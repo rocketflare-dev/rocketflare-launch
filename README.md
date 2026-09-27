@@ -116,3 +116,13 @@ All of them: [spec/12-open-questions.md](spec/12-open-questions.md).
 11. [Roadmap](spec/11-roadmap.md)
 12. [Open questions](spec/12-open-questions.md)
 13. [Sources](spec/sources.md)
+
+## License
+
+Copyright © 2026 Clifton Cunningham. Launch is source-available under the
+[Elastic License 2.0](LICENSE). You may use, modify and self-host it, including inside your
+company for commercial work. You may not offer it to others as a hosted or managed service, or
+remove or circumvent any licence-key functionality.
+
+[Rocketflare](https://rocketflare.dev) itself, and every app Launch creates from it, stays
+[MIT](https://github.com/rocketflare-dev/rocketflare/blob/main/LICENSE).
