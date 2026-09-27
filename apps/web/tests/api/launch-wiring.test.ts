@@ -103,12 +103,18 @@ describe('Launch mounts', () => {
     expect(WORKER_FIRST_PATTERNS).toEqual(expect.arrayContaining(['/ci', '/ci/*']))
   })
 
-  it.each(['/ci', '/ci/nope', '/ci/scaffold/token'])(
+  it.each(['/ci', '/ci/nope'])(
     '%s is public and answers a JSON 404 until its slice fills it, never the SPA',
     async path => {
       await expectEnvelope(await request(path, { method: 'POST', body: '{}' }), 404, path)
     }
   )
+
+  it('/ci/scaffold/* is public and answers a JSON 401 without a GitHub OIDC token', async () => {
+    for (const path of ['/ci/scaffold/token', '/ci/scaffold/done']) {
+      await expectEnvelope(await request(path, { method: 'POST', body: '{}' }), 401, path)
+    }
+  })
 
   it('/ci caps bodies at 1 MB, except the deployer upload (64 MB)', async () => {
     expect(isCiUploadPath('/ci/deploy/0b7c1b8e-4b8e-4c9b-9a55-1b0e5d7f2a11/upload')).toBe(true)
