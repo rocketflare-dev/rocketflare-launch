@@ -261,6 +261,17 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       message: 'AUTH_OIDC_ONLY=true needs OIDC_ISSUER and OIDC_CLIENT_ID',
     })
   }
+  // Launch IS an OIDC issuer at APP_URL (spec/05); its own OIDC_ISSUER is its UPSTREAM login.
+  // Pointing one at the other would send every sign-in round in a circle.
+  if (cfg.OIDC_ISSUER && cfg.OIDC_ISSUER.replace(/\/+$/, '') === cfg.APP_URL.replace(/\/+$/, '')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OIDC_ISSUER'],
+      message:
+        'OIDC_ISSUER must not be APP_URL: Launch is the issuer for its apps, and OIDC_ISSUER is ' +
+        "Launch's own upstream sign-in (Google, Microsoft, any other issuer)",
+    })
+  }
   // A Neon deployment has no HYPERDRIVE fallback: fail here, not on the first query.
   if (cfg.DATABASE_DRIVER === 'neon' && !(cfg.DATABASE_URL || cfg.PREVIEW_DATABASE_URL)) {
     ctx.addIssue({
