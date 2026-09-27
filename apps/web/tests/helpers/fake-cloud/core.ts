@@ -89,9 +89,13 @@ export function noContent(): Response {
   return new Response(null, { status: 204 })
 }
 
-/** Deterministic ids, unique per FakeCloud instance. */
+/**
+ * Ids unique per FakeCloud instance, and — from a random starting point — across the instances of
+ * every suite sharing one database: `apps.github_repo_id` is UNIQUE, and two clouds counting from
+ * 1 would hand out the same repository id.
+ */
 export class IdSource {
-  private n = 0
+  private n = Math.floor(Math.random() * 1_000_000_000)
   /** 32 lower-case hex characters, Cloudflare-style. */
   hex32(): string {
     this.n++

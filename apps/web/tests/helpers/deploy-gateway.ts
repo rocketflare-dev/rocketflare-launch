@@ -114,10 +114,8 @@ export async function seedDeployableApp(
 
   // GitHub: the repo, with the kit's deploy workflow on `main`.
   const token = cloud.github.issueToken()
-  await createOrgRepo(token.token, org, { name: slug }, { fetch })
-  // A FakeCloud numbers its repos from a fixed start, and `apps.github_repo_id` is unique across
-  // every file sharing the database: the OIDC claim only has to match the row, so make it unique.
-  const repositoryId = String(1_000_000_000 + Math.floor(Math.random() * 1_000_000_000))
+  const repo = await createOrgRepo(token.token, org, { name: slug }, { fetch })
+  const repositoryId = String(repo.id)
   cloud.github.pushCommit(org, slug, { '.github/workflows/deploy.yml': 'name: Deploy\n' })
 
   // Neon: `main` (production) and `staging` cut from it, `migrator` owning `app`.

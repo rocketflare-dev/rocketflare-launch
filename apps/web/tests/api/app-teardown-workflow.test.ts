@@ -16,14 +16,9 @@ import { AppTeardownWorkflow } from '@/api/workflows/app-teardown'
 import { appOperations, apps, auditEvents, oidcClients } from '@/db/schema'
 import { createTestTenant } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
-import type { FakeCloud } from '../helpers/fake-cloud'
+import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 import { forgetApps, seedApp } from '../helpers/launch-apps'
-import {
-  createPipelineCloud,
-  fakeVendors,
-  type Launch,
-  LaunchHarness,
-} from '../helpers/launch-pipeline'
+import { fakeVendors, type Launch, LaunchHarness } from '../helpers/launch-pipeline'
 import { createExecutionContext, createTestEnv, stubs } from '../mocks/bindings'
 import { createFakeWorkflowStep } from '../mocks/cloudflare-workers'
 
@@ -35,7 +30,7 @@ let cloud: FakeCloud
 let restore: () => void
 let h: LaunchHarness
 beforeEach(() => {
-  cloud = createPipelineCloud()
+  cloud = createFakeCloud()
   restore = cloud.install()
   h = new LaunchHarness(db, cloud, tenantIds)
 })

@@ -35,19 +35,8 @@ import { appEnvironments, deployTickets } from '@/db/schema'
 import { createExecutionContext, createTestEnv, stubs } from '../mocks/bindings'
 import { createFakeWorkflowStep, type RecordedWait } from '../mocks/cloudflare-workers'
 import { createTestTenantWithUser } from './auth'
-import { createFakeCloud, type FakeCloud } from './fake-cloud'
+import type { FakeCloud } from './fake-cloud'
 import { uniqueSlug } from './launch-apps'
-
-/**
- * A FakeCloud whose ids do not repeat another instance's. Every FakeCloud counts ids from 1, so
- * two of them hand out the same GitHub repository id — and `apps.github_repo_id` is UNIQUE across
- * the database the suites share. Starting the counter at a random offset keeps them apart.
- */
-export function createPipelineCloud(): FakeCloud {
-  const cloud = createFakeCloud()
-  ;(cloud.ids as unknown as { n: number }).n = Math.floor(Math.random() * 1_000_000_000)
-  return cloud
-}
 
 const FIXTURES = path.resolve(__dirname, '../fixtures/p2c')
 

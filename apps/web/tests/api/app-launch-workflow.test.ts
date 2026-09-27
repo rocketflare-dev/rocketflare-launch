@@ -34,10 +34,9 @@ import {
   oidcClients,
 } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
-import type { FakeCloud } from '../helpers/fake-cloud'
+import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 import { forgetApps } from '../helpers/launch-apps'
 import {
-  createPipelineCloud,
   finishScaffoldTicket,
   type Launch,
   LaunchHarness,
@@ -53,7 +52,7 @@ let cloud: FakeCloud
 let restore: () => void
 let h: LaunchHarness
 beforeEach(() => {
-  cloud = createPipelineCloud()
+  cloud = createFakeCloud()
   restore = cloud.install()
   h = new LaunchHarness(db, cloud, tenantIds)
 })
