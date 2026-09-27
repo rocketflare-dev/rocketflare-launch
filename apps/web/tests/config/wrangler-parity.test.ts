@@ -18,7 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import TOML from '@iarna/toml'
 import { describe, expect, it } from 'vitest'
-import { WORKER_FIRST_PATTERNS } from '@/api/utils/routes/api-prefixes'
+import { API_PREFIXES, isApiPath, WORKER_FIRST_PATTERNS } from '@/api/utils/routes/api-prefixes'
 import { pluginSurfaces, readManifest } from '../../../../scripts/lib/manifest.mjs'
 import { patchToml } from '../../scripts/provision/patch-toml'
 import {
@@ -52,11 +52,6 @@ const installed = readPluginResources(
     kind: string
     anchor: string
   }>
-)
-
-/** The run_worker_first patterns an installed plugin contributes, rather than the kit itself. */
-const PLUGIN_WORKER_FIRST = new Set(
-  installed.flatMap(p => p.apiPrefixes.flatMap(prefix => [prefix, `${prefix}/*`]))
 )
 
 // ---- helpers ----------------------------------------------------------------------------
@@ -108,6 +103,8 @@ const BINDING_SECTIONS: Array<{ section: string; keys: string[]; scopedKey?: str
   { section: 'workflows', keys: ['binding', 'class_name'], scopedKey: 'name' },
   { section: 'r2_buckets', keys: ['binding'], scopedKey: 'bucket_name' },
   { section: 'analytics_engine_datasets', keys: ['binding'], scopedKey: 'dataset' },
+  // Launch P3: a container class is observable code (its image, size and instance cap).
+  { section: 'containers', keys: ['class_name', 'image', 'instance_type', 'max_instances'] },
 ]
 
 // ---- must match -------------------------------------------------------------------------
@@ -165,30 +162,27 @@ describe('wrangler parity: must match', () => {
     }
   })
 
-  it('[assets] routes every Worker-owned prefix to the Worker FIRST', () => {
+  it('[assets] sends EVERY request to the Worker first, and the server prefixes still JSON-404', () => {
     // The asset router runs BEFORE the Worker, and `single-page-application` answers anything it
-    // considers a NAVIGATION with index.html without invoking `fetch`. An `<object>` embed and an
-    // `<a download>` click are navigations, so a prefix missing here is silently served the app
-    // shell for exactly those requests — while every API test still passes, because they drive the
-    // Hono app directly and never reach the asset router. This assertion is the only thing that
-    // catches it, so it is an equality against the one list `isApiPath` uses, not a subset check.
+    // considers a NAVIGATION with index.html without invoking `fetch`. Launch P3 needs every path:
+    // a session preview is a navigation to `/` on `<port>-<shortId>-<token>.<preview domain>`, and
+    // the asset router would answer it with LAUNCH's index.html. So both tomls say `true`, and the
+    // Hono app's catch-all serves `ASSETS` itself — which is only safe while every prefix the
+    // Worker owns (`API_PREFIXES`, plugins' included) is still a JSON 404 there rather than the
+    // app shell (`isApiPath`; the live requests are `tests/api/health.test.ts`).
     for (const [label, config] of [
       ['production', prod],
       ['staging', staging],
     ] as const) {
       expect(get(config, 'assets.not_found_handling'), label).toBe('single-page-application')
-      // Equality, not a subset — but over the prefixes the KIT owns. WORKER_FIRST_PATTERNS is
-      // built from the server barrel, so an installed plugin inflates it while the toml stays bare
-      // until `provision cloudflare` writes them (D31, decision 12). Subtracting the plugin's
-      // patterns from both sides keeps this exact where it protects something, and silent where
-      // provisioning rather than the kit fills the gap; `pluginParityIssues` under
-      // REQUIRE_PROVISIONED=1 is what demands the plugin half.
-      const workerFirst = (get(config, 'assets.run_worker_first') ?? []) as string[]
-      expect(
-        workerFirst.filter(pattern => !PLUGIN_WORKER_FIRST.has(pattern)),
-        label
-      ).toEqual(WORKER_FIRST_PATTERNS.filter(pattern => !PLUGIN_WORKER_FIRST.has(pattern)))
+      expect(get(config, 'assets.run_worker_first'), label).toBe(true)
     }
+    for (const prefix of API_PREFIXES) {
+      expect(isApiPath(prefix), prefix).toBe(true)
+      expect(isApiPath(`${prefix}/anything`), prefix).toBe(true)
+    }
+    expect(isApiPath('/')).toBe(false)
+    expect(isApiPath('/apps/shop')).toBe(false)
   })
 
   it('both files declare the baseline bindings', () => {
@@ -226,6 +220,43 @@ describe('wrangler parity: must match', () => {
         name: 'launch-app-teardown-staging',
       },
     ])
+  })
+})
+
+describe('wrangler parity: coding sessions (Launch P3)', () => {
+  it.each([
+    ['production', prod, 'launch-session'],
+    ['staging', staging, 'launch-session-staging'],
+  ] as const)('%s binds the session sandbox and its Workflow', (_label, config, workflowName) => {
+    // The container class IS a Durable Object class: `[[containers]]`, the SESSION_SANDBOX binding
+    // and a SQLite-backed migration all name the same class, or `wrangler deploy` refuses it.
+    expect(rows(config, 'containers')).toEqual([
+      {
+        class_name: 'SessionSandbox',
+        image: './containers/session/Dockerfile',
+        instance_type: 'standard-3',
+        max_instances: 10,
+      },
+    ])
+    expect(rows(config, 'durable_objects.bindings')).toContainEqual({
+      name: 'SESSION_SANDBOX',
+      class_name: 'SessionSandbox',
+    })
+    expect(rows(config, 'migrations')).toContainEqual({
+      tag: 'v2',
+      new_sqlite_classes: ['SessionSandbox'],
+    })
+    expect(rows(config, 'workflows')).toContainEqual({
+      name: workflowName,
+      binding: 'SESSION_WORKFLOW',
+      class_name: 'SessionWorkflow',
+    })
+    expect(get(config, 'vars.SESSION_BACKEND')).toBe('cloud')
+    expect(String(get(config, 'vars.SESSION_PREVIEW_URL'))).toMatch(/^https:\/\/\{label\}\./)
+  })
+
+  it('the image the tomls name exists (the dry-run build refuses a missing Dockerfile)', () => {
+    expect(fs.existsSync(path.join(WEB_DIR, 'containers/session/Dockerfile'))).toBe(true)
   })
 })
 

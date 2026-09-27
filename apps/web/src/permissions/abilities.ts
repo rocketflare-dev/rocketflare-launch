@@ -64,6 +64,8 @@ const grantAdmin: RoleGrant = can => {
   can('read', 'Feedback')
   // Launch (spec/08): the audit log is read-only for everyone; admin+ may read it.
   can('read', 'AuditEvent')
+  // Launch P3: every coding session in the organisation — ship, end, extend, drain.
+  can('manage', 'Session')
 }
 
 /**
@@ -89,6 +91,7 @@ const grantAdmin: RoleGrant = can => {
  * | Feedback       | manage      | create+read | create+read | create+read | create (D33: on answers they can read) |
  * | App            | manage      | manage | manage | manage  | read   (Launch: the catalogue, spec/06) |
  * | AuditEvent     | manage      | read   | read   | read    | –      (Launch: append-only log, spec/08) |
+ * | Session        | manage      | manage | manage | manage  | create+read+update (own only — the route filters by creator; app owners count, P3) |
  * | Feature:<f>    | access all  | by ctx | by ctx | access all | by ctx |
  */
 export const rolePermissions: Record<EffectiveRole, RoleGrant> = {
@@ -123,6 +126,11 @@ export const rolePermissions: Record<EffectiveRole, RoleGrant> = {
     // D33: anyone may rate an answer they can read (the service checks the target); reading the
     // ratings is admin+.
     can('create', 'Feedback')
+    // Launch P3: anyone may start a coding session on an app they can see, and chat in, ship or
+    // end their OWN (the route's creator / app-owner check); others' sessions are a 404.
+    can('create', 'Session')
+    can('read', 'Session')
+    can('update', 'Session')
   },
 }
 

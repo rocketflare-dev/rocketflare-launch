@@ -8,6 +8,14 @@
  * here), everything else a live installation token — a revoked or unknown one is a 401, a token
  * narrowed to other repositories is a 403, and moving a ref over a change to `.github/workflows/*`
  * needs `workflows: write` (the reason the scaffold job gets its own token, plan §0.1).
+ *
+ * P3 adds pull requests and CI: `POST …/pulls` (`pull_requests: write`; the head branch must exist,
+ * and a second OPEN one from the same head is GitHub's 422), `GET …/pulls?state&head=owner:branch`,
+ * `GET …/pulls/{n}`, and the two CI reads on a commit — `GET …/commits/{ref}/check-runs`
+ * (`checks: read`) and `GET …/commits/{ref}/status`, the combined status (`statuses: read`: no
+ * statuses is `pending` with `total_count: 0`, as GitHub answers). A test sets CI with
+ * `setCheckRuns(owner, repo, ref, runs)` / `setStatuses(owner, repo, ref, statuses)` (the ref is
+ * resolved to its sha when set) and reads `pulls`.
  */
 import {
   belongsTo,
@@ -65,6 +73,32 @@ export interface FakeRepo {
   variables: Map<string, string>
 }
 
+export interface FakeGitHubPull {
+  number: number
+  owner: string
+  repo: string
+  head: string
+  base: string
+  title: string
+  body: string
+  state: 'open' | 'closed'
+  /** The head branch's sha when the PR was opened. */
+  headSha: string
+}
+
+export interface FakeCheckRun {
+  name: string
+  status: 'queued' | 'in_progress' | 'completed'
+  conclusion?: string | null
+  html_url?: string
+}
+
+export interface FakeCommitStatus {
+  context: string
+  state: 'pending' | 'success' | 'failure' | 'error'
+  target_url?: string
+}
+
 export interface FakeGitHubOptions {
   org: string
   appId: number
@@ -84,6 +118,10 @@ const DEFAULT_PERMISSIONS = {
   environments: 'write',
   actions_variables: 'write',
   metadata: 'read',
+  // P3: sessions open PRs and read their CI.
+  pull_requests: 'write',
+  checks: 'read',
+  statuses: 'read',
 }
 
 export class FakeGitHub implements VendorHandler {
@@ -95,6 +133,11 @@ export class FakeGitHub implements VendorHandler {
   readonly runs: FakeWorkflowRun[] = []
   /** Called after each accepted `workflow_dispatch` (awaited) — the test's stand-in for the job. */
   onDispatch: ((run: FakeWorkflowRun) => unknown | Promise<unknown>) | null = null
+  /** P3: every pull request opened, in order. */
+  readonly pulls: FakeGitHubPull[] = []
+  /** P3: `owner/name@sha` (lower-case repo) → the commit's check runs / statuses. */
+  readonly checkRuns = new Map<string, FakeCheckRun[]>()
+  readonly statuses = new Map<string, FakeCommitStatus[]>()
 
   constructor(
     private readonly ids: IdSource,
@@ -166,6 +209,22 @@ export class FakeGitHub implements VendorHandler {
     const sha = this.writeCommit(tree, parent ? [parent] : [], message)
     repo.refs.set(ref, sha)
     return sha
+  }
+
+  private ciKey(owner: string, name: string, ref: string): string {
+    const repo = this.repo(owner, name)
+    const sha = repo ? (this.resolveRef(repo, ref) ?? ref) : ref
+    return `${owner}/${name}`.toLowerCase() + `@${sha}`
+  }
+
+  /** P3: the check runs `ref` (resolved to its sha now) reports. */
+  setCheckRuns(owner: string, name: string, ref: string, runs: FakeCheckRun[]): void {
+    this.checkRuns.set(this.ciKey(owner, name, ref), runs)
+  }
+
+  /** P3: the commit statuses `ref` (resolved to its sha now) reports. */
+  setStatuses(owner: string, name: string, ref: string, statuses: FakeCommitStatus[]): void {
+    this.statuses.set(this.ciKey(owner, name, ref), statuses)
   }
 
   handle(req: FakeRequest): Promise<Response> | Response | null {
@@ -513,6 +572,106 @@ export class FakeGitHub implements VendorHandler {
       return json({ total_count: runs.length, workflow_runs: runs })
     }
 
+    // ---- P3: pull requests
+    const readable = (permission: string) =>
+      this.can(token, permission, 'read')
+        ? null
+        : ghError(403, 'Resource not accessible by integration')
+    if (rest === '/pulls' && m === 'POST') {
+      const refused = writable('pull_requests')
+      if (refused) return refused
+      const head = String(body.head ?? '')
+      const base = String(body.base ?? repo.default_branch)
+      const headSha = repo.refs.get(`heads/${head}`)
+      if (!headSha || !repo.refs.has(`heads/${base}`)) {
+        return ghError(422, 'Validation Failed')
+      }
+      if (
+        this.pulls.some(
+          p =>
+            p.owner === repo.owner && p.repo === repo.name && p.head === head && p.state === 'open'
+        )
+      ) {
+        return ghError(422, `A pull request already exists for ${repo.owner}:${head}.`)
+      }
+      const pull: FakeGitHubPull = {
+        number: this.pulls.filter(p => p.owner === repo.owner && p.repo === repo.name).length + 1,
+        owner: repo.owner,
+        repo: repo.name,
+        head,
+        base,
+        title: String(body.title ?? ''),
+        body: String(body.body ?? ''),
+        state: 'open',
+        headSha,
+      }
+      this.pulls.push(pull)
+      return json(this.pullJson(pull), 201)
+    }
+    if (rest === '/pulls' && m === 'GET') {
+      const refused = readable('pull_requests')
+      if (refused) return refused
+      const state = req.url.searchParams.get('state') ?? 'open'
+      const head = req.url.searchParams.get('head')
+      const list = this.pulls.filter(
+        p =>
+          p.owner === repo.owner &&
+          p.repo === repo.name &&
+          (state === 'all' || p.state === state) &&
+          (!head || `${p.owner}:${p.head}`.toLowerCase() === head.toLowerCase())
+      )
+      return json(list.map(p => this.pullJson(p)))
+    }
+    match = rest.match(/^\/pulls\/(\d+)$/)
+    if (match && m === 'GET') {
+      const refused = readable('pull_requests')
+      if (refused) return refused
+      const pull = this.pulls.find(
+        p => p.owner === repo.owner && p.repo === repo.name && p.number === Number(match?.[1])
+      )
+      return pull ? json(this.pullJson(pull)) : ghError(404, 'Not Found')
+    }
+
+    // ---- P3: CI on a commit
+    match = rest.match(/^\/commits\/([^/]+)\/check-runs$/)
+    if (match && m === 'GET') {
+      const refused = readable('checks')
+      if (refused) return refused
+      const runs =
+        this.checkRuns.get(this.ciKey(repo.owner, repo.name, decodeURIComponent(match[1]))) ?? []
+      return json({
+        total_count: runs.length,
+        check_runs: runs.map((r, i) => ({
+          id: i + 1,
+          name: r.name,
+          status: r.status,
+          conclusion: r.status === 'completed' ? (r.conclusion ?? 'success') : null,
+          html_url: r.html_url ?? `https://github.com/${repo.owner}/${repo.name}/runs/${i + 1}`,
+        })),
+      })
+    }
+    match = rest.match(/^\/commits\/([^/]+)\/status$/)
+    if (match && m === 'GET') {
+      const refused = readable('statuses')
+      if (refused) return refused
+      const ref = decodeURIComponent(match[1])
+      const statuses = this.statuses.get(this.ciKey(repo.owner, repo.name, ref)) ?? []
+      const state =
+        statuses.length === 0
+          ? 'pending'
+          : statuses.some(s => s.state === 'failure' || s.state === 'error')
+            ? 'failure'
+            : statuses.some(s => s.state === 'pending')
+              ? 'pending'
+              : 'success'
+      return json({
+        state,
+        sha: this.resolveRef(repo, ref) ?? ref,
+        total_count: statuses.length,
+        statuses: statuses.map(s => ({ ...s, target_url: s.target_url ?? null })),
+      })
+    }
+
     // ---- settings
     match = rest.match(/^\/environments\/([^/]+)$/)
     if (match && m === 'PUT') {
@@ -541,6 +700,20 @@ export class FakeGitHub implements VendorHandler {
     }
 
     return ghError(404, `Not Found (${m} ${path})`)
+  }
+
+  private pullJson(p: FakeGitHubPull) {
+    return {
+      number: p.number,
+      html_url: `https://github.com/${p.owner}/${p.repo}/pull/${p.number}`,
+      state: p.state,
+      title: p.title,
+      body: p.body,
+      draft: false,
+      merged: false,
+      head: { ref: p.head, sha: p.headSha },
+      base: { ref: p.base },
+    }
   }
 
   /** Whether moving a ref from `fromSha` to `toSha` changes anything under `.github/workflows/`. */

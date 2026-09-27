@@ -9,7 +9,9 @@ paths:
 # API Patterns
 
 Hono app assembled in `apps/web/src/api/index.ts` (exports `app` only). `apps/web/src/worker.ts` is the Worker entry:
-`export default { fetch, queue, scheduled }` plus the DO/Workflow class exports. Keeping the classes
+`export default { fetch, queue, scheduled }` plus the DO/Workflow class exports. Its `fetch` checks the
+HOST first (Launch P3): a session preview host (`previewHostOf`, `SESSION_PREVIEW_URL`) goes to
+`api/preview/gateway.ts` and never reaches the Hono app or its middleware. Keeping the classes
 out of `api/index.ts` is what lets tests drive `app.request(req, env, ctx)` under Node.
 
 ## Middleware order (do not reorder casually — 04 §10)
@@ -23,7 +25,7 @@ out of `api/index.ts` is what lets tests drive `app.request(req, env, ctx)` unde
 7. `csrf` — cookie-only, no DB, cheap rejection (GET `/ws` is a safe method, no exemption needed)
 8. `databaseMiddleware` — per-request client from `openDatabase({ ...config, HYPERDRIVE })` (D35: neon-http or postgres.js, per `DATABASE_DRIVER`), `c.executionCtx.waitUntil(close())`
 9. `tracerMiddleware` (`middleware/tracing.ts`, on `/api/*`) — `c.set('tracer', tracerFor(cfg, { store: ownConnectionSpanStore(cfg, env) }))` (D32): the span recorder with the OTLP exporter when a backend is configured and the `ai_spans` store (its OWN short-lived client per non-empty flush — the request's is closed in `waitUntil`, possibly first); flushed through `deferOrAwait` (= `waitUntil`) AFTER the handler. A streaming route whose generations run after `next()` resolves (chat SSE) flushes again itself; flushing an empty batch is a no-op
-10. Mounts: `/api/health|ready` public → `/auth` (rate-limited login routes) → Launch's public protocol surfaces `/.well-known`, `/oidc` (the issuer) and `/ci` (P2: GitHub Actions OIDC — every handler verifies the token and resolves the calling repo before any row, `routes/ci.ts`) → `/api/invite` public → `/api/admin/*` behind `globalAdminMiddleware` → `/ws` (no `authMiddleware`: a browser cannot set headers on an upgrade, so `routes/ws.ts` resolves the cookie itself) → every other `/api/*` (incl. `/api/files`, `/api/ai/{config,prompts,usage,agent-models,documents}`, `/api/chat`, `/api/agui`, `/api/agents`, `/api/traces`) with `authMiddleware` at the mount → every installed plugin's `publicMounts` under `/api/hooks/<id>`, with NO `authMiddleware` (D34) → **every installed plugin's authed mounts, last** (D31, so a plugin can never shadow a kit prefix — Hono matches in registration order; the analytics plugin's are `/api/analytics`, `/cubejs-api` and `/mcp`, the last two ONE router mounted twice because drizzle-cube registers absolute paths) → `app.all('*')` ASSETS catch-all with a JSON-404 guard for `/api|/auth|/ws` plus every prefix in `API_PREFIXES` (an unauthenticated `/cubejs-api/*` is therefore a 401 envelope, never `index.html` — `tests/api/health.test.ts`)
+10. Mounts: `/api/health|ready` public → `/auth` (rate-limited login routes) → Launch's public protocol surfaces `/.well-known`, `/oidc` (the issuer) and `/ci` (P2: GitHub Actions OIDC — every handler verifies the token and resolves the calling repo before any row, `routes/ci.ts`) → `/api/invite` public → `/api/admin/*` behind `globalAdminMiddleware` (Launch's `/api/admin/setup`, `/api/admin/oidc` and P3's `/api/admin/sessions` first) → `/ws` (no `authMiddleware`: a browser cannot set headers on an upgrade, so `routes/ws.ts` resolves the cookie itself) → every other `/api/*` (incl. `/api/files`, `/api/ai/{config,prompts,usage,agent-models,documents}`, `/api/chat`, `/api/agui`, `/api/agents`, `/api/traces`, Launch's `/api/apps` — with P3's `/:id/sessions` sub-router — and `/api/sessions`, three routers on one prefix: `sessions.ts` mounts `session-chat.ts` and `session-ship.ts` first) with `authMiddleware` at the mount → every installed plugin's `publicMounts` under `/api/hooks/<id>`, with NO `authMiddleware` (D34) → **every installed plugin's authed mounts, last** (D31, so a plugin can never shadow a kit prefix — Hono matches in registration order; the analytics plugin's are `/api/analytics`, `/cubejs-api` and `/mcp`, the last two ONE router mounted twice because drizzle-cube registers absolute paths) → `app.all('*')` ASSETS catch-all with a JSON-404 guard for `/api|/auth|/ws` plus every prefix in `API_PREFIXES` (an unauthenticated `/cubejs-api/*` is therefore a 401 envelope, never `index.html` — `tests/api/health.test.ts`)
 
 Auth is per-mount, not global: the public surface is enumerable and small.
 
@@ -147,9 +149,10 @@ and `services/fact-tables/CLAUDE.md`. Three things a KIT route author still has 
   contract from its own shared entry, `guardPermission` with its own subject, `withAuthAndDb` for
   the tenant id, typed errors, and a tenant predicate on every query. What differs is only where
   they are REGISTERED: `ServerPlugin.mounts`, not `api/index.ts`'s table.
-- **A prefix outside `/api` costs three core edits the plugin cannot make**: `ServerPlugin.apiPrefixes`
-  feeds `API_PREFIXES` (the SPA catch-all's JSON-404 guard and the parity test), but
-  `[assets] run_worker_first` in BOTH tomls and the Vite dev proxy are files a plugin never touches.
+- **A prefix outside `/api` costs core edits the plugin cannot make**: `ServerPlugin.apiPrefixes`
+  feeds `API_PREFIXES` (the SPA catch-all's JSON-404 guard and the parity test), but the Vite dev
+  proxy is a file a plugin never touches — and so is `[assets] run_worker_first`, which Launch's
+  tomls set to `true` (P3's session previews), so nothing needs adding there while it stays so.
   `pnpm plugin add` prints them; `pnpm provision cloudflare <env>` writes the toml half.
 - **A registry a plugin composes into is a FUNCTION, not a const.** `visibilityResources()` is the
   kit's worked example: it reads the plugin barrel, a plugin's visibility resource imports this

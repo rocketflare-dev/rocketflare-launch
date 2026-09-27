@@ -155,6 +155,13 @@
       "when": 1790548345662,
       "tag": "0021_launch-p2-launch-instance",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790550414548,
+      "tag": "0022_launch-p3-sessions",
+      "breakpoints": true
     }
   ]
 }

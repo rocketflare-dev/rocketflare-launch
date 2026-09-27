@@ -203,6 +203,46 @@ const coreConfigSchema = z.object({
    */
   OIDC_TRUST_EMAIL: optionalBoolean(false),
 
+  /**
+   * Launch P3 (coding sessions): where a session's sandbox, database and repo live. `cloud` —
+   * Cloudflare Sandbox, a Neon branch, GitHub (the tomls). `local` — `wrangler dev`'s local
+   * containers, a database cloned on the local Postgres, the local git server
+   * (`docs/SESSIONS-LOCAL.md`). `loadConfig` refuses `local` outside `APP_ENV=development`: it
+   * points sessions at a laptop's Postgres and git.
+   */
+  SESSION_BACKEND: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(['cloud', 'local']).default('cloud')
+  ),
+  /**
+   * The preview origin template: `{label}` becomes `<port>-<shortId>-<token>`
+   * (`https://{label}.clewro.com`; `http://{label}.localhost:3001` locally). Unset, previews are
+   * off and `worker.ts` sends nothing to the preview gateway.
+   */
+  SESSION_PREVIEW_URL: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z
+      .string()
+      .regex(
+        /^https?:\/\/\{label\}\.[a-z0-9.-]+(:\d+)?$/i,
+        'SESSION_PREVIEW_URL is an origin whose host STARTS with {label}, e.g. https://{label}.example.com'
+      )
+      .optional()
+  ),
+  /** `SESSION_BACKEND=local`: the git server sessions clone from and push to (`pnpm sessions:local-git`). */
+  SESSION_LOCAL_GIT_URL: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().url().optional()
+  ),
+  /**
+   * `SESSION_BACKEND=local`: the Neon proxy as a CONTAINER reaches it
+   * (`http://host.docker.internal:<port>`) — a locked sandbox speaks only HTTP(S) to Postgres (S7).
+   */
+  SESSION_LOCAL_NEON_PROXY: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().url().optional()
+  ),
+
   // ---- Secrets (.dev.vars locally, `wrangler secret put` deployed) — all optional here;
   //      features gate on presence (zero-creds first run) or demand them at use time. -------
   /**
@@ -220,6 +260,11 @@ const coreConfigSchema = z.object({
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().url().optional()
   ),
+  /**
+   * `SESSION_BACKEND=local`: an owner connection to the local Postgres that sessions clone their
+   * databases on (`CREATE DATABASE launch_sess_<short> TEMPLATE launch_sessdev_<slug>`). A secret.
+   */
+  SESSION_LOCAL_DB_URL: optionalString,
   /** AES-GCM key for OAuth tokens at rest (D12). */
   OAUTH_ENCRYPTION_KEY: optionalSecret(32),
   RESEND_API_KEY: optionalString,
@@ -270,6 +315,14 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       message:
         'OIDC_ISSUER must not be APP_URL: Launch is the issuer for its apps, and OIDC_ISSUER is ' +
         "Launch's own upstream sign-in (Google, Microsoft, any other issuer)",
+    })
+  }
+  // Local sessions point at a laptop's Postgres and git server: never in a deployed Worker.
+  if (cfg.SESSION_BACKEND === 'local' && cfg.APP_ENV !== 'development') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SESSION_BACKEND'],
+      message: 'SESSION_BACKEND=local is only allowed with APP_ENV=development',
     })
   }
   // A Neon deployment has no HYPERDRIVE fallback: fail here, not on the first query.

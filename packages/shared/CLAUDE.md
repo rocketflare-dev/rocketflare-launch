@@ -33,6 +33,18 @@ Launch (P2): `launch-pipeline.ts` (`newAppSlugProblem` — the `launch-` rule on
 DEPLOYER.md v1 bodies behind `/ci/deploy`, the `/ci/scaffold` token and done bodies, and the event
 types `SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`, golden-tested against Cloudflare's
 `/^[A-Za-z0-9_-]{1,100}$/`) ·
+Launch (P3): `launch-sessions.ts` (coding sessions — `SESSION_KINDS`, `SESSION_STATUSES` with
+`ACTIVE_SESSION_STATUSES` (the concurrency index's predicate is rendered from it) and
+`TERMINAL_SESSION_STATUSES`, `SESSION_ACTIONS`, `SESSION_EVENT_TYPES` + `SESSION_EVENT_DATA` (the
+agent-run payloads reused for `text`/`tool.*`/`step`/`status`/`error`), `sessionPolicySchema` +
+`DEFAULT_SESSION_POLICY` + `resolveSessionPolicy`, microcents helpers, the jsonb shapes
+(`sessionDbSchema`, `appSessionDbSchema`, `prChecksSchema`), the request/response bodies of
+`/api/sessions`, `/api/apps/:id/sessions` and `/api/admin/sessions` (`sessionSchema` carries no
+token and no sealed column — a config test pins it), `sessionWorkflowParamsSchema`,
+`SESSION_WAKE_EVENT` (golden-tested) and `SESSION_REALTIME_ENTITY`, and the preview-host grammar:
+`newSessionShortId` / `newPreviewToken`, `previewLabel`, `previewUrl`, `parsePreviewHost`);
+`launch-setup.ts` gained the `anthropic_api_key` kind and the `session_policy` / `sessions_paused`
+settings ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

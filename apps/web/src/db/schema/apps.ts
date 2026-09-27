@@ -13,10 +13,13 @@
  *   DATABASE rather than in service code.
  */
 import { APP_SOURCES, APP_STATUSES } from '@launch/shared/launch-apps'
+import type { AppSessionDb } from '@launch/shared/launch-sessions'
 import { relations } from 'drizzle-orm'
 import {
+  bigint,
   foreignKey,
   index,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -78,6 +81,14 @@ export const apps = pgTable(
     }),
     /** Set by teardown (P2) when the app reaches `archived`. */
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    /**
+     * P3: the prepared `dev` database coding sessions branch from (`AppSessionDb` — the Neon branch
+     * id, or the local template database, and the commit it was migrated and seeded at). Null until
+     * the first session prepares it. Non-secret.
+     */
+    sessionDb: jsonb('session_db').$type<AppSessionDb>(),
+    /** P3: this app's monthly session budget, overriding `session_policy.appMonthlyUsd`. */
+    sessionMonthlyBudgetMicrocents: bigint('session_monthly_budget_microcents', { mode: 'number' }),
     ...timestamps(),
   },
   table => [

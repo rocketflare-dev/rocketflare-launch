@@ -76,7 +76,13 @@ describe('sealed credential store', () => {
     // Status: set, checked, metadata merged — and no value anywhere in it.
     const listed = await credentialStatus(db)
     expect(listed.map(s => s.kind).sort()).toEqual(
-      ['cloudflare_api_token', 'github_app', 'neon_org_api_key', 'resend_api_key'].sort()
+      [
+        'anthropic_api_key',
+        'cloudflare_api_token',
+        'github_app',
+        'neon_org_api_key',
+        'resend_api_key',
+      ].sort()
     )
     const resend = listed.find(s => s.kind === 'resend_api_key')
     expect(resend).toMatchObject({

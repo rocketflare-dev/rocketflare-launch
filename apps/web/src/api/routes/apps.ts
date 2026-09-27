@@ -6,7 +6,8 @@
  * Reads are by SLUG (`GET /:slug`, the URL the console shows); everything under an app is by ID.
  * Every lookup is tenant-first (`services/launch/apps.ts`), so another tenant's app is a 404.
  *
- * P2 mounts two sub-routers first (`app-pipeline.ts`, `app-deploys.ts`); see below.
+ * P2 mounts two sub-routers first (`app-pipeline.ts`, `app-deploys.ts`), and P3 a third
+ * (`app-sessions.ts`, an app's coding sessions); see below.
  *
  * `POST /:id/health-check` probes inline rather than enqueueing: it is two GETs per environment
  * with a five-second cap, and the person who pressed the button is waiting for the answer.
@@ -44,6 +45,7 @@ import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 import { appDeploysRouter, appViewer } from './app-deploys'
 import { appPipelineRouter } from './app-pipeline'
+import { appSessionsRouter } from './app-sessions'
 
 export const appsRouter = createRouter()
 
@@ -52,6 +54,8 @@ export const appsRouter = createRouter()
 // and nothing here may be shadowed by `GET /:slug` below.
 appsRouter.route('/', appPipelineRouter)
 appsRouter.route('/', appDeploysRouter)
+// Launch P3: `POST|GET /:id/sessions` — starting and listing an app's coding sessions.
+appsRouter.route('/', appSessionsRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')

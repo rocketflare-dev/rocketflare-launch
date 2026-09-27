@@ -27,6 +27,8 @@ export interface UsageInput {
   model: string
   usage: TokenUsage
   costMicrocents?: number | null
+  /** Launch P3: the coding session billed (the model proxy's calls); null everywhere else. */
+  sessionId?: string | null
 }
 
 export async function recordUsage(db: Database, input: UsageInput): Promise<void> {
@@ -35,6 +37,7 @@ export async function recordUsage(db: Database, input: UsageInput): Promise<void
   await db.insert(aiUsage).values({
     tenantId: input.tenantId,
     userId: input.userId ?? null,
+    sessionId: input.sessionId ?? null,
     feature: input.feature,
     provider: input.provider,
     model: input.model,

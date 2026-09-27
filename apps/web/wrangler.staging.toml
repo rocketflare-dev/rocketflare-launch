@@ -36,6 +36,8 @@ AGENT_INTERRUPT_TIMEOUT = "168 hours"   # Agents (#17): how long a run parked on
 FEATURES_ENABLED = ""                  # Feature flags (D30): keys this environment ships at all; blank = none (fail-closed)
 OBSERVABILITY_CAPTURE_CONTENT = "true"  # Tracing (D32): "false" strips prompts/completions/tool I/O from the export AND ai_spans
 OBSERVABILITY_SPAN_RETENTION_DAYS = "14"   # Tracing (D32): days of ai_spans the nightly prune keeps
+SESSION_BACKEND = "cloud"              # Coding sessions (P3): cloud | local (local = wrangler dev only; loadConfig refuses it elsewhere)
+SESSION_PREVIEW_URL = "https://{label}.clewro.com"  # P3: preview origins, {label} = <port>-<shortId>-<token> (docs/DEPLOY.md § Coding sessions)
 # Tracing backend (D32) — add these to BOTH files when you pick one (docs/DEPLOY.md § Tracing):
 #   OBSERVABILITY_PRESET = "langfuse"    # langfuse | phoenix | generic (unset + Langfuse keys = langfuse)
 #   OTEL_EXPORTER_OTLP_ENDPOINT = "https://…"   # unset + Langfuse keys = <LANGFUSE_BASE_URL>/api/public/otel
@@ -73,28 +75,12 @@ not_found_handling = "single-page-application"
 # The asset router runs BEFORE the Worker, and `single-page-application` answers any request it
 # considers a navigation with index.html — without ever invoking `fetch`. `Sec-Fetch-Mode: navigate`
 # is not just the address bar: an `<object>`/`<iframe>` embed and an `<a download>` click are
-# navigations too, so `GET /api/files/:id` was served the SPA shell instead of the file (the
-# document viewer's PDF embed, D18). These prefixes are the app's server surface — the same list the
-# catch-all in `api/index.ts` JSON-404s — and they must reach the Worker whatever the request mode.
-run_worker_first = [
-  "/api",
-  "/api/*",
-  "/auth",
-  "/auth/*",
-  "/ws",
-  "/ws/*",
-  # Launch's OIDC issuer (spec/05): an app's browser navigates to /oidc/authorize and /oidc/logout.
-  "/oidc",
-  "/oidc/*",
-  "/.well-known",
-  "/.well-known/*",
-  # Launch P2: the GitHub-OIDC surface — the deployer protocol and the scaffold job call it.
-  "/ci",
-  "/ci/*",
-  # An installed plugin's own prefixes go here too, in barrel order (D31) — the analytics plugin
-  # adds "/cubejs-api" and "/mcp". `pnpm plugin add` prints the step; `pnpm provision cloudflare
-  # <env>` writes it. The parity test reads `API_PREFIXES`, so a forgotten one fails the gate.
-]
+# navigations too. Launch P3 makes this `true` (every request reaches the Worker first): a coding
+# session's PREVIEW is a navigation to `/` on `<port>-<shortId>-<token>.<preview domain>`, which the
+# asset router would otherwise answer with Launch's own index.html. `src/worker.ts` sends preview
+# hosts to the gateway before the Hono app; the app's catch-all serves `ASSETS` for everything else
+# and JSON-404s the server prefixes (`API_PREFIXES`) — the parity test asserts both.
+run_worker_first = true
 
 # Postgres (D35). Under DATABASE_DRIVER = "neon" there is NO [[hyperdrive]] block — wrangler refuses
 # to deploy one whose id does not exist — and the Worker reads the DATABASE_URL secret instead.
@@ -149,6 +135,25 @@ class_name = "NotificationsHub"
 tag = "v1"
 new_classes = ["NotificationsHub"]
 
+# Coding sessions (P3, spec/07): one Sandbox container per session. `SessionSandbox` IS the Durable
+# Object (it extends the Sandbox SDK's class), reached with `getSandbox(env.SESSION_SANDBOX, id)`;
+# SQLite-backed, as the SDK requires. `image` is built by `wrangler deploy` (and by `wrangler dev`,
+# with Docker). **Changing the image or this block replaces running instances: drain sessions
+# first** (docs/DEPLOY.md § Coding sessions). `max_instances` is also the cap on live sessions.
+[[containers]]
+class_name = "SessionSandbox"
+image = "./containers/session/Dockerfile"
+instance_type = "standard-3"
+max_instances = 10
+
+[[durable_objects.bindings]]
+name = "SESSION_SANDBOX"
+class_name = "SessionSandbox"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SessionSandbox"]
+
 # File storage (D23): R2 behind `services/storage.ts`. Create: wrangler r2 bucket create launch-files-staging
 [[r2_buckets]]
 binding = "FILES"
@@ -184,6 +189,13 @@ class_name = "AppLaunchWorkflow"
 name = "launch-app-teardown-staging"
 binding = "APP_TEARDOWN_WORKFLOW"
 class_name = "AppTeardownWorkflow"
+
+# Coding sessions (P3): one instance per session (id = sessions.id, `<id>-rN` on a restart) drives
+# boot → the turn loop → ship or end → cleanup. `name` is ACCOUNT-scoped (staging uses `-staging`).
+[[workflows]]
+name = "launch-session-staging"
+binding = "SESSION_WORKFLOW"
+class_name = "SessionWorkflow"
 
 # ---- Added in later phases (keep this list in sync with wrangler.toml) ----------
 # Phase 4 (D19): optional [[analytics_engine_datasets]] for product telemetry — not wired yet

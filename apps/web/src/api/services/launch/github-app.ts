@@ -27,6 +27,15 @@
  * - Settings: `PUT …/environments/{name}`, repository variables (`PATCH`, falling back to `POST`
  *   when the variable does not exist yet), and `DELETE /installation/token` — a job revoking the
  *   token it was handed.
+ *
+ * P3 adds what shipping a coding session needs, under an installation token scoped to the one repo:
+ *
+ * - `POST …/pulls {title, head, base, body}` (`pull_requests: write`; 422 "A pull request already
+ *   exists" for a second one from the same head — `findOpenPullRequest` is the way back to it) and
+ *   `GET …/pulls/{n}`.
+ * - CI on the head commit, which is TWO APIs: `GET …/commits/{ref}/check-runs` (Actions and other
+ *   Checks apps — `checks: read`) and `GET …/commits/{ref}/status`, the combined commit status
+ *   (older integrations — `statuses: read`). A PR is green only when both are.
  */
 import { importPKCS8, SignJWT } from 'jose'
 
@@ -589,4 +598,130 @@ export async function upsertRepoVariable(
 /** Revoke the installation token making the call — a job ending its own access. */
 export function revokeInstallationToken(token: string, opts: GitHubOptions = {}): Promise<void> {
   return githubVoid('/installation/token', { method: 'DELETE', token }, opts)
+}
+
+// ---- P3: pull requests and CI -----------------------------------------------------------------
+
+export interface GitHubPullRequest {
+  number: number
+  html_url: string
+  state: 'open' | 'closed' | string
+  merged?: boolean
+  draft?: boolean
+  title?: string
+  head: { ref: string; sha: string }
+  base: { ref: string }
+}
+
+/** Open a pull request from `head` into `base`. A second one from the same head is a 422. */
+export function createPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  input: { title: string; head: string; base: string; body?: string; draft?: boolean },
+  opts: GitHubOptions = {}
+): Promise<GitHubPullRequest> {
+  return githubJson<GitHubPullRequest>(
+    `${repoPath(owner, repo)}/pulls`,
+    {
+      method: 'POST',
+      token,
+      body: {
+        title: input.title,
+        head: input.head,
+        base: input.base,
+        body: input.body ?? '',
+        draft: input.draft ?? false,
+      },
+    },
+    opts
+  )
+}
+
+/** One pull request, or null when it does not exist. */
+export async function getPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  number: number,
+  opts: GitHubOptions = {}
+): Promise<GitHubPullRequest | null> {
+  const path = `${repoPath(owner, repo)}/pulls/${number}`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) return null
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubPullRequest
+}
+
+/** The OPEN pull request from `head` (a branch in the same repo), or null. */
+export async function findOpenPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  head: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubPullRequest | null> {
+  const params = new URLSearchParams({ state: 'open', head: `${owner}:${head}`, per_page: '1' })
+  const pulls = await githubJson<GitHubPullRequest[]>(
+    `${repoPath(owner, repo)}/pulls?${params}`,
+    { token },
+    opts
+  )
+  return pulls[0] ?? null
+}
+
+export interface GitHubCheckRun {
+  id: number
+  name: string
+  status: 'queued' | 'in_progress' | 'completed' | string
+  /** Null until `completed`; then `success`, `failure`, `neutral`, `skipped`, `cancelled`… */
+  conclusion: string | null
+  html_url?: string | null
+  details_url?: string | null
+}
+
+/** The check runs on `ref` (a sha or branch) — the first 100, which is every CI a PR has. */
+export async function listCheckRuns(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubCheckRun[]> {
+  const body = await githubJson<{ total_count: number; check_runs?: GitHubCheckRun[] }>(
+    `${repoPath(owner, repo)}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`,
+    { token },
+    opts
+  )
+  return body.check_runs ?? []
+}
+
+export interface GitHubCommitStatus {
+  context: string
+  state: 'pending' | 'success' | 'failure' | 'error' | string
+  target_url?: string | null
+  description?: string | null
+}
+
+export interface GitHubCombinedStatus {
+  /** GitHub answers `pending` with `total_count: 0` for a commit nobody reported a status on. */
+  state: 'pending' | 'success' | 'failure' | 'error' | string
+  sha: string
+  total_count: number
+  statuses: GitHubCommitStatus[]
+}
+
+/** The combined commit status of `ref` (every status context's latest state, folded). */
+export function getCombinedStatus(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubCombinedStatus> {
+  return githubJson<GitHubCombinedStatus>(
+    `${repoPath(owner, repo)}/commits/${encodeURIComponent(ref)}/status`,
+    { token },
+    opts
+  )
 }

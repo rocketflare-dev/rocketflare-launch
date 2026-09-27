@@ -54,8 +54,10 @@
  *   `workflows` (name → `{class_name, script_name}`), `routes` (id → `{pattern, script, zoneId}`),
  *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`.
  * - `cloud.neon` (`FakeNeon`): `projects` (id → `{name, region_id, org_id, pg_version, branches:
- *   id → {name, parent_id, host, roles: name → {password, resets}, databases}}`),
- *   `resetCount(projectId, role)`, `sql` (every HTTP SQL statement with its role), `grants`.
+ *   id → {name, parent_id, init_source, host, roles: name → {password, resets}, databases}}`),
+ *   `branchNamed(projectId, name)`, `resetCount(projectId, role)`, `sql` (every HTTP SQL statement
+ *   with its role), `grants`. P3: branches take `init_source` and `endpoints: []`, list their
+ *   endpoints and can be DELETEd (not the default one, not one with children).
  * - `cloud.resend` (`FakeResend`): `apiKeys` (id → `{name, token, permission, domain_id}`),
  *   `domains`.
  * - `cloud.github` (`FakeGitHub`): `repos` (`owner/name` lower-case → `{id, archived, refs,
@@ -64,7 +66,10 @@
  *   `readFile(owner, repo, path, ref?)`, `filesAt(owner, repo, ref?)`,
  *   `pushCommit(owner, repo, files, message?)` (what a scaffold job's push leaves — no token),
  *   `runs` (every dispatch as a run), and `onDispatch = run => …` (awaited inside the dispatch
- *   call — the test's stand-in for the job starting).
+ *   call — the test's stand-in for the job starting). P3: `pulls` (every PR opened: `{number, head,
+ *   base, title, body, state, headSha}`), and the head commit's CI through
+ *   `setCheckRuns(owner, repo, ref, [{ name, status, conclusion? }])` and
+ *   `setStatuses(owner, repo, ref, [{ context, state }])` — no statuses reads back `pending`.
  *
  * ## App hosts
  *

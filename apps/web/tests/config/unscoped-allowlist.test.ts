@@ -52,6 +52,15 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
     'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
   'src/api/services/launch/deploy/tickets.ts':
     'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
+  // Launch P3: a session's egress handlers get the platform's container id and nothing else, and a
+  // preview host names the session by short id (then its signed cookie) — no session cookie, no
+  // tenant, until the row is found.
+  'src/api/services/sessions/egress/anthropic.ts':
+    'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
+  'src/api/services/sessions/egress/github.ts':
+    'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
+  'src/api/preview/gateway.ts':
+    'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
   // Launch: the analytics plugin (3.4.1) ships this test file without declaring it in its own
   // `unscopedAllowlist`, so the entry lives here until the plugin carries it (upstream issue).
   'src/plugins/analytics/tests/api/dashboard-visibility.test.ts':

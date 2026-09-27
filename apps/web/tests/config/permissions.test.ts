@@ -28,9 +28,11 @@ const CRUD: Actions[] = ['create', 'read', 'update', 'delete']
 
 /**
  * `create` = create + read, nothing else (member on `File`). `createOnly` = create and NOT read
- * (member on `Feedback`: they rate answers, and only admin+ read the ratings back).
+ * (member on `Feedback`: they rate answers, and only admin+ read the ratings back). `createUpdate`
+ * = create + read + update and NOT delete or manage (member on `Session`: they start and drive
+ * their own; the route narrows it to their own).
  */
-type Level = 'manage' | 'read' | 'create' | 'createOnly' | 'none'
+type Level = 'manage' | 'read' | 'create' | 'createOnly' | 'createUpdate' | 'none'
 
 /** Subject → per-role level, transcribed from the matrix. */
 const MATRIX: Record<string, Record<Role, Level>> = {
@@ -61,6 +63,8 @@ const MATRIX: Record<string, Record<Role, Level>> = {
   App: { owner: 'manage', admin: 'manage', support: 'manage', member: 'read' },
   // Launch (spec/08) — the audit log is append-only: admin+ read, members nothing, nobody writes.
   AuditEvent: { owner: 'read', admin: 'read', support: 'read', member: 'none' },
+  // Launch P3 — coding sessions: anyone starts one and drives their own; admin+ manage them all.
+  Session: { owner: 'manage', admin: 'manage', support: 'manage', member: 'createUpdate' },
 }
 
 const build = (role: Role | null, features: string[] = [], isGlobalAdmin = false) =>
@@ -92,6 +96,11 @@ describe('ability matrix (D10)', () => {
             expect(ability.can('read', s)).toBe(true)
             expect(ability.can('manage', s)).toBe(false)
             for (const a of ['update', 'delete'] as Actions[]) expect(ability.can(a, s)).toBe(false)
+          } else if (level === 'createUpdate') {
+            for (const a of ['create', 'read', 'update'] as Actions[]) {
+              expect(ability.can(a, s)).toBe(true)
+            }
+            for (const a of ['manage', 'delete'] as Actions[]) expect(ability.can(a, s)).toBe(false)
           } else if (level === 'createOnly') {
             expect(ability.can('create', s)).toBe(true)
             for (const a of ['manage', 'read', 'update', 'delete'] as Actions[]) {

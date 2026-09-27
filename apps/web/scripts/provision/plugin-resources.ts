@@ -446,6 +446,12 @@ function rows(doc: unknown, dotted: string): Array<Record<string, unknown>> {
   return Array.isArray(v) ? (v as Array<Record<string, unknown>>) : []
 }
 
+/** `[assets] run_worker_first = true`: every request reaches the Worker before the asset router. */
+function workerFirstForAll(doc: unknown): boolean {
+  const assets = (doc as TomlDoc | undefined)?.assets
+  return !!assets && typeof assets === 'object' && (assets as TomlDoc).run_worker_first === true
+}
+
 function list(doc: unknown, dotted: string): string[] {
   const v = dotted
     .split('.')
@@ -578,10 +584,11 @@ export function pluginParityIssues(
         for (const [env, doc] of envs)
           if (!list(doc, 'triggers.crons').includes(cron))
             issues.push(`${env}: [triggers] crons is missing "${cron}" (plugin ${plugin.id})`)
+      // `run_worker_first = true` (Launch P3) sends EVERY path to the Worker first.
       for (const prefix of plugin.apiPrefixes)
         for (const [env, doc] of envs)
           for (const pattern of [prefix, `${prefix}/*`])
-            if (!list(doc, 'assets.run_worker_first').includes(pattern))
+            if (!workerFirstForAll(doc) && !list(doc, 'assets.run_worker_first').includes(pattern))
               issues.push(
                 `${env}: [assets] run_worker_first is missing "${pattern}" (plugin ${plugin.id})`
               )

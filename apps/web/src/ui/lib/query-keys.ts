@@ -186,6 +186,32 @@ const CORE_QUERY_KEYS = {
     /** P2: the app's deploy tickets. */
     deploys: (appId: string) => ['apps', 'deploys', appId] as const,
   },
+  /**
+   * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is
+   * `session` ON PURPOSE — it is `SESSION_REALTIME_ENTITY`: the Workflow nudges
+   * `entity.changed { entity: 'session', id }` after every durable write, and `invalidationsFor()`
+   * resolves that to this root, so the session page, the app's sessions card and the admin list
+   * refresh with no socket code in a hook.
+   */
+  sessions: {
+    all: ['session'] as const,
+    /** `GET /api/apps/:id/sessions` — keyed by app id (and `scope`). */
+    forApp: (appId: string, filters: object = {}) => ['session', 'app', appId, filters] as const,
+    detail: (id: string) => ['session', 'detail', id] as const,
+    events: (id: string) => ['session', 'events', id] as const,
+    pr: (id: string) => ['session', 'pr', id] as const,
+    /** `GET /api/admin/sessions` — live sessions across the deployment and the drain flag. */
+    admin: (filters: object = {}) => ['session', 'admin', filters] as const,
+  },
+  /**
+   * A session's AG-UI chat timeline — **its own root, and it must stay out of
+   * `REALTIME_INVALIDATIONS`**, for the reason `agentRunAgui` gives: every durable event nudges
+   * `session`, and a list under that root would be thrown away and re-fetched on every one.
+   */
+  sessionAgui: {
+    all: ['session-agui'] as const,
+    detail: (id: string) => ['session-agui', id] as const,
+  },
   /** Launch: `/api/app-access` — an app's sign-in policy, grants and access requests (spec/05) */
   appAccess: {
     all: ['app-access'] as const,

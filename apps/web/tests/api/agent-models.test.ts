@@ -70,6 +70,8 @@ describe('/api/ai/agent-models', () => {
       'chat-compaction',
       'evals-judge',
       'research-topic',
+      'session-ship',
+      'session-system-note',
       'summarize-text',
     ])
     for (const item of items) {

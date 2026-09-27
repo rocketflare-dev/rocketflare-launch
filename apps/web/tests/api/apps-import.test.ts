@@ -149,7 +149,10 @@ describe('the Rocketflare manifest and tomls', () => {
     expect(production.resources).toEqual({
       queues: [{ binding: 'JOBS_QUEUE', queue: 'launch-jobs' }],
       r2: [{ binding: 'FILES', bucketName: 'launch-files' }],
-      durableObjects: [{ binding: 'NOTIFICATIONS_HUB', className: 'NotificationsHub' }],
+      durableObjects: [
+        { binding: 'NOTIFICATIONS_HUB', className: 'NotificationsHub' },
+        { binding: 'SESSION_SANDBOX', className: 'SessionSandbox' },
+      ],
       workflows: [
         { binding: 'AGENT_RUN_WORKFLOW', name: 'launch-agent-run', className: 'AgentRunWorkflow' },
         {
@@ -162,6 +165,7 @@ describe('the Rocketflare manifest and tomls', () => {
           name: 'launch-app-teardown',
           className: 'AppTeardownWorkflow',
         },
+        { binding: 'SESSION_WORKFLOW', name: 'launch-session', className: 'SessionWorkflow' },
       ],
     })
     const staging = parseWranglerToml(STAGING_TOML, 'apps/web/wrangler.staging.toml')

@@ -17,6 +17,10 @@ const alias = {
   // Worker-only module: DurableObject / WorkflowEntrypoint base classes. Tests run under Node
   // (real Postgres, `app.request(req, env)` with tests/mocks/bindings.ts), not workerd.
   'cloudflare:workers': path.resolve(__dirname, './tests/mocks/cloudflare-workers.ts'),
+  // Launch P3: the Sandbox SDK extends a container runtime Node does not have. Its two importers
+  // (`durable-objects/session-sandbox.ts`, `services/sessions/sandbox/cloudflare-sandbox.ts`) load
+  // this stub instead; tests drive a session through `FakeSandbox` (tests/helpers/fake-sandbox.ts).
+  '@cloudflare/sandbox': path.resolve(__dirname, './tests/mocks/cloudflare-sandbox.ts'),
 }
 
 // Forks are capped because each holds its own Postgres connections (test DB runs

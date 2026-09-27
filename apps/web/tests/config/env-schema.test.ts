@@ -107,4 +107,43 @@ describe('loadConfig', () => {
     })
     expect(isOidcOnly(cfg)).toBe(true)
   })
+
+  it('coding sessions (P3): cloud by default; `local` only under APP_ENV=development', () => {
+    const cfg = loadConfig(base)
+    expect(cfg.SESSION_BACKEND).toBe('cloud')
+    expect(cfg.SESSION_PREVIEW_URL).toBeUndefined()
+    expect(loadConfig({ ...base, SESSION_BACKEND: 'local' }).SESSION_BACKEND).toBe('local')
+    for (const APP_ENV of ['staging', 'production']) {
+      expect(() =>
+        loadConfig({
+          ...base,
+          APP_ENV,
+          APP_URL: 'https://launch.example.com',
+          SESSION_BACKEND: 'local',
+        })
+      ).toThrow(/SESSION_BACKEND=local is only allowed with APP_ENV=development/)
+    }
+    expect(() => loadConfig({ ...base, SESSION_BACKEND: 'laptop' })).toThrow(/SESSION_BACKEND/)
+  })
+
+  it('SESSION_PREVIEW_URL is an origin whose host starts with {label}', () => {
+    expect(
+      loadConfig({ ...base, SESSION_PREVIEW_URL: 'https://{label}.clewro.com' }).SESSION_PREVIEW_URL
+    ).toBe('https://{label}.clewro.com')
+    expect(
+      loadConfig({ ...base, SESSION_PREVIEW_URL: 'http://{label}.localhost:3001' })
+        .SESSION_PREVIEW_URL
+    ).toBe('http://{label}.localhost:3001')
+    for (const bad of [
+      'https://preview.clewro.com',
+      'https://x.{label}.clewro.com',
+      '{label}.clewro.com',
+      'https://{label}.clewro.com/path',
+    ]) {
+      expect(() => loadConfig({ ...base, SESSION_PREVIEW_URL: bad }), bad).toThrow(
+        /SESSION_PREVIEW_URL/
+      )
+    }
+    expect(loadConfig({ ...base, SESSION_PREVIEW_URL: '' }).SESSION_PREVIEW_URL).toBeUndefined()
+  })
 })

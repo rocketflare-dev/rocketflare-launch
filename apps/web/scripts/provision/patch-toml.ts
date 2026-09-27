@@ -52,7 +52,10 @@ export interface TomlPatch {
   crons?: string[]
   /** `[vars]` keys appended when absent (idempotent; an existing key is left alone). */
   vars?: Array<{ key: string; value: string }>
-  /** Route prefixes appended to `[assets] run_worker_first` as `p` and `p/*` (idempotent). */
+  /**
+   * Route prefixes appended to `[assets] run_worker_first` as `p` and `p/*` (idempotent). A no-op
+   * when the file says `run_worker_first = true`, which already sends every path to the Worker.
+   */
   workerFirstPrefixes?: string[]
   /** Overwrite a different existing id instead of throwing. */
   force?: boolean
@@ -491,7 +494,9 @@ export function patchToml(text: string, patch: TomlPatch): string {
   for (const block of patch.bindings ?? []) out = upsertBindingBlock(out, block, force)
   for (const block of patch.migrations ?? []) out = appendMigration(out, block)
   if (patch.crons?.length) out = appendToArray(out, 'crons', patch.crons)
-  if (patch.workerFirstPrefixes?.length)
+  // `run_worker_first = true` (Launch P3: every request reaches the Worker first, so a session
+  // preview's `/` is not the asset router's index.html) already covers any prefix: nothing to add.
+  if (patch.workerFirstPrefixes?.length && !/^run_worker_first\s*=\s*true\b/m.test(out))
     out = appendToArray(
       out,
       'run_worker_first',

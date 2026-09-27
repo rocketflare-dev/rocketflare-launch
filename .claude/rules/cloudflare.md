@@ -27,7 +27,10 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   Hyperdrive }`. The parity test wants the block in both tomls or neither, and none in a `neon` file.
   Phase 2: `JOBS_QUEUE`, `NOTIFICATIONS_HUB`,
   `FILES`. Phase 3 (built): `AGENT_RUN_WORKFLOW` (`[[workflows]]`, class `AgentRunWorkflow`) and `AI`
-  (`[ai] binding = "AI"`, Workers AI embeddings). The analytics PLUGIN (D19, D31) adds **no binding**:
+  (`[ai] binding = "AI"`, Workers AI embeddings). Launch P2: `APP_LAUNCH_WORKFLOW`,
+  `APP_TEARDOWN_WORKFLOW`. Launch P3: `SESSION_SANDBOX` (the `SessionSandbox` container + Durable
+  Object, below) and `SESSION_WORKFLOW` (`launch-session[-staging]`, class `SessionWorkflow`); a
+  missing `SESSION_WORKFLOW` is a 503 `sessions_not_configured` before any row is written. The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`
   dataset is deliberately NOT wired (the toml comment is the only trace). Optional: `ANALYTICS_ENGINE`,
   `HYPERDRIVE_APP`
@@ -67,15 +70,33 @@ inherit bindings, so two files are more honest than one with a hidden gap. They 
 must NOT differ in: binding names, `class_name`s, `compatibility_date`/`flags`, `[limits]`,
 `[triggers].crons`, `[assets]`, `[[migrations]]`.
 
-**`[assets] run_worker_first` is not optional.** Cloudflare's asset router runs BEFORE the Worker,
-and `not_found_handling = "single-page-application"` answers anything it treats as a NAVIGATION with
-`index.html` without ever invoking `fetch`. `Sec-Fetch-Mode: navigate` is not just the address bar —
-an `<object>`/`<iframe>` embed and an `<a download>` click are navigations too — so a server prefix
-missing from `run_worker_first` is silently served the app shell for exactly those requests. No test
-of the Hono app can see this (they never reach the asset router), so the list is derived from
-`API_PREFIXES` (`api/utils/routes/api-prefixes.ts`) and `wrangler-parity.test.ts` asserts both tomls
-equal it. Add a top-level route prefix → add it there. `apps/web/tests/config/wrangler-parity.test.ts` enforces
-this; `REQUIRE_PROVISIONED=1` additionally forbids `<PLACEHOLDER>` values (CI sets it before deploy).
+**`[assets] run_worker_first = true` is not optional.** Cloudflare's asset router runs BEFORE the
+Worker, and `not_found_handling = "single-page-application"` answers anything it treats as a
+NAVIGATION with `index.html` without ever invoking `fetch`. `Sec-Fetch-Mode: navigate` is not just
+the address bar — an `<object>`/`<iframe>` embed and an `<a download>` click are navigations too.
+Launch P3 made it `true` rather than a prefix list: a coding session's PREVIEW is a navigation to
+`/` on `<port>-<shortId>-<token>.<preview domain>`, which no prefix can name, and the asset router
+would answer it with Launch's own `index.html`. So every request reaches the Worker: `src/worker.ts`
+sends preview hosts to `api/preview/gateway.ts` before the Hono app, and the app's catch-all serves
+`ASSETS` for the rest while JSON-404ing every prefix in `API_PREFIXES`
+(`api/utils/routes/api-prefixes.ts` — add a top-level server prefix there). No test of the Hono app
+can see the asset router, so `wrangler-parity.test.ts` asserts `true` in both tomls and that every
+prefix is still `isApiPath`; `REQUIRE_PROVISIONED=1` additionally forbids `<PLACEHOLDER>` values
+(CI sets it before deploy). `pnpm provision cloudflare` leaves `true` alone when a plugin declares
+`apiPrefixes`.
+
+**Containers (Launch P3).** `[[containers]]` (class `SessionSandbox`, `image =
+"./containers/session/Dockerfile"`, `standard-3`, `max_instances = 10`) is identical in both files
+and parity-checked like a binding. The class is a Durable Object too — `SESSION_SANDBOX` plus
+`[[migrations]] tag = "v2", new_sqlite_classes` (the Sandbox SDK needs SQLite storage) — and
+`src/worker.ts` also exports the SDK's `ContainerProxy`, which the platform routes the container's
+outbound traffic through so `outboundByHost` runs in this Worker. `wrangler deploy` builds and pushes
+the image (Docker); `pnpm build:api`'s dry run does not build it but refuses a missing Dockerfile.
+**A change to the image or the block replaces running containers — drain sessions first**
+(`docs/DEPLOY.md` § Coding sessions). `@cloudflare/sandbox` (0.12.10, stable) and the image's
+`cloudflare/sandbox:<version>` base must stay on the SAME version, and the SDK is imported in two
+files only (the DO class and `services/sessions/sandbox/cloudflare-sandbox.ts`); tests alias it to
+`tests/mocks/cloudflare-sandbox.ts`.
 
 ## Account-scoped names
 

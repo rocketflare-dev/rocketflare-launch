@@ -3,6 +3,12 @@
  * project has a `main` branch with `neondb_owner` and `neondb`; roles and databases live on a
  * branch, and a branch inherits its parent's roles WITH their passwords (as Neon's does). Every
  * write answers `operations[]` that start `running` and read back `finished`. See `index.ts`.
+ *
+ * P3 adds what coding sessions do with branches: `init_source` on create (recorded on the branch —
+ * `schema-only` still copies roles and databases, which ARE the schema here, but a test can assert
+ * no data was meant to come along), `endpoints: []` for a branch with no compute,
+ * `GET …/branches/{b}/endpoints`, and `DELETE …/branches/{b}` (a branch with children is refused,
+ * as Neon refuses it; a deleted one is a 404). `branchNamed(projectId, name)` finds one.
  */
 import {
   belongsTo,
@@ -24,8 +30,11 @@ export interface FakeNeonBranch {
   id: string
   name: string
   parent_id: string | null
+  /** P3: how it was filled — `schema-only` copies roles and databases (the schema) but no rows. */
+  init_source: 'parent-data' | 'schema-only'
+  /** '' when the branch was created with `endpoints: []` (no compute). */
   endpointId: string
-  /** `ep-…​.<region>.aws.neon.tech` (the direct host; pooled adds `-pooler`). */
+  /** `ep-…​.<region>.aws.neon.tech` (the direct host; pooled adds `-pooler`); '' with no endpoint. */
   host: string
   roles: Map<string, FakeNeonRole>
   databases: Map<string, { name: string; owner_name: string }>
@@ -75,6 +84,11 @@ export class FakeNeon implements VendorHandler {
     return [...this.projects.values()]
       .filter(p => belongsTo(slug, p.name))
       .map(p => `neon:project:${p.name}`)
+  }
+
+  /** A project's branch by name (`dev`, `session-<short>`), or undefined. */
+  branchNamed(projectId: string, name: string): FakeNeonBranch | undefined {
+    return [...(this.projects.get(projectId)?.branches.values() ?? [])].find(b => b.name === name)
   }
 
   /** Total password resets of `role` across a project's branches. */
@@ -172,7 +186,10 @@ export class FakeNeon implements VendorHandler {
       if ([...project.branches.values()].some(b => b.name === name)) {
         return neonError(409, `branch ${name} already exists`)
       }
-      const branch = this.newBranch(project, name, parent.id)
+      const initSource = input.init_source === 'schema-only' ? 'schema-only' : 'parent-data'
+      const endpoints = (req.json as { endpoints?: unknown[] } | null)?.endpoints
+      const withCompute = !Array.isArray(endpoints) || endpoints.length > 0
+      const branch = this.newBranch(project, name, parent.id, { initSource, withCompute })
       for (const role of parent.roles.values()) {
         branch.roles.set(role.name, { name: role.name, password: role.password, resets: 0 })
       }
@@ -180,10 +197,11 @@ export class FakeNeon implements VendorHandler {
       return json(
         {
           branch: this.branchJson(branch),
-          endpoints: [
-            { id: branch.endpointId, host: branch.host, branch_id: branch.id, type: 'read_write' },
+          endpoints: withCompute ? [this.endpointJson(branch)] : [],
+          operations: [
+            this.op(project, 'create_branch'),
+            ...(withCompute ? [this.op(project, 'start_compute')] : []),
           ],
-          operations: [this.op(project, 'create_branch'), this.op(project, 'start_compute')],
         },
         201
       )
@@ -198,11 +216,27 @@ export class FakeNeon implements VendorHandler {
       return json({ uri: this.uri(branch, role, database.name, q.get('pooled') === 'true') })
     }
 
-    match = rest.match(/^\/branches\/([^/]+)(\/.*)$/)
+    match = rest.match(/^\/branches\/([^/]+)(\/.*)?$/)
     if (!match) return neonError(404, 'not found')
     const branch = project.branches.get(match[1])
     if (!branch) return neonError(404, 'branch not found')
-    const sub = match[2]
+    const sub = match[2] ?? ''
+
+    if (sub === '' && m === 'GET') return json({ branch: this.branchJson(branch) })
+    if (sub === '' && m === 'DELETE') {
+      if ([...project.branches.values()].some(b => b.parent_id === branch.id)) {
+        return neonError(422, `branch ${branch.id} has child branches`)
+      }
+      if (branch.parent_id === null) return neonError(422, 'cannot delete the default branch')
+      project.branches.delete(branch.id)
+      return json({
+        branch: this.branchJson(branch),
+        operations: [this.op(project, 'delete_timeline')],
+      })
+    }
+    if (sub === '/endpoints' && m === 'GET') {
+      return json({ endpoints: branch.endpointId ? [this.endpointJson(branch)] : [] })
+    }
 
     if (sub === '/roles' && m === 'POST') {
       const name = String(body.role?.name ?? '')
@@ -248,15 +282,19 @@ export class FakeNeon implements VendorHandler {
   private newBranch(
     project: FakeNeonProject,
     name: string,
-    parentId: string | null
+    parentId: string | null,
+    opts: { initSource?: FakeNeonBranch['init_source']; withCompute?: boolean } = {}
   ): FakeNeonBranch {
-    const endpointId = this.ids.short('ep')
+    const endpointId = opts.withCompute === false ? '' : this.ids.short('ep')
     const branch: FakeNeonBranch = {
       id: this.ids.short('br'),
       name,
       parent_id: parentId,
+      init_source: opts.initSource ?? 'parent-data',
       endpointId,
-      host: `${endpointId}.${project.region_id.replace(/^aws-/, '')}.aws.neon.tech`,
+      host: endpointId
+        ? `${endpointId}.${project.region_id.replace(/^aws-/, '')}.aws.neon.tech`
+        : '',
       roles: new Map(),
       databases: new Map(),
     }
@@ -290,9 +328,7 @@ export class FakeNeon implements VendorHandler {
         branch: this.branchJson(main),
         roles: [this.roleJson(main, owner, true)],
         databases: [{ name: 'neondb', owner_name: owner.name, branch_id: main.id }],
-        endpoints: [
-          { id: main.endpointId, host: main.host, branch_id: main.id, type: 'read_write' },
-        ],
+        endpoints: [this.endpointJson(main)],
         operations: [this.op(project, 'create_timeline'), this.op(project, 'start_compute')],
         connection_uris: [{ connection_uri: this.uri(main, owner, 'neondb', false) }],
       },
@@ -316,7 +352,12 @@ export class FakeNeon implements VendorHandler {
       name: b.name,
       parent_id: b.parent_id ?? undefined,
       default: b.parent_id === null,
+      init_source: b.init_source,
     }
+  }
+
+  private endpointJson(b: FakeNeonBranch) {
+    return { id: b.endpointId, host: b.host, branch_id: b.id, type: 'read_write' }
   }
 
   private uri(

@@ -1,0 +1,573 @@
+/**
+ * Launch P3 contracts: coding sessions (spec/07, `docs/plans/p3-sessions.md`). A session is a
+ * sandbox running Claude Code against an app's repo, with a live preview and a pull request at
+ * the end. Everything the API, the UI and the CLI say about one is here:
+ *
+ * - the enums the `sessions` table mirrors (`SESSION_KINDS`, `SESSION_STATUSES`,
+ *   `ACTIVE_SESSION_STATUSES` — the concurrency index's predicate — `SESSION_ACTIONS`);
+ * - the event log (`SESSION_EVENT_TYPES`, one payload schema per type in `SESSION_EVENT_DATA`),
+ *   shaped like `AgentRunEvent` so the agent timeline folds it;
+ * - the policy (`sessionPolicySchema`, `DEFAULT_SESSION_POLICY`), snapshotted on the row at create;
+ * - the jsonb shapes (`sessionDbSchema`, `appSessionDbSchema`, `prChecksSchema`);
+ * - the request and response bodies of `/api/sessions`, `/api/apps/:id/sessions` and
+ *   `/api/admin/sessions`;
+ * - `SESSION_WAKE_EVENT`, golden-tested against Cloudflare's event-type rule;
+ * - the preview host grammar: `previewLabel()` / `parsePreviewHost()` / `previewUrl()`.
+ *
+ * Money is microcents throughout (`@launch/shared/ai/pricing`: 100 000 000 per USD), as on
+ * `ai_usage`; `usdToMicrocents` / `microcentsToUsd` convert at the edges. No credential, sealed
+ * column or preview token ever appears in a response schema here.
+ */
+import { z } from 'zod'
+import {
+  agentErrorEventDataSchema,
+  agentStatusEventDataSchema,
+  agentStepEventDataSchema,
+  agentTextEventDataSchema,
+  agentToolEndEventDataSchema,
+  agentToolStartEventDataSchema,
+} from './ai/agents'
+
+// ---- enums -------------------------------------------------------------------------------------
+
+/** `session` is a person's chat; `prepare` is the one-off run that migrates and seeds `dev`. */
+export const SESSION_KINDS = ['session', 'prepare'] as const
+export const sessionKindSchema = z.enum(SESSION_KINDS)
+export type SessionKind = z.infer<typeof sessionKindSchema>
+
+/**
+ * Mirrors the `session_status` pg enum — append-only. The lifecycle (plan §1.2, §1.8):
+ *
+ *   requested → booting → ready ⇄ working → shipping → shipped
+ *                          │  ⇅               ↘
+ *                        blocked  suspended     ending → ended      (and `failed` from anywhere)
+ *
+ * `blocked` is over budget (a person may extend it); `suspended` has no sandbox but keeps its
+ * branch and database, and resumes by booting again.
+ */
+export const SESSION_STATUSES = [
+  'requested',
+  'booting',
+  'ready',
+  'working',
+  'blocked',
+  'suspended',
+  'shipping',
+  'shipped',
+  'ending',
+  'ended',
+  'failed',
+] as const
+export const sessionStatusSchema = z.enum(SESSION_STATUSES)
+export type SessionStatus = z.infer<typeof sessionStatusSchema>
+
+/**
+ * The statuses that hold resources — a Neon branch, and a sandbox or the right to boot one — and
+ * so count against `maxConcurrentPerApp`. `sessions_app_active_idx`'s predicate is RENDERED from
+ * this list, so the index and the check cannot disagree. `suspended` is in it on purpose: it still
+ * holds a branch, and Neon caps branches per project.
+ */
+export const ACTIVE_SESSION_STATUSES = [
+  'requested',
+  'booting',
+  'ready',
+  'working',
+  'blocked',
+  'suspended',
+  'shipping',
+  'ending',
+] as const satisfies readonly SessionStatus[]
+
+/** Settled: nothing left to run, the sandbox is gone (or going) and the row is history. */
+export const TERMINAL_SESSION_STATUSES = [
+  'shipped',
+  'ended',
+  'failed',
+] as const satisfies readonly SessionStatus[]
+
+export function isActiveSessionStatus(status: SessionStatus): boolean {
+  return (ACTIVE_SESSION_STATUSES as readonly SessionStatus[]).includes(status)
+}
+
+/** `sessions.requested_action` — what the Workflow should do when it next wakes. */
+export const SESSION_ACTIONS = ['ship', 'end', 'resume'] as const
+export const sessionActionSchema = z.enum(SESSION_ACTIONS)
+export type SessionAction = z.infer<typeof sessionActionSchema>
+
+/**
+ * The event type every route sends to wake a session's Workflow (`instance.sendEvent`). The
+ * payload is ignored: the row is the truth (`pending_message`, `requested_action`,
+ * `cancel_requested_at`), so a wake carries nothing that could disagree with it.
+ *
+ * **Golden-tested** (`tests/config/launch-sessions.test.ts`) against `/^[A-Za-z0-9_-]{1,100}$/`:
+ * Cloudflare rejects anything else — a `.` is the classic mistake — with
+ * `workflow.invalid_event_type` at RUNTIME, and no fake binding would ever notice.
+ */
+export const SESSION_WAKE_EVENT = 'session_wake'
+
+/**
+ * `SESSION_WORKFLOW.create({ id, params })` — one instance per session (id = the session id,
+ * `<id>-rN` after a restart; a prepare run is a session row of kind `prepare`). Ids only: the
+ * Workflow re-reads everything else from the row, so a retried step sees what is true now.
+ */
+export const sessionWorkflowParamsSchema = z.object({
+  sessionId: z.string().uuid(),
+  tenantId: z.string().uuid(),
+})
+export type SessionWorkflowParams = z.infer<typeof sessionWorkflowParamsSchema>
+
+/**
+ * The realtime nudge's entity: `entity.changed { entity: 'session', id }` after every durable
+ * write, which `invalidationsFor()` resolves to the `['session']` query-key root. The chat's own
+ * AG-UI list is a separate root (`session-agui`) and must stay out of it, exactly as
+ * `agent-run-agui` stays out of `agent-run`.
+ */
+export const SESSION_REALTIME_ENTITY = 'session'
+
+// ---- events ------------------------------------------------------------------------------------
+
+/**
+ * `session_events.type`. The Workflow is the ONE writer. The first seven are shaped like the agent
+ * run's events so `timelineModel` and `ToolCallRow` fold a session's turns with no new code.
+ */
+export const SESSION_EVENT_TYPES = [
+  'user.message',
+  'turn.start',
+  'text',
+  'tool.start',
+  'tool.end',
+  'turn.end',
+  'turn.failed',
+  'turn.interrupted',
+  'step',
+  'status',
+  'preview.ready',
+  'budget.reached',
+  'ship.gate',
+  'ship.pr',
+  'error',
+] as const
+export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
+export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
+
+/** Token counts as the model proxy meters them (Anthropic's names, flattened). */
+export const sessionUsageSchema = z.object({
+  tokensIn: z.number().int().nonnegative(),
+  tokensOut: z.number().int().nonnegative(),
+  cacheRead: z.number().int().nonnegative(),
+  cacheWrite: z.number().int().nonnegative(),
+})
+export type SessionUsage = z.infer<typeof sessionUsageSchema>
+
+export const sessionUserMessageDataSchema = z.object({
+  text: z.string(),
+  userId: z.string().uuid().nullable(),
+})
+export const sessionTurnStartDataSchema = z.object({ turn: z.number().int().positive() })
+export const sessionTurnEndDataSchema = z
+  .object({
+    turn: z.number().int().positive(),
+    /** Claude Code's `result` line: `success` / `error_max_turns` / … */
+    result: z.string().optional(),
+    durationMs: z.number().nonnegative().optional(),
+    usage: sessionUsageSchema.partial().optional(),
+    costMicrocents: z.number().int().nonnegative().optional(),
+  })
+  .passthrough()
+export const sessionTurnFailedDataSchema = z
+  .object({ turn: z.number().int().positive(), message: z.string() })
+  .passthrough()
+/** A turn cut off by a rollout, a cancel or the turn timeout. The session goes `suspended` (rollout) or back to `ready`. */
+export const sessionTurnInterruptedDataSchema = z
+  .object({
+    turn: z.number().int().positive(),
+    reason: z.enum(['rollout', 'cancelled', 'timeout']),
+  })
+  .passthrough()
+export const sessionPreviewReadyDataSchema = z.object({ port: z.number().int().positive() })
+export const sessionBudgetReachedDataSchema = z.object({
+  spentMicrocents: z.number().int().nonnegative(),
+  capMicrocents: z.number().int().nonnegative(),
+  scope: z.enum(['session', 'app_month']),
+})
+export const sessionShipGateDataSchema = z
+  .object({
+    passed: z.boolean(),
+    attempt: z.number().int().positive(),
+    /** The tail of the gate's output, for the ship panel. Never a secret (the sandbox holds none). */
+    output: z.string().optional(),
+  })
+  .passthrough()
+export const sessionShipPrDataSchema = z.object({
+  number: z.number().int().positive(),
+  url: z.string(),
+})
+
+/** Event type → the schema its `data` parses with; one lookup for the timeline and the projection. */
+export const SESSION_EVENT_DATA = {
+  'user.message': sessionUserMessageDataSchema,
+  'turn.start': sessionTurnStartDataSchema,
+  text: agentTextEventDataSchema,
+  'tool.start': agentToolStartEventDataSchema,
+  'tool.end': agentToolEndEventDataSchema,
+  'turn.end': sessionTurnEndDataSchema,
+  'turn.failed': sessionTurnFailedDataSchema,
+  'turn.interrupted': sessionTurnInterruptedDataSchema,
+  step: agentStepEventDataSchema,
+  status: agentStatusEventDataSchema,
+  'preview.ready': sessionPreviewReadyDataSchema,
+  'budget.reached': sessionBudgetReachedDataSchema,
+  'ship.gate': sessionShipGateDataSchema,
+  'ship.pr': sessionShipPrDataSchema,
+  error: agentErrorEventDataSchema,
+} as const satisfies Record<SessionEventType, z.ZodTypeAny>
+
+/** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */
+export const sessionEventSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  /** Position in the session's stream, from 1. Unique per session. */
+  seq: z.number().int().positive(),
+  /** The turn it belongs to; 0 for boot and lifecycle rows. */
+  turn: z.number().int().nonnegative(),
+  type: sessionEventTypeSchema,
+  data: z.unknown(),
+  at: z.coerce.date(),
+})
+export type SessionEvent = z.infer<typeof sessionEventSchema>
+
+/** What a writer hands the event log (the Workflow assigns `seq` and `at`). */
+export interface SessionEventInput<T extends SessionEventType = SessionEventType> {
+  type: T
+  turn: number
+  data: z.infer<(typeof SESSION_EVENT_DATA)[T]>
+}
+
+// ---- policy ------------------------------------------------------------------------------------
+
+/**
+ * `launch_settings.session_policy`, with code defaults, snapshotted on `sessions.policy` at create
+ * so a policy edit never changes a session already running. `model` is the ONLY model the model
+ * proxy lets through for the session.
+ */
+export const sessionPolicySchema = z.object({
+  model: z.string().trim().min(1).max(100),
+  maxSessionUsd: z.number().positive().max(10_000),
+  appMonthlyUsd: z.number().positive().max(1_000_000),
+  maxConcurrentPerApp: z.number().int().positive().max(25),
+  maxTurnMinutes: z.number().int().positive().max(120),
+  idleSuspendMinutes: z.number().int().positive().max(1440),
+  suspendedExpiryHours: z.number().int().positive().max(720),
+  maxSessionHours: z.number().int().positive().max(168),
+  maxTurns: z.number().int().positive().max(1000),
+})
+export type SessionPolicy = z.infer<typeof sessionPolicySchema>
+
+export const DEFAULT_SESSION_POLICY: SessionPolicy = {
+  model: 'claude-sonnet-4-5',
+  maxSessionUsd: 10,
+  appMonthlyUsd: 200,
+  maxConcurrentPerApp: 3,
+  maxTurnMinutes: 20,
+  idleSuspendMinutes: 30,
+  suspendedExpiryHours: 24,
+  maxSessionHours: 8,
+  maxTurns: 100,
+}
+
+/** A stored policy with the defaults filled in; an unparseable one is the defaults. */
+export function resolveSessionPolicy(stored: unknown): SessionPolicy {
+  const partial = sessionPolicySchema.partial().safeParse(stored)
+  return partial.success ? { ...DEFAULT_SESSION_POLICY, ...partial.data } : DEFAULT_SESSION_POLICY
+}
+
+/** Microcents (1/1 000 000 of a cent) per USD — `ai_usage.cost_microcents`'s unit. */
+export const MICROCENTS_PER_USD = 100_000_000
+export const usdToMicrocents = (usd: number): number => Math.round(usd * MICROCENTS_PER_USD)
+export const microcentsToUsd = (microcents: number): number => microcents / MICROCENTS_PER_USD
+
+// ---- jsonb shapes ------------------------------------------------------------------------------
+
+/**
+ * `sessions.db` — where the session's database lives. NON-secret: the connection string is sealed
+ * separately in `db_uri_sealed`. `neon`: a branch of the app's `dev` branch; `local`: a database
+ * cloned from `launch_sessdev_<slug>` (`SESSION_BACKEND=local`).
+ */
+export const sessionDbSchema = z.object({
+  provider: z.enum(['neon', 'local']),
+  projectId: z.string().nullable(),
+  branchId: z.string(),
+  host: z.string(),
+  database: z.string(),
+  role: z.string(),
+})
+export type SessionDb = z.infer<typeof sessionDbSchema>
+
+export const APP_SESSION_DB_STATUSES = ['none', 'preparing', 'ready', 'failed'] as const
+
+/**
+ * `apps.session_db` — the app's prepared `dev` branch, which sessions branch from. `preparedCommit`
+ * is the commit the prepare run migrated and seeded at; a newer `main` re-prepares.
+ */
+export const appSessionDbSchema = z.object({
+  devBranchId: z.string().nullable(),
+  database: z.string(),
+  preparedCommit: z.string().nullable(),
+  preparedAt: z.coerce.date().nullable(),
+  status: z.enum(APP_SESSION_DB_STATUSES),
+})
+export type AppSessionDb = z.infer<typeof appSessionDbSchema>
+
+/** GitHub check-run / commit-status states, folded to one verdict. */
+export const PR_CHECK_STATES = ['pending', 'success', 'failure', 'none'] as const
+export const prCheckStateSchema = z.enum(PR_CHECK_STATES)
+export type PrCheckState = z.infer<typeof prCheckStateSchema>
+
+/**
+ * `sessions.pr_checks` — the PR head's CI, from check runs plus the combined status. Refreshed when
+ * read (at most every 30 s) and by the five-minute cron while `pending`.
+ */
+export const prChecksSchema = z.object({
+  state: prCheckStateSchema,
+  headSha: z.string().nullable(),
+  checkedAt: z.coerce.date(),
+  total: z.number().int().nonnegative(),
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  checks: z.array(
+    z.object({
+      name: z.string(),
+      /** `check_run` or `status` (a commit status context). */
+      source: z.enum(['check_run', 'status']),
+      state: prCheckStateSchema,
+      url: z.string().nullable(),
+    })
+  ),
+})
+export type PrChecks = z.infer<typeof prChecksSchema>
+
+// ---- requests ----------------------------------------------------------------------------------
+
+/** A branch, tag or sha to start from. Git's own rules, minus the characters a shell would read. */
+const gitRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]+(?<![./])$/, 'A branch, tag or commit')
+
+/** `POST /api/apps/:id/sessions`. */
+export const createSessionRequestSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  /** Defaults to the app's default branch. */
+  baseRef: gitRefSchema.optional(),
+})
+export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>
+
+export const SESSION_MESSAGE_MAX = 20_000
+
+/** `POST /api/sessions/:id/turns`. */
+export const sessionTurnRequestSchema = z.object({
+  message: z.string().trim().min(1).max(SESSION_MESSAGE_MAX),
+})
+export type SessionTurnRequest = z.infer<typeof sessionTurnRequestSchema>
+
+/** `POST /api/sessions/:id/budget` — owners and admins; audited `session.budget.extended`. */
+export const extendBudgetSchema = z.object({
+  extraUsd: z.number().positive().max(1000),
+})
+export type ExtendBudgetRequest = z.infer<typeof extendBudgetSchema>
+
+/** `GET /api/apps/:id/sessions` and `GET /api/admin/sessions`. */
+export const sessionListQuerySchema = z.object({
+  scope: z.enum(['active', 'all']).default('active'),
+})
+export type SessionListQuery = z.infer<typeof sessionListQuerySchema>
+
+/** `GET /api/sessions/:id/events` (and the AG-UI stream's `?afterSeq=`). */
+export const sessionEventsQuerySchema = z.object({
+  afterSeq: z.coerce.number().int().nonnegative().optional(),
+})
+export type SessionEventsQuery = z.infer<typeof sessionEventsQuerySchema>
+
+// ---- responses ---------------------------------------------------------------------------------
+
+/** What a session cost and may cost, in microcents. */
+export const sessionBudgetSchema = z.object({
+  spentMicrocents: z.number().int().nonnegative(),
+  /** `policy.maxSessionUsd` plus every extension. */
+  capMicrocents: z.number().int().nonnegative(),
+  extraMicrocents: z.number().int().nonnegative(),
+})
+export type SessionBudget = z.infer<typeof sessionBudgetSchema>
+
+/** One row in a list: the app's sessions card, the admin page, `launch sessions ls`. */
+export const sessionSummarySchema = z.object({
+  id: z.string().uuid(),
+  appId: z.string().uuid(),
+  kind: sessionKindSchema,
+  shortId: z.string(),
+  title: z.string().nullable(),
+  status: sessionStatusSchema,
+  createdByUserId: z.string().uuid().nullable(),
+  branch: z.string().nullable(),
+  turnCount: z.number().int().nonnegative(),
+  costMicrocents: z.number().int().nonnegative(),
+  prNumber: z.number().int().positive().nullable(),
+  prUrl: z.string().nullable(),
+  lastActivityAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+})
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
+
+/** `GET /api/sessions/:id` — everything the session page draws. No token, no sealed column. */
+export const sessionSchema = sessionSummarySchema.extend({
+  baseRef: z.string().nullable(),
+  baseSha: z.string().nullable(),
+  headSha: z.string().nullable(),
+  requestedAction: sessionActionSchema.nullable(),
+  /** A turn is waiting for the Workflow to pick it up. */
+  pendingMessage: z.boolean(),
+  cancelRequested: z.boolean(),
+  imageVersion: z.string().nullable(),
+  policy: sessionPolicySchema,
+  usage: sessionUsageSchema,
+  budget: sessionBudgetSchema,
+  containerSeconds: z.number().int().nonnegative(),
+  prChecks: prChecksSchema.nullable(),
+  error: z.string().nullable(),
+  readyAt: z.coerce.date().nullable(),
+  suspendedAt: z.coerce.date().nullable(),
+  endedAt: z.coerce.date().nullable(),
+  updatedAt: z.coerce.date(),
+  /** Whether the caller may ship, end, extend (the creator, the app's owners, admins). */
+  viewerCanManage: z.boolean(),
+})
+export type Session = z.infer<typeof sessionSchema>
+
+export const sessionDetailResponseSchema = z.object({ session: sessionSchema })
+export type SessionDetailResponse = z.infer<typeof sessionDetailResponseSchema>
+
+export const sessionListResponseSchema = z.object({ items: z.array(sessionSummarySchema) })
+export type SessionListResponse = z.infer<typeof sessionListResponseSchema>
+
+/** `GET /api/sessions/:id/events`. `nextSeq` is the cursor to pass as `afterSeq`. */
+export const sessionEventsResponseSchema = z.object({
+  items: z.array(sessionEventSchema),
+  nextSeq: z.number().int().nonnegative(),
+})
+export type SessionEventsResponse = z.infer<typeof sessionEventsResponseSchema>
+
+/** `POST /api/sessions/:id/cancel`. */
+export const sessionCancelResponseSchema = z.object({ cancelRequested: z.literal(true) })
+
+/** `POST /api/sessions/:id/preview-grant` — load `url` in the iframe within `expiresAt`. */
+export const previewGrantResponseSchema = z.object({
+  url: z.string(),
+  expiresAt: z.coerce.date(),
+})
+export type PreviewGrantResponse = z.infer<typeof previewGrantResponseSchema>
+
+/** `GET /api/sessions/:id/pr`. */
+export const sessionPrResponseSchema = z.object({
+  prNumber: z.number().int().positive().nullable(),
+  prUrl: z.string().nullable(),
+  checks: prChecksSchema.nullable(),
+})
+export type SessionPrResponse = z.infer<typeof sessionPrResponseSchema>
+
+/** `GET /api/admin/sessions` — a live session with the app it belongs to. */
+export const adminSessionSchema = sessionSummarySchema.extend({
+  appSlug: z.string(),
+  tenantId: z.string().uuid(),
+  imageVersion: z.string().nullable(),
+  containerSeconds: z.number().int().nonnegative(),
+})
+export type AdminSession = z.infer<typeof adminSessionSchema>
+
+export const adminSessionListResponseSchema = z.object({
+  items: z.array(adminSessionSchema),
+  /** `launch_settings.sessions_paused`: new sessions are refused while true. */
+  paused: z.boolean(),
+})
+export type AdminSessionListResponse = z.infer<typeof adminSessionListResponseSchema>
+
+/** `POST /api/admin/sessions/drain` and `/undrain`. */
+export const drainResponseSchema = z.object({
+  paused: z.boolean(),
+  /** How many live sessions the drain asked to suspend (0 on an undrain). */
+  suspended: z.number().int().nonnegative(),
+})
+export type DrainResponse = z.infer<typeof drainResponseSchema>
+
+// ---- ids, branches and preview hosts -----------------------------------------------------------
+
+/** 12 lower-case base32 characters (RFC 4648 alphabet): a DNS-safe, unguessable short id. */
+export const SESSION_SHORT_ID_RE = /^[a-z2-7]{12}$/
+/** 10 lower-case alphanumerics — the preview host's second secret. */
+export const PREVIEW_TOKEN_RE = /^[a-z0-9]{10}$/
+
+const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
+const ALNUM = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+function randomChars(alphabet: string, length: number): string {
+  // Rejection sampling, so every character is equally likely even when 256 % alphabet ≠ 0.
+  const limit = 256 - (256 % alphabet.length)
+  let out = ''
+  while (out.length < length) {
+    const bytes = crypto.getRandomValues(new Uint8Array(length * 2))
+    for (const b of bytes) {
+      if (b < limit && out.length < length) out += alphabet[b % alphabet.length]
+    }
+  }
+  return out
+}
+
+/** A fresh `sessions.short_id`. */
+export const newSessionShortId = (): string => randomChars(BASE32, 12)
+/** A fresh `sessions.preview_token`. */
+export const newPreviewToken = (): string => randomChars(ALNUM, 10)
+
+/** The git branch a session works on: `session/<shortId>`. */
+export const sessionBranchName = (shortId: string): string => `session/${shortId}`
+
+/** The DNS label of one preview port: `<port>-<shortId>-<token>`. */
+export function previewLabel(port: number, shortId: string, token: string): string {
+  return `${port}-${shortId}-${token}`
+}
+
+/**
+ * `SESSION_PREVIEW_URL` with the label filled in — `https://{label}.clewro.com` →
+ * `https://5173-abcdefghijkl-0123456789.clewro.com`. No trailing slash.
+ */
+export function previewUrl(template: string, label: string): string {
+  return template.replace('{label}', label).replace(/\/+$/, '')
+}
+
+export interface PreviewHost {
+  port: number
+  shortId: string
+  token: string
+}
+
+const LABEL_RE = /^(\d{2,5})-([a-z2-7]{12})-([a-z0-9]{10})$/
+
+/**
+ * The preview a request's `Host` names, or null when it is not a preview host of `template`. The
+ * suffix is whatever follows `{label}` in the template's host (`.clewro.com`, `.localhost:3001`),
+ * compared case-insensitively and INCLUDING the port, so `launch.clewro.com` itself is never one.
+ */
+export function parsePreviewHost(host: string, template: string): PreviewHost | null {
+  const templateHost = template.replace(/^[a-z]+:\/\//i, '').split('/')[0] ?? ''
+  const at = templateHost.indexOf('{label}')
+  if (at !== 0) return null
+  const suffix = templateHost.slice('{label}'.length).toLowerCase()
+  const candidate = host.trim().toLowerCase()
+  if (!suffix || !candidate.endsWith(suffix)) return null
+  const match = LABEL_RE.exec(candidate.slice(0, candidate.length - suffix.length))
+  if (!match) return null
+  const port = Number(match[1])
+  if (port < 1 || port > 65_535) return null
+  return { port, shortId: match[2] as string, token: match[3] as string }
+}

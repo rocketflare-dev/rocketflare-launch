@@ -82,3 +82,18 @@ Worker in that same step and returns ids only.
   `createFakeWorkflowStep({ onWait })` playing the scaffold job and the deploy
   (`tests/helpers/launch-pipeline.ts` `LaunchHarness`, the FakeCloud as the global fetch).
 
+## Launch P3: `session.ts`
+
+`SessionWorkflow` (`SESSION_WORKFLOW`, `launch-session[-staging]`) drives one coding session;
+params `SessionWorkflowParams` (`{ sessionId, tenantId }`, `@launch/shared/launch-sessions`), the
+instance id is the session id (`<id>-rN` after a restart). **A stub from slice 3a** (`run` throws
+`NotWiredError`); slice 3b builds it: `claim → db → sandbox.start → repo → bootstrap → dev`, then a
+loop of `wait#N` (`waitForEvent(SESSION_WAKE_EVENT, idle timeout)` — the golden-tested event type)
+dispatching to `turn#N` (3c) · `checkpoint#N` · `suspend#N` · `resume#N` · `ship` (3d) · `end`, and
+`cleanup` ALWAYS (destroy the sandbox, delete the branch). Same rules as above: `withStepDatabase`,
+distinct names per round, the row is the truth (a wake carries nothing), no secret in a step result.
+Its dependencies are the four ports of `services/sessions/ports.ts`, bound once by
+`defaultSessionPorts(env, cfg)`; tests set `workflow.overrides = { ports }` with
+`createFakeSessionPorts()` (`tests/helpers/sessions.ts`) and drive `run` with
+`createFakeWorkflowStep({ onWait })`.
+

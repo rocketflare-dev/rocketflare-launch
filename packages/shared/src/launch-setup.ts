@@ -15,6 +15,12 @@ export const CREDENTIAL_KINDS = [
   'neon_org_api_key',
   'resend_api_key',
   'github_app',
+  /**
+   * P3: the Anthropic key coding sessions spend. It never enters a sandbox — the model proxy
+   * (`services/sessions/egress/anthropic.ts`) swaps it in for the sandbox's placeholder. Unset,
+   * sessions fall back to the Worker's `ANTHROPIC_API_KEY` secret.
+   */
+  'anthropic_api_key',
 ] as const
 export const credentialKindSchema = z.enum(CREDENTIAL_KINDS)
 export type CredentialKind = z.infer<typeof credentialKindSchema>
@@ -56,11 +62,21 @@ export const githubAppCredentialSchema = z.object({
   privateKey: z.string().trim().includes('PRIVATE KEY'),
 })
 
+/** An Anthropic API key (`sk-ant-…`); an admin key (`sk-ant-admin…`) cannot call the Messages API. */
+export const anthropicCredentialSchema = z.object({
+  apiKey: z
+    .string()
+    .trim()
+    .startsWith('sk-ant-')
+    .refine(key => !key.startsWith('sk-ant-admin'), 'An API key, not an admin key'),
+})
+
 export const credentialPayloadSchemas = {
   cloudflare_api_token: cloudflareCredentialSchema,
   neon_org_api_key: neonCredentialSchema,
   resend_api_key: resendCredentialSchema,
   github_app: githubAppCredentialSchema,
+  anthropic_api_key: anthropicCredentialSchema,
 } as const satisfies Record<CredentialKind, z.ZodTypeAny>
 
 export type CredentialPayload<K extends CredentialKind = CredentialKind> = z.infer<
@@ -102,11 +118,20 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *
  * - `template_pin` — `{ repo, tag, commit }`, the kit a new app is cut from (`DEFAULT_TEMPLATE_PIN`).
  * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
+ *
+ * And P3's two (`@launch/shared/launch-sessions`):
+ *
+ * - `session_policy` — the coding-session budgets and limits (`DEFAULT_SESSION_POLICY`), read
+ *   through `resolveSessionPolicy` and snapshotted on each session at create.
+ * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
+ *   answer 409 until it is cleared.
  */
 export const LAUNCH_SETTING_KEYS = [
   ...SETUP_SETTING_KEYS,
   'template_pin',
   'app_create_role',
+  'session_policy',
+  'sessions_paused',
 ] as const
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>

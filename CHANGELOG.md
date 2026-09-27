@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- P3 foundations (slice 3a) for coding sessions: the `sessions` and `session_events` tables,
+  `ai_usage.session_id`, the app's session database and monthly budget columns (one migration);
+  the `SESSION_SANDBOX` container (`@cloudflare/sandbox` 0.12.10, a placeholder image) and
+  `SESSION_WORKFLOW` bindings; `run_worker_first = true` so session previews reach the Worker; the
+  session contracts, policy defaults and preview-host grammar; an `anthropic_api_key` credential
+  with its Setup check, and the GitHub App now needs `checks` and `statuses` read; PR and CI calls
+  to GitHub, branch delete and `schema-only` branches on Neon. No screen changes yet.
 - Create an app: "Create app" on the catalogue starts a pipeline that creates the GitHub repo,
   scaffolds it from Rocketflare 0.15.0, creates its Neon project (a `staging` branch, `migrator`
   and `app` roles), KV, queue and R2 per environment, its sign-in client, placeholder Workers

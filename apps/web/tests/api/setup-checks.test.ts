@@ -9,6 +9,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import type { SetupSettings } from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
 import {
+  checkAnthropic,
   checkCloudflare,
   checkGitHubApp,
   checkNeon,
@@ -315,7 +316,73 @@ describe('checkGitHubApp', () => {
     expect(
       missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, administration: 'admin' })
     ).toEqual([])
-    expect(missingGitHubPermissions({})).toHaveLength(8)
+    expect(missingGitHubPermissions({})).toHaveLength(10)
+  })
+
+  it('needs READ on checks and statuses (P3: a session ships when its CI is green)', async () => {
+    const { checks: _c, ...withoutChecks } = FULL_GITHUB_PERMISSIONS
+    const fake = fakeVendorFetch(
+      happyVendors({
+        domain: DOMAIN,
+        org: ORG,
+        permissions: { ...withoutChecks, statuses: 'read' },
+      })
+    )
+    const out = await checkGitHubApp(githubSecret, settings, { fetch: fake.fetch })
+    const perms = out.checks.find(c => c.id === 'permissions')
+    expect(perms).toMatchObject({ status: 'failed' })
+    expect(perms?.detail).toContain('Missing read on: checks.')
+    expect(perms?.detail).not.toContain('Missing write')
+    // Read is enough for these two; write is enough for anything.
+    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, checks: 'write' })).toEqual([])
+    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, contents: 'read' })).toEqual([
+      'contents',
+    ])
+  })
+})
+
+describe('checkAnthropic (P3)', () => {
+  const KEY = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789'
+  const models = (ids: string[]) =>
+    fakeVendorFetch({
+      'api.anthropic.com/v1/models': () =>
+        jsonResponse({ data: ids.map(id => ({ id, type: 'model' })), has_more: false }),
+    })
+
+  it('accepts a key that lists the session model (matched by prefix — ids carry dates)', async () => {
+    const fake = models(['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'])
+    const out = await checkAnthropic({ apiKey: KEY }, settings, { fetch: fake.fetch })
+    expect(byId(out.checks)).toEqual({ key: 'ok', model: 'ok' })
+    expect(out.metadata).toMatchObject({ models: 2 })
+    expect(JSON.stringify(out)).not.toContain(KEY)
+  })
+
+  it('warns when the key cannot see the policy model', async () => {
+    const fake = models(['claude-haiku-4-5-20251001'])
+    const out = await checkAnthropic({ apiKey: KEY }, settings, { fetch: fake.fetch })
+    expect(byId(out.checks)).toEqual({ key: 'ok', model: 'warning' })
+  })
+
+  it('fails on a key Anthropic refuses, without echoing it', async () => {
+    const fake = fakeVendorFetch({
+      'api.anthropic.com/v1/models': () =>
+        jsonResponse(
+          {
+            type: 'error',
+            error: { type: 'authentication_error', message: `invalid x-api-key ${KEY}` },
+          },
+          401
+        ),
+    })
+    const out = await checkAnthropic({ apiKey: KEY }, settings, { fetch: fake.fetch })
+    expect(out.checks).toEqual([
+      expect.objectContaining({
+        id: 'key',
+        status: 'failed',
+        detail: expect.stringContaining('401'),
+      }),
+    ])
+    expect(JSON.stringify(out)).not.toContain(KEY)
   })
 })
 

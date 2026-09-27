@@ -100,6 +100,33 @@ material is ambiguous, say so in the rationale and choose the more conservative 
 Reply with ONE JSON object and nothing else, in exactly the shape the task asks for. The rationale
 is one or two plain sentences a developer can act on: what was wrong, or why it passed.`
 
+const SESSION_SYSTEM_NOTE_DEFAULT = `You are working inside a Launch coding session on {{appName}} ({{appSlug}}), for {{userName}}.
+
+The repository is checked out on the branch \`{{branch}}\`, and the app is already running: the dev UI is
+on port 5173 and the API on port 8787, with hot reload, and {{userName}} is looking at it in a live
+preview beside this chat. Follow the repository's own CLAUDE.md and .claude/rules — they describe how
+this app is built.
+
+- Make the change that was asked for, keep it small, and say plainly what you changed and where.
+  {{userName}} may not be an engineer: describe the result as they will see it in the preview.
+- Do not commit, push or open a pull request. Launch commits and pushes your work after every turn,
+  and opens the pull request when {{userName}} ships.
+- Do not stop or restart the dev servers, and never use port 3000 (the sandbox's own).
+- The database is this session's own copy; run the app's migrations when you change the schema.
+- There are no credentials in this environment and you do not need any. Never print environment
+  variables or secrets.
+- When a request is ambiguous, ask one short question instead of guessing.`
+
+const SESSION_SHIP_DEFAULT = `{{userName}} wants to ship this work as a pull request on {{appName}}.
+
+1. Run the app's gate from the repository root: \`{{gateCommand}}\`.
+2. If it fails, fix what it reports and run it again — up to {{maxAttempts}} attempts in all. Fix the
+   cause; never skip, delete or weaken a test, a lint rule or a type to make the gate pass.
+3. Do not commit or push: Launch does both.
+4. Finish with ONE JSON object on the last line of your reply, and nothing after it:
+   {"title": "<a pull request title, under 70 characters, imperative mood>", "body": "<markdown: what changed and why, how to check it in the app, and the gate's result>", "gatePassed": true|false}
+   Set "gatePassed" to false if the gate still fails after the last attempt, and say what is left.`
+
 export const CORE_PROMPT_REGISTRY = {
   chat: {
     key: 'chat',
@@ -139,6 +166,22 @@ export const CORE_PROMPT_REGISTRY = {
       'System prompt for the LLM judges in `pnpm eval` (rubric, faithfulness, factuality). Never used by the app itself; assign it a strong model in Settings → agent models, or pass `--judge-model`.',
     variables: ['appName'],
     defaultText: EVALS_JUDGE_DEFAULT,
+  },
+  'session-system-note': {
+    key: 'session-system-note',
+    title: 'Coding session: system note',
+    description:
+      "Appended to Claude Code's own system prompt for every turn of a Launch coding session (`--append-system-prompt`): where it is, what Launch does for it (commits, pushes, the PR), and what it must not do. The model is the session policy's, not an agent-model assignment.",
+    variables: ['appName', 'appSlug', 'userName', 'branch'],
+    defaultText: SESSION_SYSTEM_NOTE_DEFAULT,
+  },
+  'session-ship': {
+    key: 'session-ship',
+    title: 'Coding session: ship',
+    description:
+      "The message of a session's ship turn: run the gate, fix failures up to N attempts, and end with the pull request's `{ title, body, gatePassed }` as JSON, which Launch parses to open the PR.",
+    variables: ['appName', 'userName', 'gateCommand', 'maxAttempts'],
+    defaultText: SESSION_SHIP_DEFAULT,
   },
 } as const satisfies PromptRegistry
 

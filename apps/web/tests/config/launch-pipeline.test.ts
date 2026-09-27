@@ -118,7 +118,14 @@ describe('the deployer protocol (DEPLOYER.md v1)', () => {
 
 describe('P2 settings', () => {
   it('the wizard edits only its own string keys; the P2 keys have code defaults', () => {
-    expect(LAUNCH_SETTING_KEYS).toEqual([...SETUP_SETTING_KEYS, 'template_pin', 'app_create_role'])
+    // …then P3's two, both with code defaults too (`@launch/shared/launch-sessions`).
+    expect(LAUNCH_SETTING_KEYS).toEqual([
+      ...SETUP_SETTING_KEYS,
+      'template_pin',
+      'app_create_role',
+      'session_policy',
+      'sessions_paused',
+    ])
     expect(templatePinSchema.parse(DEFAULT_TEMPLATE_PIN)).toEqual({
       repo: 'rocketflare-dev/rocketflare',
       tag: '0.15.0',

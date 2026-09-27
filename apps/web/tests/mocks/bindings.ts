@@ -2,7 +2,8 @@
  * `Cloudflare.Env`-shaped test bindings (D15): in-memory KV, a 404 ASSETS fetcher, the database
  * for the driver `.env.test` selects (D35 — a HYPERDRIVE stub pointing at the test Postgres under
  * `postgres`; `DATABASE_URL` + `NEON_LOCAL_PROXY` under `neon`), a recording Queue, an in-memory R2 bucket, a recording DO namespace,
- * a recording Workers AI stub, a recording Workflow namespace, and vars from `process.env` (loaded
+ * a recording Workers AI stub, recording Workflow namespaces, Launch P3's `SESSION_SANDBOX`
+ * (`FakeSandboxNamespace`) and `SESSION_WORKFLOW`, and vars from `process.env` (loaded
  * from .env.test by dotenv-cli). The AI stub also answers `toMarkdown` (D18 uploads). Tests may
  * read `process.env`; `src/` may not.
  *
@@ -268,6 +269,71 @@ export class RecordingDurableObjectNamespace {
   }
   clear(): void {
     this.broadcasts.length = 0
+  }
+}
+
+// ---- Sandbox namespace (Launch P3) ----------------------------------------------------------
+
+export interface RecordedSandboxCall {
+  /** The sandbox name `getSandbox(ns, name)` was called with (a session id). */
+  name: string
+  method: string
+  args: unknown[]
+}
+
+/**
+ * Stub `SESSION_SANDBOX` namespace (Launch P3). `idFromName(name)` is a stable id whose
+ * `toString()` is `fake-sandbox-<name>` — what `CloudflareSandbox.id` (and so `sessions.sandbox_id`)
+ * reads under test. `get(id)` answers a stub whose every RPC method records `{ name, method, args }`
+ * in `calls` and resolves `undefined`, except `containerFetch(req, port)` / `fetch(req)`, which
+ * answer through `respond` (default 502) — enough for a preview-gateway test that goes through
+ * `getSandbox`. The container itself is `FakeSandbox` (`tests/helpers/fake-sandbox.ts`): code under
+ * test takes a `SandboxPort`, not this.
+ */
+export class FakeSandboxNamespace {
+  readonly calls: RecordedSandboxCall[] = []
+  respond: (name: string, req: Request, port?: number) => Response | Promise<Response> = () =>
+    new Response('no sandbox (FakeSandboxNamespace)', { status: 502 })
+
+  idFromName(name: string) {
+    return {
+      toString: () => `fake-sandbox-${name}`,
+      name,
+      equals: (o: { name?: string }) => o.name === name,
+    }
+  }
+  newUniqueId() {
+    return this.idFromName(crypto.randomUUID())
+  }
+  idFromString(id: string) {
+    return this.idFromName(id.replace(/^fake-sandbox-/, ''))
+  }
+  get(id: { name: string }) {
+    const name = id.name
+    const record =
+      (method: string) =>
+      async (...args: unknown[]) => {
+        this.calls.push({ name, method, args })
+        return undefined
+      }
+    return new Proxy(
+      {
+        id,
+        name,
+        fetch: async (req: Request) => {
+          this.calls.push({ name, method: 'fetch', args: [req.url] })
+          return this.respond(name, req)
+        },
+        containerFetch: async (req: Request, port?: number) => {
+          this.calls.push({ name, method: 'containerFetch', args: [req.url, port] })
+          return this.respond(name, req, port)
+        },
+      } as Record<string, unknown>,
+      { get: (t, prop: string) => (prop in t ? t[prop] : record(prop)) }
+    )
+  }
+  clear(): void {
+    this.calls.length = 0
   }
 }
 
@@ -537,6 +603,9 @@ export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
     // Launch P2: the create and archive pipelines — the same recorder; tests drive the classes.
     APP_LAUNCH_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     APP_TEARDOWN_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
+    // Launch P3: coding sessions — the container namespace and the lifecycle Workflow.
+    SESSION_SANDBOX: new FakeSandboxNamespace() as unknown as DurableObjectNamespace,
+    SESSION_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     APP_ENV: process.env.APP_ENV ?? 'development',
     APP_URL: process.env.APP_URL ?? 'http://localhost:3001',
     APP_NAME: process.env.APP_NAME ?? 'Launch Test',
@@ -570,6 +639,10 @@ export function stubs(env: TestEnv) {
     launchWorkflow: env.APP_LAUNCH_WORKFLOW as unknown as RecordingWorkflow | undefined,
     /** `APP_TEARDOWN_WORKFLOW`. */
     teardownWorkflow: env.APP_TEARDOWN_WORKFLOW as unknown as RecordingWorkflow | undefined,
+    /** Launch P3: `SESSION_WORKFLOW` — `created[i]` is `{ id: sessionId, params }`; `events` the wakes. */
+    sessionWorkflow: env.SESSION_WORKFLOW as unknown as RecordingWorkflow | undefined,
+    /** Launch P3: `SESSION_SANDBOX` — every RPC call on a sandbox stub, and `respond` for fetches. */
+    sandboxes: env.SESSION_SANDBOX as unknown as FakeSandboxNamespace | undefined,
   }
 }
 

@@ -33,6 +33,10 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
   raw results only through `rows()`/`affected()`
 - **Auth**: arctic (Google, Microsoft, any OIDC issuer — jose-verified `id_token`, off by default) + magic link + dev-login; `__Host-session`; API keys; KV rate limit
 - **Async / realtime**: Queues (`JOBS_QUEUE`), `NotificationsHub` DO `/ws`, R2 (`FILES`), cron, Workflows
+- **Coding sessions (Launch P3, `docs/plans/p3-sessions.md`)**: Cloudflare Sandbox containers
+  (`@cloudflare/sandbox` 0.12.10 stable, `[[containers]]` `SessionSandbox` = `SESSION_SANDBOX`) driven
+  by `SESSION_WORKFLOW`; everything outside Launch sits behind the four ports in
+  `services/sessions/ports.ts` (`defaultSessionPorts`); tests use `FakeSandbox` / fake Anthropic
 - **AI**: `services/ai/resolve` (`agent_models` → tenant `ai_configs` → platform key → Workers AI via
   `[ai]`, zero key → 503); Anthropic / OpenAI-compatible / Workers AI chat streamed as **AG-UI**
   (`@ag-ui/core` pinned; SSE or protobuf; `POST /api/agui/run` is the protocol endpoint), chat calls
@@ -75,11 +79,14 @@ pnpm plugin list · pnpm plugin check · pnpm plugin upgrade analytics [--apply]
 ```
 apps/web/          @launch/web — wrangler*.toml, worker-configuration.d.ts, .dev.vars(.example), .env.test,
 │                  drizzle.config.ts, migrations/, scripts/, tests/
-│  src/worker.ts   export default { fetch, queue, scheduled }; export { NotificationsHub, AgentRunWorkflow }
+│  src/worker.ts   export default { fetch, queue, scheduled }; export { NotificationsHub, AgentRunWorkflow,
+│                  App{Launch,Teardown}Workflow, SessionSandbox + ContainerProxy, SessionWorkflow };
+│                  fetch sends session PREVIEW hosts to api/preview/gateway.ts before the Hono app
 │  src/config.ts   loadConfig(env): zod over Cloudflare.Env; routes read c.get('config')
 │  src/permissions/  CASL owner/admin/member/support + isGlobalAdmin   src/db/  client, tenant-scope, schema/
 │  src/api/        index.ts (Hono app, middleware order, ASSETS catch-all) · queue.ts · scheduled.ts ·
-│                  middleware/ · auth/ · routes/ (thin) · services/ (ai/, agents/, prompts.ts) ·
+│                  middleware/ · auth/ · routes/ (thin) · services/ (ai/, agents/, prompts.ts,
+│                  launch/ — P1/P2, sessions/ — P3: ports.ts, access.ts, egress/, adapters) · preview/ ·
 │                  workflows/ · observability/ · utils/ · queues/ · durable-objects/
 │  src/ui/         React app
 │  src/plugins/    D31 seam: types.ts, api/ (the context family a plugin imports) + the

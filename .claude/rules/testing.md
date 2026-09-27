@@ -32,16 +32,23 @@ vitest 3 resolves `isolate` per run, not per project.
   is the test URL, under `neon` NO `HYPERDRIVE` (a deployed `neon` Worker has none) plus
   `DATABASE_DRIVER` / `NEON_LOCAL_PROXY`; `ctx = createExecutionContext()` collects `waitUntil`
   promises so a test can `await waitOnExecutionContext(ctx)` before asserting side effects
-- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow, launchWorkflow, teardownWorkflow }`: `queue.messages`
+- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow, launchWorkflow, teardownWorkflow, sessionWorkflow, sandboxes }`: `queue.messages`
   (what a route enqueued — `[{ body, options }]`), `files.objects` (key → stored bytes/metadata),
   `hub.broadcasts` (`[{ tenantId, args: [method, ...args] }]` — every RPC call on any stub, e.g.
   `['broadcast', event]`; the stub's `fetch` answers 501), `kv.store`, `ai.runs` (`[{ model, inputs }]`),
   `workflow.created` (`[{ id, params }]`) + `workflow.setStatus(id, { status })`, and Launch P2's
   `launchWorkflow` / `teardownWorkflow` (the same `RecordingWorkflow` behind `APP_LAUNCH_WORKFLOW`
-  / `APP_TEARDOWN_WORKFLOW`). `createTestEnv({
+  / `APP_TEARDOWN_WORKFLOW`), Launch P3's `sessionWorkflow` (the same recorder behind
+  `SESSION_WORKFLOW`) and `sandboxes` (the `FakeSandboxNamespace` behind `SESSION_SANDBOX`:
+  `idFromName(name).toString()` is `fake-sandbox-<name>`, every RPC call on a stub lands in `calls`,
+  `containerFetch` / `fetch` answer through `respond`). `createTestEnv({
   JOBS_QUEUE: undefined })` / `{ FILES: undefined }` / `{ NOTIFICATIONS_HUB: undefined }` /
   `{ AGENT_RUN_WORKFLOW: undefined }` / `{ AI: undefined }` exercise the missing-binding branches
   (throws / 503 / no-op / 503 `agent_runs_not_configured` / next embeddings tier)
+- `@cloudflare/sandbox` (Launch P3) is aliased to `apps/web/tests/mocks/cloudflare-sandbox.ts`: a
+  `Sandbox` base class with the egress fields and a static `outboundByHost`, `ContainerProxy`, and
+  `getSandbox(ns, name)` = `ns.get(ns.idFromName(name))`. Enough for the two SDK importers to load
+  under Node; nothing drives a container through it
 - `cloudflare:workers` is aliased to `apps/web/tests/mocks/cloudflare-workers.ts` (stub `DurableObject`,
   `WorkflowEntrypoint`, plus `createFakeWorkflowStep(options)` → `{ step, calls, waits, names }` —
   runs each `step.do` callback inline and records `{ name, config? }`; `waitForEvent` is a RECORDER,
@@ -213,6 +220,31 @@ a fake `WebSocket` factory left set) is on you.
   module with `mockCredentialsModule(real, store)` and seed through `putCredential` /
   `putSetting` — those tables are global, and writing them races `setup.test.ts`.
   `tests/api/app-create-e2e.test.ts` is the whole create → deploy → teardown path in one file
+- **Launch P3's coding sessions: fakes behind four ports** (`services/sessions/ports.ts` —
+  `SandboxPort`, `SessionDbPort`, `RepoHostPort`, `ModelUpstream`; `defaultSessionPorts(env, cfg)` is
+  never reached by a test: the Workflow takes `overrides.ports`, route suites mock the module).
+  `tests/helpers/fake-sandbox.ts` **`FakeSandbox`** implements `SandboxPort` with nothing running:
+  `onExec(match, result | fn)`, `onProcess(match, lines[] | { lines, exitCode?, hang?, ports? })`
+  (`streamLogs` yields each line as a `stdout` chunk then `exit`; `hang` runs until `kill` → 137),
+  `onPort(port, handler)` / `openPort`, `interruptNext()` (a ROLLOUT: the next `exec` throws
+  `SandboxInterruptedError`, or the next stream after its first chunk — and files, ports and
+  processes are wiped), `failNext(method, err)`; inspect `execs`, `processes`, `killed`, `files`,
+  `ports`, `fetches`, `allowedHosts`, `startCount`, `destroyed` / `destroyCount`, `interruptions`.
+  `tests/helpers/fake-anthropic.ts`: `createFakeAnthropic(message)` → `{ upstream, requests,
+  respond }` (every request's `apiKey` / `authorization` / `body` recorded — the "placeholder never
+  reaches upstream" assertion; SSE when `body.stream`, JSON otherwise, both with `usage` where
+  Anthropic puts it), `anthropicSse` / `anthropicJson` / `anthropicSseText`, and
+  `claudeStreamJson(turn)` — a `FakeSandbox.onProcess` script of one Claude Code
+  `--output-format stream-json` turn (`system:init` → tool_use / tool_result pairs → text →
+  `result`, shaped like `spikes/s7-sandbox/output-locked-session.txt`). `tests/helpers/sessions.ts`:
+  `seedSessionApp(db, cloud, { role?, prepared? })` (tenant + cookie, an app whose repo is in the
+  FakeCloud's GitHub, a Neon project on the production environment, and with `prepared` a `dev`
+  branch — `schema-only`, `session_owner`, `session_app` — recorded ready in `apps.session_db`),
+  `insertSession(db, fixture, overrides)`, `sessionAppRef(fixture)`, and
+  `createFakeSessionPorts({ sessionDb?, repoHost?, model? })` (one `FakeSandbox` per name in
+  `sandboxes`, `script(fn)` applied to each; an unprovided port throws by name). The FakeCloud
+  covers the vendor half: Neon `init_source`, `endpoints: []`, branch endpoints and DELETE; GitHub
+  `pulls`, `setCheckRuns` / `setStatuses`. `tests/api/session-foundations.test.ts` shows each
 - Producers: assert on `stubs(env).queue.messages` (RecordingQueue) — `body.type`, `body.payload` —
   and that the route did NOT do the work itself (no `[email:dev]` line, no provider fetch)
 - Uploads: `new FormData()` + `form.append('file', new File([bytes], 'a.png', { type: 'image/png' }))`

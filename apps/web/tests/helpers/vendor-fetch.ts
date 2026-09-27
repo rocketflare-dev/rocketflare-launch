@@ -65,6 +65,9 @@ export const FULL_GITHUB_PERMISSIONS = {
   actions_variables: 'write',
   deployments: 'write',
   metadata: 'read',
+  // P3: a session's PR is shipped when its CI is green — check runs plus the combined status.
+  checks: 'read',
+  statuses: 'read',
 }
 
 /** Every vendor answering as a correctly set-up company would. */

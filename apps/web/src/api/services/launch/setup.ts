@@ -17,10 +17,16 @@
  * depends on an earlier one is skipped (not run) when that one failed, rather than piling on
  * failures that all mean the same thing.
  *
+ * **Anthropic (P3)** is probed with `GET /v1/models`: the key works, and the session policy's
+ * default model is one it can see. It has no setup STEP — coding sessions fall back to the
+ * Worker's `ANTHROPIC_API_KEY` secret without it — so the wizard's dots never wait on it.
+ *
  * **What is deliberately NOT probed.** Cloudflare write scope: nothing proves "can create a Worker"
  * short of creating one, so it is reported as a standing `warning` ("write scope unverified") rather
  * than a green light the check did not earn.
  */
+
+import { DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
 import {
   CREDENTIAL_KINDS,
   type CredentialCheck,
@@ -410,7 +416,7 @@ export async function checkResend(
  * The installation's required WRITE set (spec/03), by GitHub's permission keys. `actions_variables`
  * is the repository "Variables" permission S5 found missing (`LAUNCH_URL`).
  */
-export const REQUIRED_GITHUB_PERMISSIONS = [
+export const REQUIRED_GITHUB_WRITE_PERMISSIONS = [
   'administration',
   'contents',
   'workflows',
@@ -421,13 +427,25 @@ export const REQUIRED_GITHUB_PERMISSIONS = [
   'deployments',
 ] as const
 
+/**
+ * P3: what READ access coding sessions need on top — a session's PR is shipped when its CI is
+ * green, which is the head commit's check runs (`checks`) plus its combined status (`statuses`).
+ */
+export const REQUIRED_GITHUB_READ_PERMISSIONS = ['checks', 'statuses'] as const
+
+/** Every required permission with the level it needs. */
+export const REQUIRED_GITHUB_PERMISSIONS: Readonly<Record<string, 'read' | 'write'>> = {
+  ...Object.fromEntries(REQUIRED_GITHUB_WRITE_PERMISSIONS.map(p => [p, 'write'])),
+  ...Object.fromEntries(REQUIRED_GITHUB_READ_PERMISSIONS.map(p => [p, 'read'])),
+}
+
 const PERMISSION_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 }
 
-/** Required permissions the installation holds below `write`. */
+/** Required permissions the installation holds below the level each needs (write first, then read). */
 export function missingGitHubPermissions(granted: GitHubPermissions): string[] {
-  return REQUIRED_GITHUB_PERMISSIONS.filter(
-    p => (PERMISSION_RANK[granted[p] ?? ''] ?? 0) < PERMISSION_RANK.write
-  )
+  return Object.entries(REQUIRED_GITHUB_PERMISSIONS)
+    .filter(([p, level]) => (PERMISSION_RANK[granted[p] ?? ''] ?? 0) < PERMISSION_RANK[level])
+    .map(([p]) => p)
 }
 
 export async function checkGitHubApp(
@@ -477,13 +495,82 @@ export async function checkGitHubApp(
   checks.push(ok('installation', label, `Installation ${installation.id} on ${org}`))
 
   const missing = missingGitHubPermissions(installation.permissions ?? {})
+  const missingWrite = missing.filter(p => REQUIRED_GITHUB_PERMISSIONS[p] === 'write')
+  const missingRead = missing.filter(p => REQUIRED_GITHUB_PERMISSIONS[p] === 'read')
+  const gaps = [
+    ...(missingWrite.length ? [`Missing write on: ${missingWrite.join(', ')}.`] : []),
+    ...(missingRead.length ? [`Missing read on: ${missingRead.join(', ')}.`] : []),
+  ]
   checks.push(
     missing.length === 0
-      ? ok('permissions', 'Required permissions (write)')
+      ? ok('permissions', 'Required permissions')
       : fail(
           'permissions',
-          'Required permissions (write)',
-          `Missing write on: ${missing.join(', ')}. Grant them in the app's settings, then accept the new permissions on the installation.`
+          'Required permissions',
+          `${gaps.join(' ')} Grant them in the app's settings, then accept the new permissions on the installation.`
+        )
+  )
+  return { checks, metadata, settings: {} }
+}
+
+// ---- Anthropic (P3) --------------------------------------------------------------------------
+
+export const ANTHROPIC_API_BASE = 'https://api.anthropic.com'
+export const ANTHROPIC_VERSION = '2023-06-01'
+
+/**
+ * The key coding sessions spend: `GET /v1/models` proves it authenticates and lists what it may
+ * call; the session policy's default model (`DEFAULT_SESSION_POLICY.model`) must be among them,
+ * matched by prefix because Anthropic's ids carry dates (`claude-sonnet-4-5-20250929`). A model
+ * this key cannot see is a `warning` — the policy may name another — and a refused key `failed`.
+ */
+export async function checkAnthropic(
+  secret: CredentialPayload<'anthropic_api_key'>,
+  _settings: Partial<SetupSettings>,
+  opts: VendorOptions & { model?: string } = {}
+): Promise<CheckOutcome> {
+  const secrets = [secret.apiKey]
+  const checks: CredentialCheck[] = []
+  const metadata: CredentialMetadata = {}
+  const doFetch = opts.fetch ?? fetch
+  const model = opts.model ?? DEFAULT_SESSION_POLICY.model
+  let ids: string[]
+  try {
+    const res = await doFetch(`${ANTHROPIC_API_BASE}/v1/models?limit=100`, {
+      headers: {
+        'x-api-key': secret.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const body = (await res.json().catch(() => ({}))) as {
+      data?: { id?: unknown }[]
+      error?: { message?: unknown }
+    }
+    if (!res.ok) {
+      const message =
+        typeof body.error?.message === 'string' ? body.error.message : `Anthropic ${res.status}`
+      checks.push(
+        fail('key', 'API key accepted', scrub(`Anthropic ${res.status}: ${message}`, secrets))
+      )
+      return { checks, metadata, settings: {} }
+    }
+    ids = (body.data ?? []).map(m => m.id).filter((id): id is string => typeof id === 'string')
+  } catch (err) {
+    checks.push(fail('key', 'API key accepted', errorDetail(err, 'Anthropic', secrets)))
+    return { checks, metadata, settings: {} }
+  }
+  metadata.models = ids.length
+  metadata.fingerprint = await fingerprint(secret.apiKey)
+  checks.push(ok('key', 'API key accepted', `${ids.length} models visible`))
+  checks.push(
+    ids.some(id => id === model || id.startsWith(`${model}-`))
+      ? ok('model', 'Session model available', model)
+      : warn(
+          'model',
+          'Session model available',
+          `${model} is not among the models this key can call. Change the session policy's model, or use a key that has it.`
         )
   )
   return { checks, metadata, settings: {} }
@@ -559,6 +646,8 @@ function probe(
       return checkResend(secret as CredentialPayload<typeof kind>, settings, opts)
     case 'github_app':
       return checkGitHubApp(secret as CredentialPayload<typeof kind>, settings, opts)
+    case 'anthropic_api_key':
+      return checkAnthropic(secret as CredentialPayload<typeof kind>, settings, opts)
   }
 }
 

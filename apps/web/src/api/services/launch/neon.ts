@@ -31,6 +31,15 @@
  * - `POST …/branches {branch:{name, parent_id?}, endpoints:[{type:'read_write'}]}`. A branch
  *   INHERITS its parent's role passwords, so the pipeline resets them on the new branch.
  * - `GET …/connection_uri?branch_id&database_name&role_name&pooled` → `{ uri }` — a secret.
+ *
+ * P3 (coding sessions) adds:
+ *
+ * - `createBranch` takes `init_source` — `schema-only` copies the parent's schema and roles but no
+ *   data (the app's `dev` branch, cut from `main`: never production data) and `parent-data` (the
+ *   default) everything — and the endpoints to create with it (`[]` for none).
+ * - `GET …/branches/{b}/endpoints` → `{ endpoints }`, the compute (and its host) a branch has.
+ * - `DELETE …/branches/{b}` → `{ branch, operations }`: a session's branch is deleted with the
+ *   session (Neon caps branches per project — 10 on Launch, 25 on Scale).
  * - **HTTP SQL** (`runSql`): `POST https://api.<endpoint's region host>/sql` with the connection
  *   string in the `Neon-Connection-String` header and `{ query, params }` — what
  *   `@neondatabase/serverless`'s `neon()` does, without importing a driver into this module.
@@ -104,7 +113,12 @@ export interface NeonBranch {
   name: string
   parent_id?: string
   default?: boolean
+  /** Echoed back on create; `schema-only` branches have no data. */
+  init_source?: NeonBranchInitSource
 }
+
+/** How a new branch is filled from its parent. */
+export type NeonBranchInitSource = 'parent-data' | 'schema-only'
 
 export interface NeonRole {
   name: string
@@ -294,15 +308,48 @@ export class NeonClient {
     })
   }
 
-  /** A branch with its own read-write endpoint. It inherits the parent's data AND passwords. */
+  /**
+   * A branch, by default with its own read-write endpoint. It inherits the parent's roles AND
+   * passwords, and — unless `initSource: 'schema-only'` — its data.
+   */
   createBranch(
     projectId: string,
-    input: { name: string; parentId?: string }
+    input: {
+      name: string
+      parentId?: string
+      /** `parent-data` (Neon's default) or `schema-only` (no rows copied — P3's `dev` branch). */
+      initSource?: NeonBranchInitSource
+      /** The computes to create with it; default one `read_write`, `[]` for none. */
+      endpoints?: readonly { type: 'read_write' | 'read_only' }[]
+    }
   ): Promise<{ branch: NeonBranch; endpoints: NeonEndpoint[]; operations: NeonOperation[] }> {
     return this.request('POST', `/projects/${enc(projectId)}/branches`, {
-      branch: { name: input.name, ...(input.parentId ? { parent_id: input.parentId } : {}) },
-      endpoints: [{ type: 'read_write' }],
+      branch: {
+        name: input.name,
+        ...(input.parentId ? { parent_id: input.parentId } : {}),
+        ...(input.initSource ? { init_source: input.initSource } : {}),
+      },
+      endpoints: input.endpoints ?? [{ type: 'read_write' }],
     })
+  }
+
+  /** The endpoints (computes) of one branch — where its `host` comes from. */
+  async listBranchEndpoints(projectId: string, branchId: string): Promise<NeonEndpoint[]> {
+    const body = await this.get<{ endpoints?: NeonEndpoint[] }>(
+      `/projects/${enc(projectId)}/branches/${enc(branchId)}/endpoints`
+    )
+    return body.endpoints ?? []
+  }
+
+  /**
+   * Delete a branch (and its endpoints). A branch that is already gone is a 404 — test it with
+   * `isNeonNotFound` where "gone" is the goal. Neon refuses to delete a branch that has children.
+   */
+  deleteBranch(
+    projectId: string,
+    branchId: string
+  ): Promise<{ branch: NeonBranch; operations: NeonOperation[] }> {
+    return this.request('DELETE', `/projects/${enc(projectId)}/branches/${enc(branchId)}`)
   }
 
   /** A connection string (`pooled` = the `-pooler` host the Worker uses). A secret. */

@@ -71,6 +71,8 @@ AUTH_OIDC_ONLY=
 OIDC_TRUST_EMAIL=
 # AI layer (Phase 3): platform default key; tenants may override in Settings → AI. Optional — without
 # it chat falls back to Workers AI through the [ai] binding (zero key, billed to the Cloudflare account).
+# Launch P3: coding sessions spend this key too (through the model proxy — it never enters a
+# sandbox) unless the Setup page holds an `anthropic_api_key` credential.
 ANTHROPIC_API_KEY=
 EMBEDDINGS_API_KEY=
 # Evals only (D33, docs/EVALS.md): `pnpm eval --provider fireworks|gemini` (and `--judge-provider`)
@@ -90,6 +92,22 @@ OTEL_EXPORTER_OTLP_ENDPOINT=
 OTEL_EXPORTER_OTLP_HEADERS=
 # Link-out for `traces show`: {traceId} is substituted.
 OBSERVABILITY_TRACE_URL=
+
+# --- Coding sessions (Launch P3, docs/SESSIONS-LOCAL.md) --------------------------------
+# `local` runs a session's sandbox in wrangler dev's local containers (Docker), its database on the
+# local Postgres and its repo on the local git server. Only with APP_ENV=development: loadConfig
+# refuses `local` anywhere else. The tomls say `cloud`.
+SESSION_BACKEND=local
+# Preview origins: {label} becomes <port>-<shortId>-<token>; *.localhost resolves to 127.0.0.1.
+SESSION_PREVIEW_URL=http://{label}.localhost:3001
+# An OWNER connection to the local Postgres that session databases are cloned on (CREATE DATABASE …
+# TEMPLATE …) — e.g. the DATABASE_URL above.
+SESSION_LOCAL_DB_URL=
+# The local Neon proxy as a CONTAINER sees it (a locked sandbox speaks only HTTP(S) to Postgres):
+# http://host.docker.internal:<the NEON_LOCAL_PROXY port>.
+SESSION_LOCAL_NEON_PROXY=
+# The local git server sessions clone from and push to (`pnpm sessions:local-git serve`).
+SESSION_LOCAL_GIT_URL=http://localhost:9420
 
 # --- RLS (see docs/RLS.md) — leave as-is unless running the enforce spike ---------------
 # App-role credential for scripts/db-roles.ts; username must equal APP_ROLE in src/db/schema/rls.ts

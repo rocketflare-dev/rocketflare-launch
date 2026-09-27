@@ -110,7 +110,8 @@ hidden gap. `apps/web/tests/config/wrangler-parity.test.ts` enforces the table b
 | every `binding` name, every DO `class_name`, `[[migrations]]` | application code never branches on environment |
 | `[limits]` (present in both or neither) | Workflows bound CPU per step by it — see below |
 | `[triggers].crons` | the dispatcher table in `scheduled.ts` is one file |
-| `[assets]` (incl. `run_worker_first`), `[placement]`, `[observability]` | same SPA, same placement, same logging. `run_worker_first` must list every prefix the Worker owns: the asset router runs BEFORE the Worker and `single-page-application` answers any NAVIGATION with `index.html` without invoking `fetch` — and an `<object>` embed or an `<a download>` click is a navigation, so a missing prefix silently serves the app shell for those (`wrangler-parity.test.ts` asserts it mirrors `API_PREFIXES`) |
+| `[assets]` (incl. `run_worker_first`), `[placement]`, `[observability]` | same SPA, same placement, same logging. `run_worker_first = true` (Launch P3): the asset router runs BEFORE the Worker and `single-page-application` answers any NAVIGATION with `index.html` without invoking `fetch` — an `<object>` embed, an `<a download>` click, and a coding session's preview (a navigation to `/` on `<port>-<shortId>-<token>.<preview domain>`, which would otherwise get LAUNCH's `index.html`). So every request reaches the Worker, and the Hono catch-all serves `ASSETS` itself while every prefix in `API_PREFIXES` stays a JSON 404 (`wrangler-parity.test.ts` asserts both) |
+| `[[containers]]` (class, image, instance type, `max_instances`) | the session image and its capacity are code (Launch P3) — see § Coding sessions |
 | `[vars]` **keys** (values may differ) | `loadConfig` validates one schema. `DATABASE_DRIVER` is a value, so staging may switch driver before production |
 | `[[hyperdrive]]` present in both or neither | it exists only under `postgres` (D35) |
 
@@ -131,7 +132,9 @@ in both files (one local database).
 | Workers AI (Phase 3, built) | `AI` | — | `[ai] binding = "AI"` — no resource; the zero-key floor for chat (`@cf/zai-org/glm-4.7-flash`) and embeddings (`@cf/baai/bge-m3`); **billed per call to this account** (10k free neurons/day), `wrangler dev` proxies to the logged-in account; remove from BOTH tomls for zero-spend |
 | Analytics (a PLUGIN, D31) | — | — | **no resource and no binding**: its cubes read through the request's database handle (either driver), its fact tables rebuild on the `15 * * * *` cron it declares, and `/cubejs-api` + `/mcp` are routes of this Worker. Installing it means adding that cron and those two prefixes to BOTH tomls — `pnpm provision cloudflare <env>` reads them off the installed surface and writes them (decision 12) |
 | Analytics Engine (optional) | `ANALYTICS_ENGINE` | `<app>_analytics[_staging]` | declared in toml — deliberately NOT wired by the kit (only a comment in both tomls) |
-| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first` keeps `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known`, its GitHub-OIDC surface `/ci` (P2: the deployer protocol and the scaffold job; 64 MB body cap on `POST /ci/deploy/:id/upload`, 1 MB elsewhere) — and every prefix an installed plugin declares — off the asset router |
+| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first = true` sends every request to the Worker first (Launch P3's session previews), so `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known`, its GitHub-OIDC surface `/ci` (P2: the deployer protocol and the scaffold job; 64 MB body cap on `POST /ci/deploy/:id/upload`, 1 MB elsewhere) and every prefix an installed plugin declares never meet the asset router — the Hono catch-all serves `ASSETS` for the rest |
+| Session containers (Launch P3) | `SESSION_SANDBOX` | class `SessionSandbox`; container application `launch-sessionsandbox` / `launch-staging-sessionsandbox` (wrangler names it from the Worker and the class) | `[[containers]]` (`image = "./containers/session/Dockerfile"`, `instance_type = "standard-3"`, `max_instances = 10`) + `[[durable_objects.bindings]]` + `[[migrations]] tag = "v2", new_sqlite_classes` — no create step: `wrangler deploy` builds the image (Docker, amd64) and pushes it to Cloudflare's registry. See § Coding sessions |
+| Workflow (Launch P3) | `SESSION_WORKFLOW` | `launch-session` / `launch-session-staging` | `[[workflows]]` with `class_name = "SessionWorkflow"` — registered by `wrangler deploy`; **account-scoped name**. One instance per coding session (id = the session id, `<id>-rN` on a restart) |
 | RLS app role (optional, docs/RLS.md, not wired yet) | `postgres`: `HYPERDRIVE_APP`; `neon`: an `APP_DATABASE_URL` Worker secret | `<app>-<env>-app` | `postgres`: `… hyperdrive create … --caching-disabled`; `neon`: `wrangler secret put APP_DATABASE_URL` |
 | Plugin resources (D31) | whatever the plugin's `plugin.json` declares (`APPROVALS_CACHE`…) | `<app>-<id>-<name>[-staging]`, and `<APP>_<ID>_<NAME>[_STAGING]` for KV | `pnpm provision cloudflare <env>` — it reads each installed plugin's `bindings[]`, creates the `kv`/`queue`/`r2` ones through `cf-provision.sh` and patches every block into BOTH tomls |
 | Plugin Workflow / Durable Object (D31) | whatever the plugin declares (`ORDERS_SYNC`, `ORDERS_HUB`…) | workflow `<app>-<id>-<name>[-staging]`; a DO binding has no account-scoped name | **no create step** — `pnpm provision cloudflare <env>` writes `[[workflows]]` / `[[durable_objects.bindings]]` (+ a `plugin-<id>-v1` `[[migrations]]` tag) into both tomls and `wrangler deploy` registers them. The `class_name` resolves through the sixth barrel, `apps/web/src/plugins/worker-exports.ts` |
@@ -174,7 +177,8 @@ the next free `plugin-<id>-v<n>` with `deleted_classes` — and that one is a HU
 destroys the namespace and everything stored in it.
 
 The phase writes the DECLARATIONS into **both** tomls first (the binding block with a
-`<PLACEHOLDER>` id, the `crons`, the `[vars]` keys, the `apiPrefixes` in `run_worker_first`), then
+`<PLACEHOLDER>` id, the `crons`, the `[vars]` keys, the `apiPrefixes` in `run_worker_first` — a
+no-op while it is `true`, as Launch's is), then
 creates the resources for the environment it was given and patches that file's ids. Both files,
 because the ordinary parity test compares binding names, `[vars]` keys, crons and
 `run_worker_first` on every `pnpm test`; the placeholder in the other environment is refused by
@@ -187,6 +191,39 @@ the orchestrator around it — phases `tokens` (TTY only: hidden prompts → `ap
 `cloudflare <env>` (this script with `--apply`) · `migrate <env>` · `github <env>` · `urls` ·
 `deploy <env>` · `secrets <env>` · `all` — each idempotent, each ending in one `Verify:` line;
 `SETUP.md` Part 3 has the table.
+
+## Coding sessions (Launch P3)
+
+A coding session is a Cloudflare Sandbox container (`@cloudflare/sandbox` **0.12.10**, the stable
+line S7 proved, with the matching `cloudflare/sandbox:0.12.10` base image — keep the two on the SAME
+version) driven by the `SessionWorkflow`, with its preview served by this Worker. What a deployment
+needs, beyond the bindings above:
+
+- **The image.** `apps/web/containers/session/Dockerfile` (a placeholder until slice 3b; the real
+  one adds Node 24, pnpm 10, a pinned Claude Code and a warm pnpm store). `wrangler deploy` builds it
+  with Docker and pushes it — the first push from an ARM Mac took ~5 minutes in S7 (amd64
+  emulation), a cached one ~14 s. `pnpm build:api` (`wrangler deploy --dry-run`) does NOT build it,
+  but refuses a missing Dockerfile. Deleting the Worker leaves the container application and its
+  images behind: `wrangler containers delete`, `wrangler containers images delete`.
+- **`[vars]`.** `SESSION_BACKEND = "cloud"` (`local` is `wrangler dev` only — `loadConfig` refuses it
+  elsewhere) and `SESSION_PREVIEW_URL = "https://{label}.<domain>"`: `{label}` becomes
+  `<port>-<shortId>-<token>`. The preview hosts need a Worker route `*.<domain>/*` to THIS Worker
+  and the proxied wildcard DNS record the apps domain already has (a more specific app route still
+  wins); a wildcard is only allowed at the start of a route host (S7). Both environments name the
+  same template today — give staging its own domain before running sessions on both.
+- **Secrets.** No new Worker secret: the Anthropic key is the Setup page's `anthropic_api_key`
+  credential, falling back to `ANTHROPIC_API_KEY`. The GitHub App needs `checks: read` and
+  `statuses: read` on top of P2's permissions (the Setup check fails without them).
+- **Egress.** A session runs with internet OFF and an allow-list (`registry.npmjs.org`, `github.com`,
+  `codeload.github.com`, `api.anthropic.com`); `interceptHttps = true` is set explicitly because the
+  stable packages default it to `false`. The model key and the GitHub token are injected by the
+  outbound handlers IN THIS WORKER — the sandbox never holds either.
+- **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
+  running containers and cuts off a running turn (S7 finding 8). Until slice 3b lands the procedure
+  (`POST /api/admin/sessions/drain` → deploy → `/undrain`, the Sessions admin page), no session
+  runs, so there is nothing to drain; this section is where the steps will live.
+- **Capacity.** `max_instances` (10) caps live sessions across the deployment, and each app's Neon
+  project caps its branches (10 on Launch, 25 on Scale) against `maxConcurrentPerApp` (3).
 
 ## Crons
 

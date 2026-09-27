@@ -425,9 +425,21 @@ describe('plugin crons, vars and run_worker_first', () => {
     expect(Object.keys(doc.vars)).toEqual([...Object.keys(before.vars), 'TOMLFIXTURE_MAX_ITEMS'])
   })
 
-  it('appends both run_worker_first patterns — the prefix and everything beneath it', () => {
-    expect(doc.assets.run_worker_first).toEqual([
-      ...before.assets.run_worker_first,
+  it('leaves `run_worker_first = true` alone — it already sends every prefix to the Worker', () => {
+    // Launch P3's tomls: a session preview's `/` must reach the Worker, so ALL paths do.
+    expect(before.assets.run_worker_first).toBe(true)
+    expect(doc.assets.run_worker_first).toBe(true)
+  })
+
+  it('appends both run_worker_first patterns to a LIST — the prefix and everything beneath it', () => {
+    const listText = prodText.replace(
+      /^run_worker_first = true$/m,
+      'run_worker_first = [\n  "/api",\n  "/api/*",\n]'
+    )
+    const listed = TOML.parse(patchToml(listText, patch)) as any
+    expect(listed.assets.run_worker_first).toEqual([
+      '/api',
+      '/api/*',
       '/tomlfixture-hook',
       '/tomlfixture-hook/*',
     ])

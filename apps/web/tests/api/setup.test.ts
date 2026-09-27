@@ -375,7 +375,13 @@ describe('credentials', () => {
     expect(overview.status).toBe(200)
     const o = overview.body as SetupOverview
     expect(o.credentials.map(c => c.kind).sort()).toEqual(
-      ['cloudflare_api_token', 'github_app', 'neon_org_api_key', 'resend_api_key'].sort()
+      [
+        'anthropic_api_key',
+        'cloudflare_api_token',
+        'github_app',
+        'neon_org_api_key',
+        'resend_api_key',
+      ].sort()
     )
     expect(o.identity.providers.length).toBeGreaterThan(0)
     for (const text of bodies) {

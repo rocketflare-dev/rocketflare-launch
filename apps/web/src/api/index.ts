@@ -21,6 +21,7 @@ import { tracerMiddleware } from './middleware/tracing'
 import { accessRequestsRouter } from './routes/access-requests'
 import { activityRouter } from './routes/activity'
 import { adminRouter } from './routes/admin'
+import { adminSessionsRouter } from './routes/admin-sessions'
 import { agentsRouter } from './routes/agents'
 import { aguiRouter } from './routes/agui'
 import { aiAgentModelsRouter } from './routes/ai-agent-models'
@@ -48,6 +49,7 @@ import { membersRouter } from './routes/members'
 import { notificationsRouter } from './routes/notifications'
 import { oidcRouter, wellKnownRouter } from './routes/oidc'
 import { oidcAdminRouter } from './routes/oidc-admin'
+import { sessionsRouter } from './routes/sessions'
 import { setupRouter } from './routes/setup'
 import { tenantRouter } from './routes/tenant'
 import { tenantsRouter } from './routes/tenants'
@@ -125,6 +127,8 @@ app.use('/api/admin/*', globalAdminMiddleware)
 // credentials and the issuer's signing keys belong to the deployment, not to an organisation.
 app.route('/api/admin/setup', setupRouter)
 app.route('/api/admin/oidc', oidcAdminRouter)
+// Launch P3: live coding sessions and the drain before a deploy that touches the session image.
+app.route('/api/admin/sessions', adminSessionsRouter)
 app.route('/api/admin', adminRouter)
 // WebSocket upgrade resolves the cookie itself (no authMiddleware: browsers can't set headers here).
 app.route('/ws', wsRouter)
@@ -173,6 +177,9 @@ const mounts: readonly (readonly [string, Hono<AppEnv>, MiddlewareHandler?])[] =
   ['/api/apps', appsRouter],
   ['/api/app-access', appAccessRouter],
   ['/api/audit', auditRouter],
+  // Launch P3 (spec/07): one coding session by id — lifecycle, chat, ship (three routers, one
+  // prefix). Starting one is `POST /api/apps/:id/sessions`.
+  ['/api/sessions', sessionsRouter],
   // D31: installed plugins, last, so a plugin can never shadow a kit prefix — Hono matches in
   // registration order. Each mount gets `authMiddleware` and its own optional gate exactly like a
   // kit mount; the convention is `/api/<plugin id>`, and `tests/config/plugins.test.ts` is what

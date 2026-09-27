@@ -25,6 +25,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `Feedback` (D33, thumbs on AI answers) | manage | create + read | create + read | create + read | create only (on an answer they can read — `services/feedback.ts` checks the target; reading ratings back is admin+) |
 | `App` (Launch, spec/06) | manage | manage | manage | manage | read (the catalogue; import, edit and the OIDC client are admin+) |
 | `AuditEvent` (Launch, spec/08) | manage | read | read | read | – (append-only: no role writes one through the API) |
+| `Session` (Launch P3, spec/07) | manage | manage | manage | manage | create + read + update (own only — `maySeeSession` / `mayManageSession` in `services/sessions/access.ts`: the creator and the app's owners; another member's session is 404) |
 
 - Actions: `manage` (wildcard) · `create` · `read` · `update` · `delete` · `access` (features only)
 - Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`

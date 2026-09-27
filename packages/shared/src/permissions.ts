@@ -63,6 +63,14 @@ export const CORE_SUBJECTS = [
    * `ADMIN_MANAGED`, which would hand every member `read`.
    */
   'AuditEvent',
+  /**
+   * Launch P3: a coding session (spec/07). Every member may `create` one and `read`/`update` their
+   * OWN — the route filters by creator, exactly as `AgentRun` does, and the app's owners count as
+   * owners of its sessions (`services/sessions/access.ts`, `maySeeSession`). Admin+ `manage` every session in the
+   * organisation. Deliberately NOT in `ADMIN_MANAGED`, which would hand every member `read` on
+   * everyone's sessions through `MEMBER_READABLE`.
+   */
+  'Session',
 ] as const
 export type CoreSubject = (typeof CORE_SUBJECTS)[number]
 
