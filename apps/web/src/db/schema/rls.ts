@@ -88,7 +88,22 @@ export const RLS_REVOKED_TABLES = [
   'magic_link_tokens',
   'oauth_providers',
   'access_requests',
+  // Launch (P1): issuer-wide and platform infrastructure with no tenant at all — the OIDC signing
+  // keys every app verifies against, the sealed platform credentials, and the platform settings.
+  // Only the owner connection reads them, through `services/oidc/keys.ts` and
+  // `services/launch/credentials.ts`.
+  'oidc_signing_keys',
+  'admin_credentials',
+  'launch_settings',
 ] as const
+
+/**
+ * Tables whose rows are never changed once written. `scripts/db-roles.ts` REVOKEs UPDATE, DELETE
+ * and TRUNCATE on them from the app role, after the blanket grant. That is the SECOND line: the
+ * Worker connects as the table owner, which no grant restricts, so the first line is the
+ * `BEFORE UPDATE OR DELETE` trigger in the migration that created the table (spec/08).
+ */
+export const APPEND_ONLY_TABLES = ['audit_events'] as const
 
 /**
  * Deliberately NOT policied — every exclusion is a decision recorded here rather than hidden

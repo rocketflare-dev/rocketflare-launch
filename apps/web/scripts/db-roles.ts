@@ -1,7 +1,8 @@
 /**
  * Create (or reconcile) the non-superuser Postgres role that RLS policies target (D1).
  * Ported from the Node reference app's `scripts/db-roles.ts`; role name from
- * `src/db/schema/rls.ts`, REVOKE list from `RLS_REVOKED_TABLES`. Runs over the driver
+ * `src/db/schema/rls.ts`, REVOKE list from `RLS_REVOKED_TABLES`, and the append-only tables
+ * (`APPEND_ONLY_TABLES` — Launch's `audit_events`, spec/08) lose UPDATE, DELETE and TRUNCATE. Runs over the driver
  * `DATABASE_DRIVER` selects (D35, `scripts/lib/sql.ts`).
  *
  * The owner (DATABASE_URL's user) owns every table and bypasses RLS — on Neon it is a
@@ -23,7 +24,7 @@
  * LOGIN: rollback is `TENANT_SCOPE_MODE=off`, not locking out a connection something may hold.
  */
 import { fileURLToPath } from 'node:url'
-import { APP_ROLE, RLS_REVOKED_TABLES } from '../src/db/schema/rls'
+import { APP_ROLE, APPEND_ONLY_TABLES, RLS_REVOKED_TABLES } from '../src/db/schema/rls'
 import { isNeonUrl, openScriptSql, toDirectNeonHost } from './lib/sql'
 
 /** Conservative identifier sanity check before we hand a value to quote_ident. */
@@ -47,6 +48,8 @@ export interface ApplyDbRolesResult {
   loginConfigured: boolean
   /** Tables REVOKEd from the app role in this run (grants phase only). */
   revoked: string[]
+  /** Append-only tables whose UPDATE/DELETE/TRUNCATE were REVOKEd in this run (grants phase only). */
+  appendOnly: string[]
 }
 
 function parseCredentials(connectionString: string, label: string) {
@@ -169,6 +172,7 @@ export async function applyDbRoles(options: ApplyDbRolesOptions = {}): Promise<A
     }
 
     let revoked: string[] = []
+    let appendOnly: string[] = []
     if (wantsGrants) {
       const revokeTargets = await sql.query<{ ident: string; name: string }>(
         `SELECT quote_ident(table_name::text) AS ident, table_name::text AS name
@@ -176,6 +180,13 @@ export async function applyDbRoles(options: ApplyDbRolesOptions = {}): Promise<A
          WHERE table_schema = 'public' AND table_name::text = ANY($1::text[])
          ORDER BY table_name`,
         [[...RLS_REVOKED_TABLES]]
+      )
+      const appendOnlyTargets = await sql.query<{ ident: string; name: string }>(
+        `SELECT quote_ident(table_name::text) AS ident, table_name::text AS name
+         FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name::text = ANY($1::text[])
+         ORDER BY table_name`,
+        [[...APPEND_ONLY_TABLES]]
       )
       const [counted] = await sql.query<{ count: number }>(
         `SELECT count(*)::int AS count FROM information_schema.tables
@@ -210,6 +221,17 @@ export async function applyDbRoles(options: ApplyDbRolesOptions = {}): Promise<A
       } else if (phase === 'grants') {
         log('   (no tables in public yet — nothing to REVOKE; expected before Phase 1 migrations)')
       }
+
+      // Same reason, same position: the blanket grant just handed these UPDATE and DELETE back.
+      // No grant restricts the OWNER connection the Worker uses — the table's trigger does that.
+      if (appendOnlyTargets.length > 0) {
+        appendOnly = appendOnlyTargets.map(r => r.name)
+        const idents = appendOnlyTargets.map(r => r.ident).join(', ')
+        statements.push([
+          'revoke writes on append-only tables',
+          `REVOKE UPDATE, DELETE, TRUNCATE ON ${idents} FROM ${role}`,
+        ])
+      }
     }
 
     await sql.transaction(async query => {
@@ -233,7 +255,7 @@ export async function applyDbRoles(options: ApplyDbRolesOptions = {}): Promise<A
       `Role '${APP_ROLE}' ready [${phase}] (nosuperuser, nobypassrls` +
         `${appPassword ? '' : ', nologin — policies resolve but nothing can connect as it'})`
     )
-    return { loginConfigured: appPassword !== null, revoked }
+    return { loginConfigured: appPassword !== null, revoked, appendOnly }
   } finally {
     await sql.end()
   }

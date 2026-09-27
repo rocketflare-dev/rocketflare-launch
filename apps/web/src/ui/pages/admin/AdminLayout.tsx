@@ -18,6 +18,9 @@ export default function AdminLayout() {
     { to: '/admin/tenants', label: tenancyMode === 'single' ? 'Organisation' : 'Organisations' },
     { to: '/admin/users', label: 'Users' },
     { to: '/admin/feature-flags', label: 'Feature flags' },
+    // Launch: the platform credentials (spec/03) and the OIDC issuer's keys (spec/05).
+    { to: '/admin/setup', label: 'Setup' },
+    { to: '/admin/identity', label: 'Identity' },
   ]
 
   return (

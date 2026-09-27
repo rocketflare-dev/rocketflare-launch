@@ -170,6 +170,45 @@ const CORE_QUERY_KEYS = {
   features: {
     all: ['features'] as const,
   },
+  /**
+   * Launch: `/api/apps` — the registry (spec/06). Detail is keyed by SLUG (the URL), health and
+   * operations by app id; one `apps.all` invalidation after an import or an edit refreshes all.
+   */
+  apps: {
+    all: ['apps'] as const,
+    list: (filters: object = {}) => ['apps', 'list', filters] as const,
+    detail: (slug: string) => ['apps', 'detail', slug] as const,
+    health: (appId: string) => ['apps', 'health', appId] as const,
+    operations: (appId: string) => ['apps', 'operations', appId] as const,
+    oidcClient: (appId: string) => ['apps', 'oidc-client', appId] as const,
+  },
+  /** Launch: `/api/app-access` — an app's sign-in policy, grants and access requests (spec/05) */
+  appAccess: {
+    all: ['app-access'] as const,
+    policy: (appId: string) => ['app-access', 'policy', appId] as const,
+    grants: (appId: string) => ['app-access', 'grants', appId] as const,
+    requests: (appId: string, filters: object = {}) =>
+      ['app-access', 'requests', appId, filters] as const,
+    mine: ['app-access', 'mine'] as const,
+  },
+  /** Launch: `/api/audit` — the append-only audit log (spec/08), cursor-paged */
+  audit: {
+    all: ['audit'] as const,
+    list: (filters: object = {}) => ['audit', 'list', filters] as const,
+  },
+  /**
+   * Launch: `/api/admin/setup` (spec/03) — under the `admin` root on purpose, so the one
+   * `admin.all` invalidation after an admin mutation covers it like every other admin screen.
+   */
+  setup: {
+    all: ['admin', 'setup'] as const,
+    status: ['admin', 'setup', 'status'] as const,
+  },
+  /** Launch: `/api/admin/oidc` — the issuer's signing keys (spec/05); under `admin` like `setup` */
+  oidcAdmin: {
+    all: ['admin', 'oidc'] as const,
+    keys: ['admin', 'oidc', 'keys'] as const,
+  },
   /** `/api/admin/*` — cross-tenant; one `admin.all` invalidation after any admin mutation */
   admin: {
     all: ['admin'] as const,

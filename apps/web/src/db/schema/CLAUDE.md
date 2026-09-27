@@ -52,9 +52,22 @@ closes a cycle back through `plugins/schema.ts`.
 | `group_members` | `groups.ts` | `tenant_id` | ✓ | D29: PK `(group_id, user_id)` so an add is `onConflictDoNothing`; **composite FK `(tenant_id, user_id)` → `tenant_users` cascade**, so losing a membership loses the group memberships in the DATABASE, not in service code; index `(tenant_id, user_id)` is the auth-context read |
 | `document_groups` | `document-groups.ts` | `tenant_id` | ✓ | D29: which groups a `visibility: 'groups'` document is shared with. PK on the pair, both FKs cascade. **Grants, never the decision** — `documents.visibility` is |
 | `chunks` | `chunks.ts` | `tenant_id` | ✓ | retrieval units (D17/D18): `documentId` cascade, `seq` (unique per document), `text`, `tokenCount` (char estimate), `embedding vector(1024)` (`EMBEDDING_DIM`; a new dimension is a new table); **HNSW `vector_cosine_ops`** index; lexical half is `to_tsvector('english', text)` at query time (generated tsvector + GIN is the scaling path) |
+| `apps` | `apps.ts` | `tenant_id` | ✓ | Launch registry (spec/06): `slug` unique **globally** (`apps_slug_key` — hostnames are global), `ownerGroupId` → `groups` set null (teams ARE groups, D29), `source` / `status` pg enums, template + versions, repo; index `(tenant_id, status)` |
+| `app_owners` | `apps.ts` | `tenant_id` | ✓ | PK `(app_id, user_id)`; composite FK `(tenant_id, user_id)` → `tenant_users` cascade (the `group_members` pattern) |
+| `app_environments` | `app-environments.ts` | `tenant_id` | ✓ | per app × `staging\|production` (unique): url, worker, `resources`/`neon`/`route_ids` jsonb (ids recorded, never looked up by name), last deploy, latest health |
+| `app_health_checks` | `app-environments.ts` | `tenant_id` | ✓ | one row per poll; `(tenant_id, environment_id, checked_at DESC)`; pruned after 7 days |
+| `app_operations` | `app-operations.ts` | `tenant_id` | ✓ | per-step pipeline log; **unique `(run_id, step)` is the idempotency**; `external_ids` jsonb |
+| `oidc_clients` | `oidc.ts` | `tenant_id` | ✓ | one per app (unique `app_id`); `client_id` unique `lc_…`; `secret_hash` + `secret_hint`; redirect URIs as **jsonb** arrays (not `text[]`, D35); `access_policy` `company\|restricted` |
+| `oidc_client_grants` | `oidc.ts` | `tenant_id` | ✓ | a group OR a user (`num_nonnulls = 1` CHECK), unique NULLS NOT DISTINCT `(client_id, group_id, user_id)` |
+| `oidc_codes` | `oidc.ts` | `tenant_id` | ✓ | `code_hash` unique; single-use by `UPDATE … WHERE consumed_at IS NULL RETURNING`; kept after use so a replay can revoke `access_token_jti`; `session_id` has no FK |
+| `oidc_signing_keys` | `oidc.ts` | — | **revoked** | issuer-wide ES256 keys: `status` `next\|active\|retiring\|retired`, partial unique ONE `active`; private JWK sealed |
+| `app_access_requests` | `oidc.ts` | `tenant_id` | ✓ | the P1 stand-in for P4 approvals; partial unique `(app_id, user_id) WHERE status = 'pending'` |
+| `admin_credentials` | `admin-credentials.ts` | — | **revoked** | one row per `kind` (unique); `sealed` JSON (OAUTH_ENCRYPTION_KEY), `metadata` non-secret only, last check; only `services/launch/credentials.ts` touches it |
+| `launch_settings` | `admin-credentials.ts` | — | **revoked** | platform settings, `key` PK → jsonb `value` |
+| `audit_events` | `audit-events.ts` | `tenant_id` | ✓ | Launch audit log (spec/08): **append-only** — a `BEFORE UPDATE OR DELETE` trigger raises unless `pg_trigger_depth() > 1` (the tenant cascade), and `APPEND_ONLY_TABLES` revokes UPDATE/DELETE/TRUNCATE from the app role. `actor_user_id` / `app_id` have NO FK; indexes `(tenant_id, at DESC)`, `(tenant_id, target_type, target_id)`, `(tenant_id, app_id, at DESC)` |
 
-32 policies (`tenants`, `users` + 30 tenant tables); 4 revoked tables = `RLS_REVOKED_TABLES` =
-`RLS_EXCLUDED_TABLES`. jsonb columns are `$type<>()`d from `@launch/shared` (type-only imports).
+42 policies (`tenants`, `users` + 40 tenant tables); 7 revoked tables = `RLS_REVOKED_TABLES` =
+`RLS_EXCLUDED_TABLES` minus `feature_flags`. jsonb columns are `$type<>()`d from `@launch/shared` (type-only imports).
 
 ## Conventions
 

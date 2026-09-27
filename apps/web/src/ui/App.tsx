@@ -58,6 +58,12 @@ const DocumentsPage = lazy(() => import('@/ui/pages/documents/DocumentsPage'))
 const SearchPage = lazy(() => import('@/ui/pages/documents/SearchPage'))
 // The detail page — no SideNav entry; it is reached from the list, from Search and from a citation.
 const DocumentViewPage = lazy(() => import('@/ui/pages/documents/DocumentViewPage'))
+// Launch (spec/05, 06, 08): the app registry, per-app sign-in access, request-access and the audit log.
+const CataloguePage = lazy(() => import('@/ui/pages/apps/CataloguePage'))
+const AppDetailPage = lazy(() => import('@/ui/pages/apps/AppDetailPage'))
+const AppAccessPage = lazy(() => import('@/ui/pages/apps/AppAccessPage'))
+const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
+const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
 const AccessRequests = lazy(() => import('@/ui/pages/admin/AccessRequests'))
 const TenantList = lazy(() => import('@/ui/pages/admin/TenantList'))
@@ -65,6 +71,8 @@ const TenantDetail = lazy(() => import('@/ui/pages/admin/TenantDetail'))
 const UserList = lazy(() => import('@/ui/pages/admin/UserList'))
 const UserDetail = lazy(() => import('@/ui/pages/admin/UserDetail'))
 const FeatureFlags = lazy(() => import('@/ui/pages/admin/FeatureFlags'))
+const Setup = lazy(() => import('@/ui/pages/admin/Setup'))
+const Identity = lazy(() => import('@/ui/pages/admin/Identity'))
 
 // Dev-only TanStack Query devtools. `import.meta.env.DEV` is replaced at build time, so the
 // dynamic import (and its chunk) is dropped from production bundles. Set
@@ -201,6 +209,42 @@ function ShellRoutes() {
               </RequireGuard>
             }
           />
+          {/* Launch (spec/06): the catalogue and one app are every member's (`read App`); the
+              access page is for the app's owners and admins, which the server decides. */}
+          <Route
+            path="/apps"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
+                <CataloguePage />
+              </RequireGuard>
+            }
+          />
+          <Route
+            path="/apps/:slug"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
+                <AppDetailPage />
+              </RequireGuard>
+            }
+          />
+          <Route
+            path="/apps/:slug/access"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
+                <AppAccessPage />
+              </RequireGuard>
+            }
+          />
+          {/* spec/05: where `/oidc/authorize` sends a signed-in person the app's policy denies. */}
+          <Route path="/request-access" element={<RequestAccess />} />
+          <Route
+            path="/audit"
+            element={
+              <RequireGuard guard="admin">
+                <Audit />
+              </RequireGuard>
+            }
+          />
           <Route
             path="/activity"
             element={
@@ -232,6 +276,8 @@ function ShellRoutes() {
             <Route path="users" element={<UserList />} />
             <Route path="users/:id" element={<UserDetail />} />
             <Route path="feature-flags" element={<FeatureFlags />} />
+            <Route path="setup" element={<Setup />} />
+            <Route path="identity" element={<Identity />} />
           </Route>
           {pluginRoutes('shell')}
           <Route path="*" element={<NotFound />} />

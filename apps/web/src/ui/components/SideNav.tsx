@@ -6,9 +6,11 @@ import {
   ClockIcon,
   Cog6ToothIcon,
   CpuChipIcon,
+  DocumentMagnifyingGlassIcon,
   HomeIcon,
   MagnifyingGlassIcon,
   ShieldCheckIcon,
+  Squares2X2Icon,
 } from '@heroicons/react/24/outline'
 import type { ComponentType, ReactNode } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
@@ -53,6 +55,13 @@ const CORE_NAVIGATION: NavConfig = [
   {
     items: [
       { to: '/', label: 'Home', icon: HomeIcon },
+      // Launch (spec/06): the app catalogue — every member reads it.
+      {
+        to: '/apps',
+        label: 'Apps',
+        icon: Squares2X2Icon,
+        guard: { action: 'read', subject: 'App' },
+      },
       // D17: every role may chat (ownership is the route's userId filter)
       {
         to: '/chat',
@@ -91,6 +100,8 @@ const CORE_NAVIGATION: NavConfig = [
     items: [
       { to: '/settings', label: 'Settings', icon: Cog6ToothIcon, guard: 'admin' },
       { to: '/activity', label: 'Activity', icon: ClockIcon, guard: 'admin' },
+      // Launch (spec/08): the append-only audit log — the same guard as its route.
+      { to: '/audit', label: 'Audit', icon: DocumentMagnifyingGlassIcon, guard: 'admin' },
     ],
   },
   {

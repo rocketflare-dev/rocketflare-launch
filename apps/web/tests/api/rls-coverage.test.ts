@@ -10,7 +10,12 @@ import { getTableConfig, PgTable } from 'drizzle-orm/pg-core'
 import { describe, expect, it } from 'vitest'
 import { rows as resultRows } from '@/db/client'
 import * as schema from '@/db/schema'
-import { APP_ROLE, RLS_EXCLUDED_TABLES, RLS_REVOKED_TABLES } from '@/db/schema/rls'
+import {
+  APP_ROLE,
+  APPEND_ONLY_TABLES,
+  RLS_EXCLUDED_TABLES,
+  RLS_REVOKED_TABLES,
+} from '@/db/schema/rls'
 import { serverPlugins } from '@/plugins/server'
 import { setupTestDatabase } from '../helpers/db'
 
@@ -132,6 +137,30 @@ describe('row-level security coverage', () => {
       'SELECT',
       'UPDATE',
     ])
+  })
+
+  // Launch (spec/08): an append-only table keeps SELECT and INSERT for the app role and loses
+  // every way of changing what is there. The owner connection is stopped by the table's trigger.
+  it('the append-only tables grant the app role no UPDATE, DELETE or TRUNCATE', async () => {
+    expect(APPEND_ONLY_TABLES).toContain('audit_events')
+    const grants = await rows<{ table_name: string; privilege_type: string }>(sql`
+      SELECT table_name::text, privilege_type::text FROM information_schema.role_table_grants
+      WHERE grantee = ${APP_ROLE} AND table_schema = 'public'
+        AND table_name::text = ANY(${textArray(APPEND_ONLY_TABLES)})`)
+    for (const table of APPEND_ONLY_TABLES) {
+      expect(
+        grants
+          .filter(g => g.table_name === table)
+          .map(g => g.privilege_type)
+          .sort(),
+        table
+      ).toEqual(['INSERT', 'SELECT'])
+    }
+    const triggers = await rows<{ table_name: string }>(sql`
+      SELECT event_object_table::text AS table_name FROM information_schema.triggers
+      WHERE trigger_schema = 'public' AND trigger_name = 'audit_events_append_only'
+        AND event_manipulation IN ('UPDATE', 'DELETE')`)
+    expect(triggers.map(t => t.table_name)).toEqual(['audit_events', 'audit_events'])
   })
 
   it('the app role cannot bypass RLS', async () => {

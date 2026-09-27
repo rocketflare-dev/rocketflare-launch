@@ -80,6 +80,11 @@ run_worker_first = [
   "/auth/*",
   "/ws",
   "/ws/*",
+  # Launch's OIDC issuer (spec/05): an app's browser navigates to /oidc/authorize and /oidc/logout.
+  "/oidc",
+  "/oidc/*",
+  "/.well-known",
+  "/.well-known/*",
   # An installed plugin's own prefixes go here too, in barrel order (D31) — the analytics plugin
   # adds "/cubejs-api" and "/mcp". `pnpm plugin add` prints the step; `pnpm provision cloudflare
   # <env>` writes it. The parity test reads `API_PREFIXES`, so a forgotten one fails the gate.
@@ -107,6 +112,7 @@ id = "<KV_RATE_LIMIT_ID>"
 [triggers]
 crons = [
   "0 4 * * *",     # Daily 04:00 UTC — prune expired sessions, magic links, rate-limit state
+  "*/5 * * * *",   # Every 5 minutes — Launch polls every registered app environment's health
   # An installed plugin's crons go here too, identical in both files (D31): a plugin declares the
   # EXPRESSION in its `plugin.json` and contributes the TASK through `ServerPlugin.scheduledTasks`,
   # and a task registered under an expression no toml declares simply never runs. The analytics

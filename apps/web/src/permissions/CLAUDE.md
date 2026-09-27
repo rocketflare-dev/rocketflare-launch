@@ -23,6 +23,8 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `FeatureFlag` (D30, administering flags) | manage | – | – | – | – |
 | `Trace` (D32) | manage | read | read | read | – |
 | `Feedback` (D33, thumbs on AI answers) | manage | create + read | create + read | create + read | create only (on an answer they can read — `services/feedback.ts` checks the target; reading ratings back is admin+) |
+| `App` (Launch, spec/06) | manage | manage | manage | manage | read (the catalogue; import, edit and the OIDC client are admin+) |
+| `AuditEvent` (Launch, spec/08) | manage | read | read | read | – (append-only: no role writes one through the API) |
 
 - Actions: `manage` (wildcard) · `create` · `read` · `update` · `delete` · `access` (features only)
 - Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`

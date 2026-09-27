@@ -21,7 +21,12 @@
  */
 import { serverPlugins } from '../../../plugins/server'
 
-const CORE_API_PREFIXES = ['/api', '/auth', '/ws'] as const
+/**
+ * `/oidc` and `/.well-known` are Launch's OIDC issuer (spec/05): discovery, the JWKS, authorize,
+ * token, userinfo and logout. An app's browser NAVIGATES to `/oidc/authorize` and `/oidc/logout`,
+ * which is exactly the request the asset router would otherwise answer with the SPA shell.
+ */
+const CORE_API_PREFIXES = ['/api', '/auth', '/ws', '/oidc', '/.well-known'] as const
 
 export const API_PREFIXES: readonly string[] = [
   ...CORE_API_PREFIXES,

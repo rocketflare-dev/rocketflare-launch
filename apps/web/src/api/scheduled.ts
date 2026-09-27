@@ -15,6 +15,7 @@ import { aiSpans, tenants, userSessions } from '../db/schema'
 import { serverPlugins } from '../plugins/server'
 import { pruneMagicLinkTokens } from './auth/magic-link'
 import { pruneInvitations } from './services/invitations'
+import { healthPoll } from './services/launch/health'
 import type { AppBindings } from './types'
 import { type Logger, loggerFor } from './utils/core/logger'
 
@@ -108,6 +109,8 @@ export const pruneAiSpans: ScheduledTask = {
 /** Cron expression → tasks. Keep in sync with `[triggers] crons` in both wrangler tomls. */
 const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   '0 4 * * *': [pruneExpired, pruneAiSpans],
+  // Launch (spec/06): every registered app environment's `/api/health` + `/api/ready`.
+  '*/5 * * * *': [healthPoll],
 }
 
 /**

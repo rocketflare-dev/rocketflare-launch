@@ -27,7 +27,7 @@ package is private by default (`"private": true`, like `packages/shared`, which 
               │ .toml            │  │                  │   + NotificationsHub DO
               └───────┬──────────┘  └────────┬─────────┘   + AgentRunWorkflow
    bindings:  RATE_LIMIT_KV  [JOBS_QUEUE  FILES  AGENT_RUN_WORKFLOW  AI]  ASSETS  (+ HYPERDRIVE under postgres)
-   crons:     0 4 * * * (prune)  + every installed plugin's       routes: /api /auth /ws + plugins'
+   crons:     0 4 * * * (prune), */5 (app health) + plugins'   routes: /api /auth /ws /oidc /.well-known + plugins'
                       │                      │
    neon:      DATABASE_URL secret        DATABASE_URL secret              (pooled Neon host, HTTPS + WS)
    postgres:  Hyperdrive <app>-staging   Hyperdrive <app>-production      (direct host, any Postgres)
@@ -129,7 +129,7 @@ in both files (one local database).
 | Workers AI (Phase 3, built) | `AI` | — | `[ai] binding = "AI"` — no resource; the zero-key floor for chat (`@cf/zai-org/glm-4.7-flash`) and embeddings (`@cf/baai/bge-m3`); **billed per call to this account** (10k free neurons/day), `wrangler dev` proxies to the logged-in account; remove from BOTH tomls for zero-spend |
 | Analytics (a PLUGIN, D31) | — | — | **no resource and no binding**: its cubes read through the request's database handle (either driver), its fact tables rebuild on the `15 * * * *` cron it declares, and `/cubejs-api` + `/mcp` are routes of this Worker. Installing it means adding that cron and those two prefixes to BOTH tomls — `pnpm provision cloudflare <env>` reads them off the installed surface and writes them (decision 12) |
 | Analytics Engine (optional) | `ANALYTICS_ENGINE` | `<app>_analytics[_staging]` | declared in toml — deliberately NOT wired by the kit (only a comment in both tomls) |
-| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first` keeps `/api`, `/auth`, `/ws` — and every prefix an installed plugin declares — off the asset router |
+| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first` keeps `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known` — and every prefix an installed plugin declares — off the asset router |
 | RLS app role (optional, docs/RLS.md, not wired yet) | `postgres`: `HYPERDRIVE_APP`; `neon`: an `APP_DATABASE_URL` Worker secret | `<app>-<env>-app` | `postgres`: `… hyperdrive create … --caching-disabled`; `neon`: `wrangler secret put APP_DATABASE_URL` |
 | Plugin resources (D31) | whatever the plugin's `plugin.json` declares (`APPROVALS_CACHE`…) | `<app>-<id>-<name>[-staging]`, and `<APP>_<ID>_<NAME>[_STAGING]` for KV | `pnpm provision cloudflare <env>` — it reads each installed plugin's `bindings[]`, creates the `kv`/`queue`/`r2` ones through `cf-provision.sh` and patches every block into BOTH tomls |
 | Plugin Workflow / Durable Object (D31) | whatever the plugin declares (`ORDERS_SYNC`, `ORDERS_HUB`…) | workflow `<app>-<id>-<name>[-staging]`; a DO binding has no account-scoped name | **no create step** — `pnpm provision cloudflare <env>` writes `[[workflows]]` / `[[durable_objects.bindings]]` (+ a `plugin-<id>-v1` `[[migrations]]` tag) into both tomls and `wrangler deploy` registers them. The `class_name` resolves through the sixth barrel, `apps/web/src/plugins/worker-exports.ts` |
@@ -194,6 +194,7 @@ the orchestrator around it — phases `tokens` (TTY only: hidden prompts → `ap
 | Expression | Task | What it does | Local trigger (`wrangler dev` never fires crons itself) |
 |---|---|---|---|
 | `0 4 * * *` | `pruneExpired`, `pruneAiSpans` | deletes expired sessions, consumed/expired magic links, invitations older than 30 days; then `ai_spans` older than `OBSERVABILITY_SPAN_RETENTION_DAYS` (14), one DELETE per tenant (D32) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=0+4+*+*+*"` |
+| `*/5 * * * *` | `healthPoll` (Launch, spec/06) | polls `/api/health` + `/api/ready` of every registered app environment, records the check, audits a status change, prunes checks older than 7 days (a stub until P1 slice 1d) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"` |
 | `15 * * * *` | `analytics.refreshFactTables` (the analytics PLUGIN, D31) | every registered fact table, per tenant, DELETE+INSERT in one transaction; per-tenant failures collected, logged as a warning, never abort the run. The expression is the plugin's `crons` declaration and the task is `ServerPlugin.scheduledTasks` — **a task under an expression no toml declares simply never runs** | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=15+*+*+*+*"` — or, for one organisation, `launch analytics refresh-facts` |
 
 Health of the fact tables: `GET /api/analytics/facts/status` (admin+; `stale` = newest source row

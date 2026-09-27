@@ -16,7 +16,7 @@ setup in `SETUP.md`; Cloudflare topology in `docs/DEPLOY.md`; RLS in `docs/RLS.m
 | 6 | [Email and storage](#6-email-and-storage) | 14 | [Definition of done](#14-definition-of-done-for-the-kit) |
 | 7 | [UI shell](#7-ui-shell) | 15 | [Feature flags](#15-feature-flags) |
 | 8 | [Analytics](#8-analytics) | 16 | [Plugins](#16-plugins) |
-|  |  | 17 | [Connectors](#17-connectors) |
+| 18 | [Launch control plane](#18-launch-control-plane) | 17 | [Connectors](#17-connectors) |
 
 **Layout (D26).** A pnpm workspace: `apps/web` (the Worker — Hono API + React UI, §§1–10),
 `apps/cli` (§11), `packages/shared` (zod contracts, §12), and `apps/evals` (developer-run eval
@@ -702,3 +702,33 @@ delegated connections or refresh-token rotation (phase 4); Google Workspace prov
 M365 uses a client secret, not a certificate assertion; no Exchange RBAC-for-Applications scoping
 script; synced private rows are still readable by tenant admins (D29 owner-and-admins); the kit has
 no MCP client; directory sync does not provision kit users or groups (it only matches by email).
+
+---
+
+## 18. Launch control plane
+
+What makes this copy Launch rather than the kit: a registry of the company's Rocketflare apps, an
+OIDC issuer they sign in through, the sealed platform credentials Launch acts with, and an
+append-only audit log (spec/05, 06, 08; the build plan is `docs/plans/p1-foundation.md`).
+
+- **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
+  `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `app_access_requests`, `audit_events`) are
+  tenant tables like any other, scoped to the single company tenant. Three are platform
+  infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
+  `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
+- **Audit** (`services/launch/audit.ts`): `recordAudit` is AWAITED, unlike `recordActivity`, and
+  `audit_events` is append-only by the database — a `BEFORE UPDATE OR DELETE` trigger (the tenant
+  cascade still works) plus revoked grants. `GET /api/audit` is admin+ and cursor-paged; `/audit`
+  renders it. A summary never carries a secret value.
+- **Credentials** (`services/launch/credentials.ts`) are sealed with `OAUTH_ENCRYPTION_KEY`, one row
+  per kind; only `credentialStatus` (value-free) may reach a response.
+- **GitHub** (`services/launch/github-app.ts`): a Worker-safe App client (PKCS#1 → PKCS#8, app JWT,
+  installation tokens, raw file reads), every call on an injected `fetch`.
+- **Issuer surface**: `/oidc/*` and `/.well-known/*` are public, outside `/api`, and in
+  `run_worker_first`; `/api/admin/setup` and `/api/admin/oidc` sit behind `globalAdminMiddleware`.
+  The `*/5` cron polls app health.
+
+**Known gaps:** the issuer endpoints, the setup wizard, import, the catalogue and the health
+poller are stubs until slices 1b–1d land (JSON 404s and "coming soon" pages); no audit hash chain,
+export or SIEM stream (spec/08); `admin_credentials` has one row per kind for the whole deployment,
+so two test files writing the same kind race each other.

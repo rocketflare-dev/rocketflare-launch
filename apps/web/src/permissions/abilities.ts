@@ -44,6 +44,8 @@ export const ADMIN_MANAGED: readonly Subjects[] = [
   'Prompt',
   'Document',
   'Group',
+  // Launch: the app registry (spec/06) — members read the catalogue, admins import and manage.
+  'App',
 ]
 
 /** What every member may at least read. */
@@ -60,6 +62,8 @@ const grantAdmin: RoleGrant = can => {
   // D33: rating answers, and reading everyone's ratings (the promotion queue).
   can('create', 'Feedback')
   can('read', 'Feedback')
+  // Launch (spec/08): the audit log is read-only for everyone; admin+ may read it.
+  can('read', 'AuditEvent')
 }
 
 /**
@@ -83,6 +87,8 @@ const grantAdmin: RoleGrant = can => {
  * | Group          | manage      | manage | manage | manage  | read (D29: routes narrow a member's reads to their OWN groups) |
  * | Trace          | manage      | read   | read   | read    | –      (D32: spans hold other people's prompts) |
  * | Feedback       | manage      | create+read | create+read | create+read | create (D33: on answers they can read) |
+ * | App            | manage      | manage | manage | manage  | read   (Launch: the catalogue, spec/06) |
+ * | AuditEvent     | manage      | read   | read   | read    | –      (Launch: append-only log, spec/08) |
  * | Feature:<f>    | access all  | by ctx | by ctx | access all | by ctx |
  */
 export const rolePermissions: Record<EffectiveRole, RoleGrant> = {

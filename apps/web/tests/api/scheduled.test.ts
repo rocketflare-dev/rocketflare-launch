@@ -7,6 +7,16 @@ describe('scheduled dispatcher', () => {
     expect(SCHEDULED_TASKS['0 4 * * *']?.map(t => t.name)).toEqual(['pruneExpired', 'pruneAiSpans'])
   })
 
+  it("registers Launch's app health poll on the five-minute cron (both tomls declare it)", async () => {
+    expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual(['healthPoll'])
+    const ctx = createExecutionContext()
+    const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx)
+    await waitOnExecutionContext(ctx)
+    expect(reports).toEqual([
+      expect.objectContaining({ cron: '*/5 * * * *', task: 'healthPoll', status: 'ok' }),
+    ])
+  })
+
   it('runs the tasks registered for event.cron and reports each', async () => {
     const env = createTestEnv()
     const ctx = createExecutionContext()

@@ -51,6 +51,18 @@ export const CORE_SUBJECTS = [
    * candidates are found and each row points at another member's conversation.
    */
   'Feedback',
+  /**
+   * Launch: a registered app (spec/06). Every member may `read` the catalogue; admin+ `manage`
+   * (import, edit, register its OIDC client). In `ADMIN_MANAGED`, so members get `read` through
+   * `MEMBER_READABLE`.
+   */
+  'App',
+  /**
+   * Launch: the audit log (spec/08). Admin+ `read` only — nobody writes one through the API (rows
+   * are appended by the services that act, and the table refuses UPDATE and DELETE). NOT in
+   * `ADMIN_MANAGED`, which would hand every member `read`.
+   */
+  'AuditEvent',
 ] as const
 export type CoreSubject = (typeof CORE_SUBJECTS)[number]
 

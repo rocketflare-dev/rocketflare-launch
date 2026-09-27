@@ -28,6 +28,9 @@ import { aiConfigRouter } from './routes/ai-config'
 import { aiDocumentsRouter } from './routes/ai-documents'
 import { aiPromptsRouter } from './routes/ai-prompts'
 import { aiUsageRouter } from './routes/ai-usage'
+import { appAccessRouter } from './routes/app-access'
+import { appsRouter } from './routes/apps'
+import { auditRouter } from './routes/audit'
 import { authRouter } from './routes/auth/index'
 import { chatRouter } from './routes/chat'
 import { evalsRouter } from './routes/evals'
@@ -42,6 +45,9 @@ import { keysRouter } from './routes/keys'
 import { meRouter } from './routes/me'
 import { membersRouter } from './routes/members'
 import { notificationsRouter } from './routes/notifications'
+import { oidcRouter, wellKnownRouter } from './routes/oidc'
+import { oidcAdminRouter } from './routes/oidc-admin'
+import { setupRouter } from './routes/setup'
 import { tenantRouter } from './routes/tenant'
 import { tenantsRouter } from './routes/tenants'
 import { tracesRouter } from './routes/traces'
@@ -76,6 +82,9 @@ app.use('*', securityHeaders)
 //    (larger) limit — see middleware/body-limit.ts.
 app.use('/api/*', (c, next) => (isUploadPath(c.req.path) ? next() : jsonBodyLimit(c, next)))
 app.use('/auth/*', jsonBodyLimit)
+// Launch's OIDC issuer (spec/05) is a protocol surface outside `/api`; its token and userinfo
+// bodies are small forms, and nothing under it accepts an upload.
+app.use('/oidc/*', jsonBodyLimit)
 
 // 6–7. CORS answers preflights before CSRF can reject them; CSRF is cookie-only, no DB.
 app.use('*', corsMiddleware)
@@ -93,9 +102,21 @@ app.use('/api/*', tracerMiddleware)
 //    tenant-free cross-tenant path (globalAdminMiddleware); everything else is `authMiddleware`.
 app.route('/api', healthRouter)
 app.route('/auth', authRouter)
+// Launch as the company's OIDC issuer (spec/05). PUBLIC by design: discovery and the JWKS are
+// anonymous, `/oidc/authorize` resolves the session cookie itself (as `/auth/cli` does), and
+// `/oidc/token` / `/oidc/userinfo` authenticate the client or the access token, never a session.
+// No `authRateLimit` on the token endpoint either — every app calls it from Cloudflare's shared
+// egress, so an IP key would throttle the whole fleet as one caller.
+app.route('/.well-known', wellKnownRouter)
+app.route('/oidc', oidcRouter)
 app.use('/api/invite/:token/accept', authRateLimit)
 app.route('/api/invite', inviteRouter)
 app.use('/api/admin/*', globalAdminMiddleware)
+// Launch's platform administration (spec/03, spec/05) — mounted BEFORE the kit's admin router so
+// its prefixes are matched first. Both sit behind the `globalAdminMiddleware` above: the setup
+// credentials and the issuer's signing keys belong to the deployment, not to an organisation.
+app.route('/api/admin/setup', setupRouter)
+app.route('/api/admin/oidc', oidcAdminRouter)
 app.route('/api/admin', adminRouter)
 // WebSocket upgrade resolves the cookie itself (no authMiddleware: browsers can't set headers here).
 app.route('/ws', wsRouter)
@@ -140,6 +161,10 @@ const mounts: readonly (readonly [string, Hono<AppEnv>, MiddlewareHandler?])[] =
   // D33: thumbs on AI answers (member create; admin+ read) and the eval-case export (admin+).
   ['/api/feedback', feedbackRouter],
   ['/api/evals', evalsRouter],
+  // Launch (spec/05, 06, 08): the app registry, who may sign in to each app, and the audit log.
+  ['/api/apps', appsRouter],
+  ['/api/app-access', appAccessRouter],
+  ['/api/audit', auditRouter],
   // D31: installed plugins, last, so a plugin can never shadow a kit prefix — Hono matches in
   // registration order. Each mount gets `authMiddleware` and its own optional gate exactly like a
   // kit mount; the convention is `/api/<plugin id>`, and `tests/config/plugins.test.ts` is what

@@ -76,6 +76,9 @@ export default defineConfig({
       '/api': proxyTo(),
       '/auth': proxyTo(),
       '/ws': proxyTo(`ws://localhost:${ports.api}`, { ws: true }),
+      // Launch's OIDC issuer (spec/05) — discovery, JWKS, authorize, token, userinfo, logout.
+      '/oidc': proxyTo(),
+      '/.well-known': proxyTo(),
       '/cubejs-api': proxyTo(),
       '/mcp': proxyTo(),
     },

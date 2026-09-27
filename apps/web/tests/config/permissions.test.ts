@@ -56,6 +56,10 @@ const MATRIX: Record<string, Record<Role, Level>> = {
   Trace: { owner: 'read', admin: 'read', support: 'read', member: 'none' },
   // D33 — anyone rates an answer; reading the ratings (the promotion queue) is admin+.
   Feedback: { owner: 'create', admin: 'create', support: 'create', member: 'createOnly' },
+  // Launch (spec/06) — the app catalogue: everyone reads it, admin+ import and manage.
+  App: { owner: 'manage', admin: 'manage', support: 'manage', member: 'read' },
+  // Launch (spec/08) — the audit log is append-only: admin+ read, members nothing, nobody writes.
+  AuditEvent: { owner: 'read', admin: 'read', support: 'read', member: 'none' },
 }
 
 const build = (role: Role | null, features: string[] = [], isGlobalAdmin = false) =>
