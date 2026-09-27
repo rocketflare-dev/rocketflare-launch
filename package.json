@@ -1,8 +1,8 @@
 {
   "name": "launch",
-  "version": "0.15.0",
+  "version": "0.1.0",
   "private": true,
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "description": "Launch \u2014 multi-tenant SaaS starter kit \u2014 pnpm workspace: apps/web (Hono API + React UI on Cloudflare Workers), apps/cli, packages/shared",
   "type": "module",
   "packageManager": "pnpm@10.18.0",

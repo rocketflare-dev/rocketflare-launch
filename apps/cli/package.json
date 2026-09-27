@@ -2,7 +2,7 @@
   "name": "@launch/cli",
   "version": "0.1.0",
   "private": true,
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "description": "Launch kit command-line interface (login via browser → API key, whoami, tenant-scoped commands)",
   "type": "module",
   "bin": {

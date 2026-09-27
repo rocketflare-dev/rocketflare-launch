@@ -2,7 +2,7 @@
   "name": "@launch/web",
   "version": "0.1.0",
   "private": true,
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "description": "Launch kit web app: Hono API + React UI on Cloudflare Workers, Postgres (Neon serverless or Hyperdrive) + Drizzle",
   "type": "module",
   "cfld": {
