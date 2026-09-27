@@ -1,11 +1,149 @@
 /**
- * `/api/admin/setup` (spec/03, spec/04) — the setup wizard's API: every step's status (never a
- * credential value), the platform settings, and put / check / delete for each sealed credential.
- * Mounted under `/api/admin`, so `globalAdminMiddleware` already applies.
+ * `/api/admin/setup` (spec/03, spec/04) — the setup wizard's API. Mounted under `/api/admin`, so
+ * `globalAdminMiddleware` already applies (401 without a session, 403 for anyone not a global
+ * admin, and never a Bearer key).
  *
- * STUB (slice 1a): mounted and guarded, no routes yet — every path answers a JSON 404. Slice 1c
- * owns this file.
+ *   GET    /                          every step, settings, credential status, identity — no value
+ *   PUT    /settings                  apps domain, account id, Neon org/region, notifications domain, org
+ *   PUT    /credentials/:kind         validate → seal → check → audit credential.set | .rotated
+ *   POST   /credentials/:kind/check   re-run the probes → audit credential.checked
+ *   DELETE /credentials/:kind         → audit credential.removed
+ *
+ * **A value never leaves.** The body of a PUT is sealed by `putCredential` and every response is
+ * built from `credentialStatus` (which does not even select the sealed column); audit summaries say
+ * `'set'`, never the value.
+ *
+ * **Audit tenant.** `audit_events` is tenant-scoped and these tables are not, so a row goes to the
+ * admin's session tenant or, for a global admin with none, the deployment's one tenant
+ * (`getSingleTenant`). With neither there is nowhere to record the action, and an action Launch
+ * cannot record is refused (409) BEFORE anything is written.
  */
+import {
+  type CredentialKind,
+  credentialKindSchema,
+  credentialPayloadSchemas,
+  setupSettingsUpdateSchema,
+} from '@launch/shared/launch-setup'
+import { z } from 'zod'
+import type { Database } from '../../db/client'
+import { auditActor, recordAudit } from '../services/launch/audit'
+import { putCredential, removeCredential } from '../services/launch/credentials'
+import {
+  fingerprint,
+  runCredentialCheck,
+  setupCredential,
+  setupOverview,
+  updateSettings,
+} from '../services/launch/setup'
+import type { AppContext } from '../types'
+import { ConflictError, NotFoundError, ValidationError } from '../utils/core/errors'
+import { getSingleTenant } from '../utils/db/tenant-helpers'
+import { withAuth } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
+import { validate } from '../utils/routes/validate'
 
 export const setupRouter = createRouter()
+
+const kindParamSchema = z.object({ kind: credentialKindSchema })
+
+/** The tenant an audit row for a platform action goes to — see the header. */
+async function auditTenant(db: Database, sessionTenantId: string | null): Promise<string> {
+  if (sessionTenantId) return sessionTenantId
+  const single = await getSingleTenant(db)
+  if (!single) {
+    throw new ConflictError(
+      'There is no organisation to record this in yet. Create one first.',
+      'no_audit_tenant'
+    )
+  }
+  return single.id
+}
+
+function audit(
+  c: AppContext,
+  db: Database,
+  tenantId: string,
+  action: string,
+  kind: CredentialKind,
+  after: Record<string, unknown>
+) {
+  return recordAudit(db, {
+    tenantId,
+    ...auditActor(c),
+    action,
+    targetType: 'Credential',
+    targetId: kind,
+    summary: { after },
+  })
+}
+
+setupRouter.get('/', async c => {
+  const { db, cfg } = withAuth(c)
+  return c.json(await setupOverview(db, cfg))
+})
+
+setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const changed = await updateSettings(db, c.req.valid('json'), user.id)
+  const keys = Object.keys(changed)
+  if (keys.length > 0) {
+    await recordAudit(db, {
+      tenantId: auditTenantId,
+      ...auditActor(c),
+      action: 'setting.changed',
+      targetType: 'Setting',
+      targetId: keys.join(','),
+      summary: {
+        before: Object.fromEntries(keys.map(k => [k, changed[k]?.before ?? null])),
+        after: Object.fromEntries(keys.map(k => [k, changed[k]?.after ?? null])),
+      },
+    })
+  }
+  return c.json(await setupOverview(db, cfg))
+})
+
+setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const { kind } = c.req.valid('param')
+  const parsed = credentialPayloadSchemas[kind].safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) throw new ValidationError(parsed.error.issues, 'Invalid json')
+  const auditTenantId = await auditTenant(db, tenantId)
+
+  const secret = parsed.data
+  const metadata = {
+    fingerprint: await fingerprint(secret),
+    ...(kind === 'github_app' ? { appId: (secret as { appId: string }).appId } : {}),
+  }
+  const { rotated } = await putCredential(db, cfg, kind, secret, metadata, user.id)
+  const { status, checks } = await runCredentialCheck(db, cfg, kind, user.id)
+  await audit(c, db, auditTenantId, rotated ? 'credential.rotated' : 'credential.set', kind, {
+    value: rotated ? 'rotated' : 'set',
+    fingerprint: metadata.fingerprint,
+    checkStatus: status,
+  })
+  return c.json({ credential: await setupCredential(db, kind), status, checks })
+})
+
+setupRouter.post('/credentials/:kind/check', validate('param', kindParamSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const { kind } = c.req.valid('param')
+  const auditTenantId = await auditTenant(db, tenantId)
+  const { status, checks } = await runCredentialCheck(db, cfg, kind, user.id)
+  await audit(c, db, auditTenantId, 'credential.checked', kind, {
+    checkStatus: status,
+    failed: checks.filter(ch => ch.status === 'failed').map(ch => ch.id),
+  })
+  return c.json({ credential: await setupCredential(db, kind), status, checks })
+})
+
+setupRouter.delete('/credentials/:kind', validate('param', kindParamSchema), async c => {
+  const { db, tenantId } = withAuth(c)
+  const { kind } = c.req.valid('param')
+  const auditTenantId = await auditTenant(db, tenantId)
+  if (!(await removeCredential(db, kind))) {
+    throw new NotFoundError(`No ${kind} credential is set`, 'credential_not_set')
+  }
+  await audit(c, db, auditTenantId, 'credential.removed', kind, { value: 'removed' })
+  return c.json({ removed: true as const })
+})
