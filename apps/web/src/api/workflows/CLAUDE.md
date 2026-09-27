@@ -57,10 +57,28 @@ which is how the expiry path is driven. `names` is every step name in call order
 `AppLaunchWorkflow` (`APP_LAUNCH_WORKFLOW`, `launch-app-create[-staging]`) creates an app and
 `AppTeardownWorkflow` (`APP_TEARDOWN_WORKFLOW`, `launch-app-teardown[-staging]`) archives one; the
 params are `AppLaunchParams` / `AppTeardownParams` from `@launch/shared/launch-pipeline`, and the
-instance id is the pipeline run id (`<runId>-rN` on a retry, same `runId` in the params). Slice 2a
-ships them as no-op stubs so the bindings, the exports and the generated types agree; slice 2c
-fills `run`, following `agent-run.ts` — `withStepDatabase`, distinct step names (`health#N`), and
-every step body wrapped in `runStep` (`services/launch/pipeline/operations.ts`) so a retry skips
-what succeeded. **A secret never appears in a step result**: the step that mints one puts it on the
+instance id is the pipeline run id (`<runId>-rN` on a retry, same `runId` in the params). They
+follow `agent-run.ts` — `withStepDatabase`, distinct step names, and every step body wrapped in
+`runStep` (`services/launch/pipeline/operations.ts`) so a retry skips what succeeded. The bodies
+are plain functions in `services/launch/pipeline/launch-steps.ts` and `teardown-steps.ts`; the
+classes only wire names, configs (`PIPELINE_STEP_CONFIG`: 3 retries, 10 s exponential, 5 min) and
+DB clients. **A secret never appears in a step result**: the step that mints one puts it on the
 Worker in that same step and returns ids only.
+
+- **The two long waits are ROUNDS**: `scaffold.poll#N` / `deploy_staging.poll#N` read the ticket
+  row (the truth; the event is a nudge) and ask whether the job itself died, then
+  `scaffold.wait#N` / `deploy_staging.wait#N` park on the event for one round (2 min × 15, 3 min ×
+  15). A retried run's events go to the OLD instance (the ticket holds the base run id), so a lost
+  event costs one round, not 30 minutes; a failed job ends the wait at once. The `<prefix>.wait`
+  row is written when the wait ends.
+- **`email` is non-blocking** (caught; its row stays `failed`); `health#N` probes with
+  `health-wait#N` sleeps between; `production` is `skipped`; an uncaught failure runs
+  `launch_failed` (status `failed`, `app.launch_failed` with the failed row's SCRUBBED error) and
+  the run returns.
+- **Adapter ports** (`services/launch/pipeline/ports.ts`): the names, `writeConfig`, the
+  placeholder Worker, the scaffold files and runner come from slice 2b through `defaultPorts()`.
+- **Tests** set `workflow.overrides = { ports, vendors, sleep, health }` — the credentials are
+  handed in because `admin_credentials` is global — and drive `run()` with
+  `createFakeWorkflowStep({ onWait })` playing the scaffold job and the deploy
+  (`tests/helpers/launch-pipeline.ts` `LaunchHarness`, the FakeCloud as the global fetch).
 

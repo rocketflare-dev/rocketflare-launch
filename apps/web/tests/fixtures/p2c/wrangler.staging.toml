@@ -1,0 +1,82 @@
+# Fixture (slice 2c tests): the kit 0.15.0 apps/web/wrangler.staging.toml as `rename.mjs` leaves it
+# for an app — comments trimmed, every binding kept. `__SLUG__` is replaced per test.
+name = "__SLUG__-staging"
+main = "src/worker.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+[vars]
+APP_ENV = "staging"
+APP_URL = "https://staging.__SLUG__.dev"
+APP_NAME = "__SLUG__"
+RELEASE_VERSION = "dev"
+LOG_LEVEL = "info"
+EMAIL_FROM = "__SLUG__ <noreply@__SLUG__.dev>"
+TENANCY_MODE = "multi"
+SIGNUP_MODE = "invite_only"
+TENANT_SCOPE_MODE = "off"
+DATABASE_DRIVER = "neon"
+AGENT_MAX_OUTPUT_TOKENS = "16384"
+AGENT_MAX_TURNS = "30"
+CHAT_KNOWLEDGE_TOOLS = "true"
+CHAT_HISTORY_MAX_CHARS = "24000"
+AGENT_INTERRUPT_TIMEOUT = "168 hours"
+FEATURES_ENABLED = ""
+OBSERVABILITY_CAPTURE_CONTENT = "true"
+OBSERVABILITY_SPAN_RETENTION_DAYS = "14"
+
+[placement]
+mode = "smart"
+
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
+
+[assets]
+directory = "./dist/ui"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api", "/api/*", "/auth", "/auth/*", "/ws", "/ws/*", "/cubejs-api", "/cubejs-api/*", "/mcp", "/mcp/*"]
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "<KV_RATE_LIMIT_STAGING_ID>"
+
+[triggers]
+crons = ["0 4 * * *", "15 * * * *"]
+
+[[queues.producers]]
+binding = "JOBS_QUEUE"
+queue = "__SLUG__-jobs-staging"
+
+[[queues.consumers]]
+queue = "__SLUG__-jobs-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+retry_delay = 60
+
+[[durable_objects.bindings]]
+name = "NOTIFICATIONS_HUB"
+class_name = "NotificationsHub"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["NotificationsHub"]
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "__SLUG__-files-staging"
+
+[ai]
+binding = "AI"
+remote = true
+
+[[workflows]]
+name = "__SLUG__-agent-run-staging"
+binding = "AGENT_RUN_WORKFLOW"
+class_name = "AgentRunWorkflow"
