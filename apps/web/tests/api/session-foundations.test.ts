@@ -86,8 +86,9 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
 
     const right = previewUrl(PREVIEW_TEMPLATE, previewLabel(5173, row.shortId, row.previewToken))
     const live = await workerFetch(`${right}/`, env)
-    expect(live.status).toBe(503)
-    expect(await live.json()).toMatchObject({ code: 'preview_not_configured' })
+    // Slice 3d: a real session with no preview cookie (preview-gateway.test.ts has the rest).
+    expect(live.status).toBe(401)
+    expect(await live.json()).toMatchObject({ code: 'preview_unauthorized' })
   })
 
   it('an ended session is a 410', async () => {
@@ -147,7 +148,8 @@ describe('egress handlers find the session from the container id alone', () => {
 
     const git = new Request('https://github.com/acme/x.git/info/refs?service=git-upload-pack')
     expect((await handleGitHub(git, env, { containerId: 'nobody' })).status).toBe(403)
-    expect((await handleGitHub(git, env, { containerId: sandboxId })).status).toBe(503)
+    // Slice 3d: `acme/x` is not the session's repo (session-github-egress.test.ts has the rest).
+    expect((await handleGitHub(git, env, { containerId: sandboxId })).status).toBe(403)
 
     // An ENDED session's container is nobody.
     const endedId = `fake-sandbox-${crypto.randomUUID()}`
