@@ -534,6 +534,9 @@ export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
     NOTIFICATIONS_HUB: new RecordingDurableObjectNamespace() as unknown as DurableObjectNamespace,
     AI: new RecordingAi() as unknown as Ai,
     AGENT_RUN_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
+    // Launch P2: the create and archive pipelines — the same recorder; tests drive the classes.
+    APP_LAUNCH_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
+    APP_TEARDOWN_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     APP_ENV: process.env.APP_ENV ?? 'development',
     APP_URL: process.env.APP_URL ?? 'http://localhost:3001',
     APP_NAME: process.env.APP_NAME ?? 'Launch Test',
@@ -563,6 +566,10 @@ export function stubs(env: TestEnv) {
     hub: env.NOTIFICATIONS_HUB as unknown as RecordingDurableObjectNamespace,
     ai: env.AI as unknown as RecordingAi | undefined,
     workflow: env.AGENT_RUN_WORKFLOW as unknown as RecordingWorkflow | undefined,
+    /** `APP_LAUNCH_WORKFLOW` — `created[i].params` is the `AppLaunchParams`; `events` the wakes. */
+    launchWorkflow: env.APP_LAUNCH_WORKFLOW as unknown as RecordingWorkflow | undefined,
+    /** `APP_TEARDOWN_WORKFLOW`. */
+    teardownWorkflow: env.APP_TEARDOWN_WORKFLOW as unknown as RecordingWorkflow | undefined,
   }
 }
 

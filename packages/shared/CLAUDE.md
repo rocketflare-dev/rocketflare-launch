@@ -25,7 +25,14 @@ catalogue/detail/health/operations responses, the OIDC client and its once-only
 both show), `launch-oidc.ts` (access policy, signing-key and access-request statuses, redirect URIs,
 public JWK, the key-admin responses and the `/api/app-access` request/policy/grant contracts), `launch-setup.ts`
 (credential kinds, per-kind payloads, checks, the value-free `credentialStatusSchema`, setting
-keys), `launch-audit.ts` (audit event, `auditListQuerySchema` / `auditListResponseSchema`, cursor-paged) ·
+keys — the wizard's string `SETUP_SETTING_KEYS` plus P2's `template_pin` / `app_create_role` with
+their code defaults and `meetsAppCreateRole`), `launch-audit.ts` (audit event, `auditListQuerySchema` / `auditListResponseSchema`, cursor-paged) ·
+Launch (P2): `launch-pipeline.ts` (`newAppSlugProblem` — the `launch-` rule on top of
+`appSlugProblem` — `createAppRequestSchema`, `APP_LAUNCH_STEPS` / `APP_TEARDOWN_STEPS`, the
+`pipelineViewSchema`, retry/teardown bodies, the Workflow params, deploy tickets and decisions, the
+DEPLOYER.md v1 bodies behind `/ci/deploy`, the `/ci/scaffold` token and done bodies, and the event
+types `SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`, golden-tested against Cloudflare's
+`/^[A-Za-z0-9_-]{1,100}$/`) ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

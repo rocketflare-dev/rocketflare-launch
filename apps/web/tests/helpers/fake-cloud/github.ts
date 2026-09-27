@@ -1,0 +1,556 @@
+/**
+ * FakeGitHub — the GitHub App, its installation tokens and the repo surface Launch drives,
+ * stateful. Repositories keep real git-shaped state (refs → commits → flat trees of file
+ * contents), so a test can commit through the Git Data API and read the files back through
+ * `getRepoFile` (raw contents) or `readFile()`. See `index.ts` for the API.
+ *
+ * Tokens are checked the way GitHub checks them: app endpoints want the app JWT (any compact JWS
+ * here), everything else a live installation token — a revoked or unknown one is a 401, a token
+ * narrowed to other repositories is a 403, and moving a ref over a change to `.github/workflows/*`
+ * needs `workflows: write` (the reason the scaffold job gets its own token, plan §0.1).
+ */
+import {
+  belongsTo,
+  type FakeRequest,
+  type IdSource,
+  json,
+  noContent,
+  type ResourceLabel,
+  type VendorHandler,
+} from './core'
+
+export interface FakeInstallationToken {
+  token: string
+  installationId: number
+  expires_at: string
+  /** Repository NAMES it may touch; null = every repository of the installation. */
+  repositories: string[] | null
+  /** Narrowed permissions; null = the installation's own. */
+  permissions: Record<string, string> | null
+  revoked: boolean
+}
+
+export interface FakeCommit {
+  sha: string
+  tree: string
+  parents: string[]
+  message: string
+}
+
+export interface FakeWorkflowRun {
+  id: number
+  owner: string
+  repo: string
+  workflow: string
+  ref: string
+  inputs: Record<string, string>
+  status: 'queued' | 'in_progress' | 'completed'
+  conclusion: string | null
+  head_sha: string
+  run_attempt: number
+  created_at: string
+}
+
+export interface FakeRepo {
+  id: number
+  owner: string
+  name: string
+  description: string | null
+  private: boolean
+  archived: boolean
+  default_branch: string
+  /** `heads/main` → commit sha; `tags/x` → commit sha. */
+  refs: Map<string, string>
+  environments: Map<string, Record<string, unknown>>
+  variables: Map<string, string>
+}
+
+export interface FakeGitHubOptions {
+  org: string
+  appId: number
+  installationId: number
+  /** The installation's permissions (default: everything Launch needs). */
+  permissions?: Record<string, string>
+}
+
+const ghError = (status: number, message: string) =>
+  json({ message, documentation_url: 'https://docs.github.com/rest' }, status)
+
+const DEFAULT_PERMISSIONS = {
+  administration: 'write',
+  contents: 'write',
+  workflows: 'write',
+  actions: 'write',
+  environments: 'write',
+  actions_variables: 'write',
+  metadata: 'read',
+}
+
+export class FakeGitHub implements VendorHandler {
+  /** Keyed `owner/name` (lower-case). A deleted repo is removed. */
+  readonly repos = new Map<string, FakeRepo>()
+  readonly tokens = new Map<string, FakeInstallationToken>()
+  readonly commits = new Map<string, FakeCommit>()
+  readonly trees = new Map<string, Map<string, string>>()
+  readonly runs: FakeWorkflowRun[] = []
+  /** Called after each accepted `workflow_dispatch` (awaited) — the test's stand-in for the job. */
+  onDispatch: ((run: FakeWorkflowRun) => unknown | Promise<unknown>) | null = null
+
+  constructor(
+    private readonly ids: IdSource,
+    readonly opts: FakeGitHubOptions
+  ) {}
+
+  get permissions(): Record<string, string> {
+    return this.opts.permissions ?? DEFAULT_PERMISSIONS
+  }
+
+  resourcesFor(slug: string): ResourceLabel[] {
+    return [...this.repos.values()]
+      .filter(r => !r.archived && belongsTo(slug, r.name))
+      .map(r => `github:repo:${r.owner}/${r.name}`)
+  }
+
+  repo(owner: string, name: string): FakeRepo | undefined {
+    return this.repos.get(`${owner}/${name}`.toLowerCase())
+  }
+
+  /** Mint an installation token directly (as `POST …/access_tokens` would). */
+  issueToken(
+    scope: { repositories?: string[]; permissions?: Record<string, string> } = {}
+  ): FakeInstallationToken {
+    const token: FakeInstallationToken = {
+      token: this.ids.secret('ghs_'),
+      installationId: this.opts.installationId,
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+      repositories: scope.repositories ?? null,
+      permissions: scope.permissions ?? null,
+      revoked: false,
+    }
+    this.tokens.set(token.token, token)
+    return token
+  }
+
+  /** The files of `ref` (a branch, `heads/x`, a tag or a commit sha), or null. */
+  filesAt(owner: string, name: string, ref?: string): Map<string, string> | null {
+    const repo = this.repo(owner, name)
+    if (!repo) return null
+    const sha = this.resolveRef(repo, ref ?? repo.default_branch)
+    if (!sha) return null
+    const commit = this.commits.get(sha)
+    return commit ? (this.trees.get(commit.tree) ?? null) : null
+  }
+
+  /** One file's contents at `ref` (default branch when omitted), or null. */
+  readFile(owner: string, name: string, path: string, ref?: string): string | null {
+    return this.filesAt(owner, name, ref)?.get(path) ?? null
+  }
+
+  /**
+   * Commit `files` onto a branch directly (no token) — what a scaffold job's `git push` leaves
+   * behind. `null` deletes a path. Returns the new commit sha.
+   */
+  pushCommit(
+    owner: string,
+    name: string,
+    files: Record<string, string | null>,
+    message = 'test commit',
+    branch?: string
+  ): string {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const ref = `heads/${branch ?? repo.default_branch}`
+    const parent = repo.refs.get(ref) ?? null
+    const base = parent ? this.trees.get(this.commits.get(parent)?.tree ?? '') : undefined
+    const tree = this.writeTree(base ?? new Map(), Object.entries(files))
+    const sha = this.writeCommit(tree, parent ? [parent] : [], message)
+    repo.refs.set(ref, sha)
+    return sha
+  }
+
+  handle(req: FakeRequest): Promise<Response> | Response | null {
+    if (req.url.hostname !== 'api.github.com') return null
+    return this.route(req)
+  }
+
+  // ---- internals -------------------------------------------------------------------------------
+
+  private resolveRef(repo: FakeRepo, ref: string): string | null {
+    const bare = ref.replace(/^refs\//, '')
+    return (
+      repo.refs.get(bare) ??
+      repo.refs.get(`heads/${bare}`) ??
+      repo.refs.get(`tags/${bare}`) ??
+      (this.commits.has(bare) ? bare : null)
+    )
+  }
+
+  private writeTree(base: Map<string, string>, entries: [string, string | null][]): string {
+    const next = new Map(base)
+    for (const [path, content] of entries) {
+      if (content === null) next.delete(path)
+      else next.set(path, content)
+    }
+    const sha = this.ids.sha()
+    this.trees.set(sha, next)
+    return sha
+  }
+
+  private writeCommit(tree: string, parents: string[], message: string): string {
+    const sha = this.ids.sha()
+    this.commits.set(sha, { sha, tree, parents, message })
+    return sha
+  }
+
+  private isAppJwt(bearer: string | null): boolean {
+    return !!bearer && bearer.split('.').length === 3
+  }
+
+  /** The live installation token behind `req`, or an error response. */
+  private token(req: FakeRequest): FakeInstallationToken | Response {
+    const token = req.bearer ? this.tokens.get(req.bearer) : undefined
+    if (!token || token.revoked || Date.parse(token.expires_at) < Date.now()) {
+      return ghError(401, 'Bad credentials')
+    }
+    return token
+  }
+
+  private can(token: FakeInstallationToken, permission: string, level: 'read' | 'write'): boolean {
+    const granted = (token.permissions ?? this.permissions)[permission]
+    if (!granted) return false
+    return level === 'read' || granted === 'write' || granted === 'admin'
+  }
+
+  private repoAccess(token: FakeInstallationToken, repo: FakeRepo): Response | null {
+    if (token.repositories && !token.repositories.includes(repo.name)) {
+      return ghError(403, 'Resource not accessible by integration')
+    }
+    return null
+  }
+
+  private repoJson(repo: FakeRepo) {
+    return {
+      id: repo.id,
+      name: repo.name,
+      full_name: `${repo.owner}/${repo.name}`,
+      private: repo.private,
+      archived: repo.archived,
+      default_branch: repo.default_branch,
+      description: repo.description,
+      html_url: `https://github.com/${repo.owner}/${repo.name}`,
+      owner: { login: repo.owner },
+    }
+  }
+
+  private async route(req: FakeRequest): Promise<Response> {
+    const path = req.url.pathname
+    const m = req.method
+    const body = (req.json ?? {}) as Record<string, unknown>
+    let match: RegExpMatchArray | null
+
+    // ---- the app (app JWT)
+    if (path === '/app' && m === 'GET') {
+      if (!this.isAppJwt(req.bearer)) return ghError(401, 'A JSON web token could not be decoded')
+      return json({
+        id: this.opts.appId,
+        slug: 'company-launch',
+        name: 'Company Launch',
+        owner: { login: this.opts.org },
+        permissions: this.permissions,
+      })
+    }
+    if (path === '/app/installations' && m === 'GET') {
+      if (!this.isAppJwt(req.bearer)) return ghError(401, 'A JSON web token could not be decoded')
+      return json([
+        {
+          id: this.opts.installationId,
+          account: { login: this.opts.org, type: 'Organization' },
+          permissions: this.permissions,
+          repository_selection: 'all',
+          suspended_at: null,
+        },
+      ])
+    }
+    match = path.match(/^\/app\/installations\/(\d+)\/access_tokens$/)
+    if (match && m === 'POST') {
+      if (!this.isAppJwt(req.bearer)) return ghError(401, 'A JSON web token could not be decoded')
+      if (Number(match[1]) !== this.opts.installationId) return ghError(404, 'Not Found')
+      const repositories = (body.repositories as string[] | undefined) ?? undefined
+      if (repositories?.some(name => !this.repo(this.opts.org, name))) {
+        return ghError(
+          422,
+          'There is at least one repository that does not exist or is not accessible'
+        )
+      }
+      const permissions = (body.permissions as Record<string, string> | undefined) ?? undefined
+      const token = this.issueToken({ repositories, permissions })
+      return json(
+        {
+          token: token.token,
+          expires_at: token.expires_at,
+          permissions: token.permissions ?? this.permissions,
+          repository_selection: token.repositories ? 'selected' : 'all',
+        },
+        201
+      )
+    }
+
+    // ---- everything else: an installation token
+    const token = this.token(req)
+    if (token instanceof Response) return token
+
+    if (path === '/installation/token' && m === 'DELETE') {
+      token.revoked = true
+      return noContent()
+    }
+
+    match = path.match(/^\/orgs\/([^/]+)\/repos$/)
+    if (match && m === 'POST') {
+      if (match[1].toLowerCase() !== this.opts.org.toLowerCase()) return ghError(404, 'Not Found')
+      if (!this.can(token, 'administration', 'write')) {
+        return ghError(403, 'Resource not accessible by integration')
+      }
+      const name = String(body.name ?? '')
+      if (this.repo(this.opts.org, name)) {
+        return json(
+          {
+            message: 'Repository creation failed.',
+            errors: [{ message: 'name already exists on this account' }],
+          },
+          422
+        )
+      }
+      const repo: FakeRepo = {
+        id: this.ids.number(),
+        owner: this.opts.org,
+        name,
+        description: body.description ? String(body.description) : null,
+        private: body.private !== false,
+        archived: false,
+        default_branch: 'main',
+        refs: new Map(),
+        environments: new Map(),
+        variables: new Map(),
+      }
+      this.repos.set(`${repo.owner}/${repo.name}`.toLowerCase(), repo)
+      if (body.auto_init) {
+        const tree = this.writeTree(new Map(), [['README.md', `# ${name}\n`]])
+        repo.refs.set('heads/main', this.writeCommit(tree, [], 'Initial commit'))
+      }
+      return json(this.repoJson(repo), 201)
+    }
+
+    match = path.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/)
+    if (!match) {
+      return ghError(404, 'Not Found')
+    }
+    const repo = this.repo(decodeURIComponent(match[1]), decodeURIComponent(match[2]))
+    if (!repo) return ghError(404, 'Not Found')
+    const denied = this.repoAccess(token, repo)
+    if (denied) return denied
+    const rest = match[3] ?? ''
+    const writable = (permission: string) =>
+      this.can(token, permission, 'write')
+        ? null
+        : ghError(403, 'Resource not accessible by integration')
+    if (repo.archived && m !== 'GET' && rest !== '') {
+      return ghError(403, 'Repository was archived so is read-only.')
+    }
+
+    if (rest === '') {
+      if (m === 'GET') return json(this.repoJson(repo))
+      if (m === 'PATCH') {
+        const refused = writable('administration')
+        if (refused) return refused
+        if (body.archived !== undefined) repo.archived = Boolean(body.archived)
+        if (body.description !== undefined) repo.description = String(body.description)
+        return json(this.repoJson(repo))
+      }
+      if (m === 'DELETE') {
+        const refused = writable('administration')
+        if (refused) return refused
+        this.repos.delete(`${repo.owner}/${repo.name}`.toLowerCase())
+        return noContent()
+      }
+    }
+
+    // ---- contents (raw)
+    match = rest.match(/^\/contents\/(.+)$/)
+    if (match && m === 'GET') {
+      const filePath = match[1].split('/').map(decodeURIComponent).join('/')
+      const content = this.readFile(
+        repo.owner,
+        repo.name,
+        filePath,
+        req.url.searchParams.get('ref') ?? undefined
+      )
+      if (content === null) return ghError(404, 'Not Found')
+      return new Response(content, {
+        status: 200,
+        headers: { 'Content-Type': 'application/vnd.github.raw' },
+      })
+    }
+
+    // ---- Git Data
+    match = rest.match(/^\/git\/ref\/(.+)$/)
+    if (match && m === 'GET') {
+      const sha = repo.refs.get(match[1])
+      if (!sha) return ghError(404, 'Not Found')
+      return json({ ref: `refs/${match[1]}`, object: { sha, type: 'commit' } })
+    }
+    match = rest.match(/^\/git\/commits\/([0-9a-f]+)$/)
+    if (match && m === 'GET') {
+      const commit = this.commits.get(match[1])
+      if (!commit) return ghError(404, 'Not Found')
+      return json({
+        sha: commit.sha,
+        tree: { sha: commit.tree },
+        parents: commit.parents.map(sha => ({ sha })),
+        message: commit.message,
+      })
+    }
+    if (rest === '/git/trees' && m === 'POST') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const baseSha = body.base_tree ? String(body.base_tree) : null
+      const base = baseSha ? this.trees.get(baseSha) : new Map<string, string>()
+      if (!base) return ghError(422, 'base_tree is not a valid tree')
+      const entries = ((body.tree as Record<string, unknown>[]) ?? []).map(
+        e =>
+          [String(e.path), e.sha === null ? null : String(e.content ?? '')] as [
+            string,
+            string | null,
+          ]
+      )
+      return json({ sha: this.writeTree(base, entries) }, 201)
+    }
+    if (rest === '/git/commits' && m === 'POST') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const tree = String(body.tree ?? '')
+      if (!this.trees.has(tree)) return ghError(422, 'tree is not a valid tree')
+      const parents = ((body.parents as string[]) ?? []).map(String)
+      const sha = this.writeCommit(tree, parents, String(body.message ?? ''))
+      return json(
+        {
+          sha,
+          tree: { sha: tree },
+          parents: parents.map(p => ({ sha: p })),
+          message: body.message,
+        },
+        201
+      )
+    }
+    match = rest.match(/^\/git\/refs\/(.+)$/)
+    if (match && m === 'PATCH') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const ref = match[1]
+      const current = repo.refs.get(ref)
+      if (!current) return ghError(422, 'Reference does not exist')
+      const sha = String(body.sha ?? '')
+      const commit = this.commits.get(sha)
+      if (!commit) return ghError(422, 'Object does not exist')
+      if (!body.force && !commit.parents.includes(current)) {
+        return ghError(422, 'Update is not a fast forward')
+      }
+      if (this.touchesWorkflows(current, sha) && !this.can(token, 'workflows', 'write')) {
+        return ghError(
+          403,
+          'refusing to allow a GitHub App to create or update workflow without `workflows` permission'
+        )
+      }
+      repo.refs.set(ref, sha)
+      return json({ ref: `refs/${ref}`, object: { sha, type: 'commit' } })
+    }
+
+    // ---- Actions
+    match = rest.match(/^\/actions\/workflows\/([^/]+)\/dispatches$/)
+    if (match && m === 'POST') {
+      const refused = writable('actions')
+      if (refused) return refused
+      const workflow = decodeURIComponent(match[1])
+      const ref = String(body.ref ?? repo.default_branch)
+      const headSha = this.resolveRef(repo, ref)
+      const files = headSha ? this.trees.get(this.commits.get(headSha)?.tree ?? '') : undefined
+      if (!headSha || !files?.has(`.github/workflows/${workflow}`)) {
+        return ghError(404, 'Not Found')
+      }
+      const run: FakeWorkflowRun = {
+        id: this.ids.number(),
+        owner: repo.owner,
+        repo: repo.name,
+        workflow,
+        ref,
+        inputs: (body.inputs as Record<string, string>) ?? {},
+        status: 'queued',
+        conclusion: null,
+        head_sha: headSha,
+        run_attempt: 1,
+        created_at: new Date().toISOString(),
+      }
+      this.runs.push(run)
+      await this.onDispatch?.(run)
+      return noContent()
+    }
+    match = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/)
+    if (match && m === 'GET') {
+      const workflow = decodeURIComponent(match[1])
+      const runs = this.runs
+        .filter(r => r.owner === repo.owner && r.repo === repo.name && r.workflow === workflow)
+        .reverse()
+        .map(r => ({
+          id: r.id,
+          run_attempt: r.run_attempt,
+          status: r.status,
+          conclusion: r.conclusion,
+          head_sha: r.head_sha,
+          head_branch: r.ref.replace(/^refs\/heads\//, ''),
+          event: 'workflow_dispatch',
+          created_at: r.created_at,
+          html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}`,
+        }))
+      return json({ total_count: runs.length, workflow_runs: runs })
+    }
+
+    // ---- settings
+    match = rest.match(/^\/environments\/([^/]+)$/)
+    if (match && m === 'PUT') {
+      const refused = writable('environments')
+      if (refused) return refused
+      const name = decodeURIComponent(match[1])
+      repo.environments.set(name, body)
+      return json({ id: this.ids.number(), name })
+    }
+    match = rest.match(/^\/actions\/variables\/([^/]+)$/)
+    if (match && m === 'PATCH') {
+      const refused = writable('actions_variables')
+      if (refused) return refused
+      const name = decodeURIComponent(match[1])
+      if (!repo.variables.has(name)) return ghError(404, 'Not Found')
+      repo.variables.set(name, String(body.value ?? ''))
+      return noContent()
+    }
+    if (rest === '/actions/variables' && m === 'POST') {
+      const refused = writable('actions_variables')
+      if (refused) return refused
+      const name = String(body.name ?? '')
+      if (repo.variables.has(name)) return ghError(409, 'Already exists')
+      repo.variables.set(name, String(body.value ?? ''))
+      return json({}, 201)
+    }
+
+    return ghError(404, `Not Found (${m} ${path})`)
+  }
+
+  /** Whether moving a ref from `fromSha` to `toSha` changes anything under `.github/workflows/`. */
+  private touchesWorkflows(fromSha: string, toSha: string): boolean {
+    const before = this.trees.get(this.commits.get(fromSha)?.tree ?? '') ?? new Map()
+    const after = this.trees.get(this.commits.get(toSha)?.tree ?? '') ?? new Map()
+    const paths = new Set(
+      [...before.keys(), ...after.keys()].filter(p => p.startsWith('.github/workflows/'))
+    )
+    for (const p of paths) if (before.get(p) !== after.get(p)) return true
+    return false
+  }
+}

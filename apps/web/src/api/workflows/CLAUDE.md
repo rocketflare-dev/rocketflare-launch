@@ -51,3 +51,16 @@ The fake's `waitForEvent` is a recorder: `{ events?, onWait? }` in, `{ step, cal
 queueEvent }` out. `onWait` is the test's stand-in for the resolve route (write the answer, flip the
 row, return a payload); an empty queue with no `onWait` rejects the way the platform's timeout does,
 which is how the expiry path is driven. `names` is every step name in call order.
+
+## Launch P2: `app-launch.ts` and `app-teardown.ts`
+
+`AppLaunchWorkflow` (`APP_LAUNCH_WORKFLOW`, `launch-app-create[-staging]`) creates an app and
+`AppTeardownWorkflow` (`APP_TEARDOWN_WORKFLOW`, `launch-app-teardown[-staging]`) archives one; the
+params are `AppLaunchParams` / `AppTeardownParams` from `@launch/shared/launch-pipeline`, and the
+instance id is the pipeline run id (`<runId>-rN` on a retry, same `runId` in the params). Slice 2a
+ships them as no-op stubs so the bindings, the exports and the generated types agree; slice 2c
+fills `run`, following `agent-run.ts` — `withStepDatabase`, distinct step names (`health#N`), and
+every step body wrapped in `runStep` (`services/launch/pipeline/operations.ts`) so a retry skips
+what succeeded. **A secret never appears in a step result**: the step that mints one puts it on the
+Worker in that same step and returns ids only.
+

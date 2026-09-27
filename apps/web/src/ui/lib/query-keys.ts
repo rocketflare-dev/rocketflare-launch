@@ -181,6 +181,10 @@ const CORE_QUERY_KEYS = {
     health: (appId: string) => ['apps', 'health', appId] as const,
     operations: (appId: string) => ['apps', 'operations', appId] as const,
     oidcClient: (appId: string) => ['apps', 'oidc-client', appId] as const,
+    /** P2: the create/teardown run's steps (polled while `provisioning`). */
+    pipeline: (appId: string) => ['apps', 'pipeline', appId] as const,
+    /** P2: the app's deploy tickets. */
+    deploys: (appId: string) => ['apps', 'deploys', appId] as const,
   },
   /** Launch: `/api/app-access` — an app's sign-in policy, grants and access requests (spec/05) */
   appAccess: {

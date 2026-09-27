@@ -13,6 +13,20 @@
  *
  * GitHub rejects a request with no `User-Agent`, so every call sends one. Callers get the app's
  * credentials from `getCredential(db, cfg, 'github_app')` — `GitHubAppAuth` is that payload's shape.
+ *
+ * P2 adds the writes creating an app needs, all under an INSTALLATION token (never the app JWT):
+ *
+ * - Repos: `POST /orgs/{org}/repos` (private, `auto_init` so `main` exists to commit onto),
+ *   `GET|PATCH {archived}|DELETE /repos/{o}/{r}`.
+ * - Git Data, so a commit needs no clone: `GET …/git/ref/heads/{b}` → the head commit →
+ *   its tree; `POST …/git/trees {base_tree, tree:[{path, mode, type:'blob', content}]}` (inline
+ *   content, `sha: null` deletes), `POST …/git/commits`, `PATCH …/git/refs/heads/{b}`.
+ *   `commitFiles` is the four in a row.
+ * - Actions: `POST …/actions/workflows/{file}/dispatches {ref, inputs}` (204; a workflow file
+ *   GitHub has not registered yet is a 404, which the pipeline retries) and `GET …/runs`.
+ * - Settings: `PUT …/environments/{name}`, repository variables (`PATCH`, falling back to `POST`
+ *   when the variable does not exist yet), and `DELETE /installation/token` — a job revoking the
+ *   token it was handed.
  */
 import { importPKCS8, SignJWT } from 'jose'
 
@@ -145,7 +159,8 @@ export async function appJwt(
 
 // ---- REST -------------------------------------------------------------------------------------
 
-async function githubRequest(
+/** One authenticated GitHub call; the raw `Response`, whatever its status. */
+export async function githubRequest(
   path: string,
   init: { method?: string; token: string; accept?: string; body?: unknown },
   opts: GitHubOptions
@@ -165,6 +180,11 @@ async function githubRequest(
   })
 }
 
+/** True for a GitHub 404 — what teardown counts as "already gone". */
+export function isGitHubNotFound(err: unknown): boolean {
+  return err instanceof GitHubApiError && err.status === 404
+}
+
 async function failure(res: Response, path: string): Promise<GitHubApiError> {
   let message = `GitHub ${res.status}`
   try {
@@ -176,7 +196,8 @@ async function failure(res: Response, path: string): Promise<GitHubApiError> {
   return new GitHubApiError(res.status, message, path)
 }
 
-async function githubJson<T>(
+/** One call whose 2xx body is JSON; anything else throws `GitHubApiError`. */
+export async function githubJson<T>(
   path: string,
   init: { method?: string; token: string; body?: unknown },
   opts: GitHubOptions
@@ -248,4 +269,324 @@ export async function getRepoFile(
   if (res.status === 404) return null
   if (!res.ok) throw await failure(res, url)
   return res.text()
+}
+
+// ---- P2: repos --------------------------------------------------------------------------------
+
+export interface GitHubRepo {
+  /** Numeric and stable across renames — the OIDC `repository_id` claim. */
+  id: number
+  name: string
+  full_name: string
+  private: boolean
+  archived?: boolean
+  default_branch: string
+  html_url?: string
+  owner: { login: string }
+}
+
+const repoPath = (owner: string, repo: string) =>
+  `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+
+/** A call whose success has no body worth reading (204s, or a body nobody needs). */
+async function githubVoid(
+  path: string,
+  init: { method: string; token: string; body?: unknown },
+  opts: GitHubOptions
+): Promise<void> {
+  const res = await githubRequest(path, init, opts)
+  if (!res.ok) throw await failure(res, path)
+  await res.body?.cancel().catch(() => {})
+}
+
+/** A new repository in the org. `autoInit` gives it a `main` with one commit to build on. */
+export function createOrgRepo(
+  token: string,
+  org: string,
+  input: { name: string; description?: string; private?: boolean; autoInit?: boolean },
+  opts: GitHubOptions = {}
+): Promise<GitHubRepo> {
+  return githubJson<GitHubRepo>(
+    `/orgs/${encodeURIComponent(org)}/repos`,
+    {
+      method: 'POST',
+      token,
+      body: {
+        name: input.name,
+        description: input.description,
+        private: input.private ?? true,
+        auto_init: input.autoInit ?? true,
+      },
+    },
+    opts
+  )
+}
+
+/** The repository, or null when it does not exist (or the token cannot see it). */
+export async function getRepo(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRepo | null> {
+  const path = repoPath(owner, repo)
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) return null
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubRepo
+}
+
+/** Archive (read-only, kept) — teardown's default. */
+export function archiveRepo(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRepo> {
+  return githubJson<GitHubRepo>(
+    repoPath(owner, repo),
+    { method: 'PATCH', token, body: { archived: true } },
+    opts
+  )
+}
+
+/** Delete for good — teardown only when the person ticked "delete repository". */
+export function deleteRepo(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<void> {
+  return githubVoid(repoPath(owner, repo), { method: 'DELETE', token }, opts)
+}
+
+// ---- P2: Git Data -----------------------------------------------------------------------------
+
+export interface GitHubRef {
+  ref: string
+  object: { sha: string; type: string }
+}
+
+export interface GitHubCommit {
+  sha: string
+  tree: { sha: string }
+  parents?: { sha: string }[]
+  message?: string
+}
+
+/**
+ * One file to write: `content` inline (UTF-8), or `null` to delete the path. `mode` defaults to
+ * `100644`; `100755` for an executable.
+ */
+export interface CommitFile {
+  path: string
+  content: string | null
+  mode?: '100644' | '100755'
+}
+
+/** `ref` without the `refs/` prefix, e.g. `heads/main`. */
+export function getRef(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRef> {
+  return githubJson<GitHubRef>(`${repoPath(owner, repo)}/git/ref/${ref}`, { token }, opts)
+}
+
+export function getCommit(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubCommit> {
+  return githubJson<GitHubCommit>(
+    `${repoPath(owner, repo)}/git/commits/${encodeURIComponent(sha)}`,
+    { token },
+    opts
+  )
+}
+
+/** A tree on top of `baseTree` with `files` written (inline content) or removed. */
+export function createTree(
+  token: string,
+  owner: string,
+  repo: string,
+  input: { baseTree?: string; files: readonly CommitFile[] },
+  opts: GitHubOptions = {}
+): Promise<{ sha: string }> {
+  return githubJson<{ sha: string }>(
+    `${repoPath(owner, repo)}/git/trees`,
+    {
+      method: 'POST',
+      token,
+      body: {
+        ...(input.baseTree ? { base_tree: input.baseTree } : {}),
+        tree: input.files.map(f =>
+          f.content === null
+            ? { path: f.path, mode: f.mode ?? '100644', type: 'blob', sha: null }
+            : { path: f.path, mode: f.mode ?? '100644', type: 'blob', content: f.content }
+        ),
+      },
+    },
+    opts
+  )
+}
+
+export function createCommit(
+  token: string,
+  owner: string,
+  repo: string,
+  input: { message: string; tree: string; parents: string[] },
+  opts: GitHubOptions = {}
+): Promise<GitHubCommit> {
+  return githubJson<GitHubCommit>(
+    `${repoPath(owner, repo)}/git/commits`,
+    { method: 'POST', token, body: input },
+    opts
+  )
+}
+
+/** Move `ref` (e.g. `heads/main`) to `sha`. Not forced: a concurrent push makes this fail. */
+export function updateRef(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+  sha: string,
+  opts: GitHubOptions & { force?: boolean } = {}
+): Promise<GitHubRef> {
+  return githubJson<GitHubRef>(
+    `${repoPath(owner, repo)}/git/refs/${ref}`,
+    { method: 'PATCH', token, body: { sha, force: opts.force ?? false } },
+    opts
+  )
+}
+
+/**
+ * Commit `files` onto the tip of `branch` in one commit, with no clone: ref → head commit → its
+ * tree → a new tree on top → a commit → move the ref. Returns the new commit's sha.
+ */
+export async function commitFiles(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  files: readonly CommitFile[],
+  message: string,
+  opts: GitHubOptions = {}
+): Promise<{ sha: string }> {
+  const ref = await getRef(token, owner, repo, `heads/${branch}`, opts)
+  const head = await getCommit(token, owner, repo, ref.object.sha, opts)
+  const tree = await createTree(token, owner, repo, { baseTree: head.tree.sha, files }, opts)
+  const commit = await createCommit(
+    token,
+    owner,
+    repo,
+    { message, tree: tree.sha, parents: [head.sha] },
+    opts
+  )
+  await updateRef(token, owner, repo, `heads/${branch}`, commit.sha, opts)
+  return { sha: commit.sha }
+}
+
+// ---- P2: Actions ------------------------------------------------------------------------------
+
+export interface GitHubWorkflowRun {
+  id: number
+  run_attempt?: number
+  status: string | null
+  conclusion: string | null
+  head_sha?: string
+  head_branch?: string | null
+  event?: string
+  created_at?: string
+  html_url?: string
+}
+
+/**
+ * `workflow_dispatch` on `workflowFile` (e.g. `deploy.yml`) at `ref`. GitHub answers 204 and no
+ * run id — find the run with `listWorkflowRuns`. A 404 means the file is not registered (yet).
+ */
+export function dispatchWorkflow(
+  token: string,
+  owner: string,
+  repo: string,
+  workflowFile: string,
+  input: { ref: string; inputs?: Record<string, string> },
+  opts: GitHubOptions = {}
+): Promise<void> {
+  return githubVoid(
+    `${repoPath(owner, repo)}/actions/workflows/${encodeURIComponent(workflowFile)}/dispatches`,
+    { method: 'POST', token, body: { ref: input.ref, inputs: input.inputs ?? {} } },
+    opts
+  )
+}
+
+/** The workflow's most recent runs, newest first. */
+export async function listWorkflowRuns(
+  token: string,
+  owner: string,
+  repo: string,
+  workflowFile: string,
+  query: { branch?: string; event?: string; perPage?: number } = {},
+  opts: GitHubOptions = {}
+): Promise<GitHubWorkflowRun[]> {
+  const params = new URLSearchParams({ per_page: String(query.perPage ?? 10) })
+  if (query.branch) params.set('branch', query.branch)
+  if (query.event) params.set('event', query.event)
+  const body = await githubJson<{ workflow_runs?: GitHubWorkflowRun[] }>(
+    `${repoPath(owner, repo)}/actions/workflows/${encodeURIComponent(workflowFile)}/runs?${params}`,
+    { token },
+    opts
+  )
+  return body.workflow_runs ?? []
+}
+
+// ---- P2: settings -----------------------------------------------------------------------------
+
+/** Create or update a deployment environment (it scopes the OIDC `environment` claim). */
+export function putEnvironment(
+  token: string,
+  owner: string,
+  repo: string,
+  name: string,
+  settings: Record<string, unknown> = {},
+  opts: GitHubOptions = {}
+): Promise<{ id: number; name: string }> {
+  return githubJson<{ id: number; name: string }>(
+    `${repoPath(owner, repo)}/environments/${encodeURIComponent(name)}`,
+    { method: 'PUT', token, body: settings },
+    opts
+  )
+}
+
+/** Set a repository Actions VARIABLE (not a secret): update, or create when it does not exist. */
+export async function upsertRepoVariable(
+  token: string,
+  owner: string,
+  repo: string,
+  name: string,
+  value: string,
+  opts: GitHubOptions = {}
+): Promise<void> {
+  const base = `${repoPath(owner, repo)}/actions/variables`
+  const res = await githubRequest(
+    `${base}/${encodeURIComponent(name)}`,
+    { method: 'PATCH', token, body: { name, value } },
+    opts
+  )
+  if (res.ok) {
+    await res.body?.cancel().catch(() => {})
+    return
+  }
+  if (res.status !== 404) throw await failure(res, `${base}/${name}`)
+  await githubVoid(base, { method: 'POST', token, body: { name, value } }, opts)
+}
+
+/** Revoke the installation token making the call — a job ending its own access. */
+export function revokeInstallationToken(token: string, opts: GitHubOptions = {}): Promise<void> {
+  return githubVoid('/installation/token', { method: 'DELETE', token }, opts)
 }

@@ -57,15 +57,30 @@ export const apps = pgTable(
     repoOwner: text('repo_owner'),
     repoName: text('repo_name'),
     defaultBranch: text('default_branch'),
+    /**
+     * GitHub's numeric repository id (P2). The GitHub OIDC `repository_id` claim — unlike
+     * `owner/name`, it survives a rename — so it is what `/ci/*` maps a job to an app by.
+     */
+    githubRepoId: text('github_repo_id'),
+    /** The kit tag and commit a created app was scaffolded from (P2, `launch_settings.template_pin`). */
+    templateRef: text('template_ref'),
+    templateCommit: text('template_commit'),
+    /** The latest launch pipeline run (`app_operations.run_id`, the Workflow instance's base id). */
+    launchRunId: uuid('launch_run_id'),
     status: appStatusEnum('status').notNull().default('requested'),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
+    /** Set by teardown (P2) when the app reaches `archived`. */
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [
     // A CONSTRAINT with a known name, so an import's duplicate slug is a 23505 the service can map.
     unique('apps_slug_key').on(table.slug),
+    // `/ci/*` resolves a GitHub job to its app by this, before any tenant is known; one repo is
+    // one app. NULLs (an import made before P2) are distinct, so they never collide.
+    unique('apps_github_repo_id_key').on(table.githubRepoId),
     index('apps_tenant_status_idx').on(table.tenantId, table.status),
     tenantIsolation('apps'),
   ]

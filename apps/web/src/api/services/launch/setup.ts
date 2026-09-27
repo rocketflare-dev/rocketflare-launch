@@ -28,8 +28,8 @@ import {
   type CredentialKind,
   type CredentialMetadata,
   type CredentialPayload,
-  LAUNCH_SETTING_KEYS,
   type LaunchSettingKey,
+  SETUP_SETTING_KEYS,
   type SetupCredential,
   type SetupIdentity,
   type SetupOverview,
@@ -568,7 +568,7 @@ function probe(
 export async function readSettings(db: Database): Promise<SetupSettings> {
   const stored = await getSettings(db)
   return Object.fromEntries(
-    LAUNCH_SETTING_KEYS.map(key => {
+    SETUP_SETTING_KEYS.map(key => {
       const value = stored[key]
       return [key, typeof value === 'string' ? value : null]
     })
@@ -586,7 +586,7 @@ export async function updateSettings(
 ): Promise<Record<string, { before: string | null; after: string | null }>> {
   const before = await readSettings(db)
   const changed: Record<string, { before: string | null; after: string | null }> = {}
-  for (const key of LAUNCH_SETTING_KEYS) {
+  for (const key of SETUP_SETTING_KEYS) {
     if (!(key in patch)) continue
     const after = patch[key] ?? null
     if (after === before[key]) continue

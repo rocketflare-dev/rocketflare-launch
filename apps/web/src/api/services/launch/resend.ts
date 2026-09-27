@@ -11,6 +11,9 @@
  * - `GET /domains` → `{ data: [{ id, name, status, region }] }`, status ∈ not_started | pending |
  *   verified | failed | temporary_failure. The one fleet domain is `notifications.<apps domain>`,
  *   verified once in the wizard (87 s in S4).
+ * - P2: `POST /api-keys {name, permission:'sending_access', domain_id}` → `{ id, token }` — a key
+ *   that can send only from the fleet domain. `token` is shown once; the pipeline puts it on the
+ *   Worker in the same step and keeps only `id`. `DELETE /api-keys/{id}` revokes it.
  */
 
 export const RESEND_API_BASE = 'https://api.resend.com'
@@ -48,11 +51,21 @@ export class ResendClient {
     private readonly opts: ResendOptions = {}
   ) {}
 
-  async get<T>(path: string): Promise<T> {
+  get<T>(path: string): Promise<T> {
+    return this.request<T>('GET', path)
+  }
+
+  async request<T>(method: string, path: string, json?: unknown): Promise<T> {
     const doFetch = this.opts.fetch ?? fetch
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey}`,
+      Accept: 'application/json',
+    }
+    if (json !== undefined) headers['Content-Type'] = 'application/json'
     const res = await doFetch(`${this.opts.apiBase ?? RESEND_API_BASE}${path}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' },
+      method,
+      headers,
+      body: json === undefined ? undefined : JSON.stringify(json),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const body = (await res.json().catch(() => ({}))) as { message?: unknown; name?: unknown }
@@ -77,4 +90,25 @@ export class ResendClient {
     const body = await this.get<{ data?: ResendDomain[] }>('/domains')
     return body.data ?? []
   }
+
+  /**
+   * A `sending_access` key restricted to one domain. The `token` is a SECRET shown only here:
+   * put it where it goes in the same breath, keep only the `id`.
+   */
+  createSendingKey(name: string, domainId: string): Promise<{ id: string; token: string }> {
+    return this.request('POST', '/api-keys', {
+      name,
+      permission: 'sending_access',
+      domain_id: domainId,
+    })
+  }
+
+  async deleteApiKey(id: string): Promise<void> {
+    await this.request('DELETE', `/api-keys/${encodeURIComponent(id)}`)
+  }
+}
+
+/** True for a Resend 404 — what teardown counts as "already gone". */
+export function isResendNotFound(err: unknown): boolean {
+  return err instanceof ResendApiError && err.status === 404
 }

@@ -8,7 +8,7 @@
 import type { Hono, MiddlewareHandler } from 'hono'
 import { serverPlugins } from '../plugins/server'
 import { authMiddleware, globalAdminMiddleware } from './middleware/auth'
-import { isUploadPath, jsonBodyLimit } from './middleware/body-limit'
+import { ciBodyLimit, isUploadPath, jsonBodyLimit } from './middleware/body-limit'
 import { configMiddleware } from './middleware/config'
 import { corsMiddleware } from './middleware/cors'
 import { csrfProtection } from './middleware/csrf'
@@ -33,6 +33,7 @@ import { appsRouter } from './routes/apps'
 import { auditRouter } from './routes/audit'
 import { authRouter } from './routes/auth/index'
 import { chatRouter } from './routes/chat'
+import { ciRouter } from './routes/ci'
 import { evalsRouter } from './routes/evals'
 import { featuresRouter } from './routes/features'
 import { feedbackRouter } from './routes/feedback'
@@ -85,6 +86,9 @@ app.use('/auth/*', jsonBodyLimit)
 // Launch's OIDC issuer (spec/05) is a protocol surface outside `/api`; its token and userinfo
 // bodies are small forms, and nothing under it accepts an upload.
 app.use('/oidc/*', jsonBodyLimit)
+// Launch P2's GitHub-OIDC surface: 64 MB on the deployer's `upload` (a whole build as base64
+// JSON), the JSON cap on everything else under it.
+app.use('/ci/*', ciBodyLimit)
 
 // 6–7. CORS answers preflights before CSRF can reject them; CSRF is cookie-only, no DB.
 app.use('*', corsMiddleware)
@@ -109,6 +113,10 @@ app.route('/auth', authRouter)
 // egress, so an IP key would throttle the whole fleet as one caller.
 app.route('/.well-known', wellKnownRouter)
 app.route('/oidc', oidcRouter)
+// Launch P2: the GitHub-OIDC surface (the deployer protocol, the scaffold job). PUBLIC by design:
+// a CI job has no session. Every route beneath verifies the job's GitHub OIDC token and resolves
+// the calling repo, environment and workflow before it touches a row (`routes/ci.ts`).
+app.route('/ci', ciRouter)
 app.use('/api/invite/:token/accept', authRateLimit)
 app.route('/api/invite', inviteRouter)
 app.use('/api/admin/*', globalAdminMiddleware)

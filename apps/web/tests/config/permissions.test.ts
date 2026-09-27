@@ -3,6 +3,7 @@
  * table changes, this file changes with it.
  */
 
+import { DEFAULT_APP_CREATE_ROLE, meetsAppCreateRole } from '@launch/shared/launch-setup'
 import {
   type Actions,
   CORE_SUBJECTS,
@@ -200,5 +201,28 @@ describe('pack / unpack round-trip (D13)', () => {
     const restored = abilityFromPackedRules(packRules(build(null, [], true)))
     expect(restored.can('manage', 'all')).toBe(true)
     expect(restored.can('delete', 'User')).toBe(true)
+  })
+})
+
+describe('who may create an app (Launch P2, launch_settings.app_create_role)', () => {
+  // Creating is `manage App` (admin+) AND at least the configured role — the setting can only
+  // NARROW or widen within the tenant roles, never hand a member `manage App`.
+  it.each([
+    ['admin', { owner: true, admin: true, support: true, member: false }],
+    ['owner', { owner: true, admin: false, support: false, member: false }],
+    ['member', { owner: true, admin: true, support: true, member: true }],
+  ] as const)('app_create_role=%s', (required, expected) => {
+    for (const role of ROLES) {
+      expect(meetsAppCreateRole(role, required), `${role} vs ${required}`).toBe(expected[role])
+    }
+    expect(meetsAppCreateRole('nobody', required)).toBe(false)
+  })
+
+  it('the default is admin, which is exactly who holds manage App', () => {
+    for (const role of ROLES) {
+      expect(meetsAppCreateRole(role, DEFAULT_APP_CREATE_ROLE)).toBe(
+        build(role).can('manage', 'App')
+      )
+    }
   })
 })

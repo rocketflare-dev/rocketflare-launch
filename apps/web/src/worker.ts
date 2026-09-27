@@ -1,6 +1,7 @@
 /**
  * Cloudflare Worker entry (D5): `export default { fetch, queue, scheduled }` plus the in-script
- * Durable Object class (`NotificationsHub`, D8) and the Workflow class (`AgentRunWorkflow`, D7).
+ * Durable Object class (`NotificationsHub`, D8) and the Workflow classes (`AgentRunWorkflow`, D7;
+ * Launch P2's `AppLaunchWorkflow` and `AppTeardownWorkflow`).
  * The classes are exported HERE — never from api/index.ts, which must stay importable from Node
  * tests.
  *
@@ -18,6 +19,8 @@ import type { AppBindings } from './api/types'
 
 export { NotificationsHub } from './api/durable-objects/notifications-hub'
 export { AgentRunWorkflow } from './api/workflows/agent-run'
+export { AppLaunchWorkflow } from './api/workflows/app-launch'
+export { AppTeardownWorkflow } from './api/workflows/app-teardown'
 export * from './plugins/worker-exports'
 
 export default {

@@ -196,6 +196,37 @@ describe('wrangler parity: must match', () => {
     expect(get(prod, 'assets.binding')).toBe('ASSETS')
     expect(prod.compatibility_flags).toContain('nodejs_compat')
   })
+
+  it("both files bind Launch P2's create and teardown Workflows under account-scoped names", () => {
+    const rowsOf = (o: Toml) =>
+      rows(o, 'workflows')
+        .filter(r => String(r.binding).startsWith('APP_'))
+        .map(r => ({ binding: r.binding, class_name: r.class_name, name: r.name }))
+    expect(rowsOf(prod)).toEqual([
+      {
+        binding: 'APP_LAUNCH_WORKFLOW',
+        class_name: 'AppLaunchWorkflow',
+        name: 'launch-app-create',
+      },
+      {
+        binding: 'APP_TEARDOWN_WORKFLOW',
+        class_name: 'AppTeardownWorkflow',
+        name: 'launch-app-teardown',
+      },
+    ])
+    expect(rowsOf(staging)).toEqual([
+      {
+        binding: 'APP_LAUNCH_WORKFLOW',
+        class_name: 'AppLaunchWorkflow',
+        name: 'launch-app-create-staging',
+      },
+      {
+        binding: 'APP_TEARDOWN_WORKFLOW',
+        class_name: 'AppTeardownWorkflow',
+        name: 'launch-app-teardown-staging',
+      },
+    ])
+  })
 })
 
 // ---- the database driver (D35) -------------------------------------------------------------

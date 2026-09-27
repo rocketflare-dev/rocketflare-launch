@@ -25,9 +25,10 @@ package is private by default (`"private": true`, like `packages/shared`, which 
               │ <app>-staging    │  │ <app>            │   one Worker per env:
               │ wrangler.staging │  │ wrangler.toml    │   fetch + queue + scheduled
               │ .toml            │  │                  │   + NotificationsHub DO
-              └───────┬──────────┘  └────────┬─────────┘   + AgentRunWorkflow
-   bindings:  RATE_LIMIT_KV  [JOBS_QUEUE  FILES  AGENT_RUN_WORKFLOW  AI]  ASSETS  (+ HYPERDRIVE under postgres)
-   crons:     0 4 * * * (prune), */5 (app health) + plugins'   routes: /api /auth /ws /oidc /.well-known + plugins'
+              └───────┬──────────┘  └────────┬─────────┘   + AgentRunWorkflow, AppLaunchWorkflow,
+                      │                      │                   AppTeardownWorkflow
+   bindings:  RATE_LIMIT_KV  [JOBS_QUEUE  FILES  AGENT_RUN_WORKFLOW  APP_LAUNCH_WORKFLOW  APP_TEARDOWN_WORKFLOW  AI]  ASSETS  (+ HYPERDRIVE under postgres)
+   crons:     0 4 * * * (prune), */5 (app health) + plugins'   routes: /api /auth /ws /oidc /.well-known /ci + plugins'
                       │                      │
    neon:      DATABASE_URL secret        DATABASE_URL secret              (pooled Neon host, HTTPS + WS)
    postgres:  Hyperdrive <app>-staging   Hyperdrive <app>-production      (direct host, any Postgres)
@@ -126,10 +127,11 @@ in both files (one local database).
 | R2 (Phase 2) | `FILES` | `<app>-files` / `<app>-files-staging` | `pnpm --filter @launch/web exec wrangler r2 bucket create <name>` |
 | Durable Object (Phase 2) | `NOTIFICATIONS_HUB` | class `NotificationsHub` | declared in toml + `[[migrations]] tag = "v1", new_classes` — no create step |
 | Workflow (Phase 3, built) | `AGENT_RUN_WORKFLOW` | `<app>-agent-run` / `<app>-agent-run-staging` | `[[workflows]] name / binding / class_name = "AgentRunWorkflow"` — `wrangler deploy` registers it, no create step; **account-scoped name** |
+| Workflows (Launch P2) | `APP_LAUNCH_WORKFLOW`, `APP_TEARDOWN_WORKFLOW` | `launch-app-create` / `launch-app-create-staging`, `launch-app-teardown` / `launch-app-teardown-staging` | `[[workflows]]` with `class_name = "AppLaunchWorkflow"` / `"AppTeardownWorkflow"` — registered by `wrangler deploy`, no create step; **account-scoped names**. They create and archive the company's apps; each instance id is a pipeline run id (`<runId>-rN` on a retry) |
 | Workers AI (Phase 3, built) | `AI` | — | `[ai] binding = "AI"` — no resource; the zero-key floor for chat (`@cf/zai-org/glm-4.7-flash`) and embeddings (`@cf/baai/bge-m3`); **billed per call to this account** (10k free neurons/day), `wrangler dev` proxies to the logged-in account; remove from BOTH tomls for zero-spend |
 | Analytics (a PLUGIN, D31) | — | — | **no resource and no binding**: its cubes read through the request's database handle (either driver), its fact tables rebuild on the `15 * * * *` cron it declares, and `/cubejs-api` + `/mcp` are routes of this Worker. Installing it means adding that cron and those two prefixes to BOTH tomls — `pnpm provision cloudflare <env>` reads them off the installed surface and writes them (decision 12) |
 | Analytics Engine (optional) | `ANALYTICS_ENGINE` | `<app>_analytics[_staging]` | declared in toml — deliberately NOT wired by the kit (only a comment in both tomls) |
-| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first` keeps `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known` — and every prefix an installed plugin declares — off the asset router |
+| Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first` keeps `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known`, its GitHub-OIDC surface `/ci` (P2: the deployer protocol and the scaffold job; 64 MB body cap on `POST /ci/deploy/:id/upload`, 1 MB elsewhere) — and every prefix an installed plugin declares — off the asset router |
 | RLS app role (optional, docs/RLS.md, not wired yet) | `postgres`: `HYPERDRIVE_APP`; `neon`: an `APP_DATABASE_URL` Worker secret | `<app>-<env>-app` | `postgres`: `… hyperdrive create … --caching-disabled`; `neon`: `wrangler secret put APP_DATABASE_URL` |
 | Plugin resources (D31) | whatever the plugin's `plugin.json` declares (`APPROVALS_CACHE`…) | `<app>-<id>-<name>[-staging]`, and `<APP>_<ID>_<NAME>[_STAGING]` for KV | `pnpm provision cloudflare <env>` — it reads each installed plugin's `bindings[]`, creates the `kv`/`queue`/`r2` ones through `cf-provision.sh` and patches every block into BOTH tomls |
 | Plugin Workflow / Durable Object (D31) | whatever the plugin declares (`ORDERS_SYNC`, `ORDERS_HUB`…) | workflow `<app>-<id>-<name>[-staging]`; a DO binding has no account-scoped name | **no create step** — `pnpm provision cloudflare <env>` writes `[[workflows]]` / `[[durable_objects.bindings]]` (+ a `plugin-<id>-v1` `[[migrations]]` tag) into both tomls and `wrangler deploy` registers them. The `class_name` resolves through the sixth barrel, `apps/web/src/plugins/worker-exports.ts` |
@@ -196,6 +198,15 @@ the orchestrator around it — phases `tokens` (TTY only: hidden prompts → `ap
 | `0 4 * * *` | `pruneExpired`, `pruneAiSpans` | deletes expired sessions, consumed/expired magic links, invitations older than 30 days; then `ai_spans` older than `OBSERVABILITY_SPAN_RETENTION_DAYS` (14), one DELETE per tenant (D32) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=0+4+*+*+*"` |
 | `*/5 * * * *` | `healthPoll` (Launch, spec/06) | polls `/api/health` + `/api/ready` of every registered app environment, records the check, audits a status change, prunes checks older than 7 days; on demand, `POST /api/apps/:id/health-check` ("Check now") | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"` |
 | `15 * * * *` | `analytics.refreshFactTables` (the analytics PLUGIN, D31) | every registered fact table, per tenant, DELETE+INSERT in one transaction; per-tenant failures collected, logged as a warning, never abort the run. The expression is the plugin's `crons` declaration and the task is `ServerPlugin.scheduledTasks` — **a task under an expression no toml declares simply never runs** | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=15+*+*+*+*"` — or, for one organisation, `launch analytics refresh-facts` |
+
+Launch P2 (creating apps) adds **no cron of its own**. The crons an APP runs are the app's: the
+deploy gateway applies an app's `[triggers]` to its Worker at `activate` (`PUT …/schedules`),
+because a Workers version upload does not.
+
+**Routes Launch creates for apps (P2).** Launch's own Worker keeps its one custom domain. Each app
+environment gets a zone route `<slug>[-staging].<apps domain>/*` → its Worker, created by the launch
+pipeline in the apps zone (`app_environments.route_ids`) and deleted by teardown; it must take
+precedence over any catch-all on the zone (checked at the real-infrastructure exit, plan §5).
 
 Health of the fact tables: `GET /api/analytics/facts/status` (admin+; `stale` = newest source row
 has waited > 2× the table's interval) or `launch analytics check-facts`, which exits 1 when

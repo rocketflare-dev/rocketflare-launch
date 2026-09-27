@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- P2 foundations (slice 2a) for creating apps: `deploy_tickets` and the app columns a launch
+  records (GitHub repo id, template ref/commit, run id, archive time, the sealed encryption key)
+  in one migration; the `APP_LAUNCH_WORKFLOW` and `APP_TEARDOWN_WORKFLOW` bindings; a public
+  `/ci` surface for GitHub Actions (verified GitHub OIDC tokens, mapped to an app, its
+  environment, workflow file and branch); the Cloudflare, Neon, Resend and GitHub calls creating
+  an app needs; `template_pin` (kit 0.15.0) and `app_create_role` (admin) settings. No screen
+  changes yet.
 - App registry: import an existing Rocketflare app from GitHub (its manifest and both wrangler
   tomls, read with a token narrowed to that repo), a catalogue with a health dot per environment,
   and an app page with resources, health history, the operations log and its OIDC client. Health

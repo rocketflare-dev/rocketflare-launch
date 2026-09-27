@@ -88,6 +88,9 @@ run_worker_first = [
   "/oidc/*",
   "/.well-known",
   "/.well-known/*",
+  # Launch P2: the GitHub-OIDC surface — the deployer protocol and the scaffold job call it.
+  "/ci",
+  "/ci/*",
   # An installed plugin's own prefixes go here too, in barrel order (D31) — the analytics plugin
   # adds "/cubejs-api" and "/mcp". `pnpm plugin add` prints the step; `pnpm provision cloudflare
   # <env>` writes it. The parity test reads `API_PREFIXES`, so a forgotten one fails the gate.
@@ -168,6 +171,19 @@ remote = true
 name = "launch-agent-run-staging"
 binding = "AGENT_RUN_WORKFLOW"
 class_name = "AgentRunWorkflow"
+
+# Launch P2 (docs/plans/p2-create-app.md): creating and archiving an app. Each run is one
+# instance, id = the pipeline run id (`<runId>-rN` on a retry); the steps record their ids in
+# `app_operations`. `name` is ACCOUNT-scoped like the agent runs' (staging uses `-staging`).
+[[workflows]]
+name = "launch-app-create-staging"
+binding = "APP_LAUNCH_WORKFLOW"
+class_name = "AppLaunchWorkflow"
+
+[[workflows]]
+name = "launch-app-teardown-staging"
+binding = "APP_TEARDOWN_WORKFLOW"
+class_name = "AppTeardownWorkflow"
 
 # ---- Added in later phases (keep this list in sync with wrangler.toml) ----------
 # Phase 4 (D19): optional [[analytics_engine_datasets]] for product telemetry — not wired yet

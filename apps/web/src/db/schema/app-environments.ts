@@ -53,6 +53,12 @@ export const appEnvironments = pgTable(
     resources: jsonb('resources').$type<AppEnvironmentResources>().notNull().default({}),
     neon: jsonb('neon').$type<AppEnvironmentNeon>(),
     resendKeyId: text('resend_key_id'),
+    /**
+     * The app's `OAUTH_ENCRYPTION_KEY` for this environment, sealed with `encryptToken` (spec/03)
+     * — generated once by the launch, so a retried `worker_secrets` step puts the SAME key back
+     * rather than orphaning everything the app already encrypted.
+     */
+    encryptionKeySealed: text('encryption_key_sealed'),
     routeIds: jsonb('route_ids').$type<AppRouteIds>().notNull().default([]),
     lastDeployVersion: text('last_deploy_version'),
     lastDeployAt: timestamp('last_deploy_at', { withTimezone: true }),

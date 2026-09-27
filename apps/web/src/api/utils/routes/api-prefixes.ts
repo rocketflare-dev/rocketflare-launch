@@ -25,8 +25,12 @@ import { serverPlugins } from '../../../plugins/server'
  * `/oidc` and `/.well-known` are Launch's OIDC issuer (spec/05): discovery, the JWKS, authorize,
  * token, userinfo and logout. An app's browser NAVIGATES to `/oidc/authorize` and `/oidc/logout`,
  * which is exactly the request the asset router would otherwise answer with the SPA shell.
+ *
+ * `/ci` (Launch P2) is the GitHub-OIDC surface a CI job calls — the deployer protocol under
+ * `/ci/deploy` and the scaffold job under `/ci/scaffold`. Nothing navigates there, but a JSON 404
+ * rather than `index.html` is what a protocol client needs from a wrong path.
  */
-const CORE_API_PREFIXES = ['/api', '/auth', '/ws', '/oidc', '/.well-known'] as const
+const CORE_API_PREFIXES = ['/api', '/auth', '/ws', '/oidc', '/.well-known', '/ci'] as const
 
 export const API_PREFIXES: readonly string[] = [
   ...CORE_API_PREFIXES,

@@ -32,11 +32,13 @@ vitest 3 resolves `isolate` per run, not per project.
   is the test URL, under `neon` NO `HYPERDRIVE` (a deployed `neon` Worker has none) plus
   `DATABASE_DRIVER` / `NEON_LOCAL_PROXY`; `ctx = createExecutionContext()` collects `waitUntil`
   promises so a test can `await waitOnExecutionContext(ctx)` before asserting side effects
-- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow }`: `queue.messages`
+- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow, launchWorkflow, teardownWorkflow }`: `queue.messages`
   (what a route enqueued — `[{ body, options }]`), `files.objects` (key → stored bytes/metadata),
   `hub.broadcasts` (`[{ tenantId, args: [method, ...args] }]` — every RPC call on any stub, e.g.
   `['broadcast', event]`; the stub's `fetch` answers 501), `kv.store`, `ai.runs` (`[{ model, inputs }]`),
-  `workflow.created` (`[{ id, params }]`) + `workflow.setStatus(id, { status })`. `createTestEnv({
+  `workflow.created` (`[{ id, params }]`) + `workflow.setStatus(id, { status })`, and Launch P2's
+  `launchWorkflow` / `teardownWorkflow` (the same `RecordingWorkflow` behind `APP_LAUNCH_WORKFLOW`
+  / `APP_TEARDOWN_WORKFLOW`). `createTestEnv({
   JOBS_QUEUE: undefined })` / `{ FILES: undefined }` / `{ NOTIFICATIONS_HUB: undefined }` /
   `{ AGENT_RUN_WORKFLOW: undefined }` / `{ AI: undefined }` exercise the missing-binding branches
   (throws / 503 / no-op / 503 `agent_runs_not_configured` / next embeddings tier)
@@ -194,6 +196,18 @@ a fake `WebSocket` factory left set) is on you.
     restricted DOCUMENT past every read path; the plugin's `dashboard-visibility.test.ts` does the
     same for its own rows, including the two shapes that matter most — an EMPTY grant list is
     private rather than public, and a hidden row answers the SAME 404 as a missing one.
+- **Launch P2's vendors: the FakeCloud** (`tests/helpers/fake-cloud/`, the whole API in its
+  `index.ts` header). One STATEFUL in-memory Cloudflare + Neon (and its HTTP SQL) + Resend + GitHub
+  + GitHub's Actions JWKS behind one `fetch`: resources get ids, a deleted one answers 404, a
+  retried create meets the vendor's conflict, every call is recorded (`cloud.calls`,
+  `callsTo(vendor)`). Hand `cloud.fetch` to a client, or `cloud.install()` it as the global fetch in
+  a `// @vitest-isolate` file. `failNext(match, status)` fails one call, `lockNeon(n)` answers 423
+  n times, `resourcesFor(slug)` is the teardown invariant (empty = nothing left), and
+  `cloud.github.readFile` / `pushCommit` / `onDispatch` read committed files back and stand in for
+  a job. `tests/api/launch-vendors.test.ts` exercises every client method against it.
+  `tests/helpers/github-oidc.ts`: `mintActionsToken(actionsClaims({ repository, repositoryId,
+  environment, workflowFile }), { audience?, forged?, expiresInSeconds? })` signs a GitHub Actions
+  OIDC token whose JWKS the FakeCloud (or `actionsJwksFetch()`) serves at GitHub's URL
 - Producers: assert on `stubs(env).queue.messages` (RecordingQueue) — `body.type`, `body.payload` —
   and that the route did NOT do the work itself (no `[email:dev]` line, no provider fetch)
 - Uploads: `new FormData()` + `form.append('file', new File([bytes], 'a.png', { type: 'image/png' }))`

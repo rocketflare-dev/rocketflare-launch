@@ -81,8 +81,11 @@ export const credentialStatusSchema = z.object({
 })
 export type CredentialStatus = z.infer<typeof credentialStatusSchema>
 
-/** `launch_settings` keys — non-secret platform configuration, one row each. */
-export const LAUNCH_SETTING_KEYS = [
+/**
+ * The settings the setup wizard edits: plain strings, one field each on its cards. Every key here
+ * is also a `LAUNCH_SETTING_KEYS` key.
+ */
+export const SETUP_SETTING_KEYS = [
   'apps_domain',
   'cloudflare_account_id',
   'neon_org_id',
@@ -90,11 +93,68 @@ export const LAUNCH_SETTING_KEYS = [
   'notifications_domain',
   'github_org',
 ] as const
+export const setupSettingKeySchema = z.enum(SETUP_SETTING_KEYS)
+export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
+
+/**
+ * `launch_settings` keys — non-secret platform configuration, one row each. The wizard's strings,
+ * plus two that the pipeline reads with a CODE default and nobody has to set (P2):
+ *
+ * - `template_pin` — `{ repo, tag, commit }`, the kit a new app is cut from (`DEFAULT_TEMPLATE_PIN`).
+ * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
+ */
+export const LAUNCH_SETTING_KEYS = [
+  ...SETUP_SETTING_KEYS,
+  'template_pin',
+  'app_create_role',
+] as const
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
 
 /**
- * Setting VALUES, validated per key. Everything here is non-secret and may be shown, audited
+ * `launch_settings.template_pin`. The scaffold job clones `repo` at `tag` and refuses to go on
+ * unless the tag resolves to `commit` — a moved tag is a different kit.
+ */
+export const templatePinSchema = z.object({
+  repo: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name'),
+  tag: z.string().trim().min(1).max(100),
+  commit: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{40}$/, 'A full 40-character commit SHA'),
+})
+export type TemplatePin = z.infer<typeof templatePinSchema>
+
+/** Rocketflare kit 0.15.0 — the release P2 was built and checked against. */
+export const DEFAULT_TEMPLATE_PIN: TemplatePin = {
+  repo: 'rocketflare-dev/rocketflare',
+  tag: '0.15.0',
+  commit: 'c7fd5dfbf9cfbc197c60f1993f18d524ec28bd66',
+}
+
+/**
+ * `launch_settings.app_create_role`: the lowest tenant role that may create an app. `admin` (the
+ * default) means admins and above — `manage App`; `member` opens it to everyone.
+ */
+export const APP_CREATE_ROLES = ['owner', 'admin', 'member'] as const
+export const appCreateRoleSchema = z.enum(APP_CREATE_ROLES)
+export type AppCreateRole = z.infer<typeof appCreateRoleSchema>
+export const DEFAULT_APP_CREATE_ROLE: AppCreateRole = 'admin'
+
+/**
+ * Whether a tenant role meets `app_create_role`. `support` (platform staff inside a tenant) ranks
+ * with `admin`, as it does in the ability matrix, where both `manage App`.
+ */
+export function meetsAppCreateRole(role: string, required: AppCreateRole): boolean {
+  const rank: Record<string, number> = { owner: 3, admin: 2, support: 2, member: 1 }
+  return (rank[role] ?? 0) >= rank[required]
+}
+
+/**
+ * The wizard's setting VALUES, validated per key. Everything here is non-secret and may be shown, audited
  * (`setting.changed` carries before and after) and logged.
  */
 const hostnameSchema = z
@@ -132,15 +192,15 @@ export const launchSettingValueSchemas = {
     .string()
     .trim()
     .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, 'A GitHub organization login'),
-} as const satisfies Record<LaunchSettingKey, z.ZodTypeAny>
+} as const satisfies Record<SetupSettingKey, z.ZodTypeAny>
 
 /** `PUT /api/admin/setup/settings` — any subset of the keys; `null` clears one. */
 export const setupSettingsUpdateSchema = z
   .object(
     Object.fromEntries(
-      LAUNCH_SETTING_KEYS.map(key => [key, launchSettingValueSchemas[key].nullable().optional()])
+      SETUP_SETTING_KEYS.map(key => [key, launchSettingValueSchemas[key].nullable().optional()])
     ) as {
-      [K in LaunchSettingKey]: z.ZodOptional<z.ZodNullable<(typeof launchSettingValueSchemas)[K]>>
+      [K in SetupSettingKey]: z.ZodOptional<z.ZodNullable<(typeof launchSettingValueSchemas)[K]>>
     }
   )
   .strict()
@@ -149,8 +209,8 @@ export type SetupSettingsUpdate = z.infer<typeof setupSettingsUpdateSchema>
 
 /** Every setting, `null` when unset. */
 export const setupSettingsSchema = z.object(
-  Object.fromEntries(LAUNCH_SETTING_KEYS.map(key => [key, z.string().nullable()])) as {
-    [K in LaunchSettingKey]: z.ZodNullable<z.ZodString>
+  Object.fromEntries(SETUP_SETTING_KEYS.map(key => [key, z.string().nullable()])) as {
+    [K in SetupSettingKey]: z.ZodNullable<z.ZodString>
   }
 )
 export type SetupSettings = z.infer<typeof setupSettingsSchema>

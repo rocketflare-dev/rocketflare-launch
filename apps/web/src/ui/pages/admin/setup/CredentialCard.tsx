@@ -10,8 +10,8 @@
 import {
   type CredentialKind,
   credentialPayloadSchemas,
-  type LaunchSettingKey,
   type SetupCredential,
+  type SetupSettingKey,
   type SetupSettings,
   type SetupStepId,
   type SetupStepStatus,
@@ -31,7 +31,7 @@ import { CheckList } from './StatusDot'
 import { StepCard } from './StepCard'
 
 export interface SettingFieldSpec {
-  key: LaunchSettingKey
+  key: SetupSettingKey
   label: string
   placeholder?: string
   hint?: string
@@ -80,8 +80,8 @@ export function CredentialCard({
   const check = useCheckCredential(kind)
   const remove = useRemoveCredential(kind)
 
-  const [settingValues, setSettingValues] = useState<Partial<Record<LaunchSettingKey, string>>>(
-    () => Object.fromEntries(settingFields.map(f => [f.key, settings[f.key] ?? '']))
+  const [settingValues, setSettingValues] = useState<Partial<Record<SetupSettingKey, string>>>(() =>
+    Object.fromEntries(settingFields.map(f => [f.key, settings[f.key] ?? '']))
   )
   // A check can WRITE settings (the Neon org and region it discovered), so follow the server's
   // values whenever they change rather than keeping a stale blank that the next save would clear.

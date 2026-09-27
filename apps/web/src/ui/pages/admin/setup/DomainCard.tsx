@@ -4,8 +4,8 @@
  * probes from that credential's last check, and re-runs it after a change when a token is set.
  */
 import type {
-  LaunchSettingKey,
   SetupCredential,
+  SetupSettingKey,
   SetupSettings,
   SetupStepStatus,
 } from '@launch/shared/launch-setup'
@@ -16,7 +16,7 @@ import { settingsPatch } from './fields'
 import { CheckList } from './StatusDot'
 import { StepCard } from './StepCard'
 
-const KEYS: LaunchSettingKey[] = ['apps_domain', 'notifications_domain']
+const KEYS: SetupSettingKey[] = ['apps_domain', 'notifications_domain']
 
 export function DomainCard({
   status,
@@ -31,8 +31,8 @@ export function DomainCard({
 }) {
   const update = useUpdateSetupSettings()
   const check = useCheckCredential('cloudflare_api_token')
-  const [values, setValues] = useState<Partial<Record<LaunchSettingKey, string>>>({})
-  const [errors, setErrors] = useState<Partial<Record<LaunchSettingKey, string>>>({})
+  const [values, setValues] = useState<Partial<Record<SetupSettingKey, string>>>({})
+  const [errors, setErrors] = useState<Partial<Record<SetupSettingKey, string>>>({})
 
   const serverValues = `${settings.apps_domain}|${settings.notifications_domain}`
   // biome-ignore lint/correctness/useExhaustiveDependencies: serverValues is the dependency

@@ -152,6 +152,16 @@ describe('the Rocketflare manifest and tomls', () => {
       durableObjects: [{ binding: 'NOTIFICATIONS_HUB', className: 'NotificationsHub' }],
       workflows: [
         { binding: 'AGENT_RUN_WORKFLOW', name: 'launch-agent-run', className: 'AgentRunWorkflow' },
+        {
+          binding: 'APP_LAUNCH_WORKFLOW',
+          name: 'launch-app-create',
+          className: 'AppLaunchWorkflow',
+        },
+        {
+          binding: 'APP_TEARDOWN_WORKFLOW',
+          name: 'launch-app-teardown',
+          className: 'AppTeardownWorkflow',
+        },
       ],
     })
     const staging = parseWranglerToml(STAGING_TOML, 'apps/web/wrangler.staging.toml')

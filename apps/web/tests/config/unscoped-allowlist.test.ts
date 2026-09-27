@@ -47,6 +47,11 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
   // Launch (spec/05): the issuer's token endpoint has a client_id and a code, and nothing else.
   'src/api/services/oidc/store.ts':
     'the pre-tenant OIDC protocol path: client_id / code-hash lookups before any session; the tenant is then taken from the row',
+  // Launch P2: `/ci/*` has a GitHub OIDC token and nothing else — no session, so no tenant yet.
+  'src/api/services/launch/ci/caller.ts':
+    'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
+  'src/api/services/launch/deploy/tickets.ts':
+    'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
   // Launch: the analytics plugin (3.4.1) ships this test file without declaring it in its own
   // `unscopedAllowlist`, so the entry lives here until the plugin carries it (upstream issue).
   'src/plugins/analytics/tests/api/dashboard-visibility.test.ts':

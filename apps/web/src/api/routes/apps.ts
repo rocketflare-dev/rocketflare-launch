@@ -6,6 +6,8 @@
  * Reads are by SLUG (`GET /:slug`, the URL the console shows); everything under an app is by ID.
  * Every lookup is tenant-first (`services/launch/apps.ts`), so another tenant's app is a 404.
  *
+ * P2 mounts two sub-routers first (`app-pipeline.ts`, `app-deploys.ts`); see below.
+ *
  * `POST /:id/health-check` probes inline rather than enqueueing: it is two GETs per environment
  * with a five-second cap, and the person who pressed the button is waiting for the answer.
  */
@@ -39,8 +41,16 @@ import {
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
+import { appDeploysRouter } from './app-deploys'
+import { appPipelineRouter } from './app-pipeline'
 
 export const appsRouter = createRouter()
+
+// Launch P2: creating an app (`POST /`, `/:id/pipeline…`, `/:id/teardown`) and its deploys
+// (`/:id/deploys…`) live in their own files. Mounted FIRST: Hono matches in registration order,
+// and nothing here may be shadowed by `GET /:slug` below.
+appsRouter.route('/', appPipelineRouter)
+appsRouter.route('/', appDeploysRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')

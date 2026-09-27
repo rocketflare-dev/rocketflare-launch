@@ -43,14 +43,39 @@ export type AppOperationStatus = z.infer<typeof appOperationStatusSchema>
  * simply has none.
  */
 export const appEnvironmentResourcesSchema = z.object({
-  kv: z.array(z.object({ binding: z.string(), id: z.string() })).optional(),
-  queues: z.array(z.object({ binding: z.string(), queue: z.string() })).optional(),
+  /** `title` is the account-scoped name Launch created it under (P2); an import has only the id. */
+  kv: z
+    .array(z.object({ binding: z.string(), id: z.string(), title: z.string().optional() }))
+    .optional(),
+  /** `id` is Cloudflare's `queue_id`, recorded when Launch created the queue (P2). */
+  queues: z
+    .array(z.object({ binding: z.string(), queue: z.string(), id: z.string().optional() }))
+    .optional(),
   r2: z.array(z.object({ binding: z.string(), bucketName: z.string() })).optional(),
   durableObjects: z.array(z.object({ binding: z.string(), className: z.string() })).optional(),
   workflows: z
     .array(z.object({ binding: z.string(), name: z.string(), className: z.string() }))
     .optional(),
   hyperdrive: z.array(z.object({ binding: z.string(), id: z.string() })).optional(),
+  /**
+   * The queue consumers Launch registered on the Worker (P2: the Versions API does not create
+   * them, so the pipeline does, and teardown deletes them by `consumerId`).
+   */
+  queueConsumers: z
+    .array(
+      z.object({
+        queue: z.string(),
+        queueId: z.string(),
+        consumerId: z.string(),
+        scriptName: z.string(),
+      })
+    )
+    .optional(),
+  /**
+   * The newest Durable Object `[[migrations]]` tag the placeholder Worker applied (P2). A later
+   * build carrying a newer tag is refused by the deploy gateway: the Versions API cannot apply it.
+   */
+  doMigrationTag: z.string().optional(),
 })
 export type AppEnvironmentResources = z.infer<typeof appEnvironmentResourcesSchema>
 
@@ -61,6 +86,10 @@ export const appEnvironmentNeonSchema = z
     branchId: z.string().optional(),
     databaseName: z.string().optional(),
     roleName: z.string().optional(),
+    /** P2: owns database `app`; the deploy job migrates as it through a short-lived password. */
+    migratorRole: z.string().optional(),
+    /** P2: the Worker's role — `GRANT migrator TO app`, so it has the owner's rights (RLS inert). */
+    appRole: z.string().optional(),
   })
   .passthrough()
 export type AppEnvironmentNeon = z.infer<typeof appEnvironmentNeonSchema>

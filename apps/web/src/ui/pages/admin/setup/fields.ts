@@ -3,24 +3,24 @@
  * changed, `''` meaning "clear") validated with the SAME per-key schemas the server uses.
  */
 import {
-  type LaunchSettingKey,
   launchSettingValueSchemas,
+  type SetupSettingKey,
   type SetupSettings,
   type SetupSettingsUpdate,
 } from '@launch/shared/launch-setup'
 
 export interface SettingsPatchResult {
   patch: SetupSettingsUpdate
-  errors: Partial<Record<LaunchSettingKey, string>>
+  errors: Partial<Record<SetupSettingKey, string>>
 }
 
 export function settingsPatch(
-  keys: readonly LaunchSettingKey[],
-  values: Partial<Record<LaunchSettingKey, string>>,
+  keys: readonly SetupSettingKey[],
+  values: Partial<Record<SetupSettingKey, string>>,
   current: SetupSettings
 ): SettingsPatchResult {
   const patch: Record<string, string | null> = {}
-  const errors: Partial<Record<LaunchSettingKey, string>> = {}
+  const errors: Partial<Record<SetupSettingKey, string>> = {}
   for (const key of keys) {
     const raw = (values[key] ?? '').trim()
     if (raw === '') {
