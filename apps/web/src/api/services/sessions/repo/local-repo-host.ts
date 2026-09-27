@@ -2,25 +2,37 @@
  * `LocalRepoHost` — the `RepoHostPort` on the laptop (`SESSION_BACKEND=local`): the sandbox still
  * clones `https://github.com/<o>/<r>.git`, and the GitHub egress handler rewrites it to
  * `SESSION_LOCAL_GIT_URL` (`pnpm sessions:local-git serve`, git smart-HTTP on :9420) — so the
- * checkout and the Workflow are identical in both backends. No token (`gitAuth` → null);
- * `openPullRequest` writes the PR fields as `local://<o>/<r>/pull/<n>`; `getChecks` reports the
- * ship gate's own result.
+ * checkout and the Workflow are identical in both backends.
  *
- * **Slice 3d owns this file.** From 3a it is a stub: `gitUpstream` and `gitAuth` are real, the
- * PR and checks methods throw `NotWiredError`.
+ * - `gitAuth` → null: the local git server takes no credential.
+ * - `openPullRequest` has nowhere to open one, so it answers a stable synthetic PR —
+ *   `local://<o>/<r>/pull/<n>`, `n` derived from the head branch — which `ship()` writes onto the
+ *   session row exactly as it writes GitHub's.
+ * - `getChecks` reports the ship gate's own result: `ship()` only opens a PR after Launch ran the
+ *   gate green on that head, so the one check a local PR has is that gate, passed.
  */
 import type { PrChecks } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
-import {
-  type GitAuth,
-  NotWiredError,
-  type OpenPullRequestInput,
-  type RepoHostPort,
-  type RepoRef,
-} from '../ports'
+import type { GitAuth, OpenPullRequestInput, RepoHostPort, RepoRef } from '../ports'
+
+/** The check a local PR reports: the gate `ship()` ran before opening it. */
+export const LOCAL_SHIP_GATE_CHECK = 'Launch ship gate'
+
+/** A stable positive PR number for a head branch (FNV-1a, folded under 1 000 000). */
+function syntheticNumber(head: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < head.length; i++) {
+    hash ^= head.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return (hash % 999_999) + 1
+}
 
 export class LocalRepoHost implements RepoHostPort {
-  constructor(readonly cfg: AppConfig) {}
+  constructor(
+    readonly cfg: AppConfig,
+    readonly now: () => Date = () => new Date()
+  ) {}
 
   gitUpstream(_repo: RepoRef): string {
     return (this.cfg.SESSION_LOCAL_GIT_URL ?? 'http://localhost:9420').replace(/\/+$/, '')
@@ -30,14 +42,24 @@ export class LocalRepoHost implements RepoHostPort {
     return null
   }
 
-  openPullRequest(
-    _repo: RepoRef,
-    _input: OpenPullRequestInput
+  async openPullRequest(
+    repo: RepoRef,
+    input: OpenPullRequestInput
   ): Promise<{ number: number; url: string }> {
-    throw new NotWiredError('LocalRepoHost.openPullRequest', '3d')
+    const number = syntheticNumber(input.head)
+    return { number, url: `local://${repo.owner}/${repo.repo}/pull/${number}` }
   }
 
-  getChecks(_repo: RepoRef, _input: { prNumber: number; headSha: string }): Promise<PrChecks> {
-    throw new NotWiredError('LocalRepoHost.getChecks', '3d')
+  async getChecks(_repo: RepoRef, input: { prNumber: number; headSha: string }): Promise<PrChecks> {
+    return {
+      state: 'success',
+      headSha: input.headSha,
+      checkedAt: this.now(),
+      total: 1,
+      passed: 1,
+      failed: 0,
+      pending: 0,
+      checks: [{ name: LOCAL_SHIP_GATE_CHECK, source: 'check_run', state: 'success', url: null }],
+    }
   }
 }
