@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Launch is an OIDC issuer for the company's apps: discovery, JWKS with key rotation,
+  authorize (PKCE S256 only), token (single-use codes; a replay revokes the first token),
+  userinfo and logout. Each app has an access policy (everyone, or named groups and people),
+  and a request-access page for anyone it leaves out. Every sign-in and decision is audited.
 - Setup wizard (`/admin/setup`): the apps domain and zone, and the Cloudflare, Neon, Resend and
   GitHub App credentials, each sealed at rest, checked against the vendor, shown only as set /
   when / by whom, and audited.

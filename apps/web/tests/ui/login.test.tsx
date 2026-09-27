@@ -166,6 +166,20 @@ describe('Login', () => {
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/profile'))
   })
 
+  it('a signed-in return to the OIDC issuer is a full-page load, not a router hop', async () => {
+    stubFetch({ '/auth/methods': ALL_METHODS })
+    const authorize = '/oidc/authorize?client_id=lc_x&state=s'
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="*" element={<Where />} />
+      </Routes>,
+      { route: `/login?returnUrl=${encodeURIComponent(authorize)}`, session: makeSession() }
+    )
+    await waitFor(() => expect(hardNavigate).toHaveBeenCalledWith(authorize))
+    expect(screen.queryByTestId('path')).not.toBeInTheDocument()
+  })
+
   it('rejects an absolute returnUrl (open redirect) and falls back to /', async () => {
     stubFetch({ '/auth/methods': ALL_METHODS })
     renderWithProviders(

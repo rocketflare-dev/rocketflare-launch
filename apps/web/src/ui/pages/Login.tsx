@@ -100,6 +100,14 @@ export default function Login() {
     hardNavigate(`/auth/oidc?returnUrl=${encodeURIComponent(returnUrl)}`)
   }, [autoOidc, returnUrl])
 
+  // Launch's OIDC issuer (`/oidc/authorize`) is a Worker route, not an SPA page, so a signed-in
+  // return there must be a full-page load; the router would render NotFound.
+  const toIssuer = status === 'authenticated' && returnUrl.startsWith('/oidc/')
+  useEffect(() => {
+    if (toIssuer) hardNavigate(returnUrl)
+  }, [toIssuer, returnUrl])
+
+  if (toIssuer) return null
   if (status === 'authenticated') return <Navigate to={returnUrl} replace />
 
   const forInvitation = returnUrl.startsWith('/invite/')

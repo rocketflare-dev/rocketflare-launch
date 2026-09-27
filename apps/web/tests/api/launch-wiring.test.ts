@@ -31,15 +31,28 @@ describe('Launch mounts', () => {
     )
   })
 
-  it.each([
-    '/oidc',
-    '/oidc/authorize',
-    '/oidc/token',
-    '/.well-known/openid-configuration',
-    '/.well-known/jwks.json',
-  ])('%s is public and answers a JSON envelope, never the SPA', async path => {
-    await expectEnvelope(await request(path), 404, path)
+  it.each(['/oidc', '/oidc/token'])(
+    '%s is public and answers a JSON envelope, never the SPA',
+    async path => {
+      await expectEnvelope(await request(path), 404, path)
+    }
+  )
+
+  it('/oidc/authorize with no parameters is an HTML error page, never the SPA', async () => {
+    const res = await request('/oidc/authorize')
+    expect(res.status).toBe(400)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    expect(await res.text()).not.toContain('id="root"')
   })
+
+  it.each(['/.well-known/openid-configuration', '/.well-known/jwks.json'])(
+    '%s answers JSON',
+    async path => {
+      const res = await request(path)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('application/json')
+    }
+  )
 
   it.each(['/api/apps', '/api/app-access', '/api/audit'])(
     '%s requires a session (401 envelope)',
@@ -65,11 +78,8 @@ describe('Launch mounts', () => {
       await expectEnvelope(await request(path), 401, path)
       await expectEnvelope(await request(path, { headers: owner }), 403, path)
     }
-    expect((await request('/api/admin/setup', { headers: staff })).status).toBe(200)
-    await expectEnvelope(
-      await request('/api/admin/oidc/keys', { headers: staff }),
-      404,
-      '/api/admin/oidc/keys'
-    )
+    for (const path of ['/api/admin/setup', '/api/admin/oidc/keys']) {
+      expect((await request(path, { headers: staff })).status, path).toBe(200)
+    }
   })
 })
