@@ -262,10 +262,19 @@ export class FakeCloud {
     ]
   }
 
-  /** Make this the global `fetch`; returns the restore. The file must be `// @vitest-isolate`. */
+  /**
+   * Make this the global `fetch`; returns the restore. The file must be `// @vitest-isolate`.
+   * Loopback requests still reach the network: under `pnpm test:neon` the database driver speaks
+   * HTTP to the local Neon proxy, and a test's own bridge server lives there too.
+   */
   install(): () => void {
     const original = globalThis.fetch
-    globalThis.fetch = this.fetch
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input)
+      return /^https?:\/\/(localhost|127\.0\.0\.1)[:/]/.test(url)
+        ? original(input, init)
+        : this.fetch(input, init)
+    }) as typeof fetch
     return () => {
       globalThis.fetch = original
     }

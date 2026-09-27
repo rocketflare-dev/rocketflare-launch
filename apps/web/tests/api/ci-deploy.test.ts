@@ -47,15 +47,9 @@ const store = vi.hoisted(() => ({
   credentials: new Map<string, unknown>(),
   settings: new Map<string, unknown>(),
 }))
-vi.mock('@/api/services/launch/credentials', async importOriginal => {
-  const real = await importOriginal<typeof import('@/api/services/launch/credentials')>()
-  return {
-    ...real,
-    getCredential: async (_db: unknown, _cfg: unknown, kind: string) =>
-      store.credentials.get(kind) ?? null,
-    getSetting: async (_db: unknown, key: string) => store.settings.get(key) ?? null,
-  }
-})
+vi.mock('@/api/services/launch/credentials', async importOriginal =>
+  (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
+)
 
 const db = setupTestDatabase()
 const cloud: FakeCloud = createFakeCloud()

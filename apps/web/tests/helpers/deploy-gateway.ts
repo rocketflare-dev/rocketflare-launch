@@ -5,7 +5,8 @@
  * a placeholder Worker that applied DO migration `v1`, its Workflow, and a Neon project whose
  * `staging` branch was cut from `main` with the `migrator` role owning database `app`.
  *
- * Plus the platform credentials the gateway acts with (`fillDeployCredentials`), the job's GitHub
+ * Plus the platform credentials the gateway acts with (`fillDeployCredentials`, into a
+ * `credential-store.ts` store), the job's GitHub
  * OIDC claims (`deployClaims`), and the staging toml a kit app would send (`appToml`).
  */
 import { generateKeyPairSync } from 'node:crypto'
@@ -16,6 +17,7 @@ import { createOrgRepo } from '@/api/services/launch/github-app'
 import { NeonClient } from '@/api/services/launch/neon'
 import type { Database } from '@/db/client'
 import { type AppEnvironmentRow, type AppRow, appEnvironments, apps } from '@/db/schema'
+import { type CredentialStore, storeCredential } from './credential-store'
 import type { FakeCloud } from './fake-cloud'
 import { actionsClaims } from './github-oidc'
 import { uniqueSlug } from './launch-apps'
@@ -27,45 +29,19 @@ const { privateKey: GITHUB_APP_PEM } = generateKeyPairSync('rsa', {
 })
 
 /**
- * An in-memory stand-in for the platform credential store, for suites that `vi.mock`
- * `@/api/services/launch/credentials`. `admin_credentials` and `launch_settings` have no tenant:
- * writing them from a suite that runs beside `tests/api/setup.test.ts` (which owns those tables)
- * would race it, so the deploy suites never touch them.
- */
-export interface CredentialStore {
-  credentials: Map<string, unknown>
-  settings: Map<string, unknown>
-}
-
-/**
  * Fill `store` with what the gateway loads: the Cloudflare token, the Neon key, the GitHub App
  * (with its installation id), and the account / org settings — all FakeCloud's.
  */
 export function fillDeployCredentials(store: CredentialStore, cloud: FakeCloud): void {
-  const stored = (kind: string, secret: unknown, metadata: Record<string, unknown> = {}) => ({
-    kind,
-    secret,
-    metadata,
-    setAt: new Date(),
-    rotatedAt: null,
-  })
   store.credentials.clear()
   store.settings.clear()
-  store.credentials.set(
-    'cloudflare_api_token',
-    stored('cloudflare_api_token', { apiToken: `cf-${'t'.repeat(40)}` })
-  )
-  store.credentials.set(
-    'neon_org_api_key',
-    stored('neon_org_api_key', { apiKey: `neon-${'k'.repeat(40)}` })
-  )
-  store.credentials.set(
+  storeCredential(store, 'cloudflare_api_token', { apiToken: `cf-${'t'.repeat(40)}` })
+  storeCredential(store, 'neon_org_api_key', { apiKey: `neon-${'k'.repeat(40)}` })
+  storeCredential(
+    store,
     'github_app',
-    stored(
-      'github_app',
-      { appId: String(cloud.opts.appId), privateKey: GITHUB_APP_PEM },
-      { installationId: cloud.opts.installationId }
-    )
+    { appId: String(cloud.opts.appId), privateKey: GITHUB_APP_PEM },
+    { installationId: cloud.opts.installationId }
   )
   store.settings.set('cloudflare_account_id', cloud.opts.accountId)
   store.settings.set('github_org', cloud.opts.org)

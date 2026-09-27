@@ -1,10 +1,10 @@
 // @vitest-isolate
-// Replaces the global fetch with a FakeCloud and mocks the platform settings/credential reads.
+// Replaces the global fetch with a FakeCloud and mocks the platform credential store.
 /**
  * `/ci/scaffold/token` and `/ci/scaffold/done` (Launch P2, slice 2b) through the real app, with a
  * FakeCloud as GitHub (the Actions JWKS, the app's installation tokens) and GitHub Actions OIDC
  * tokens minted for the scaffold job. `launch_settings` and the `github_app` credential are
- * platform-global rows other suites write and delete concurrently, so their READS are mocked here;
+ * platform-global rows other suites write and delete concurrently, so they live in memory here;
  * the app, its environments and the tickets are real rows.
  */
 import { generateKeyPairSync } from 'node:crypto'
@@ -17,6 +17,7 @@ import { GitHubActionsScaffoldRunner } from '@/api/services/launch/scaffold/gith
 import { ScaffoldNotReadyError } from '@/api/services/launch/scaffold/runner'
 import { apps, auditEvents, deployTickets } from '@/db/schema'
 import { createTestTenant } from '../helpers/auth'
+import { storeCredential } from '../helpers/credential-store'
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud } from '../helpers/fake-cloud'
 import { actionsClaims, mintActionsToken } from '../helpers/github-oidc'
@@ -32,42 +33,29 @@ const { privateKey } = generateKeyPairSync('rsa', {
   publicKeyEncoding: { type: 'spki', format: 'pem' },
 })
 
-vi.mock('@/api/services/launch/credentials', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/api/services/launch/credentials')>()
-  return {
-    ...actual,
-    getSetting: vi.fn(async (_db: unknown, key: string) => {
-      if (key === 'apps_domain') return APPS_DOMAIN
-      if (key === 'github_org') return cloud.opts.org
-      return null
-    }),
-    getCredential: vi.fn(async (_db: unknown, _cfg: unknown, kind: string) =>
-      kind === 'github_app'
-        ? {
-            kind,
-            secret: { appId: String(cloud.opts.appId), privateKey },
-            metadata: { installationId: cloud.opts.installationId },
-            setAt: new Date(),
-            rotatedAt: null,
-          }
-        : null
-    ),
-  }
-})
+/** The platform credentials, in memory (`credential-store.ts`): no global table is written. */
+const store = vi.hoisted(() => ({
+  credentials: new Map<string, unknown>(),
+  settings: new Map<string, unknown>(),
+}))
+vi.mock('@/api/services/launch/credentials', async importOriginal =>
+  (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
+)
 
 const db = setupTestDatabase()
 let restoreFetch: () => void
 
 beforeAll(() => {
   // GitHub (and its JWKS) through the FakeCloud; the local database proxy (neon driver) as is.
-  const original = globalThis.fetch
-  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-    const url = input instanceof Request ? input.url : String(input)
-    return /^https?:\/\/(localhost|127\.0\.0\.1)[:/]/.test(url)
-      ? original(input, init)
-      : cloud.fetch(input, init)
-  })
-  restoreFetch = () => spy.mockRestore()
+  restoreFetch = cloud.install()
+  store.settings.set('apps_domain', APPS_DOMAIN)
+  store.settings.set('github_org', cloud.opts.org)
+  storeCredential(
+    store,
+    'github_app',
+    { appId: String(cloud.opts.appId), privateKey },
+    { installationId: cloud.opts.installationId }
+  )
 })
 afterAll(() => restoreFetch())
 
