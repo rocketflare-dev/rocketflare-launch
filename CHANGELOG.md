@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- P3 coding-session UI and CLI (slice 3e): the session page (`/apps/:slug/sessions/:id` — chat
+  with one-line tool rows and a keyboard-first composer beside a live, grant-gated preview that
+  reloads after every turn; header with status, cost against the cap, Ship / End / Resume and
+  Extend budget; the ship panel with gate attempts, the PR and its CI; boot progress), a
+  "Coding sessions" card with Start session on the app page, Admin → Sessions with Drain /
+  Undrain, and `launch sessions start|say --follow|ship --wait|end|ls|preview-url`.
 - P3 foundations (slice 3a) for coding sessions: the `sessions` and `session_events` tables,
   `ai_usage.session_id`, the app's session database and monthly budget columns (one migration);
   the `SESSION_SANDBOX` container (`@cloudflare/sandbox` 0.12.10, a placeholder image) and

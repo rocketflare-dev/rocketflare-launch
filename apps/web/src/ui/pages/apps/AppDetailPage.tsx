@@ -8,7 +8,10 @@
  * while a run is owed — `usePipeline`), its deploys (`DeploysCard`), and a danger zone whose
  * Archive runs the teardown, which then shows here the same way. Approving, rejecting and starting
  * a production deploy is for the app's owners as well as admins — the detail's `viewerCanDeploy`,
- * the server's own rule; retry and archive stay `manage App`. While the launch is under way the
+ * the server's own rule; retry and archive stay `manage App`.
+ *
+ * P3: an app with a repository also carries its coding sessions (`SessionsCard`) — "Start session"
+ * and the sessions running on it. While the launch is under way the
  * parts that only make sense for a running app — health history, "Check now", the sign-in card the
  * pipeline itself registers — wait for it.
  */
@@ -48,6 +51,7 @@ import { HealthHistory } from './components/HealthHistory'
 import { OidcClientCard } from './components/OidcClientCard'
 import { OperationsLog } from './components/OperationsLog'
 import { PipelineProgress } from './components/PipelineProgress'
+import { SessionsCard } from './components/SessionsCard'
 import { TeardownModal } from './components/TeardownModal'
 
 function About({ app }: { app: AppDetail }) {
@@ -247,6 +251,7 @@ export default function AppDetailPage() {
   const stagingHost = app.environments
     .find(env => env.name === 'staging')
     ?.url?.replace(/^https?:\/\//, '')
+  const hasRepo = Boolean(app.repoOwner && app.repoName)
   const archivedAt = teardownView?.status === 'succeeded' ? lastFinished(teardownView) : null
 
   return (
@@ -339,6 +344,11 @@ export default function AppDetailPage() {
           canDecide={app.viewerCanDeploy}
           canDeployProduction={app.viewerCanDeploy && app.status === 'live'}
         />
+      )}
+
+      {/* Launch P3: the way into a coding session — for an app with a repository to work on. */}
+      {hasRepo && !launching && app.status !== 'archived' && (
+        <SessionsCard appId={app.id} appSlug={app.slug} canStart={can('create', 'Session')} />
       )}
 
       {app.environments.length > 0 && !launching && (

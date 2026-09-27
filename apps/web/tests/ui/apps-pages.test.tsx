@@ -185,6 +185,13 @@ describe('AppDetailPage', () => {
     expect(screen.queryByRole('button', { name: /Register OIDC client/ })).not.toBeInTheDocument()
   })
 
+  it('carries the coding sessions card, with Start for anyone who may start one (P3)', async () => {
+    renderDetail(member(), { [`/api/apps/${APP_ID}/sessions`]: { items: [] } })
+    expect(await screen.findByRole('heading', { name: 'Coding sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument()
+    expect(await screen.findByText('No sessions running')).toBeInTheDocument()
+  })
+
   it('registers the OIDC client and shows the secret once, with the config snippet', async () => {
     const client = {
       id: '12121212-1212-4212-8212-121212121212',

@@ -63,6 +63,19 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   a created app's staging URL, else null) and `useDeploys` (`useDeploys` polling while a ticket is
   in flight — `approved`/`uploaded`, never `pending`, which waits on a person — `useDecideDeploy`,
   `useDeployProduction`).
+  Launch P3 (coding sessions): `useSessions` (`useSession(id)` / `useAppSessions(appId, scope)` /
+  `useAdminSessions(scope)` polling `SESSION_POLL_MS` only while `sessionOwesAnswer` — `ready`,
+  `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession`, `useSendTurn`,
+  `useCancelTurn`, `useShipSession`, `useEndSession`, `useResumeSession`, `useExtendBudget` write
+  the returned row into the cache; `usePreviewGrant` is a mutation — every iframe load mints a fresh
+  grant; `useSessionPr`, `useDrainSessions`/`useUndrainSessions`) and `useSessionStream(session)`:
+  the ONLY writer of `['session-agui', id]`, holding the DURABLE `session_events` rows
+  (`GET /events?afterSeq=`), topped up (merged, coalesced) when the read-stream
+  (`lib/sessionAguiStream.ts`, a permissive cadence-only parser — it reads nothing but `id:`)
+  reports a seq past the cursor, when the row changes, or on a poll after the stream gives up —
+  RunPage's `useLiveRun` pattern. `pages/sessions/` is the lazy page (it carries `Markdown`); every
+  panel is a selector in the pure `sessionChatModel.ts` (`buildSessionChat`, `toolSummary`,
+  `bootSteps`, `latestPreviewChangeSeq`, `shipGates` — `tests/config/session-chat-model.test.ts`).
   An installed PLUGIN's hooks live in its own tree (`src/plugins/<id>/ui/hooks/`) and read its own
   query keys directly rather than the merged `queryKeys` — a plugin must work the same whether it is
   the only one installed or the fifth. The analytics plugin's are `useAnalyticsPages`, `useCubeMeta`

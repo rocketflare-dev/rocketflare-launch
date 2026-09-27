@@ -53,6 +53,14 @@ Groups (D29) are READ-only here: `groups list` and `groups members <id>`. Creati
 group is a decision about who sees what, and the confirmation the web UI gives before a delete
 narrows access has no honest one-line equivalent in a CLI.
 
+Coding sessions (Launch P3): `sessions start <app>` (slug → `GET /api/apps/:slug` → `POST
+/api/apps/:id/sessions`), `say <id> <msg> [--follow]`, `ship <id> [--wait]`, `end`, `ls <app>
+[--all]`, `preview-url <id> [--open]`. Following POLLS the durable rows (`GET /events?afterSeq=`)
+rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pollMs` are injectable.
+A failed turn, a ship with no PR, or failing CI exit 1; with `--json` a follow prints ONE document
+(`{ session, events[, pr] }`) at the end. The preview URL is a one-minute credential: printed only
+when asked for.
+
 ## Output
 
 - Human output goes to stdout via `chalk`; diagnostics and progress to stderr. `--json` on **every
