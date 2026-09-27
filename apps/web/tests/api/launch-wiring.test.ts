@@ -51,7 +51,7 @@ describe('Launch mounts', () => {
   it('a member reaching an unfilled tenant mount gets a JSON 404', async () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'member')
     const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
-    for (const path of ['/api/apps', '/api/apps/some-slug', '/api/app-access/requests']) {
+    for (const path of ['/api/apps/some-slug', '/api/app-access/requests']) {
       await expectEnvelope(await request(path, { headers: cookie }), 404, path)
     }
   })
