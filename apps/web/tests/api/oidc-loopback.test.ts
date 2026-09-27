@@ -168,13 +168,35 @@ describe("the kit's OIDC relying party against Launch's issuer", () => {
     const end = new URL(endSessionUrl as string)
     expect(`${end.origin}${end.pathname}`).toBe(`${ISSUER}/oidc/logout`)
 
+    // The kit keeps no id_token, so it sends no id_token_hint: Launch asks before signing out.
     const res = await request(
       `${end.pathname}${end.search}`,
       { headers: sessionCookieHeader(launchCookie) },
       { env: launch }
     )
-    expect(res.status).toBe(302)
-    expect(res.headers.get('location')).toBe(client.postLogoutRedirectUri)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Sign out of Launch?')
+    const confirmed = await request(
+      '/oidc/logout',
+      {
+        method: 'POST',
+        headers: {
+          ...sessionCookieHeader(launchCookie),
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Sec-Fetch-Site': 'same-origin',
+          Origin: ISSUER,
+        },
+        body: new URLSearchParams({
+          client_id: client.clientId,
+          post_logout_redirect_uri: end.searchParams.get('post_logout_redirect_uri') ?? '',
+        }).toString(),
+      },
+      { env: launch }
+    )
+    expect(confirmed.status).toBe(200)
+    expect(await confirmed.text()).toContain(
+      `content="0;url=${client.postLogoutRedirectUri.replace(/&/g, '&#38;')}"`
+    )
 
     // Signed out of Launch too: the next app sign-in has to go through the login page.
     const again = await request(

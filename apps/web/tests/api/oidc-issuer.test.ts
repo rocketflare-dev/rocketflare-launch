@@ -6,11 +6,17 @@
  * overlap, the access policy and its request-access redirect, tenant isolation and the audit rows.
  */
 import { and, eq } from 'drizzle-orm'
-import { createLocalJWKSet, decodeProtectedHeader, type JSONWebKeySet, jwtVerify } from 'jose'
+import {
+  createLocalJWKSet,
+  decodeProtectedHeader,
+  type JSONWebKeySet,
+  jwtVerify,
+  SignJWT,
+} from 'jose'
 import * as oidc from 'openid-client'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { SESSION_COOKIE_NAME } from '@/api/auth/cookies'
-import { rotateKeys } from '@/api/services/oidc/keys'
+import { rotateKeys, signingKey } from '@/api/services/oidc/keys'
 import { loadConfig } from '@/config'
 import {
   auditEvents,
@@ -556,11 +562,155 @@ describe('sessions', () => {
     expect(tb.claims()?.sub).toBe(alice.id)
     expect(tb.claims()?.aud).toBe(appB.clientId)
   })
+})
 
-  it('logout ends the Launch session and returns only to a registered URI', async () => {
+// ---- Re-authentication: prompt=login and max_age --------------------------------------------
+
+describe('re-authentication', () => {
+  /** A fresh member of alice's organisation, so ending sessions here never touches hers. */
+  async function person() {
+    const user = await createTestUser(db)
+    await linkUserToTenant(db, user.id, tenantId, 'member')
+    return user
+  }
+
+  async function sessionFor(userId: string, ageSeconds = 0) {
+    const cookie = await createTestSession(db, userId, tenantId)
+    if (ageSeconds > 0) {
+      await db
+        .update(userSessions)
+        .set({ createdAt: new Date(Date.now() - ageSeconds * 1000) })
+        .where(eq(userSessions.userId, userId))
+    }
+    return cookie
+  }
+
+  async function liveSessions(userId: string) {
+    return db.select().from(userSessions).where(eq(userSessions.userId, userId))
+  }
+
+  /** The authorize URL the login page will return to. */
+  function returnUrlOf(a: Authorized): URL {
+    expect(a.location?.pathname).toBe('/login')
+    return new URL(a.location?.searchParams.get('returnUrl') ?? '', ISSUER)
+  }
+
+  it('prompt=login ends the session and sends the person to sign in, without looping', async () => {
+    const carol = await person()
+    const cookie = await sessionFor(carol.id)
+    const a = await authorize(A, appA, cookie, { params: { prompt: 'login' } })
+    expect(a.res.status).toBe(302)
+    expect(setCookieValue(a.res, SESSION_COOKIE_NAME)).toBe('')
+    expect(await liveSessions(carol.id)).toHaveLength(0)
+    const back = returnUrlOf(a)
+    expect(back.searchParams.has('prompt')).toBe(false)
+    expect(Number(back.searchParams.get('launch_reauth'))).toBeGreaterThan(0)
+
+    // Signed in again: the return URL issues a code, and auth_time is the NEW sign-in.
+    const fresh = await sessionFor(carol.id)
+    const res = await request(
+      `${back.pathname}${back.search}`,
+      { headers: sessionCookieHeader(fresh) },
+      { env }
+    )
+    const location = new URL(res.headers.get('location') ?? '')
+    const tokens = await grant(A, { ...a, res, location })
+    const [session] = await liveSessions(carol.id)
+    expect(tokens.claims()?.auth_time).toBe(Math.floor((session?.createdAt.getTime() ?? 0) / 1000))
+  })
+
+  it('max_age: a session older than it re-authenticates; a younger one signs in', async () => {
+    const dave = await person()
+    const old = await sessionFor(dave.id, 3600)
+    const young = await authorize(A, appA, old, { params: { max_age: '7200' } })
+    expect(young.location?.searchParams.get('code')).toBeTruthy()
+    const stale = await authorize(A, appA, old, { params: { max_age: '60' } })
+    expect(returnUrlOf(stale).searchParams.get('max_age')).toBe('60')
+    expect(await liveSessions(dave.id)).toHaveLength(0)
+  })
+
+  it('max_age=0 is satisfied by the sign-in it forced (the marker), not by an older one', async () => {
+    const erin = await person()
+    const first = await authorize(A, appA, await sessionFor(erin.id), {
+      params: { max_age: '0' },
+    })
+    const back = returnUrlOf(first)
+    const fresh = await sessionFor(erin.id)
+    const res = await request(
+      `${back.pathname}${back.search}`,
+      { headers: sessionCookieHeader(fresh) },
+      { env }
+    )
+    expect(new URL(res.headers.get('location') ?? '').searchParams.get('code')).toBeTruthy()
+
+    // A marker older than the window proves nothing.
+    const stale = new URL(back)
+    stale.searchParams.set('launch_reauth', String(Math.floor(Date.now() / 1000) - 3600))
+    const again = await request(
+      `${stale.pathname}${stale.search}`,
+      { headers: sessionCookieHeader(await sessionFor(erin.id, 7200)) },
+      { env }
+    )
+    expect(new URL(again.headers.get('location') ?? '', ISSUER).pathname).toBe('/login')
+  })
+
+  it('prompt=none with a session older than max_age answers login_required', async () => {
+    const frank = await person()
+    const cookie = await sessionFor(frank.id, 3600)
+    const a = await authorize(A, appA, cookie, { params: { prompt: 'none', max_age: '60' } })
+    expect(a.location?.searchParams.get('error')).toBe('login_required')
+    expect(await liveSessions(frank.id)).toHaveLength(1)
+  })
+
+  it('a malformed max_age is invalid_request', async () => {
+    const a = await authorize(A, appA, aliceCookie, { params: { max_age: '-5' } })
+    expect(a.location?.searchParams.get('error')).toBe('invalid_request')
+  })
+})
+
+// ---- RP-initiated logout --------------------------------------------------------------------
+
+describe('logout', () => {
+  /** Alice's id_token from app A, from a real sign-in on `cookie`. */
+  async function idTokenFor(cookie: string): Promise<string> {
+    const tokens = await grant(A, await authorize(A, appA, cookie))
+    return tokens.id_token as string
+  }
+
+  async function sessionAlive(cookie: string): Promise<boolean> {
+    const a = await authorize(A, appA, cookie)
+    return a.location?.pathname !== '/login'
+  }
+
+  function logoutGet(params: Record<string, string>, cookie?: string) {
+    return request(
+      `/oidc/logout?${new URLSearchParams(params)}`,
+      { headers: cookie ? sessionCookieHeader(cookie) : {} },
+      { env }
+    )
+  }
+
+  function logoutPost(form: Record<string, string>, cookie: string, site = 'same-origin') {
+    return request(
+      '/oidc/logout',
+      {
+        method: 'POST',
+        headers: {
+          ...sessionCookieHeader(cookie),
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Sec-Fetch-Site': site,
+          Origin: site === 'same-origin' ? ISSUER : 'https://attacker.example',
+        },
+        body: new URLSearchParams(form).toString(),
+      },
+      { env }
+    )
+  }
+
+  it("with the app's id_token_hint: signed out at once, back to the registered URI with state", async () => {
     const cookie = await createTestSession(db, alice.id, tenantId)
     const url = oidc.buildEndSessionUrl(A, {
-      client_id: appA.clientId,
+      id_token_hint: await idTokenFor(cookie),
       post_logout_redirect_uri: appA.postLogoutRedirectUri,
       state: 'bye',
     })
@@ -577,11 +727,96 @@ describe('sessions', () => {
     expect(back.searchParams.get('signedOut')).toBe('1')
     expect(back.searchParams.get('state')).toBe('bye')
     expect(setCookieValue(res, SESSION_COOKIE_NAME)).toBe('')
-
-    // The session is gone: authorize now sends the browser to sign in.
-    const again = await authorize(A, appA, cookie)
-    expect(again.location?.pathname).toBe('/login')
+    expect(await sessionAlive(cookie)).toBe(false)
     expect((await auditRows(tenantId, 'oidc.logout')).length).toBeGreaterThan(0)
+  })
+
+  it('an EXPIRED hint signed by Launch still counts', async () => {
+    const cookie = await createTestSession(db, alice.id, tenantId)
+    const { kid, key } = await signingKey(db, cfg)
+    const past = Math.floor(Date.now() / 1000) - 86_400
+    const expired = await new SignJWT({})
+      .setProtectedHeader({ alg: 'ES256', kid, typ: 'JWT' })
+      .setIssuer(ISSUER)
+      .setSubject(alice.id)
+      .setAudience(appA.clientId)
+      .setIssuedAt(past - 300)
+      .setExpirationTime(past)
+      .sign(key)
+    const res = await logoutGet(
+      { id_token_hint: expired, post_logout_redirect_uri: appA.postLogoutRedirectUri },
+      cookie
+    )
+    expect(res.status).toBe(302)
+    expect(await sessionAlive(cookie)).toBe(false)
+  })
+
+  it('no hint (what a Rocketflare app sends): a confirmation page, and nothing ends until its POST', async () => {
+    const cookie = await createTestSession(db, alice.id, tenantId)
+    const res = await logoutGet(
+      {
+        client_id: appA.clientId,
+        post_logout_redirect_uri: appA.postLogoutRedirectUri,
+        state: 's1',
+      },
+      cookie
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('location')).toBeNull()
+    const page = await res.text()
+    expect(page).toContain('<form method="post" action="/oidc/logout">')
+    expect(page).toContain(`name="client_id" value="${appA.clientId}"`)
+    expect(page).toContain(alice.email)
+    expect(await sessionAlive(cookie)).toBe(true)
+
+    // A cross-site POST carrying the cookie is refused by the CSRF middleware.
+    const forged = await logoutPost({ client_id: appA.clientId }, cookie, 'cross-site')
+    expect(forged.status).toBe(403)
+    expect(await sessionAlive(cookie)).toBe(true)
+
+    // The page's own (same-origin) POST signs out and returns to the app — by a meta refresh,
+    // because the CSP's form-action 'self' governs a form response's redirect too.
+    const confirmed = await logoutPost(
+      {
+        client_id: appA.clientId,
+        post_logout_redirect_uri: appA.postLogoutRedirectUri,
+        state: 's1',
+      },
+      cookie
+    )
+    expect(confirmed.status).toBe(200)
+    expect(setCookieValue(confirmed, SESSION_COOKIE_NAME)).toBe('')
+    const body = await confirmed.text()
+    const target = new URL(appA.postLogoutRedirectUri)
+    target.searchParams.set('state', 's1')
+    expect(body).toContain(
+      `<meta http-equiv="refresh" content="0;url=${target.toString().replace(/&/g, '&#38;')}">`
+    )
+    expect(await sessionAlive(cookie)).toBe(false)
+  })
+
+  it("a forged hint, or another person's, is not a proof: the person is asked", async () => {
+    const cookie = await createTestSession(db, alice.id, tenantId)
+    const real = await idTokenFor(cookie)
+    const [h, p, sig] = real.split('.')
+    const tampered = `${h}.${p}.${sig?.startsWith('A') ? 'B' : 'A'}${sig?.slice(1)}`
+    expect((await logoutGet({ id_token_hint: tampered }, cookie)).status).toBe(200)
+    expect(await sessionAlive(cookie)).toBe(true)
+
+    const bobUser = await createTestUser(db)
+    await linkUserToTenant(db, bobUser.id, tenantId, 'member')
+    const bobCookie = await createTestSession(db, bobUser.id, tenantId)
+    const res = await logoutGet(
+      { id_token_hint: real, post_logout_redirect_uri: appA.postLogoutRedirectUri },
+      bobCookie
+    )
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Sign out of Launch?')
+
+    // A hint for app A presented as app B is not a proof for either.
+    const mixed = await logoutGet({ id_token_hint: real, client_id: appB.clientId }, cookie)
+    expect(mixed.status).toBe(200)
+    expect(await sessionAlive(cookie)).toBe(true)
   })
 
   it('logout never redirects to an unregistered URI', async () => {
@@ -593,12 +828,19 @@ describe('sessions', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('location')).toBeNull()
     // Another client's registered URI is not this client's.
-    const other = await request(
-      `/oidc/logout?client_id=${appA.clientId}&post_logout_redirect_uri=${encodeURIComponent(appB.postLogoutRedirectUri)}`,
-      {},
-      { env }
-    )
+    const other = await logoutGet({
+      client_id: appA.clientId,
+      post_logout_redirect_uri: appB.postLogoutRedirectUri,
+    })
     expect(other.status).toBe(200)
+    expect(other.headers.get('location')).toBeNull()
+    // With nobody signed in there is nothing to confirm: straight back to a registered URI.
+    const none = await logoutGet({
+      client_id: appA.clientId,
+      post_logout_redirect_uri: appA.postLogoutRedirectUri,
+    })
+    expect(none.status).toBe(302)
+    expect(none.headers.get('location')).toBe(appA.postLogoutRedirectUri)
   })
 })
 

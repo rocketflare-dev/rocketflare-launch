@@ -23,12 +23,16 @@
  * - **No `authRateLimit`** on the token endpoint: every app calls it from Cloudflare's shared
  *   egress, so an IP key would throttle the whole fleet as one caller (`api/index.ts`).
  *
- * Known gaps (spec/05): `prompt=login` and `max_age` are not honoured with a fresh sign-in (the
- * session's real `auth_time` is always reported, so a client can enforce them itself); there are
- * no refresh tokens; the authorization endpoint answers GET only, because a cross-site POST that
- * carries the session cookie is refused by the CSRF middleware.
+ * `prompt=login` and a `max_age` the session is older than END the Launch session and send the
+ * person to sign in again (`reauthenticate`); with `prompt=none` that is `login_required`.
+ *
+ * Known gaps (spec/05): a re-authentication ends the person's Launch session (the login page has
+ * no "sign in again while signed in" mode), and when Launch itself signs in through an upstream
+ * OIDC issuer that issuer may answer silently from its own session — `prompt=login` is not
+ * forwarded upstream; there are no refresh tokens; the authorization endpoint answers GET only,
+ * because a cross-site POST that carries the session cookie is refused by the CSRF middleware —
+ * for the same reason RP-initiated logout is GET (a form POST is the confirmation page's own).
  */
-import { decodeJwt } from 'jose'
 import type { Database } from '../../db/client'
 import type { OidcClientRow } from '../../db/schema'
 import { clearSessionCookie, readSessionToken } from '../auth/cookies'
@@ -63,6 +67,7 @@ import {
   identityClaims,
   issueTokens,
   verifyAccessToken,
+  verifyIdTokenHint,
   verifyPkce,
 } from '../services/oidc/tokens'
 import type { AppContext, AuthContext } from '../types'
@@ -102,9 +107,22 @@ wellKnownRouter.get('/jwks.json', async c =>
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`)
 
-/** A plain page for what must not go back to the app: the app itself is unknown or unverified. */
-function htmlPage(c: AppContext, status: 200 | 400, title: string, message: string) {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} · Launch</title></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`
+/**
+ * The issuer's own pages — an error that must not go back to the app, the logout confirmation —
+ * are plain server-rendered HTML, not the SPA: they answer before (or without) a Launch session,
+ * and a relying party may land on them from anywhere. Styled inline in the Afterburner palette
+ * (the CSP allows inline styles, never inline scripts), light or dark with the system.
+ */
+const PAGE_STYLE = `:root{color-scheme:light dark;--bg:#faf7f2;--panel:#fff;--text:#1c1917;--muted:#57534e;--line:#dcd4cb;--primary:#c2410c;--on-primary:#fff}@media (prefers-color-scheme:dark){:root{--bg:#120d1f;--panel:#1d1630;--text:#f5f3ff;--muted:#d6d1e6;--line:#3d3358;--primary:#ff7a45;--on-primary:#1a0b05}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}main{width:min(26rem,calc(100vw - 2rem));background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:1.75rem}.brand{font-weight:600;letter-spacing:.02em;color:var(--primary);margin:0 0 1rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{margin:0 0 1rem;color:var(--muted)}form{display:flex;gap:.5rem;margin:0}button,a.button{font:inherit;cursor:pointer;border-radius:5px;padding:.5rem 1rem;text-decoration:none}button{background:var(--primary);color:var(--on-primary);border:1px solid var(--primary)}a.button{border:1px solid var(--line);color:var(--text)}`
+
+function htmlPage(
+  c: AppContext,
+  status: 200 | 400,
+  title: string,
+  message: string,
+  extra: { body?: string; head?: string } = {}
+) {
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${extra.head ?? ''}<title>${escapeHtml(title)} · Launch</title><style>${PAGE_STYLE}</style></head><body><main><p class="brand">Launch</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${extra.body ?? ''}</main></body></html>`
   return c.html(body, status, NO_STORE)
 }
 
@@ -142,6 +160,48 @@ function formDecode(value: string): string | null {
 
 function clientTarget(client: Pick<OidcClientRow, 'clientId' | 'appId'>) {
   return { targetType: 'oidc_client', targetId: client.clientId, appId: client.appId }
+}
+
+// ---- Re-authentication (prompt=login, max_age) ----------------------------------------------
+
+/**
+ * The marker a forced re-authentication adds to the authorize URL it returns to: the time (unix
+ * seconds) Launch sent the person to sign in again. A session that began after it satisfies
+ * `prompt=login` and `max_age`, which is what stops `max_age=0` looping. A marker older than
+ * `REAUTH_WINDOW_S` proves nothing, and one from the future matches no session; forging one only
+ * weakens the request its forger built, and the id_token's `auth_time` still tells the app the
+ * truth.
+ */
+export const REAUTH_PARAM = 'launch_reauth'
+const REAUTH_WINDOW_S = 30 * 60
+/** Worker and database clocks may disagree by a little; the session row is stamped by Postgres. */
+const REAUTH_SKEW_S = 30
+
+function reauthenticated(q: URLSearchParams, authTime: Date): boolean {
+  const marker = Number(q.get(REAUTH_PARAM))
+  if (!Number.isInteger(marker) || marker <= 0) return false
+  const nowS = Date.now() / 1000
+  if (nowS - marker > REAUTH_WINDOW_S || marker - nowS > REAUTH_SKEW_S) return false
+  return authTime.getTime() / 1000 >= marker - REAUTH_SKEW_S
+}
+
+/**
+ * Send the person to sign in again. The Launch session ENDS first — the login page forwards a
+ * signed-in visitor straight back, so keeping it would loop — and the return URL drops
+ * `prompt=login` and carries the marker.
+ */
+async function reauthenticate(c: AppContext, url: URL, sessionId: string) {
+  await deleteSession(c.get('db'), sessionId)
+  clearSessionCookie(c)
+  const next = new URL(url)
+  const prompt = (next.searchParams.get('prompt') ?? '')
+    .split(' ')
+    .filter(p => p && p !== 'login')
+    .join(' ')
+  if (prompt) next.searchParams.set('prompt', prompt)
+  else next.searchParams.delete('prompt')
+  next.searchParams.set(REAUTH_PARAM, String(Math.floor(Date.now() / 1000)))
+  return c.redirect(`/login?returnUrl=${encodeURIComponent(`${next.pathname}${next.search}`)}`, 302)
 }
 
 // ---- Authorization endpoint ----------------------------------------------------------------
@@ -222,6 +282,11 @@ oidcRouter.get('/authorize', async c => {
   if (silent && prompt.length > 1) {
     return fail('invalid_request', 'prompt=none cannot be combined with other values')
   }
+  const maxAgeParam = q.get('max_age')
+  if (maxAgeParam !== null && !/^\d{1,9}$/.test(maxAgeParam)) {
+    return fail('invalid_request', 'max_age must be a whole number of seconds')
+  }
+  const maxAge = maxAgeParam === null ? null : Number(maxAgeParam)
 
   // 3. Who is signed in to Launch? Nobody → the login page, which returns here.
   let auth: AuthContext | null
@@ -238,6 +303,17 @@ oidcRouter.get('/authorize', async c => {
     return c.redirect(`/login?returnUrl=${encodeURIComponent(here)}`, 302)
   }
   const user = auth.user
+
+  // 3b. Fresh enough? `prompt=login`, or a session older than `max_age`, means sign in again —
+  // unless this request is the return from exactly that (see `reauthenticate`).
+  const authTime = (await sessionCreatedAt(db, auth.session.id)) ?? new Date()
+  // `max_age=0` is `prompt=login` (OIDC Core §3.1.2.1), whatever the clocks say.
+  const tooOld =
+    maxAge !== null && (maxAge === 0 || Date.now() - authTime.getTime() > maxAge * 1000)
+  if ((prompt.includes('login') || tooOld) && !reauthenticated(q, authTime)) {
+    if (silent) return fail('login_required', 'The Launch sign-in is older than max_age')
+    return reauthenticate(c, url, auth.session.id)
+  }
 
   // 4. May they use this app? The policy runs in the CLIENT's tenant, not the session's.
   const groups = await listUserGroups(db, client.tenantId, user.id)
@@ -278,7 +354,7 @@ oidcRouter.get('/authorize', async c => {
     codeChallenge: challenge,
     nonce: nonce || null,
     scope,
-    authTime: (await sessionCreatedAt(db, auth.session.id)) ?? new Date(now),
+    authTime,
     expiresAt: new Date(now + CODE_TTL_S * 1000),
   })
   await recordAudit(db, {
@@ -463,48 +539,148 @@ oidcRouter.post('/userinfo', userinfo)
 
 // ---- RP-initiated logout -------------------------------------------------------------------
 
-oidcRouter.get('/logout', async c => {
-  const db = c.get('db')
-  const q = new URL(c.req.url).searchParams
-  const target = q.get('post_logout_redirect_uri')
+/**
+ * OIDC RP-Initiated Logout 1.0. A GET that signs someone out is a cross-site request any page can
+ * make, so the Launch session ends WITHOUT asking only when the request proves which app sent it:
+ * an `id_token_hint` this issuer signed (any published key, retiring included; expiry is not
+ * checked, as §2 allows), for a registered, enabled client, naming the person signed in (or with
+ * nobody signed in). Anything else with a live session gets a confirmation page whose button is a
+ * same-origin form POST — the CSRF middleware refuses a cross-site one carrying the session cookie
+ * (`Sec-Fetch-Site`, then `Origin`), and the `SameSite=Lax` cookie is not sent on one anyway.
+ *
+ * Either way the browser is only ever sent to a `post_logout_redirect_uri` registered for that
+ * client (exact match), with `state`. After the confirmation POST it is a page with a meta refresh
+ * rather than a 302: the CSP's `form-action 'self'` also governs where a form's response
+ * redirects, and the app is another origin.
+ */
+interface LogoutRequest {
+  client: OidcClientRow | null
+  /** The registered URI to return to, if the request named one of this client's. */
+  target: string | null
+  state: string | null
+  /** The verified hint's subject, when an `id_token_hint` checked out. */
+  hintSub: string | null
+}
 
-  // The client names itself with client_id, or through the id_token it was issued. The hint is
-  // only used to pick WHICH client's registered list to check, so an unverified one can at worst
-  // select another registered URI — never an arbitrary one.
-  let clientId = q.get('client_id')
-  const hint = q.get('id_token_hint')
-  if (!clientId && hint) {
-    try {
-      const aud = decodeJwt(hint).aud
-      clientId = typeof aud === 'string' ? aud : (aud?.[0] ?? null)
-    } catch {
-      clientId = null
+async function readLogoutRequest(c: AppContext, params: URLSearchParams): Promise<LogoutRequest> {
+  const db = c.get('db')
+  const hint = params.get('id_token_hint')
+  let clientId = params.get('client_id')
+  let hintSub: string | null = null
+  if (hint) {
+    const verified = await verifyIdTokenHint(db, c.get('config'), hint)
+    // A hint for another client than the one named is not a proof for either; an invalid hint
+    // is treated as absent (the person is asked), never as a proof.
+    if (verified && (!clientId || clientId === verified.clientId)) {
+      clientId = verified.clientId
+      hintSub = verified.sub
     }
   }
-  const client = clientId ? await findClientByClientId(db, clientId) : null
+  const found = clientId ? await findClientByClientId(db, clientId) : null
+  const client = found && !found.disabledAt ? found : null
+  if (!client) hintSub = null
+  const requested = params.get('post_logout_redirect_uri')
+  const target =
+    client && requested && client.postLogoutRedirectUris.includes(requested) ? requested : null
+  const state = params.get('state')
+  return {
+    client,
+    target,
+    state: state && state.length <= STATE_MAX ? state : null,
+    hintSub,
+  }
+}
 
+function logoutTarget(req: LogoutRequest): string | null {
+  if (!req.target) return null
+  const back = new URL(req.target)
+  if (req.state) back.searchParams.set('state', req.state)
+  return back.toString()
+}
+
+/** End the Launch session (if any), audit it against the client, clear the cookie. */
+async function endLaunchSession(c: AppContext, req: LogoutRequest, via: 'hint' | 'confirmed') {
+  const db = c.get('db')
   const token = readSessionToken(c)
   if (token) {
     const resolved = await resolveSession(db, token)
     if (resolved) {
       await deleteSession(db, resolved.session.id)
-      if (client) {
+      if (req.client) {
         await recordAudit(db, {
-          tenantId: client.tenantId,
+          tenantId: req.client.tenantId,
           ...auditActor(c, resolved.user),
           action: 'oidc.logout',
-          ...clientTarget(client),
+          ...clientTarget(req.client),
+          summary: { after: { via } },
         })
       }
     }
   }
   clearSessionCookie(c)
+}
 
-  if (client && !client.disabledAt && target && client.postLogoutRedirectUris.includes(target)) {
-    const back = new URL(target)
-    const state = q.get('state')
-    if (state) back.searchParams.set('state', state)
-    return c.redirect(back.toString(), 302)
+function signedOutPage(c: AppContext, req: LogoutRequest, afterPost: boolean) {
+  const target = logoutTarget(req)
+  if (target && !afterPost) return c.redirect(target, 302)
+  if (target) {
+    const href = escapeHtml(target)
+    return htmlPage(c, 200, 'Signed out', 'You have been signed out of Launch.', {
+      head: `<meta http-equiv="refresh" content="0;url=${href}">`,
+      body: `<p><a class="button" href="${href}">Return to the app</a></p>`,
+    })
   }
   return htmlPage(c, 200, 'Signed out', 'You have been signed out of Launch.')
+}
+
+oidcRouter.get('/logout', async c => {
+  const req = await readLogoutRequest(c, new URL(c.req.url).searchParams)
+  const token = readSessionToken(c)
+  const found = token ? await resolveSession(c.get('db'), token) : null
+  const resolved = found && found.session.expiresAt.getTime() > Date.now() ? found : null
+
+  // Nobody signed in: nothing to end, nothing to forge. Back to the (registered) app.
+  if (!resolved) {
+    clearSessionCookie(c)
+    return signedOutPage(c, req, false)
+  }
+  // Proven by the app, about this person: sign out without asking.
+  if (req.hintSub && req.hintSub === resolved.user.id) {
+    await endLaunchSession(c, req, 'hint')
+    return signedOutPage(c, req, false)
+  }
+  // Otherwise ask. The form carries only what the POST needs to find its way back.
+  const fields: Array<[string, string | null | undefined]> = [
+    ['client_id', req.client?.clientId],
+    ['post_logout_redirect_uri', req.target],
+    ['state', req.state],
+  ]
+  const hidden = fields
+    .filter((f): f is [string, string] => Boolean(f[1]))
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
+    .join('')
+  const cancel = req.target
+    ? `<a class="button" href="${escapeHtml(req.target)}">Stay signed in</a>`
+    : ''
+  const who = resolved.user.email
+  return htmlPage(
+    c,
+    200,
+    'Sign out of Launch?',
+    `You are signed in to Launch as ${who}. Signing out also ends single sign-on for every app that uses Launch.`,
+    {
+      body: `<form method="post" action="/oidc/logout">${hidden}<button type="submit">Sign out</button>${cancel}</form>`,
+    }
+  )
+})
+
+/** The confirmation page's form. A cross-site POST with the session cookie never gets here (CSRF). */
+oidcRouter.post('/logout', async c => {
+  const contentType = c.req.header('Content-Type') ?? ''
+  const form = contentType.toLowerCase().startsWith('application/x-www-form-urlencoded')
+    ? new URLSearchParams(await c.req.text())
+    : new URLSearchParams()
+  const req = await readLogoutRequest(c, form)
+  await endLaunchSession(c, req, 'confirmed')
+  return signedOutPage(c, req, true)
 })

@@ -11,7 +11,7 @@
  *   the comparison is over equal-length hex and a miss costs the same as a hit.
  */
 import type { GroupRef } from '@launch/shared/groups'
-import { decodeProtectedHeader, type JWTPayload, jwtVerify, SignJWT } from 'jose'
+import { compactVerify, decodeProtectedHeader, type JWTPayload, jwtVerify, SignJWT } from 'jose'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import type { OidcClientRow, User } from '../../../db/schema'
@@ -126,6 +126,39 @@ export async function verifyAccessToken(
     })
     if (typeof payload.scope !== 'string' || typeof payload.client_id !== 'string') return null
     return payload as AccessTokenClaims
+  } catch {
+    return null
+  }
+}
+
+export interface IdTokenHint {
+  sub: string
+  /** The client the id_token was issued to (its `aud`). */
+  clientId: string
+}
+
+/**
+ * An `id_token_hint` (OIDC RP-Initiated Logout 1.0 §2): an id_token THIS issuer signed, checked
+ * against the keys published now (so one signed by a retiring key still counts) with `iss` and a
+ * single-client `aud`. Expiry is deliberately NOT checked — the spec allows an expired hint, and
+ * an app typically logs out long after the five-minute id_token lapsed. Null when it is not one.
+ */
+export async function verifyIdTokenHint(
+  db: Database,
+  cfg: AppConfig,
+  token: string
+): Promise<IdTokenHint | null> {
+  try {
+    const { kid, alg, typ } = decodeProtectedHeader(token)
+    if (!kid || alg !== SIGNING_ALG || (typ && typ !== 'JWT')) return null
+    const key = await publishedVerificationKey(db, kid)
+    if (!key) return null
+    const { payload } = await compactVerify(token, key, { algorithms: [SIGNING_ALG] })
+    const claims = JSON.parse(new TextDecoder().decode(payload)) as JWTPayload
+    if (claims.iss !== issuerOf(cfg) || typeof claims.sub !== 'string' || !claims.sub) return null
+    const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud]
+    if (aud.length !== 1 || typeof aud[0] !== 'string') return null
+    return { sub: claims.sub, clientId: aud[0] }
   } catch {
     return null
   }
