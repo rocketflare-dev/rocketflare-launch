@@ -72,17 +72,19 @@ const member = () =>
 afterEach(() => vi.unstubAllGlobals())
 
 describe('CataloguePage', () => {
-  it('greets an empty catalogue with the Import action for an admin, and without it for a member', async () => {
+  it('greets an empty catalogue with Create (the flame) and Import for an admin, and neither for a member', async () => {
     stubFetch({ '/api/apps': { items: [] } })
     const { unmount } = renderWithProviders(<CataloguePage />, { session: makeSession() })
-    expect(await screen.findByText('No apps in the catalogue yet')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Import app/ })).toHaveClass('btn-flame')
+    expect(await screen.findByText('Launch your first app')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Create app/ })).toHaveClass('btn-flame')
+    expect(screen.getByRole('button', { name: /Import app/ })).not.toHaveClass('btn-flame')
     unmount()
 
     stubFetch({ '/api/apps': { items: [] } })
     renderWithProviders(<CataloguePage />, { session: member() })
     expect(await screen.findByText('No apps in the catalogue yet')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Import app/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Create app/ })).not.toBeInTheDocument()
   })
 
   it('shows each app with team, kit and a labelled dot per environment, and the fleet summary', async () => {

@@ -18,10 +18,11 @@ import { queryKeys } from '@/ui/lib/query-keys'
 
 const BASE = '/api/admin/setup'
 
-export function useSetupOverview() {
+export function useSetupOverview(enabled = true) {
   return useQuery({
     queryKey: queryKeys.setup.status,
     queryFn: () => api.get(BASE, { schema: setupOverviewSchema }),
+    enabled,
   })
 }
 

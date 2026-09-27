@@ -3,16 +3,25 @@
  * twenty-four hours of health history, its sign-in through Launch (the OIDC client, with the secret
  * shown once), the operations log, and a link to who may sign in (`/apps/:slug/access`). Every
  * member reads it; "Check now", Edit and the OIDC actions are for admins (`manage App`).
+ *
+ * P2: an app Launch created also shows its launch as it happens (`PipelineProgress`, polled only
+ * while a run is owed — `usePipeline`), its deploys (`DeploysCard`), and a danger zone whose
+ * Archive runs the teardown, which then shows here the same way. While the launch is under way the
+ * parts that only make sense for a running app — health history, "Check now", the sign-in card the
+ * pipeline itself registers — wait for it.
  */
 import {
+  ArchiveBoxIcon,
   ArrowPathIcon,
   CodeBracketIcon,
   ExclamationTriangleIcon,
   PencilSquareIcon,
   Squares2X2Icon,
+  TrashIcon,
 } from '@heroicons/react/24/outline'
 import type { AppDetail } from '@launch/shared/launch-apps'
-import { useState } from 'react'
+import type { PipelineKind, PipelineView } from '@launch/shared/launch-pipeline'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   EmptyStateCard,
@@ -22,13 +31,22 @@ import {
 } from '@/ui/components/shared'
 import { useApp, useCheckAppHealth } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
+import {
+  appAwaitsPipeline,
+  PIPELINE_KICK_GRACE_MS,
+  usePipeline,
+  useRetryPipeline,
+} from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
-import { formatDate } from '@/ui/lib/format'
+import { formatDate, formatDateTime } from '@/ui/lib/format'
+import { DeploysCard } from './components/DeploysCard'
 import { EditAppModal } from './components/EditAppModal'
 import { EnvironmentCard } from './components/EnvironmentCard'
 import { HealthHistory } from './components/HealthHistory'
 import { OidcClientCard } from './components/OidcClientCard'
 import { OperationsLog } from './components/OperationsLog'
+import { PipelineProgress } from './components/PipelineProgress'
+import { TeardownModal } from './components/TeardownModal'
 
 function About({ app }: { app: AppDetail }) {
   const repo = app.repoOwner && app.repoName ? `${app.repoOwner}/${app.repoName}` : null
@@ -95,12 +113,94 @@ function CheckNowButton({ app }: { app: AppDetail }) {
   )
 }
 
+function DangerZone({
+  onArchive,
+  busy,
+}: {
+  onArchive: () => void
+  /** A launch or teardown is still running: another run now would race it. */
+  busy: boolean
+}) {
+  return (
+    <section className="surface-panel border-error/40" aria-labelledby="danger-zone-title">
+      <h2 id="danger-zone-title" className="text-base font-semibold text-error">
+        Danger zone
+      </h2>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Archive this app</p>
+          <p className="text-sm text-secondary mt-0.5">
+            Deletes its Workers, database, storage and email keys, disables its sign-in and archives
+            the repository. The catalogue keeps the app, marked archived.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn btn-sm btn-error btn-outline gap-1.5 shrink-0"
+          onClick={onArchive}
+          disabled={busy}
+          title={busy ? 'Wait for the running pipeline to finish or stop first' : undefined}
+        >
+          <TrashIcon className="w-4 h-4" />
+          Archive app…
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/** App status → the `.status-badge` vocabulary in `index.css`. */
+const STATUS_TONE: Record<AppDetail['status'], string> = {
+  live: 'active',
+  requested: 'pending',
+  provisioning: 'running',
+  failed: 'failed',
+  archived: 'archived',
+}
+
+/** When a run finished: its last step's end. Pure. */
+function lastFinished(view: Pick<PipelineView, 'steps'>): Date | null {
+  const ends = view.steps.flatMap(step => (step.finishedAt ? [step.finishedAt.getTime()] : []))
+  return ends.length ? new Date(Math.max(...ends)) : null
+}
+
+/** A run this tab just started, awaited until it shows up or the grace window ends. */
+interface Kick {
+  kind: PipelineKind
+  until: number
+}
+
 export default function AppDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
   const { data: app, isLoading, error } = useApp(slug)
   const { can } = usePermissions()
   const canManage = can('manage', 'App')
   const [editOpen, setEditOpen] = useState(false)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [kick, setKick] = useState<Kick | null>(null)
+
+  const created = app?.source === 'created'
+  const appBusy = appAwaitsPipeline(app?.status)
+  const create = usePipeline(app?.id, 'create', {
+    enabled: created && app?.status !== 'live' && app?.status !== 'archived',
+    appBusy,
+    expectUntil: kick?.kind === 'create' ? kick.until : null,
+  })
+  const teardown = usePipeline(app?.id, 'teardown', {
+    enabled: created,
+    expectUntil: kick?.kind === 'teardown' ? kick.until : null,
+  })
+  const retry = useRetryPipeline(app?.id ?? '')
+  const startWatching = (kind: PipelineKind) =>
+    setKick({ kind, until: Date.now() + PIPELINE_KICK_GRACE_MS })
+  const onRetry = (kind: PipelineKind) => () =>
+    retry.mutate({ kind }, { onSuccess: () => startWatching(kind) })
+
+  // The run we were waiting for has shown up: from here its own status decides the polling.
+  const kickedStatus = kick ? (kick.kind === 'create' ? create.data : teardown.data)?.status : null
+  useEffect(() => {
+    if (kickedStatus === 'running') setKick(null)
+  }, [kickedStatus])
 
   if (isLoading) {
     return (
@@ -133,6 +233,20 @@ export default function AppDetailPage() {
     )
   }
 
+  const createView = create.data
+  const teardownView = teardown.data
+  // The launch panel stays until the run succeeds and the app is live: while the row says a run
+  // is owed, or while the latest run has not succeeded.
+  const launching =
+    created &&
+    app.status !== 'live' &&
+    app.status !== 'archived' &&
+    (appBusy || (createView !== undefined && createView.status !== 'succeeded'))
+  const stagingHost = app.environments
+    .find(env => env.name === 'staging')
+    ?.url?.replace(/^https?:\/\//, '')
+  const archivedAt = teardownView?.status === 'succeeded' ? lastFinished(teardownView) : null
+
   return (
     <div className="max-w-6xl space-y-6">
       <PageHeader
@@ -140,10 +254,7 @@ export default function AppDetailPage() {
         title={app.displayName}
         badge={
           app.status === 'live' ? null : (
-            <span
-              className="status-badge"
-              data-status={app.status === 'archived' ? 'archived' : 'pending'}
-            >
+            <span className="status-badge" data-status={STATUS_TONE[app.status]}>
               {app.status}
             </span>
           )
@@ -165,7 +276,7 @@ export default function AppDetailPage() {
         actions={
           canManage && (
             <>
-              <CheckNowButton app={app} />
+              {!launching && app.status !== 'archived' && <CheckNowButton app={app} />}
               <button
                 type="button"
                 className="btn btn-sm btn-ghost gap-1.5"
@@ -179,6 +290,37 @@ export default function AppDetailPage() {
         }
       />
 
+      {teardownView && teardownView.status !== 'none' && teardownView.status !== 'succeeded' && (
+        <PipelineProgress
+          view={teardownView}
+          canRetry={canManage}
+          onRetry={onRetry('teardown')}
+          retrying={retry.isPending}
+        />
+      )}
+
+      {app.status === 'archived' && (
+        <div className="alert alert-soft text-sm">
+          <ArchiveBoxIcon className="w-5 h-5" />
+          <span>
+            Archived{archivedAt ? ` ${formatDateTime(archivedAt)}` : ''}. Its resources are deleted;
+            the history below is kept.
+          </span>
+        </div>
+      )}
+
+      {launching && (
+        <PipelineProgress
+          view={
+            createView ?? { appId: app.id, runId: null, kind: 'create', status: 'none', steps: [] }
+          }
+          canRetry={canManage}
+          onRetry={onRetry('create')}
+          retrying={retry.isPending}
+          subject={stagingHost && <span className="font-mono text-xs">{stagingHost}</span>}
+        />
+      )}
+
       {app.environments.length === 0 ? (
         <EmptyStateCard icon={Squares2X2Icon} message="No environments recorded" />
       ) : (
@@ -189,20 +331,55 @@ export default function AppDetailPage() {
         </div>
       )}
 
-      {app.environments.length > 0 && (
+      {created && app.status !== 'requested' && app.status !== 'archived' && (
+        <DeploysCard
+          appId={app.id}
+          canDecide={canManage}
+          canDeployProduction={canManage && app.status === 'live'}
+        />
+      )}
+
+      {app.environments.length > 0 && !launching && (
         <HealthHistory appId={app.id} environments={app.environments} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         <div className="lg:col-span-2">
-          <OidcClientCard appId={app.id} slug={app.slug} canManage={canManage} />
+          {launching ? (
+            <SectionPanel title="Sign-in through Launch">
+              <p className="text-sm text-secondary">
+                The launch registers this app’s sign-in client itself; it appears here once the app
+                is live.
+              </p>
+            </SectionPanel>
+          ) : (
+            <OidcClientCard appId={app.id} slug={app.slug} canManage={canManage} />
+          )}
         </div>
         <About app={app} />
       </div>
 
       <OperationsLog appId={app.id} />
 
+      {canManage && created && app.status !== 'archived' && (
+        <DangerZone
+          onArchive={() => setArchiveOpen(true)}
+          busy={createView?.status === 'running' || teardownView?.status === 'running'}
+        />
+      )}
+
       {editOpen && <EditAppModal app={app} open={editOpen} onClose={() => setEditOpen(false)} />}
+      {archiveOpen && (
+        <TeardownModal
+          app={app}
+          open={archiveOpen}
+          onClose={() => setArchiveOpen(false)}
+          onStarted={() => startWatching('teardown')}
+          view={teardownView}
+          onRetry={canManage ? onRetry('teardown') : undefined}
+          retrying={retry.isPending}
+        />
+      )}
     </div>
   )
 }
