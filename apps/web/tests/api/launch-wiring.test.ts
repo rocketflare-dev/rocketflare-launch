@@ -64,7 +64,12 @@ describe('Launch mounts', () => {
     for (const path of ['/api/admin/setup', '/api/admin/oidc/keys']) {
       await expectEnvelope(await request(path), 401, path)
       await expectEnvelope(await request(path, { headers: owner }), 403, path)
-      await expectEnvelope(await request(path, { headers: staff }), 404, path)
     }
+    expect((await request('/api/admin/setup', { headers: staff })).status).toBe(200)
+    await expectEnvelope(
+      await request('/api/admin/oidc/keys', { headers: staff }),
+      404,
+      '/api/admin/oidc/keys'
+    )
   })
 })

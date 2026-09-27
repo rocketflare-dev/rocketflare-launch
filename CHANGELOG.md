@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Setup wizard (`/admin/setup`): the apps domain and zone, and the Cloudflare, Neon, Resend and
+  GitHub App credentials, each sealed at rest, checked against the vendor, shown only as set /
+  when / by whom, and audited.
 - Seeded from Rocketflare 0.15.0.
 - Branded as Launch by Rocketflare: the Rocketflare icon (tuned 16px favicon, PNG and
   apple-touch icons, a web manifest), a "by Rocketflare" line under the name, and the
