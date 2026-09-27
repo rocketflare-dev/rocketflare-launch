@@ -57,7 +57,7 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
   const { can } = usePermissions()
   const canListGroups = can('manage', 'Group')
   const groups = useGroups(undefined, open && canListGroups)
-  const domain = useAppsDomain(open)
+  const domain = useAppsDomain()
 
   const [displayName, setDisplayName] = useState('')
   const [slug, setSlug] = useState('')

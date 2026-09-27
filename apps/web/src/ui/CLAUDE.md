@@ -59,7 +59,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `pipelinePollInterval` says a run is owed — `running`, an app row `requested`/`provisioning`, or
   the grace window after this tab started a retry/teardown; a status transition refreshes the rest
   of the `apps` family once — plus `useCreateApp`, `useRetryPipeline`, `useTeardownApp` and
-  `useAppsDomain`, which reads the setup API for a global admin and otherwise infers the domain from
+  `useAppsDomain`, which reads the catalogue's `appsDomain` and otherwise infers the domain from
   a created app's staging URL, else null) and `useDeploys` (`useDeploys` polling while a ticket is
   in flight — `approved`/`uploaded`, never `pending`, which waits on a person — `useDecideDeploy`,
   `useDeployProduction`).

@@ -27,8 +27,6 @@ import { useEffect, useRef } from 'react'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 import { useApps } from './useApps'
-import { usePermissions } from './usePermissions'
-import { useSetupOverview } from './useSetup'
 
 /** How often a pipeline the server still owes an answer on is re-read. */
 export const PIPELINE_POLL_MS = 3000
@@ -159,14 +157,11 @@ export function appsDomainFromCatalogue(apps: readonly AppSummary[]): string | n
 }
 
 /**
- * Where a new app will live, for the Create modal's host preview. The setting itself is read by
- * the global-admin setup API only, so a global admin gets it from there and anyone else gets what
- * the catalogue reveals — or null, and the modal shows no preview rather than a guess.
+ * Where a new app will live, for the Create modal's host preview: the catalogue response's
+ * `appsDomain` (`launch_settings.apps_domain`, readable by every member), else what a created
+ * app's staging URL reveals — or null, and the modal shows no preview rather than a guess.
  */
-export function useAppsDomain(enabled: boolean): string | null {
-  const { can } = usePermissions()
-  const globalAdmin = can('manage', 'all')
-  const setup = useSetupOverview(enabled && globalAdmin)
+export function useAppsDomain(): string | null {
   const apps = useApps()
-  return setup.data?.settings.apps_domain ?? appsDomainFromCatalogue(apps.data?.items ?? [])
+  return apps.data?.appsDomain ?? appsDomainFromCatalogue(apps.data?.items ?? [])
 }

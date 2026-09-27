@@ -29,6 +29,7 @@ import {
   updateApp,
 } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
+import { getSetting } from '../services/launch/credentials'
 import { checkAppHealth } from '../services/launch/health'
 import { importApp } from '../services/launch/import'
 import {
@@ -41,7 +42,7 @@ import {
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
-import { appDeploysRouter } from './app-deploys'
+import { appDeploysRouter, appViewer } from './app-deploys'
 import { appPipelineRouter } from './app-pipeline'
 
 export const appsRouter = createRouter()
@@ -55,27 +56,31 @@ appsRouter.route('/', appDeploysRouter)
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
-  return c.json({ items: await listApps(db, tenantId) })
+  const [items, appsDomain] = await Promise.all([
+    listApps(db, tenantId),
+    getSetting<string>(db, 'apps_domain'),
+  ])
+  return c.json({ items, appsDomain: typeof appsDomain === 'string' ? appsDomain : null })
 })
 
 appsRouter.post('/import', validate('json', importAppRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
   const { db, cfg, tenantId } = withAuthAndDb(c)
   const { app } = await importApp(db, cfg, tenantId, c.req.valid('json'), auditActor(c))
-  return c.json(await getAppDetail(db, tenantId, app.slug), 201)
+  return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)), 201)
 })
 
 appsRouter.get('/:slug', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
-  return c.json(await getAppDetail(db, tenantId, c.req.param('slug')))
+  return c.json(await getAppDetail(db, tenantId, c.req.param('slug'), appViewer(c)))
 })
 
 appsRouter.patch('/:id', validate('json', updateAppRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)
   const app = await updateApp(db, tenantId, uuidParam(c, 'id'), c.req.valid('json'), auditActor(c))
-  return c.json(await getAppDetail(db, tenantId, app.slug))
+  return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)))
 })
 
 appsRouter.get('/:id/health', validate('query', appHealthQuerySchema), async c => {

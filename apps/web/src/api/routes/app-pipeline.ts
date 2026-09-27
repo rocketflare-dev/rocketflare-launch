@@ -39,6 +39,7 @@ import { ForbiddenError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
+import { appViewer } from './app-deploys'
 
 export const appPipelineRouter = createRouter()
 
@@ -57,7 +58,7 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
     c.req.valid('json'),
     auditActor(c)
   )
-  return c.json({ app: await getAppDetail(db, tenantId, app.slug), runId }, 202)
+  return c.json({ app: await getAppDetail(db, tenantId, app.slug, appViewer(c)), runId }, 202)
 })
 
 appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), async c => {

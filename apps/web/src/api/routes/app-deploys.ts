@@ -16,14 +16,13 @@
  */
 import { deployDecisionSchema } from '@launch/shared/launch-pipeline'
 import { can, guardPermission } from '../middleware/permissions'
-import { getAppRow } from '../services/launch/apps'
+import { type AppViewer, getAppRow, mayDeployApp } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
 import {
   decideDeploy,
   listDeploys,
   requestProductionDeploy,
 } from '../services/launch/deploy/decisions'
-import { isAppOwner } from '../services/oidc/policy'
 import type { AppContext } from '../types'
 import { ForbiddenError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
@@ -32,21 +31,18 @@ import { validate } from '../utils/routes/validate'
 
 export const appDeploysRouter = createRouter()
 
+/** The caller as `mayDeployApp` / `getAppDetail` see them. */
+export function appViewer(c: AppContext): AppViewer {
+  const { user, auth } = withAuthAndDb(c)
+  return { userId: user.id, groupIds: auth.groups.map(g => g.id), isAdmin: can(c, 'manage', 'App') }
+}
+
 /** The app, if the caller may decide its deploys: an admin, or one of its owners. Else 403. */
 async function deployableApp(c: AppContext) {
   guardPermission(c, 'read', 'App')
   const ctx = withAuthAndDb(c)
   const app = await getAppRow(ctx.db, ctx.tenantId, uuidParam(c, 'id'))
-  const allowed =
-    can(c, 'manage', 'App') ||
-    (await isAppOwner(
-      ctx.db,
-      ctx.tenantId,
-      app,
-      ctx.user.id,
-      ctx.auth.groups.map(g => g.id)
-    ))
-  if (!allowed) {
+  if (!(await mayDeployApp(ctx.db, ctx.tenantId, app, appViewer(c)))) {
     throw new ForbiddenError('Only the app’s owners and admins decide its deploys', 'forbidden')
   }
   return { ...ctx, app }

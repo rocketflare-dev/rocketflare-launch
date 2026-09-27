@@ -58,6 +58,8 @@ const summary = (overrides: Record<string, unknown> = {}) => ({
 })
 
 const detail = (overrides: Record<string, unknown> = {}) => ({
+  // The server's answer for the caller; an admin's (or an owner's) by default.
+  viewerCanDeploy: true,
   ...summary(overrides),
   templateContractVersion: '1',
   defaultBranch: 'main',
@@ -150,6 +152,7 @@ describe('CreateAppModal', () => {
   function renderCatalogue(routes: Record<string, unknown> = {}) {
     const fetchMock = stubFetch({
       '/api/apps': {
+        appsDomain: null,
         items: [
           summary({
             slug: 'atlas',
@@ -261,7 +264,10 @@ describe('CreateAppModal', () => {
 
   it('shows no host preview while the apps domain is unknown', async () => {
     // An empty catalogue reveals no domain, and a tenant admin cannot read the setup settings.
-    const fetchMock = stubFetch({ '/api/apps': { items: [] }, '/api/groups': { items: [] } })
+    const fetchMock = stubFetch({
+      '/api/apps': { items: [], appsDomain: null },
+      '/api/groups': { items: [] },
+    })
     renderWithProviders(<CataloguePage />, { session: makeSession() })
     fireEvent.click(await screen.findByRole('button', { name: /Create app/ }))
     const dialog = screen.getByRole('dialog')
@@ -471,12 +477,23 @@ describe('AppDetailPage — archive and deploys', () => {
   })
 
   it('shows a member one sentence instead of the decision buttons, and no production button', async () => {
-    renderLive(member(), { [`/api/apps/${APP_ID}/deploys`]: { items: [ticket()] } })
+    renderLive(member(), {
+      '/api/apps/expenses': detail({ viewerCanDeploy: false }),
+      [`/api/apps/${APP_ID}/deploys`]: { items: [ticket()] },
+    })
     expect(
       await screen.findByText(/Waiting for an app owner or an administrator/)
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Deploy to production/ })).not.toBeInTheDocument()
+  })
+
+  it('lets a member who OWNS the app approve and deploy, as the server does', async () => {
+    renderLive(member(), { [`/api/apps/${APP_ID}/deploys`]: { items: [ticket()] } })
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Deploy to production/ })).toBeInTheDocument()
+    // Retry and archive stay with admins.
+    expect(screen.queryByRole('button', { name: /Archive app/ })).not.toBeInTheDocument()
   })
 
   it('confirms before deploying to production', async () => {

@@ -30,6 +30,7 @@ import {
   groups,
 } from '../../../db/schema'
 import { BadRequestError, NotFoundError } from '../../utils/core/errors'
+import { isAppOwner } from '../oidc/policy'
 import { type AuditActor, recordAudit } from './audit'
 
 /** Staging before production, everywhere an app's environments are listed. */
@@ -126,10 +127,32 @@ export async function listApps(db: Database, tenantId: string): Promise<AppSumma
 }
 
 /** One app by slug, with its environments in full. 404 when it is not this tenant's. */
+/** Who is looking — enough to answer `viewerCanDeploy` (`mayDeployApp`). */
+export interface AppViewer {
+  userId: string
+  groupIds: readonly string[]
+  /** `manage App` — the organisation's admins and above. */
+  isAdmin: boolean
+}
+
+/**
+ * May `viewer` decide and start `app`'s deploys: an admin, or one of its owners. The ONE rule
+ * behind `POST /:id/deploys/…` and the detail's `viewerCanDeploy`.
+ */
+export async function mayDeployApp(
+  db: Database,
+  tenantId: string,
+  app: Pick<AppRow, 'id' | 'ownerGroupId'>,
+  viewer: AppViewer
+): Promise<boolean> {
+  return viewer.isAdmin || isAppOwner(db, tenantId, app, viewer.userId, viewer.groupIds)
+}
+
 export async function getAppDetail(
   db: Database,
   tenantId: string,
-  slug: string
+  slug: string,
+  viewer: AppViewer
 ): Promise<AppDetail> {
   const [row] = await db
     .select({ app: apps, groupId: groups.id, groupName: groups.name })
@@ -145,6 +168,7 @@ export async function getAppDetail(
     defaultBranch: row.app.defaultBranch,
     environments: sorted.map(toEnvironment),
     updatedAt: row.app.updatedAt,
+    viewerCanDeploy: await mayDeployApp(db, tenantId, row.app, viewer),
   }
 }
 

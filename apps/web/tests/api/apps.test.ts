@@ -14,7 +14,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { hashToken } from '@/api/utils/core/hash'
-import { appOperations, auditEvents, groups, groupTypes, oidcClients } from '@/db/schema'
+import { appOperations, appOwners, auditEvents, groups, groupTypes, oidcClients } from '@/db/schema'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -114,6 +114,26 @@ describe('GET /api/apps and GET /api/apps/:slug', () => {
     for (const path of ['operations', 'health', 'oidc-client']) {
       expect((await request(`/api/apps/${app.id}/${path}`, { headers: b.cookie })).status).toBe(404)
     }
+  })
+
+  it('says whether the caller may deploy: admins and the app’s owners, not other members', async () => {
+    const admin = await session('admin')
+    const { app } = await seedApp(db, admin.tenantId)
+    const owner = await createTestUser(db)
+    await linkUserToTenant(db, owner.id, admin.tenantId, 'member')
+    await db.insert(appOwners).values({ tenantId: admin.tenantId, appId: app.id, userId: owner.id })
+    const ownerCookie = sessionCookieHeader(await createTestSession(db, owner.id, admin.tenantId))
+    const member = await session('member', admin.tenantId)
+    const canDeploy = async (cookie: Record<string, string>) =>
+      appDetailSchema.parse(
+        await (await request(`/api/apps/${app.slug}`, { headers: cookie })).json()
+      ).viewerCanDeploy
+    expect(await canDeploy(admin.cookie)).toBe(true)
+    expect(await canDeploy(ownerCookie)).toBe(true)
+    expect(await canDeploy(member.cookie)).toBe(false)
+    // The list carries the apps domain (null until Setup sets it) for the create form's preview.
+    const list = await (await request('/api/apps', { headers: member.cookie })).json()
+    expect(list).toHaveProperty('appsDomain')
   })
 
   it('is 401 without a session', async () => {

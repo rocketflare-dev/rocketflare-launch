@@ -64,6 +64,7 @@ const detail = () => ({
     lastDeployBy: null,
   })),
   updatedAt: '2026-09-01T00:00:00Z',
+  viewerCanDeploy: true,
 })
 
 const member = () =>
@@ -73,14 +74,14 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('CataloguePage', () => {
   it('greets an empty catalogue with Create (the flame) and Import for an admin, and neither for a member', async () => {
-    stubFetch({ '/api/apps': { items: [] } })
+    stubFetch({ '/api/apps': { items: [], appsDomain: null } })
     const { unmount } = renderWithProviders(<CataloguePage />, { session: makeSession() })
     expect(await screen.findByText('Launch your first app')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Create app/ })).toHaveClass('btn-flame')
     expect(screen.getByRole('button', { name: /Import app/ })).not.toHaveClass('btn-flame')
     unmount()
 
-    stubFetch({ '/api/apps': { items: [] } })
+    stubFetch({ '/api/apps': { items: [], appsDomain: null } })
     renderWithProviders(<CataloguePage />, { session: member() })
     expect(await screen.findByText('No apps in the catalogue yet')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Import app/ })).not.toBeInTheDocument()
@@ -90,6 +91,7 @@ describe('CataloguePage', () => {
   it('shows each app with team, kit and a labelled dot per environment, and the fleet summary', async () => {
     stubFetch({
       '/api/apps': {
+        appsDomain: null,
         items: [
           summary(),
           summary({
@@ -126,7 +128,7 @@ describe('CataloguePage', () => {
 
   it('validates the repo with the shared schema, then renders a refusal inside the modal', async () => {
     const fetchMock = stubFetch({
-      '/api/apps': { items: [] },
+      '/api/apps': { items: [], appsDomain: null },
       'POST /api/apps/import': errorResponse(
         422,
         'acme/nope@main has no .rocketflare.json or launch.plugins.json — is it a Rocketflare app?',

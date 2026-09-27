@@ -234,8 +234,15 @@ export const appSummarySchema = z.object({
 })
 export type AppSummary = z.infer<typeof appSummarySchema>
 
-/** `GET /api/apps` — the whole catalogue, by name. It is one company's apps, so no paging. */
-export const appListResponseSchema = z.object({ items: z.array(appSummarySchema) })
+/**
+ * `GET /api/apps` — the whole catalogue, by name. It is one company's apps, so no paging.
+ * `appsDomain` is `launch_settings.apps_domain` (null until Setup sets it): what a created app's
+ * hosts end in, so the create form can preview `<slug>-staging.<appsDomain>` for any member.
+ */
+export const appListResponseSchema = z.object({
+  items: z.array(appSummarySchema),
+  appsDomain: z.string().nullable(),
+})
 export type AppListResponse = z.infer<typeof appListResponseSchema>
 
 /** `GET /api/apps/:slug`. */
@@ -244,6 +251,12 @@ export const appDetailSchema = appSummarySchema.extend({
   defaultBranch: z.string().nullable(),
   environments: z.array(appEnvironmentSchema),
   updatedAt: z.coerce.date(),
+  /**
+   * Whether the CALLER may approve or reject its production deploys and start one — the app's
+   * owners (a named owner or a member of its owner group) and admins (`manage App`), exactly the
+   * rule `POST /:id/deploys/…` enforces. Retry and archive stay `manage App`.
+   */
+  viewerCanDeploy: z.boolean(),
 })
 export type AppDetail = z.infer<typeof appDetailSchema>
 

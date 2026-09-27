@@ -6,7 +6,9 @@
  *
  * P2: an app Launch created also shows its launch as it happens (`PipelineProgress`, polled only
  * while a run is owed — `usePipeline`), its deploys (`DeploysCard`), and a danger zone whose
- * Archive runs the teardown, which then shows here the same way. While the launch is under way the
+ * Archive runs the teardown, which then shows here the same way. Approving, rejecting and starting
+ * a production deploy is for the app's owners as well as admins — the detail's `viewerCanDeploy`,
+ * the server's own rule; retry and archive stay `manage App`. While the launch is under way the
  * parts that only make sense for a running app — health history, "Check now", the sign-in card the
  * pipeline itself registers — wait for it.
  */
@@ -334,8 +336,8 @@ export default function AppDetailPage() {
       {created && app.status !== 'requested' && app.status !== 'archived' && (
         <DeploysCard
           appId={app.id}
-          canDecide={canManage}
-          canDeployProduction={canManage && app.status === 'live'}
+          canDecide={app.viewerCanDeploy}
+          canDeployProduction={app.viewerCanDeploy && app.status === 'live'}
         />
       )}
 
