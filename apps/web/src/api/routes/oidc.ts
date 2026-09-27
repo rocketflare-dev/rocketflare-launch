@@ -112,6 +112,9 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, ch => `&#${ch.ch
  * are plain server-rendered HTML, not the SPA: they answer before (or without) a Launch session,
  * and a relying party may land on them from anywhere. Styled inline in the Afterburner palette
  * (the CSP allows inline styles, never inline scripts), light or dark with the system.
+ *
+ * No `no-referrer` policy here: under it a browser sends `Origin: null` with the confirmation
+ * form's POST, and the CSRF middleware (rightly) refuses an origin it cannot match.
  */
 const PAGE_STYLE = `:root{color-scheme:light dark;--bg:#faf7f2;--panel:#fff;--text:#1c1917;--muted:#57534e;--line:#dcd4cb;--primary:#c2410c;--on-primary:#fff}@media (prefers-color-scheme:dark){:root{--bg:#120d1f;--panel:#1d1630;--text:#f5f3ff;--muted:#d6d1e6;--line:#3d3358;--primary:#ff7a45;--on-primary:#1a0b05}}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}main{width:min(26rem,calc(100vw - 2rem));background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:1.75rem}.brand{font-weight:600;letter-spacing:.02em;color:var(--primary);margin:0 0 1rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{margin:0 0 1rem;color:var(--muted)}form{display:flex;gap:.5rem;margin:0}button,a.button{font:inherit;cursor:pointer;border-radius:5px;padding:.5rem 1rem;text-decoration:none}button{background:var(--primary);color:var(--on-primary);border:1px solid var(--primary)}a.button{border:1px solid var(--line);color:var(--text)}`
 
@@ -122,7 +125,7 @@ function htmlPage(
   message: string,
   extra: { body?: string; head?: string } = {}
 ) {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">${extra.head ?? ''}<title>${escapeHtml(title)} · Launch</title><style>${PAGE_STYLE}</style></head><body><main><p class="brand">Launch</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${extra.body ?? ''}</main></body></html>`
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${extra.head ?? ''}<title>${escapeHtml(title)} · Launch</title><style>${PAGE_STYLE}</style></head><body><main><p class="brand">Launch</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${extra.body ?? ''}</main></body></html>`
   return c.html(body, status, NO_STORE)
 }
 

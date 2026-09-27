@@ -767,6 +767,9 @@ describe('logout', () => {
     expect(page).toContain('<form method="post" action="/oidc/logout">')
     expect(page).toContain(`name="client_id" value="${appA.clientId}"`)
     expect(page).toContain(alice.email)
+    // Under a no-referrer policy the browser would send `Origin: null` with the form, and CSRF
+    // refuses that (found driving a real browser through the confirmation).
+    expect(page).not.toContain('no-referrer')
     expect(await sessionAlive(cookie)).toBe(true)
 
     // A cross-site POST carrying the cookie is refused by the CSRF middleware.
