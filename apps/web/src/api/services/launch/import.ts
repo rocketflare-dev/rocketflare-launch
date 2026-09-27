@@ -38,6 +38,7 @@ import {
   installationToken,
   listInstallations,
 } from './github-app'
+import { ROCKETFLARE_CONTRACT_VERSION } from './rocketflare/adapter'
 import {
   type AppIdentity,
   MANIFEST_PATHS,
@@ -48,8 +49,8 @@ import {
   type WranglerEnvironment,
 } from './rocketflare-manifest'
 
-/** The adapter contract version an import records (spec/02, "Rocketflare adapter v1"). */
-export const ROCKETFLARE_CONTRACT_VERSION = '1'
+/** The adapter contract version an import records — defined by the adapter, re-exported here. */
+export { ROCKETFLARE_CONTRACT_VERSION }
 
 /** The GitHub App credentials an import acts with; tests hand them in directly. */
 export interface ImportGitHub {
