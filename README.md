@@ -139,5 +139,7 @@ Copyright © 2026 Clifton Cunningham. Launch is source-available under the
 company for commercial work. You may not offer it to others as a hosted or managed service, or
 remove or circumvent any licence-key functionality.
 
-[Rocketflare](https://rocketflare.dev) itself, and every app Launch creates from it, stays
-[MIT](https://github.com/rocketflare-dev/rocketflare/blob/main/LICENSE).
+[Rocketflare](https://rocketflare.dev) itself is
+[MIT](https://github.com/rocketflare-dev/rocketflare/blob/main/LICENSE). The apps Launch creates
+from it belong to the company that creates them, and it can license them however it likes. MIT
+only asks that the kit's copyright notice is kept. Launch's licence doesn't extend to them.
