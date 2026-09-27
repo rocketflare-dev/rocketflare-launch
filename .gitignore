@@ -1,0 +1,7 @@
+.env
+spikes/.env
+spikes/.created.json
+node_modules/
+*.pem
+.state.json
+spikes/.ssh/

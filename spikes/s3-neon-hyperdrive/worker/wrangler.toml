@@ -1,0 +1,9 @@
+name = "rfspike-db"
+main = "index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "f3986e210fb34a8987d8dba7fe4c405d"

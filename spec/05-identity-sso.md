@@ -10,12 +10,12 @@ decides who may use which app, and records it.
 
 ## Decision: Launch is an OIDC issuer
 
-Launch is an OpenID Connect provider at `https://apps.example.com`, and every app is an OIDC
+Launch is an OpenID Connect provider at `https://launch.company-launch.com`, and every app is an OIDC
 client that Launch registers automatically when it creates the app.
 
 ```
-user ──► <slug>.apps.example.com/login
-          └─► 302 apps.example.com/oidc/authorize?client_id=…&code_challenge=…&redirect_uri=…
+user ──► <slug>.company-apps.com/login
+          └─► 302 launch.company-launch.com/oidc/authorize?client_id=…&code_challenge=…&redirect_uri=…
                  ├─ no Launch session? → upstream Google/Microsoft sign-in → Launch session
                  ├─ access policy for this app? deny → "request access" page (an approval, 08)
                  └─ allow → 302 back with ?code=…
@@ -72,7 +72,7 @@ through Launch, so an offboarded user loses access when their next refresh fails
 
 ## Rejected alternatives
 
-- **A shared parent-domain cookie (`Domain=.apps.example.com`).** Every app could read and replay
+- **A shared parent-domain cookie (`Domain=.company-apps.com`).** Every app could read and replay
   it, so one compromised app would compromise every account. It is also incompatible with
   `__Host-` cookies.
 - **Cloudflare Access as the primary login.** It is configured once and works for any app, but it
@@ -84,15 +84,26 @@ through Launch, so an offboarded user loses access when their next refresh fails
   Microsoft Graph can create app registrations, but every app would then have its own consent
   screen and its own admin consent. One upstream client, on Launch, avoids both problems.
 
-## Build choice (open)
+## Build choice: a small issuer on `jose` (decided)
 
-| Option | For | Against |
-|---|---|---|
-| `@openauthjs/openauth` | Runs on Workers; has provider adapters; less to write | How complete its OIDC support is (discovery, `id_token`, logout) needs checking; a library to follow |
-| A small issuer on `jose` | Exactly the spec subset above; easy to audit | We own the security surface: PKCE, code replay, key rotation |
+[S6](../spikes/s6-oidc-issuer/RESULT.md) settled it:
 
-**Recommendation:** spike OpenAuth first. Fall back to `jose` if it can't produce a standard
-`id_token` and discovery document.
+- **OpenAuth is not an OIDC provider.** It issues no `id_token`, publishes no
+  `openid-configuration`, and has no `userinfo` or logout. Its last release was March 2025.
+- **A `jose` issuer of about 200 lines** implemented the subset above. `openid-client` accepted it,
+  and all 15 checks passed, including:
+  - code replay, a wrong PKCE verifier and a cross-client code are refused;
+  - an unregistered redirect is shown an error page rather than redirected;
+  - the access policy denies a user outside the app's allowed groups;
+  - single sign-on works across two apps;
+  - logout clears the session and only returns to a registered URI.
+
+What remains for production:
+- signing-key rotation with a JWKS overlap;
+- refresh or silent re-auth;
+- revoking tokens issued from a replayed code;
+- the "request access" page;
+- running the OpenID Foundation's Basic OP conformance suite before P1 exits.
 
 ## Known gaps
 

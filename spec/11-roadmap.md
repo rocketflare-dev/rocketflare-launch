@@ -7,16 +7,24 @@ useful on its own.
 
 - This repository, reviewed.
 - **Spikes that decide feasibility**, each about one day:
-  1. Mint a Cloudflare token scoped to one Worker and deploy with it; confirm the policy format.
-  2. Custom Domain certificates on `x.apps.<domain>` and `x.staging.apps.<domain>`.
-  3. A custom deployment protection rule on a private repo in the target GitHub plan.
-  4. Sandbox cold start: clone a Rocketflare app, bootstrap, and time `pnpm dev` to a ready
-     preview.
-  5. An OpenAuth issuer producing a standard `id_token` and discovery document, used as the login
+  - S0, fleet limits: done ([spikes/s0-limits](../spikes/s0-limits/RESULT.md)).
+  - S1, a Cloudflare token scoped to one Worker: done. The format works, but it doesn't isolate
+    apps, so Launch deploys ([spikes/s1-worker-token](../spikes/s1-worker-token/RESULT.md)).
+  - S2, flat hosts on the apps domain: done ([spikes/s2-flat-routes](../spikes/s2-flat-routes/RESULT.md)).
+  - S3, Neon + Hyperdrive: done ([spikes/s3-neon-hyperdrive](../spikes/s3-neon-hyperdrive/RESULT.md)).
+  - S4, one shared Resend domain: done ([spikes/s4-resend-shared-domain](../spikes/s4-resend-shared-domain/RESULT.md)).
+  - S5, deploying through Launch from a private repo on a non-Enterprise GitHub plan: done
+    ([spikes/s5-deploy-via-launch](../spikes/s5-deploy-via-launch/RESULT.md)).
+  - S6, the OIDC issuer: done. OpenAuth isn't an OIDC provider, and a `jose` issuer passes
+    `openid-client` ([spikes/s6-oidc-issuer](../spikes/s6-oidc-issuer/RESULT.md)).
+  - S7, the session sandbox: done. 24 s to a live, gated preview; a streamed, resumable Claude Code
+    chat with no model key in the sandbox ([spikes/s7-sandbox](../spikes/s7-sandbox/RESULT.md)).
      for a Rocketflare app.
 
 **Exit:** each spike reports yes, no, or yes-with-a-workaround, and the design is updated to
-match.
+match. **Done 2026-09-27**: every spike reported, and the spec was updated
+([spikes/SUMMARY.md](../spikes/SUMMARY.md)). What P0 leaves for the kit: an OIDC login, a Neon
+driver client, a deploy mode that goes through Launch, and configurable dev ports.
 
 ## P1: foundation
 
@@ -41,7 +49,7 @@ switched, its users sign in through Launch.
 - The kit's generic OIDC login, contributed upstream if the kit takes it; otherwise carried by the
   adapter.
 
-**Exit:** a user clicks "Create app", and minutes later `<slug>.staging.apps.<domain>` serves the
+**Exit:** a user clicks "Create app", and minutes later `<slug>-staging.<apps domain>` serves the
 app. They sign in through Launch. Nobody opened a terminal.
 
 ## P3: coding sessions
@@ -56,7 +64,7 @@ green PR.
 ## P4: approvals and shipping
 
 - The approvals engine, the inbox and policies ([08](08-approvals-audit-ship.md)).
-- Release and promote from Launch; production gated by the protection rule, or by the fallback.
+- Release and promote from Launch; every deploy goes through Launch, which is the production gate.
 
 **Exit:** a production deploy waits in the Launch inbox and is released by the approval. The
 audit log shows the whole chain from PR to production.

@@ -21,8 +21,15 @@ still be deployed from its repo by hand.
 
 ## One Launch per company
 
-Launch is deployed **into the company's own Cloudflare account**, with one instance per company.
-This decides the trust model. The account token, the Neon organisation key and the Resend key are
+Launch is deployed **into the company's own Cloudflare**, with one instance per company. This
+decides the trust model.
+
+**Two accounts are strongly recommended**, both owned by the company: a **Launch account** for
+Launch's own Worker, database and storage, and an **apps account** where every app's Workers and
+resources live. Any Worker in an account can bind any resource in that account, whatever the
+deploying token was scoped to ([S1](../spikes/s1-worker-token/RESULT.md)). Keeping Launch in its own
+account means nothing an app deploys can reach Launch's database or storage. A single account also
+works; it is then only as safe as Launch's deploy checks ([08](08-approvals-audit-ship.md)). The account token, the Neon organisation key and the Resend key are
 the most powerful credentials the company owns, and here they never leave its infrastructure.
 
 It also makes Launch single-tenant: the company is the only tenant. Teams inside the company are
@@ -64,7 +71,7 @@ rename it to `launch`, then delete everything that ties it to the kit:
 From that commit on it is Launch's own code. It gets the parts that take weeks to build for free:
 
 - sessions, Google and Microsoft login, and API keys,
-- Drizzle over Hyperdrive,
+- Drizzle over Hyperdrive (Launch keeps Hyperdrive; the apps it creates don't, see [02](02-template-contract.md)),
 - Queues, Workflows and Durable Objects wiring,
 - sealed secrets,
 - the AG-UI event rendering (useful for session transcripts),

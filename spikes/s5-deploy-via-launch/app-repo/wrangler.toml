@@ -1,0 +1,13 @@
+name = "rfspike-app"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "4417c5421de44a5bba21ee67d75aec45"

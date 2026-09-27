@@ -64,37 +64,59 @@ session PR ──► GitHub review + CI (the app's own gate) ──► merge to 
           (Rocketflare: bump version + tag X.Y.Z → deploy workflow → STAGING)
       ──► staging healthy → "Promote to production" in Launch
           (Rocketflare: publish the GitHub Release → production job starts)
-      ──► production job reaches environment `production`
-          └─ GitHub → webhook deployment_protection_rule → Launch opens deploy.production
-             approvers decide in Launch → Launch calls GitHub's review API → job proceeds or fails
+      ──► production job starts in GitHub, and asks Launch to deploy (GitHub Actions OIDC)
+          └─ Launch opens deploy.production → approvers decide in Launch
+             → approved: the job builds and hands its build to Launch; Launch checks it and stores
+               it as an undeployed version, then hands the job short-lived migration credentials;
+               the job migrates; Launch activates the version
+             → rejected or expired: the job fails, and nothing reached production
       ──► Launch mirrors deploy status, version and health into the registry; audit event
 ```
 
-### Gating production with a custom deployment protection rule
+### Launch deploys, so Launch is the gate
 
-- Launch's GitHub App is registered as a **custom deployment protection rule** on each app's
-  `production` environment. Launch does this in pipeline step 8
-  ([06](06-registry-and-pipeline.md)).
-- When a job targets `production`, GitHub pauses it and sends Launch a
-  `deployment_protection_rule` webhook.
-- Launch answers through GitHub's API: approved or rejected, with a comment linking to the Launch
-  approval.
-- GitHub keeps its own deployment record. Launch holds the decision and the audit.
+CI holds **no Cloudflare token and no production database credential** ([03](03-trust-and-credentials.md)).
+A deploy job can only ask Launch:
 
-**Caveat, to verify first:** custom deployment protection rules are available to all plans on
-public repos, but on **private or internal repos they need GitHub Enterprise**. Company app repos
-will be private.
+1. **Who is asking.** The job requests a GitHub Actions OIDC token (`permissions: id-token: write`)
+   with Launch as its audience, fresh for each call. Launch verifies it against GitHub's JWKS and
+   requires:
+   - `repository` → one app;
+   - `environment` → one of its environments;
+   - `job_workflow_ref` → the deploy workflow;
+   - `ref` → `main` or a release tag.
 
-**Fallback without Enterprise:**
+   There is no stored secret to leak.
+2. **May it deploy.** Launch opens a ticket **bound to the run** (`run_id`): later calls must come
+   from the same run and environment. Staging follows its policy (usually automatic). Production
+   opens a `deploy.production` approval, and the job waits with a timeout (or ends and is
+   re-dispatched by Launch on approval).
+3. **The build is checked before anything changes.** The job builds
+   (`wrangler deploy --dry-run --outdir`, plus the static assets) and uploads the build to Launch.
+   Launch **checks every binding against the resource ids the registry holds for that app and
+   environment**, and refuses anything else, whether it is another app's KV, R2, Queue or Worker
+   ([S1](../spikes/s1-worker-token/RESULT.md)). It uploads the assets and an **undeployed Worker
+   version** with its own token, keeping the Worker's secrets.
+4. **Migrations.** Only now does Launch reset the environment's `migrator` role password and
+   return the URI to that run. The job runs the kit's migrations.
+5. **Activate.** Launch deploys the version at 100% and resets `migrator` again. A final step
+   that always runs resets it anyway if the job failed part-way.
 
-- The production job runs only on `workflow_dispatch`.
-- The `production` environment restricts deployment refs to release tags, and only Launch's App
-  can create those tags (rulesets).
-- The per-Worker production token exists only in that environment.
-- Launch dispatches the job only after the approval.
+All of this ran end to end in [S5](../spikes/s5-deploy-via-launch/RESULT.md):
+- an approval turned into a production deploy in 23 s;
+- an unapproved run and a build that bound another app's KV were both stopped **before any
+  migration ran**.
 
-This is weaker, because a repo admin could still dispatch it by hand. The audit log catches it
-after the fact: a deploy with no approval id raises an alert.
+This works on **every GitHub plan**, because GitHub is no longer the enforcement point. A repo admin
+who dispatches the workflow by hand gets as far as step 2 and no further. On GitHub Enterprise,
+Launch can also register a custom deployment protection rule, so the job shows as waiting in
+GitHub's own UI. That is a convenience, not the gate.
+
+*Rejected: a per-Worker Cloudflare token in each GitHub Environment.* It can't stop cross-app
+bindings (S1), and a repo admin could deploy with it without an approval.
+
+*Rejected: GitHub custom deployment protection rules as the gate.* They need GitHub Enterprise on
+private repos, and they still leave the credentials in GitHub.
 
 ### Code review
 
@@ -104,6 +126,7 @@ Launch could later offer "approve PR" by acting as the user, but that is out of 
 
 ## Known gaps
 
-- The Enterprise dependency above.
+- The deploy hand-off (build upload, assets upload sessions, binding checks) is Launch code to
+  build and keep in step with wrangler's upload format.
 - Approvals by email reply or chat buttons are a later phase.
 - No emergency "break glass" production deploy yet. It needs a policy and a loud audit trail.

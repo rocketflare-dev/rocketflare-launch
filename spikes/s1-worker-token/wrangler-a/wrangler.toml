@@ -1,0 +1,11 @@
+name = "rfspike-a"
+main = "index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "147125c11b9149f9b1c456c9f9325487"
+
+[vars]
+APP_URL = "https://rfspike-a.clewro.com"

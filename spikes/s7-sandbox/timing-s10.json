@@ -1,0 +1,49 @@
+{
+  "id": "s10",
+  "coldStore": true,
+  "prepared": true,
+  "steps": [
+    [
+      "neon: session branch from a migrated + seeded dev",
+      771
+    ],
+    [
+      "container start (first exec)",
+      3198
+    ],
+    [
+      "git clone kit 0.13.0 (depth 1)",
+      1183
+    ],
+    [
+      "pnpm install (empty store)",
+      16803
+    ],
+    [
+      ".dev.vars + offline AI (bootstrap --offline)",
+      100
+    ],
+    [
+      "pnpm db:migrate (branch already migrated: no-op)",
+      10542
+    ],
+    [
+      "start wrangler dev :3001 + vite :5173",
+      176
+    ],
+    [
+      "api ready (:3001/api/health = 200)",
+      5135
+    ],
+    [
+      "ui ready (:5173 = 200)",
+      96
+    ]
+  ],
+  "total": 38005,
+  "preview": {
+    "anon": 401,
+    "signedIn": 200,
+    "api": 200
+  }
+}

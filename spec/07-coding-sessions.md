@@ -15,25 +15,36 @@ built on the company's own repo, CI and approvals.
 browser ◄─WebSocket─► SessionDO (one per session; Launch Worker)
                          │  • owns the Sandbox handle, the GitHub token refresh, budgets
                          │  • persists every event → session_events (Postgres)
-                         │  • proxies/meters model calls
+                         │  • keys and meters model calls (outbound handler, in the Worker)
                          ▼
-                      Cloudflare Sandbox (container)
+                      Cloudflare Sandbox (container, egress allowlisted)
                          • git clone <app repo> (1-hour, single-repo token)
-                         • template devBootstrap → e.g. `pnpm bootstrap --yes --no-dev && pnpm dev`
-                         • exposed port :3000 → live preview URL
-                         • Claude Agent SDK / Claude Code headless (streaming mode)
+                         • its own Neon branch, copied from the app's prepared `dev` branch
+                         • template devBootstrap → install, .dev.vars, migrate, dev servers
+                         • dev UI port → preview, fronted by Launch (containerFetch)
+                         • Claude Code headless, one streamed turn per message (--resume)
                            working in the checkout, on branch session/<id>
 ```
 
-- **Container image**: Node 24, pnpm 10, Postgres 17 + pgvector (started in the container, so the
-  template's local database needs no Docker), git, and Claude Code / the Agent SDK. The image is
+- **Container image**: the stable Sandbox image, plus Node 24 (first on `PATH`: the base image's
+  Node 22 comes first otherwise), pnpm 10, Claude Code, and a **pnpm store pre-fetched for the
+  pinned kit tag** (~12 s saved per session). There is **no Postgres** in the image. The image is
   one per template and adapter version, built and versioned by Launch.
+- **Database: a Neon branch per session**, copied from the app's `dev` branch, which Launch keeps
+  migrated and seeded (never production data). Branching takes ~1 s; a prepared `dev` saves ~45 s
+  of migrate and seed per session. The branch is deleted with the session. Neon caps branches per
+  project (10 on Launch, 25 on Scale), which caps concurrent sessions per app.
 - **Why this works well with Rocketflare apps**: the agent inherits the repo's own `CLAUDE.md`,
   `.claude/rules`, per-directory `CLAUDE.md` files and `rf-*` skills. The kit was designed so an
   agent can copy it and get going; Launch sessions are exactly that case. The zero-credential dev
-  mode means the sandbox needs no Cloudflare, Neon or Resend credentials to run the app.
-- **Streaming**: the SDK's streaming output, including partial messages, is relayed by the
-  SessionDO to the browser. Events are mapped onto AG-UI types (text, tool call start and end,
+  mode means the sandbox needs no Cloudflare or Resend credentials to run the app. Its only
+  database credential is for its own throwaway branch.
+- **The chat loop** ([S7](../spikes/s7-sandbox/RESULT.md)): each user message is one Claude Code turn,
+  `claude -p … --resume <session> --output-format stream-json`, run with the Sandbox's streaming
+  `exec`. The SessionDO relays each event to the browser as it arrives. In the spike, a second
+  turn resumed the first and answered from its context.
+- **Streaming**: the stream-json output, including partial messages, is relayed by the SessionDO
+  to the browser. Events are mapped onto AG-UI types (text, tool call start and end,
   run finished), so the transcript renders with standard components and can be replayed from
   `session_events`.
 - **Human in the loop**: the agent's permission prompts (for example, running a migration
@@ -57,10 +68,11 @@ PR as usual.
 
 ## Live preview
 
-The sandbox exposes the dev server's port as a preview URL. Preferred: a custom hostname under
-`preview.apps.example.com`, gated by the viewer's Launch session, so previews are private to the
-company. Needs checking: Sandbox preview URLs on a custom domain, and how auth sits in front of
-them.
+The sandbox exposes the dev server's port as a preview URL,
+`<port>-<sandbox>-<token>.company-launch.com`. It is served by a wildcard route on Launch's own
+domain, so the zone's wildcard certificate covers it ([04](04-hostnames-and-dns.md)). Launch gates it with the viewer's Launch session, so
+previews are private to the company. Needs checking (spike S7): the preview on this hostname, and
+how the session check sits in front of the Sandbox's own token.
 
 ## Budgets and cost
 
@@ -89,11 +101,19 @@ them.
   pattern for business agents inside apps, but it isn't a coding agent and has no filesystem or
   shell.
 
+## Measured (S7)
+
+From nothing to a live, gated preview: **24 s** with a prepared `dev` branch and the warm pnpm
+store, 38 s with an empty store, and 57 s when migrating and seeding a fresh branch. The first
+container start after a deploy took 36 s; after that 2–4 s ([S7](../spikes/s7-sandbox/RESULT.md)).
+
 ## Known gaps
 
-- The Sandbox SDK 1.0 (`@next`) preview or the stable package: we need to pick one at build time.
-  Cloudflare recommends 1.0 for new projects.
-- Cold start: time from starting a session to a ready preview (clone, install, Postgres, first
-  build). This is the key feasibility metric for P3; target under 90 seconds with a warm image and
-  a pnpm store cache.
+- **Deploys interrupt live sessions.** Changing the session image or config rolls out by replacing
+  instances, and cut off a running command in S7. Launch has to drain or checkpoint sessions first.
+- Sandboxes must be destroyed when a session fails, not only when it ends: leftovers count against
+  `max_instances`, which is also the cap on concurrent sessions per class.
+- Permission prompts in the UI (the Agent SDK's permission callback, or
+  `--permission-prompt-tool`) and cancelling a turn: not yet spiked; S7 used `acceptEdits`.
+- Vite HMR over a WebSocket through `containerFetch`: not yet tested.
 - No multiplayer (two people in one session) in the first version.

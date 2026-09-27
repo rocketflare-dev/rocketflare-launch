@@ -1,0 +1,2 @@
+{ "name": "rfspike-gw", "private": true, "type": "module",
+  "dependencies": { "jose": "^6.1.0", "smol-toml": "^1.4.2" } }

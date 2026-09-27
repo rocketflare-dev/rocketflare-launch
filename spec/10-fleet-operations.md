@@ -33,9 +33,9 @@ same way.
 
 The `ROTATE` Workflow, on a schedule per credential kind:
 
-- Neon role passwords: rotate, update the GitHub `DATABASE_URL` and the Hyperdrive config.
+- Neon `app` role passwords: rotate, then update the Worker's `DATABASE_URL`. (`migrator` is reset on
+  every deploy anyway.)
 - Resend sending keys: mint a new one, push it, delete the old one.
-- Per-Worker deploy tokens: mint, update the GitHub secret, revoke the old one.
 - OIDC client secrets: overlapping validity, push, retire the old one.
 - Shared grant values: when their owners rotate them ([09](09-config-and-grants.md)).
 - **Never** the app's `OAUTH_ENCRYPTION_KEY`. Rotating it would break data the app has sealed.
@@ -45,11 +45,11 @@ The `ROTATE` Workflow, on a schedule per credential kind:
 "Archive" or "Delete" raises an `app.teardown` approval. The `APP_TEARDOWN` Workflow then walks
 the recorded ids in `app_operations` in reverse:
 
-- detach the custom domains;
+- delete the Worker routes;
 - delete the Workers (both environments);
-- delete R2, KV, Queues and Hyperdrive;
+- delete R2, KV and Queues;
 - revoke the tokens;
-- remove the Resend domain and its DNS records;
+- delete the app's Resend sending key;
 - delete the OIDC client;
 - revoke the grants.
 

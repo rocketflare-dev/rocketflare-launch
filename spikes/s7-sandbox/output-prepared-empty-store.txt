@@ -1,0 +1,12 @@
+ok   neon: session branch from a migrated + seeded dev    0.8s
+ok   container start (first exec)                    3.2s
+ok   git clone kit 0.13.0 (depth 1)                  1.2s
+ok   pnpm install (empty store)                     16.8s
+ok   .dev.vars + offline AI (bootstrap --offline)    0.1s
+ok   pnpm db:migrate (branch already migrated: no-op)   10.5s
+ok   start wrangler dev :3001 + vite :5173           0.2s
+ok   api ready (:3001/api/health = 200)              5.1s
+ok   ui ready (:5173 = 200)                          0.1s
+preview without a Launch session: 401 · with one: 200 (the app shell) · /api/health via Vite proxy: 200 {"status":"ok","version":"dev","env":"development"}
+
+TOTAL from nothing to a live preview: 38.0s

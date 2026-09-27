@@ -1,0 +1,56 @@
+# Deploy through Launch (spec/08). This workflow holds no secrets: no Cloudflare token and no
+# database credential. It proves who it is with GitHub's OIDC token, and Launch does the rest.
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      toml:
+        description: Override the wrangler config (the spike's foreign-binding test)
+        type: string
+        default: ''
+      wait_seconds:
+        type: string
+        default: '300'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      # A repo variable in Launch proper; the spike's App lacks the Variables permission.
+      LAUNCH_URL: ${{ vars.LAUNCH_URL || 'https://rfspike-gw.clewro.com' }}
+      DEPLOY_ENV: ${{ inputs.environment }}
+      WAIT_SECONDS: ${{ inputs.wait_seconds }}
+      TOML: ${{ inputs.toml != '' && inputs.toml || (inputs.environment == 'production' && 'wrangler.toml' || 'wrangler.staging.toml') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --no-audit --no-fund
+      - name: A token for another audience is refused
+        run: node launch.mjs wrong-audience
+      - name: Ask Launch to deploy (waits for approval)
+        run: node launch.mjs start
+      - name: Build (no credentials needed)
+        run: npx wrangler deploy --dry-run --outdir dist -c "$TOML"
+      - name: Hand the build to Launch (checked, stored as an undeployed version)
+        run: node launch.mjs upload
+      - name: Migrate with the credentials Launch handed to this run
+        run: node migrate.mjs
+      - name: Launch activates the version
+        run: node launch.mjs activate
+      - name: Tell Launch the deploy is over
+        if: always()
+        run: node launch.mjs finish
+      - name: The migrator password this run had is now dead
+        if: always()
+        run: node launch.mjs check-dead

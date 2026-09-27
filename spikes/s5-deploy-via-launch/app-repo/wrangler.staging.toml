@@ -1,0 +1,13 @@
+name = "rfspike-app-staging"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "6e5fd9fc8ab34f39817a14cb71f66f69"

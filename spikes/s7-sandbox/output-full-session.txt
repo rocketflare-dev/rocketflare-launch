@@ -1,0 +1,15 @@
+ok   neon: session branch from an empty dev          1.1s
+ok   container start (first exec)                    1.8s
+ok   git clone kit 0.13.0 (depth 1)                  1.1s
+ok   pnpm install (warm store in image)              4.7s
+ok   .dev.vars + offline AI (bootstrap --offline)    0.1s
+ok   pnpm db:migrate (fresh Neon branch)            36.6s
+ok   pnpm seed                                       7.6s
+ok   start wrangler dev :3001 + vite :5173           0.2s
+ok   api ready (:3001/api/health = 200)              3.5s
+ok   ui ready (:5173 = 200)                          0.1s
+preview without a Launch session: 401 · with one: 403 (Blocked request. This host ("rfspike-pv-open-s8.clewro.com") is not allowed.
+To ) · /api/health via Vite proxy: 403 Blocked request. This host ("rfspike-pv-open-s8.clewro.com") is not allowed.
+To 
+
+TOTAL from nothing to a live preview: 56.9s

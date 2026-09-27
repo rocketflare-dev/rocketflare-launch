@@ -1,0 +1,2 @@
+{ "name": "rfspike-db", "private": true, "type": "module",
+  "dependencies": { "postgres": "^3.4.7", "@neondatabase/serverless": "^1.0.0" } }

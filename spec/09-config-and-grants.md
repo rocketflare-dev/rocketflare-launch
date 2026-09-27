@@ -63,7 +63,7 @@ request ──► grant.request approval (resource owner; policy per environment
 
 Changing an app's own vars or secrets (not shared resources) is a `config.change` request through
 the same push path, with the app owners as approvers. Launch-minted credentials (Neon passwords,
-Resend keys, per-Worker tokens, OIDC client secrets) are rotated on a schedule by the `ROTATE`
+Resend keys, OIDC client secrets) are rotated on a schedule by the `ROTATE`
 Workflow ([10](10-fleet-operations.md)).
 
 ## Why push, not pull

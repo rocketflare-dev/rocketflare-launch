@@ -1,0 +1,10 @@
+{
+  "name": "rfspike-deploy",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0",
+    "postgres": "^3.4.7",
+    "wrangler": "^4"
+  }
+}

@@ -1,0 +1,99 @@
+PASS a forged token is refused · 401 {"error":"token rejected: ERR_JWKS_MULTIPLE_MATCHING_KEYS"}
+
+--- A: staging (policy: automatic)
+✓ Set up job
+✓ Run actions/checkout@v4
+✓ Run actions/setup-node@v4
+✓ Run npm install --no-audit --no-fund
+✓ A token for another audience is refused
+✓ Ask Launch to deploy (waits for approval)
+✓ Build (no credentials needed)
+✓ Hand the build to Launch (checked, stored as an undeployed version)
+✓ Migrate with the credentials Launch handed to this run
+✓ Launch activates the version
+✓ Tell Launch the deploy is over
+✓ The migrator password this run had is now dead
+✓ Post Run actions/setup-node@v4
+✓ Post Run actions/checkout@v4
+✓ Complete job
+      a token for another audience: 401 {"error":"token rejected: ERR_JWT_CLAIM_VALIDATION_FAILED"}
+      ticket ec45ea1f-706d-4715-9bfc-6eed36c92e97: approved
+      upload: 200 {"versionId":"9c4f5a83-8c11-4d05-8aa3-e86a3466be07","bindings":["kv_namespace:RATE_LIMIT_KV","assets:ASSETS","plain_text:RELEASE"]}
+      migrated as migrator
+      activate: 200 deployed
+      ok: the migrator password is dead after finish (password authentication failed for user 'migrator')
+PASS A: run succeeded
+PASS A: staging serves the static asset
+PASS A: staging reads the row this run migrated, over its Worker secret (secret survived the deploy) · {"release":"be26285 run 36299185309","lastMigration":{"run_id":"36299185309","env":"staging","sha":"be26285386712419fc36fd05ca49475cb27a5012","at":"2026-09-27T06:08:10.576Z"},"kv":true}
+PASS A: KV binding works
+
+--- B: production (policy: approval)
+PASS B: the run opened a pending ticket in Launch
+PASS B: production is untouched while waiting · {"worker":"rfspike-app","host":"rfspike-app.clewro.com","cookie":null}
+PASS B: approved in Launch
+✓ Set up job
+✓ Run actions/checkout@v4
+✓ Run actions/setup-node@v4
+✓ Run npm install --no-audit --no-fund
+✓ A token for another audience is refused
+✓ Ask Launch to deploy (waits for approval)
+✓ Build (no credentials needed)
+✓ Hand the build to Launch (checked, stored as an undeployed version)
+✓ Migrate with the credentials Launch handed to this run
+✓ Launch activates the version
+✓ Tell Launch the deploy is over
+✓ The migrator password this run had is now dead
+✓ Post Run actions/setup-node@v4
+✓ Post Run actions/checkout@v4
+✓ Complete job
+PASS B: run succeeded after approval · 23s from approval to done
+PASS B: production serves this run and its migration · {"release":"be26285 run 36299218388","lastMigration":{"run_id":"36299218388","env":"production","sha":"be26285386712419fc36fd05ca49475cb27a5012","at":"2026-09-27T06:09:17.688Z"},"kv":true}
+
+--- C: production, never approved (a repo admin dispatching by hand gets this far)
+✓ Set up job
+✓ Run actions/checkout@v4
+✓ Run actions/setup-node@v4
+✓ Run npm install --no-audit --no-fund
+✓ A token for another audience is refused
+✗ Ask Launch to deploy (waits for approval)
+· Build (no credentials needed)
+· Hand the build to Launch (checked, stored as an undeployed version)
+· Migrate with the credentials Launch handed to this run
+· Launch activates the version
+✓ Tell Launch the deploy is over
+✓ The migrator password this run had is now dead
+· Post Run actions/setup-node@v4
+✓ Post Run actions/checkout@v4
+✓ Complete job
+      waiting for approval in Launch (status pending)
+      waiting for approval in Launch (status pending)
+      waiting for approval in Launch (status pending)
+      waiting for approval in Launch (status pending)
+          if (Date.now() > deadline) throw new Error(`no approval within ${process.env.WAIT_SECONDS}s (status ${t.body.status})`)
+      Error: no approval within 40s (status pending)
+PASS C: run failed without approval
+PASS C: production still serves B, and no migration ran · {"run_id":"36299218388","env":"production","sha":"be26285386712419fc36fd05ca49475cb27a5012","at":"2026-09-27T06:09:17.688Z"}
+
+--- D: staging build binding another app's KV (the S1 attack)
+✓ Set up job
+✓ Run actions/checkout@v4
+✓ Run actions/setup-node@v4
+✓ Run npm install --no-audit --no-fund
+✓ A token for another audience is refused
+✓ Ask Launch to deploy (waits for approval)
+✓ Build (no credentials needed)
+✗ Hand the build to Launch (checked, stored as an undeployed version)
+· Migrate with the credentials Launch handed to this run
+· Launch activates the version
+✓ Tell Launch the deploy is over
+✓ The migrator password this run had is now dead
+· Post Run actions/setup-node@v4
+✓ Post Run actions/checkout@v4
+✓ Complete job
+      upload: 403 {"error":"bindings not registered for this app","refused":["kv_namespaces RATE_LIMIT_KV=708597ddb2ab4ec3a05028334b9e9624"]}
+PASS D: run failed at the hand-off
+PASS D: staging still serves A, and no migration ran · {"run_id":"36299185309","env":"staging","sha":"be26285386712419fc36fd05ca49475cb27a5012","at":"2026-09-27T06:08:10.576Z"}
+
+tickets: production:pending · production:deployed · staging:refused kv_namespaces RATE_LIMIT_KV=708597ddb2ab4ec3a05028334b9e9624 · staging:deployed
+
+ALL PASS (14 checks)
