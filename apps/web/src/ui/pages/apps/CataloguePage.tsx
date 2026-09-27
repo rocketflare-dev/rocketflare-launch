@@ -1,7 +1,8 @@
 /**
  * `/apps` (spec/06): the catalogue — Launch's main screen. Every registered app with its team, kit
  * version and the live health of staging and production, as cards (the default) or a dense table,
- * with a fleet summary above and "Import app" for admins. Every member may read it (`read App`).
+ * with a fleet summary above and, for admins, "Create app" (P2 — the page's one flame button) and
+ * "Import app" for an existing repo. Every member may read it (`read App`).
  *
  * Search filters the list client-side: the catalogue is one company's apps and arrives whole.
  */
@@ -9,6 +10,7 @@ import {
   ArrowDownTrayIcon,
   ExclamationTriangleIcon,
   ListBulletIcon,
+  PlusIcon,
   RocketLaunchIcon,
   Squares2X2Icon,
 } from '@heroicons/react/24/outline'
@@ -25,6 +27,7 @@ import {
 import { useApps } from '@/ui/hooks/useApps'
 import { useLocalStoragePreference } from '@/ui/hooks/useLocalStoragePreference'
 import { usePermissions } from '@/ui/hooks/usePermissions'
+import { CreateAppModal } from './components/CreateAppModal'
 import { EnvironmentHealth } from './components/HealthDot'
 import { ImportAppModal } from './components/ImportAppModal'
 
@@ -261,20 +264,33 @@ export default function CataloguePage() {
   const canManage = can('manage', 'App')
   const { data, isLoading, error } = useApps()
   const [importOpen, setImportOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [view, setView] = useLocalStoragePreference<View>('launch.apps.view', 'cards')
   const apps = data?.items ?? []
   const shown = useMemo(() => apps.filter(app => matchesSearch(app, search)), [apps, search])
 
-  const importButton = canManage && (
-    <button
-      type="button"
-      className="btn btn-primary btn-flame gap-1.5"
-      onClick={() => setImportOpen(true)}
-    >
+  const importButton = (
+    <button type="button" className="btn gap-1.5" onClick={() => setImportOpen(true)}>
       <ArrowDownTrayIcon className="w-4 h-4" />
       Import app
     </button>
+  )
+  const createButton = (
+    <button
+      type="button"
+      className="btn btn-primary btn-flame gap-1.5"
+      onClick={() => setCreateOpen(true)}
+    >
+      <PlusIcon className="w-4 h-4" />
+      Create app
+    </button>
+  )
+  const actions = canManage && (
+    <>
+      {importButton}
+      {createButton}
+    </>
   )
 
   return (
@@ -282,7 +298,7 @@ export default function CataloguePage() {
       <PageHeader
         title="Apps"
         description="Every Rocketflare app the company runs, and whether it is answering."
-        actions={apps.length > 0 ? importButton : undefined}
+        actions={apps.length > 0 ? actions || undefined : undefined}
       />
 
       {error ? (
@@ -296,13 +312,20 @@ export default function CataloguePage() {
         <EmptyStateCard
           size="lg"
           icon={RocketLaunchIcon}
-          message="No apps in the catalogue yet"
+          message={canManage ? 'Launch your first app' : 'No apps in the catalogue yet'}
           description={
             canManage
-              ? 'Import an existing Rocketflare app from GitHub. Launch reads its config, then watches staging and production every five minutes.'
-              : 'An administrator imports the company’s Rocketflare apps; they appear here with their live health.'
+              ? 'Name it, and Launch creates the repository from the Rocketflare template, its database, storage and sign-in, and deploys staging. Already have a Rocketflare app on GitHub? Import it instead.'
+              : 'An administrator creates or imports the company’s Rocketflare apps; they appear here with their live health.'
           }
-          action={importButton || undefined}
+          action={
+            canManage ? (
+              <div className="flex flex-wrap justify-center gap-2">
+                {createButton}
+                {importButton}
+              </div>
+            ) : undefined
+          }
         />
       ) : (
         <>
@@ -357,6 +380,7 @@ export default function CataloguePage() {
       )}
 
       <ImportAppModal open={importOpen} onClose={() => setImportOpen(false)} />
+      <CreateAppModal open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   )
 }

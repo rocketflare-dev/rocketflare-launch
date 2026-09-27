@@ -54,6 +54,15 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   (`useAgentModels`, `useUpsertAgentModel`, `useDeleteAgentModel`), `useDocuments` (`useDocuments`
   polling while any row is `pending`, `useDocument`, `useIngestText`, `useDeleteDocument`,
   `useSearch` — mutation-style, hits are its `data`).
+  Launch P2 (create an app): `usePipeline` (`usePipeline(appId, kind, { appBusy, expectUntil })`
+  keyed `[...apps.pipeline(appId), kind]`, polling `PIPELINE_POLL_MS` only while
+  `pipelinePollInterval` says a run is owed — `running`, an app row `requested`/`provisioning`, or
+  the grace window after this tab started a retry/teardown; a status transition refreshes the rest
+  of the `apps` family once — plus `useCreateApp`, `useRetryPipeline`, `useTeardownApp` and
+  `useAppsDomain`, which reads the setup API for a global admin and otherwise infers the domain from
+  a created app's staging URL, else null) and `useDeploys` (`useDeploys` polling while a ticket is
+  in flight — `approved`/`uploaded`, never `pending`, which waits on a person — `useDecideDeploy`,
+  `useDeployProduction`).
   An installed PLUGIN's hooks live in its own tree (`src/plugins/<id>/ui/hooks/`) and read its own
   query keys directly rather than the merged `queryKeys` — a plugin must work the same whether it is
   the only one installed or the fifth. The analytics plugin's are `useAnalyticsPages`, `useCubeMeta`
