@@ -67,6 +67,11 @@ export const apps = pgTable(
     templateCommit: text('template_commit'),
     /** The latest launch pipeline run (`app_operations.run_id`, the Workflow instance's base id). */
     launchRunId: uuid('launch_run_id'),
+    /**
+     * The Workflow instance currently running `launch_run_id`: the run id itself, or `<runId>-rN`
+     * after a retry. `/ci/scaffold/done` and `/ci/deploy/:id/finish` send their events here.
+     */
+    launchInstanceId: text('launch_instance_id'),
     status: appStatusEnum('status').notNull().default('requested'),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',

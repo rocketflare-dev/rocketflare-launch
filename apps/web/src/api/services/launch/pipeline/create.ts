@@ -119,6 +119,7 @@ export async function createApp(
           template: 'rocketflare',
           status: 'requested',
           launchRunId: runId,
+          launchInstanceId: runId,
           createdByUserId: actor.actorUserId,
         })
         .returning()

@@ -1,0 +1,1 @@
+ALTER TABLE "apps" ADD COLUMN "launch_instance_id" text;

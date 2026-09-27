@@ -12,8 +12,7 @@
  * The two long waits (the scaffold job, the staging deploy) are ROUNDS rather than one
  * `waitForEvent`: `…poll#N` reads the ticket row (the truth — the event is a nudge) and asks
  * whether the job itself died, then `…wait#N` parks on the event for one round. A lost event (the
- * sender woke an older instance of a retried run) therefore costs one round, not the whole
- * timeout, and a job that crashed ends the wait at once. The `<prefix>.wait` row is written when
+ * instance was restarted, or the send failed) therefore costs one round, not the whole timeout, and a job that crashed ends the wait at once. The `<prefix>.wait` row is written when
  * the wait ends — succeeded, or failed with the reason.
  */
 import type {

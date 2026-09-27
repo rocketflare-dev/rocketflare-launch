@@ -309,6 +309,19 @@ describe('POST /ci/scaffold/done', () => {
     expect(other.status).toBe(409)
   })
 
+  it('after a retry, wakes the instance that is waiting (<runId>-rN), not the failed one', async () => {
+    const created = await createdApp()
+    const retried = `${created.launchRunId}-r1`
+    launchWorkflow().setStatus(retried, { status: 'waiting' })
+    await db
+      .update(apps)
+      .set({ launchRunId: created.launchRunId, launchInstanceId: retried })
+      .where(eq(apps.id, created.app.id))
+    expect((await call('token', await jobToken(created))).status).toBe(200)
+    expect((await call('done', await jobToken(created), { commit: COMMIT })).status).toBe(200)
+    expect(launchWorkflow().events.map(e => e.instanceId)).toEqual([retried])
+  })
+
   it('refuses a run that holds no ticket, and a malformed commit', async () => {
     const created = await createdApp()
     const res = await call('done', await jobToken(created), { commit: COMMIT })

@@ -12,6 +12,7 @@
  * - A create retry puts the app back to `provisioning` (the `reserve` step, which would, is
  *   skipped), and a failed WAIT re-opens the step that started its job (`RESTARTS`), so the
  *   scaffold job or the staging deploy is dispatched again. Audited `app.pipeline.retried`.
+ * - The new instance id is recorded on `apps.launch_instance_id`, so the job events reach it.
  */
 import type {
   AppLaunchParams,
@@ -125,6 +126,11 @@ export async function retryPipeline(
       userId: app.createdByUserId,
       options: { deployStaging: options.deployStaging !== false },
     })
+    // Where `/ci/scaffold/done` and `/ci/deploy/:id/finish` now send their events (`instance.ts`).
+    await db
+      .update(apps)
+      .set({ launchInstanceId: instanceId, updatedAt: new Date() })
+      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, app.id)))
   } else {
     const starter = requireWorkflow(workflows.APP_TEARDOWN_WORKFLOW, 'APP_TEARDOWN_WORKFLOW')
     instanceId = await createNextInstance(starter, runId, {

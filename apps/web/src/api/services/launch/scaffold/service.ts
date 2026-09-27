@@ -35,6 +35,7 @@ import {
   listInstallations,
 } from '../github-app'
 import { loadImportGitHub } from '../import'
+import { launchInstanceOf } from '../pipeline/instance'
 import { claimScaffoldTicket, failScaffoldTicket, finishScaffoldTicket } from './tickets'
 
 /** The permissions the scaffold job's token carries — and nothing else. */
@@ -161,7 +162,7 @@ export async function completeScaffold(
     return { ticket, repeated, notified: false, notifyError: 'APP_LAUNCH_WORKFLOW is not bound' }
   }
   try {
-    const instance = await workflow.get(ticket.launchRunId)
+    const instance = await workflow.get(launchInstanceOf(caller.app, ticket.launchRunId))
     await instance.sendEvent({ type: SCAFFOLD_FINISHED_EVENT, payload: { ticketId: ticket.id } })
     return { ticket, repeated, notified: true, notifyError: null }
   } catch (err) {

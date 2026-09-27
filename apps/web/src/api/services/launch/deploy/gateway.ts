@@ -46,6 +46,7 @@ import type { ResolvedCaller } from '../ci/caller'
 import { CloudflareClient } from '../cloudflare'
 import { getCredential, getSetting } from '../credentials'
 import { NeonClient, type NeonOptions } from '../neon'
+import { launchInstanceOf } from '../pipeline/instance'
 import { type BindingCheckResult, type CheckedWorkflow, checkBindings } from './binding-check'
 import { issueMigratorUrl, revokeMigrator } from './migrator'
 import {
@@ -571,7 +572,9 @@ export async function finishDeploy(
   })
   if (closed.launchRunId && ctx.launchWorkflow) {
     try {
-      const instance = await ctx.launchWorkflow.get(closed.launchRunId)
+      const instance = await ctx.launchWorkflow.get(
+        launchInstanceOf(ctx.caller.app, closed.launchRunId)
+      )
       await instance.sendEvent({ type: DEPLOY_FINISHED_EVENT, payload: { ticketId: closed.id } })
     } catch (err) {
       // The run re-reads the ticket after its wait (`deploy_staging.check`), so a lost event

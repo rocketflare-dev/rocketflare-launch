@@ -261,6 +261,8 @@ describe('POST /api/apps/:id/pipeline/retry', () => {
     expect(created[1]?.params).toMatchObject({ runId, options: { deployStaging: true } })
     const [row] = await db.select().from(apps).where(eq(apps.id, app.id))
     expect(row?.status).toBe('provisioning')
+    // The job events now go to the newest instance.
+    expect(row).toMatchObject({ launchRunId: runId, launchInstanceId: `${runId}-r2` })
   })
 
   it('is 403 for a member of the same tenant', async () => {
