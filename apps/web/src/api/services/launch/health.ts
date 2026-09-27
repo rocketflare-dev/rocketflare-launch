@@ -18,7 +18,7 @@
  * - **Retention**: checks older than seven days are pruned per tenant on every run.
  */
 import type { HealthStatus } from '@launch/shared/launch-apps'
-import { and, eq, isNotNull, lt, ne } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, lt, ne } from 'drizzle-orm'
 import { affected, type Database } from '../../../db/client'
 import {
   type AppEnvironmentRow,
@@ -47,6 +47,8 @@ export interface HealthPollOptions {
   now?: Date
   /** Per-probe timeout; tests shorten it. */
   timeoutMs?: number
+  /** Poll only these tenants (tests, so a run never probes another suite's environments). */
+  tenantIds?: string[]
 }
 
 export interface HealthPollResult {
@@ -246,7 +248,10 @@ export async function runHealthPoll(
   const now = opts.now ?? new Date()
   const timeoutMs = opts.timeoutMs ?? HEALTH_TIMEOUT_MS
   const cutoff = new Date(now.getTime() - HEALTH_RETENTION_DAYS * 24 * 60 * 60 * 1000)
-  const tenantRows = await db.select({ id: tenants.id }).from(tenants)
+  const tenantRows = await db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(opts.tenantIds ? inArray(tenants.id, opts.tenantIds) : undefined)
   const result: HealthPollResult = { environments: 0, changed: 0, pruned: 0 }
 
   for (let i = 0; i < tenantRows.length; i += TENANT_CONCURRENCY) {
@@ -302,11 +307,16 @@ export async function checkAppHealth(
   return [...outcomes.map(o => o.row), ...rest.filter(r => !polled.has(r.id))]
 }
 
-/** The `*\/5` cron task. */
-export const healthPoll: ScheduledTask = {
-  name: 'healthPoll',
-  async run({ db, logger }) {
-    const result = await runHealthPoll(db)
-    logger.info(result, 'healthPoll: polled app environments')
-  },
+/** The `*\/5` cron task, over the given options (a test injects `fetch` and its own tenants). */
+export function healthPollTask(opts: HealthPollOptions = {}): ScheduledTask {
+  return {
+    name: 'healthPoll',
+    async run({ db, logger }) {
+      const result = await runHealthPoll(db, opts)
+      logger.info(result, 'healthPoll: polled app environments')
+    },
+  }
 }
+
+/** The task the cron runs: every tenant, the global `fetch`. */
+export const healthPoll: ScheduledTask = healthPollTask()

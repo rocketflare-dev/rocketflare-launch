@@ -1,20 +1,55 @@
+import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { dispatchScheduled, SCHEDULED_TASKS, type ScheduledTask, scheduled } from '@/api/scheduled'
+import { healthPoll, healthPollTask } from '@/api/services/launch/health'
+import { appEnvironments } from '@/db/schema'
+import { createTestTenantWithUser } from '../helpers/auth'
+import { setupTestDatabase } from '../helpers/db'
+import { forgetApps, seedApp } from '../helpers/launch-apps'
 import { createExecutionContext, createTestEnv, waitOnExecutionContext } from '../mocks/bindings'
+
+const db = setupTestDatabase()
 
 describe('scheduled dispatcher', () => {
   it('registers pruneExpired and the trace-store retention on the nightly cron', () => {
     expect(SCHEDULED_TASKS['0 4 * * *']?.map(t => t.name)).toEqual(['pruneExpired', 'pruneAiSpans'])
   })
 
-  it("registers Launch's app health poll on the five-minute cron (both tomls declare it)", async () => {
-    expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual(['healthPoll'])
+  it("registers Launch's app health poll on the five-minute cron (both tomls declare it)", () => {
+    expect(SCHEDULED_TASKS['*/5 * * * *']).toEqual([healthPoll])
+  })
+
+  it('dispatches the health poll: an injected fetch, one tenant — no network, no other suite', async () => {
+    // The poll walks every tenant in the shared test database, so the registered task (global
+    // fetch, every tenant) would probe other suites' environments over the real network. The
+    // same task over injected options is the deterministic version of that run.
+    const { tenant } = await createTestTenantWithUser(db, 'owner')
+    const { environments } = await seedApp(db, tenant.id, {
+      environments: { production: 'https://sched.apps.test' },
+    })
+    const seen: string[] = []
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input))
+      return new Response(JSON.stringify({ status: 'ok', version: '9.9.9' }), { status: 200 })
+    }) as typeof fetch
     const ctx = createExecutionContext()
-    const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx)
+    const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
+      '*/5 * * * *': [healthPollTask({ fetch: fakeFetch, tenantIds: [tenant.id] })],
+    })
     await waitOnExecutionContext(ctx)
     expect(reports).toEqual([
       expect.objectContaining({ cron: '*/5 * * * *', task: 'healthPoll', status: 'ok' }),
     ])
+    expect(seen.sort()).toEqual([
+      'https://sched.apps.test/api/health',
+      'https://sched.apps.test/api/ready',
+    ])
+    const [row] = await db
+      .select()
+      .from(appEnvironments)
+      .where(eq(appEnvironments.id, environments[0]?.id ?? ''))
+    expect(row?.healthStatus).toBe('up')
+    await forgetApps(db, [tenant.id])
   })
 
   it('runs the tasks registered for event.cron and reports each', async () => {
