@@ -49,7 +49,7 @@ export default function Audit() {
           <SearchInput
             value={search}
             onChange={setSearch}
-            placeholder="Filter by action, e.g. oidc"
+            placeholder="Action, e.g. oidc"
             aria-label="Filter by action"
           />
         }
