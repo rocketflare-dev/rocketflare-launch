@@ -1,6 +1,6 @@
 # Rocketflare Launch
 
-**Everyone builds. IT stays in control.**
+**Unlock your builders, safely.**
 
 Launch is the company console for [Rocketflare](https://github.com/rocketflare-dev/rocketflare)
 apps. Anyone can go from an idea to a secure, production app in the browser, while IT keeps
