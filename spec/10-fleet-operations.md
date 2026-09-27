@@ -78,7 +78,11 @@ For each open PR:
 - a Worker version uploaded with a preview URL;
 - a preview link and teardown on close.
 
-This needs the adapter to support deploying a version without promoting it.
+This needs the adapter to support deploying a version without promoting it. Launch's deploy
+path already does that: it uploads an undeployed Worker version before activating it
+([S5](../spikes/s5-deploy-via-launch/RESULT.md)). Each PR preview uses a Neon branch, and so does
+each coding session. Neon caps branches per project (10 on Launch, 25 on Scale), so previews and
+sessions share that budget and must be deleted promptly.
 
 ## Known gaps
 

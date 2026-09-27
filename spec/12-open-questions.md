@@ -20,3 +20,8 @@ Each question has a recommendation where there is one. The spikes are in [P0](11
 | 14 | Model provider for sessions: Anthropic direct, Bedrock or Vertex? | Anthropic direct first; Bedrock or Vertex for companies that require their cloud's data terms |
 | 15 | Product name ("Launch" is a working name) | Open |
 | 16 | Should the approvals engine or the grants model later become Rocketflare plugins that other apps can use? | Not before Launch has proven them; they stay decoupled until then |
+| 17 | Will Rocketflare take the six changes in [13](13-rocketflare-changes.md)? | Propose them upstream, as opt-in and off by default. Until then the adapter patches them in at scaffold time |
+| 18 | How are live coding sessions protected from session-image rollouts? A config change interrupted a running command in S7 | Drain sessions before a rollout, or checkpoint the branch and resume; roll out outside working hours by default |
+| 19 | How many concurrent sessions (and PR previews) per app? Each needs a Neon branch, capped per project | Budget branches per app; queue sessions beyond it. Recommend Neon Scale for larger fleets |
+| 20 | Is it acceptable that apps sharing the Resend domain can send as each other, undetectably (S4)? | Accept for v1, since all apps are internal. Revisit with Cloudflare Email Service's per-Worker sender allowlist |
+| 21 | Is the kit's `db-roles.ts` failing on Neon today (S7)? | Confirm against the kit's own Neon deploy; fix is in [13](13-rocketflare-changes.md) change 6 |

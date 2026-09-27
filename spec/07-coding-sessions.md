@@ -71,8 +71,10 @@ PR as usual.
 The sandbox exposes the dev server's port as a preview URL,
 `<port>-<sandbox>-<token>.company-launch.com`. It is served by a wildcard route on Launch's own
 domain, so the zone's wildcard certificate covers it ([04](04-hostnames-and-dns.md)). Launch gates it with the viewer's Launch session, so
-previews are private to the company. Needs checking (spike S7): the preview on this hostname, and
-how the session check sits in front of the Sandbox's own token.
+previews are private to the company. Launch proxies to the dev port itself with
+`sandbox.containerFetch` after checking the session. The Sandbox's `tunnels` API gives public
+URLs, so it isn't used. The dev UI can't use `:3000`, which the Sandbox SDK reserves. S7 confirmed
+all of this: 401 without a session, and the app with one ([S7](../spikes/s7-sandbox/RESULT.md)).
 
 ## Budgets and cost
 

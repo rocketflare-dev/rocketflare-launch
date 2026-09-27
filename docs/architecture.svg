@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Rocketflare Launch architecture</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .h1 { font-size: 20px; font-weight: 700; fill: #0f172a; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .h3 { font-size: 13px; font-weight: 700; fill: #0f172a; }
+      .t  { font-size: 12px; fill: #334155; }
+      .s  { font-size: 11px; fill: #64748b; }
+      .lbl { font-size: 11px; fill: #334155; font-weight: 600; }
+      .edge { stroke: #475569; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .pill { fill: #ffffff; stroke: #cbd5e1; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="800" fill="#ffffff"/>
+  <text x="30" y="40" class="h1">Rocketflare Launch</text>
+  <text x="30" y="60" class="s">One Launch per company, in the company's own Cloudflare. Apps run on their own and never call Launch at request time.</text>
+
+  <!-- People -->
+  <rect x="455" y="80" width="290" height="44" rx="22" fill="#0f172a"/>
+  <text x="600" y="107" text-anchor="middle" font-size="13" font-weight="600" fill="#ffffff">People in the company (browser)</text>
+
+  <!-- Launch account -->
+  <rect x="30" y="160" width="560" height="400" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="50" y="186" class="h2" fill="#4338ca">Launch account</text>
+  <text x="570" y="186" text-anchor="end" class="s">launch.company-launch.com</text>
+
+  <rect x="50" y="200" width="520" height="205" rx="10" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="66" y="222" class="h3">Launch Worker</text>
+  <text x="66" y="246" class="t"><tspan font-weight="600">Console</tspan><tspan dx="8">catalogue · create app · sessions · approvals · grants · audit</tspan></text>
+  <text x="66" y="270" class="t"><tspan font-weight="600">OIDC issuer</tspan><tspan dx="8">authorize · token · userinfo · JWKS (on jose)</tspan></text>
+  <text x="66" y="294" class="t"><tspan font-weight="600">Deploy gateway</tspan><tspan dx="8">GitHub OIDC · binding check · versions · migrator creds</tspan></text>
+  <text x="66" y="318" class="t"><tspan font-weight="600">Workflows</tspan><tspan dx="8">APP_LAUNCH · GRANT_PUSH · ROTATE · TEARDOWN</tspan></text>
+  <text x="66" y="342" class="t"><tspan font-weight="600">Registry</tspan><tspan dx="8">apps · environments · approvals · append-only audit</tspan></text>
+  <text x="66" y="366" class="t"><tspan font-weight="600">Admin credentials</tspan><tspan dx="8">apps-account token · Neon org key · Resend · GitHub App</tspan></text>
+  <text x="66" y="390" class="s">Launch's own database: Neon via Hyperdrive</text>
+
+  <rect x="50" y="418" width="520" height="126" rx="10" fill="#fff7ed" stroke="#f59e0b"/>
+  <text x="66" y="440" class="h3">Coding sessions: SessionDO → Cloudflare Sandbox</text>
+  <text x="66" y="463" class="t">repo clone · its own Neon branch · dev servers · Claude Code</text>
+  <text x="66" y="483" class="t">chat: one streamed turn per message, resumed each time</text>
+  <text x="66" y="503" class="t">preview *.company-launch.com, private behind the Launch session</text>
+  <text x="66" y="523" class="t">egress allowlist · model key injected + metered outside the sandbox</text>
+
+  <!-- Apps account -->
+  <rect x="610" y="160" width="560" height="400" rx="14" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+  <text x="630" y="186" class="h2" fill="#047857">Apps account</text>
+  <text x="1150" y="186" text-anchor="end" class="s">*.company-apps.com</text>
+
+  <rect x="648" y="212" width="250" height="118" rx="10" fill="#ffffff" stroke="#a7f3d0"/>
+  <rect x="640" y="204" width="250" height="118" rx="10" fill="#ffffff" stroke="#6ee7b7"/>
+  <text x="656" y="228" class="h3">&lt;slug&gt;.company-apps.com</text>
+  <text x="656" y="250" class="t">Worker · KV · Queue · R2</text>
+  <text x="656" y="270" class="t">own origin, own session cookie</text>
+  <text x="656" y="290" class="s">production</text>
+  <text x="656" y="308" class="s">one Rocketflare app per repo</text>
+
+  <rect x="918" y="212" width="236" height="118" rx="10" fill="#ffffff" stroke="#a7f3d0"/>
+  <rect x="910" y="204" width="236" height="118" rx="10" fill="#ffffff" stroke="#6ee7b7"/>
+  <text x="926" y="228" class="h3">&lt;slug&gt;-staging.company-apps…</text>
+  <text x="926" y="250" class="t">Worker · KV · Queue · R2</text>
+  <text x="926" y="270" class="t">same shape as production</text>
+  <text x="926" y="290" class="s">staging</text>
+
+  <rect x="640" y="346" width="506" height="52" rx="10" fill="#ffffff" stroke="#a7f3d0"/>
+  <text x="656" y="367" class="t"><tspan font-weight="600">Routing</tspan><tspan dx="8">wildcard DNS + one route per app, owned by Launch</tspan></text>
+  <text x="656" y="387" class="s">Universal SSL *.company-apps.com: a host is live as soon as its route exists</text>
+
+  <rect x="640" y="410" width="506" height="134" rx="10" fill="#ffffff" stroke="#a7f3d0"/>
+  <text x="656" y="432" class="h3">Every app, standalone</text>
+  <text x="656" y="455" class="t">signs people in through Launch's OIDC issuer</text>
+  <text x="656" y="475" class="t">reads Neon over the serverless driver (HTTP, WebSocket)</text>
+  <text x="656" y="495" class="t">sends mail from notifications.company-apps.com</text>
+  <text x="656" y="515" class="t">holds only runtime secrets: its DB role, sending key, OIDC client</text>
+  <text x="656" y="535" class="s">no Cloudflare token anywhere in the app or its CI</text>
+
+  <!-- Launch ⇄ apps -->
+  <path d="M570,262 L640,262" class="edge"/>
+  <rect x="566" y="232" width="78" height="20" rx="10" class="pill"/>
+  <text x="605" y="246" text-anchor="middle" class="lbl">deploy</text>
+  <path d="M640,298 L570,298" class="edge"/>
+  <rect x="566" y="304" width="78" height="20" rx="10" class="pill"/>
+  <text x="605" y="318" text-anchor="middle" class="lbl">sign-in</text>
+
+  <!-- People → accounts -->
+  <path d="M520,124 C500,140 440,145 420,158" class="edge"/>
+  <text x="400" y="138" text-anchor="end" class="lbl">console · sessions · approvals</text>
+  <path d="M680,124 C700,140 760,145 780,158" class="edge"/>
+  <text x="800" y="138" class="lbl">use apps</text>
+
+  <!-- External services -->
+  <g>
+    <rect x="30" y="640" width="200" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+    <text x="46" y="664" class="h3">Google / Microsoft</text>
+    <text x="46" y="686" class="t">upstream sign-in,</text>
+    <text x="46" y="704" class="t">configured once on Launch</text>
+
+    <rect x="250" y="640" width="200" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+    <text x="266" y="664" class="h3">Anthropic</text>
+    <text x="266" y="686" class="t">model calls from sessions;</text>
+    <text x="266" y="704" class="t">the key stays with Launch</text>
+
+    <rect x="470" y="640" width="200" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+    <text x="486" y="664" class="h3">GitHub</text>
+    <text x="486" y="686" class="t">a private repo per app</text>
+    <text x="486" y="704" class="t">Actions builds, no secrets</text>
+    <text x="486" y="722" class="t">any plan (no Enterprise)</text>
+
+    <rect x="720" y="640" width="200" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+    <text x="736" y="664" class="h3">Neon</text>
+    <text x="736" y="686" class="t">a project per app</text>
+    <text x="736" y="704" class="t">main · staging · dev</text>
+    <text x="736" y="722" class="t">+ a branch per session</text>
+
+    <rect x="970" y="640" width="200" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+    <text x="986" y="664" class="h3">Resend</text>
+    <text x="986" y="686" class="t">one sending domain</text>
+    <text x="986" y="704" class="t">a sending key per app</text>
+  </g>
+
+  <!-- Edges to external services -->
+  <path d="M130,560 L130,638" class="edge" marker-start="url(#arrow)"/>
+  <text x="140" y="604" class="lbl">sign-in</text>
+
+  <path d="M350,544 L350,638" class="edge"/>
+  <text x="360" y="596" class="lbl">via outbound</text>
+  <text x="360" y="610" class="lbl">handler</text>
+
+  <path d="M540,638 L540,562" class="edge"/>
+  <text x="550" y="596" class="lbl">OIDC token</text>
+  <text x="550" y="610" class="lbl">+ build</text>
+
+  <path d="M585,560 C620,585 690,590 750,638" class="edge"/>
+  <text x="612" y="620" class="lbl">projects, branches,</text>
+  <text x="612" y="634" class="lbl">migrator creds</text>
+
+  <path d="M840,560 L840,638" class="edge"/>
+  <text x="850" y="604" class="lbl">HTTP / WS</text>
+
+  <path d="M1070,560 L1070,638" class="edge"/>
+  <text x="1080" y="604" class="lbl">send mail</text>
+</svg>

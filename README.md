@@ -39,6 +39,11 @@ Rocketflare app already has (`.rocketflare.json`, the wrangler tomls, the deploy
 health endpoints, plugin manifests). It doesn't import kit code, so each can ship on its own
 schedule ([spec/02](spec/02-template-contract.md)).
 
+The P0 spikes found six changes the kit needs: an OIDC login, a Neon driver option, deploying
+through an external deployer, configurable dev ports, bootstrap without Docker, and a Neon role
+fix. All are opt-in and off by default, so Rocketflare stays a standalone product
+([spec/13](spec/13-rocketflare-changes.md)).
+
 ## Key decisions
 
 | # | Decision | Rejected alternatives | Spec |
@@ -56,31 +61,19 @@ schedule ([spec/02](spec/02-template-contract.md)).
 
 ## Architecture
 
-```
-               launch.company-launch.com  (Launch — one Worker in its own CF account)
-  ┌───────────────────────────────────────────────────────────────────────────────────────┐
-  │ Console UI        catalogue · create app · sessions · approvals inbox · grants · audit │
-  │ OIDC issuer       /oidc/authorize /token /userinfo /jwks — Google/Microsoft upstream     │
-  │ Registry (PG)     apps · app_environments · oidc_clients · grants · approvals · audit   │
-  │ Workflows         APP_LAUNCH · APP_TEARDOWN · GRANT_PUSH · ROTATE                        │
-  │ SessionDO ─┬─►    Cloudflare Sandbox: repo clone · Postgres · `pnpm dev` · Claude Code   │
-  │            └─►    live preview URL · event stream to the browser                        │
-  │ Admin secrets     CF account token · Neon org key · Resend key · GitHub App · Anthropic  │
-  └──────┬──────────────┬───────────────┬───────────────┬───────────────┬─────────────────┘
-         │ REST         │ REST          │ REST          │ App API +      │ OIDC
-         ▼              ▼               ▼               ▼ webhooks       ▼
-   Cloudflare API    Neon API       Resend API       GitHub           each app
-   (apps account:    (project per   (key per app,   (repo per app,   <slug>.company-apps.com
-    Workers, KV,      app, branch    one domain)      Actions build →  own Worker · own DB ·
-    Queues, R2,       per env)                        OIDC → Launch    own session cookie
-    DNS, routes)                                      deploys)
-```
+![Rocketflare Launch architecture](docs/architecture.svg)
+
+Launch and the apps live in separate Cloudflare accounts, both owned by the company (strongly
+recommended: an app's Worker can bind anything in its own account,
+[S1](spikes/s1-worker-token/RESULT.md)). CI never holds a Cloudflare token: GitHub Actions builds,
+proves who it is with OIDC, and Launch checks and deploys the build
+([08](spec/08-approvals-audit-ship.md)).
 
 ## Roadmap
 
 | Phase | Delivers | Exit test |
 |---|---|---|
-| P0 | This spec | Reviewed; the open questions have owners |
+| P0 | This spec, and eight feasibility spikes | **Done**: every spike reported and the spec was updated ([spikes/SUMMARY.md](spikes/SUMMARY.md)) |
 | P1 | Setup wizard (domain, IdP, OIDC issuer), registry, import of existing Rocketflare apps, audit log | An existing app is listed with live health, and its users sign in through Launch |
 | P2 | Rocketflare adapter and the create-app pipeline | "Create app" leads to a live `<slug>.company-apps.com` with no terminal |
 | P3 | Coding sessions: sandbox, live preview, PR | A non-engineer changes a screen and opens a PR from the browser |
@@ -90,20 +83,33 @@ schedule ([spec/02](spec/02-template-contract.md)).
 
 Details: [spec/11-roadmap.md](spec/11-roadmap.md).
 
+## What the spikes settled
+
+Eight P0 spikes ran against real accounts ([spikes/SUMMARY.md](spikes/SUMMARY.md)):
+
+- **Hosts:** flat `<slug>.company-apps.com` on a wildcard record. Every host is live ~100 ms after
+  its route is created, under the free wildcard certificate.
+- **Email:** one Resend domain for the fleet, with a key per app.
+- **Database:** Neon per app, reached with Neon's serverless driver. Hyperdrive would cap the fleet
+  at ~12 apps.
+- **Deploys:** Launch deploys every app. A per-Worker Cloudflare token can bind other apps' data,
+  so CI holds no token. This works on any GitHub plan; Enterprise isn't needed.
+- **Sign-in:** a ~200-line `jose` OIDC issuer passed a standard client. OpenAuth can't issue
+  `id_token`s.
+- **Coding sessions:**
+  - 24 s from nothing to a live, private preview, on a Neon branch per session;
+  - a streamed Claude Code chat that resumes across turns;
+  - no model key in the sandbox (Launch injects and meters it).
+
 ## Biggest open questions
 
-- **Deploying through Launch.** Per-Worker Cloudflare tokens don't isolate apps: a token for one
-  app can bind any other app's data ([S1](spikes/s1-worker-token/RESULT.md)). So Launch deploys
-  every app, which also removes the need for GitHub Enterprise. This worked end to end on a
-  non-Enterprise org ([S5](spikes/s5-deploy-via-launch/RESULT.md)); the kit's deploy job needs a
-  mode for it.
-- **The kit's database driver.** Apps reach Neon over Neon's serverless driver, not Hyperdrive,
-  because Hyperdrive's 25-configs-per-account limit would cap the fleet at about 12 apps. The kit
-  is postgres.js-only and uses interactive transactions, so this needs an upstream change to its
-  DB client ([spikes/s3](spikes/s3-neon-hyperdrive/RESULT.md)).
-- **A generic OIDC login in Rocketflare.** Launch's issuer is decided: a small `jose` issuer passed a
-  standard OIDC client ([S6](spikes/s6-oidc-issuer/RESULT.md)). The kit still needs a generic OIDC
-  login to use it.
+- **The kit changes** in [spec/13](spec/13-rocketflare-changes.md), especially the Neon driver
+  (with transactions) and deploying through an external deployer. Until the kit takes them, the
+  adapter has to patch every app.
+- **Session rollouts.** Changing the session image interrupts live sessions, so sessions must be
+  drained or checkpointed first.
+- **Concurrent sessions per app.** Neon caps branches per project (10 on Launch, 25 on Scale), and
+  each session uses one.
 - **Session cost policy.** Budgets per session, per team and per month.
 
 All of them: [spec/12-open-questions.md](spec/12-open-questions.md).
