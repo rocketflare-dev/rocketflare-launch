@@ -59,6 +59,14 @@ describe('Login', () => {
     }
   })
 
+  it('brands the card "Launch by Rocketflare" and makes sign-in the flame CTA', async () => {
+    render('/login')
+    const submit = await screen.findByRole('button', { name: 'Email me a sign-in link' })
+    expect(submit).toHaveClass('btn-primary', 'btn-flame')
+    expect(screen.getByText('Launch')).toBeInTheDocument()
+    expect(screen.getByText('by Rocketflare')).toBeInTheDocument()
+  })
+
   it('hides the magic-link form and dev panel when the server disables them', async () => {
     render('/login', { magicLink: false, providers: ['microsoft'], devLogin: false })
     await waitFor(() =>

@@ -5,10 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <title>Launch</title>
-    <meta name="description" content="Launch" />
+    <meta name="description" content="Launch by Rocketflare" />
 
+    <!-- The Rocketflare mark. favicon.svg is the three-fill cut tuned to read at 16px (the full
+         illustration is logo.svg); the PNGs cover browsers without SVG icons and iOS. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="theme-color" content="#2563eb" />
+    <link rel="icon" sizes="32x32" type="image/png" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <!-- The canvas colour (`--surface-app`) per OS scheme; ThemeToggle overwrites both with the
+         chosen theme's token so the browser chrome follows a manual toggle too. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fffaf5" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#140f1f" />
 
     <!-- Apply the saved theme before React mounts so there is no flash. Only the two known
          theme names are accepted; anything else falls back to the OS preference so a stale

@@ -1,8 +1,9 @@
 /**
- * The Launch mark — a rocket launching from a cloud — inlined so it needs no request and
+ * The Rocketflare mark — a rocket launching from a cloud — inlined so it needs no request and
  * scales with `className`. The fills are the brand illustration colours, fixed on purpose (the mark
  * is multi-coloured, so it does not take `currentColor` like a monochrome glyph would); the same
- * art is `public/logo.svg` and `public/favicon.svg`. Rebrand: replace the paths in all three.
+ * art is `public/logo.svg`. `public/favicon.svg` is a three-fill cut of it tuned for 16–32px, with
+ * the PNG icons rendered from that. Rebrand: replace the art in all of them.
  */
 export function LogoMark({ className = 'w-7 h-7' }: { className?: string }) {
   return (
@@ -30,5 +31,25 @@ export function LogoMark({ className = 'w-7 h-7' }: { className?: string }) {
         d="M91 409C91 377 117 351 149 351C154 351 159 352 164 353C174 320 205 296 241 296C279 296 311 322 319 358C328 351 339 347 351 347C382 347 407 372 409 403C431 405 449 423 449 446L449 452L63 452L63 438C63 422 75 410 91 409Z"
       />
     </svg>
+  )
+}
+
+/**
+ * The mark + the app's name, and — when `subline` — a quiet "by Rocketflare" under it. The NAME is
+ * the caller's (`useAppInfo().name`, i.e. `APP_NAME` until `/api/health` answers), so renaming the
+ * app never touches this; the maker's line is fixed. Callers drop the subline where there is no
+ * room for it (the collapsed rail).
+ */
+export function BrandLockup({ name, subline = true }: { name: string; subline?: boolean }) {
+  return (
+    <span className="flex items-center gap-2.5 min-w-0">
+      <LogoMark />
+      <span className="flex flex-col min-w-0">
+        <span className="text-sm font-semibold tracking-tight text-base-content truncate">
+          {name}
+        </span>
+        {subline && <span className="brand-subline truncate">by Rocketflare</span>}
+      </span>
+    </span>
   )
 }

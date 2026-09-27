@@ -16,6 +16,20 @@ export function getInitialTheme(): Theme {
     : 'launch-light'
 }
 
+/**
+ * Point the browser chrome (`<meta name="theme-color">`, one per OS scheme in index.html) at the
+ * theme actually showing, so a manual toggle against the OS preference does not leave a cream
+ * address bar over the night canvas. Reads `--surface-app` from the live theme rather than
+ * repeating a hex here — index.css stays the only place a colour is written down.
+ */
+function syncThemeColor() {
+  const color = getComputedStyle(document.documentElement).getPropertyValue('--surface-app').trim()
+  if (!color) return
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+    meta.content = color
+  }
+}
+
 /** Light/dark switch. The `data-theme` attribute IS the state; localStorage remembers it. */
 export default function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
@@ -23,6 +37,7 @@ export default function ThemeToggle() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('theme', theme)
+    syncThemeColor()
   }, [theme])
 
   const isLight = theme === 'launch-light'

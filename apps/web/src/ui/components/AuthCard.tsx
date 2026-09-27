@@ -1,12 +1,13 @@
 /**
  * The card every page OUTSIDE the shell renders in (login, invite, select-tenant, pending):
- * brand header + theme toggle over `main-gradient`. Keeps the public pages visually one family.
+ * brand header (mark, name, "by Rocketflare") + theme toggle over `main-gradient`, with the
+ * dark theme's `starfield`. Keeps the public pages visually one family.
  */
 import { ShieldCheckIcon } from '@heroicons/react/24/outline'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAppInfo } from '@/ui/hooks/useAppInfo'
-import { LogoMark } from './shared/LogoMark'
+import { BrandLockup } from './shared/LogoMark'
 import ThemeToggle from './ThemeToggle'
 
 interface AuthCardProps {
@@ -20,14 +21,11 @@ interface AuthCardProps {
 export function AuthCard({ children, width = 'md', footer }: AuthCardProps) {
   const { name } = useAppInfo()
   return (
-    <div className="min-h-screen main-gradient flex flex-col items-center justify-center px-4 py-10">
+    <div className="min-h-screen main-gradient starfield flex flex-col items-center justify-center px-4 py-10">
       <div className={`w-full ${width === 'lg' ? 'max-w-lg' : 'max-w-md'}`}>
         <div className="surface-panel !p-0 overflow-hidden">
           <div className="flex h-14 items-center justify-between px-6 border-b border-[color:var(--border-subtle)]">
-            <span className="flex items-center gap-2.5">
-              <LogoMark />
-              <span className="text-sm font-semibold tracking-tight">{name}</span>
-            </span>
+            <BrandLockup name={name} />
             <ThemeToggle />
           </div>
           <div className="p-6 md:p-8">{children}</div>

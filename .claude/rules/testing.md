@@ -211,7 +211,7 @@ a fake `WebSocket` factory left set) is on you.
 ## UI tests
 
 `apps/web/tests/ui/setup.ts` (jest-dom). `renderWithProviders()` gives QueryClient + Auth + Ability + Router.
-Shallow component tests; mock `fetch` where needed, no MSW. `contrast.test.ts` gates the design tokens.
+Shallow component tests; mock `fetch` where needed, no MSW. `tests/config/contrast.test.ts` gates the design tokens.
 Polling hooks (`agents-page`, `run-page`, `documents-page`): test the pure decision
 (`runPollInterval(status)` over `runOwesAnswer`, so a parked run polls NEVER), not `refetchInterval`
 with fake timers; `run-page` mounts inside `WebSocketProvider` with the `FakeSocket` to prove an

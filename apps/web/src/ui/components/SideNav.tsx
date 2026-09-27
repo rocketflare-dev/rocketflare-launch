@@ -18,7 +18,7 @@ import { useAppInfo } from '@/ui/hooks/useAppInfo'
 import { useBooleanPreference } from '@/ui/hooks/useLocalStoragePreference'
 import { type NavBadgeKey, type NavBadges, useNavBadges } from '@/ui/hooks/useNavBadges'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
-import { LogoMark } from './shared/LogoMark'
+import { BrandLockup, LogoMark } from './shared/LogoMark'
 
 export interface NavItem {
   to: string
@@ -245,13 +245,8 @@ export default function SideNav({ items = navigationConfig, footer }: SideNavPro
           isCollapsed ? 'justify-center' : ''
         }`}
       >
-        <Link to="/" className="flex items-center gap-2.5 truncate" aria-label={name}>
-          <LogoMark />
-          {!isCollapsed && (
-            <span className="text-sm font-semibold tracking-tight text-base-content truncate">
-              {name}
-            </span>
-          )}
+        <Link to="/" className="flex items-center gap-2.5 min-w-0" aria-label={name}>
+          {isCollapsed ? <LogoMark /> : <BrandLockup name={name} />}
         </Link>
       </div>
 

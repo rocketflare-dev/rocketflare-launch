@@ -1,0 +1,13 @@
+{
+  "name": "Launch",
+  "short_name": "Launch",
+  "description": "Launch by Rocketflare — the control plane for your company's internal apps.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#fffaf5",
+  "theme_color": "#fffaf5",
+  "icons": [
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

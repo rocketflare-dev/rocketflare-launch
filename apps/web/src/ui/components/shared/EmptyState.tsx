@@ -17,7 +17,7 @@ const sizeClasses = {
   lg: { container: 'py-12', icon: 'w-16 h-16', message: 'text-lg', description: 'text-base' },
 }
 
-/** "Nothing here yet" for lists and panels. */
+/** "Nothing here yet" for lists and panels. `starfield` is a no-op outside the dark theme. */
 export function EmptyState({
   icon: Icon,
   message,
@@ -28,7 +28,9 @@ export function EmptyState({
 }: EmptyStateProps) {
   const sizes = sizeClasses[size]
   return (
-    <div className={`text-center text-muted ${sizes.container} ${className}`}>
+    <div
+      className={`starfield rounded-[inherit] text-center text-muted ${sizes.container} ${className}`}
+    >
       {Icon && <Icon className={`${sizes.icon} mx-auto mb-2 opacity-40`} />}
       <p className={sizes.message}>{message}</p>
       {description && <p className={`${sizes.description} text-muted mt-1`}>{description}</p>}

@@ -21,7 +21,11 @@ Either port moves with `DEV_UI_PORT` / `DEV_API_PORT` (`scripts/lib/dev-ports.mj
   appears. Components use DaisyUI semantic classes (`bg-base-200`, `text-primary`) or the kit's
   surface/border/text tokens (`--surface-panel`, `--border-subtle`, `.text-muted`); **never
   `bg-blue-50`-style palette utilities**
-- `apps/web/tests/ui/contrast.test.ts` gates the emitted tokens (WCAG); if you change a colour, run it
+- `apps/web/tests/config/contrast.test.ts` reads `index.css` and gates every token pair (WCAG AA) plus
+  the `theme-color` metas; if you change a colour, run it (`pnpm web test:config`). The theme is
+  "Afterburner": flame primary, violet accent, `--highlight` (nose-cone yellow, a fill only), and
+  `.btn-flame` — the one gradient, layered on `btn btn-primary` for the single hero action on a page.
+  `.starfield` is a dark-only dot field on public pages and `EmptyState`
 - `ThemeToggle` sets `data-theme` on `<html>`; the DOM attribute is the state, mirrored to
   `localStorage['theme']` and validated on read (`index.html` pre-hydration script)
 - Tailwind v4 content scanning: `index.css` starts with `@import "tailwindcss" source(none)` and then

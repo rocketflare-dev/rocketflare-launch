@@ -233,7 +233,11 @@ export default function Login() {
                 <span>{submitError}</span>
               </div>
             )}
-            <button type="submit" className="btn btn-primary w-full" disabled={busy !== null}>
+            <button
+              type="submit"
+              className="btn btn-primary btn-flame w-full"
+              disabled={busy !== null}
+            >
               {busy === 'magic-link' ? <LoadingIndicator size="sm" /> : 'Email me a sign-in link'}
             </button>
           </form>
