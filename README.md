@@ -1,8 +1,10 @@
 # Rocketflare Launch
 
-**The company console for [Rocketflare](https://github.com/rocketflare-dev/rocketflare) apps.**
-Anyone in the company can go from an idea to a secure, production Rocketflare app in the browser,
-and IT keeps control of credentials, sign-in, approvals and audit.
+**Everyone builds. IT stays in control.**
+
+Launch is the company console for [Rocketflare](https://github.com/rocketflare-dev/rocketflare)
+apps. Anyone can go from an idea to a secure, production app in the browser, while IT keeps
+control of credentials, sign-in, approvals and audit.
 
 > Status: **spec for feasibility review, nothing built** (September 2026).
 
