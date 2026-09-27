@@ -487,7 +487,18 @@ export class FakeCloudflare implements VendorHandler {
     const main = String(metadata.main_module ?? '')
     if (!(main in modules)) return cfError(400, 10021, `main_module ${main} is not among the parts`)
     const existing = this.scripts.get(name)
-    const migrations = metadata.migrations as { new_tag?: string } | undefined
+    const migrations = metadata.migrations as { new_tag?: string; old_tag?: string } | undefined
+    // As the real API: migrations apply on top of the script's current tag, named as `old_tag`.
+    // Re-sending an applied tag (a retry that forgot it) is refused.
+    const current = existing?.migrationTag ?? null
+    if (migrations?.new_tag && (migrations.old_tag ?? null) !== current) {
+      return cfError(
+        400,
+        10079,
+        `Migration tag precondition failed: the script is at ${current ?? 'no tag'}, ` +
+          `the upload says ${migrations.old_tag ?? 'none'}`
+      )
+    }
     const script: FakeScript = existing ?? {
       name,
       metadata: {},

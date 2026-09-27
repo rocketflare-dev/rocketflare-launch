@@ -96,7 +96,10 @@ export function fakePorts(): FakePorts {
     started: [],
     names,
     writeConfig(text, _env, values) {
-      let out = text.replace(/id = "<KV_RATE_LIMIT(?:_STAGING)?_ID>"/, `id = "${values.kvId}"`)
+      let out = text.replace(
+        /id = "<KV_RATE_LIMIT(?:_STAGING)?_ID>"/,
+        `id = "${values.kvIds.RATE_LIMIT_KV}"`
+      )
       out = out.replace(/^workers_dev = true$/m, 'workers_dev = false')
       out = setVar(out, 'APP_URL', values.appUrl)
       out = setVar(out, 'EMAIL_FROM', values.emailFrom)
@@ -107,7 +110,7 @@ export function fakePorts(): FakePorts {
       out = setVar(out, 'AUTH_OIDC_ONLY', 'true')
       return out
     },
-    placeholderScript(text) {
+    placeholderScript(text, opts = {}) {
       const doc = parseToml(text) as Record<string, unknown>
       const classes = [
         ...(((doc.durable_objects as { bindings?: { class_name: string }[] })?.bindings ?? []).map(
@@ -116,7 +119,11 @@ export function fakePorts(): FakePorts {
         ...((doc.workflows as { class_name: string }[]) ?? []).map(w => w.class_name),
       ]
       const migrations = (doc.migrations as { tag: string; new_classes?: string[] }[]) ?? []
-      const last = migrations.at(-1)
+      const applied = opts.appliedTag ?? null
+      const pending = applied
+        ? migrations.slice(migrations.findIndex(m => m.tag === applied) + 1)
+        : migrations
+      const last = pending.at(-1)
       const module = [
         'export default { fetch() { return new Response("placeholder", { status: 503 }) } }',
         ...classes.map(c => `export class ${c} {}`),
@@ -128,14 +135,15 @@ export function fakePorts(): FakePorts {
           ...(last
             ? {
                 migrations: {
+                  ...(applied ? { old_tag: applied } : {}),
                   new_tag: last.tag,
-                  steps: migrations.map(m => ({ new_classes: m.new_classes ?? [] })),
+                  steps: pending.map(m => ({ new_classes: m.new_classes ?? [] })),
                 },
               }
             : {}),
         },
         modules: [{ name: 'placeholder.mjs', content: module }],
-        migrationTag: last?.tag ?? null,
+        migrationTag: last?.tag ?? applied,
       }
     },
     scaffoldFiles() {

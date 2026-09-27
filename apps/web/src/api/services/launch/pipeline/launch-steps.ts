@@ -54,6 +54,7 @@ import {
   issuerOf,
   rotateAppOidcSecret,
 } from '../oidc-clients'
+import { KIT_BINDINGS } from '../rocketflare/names'
 import {
   MANIFEST_PATHS,
   parseManifest,
@@ -264,7 +265,7 @@ async function scaffoldContext(
     { actions: 'write', contents: 'read' },
     ctx
   )
-  return { token, owner: repo.owner, repo: repo.name, ticketId }
+  return { token, owner: repo.owner, repo: repo.name, ticketId, launchUrl: issuerOf(d.cfg) }
 }
 
 export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
@@ -562,10 +563,12 @@ export function writeConfigStep(d: PipelineDeps, params: AppLaunchParams) {
       const names = d.ports.names(app.slug, env, domain)
       const kvId = storage[idKey('kv', env)]
       if (!kvId) throw new Error(`No ${env} KV namespace was recorded`)
+      // The pipeline creates the kit's one KV namespace; a toml declaring another is refused by
+      // `writeConfig` (no id for it) rather than left with a placeholder.
       const written = d.ports.writeConfig(before, env, {
         appUrl: names.url,
         emailFrom: emailFrom(app, vendors.settings.notificationsDomain),
-        kvId,
+        kvIds: { [KIT_BINDINGS.rateLimitKv]: kvId },
         oidcIssuer: issuerOf(d.cfg),
         oidcClientId: client.clientId,
       })
@@ -641,7 +644,11 @@ export function placeholdersStep(d: PipelineDeps, params: AppLaunchParams) {
         names: d.ports.names(app.slug, env, domain),
         tomlText,
         toml,
-        script: d.ports.placeholderScript(tomlText),
+        // A retry after the script PUT: its DO migrations are already applied.
+        script: d.ports.placeholderScript(tomlText, {
+          appliedTag:
+            ctx.prior[idKey('migrationTag', env)] ?? envs[env].resources?.doMigrationTag ?? null,
+        }),
         queueIds: queueName && queueId ? { [queueName]: queueId } : {},
       })
       const current = envs[env].resources ?? {}

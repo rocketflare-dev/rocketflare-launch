@@ -4,17 +4,15 @@
  * `services/launch/scaffold/*`). Slice 2c depends on these interfaces only, so the two slices can
  * be built in parallel; `defaultPorts()` is the ONE place that binds them to 2b's modules.
  *
- * **Wiring at merge (a one-file change, this file only):** replace the body of `defaultPorts()`
- * with an object built from 2b's modules. Expected shapes, as 2b's plan (p2-create-app.md §3 2b)
- * describes them — adapt argument order here, never in the callers:
+ * `defaultPorts()` binds them to 2b's modules; argument order is adapted HERE, never in the callers:
  *
- * | Port                        | 2b module                                              |
- * |-----------------------------|--------------------------------------------------------|
- * | `names(slug, env, domain)`  | `rocketflare/names.ts` — the naming table of plan §1   |
- * | `writeConfig(toml, env, v)` | `rocketflare/toml.ts` `writeConfig(tomlText, env, values)` |
- * | `placeholderScript(toml)`   | `rocketflare/placeholder-worker.ts` `placeholderScript(toml)` |
- * | `scaffoldFiles()`           | `rocketflare/scaffold-job.ts` `SCAFFOLD_WORKFLOW_YAML` → `.github/workflows/launch-scaffold.yml`, `SCAFFOLD_SCRIPT` → `.launch/scaffold.mjs` |
- * | `scaffoldRunner`            | `scaffold/github-actions-runner.ts` `GitHubActionsScaffoldRunner` (`start` dispatches `launch-scaffold.yml` on `main`; `poll` reads its run) |
+ * | Port                        | Module                                                  |
+ * |-----------------------------|---------------------------------------------------------|
+ * | `names(slug, env, domain)`  | `rocketflare/names.ts` `appResourceNames` — plan §1's naming table |
+ * | `writeConfig(toml, env, v)` | `rocketflare/toml.ts` `writeConfig(tomlText, env, ConfigValues)` |
+ * | `placeholderScript(toml)`   | `rocketflare/placeholder-worker.ts` `placeholderScript(toml, { appliedTag })` |
+ * | `scaffoldFiles()`           | `rocketflare/scaffold-job.ts` `scaffoldFiles()` (the workflow + `.launch/scaffold.mjs`) |
+ * | `scaffoldRunner`            | `scaffold/github-actions-runner.ts` `GitHubActionsScaffoldRunner` (dispatches `launch-scaffold.yml` on `main` with `launch_url`; `poll` reads its run) |
  *
  * Tests never reach `defaultPorts()`: the Workflow classes take `overrides.ports`, and the route
  * suite mocks this module.
@@ -23,6 +21,11 @@ import type { AppEnvironmentName } from '@launch/shared/launch-apps'
 import type { ScaffoldPlan } from '@launch/shared/launch-pipeline'
 import type { WorkerMetadata, WorkerModule } from '../cloudflare'
 import type { CommitFile } from '../github-app'
+import { appResourceNames } from '../rocketflare/names'
+import { placeholderScript } from '../rocketflare/placeholder-worker'
+import { scaffoldFiles } from '../rocketflare/scaffold-job'
+import { writeConfig } from '../rocketflare/toml'
+import { GitHubActionsScaffoldRunner } from '../scaffold/github-actions-runner'
 
 /** Every account-scoped name one environment of an app uses (plan §1 "Naming"). */
 export interface AppResourceNames {
@@ -50,8 +53,11 @@ export interface WriteConfigValues {
   appUrl: string
   /** `[vars].EMAIL_FROM`, e.g. `Shop <shop@notifications.clewro.com>`. */
   emailFrom: string
-  /** The id of the rate-limit KV namespace the pipeline created (replaces the kit placeholder). */
-  kvId: string
+  /**
+   * The id of every KV namespace the pipeline created, by the toml BINDING it answers (kit 0.15
+   * has one: `RATE_LIMIT_KV`). A declared binding with no id here is an error, not a placeholder.
+   */
+  kvIds: Record<string, string>
   /** `[vars].OIDC_ISSUER` — Launch's own origin. */
   oidcIssuer: string
   /** `[vars].OIDC_CLIENT_ID`. */
@@ -79,6 +85,8 @@ export interface ScaffoldRunnerContext {
   repo: string
   /** The `scaffold` deploy ticket the job will claim at `/ci/scaffold/token`. */
   ticketId: string
+  /** Launch's `APP_URL` — dispatched to the job, which uses it as its OIDC audience and base URL. */
+  launchUrl?: string
 }
 
 export type ScaffoldRunStatus = 'running' | 'succeeded' | 'failed'
@@ -100,7 +108,11 @@ export interface PipelinePorts {
   names(slug: string, env: AppEnvironmentName, appsDomain: string): AppResourceNames
   /** The toml with every placeholder filled and the §0.4 vars set. Must be idempotent. */
   writeConfig(tomlText: string, env: AppEnvironmentName, values: WriteConfigValues): string
-  placeholderScript(tomlText: string): PlaceholderScript
+  /**
+   * `appliedTag` is the DO migration tag the script ALREADY carries (a retried `placeholders`):
+   * only the migrations after it are sent, since re-sending an applied tag is refused.
+   */
+  placeholderScript(tomlText: string, opts?: { appliedTag?: string | null }): PlaceholderScript
   /** The files `repo` commits before dispatching the scaffold job. */
   scaffoldFiles(): CommitFile[]
   scaffoldRunner: ScaffoldRunnerPort
@@ -114,14 +126,24 @@ export interface PipelinePorts {
 export const SCAFFOLD_TICKET_ENVIRONMENT: AppEnvironmentName = 'production'
 
 /** The scaffold job's workflow file, as `resolveCaller` and the dispatch name it. */
-export const SCAFFOLD_WORKFLOW_FILE = 'launch-scaffold.yml'
+export { SCAFFOLD_WORKFLOW_FILE } from '../rocketflare/scaffold-job'
 
 /** The kit's deploy workflow (`workflow_dispatch` with `inputs.environment`). */
 export const DEPLOY_WORKFLOW_FILE = 'deploy.yml'
 
-/** The adapter wired to slice 2b's modules. See the header — this body is the merge-time change. */
+/** The Rocketflare adapter and the GitHub Actions scaffold runner (plan §1). */
 export function defaultPorts(): PipelinePorts {
-  throw new Error(
-    'The create-an-app pipeline ports are not wired yet (services/launch/pipeline/ports.ts)'
-  )
+  return {
+    names: appResourceNames,
+    writeConfig: (tomlText, env, v) =>
+      writeConfig(tomlText, env, {
+        appUrl: v.appUrl,
+        emailFrom: v.emailFrom,
+        kvIds: v.kvIds,
+        oidc: { issuer: v.oidcIssuer, clientId: v.oidcClientId },
+      }),
+    placeholderScript: (tomlText, opts) => placeholderScript(tomlText, opts),
+    scaffoldFiles,
+    scaffoldRunner: new GitHubActionsScaffoldRunner(),
+  }
 }

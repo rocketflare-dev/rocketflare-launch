@@ -200,7 +200,13 @@ export async function putPlaceholder(
     input.script.metadata,
     input.script.modules
   )
-  await ctx.record({ [idKey('script', env)]: names.workerName })
+  // The tag is recorded with the script: a retry must not send an applied migration again.
+  await ctx.record({
+    [idKey('script', env)]: names.workerName,
+    ...(input.script.migrationTag
+      ? { [idKey('migrationTag', env)]: input.script.migrationTag }
+      : {}),
+  })
   await client.setWorkersDevSubdomain(accountId, names.workerName, false)
 
   const workflows: string[] = []
