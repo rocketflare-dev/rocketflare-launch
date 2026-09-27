@@ -190,6 +190,8 @@ const CORE_QUERY_KEYS = {
     requests: (appId: string, filters: object = {}) =>
       ['app-access', 'requests', appId, filters] as const,
     mine: ['app-access', 'mine'] as const,
+    /** The request-access page: one app (by OIDC client id) and where the caller stands. */
+    requestContext: (clientId: string) => ['app-access', 'request-context', clientId] as const,
   },
   /** Launch: `/api/audit` — the append-only audit log (spec/08), cursor-paged */
   audit: {
