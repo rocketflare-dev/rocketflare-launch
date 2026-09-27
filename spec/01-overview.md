@@ -91,4 +91,4 @@ most of what would be written is what the kit already has.
 
 - There is no multi-cloud or multi-account story: one Cloudflare account per Launch.
 - There is no billing or chargeback beyond a cost view ([10](10-fleet-operations.md)).
-- There is no mobile or desktop app targets. Templates are Workers apps.
+- Only Rocketflare apps. There are no mobile or desktop targets, and no other app templates.

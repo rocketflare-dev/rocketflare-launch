@@ -3,8 +3,9 @@
 Status: spec, not built.
 
 The contract is the **only** coupling between Launch and the kind of app it manages. Launch
-drives any app through a `TemplateAdapter`. Rocketflare is adapter v1, and other templates (a
-plain Worker, a static site, a Python Worker) can be added later without touching the pipeline.
+drives apps through a `TemplateAdapter`. **Rocketflare is the only template Launch supports.** The
+interface exists to keep the pipeline independent of kit internals and to version the contract
+across kit releases, not to add other templates.
 
 ## The adapter interface
 
@@ -104,8 +105,6 @@ adapter only says *what* an app needs and *where* the answers go.
 
 ## Known gaps
 
-- There is only one adapter. The interface shape above will change when a second template
-  arrives.
 - The Rocketflare surfaces are stable by convention, not by a published guarantee. A kit release
   that renames a placeholder breaks adapter v1. Mitigation: pin the scaffold tag per Launch
   release, and let fleet upgrades ([10](10-fleet-operations.md)) move apps forward only through

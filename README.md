@@ -1,35 +1,48 @@
 # Rocketflare Launch
 
-**Status: a spec for feasibility review. Nothing is built yet.** Written September 2026. The
-external APIs it relies on were checked against vendor docs at that time; see
-[spec/sources.md](spec/sources.md).
+**The company console for [Rocketflare](https://github.com/rocketflare-dev/rocketflare) apps.**
+Anyone in the company can go from an idea to a secure, production Rocketflare app in the browser,
+and IT keeps control of credentials, sign-in, approvals and audit.
 
-Launch is an internal developer platform for companies that run on Cloudflare: Lovable, but for
-the enterprise. Each company runs its own Launch at one URL, `apps.example.com` in these
-docs (the company picks the real domain). Anyone in the company can go there to:
+> Status: **spec for feasibility review, nothing built** (September 2026).
 
-- **see** every app the company runs, with its owner, health, version and URLs;
-- **create** a new app. Launch creates the GitHub repo, the Neon database, the Cloudflare
-  resources, the email domain and the sign-in client, then deploys it to
-  `<slug>.apps.example.com`;
-- **build** the app in AI coding sessions (Claude Code in a Cloudflare Sandbox) with a live
-  preview; each session ends as a pull request;
-- **ship** it: staging on merge, then production once an approval in Launch is granted;
-- **share** centrally managed config and secrets, such as the company's M365 connection, with the
-  apps that ask for them and are approved to have them.
+## Why
 
-Launch is a separate product from [Rocketflare](https://github.com/rocketflare-dev/rocketflare).
-Rocketflare is the first **app template** Launch can create and manage. Launch talks to it only
-through a small, versioned contract made of files and endpoints a Rocketflare app already
-exposes. Launch never imports Rocketflare code, and Rocketflare never has to know about Launch.
+Rocketflare already makes one app fast to build: multi-tenant auth, Postgres, queues, AI and
+agent context on Cloudflare. At company scale, the hard part is everything around each app:
+accounts, databases, DNS, secrets, sign-in, deploys, approvals, upgrades. Launch does that part,
+so that:
+
+- **Building is self-service.** Describe a change, watch it in a live preview, and ship a pull
+  request. Claude Code runs in a Cloudflare Sandbox against the app's real repo.
+- **Every app is production-grade from day one.** Each app gets its own repo, Worker, Neon
+  database, email domain and `<slug>.apps.<your-domain>` host. They are all set up by Launch and
+  all on the company's own Cloudflare account.
+- **IT stays in control.** Admin credentials never leave Launch, and each app gets narrowly scoped
+  ones. There is one company sign-in across every app. Production deploys and access to shared
+  secrets, such as the M365 connection, need an approval in Launch, and all of it is in one audit
+  log.
+- **The fleet stays current.** Kit upgrades, credential rotation and teardown are run across every
+  app by Launch.
+
+## Launch and Rocketflare
+
+**Rocketflare is the only app template Launch creates and manages**: Launch is built for
+Rocketflare apps. Every app Launch creates is a normal Rocketflare copy that keeps working, and
+can still be deployed from its repo, without Launch.
+
+The two are released separately. Launch drives apps through the files and endpoints every
+Rocketflare app already has (`.rocketflare.json`, the wrangler tomls, the deploy workflow, the
+health endpoints, plugin manifests). It doesn't import kit code, so each can ship on its own
+schedule ([spec/02](spec/02-template-contract.md)).
 
 ## Key decisions
 
 | # | Decision | Rejected alternatives | Spec |
 |---|---|---|---|
 | 1 | **One Launch per company**, deployed into that company's Cloudflare account. The admin credentials never leave it. | A hosted service serving many companies, which would hold every customer's admin keys | [01](spec/01-overview.md) |
-| 2 | **Separate product.** It may be seeded from the kit once, and after that it owns its code | Launch as a copy of the kit that tracks kit upgrades; Launch as a kit plugin | [01](spec/01-overview.md) |
-| 3 | **Template adapter contract** between Launch and each app template; Rocketflare is adapter v1 | Importing the kit's provisioning code | [02](spec/02-template-contract.md) |
+| 2 | **Built for Rocketflare, released separately.** Seeded from the kit once, then it owns its code | Launch as a copy of the kit that tracks kit upgrades; Launch as a kit plugin | [01](spec/01-overview.md) |
+| 3 | **A versioned Rocketflare contract** (files and endpoints every app has) is the only coupling | Importing the kit's provisioning code | [02](spec/02-template-contract.md) |
 | 4 | **Admin credentials stay in Launch.** Each app gets derived, narrowly scoped credentials: a token for its own Worker only, a key for its own Neon project, a sending key for its own email domain | Handing out shared account tokens | [03](spec/03-trust-and-credentials.md) |
 | 5 | **Subdomains**: `<slug>.apps.example.com`, each app its own origin | Path routing (`apps.example.com/my-app/`) | [04](spec/04-hostnames-and-dns.md) |
 | 6 | **Launch is the company's OIDC sign-in provider.** Google or Microsoft is configured once, every app signs in through Launch, and access is set per app | A shared parent-domain cookie; Cloudflare Access as the main login | [05](spec/05-identity-sso.md) |
