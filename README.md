@@ -2,7 +2,7 @@
 
 **Unlock your builders, safely.**
 
-Launch is the company console for [Rocketflare](https://github.com/rocketflare-dev/rocketflare)
+Launch is the company console for [Rocketflare](https://rocketflare.dev) ([GitHub](https://github.com/rocketflare-dev/rocketflare))
 apps. Anyone can go from an idea to a secure, production app in the browser, while IT keeps
 control of credentials, sign-in, approvals and audit.
 
