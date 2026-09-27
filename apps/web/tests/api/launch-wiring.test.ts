@@ -103,7 +103,7 @@ describe('Launch mounts', () => {
     expect(WORKER_FIRST_PATTERNS).toEqual(expect.arrayContaining(['/ci', '/ci/*']))
   })
 
-  it.each(['/ci', '/ci/nope', '/ci/deploy/start', '/ci/scaffold/token'])(
+  it.each(['/ci', '/ci/nope', '/ci/scaffold/token'])(
     '%s is public and answers a JSON 404 until its slice fills it, never the SPA',
     async path => {
       await expectEnvelope(await request(path, { method: 'POST', body: '{}' }), 404, path)
@@ -123,14 +123,14 @@ describe('Launch mounts', () => {
       413,
       '/ci/scaffold/token'
     )
-    // The upload path lets the same body through to the router (a 404 until 2d fills it).
+    // The upload path lets the same body through to the router, which then wants a GitHub token.
     await expectEnvelope(
       await request('/ci/deploy/0b7c1b8e-4b8e-4c9b-9a55-1b0e5d7f2a11/upload', {
         method: 'POST',
         body: big,
         headers,
       }),
-      404,
+      401,
       'upload'
     )
   })
