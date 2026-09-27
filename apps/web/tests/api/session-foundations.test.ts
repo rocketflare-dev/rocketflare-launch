@@ -130,7 +130,7 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
 })
 
 describe('egress handlers find the session from the container id alone', () => {
-  it('an unknown container is refused; a live session’s reaches the (not yet wired) proxy', async () => {
+  it('an unknown container is refused; a live session’s gets past the lookup to the proxy’s own checks', async () => {
     const env = createTestEnv()
     const req = new Request('https://api.anthropic.com/v1/messages', { method: 'POST' })
     const unknown = await handleAnthropic(req, env, { containerId: 'nobody' })
@@ -143,8 +143,13 @@ describe('egress handlers find the session from the container id alone', () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const sandboxId = `fake-sandbox-${crypto.randomUUID()}`
     await insertSession(db, f, { status: 'working', sandboxId })
+    // Past the lookup: the empty body names no model, so the proxy's allow-list refuses it
+    // (slice 3c; `session-model-proxy.test.ts` covers the rest).
     const known = await handleAnthropic(req, env, { containerId: sandboxId })
-    expect(known.status).toBe(503)
+    expect(known.status).toBe(403)
+    expect(await known.json()).toMatchObject({
+      error: { message: expect.stringContaining('model') },
+    })
 
     const git = new Request('https://github.com/acme/x.git/info/refs?service=git-upload-pack')
     expect((await handleGitHub(git, env, { containerId: 'nobody' })).status).toBe(403)
