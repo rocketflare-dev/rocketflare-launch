@@ -5,16 +5,13 @@
  * `--server <url>` and `--json` apply to every command. The bin name comes from `package.json`.
  */
 import { Command, InvalidArgumentError } from 'commander'
-import { runActivityList } from './commands/activity'
 import { runConfigGet, runConfigPath, runConfigSet } from './commands/config'
 import { runEvalsPromote } from './commands/evals'
 import { runFeaturesList } from './commands/features'
 import { runFeedbackList } from './commands/feedback'
 import { runGroupMembers, runGroupsList } from './commands/groups'
-import { runKeysList } from './commands/keys'
 import { runLogin } from './commands/login'
 import { runLogout } from './commands/logout'
-import { runMembersList } from './commands/members'
 import { runStatus } from './commands/status'
 import { runTracesList, runTracesShow } from './commands/traces'
 import { runWhoami } from './commands/whoami'
@@ -113,14 +110,6 @@ program
 
 // ---- tenant-scoped -------------------------------------------------------------------------
 
-const members = program.command('members').description('members of the active tenant')
-members
-  .command('list')
-  .description('list members')
-  .option('--page <n>', 'page number', positiveInt('--page'))
-  .option('--page-size <n>', 'items per page (max 200)', positiveInt('--page-size'))
-  .action(action((ctx, cmd) => runMembersList(ctx, cmd.opts())))
-
 const groups = program.command('groups').description('groups of the active tenant (admin+)')
 groups
   .command('list')
@@ -138,20 +127,6 @@ features
   .command('list', { isDefault: true })
   .description('list features and whether they are on')
   .action(action(runFeaturesList))
-
-const keys = program.command('keys').description('API keys of the active tenant')
-keys.command('list').description('list API keys (prefixes only)').action(action(runKeysList))
-
-const activity = program
-  .command('activity')
-  .description('activity log of the active tenant (admin+)')
-activity
-  .command('list')
-  .description('list recent activity events')
-  .option('--page <n>', 'page number', positiveInt('--page'))
-  .option('--page-size <n>', 'items per page (max 200)', positiveInt('--page-size'))
-  .option('--type <name>', 'filter by dotted event type, e.g. member.invited')
-  .action(action((ctx, cmd) => runActivityList(ctx, cmd.opts())))
 
 const traces = program
   .command('traces')

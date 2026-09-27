@@ -1,6 +1,8 @@
 /**
- * The pure half of `scripts/rename.mjs`: name derivation, the ordered replacement classes, the
- * exclusion list and the "careful row" computations. No I/O and nothing runs at import time, so
+ * The kit-to-Launch name translator: name derivation and the ordered replacement classes. A plugin
+ * is authored in the Rocketflare kit's vocabulary, and `pnpm plugin add|upgrade` translates every
+ * file it copies in through `applyReplacements` (the kit's `rename.mjs` used the same map to turn
+ * the kit into Launch once). No I/O and nothing runs at import time, so
  * `apps/web/tests/config/rename-lib.test.ts` can drive it under vitest; `rename-lib.d.mts` beside
  * this file is the hand-written type surface (no `allowJs`).
  *
@@ -32,14 +34,17 @@ export const KIT = Object.freeze({
    * Literal strings restored after the pass, longest first: the kit's origin, and the three
    * filenames that keep the KIT's name in a renamed app.
    *
-   * `.rocketflare.json` is deliberately not renamed — it describes the KIT, and a fixed path is
-   * what lets `kit:upgrade` and `pnpm plugin` find it (D27, D31). Its sidecar follows it, and
-   * `rocketflare-plugin.json` is the ECOSYSTEM's filename, identical in every plugin repository.
-   * Without these three, a copy renamed to `acme` looked for `.acme.json`, `.gitignore` stopped
-   * ignoring the sidecar, and an app could never install any plugin at all.
+   * `rocketflare-plugin.json` is the ECOSYSTEM's filename, identical in every plugin repository,
+   * and `.rocketflare.json` / its sidecar are how plugin documentation names a kit host's manifest.
    */
   preserved: [
+    // Launch: the upstream GitHub org, its repositories and its images keep their real names when a
+    // plugin's files are translated on the way in (`ghcr.io/rocketflare-dev/local-neon-proxy`,
+    // `rocketflare-dev/rocketflare-plugins`). Longest first.
     'github.com/rocketflare-dev/rocketflare',
+    'rocketflare-dev/rocketflare-plugins',
+    'rocketflare-dev/rocketflare-plugin-',
+    'rocketflare-dev/',
     '.rocketflare.local.json',
     'rocketflare-plugin.json',
     '.rocketflare.json',
@@ -86,9 +91,9 @@ export function deriveNames(slug, display, options = {}) {
     throw new Error(`colour '${colour}' must be a 6-digit hex like #2563eb`)
   }
   const trimmed = typeof display === 'string' ? display.trim() : ''
-  // A newline here would break more than the rename: `scripts/upgrade.mjs` translates kit diffs
-  // with these same replacements, and its hunk headers are only safe because every substitution
-  // changes columns and never line counts.
+  // A newline here would break `pnpm plugin upgrade`, which translates plugin diffs with these
+  // same replacements: its hunk headers are only safe because every substitution changes columns
+  // and never line counts.
   if (/[\r\n]/.test(trimmed)) {
     throw new Error('display name must be a single line')
   }
@@ -189,221 +194,9 @@ export function applyReplacements(text, names) {
   return { text: total === 0 ? text : out, counts, total, preserved: preservedHits }
 }
 
-/**
- * Paths (repo-relative, POSIX) the pass never touches. Directories are matched as a leading
- * segment anywhere in the path; files exactly.
- */
-export const EXCLUDED_DIRS = Object.freeze([
-  'node_modules',
-  'dist',
-  '.git',
-  '.wrangler',
-  'coverage',
-])
-export const EXCLUDED_PATHS = Object.freeze([
-  'pnpm-lock.yaml', // rewritten by the `pnpm install` the script runs at the end
-  'LICENSE',
-  'CODE_OF_CONDUCT.md',
-  'SECURITY.md',
-  'CONTRIBUTING.md',
-  'apps/web/public/logo.svg',
-  'apps/web/public/favicon.svg',
-  'apps/web/src/ui/public/logo.svg', // the kit's mark — a human replaces it (row f)
-  'apps/web/src/ui/public/favicon.svg',
-  'scripts/rename.mjs', // the tool must keep working after it has run
-  'scripts/lib/rename-lib.mjs',
-  'scripts/lib/rename-lib.d.mts',
-  'apps/web/tests/config/rename-lib.test.ts', // asserts on the kit's own token strings
-  '.claude/skills/rf-adapt/SKILL.md', // the skill that drives this tool — written in the kit's terms
-  '.claude/skills/rf-adapt/checklist.md',
-  // The provenance file names the KIT, not the app: its repo URL, version and surface manifest
-  // must survive verbatim or `pnpm kit:upgrade` loses the thing it descends from. `rename.mjs`
-  // writes its `app` block itself, at the end of the pass.
-  '.rocketflare.json',
-  // The upgrade toolchain, for the same reason `rename.mjs` is here: it must keep working after
-  // this has run, and it addresses `.rocketflare.json` by that literal name.
-  'scripts/upgrade.mjs',
-  'scripts/release.mjs',
-  'scripts/release-check.mjs',
-  'scripts/lib/upgrade-lib.mjs',
-  'scripts/lib/upgrade-lib.d.mts',
-  'apps/web/tests/config/upgrade-lib.test.ts',
-  'apps/web/tests/config/kit-manifest.test.ts',
-  'apps/web/tests/config/upgrade-notes.test.ts',
-  'CHANGELOG.md', // the kit's releases, described in the kit's own terms
-])
-
-/**
- * Excluded whole directories, matched by prefix. `docs/upgrades/` holds the kit's release notes —
- * an app accumulates them verbatim as a record of what it has absorbed, so they keep talking about
- * the kit's names. `.claude/skills/rf-upgrade/` drives the tool and names its files literally.
- */
-export const EXCLUDED_PREFIXES = Object.freeze(['docs/upgrades/', '.claude/skills/rf-upgrade/'])
-
-export function isExcluded(relPath) {
-  const p = relPath.replaceAll('\\', '/')
-  if (EXCLUDED_PATHS.includes(p)) return true
-  if (EXCLUDED_PREFIXES.some(prefix => p.startsWith(prefix))) return true
-  return p.split('/').some(seg => EXCLUDED_DIRS.includes(seg))
-}
-
-/** Ignored-by-git files the pass still wants, when they exist: local config that names the DB. */
-export const OPT_IN_IGNORED_PATHS = Object.freeze(['apps/web/.dev.vars'])
-
-/** A NUL byte in the first 8 KiB is a binary; the pass skips it. */
+/** A NUL byte in the first 8 KiB is a binary; the translator skips it. */
 export function isBinary(buffer) {
   const len = Math.min(buffer.length, 8192)
   for (let i = 0; i < len; i++) if (buffer[i] === 0) return true
   return false
-}
-
-// ---------------------------------------------------------------- careful rows
-
-/** Margins the kit's two display-handle constants keep beyond the `<prefix>_` (hash.ts, config.ts). */
-export const API_KEY_HANDLE_MARGIN = 8 // `rocketflare_` (12) + 8 = 20, the server's `keyPrefix`
-export const REDACTED_KEY_MARGIN = 4 // `rocketflare_` (12) + 4 = 16, the CLI's masked form
-
-/**
- * Row (a): the two handle lengths as they must read for the new prefix. The CLI tests assume
- * `REDACTED_KEY_CHARS === prefix.length + 4` exactly (`<prefix>_test…`), so both are SET to
- * prefix + margin rather than merely bumped; a shorter prefix therefore also shrinks them.
- */
-export function prefixGuard(names, current) {
-  const prefixLength = names.prefix.length
-  const want = (margin, cur) => ({
-    current: cur,
-    required: prefixLength + margin,
-    change: cur === null || cur !== prefixLength + margin,
-  })
-  return {
-    prefix: names.prefix,
-    prefixLength,
-    apiKeyPrefixLength: want(API_KEY_HANDLE_MARGIN, current.apiKeyPrefixLength ?? null),
-    redactedKeyChars: want(REDACTED_KEY_MARGIN, current.redactedKeyChars ?? null),
-  }
-}
-
-const CONST_RE = name => new RegExp(`(export const ${name} = )(\\d+)([^\\n]*)`)
-
-/** The current value of `export const <name> = <int>` in a source, or null. */
-export function readIntConstant(source, name) {
-  const m = source.match(CONST_RE(name))
-  return m ? Number(m[2]) : null
-}
-
-/**
- * Rewrites `export const <name> = <old>` to `<value>` and refreshes the trailing comment's
- * `(<n>)` + `<margin>` arithmetic so the comment keeps telling the truth. Applied AFTER the token
- * pass, so the example handle in the comment already carries the new prefix.
- */
-export function rewriteIntConstant(source, name, value, prefix, margin) {
-  return source.replace(CONST_RE(name), (_m, head, _old, tail) => {
-    const comment = tail.replace(/\(\d+\) \+ \d+/, `(${prefix.length}) + ${margin}`)
-    return `${head}${value}${comment}`
-  })
-}
-
-/** Also fix a `\`<prefix>\` (12) + 4` docblock line above the constant, if present. */
-export function rewritePrefixComments(source, prefix, margin) {
-  return source.replace(
-    new RegExp(`(\`${escapeRegExp(prefix)}\` )\\(\\d+\\) \\+ \\d+`, 'g'),
-    `$1(${prefix.length}) + ${margin}`
-  )
-}
-
-/** `#2563eb` → `37, 99, 235`. */
-export function hexToRgb(hex) {
-  const n = Number.parseInt(hex.slice(1), 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].join(', ')
-}
-
-/**
- * Row (e): the light theme's `--color-primary` hex (read from the file, never assumed) replaced
- * everywhere it appears in `index.css` (`--color-primary`, `--surface-active`, `--focus-ring`),
- * the matching `--dc-primary-rgb` triple, and `<meta name="theme-color">` in `index.html`. The
- * dark theme's primary, the `-content` colours and the `--tone-primary-*` tints are reported as
- * manual: they are separate design decisions (contrast), not the same value.
- */
-export function applyColour({ css, html }, colour) {
-  const m = css.match(/--color-primary:\s*(#[0-9a-fA-F]{6})/)
-  if (!m) throw new Error('index.css has no `--color-primary: #hex` line to rewrite')
-  const from = m[1].toLowerCase()
-  const cssOut = css
-    .replace(new RegExp(from, 'gi'), colour)
-    .replace(/(--dc-primary-rgb:\s*)\d+,\s*\d+,\s*\d+/, `$1${hexToRgb(colour)}`)
-  const htmlOut = html.replace(
-    /(<meta name="theme-color" content=")#[0-9a-fA-F]{6}(")/,
-    `$1${colour}$2`
-  )
-  const cssHits = (css.match(new RegExp(from, 'gi')) ?? []).length
-  const dark = [...css.matchAll(/--color-primary:\s*(#[0-9a-fA-F]{6})/g)]
-    .map(x => x[1].toLowerCase())
-    .filter(hex => hex !== from)
-  return {
-    css: cssOut,
-    html: htmlOut,
-    from,
-    to: colour,
-    cssReplacements: cssHits,
-    htmlReplaced: htmlOut !== html,
-    manual: [
-      ...dark.map(
-        hex => `dark theme \`--color-primary: ${hex}\` (+ its --surface-active / --focus-ring)`
-      ),
-      '`--color-primary-content` in both themes (text on the accent — check contrast)',
-      "`--tone-primary-surface` / `--tone-primary-border` (the accent's 100 / 300 tints)",
-      '`--color-accent` (the secondary accent), if the palette has one',
-      `the "/* blue-600 */"-style comments beside the rewritten values (now stale)`,
-    ],
-  }
-}
-
-// ---------------------------------------------------------------- argv
-
-export const USAGE = `usage: node scripts/rename.mjs [--dry-run] [--force] [--skip-install]
-                              [--domain <apex>] [--colour <#hex>] <slug> ["Display Name"]
-
-  <slug>            lowercase, digits, hyphens (my-app); becomes @<slug>/*, the worker, bin, themes
-  "Display Name"    what people see (APP_NAME, titles); default: Title Case of the slug
-  --domain <apex>   replaces rocketflare.dev / rocketflare.local; default <slug>.example.com
-  --colour <#hex>   the primary brand colour (light theme); then run: pnpm web test:ui
-  --dry-run         print the table of replacements per file and change nothing
-  --force           run on a dirty git tree (commit or stash first, normally)
-  --skip-install    do not run pnpm install / biome at the end (offline; run them yourself)
-
-exit 0 ok · 1 error · 2 usage`
-
-/** Parses argv (without node + script). Returns `{ error }` for a usage problem. */
-export function parseArgs(argv) {
-  const opts = {
-    dryRun: false,
-    force: false,
-    skipInstall: false,
-    domain: undefined,
-    colour: undefined,
-  }
-  const positional = []
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    if (a === '--dry-run') opts.dryRun = true
-    else if (a === '--force') opts.force = true
-    else if (a === '--skip-install') opts.skipInstall = true
-    else if (a === '--domain' || a === '--colour' || a === '--color') {
-      const v = argv[i + 1]
-      if (v === undefined || v.startsWith('--')) return { error: `${a} needs a value` }
-      opts[a === '--domain' ? 'domain' : 'colour'] = v
-      i += 1
-    } else if (a === '-h' || a === '--help') return { help: true }
-    else if (a.startsWith('--')) return { error: `unknown option ${a}` }
-    else positional.push(a)
-  }
-  if (positional.length === 0) return { error: 'a slug is required' }
-  if (positional.length > 2) return { error: `unexpected argument '${positional[2]}'` }
-  const [slug, display] = positional
-  const problem = validateSlug(slug)
-  if (problem) return { error: problem }
-  if (opts.colour !== undefined && !HEX_COLOUR_RE.test(opts.colour)) {
-    return { error: `--colour '${opts.colour}' must be a 6-digit hex like #2563eb` }
-  }
-  return { ...opts, slug, display }
 }

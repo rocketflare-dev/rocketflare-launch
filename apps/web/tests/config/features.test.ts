@@ -14,6 +14,7 @@ import {
   type FeatureDefinition,
   type FeatureFlagEvaluation,
   featureBucket,
+  featureDefinition,
 } from '@launch/shared/features'
 import type { FeatureName } from '@launch/shared/permissions'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -150,7 +151,7 @@ describe('rollout monotonicity', () => {
 
 describe('evaluateFlag precedence', () => {
   it('falls back to the registry default with no stored row', () => {
-    expect(evaluateFlag(KEY, null, ctx())).toBe(FEATURE_FLAGS[KEY].defaultState === 'on')
+    expect(evaluateFlag(KEY, null, ctx())).toBe(featureDefinition(KEY).defaultState === 'on')
   })
 
   it('reads the platform state', () => {
@@ -194,7 +195,7 @@ describe('the environment layer', () => {
    * Layer 1 is the release gate and beats everything, including an override — because "this
    * deployment does not ship that surface" is not a per-customer decision.
    */
-  const gated = { ...FEATURE_FLAGS[KEY], environmentGated: true }
+  const gated = { ...featureDefinition(KEY), environmentGated: true }
 
   it('is skipped entirely for a flag that is not environment-gated', () => {
     expect(evaluateFlag(KEY, row({ state: 'on' }), ctx({ environmentEnabled: [] }))).toBe(true)
@@ -226,6 +227,8 @@ describe('evaluateFeatures', () => {
   })
 
   it('treats a missing row as the registry default', () => {
-    expect(evaluateFeatures([], ctx()).includes(KEY)).toBe(FEATURE_FLAGS[KEY].defaultState === 'on')
+    expect(evaluateFeatures([], ctx()).includes(KEY)).toBe(
+      featureDefinition(KEY).defaultState === 'on'
+    )
   })
 })

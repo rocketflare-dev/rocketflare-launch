@@ -3,7 +3,7 @@
 A plugin is a **separate git repository copied into an app** — never installed from npm, exactly
 like the kit itself — that contributes contracts, schema, routes, jobs, agents, UI and CLI commands.
 This directory is the host half: the types, the two web barrels, and every installed plugin's tree.
-`docs/CONCEPTS.md` §16 is the decision record; `example-feature/` is the worked example.
+`docs/CONCEPTS.md` §16 is the decision record; `analytics/` is the installed example.
 
 The whole seam is **six barrel lines**. Installing a plugin is writing them; removing it is
 deleting them. Nothing else in the kit ever names a plugin, which is what makes both reversible.
@@ -36,7 +36,7 @@ in the host. Each half is checked where it is written; only the merge is cast.
 ## What a plugin may and may not do
 
 - **It namespaces everything with its id.** Tables prefixed with the id's first hyphen-separated
-  segment (`example-feature` → `example_*`, `analytics` → `analytics_*`; a longer prefix is welcome,
+  segment (`orders` → `orders_*`, `analytics` → `analytics_*`; a longer prefix is welcome,
   not required — the prefix is a convention, and the CHECK is that no two installed plugins declare
   the same table name), job types
   `<id>.verb`, CASL subjects, prompt/agent/feature keys, query-key roots `<id>:…`, the API prefix
@@ -98,7 +98,7 @@ in the host. Each half is checked where it is written; only the merge is cast.
   it. `<dir>` is `<id>` or `<id>-<what>` and SKILL.md's `name:` equals it. Anything a person must
   SET UP or OPERATE — an app registration, a secret, a console, an error to decode — deserves one:
   the skill drives the steps an agent can take and coaches the ones only a human can.
-  `.claude/skills/example-feature/` is the worked example.
+  `.claude/skills/analytics*/` are the installed examples.
 - **It composes, never redefines.** `grants` are additive over its own subjects; hooks are
   post-commit, idempotent and best-effort; `agentTools` are appended after the kit's (async
   allowed, `[]` for a tenant that has not turned the tool on, a throw is logged and skipped). A
@@ -110,7 +110,7 @@ in the host. Each half is checked where it is written; only the merge is cast.
   failing to compile. Whole-declaration `import type` is fine; `import { type X } from` is not.
   The same shape bites on the web side, where the barrels are read at MODULE SCOPE by
   `queues/jobs.ts`, `agents/registry.ts`, `prompts.ts`, `scheduled.ts`, `api-prefixes.ts` and
-  `access.ts`: the two avoidances `example-feature` uses are `import type` for anything only needed
+  `access.ts`: the two avoidances are `import type` for anything only needed
   as a type (`AgentToolContext`, `Tool`) and naming a file DIRECTLY rather than a barrel that
   re-exports the plugin (`db/schema/feature-flags`, not `db/schema`).
 
@@ -128,11 +128,9 @@ pnpm plugin remove <id> [--archive] [--apply]
 pnpm plugin list · pnpm plugin check · pnpm plugin export <id> <dir>
 ```
 
-`add --apply` copies the three trees (translated into this app's names by the same token map the
-rename used), copies the plugin's release notes to `docs/plugins/<id>/upgrades/`, writes the six
+`add --apply` copies the three trees (translated from the kit's vocabulary into Launch's names), copies the plugin's release notes to `docs/plugins/<id>/upgrades/`, writes the six
 barrel lines, installs the dependencies the manifest declares, and records the surface — in
-`.rocketflare.json`, or in the git-ignored `.rocketflare.local.json` sidecar with `--local` and
-always inside the kit itself. Exit codes: 0 ok · 1 error · 2 usage · 3 unreachable with no cached
+`launch.plugins.json`, or in the git-ignored `launch.plugins.local.json` sidecar with `--local`. Exit codes: 0 ok · 1 error · 2 usage · 3 unreachable with no cached
 mirror · 4 rejects remain (upgrade) · 5 no `rocketflare-plugin.json` at the source · 6 a
 requirement is unmet · 7 the target path exists.
 
@@ -160,8 +158,7 @@ A file in a plugin's repository that falls outside `apps/web/src/plugins/<id>/`,
 `migrations/`, `docs/upgrades/` or its own root metadata is a **refusal**, not a warning: an
 install has to stay reversible by deleting a directory. The exception is the plugin REPOSITORY's
 own tooling — `.github/`, `.claude/`, `scripts/`, `package.json`, `.gitignore` — which is neither
-copied nor refused, because a plugin repo needs a CI workflow (half of decision 5) and a copy of
-`release.mjs` to cut a release with.
+copied nor refused, because a plugin repo needs its own CI workflow and release tooling.
 
 `remove` deletes the trees, the six lines and the surface, then `pnpm db:generate` emits the
 `DROP TABLE`s — which is correct here; the kit's warning is about importing a foreign SNAPSHOT, not
@@ -208,14 +205,13 @@ gating oracle cannot disagree.
 
 **Two checks were DELETED rather than relaxed**, because each failed a plugin whose code was
 correct: the anchor's version against the surface's (the anchor is now written by `plugin add` from
-the source manifest, so they cannot differ), and the installed version against the `defaultPlugins`
-pin (the gate already installs each default plugin at its pinned ref and runs the whole suite on
-the result, which is the real proof).
+the source manifest, so they cannot differ), and the installed version against a pinned default
+(Launch commits its plugins; the gate runs their tests on every change).
 
-**A VENDORED plugin is upgraded by `pnpm kit:upgrade`, not by this script.** `example-feature`'s
-`source.repo` is the kit's own repository with no subdirectory, so the kit release that moves it
-forward is the one that moves it — and for the same reason its `minKit` floor is not checked (the
-same release cut both, so the floor describes the kit it shipped inside).
+**`minKit` is checked against `kitVersion` in `launch.plugins.json`** — the Rocketflare release
+whose plugin API Launch implements (0.15.0, the one it was seeded from) — not against Launch's own
+`package.json` version. Launch does not track kit releases, so raising `kitVersion` means porting
+the host changes that release made to the plugin API first.
 
 ## Adding a SLOT to the seam
 

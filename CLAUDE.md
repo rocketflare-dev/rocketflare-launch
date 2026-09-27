@@ -1,27 +1,26 @@
 # Launch
 
-Multi-tenant SaaS starter for internal tools and B2B products, a **pnpm workspace**: Hono API + React UI in one
-Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
-(`packages/shared`). `AGENTS.md` symlinks here.
+> **This is Launch**, the control plane for a company's internal apps. It was seeded from the
+> Rocketflare starter kit 0.15.0 and no longer tracks kit releases. The product spec is `spec/`
+> (start at `spec/01-overview.md`); `spikes/` holds the feasibility results behind it.
+
+A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`), a CLI
+(`apps/cli`), private zod contracts (`packages/shared`). Deployed single-tenant
+(`TENANCY_MODE=single`). `AGENTS.md` symlinks here.
 
 > **How it works**: `docs/CONCEPTS.md` — one section per subsystem with its known gaps. **Check it
 > before assuming a capability exists; update it when you change one.**
-> **Setup**: asked for setup help → run `/rf-setup` (it drives `scripts/bootstrap.sh --no-dev`, then
+> **Setup**: asked for setup help → run `/launch-setup` (it drives `scripts/bootstrap.sh --no-dev`, then
 > starts the server): show each `✔ n/10` line, stop on failure. By hand: `SETUP.md` Part 1.
-> **Fresh copy?** `/rf-adapt <slug>`, then `docs/ADAPTING.md`. `/rf-setup`, `/rf-adapt`, `/rf-preflight`,
-> `/rf-traces`, `/rf-evals` and `/rf-plugin` you
-> may run yourself; **`/rf-provision` is user-invoked only** (it creates paid resources and prompts for
-> tokens on a TTY) — asked to deploy, tell the user to run `/rf-provision`.
+> `/launch-setup`, `/launch-preflight`, `/launch-traces`, `/launch-evals`, `/launch-how-do-i` and
+> `/launch-plugin` you may run yourself; **`/launch-provision` is user-invoked only** (it creates paid resources and prompts for
+> tokens on a TTY) — asked to deploy, tell the user to run `/launch-provision`.
 > **Plugins** (D31, `docs/CONCEPTS.md` §16): a plugin is a git repository copied in, wired through six
-> barrels — `pnpm plugin add|upgrade|remove|list|check`, driven by `/rf-plugin`, which always shows the
+> barrels — `pnpm plugin add|upgrade|remove|list|check`, driven by `/launch-plugin`, which always shows the
 > plan before `--apply`. It imports the host only through the DECLARED entries (`docs/plugin-api.md`,
-> generated and diff-checked) and receives everything else as injected context. `.rocketflare.json`'s `defaultPlugins` is what a fresh clone installs
-> (bootstrap step `6/10 plugins`).
-> **Copies of the kit upgrade.** `.rocketflare.json` records the kit version, the app's names and the
-> manifest of replaceable surfaces; `/rf-upgrade` ports later releases into a copy and never
-> recreates a surface whose anchor file is gone. **A behaviour change here needs an entry in
-> `docs/upgrades/unreleased.md` in the same commit** — CI fails without one, and the tag gate refuses
-> a release with no note. `pnpm kit:release <version>` writes the release assets.
+> generated and diff-checked) and receives everything else as injected context. Installed plugins
+> are recorded in `launch.plugins.json` (never edit it by hand); the one installed today is
+> `analytics` (from `rocketflare-dev/rocketflare-plugins`), committed with its migration.
 
 ## Stack
 
@@ -29,7 +28,7 @@ Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
   + DO/Workflow classes (`src/worker.ts`). Node 24, pnpm 10
 - **API**: Hono 4, zod contracts from `@launch/shared`, CASL. **DB**: Postgres 17 + pgvector —
   Docker locally; deployed, `DATABASE_DRIVER` (D35) picks Drizzle over the Neon serverless driver
-  (`neon`, HTTP + a WS pool for transactions — the kit's tomls) or `postgres.js` via Hyperdrive
+  (`neon`, HTTP + a WS pool for transactions — Launch's tomls) or `postgres.js` via Hyperdrive
   (`postgres`, any Postgres — a missing var, and local/`.dev.vars`); `openDatabase(env)`, 1 client/request;
   raw results only through `rows()`/`affected()`
 - **Auth**: arctic (Google, Microsoft, any OIDC issuer — jose-verified `id_token`, off by default) + magic link + dev-login; `__Host-session`; API keys; KV rate limit
@@ -42,8 +41,8 @@ Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
   spans → Langfuse/Phoenix/any backend, always also `ai_spans` → `launch traces`); evals (D33:
   `apps/evals`, vitest-evals on vitest 4, `pnpm eval`, never in the gate) + thumbs feedback →
   `launch evals promote`
-- **Analytics**: not core — the `analytics` PLUGIN (D31, the one `defaultPlugins` entry, installed
-  by the bootstrap): drizzle-cube at `/cubejs-api`+`/mcp`, fact tables on the `:15` cron, dashboards
+- **Analytics**: not core — the `analytics` PLUGIN (D31, committed and recorded in
+  `launch.plugins.json`): drizzle-cube at `/cubejs-api`+`/mcp`, fact tables on the `:15` cron, dashboards
 - **UI**: React 18 + Vite, DaisyUI 5 / Tailwind v4, React Router 6, TanStack Query 5; served as `ASSETS`
 - **CLI**: commander + chalk + open; `tsx` in dev, `tsc` → `dist/cli.js` (bin `launch`)
 - **Tests**: vitest projects `api` · `api-isolated` · `driver` · `ui` · `config` (Postgres :5433; `postgres`
@@ -56,7 +55,7 @@ Cloudflare Worker (`apps/web`), a CLI (`apps/cli`), private zod contracts
 ```bash
 pnpm bootstrap · pnpm preflight  # first run in one go (--offline/--online toggle [ai]) / read-only check
 pnpm dev:db:up && pnpm db:migrate  # Postgres on the first free port from :5432 → DATABASE_URL; role → migrations → grants
-pnpm seed [--demo] && pnpm dev  # tenant/users/key (+ populated workspace); wrangler :3001 + vite :3000 (strict ports)
+pnpm seed [--demo] && pnpm dev  # tenant/users/key (+ plugins' demo rows); wrangler :3001 + vite :3000 (strict ports)
 pnpm dev:stop · pnpm dev:status · pnpm dev:db:status  # kill this repo's dev tree / port holders / every dev database
 pnpm cli login --server http://localhost:3001  # browser → ~/.launch/config.json, then whoami
 pnpm test:db:up && pnpm test  # every package; web loads .env.test (postgres driver)
@@ -65,7 +64,7 @@ pnpm eval [suite] [--model x] [--compare] · pnpm eval:baseline · pnpm eval:vie
 pnpm lint · pnpm typecheck · pnpm build  # workspace-wide
 pnpm web <script>  # any apps/web script (test:api, db:check…)
 pnpm db:generate · pnpm db:studio · pnpm deploy[:staging] · pnpm provision all  # (or one phase: --help)
-pnpm kit:upgrade [--to X.Y.Z] [--apply] · pnpm kit:release X.Y.Z  # port a kit release into a copy / cut one
+pnpm plugin list · pnpm plugin check · pnpm plugin upgrade analytics [--apply]  # installed plugins (/launch-plugin)
 ```
 
 `wrangler` lives in `apps/web`: `pnpm --filter @launch/web exec wrangler …`, never at the root. No
@@ -85,8 +84,7 @@ apps/web/          @launch/web — wrangler*.toml, worker-configuration.d.ts, .d
 │  src/ui/         React app
 │  src/plugins/    D31 seam: types.ts, api/ (the context family a plugin imports) + the
 │                  server/ui/schema/worker-exports barrels (one line per installed plugin)
-│                  + each plugin's tree — `example-feature/` vendored as the reference one, and
-│                  `analytics/` (cubes, dashboards, fact tables) once the default set is installed
+│                  + each plugin's tree — `analytics/` (cubes, dashboards, fact tables)
 │                  (per-dir CLAUDE.md: permissions, db/schema, api/*, ui, plugins, plugins/<id>)
 apps/cli/          @launch/cli — src/cli.ts, commands/*, api.ts (only fetch site), config.ts, login.ts,
                    plugins/ (CLI_PLUGINS barrel + each plugin's commands)
@@ -94,18 +92,17 @@ apps/evals/        @launch/evals — vitest-evals suites over apps/web in-proces
                    suites/, datasets/*.jsonl, baselines/; `pnpm eval` only, never the gate (docs/EVALS.md)
 packages/shared/   @launch/shared — src/*.ts zod contracts, errors, pagination, permissions,
                    plugins/ (SharedPlugin + the SHARED_PLUGINS barrel + each plugin's contracts) (CLAUDE.md)
-scripts/           bootstrap.sh → bootstrap.mjs (9 steps), install.sh (curl one-liner), rename.mjs,
-                   upgrade.mjs (port a kit release into a copy), release{,-check}.mjs, changelog-nudge.mjs +
-                   release-site-nudge.mjs (PreToolUse on a commit: missing porting note / version
-                   bump → update launch-www),
-                   kit-update-check.mjs (SessionStart: tells a copy about a newer kit release), lib/
-.rocketflare.json  kit version + commit, the app's names, the replaceable-surface manifest
-docs/upgrades/     one porting note per kit release (+ unreleased.md) — CHANGELOG.md is the index
-.claude/skills/    rf-setup · rf-preflight · rf-adapt (+ checklist.md) · rf-provision (+ reference.md) ·
-                   rf-how-do-i (+ example-orders.md) · rf-upgrade (+ porting.md — port later kit releases) ·
-                   rf-plugin (+ reference.md — install/upgrade/remove a plugin, D31) ·
-                   rf-traces (debug a run from its span tree; pick a tracing backend, D32) ·
-                   rf-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33)
+scripts/           bootstrap.sh → bootstrap.mjs (10 steps), plugin.mjs (`pnpm plugin`), plugin-api-doc.mjs,
+                   deployer.mjs, lib/ (plugin-lib, manifest, upgrade-lib + rename-lib = the plugin diff
+                   translator, git-lib, surface, bootstrap-lib, dev-ports)
+launch.plugins.json  the installed plugins (source repo, version, commit), `kitVersion` (the kit
+                   plugin-API level a plugin's `minKit` is checked against) and the app's names
+spec/ · spikes/    the product spec and the feasibility spikes behind it
+.claude/skills/    launch-setup · launch-preflight · launch-provision (+ reference.md) ·
+                   launch-how-do-i (+ example-orders.md) ·
+                   launch-plugin (+ reference.md — install/upgrade/remove a plugin, D31) ·
+                   launch-traces (debug a run from its span tree; pick a tracing backend, D32) ·
+                   launch-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33)
 ```
 
 **`packages/shared`.** Private, no build: `@launch/shared/<module>` → `./src/<module>.ts` (incl. `ai/*`,
@@ -117,7 +114,7 @@ written justification, and `apps/web/tests/config/shared-imports.test.ts` enforc
 **`apps/cli`.** `login` opens `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; the server
 mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored `0600` in
 `~/.launch/config.json` (`LAUNCH_API_KEY`/`LAUNCH_URL` for CI). Also `logout|whoami|status|config`,
-`members|keys|activity list --json` (`.claude/rules/cli.md`)
+`groups|features|traces|feedback|evals` (`--json` for raw output; `.claude/rules/cli.md`)
 
 ## Config model
 
@@ -156,13 +153,12 @@ code-quality.md · cloudflare.md. Runbooks: `docs/DEPLOY.md` · `docs/RLS.md`
 - **No `process.env` / Node-only APIs in `apps/web/src/`** (`pg`, `ws`, `node:fs`…); `build:api` catches it
 - **Release = root version**: git tag == root `package.json` `version` (ships web + cli)
 - **Docs in sync**: a behaviour change updates CONCEPTS / SETUP / DEPLOY / rules in the same PR,
-  **and adds an entry to `docs/upgrades/unreleased.md`** — copies of the kit absorb changes by
-  reading those notes, so a change with no note never reaches them (CI and the tag gate enforce it)
+  and gets a line under `## Unreleased` in `CHANGELOG.md`
 - **A plugin composes, it never redefines** (D31): it namespaces everything with its id (tables
-  prefixed from it — `example-feature` → `example_*`, and `plugin check` fails a collision — job
+  prefixed from it — `orders` → `orders_*`, and `plugin check` fails a collision — job
   types `<id>.x`, query-key roots `<id>:…`, `/api/<id>`, CUSTOM events `<id>.` — **never `kit.`**),
   reaches core only through the six barrels, its own four published entries and the DECLARED import
   entries (`@/plugins/api`, `@/db/schema/kit`, `@testkit/*` — `docs/plugin-api.md`), and ships
   no migration and no toml edit — the host generates the DDL; its bindings go in BOTH tomls
-- **Released history is never rewritten**: an adopted copy pins a kit commit in `.rocketflare.json`;
-  a force-push to a released tag orphans every copy that came from it
+- **Migrations are history**: never edit or delete an applied migration (`apps/web/migrations/`);
+  a change is a new one from `pnpm db:generate`

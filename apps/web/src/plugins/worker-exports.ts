@@ -11,7 +11,7 @@
  * **This barrel is to `worker.ts` what `schema.ts` is to `db/schema/index.ts`**, and for the same
  * reason. Before it, a plugin shipping a class declared `workerExports` in its manifest and the
  * install plan PRINTED "export { ApprovalsHub } from its plugin in apps/web/src/worker.ts". A
- * printed instruction is not a mechanism: an unattended install (`plugin-ci.yml` applies nothing it
+ * printed instruction is not a mechanism: an unattended install (a CI job applies nothing it
  * reads) left a tree that deployed without the class and answered every request that reached it
  * with a binding error — the same failure `coreEdits` was introduced to remove, one file along.
  * `coreEdits` is not the fix either: using it here would have every class-shipping plugin mutating

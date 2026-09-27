@@ -527,7 +527,7 @@ export function classifyPluginFile(relPath, id, { skills = [] } = {}) {
   // A skill is copied OUT of the plugin's roots, into `.claude/skills/<dir>/` — the one place
   // outside them a plugin may write, and only for a directory its manifest names. An undeclared
   // one is refused rather than skipped: shipping a skill nobody declared is how a plugin would
-  // claim `.claude/skills/rf-plugin/`.
+  // claim `.claude/skills/launch-plugin/`.
   if (relPath.startsWith('skills/')) {
     const [, dir, ...rest] = relPath.split('/')
     if (dir && rest.length > 0 && skills.includes(dir)) {
@@ -804,7 +804,7 @@ export { isVendored }
 // ---------------------------------------------------------------- the surface
 
 /**
- * The `.rocketflare.json` entry an install writes. Deliberately built from the plugin's own
+ * The `launch.plugins.json` entry an install writes. Deliberately built from the plugin's own
  * manifest plus the three facts only the host knows — where it fetched it from, at what commit and
  * when — so a surface never carries a field the plugin did not declare.
  */
@@ -1026,7 +1026,7 @@ export function planSteps(m, { fragments = [], clashes = [] } = {}) {
   const version = m.version ?? '0.0.0'
   if (clashes.length > 0) {
     // HUMAN, and first: `pnpm add` would overwrite the existing range without a word, and the
-    // host's `package.json` is `manual` in `.rocketflare.json`, so nothing reconciles it later.
+    // host's `package.json` is the host's own, so nothing reconciles it later.
     // Choosing a range two dependants can both live with is a judgement, not a command.
     steps.push(
       mkStep(
@@ -1362,7 +1362,7 @@ export function pluginManifestProblems(manifest) {
     bad(
       'version',
       'declares no version',
-      'add "version": "0.1.0" — defaultPlugins pins it and the surface is compared to it'
+      'add "version": "0.1.0" — the host records it and the surface is compared to it'
     )
   } else if (!(isStr(m.version) && /^\d+\.\d+\.\d+/.test(m.version))) {
     bad(
@@ -1750,8 +1750,8 @@ const rangeIn = (json, name) => json?.dependencies?.[name] ?? json?.devDependenc
  * `pnpm --dir <pkg> add <name>@<range>`, so a plugin whose install failed part-way — or whose
  * dependency was dropped later by `remove`, which deliberately only PRINTS `pnpm remove` — reports
  * as perfectly healthy while its imports cannot resolve. `have: null` is the missing case and is a
- * failure; a different range is reported separately, because the host's `package.json` is listed
- * under `manual` in `.rocketflare.json` and an operator is entitled to have pinned it themselves.
+ * failure; a different range is reported separately, because the host's `package.json` is its own
+ * and an operator is entitled to have pinned it themselves.
  */
 export function missingDependencies(manifest, packageJsons = {}) {
   const out = []
@@ -1772,8 +1772,7 @@ export function missingDependencies(manifest, packageJsons = {}) {
  * **`pnpm add` silently overwrites the range in the host's `package.json`**, so two plugins wanting
  * different majors of one package is last-install-wins with nothing said — at the exact moment
  * somebody is being asked to approve an install that carries full Worker and database access. And
- * `package.json` is `manual` in `.rocketflare.json`, so no kit upgrade ever reconciles it for
- * anyone afterwards.
+ * nothing ever reconciles the host's `package.json` for anyone afterwards.
  *
  * It WARNS rather than refusing, and the reason is not timidity: a clash is very often the intended
  * change — a plugin that legitimately needs a newer major of a shared package is how a dependency

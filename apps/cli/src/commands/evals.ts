@@ -142,6 +142,6 @@ export async function runEvalsPromote(
   ctx.out.data({ ...(raw as object), file, id: evalCase.id }, () => `${file}  +${evalCase.id}`)
   ctx.log.success(`Added ${evalCase.id} to ${options.dataset}.jsonl`)
   ctx.log.hint(
-    'Next: draft the expected output and rubric with the rf-evals skill, then run pnpm eval.'
+    'Next: draft the expected output and rubric with the launch-evals skill, then run pnpm eval.'
   )
 }

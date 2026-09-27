@@ -51,7 +51,7 @@ import {
   notesBetween,
   PLUGIN_MIRROR_ROOT,
 } from './lib/git-lib.mjs'
-import { pluginSurfaces, readManifest } from './lib/manifest.mjs'
+import { MANIFEST_FILE, pluginSurfaces, readManifest, SIDECAR_FILE } from './lib/manifest.mjs'
 import {
   addBarrelLine,
   addPlanJson,
@@ -132,8 +132,7 @@ function requireLedger() {
 }
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-// The mirror location is shared with `scripts/release.mjs`, which fetches the same plugin
-// repositories to read their manifests — one clone, not two that take turns being stale.
+// The git-ignored cache of plugin repository mirrors and upgrade work artifacts.
 const WORK_DIR = PLUGIN_MIRROR_ROOT
 
 const out = (...lines) => {
@@ -152,12 +151,12 @@ export const USAGE = `usage: node scripts/plugin.mjs <command> [options]
     --subdir <dir>        the plugin lives in a subdirectory of that repository
     --apply               actually install it: copy, write the five barrel lines, add dependencies
                           and record the surface
-    --local               record it in the git-ignored .rocketflare.local.json sidecar rather than
-                          in .rocketflare.json (implied in the kit itself)
+    --local               record it in the git-ignored ${SIDECAR_FILE} sidecar rather than
+                          in ${MANIFEST_FILE}
     --no-fetch            use the cached mirror as-is (offline)
     --allow-dirty         install onto a tree with uncommitted changes
 
-  upgrade <id>            port the plugin's own later releases in, exactly as \`pnpm kit:upgrade\`
+  upgrade <id>            port the plugin's own later releases in (a translated diff, like a merge)
     --to <ref> / --from <ref> / --apply / --no-fetch / --allow-dirty
 
   remove <id>             uninstall: delete its directories, its barrel lines and its surface
@@ -237,11 +236,14 @@ function loadHost() {
   if (!manifest) {
     stop(
       1,
-      'error: .rocketflare.json not found — a plugin is recorded as a surface in it, so there is',
-      'nowhere to record one. Run this from the root of a copy of the kit.'
+      `error: ${MANIFEST_FILE} not found — a plugin is recorded as a surface in it, so there is`,
+      'nowhere to record one. Run this from the root of the Launch checkout.'
     )
   }
-  const kitVersion = JSON.parse(readFileSync(abs('package.json'), 'utf8')).version
+  // The kit plugin-API level a plugin's `minKit` is checked against. Launch records it in the
+  // manifest because its own `package.json` version is Launch's, not the kit's.
+  const kitVersion =
+    manifest.kitVersion ?? JSON.parse(readFileSync(abs('package.json'), 'utf8')).version
   const names = manifest.app
     ? deriveNames(manifest.app.slug, manifest.app.display, { domain: manifest.app.domain })
     : null
@@ -256,7 +258,7 @@ function loadHost() {
     names,
     tracked,
     label: manifest.app ? `${manifest.app.display} (${manifest.app.slug})` : 'the kit itself',
-    kitRepo: manifest.kit.repo,
+    kitRepo: manifest.kit?.repo ?? null,
     plugins: pluginSurfaces(manifest),
     sidecarIds: (sidecar?.surfaces ?? []).map(s => s.id),
     presentSurfaces: manifest.surfaces.filter(s => existsSync(abs(s.anchor))).map(s => s.id),
@@ -314,7 +316,7 @@ function requireClean(host, args) {
 }
 
 /**
- * Write `.rocketflare.json` (or the sidecar) back.
+ * Write `launch.plugins.json` (or the sidecar) back.
  *
  * `JSON.stringify` does not produce the bytes Biome wants — it never collapses a short array onto
  * one line — so the committed manifest is re-formatted afterwards, or the very commit an install
@@ -396,7 +398,7 @@ export function splitRef(spec) {
   return { target: spec, ref: null }
 }
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', 'dist', '.wrangler', '.upgrade'])
+const IGNORED_DIRS = new Set(['.git', 'node_modules', 'dist', '.wrangler', '.plugin-cache'])
 
 function walk(root, prefix = '') {
   const found = []
@@ -607,8 +609,8 @@ function cmdAdd(args, host) {
   })
 
   // A dependency this plugin wants at a range the host — or another installed plugin — already
-  // pins differently. `pnpm add` would overwrite it without a word, and `package.json` is `manual`
-  // in `.rocketflare.json`, so no kit upgrade ever reconciles it. It WARNS rather than refusing (a
+  // pins differently. `pnpm add` would overwrite it without a word, and nothing ever
+  // reconciles the host's `package.json` afterwards. It WARNS rather than refusing (a
   // clash is often the intended change) and is surfaced as a HUMAN step, which is where the
   // taxonomy makes a decision unmissable.
   const clashes = dependencyClashes(m, {
@@ -792,7 +794,7 @@ function cmdUpgrade(args, host) {
   if (isVendored(source, host.kitRepo)) {
     out(
       `${id} is vendored — it ships inside ${host.kitRepo} with no subdirectory, so the kit release`,
-      'that moves it forward is the one that moves it. Upgrade it with `pnpm kit:upgrade`.'
+      'that moves it forward is the one that moves it.'
     )
     return 0
   }
@@ -997,7 +999,8 @@ function cmdUpgrade(args, host) {
       ...floors.map(n => `  ${n.version} needs kit ${n.requires_kit} or newer`),
       ...(manifestFloor ? [`  ${toVersion ?? to} declares minKit ${manifestFloor}`] : []),
       '',
-      'Upgrade the kit first (`pnpm kit:upgrade`), then come back to this.'
+      `Launch implements the kit plugin API at ${host.kitVersion} (\`kitVersion\` in ${MANIFEST_FILE}).`,
+      'Port the host changes that release needs first, then come back to this.'
     )
     return 6
   }
@@ -1308,7 +1311,7 @@ function cmdList(_args, host) {
 
 /**
  * Audit every installed plugin. One line per failure and exit 1 on any — this is the thing
- * `/rf-preflight` and CI run, so it says what is wrong rather than how to fix it.
+ * `/launch-preflight` and CI run, so it says what is wrong rather than how to fix it.
  */
 /** The directories under `.claude/skills/` in this host — every skill, kit and plugin alike. */
 function hostSkillDirs() {
@@ -1629,8 +1632,8 @@ function cmdCheck(args, host) {
         })
         continue
       }
-      // A DIFFERENT range is not the same fault: `package.json` is `manual` in `.rocketflare.json`,
-      // so an operator is entitled to have pinned it themselves and no kit upgrade reconciles it.
+      // A DIFFERENT range is not the same fault: `package.json` is the host's own, so an operator
+      // is entitled to have pinned it themselves.
       add('fail', `${id}:dependency-range:${d.name}`, {
         file: `${d.pkg}/package.json`,
         line: jsonKeyLine(readHostPackageJsonSource(d.pkg), d.name),
@@ -1660,8 +1663,8 @@ function cmdCheck(args, host) {
           problem: `has no test proving another organisation cannot read ${tables.join(', ')}`,
           fix:
             'add a case that creates a SECOND tenant and drives the real mount as it — copy the ' +
-            "describe('tenant isolation') block from apps/web/src/plugins/example-feature/tests/" +
-            'api/example-feature.test.ts. This proves such a test EXISTS, not that it is correct',
+            'second-tenant case in apps/web/src/plugins/analytics/tests/api/' +
+            'dashboard-visibility.test.ts. This proves such a test EXISTS, not that it is correct',
         })
       }
     }

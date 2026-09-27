@@ -47,11 +47,10 @@ export function dirtyTree(cwd) {
 }
 
 /**
- * Where a PLUGIN repository's mirror lives, relative to the repository root. One constant, because
- * `scripts/plugin.mjs` and `scripts/release.mjs` mirror the same repositories: a second spelling
- * would mean two clones of one plugin, and whichever the release read would be the stale one.
+ * Where a PLUGIN repository's mirror (and `pnpm plugin upgrade`'s work artifacts) live, relative
+ * to the repository root. Git-ignored, and safe to delete at any time.
  */
-export const PLUGIN_MIRROR_ROOT = path.join('.upgrade', 'plugins')
+export const PLUGIN_MIRROR_ROOT = '.plugin-cache'
 
 /**
  * `<root>/<last path segment of repo>.git` — the directory a repository's bare mirror occupies.
@@ -71,7 +70,7 @@ export function mirrorDirFor(repo, root) {
 /**
  * A blobless bare mirror of `repo` at `dir`, reused across runs — never a remote on the host
  * repository, whose tags would collide with the mirrored one's and whose objects the host would
- * push. `rm -rf .upgrade` is a complete uninstall.
+ * push. `rm -rf .plugin-cache` is a complete uninstall.
  *
  * Throws with `exitCode: 3` when the remote cannot be reached and there is no usable cache, which
  * is the one failure a caller reports differently from a genuine error.

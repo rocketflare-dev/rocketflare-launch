@@ -9,8 +9,9 @@
  * Also `createExecutionContext()` — `waitUntil` collects promises so `waitOnExecutionContext`
  * can drain them; this is how the per-request DB close (middleware/database.ts) is awaited.
  */
-import { deterministicEmbedding } from '@/api/services/ai/deterministic-embedding'
+
 import type { AppBindings } from '@/api/types'
+import { deterministicEmbedding } from './deterministic-embedding'
 
 // ---- KV -----------------------------------------------------------------------------------
 

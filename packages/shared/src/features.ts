@@ -45,8 +45,8 @@ export type FeatureRolloutUnit = z.infer<typeof featureRolloutUnitSchema>
  * A key the running deployment actually has (D30, D31).
  *
  * **Not `z.enum(FEATURES)`**, and not for style: `FEATURES` is `[...CORE_FEATURES, ...plugins]`,
- * `CORE_FEATURES` is now empty (the kit's own demonstration flag ships as the `example-feature`
- * PLUGIN), and a `z.enum` needs a non-empty TUPLE — an array of strings is a type error there.
+ * `CORE_FEATURES` is empty (the kit's demonstration flag shipped as the `example-feature` plugin,
+ * which Launch removed), and a `z.enum` needs a non-empty TUPLE — an array of strings is a type error there.
  * A refined `z.string()` is the same runtime check and the same output type, and it keeps
  * validating against whatever is installed rather than against what was compiled in.
  */
@@ -77,10 +77,9 @@ export interface FeatureDefinition {
  * `permissions.ts`, so a typo anywhere that gates on one is a type error rather than a route that
  * 404s for ever.
  *
- * The kit's demonstration flag moved into the `example-feature` PLUGIN (D31), which is where both
- * halves of a flag now arrive together: the key, its metadata, the nav item it gates, the mount it
- * gates and the page behind it. An app that wants a flag of its own adds it here and to
- * `CORE_FEATURES` — or, better, ships the whole feature as a plugin.
+ * A plugin (D31) is where both halves of a flag arrive together: the key, its metadata, the nav
+ * item it gates, the mount it gates and the page behind it. A flag of Launch's own goes here and
+ * in `CORE_FEATURES` — or, better, ships with the whole feature as a plugin.
  */
 export const CORE_FEATURE_FLAGS = {} satisfies Record<string, FeatureDefinition>
 
@@ -99,6 +98,15 @@ export const FEATURE_FLAGS = {
 } as Record<FeatureName, FeatureDefinition>
 
 export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureName[]
+
+/**
+ * The definition of one installed flag. Use this rather than `FEATURE_FLAGS[key]`: with no flag
+ * installed (Launch today) `FeatureName` is `never`, and so is any index by it — this keeps the
+ * callers typechecking either way.
+ */
+export function featureDefinition(key: FeatureName): FeatureDefinition {
+  return (FEATURE_FLAGS as Record<string, FeatureDefinition>)[key as string] as FeatureDefinition
+}
 
 export function isFeatureName(value: string): value is FeatureName {
   return Object.hasOwn(FEATURE_FLAGS, value)
@@ -170,7 +178,7 @@ export function evaluateFlag(
   row: FeatureFlagEvaluation | null,
   ctx: FeatureEvaluationContext
 ): boolean {
-  const definition = FEATURE_FLAGS[key]
+  const definition = (FEATURE_FLAGS as Record<string, FeatureDefinition | undefined>)[key as string]
   if (!definition) return false
   // Layer 1. An environment that has not opted in never reaches the database state at all.
   if (definition.environmentGated && !ctx.environmentEnabled.includes(key)) return false

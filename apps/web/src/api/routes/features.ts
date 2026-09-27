@@ -11,7 +11,7 @@
  * It answers from `auth.features`, already resolved by the auth middleware, so it costs no query
  * and cannot disagree with the gate on any other route.
  */
-import { FEATURE_FLAGS, FEATURE_KEYS } from '@launch/shared/features'
+import { FEATURE_KEYS, featureDefinition } from '@launch/shared/features'
 import { withAuth } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 
@@ -24,7 +24,7 @@ featuresRouter.get('/', c => {
     features,
     items: FEATURE_KEYS.map(key => ({
       key,
-      label: FEATURE_FLAGS[key].label,
+      label: featureDefinition(key).label,
       enabled: features.includes(key),
     })),
   })

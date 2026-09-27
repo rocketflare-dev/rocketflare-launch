@@ -3,7 +3,7 @@
 Developer-run eval suites for the kit's chat and agents (D33; the rules and known gaps are in
 `docs/CONCEPTS.md` §9). They answer one question: **did a prompt, model, tool or retrieval change
 make answers better or worse?** They run locally with `pnpm eval`, cost real tokens, and are
-**never part of the gate**. The `rf-evals` skill drives every step below and coaches as it goes.
+**never part of the gate**. The `launch-evals` skill drives every step below and coaches as it goes.
 
 ## Setup
 
@@ -82,7 +82,7 @@ string can't check.
 | every claim is grounded in what it retrieved | `FaithfulnessJudge()` |
 | it agrees with a reference answer | `ReferenceJudge()` + `expected.output` |
 
-The full catalogue, with scoring, is `.claude/skills/rf-evals/reference.md`. LLM judges run
+The full catalogue, with scoring, is `.claude/skills/launch-evals/reference.md`. LLM judges run
 through the `evals-judge` prompt (Settings → Prompts), on whatever model Settings → Agent models
 assigns it, or on `--judge-model <id>` for one run. Every judge call is costed in `ai_usage`
 (feature `evals.judge`) and never counted in a case's own spend.
@@ -136,7 +136,7 @@ pnpm cli evals promote <messageId|runId> --dataset knowledge-chat
 
 The draft contains the question, the earlier turns, the passages retrieved, the tools called and
 the **observed** answer as `expected.output`. That's the answer somebody disliked, so correct it and
-write a rubric before committing (the `rf-evals` skill drafts both and waits for your sign-off). **A
+write a rubric before committing (the `launch-evals` skill drafts both and waits for your sign-off). **A
 promoted case is tenant data**: the command refuses to write without `--yes` or a confirmed prompt.
 Redact names and emails before the line enters the repository.
 

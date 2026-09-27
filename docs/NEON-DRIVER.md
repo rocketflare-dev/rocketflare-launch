@@ -83,7 +83,7 @@ It is set in two layers:
 
 ## 4. The local Neon proxy
 
-`ghcr.io/launch-dev/local-neon-proxy:rf-<n>` — OUR image (`apps/web/docker/Dockerfile.neon-proxy`):
+`ghcr.io/rocketflare-dev/local-neon-proxy:rf-<n>` — OUR image (`apps/web/docker/Dockerfile.neon-proxy`):
 a byte-identical mirror (`:2026-03-27`, same digest) of the community image
 `ghcr.io/timowilhelm/local-neon-http-proxy` (Neon's open-source proxy plus Caddy, CC0) with our
 start script baked in as the entrypoint. **Pinned by digest** in both compose files (profile `neon`;
@@ -122,7 +122,6 @@ both platforms build without emulation), then pin the new index digest in both c
 | Risk | Handling |
 |---|---|
 | A fresh copy develops on `postgres` and deploys on `neon` | `test-neon` on every PR; the guard catches driver-specific reads before either; `pnpm test:neon` / `dev:db:up --neon` reproduce locally |
-| An upgrading copy picks up the kit's `DATABASE_DRIVER = "neon"` | tomls are never patched as text by `/rf-upgrade`; its porting rules say not to carry the value; if one did, `loadConfig` fails at startup on the missing secret |
 | `neon` has no read cache and a round trip per query | measured per app when it switches (staging p95 against the Hyperdrive baseline); first fix: batch session + membership in one neon-http `batch()` |
 | A WebSocket handshake per transaction under `neon` (every chat retrieval's `SET LOCAL`) | accepted — it sits inside a multi-second model call |
 | A community image in `test-neon` and `dev:db:up --neon` | digest pin, our own start script, the mirror/build fallback (§4); the default dev loop never pulls it |

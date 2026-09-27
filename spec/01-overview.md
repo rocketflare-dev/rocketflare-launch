@@ -63,15 +63,18 @@ Two directions of independence, both rules:
 **Recommended: seed from Rocketflare once, then cut the cord.** Run the kit's installer and
 rename it to `launch`, then delete everything that ties it to the kit:
 
-- `.rocketflare.json`,
+- `.rocketflare.json` (Launch keeps a `launch.plugins.json` that records only its plugins),
 - the `kit-update-check` SessionStart hook,
-- the `rf-upgrade` and `rf-plugin` skills,
-- the plugin barrels and tooling, if Launch doesn't use them.
+- the kit's upgrade and release tooling, and the `rf-upgrade` skill.
+
+Launch keeps the plugin barrels and tooling, because it uses the analytics plugin.
 
 From that commit on it is Launch's own code. It gets the parts that take weeks to build for free:
 
 - sessions, Google and Microsoft login, and API keys,
-- Drizzle over Hyperdrive (Launch keeps Hyperdrive; the apps it creates don't, see [02](02-template-contract.md)),
+- Drizzle over the Neon serverless driver (`DATABASE_DRIVER=neon`), with Launch's own `launch`
+  database and role in a Neon project. Launch doesn't use Hyperdrive, and neither do the apps it
+  creates ([02](02-template-contract.md)),
 - Queues, Workflows and Durable Objects wiring,
 - sealed secrets,
 - the AG-UI event rendering (useful for session transcripts),

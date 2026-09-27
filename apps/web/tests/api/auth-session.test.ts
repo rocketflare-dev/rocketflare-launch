@@ -4,7 +4,7 @@
  */
 import type { SessionResponse } from '@launch/shared/auth'
 import { ERROR_CODES } from '@launch/shared/errors'
-import { FEATURE_FLAGS, FEATURE_KEYS } from '@launch/shared/features'
+import { FEATURE_KEYS, featureDefinition } from '@launch/shared/features'
 import { eq } from 'drizzle-orm'
 import { describe, expect, inject, it } from 'vitest'
 import { SESSION_COOKIE_NAME } from '@/api/auth/cookies'
@@ -50,7 +50,7 @@ describe('GET /auth/session', () => {
     // defaults ON is on here, and a bare kit has none.
     expect(body.features).toEqual(
       FEATURE_KEYS.filter(
-        k => FEATURE_FLAGS[k].defaultState === 'on' && !FEATURE_FLAGS[k].environmentGated
+        k => featureDefinition(k).defaultState === 'on' && !featureDefinition(k).environmentGated
       )
     )
     expect(body).toMatchObject({

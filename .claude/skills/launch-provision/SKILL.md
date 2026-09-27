@@ -1,0 +1,162 @@
+---
+name: launch-provision
+description: Take a locally-running copy to Cloudflare + Neon + Resend — provisions every resource, patches the tomls, migrates, deploys staging, sets secrets, verifies email. Runs after /launch-setup.
+disable-model-invocation: true
+argument-hint: "[--driver neon|postgres] [--deploy staging|both] [--skip-email] [--rotate]"
+---
+
+# /launch-provision — from "runs on my laptop" to "deployed"
+
+**This one is user-invoked only** (`disable-model-invocation`), unlike `/launch-setup`:
+it creates paid cloud resources and its `tokens` phase needs a TTY for hidden prompts. Asked
+to deploy, tell the user to run `/launch-provision` themselves rather than attempting it.
+
+You are driving `pnpm provision` (`apps/web/scripts/provision.ts`) for a person who may never have
+deployed anything. Explain each step in one plain sentence before you run it, show the `Verify:`
+line it ends with, and stop at the first failure. Reference material (API docs, token scopes,
+known risks, the manual path) is in `reference.md` next to this file.
+
+Prerequisites: `/launch-setup` Part 1 has passed locally (the script reads the app name from `apps/web/wrangler.toml`, never a literal).
+
+**Install the plugins first.** Every phase reads the plugins that are installed *now*: `cloudflare
+<env>` creates their bindings and writes their declarations into both tomls, and `secrets <env>`
+offers their secret `vars`. Adding a plugin afterwards means re-running those two phases (they are
+idempotent, so that is cheap — but it is a re-run, not automatic). Run `pnpm plugin list` before you
+start and say what it shows; `/launch-plugin` installs one.
+
+## Step 0 — accounts and tokens (the user does this, not you)
+
+**Before anything: three accounts you create yourself** (no script can):
+
+1. **Cloudflare** — on the **Workers Paid** plan (Workflows; Hyperdrive under `postgres`), AND your domain on the
+   account: registered there (https://dash.cloudflare.com/?to=/:account/domains/register) or added
+   as a site with its nameservers moved (https://dash.cloudflare.com/?to=/:account/add-site). The
+   app's hostnames and the email DNS records are created in that zone. Without a domain the skill
+   uses a `workers.dev` address for both hosts and `--skip-email`.
+2. **Neon** — the free tier is fine for the two branches.
+3. **Resend** — the free tier is fine; it needs the domain from (1).
+
+Then **`! pnpm provision tokens`**. Three accounts, four tokens. **Tokens are never pasted into this
+chat and never echoed.** Ask the
+user to run **`! pnpm provision tokens`** in their own terminal (the `!` prefix runs it there; it
+shows where to mint each token with its scopes, prompts with hidden input, verifies each token
+against its vendor and writes `apps/web/.provision.env`, git-ignored, mode 0600) — or to copy
+`apps/web/.provision.env.example` to `apps/web/.provision.env` and fill it in by hand. Environment
+variables still override the file (CI exports them). Your Bash has no TTY, so `tokens` refuses to
+run from here (exit 2) — that is deliberate. If they are missing, tell the user to:
+
+1. Create the tokens (scope lists in `reference.md`; `pnpm provision tokens` prints the same):
+   - Cloudflare: https://dash.cloudflare.com/profile/api-tokens → `CLOUDFLARE_API_TOKEN`; the
+     account id (Workers & Pages overview, right-hand column) → `CLOUDFLARE_ACCOUNT_ID`.
+     The token needs `Zone: DNS — Edit` on the zone from (1).
+   - Neon: https://console.neon.tech/app/settings/api-keys → `NEON_API_KEY`.
+   - Resend: https://resend.com/api-keys (Full access) → `RESEND_API_KEY` — or use `--skip-email`
+     (`pnpm provision tokens --skip-email` skips that prompt).
+   - Optional, same file (the `secrets` phase copies them to the Worker): `GOOGLE_CLIENT_ID/SECRET`,
+     `MICROSOFT_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`,
+     `LANGFUSE_PUBLIC_KEY/SECRET_KEY`.
+2. `! pnpm provision tokens` in their terminal (or fill the file). A CI job exports the variables
+   instead; an exported variable always wins over the file.
+3. Log in to the two CLIs themselves (these open a browser; you cannot do it for them):
+   type `! gh auth login` and, if `wrangler whoami` is not already happy, `! pnpm web exec wrangler login`.
+
+Then check everything at once:
+
+```
+pnpm provision preflight --domain <sending domain> --staging-host <host|workers.dev> --production-host <host|workers.dev> --admin-email <email>
+```
+
+Exit code 2 = something is missing; the output names each missing token with the URL to mint it
+and says to run `pnpm provision tokens`. Exit code 1 with "the domain <apex> is not on this
+Cloudflare account" = step 0 (1) is not done: the user registers the domain or moves its
+nameservers (the message carries both links), or answers `workers.dev` for both hosts and adds
+`--skip-email`. Fix (no restart of `claude` is needed when the file changed — it is read on every
+run), re-run. Success reads
+`Verify: preflight ok — app=… account=… neon=… resend=… zone=<zone> (<id>)` (`zone=none` when both
+hosts are `workers.dev` and email is skipped); the zone id is cached for `email create` and `urls`.
+
+## Step 1 — the database driver (D35), then the four answers
+
+**Ask which driver to deploy on, and coach the choice** — it is the one decision here that is
+awkward to change later (`docs/DEPLOY.md` § Database driver has the table):
+
+- **`neon`** (the kit's default, what the tomls already say): the Worker talks to Neon over HTTPS
+  with the pooled URI as its `DATABASE_URL` secret. No Hyperdrive, so it scales to many apps in one
+  account (Hyperdrive caps an account at 25 configs) and works from a sandbox with no TCP out.
+  No read cache; a round trip per query. Pick it when the database is Neon — the usual case here.
+- **`postgres`**: postgres.js through a Hyperdrive config per environment. Any Postgres (RDS,
+  Supabase, Crunchy, self-hosted — this skill still provisions Neon; for another Postgres the user
+  points Hyperdrive at it by hand, `reference.md`), plus Hyperdrive's 60 s read cache. Pick it for
+  a non-Neon database, or a single app that wants the cache and has Hyperdrive configs to spare.
+
+Say which the tomls say now (`grep DATABASE_DRIVER apps/web/wrangler.toml`; missing = `postgres`,
+a copy from before 0.15.0). If the user picks the other one, pass `--driver <d>`: the `cloudflare`
+phase rewrites BOTH tomls (the var, and the `[[hyperdrive]]` block added or removed), `secrets`
+and `deploy` put `DATABASE_URL` under `neon`. **Switching a deployment that is already live** is a
+separate procedure, one environment at a time — follow `reference.md` § Switching drivers, never
+`all`. Local development is unaffected either way: `.dev.vars` keeps `DATABASE_DRIVER=postgres`.
+
+Then collect the four answers:
+
+Your Bash has no TTY, so the script cannot ask questions — **ask the user first**, then pass the
+answers as flags (they are cached in `apps/web/.provision.json` after the first run):
+
+| Question | Flag | Sensible default |
+|---|---|---|
+| Neon region (near your users) | `--region aws-us-east-1` | `aws-us-east-1` |
+| Sending domain (a subdomain of a zone in the Cloudflare account) | `--domain mail.example.com` | `mail.<apex of APP_URL>` |
+| Staging host, or `workers.dev` | `--staging-host staging.example.com` | `workers.dev` |
+| Production host, or `workers.dev` | `--production-host app.example.com` | `workers.dev` |
+| First admin email (`BOOTSTRAP_ADMIN_EMAILS`) | `--admin-email you@example.com` | `git config user.email` |
+
+Then run the whole sequence (it takes 10–20 minutes; use a long Bash timeout):
+
+```
+pnpm provision all $ARGUMENTS [--driver neon|postgres] --region … --domain … --staging-host … --production-host … --admin-email …
+```
+
+`$ARGUMENTS` may carry `--driver` (above), `--deploy both` (deploy production too; default staging only),
+`--skip-email` (no Resend: magic links are logged in `wrangler tail` instead of sent) and
+`--rotate` (regenerate keys/passwords — read the warning it prints first).
+
+## How to read the output
+
+Every phase prints one `Verify:` line. `all` runs them in this order and stops at the first one
+that fails, telling you which phase to re-run; every phase is idempotent (find-or-create), so
+re-running `all` afterwards is safe.
+
+| Phase | It did | If it fails |
+|---|---|---|
+| `tokens` | (user's terminal only) prompts, verifies and writes `apps/web/.provision.env` | "needs a terminal" → the user runs it with the `!` prefix, not you |
+| `preflight` | tokens, tools, accounts, answers; every custom host and the sending domain resolved to a zone on the account, DNS readable | missing token → step 0; `gh` not logged in → the user runs `gh auth login` themselves; "not on this Cloudflare account" → step 0 (1), or `workers.dev` + `--skip-email`; "cannot read DNS records" → the token lacks `Zone: DNS — Edit` on that zone |
+| `email create` | Resend domain + DNS records in your Cloudflare zone, `EMAIL_FROM` in both tomls | "no Cloudflare zone" → the apex domain must be in this Cloudflare account (or `--skip-email`) |
+| `neon` | project + `staging` branch, `SELECT 1` on both | region name wrong → `--region`; 412 password storage → it resets the password itself |
+| `cloudflare staging/production` | KV, Queue, R2 (+ Hyperdrive under `postgres`); ids patched into the toml; with `--driver`, `DATABASE_DRIVER` + the `[[hyperdrive]]` block rewritten in both tomls — **plus every installed plugin's declared bindings, crons, route prefixes and non-secret `[vars]`**, written into BOTH tomls (D31) | "Hyperdrive requires Workers Paid" → upgrade the plan at the printed URL; "already has id" → `--force` only if you know the old resource is gone; a plugin binding whose `type` is not `kv`/`queue`/`r2` is refused by name at install time, not here |
+| `migrate <env>` | migrations on that branch, count == journal | a schema error is a code problem — do not retry blindly |
+| `github <env>` | GitHub Environment + `DATABASE_URL`, `CLOUDFLARE_*` secrets | `gh` needs `repo` scope; the remote must be GitHub |
+| `urls` | `APP_URL` + `routes` (custom host) or `workers.dev` in both tomls; parity test | "no workers.dev subdomain" → pick one in the Cloudflare dashboard once |
+| `deploy <env>` | `pnpm deploy[:staging]` (under `neon` it puts the Worker's `DATABASE_URL` right after the first deploy), then `/api/health` and `/api/ready` | `/api/ready` 503 → the Worker cannot reach Neon: under `neon` re-run `secrets <env>` (the `DATABASE_URL` secret); under `postgres` Hyperdrive has the wrong host / SSL — re-run `cloudflare <env> --force` after checking |
+| `secrets <env>` | `OAUTH_ENCRYPTION_KEY` (generated), `DATABASE_URL` under `neon` (the pooled Neon URI; `--rotate` re-puts it), + every optional secret in the environment or `apps/web/.provision.env` — **including every installed plugin's `vars` marked `secret`**, from the same two places | nothing to fix; unset ones are listed as skipped. A plugin secret that is skipped means the plugin 503s at runtime rather than reading a blank string as configured — add it to `apps/web/.provision.env` and re-run this phase |
+| `email verify <env>` | Resend verification (polls ≤ 10 min), mints a sending key into `RESEND_API_KEY` | "DNS still propagating" → wait and re-run `pnpm provision email verify <env>` later |
+
+`pnpm provision email status` shows each DNS record's presence when verification stalls.
+
+## Close-out
+
+`all` ends with a checklist — walk the user through it: sign in with the admin's magic link (with
+`SIGNUP_MODE=invite_only` the first login lands on `/pending`; create the first organisation at
+`/admin`), add OAuth redirect URIs per environment if they use Google/Microsoft, commit the two
+tomls (`git add apps/web/wrangler*.toml && git commit`), push, optionally
+`gh workflow run deploy.yml -f environment=staging`, and `pnpm cli login --server <APP_URL>`.
+Production, when not deployed by `--deploy both`, ships through the release dance in
+`docs/DEPLOY.md` or `pnpm provision deploy production` + `secrets production` + `email verify production`.
+
+## Rules
+
+- Never print, paste or store a token, key or connection string; the script redacts its own
+  output and keeps secrets in memory or in child-process stdin/env only. Do not work around that.
+  You never read, `cat` or edit `apps/web/.provision.env` — the script reads it.
+- Do not edit `.dev.vars`, and do not hand-edit the tomls while a phase runs.
+- The user's local `pnpm dev` stack is untouched by every phase; no phase needs it running.
+- `gh auth login`, `wrangler login` and any browser step are the user's own commands (they type them
+  with the exclamation-mark prefix in Claude Code); you never run them.

@@ -1,0 +1,49 @@
+{
+  "$purpose": "The plugins installed in Launch (D31, docs/CONCEPTS.md §16). `pnpm plugin add|upgrade|remove|list|check` (scripts/plugin.mjs, the /launch-plugin skill) read and write this file: each installed plugin is a surface with the repository, version and commit it came from. Launch was seeded from the Rocketflare kit but does not track kit releases; this file tracks plugins only. Never edit it by hand.",
+  "$kitVersion": "The Rocketflare release whose plugin API Launch implements (it was seeded from it). A plugin declares the oldest kit it supports as `minKit`, and `pnpm plugin` checks it against this value rather than against Launch's own version.",
+  "kitVersion": "0.15.0",
+  "$app": "Launch's names. A plugin is written in the kit's vocabulary and translated into these on the way in.",
+  "app": {
+    "slug": "launch",
+    "display": "Launch",
+    "domain": "clewro.com"
+  },
+  "surfaces": [
+    {
+      "id": "analytics",
+      "kind": "plugin",
+      "label": "Analytics",
+      "anchor": "apps/web/src/plugins/analytics/plugin.json",
+      "paths": [
+        "apps/web/src/plugins/analytics/**",
+        "packages/shared/src/plugins/analytics/**",
+        "apps/cli/src/plugins/analytics/**",
+        "docs/plugins/analytics/**",
+        ".claude/skills/analytics/**",
+        ".claude/skills/analytics-cubes/**",
+        ".claude/skills/analytics-queries/**",
+        ".claude/skills/analytics-dashboards/**"
+      ],
+      "registries": [
+        "apps/web/src/plugins/server.ts",
+        "apps/web/src/plugins/ui.ts",
+        "apps/web/src/plugins/schema.ts",
+        "packages/shared/src/plugins/index.ts",
+        "apps/cli/src/plugins/index.ts"
+      ],
+      "source": {
+        "repo": "https://github.com/rocketflare-dev/rocketflare-plugins.git",
+        "subdir": "plugins/analytics",
+        "version": "3.4.1",
+        "commit": "1b662476e21308d374df39c082882864b9b8005c"
+      },
+      "installedAt": "2026-09-27",
+      "minKit": "0.13.0",
+      "requires": {
+        "surfaces": [],
+        "plugins": []
+      },
+      "history": []
+    }
+  ]
+}

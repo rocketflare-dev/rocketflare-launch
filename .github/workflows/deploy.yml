@@ -18,9 +18,7 @@ name: Deploy
 # deploy` is executed INSIDE apps/web (via `--filter … exec`) so `wrangler.toml` and its
 # `[assets] directory = "./dist/ui"` resolve.
 #
-# The CI gate it calls is ci.yml, which since D31 is two passes of `gate.yml`: the ordinary one and
-# the same gate with every `defaultPlugins` entry installed. So a tag proves the kit AND what a
-# fresh clone of it installs; with no default plugins the second pass is skipped.
+# The CI gate it calls is ci.yml (lint, typecheck, test, build, plus the plugin check).
 #
 # Each job: verify tag == root package.json version → CI gate (staging only; production re-ships a
 # validated tag) → parity test with REQUIRE_PROVISIONED=1 (no <PLACEHOLDER> may remain) →
@@ -66,21 +64,6 @@ permissions:
   contents: read
 
 jobs:
-  # Is there anything here to deploy? The kit's OWN repository has no Cloudflare or Neon resources —
-  # its tomls keep `<PLACEHOLDER>` ids on purpose, so a copy cannot deploy without provisioning
-  # first. Without this the kit goes red on every tag it cuts, and a deploy nobody reads is one that
-  # hides a real failure. A copy (`app` set in .rocketflare.json) always deploys, and still fails
-  # loudly at the parity check if it was never provisioned — that gate is the point of it.
-  guard:
-    name: Anything to deploy?
-    runs-on: ubuntu-latest
-    outputs:
-      deployable: ${{ steps.check.outputs.deployable }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: check
-        run: node scripts/release-check.mjs --deployable
-
   # Step 1 of the dance: a tag has not necessarily been through a PR, so the gate runs here.
   ci:
     if: |
@@ -90,12 +73,10 @@ jobs:
 
   staging:
     name: Deploy to staging
-    needs: [guard, ci]
+    needs: [ci]
     if: |
-      needs.guard.outputs.deployable == 'true' && (
-        (github.event_name == 'push' && github.ref_type == 'tag') ||
-        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
-      )
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
     runs-on: ubuntu-latest
     environment: staging
     # id-token: the deployer path authenticates with a GitHub OIDC token; unused otherwise.
@@ -124,20 +105,16 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Deploying version: $VERSION"
 
-      # `release-check.mjs --tag` checks all four release facts at once: the tag equals the ROOT
-      # package.json version (apps/*/package.json are informational), `.rocketflare.json`'s
-      # kit.version agrees, the porting note exists and chains, and CHANGELOG.md has its section.
-      # The version comparison used to be a third copy of itself, in shell, in both deploy jobs.
-      #
-      # A release with no porting note is a gap every copy of the kit has to step over, permanently:
-      # `docs/upgrades/` is the chain `/rf-upgrade` walks. `pnpm kit:release <version>` writes all of
-      # it. Exits 0 immediately in an adopted copy, so it never gates somebody's own product.
-      #
-      # Only on a real tag: `workflow_dispatch` deploys `<branch>-<sha>`, which is not an X.Y.Z
-      # version and has no note of its own.
-      - name: Tag matches the root version and carries its porting note
+      # One tag ships apps/web and apps/cli together, so it must equal the ROOT package.json
+      # version. Only on a real tag: `workflow_dispatch` deploys `<branch>-<sha>`.
+      - name: Tag matches the root version
         if: github.ref_type == 'tag'
-        run: node scripts/release-check.mjs --tag "${{ steps.version.outputs.version }}"
+        run: |
+          expected=$(node -p "require('./package.json').version")
+          if [ "$expected" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::tag ${{ steps.version.outputs.version }} does not match package.json version $expected"
+            exit 1
+          fi
 
       - run: pnpm install --frozen-lockfile
 
@@ -208,12 +185,9 @@ jobs:
   # on staging, so the CI gate is not re-run here.
   production:
     name: Deploy to production
-    needs: guard
     if: |
-      needs.guard.outputs.deployable == 'true' && (
-        github.event_name == 'release' ||
-        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
-      )
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -243,12 +217,15 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Deploying version: $VERSION"
 
-      # As in the staging job: one script checks the tag against the root version, the manifest's
-      # kit.version, the porting note and the changelog section. Only on a real Release — a
-      # `workflow_dispatch` ships `<branch>-<sha>`, which is not an X.Y.Z version.
-      - name: Release tag matches the root version and carries its porting note
+      # As in the staging job. Only on a real Release: a `workflow_dispatch` ships `<branch>-<sha>`.
+      - name: Release tag matches the root version
         if: github.event_name == 'release'
-        run: node scripts/release-check.mjs --tag "${{ steps.version.outputs.version }}"
+        run: |
+          expected=$(node -p "require('./package.json').version")
+          if [ "$expected" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::tag ${{ steps.version.outputs.version }} does not match package.json version $expected"
+            exit 1
+          fi
 
       - run: pnpm install --frozen-lockfile
 

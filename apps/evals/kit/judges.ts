@@ -7,7 +7,7 @@
  * Deterministic (free, instant — prefer them): `ContainsJudge`, `MatchesJudge`, `SchemaJudge`,
  * `TrajectoryJudge`, `BudgetJudge`. LLM (costed, through `judgeHarness`): `RubricJudge`,
  * `FaithfulnessJudge`, `ReferenceJudge` (vitest-evals' `FactualityJudge` against
- * `expected.output`). The pure scoring lives in `scoring.ts`; `reference.md` in the `rf-evals`
+ * `expected.output`). The pure scoring lives in `scoring.ts`; `reference.md` in the `launch-evals`
  * skill is the catalogue a person reads.
  */
 import type { EvalCase, EvalContextDoc } from '@launch/shared/ai/evals'

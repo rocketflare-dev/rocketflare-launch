@@ -9,13 +9,9 @@
  * own commands, so `launch --help` lists them together.
  */
 import { analyticsCli } from './analytics'
-import { exampleFeatureCli } from './example-feature'
 import type { AnyCliPlugin } from './types'
 
-export const CLI_PLUGINS = [
-  analyticsCli,
-  exampleFeatureCli,
-] as const satisfies readonly AnyCliPlugin[]
+export const CLI_PLUGINS = [analyticsCli] as const satisfies readonly AnyCliPlugin[]
 
 /** The barrel as a plain list. Iterate this; `CLI_PLUGINS` is for type derivation. */
 export const cliPlugins: readonly AnyCliPlugin[] = CLI_PLUGINS

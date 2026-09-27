@@ -27,14 +27,12 @@ import {
   parseBootstrapArgs,
   parseNvmrc,
   parseWhoami,
-  planDefaultPlugins,
   readDevVars,
   toggleAiBlock,
   upsertDevVar,
   versionAtLeast,
   withDatabaseUrlPort,
 } from '../../../../scripts/lib/bootstrap-lib.mjs'
-import { readManifest } from '../../../../scripts/lib/manifest.mjs'
 
 const WEB_DIR = path.resolve(__dirname, '../..')
 const readWeb = (file: string) => fs.readFileSync(path.join(WEB_DIR, file), 'utf8')
@@ -367,76 +365,6 @@ describe('checkoutTag', () => {
     expect(checkoutTag('/Users/x/work/launch/apps/web')).toBe(a)
     expect(checkoutTag('/Users/x/work/other/apps/web')).not.toBe(a)
     expect(a).toMatch(/^[a-z0-9]{7}$/)
-  })
-})
-
-describe('planDefaultPlugins', () => {
-  const entry = { id: 'analytics', repo: 'https://example.test/launch-plugin-analytics.git' }
-
-  it('turns a declared entry into one `plugin add … --apply`', () => {
-    const plan = planDefaultPlugins([entry], [])
-    expect(plan.install).toEqual([
-      {
-        id: 'analytics',
-        spec: 'https://example.test/launch-plugin-analytics.git',
-        args: [
-          'plugin',
-          'add',
-          'https://example.test/launch-plugin-analytics.git',
-          '--apply',
-          '--allow-dirty',
-        ],
-      },
-    ])
-    expect(plan.skipped).toEqual([])
-    expect(plan.problems).toEqual([])
-  })
-
-  it('pins the ref onto the spec and passes a subdir through', () => {
-    const [job] = planDefaultPlugins([{ ...entry, ref: '1.2.0', subdir: 'plugin' }], []).install
-    expect(job.spec).toBe('https://example.test/launch-plugin-analytics.git@1.2.0')
-    expect(job.args).toEqual([
-      'plugin',
-      'add',
-      'https://example.test/launch-plugin-analytics.git@1.2.0',
-      '--subdir',
-      'plugin',
-      '--apply',
-      '--allow-dirty',
-    ])
-  })
-
-  // Idempotence is the whole point: a second bootstrap must not re-add an installed plugin, which
-  // `pnpm plugin add` answers with exit 7.
-  it('skips an id that is already a surface', () => {
-    const plan = planDefaultPlugins([entry], ['analytics'])
-    expect(plan.install).toEqual([])
-    expect(plan.skipped).toEqual(['analytics'])
-  })
-
-  it('is empty and silent with nothing declared — the kit today', () => {
-    expect(planDefaultPlugins([], [])).toEqual({ install: [], skipped: [], problems: [] })
-    expect(planDefaultPlugins(undefined, [])).toEqual({ install: [], skipped: [], problems: [] })
-  })
-
-  // `defaultPlugins` is hand-edited, so a typo in it is a sentence rather than a crash mid-install.
-  it('reports a malformed entry instead of throwing, and installs nothing from it', () => {
-    const plan = planDefaultPlugins(
-      ['https://example.test/x.git', { repo: 'https://example.test/y.git' }, { id: 'z' }, entry],
-      []
-    )
-    // The sentences come from `defaultPluginEntryProblems` now — one validator for the bootstrap,
-    // `kit:release` and both workflows, which used to answer this differently from each other.
-    expect(plan.problems).toHaveLength(3)
-    expect(plan.problems[1]).toMatch(/no "id"/)
-    expect(plan.problems[2]).toMatch(/'z' has no "repo"/)
-    expect(plan.install.map(j => j.id)).toEqual(['analytics'])
-  })
-
-  it('matches what the kit ships in .rocketflare.json', () => {
-    const { manifest } = readManifest(path.join(WEB_DIR, '../..'))
-    expect(Array.isArray(manifest?.defaultPlugins)).toBe(true)
-    expect(planDefaultPlugins(manifest?.defaultPlugins, []).problems).toEqual([])
   })
 })
 

@@ -1,8 +1,8 @@
 # Contributing
 
-Welcome — thanks for your interest in Rocketflare.
+Welcome — thanks for your interest in Launch.
 
-Rocketflare is maintained by [Clifton Cunningham](https://github.com/cliftonc) and community
+Launch is maintained by [Clifton Cunningham](https://github.com/cliftonc) and community
 contributors. All contributions are reviewed and approved by the maintainer.
 
 Ways to contribute:
@@ -14,20 +14,20 @@ Ways to contribute:
 
 ## <a name="bug-report"></a> Submitting a bug report
 
-Open an [issue](https://github.com/rocketflare-dev/rocketflare/issues/new) with a title starting
+Open an [issue](https://github.com/rocketflare-dev/rocketflare-launch/issues/new) with a title starting
 "Bug: ". Include the command you ran, the output, and whether a fresh clone following `SETUP.md`
 Part 1 reproduces it. Security issues go through [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ## <a name="feature-request"></a> Submitting a feature request
 
-Open an [issue](https://github.com/rocketflare-dev/rocketflare/issues/new) with a title starting
+Open an [issue](https://github.com/rocketflare-dev/rocketflare-launch/issues/new) with a title starting
 "Feature Request: ". Say which subsystem it belongs to (`docs/CONCEPTS.md` has one section per
 subsystem, each ending in **Known gaps** — check there first; many good ideas are already listed as
 deliberate omissions with a reason).
 
 ## <a name="feedback"></a> Providing feedback
 
-- Start a thread in [Discussions](https://github.com/rocketflare-dev/rocketflare/discussions).
+- Start a thread in [Discussions](https://github.com/rocketflare-dev/rocketflare-launch/discussions).
 - Mention the maintainer on [BlueSky — @cliftonc.nl](https://bsky.app/profile/cliftonc.nl).
 
 ## <a name="contribution-guidelines"></a> Contribution guidelines
@@ -47,34 +47,35 @@ Node 24 (`.nvmrc`), pnpm 10 (`corepack enable` reads `packageManager`), Docker; 
 (Windows: WSL2). Then:
 
 ```bash
-git clone https://github.com/rocketflare-dev/rocketflare.git && cd rocketflare
+git clone <this repository> launch && cd launch
 bash scripts/bootstrap.sh        # toolchain → install → .dev.vars → Postgres → migrate → seed --demo → pnpm dev, signed in
 pnpm test:db:up && pnpm test     # the full suite against a throwaway Postgres on :5433
 ```
 
 The bootstrap is [`SETUP.md`](SETUP.md) Part 1 as one re-runnable command — every step prints a
-`✔ n/9` verification line; the numbered steps there are what it runs, for doing it by hand or
+`✔ n/10` verification line; the numbered steps there are what it runs, for doing it by hand or
 debugging one step (`pnpm preflight` is the read-only check). No external credentials are needed:
 magic links are logged; chat, agents and embeddings run on Workers AI through a logged-in Cloudflare
 account, or answer 503 with `bash scripts/bootstrap.sh --offline` until a key exists. If you are working somewhere Docker cannot run, `pnpm web test:config` and
-`pnpm --filter @rocketflare/cli test` need no database; the `api`, `api-isolated` and `ui` projects do.
+`pnpm --filter @launch/cli test` need no database; the `api`, `api-isolated` and `ui` projects do.
 
 ### <a name="repository-structure"></a> Repository structure
 
 A pnpm workspace; `CLAUDE.md` is the map and every significant directory has its own `CLAUDE.md`.
 
-- 📂 `apps/web/` — `@rocketflare/web`: the Cloudflare Worker (Hono API, queue and cron handlers, the
+- 📂 `apps/web/` — `@launch/web`: the Cloudflare Worker (Hono API, queue and cron handlers, the
   Durable Object and Workflow) and the React UI, plus `wrangler*.toml`, `migrations/`, `scripts/`, `tests/`
-- 📂 `apps/cli/` — `@rocketflare/cli`: the `rocketflare` command-line client
-- 📂 `packages/shared/` — `@rocketflare/shared`: the zod contracts the API validates with and the UI
+- 📂 `apps/cli/` — `@launch/cli`: the `launch` command-line client
+- 📂 `packages/shared/` — `@launch/shared`: the zod contracts the API validates with and the UI
   and CLI parse with (private, consumed as TypeScript source)
 - 📂 `docs/` — `CONCEPTS.md` (how each subsystem works, the decision record, and its known gaps),
-  `ADAPTING.md`, `DEPLOY.md`, `RLS.md`, `upgrades/` (one porting note per release)
-- 📂 `scripts/` — first-run tooling: `bootstrap.sh` / `bootstrap.mjs`, `install.sh`, `rename.mjs`,
-  `lib/`; and the upgrade path: `upgrade.mjs`, `release.mjs`, `release-check.mjs`
+  `ADAPTING.md`, `DEPLOY.md`, `RLS.md`
+- 📂 `scripts/` — first-run tooling (`bootstrap.sh` / `bootstrap.mjs`), the plugin tooling
+  (`plugin.mjs`, `plugin-api-doc.mjs`), `deployer.mjs` and `lib/`
 - 📂 `.claude/rules/` — layer conventions (api, database, ui, cli, testing, code-quality,
   cloudflare), loaded by path when you or a coding agent touch that layer; `.claude/skills/` — the
-  `/rf-setup`, `/rf-preflight`, `/rf-adapt`, `/rf-provision` and `/rf-upgrade` slash commands
+  `/launch-setup`, `/launch-preflight`, `/launch-provision`, `/launch-plugin` and the other `launch-*`
+  slash commands
 
 ### <a name="what-a-change-must-include"></a> What a change must include
 
@@ -82,13 +83,8 @@ The repo's **non-negotiables** are listed in `CLAUDE.md`; the ones contributors 
 
 - **The gate is green**: `pnpm lint && pnpm typecheck && pnpm test && pnpm build` before every
   commit. `typecheck` regenerates `apps/web/worker-configuration.d.ts` — commit it if it changed.
-- **A behaviour change adds an entry to `docs/upgrades/unreleased.md`.** People are running copies
-  of this kit that were detached and renamed; they absorb your change by running `/rf-upgrade`,
-  which is guided by those notes. A change with no note never reaches them. `docs/upgrades/README.md`
-  has the shape, and CI fails a pull request that touches `apps/**` or `packages/**` without one.
-- **Never rewrite released history.** Every copy pins a kit commit in its `.rocketflare.json`; a
-  force-push over a released tag orphans each one of them, permanently. Releases are cut with
-  `pnpm kit:release <version>` and the tag gate refuses one without its porting note.
+- **A user-visible change adds a line to `CHANGELOG.md`** under `## Unreleased`.
+- **Never rewrite released history.** Do not force-push over a released tag.
 - **Contracts first**: a new or changed API surface starts as a zod schema in
   `packages/shared/src/`, then the route validates with it, then the UI/CLI parse with it.
 - **Tenant isolation**: every domain query filters by the tenant from the auth context; every tenant
@@ -117,7 +113,7 @@ Tests run under Node against the real Hono app and a **real Postgres** on port 5
 ```bash
 pnpm test                       # every package
 pnpm web test:api               # or test:ui, test:config
-pnpm --filter @rocketflare/cli test
+pnpm --filter @launch/cli test
 pnpm test:coverage
 ```
 
@@ -161,22 +157,10 @@ the approval. Enqueue email.send instead — the consumer retries with backoff.
 
 ### <a name="cutting-a-release"></a> Cutting a release
 
-Maintainers only. `SETUP.md` 3.7 is the release dance every copy of the kit deploys with; the kit
-adds one step, because rocketflare.dev keeps its own copy of the release list.
-
-1. `pnpm kit:release X.Y.Z`, then `node scripts/release-check.mjs --tag X.Y.Z` and the gate.
-2. `git commit -am "Release X.Y.Z" && git tag -m "Release X.Y.Z" X.Y.Z && git push origin main X.Y.Z`.
-   The tag has to be annotated because tags are signed. The kit's `deploy.yml` skips deployment,
-   since its tomls hold placeholders, and `notify-plugins.yml` pings the plugin repositories.
-3. **Update the site's changelog**, which never happens automatically. `rocketflare-www` stores
-   the release list as committed data (`src/data/releases.ts`) so it can build without the kit. In a
-   checkout next to this one, on a branch (a push to its `main` deploys):
-   `npm run sync:releases` adds the entry from the new porting note's frontmatter with a `TODO`
-   summary. Replace that with one line in the site's voice, then run
-   `npm run check:releases && npm run build` and open a PR. Merging deploys rocketflare.dev.
-   In a Claude Code session you are reminded of this step: `scripts/release-site-nudge.mjs` fires
-   on the release commit (any commit that changes the root `package.json` version). The plugins
-   monorepo carries the same hook, and there step 3 also means updating `src/data/plugins.ts`.
+Maintainers only. `SETUP.md` 3.7 is the release dance: move the `## Unreleased` lines in
+`CHANGELOG.md` under the new version, bump the root `package.json` version, then
+`git commit -am "Release X.Y.Z" && git tag -m "Release X.Y.Z" X.Y.Z && git push origin main X.Y.Z`.
+`deploy.yml` refuses a tag that does not equal the root `package.json` version.
 
 ### <a name="architecture-guidelines"></a> Architecture guidelines
 
@@ -199,7 +183,7 @@ adds one step, because rocketflare.dev keeps its own copy of the release list.
 ## Getting help
 
 - 📖 `docs/CONCEPTS.md`, `SETUP.md`, `docs/DEPLOY.md`
-- 🐛 [Existing issues](https://github.com/rocketflare-dev/rocketflare/issues)
-- 💬 [Discussions](https://github.com/rocketflare-dev/rocketflare/discussions)
+- 🐛 [Existing issues](https://github.com/rocketflare-dev/rocketflare-launch/issues)
+- 💬 [Discussions](https://github.com/rocketflare-dev/rocketflare-launch/discussions)
 
-Thank you for contributing to Rocketflare! 🚀
+Thank you for contributing to Launch! 🚀

@@ -13,10 +13,9 @@
  * of every plugin `ui.ts` for exactly that.
  */
 import { analyticsUi } from './analytics/ui'
-import { exampleFeatureUi } from './example-feature/ui'
 import type { AnyUiPlugin } from './types'
 
-export const UI_PLUGINS = [analyticsUi, exampleFeatureUi] as const satisfies readonly AnyUiPlugin[]
+export const UI_PLUGINS = [analyticsUi] as const satisfies readonly AnyUiPlugin[]
 
 /** The barrel as a plain list. Iterate this; `UI_PLUGINS` is for type derivation. */
 export const uiPlugins: readonly AnyUiPlugin[] = UI_PLUGINS

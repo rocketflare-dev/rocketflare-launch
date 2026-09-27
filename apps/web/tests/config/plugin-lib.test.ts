@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -83,13 +84,11 @@ const read = (rel: string) => readFileSync(path.join(REPO_ROOT, rel), 'utf8')
 
 /**
  * Everything below drives the script against THIS checkout, so its subject is whatever plugin is
- * installed here rather than the kit's reference one by name. An app is expected to delete
- * `example-feature` — that is what it is for — and these tests travel into every app with the rest
- * of the kit's suite, so naming it would turn "I uninstalled the example" into a red gate.
+ * installed here rather than one plugin by name (Launch has `analytics` installed).
  */
 const installedHere = pluginSurfaces(readManifest().manifest)
 const subject = installedHere[0]?.id ?? null
-const kitRepo = readManifest().manifest?.kit.repo ?? ''
+const kitRepo = ''
 const vendoredHere = installedHere.find(s => isVendored(s.source, kitRepo))?.id ?? null
 
 describe('plugin ids', () => {
@@ -902,7 +901,7 @@ describe('scripts/plugin.mjs, end to end', () => {
   it.skipIf(!subject)(
     'exports a plugin, adds it back under a fresh id, and writes nothing without --apply',
     () => {
-      const dir = mkdtempSync(path.join(tmpdir(), 'rf-plugin-'))
+      const dir = mkdtempSync(path.join(tmpdir(), 'launch-plugin-'))
       try {
         expect(plugin(['export', subject as string, dir]).status).toBe(0)
         expect(existsSync(path.join(dir, PLUGIN_MANIFEST_FILE))).toBe(true)
@@ -915,7 +914,6 @@ describe('scripts/plugin.mjs, end to end', () => {
           'apps/web/src/plugins',
           'packages/shared/src/plugins',
           'apps/cli/src/plugins',
-          'skills',
         ]) {
           const from = path.join(dir, base, subject as string)
           if (existsSync(from)) {
@@ -923,13 +921,30 @@ describe('scripts/plugin.mjs, end to end', () => {
             renameSync(from, path.join(dir, base, 'smoke-plugin'))
           }
         }
-        // A skill's frontmatter names its directory, so a rebadge renames it too.
-        const skillFile = path.join(dir, 'skills/smoke-plugin/SKILL.md')
-        if (existsSync(skillFile)) {
-          writeFileSync(
-            skillFile,
-            readFileSync(skillFile, 'utf8').replace(/^name: .*$/m, 'name: smoke-plugin')
-          )
+        // Every skill is namespaced by the id (`<id>` or `<id>-<suffix>`), and its frontmatter
+        // names its directory, so a rebadge renames both.
+        const skillsDir = path.join(dir, 'skills')
+        if (existsSync(skillsDir)) {
+          for (const name of readdirSync(skillsDir)) {
+            if (!name.startsWith(subject as string)) continue
+            const renamed = name.replace(subject as string, 'smoke-plugin')
+            if (renamed !== name)
+              renameSync(path.join(skillsDir, name), path.join(skillsDir, renamed))
+            const skillFile = path.join(skillsDir, renamed, 'SKILL.md')
+            if (existsSync(skillFile)) {
+              writeFileSync(
+                skillFile,
+                readFileSync(skillFile, 'utf8').replace(/^name: .*$/m, `name: ${renamed}`)
+              )
+            }
+          }
+        }
+        // `export` writes the release notes where the HOST keeps them (`docs/plugins/<id>/`); a
+        // plugin repository keeps them in `docs/upgrades/`, which is where `add` reads them from.
+        const hostNotes = path.join(dir, 'docs/plugins', subject as string, 'upgrades')
+        if (existsSync(hostNotes)) {
+          renameSync(hostNotes, path.join(dir, 'docs/upgrades'))
+          rmSync(path.join(dir, 'docs/plugins'), { recursive: true, force: true })
         }
         const manifestFile = path.join(dir, PLUGIN_MANIFEST_FILE)
         const rebadged = JSON.parse(
@@ -943,7 +958,7 @@ describe('scripts/plugin.mjs, end to end', () => {
         const sidecarBefore = existsSync(path.join(REPO_ROOT, SIDECAR_FILE))
 
         const plan = plugin(['add', dir, '--local'])
-        expect(plan.status).toBe(0)
+        expect(plan.status, plan.out).toBe(0)
         expect(plan.out).toContain('Plugin      smoke-plugin@')
         expect(plan.out).toContain('Barrel lines')
         expect(plan.out).toContain('Nothing written.')
@@ -959,7 +974,7 @@ describe('scripts/plugin.mjs, end to end', () => {
   )
 
   it.skipIf(!subject)('refuses to add a plugin that is already installed, by id', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'rf-plugin-'))
+    const dir = mkdtempSync(path.join(tmpdir(), 'launch-plugin-'))
     try {
       expect(plugin(['export', subject as string, dir]).status).toBe(0)
       const again = plugin(['add', dir, '--local'])
@@ -971,7 +986,7 @@ describe('scripts/plugin.mjs, end to end', () => {
   })
 
   it('refuses a source with no plugin manifest', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'rf-plugin-'))
+    const dir = mkdtempSync(path.join(tmpdir(), 'launch-plugin-'))
     try {
       const r = plugin(['add', dir])
       expect(r.status).toBe(5)
@@ -1129,7 +1144,7 @@ describe('the plan as JSON', () => {
  * finding carries the edit.
  */
 describe('the audit', () => {
-  const anchorFile = 'apps/web/src/plugins/example-feature/plugin.json'
+  const anchorFile = 'apps/web/src/plugins/analytics/plugin.json'
 
   it('renders a finding as file, place, problem and the exact edit', () => {
     expect(
@@ -1155,7 +1170,7 @@ describe('the audit', () => {
     expect(jsonKeyLine(read(anchorFile), 'nope')).toBeNull()
   })
 
-  it("passes the kit's own reference manifest", () => {
+  it("passes the installed analytics plugin's manifest", () => {
     expect(pluginManifestProblems(JSON.parse(read(anchorFile)))).toEqual([])
   })
 
@@ -1233,8 +1248,8 @@ describe('the audit', () => {
    * cannot*. Neither `plugins.test.ts` nor `helpers/plugins.ts` mentioned isolation at all, so the
    * one area the kit treats as non-negotiable had no enforcement whatsoever.
    */
-  it("accepts the reference plugin's isolation test and refuses a stub", () => {
-    const real = read('apps/web/src/plugins/example-feature/tests/api/example-feature.test.ts')
+  it("accepts the analytics plugin's isolation test and refuses a stub", () => {
+    const real = read('apps/web/src/plugins/analytics/tests/api/dashboard-visibility.test.ts')
     expect(isolationEvidence(real).ok).toBe(true)
     // Two signals, because either alone is noise. Naming the property proves nothing on its own…
     expect(isolationEvidence("describe('tenant isolation', () => {})").ok).toBe(false)

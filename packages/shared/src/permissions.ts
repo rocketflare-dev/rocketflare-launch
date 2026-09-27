@@ -88,9 +88,8 @@ type PluginFeatureKey = Extract<
 /**
  * Core keys plus every installed plugin's (D31).
  *
- * **It may legitimately be EMPTY**, which is what happens in a kit with no plugins installed — the
- * kit's own demonstration flag moved into `example-feature` (A3), and a bare kit ships no feature
- * of its own. So `FeatureName` can be `never`, `Record<FeatureName, …>` can be `{}`, and
+ * **It may legitimately be EMPTY**, which is Launch today: no core flag, and no installed plugin
+ * declares one. So `FeatureName` can be `never`, `Record<FeatureName, …>` can be `{}`, and
  * `featureNameSchema` cannot be a `z.enum` (which needs a non-empty tuple). `features.ts` spells it
  * as a refined `z.string()` for exactly that reason.
  */

@@ -9,7 +9,7 @@
  *
  * **This file names the agent runtime, which is a deletable surface.** `AnyAgentDefinition`,
  * `AgentToolContext` and `AgentForm` all live inside `feature-agents`, so this file is listed in
- * that surface's `registries[]` in `.rocketflare.json`: an adopter who deletes the agent runtime
+ * that surface's registries in the kit's manifest: an app that deletes the agent runtime
  * deletes the four fields below too, exactly as they already delete lines from `worker.ts`,
  * `api/index.ts` and `App.tsx`. The alternative — restating a structural agent type here so the
  * seam survives on its own — was rejected because it buys nothing: the real types are what makes

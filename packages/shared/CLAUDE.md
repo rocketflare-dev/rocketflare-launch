@@ -18,8 +18,8 @@ response with the same schema. `pnpm test:config` covers the pure parts.
 `permissions.ts` actions/subjects/`AppAbility`/packed rules (matrix lives in `apps/web/src/permissions/`) ·
 `api-keys.ts` · `tenant-settings.ts` · `user-settings.ts` · `notifications.ts` · `admin.ts` ·
 `activity.ts` · `errors.ts` envelope + codes · `pagination.ts` ·
-`features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, now EMPTY — the kit's demo
-flag is the `example-feature` PLUGIN — merged with each plugin's `SharedPlugin.features` into
+`features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
+flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is
 likewise empty; so `featureNameSchema` is a refined `z.string()` over the runtime list rather than a
 `z.enum`, which needs a non-empty tuple), `featureBucket` (**a wire format — changing it reshuffles every live

@@ -1,149 +1,8 @@
-# ADAPTING — you just copied the kit
+# ADAPTING — building Launch on the seeded kit
 
-Read this once, do the checklist, then run `SETUP.md` Part 1. Everything below is a rename or a
-delete; no design decisions are needed to get to a running app.
-
-## 0. Copy — decouple from the kit
-
-The kit is a template, not an upstream. Clone it, delete its history, and start your own:
-
-```bash
-git clone https://github.com/rocketflare-dev/rocketflare.git myapp && cd myapp
-rm -rf .git && git init && git add -A && git commit -m "Start from Launch"
-git remote add origin git@github.com:<you>/myapp.git
-```
-
-Or the one-liner — `curl -fsSL https://clewro.com/install.sh | bash -s -- myapp` (read
-`scripts/install.sh` first: it clones, detaches exactly as above with the kit commit recorded in the
-first message, then execs `scripts/bootstrap.sh`). Either way, `bash scripts/bootstrap.sh` (or
-`/rf-setup`) is the first run — `SETUP.md` Part 1 as one command.
-
-Why: you are about to rename packages, delete examples and rewrite docs; a fork or a shared history
-only invites merge conflicts with a kit that will keep evolving independently.
-
-**Detached is not frozen.** `.rocketflare.json` at the root records which kit version and commit this
-copy came from, and `/rf-adapt` writes your names into it. Later, `/rf-upgrade` (or `pnpm
-kit:upgrade`) fetches the kit into a throwaway mirror, translates its diff into your names, drops
-everything belonging to a part you deleted, and hands you the rest to apply — guided by the release
-notes in `docs/upgrades/`. So delete freely in §2 below: an upgrade never recreates what you removed.
-
-Keep `.rocketflare.json`. Deleting it is the one thing that costs you the upgrade path.
-
-## 1. Rename (exact find/replace targets)
-
-Pick an app slug (`myapp`, lowercase, digits, hyphens; starts with a letter), a package scope
-(`@myapp`) and a display name.
-
-**`/rf-adapt <slug> ["Name"] [--domain <apex>] [--colour <#hex>]`** in Claude Code, or by hand
-`node scripts/rename.mjs --dry-run <slug> ["Display Name"] [--domain …] [--colour …]` then the same
-without `--dry-run`, performs the mechanical rows below in one pass and reports the careful ones —
-`.claude/skills/rf-adapt/checklist.md` walks those six, lettered (a)–(f) as in the **Script** column.
-The script walks every text file git knows about (tracked and untracked, `.gitignore` honoured;
-`pnpm-lock.yaml`, `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, the two svgs,
-the tool itself, its test and the adapt skill are skipped; `github.com/rocketflare-dev/rocketflare`
-is preserved as the kit's origin) plus `apps/web/.dev.vars` when it exists (git-ignored, but its
-`DATABASE_URL` must follow the compose file), applies nine ordered token classes — `@launch/`
-→ `@<slug>/`, `LAUNCH` → `<UPPER>`, `clewro.com|.local` → `<domain>` (default
-`<slug>.example.com`), `.launch` → `.<slug>`, the Postgres owner `launch` → `<snake>`,
-`launch_` → `<snake>_`, `launch-` → `<slug>-`, `Launch` → the display name, bare
-`launch` → `<slug>` — refuses a dirty tree without `--force`, then runs `pnpm install` and
-`biome check --write` (`--skip-install` to defer). Exit `0` ok · `1` error · `2` usage. Delete
-`apps/web/.provision.json` (the git-ignored provisioning cache) when re-adapting a copy that was
-already provisioned — the rename never rewrites it (`.dev.vars` is the only git-ignored file it
-opts in), so its cached app name and ids would be the old ones. The table stays the reference — the first block
-renames the packages themselves; by hand, do it first and run `pnpm install` before anything else,
-or nothing resolves.
-
-| Token | Where | Replace with | Script |
-|---|---|---|---|
-| `@launch/web`, `@launch/cli`, `@launch/shared` | the `name` field of `apps/web/package.json`, `apps/cli/package.json`, `packages/shared/package.json`; every `"@launch/shared": "workspace:*"` dependency; **every import specifier** `@launch/shared/<module>` in `apps/web/src`, `apps/web/tests`, `apps/cli/src` (`grep -rn "@launch/" apps packages --include=*.ts --include=*.tsx --include=*.json -l`); the root `package.json` scripts (`--filter @launch/web`, `--filter @launch/cli`); `.github/workflows/deploy.yml` (`--filter @launch/web`); `CLAUDE.md`, `docs/*.md`, `.claude/rules/*.md` | `@myapp/web`, `@myapp/cli`, `@myapp/shared` — then `pnpm install` (relinks the workspace) | automatic (`scope`) |
-| `launch` (root package name) | root `package.json` `name` | `myapp` | automatic (`bare`) |
-| `launch` (API key prefix — keys are `launch_<43 chars>`) | `API_KEY_PREFIX` in `apps/web/src/api/utils/core/hash.ts`; SET `API_KEY_PREFIX_LENGTH` (the stored handle) to `len('<prefix>_') + 8` and `REDACTED_KEY_CHARS` in `apps/cli/src/config.ts` (the CLI's masked form) to `len('<prefix>_') + 4` — shorter and every key in a list shows zero characters of its token; the CLI tests assume exactly prefix + 4; the `launch_…` literals in `apps/web/tests/{api/keys,api/auth-cli,ui/api-keys}.test.*` and `apps/cli/tests/*` | `myapp` — existing keys keep working (only the display handle changes) | automatic — both handles SET to prefix + 8 / prefix + 4, reported as (a) |
-| `launch` (CLI bin) | `apps/cli/package.json` `bin` key; `program.name('launch')` in `apps/cli/src/cli.ts`; the `pnpm cli` examples in `SETUP.md`, `README.md`, `docs/CONCEPTS.md` | `myapp` — users type `myapp login` | automatic (`bare`) |
-| `~/.launch` (CLI config dir) | `apps/cli/src/config.ts` (`LAUNCH_CONFIG_DIR` default); `.claude/rules/cli.md`; `SETUP.md` 1.7 | `~/.myapp` | automatic (`cfgdir`) |
-| `LAUNCH_` (CLI env prefix: `LAUNCH_API_KEY`, `LAUNCH_URL`, `LAUNCH_CONFIG_DIR`, `LAUNCH_DEBUG`) | `apps/cli/src/config.ts`; `apps/cli/tests`; `docs/CONCEPTS.md` → CLI; `.claude/rules/cli.md` | `MYAPP_` | automatic (`env`) |
-| `launch` | `apps/web/package.json` `cfld.name`; `apps/web/wrangler.toml` / `wrangler.staging.toml` `name` (staging keeps `-staging`); `apps/web/scripts/cf-provision.sh`; `.claude/rules/cloudflare.md` examples | `myapp` | automatic (`bare` / `kebab`) |
-| `launch-agent-run` (Workflow — name is account-scoped) | `name = ` in `[[workflows]]` of both tomls (staging `-staging`); no code references — the binding is always `AGENT_RUN_WORKFLOW`, the class `AgentRunWorkflow`; `docs/DEPLOY.md`, `.claude/rules/cloudflare.md`, `apps/web/src/api/workflows/CLAUDE.md` examples | `myapp-agent-run` — nothing to create; `wrangler deploy` registers it | automatic (`kebab`); the `-staging` suffix reported as (d) |
-| `launch-jobs` (queue — name is account-scoped) | `queue = ` in `[[queues.producers]]` AND `[[queues.consumers]]` of both tomls (staging `-staging`; the commented `dead_letter_queue` too); **`JOBS_QUEUE_NAME_PREFIX` in `apps/web/src/api/services/jobs.ts`** — the consumer matches `batch.queue` by this prefix, so the toml and the constant must agree or every batch is `ackAll()`ed as "unknown queue"; the literals in `apps/web/tests/api/{queue-dispatch,jobs-producer,jobs-consumer}.test.ts` | `myapp-jobs` — then `wrangler queues create myapp-jobs[-staging]` per environment | automatic (`kebab`, incl. `JOBS_QUEUE_NAME_PREFIX`); reported as (d) |
-| `launch-files` (R2 bucket — account-scoped) | `bucket_name` in `[[r2_buckets]]` of both tomls (staging `-staging`); no code references — the binding is always `FILES` | `myapp-files` — then `wrangler r2 bucket create myapp-files[-staging]` | automatic (`kebab`); reported as (d) |
-| `launch_dev`, `launch_test`, `launch` / `launch_pass`, `test` / `test` | `apps/web/docker-compose.dev.yml`, `apps/web/docker-compose.test.yml`, `apps/web/.dev.vars.example`, `apps/web/.env.test`, `apps/web/drizzle.config.ts`, `localConnectionString` in both tomls, `.github/workflows/ci.yml` (Postgres service) | `myapp_dev`, `myapp_test`, `myapp` / a local-only password | automatic (`dbuser` + `snake`: the owner stays the snake form — `db-roles.ts` refuses a hyphenated identifier; `.dev.vars` `DATABASE_URL` rewritten when the file exists); reported as (c) |
-| `launch_app` | `apps/web/src/db/schema/rls.ts` `APP_ROLE`, `apps/web/.env.test` `APP_DATABASE_URL`, `docs/RLS.md` | `myapp_app` (policies name the role; do this before the first migration) | automatic, including `apps/web/migrations/**` (SQL + meta snapshots) — WARNED as (b): a database migrated under the old name keeps the old role; drop it and migrate again |
-| `Launch` / `Launch Test` | `[vars] APP_NAME` in both tomls, `apps/web/.env.test`, `apps/web/src/ui/index.html` `<title>`, `README.md` | display name | automatic (`display`) |
-| `noreply@clewro.com`, `app.clewro.com`, `staging.clewro.com` | `[vars] EMAIL_FROM`, `APP_URL`, commented `routes` in both tomls | your domains | automatic (`domain`, from `--domain`) |
-| `launch-light` / `launch-dark` | `apps/web/src/ui/index.css` theme blocks, `index.html` pre-hydration script, `ThemeToggle.tsx`, `apps/web/tests/ui/theme-toggle.test.tsx` | `myapp-light` / `myapp-dark` (or keep) | automatic (`kebab`) |
-| `launch-dev-postgres` / `launch-test-postgres` | `container_name` in `apps/web/docker-compose.dev.yml` / `docker-compose.test.yml` | `myapp-dev-postgres` / `myapp-test-postgres` — pinned names mean a SECOND checkout of the same kit on one machine shares ONE database (Compose derives the project name `web` from the directory, so `pnpm dev:db:up` attaches to the running container instead of failing; `pnpm bootstrap` detects it and stops unless `--share-db`) until renamed | automatic (`bare`; the `-dev-data` volume too); reported as (c) with the `docker rm` / `volume rm` for the OLD names |
-| `admin@clewro.com` | `apps/web/scripts/seed.ts` (the seeded global admin), the dev quick-login list in `apps/web/src/ui/pages/Login.tsx`, `SETUP.md` | `admin@myapp.local` | automatic (`domain`) |
-| brand colour variables | the header block of `apps/web/src/ui/index.css` (the only place hex values live) | your palette — then `pnpm web test:ui` (contrast gate) | `--colour` rewrites the LIGHT theme's primary hex only (`--color-primary`, `--surface-active`, `--focus-ring`, `--dc-primary-rgb`, `<meta name="theme-color">`); the dark primary, `-content` colours and `--tone-primary-*` tints reported as (e) |
-| `LogoMark` | `apps/web/src/ui/components/shared/LogoMark.tsx`, `apps/web/src/ui/public/logo.svg` + favicons | your mark | not touched — reported as (f) |
-| `EMBEDDING_DIM` (1024) | `packages/shared/src/ai/config.ts` (imported by `apps/web/src/db/schema/chunks.ts` and the `openai*` embeddings adapter) — only if you will NOT use the default `@cf/baai/bge-m3`; see §3 "Changing the embedding model or dimension" | before the first migration, never after | not touched — the decision is flagged in (b) |
-
-Then, from the root: `pnpm install && pnpm types && pnpm lint && pnpm typecheck && pnpm test`. The
-parity test will tell you if the two tomls drifted during the rename; `typecheck` will tell you if
-an `@launch/shared` import was missed. Keep `packages/shared` **private** (`"private": true`, no
-`publishConfig`) whatever you call it.
-
-## 2. Delete once you have real ones
-
-Each bullet below is a **surface** in `.rocketflare.json`, with an anchor file. Delete the anchor and
-`pnpm kit:upgrade` stops offering you that surface's changes forever — no bookkeeping, nothing to
-tell it. That is what makes deleting safe.
-
-- The example agents `apps/web/src/api/services/agents/examples/{summarize-text,research-topic}.ts` —
-  `summarize-text` is the one-forced-call shape, `research-topic` the tool-loop-over-the-knowledge-base
-  shape; delete whichever you are not copying (keep
-  `services/agents/{registry,runs,runtime}.ts` and `api/workflows/agent-run.ts` — that is the runtime,
-  not the example). Removing it touches: `CORE_AGENT_KEYS` + `summarizeText*Schema` +
-  `SUMMARIZE_TEXT_MAX_CHARS` in `packages/shared/src/ai/agents.ts`, the `summarize-text` entry in
-  `CORE_PROMPT_REGISTRY` (`apps/web/src/api/services/prompts.ts`), the `CORE_AGENTS` entry in
-  `services/agents/registry.ts`, `apps/web/tests/api/{agent-runs,agent-run-workflow,agent-research}.test.ts` (rewrite
-  them around your first agent — the runtime needs at least one), and the agent's TWO UI entries —
-  `apps/web/src/ui/pages/agents/forms/<key>.tsx` and `outputs/<key>.tsx`, with their registry lines
-  (see `apps/web/src/ui/CLAUDE.md`). `RunPage` itself is the runtime's, not the example's. `AGENT_KEYS` must not be empty (it is a `z.enum`, and `CORE_AGENT_KEYS` leads it):
-  `agentKeySchema` is a `z.enum`. Rows in `agent_runs` / `agent_run_events` / `prompt_overrides` /
-  `agent_models` for the old key are inert data — delete them or leave them
-- **Analytics** — it is a PLUGIN (D31, `docs/CONCEPTS.md` §8), so removing it is one command
-  rather than a list of files:
-
-  ```bash
-  pnpm plugin remove analytics --apply    # three directories, five barrel lines, the surface
-  pnpm db:generate --name plugin-analytics-remove && pnpm db:migrate   # read the DROP TABLEs first
-  pnpm --dir apps/web remove d3 drizzle-cube react-grid-layout react-is recharts
-  ```
-
-  Then the three things a plugin never wrote for you, which the removal plan prints: the
-  `15 * * * *` cron out of `[triggers]` in BOTH tomls, `/cubejs-api` and `/mcp` out of
-  `[assets] run_worker_first` in both, and the two proxy lines plus the `@nivo/heatmap` alias and
-  the `recharts` dedupe entry out of `apps/web/vite.config.ts`. That takes the largest single
-  contributor out of the Worker bundle and drizzle-cube out of the UI entirely (`docs/DEPLOY.md`,
-  "Bundle size", on why no figure is quoted). To keep analytics but trim ITS examples — the
-  `ActivityEvents` / `TenantActivityDaily` cubes, the fact table, the `tenant-overview` template —
-  read the plugin's own `CLAUDE.md`; they are its files now, not yours, and `pnpm plugin upgrade`
-  will not recreate what you delete
-- The reference PLUGIN `example-feature` (D31) — a feature flag, a `example_notes` table, a CRUD
-  mount at `/api/example-feature`, `example-feature.ping`, an agent tool, two lifecycle hooks, a
-  lazy page with a nav item and two CLI commands, all in three directories. It exists to be read
-  first and deleted second — and deleting it is one command:
-
-  ```bash
-  pnpm plugin remove example-feature            # read the plan: what is deleted, which barrel
-  pnpm plugin remove example-feature --apply    # lines go, which tables db:generate will drop
-  pnpm db:generate --name plugin-example-feature-remove   # → DROP TABLE "example_notes"
-  pnpm db:migrate
-  ```
-
-  It removes the **three directories** (`apps/web/src/plugins/example-feature/`,
-  `packages/shared/src/plugins/example-feature/`, `apps/cli/src/plugins/example-feature/`), the
-  **barrel lines** that name them — five of the six barrels here
-  (`apps/web/src/plugins/{server,ui,schema}.ts`, `packages/shared/src/plugins/index.ts`,
-  `apps/cli/src/plugins/index.ts` — import and list entry both; the sixth,
-  `apps/web/src/plugins/worker-exports.ts`, carries a line only for a plugin that ships a Durable
-  Object or Workflow class, and `example-feature` ships neither) — and its
-  **surface in `.rocketflare.json`**. Nothing else in the kit names it, which is the
-  point of the seam. Add `--archive` to copy `example_notes` into schema `archive` first if you
-  seeded anything into it you want to keep
-- CLI commands you do not want (`apps/cli/src/commands/*` — `members list`, `keys list`,
-  `activity list` are examples of the pattern; keep `login`, `logout`, `whoami`, `status`, `config`)
-- Lines in `README.md` "Features" that describe the kit rather than your app
+Launch was seeded from Rocketflare 0.15.0 and then cut loose from it. The rename (`@launch/*`,
+`launch_app`, `clewro.com`) and the removal of the kit's example surfaces are done, so §0–§2 of the
+kit's version of this file no longer apply. What follows is where new work goes.
 
 ## 3. Your first three features — where each goes
 
@@ -159,8 +18,8 @@ into core, it is diffused across twenty files nobody can separate again.
 Default to the plugin. **Core is still right when the change is to the kit's OWN tables
 (`tenants`, `users`, `tenant_users`, `documents`…), to auth or tenancy, or to a cross-cutting
 middleware** — the things a plugin composes ON TOP of and must not redefine. Everything else — a
-resource with its own table, its own screens, its own jobs — is a plugin, and
-`apps/web/src/plugins/example-feature/` is the worked example of every slot below.
+resource with its own table, its own screens, its own jobs — is a plugin, and the installed
+`apps/web/src/plugins/analytics/` shows most of the slots below.
 
 The layer walk is the same either way; what changes is where the line goes. The contract comes
 first and lives in the shared package, so the API, the UI and the CLI parse one schema.
@@ -216,10 +75,10 @@ Written as a plugin, the same six steps land in the four published files instead
 entry (1, and every key the plugin owns), the server entry (2, 3), the UI entry (4, 5) and the CLI
 entry (6) — and the host merges each contribution into the registry it could not otherwise be
 edited into. Everything the plugin keys carries its id: tables prefixed from it
-(`example-feature` → `example_*`), job types `<id>.verb`,
+(`orders` → `orders_*`), job types `<id>.verb`,
 the API prefix `/api/<id>`, query-key roots `<id>:…`, the CLI command `<id>`, AG-UI CUSTOM events
 `<id>.` (**never `kit.`**). Read `apps/web/src/plugins/CLAUDE.md` for the seam and
-`apps/web/src/plugins/example-feature/CLAUDE.md` for the example, and remember the two things a
+`apps/web/src/plugins/analytics/CLAUDE.md` for the installed example, and remember the two things a
 plugin never does: **it ships no migration** (the HOST runs `pnpm db:generate --name
 plugin-<id>-<version>` once its schema barrel line is in place) and **it edits no toml** (a binding,
 cron, route prefix or `[vars]` key it declares in `plugin.json` is written into BOTH files by
@@ -351,7 +210,7 @@ expectations. Do it before the first production migration if you can.
 (`packages/shared/src/jobs.ts` — both unions, `JobType` and `JOB_TYPES` are derived from that list)
 → a handler
 `apps/web/src/api/queues/handlers/<name>.ts` (copy `document-index.ts` for one that re-reads a row
-by id, or `src/plugins/example-feature/jobs/ping.ts` for the shortest one there is; signature
+by id, or `src/plugins/analytics/jobs/refresh-facts.ts` for a plugin's; signature
 `(job: JobOf<'x'>,
 ctx: { env, config, logger, db })`, throw to retry, return to ack, await everything) → one entry in
 `coreHandlers` in `apps/web/src/api/queues/jobs.ts` (its mapped type is the completeness check;
@@ -378,7 +237,9 @@ limits are an app change (`MAX_UPLOAD_BYTES` is one constant today).
   **Dashboard theming**: drizzle-cube reads `--dc-*` CSS variables, mapped to the kit's tokens in
   the plugin's `ui/drizzle-cube-theme.css` — which is imported beside the library's own stylesheet
   so it ships only in the lazy analytics chunk. Change the kit's tokens, not the `--dc-*` lines.
-  **Removing analytics entirely** is `pnpm plugin remove analytics --apply` (§2 above).
+  **Removing analytics entirely** is `pnpm plugin remove analytics --apply`, then
+  `pnpm db:generate --name plugin-analytics-remove && pnpm db:migrate` (read the DROP TABLEs first);
+  the plan prints the cron, `run_worker_first` and `vite.config.ts` lines to take out by hand.
 - **Your own streamed events (AG-UI)**: chat and agent runs speak AG-UI
   (`docs/CONCEPTS.md` §9). A new semantic is either an AG-UI event type added to
   `kitAguiEventSchema` or — far more often — a CUSTOM event. **Put yours in your OWN namespace,
@@ -408,7 +269,9 @@ Drift is the one failure mode this kit's source apps suffered most; the rule exi
 
 Many apps — internal tools especially — start as one organisation. Set `TENANCY_MODE = "single"` in both tomls (and
 `apps/web/.env.test` if you want the suite to run in that mode). Nothing in the schema changes — every table
-keeps `tenant_id` — so flipping back to `multi` later needs no migration. Effects:
+keeps `tenant_id` — so flipping back to `multi` later needs no migration. **Launch is set up this
+way**: both tomls and `.dev.vars.example` say `single`; `.env.test` stays `multi`, because 19 of the
+kit's tests exercise the multi-tenant paths. Effects:
 
 - The one tenant is created at bootstrap: `pnpm seed`, or the first verified login of an address in
   `BOOTSTRAP_ADMIN_EMAILS`, who becomes `owner`

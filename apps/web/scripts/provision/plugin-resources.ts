@@ -492,8 +492,8 @@ const IS_PLACEHOLDER = /^<[A-Z0-9_]+>$/
  * Crons and prefixes are gated because `pnpm plugin add` deliberately does not touch a toml (D31,
  * decision 12) — `pnpm provision cloudflare <env>` writes them. So a checkout that has installed a
  * plugin and not yet provisioned is a legitimate, documented state, and the ordinary gate must not
- * fail it. The kit's own CI is exactly that state: it installs every `defaultPlugins` entry and has
- * no Cloudflare credentials to provision with. `deploy.yml` runs this same test with
+ * fail it. Launch's own CI is exactly that state: its plugins are committed and it has no
+ * Cloudflare credentials to provision with. `deploy.yml` runs this same test with
  * `REQUIRE_PROVISIONED=1`, so an app that installed a plugin and never provisioned is still stopped
  * before it can deploy, which is the moment the missing cron or prefix would actually bite.
  */

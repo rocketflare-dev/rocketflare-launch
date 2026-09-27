@@ -292,9 +292,8 @@ the whole rule, and it is why neither half duplicates the other.
   three now, and each requires a real DECLARATION (`declaresProperty`) rather than a mention
 - **A plugin's api test MUST carry a tenant-isolation case.** Its tables are tenant-scoped like any
   other and the kit's own suites cannot see them:
-  `src/plugins/example-feature/tests/api/example-feature.test.ts` is the template — tenant B can
-  neither list, read nor delete tenant A's notes — beside the 404 feature gate, CRUD, ownership,
-  the hooks, the enqueue and the tool
+  `src/plugins/analytics/tests/api/dashboard-visibility.test.ts` is the installed example (with
+  `cube-isolation.test.ts`) — another tenant can never read its rows
 - **The host's structural suite is `tests/config/plugins.test.ts`**: ids are namespaces and never
   contain the kit's name, query-key roots carry `<id>:`, nothing reaches INTO a plugin except
   through its four published entries, and a plugin's `ui.ts` imports only from the allowlist and

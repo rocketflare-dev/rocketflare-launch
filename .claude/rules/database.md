@@ -164,7 +164,7 @@ predicate**, not SQL injection — the app role can `set_config` itself.
   toml); under `neon` they use the WebSocket pool for everything (`poolOnly`) — one held connection
   instead of an HTTP round trip per query. `db:migrate:ci` is `postgres` unless CI sets the var
 - **The local Neon proxy** (compose profile `neon`, `pnpm dev:db:up --neon`, `pnpm web test:db:up:neon`)
-  is OUR image `ghcr.io/launch-dev/local-neon-proxy:rf-<n>` (`apps/web/docker/Dockerfile.neon-proxy`):
+  is OUR image `ghcr.io/rocketflare-dev/local-neon-proxy:rf-<n>` (`apps/web/docker/Dockerfile.neon-proxy`):
   our byte-identical mirror of the community `ghcr.io/timowilhelm/local-neon-http-proxy` (Neon's
   open-source proxy + Caddy, CC0) with `apps/web/docker/neon-proxy-start.sh` BAKED IN as the
   entrypoint (one SCRAM round for the local role, no endpoint rate limit, pooled HTTP: ~8 ms a
@@ -196,7 +196,7 @@ Tests migrate a throwaway database on 5433 from `apps/web/tests/setup.ts` — ne
 An installed plugin owns tables exactly like the kit's, in `src/plugins/<id>/db/schema/*`:
 
 - **Every table starts with a prefix derived from the plugin's id** — its first hyphen-separated
-  segment (`example-feature` → `example_*`, `analytics` → `analytics_*`). A longer prefix is
+  segment (`orders` → `orders_*`, `analytics` → `analytics_*`). A longer prefix is
   welcome, not required. **The prefix is a convention a human picks, not a string the tooling
   derives**: nothing anywhere turns an id into a table name or a table name into an id
   (`plugin remove` reads `schema.tables` verbatim, `archiveSql` quotes them, `rls-coverage` reads

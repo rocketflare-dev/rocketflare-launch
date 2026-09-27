@@ -127,6 +127,13 @@
       "when": 1790536317965,
       "tag": "0017_plugin-analytics",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790537648928,
+      "tag": "0018_plugin-example-feature-remove",
+      "breakpoints": true
     }
   ]
 }

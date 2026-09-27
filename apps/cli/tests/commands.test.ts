@@ -1,13 +1,10 @@
 /** Command tests (D26): tables vs `--json`, not-logged-in / forbidden exits, env key, config commands. */
 import { afterEach, describe, expect, it } from 'vitest'
-import { runActivityList } from '../src/commands/activity'
 import { runConfigGet, runConfigPath, runConfigSet } from '../src/commands/config'
 import { runGroupMembers, runGroupsList } from '../src/commands/groups'
-import { runKeysList } from '../src/commands/keys'
-import { runMembersList } from '../src/commands/members'
 import { runStatus } from '../src/commands/status'
 import { runWhoami } from '../src/commands/whoami'
-import { EXIT_FORBIDDEN, EXIT_NOT_LOGGED_IN, exitCodeFor, NotLoggedInError } from '../src/errors'
+import { EXIT_FORBIDDEN, exitCodeFor } from '../src/errors'
 import {
   captureError,
   headersOf,
@@ -36,36 +33,6 @@ async function loggedInStore() {
     tenantName: 'Acme',
   })
   return t.store
-}
-
-const membersBody = {
-  items: [
-    {
-      userId: USER_ID,
-      email: 'alice@example.com',
-      name: 'Alice',
-      avatarUrl: null,
-      role: 'owner',
-      joinedAt: '2026-01-05T10:00:00.000Z',
-      lastLoginAt: '2026-08-30T09:30:00.000Z',
-      invitedByUserId: null,
-      groups: [],
-    },
-    {
-      userId: '99999999-8888-4777-8666-555555555556',
-      email: 'bob@example.com',
-      name: 'Bob',
-      avatarUrl: null,
-      role: 'member',
-      joinedAt: '2026-02-01T10:00:00.000Z',
-      lastLoginAt: null,
-      invitedByUserId: USER_ID,
-      groups: [
-        { id: '33333333-2222-4111-8000-000000000001', name: 'Finance', typeName: 'Department' },
-      ],
-    },
-  ],
-  pagination: { page: 1, pageSize: 25, total: 2, totalPages: 1 },
 }
 
 const GROUP_ID = '44444444-3333-4222-8111-000000000001'
@@ -124,120 +91,6 @@ describe('groups', () => {
     })
     const { ctx } = await testContext({ store, fetch: api.fetch })
     const error = await captureError(runGroupsList(ctx))
-    expect(exitCodeFor(error)).toBe(EXIT_FORBIDDEN)
-  })
-})
-
-describe('members list', () => {
-  it('renders a table and passes page/pageSize', async () => {
-    const store = await loggedInStore()
-    const api = mockFetch({ '/api/members': () => jsonResponse(membersBody) })
-    const { ctx, out } = await testContext({ store, fetch: api.fetch })
-    await runMembersList(ctx, { page: 2, pageSize: 10 })
-    const text = out.content()
-    expect(text).toMatch(/Email\s+Name\s+Role\s+Joined\s+Last login/)
-    expect(text).toContain('alice@example.com')
-    expect(text).toMatch(/bob@example.com\s+Bob\s+member\s+2026-02-01 \d\d:\d\d\s+-/)
-    expect(text).toContain('Page 1/1 · 2 total')
-    expect(api.calls[0]?.url.search).toBe('?page=2&pageSize=10')
-    expect(headersOf(api.calls).Authorization).toBe(`Bearer ${TEST_KEY}`)
-  })
-
-  it('--json prints the raw body only', async () => {
-    const store = await loggedInStore()
-    const api = mockFetch({ '/api/members': () => jsonResponse(membersBody) })
-    const { ctx, out } = await testContext({ store, fetch: api.fetch, json: true })
-    await runMembersList(ctx)
-    expect(JSON.parse(out.content())).toEqual(membersBody)
-    expect(out.chunks).toHaveLength(1)
-  })
-
-  it('throws NotLoggedInError (exit 2) without a key', async () => {
-    const t = await tempStore()
-    cleanups.push(t.cleanup)
-    const { ctx } = await testContext({ store: t.store })
-    const error = await captureError(runMembersList(ctx))
-    expect(error).toBeInstanceOf(NotLoggedInError)
-    expect(exitCodeFor(error)).toBe(EXIT_NOT_LOGGED_IN)
-    expect(error.hint).toContain('launch login')
-  })
-
-  it('uses LAUNCH_API_KEY from the environment when set', async () => {
-    const t = await tempStore({ LAUNCH_API_KEY: 'env-key', LAUNCH_URL: SERVER })
-    cleanups.push(t.cleanup)
-    const api = mockFetch({ '/api/members': () => jsonResponse(membersBody) })
-    const { ctx } = await testContext({ store: t.store, fetch: api.fetch })
-    await runMembersList(ctx)
-    expect(headersOf(api.calls).Authorization).toBe('Bearer env-key')
-  })
-})
-
-describe('keys list', () => {
-  const key = {
-    id: '11111111-2222-4333-8444-555555555556',
-    name: 'cli:laptop',
-    keyPrefix: 'launch_test',
-    scopes: ['read', 'write'],
-    createdByUserId: USER_ID,
-    lastUsedAt: null,
-    expiresAt: null,
-    revokedAt: null,
-    createdAt: '2026-08-01T00:00:00.000Z',
-  }
-  it('accepts a bare array', async () => {
-    const store = await loggedInStore()
-    const { ctx, out } = await testContext({
-      store,
-      fetch: mockFetch({ '/api/keys': () => jsonResponse([key]) }).fetch,
-    })
-    await runKeysList(ctx)
-    expect(out.content()).toMatch(/cli:laptop\s+launch_test\s+read,write/)
-    expect(out.content()).not.toContain('Page ')
-  })
-  it('accepts a paginated envelope', async () => {
-    const store = await loggedInStore()
-    const body = { items: [key], pagination: { page: 1, pageSize: 25, total: 1, totalPages: 1 } }
-    const { ctx, out } = await testContext({
-      store,
-      fetch: mockFetch({ '/api/keys': () => jsonResponse(body) }).fetch,
-    })
-    await runKeysList(ctx)
-    expect(out.content()).toContain('cli:laptop')
-    expect(out.content()).toContain('Page 1/1')
-  })
-})
-
-describe('activity list', () => {
-  it('renders events and maps 403 to exit 3', async () => {
-    const store = await loggedInStore()
-    const body = {
-      items: [
-        {
-          id: '11111111-2222-4333-8444-555555555557',
-          tenantId: TENANT_ID,
-          userId: USER_ID,
-          type: 'member.invited',
-          subjectType: 'invitation',
-          subjectId: 'inv-1',
-          metadata: { email: 'x@y.z' },
-          createdAt: '2026-08-31T12:00:00.000Z',
-          actor: { name: 'Alice', email: 'alice@example.com' },
-        },
-      ],
-      pagination: { page: 1, pageSize: 25, total: 1, totalPages: 1 },
-    }
-    const okApi = mockFetch({ '/api/activity': () => jsonResponse(body) })
-    const { ctx, out } = await testContext({ store, fetch: okApi.fetch })
-    await runActivityList(ctx, { type: 'member.invited' })
-    expect(out.content()).toMatch(/member\.invited\s+alice@example\.com\s+invitation:inv-1/)
-    expect(okApi.calls[0]?.url.search).toBe('?type=member.invited')
-
-    const forbidden = mockFetch({
-      '/api/activity': () =>
-        jsonResponse({ error: 'Forbidden', statusCode: 403, code: 'forbidden' }, 403),
-    })
-    const { ctx: ctx2 } = await testContext({ store, fetch: forbidden.fetch })
-    const error = await captureError(runActivityList(ctx2))
     expect(exitCodeFor(error)).toBe(EXIT_FORBIDDEN)
   })
 })

@@ -1,28 +1,15 @@
 /**
- * `scripts/rename.mjs`'s pure half (`scripts/lib/rename-lib.mjs`): name derivation, the ordered
- * replacement classes and the careful-row arithmetic. No database, no filesystem — the `config`
- * project. This file is on the tool's exclusion list precisely because it asserts on the kit's
- * own token strings.
+ * The kit-to-Launch translator (`scripts/lib/rename-lib.mjs`) that `pnpm plugin add|upgrade` runs
+ * every plugin file through: name derivation and the ordered replacement classes. No database, no
+ * filesystem — the `config` project. It asserts on the kit's own token strings on purpose.
  */
 import { describe, expect, it } from 'vitest'
 import {
-  API_KEY_HANDLE_MARGIN,
-  applyColour,
   applyReplacements,
   CLASS_IDS,
   deriveNames,
-  EXCLUDED_DIRS,
-  EXCLUDED_PATHS,
-  hexToRgb,
   isBinary,
-  isExcluded,
   KIT,
-  parseArgs,
-  prefixGuard,
-  REDACTED_KEY_MARGIN,
-  readIntConstant,
-  rewriteIntConstant,
-  rewritePrefixComments,
   validateSlug,
 } from '../../../../scripts/lib/rename-lib.mjs'
 
@@ -172,6 +159,24 @@ describe('applyReplacements', () => {
     expect(preserved).toBe(4)
   })
 
+  it('keeps the upstream org, its repositories and its images under their real names', () => {
+    const names = deriveNames('launch', 'Launch', { domain: 'clewro.com' })
+    const input = [
+      'image: ghcr.io/rocketflare-dev/local-neon-proxy@sha256:abc',
+      'https://github.com/rocketflare-dev/rocketflare-plugins.git',
+      'rocketflare-dev/rocketflare-plugin-analytics',
+      "import { x } from '@rocketflare/shared/errors'",
+    ].join('\n')
+    expect(applyReplacements(input, names).text).toBe(
+      [
+        'image: ghcr.io/rocketflare-dev/local-neon-proxy@sha256:abc',
+        'https://github.com/rocketflare-dev/rocketflare-plugins.git',
+        'rocketflare-dev/rocketflare-plugin-analytics',
+        "import { x } from '@launch/shared/errors'",
+      ].join('\n')
+    )
+  })
+
   it('applies the classes longest-first: the env class takes the bare ENV_PREFIX too', () => {
     const { text, counts } = applyReplacements("'ROCKETFLARE' ROCKETFLARE_X", deriveNames('a-b'))
     expect(text).toBe("'A_B' A_B_X")
@@ -207,126 +212,9 @@ describe('applyReplacements', () => {
   })
 })
 
-describe('exclusions', () => {
-  it('lists the files that must survive the pass', () => {
-    for (const p of [
-      'pnpm-lock.yaml',
-      'LICENSE',
-      'CODE_OF_CONDUCT.md',
-      'SECURITY.md',
-      'CONTRIBUTING.md',
-      'apps/web/src/ui/public/logo.svg',
-      'apps/web/src/ui/public/favicon.svg',
-      'scripts/rename.mjs',
-      'scripts/lib/rename-lib.mjs',
-      'scripts/lib/rename-lib.d.mts',
-      'apps/web/tests/config/rename-lib.test.ts',
-      '.claude/skills/rf-adapt/SKILL.md',
-      '.claude/skills/rf-adapt/checklist.md',
-      '.rocketflare.json',
-    ]) {
-      expect(EXCLUDED_PATHS, p).toContain(p)
-      expect(isExcluded(p), p).toBe(true)
-    }
-    for (const d of ['node_modules', 'dist', '.git', '.wrangler'])
-      expect(EXCLUDED_DIRS).toContain(d)
-    expect(isExcluded('apps/web/node_modules/x/package.json')).toBe(true)
-    expect(isExcluded('apps/web/dist/ui/index.html')).toBe(true)
-    expect(isExcluded('apps/web/migrations/0000_cute_violations.sql')).toBe(false)
-    expect(isExcluded('apps/web/migrations/meta/0000_snapshot.json')).toBe(false)
-    expect(isExcluded('apps/web/wrangler.staging.toml')).toBe(false)
-  })
-
+describe('binary detection', () => {
   it('spots a binary by a NUL byte in the head', () => {
     expect(isBinary(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00]))).toBe(true)
     expect(isBinary(new TextEncoder().encode('plain text\n'))).toBe(false)
-  })
-})
-
-describe('prefix guard (row a)', () => {
-  it('sets both handle lengths to prefix + margin for a longer prefix', () => {
-    const g = prefixGuard(deriveNames('northwind-traders'), {
-      apiKeyPrefixLength: 20,
-      redactedKeyChars: 16,
-    })
-    expect(g.prefix).toBe('northwind_traders_')
-    expect(g.prefixLength).toBe(18)
-    expect(g.apiKeyPrefixLength).toEqual({ current: 20, required: 26, change: true })
-    expect(g.redactedKeyChars).toEqual({ current: 16, required: 22, change: true })
-    expect(API_KEY_HANDLE_MARGIN).toBe(8)
-    expect(REDACTED_KEY_MARGIN).toBe(4)
-  })
-
-  it('shrinks them for a shorter prefix (the CLI tests assume prefix + 4 exactly)', () => {
-    const g = prefixGuard(deriveNames('acme'), { apiKeyPrefixLength: 20, redactedKeyChars: 16 })
-    expect(g.apiKeyPrefixLength).toEqual({ current: 20, required: 13, change: true })
-    expect(g.redactedKeyChars).toEqual({ current: 16, required: 9, change: true })
-  })
-
-  it('reads and rewrites the constants and their arithmetic comments', () => {
-    const hash =
-      "export const API_KEY_PREFIX = 'acme'\n" +
-      'export const API_KEY_PREFIX_LENGTH = 20 // `acme_` (12) + 8 chars — must exceed the prefix\n'
-    expect(readIntConstant(hash, 'API_KEY_PREFIX_LENGTH')).toBe(20)
-    expect(readIntConstant(hash, 'NOPE')).toBeNull()
-    const out = rewriteIntConstant(hash, 'API_KEY_PREFIX_LENGTH', 13, 'acme_', 8)
-    expect(out).toContain('export const API_KEY_PREFIX_LENGTH = 13 // `acme_` (5) + 8 chars')
-    const cli = '/** Characters shown of a key: `acme_` (12) + 4 — never the full secret. */\n'
-    expect(rewritePrefixComments(cli, 'acme_', 4)).toContain('`acme_` (5) + 4 — never')
-  })
-})
-
-describe('colour (row e)', () => {
-  it('rewrites the light primary everywhere it appears, the rgb triple and the meta tag', () => {
-    const css = [
-      '@plugin "daisyui/theme" { name: "x-light";',
-      '  --color-primary: #2563eb; /* blue-600 */',
-      '  --color-primary-content: #ffffff;',
-      '  --surface-active: color-mix(in srgb, #2563eb 10%, #ffffff);',
-      '  --focus-ring: #2563eb; }',
-      '@plugin "daisyui/theme" { name: "x-dark"; --color-primary: #60a5fa; }',
-      ':root { --dc-primary-rgb: 37, 99, 235; }',
-    ].join('\n')
-    const html = '<meta name="theme-color" content="#2563eb" />'
-    const r = applyColour({ css, html }, '#b91c1c')
-    expect(r.from).toBe('#2563eb')
-    expect(r.cssReplacements).toBe(3)
-    expect(r.css).not.toContain('#2563eb')
-    expect(r.css).toContain('--dc-primary-rgb: 185, 28, 28;')
-    expect(r.css).toContain('--color-primary: #60a5fa')
-    expect(r.html).toBe('<meta name="theme-color" content="#b91c1c" />')
-    expect(r.htmlReplaced).toBe(true)
-    expect(r.manual.join('\n')).toContain('#60a5fa')
-    expect(hexToRgb('#ffffff')).toBe('255, 255, 255')
-  })
-})
-
-describe('parseArgs', () => {
-  it('parses flags, options and the two positionals', () => {
-    expect(
-      parseArgs(['--dry-run', '--domain', 'acme.io', '--colour', '#112233', 'acme', 'Acme Ops'])
-    ).toEqual({
-      dryRun: true,
-      force: false,
-      skipInstall: false,
-      domain: 'acme.io',
-      colour: '#112233',
-      slug: 'acme',
-      display: 'Acme Ops',
-    })
-  })
-
-  it('reports usage problems instead of throwing', () => {
-    expect(parseArgs([])).toEqual({ error: 'a slug is required' })
-    expect(parseArgs(['--bogus', 'acme'])).toEqual({ error: 'unknown option --bogus' })
-    expect(parseArgs(['--domain'])).toEqual({ error: '--domain needs a value' })
-    expect(parseArgs(['rocketflare'])).toMatchObject({ error: expect.stringMatching(/kit's own/) })
-    expect(parseArgs(['acme', 'A', 'extra'])).toMatchObject({
-      error: expect.stringMatching(/extra/),
-    })
-    expect(parseArgs(['--colour', 'red', 'acme'])).toMatchObject({
-      error: expect.stringMatching(/hex/),
-    })
-    expect(parseArgs(['--help'])).toEqual({ help: true })
   })
 })

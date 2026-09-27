@@ -18,8 +18,6 @@
     "dev:db:down": "pnpm --filter @launch/web dev:db:down",
     "dev:db:status": "pnpm --filter @launch/web dev:db:status",
     "bootstrap": "node scripts/bootstrap.mjs",
-    "kit:upgrade": "node scripts/upgrade.mjs",
-    "kit:release": "node scripts/release.mjs",
     "plugin": "node scripts/plugin.mjs",
     "preflight": "node scripts/bootstrap.mjs --check",
     "test:db:up": "pnpm --filter @launch/web test:db:up",

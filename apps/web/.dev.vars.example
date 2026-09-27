@@ -8,6 +8,9 @@
 APP_ENV=development
 # APP_URL follows the UI port: change it together with DEV_UI_PORT below.
 APP_URL=http://localhost:3000
+# Launch is single-tenant (the tomls say so too). wrangler dev reads the toml; the seed reads THIS,
+# so it creates the one tenant (named after APP_NAME) rather than the multi-tenant demo set.
+TENANCY_MODE=single
 # Dev ports (scripts/lib/dev-ports.mjs), for a machine where :3000/:3001 are taken (a Cloudflare
 # Sandbox holds :3000). The shell wins over this file; unset means 3000 (Vite) / 3001 (wrangler).
 # `pnpm dev`, Vite, the bootstrap and the seed read them; `pnpm dev:api` alone reads only the shell.

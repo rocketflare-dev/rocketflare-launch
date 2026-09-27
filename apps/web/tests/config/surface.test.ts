@@ -314,13 +314,13 @@ describe('missingFrom', () => {
   })
 
   /**
-   * The live canary. `example-feature` is migrated onto the contract and vendored with the kit, so
-   * every symbol it names must be in the ledger this checkout emits — if this fails, either the
-   * document is stale or the reference plugin has reached for something the kit no longer provides.
+   * The live canary. The installed `analytics` plugin declares what it `uses`, so every symbol it
+   * names must be in the ledger this checkout emits — if this fails, either the document is stale
+   * or the host no longer provides something the plugin reaches for.
    */
-  it('finds nothing missing for the reference plugin against the real ledger', () => {
+  it('finds nothing missing for the installed plugin against the real ledger', () => {
     const real = readLedger(REPO_ROOT)
-    const uses = usesOf(REPO_ROOT, 'example-feature')
+    const uses = usesOf(REPO_ROOT, 'analytics')
     expect(Object.keys(uses).length).toBeGreaterThan(0)
     expect(missingFrom(uses, real)).toEqual([])
   })

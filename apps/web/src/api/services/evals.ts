@@ -9,7 +9,7 @@
  *   `search_knowledge` returned, grouped by document), so a faithfulness judge grades the case
  *   against the same material the model saw — not against whatever the knowledge base holds today.
  * - `expected.output` is the OBSERVED answer, a starting point for a person to correct. It is never
- *   a gold answer until somebody signs it off, which is the `rf-evals` skill's hard stop.
+ *   a gold answer until somebody signs it off, which is the `launch-evals` skill's hard stop.
  * - `expected.tools` is the tools that were called, in order — the trajectory the case pins.
  *
  * Every read carries the tenant predicate; the route is admin+ (`read Feedback`) because the

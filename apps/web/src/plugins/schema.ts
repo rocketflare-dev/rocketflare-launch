@@ -26,4 +26,3 @@
  * `many()` back-reference that cannot be contributed. Re-measure before relaxing this.
  */
 export * from './analytics/db/schema'
-export * from './example-feature/db/schema'

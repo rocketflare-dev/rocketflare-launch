@@ -6,6 +6,12 @@
 # driver talks to (D35): `pnpm test:neon` and CI's `test-neon` job start it; the gate never does.
 # Our build on a mirror of a community image packaging Neon's open-source proxy, PINNED BY DIGEST (rules/database.md). It
 # creates a `neon_control_plane` schema in the database it fronts; nothing in the kit reads it.
+#
+# `name:` pins the compose project. Without it the project is the directory name, `web`, which
+# every Rocketflare-derived checkout shares — so `pnpm test:db:up` in one repo recreated (and
+# wiped) another repo's test containers.
+name: launch-test
+
 services:
   postgres-test:
     image: pgvector/pgvector:pg17
@@ -25,7 +31,7 @@ services:
 
   neon-proxy-test:
     profiles: ["neon"]
-    image: ghcr.io/launch-dev/local-neon-proxy@sha256:fbc2c4dd398d7f8b530bc11e0dbc7e24176d4db7bca2f4d88f21b5b4e50580f8
+    image: ghcr.io/rocketflare-dev/local-neon-proxy@sha256:fbc2c4dd398d7f8b530bc11e0dbc7e24176d4db7bca2f4d88f21b5b4e50580f8
     container_name: launch-test-neon-proxy
     # Our image (docker/Dockerfile.neon-proxy): the mirrored proxy with docker/neon-proxy-start.sh
     # baked in as the entrypoint, ~10x faster locally than the image's own script. Baked, not

@@ -58,7 +58,7 @@ narrows access has no honest one-line equivalent in a CLI.
 - Human output goes to stdout via `chalk`; diagnostics and progress to stderr. `--json` on **every
   list/read command** prints the parsed response as JSON only (no colour, no extra lines) so it pipes
   into `jq`
-- **Never print a full API key.** Show `launch_ab12…` (prefix + 4) in `whoami`/`status`/`keys list`;
+- **Never print a full API key.** Show `launch_ab12…` (prefix + 4) in `whoami`/`status`;
   `login` says where the key was stored, not what it is
 - Errors: one line `error: <message>` on stderr (+ `code` when the envelope has one). With `--json`,
   the envelope `{ error, statusCode, code? }` goes to stdout
@@ -90,17 +90,16 @@ one line in `apps/cli/src/plugins/index.ts` adds it to `CLI_PLUGINS`. `cli.ts` l
 `cliPlugins` and calls `register` once each, **after** every kit command, so `launch --help`
 lists them together and a plugin can never shadow `login`.
 
-- **The top-level command name is the plugin's id** (`launch example-feature …`), which is what
+- **The top-level command name is the plugin's id** (`launch analytics …`), which is what
   keeps two installed plugins from claiming the same word. Sub-commands below it are the plugin's
-  own (`ping`, `notes list`)
+  own
 - **It registers with the host's `action()` wrapper**, so it inherits one context, one error printer
   and the same exit codes (0 · 1 · 2 · 3). It throws `CliError`; it never prints an error, never
   calls `process.exit`, and never reads `process.env` outside `config.ts`
 - **It owns no second copy of the contract**: it calls the plugin's own routes through
   `requireClient(ctx).request(...)` and parses with the same `@launch/shared/plugins/<id>`
-  schema the server validated with. `example-feature ping` POSTs the route that enqueues rather than
-  building an envelope, so producer validation and the `JOBS_QUEUE` binding stay on the server
+  schema the server validated with. A command that starts background work POSTs the route that
+  enqueues rather than building an envelope, so producer validation and the `JOBS_QUEUE` binding
+  stay on the server
 - `--json` on every list, key prefixes only, chalk to stdout and diagnostics to stderr — the rules
-  above apply unchanged. The two shipped examples are
-  `apps/cli/src/plugins/example-feature/index.ts`: `example-feature ping` (a write) and
-  `example-feature notes list` (the read-list shape with pagination)
+  above apply unchanged. The installed example is `apps/cli/src/plugins/analytics/`

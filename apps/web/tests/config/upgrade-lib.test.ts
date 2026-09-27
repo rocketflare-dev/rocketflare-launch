@@ -1,8 +1,9 @@
 /**
- * `scripts/upgrade.mjs`'s pure half: path classification against `.rocketflare.json` and the diff
- * translator. The `config` project — no database, no git, no network.
+ * `pnpm plugin upgrade`'s pure half (`scripts/lib/upgrade-lib.mjs`): the diff translator, the
+ * release-note parser and the vendored-plugin predicate. The `config` project — no database, no
+ * network.
  *
- * The translator is the risky part. It rewrites a kit diff into an adopted app's names before
+ * The translator is the risky part. It rewrites a plugin's diff into Launch's names before
  * anything is applied, and it is only safe because of two properties asserted below: a
  * substitution moves columns and never lines (so `@@` headers stay valid), and `index` lines are
  * stripped (so `git apply --3way` cannot silently merge against a preimage that no longer
@@ -10,205 +11,37 @@
  */
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import rawManifest from '../../../../.rocketflare.json'
 import { deriveNames } from '../../../../scripts/lib/rename-lib.mjs'
-import type { Manifest } from '../../../../scripts/lib/upgrade-lib.d.mts'
 import {
-  absentSurfaces,
   BinaryPatchError,
-  behaviourFiles,
-  classifyPath,
+  compareVersions,
   countLines,
-  defaultPluginEntries,
-  defaultPluginEntryProblems,
-  defaultPluginProblems,
-  globToRegExp,
-  hasChangelogSection,
-  isDeployable,
   isKitManifest,
   isVendored,
-  matchesAny,
   parseNote,
   splitDiff,
   stripIndexLines,
   translateBlock,
 } from '../../../../scripts/lib/upgrade-lib.mjs'
 
-// A JSON import widens every literal to `string`; the manifest's shape is the lib's contract.
-const manifest = rawManifest as unknown as Manifest
-
 const names = deriveNames('acme', 'Acme Logistics', { domain: 'acme.io' })
 
-describe('globs', () => {
-  it('* stops at a slash, ** does not', () => {
-    expect(globToRegExp('apps/*/src').test('apps/web/src')).toBe(true)
-    expect(globToRegExp('apps/*/src').test('apps/web/deep/src')).toBe(false)
-    expect(globToRegExp('apps/**').test('apps/web/deep/src/x.ts')).toBe(true)
-    expect(globToRegExp('apps/web/src/**').test('apps/web/src/x.ts')).toBe(true)
-  })
-
-  it('matchesAny is an or over globs', () => {
-    expect(matchesAny('LICENSE', ['LICENSE', 'README.md'])).toBe(true)
-    expect(matchesAny('CHANGELOG.md', ['LICENSE', 'README.md'])).toBe(false)
-  })
-})
-
 describe('the manifest predicate', () => {
-  it('says the kit is the kit and a copy is not', () => {
-    // The predicate, both ways, on values rather than on whichever checkout is running this —
-    // `app === null` IS the question, so a renamed copy answers `false` and is RIGHT to. Asserting
-    // `isKitManifest(manifest) === true` against the repo's own file made every adopted copy's
-    // `pnpm test` red on its first run, which is the opposite of what D27 promises.
-    expect(isKitManifest({ ...manifest, app: null })).toBe(true)
+  it('says the kit is the kit and an app is not', () => {
+    const base = { $purpose: '', surfaces: [] }
+    expect(isKitManifest({ ...base, app: null })).toBe(true)
     expect(
-      isKitManifest({ ...manifest, app: { slug: 'acme', display: 'Acme', domain: 'acme.io' } })
+      isKitManifest({ ...base, app: { slug: 'acme', display: 'Acme', domain: 'acme.io' } })
     ).toBe(false)
-    // …and this checkout agrees with itself, whichever of the two it is.
-    expect(isKitManifest(manifest)).toBe(manifest.app === null)
-  })
-
-  it('finds the surfaces whose anchor is gone', () => {
-    const withoutAgent = ['README.md']
-    expect(absentSurfaces(manifest, withoutAgent)).toContain('example-agent-summarize-text')
-    expect(absentSurfaces(manifest, withoutAgent).length).toBe(manifest.surfaces.length)
+    expect(isKitManifest(null)).toBe(false)
   })
 })
 
-describe('classifyPath', () => {
-  const base = { manifest, existsLocally: true, change: 'modified' as const }
-
-  it('drops anything under a surface this app deleted — the rule that matters most', () => {
-    const c = classifyPath('apps/web/src/api/services/agents/examples/summarize-text.ts', {
-      ...base,
-      absent: ['example-agent-summarize-text'],
-    })
-    expect(c.class).toBe('skipped-surface-absent')
-    expect(c.surface).toBe('example-agent-summarize-text')
-    expect(c.translate).toBe(false)
-  })
-
-  it('never touches a file an installed plugin owns, even though the kit shipped it', () => {
-    // D31: a plugin has its own repository and its own release chain. A kit diff that rewrote its
-    // files would be porting one version of a plugin over another, with neither side told.
-    const withPlugin = {
-      ...manifest,
-      surfaces: [
-        ...manifest.surfaces,
-        {
-          id: 'approvals',
-          kind: 'plugin' as const,
-          label: 'Approvals',
-          anchor: 'apps/web/src/plugins/approvals/plugin.json',
-          paths: ['apps/web/src/plugins/approvals/**'],
-          registries: ['apps/web/src/plugins/server.ts'],
-        },
-      ],
-    }
-    const c = classifyPath('apps/web/src/plugins/approvals/api/routes.ts', {
-      ...base,
-      manifest: withPlugin,
-    })
-    expect(c.class).toBe('skipped-plugin-owned')
-    expect(c.surface).toBe('approvals')
-    expect(c.translate).toBe(false)
-    expect(c.reason).toMatch(/pnpm plugin upgrade approvals/)
-  })
-
-  it('still drops a plugin whose anchor is gone as absent, not as plugin-owned', () => {
-    // Order matters: "the adopter removed it" is the stronger statement, and an uninstalled
-    // plugin's leftovers must not be recreated by an upgrade any more than a deleted example is.
-    const withPlugin = {
-      ...manifest,
-      surfaces: [
-        ...manifest.surfaces,
-        {
-          id: 'approvals',
-          kind: 'plugin' as const,
-          label: 'Approvals',
-          anchor: 'apps/web/src/plugins/approvals/plugin.json',
-          paths: ['apps/web/src/plugins/approvals/**'],
-          registries: [],
-        },
-      ],
-    }
-    const c = classifyPath('apps/web/src/plugins/approvals/api/routes.ts', {
-      ...base,
-      manifest: withPlugin,
-      absent: ['approvals'],
-    })
-    expect(c.class).toBe('skipped-surface-absent')
-  })
-
-  it('never applies a kit migration', () => {
-    const c = classifyPath('apps/web/migrations/0007_add_thing.sql', base)
-    expect(c.class).toBe('migration-derived')
-    expect(classifyPath('apps/web/migrations/meta/_journal.json', base).class).toBe(
-      'migration-derived'
-    )
-    expect(c.reason).toMatch(/db:generate/)
-  })
-
-  it('sends the wrangler tomls and the env examples to a human', () => {
-    expect(classifyPath('apps/web/wrangler.toml', base).class).toBe('manual-toml')
-    expect(classifyPath('apps/web/wrangler.staging.toml', base).class).toBe('manual-toml')
-    expect(classifyPath('apps/web/.dev.vars.example', base).class).toBe('manual-env')
-  })
-
-  it('keeps kit-only files out of an app', () => {
-    for (const p of [
-      'LICENSE',
-      'SECURITY.md',
-      'scripts/install.sh',
-      'docs/ADAPTING.md',
-      'pnpm-lock.yaml',
-    ]) {
-      expect(classifyPath(p, base).class, p).toBe('skipped-kit-only')
-    }
-  })
-
-  it('ports the kit tooling untranslated when asked', () => {
-    const c = classifyPath('scripts/rename.mjs', { ...base, includeKitTooling: true })
-    expect(c.class).toBe('verbatim')
-    expect(c.translate).toBe(false)
-  })
-
-  it('treats the README and CI as decisions, not edits', () => {
-    expect(classifyPath('README.md', base).class).toBe('manual')
-    expect(classifyPath('.github/workflows/deploy.yml', base).class).toBe('manual')
-  })
-
-  it('reads a file the adopter deleted as skipped, not as an error', () => {
-    const c = classifyPath('apps/web/src/api/routes/members.ts', { ...base, existsLocally: false })
-    expect(c.class).toBe('skipped-locally-deleted')
-  })
-
-  it('separates a clean add from one that collides', () => {
-    expect(
-      classifyPath('apps/web/src/api/routes/new.ts', {
-        ...base,
-        change: 'added',
-        existsLocally: false,
-      }).class
-    ).toBe('added')
-    expect(
-      classifyPath('apps/web/src/api/routes/new.ts', {
-        ...base,
-        change: 'added',
-        existsLocally: true,
-      }).class
-    ).toBe('added-collides')
-  })
-
-  it('never deletes on its own', () => {
-    expect(
-      classifyPath('apps/web/src/api/routes/old.ts', { ...base, change: 'deleted' }).class
-    ).toBe('deleted')
-  })
-
-  it('classifies an ordinary source change as modified and translated', () => {
-    const c = classifyPath('apps/web/src/api/index.ts', base)
-    expect(c.class).toBe('modified')
-    expect(c.translate).toBe(true)
+describe('compareVersions', () => {
+  it('compares numerically, not as strings', () => {
+    expect(compareVersions('0.15.0', '0.13.0')).toBe(1)
+    expect(compareVersions('0.9.0', '0.13.0')).toBe(-1)
+    expect(compareVersions('1.2.3', '1.2.3')).toBe(0)
   })
 })
 
@@ -231,9 +64,7 @@ index aaa..bbb 100644
 `
 
 describe('isVendored', () => {
-  // ONE implementation, in this file, re-exported by plugin-lib. The two that existed disagreed:
-  // this one normalises the URL, the other compared strings exactly — so the same plugin could be
-  // vendored for `kit:release` and third-party for `plugin check`, over one manifest.
+  // ONE implementation, in this file, re-exported by plugin-lib.
   const KIT_REPO = 'https://github.com/rocketflare-dev/rocketflare.git'
 
   it('is the same answer from either module', async () => {
@@ -252,225 +83,6 @@ describe('isVendored', () => {
     expect(isVendored({ repo: 'https://github.com/acme/p.git' }, KIT_REPO)).toBe(false)
     expect(isVendored(null, KIT_REPO)).toBe(false)
     expect(isVendored({ repo: '' }, KIT_REPO)).toBe(false)
-  })
-})
-
-describe('default plugins', () => {
-  // `defaultPlugins` is what a fresh clone installs and what `kit:release` refuses to ship past
-  // (D31, decision 5). The entries are OBJECTS because a bare id says nothing about where the
-  // plugin comes from; a string still parses, and is then reported as having no repo rather than
-  // having a URL guessed for it.
-  const KIT = 'https://github.com/rocketflare-dev/rocketflare.git'
-  const ok = (minKit: string | null) => () => ({ ok: true, minKit })
-
-  it('normalises both shapes and defaults the optional fields', () => {
-    expect(
-      defaultPluginEntries({
-        defaultPlugins: [{ id: 'analytics', repo: KIT, ref: '0.6.0' }, 'legacy'],
-      } as never)
-    ).toEqual([
-      { id: 'analytics', repo: KIT, ref: '0.6.0', subdir: '' },
-      { id: 'legacy', repo: null, ref: null, subdir: '' },
-    ])
-    expect(defaultPluginEntries(null)).toEqual([])
-    expect(defaultPluginEntries({} as never)).toEqual([])
-  })
-
-  it('passes a plugin whose floor is at or below the version being cut', () => {
-    const entries = defaultPluginEntries({
-      defaultPlugins: [{ id: 'analytics', repo: 'https://example.test/a.git', ref: '0.2.0' }],
-    } as never)
-    expect(defaultPluginProblems(entries, '0.6.0', ok('0.5.0'))).toEqual([])
-    // The floor is a floor: equal passes, and there is no ceiling to fall off the top of.
-    expect(defaultPluginProblems(entries, '0.6.0', ok('0.6.0'))).toEqual([])
-    expect(defaultPluginProblems(entries, '9.9.9', ok('0.5.0'))).toEqual([])
-  })
-
-  it('refuses a version BELOW the floor, naming the floor and the release', () => {
-    const entries = defaultPluginEntries({
-      defaultPlugins: [{ id: 'analytics', repo: 'https://example.test/a.git' }],
-    } as never)
-    const problems = defaultPluginProblems(entries, '0.6.0', ok('0.7.0'))
-    expect(problems).toHaveLength(1)
-    expect(problems[0]).toMatch(/analytics.*needs kit 0\.7\.0 or newer.*this release is 0\.6\.0/)
-  })
-
-  it('refuses an entry the resolver cannot reach, and one with no repo', () => {
-    const entries = defaultPluginEntries({
-      defaultPlugins: [
-        { id: 'gone', repo: 'https://example.test/gone.git', ref: '9.9.9' },
-        'nameless',
-      ],
-    } as never)
-    const problems = defaultPluginProblems(entries, '0.6.0', entry =>
-      entry.id === 'gone' ? { ok: false, reason: 'no such ref' } : { ok: true, minKit: '0.1.0' }
-    )
-    // Shape problems come first now: they are the whole of `defaultPluginEntryProblems`, and
-    // somebody fixing a hand-edited list wants every one of them in one run.
-    expect(problems).toEqual([
-      expect.stringContaining('has no "repo"'),
-      expect.stringContaining('no such ref'),
-    ])
-  })
-
-  it('tells an unread floor, an OLD-SHAPE declaration and a real refusal apart', () => {
-    // "I could not check", "this plugin was written against a contract this kit no longer reads"
-    // and "I checked and it is too old" are three different answers with three different fixes,
-    // and only the absence of all three may cut a release.
-    const entries = defaultPluginEntries({
-      defaultPlugins: [{ id: 'analytics', repo: 'https://example.test/a.git' }],
-    } as never)
-    expect(defaultPluginProblems(entries, '0.6.0', ok(null))[0]).toMatch(
-      /cannot read its minKit floor/
-    )
-    // A manifest still carrying `requires.kit` is named, never silently skipped — the range is
-    // carried out of the resolver for exactly this sentence, and is never used as a floor.
-    const legacy = () => ({ ok: true, minKit: null, legacyRange: '>=0.5.0 <1.0.0' })
-    const problem = defaultPluginProblems(entries, '0.6.0', legacy)[0]
-    expect(problem).toMatch(/declares requires\.kit '>=0\.5\.0 <1\.0\.0'/)
-    expect(problem).toMatch(/"minKit"/)
-    // And a floor wearing range language is reported, not approximated: nothing here can read it.
-    expect(defaultPluginProblems(entries, '0.6.0', ok('>=0.5.0'))[0]).toMatch(
-      /not a bare X\.Y\.Z version/
-    )
-  })
-
-  it('exempts a VENDORED plugin from the floor check, as §16 says', () => {
-    // Same repository, no subdirectory: the same release cut both, so the floor describes the kit
-    // it shipped inside rather than a compatibility claim.
-    const entries = defaultPluginEntries({
-      defaultPlugins: [{ id: 'example-feature', repo: KIT, ref: '0.4.0' }],
-    } as never)
-    expect(defaultPluginProblems(entries, '0.6.0', ok('9.9.9'), { kitRepo: KIT })).toEqual([])
-    // …but a plugin in a SUBDIRECTORY of the kit repo is not vendored, and is checked.
-    const sub = [{ id: 'x', repo: KIT, ref: null, subdir: 'plugins/x' }]
-    expect(defaultPluginProblems(sub, '0.6.0', ok('9.9.9'), { kitRepo: KIT })).toHaveLength(1)
-  })
-
-  it('catches the same plugin listed twice', () => {
-    const entries = defaultPluginEntries({
-      defaultPlugins: [
-        { id: 'a', repo: 'https://example.test/a.git' },
-        { id: 'a', repo: 'https://example.test/a.git' },
-      ],
-    } as never)
-    expect(defaultPluginProblems(entries, '0.6.0', ok('0.1.0'))).toEqual([
-      expect.stringContaining("lists 'a' twice"),
-    ])
-  })
-})
-
-describe('defaultPluginEntryProblems', () => {
-  // The shape check, alone. Four callers share it — `kit:release`, the bootstrap's plugins step and
-  // both GitHub workflows (through `scripts/default-plugins.mjs`) — and before that they answered
-  // the same question three different ways.
-  const entries = (list: unknown[]) =>
-    defaultPluginEntries({ defaultPlugins: list } as unknown as Manifest)
-
-  it('passes a well-formed list', () => {
-    expect(
-      defaultPluginEntryProblems(entries([{ id: 'a', repo: 'https://x.test/a.git', ref: '1.0.0' }]))
-    ).toEqual([])
-    expect(defaultPluginEntryProblems([])).toEqual([])
-    expect(defaultPluginEntryProblems(undefined)).toEqual([])
-  })
-
-  it('reports a missing id, a missing repo and a duplicate — all of them, in one pass', () => {
-    const problems = defaultPluginEntryProblems(
-      entries([
-        { repo: 'https://x.test/a.git' },
-        { id: 'b' },
-        { id: 'c', repo: 'https://x.test/c.git' },
-        { id: 'c', repo: 'https://x.test/c.git' },
-      ])
-    )
-    expect(problems).toEqual([
-      expect.stringContaining('has no "id"'),
-      expect.stringContaining(`'b' has no "repo"`),
-      expect.stringContaining(`lists 'c' twice`),
-    ])
-  })
-
-  it('treats a bare STRING as an id with no repo, which is what it is', () => {
-    // Not "not an object": the entry names something, it just cannot be fetched.
-    expect(defaultPluginEntryProblems(entries(['analytics']))[0]).toMatch(
-      /'analytics' has no "repo"/
-    )
-  })
-})
-
-describe('behaviourFiles', () => {
-  // The porting-note predicate, shared by the CI gate (`release-check --unreleased`) and the
-  // pre-commit hook (`changelog-nudge.mjs`). They were two copies of one regex pair, and a hook
-  // that disagrees with the gate is a hook people learn to ignore.
-  it('is source under apps/ or packages/, tests and markdown excluded', () => {
-    expect(
-      behaviourFiles([
-        'apps/web/src/api/index.ts',
-        'packages/shared/src/jobs.ts',
-        'apps/web/tests/api/chat.test.ts',
-        'apps/web/src/api/thing.test.ts',
-        'apps/web/src/ui/CLAUDE.md',
-        'docs/CONCEPTS.md',
-        'scripts/release.mjs',
-        '.github/workflows/ci.yml',
-      ])
-    ).toEqual(['apps/web/src/api/index.ts', 'packages/shared/src/jobs.ts'])
-    expect(behaviourFiles([])).toEqual([])
-    expect(behaviourFiles(undefined)).toEqual([])
-  })
-})
-
-describe('hasChangelogSection', () => {
-  const changelog = '# Changelog\n\n## 0.6.10 — 2026-01-02\n\nx\n\n## 0.6.1 — 2026-01-01\n\ny\n'
-
-  it('does not accept 0.6.10 as 0.6.1 — the bug a two-digit patch would have found', () => {
-    // `changelog.includes('## 0.6.1')` is true of `## 0.6.10`, so the tag gate would have passed
-    // on another release's section, in the direction that lets a release through.
-    expect(hasChangelogSection('# Changelog\n\n## 0.6.10 — 2026-01-02\n', '0.6.1')).toBe(false)
-    expect(hasChangelogSection(changelog, '0.6.1')).toBe(true)
-    expect(hasChangelogSection(changelog, '0.6.10')).toBe(true)
-    expect(hasChangelogSection(changelog, '0.7.0')).toBe(false)
-  })
-
-  it('anchors to the start of a line, so a mention in prose is not a section', () => {
-    expect(hasChangelogSection('see ## 0.6.1 below\n', '0.6.1')).toBe(false)
-  })
-})
-
-describe('isDeployable', () => {
-  // This gates the deploy workflow, so the expensive mistake is a false "skip": somebody's
-  // production release quietly not happening. Every ambiguous case must deploy.
-  const KIT = { app: null } as unknown as Manifest
-  const APP = { app: { slug: 'acme', display: 'Acme', domain: 'acme.io' } } as unknown as Manifest
-  const placeholder = { 'apps/web/wrangler.toml': 'id = "<KV_NAMESPACE_ID>"' }
-  const provisioned = { 'apps/web/wrangler.toml': 'id = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"' }
-
-  it('skips only the kit that has never been provisioned', () => {
-    const d = isDeployable(KIT, placeholder)
-    expect(d.deployable).toBe(false)
-    expect(d.reason).toContain('apps/web/wrangler.toml')
-  })
-
-  it('deploys an app even when its tomls still hold placeholders', () => {
-    // Their parity check fails loudly a step later; that is the gate, and it is meant to be seen.
-    expect(isDeployable(APP, placeholder).deployable).toBe(true)
-  })
-
-  it('deploys a kit-shaped repo that someone pointed at real resources', () => {
-    expect(isDeployable(KIT, provisioned).deployable).toBe(true)
-  })
-
-  it('deploys when there is no manifest at all', () => {
-    expect(isDeployable(null, placeholder).deployable).toBe(true)
-  })
-
-  it('names both tomls when both are unprovisioned', () => {
-    const d = isDeployable(KIT, {
-      'apps/web/wrangler.toml': '<A_ID>',
-      'apps/web/wrangler.staging.toml': '<B_ID>',
-    })
-    expect(d.reason).toContain('apps/web/wrangler.toml and apps/web/wrangler.staging.toml')
   })
 })
 
@@ -606,10 +218,11 @@ areas: [api]
 })
 
 /**
- * `mirror().isAncestor` — the predicate behind `kit:upgrade`'s "this diff runs BACKWARDS" warning.
+ * `mirror().isAncestor` — the predicate behind `pnpm plugin upgrade`'s "this diff runs BACKWARDS"
+ * warning.
  *
  * The failure it guards against is not a crash: with an untagged branch head as `--from`,
- * `latestTag()` picks an OLDER release as `--to` and the report says "the kit deleted 22 file(s)",
+ * `latestTag()` picks an OLDER release as `--to` and the report says "deleted 22 file(s)",
  * listing whole subsystems. Exercised against this repository's own history, which always has at
  * least two commits.
  */
@@ -619,7 +232,7 @@ describe('mirror().isAncestor', () => {
     const repo = mirror(path.resolve(__dirname, '../../../..'))
     expect(repo.isAncestor('HEAD~1', 'HEAD')).toBe(true)
     expect(repo.isAncestor('HEAD', 'HEAD~1')).toBe(false)
-    // A commit is its own ancestor, which is why `upgrade.mjs` answers "already on it" first.
+    // A commit is its own ancestor.
     expect(repo.isAncestor('HEAD', 'HEAD')).toBe(true)
   })
 })

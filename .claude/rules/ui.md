@@ -283,11 +283,8 @@ the eager shell sees. The rules follow from that one fact:
 - **`queryKeys` roots must start with `<id>:`** (checked by `plugins.test.ts`), so one plugin's
   invalidation can never reach another's cache. The `entity.changed` convention is unchanged and is
   what makes the socket wiring free: **the `entity` string of a nudge IS a query-key family root**,
-  so declare it once — `example-feature`'s `EXAMPLE_NOTES_ENTITY` is both the server's nudge entity
-  and the UI's family root — and `invalidationsFor()` covers it with no hook-side socket code
+  so declare it once — one exported constant is both the server's nudge entity and the UI's
+  family root — and `invalidationsFor()` covers it with no hook-side socket code
 - A plugin's own hooks read its `query-keys.ts` directly rather than the merged `queryKeys`: the
   merge is for the HOST's benefit, and a plugin must behave the same whether it is the only one
   installed or the fifth
-- **The demo `Example feature` nav item, its page and its notes CRUD are the `example-feature`
-  PLUGIN**, not kit files: `src/plugins/example-feature/ui/`. There is no `pages/ExampleFeature.tsx`
-  and no `EXAMPLE_FEATURE` const in `lib/feature-guards.ts` any more

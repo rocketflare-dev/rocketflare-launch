@@ -2,7 +2,7 @@
  * The deterministic scorers (D33), as plain functions over plain values so they can be unit-tested,
  * borrowed by an app's own judges, and reasoned about without a model in the loop. Every one returns
  * a score in `[0, 1]` and a sentence saying why — the sentence is what `pnpm eval` prints and the
- * `rf-evals` skill reads back to the user.
+ * `launch-evals` skill reads back to the user.
  *
  * Trajectory semantics follow agentevals (https://github.com/langchain-ai/agentevals):
  * - `strict`    — exactly the expected tools, in the expected order;

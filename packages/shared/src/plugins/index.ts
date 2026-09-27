@@ -11,13 +11,9 @@
  * so every consumer that only wants to loop reads the widened one.
  */
 import { analyticsShared } from './analytics/index'
-import { exampleFeatureShared } from './example-feature/index'
 import type { SharedPlugin } from './types'
 
-export const SHARED_PLUGINS = [
-  analyticsShared,
-  exampleFeatureShared,
-] as const satisfies readonly SharedPlugin[]
+export const SHARED_PLUGINS = [analyticsShared] as const satisfies readonly SharedPlugin[]
 
 /** The barrel as a plain list. Iterate this; `SHARED_PLUGINS` is for type derivation. */
 export const sharedPlugins: readonly SharedPlugin[] = SHARED_PLUGINS

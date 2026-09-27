@@ -31,8 +31,8 @@ import type { TypeOf, ZodDiscriminatedUnionOption, ZodRawShape } from 'zod'
 import type { FeatureDefinition } from '../features'
 
 /**
- * `^[a-z][a-z0-9-]*$` and never containing `launch`: a plugin is written in the kit's
- * vocabulary so `scripts/rename.mjs` can translate it into a renamed app on the way in, and an id
+ * `^[a-z][a-z0-9-]*$` and never containing the kit's name: a plugin is written in the kit's
+ * vocabulary so `pnpm plugin` can translate it into Launch's names on the way in, and an id
  * carrying the kit's name would be rewritten with everything else.
  */
 export const PLUGIN_ID_RE = /^[a-z][a-z0-9-]*$/

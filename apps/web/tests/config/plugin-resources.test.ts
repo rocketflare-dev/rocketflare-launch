@@ -258,7 +258,7 @@ describe('the resource list', () => {
 
 // ---- reading what is installed ------------------------------------------------------------
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-plugin-res-'))
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'launch-plugin-res-'))
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }))
 
 function writeAnchor(id: string, body: unknown): string {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prerequisites for `scripts/bootstrap.mjs`, then exec it. This is the entry point for a machine
-# that may have no Node or pnpm yet (`bash scripts/bootstrap.sh`, and what install.sh execs).
+# that may have no Node or pnpm yet (`bash scripts/bootstrap.sh`).
 # It only ever installs through a version manager that is already present (fnm or nvm) or through
 # corepack/npm — it never pipes a URL into a shell. Exit 3 with a one-line fix hint on any miss.
 # Bash 3.2 (macOS) compatible: no mapfile, no ${var,,}, ${1+"$@"} for the empty-argument case.

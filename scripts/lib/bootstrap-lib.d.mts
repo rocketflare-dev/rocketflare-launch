@@ -48,22 +48,6 @@ export function withDatabaseUrlPort(url: string, port: number): string
 export function upsertDevVar(text: string, key: string, value: string): string
 export function checkoutTag(absolutePath: string): string
 
-export interface DefaultPluginEntry {
-  id: string
-  repo: string
-  ref?: string
-  subdir?: string
-}
-export interface DefaultPluginPlan {
-  install: { id: string; spec: string; args: string[] }[]
-  skipped: string[]
-  problems: string[]
-}
-export function planDefaultPlugins(
-  entries: readonly unknown[] | undefined,
-  installedIds?: readonly string[]
-): DefaultPluginPlan
-
 export class BootstrapUsageError extends Error {}
 export function isPostgresUrl(value: string): boolean
 export function isLocalDatabaseUrl(url: string): boolean

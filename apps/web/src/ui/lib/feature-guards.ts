@@ -15,9 +15,8 @@ import type { NavGuard } from '@/ui/hooks/useNavGuard'
  * a global admin's `manage all` satisfies the CASL form, which would show them a nav item whose
  * routes the server 404s. The flag is configuration; only `session.features` answers it.
  *
- * The kit ships none of its own — its demonstration flag lives in the `example-feature` PLUGIN
- * (D31), which declares its guard beside the route and the nav item it gates, in
- * `apps/web/src/plugins/example-feature/ui/index.ts`. A plugin never edits this file.
+ * Launch ships none of its own today. A plugin (D31) declares its guard beside the route and the
+ * nav item it gates, in its own `ui/index.ts`. A plugin never edits this file.
  */
 
 /** `featureGuard(MY_FEATURE, { action: 'read', subject: 'Thing' })` → the flag AND the permission. */

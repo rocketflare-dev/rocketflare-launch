@@ -42,7 +42,6 @@ import {
   parseBootstrapArgs,
   parseNvmrc,
   parseWhoami,
-  planDefaultPlugins,
   readDevVars,
   toggleAiBlock,
   upsertDevVar,
@@ -84,7 +83,7 @@ Take a fresh clone to a running, signed-in dev stack in one command. Re-runnable
   --online      keep/restore the [ai] block; exit 5 if wrangler is not logged in
   --no-dev      stop after step 8 and print the commands to run next
   --no-demo     seed without the demo data (plain \`pnpm seed\`)
-  --no-plugins  skip the plugins step (do not install .rocketflare.json's defaultPlugins)
+  --no-plugins  skip the plugins step (the check that every installed plugin is on disk)
   --share-db    accepted and ignored: every checkout now gets its own database (pnpm dev:db:status)
   --no-open     do not open the browser once the server answers
   --as <email>  seeded account to sign in as (default owner@example.test)
@@ -459,71 +458,27 @@ async function stepMigrate() {
 }
 
 /**
- * Install `.rocketflare.json`'s `defaultPlugins` (D31) — what makes a fresh clone of a kit whose
- * features live in plugins come up with those features already there.
- *
- * It runs BEFORE the seed on purpose: a plugin contributes a `hooks.seedDemo`, so installing one
- * after `pnpm seed` would leave the demo workspace missing exactly the rows the plugin exists to
- * show. And it runs the migration itself rather than printing it, because the bootstrap promises a
- * working app: a barrel line with no table is a checkout that does not typecheck.
- *
- * Idempotent: an id already recorded as a surface is skipped, never re-added (a second
- * `pnpm plugin add` of an installed plugin is exit 7).
+ * Check the installed plugins (D31) are all on disk. Launch commits its plugins — their files,
+ * their barrel lines and their migrations — so a fresh clone has nothing to install; this step
+ * only proves every surface in `launch.plugins.json` still has its anchor file.
  */
 async function stepPlugins({ plugins }) {
   if (!plugins) return { verify: 'skipped (--no-plugins)' }
   const { manifest } = readManifest(REPO_ROOT)
-  const declared = manifest?.defaultPlugins ?? []
-  const plan = planDefaultPlugins(
-    declared,
-    pluginSurfaces(manifest).map(surface => surface.id)
-  )
-  if (plan.problems.length > 0) {
-    throw new StepError(`.rocketflare.json defaultPlugins: ${plan.problems[0]}`, {
-      hint: 'each entry is { "id": "…", "repo": "…", "ref"?: "…", "subdir"?: "…" }',
-      output: plan.problems.join('\n'),
+  const installed = pluginSurfaces(manifest)
+  const missing = installed.filter(surface => !existsSync(path.join(REPO_ROOT, surface.anchor)))
+  if (missing.length > 0) {
+    throw new StepError(`plugin files missing: ${missing.map(s => s.id).join(', ')}`, {
+      hint: 'pnpm plugin check names what is wrong; git status shows what was deleted',
+      output: missing.map(s => `${s.id}: ${s.anchor} not found`).join('\n'),
     })
   }
-  if (plan.install.length === 0) {
-    const verify =
-      declared.length === 0
-        ? 'no defaultPlugins declared — nothing to install'
-        : `already installed: ${plan.skipped.join(', ')}`
-    return { verify }
+  return {
+    verify:
+      installed.length === 0
+        ? 'no plugins installed'
+        : `installed: ${installed.map(s => `${s.id}@${s.source?.version ?? '?'}`).join(', ')}`,
   }
-  const installed = []
-  for (const entry of plan.install) {
-    const result = await pnpm(entry.args)
-    if (result.code !== 0) {
-      throw new StepError(`pnpm plugin add ${entry.spec} exited ${result.code}`, {
-        hint: `pnpm plugin add ${entry.spec} (no --apply) and read the plan`,
-        output: result.output,
-      })
-    }
-    if (!verbose) process.stdout.write(result.output)
-    installed.push(entry.id)
-    // One migration per plugin, named after it, so the journal says which release brought which
-    // tables — and so a failure names the plugin rather than "the schema".
-    const generated = await pnpm(['db:generate', '--name', `plugin-${entry.id}`])
-    if (generated.code !== 0) {
-      throw new StepError(`pnpm db:generate for ${entry.id} exited ${generated.code}`, {
-        hint: `pnpm db:generate --name plugin-${entry.id} by hand and read the SQL`,
-        output: generated.output,
-      })
-    }
-  }
-  const migrated = await pnpm(['db:migrate'])
-  if (migrated.code !== 0 || !migrated.output.includes('Migrations applied')) {
-    throw new StepError(
-      'pnpm db:migrate after the plugin schema did not report "Migrations applied"',
-      {
-        hint: 'pnpm db:migrate by hand and read its output',
-        output: migrated.output,
-      }
-    )
-  }
-  const skipped = plan.skipped.length > 0 ? ` (already there: ${plan.skipped.join(', ')})` : ''
-  return { verify: `installed ${installed.join(', ')}; tables generated and migrated${skipped}` }
 }
 
 /** Returns the one-time API key, kept in memory only, or undefined when the seed had one. */

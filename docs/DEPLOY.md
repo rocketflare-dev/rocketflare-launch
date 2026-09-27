@@ -47,8 +47,8 @@ near Neon rather than near the user, which is what makes sequential queries chea
 ## Database driver (D35)
 
 `[vars] DATABASE_DRIVER` in each toml picks how the Worker reaches Postgres. **A toml with no
-`DATABASE_DRIVER` means `postgres`** — every copy from before 0.15.0 — and the kit's own tomls say
-`"neon"`, so a fresh copy deploys on Neon. Locally `apps/web/.dev.vars` overrides it (the bootstrap
+`DATABASE_DRIVER` means `postgres`**, and Launch's tomls say `"neon"`, so Launch deploys on Neon.
+Locally `apps/web/.dev.vars` overrides it (the bootstrap
 writes `DATABASE_DRIVER=postgres`), so development never needs the deployed driver.
 
 | | `neon` | `postgres` |
@@ -180,7 +180,7 @@ because the ordinary parity test compares binding names, `[vars]` keys, crons an
 `<KV_RATE_LIMIT_ID>` behaves. A `var` marked `"secret": true` is a Worker secret offered by
 `pnpm provision secrets <env>`, never a `[vars]` key.
 
-`pnpm provision <phase> [env]` (`apps/web/scripts/provision.ts`, driven by the `/rf-provision` skill) is
+`pnpm provision <phase> [env]` (`apps/web/scripts/provision.ts`, driven by the `/launch-provision` skill) is
 the orchestrator around it — phases `tokens` (TTY only: hidden prompts → `apps/web/.provision.env`) · `preflight` · `email create|status|verify` · `neon` ·
 `cloudflare <env>` (this script with `--apply`) · `migrate <env>` · `github <env>` · `urls` ·
 `deploy <env>` · `secrets <env>` · `all` — each idempotent, each ending in one `Verify:` line;
@@ -291,17 +291,14 @@ All steps run at the repository root; the root scripts fan out with `pnpm -r` / 
 
 ```
  push to main ─► ci.yml (root) ─► check      → gate.yml: pnpm install --frozen-lockfile → gitleaks
-                        │                       → porting note → pnpm lint → pnpm typecheck
+                        │                       → pnpm lint → pnpm typecheck
                         │                       → git diff --exit-code apps/web/worker-configuration.d.ts
                         │                       → pnpm test (pg 5433; web + cli)
                         │                       → pnpm build (web: vite + dry-run wrangler deploy; cli: tsc)
                         ├─► test-neon       → pnpm web test:neon: test Postgres + the Neon proxy (compose
                         │                     `--profile neon`), api + api-isolated + driver projects under
                         │                     DATABASE_DRIVER=neon (D35 — the gate runs `postgres`)
-                        ├─► default-plugins → what .rocketflare.json `defaultPlugins` names (or "none")
-                        └─► plugins         → gate.yml again with `plugins: true`: pnpm plugin add each
-                                              entry at its pinned ref → pnpm db:generate → db:migrate:ci
-                                              → the same gate (D31; skipped when there are none)
+                        └─► plugin-check    → node scripts/plugin.mjs check (no install, no database)
                                                                                                             │
  push tag X.Y.Z ──► deploy.yml ─► ci (workflow_call, same file) ─► staging job (environment: staging)
                                      tag == ROOT package.json version?
@@ -331,88 +328,20 @@ start (ticket; waits for approval) → build:ui → wrangler deploy --dry-run --
   → finish (if: always())
 ```
 
-Triggers, the guard, the CI gate, the parity check and the version resolution are the same on both
+Triggers, the CI gate, the parity check and the version resolution are the same on both
 paths; with `DEPLOYER_URL` unset the migrate / `wrangler deploy` steps run exactly as above. The
 contract a deployer implements — endpoints, payload, OIDC claims to check, what `migratorUrl` must be
 able to do — is **`docs/DEPLOYER.md`** (protocol v1).
 
-### Default plugins in CI, and the template a plugin repository calls (D31, decision 5)
+### Plugins in CI (D31)
 
-The gate's steps live in `.github/workflows/gate.yml` and `ci.yml` calls it twice — once on the
-checkout as it is, once with every default plugin installed. One boolean input is the difference,
-because a second copy of those steps would prove nothing about the copy nobody ran.
+Launch commits its installed plugins, so the ordinary gate already runs each one's own tests
+(`src/plugins/*/tests/{api,ui,config}`). The `plugin-check` job runs `node scripts/plugin.mjs
+check` — the same command a person runs — with no install and no database. There are no default
+plugins to install and no second gate pass.
 
-`defaultPlugins` in `.rocketflare.json` is a list of OBJECTS, and CI is its only strict reader:
-
-```json
-"defaultPlugins": [
-  { "id": "analytics", "repo": "https://github.com/rocketflare-dev/rocketflare-plugin-analytics.git", "ref": "1.0.2" }
-]
-```
-
-`repo` because a bare id says nothing about where a plugin comes from (decision 13 already made a
-repository required of every plugin manifest); `ref` because CI installs a PINNED version rather
-than whatever the default branch says this morning; `subdir` when the plugin is not the root of its
-repository. A bare string parses as an id with no repo and is reported as such rather than having a
-URL guessed for it. With the list empty the `default-plugins` job still runs and says so — that is
-the answer worth seeing on a bare kit — and the expensive second gate is skipped, since with nothing
-installed it would re-run the first one verbatim.
-
-**`pnpm kit:release X.Y.Z` refuses a version its default plugins are not ready for**: every entry
-must still resolve at the ref the kit pins (`git ls-remote`), and the `minKit` floor it declares
-there must be at or below the version being cut. A plugin still carrying the retired `requires.kit`
-is named as such, with the edit, rather than approximated — there is no range machinery left to fall
-back on. `--skip-plugin-check` is the escape hatch and says so loudly. Be clear about what that proves: it catches a pin nobody updated.
-**"CI green" is proven by the `plugins` job above, on the release commit** — a release script cannot
-run somebody else's tests.
-
-The mirror image, for a plugin repository, is `.github/workflows/plugin-ci.yml`, which lives in the
-kit so that a change to how compatibility is proved reaches every plugin through one file. It reads
-the plugin's own top-level `minKit` — one bare `X.Y.Z`, a floor with no ceiling — pairs it with the
-kit's NEWEST release tag, and for each clones that kit, installs the plugin from the checkout under
-test, generates and applies the migrations the host owns, and runs the full gate. A plugin whose
-`requires.plugins` names others gets them installed FIRST — each resolved by `id` to a directory in
-the same checkout, dependencies before dependants, a missing id or a cycle failing the resolve job
-by name — and its floor is the highest `minKit` across the plugin and those requirements, because a
-kit too old for a dependency cannot host the plugin either. Both ends, not a
-midpoint: the floor an adopter may still be on and the ceiling the kit has just reached. It compares
-no versions itself — `sort -V` over `git ls-remote --tags` picks the newest, and everything left in
-JavaScript is exact string matching, so there is no range to be malformed. A plugin repository
-copies this and nothing else:
-
-```yaml
-# .github/workflows/ci.yml in the plugin repository
-name: CI
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-jobs:
-  ci:
-    uses: launch-dev/launch/.github/workflows/plugin-ci.yml@main
-    # with:
-    #   kit_repo: https://github.com/rocketflare-dev/rocketflare.git  # the default
-    #   kit_ref: my-branch         # prove against one kit branch/tag; minKit is not consulted
-    #   plugin_subdir: ""          # when the plugin is not the root of this repository
-    #   plugin_subdirs: '["plugins/analytics"]'   # a repository holding several plugins
-    # secrets:
-    #   kit_token: ${{ secrets.KIT_READ_TOKEN }}   # only if the kit repository is private
-```
-
-There is no `kit_range` input: it was removed with the ranges, and **passing an input a reusable
-workflow does not declare is a hard error**, so a caller that still names it fails outright rather
-than being ignored.
-
-Failing there means one of two things and the matrix says which: at the FLOOR, the plugin has
-started using something the kit only gained later — raise `minKit` and release the plugin; at the
-CEILING, the kit has moved under it — port the plugin (`pnpm plugin upgrade` is the adopter's side
-of the same change) and release it. `pnpm plugin check` names the symbols, because compatibility is
-the set difference between what a plugin `uses` and the kit's `## Surface ledger` (D31, §16).
-
-**`test-neon`** is how a fresh copy's DEPLOYED path is tested before it deploys: local development
-and the gate run `postgres`. It is required in the kit; a copy that deploys on `postgres` everywhere
-may delete the job.
+**`test-neon`** is how Launch's DEPLOYED path (`DATABASE_DRIVER=neon`) is tested before it deploys:
+local development and the gate run `postgres`.
 
 **Bundle size.** `pnpm build` (`build:api` = `wrangler deploy --dry-run --outdir dist/api`) produces
 `dist/api/worker.js`; **`gzip -c apps/web/dist/api/worker.js | wc -c` is the size that matters, and
@@ -426,25 +355,14 @@ adapter over `drizzle-cube/server` (`.claude/rules/cloudflare.md`). UI: the anal
 (drizzle-cube client + recharts + d3) is the largest and lazy — it must never merge into the main
 chunk.
 
-**Deploy guard.** A `guard` job runs first and the two deploy jobs are conditional on it. It skips
-only the kit's own repository, which keeps `<PLACEHOLDER>` ids in both tomls on purpose — an app
-(`app` set in `.rocketflare.json`) always deploys and still fails loudly at the parity check if it
-was never provisioned. `isDeployable` (`scripts/lib/upgrade-lib.mjs`, unit-tested) deploys in every
-ambiguous case, because a false skip is a release quietly not happening.
+**No deploy guard.** Both deploy jobs always run; an unprovisioned checkout fails loudly at the
+parity check (`REQUIRE_PROVISIONED=1`), which is the point of it.
 
 **Version rule.** The git tag must equal `version` in the **root** `package.json`; the job fails
-otherwise. It also fails without `docs/upgrades/<tag>.md`, its `CHANGELOG.md` section and a
-matching `.rocketflare.json` `kit.version` (`scripts/release-check.mjs --tag`): a release with no
-porting note is a permanent gap in the chain `/rf-upgrade` walks, and every copy of the kit has to
-step over it. `pnpm kit:release <version>` writes all of that, so the gate passes by construction — and in the
-kit it also refuses a version whose `defaultPlugins` no longer resolve at their pinned ref
-(D31, above).
-**Released history is never rewritten** — a copy pins a kit commit and a force-push orphans it. One tag ships `apps/web` and `apps/cli` together — the `apps/*` and `packages/*` versions
-are informational and are not checked. Bump the root version, commit, tag. The kit itself has one
-more step after the tag, which nothing automates: updating clewro.com's changelog
-(`CONTRIBUTING.md`, "Cutting a release"). A Claude Code `PreToolUse` hook
-(`scripts/release-site-nudge.mjs`) reminds the agent of it on any commit that changes the root
-`package.json` version, in the kit and in the plugins monorepo (which carries a copy).
+otherwise (an inline check in `deploy.yml`). One tag ships `apps/web` and `apps/cli` together — the
+`apps/*` and `packages/*` versions are informational and are not checked. Bump the root version,
+move the `## Unreleased` lines in `CHANGELOG.md` under it, commit, tag. Never force-push a released
+tag.
 
 Publishing the Release is the promotion gate (required reviewers are unavailable on private repos
 on the free plan; add them to the `production` environment if the plan allows). Production does not

@@ -399,14 +399,9 @@ A `CUSTOM kit.notice` renders
   `availableInEnvironment` is config a redeploy moves, everything else is a click. Overrides offer
   three states — On / Off / Default — because deleting the row (follow the platform state) is a real
   third answer a checkbox cannot express; the section is absent in single mode, matching the routes.
-- The `Example feature` nav item, its page and its notes CRUD are the `example-feature` PLUGIN
-  (D31), not kit files: they live in `src/plugins/example-feature/ui/` and arrive through
-  `UiPlugin.routes` / `UiPlugin.nav`. Delete the whole plugin (three directories, its barrel lines,
-  its surface in `.rocketflare.json`) rather than editing the shell.
-- Tests: `src/plugins/example-feature/tests/ui/feature-flag-nav.test.tsx` — it MOVED into the
-  plugin with the nav item it looks for (a test that outlived its subject is a false failure). It
-  drives the REAL `useNavGuard` — never a re-implementation, which is what hid the ability-wildcard
-  bug — and runs every assertion for a global admin as well as an owner.
+- A plugin's nav items and pages arrive through `UiPlugin.routes` / `UiPlugin.nav` and live in
+  `src/plugins/<id>/ui/`, not in the shell. Remove a plugin with `pnpm plugin remove <id>` rather
+  than editing the shell.
 
 ## Groups and visibility (D29)
 

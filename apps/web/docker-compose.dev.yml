@@ -11,6 +11,12 @@
 # the deployed `neon` driver locally (D35): `pnpm dev:db:up --neon` starts it on a per-checkout port
 # and writes NEON_LOCAL_PROXY; `--postgres` stops it. Our build on a mirror of a community image packaging Neon's open-source
 # proxy, PINNED BY DIGEST (rules/database.md). It creates a `neon_control_plane` schema.
+#
+# `name:` is the project for a bare `docker compose -f docker-compose.dev.yml up`, instead of the
+# directory name `web` that every Rocketflare-derived checkout shares. `pnpm dev:db:up` still sets
+# its own per-checkout project (`launch-dev-<tag>`, scripts/dev-db.mjs), which takes precedence.
+name: launch-dev
+
 services:
   postgres-dev:
     image: pgvector/pgvector:pg17
@@ -31,7 +37,7 @@ services:
 
   neon-proxy-dev:
     profiles: ["neon"]
-    image: ghcr.io/launch-dev/local-neon-proxy@sha256:fbc2c4dd398d7f8b530bc11e0dbc7e24176d4db7bca2f4d88f21b5b4e50580f8
+    image: ghcr.io/rocketflare-dev/local-neon-proxy@sha256:fbc2c4dd398d7f8b530bc11e0dbc7e24176d4db7bca2f4d88f21b5b4e50580f8
     container_name: ${DEV_NEON_PROXY_CONTAINER:-launch-dev-neon-proxy}
     # Our image (docker/Dockerfile.neon-proxy): the mirrored proxy with docker/neon-proxy-start.sh
     # baked in as the entrypoint, ~10x faster locally than the image's own script. Baked, not

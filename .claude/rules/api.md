@@ -139,7 +139,7 @@ failures surface as the JSON envelope on this route.
 ## Analytics — a PLUGIN, not core (D19 · D31)
 
 Cubes, dashboards, fact tables, `/cubejs-api` and `/mcp` left the kit in 0.6.0 for
-`launch-plugin-analytics` (`docs/CONCEPTS.md` §8). **The conventions did not change, they
+`rocketflare-plugin-analytics` (`docs/CONCEPTS.md` §8). **The conventions did not change, they
 moved**: once installed they are in `apps/web/src/plugins/analytics/CLAUDE.md`, `cubes/CLAUDE.md`
 and `services/fact-tables/CLAUDE.md`. Three things a KIT route author still has to know:
 
@@ -260,7 +260,7 @@ A plugin is a separate git repository copied into the app that contributes throu
   MODULE SCOPE by `queues/jobs.ts`, `services/agents/registry.ts`, `services/prompts.ts`,
   `api/scheduled.ts`, `utils/routes/api-prefixes.ts` and `services/access.ts`, so a plugin module
   that reads a module-scope value from one of those at its OWN module scope closes a cycle and one
-  side holds `undefined` — a crash at import, not a compile error. `example-feature` shows the two
+  side holds `undefined` — a crash at import, not a compile error. There are two
   avoidances: **`import type`** for anything only needed as a type (`AgentToolContext`, `Tool`), and
   **naming the file directly** rather than the barrel (`db/schema/feature-flags`, because
   `db/schema/index.ts` re-exports `plugins/schema.ts`, which re-exports the plugin). The shared side
@@ -302,7 +302,7 @@ Jobs rules (D7):
 - **Adding a job type** = a variant in `CORE_JOB_VARIANTS` (shared — `jobInputSchema`, `jobEnvelopeSchema`, `JobType` and `JOB_TYPES` are all DERIVED from that one list), a handler in `queues/handlers/`, and its entry in `coreHandlers` (`queues/jobs.ts`). **There is no `runHandler` switch**: the mapped type `{ [T in CoreJobType]: JobHandler<T> }` is the completeness check, and dispatch is `handlers[job.type](job as never, ctx)`. A plugin (D31) brings its variants in `SharedPlugin.jobs` and its handlers in `ServerPlugin.jobHandlers`, checked against the types IT declared
   (`packages/shared/src/jobs.ts`). The `type` string is the version seam: a breaking payload change
   is a new type (`email.send.v2`), never an edited schema. `handlers/document-index.ts` is the
-  shortest kit handler to copy; `src/plugins/example-feature/jobs/ping.ts` is the shortest one full stop
+  shortest kit handler to copy
 - Handler signature `(job: JobOf<'x'>, ctx: { env, config, logger, db, tracer? })` (`tracer` is the message's span recorder, flushed by the consumer before `db` closes — an AI handler brackets its work in `withAgentTrace(..., { kind: 'job', spanName: 'job <type>' })`); each message gets its
   own DB client, closed in `finally`. **Never `waitUntil` in a consumer — await everything**; a
   handler that throws is retried, one that returns is acked
@@ -323,7 +323,6 @@ Jobs rules (D7):
   unreachable. An R2 error throws and is retried: the alternative is a tenant's files living on for
   ever because one list call timed out. Everything in it is idempotent, which is what makes that
   retry free
-- `example-feature.ping` is the smoke job and it belongs to the `example-feature` PLUGIN (D31), not to the kit: `POST /api/example-feature/ping` (or `launch example-feature ping`) enqueues it, then watch `wrangler dev`. The shape to copy is `apps/web/src/plugins/example-feature/jobs/ping.ts`
 - `chat.compact` (D17) folds the messages outside a conversation's `CHAT_HISTORY_MAX_CHARS` budget into `conversations.summary`; the window comes from the same pure `selectHistoryWindow` the route uses, and the write is a compare-and-set on `summarised_through_id` so two deliveries cannot lose an update. `document.index` (D18) re-indexes a `documents` row from its stored `content` (`handlers/document-index.ts` → `indexDocument`); the message carries ids only. `ingestText` enqueues it for texts over 50 chunks
 
 Side effects that can outlive the response (email, tracing flush, DO nudge, `sql.end()`) go in

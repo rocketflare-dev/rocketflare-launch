@@ -14,13 +14,9 @@
  * reads the widened `serverPlugins` beside it.
  */
 import { analyticsServer } from './analytics'
-import { exampleFeatureServer } from './example-feature'
 import type { AnyServerPlugin } from './types'
 
-export const SERVER_PLUGINS = [
-  analyticsServer,
-  exampleFeatureServer,
-] as const satisfies readonly AnyServerPlugin[]
+export const SERVER_PLUGINS = [analyticsServer] as const satisfies readonly AnyServerPlugin[]
 
 /** The barrel as a plain list. Iterate this; `SERVER_PLUGINS` is for type derivation. */
 export const serverPlugins: readonly AnyServerPlugin[] = SERVER_PLUGINS

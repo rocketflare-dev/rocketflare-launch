@@ -1,12 +1,11 @@
 # SETUP — step-by-step walkthrough
 
-Everything needed to take this kit from a fresh copy to a configured, deployed app. Work through
+Everything needed to take Launch from a fresh clone to a configured, deployed app. Work through
 the parts in order; **every step ends with a verification line — do not move on until it passes.**
 
 **This file is instructions, not design.** What the kit does and why is in
 [`docs/CONCEPTS.md`](docs/CONCEPTS.md); the Cloudflare topology is in [`docs/DEPLOY.md`](docs/DEPLOY.md);
-code conventions are in `.claude/rules/`. If this is a freshly copied kit, do
-[`docs/ADAPTING.md`](docs/ADAPTING.md) §1 (renames) before Part 1.
+code conventions are in `.claude/rules/`.
 
 **Where commands run.** The repo is a pnpm workspace (`apps/web`, `apps/cli`, `packages/shared`).
 **Every command below runs from the repository root** unless it says otherwise: the root
@@ -27,14 +26,14 @@ Engine and add your user to the `docker` group. Confirm the tool works, then car
 
 ## Part 1 — First run (local) `[ready]`
 
-> **The short way.** `bash scripts/bootstrap.sh` (or `/rf-setup` in Claude Code; `pnpm bootstrap` once
+> **The short way.** `bash scripts/bootstrap.sh` (or `/launch-setup` in Claude Code; `pnpm bootstrap` once
 > Node and pnpm exist) does 1.1–1.7 in one go — ten steps, one `✔ n/10 <name> <what it verified>`
 > line each, a `✖` line plus a `fix:` hint on the first failure — and ends with the browser open at
 > `http://localhost:3000/login?as=owner@example.test`. macOS or Linux (Windows: WSL2). Re-runnable on
 > a half-done machine: it inspects before it acts and never overwrites a value you wrote. Flags:
 > `--offline` (no Cloudflare account: comments the `[ai]` block out of both tomls), `--online`
-> (restore it), `--no-demo` (plain `pnpm seed`), `--no-plugins` (do not install `defaultPlugins`,
-> §1.4b), `--no-dev` (stop after step 8 and print what to run next), `--no-open`,
+> (restore it), `--no-demo` (plain `pnpm seed`), `--no-plugins` (skip the installed-plugin
+> check, §1.4b), `--no-dev` (stop after step 8 and print what to run next), `--no-open`,
 > `--as <email>`, `--yes`, `--verbose`, `--db-url <url>` (an existing Postgres instead of Docker,
 > §1.4); `--check` is `pnpm preflight`.
 > Exit codes: `0` ok · `1` a step failed · `2` usage · `3` prerequisite missing · `4` port/container
@@ -134,14 +133,10 @@ pnpm plugin check                 # audit them: exit 1 with one line per failure
 A **plugin** is a git repository copied into this app — never an npm package — that contributes
 contracts, schema, routes, jobs, agents, UI and CLI commands through six barrel files
 (`docs/CONCEPTS.md` §16), importing the host only through the declared entries
-(`docs/plugin-api.md`) and receiving everything else as injected context. `.rocketflare.json`'s `defaultPlugins` lists the ones a fresh clone should
-have; the bootstrap's `6/10 plugins` step installs each one that is not already there with
-`pnpm plugin add <repo> --apply`, then generates and applies its migration:
-
-> In the kit itself (`app: null` in `.rocketflare.json`) the step records each install in the
-> git-ignored `.rocketflare.local.json` sidecar rather than the committed manifest, so a fresh clone
-> of the kit never commits a plugin's surface — the installed FILES are not ignored, though, so do not
-> `git add -A` them into the kit. In an app (`app` set) the surface goes into `.rocketflare.json`.
+(`docs/plugin-api.md`) and receiving everything else as injected context. Launch commits its
+installed plugins — today `analytics` — with their barrel lines and migrations, and records each in
+`launch.plugins.json`. So a fresh clone has nothing to install: the bootstrap's `6/10 plugins` step
+only checks every recorded plugin's files are on disk. To add one:
 
 ```bash
 pnpm plugin add <repo|path>[@ref]          # prints the plan and stops
@@ -149,35 +144,30 @@ pnpm plugin add <repo|path>[@ref] --apply  # copies, writes the barrel lines, re
 pnpm db:generate --name plugin-<id>-<version> && pnpm db:migrate   # the HOST's migration, always
 ```
 
-**It runs before the seed on purpose**: a plugin can contribute demo data, so installing one after
-`pnpm seed` leaves the demo workspace missing exactly the rows it exists to show. `pnpm bootstrap
---no-plugins` skips the step; an id already installed is skipped anyway, so a re-run is safe.
+`pnpm bootstrap --no-plugins` skips the check.
 
-Verify: `pnpm plugin list` shows a line per plugin (the kit ships the vendored `example-feature`),
-and `pnpm plugin check` prints `✔ n plugin(s) check out` and exits 0. `defaultPlugins` is `[]` in
-the kit today, so the bootstrap step reports `no defaultPlugins declared — nothing to install`.
+Verify: `pnpm plugin list` shows a line per plugin (`analytics  3.4.1 …`), `pnpm plugin check`
+prints `✔ n plugin(s) check out` and exits 0, and the bootstrap step reports
+`installed: analytics@3.4.1`.
 
 A plugin ships **no migration and no toml edit**: the host runs `pnpm db:generate`, and a binding,
 cron or `[vars]` key it declares is written into both tomls by `pnpm provision cloudflare <env>`
-(Part 3). `/rf-plugin` drives all of it and always shows the plan before anything is written.
+(Part 3). `/launch-plugin` drives all of it and always shows the plan before anything is written.
 
 ### 1.5 Seed
 ```bash
-pnpm seed             # idempotent: demo tenant, owner/admin/member users, one API key
-pnpm seed --demo      # the same, plus a populated workspace (what the bootstrap runs; or SEED_DEMO=1)
+pnpm seed             # idempotent: the tenant, owner/admin/member users, one API key
+pnpm seed --demo      # the same, plus each installed plugin's demo data (what the bootstrap runs; or SEED_DEMO=1)
 ```
-`pnpm seed` creates the tenant `Acme` (`acme`), `owner@` / `admin@` / `member@example.test`, a
-pending invitation for `invited@example.test`, the global admin `admin@clewro.com` and one API
-key. `--demo` additionally fills that workspace with a logistics company in use (the tenant is
-renamed `Acme Logistics` in `multi` mode) — more members, two
-sibling tenants, two weeks of activity, conversations, an indexed knowledge base, finished agent
-runs (`summarize-text`, `research-topic`), an AI usage ledger and rebuilt fact tables — so every
-page has something to show. Every demo row has a fixed id and is inserted `onConflictDoNothing`, so
-re-running adds nothing; the chunk vectors are deterministic stand-ins (`embeddingModel:
-'seed:deterministic'`), so a seeded passage is found by the lexical half of the hybrid search, not
-the dense half. Local database only — it is a `tsx` script over `DATABASE_URL`.
+`pnpm seed` creates the tenant, `owner@` / `admin@` / `member@example.test`, a pending invitation
+for `invited@example.test`, the global admin `admin@clewro.com` and one API key. Launch runs
+`TENANCY_MODE=single` (`.dev.vars`), so the one tenant is named after `APP_NAME` with slug
+`default`; under `multi` it is `Acme` (`acme`). `--demo` additionally runs every installed plugin's
+`seedDemo` hook — the analytics plugin seeds its dashboards and rebuilds its fact table. Every demo
+row has a fixed id and is inserted `onConflictDoNothing`, so re-running adds nothing. Local
+database only — it is a `tsx` script over `DATABASE_URL`.
 Verify: the output lists the seeded emails and prints the API key **once** (on the first run only;
-later runs say it already exists); with `--demo` it ends with a "Workspace `acme` now holds" table.
+later runs say it already exists).
 `pnpm db:studio` shows the rows.
 
 ### 1.6 Run it
@@ -247,7 +237,7 @@ as the CLI.
 ### 1.7 CLI first run
 The bootstrap already did this once: its `8/9 cli` step ran `pnpm cli whoami` with the seed's
 one-time key (first run only — a re-run finds the key exists and skips; not with `--no-dev`, which
-`/rf-setup` uses — run `pnpm cli login` yourself then). To use the CLI yourself, with `pnpm dev` still
+`/launch-setup` uses — run `pnpm cli login` yourself then). To use the CLI yourself, with `pnpm dev` still
 running, in a second terminal:
 ```bash
 pnpm cli login --server http://localhost:3001   # opens the browser; sign in, pick the tenant
@@ -263,13 +253,13 @@ pnpm cli whoami
 `/auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; after login + tenant select the server
 mints a tenant API key named `cli:<your hostname>` and redirects back. The key is stored in
 `~/.launch/config.json` (mode `0600`) and is never printed in full.
-Verify: `whoami` prints your email, the tenant name and a key prefix; `pnpm cli members list --json |
-head` prints JSON; `ls -l ~/.launch/config.json` shows `-rw-------`; a wrong key exits `2`. For CI or
+Verify: `whoami` prints your email, the tenant name and a key prefix; `pnpm cli features list --json
+| head` prints JSON; `ls -l ~/.launch/config.json` shows `-rw-------`; a wrong key exits `2`. For CI or
 scripts, `LAUNCH_API_KEY` + `LAUNCH_URL` in the environment replace the config file (no browser).
 
 ### 1.8 Tests
 ```bash
-pnpm test:db:up       # ephemeral Postgres on :5433 (max_connections=300; apps/web/docker-compose.test.yml)
+pnpm test:db:up       # ephemeral Postgres on :5433 (max_connections=300; apps/web/docker-compose.test.yml, compose project launch-test)
 pnpm test             # every package: web api + api-isolated + driver (real DB), ui (jsdom), config (no DB); cli
 pnpm test:neon        # optional: the Neon proxy on :4433 + api, api-isolated and driver on the neon driver (CI's test-neon)
 ```
@@ -513,9 +503,9 @@ turns a bad answer into a case. Everything else — suites, judges, baselines, C
 
 ### 2.7 Plugins `[ready]` (D31)
 
-Analytics is not part of the kit; it is the `analytics` PLUGIN, and it is the one entry in
-`.rocketflare.json` `defaultPlugins`, so `bash scripts/bootstrap.sh` installs it in its `plugins`
-step and a fresh clone has dashboards without you doing anything. Nothing to configure.
+Analytics is not core; it is the `analytics` PLUGIN (from `rocketflare-dev/rocketflare-plugins`,
+`plugins/analytics`, 3.4.1), committed with Launch, so a fresh clone has dashboards without you
+doing anything. Nothing to configure.
 
 ```bash
 pnpm plugin list                                   # what is installed, and from where
@@ -538,18 +528,16 @@ origin or a deployed host. It is an ordinary Bearer key: every query it makes is
 tenant by the cubes and it is revoked in the same place. Verify: the CLI's `meta` lists
 `ActivityEvents`, `TenantActivityDaily`, `TenantUsers`, `Users`.
 
-Writing one of your own: `/rf-plugin`, or `apps/web/src/plugins/CLAUDE.md` and
-`apps/web/src/plugins/example-feature/` — the vendored reference plugin, which exists to be read
-and then deleted.
+Writing one of your own: `/launch-plugin`, or `apps/web/src/plugins/CLAUDE.md` and the installed
+`apps/web/src/plugins/analytics/`.
 
 ### 2.8 Feature flags `[ready]` (D30)
 
-Nothing to configure — flags work out of the box, and the kit itself ships none: the one inert demo
-flag (`example-feature`, a nav item, a page and a notes API) belongs to the reference PLUGIN of the
-same name (D31, `apps/web/src/plugins/example-feature/`), which is installed by default and safe to
-delete. As a global admin, open **Admin → Feature flags**: set it to On and the nav item appears; to
-Rollout and the percentage decides deterministically; force it on or off for one organisation and
-that beats the percentage either way.
+Nothing to configure — flags work out of the box, and Launch ships none yet (a flag is declared in
+`CORE_FEATURE_FLAGS` or by a plugin's `SharedPlugin.features`). Once one exists, as a global admin
+open **Admin → Feature flags**: set it to On, or to Rollout and the percentage decides
+deterministically; force it on or off for one organisation and that beats the percentage either
+way.
 
 Two things worth knowing before you add your own:
 
@@ -565,8 +553,9 @@ Verify: `pnpm cli features list --json` prints the effective flags for your tena
 `/admin` changes it on the next call.
 
 ### 2.9 Rebrand checklist
-See [`docs/ADAPTING.md`](docs/ADAPTING.md) §1 — package names (`@launch/*`), worker names, DB names,
-CLI bin / config dir / env prefix, themes, logo, `EMAIL_FROM`.
+Done when Launch was seeded from Rocketflare 0.15.0: package names (`@launch/*`), worker names, DB
+names, CLI bin (`launch`) / config dir (`~/.launch`) / env prefix (`LAUNCH_`), `EMAIL_FROM`. The
+themes and logo are still the kit's.
 
 ---
 
@@ -592,7 +581,7 @@ deployed; the CLI is built by CI but not published (publishing it is an app deci
 3. **Resend** — the free tier is fine; it verifies the domain from (1). `--skip-email` skips it
    (magic links are logged in `wrangler tail`).
 
-**Recommended: `/rf-provision`** in Claude Code, or `pnpm provision all` by hand
+**Recommended: `/launch-provision`** in Claude Code, or `pnpm provision all` by hand
 (`apps/web/scripts/provision.ts`; `pnpm provision --help` lists every phase and flag). It is REST
 over `fetch` plus `wrangler` and `gh` — no vendor CLIs — idempotent (find-or-create), and every
 phase ends in one `Verify:` line. The four tokens go in `apps/web/.provision.env` (git-ignored,
@@ -642,7 +631,7 @@ pnpm provision all [--deploy staging|both] [--skip-email] [--rotate]   # 10–20
 Close-out: sign in with the admin's magic link — with `SIGNUP_MODE=invite_only` the first login lands
 on `/pending`; as the global admin create the first organisation at `/admin` — add OAuth redirect
 URIs, commit the two tomls (ids and URLs are not secrets), push, `pnpm cli login --server <APP_URL>`.
-Known limits: `.claude/skills/rf-provision/reference.md`. The manual sequence below is the reference for
+Known limits: `.claude/skills/launch-provision/reference.md`. The manual sequence below is the reference for
 what each phase does.
 
 ### 3.1 Accounts and access
@@ -737,11 +726,9 @@ the staging file). Wrangler creates the DNS record on the next deploy. Set `[var
 Verify: the host serves the app over HTTPS; the parity test still passes (`routes` may differ).
 
 ### 3.7 The release dance (every subsequent deploy)
-1. `pnpm kit:release X.Y.Z` — folds `docs/upgrades/unreleased.md` into `docs/upgrades/X.Y.Z.md`,
-   bumps the **root** `package.json` and `.rocketflare.json` `kit.version`, and prepends the
-   `CHANGELOG.md` section. Commit. (The `apps/*` versions are informational; one tag ships web and
-   cli together.) The deploy refuses a tag whose porting note is missing — that note is how every
-   copy of the kit absorbs this release.
+1. Bump the **root** `package.json` version to X.Y.Z and move the `## Unreleased` lines in
+   `CHANGELOG.md` under `## X.Y.Z`. Commit. (The `apps/*` versions are informational; one tag ships
+   web and cli together.)
 2. `git tag X.Y.Z && git push origin X.Y.Z` → **staging** deploys (`deploy.yml`: CI gate → parity
    with `REQUIRE_PROVISIONED=1` → `pnpm db:migrate:ci` on the staging branch →
    `pnpm --filter @launch/web build:ui` → `pnpm --filter @launch/web exec wrangler deploy -c

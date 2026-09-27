@@ -32,6 +32,8 @@ suites on vitest 4, §9 — never part of the gate).
   tenants via `tenant_users`, the session carries the current one. `single`: one tenant, every
   admitted user auto-joins as `member`; multi-only surface is 404 `tenancy_mode_single`
   (`requireMultiTenant`) and hidden via `useTenancyMode()`. Switching to `multi` needs no migration.
+  Launch deploys `single` (both tomls, and `.dev.vars.example` for the seed); the test suite runs
+  `multi`, because the kit's tests exercise the multi-tenant paths.
 - **`SIGNUP_MODE = open | invite_only | approval` (D9)**, default `invite_only`. Uninvited logins
   land on `/pending`; `approval` also files an `access_requests` row at *verify* time;
   `open` gives a personal tenant through `onNoTenant`. Invitations are handled first on every login
@@ -155,7 +157,9 @@ path); no per-PR previews.
   enums, `vector(1024)` (a new dimension means a new table). `migrate.ts` creates the `vector`
   extension first. Detail: `.claude/rules/database.md`.
 - **Local port is chosen** (`scripts/dev-db.mjs`): each checkout gets its own compose project and
-  port, written back to `DATABASE_URL`, so two copies never share a database.
+  port, written back to `DATABASE_URL`, so two copies never share a database. The test database's
+  compose project is pinned too (`name: launch-test`), so another Rocketflare-derived checkout's
+  `test:db:up` cannot recreate Launch's test container.
 - **Or an existing database** (`pnpm bootstrap --db-url <url>`): for a machine with no Docker (a
   coding sandbox on a Neon branch). The URL goes into `DATABASE_URL` and nothing is started; a
   `*.neon.tech` URL also sets `DATABASE_DRIVER=neon` there (HTTPS + WebSocket only, which is what a
@@ -171,7 +175,7 @@ path); no per-PR previews.
   and `TENANT_SCOPE_MODE=enforce` waits on the spike in `docs/RLS.md`.
 
 **Known gaps:** the RLS spike has not been run; no read replicas; the local Neon proxy is a
-community image, mirrored to `ghcr.io/launch-dev` and rebuilt with our start script (pinned by digest) — Neon's official "Neon Local"
+community image, mirrored to `ghcr.io/rocketflare-dev` and rebuilt with our start script (pinned by digest) — Neon's official "Neon Local"
 needs a cloud account; `neon` in deployment has no read cache and pays a round trip per query
 (p95 is measured per app when it switches, not gated); `test-neon` installs no plugins, so a
 plugin's own tests run under `neon` only in a local `pnpm test:neon`; the TEST database is pinned to
@@ -249,8 +253,8 @@ is hard-coded.
 
 ## 8. Analytics
 
-**The `analytics` PLUGIN, the one `defaultPlugins` entry (D31, since 0.6.0).** Repository
-`launch-dev/launch-plugin-analytics`. Once installed, its docs are its own `CLAUDE.md`
+**The `analytics` PLUGIN (D31, since 0.6.0), committed with Launch.** Repository
+`rocketflare-dev/rocketflare-plugins`, subdirectory `plugins/analytics`, at 3.4.1. Once installed, its docs are its own `CLAUDE.md`
 files. drizzle-cube cubes scope every `sql()` by tenant, dashboards are jsonb `DashboardConfig`s
 restrictable to groups, fact tables rebuild on the `:15` cron, and its cube-isolation test is
 mandatory. The kit core knows nothing about drizzle-cube, and other plugins extend it through
@@ -339,7 +343,7 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   strips prompts, completions and tool I/O from both sinks; `pruneAiSpans` on the nightly cron keeps
   `OBSERVABILITY_SPAN_RETENTION_DAYS` (14). Read back through `GET /api/traces[/:id]` (`read
   Trace`, admin+ — spans hold other people's prompts) and `launch traces list|show`; the
-  `rf-traces` skill teaches an agent to debug from the span tree. Switch recipes: `docs/DEPLOY.md`
+  `launch-traces` skill teaches an agent to debug from the span tree. Switch recipes: `docs/DEPLOY.md`
   § Tracing.
 
   **D32 decisions** (design grilling, 2026-09-25): our own OTLP exporter behind the existing seam —
@@ -373,7 +377,7 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   `--compare` exits 1 on a per-case, per-judge drop past `--threshold` (0.1). `pnpm eval:view`
   prints the score diff between two runs, then serves the vitest-evals report UI (runs, cases,
   transcripts, judge rationales). The optional `evals.yml` workflow runs it on manual dispatch or a
-  `run-evals` label, outside the gate. How-to: `docs/EVALS.md`; the `rf-evals` skill drives it.
+  `run-evals` label, outside the gate. How-to: `docs/EVALS.md`; the `launch-evals` skill drives it.
 - **Feedback and promotion (D33)**: thumbs on assistant messages and run output
   (`POST /api/feedback`, `create Feedback` for every member, on an answer they can READ — another
   member's thread is a 404, admins included). One row per `(tenant, target, user)` in
@@ -390,7 +394,7 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   own vitest-4 package rather than a workspace-wide vitest upgrade or a home-grown runner · targets
   in-process, through the real route and runtime · no in-app eval UI (JSON runs + the report UI) ·
   datasets are code; promotion from real traffic and thumbs · the judge goes through the resolver,
-  with a `--judge-model` override · in core, not a plugin · the `rf-evals` skill is a first-class
+  with a `--judge-model` override · in core, not a plugin · the `launch-evals` skill is a first-class
   deliverable. The prompt key is `evals-judge` (keys are kebab-case); the ledger feature is
   `evals.judge`.
 - **Rejected**: Cloudflare's Agents SDK. Per-instance SQLite sits outside RLS, the tenant FK cascade
@@ -406,8 +410,7 @@ not derived from the model; sliding window defeats prompt caching on long thread
 does not pre-resolve the client; Workers AI forced tools on off-list models are best-effort; no
 rerank, no generated `tsvector`; no non-exclusive agents; HITL asks cannot be amended, have no
 reminders, and parks are bounded by instance retention (3 days Free / 30 Paid); runs nobody opens
-stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning; the demo seed's
-vectors are deterministic, so dense search over seeded docs is noise. Tracing: no per-tenant
+stay active-looking; no budgets/quotas over `ai_usage` or prompt versioning. Tracing: no per-tenant
 backends (BYO keys via `sealSecret`), no native `tracing.enterSpan`, no metrics export, no
 Langfuse/Phoenix MCP; inline ingest from `POST /api/ai/documents/ingest` is untraced (no active
 span); the backend receives a run's root only at `finish`, so an in-flight run has no root there;
@@ -427,7 +430,7 @@ Account-scoped names carry `-staging`. Neon uses one project with a branch and r
 environment; under `postgres` Hyperdrive points at the direct host, under `neon` the Worker's
 `DATABASE_URL` secret holds the pooled one (D35). Tagging `X.Y.Z` (which must equal the root
 version) deploys staging; publishing the Release deploys production. `ci.yml` (→ `gate.yml`) is the
-single gate, which `deploy.yml` calls. `pnpm provision <phase>` / `/rf-provision` automates
+single gate, which `deploy.yml` calls. `pnpm provision <phase>` / `/launch-provision` automates
 accounts → resources → secrets → deploy over REST. Reference: `docs/DEPLOY.md`, `SETUP.md` Part 3.
 
 **External deployer (opt-in).** A Cloudflare token that can deploy a Worker can bind any resource in
@@ -437,7 +440,7 @@ proves who it is with a GitHub OIDC token and hands the dry-run build to a deplo
 bindings, stores an undeployed version, issues short-lived migration credentials, then activates
 (`scripts/deployer.mjs`; the v1 contract is `docs/DEPLOYER.md`). Unset, the default path is unchanged.
 
-**Known gaps:** no release helper beyond `kit:release`; no per-PR previews; no CLI publishing;
+**Known gaps:** no release helper; no per-PR previews; no CLI publishing;
 provisioning HTTP calls have not been run end-to-end against live accounts; no automated
 Workers-plan check. The kit ships no deployer, only the client and the contract; the job waits for
 approval on a runner (fine for minutes, wasteful for hours — there is no re-dispatch).
@@ -468,50 +471,28 @@ cycle). Detail: `packages/shared/CLAUDE.md`.
 
 **Known gaps:** no own test suite; no OpenAPI; no contract versioning between web and CLI.
 
-## 13. Upgrading a copy
+## 13. Provenance — Launch does not track the kit
 
-**A renamed copy with deleted examples still absorbs later kit releases (D27).**
+**Launch was seeded from Rocketflare 0.15.0 and then cut loose.** The kit's upgrade and release
+machinery (`.rocketflare.json`, `kit:upgrade`, `kit:release`, porting notes, the update-check and
+changelog hooks) was removed; later kit releases are not ported automatically.
 
-- **`.rocketflare.json`**: kit `{repo, version, commit}`, the app's names (`app === null` means
-  "this is the kit", asked only through `readManifest()`), `history[]`, `retiredSurfaces`
-  (never deleted), and the **surface manifest**. Surfaces are `example`, `optional-feature` and
-  `plugin`, each with an anchor file whose existence is its presence (delete the anchor to opt
-  out). Every other path is `neverPort`, `manual` or `core`; `kit-manifest.test.ts` requires 100%
-  coverage.
-- **Porting notes**: one `docs/upgrades/X.Y.Z.md` per release (frontmatter + four headings), with
-  `unreleased.md` accumulating. CI fails a PR touching `apps/**`/`packages/**` without an entry,
-  and the tag gate refuses a release without one. `pnpm kit:release` writes everything.
-- **`scripts/upgrade.mjs`**: a blobless mirror in `.upgrade/`. It classifies paths, drops absent
-  surfaces and plugin-owned files, translates through the same `applyReplacements()` as the rename,
-  then patches with `--reject` as a fallback. It **never** applies kit migrations (snapshots are
-  cumulative), writes resource ids into tomls, applies deletions unasked, or ports the root
-  version. The version stamp is written last, only on a clean apply.
-- **A copy hears about releases on its own**: a Claude Code `SessionStart` hook
-  (`scripts/kit-update-check.mjs`, in `.claude/settings.json`) compares `kit.version` with the
-  newest tag at `kit.repo` (`git ls-remote`, cached a day in the git-ignored
-  `.claude/kit-update-check.json`; a failed check an hour) and hands Claude one message to relay
-  once per session, with the CHANGELOG summaries and a pointer to `/rf-upgrade`. Copies only, a
-  fresh `startup` only, never in CI, `LAUNCH_UPDATE_CHECK=0` to silence; any failure is
-  silence.
-- **The kit reminds its own maintainers too**: two `PreToolUse` hooks on `git commit` —
-  `changelog-nudge.mjs` (source changed, no `unreleased.md` entry) and `release-site-nudge.mjs`
-  (root `package.json` version changed → update clewro.com after tagging). Both answer with
-  `hookSpecificOutput.additionalContext`, because a `PreToolUse` hook's plain stdout reaches only
-  the debug log. Silent in a copy.
-- **Released history is never rewritten** — every copy pins a commit.
+- **`launch.plugins.json`** records the installed plugins only: each plugin surface, the app's
+  names (a plugin is translated into them on the way in), and `kitVersion` — the kit plugin API
+  level a plugin's `minKit` is checked against. `plugin-manifest.test.ts` holds it to that shape.
+- **Plugins still upgrade** with `pnpm plugin upgrade`: a blobless mirror in `.plugin-cache/`, the
+  plugin's own diff translated through `applyReplacements()`, patched with `--reject` as a fallback,
+  the version stamp written last and only on a clean apply.
+- **Changes are recorded in `CHANGELOG.md`** under `## Unreleased`.
 
-**Known gaps:** a copy pinned before 0.10.1 has no update hook until it upgrades (and
-`.claude/settings.json` is `manual`, so that upgrade must add the hook entry by hand); summaries
-only for a GitHub-hosted kit; tomls and `.dev.vars.example` are diffed, not merged; the reject rate is not
-predicted; pre-manifest copies need `--adopt`; no partial upgrades; nothing checks the adopter ran
-migrations; lockstep plugin releases bump every plugin in a monorepo.
+**Known gaps:** a kit fix Launch wants is ported by hand; a plugin release that needs a newer kit
+plugin API than `kitVersion` cannot be installed until those host changes are ported.
 
 ## 14. Definition of done for the kit
 
-A fresh agent can clone and run `bash scripts/bootstrap.sh` with zero credentials and land signed in
-on a populated demo workspace. From there it must be able to:
+A fresh agent can clone and run `bash scripts/bootstrap.sh` with zero credentials and land signed in.
+From there it must be able to:
 
-- rename the copy (`/rf-adapt`)
 - log in by magic link and through the CLI
 - invite a member, switch tenants, approve an access request, including under `single` mode
 - see live refresh from a second browser and queued email
@@ -521,9 +502,7 @@ on a populated demo workspace. From there it must be able to:
   indexed exactly once
 - ingest, upload a PDF and search it
 - restrict content by group and watch it disappear and reappear live
-- see analytics installed by default, removable cleanly with `--no-plugins` or `plugin remove`
-- port a later kit release skipping deleted examples
-- toggle the `example-feature` plugin's flag
+- see analytics installed, removable cleanly with `plugin remove`
 - provision and deploy to staging
 
 The full gate stays green at every step. `SETUP.md` is the walkthrough.
@@ -538,8 +517,8 @@ The full gate stays green at every step. `SETUP.md` is the walkthrough.
   `environmentGated` flags. Then the admin rollout: tenant override → `on`/`off` → `rollout`
   percentage → registry default.
 - **Keys are code** (`FEATURES` + metadata). No migration is needed to add one; orphaned rows are
-  inert. The kit ships **no** flag — `example-feature`'s belongs to its plugin — so
-  `featureNameSchema` is a refined string.
+  inert. Launch ships **no** flag yet, so `featureNameSchema` is a refined string and
+  `featureDefinition(key)` is how code reads a flag's metadata.
 - **`featureBucket` is a wire format**: FNV-1a over `"<key>:<unit>"` mod 100, with golden vectors
   in `features.test.ts`. It is monotonic (the percentage is never hashed) and independent across
   flags.
@@ -560,7 +539,7 @@ the Bearer path; flags cannot gate pre-tenant surfaces.
 **A plugin is a git repository COPIED into an app, never an npm package (D31)**, translated through
 `applyReplacements()` like kit code. Only first-party plugins for now: installing one is as trusting
 as merging a PR. A plugin repo mirrors the host tree and ships **no migration, no toml and no
-`package.json`**. Working guide: `apps/web/src/plugins/CLAUDE.md`, `/rf-plugin`,
+`package.json`**. Working guide: `apps/web/src/plugins/CLAUDE.md`, `/launch-plugin`,
 `docs/plugin-api.md`.
 
 - **Outbound**: four published entries (server, UI, shared, CLI). Nothing reaches past them, in
@@ -581,17 +560,14 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 - **Namespacing**: the id is `^[a-z][a-z0-9-]*$` and namespaces jobs (`<id>.x`), query keys
   (`<id>:`), `/api/<id>`, CLI commands and CUSTOM events. Never `kit.`. Table prefixes are a human
   convention; **two plugins declaring the same table is a `plugin check` failure**.
-- **Record**: a `kind: 'plugin'` surface (`source: {repo, subdir, version, commit}`). In the kit or
-  with `--local` it goes in the git-ignored `.rocketflare.local.json`. A kit diff never touches
-  plugin-owned files. A vendored plugin (`example-feature`) upgrades with the kit.
+- **Record**: a `kind: 'plugin'` surface (`source: {repo, subdir, version, commit}`) in
+  `launch.plugins.json`; with `--local` it goes in the git-ignored `launch.plugins.local.json`.
 - **Compatibility is OBSERVED (decision 5c)**: the kit emits a `## Surface ledger` in
   `docs/plugin-api.md` (generated, diff-checked). A plugin's `uses` is **derived** from its imports
   by `pnpm plugin export`, and compatibility is the set difference `uses \ ledger`, checked before
-  any file is copied. The one surviving number is a top-level `minKit` floor. `requires.kit` /
-  `requires.pluginApi` are refused by name. CI proves both ends: `ci.yml` runs the gate with
-  `defaultPlugins` installed, and plugin repos call `plugin-ci.yml` (floor + newest kit), which
-  installs a plugin's `requires.plugins` from the same checkout first and takes the highest
-  `minKit` across the set as the floor.
+  any file is copied. The one surviving number is a top-level `minKit` floor, checked against
+  `kitVersion` in `launch.plugins.json`. `requires.kit` / `requires.pluginApi` are refused by name.
+  CI runs `pnpm plugin check`, and the gate runs every installed plugin's own tests.
 - **Lifecycle** (`scripts/plugin.mjs`): `add` (plan, then `--apply`), `upgrade`, `remove`
   (`--archive`), `list`, `check`, `export`. Every plan step is **declarative, agent (with its
   assertion) or human** — a printed instruction is not a mechanism. The host generates the
@@ -629,10 +605,10 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   `"skills"`; `add` copies each to `.claude/skills/<dir>/` (the one place outside its roots a
   plugin may write) and records it on the surface, `upgrade` REPLACES it (never patches — an agent's
   instructions are the plugin's outright), `remove` deletes it. `<dir>` is `<id>` or `<id>-*` and
-  its SKILL.md `name:` equals it, so a plugin skill can never shadow a kit `rf-*` one; an existing
+  its SKILL.md `name:` equals it, so a plugin skill can never shadow a host `launch-*` one; an existing
   directory is a refusal. `plugin check` fails a declared skill that is missing, misnamed or
   undescribed, and a directory in the plugin's namespace it does not declare. `.claude/` in a
-  plugin repository stays that repository's own tooling. `example-feature` ships one.
+  plugin repository stays that repository's own tooling. `analytics` ships four.
 - **Hooks** (`onTenantCreated`, `onTenantDeleted`, `seedDemo`) run post-commit, are idempotent,
   and are try/caught. DO state is purgeable only through instance names **derived** from the tenant
   id.
@@ -640,8 +616,8 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   (module-evaluation order); a value a plugin needs moves to a leaf module; browser-read registries
   are separate files from composing ones; plugins declare `relations()` for their own tables only
   (drizzle type intersection); annotate `const ctx: RequestCtx` so `never` narrows.
-- **`example-feature`** is the vendored reference that exercises every slot. It exists to be
-  deleted.
+- **`analytics`** is the one installed plugin. The kit's `example-feature` reference plugin was
+  removed from Launch (migration `0018` drops its `example_notes` table).
 
 **D31 decisions** (cited by number in code comments):
 
@@ -673,6 +649,10 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 | 22 | Table prefixes are convention; collisions are the check |
 | 23 | A plugin ships agent skills: `skills/<dir>/` → `.claude/skills/<dir>/`, namespaced by id, replaced on upgrade |
 
+This table is the kit's record. In Launch, 2, 3 and 5 no longer hold: there are no default plugins,
+`example-feature` was removed, and there is no plugin CI workflow or release refusal — CI runs
+`pnpm plugin check` and the installed plugins' tests.
+
 **Known gaps:** no sandbox, review or signing; no rename migrations (expand/contract only); no
 cross-plugin FK tooling or `many()` onto core tables; `grants` is additive by convention only;
 provisioning never deletes resources; `d1`/`vectorize`/`analytics_engine` bindings are refused;
@@ -680,8 +660,7 @@ the ledger judges only ledgered entries, ignores namespace imports, truncates ty
 chars, and `uses` is only as fresh as the last export; table collisions are caught by `check`, not
 refused at `add`; the isolation check proves a test exists, not that it is right; no database-free
 test of data-touching handlers; one DO per row is unpurgeable (purge-intent ledger not built);
-`plugin-ci.yml` input changes reach callers only via `main`, and nothing tests versions between
-floor and ceiling. Public mounts (D34) get no rate limit of their own and no `@testkit` builder
+nothing tests a plugin against kit versions between its floor and `kitVersion`. Public mounts (D34) get no rate limit of their own and no `@testkit` builder
 (test them through `request()`); `verifyState` has no replay ledger — a token is reusable until it
 expires, so a plugin whose callback must run once records that itself; an ingested document's
 upsert reads the previous row before writing, so two racing re-ingests of a FILE may leave one

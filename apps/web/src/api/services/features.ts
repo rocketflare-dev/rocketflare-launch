@@ -18,10 +18,10 @@
  * It is the one query in this file that does not name a tenant.
  */
 import {
-  FEATURE_FLAGS,
   FEATURE_KEYS,
   type FeatureFlag,
   type FeatureFlagEvaluation,
+  featureDefinition,
   type TenantFeatureOverride,
   type UpdateFeatureFlagRequest,
 } from '@launch/shared/features'
@@ -34,7 +34,7 @@ import { resolveFeatures } from '../../permissions/features'
 
 /** Is this key permitted in this deployment at all (D30 layer 1)? */
 export function availableInEnvironment(cfg: AppConfig, key: FeatureName): boolean {
-  return !FEATURE_FLAGS[key].environmentGated || cfg.FEATURES_ENABLED.includes(key)
+  return !featureDefinition(key).environmentGated || cfg.FEATURES_ENABLED.includes(key)
 }
 
 /**
@@ -115,7 +115,7 @@ export async function listFeatureFlags(db: Database, cfg: AppConfig): Promise<Fe
   const byKey = new Map(saved.map(row => [row.key, row]))
 
   return FEATURE_KEYS.map(key => {
-    const definition = FEATURE_FLAGS[key]
+    const definition = featureDefinition(key)
     const row = byKey.get(key)
     return {
       key,
@@ -143,7 +143,7 @@ export async function updateFeatureFlag(
   patch: UpdateFeatureFlagRequest,
   updatedByUserId: string
 ): Promise<FeatureFlag> {
-  const definition = FEATURE_FLAGS[key]
+  const definition = featureDefinition(key)
   const current = await db.query.featureFlags.findFirst({ where: eq(featureFlags.key, key) })
   const next = {
     state: patch.state ?? current?.state ?? definition.defaultState,
@@ -194,7 +194,7 @@ export async function setTenantOverride(
   enabled: boolean,
   setByUserId: string
 ): Promise<void> {
-  const definition = FEATURE_FLAGS[key]
+  const definition = featureDefinition(key)
   await db
     .insert(featureFlags)
     .values({

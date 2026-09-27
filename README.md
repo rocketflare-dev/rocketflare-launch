@@ -6,7 +6,7 @@ Launch is the company console for [Rocketflare](https://rocketflare.dev) ([GitHu
 apps. Anyone can go from an idea to a secure, production app in the browser, while IT keeps
 control of credentials, sign-in, approvals and audit.
 
-> Status: **spec reviewed against eight feasibility spikes (P0), nothing built yet** (September 2026).
+> Status: **P0 done; P1 in progress: Launch seeded from Rocketflare 0.15.0** (September 2026).
 > Results: [spikes/SUMMARY.md](spikes/SUMMARY.md).
 
 ## Why
@@ -41,8 +41,8 @@ schedule ([spec/02](spec/02-template-contract.md)).
 
 The P0 spikes found six changes the kit needs: an OIDC login, a Neon driver option, deploying
 through an external deployer, configurable dev ports, bootstrap without Docker, and a Neon role
-fix. All are opt-in and off by default, so Rocketflare stays a standalone product
-([spec/13](spec/13-rocketflare-changes.md)).
+fix. All six have shipped (0.14.0 and 0.15.0). All are opt-in and off by default, so Rocketflare
+stays a standalone product ([spec/13](spec/13-rocketflare-changes.md)).
 
 ## Key decisions
 

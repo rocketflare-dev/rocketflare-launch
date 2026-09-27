@@ -19,37 +19,24 @@ contract → schema → route → page (→ command) loop, not a platform projec
 
 ## Getting started
 
-The kit is a starting point, not a dependency: take a copy, cut it loose from this repository's
-history, and make it your own — you will rename, delete and rewrite freely, and you never merge from
-here. Cut loose is not cut off: your copy keeps a `.rocketflare.json` saying where it came from, and
-`/rf-upgrade` ports later kit releases into it without recreating anything you deleted.
+Launch was seeded from the Rocketflare 0.15.0 kit and then cut loose: it does not track kit
+releases, and a kit change Launch wants is ported by hand. Plugins still install and upgrade with
+`pnpm plugin` (`launch.plugins.json` records them).
 
-**Ask your coding agent.** Open the copy in Claude Code and type **`/rf-setup`** — it checks the
-toolchain, starts Postgres, migrates, seeds the demo workspace and leaves you signed in, showing one
-verification line per step. Then **`/rf-adapt <slug> "Your App"`** renames the kit to your app, and
-**`/rf-provision`** deploys it (you type that one yourself: it creates paid resources and prompts for
-vendor tokens). **`/rf-plugin`** installs a capability as a plugin — a git repository copied into your
-app, with the plan shown before anything is written. Later, when the kit has moved on,
-**`/rf-upgrade`**.
-
-**One command.** Read [`scripts/install.sh`](../scripts/install.sh) first — it is short — then:
-
-```bash
-curl -fsSL https://clewro.com/install.sh | bash -s -- myapp   # clone → detach → bash scripts/bootstrap.sh
-```
+**Ask your coding agent.** Open the repository in Claude Code and type **`/launch-setup`** — it
+checks the toolchain, starts Postgres, migrates, seeds and leaves you signed in, showing one
+verification line per step. **`/launch-provision`** deploys it (you type that one yourself: it
+creates paid resources and prompts for vendor tokens). **`/launch-plugin`** installs a capability as
+a plugin — a git repository copied into the app, with the plan shown before anything is written.
 
 **By hand**, if you would rather see each step (macOS or Linux; Windows through WSL2):
 
 ```bash
-git clone https://github.com/rocketflare-dev/rocketflare.git myapp && cd myapp
-rm -rf .git && git init && git add -A && git commit -m "Start from Launch"   # your history starts here
-git remote add origin git@github.com:<you>/myapp.git                              # your own repo, when ready
-
 bash scripts/bootstrap.sh          # checks Node 24 / pnpm 10 / Docker, generates the local secret, starts
-                                   # Postgres, migrates, seeds demo data, starts the app and opens the
+                                   # Postgres, migrates, seeds, starts the app and opens the
                                    # browser signed in as the demo owner. Re-runnable.
                                    #   --offline  skip the Cloudflare login by disabling Workers AI ([ai] off in both tomls)
-                                   #   --no-demo  seed the bare tenant and users only (plain `pnpm seed`)
+                                   #   --no-demo  skip the plugins' demo data (plain `pnpm seed`)
                                    #   --db-url <url>  no Docker: use an existing Postgres (a Neon branch)
                                    #   --driver neon|postgres  the LOCAL database driver (default postgres)
 ```
@@ -60,11 +47,7 @@ Nothing external is required: no `RESEND_API_KEY` → magic-link URLs are logged
 key → chat, agents and embeddings run on Workers AI through the `[ai]` binding (billed to your
 Cloudflare account, 10k free neurons/day); no Cloudflare login, or zero-spend wanted → `--offline`.
 Then `pnpm test:db:up && pnpm test` (the full suite against a throwaway Postgres on :5433;
-`pnpm test:neon` runs it again on the Neon driver, as CI does). Before
-building your app, rename it: `/rf-adapt` or [`docs/ADAPTING.md`](ADAPTING.md). Later,
-`/rf-upgrade` (or `pnpm kit:upgrade`) reads `.rocketflare.json` and the release notes in
-[`docs/upgrades/`](upgrades/), translates the kit's diff into your names, and skips every part
-you removed. [`CHANGELOG.md`](../CHANGELOG.md) is what you would be catching up on.
+`pnpm test:neon` runs it again on the Neon driver, as CI does).
 
 ## Stack
 
@@ -116,7 +99,7 @@ you removed. [`CHANGELOG.md`](../CHANGELOG.md) is what you would be catching up 
 - **Retrieval** — ingest text into `documents`/`chunks` (paragraph-aware chunking, inline or queued indexing), `vector(1024)` embeddings with an HNSW index, and **hybrid search**: dense cosine + lexical `tsvector`, fused with Reciprocal Rank Fusion. Vectors are ordinary tenant-scoped rows.
 - **Document uploads** — PDF, Word, Excel, OpenDocument, HTML and XML are stored in R2 and converted to Markdown by Workers AI (`env.AI.toMarkdown`, free for documents) in a `document.convert` job, then indexed like pasted text; the original stays downloadable. Agents read the same knowledge base through built-in `search_knowledge` / `get_document` / `list_documents` tools.
 - **Usage ledger and tracing** — one `ai_usage` row per model call with token counts and a usage summary endpoint; vendor-neutral OTLP traces with GenAI conventions (agent → model calls, tools, retrieval, embeddings) exported to Langfuse, Phoenix or any OTLP backend from `waitUntil`, and always recorded locally so `launch traces show <runId>` works with zero config — no OpenTelemetry dependency.
-- **Evals and feedback** — `pnpm eval` runs vitest-evals suites against the real chat route and agent runtime in-process, with deterministic judges (tool trajectory, schema, contains, budget) and LLM judges (rubric, faithfulness to what was retrieved, reference answer) that go through the kit's own model resolver; runs are JSON with committed baselines and `--compare` regression checks, plus a local report UI. Thumbs on chat replies and run output feed `launch evals promote`, which turns a bad real answer into a draft case. The `/rf-evals` skill drives all of it.
+- **Evals and feedback** — `pnpm eval` runs vitest-evals suites against the real chat route and agent runtime in-process, with deterministic judges (tool trajectory, schema, contains, budget) and LLM judges (rubric, faithfulness to what was retrieved, reference answer) that go through the kit's own model resolver; runs are JSON with committed baselines and `--compare` regression checks, plus a local report UI. Thumbs on chat replies and run output feed `launch evals promote`, which turns a bad real answer into a draft case. The `/launch-evals` skill drives all of it.
 
 ### Analytics
 - **Semantic layer** — drizzle-cube mounted at `/cubejs-api` and `/mcp` behind the app's auth; every cube scopes its SQL to the current tenant, and a mandatory isolation test queries every cube as two tenants and asserts disjoint rows.
@@ -126,7 +109,7 @@ you removed. [`CHANGELOG.md`](../CHANGELOG.md) is what you would be catching up 
 
 ### CLI
 - `launch login` opens the browser, completes sign-in and tenant selection in the app, and receives a tenant API key on a loopback callback — stored `0600` in `~/.launch/config.json`, never printed in full.
-- `whoami`, `status`, `members list`, `keys list`, `activity list`, `traces list|show` (the AI span tree of a run or chat turn, admin+), `feedback list` and `evals promote` (turn a thumbs-down into an eval case, admin+), `config`; `--json` prints only the parsed response so output pipes into `jq`; `LAUNCH_API_KEY` / `LAUNCH_URL` replace the config file in CI.
+- `whoami`, `status`, `groups list|members`, `features list`, `traces list|show` (the AI span tree of a run or chat turn, admin+), `feedback list` and `evals promote` (turn a thumbs-down into an eval case, admin+), `config`; `--json` prints only the parsed response so output pipes into `jq`; `LAUNCH_API_KEY` / `LAUNCH_URL` replace the config file in CI.
 - Every response is parsed with the same zod schema the server validated with; exit codes distinguish "not logged in" (2) and "forbidden" (3) from other errors (1).
 
 ### Developer experience
@@ -135,7 +118,7 @@ you removed. [`CHANGELOG.md`](../CHANGELOG.md) is what you would be catching up 
 - **Release dance** — tag = root version → staging deploys; publish the GitHub Release → production ships the same tag. Migrations run in CI against the environment's Neon branch before deploy. Or set `DEPLOYER_URL` and an external deployer ships it instead, so CI holds no Cloudflare token and no production database credential ([`docs/DEPLOYER.md`](DEPLOYER.md)).
 - **Tests that mean something** — API tests drive the real Hono app against a real Postgres; queue consumers, Workflow steps, the Durable Object and cron tasks are plain functions tested directly; UI tests in jsdom; a config project checks tomls, permissions and dashboard templates with no database.
 - **Agent-readable** — `CLAUDE.md` (also `AGENTS.md`), path-scoped rules in `.claude/rules/`, a `CLAUDE.md` in every significant directory, and `docs/CONCEPTS.md` describing each subsystem, its invariant and its known gaps.
-- **Plugins** — a feature can be a separate git repository copied in (never npm-installed, exactly like the kit): six barrels take one line each, and a plugin contributes contracts, tables with RLS policies, routes, jobs, agent tools, lifecycle hooks, Durable Object and Workflow classes, lazy pages, nav items and CLI commands without a core file naming it. In the other direction it imports the kit only through declared entries — a family of injected execution contexts, versioned as `PLUGIN_API` and documented in a generated, diff-checked `docs/plugin-api.md` — so the plugin surface can stand still while kit internals move. `pnpm plugin check` is an exhaustive audit whose every finding carries the file, the line and the exact edit, and CI runs the same command; `example-feature` is the vendored reference plugin, and it is meant to be deleted.
+- **Plugins** — a feature can be a separate git repository copied in (never npm-installed, exactly like the kit): six barrels take one line each, and a plugin contributes contracts, tables with RLS policies, routes, jobs, agent tools, lifecycle hooks, Durable Object and Workflow classes, lazy pages, nav items and CLI commands without a core file naming it. In the other direction it imports the kit only through declared entries — a family of injected execution contexts, versioned as `PLUGIN_API` and documented in a generated, diff-checked `docs/plugin-api.md` — so the plugin surface can stand still while kit internals move. `pnpm plugin check` is an exhaustive audit whose every finding carries the file, the line and the exact edit, and CI runs the same command; `analytics` is the one installed plugin.
 - **Design tokens** — two DaisyUI themes whose brand values live in one header block; a contrast test gates the emitted tokens.
 
 ## Layout
@@ -144,7 +127,7 @@ you removed. [`CHANGELOG.md`](../CHANGELOG.md) is what you would be catching up 
 launch/          workspace root: package.json (scripts delegate via pnpm -r / --filter),
 │                     pnpm-workspace.yaml, biome.json, tsconfig.base.json, CLAUDE.md, docs/, .github/
 ├── apps/web/         @launch/web — Worker (Hono API) + React UI; wrangler*.toml, migrations/, scripts/, tests/
-├── apps/cli/         @launch/cli — `launch` CLI: login, logout, whoami, status, members/keys/activity list, traces list|show, feedback list, evals promote, config
+├── apps/cli/         @launch/cli — `launch` CLI: login, logout, whoami, status, groups, features list, traces list|show, feedback list, evals promote, config
 ├── apps/evals/       @launch/evals — developer-run eval suites (vitest-evals): `pnpm eval`, never part of the gate
 └── packages/shared/  @launch/shared — PRIVATE zod contracts, error envelope, pagination, permission types;
                       consumed as TypeScript source through the workspace link (no build step)
@@ -158,8 +141,9 @@ then `pnpm provision all` (the deploy orchestrator: Neon, Cloudflare, GitHub, se
 `pnpm provision --help` lists the phases;
 `pnpm web provision:cloudflare <env> --apply` is its Cloudflare-resources half). `wrangler` is a
 devDependency of `apps/web`, so it is `pnpm --filter @launch/web exec wrangler …`, never `pnpm exec
-wrangler` at the root. Root `scripts/` holds the first-run tooling: `bootstrap.sh` / `bootstrap.mjs`,
-`install.sh`, `rename.mjs` (`docs/ADAPTING.md` §1 as one command) and their `lib/`.
+wrangler` at the root. Root `scripts/` holds the first-run tooling (`bootstrap.sh` /
+`bootstrap.mjs`), the plugin tooling (`plugin.mjs`, `plugin-api-doc.mjs`), `deployer.mjs` and their
+`lib/`.
 
 ## Not included (by design)
 
@@ -175,12 +159,12 @@ there list every known gap.
 | [`CLAUDE.md`](../CLAUDE.md) (`AGENTS.md`) | always — the canonical agent context: stack, commands, map, non-negotiables |
 | [`SETUP.md`](../SETUP.md) | getting a clone running, the CLI's first login, configuring OAuth/email/AI providers (or a local OpenAI-compatible mock)/tracing, deploying to Cloudflare |
 | [`docs/CONCEPTS.md`](CONCEPTS.md) | before assuming a capability exists or building a new one — one section per subsystem with its invariant and known gaps |
-| [`docs/ADAPTING.md`](ADAPTING.md) | you just copied the kit to start an app (package names, CLI bin, config dir, env prefix, what to delete, where the first features go) |
+| [`docs/ADAPTING.md`](ADAPTING.md) | adding a feature: where each layer goes, optional add-ons, the single-tenant recipe |
 | [`docs/DEPLOY.md`](DEPLOY.md) | Cloudflare topology, the two tomls, resources, release dance, rollback, bundle size |
 | [`docs/DEPLOYER.md`](DEPLOYER.md) | you are building a service that deploys kit apps from CI (the versioned v1 protocol behind `DEPLOYER_URL`) |
 | [`docs/RLS.md`](RLS.md) | tenant isolation posture and how to turn row-level security on |
 | `.claude/rules/*.md` | layer conventions (api, database, ui, cli, testing, code-quality, cloudflare) — auto-loaded by path |
-| `.claude/skills/` | the slash commands a coding agent drives: `/rf-setup` (first run), `/rf-preflight` (read-only diagnosis), `/rf-adapt` (rename + checklist), `/rf-how-do-i` (coaching for a new feature — asks, plans, writes `docs/features/<slug>.md`, never the code), `/rf-upgrade` (port later kit releases into your copy), `/rf-plugin` (install, upgrade, remove or audit a plugin), `/rf-traces` (debug a run or chat turn from its span tree; pick or switch a tracing backend), `/rf-evals` (write, run and interpret evals; compare models or prompts; turn thumbs-down into cases) — an agent may run those when you ask in plain words — and `/rf-provision` (deploy to Cloudflare + Neon + Resend), which only you can start: it creates paid resources and prompts for tokens |
+| `.claude/skills/` | the slash commands a coding agent drives: `/launch-setup` (first run), `/launch-preflight` (read-only diagnosis), `/launch-how-do-i` (coaching for a new feature — asks, plans, writes `docs/features/<slug>.md`, never the code), `/launch-plugin` (install, upgrade, remove or audit a plugin), `/launch-traces` (debug a run or chat turn from its span tree; pick or switch a tracing backend), `/launch-evals` (write, run and interpret evals; compare models or prompts; turn thumbs-down into cases) — an agent may run those when you ask in plain words — and `/launch-provision` (deploy to Cloudflare + Neon + Resend), which only you can start: it creates paid resources and prompts for tokens |
 
 ## Provenance
 

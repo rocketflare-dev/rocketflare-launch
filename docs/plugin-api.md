@@ -582,7 +582,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
 - `function LoadingIndicator({ size = 'md', centered = false, fullPage = false, className = '', }: LoadingIndicatorProps)`
   DaisyUI spinner in the primary colour.
 - `function LogoMark({ className = 'w-7 h-7' }: { className?: string })`
-  The Launch mark — a rocket launching from a cloud — inlined so it needs no request and scales with `className`. The fills are the brand illustration colours, fixed on purpose…
+  The Launch mark — a rocket launching from a cloud — inlined so it needs no request and scales with `className`. The fills are the brand illustration colours, fixed on purpose (the…
 - `function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)`
   `<dialog>`-based modal: native focus trap, Escape and backdrop close, `aria-modal` for free. Controlled — the caller owns `open`. Falls back to the `open` attribute where…
 - `interface ModalProps`
@@ -779,7 +779,7 @@ What a plugin's CONTRACT module imports: the error envelope, pagination, `Shared
 - `const paginationQuerySchema: z.ZodObject<{ page: z.ZodDefault<z.ZodNumber>; pageSize: z.ZodDefault<z.ZodNumber>; }, "strip", z.ZodTypeAny, { page: number; pageSize: number; }, { page?: number \| undefined; pageSize?: number \| undefined; }>`
   Page-based pagination (page-based). Query: `?page=1&pageSize=25`.
 - `const PLUGIN_ID_RE: RegExp`
-  `^[a-z][a-z0-9-]*$` and never containing `launch`: a plugin is written in the kit's vocabulary so `scripts/rename.mjs` can translate it into a renamed app on the way in, and…
+  `^[a-z][a-z0-9-]*$` and never containing the kit's name: a plugin is written in the kit's vocabulary so `pnpm plugin` can translate it into Launch's names on the way in, and an id…
 - `function pluginNamespace(id: string): string`
   `<id>:` — the prefix every query-key root and demo-seed id a plugin owns must carry.
 - `type PromptKeyOf = NonNullable<DeclaredBy<S, 'promptKeys'>>[number]`

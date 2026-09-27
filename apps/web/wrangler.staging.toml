@@ -2,8 +2,6 @@
 # two files in sync: same bindings/classes/limits, differing ONLY in name, routes, [vars]
 # URLs/APP_ENV, and resource ids. tests/config/wrangler-parity.test.ts enforces this and
 # fails while any <PLACEHOLDER> remains. See docs/DEPLOY.md and scripts/cf-provision.sh.
-#
-# ADAPTING: rename `launch` → your app (worker name, queue/workflow names, buckets).
 
 name = "launch-staging"
 main = "src/worker.ts"
@@ -24,7 +22,7 @@ APP_NAME = "Launch"
 RELEASE_VERSION = "dev"
 LOG_LEVEL = "info"
 EMAIL_FROM = "Launch <launch@notifications.clewro.com>"
-TENANCY_MODE = "multi"                 # multi | single   (docs/CONCEPTS.md → Tenancy)
+TENANCY_MODE = "single"                # multi | single   (docs/CONCEPTS.md → Tenancy); Launch is one company
 SIGNUP_MODE = "invite_only"            # open | invite_only | approval
 TENANT_SCOPE_MODE = "off"              # off | enforce    (docs/RLS.md — enforce needs an app-role connection)
 DATABASE_DRIVER = "neon"               # neon | postgres (D35, docs/DEPLOY.md § Database driver). Missing = postgres.

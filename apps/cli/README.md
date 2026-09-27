@@ -1,18 +1,18 @@
 # @launch/cli
 
-Command-line interface for the Launch kit server. Signs in through the browser (D26 handoff), stores
-an API key under `~/.launch/`, and exposes a few tenant-scoped commands as the pattern to copy.
+Command-line interface for the Launch server. Signs in through the browser (D26 handoff), stores
+an API key under `~/.launch/`, and exposes a few tenant-scoped commands.
 
 ```bash
 pnpm cli --help                 # from the repo root (runs src/cli.ts with tsx)
 pnpm cli login                  # browser → API key
 pnpm cli whoami
 pnpm cli status                 # GET /api/health on the configured server
-pnpm cli members list --page 1 --page-size 25
-pnpm cli keys list
-pnpm cli activity list --type member.invited      # admin+
+pnpm cli groups list            # admin+
+pnpm cli features list
+pnpm cli traces list --status error   # admin+
 pnpm cli config get | set <key> <value> | path
-pnpm cli --json members list    # raw JSON on stdout, nothing else
+pnpm cli --json groups list     # raw JSON on stdout, nothing else
 ```
 
 Global options: `--server <url>` (overrides everything below), `--json` (print the server's raw JSON
@@ -50,8 +50,9 @@ Precedence: `--server` flag > `LAUNCH_URL` > config `serverUrl` > `DEFAULT_SERVE
 (`http://localhost:3001`, the kit's `wrangler dev` port — a real app sets its production URL in
 `src/config.ts`). Key: `LAUNCH_API_KEY` > config `apiKey`.
 
-**ADAPTING** renames the bin (`package.json` → `bin`), the env prefix and directory (`ENV_PREFIX`,
-`CONFIG_DIR_NAME` in `src/config.ts`). The prompt prefix and `User-Agent` follow the bin name.
+The bin name (`package.json` → `bin`), the env prefix and directory (`ENV_PREFIX`,
+`CONFIG_DIR_NAME` in `src/config.ts`) are Launch's. The prompt prefix and `User-Agent` follow the
+bin name.
 
 ## How the login handoff works
 

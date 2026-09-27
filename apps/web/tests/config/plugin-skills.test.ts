@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { MANIFEST_FILE, SIDECAR_FILE } from '../../../../scripts/lib/manifest.mjs'
 import {
   addPlanJson,
   BARRELS,
@@ -54,7 +55,7 @@ describe('skill directories', () => {
     expect(skillDirProblem('orders', 'orders-admin')).toBeNull()
     expect(skillDirProblem('orders', 'order')).toMatch(/not namespaced/)
     expect(skillDirProblem('orders', 'ordersx')).toMatch(/not namespaced/)
-    expect(skillDirProblem('orders', 'rf-plugin')).toMatch(/not namespaced/)
+    expect(skillDirProblem('orders', 'launch-plugin')).toMatch(/not namespaced/)
     expect(skillDirProblem('orders', 'Orders')).toMatch(/must be a directory name/)
     expect(skillDirProblem('orders', 42)).toMatch(/must be a directory name/)
   })
@@ -127,7 +128,11 @@ describe('SKILL.md frontmatter', () => {
 describe('undeclared skill directories', () => {
   it("are the ones in a plugin's namespace that it does not declare", () => {
     expect(
-      undeclaredSkillDirs('orders', ['orders'], ['orders', 'orders-extra', 'rf-plugin', 'other'])
+      undeclaredSkillDirs(
+        'orders',
+        ['orders'],
+        ['orders', 'orders-extra', 'launch-plugin', 'other']
+      )
     ).toEqual(['orders-extra'])
   })
 
@@ -150,7 +155,7 @@ describe('the manifest field', () => {
     expect(skillProblems(['orders', 'orders-admin'])).toEqual([])
     expect(skillProblems(undefined)).toEqual([])
     expect(skillProblems('orders')[0].problem).toMatch(/array of strings/)
-    expect(skillProblems(['rf-plugin'])[0].problem).toMatch(/not namespaced/)
+    expect(skillProblems(['launch-plugin'])[0].problem).toMatch(/not namespaced/)
     expect(skillProblems(['orders', 'orders'])[0].problem).toMatch(/twice/)
   })
 
@@ -214,8 +219,8 @@ const write = (root: string, rel: string, text: string) => {
 
 /**
  * A host the script can write to: this checkout's `scripts/`, its ledger, its barrels, the kit's
- * own `rf-plugin` skill (so a collision with a kit skill is real), and a `.rocketflare.json` for an
- * app called Acme with no plugin surfaces — a vendored plugin's files are not copied, so recording
+ * own `launch-plugin` skill (so a collision with a host skill is real), and a `launch.plugins.json`
+ * for an app called Acme with no plugin surfaces — a vendored plugin's files are not copied, so recording
  * it would make every `check` fail on its missing anchor.
  */
 function makeHost(): string {
@@ -223,12 +228,12 @@ function makeHost(): string {
   sandboxes.push(root)
   cpSync(path.join(REPO_ROOT, 'scripts'), path.join(root, 'scripts'), {
     recursive: true,
-    filter: src => !src.includes(`${path.sep}.upgrade`),
+    filter: src => !src.includes(`${path.sep}.plugin-cache`),
   })
   for (const rel of [
     'package.json',
     'docs/plugin-api.md',
-    '.claude/skills/rf-plugin/SKILL.md',
+    '.claude/skills/launch-plugin/SKILL.md',
     ...Object.values(BARRELS).map(b => b.file),
     'apps/web/package.json',
     'apps/cli/package.json',
@@ -236,13 +241,13 @@ function makeHost(): string {
   ]) {
     write(root, rel, readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
   }
-  const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, '.rocketflare.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, MANIFEST_FILE), 'utf8'))
   manifest.surfaces = manifest.surfaces.filter((s: { kind?: string }) => s.kind !== 'plugin')
   // An APP, which is where a plugin is installed — and `upgrade` translates what it patches into
   // the app's names, which the kit itself (no `app`) has none of.
   manifest.app = { slug: 'acme', display: 'Acme' }
-  write(root, '.rocketflare.json', `${JSON.stringify(manifest, null, 2)}\n`)
-  write(root, '.gitignore', '.rocketflare.local.json\n.upgrade/\nnode_modules/\n')
+  write(root, MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`)
+  write(root, '.gitignore', `${SIDECAR_FILE}\n.plugin-cache/\nnode_modules/\n`)
   // `pnpm exec biome` resolves this before anything on PATH. Formatting is not what is under test,
   // and a host with no `biome.json` would reformat the anchor with Biome's defaults — after which
   // an upgrade's patch no longer matches it.
@@ -312,7 +317,7 @@ function tree(root: string, prefix = ''): string[] {
   const out: string[] = []
   for (const e of readdirSync(path.join(root, prefix), { withFileTypes: true })) {
     const rel = prefix ? `${prefix}/${e.name}` : e.name
-    if (['.git', '.upgrade', 'node_modules'].includes(e.name)) continue
+    if (['.git', '.plugin-cache', 'node_modules'].includes(e.name)) continue
     if (e.isDirectory()) out.push(...tree(root, rel))
     else out.push(rel)
   }
@@ -320,7 +325,7 @@ function tree(root: string, prefix = ''): string[] {
 }
 
 const sidecar = (host: string) =>
-  JSON.parse(readFileSync(path.join(host, '.rocketflare.local.json'), 'utf8')) as {
+  JSON.parse(readFileSync(path.join(host, SIDECAR_FILE), 'utf8')) as {
     surfaces: { id: string; paths: string[] }[]
   }
 
@@ -357,7 +362,7 @@ describe('pnpm plugin, with skills, end to end', () => {
 
     const removed = run(host, ['remove', 'orders', '--apply', '--allow-dirty'])
     expect(removed.status, removed.out).toBe(0)
-    expect(tree(host).filter(f => f !== '.rocketflare.local.json')).toEqual(before)
+    expect(tree(host).filter(f => f !== SIDECAR_FILE)).toEqual(before)
   })
 
   it('fails check for a declared skill that is gone, misnamed, or one it never declared', () => {
@@ -379,23 +384,23 @@ describe('pnpm plugin, with skills, end to end', () => {
       ])
     )
     // The kit's own skills are nobody's plugin's.
-    expect(ids.some(i => i.includes('rf-plugin'))).toBe(false)
+    expect(ids.some(i => i.includes('launch-plugin'))).toBe(false)
   })
 
   it('refuses a skill directory that already exists — the kit’s or anyone else’s', () => {
     const host = makeHost()
-    // `rf` is a legal id and `rf-plugin` is in its namespace, so only the collision stops it.
+    // `launch` is a legal id and `launch-plugin` is in its namespace, so only the collision stops it.
     const kitClash = run(host, [
       'add',
-      makePlugin({ id: 'rf', skills: ['rf-plugin'] }),
+      makePlugin({ id: 'launch', skills: ['launch-plugin'] }),
       '--local',
       '--apply',
       '--allow-dirty',
     ])
     expect(kitClash.status).toBe(7)
-    expect(kitClash.out).toContain('.claude/skills/rf-plugin/')
-    expect(readFileSync(path.join(host, '.claude/skills/rf-plugin/SKILL.md'), 'utf8')).toBe(
-      readFileSync(path.join(REPO_ROOT, '.claude/skills/rf-plugin/SKILL.md'), 'utf8')
+    expect(kitClash.out).toContain('.claude/skills/launch-plugin/')
+    expect(readFileSync(path.join(host, '.claude/skills/launch-plugin/SKILL.md'), 'utf8')).toBe(
+      readFileSync(path.join(REPO_ROOT, '.claude/skills/launch-plugin/SKILL.md'), 'utf8')
     )
 
     write(host, '.claude/skills/orders/SKILL.md', skillMd('orders'))

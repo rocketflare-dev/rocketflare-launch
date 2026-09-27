@@ -66,7 +66,7 @@ closes a cycle back through `plugins/schema.ts`.
   line — so drizzle-kit, `typeof schema` and `rls-coverage.test.ts` see them exactly like a kit
   table, and a name exported twice is TS2308 rather than a silent shadow (D31). They are prefixed
   from the plugin's id; the analytics plugin's are `analytics_pages`, `analytics_page_groups` and
-  `analytics_tenant_activity_daily_facts`, and `example-feature`'s is `example_notes`. A duplicated
+  `analytics_tenant_activity_daily_facts`. A duplicated
   table NAME is not a TypeScript error at all — `pnpm plugin check` is what catches it. A plugin
   declares `relations()` for its OWN tables only.
 - **Fact tables** — the shape for any pre-aggregated table, and the analytics plugin's worked

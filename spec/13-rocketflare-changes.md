@@ -3,6 +3,17 @@
 Status: proposal to the kit, from the P0 spikes ([spikes/SUMMARY.md](../spikes/SUMMARY.md)).
 Written against kit **0.13.0**.
 
+**All six changes shipped.** Changes 1, 3, 4, 5 and 6 are in kit **0.14.0**, and change 2 is in
+**0.15.0**. Each is off unless configured:
+
+- 1, OIDC login: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_LABEL`, `AUTH_OIDC_ONLY` and the
+  `OIDC_CLIENT_SECRET` secret.
+- 2, Neon driver: `DATABASE_DRIVER` (`neon` or `postgres`).
+- 3, external deployer: the `DEPLOYER_URL` and `DEPLOYER_AUDIENCE` repository variables.
+- 4, dev ports: `DEV_UI_PORT`, `DEV_API_PORT` and `DEV_ALLOWED_HOSTS`.
+- 5, bootstrap without Docker: `pnpm bootstrap --db-url`.
+- 6, `db-roles.ts` on Neon: a bug fix, nothing to configure.
+
 ## The rule for every change
 
 **Rocketflare stays a complete, separate product.** Every change below:

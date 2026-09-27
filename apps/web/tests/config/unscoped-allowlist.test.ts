@@ -44,6 +44,10 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
     'pruneInvitations is the nightly cron: expired invitations are deleted across every tenant, which is the job',
   'src/api/observability/span-store.ts':
     'insertSpans is an INSERT, never a read: every row carries the tenant_id of the trace that recorded it (a span without one is dropped by toSpanRow), and one flush may hold spans from more than one tenant — D32',
+  // Launch: the analytics plugin (3.4.1) ships this test file without declaring it in its own
+  // `unscopedAllowlist`, so the entry lives here until the plugin carries it (upstream issue).
+  'src/plugins/analytics/tests/api/dashboard-visibility.test.ts':
+    'a TEST, not runtime code: it deletes the group grants of a page it just created by page id (a uuid it owns) to set up the "empty grant list is private" case',
 }
 
 /**

@@ -3,12 +3,7 @@
  * `apps/web/tests/config/bootstrap-lib.test.ts` can pin every text transformation the bootstrap
  * performs on files it does not own (`.dev.vars`, the two wrangler tomls) and every parser it
  * applies to another tool's stdout (`pnpm seed`, `wrangler whoami`). Types: `bootstrap-lib.d.mts`.
- *
- * The one import is `upgrade-lib.mjs`, which is pure in the same sense — it owns the reader and the
- * validator for `.rocketflare.json`'s `defaultPlugins`, and a second parser here is what let the
- * bootstrap and `kit:release` disagree about a malformed entry.
  */
-import { defaultPluginEntries, defaultPluginEntryProblems } from './upgrade-lib.mjs'
 
 /** The major version in an `.nvmrc` (`24`, `v24.1.0`, `lts/*` → NaN). */
 export function parseNvmrc(text) {
@@ -282,55 +277,6 @@ export function checkoutTag(absolutePath) {
   let hash = 5381
   for (const char of String(absolutePath)) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0
   return hash.toString(36).padStart(7, '0').slice(0, 7)
-}
-
-/**
- * What the bootstrap's `plugins` step has to do, given `.rocketflare.json`'s `defaultPlugins` and
- * the ids already installed (D31).
- *
- * Pure, because the interesting part is the arithmetic and not the copying: an entry whose id is
- * already a surface is SKIPPED rather than re-added (a second `pnpm plugin add` of an installed
- * plugin is exit 7), the rest become one `pnpm plugin add <repo>[@ref] [--subdir d] --apply` each,
- * and a malformed entry is a sentence rather than a crash — `defaultPlugins` is hand-edited, and a
- * typo in it must not be the thing that stops a first run.
- *
- * The entry shape is an object, not a bare URL, because the step has to answer "is this one
- * already here?" BEFORE fetching anything, and only the id can answer that.
- */
-export function planDefaultPlugins(entries, installedIds = []) {
-  const installed = new Set(installedIds)
-  const install = []
-  const skipped = []
-  // Normalised and validated by the ONE reader of this list (`scripts/lib/upgrade-lib.mjs`), not
-  // by a second parser here. The two used to disagree about a bare string — "not an object" in
-  // this file, "an id with no repo" in that one — which is one question with two answers in the
-  // file that decides what a fresh clone installs.
-  const normalised = defaultPluginEntries({ defaultPlugins: entries })
-  const problems = defaultPluginEntryProblems(normalised)
-  for (const entry of normalised) {
-    const { id, repo, ref, subdir } = entry
-    if (!id || !repo) continue
-    if (installed.has(id)) {
-      skipped.push(id)
-      continue
-    }
-    const spec = ref ? `${repo}@${ref}` : repo
-    install.push({
-      id,
-      spec,
-      // `--allow-dirty`: from the second plugin on, the previous one's `db:generate` has left
-      // migration files in the tree, and the install must not refuse its own earlier step.
-      args: [
-        'plugin',
-        'add',
-        spec,
-        ...(subdir ? ['--subdir', subdir] : []),
-        '--apply',
-        '--allow-dirty',
-      ],
-    })
-  }
-  return { install, skipped, problems }
 }
 
 /* ------------------------------------------------------------------ arguments --
