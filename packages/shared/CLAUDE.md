@@ -18,8 +18,12 @@ response with the same schema. `pnpm test:config` covers the pure parts.
 `permissions.ts` actions/subjects/`AppAbility`/packed rules (matrix lives in `apps/web/src/permissions/`) ·
 `api-keys.ts` · `tenant-settings.ts` · `user-settings.ts` · `notifications.ts` · `admin.ts` ·
 `activity.ts` · `errors.ts` envelope + codes · `pagination.ts` ·
-Launch (P1): `launch-apps.ts` (registry enums + environment jsonb shapes), `launch-oidc.ts` (access
-policy, signing-key and access-request statuses, redirect URIs, public JWK), `launch-setup.ts`
+Launch (P1): `launch-apps.ts` (registry enums + environment jsonb shapes, spec/04 slug rules
+`appSlugProblem`/`appSlugSchema`, `importAppRequestSchema`, the lenient `rocketflareManifestSchema`,
+catalogue/detail/health/operations responses, the OIDC client and its once-only
+`appOidcClientSecretResponseSchema`, `appOidcConfigSnippet` — the one config text the API and UI
+both show), `launch-oidc.ts` (access policy, signing-key and access-request statuses, redirect URIs,
+public JWK, the key-admin responses and the `/api/app-access` request/policy/grant contracts), `launch-setup.ts`
 (credential kinds, per-kind payloads, checks, the value-free `credentialStatusSchema`, setting
 keys), `launch-audit.ts` (audit event, `auditListQuerySchema` / `auditListResponseSchema`, cursor-paged) ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no

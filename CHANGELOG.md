@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- App registry: import an existing Rocketflare app from GitHub (its manifest and both wrangler
+  tomls, read with a token narrowed to that repo), a catalogue with a health dot per environment,
+  and an app page with resources, health history, the operations log and its OIDC client. Health
+  is checked every 5 minutes (`/api/health` + `/api/ready`: up, degraded or down; changes are
+  audited) and on demand. Registering an app's OIDC client shows its secret once, with the config
+  to paste.
+- OIDC logout asks before signing you out of Launch unless the app proves the request with an
+  `id_token_hint` Launch issued; `prompt=login` and `max_age` now make you sign in again.
 - Launch is an OIDC issuer for the company's apps: discovery, JWKS with key rotation,
   authorize (PKCE S256 only), token (single-use codes; a replay revokes the first token),
   userinfo and logout. Each app has an access policy (everyone, or named groups and people),

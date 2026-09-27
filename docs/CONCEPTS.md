@@ -709,26 +709,112 @@ no MCP client; directory sync does not provision kit users or groups (it only ma
 
 What makes this copy Launch rather than the kit: a registry of the company's Rocketflare apps, an
 OIDC issuer they sign in through, the sealed platform credentials Launch acts with, and an
-append-only audit log (spec/05, 06, 08; the build plan is `docs/plans/p1-foundation.md`).
+append-only audit log (spec/03–06, 08; the build plan is `docs/plans/p1-foundation.md`).
+Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
+`packages/shared/src/launch-{apps,oidc,setup,audit}.ts`.
 
-- **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
-  `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `app_access_requests`, `audit_events`) are
-  tenant tables like any other, scoped to the single company tenant. Three are platform
-  infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
-  `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
-- **Audit** (`services/launch/audit.ts`): `recordAudit` is AWAITED, unlike `recordActivity`, and
-  `audit_events` is append-only by the database — a `BEFORE UPDATE OR DELETE` trigger (the tenant
-  cascade still works) plus revoked grants. `GET /api/audit` is admin+ and cursor-paged; `/audit`
-  renders it. A summary never carries a secret value.
-- **Credentials** (`services/launch/credentials.ts`) are sealed with `OAUTH_ENCRYPTION_KEY`, one row
-  per kind; only `credentialStatus` (value-free) may reach a response.
-- **GitHub** (`services/launch/github-app.ts`): a Worker-safe App client (PKCS#1 → PKCS#8, app JWT,
-  installation tokens, raw file reads), every call on an injected `fetch`.
-- **Issuer surface**: `/oidc/*` and `/.well-known/*` are public, outside `/api`, and in
-  `run_worker_first`; `/api/admin/setup` and `/api/admin/oidc` sit behind `globalAdminMiddleware`.
-  The `*/5` cron polls app health.
+**Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
+`oidc_clients`, `oidc_client_grants`, `oidc_codes`, `app_access_requests`, `audit_events`) are
+tenant tables like any other, scoped to the single company tenant. Three are platform
+infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
+`admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
 
-**Known gaps:** the issuer endpoints, the setup wizard, import, the catalogue and the health
-poller are stubs until slices 1b–1d land (JSON 404s and "coming soon" pages); no audit hash chain,
-export or SIEM stream (spec/08); `admin_credentials` has one row per kind for the whole deployment,
-so two test files writing the same kind race each other.
+### 18.1 Audit log
+
+`recordAudit` (`services/launch/audit.ts`) is AWAITED, unlike `recordActivity`, and usually runs in
+the same transaction as the change. `audit_events` is append-only in the database: a `BEFORE UPDATE
+OR DELETE` trigger raises (except inside the tenant cascade), and `UPDATE`/`DELETE`/`TRUNCATE` are
+revoked from `launch_app`. Actors are `user` (with email, IP, user agent, request id), `system` (the
+cron) or `app` (a relying party at the token endpoint); `actor_user_id` has no FK, so deleting a
+user never rewrites history. A summary is `{before?, after?}` and never carries a secret — a
+credential or client secret is recorded as `'set'`. `GET /api/audit` (admin+, filter by app and
+action, cursor-paged) backs the `/audit` page.
+
+**Known gaps:** no hash chain, export or SIEM stream (spec/08); no retention policy; the page
+filters only by app and action.
+
+### 18.2 Admin credentials and setup checks
+
+The setup wizard (`/admin/setup`, `routes/setup.ts`, global admins) holds the Cloudflare account
+token, the Neon org key, a full-access Resend key and the GitHub App (id, PEM, org), plus the
+settings beside them (apps domain, account id, Neon region, notifications domain, GitHub org). A
+credential is validated, SEALED with `OAUTH_ENCRYPTION_KEY` (one row per kind in
+`admin_credentials`), checked, then audited `credential.set` / `.rotated` / `.checked` /
+`.removed`. Responses carry only status — set, when, by whom, the last check's probes
+(`ok|warning|failed` with the vendor's scrubbed message) — never a value. Probes run on an
+injected `fetch`: the Cloudflare zone is in the account and has a proxied wildcard, the Neon key
+lists projects, the Resend key is full-access and the notifications domain verified, the GitHub
+App is installed on the org with the required write set. The upstream IdP step is read-only (it is
+Launch's own `OIDC_*` config).
+
+**Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
+creating a Worker; checks run only when a credential is saved or re-checked, not on a schedule;
+one row per kind for the whole deployment, so two test files writing the same kind race.
+
+### 18.3 The OIDC issuer
+
+Launch is the issuer at `APP_URL` (no trailing slash; `loadConfig` refuses `OIDC_ISSUER ===
+APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/api`, in
+`run_worker_first`: `/.well-known/openid-configuration`, `/.well-known/jwks.json`,
+`/oidc/authorize`, `/oidc/token`, `/oidc/userinfo`, `/oidc/logout` (`routes/oidc.ts`).
+
+- **Flow**: code + PKCE S256 only. An unknown client or unregistered `redirect_uri` gets an HTML
+  page and never a redirect; every other error goes back with `state` and `iss` (RFC 9207). Codes
+  live 60 s in `oidc_codes`, stored hashed, single-use by a compare-and-set; a replay REVOKES the
+  first redemption's access token (userinfo refuses it) and is audited `oidc.code_replayed`.
+- **Claims**: ES256 `id_token` with `sub` = the Launch user id, `email`, `email_verified: true`,
+  `name`, `groups` (group names in the client's tenant), `nonce`, `auth_time` (when the Launch
+  session began). The access token is an `at+jwt` for userinfo only. Clients authenticate with
+  `client_secret_basic` or `_post` against a hashed secret, compared in constant time.
+- **Keys** (`services/oidc/keys.ts`): `next → active → retiring → retired`; the next key is
+  published before it signs, a retiring one stays in the JWKS until the longest token plus a
+  cache margin has passed. Private JWKs are sealed; `/api/admin/oidc` lists and rotates
+  (`oidc.key.rotated`).
+- **Access policy** (`services/oidc/policy.ts`): the person must be a member of the client's
+  tenant; app owners (named or the owner group) always pass; `company` admits every member,
+  `restricted` needs a user or group grant. A member refused is sent to `/request-access`
+  (`app.access.requested`); the app's owners and admins decide on `/apps/:slug/access`
+  (approve = a user grant). Every sign-in and refusal is audited (`oidc.signin`, `oidc.denied`).
+- **Re-authentication**: `prompt=login`, or a session older than `max_age`, ends the Launch
+  session and sends the person to `/login` (the return URL carries a `launch_reauth` marker so it
+  cannot loop); under `prompt=none` it is `login_required`.
+- **Logout** (RP-Initiated Logout 1.0): with an `id_token_hint` Launch signed (retiring keys and
+  expired hints accepted) for an enabled client, naming the signed-in person, the session ends at
+  once; otherwise — including every Rocketflare app, which keeps no id_token — a confirmation page
+  whose same-origin form POST ends it (the CSRF middleware refuses a cross-site one). Only a
+  `post_logout_redirect_uri` registered for that client is ever followed, with `state`.
+
+**Known gaps:** no refresh tokens, consent screen, dynamic registration, front/back-channel logout
+or `prompt=consent|select_account`; re-authentication ends the whole Launch session, and
+`prompt=login` is not forwarded to Launch's own upstream IdP (which may answer silently); logging
+out of Launch does not end the apps' own sessions; authorize and logout answer GET only for relying
+parties (a cross-site POST with the cookie is refused by CSRF).
+
+### 18.4 Registry, health and OIDC clients
+
+- **Import** (`POST /api/apps/import {repo, ref?, ownerGroupId?}`, admin+): the GitHub App token is
+  narrowed to the one repo and `contents: read`; Launch reads `.rocketflare.json` (else
+  `launch.plugins.json`) and both wrangler tomls, parsed by `rocketflare-manifest.ts` — the
+  manifest leniently (a zod passthrough: `app {slug, display, domain}`, the kit version from
+  `kit.version` or `kitVersion`), the tomls with `smol-toml` (name, `APP_URL`, binding ids; a kit
+  `<PLACEHOLDER>` is not an id). The slug must follow spec/04 (a letter first, not `*-staging`, not
+  reserved) and is globally unique. `apps`, one `app_environments` row per toml, the
+  `app_operations` steps and `app.imported` are written in one transaction.
+- **Catalogue and detail** (`/apps`, `/apps/:slug`; members read): name, team, kit version, a
+  status dot per environment with its last check; the detail page shows resources, 24 h health
+  history, the operations log and the OIDC card.
+- **Health** (`services/launch/health.ts`, the `*/5` cron and `POST /api/apps/:id/health-check`):
+  `GET {url}/api/health` and `/api/ready`, 5 s each. `up` = both 200, `degraded` = health 200 and
+  ready not (the Worker runs, its database does not answer), `down` = anything else (timeout,
+  DNS, 5xx). Each probe updates the environment and writes an `app_health_checks` row; a status
+  CHANGE is audited `app.health.changed` (the first observation is the baseline, not a change);
+  checks older than 7 days are pruned. Ten tenants at a time, three environments at once.
+- **OIDC client** (`services/launch/oidc-clients.ts`): `POST /api/apps/:id/oidc-client` registers
+  one client per app (`lc_…`) with `{url}/auth/oidc/callback` and `{url}/login?signedOut=1` for
+  every environment with a URL. The secret is shown ONCE (stored as a hash, last four kept as a
+  hint) with a config snippet; `rotate-secret` and `PATCH …/redirect-uris` are audited.
+
+**Known gaps:** import only — creating an app (templates, provisioning) is P2; no Cloudflare
+verification of the recorded resource ids; no re-sync from the repo after import; health is
+polled, not pushed, and the cron does not run under `pnpm dev` (use "Check now" or
+`/cdn-cgi/local/scheduled`); no alerting on a status change beyond the audit row.

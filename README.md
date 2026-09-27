@@ -6,7 +6,8 @@ Launch is the company console for [Rocketflare](https://rocketflare.dev) ([GitHu
 apps. Anyone can go from an idea to a secure, production app in the browser, while IT keeps
 control of credentials, sign-in, approvals and audit.
 
-> Status: **P0 done; P1 in progress: Launch seeded from Rocketflare 0.15.0** (September 2026).
+> Status: **P0 done; P1 built locally, not yet deployed: the app registry, health, the OIDC issuer,
+> setup and audit** (September 2026).
 > Results: [spikes/SUMMARY.md](spikes/SUMMARY.md).
 
 ## Why

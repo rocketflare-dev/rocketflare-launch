@@ -194,7 +194,7 @@ the orchestrator around it — phases `tokens` (TTY only: hidden prompts → `ap
 | Expression | Task | What it does | Local trigger (`wrangler dev` never fires crons itself) |
 |---|---|---|---|
 | `0 4 * * *` | `pruneExpired`, `pruneAiSpans` | deletes expired sessions, consumed/expired magic links, invitations older than 30 days; then `ai_spans` older than `OBSERVABILITY_SPAN_RETENTION_DAYS` (14), one DELETE per tenant (D32) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=0+4+*+*+*"` |
-| `*/5 * * * *` | `healthPoll` (Launch, spec/06) | polls `/api/health` + `/api/ready` of every registered app environment, records the check, audits a status change, prunes checks older than 7 days (a stub until P1 slice 1d) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"` |
+| `*/5 * * * *` | `healthPoll` (Launch, spec/06) | polls `/api/health` + `/api/ready` of every registered app environment, records the check, audits a status change, prunes checks older than 7 days; on demand, `POST /api/apps/:id/health-check` ("Check now") | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"` |
 | `15 * * * *` | `analytics.refreshFactTables` (the analytics PLUGIN, D31) | every registered fact table, per tenant, DELETE+INSERT in one transaction; per-tenant failures collected, logged as a warning, never abort the run. The expression is the plugin's `crons` declaration and the task is `ServerPlugin.scheduledTasks` — **a task under an expression no toml declares simply never runs** | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=15+*+*+*+*"` — or, for one organisation, `launch analytics refresh-facts` |
 
 Health of the fact tables: `GET /api/analytics/facts/status` (admin+; `stale` = newest source row
