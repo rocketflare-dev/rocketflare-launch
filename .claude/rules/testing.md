@@ -207,7 +207,12 @@ a fake `WebSocket` factory left set) is on you.
   a job. `tests/api/launch-vendors.test.ts` exercises every client method against it.
   `tests/helpers/github-oidc.ts`: `mintActionsToken(actionsClaims({ repository, repositoryId,
   environment, workflowFile }), { audience?, forged?, expiresInSeconds? })` signs a GitHub Actions
-  OIDC token whose JWKS the FakeCloud (or `actionsJwksFetch()`) serves at GitHub's URL
+  OIDC token whose JWKS the FakeCloud (or `actionsJwksFetch()`) serves at GitHub's URL.
+  Code that reads the platform credentials or `launch_settings` (the pipeline, `/ci/*`,
+  `POST /api/apps`) runs over `tests/helpers/credential-store.ts`: `vi.mock` the credentials
+  module with `mockCredentialsModule(real, store)` and seed through `putCredential` /
+  `putSetting` — those tables are global, and writing them races `setup.test.ts`.
+  `tests/api/app-create-e2e.test.ts` is the whole create → deploy → teardown path in one file
 - Producers: assert on `stubs(env).queue.messages` (RecordingQueue) — `body.type`, `body.payload` —
   and that the route did NOT do the work itself (no `[email:dev]` line, no provider fetch)
 - Uploads: `new FormData()` + `form.append('file', new File([bytes], 'a.png', { type: 'image/png' }))`

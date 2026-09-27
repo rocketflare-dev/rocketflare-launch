@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Create an app: "Create app" on the catalogue starts a pipeline that creates the GitHub repo,
+  scaffolds it from Rocketflare 0.15.0, creates its Neon project (a `staging` branch, `migrator`
+  and `app` roles), KV, queue and R2 per environment, its sign-in client, placeholder Workers
+  with their routes, workflows and queue consumers, Worker secrets and a Resend sending key, then
+  deploys staging and waits for it to answer healthy. Every step is recorded; a failed run is
+  retried from the step that failed, without creating anything twice.
+- Deploy gateway (`/ci/deploy`): an app's own `deploy.yml` deploys through Launch with a GitHub
+  Actions OIDC token and no Cloudflare or Neon credential. Launch checks every binding against the
+  app's recorded resources (another app's KV, bucket, queue or workflow is refused with 403),
+  uploads the version, hands out a migration credential for that deploy only and revokes it after.
+  Staging deploys are approved automatically; production waits for an app owner or admin.
+- Scaffold job: a one-shot GitHub Actions job in the new repo clones the pinned kit, renames it,
+  installs the default plugins, runs its gate and pushes `main`, with a one-hour token scoped to
+  that repo (`/ci/scaffold`).
+- App page: follow a launch step by step, retry it from the failed step, approve or reject a
+  production deploy (owners and admins), "Deploy to production", and archive the app, which
+  deletes its resources and archives the repo. The create form previews the staging host.
 - P2 foundations (slice 2a) for creating apps: `deploy_tickets` and the app columns a launch
   records (GitHub repo id, template ref/commit, run id, archive time, the sealed encryption key)
   in one migration; the `APP_LAUNCH_WORKFLOW` and `APP_TEARDOWN_WORKFLOW` bindings; a public

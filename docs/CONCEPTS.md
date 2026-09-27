@@ -709,7 +709,8 @@ no MCP client; directory sync does not provision kit users or groups (it only ma
 
 What makes this copy Launch rather than the kit: a registry of the company's Rocketflare apps, an
 OIDC issuer they sign in through, the sealed platform credentials Launch acts with, and an
-append-only audit log (spec/03–06, 08; the build plan is `docs/plans/p1-foundation.md`).
+append-only audit log (spec/03–06, 08; the build plans are `docs/plans/p1-foundation.md` and
+`docs/plans/p2-create-app.md`). From P2 it also creates apps (§18.5–18.8).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `packages/shared/src/launch-{apps,oidc,setup,audit}.ts`.
 
@@ -749,7 +750,8 @@ Launch's own `OIDC_*` config).
 
 **Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
 creating a Worker; checks run only when a credential is saved or re-checked, not on a schedule;
-one row per kind for the whole deployment, so two test files writing the same kind race.
+one row per kind for the whole deployment, so a suite that needs credentials mocks the module
+over an in-memory store (`tests/helpers/credential-store.ts`) rather than racing the setup suite.
 
 ### 18.3 The OIDC issuer
 
@@ -814,7 +816,108 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   every environment with a URL. The secret is shown ONCE (stored as a hash, last four kept as a
   hint) with a config snippet; `rotate-secret` and `PATCH …/redirect-uris` are audited.
 
-**Known gaps:** import only — creating an app (templates, provisioning) is P2; no Cloudflare
-verification of the recorded resource ids; no re-sync from the repo after import; health is
+**Known gaps:** no Cloudflare verification of the recorded resource ids; no re-sync from the repo after import; health is
 polled, not pushed, and the cron does not run under `pnpm dev` (use "Check now" or
 `/cdn-cgi/local/scheduled`); no alerting on a status change beyond the audit row.
+
+### 18.5 Creating an app (the launch pipeline)
+
+`POST /api/apps` (`manage App` and `launch_settings.app_create_role`; `routes/app-pipeline.ts`)
+checks the slug (spec/04 plus no `launch-` prefix), writes `apps` (`source='created'`,
+`status='requested'`), both `app_environments` rows, the creator as owner and
+`app.create.requested` in one transaction, then starts `APP_LAUNCH_WORKFLOW` with the run id as the
+instance id → 202. `AppLaunchWorkflow` (`api/workflows/app-launch.ts`) only wires steps; their
+bodies are `services/launch/pipeline/launch-steps.ts`, each inside `runStep` (`operations.ts`):
+one `app_operations` row per `(run_id, step)`, every vendor id recorded the moment it exists, a
+succeeded row skipped with its stored ids, failures scrubbed. No step result carries a secret; the
+step that mints one puts it on the Worker itself.
+
+- **Steps**: `reserve` → `repo` (private repo + the two scaffold files) → `scaffold.start|wait|
+  verify` (§18.6; `.rocketflare.json` and the toml names must match `names.ts`) → `neon` (project,
+  `migrator` owning database `app`, `app` inheriting it via `GRANT` over the HTTP SQL endpoint as
+  `neondb_owner`, a `staging` branch with both passwords reset) → `cloudflare` (KV, queue, R2 per
+  environment) → `oidc_client` → `write_config` (both tomls, one commit: the ids, `APP_URL`,
+  `EMAIL_FROM`, `TENANCY_MODE=single`, `SIGNUP_MODE=open`, Launch as `OIDC_ISSUER`,
+  `AUTH_OIDC_ONLY`, `workers_dev=false`) → `placeholders` (a stub Worker per environment applying
+  the toml's DO migrations, its workflows, queue consumers and `<host>/*` route) → `github_env`
+  (environments, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
+  `worker_secrets` → `email` (non-blocking) → `deploy_staging.start|wait|check` → `health` (up to
+  20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
+- **The adapter** is `pipeline/ports.ts` `defaultPorts()`: `rocketflare/{names,toml,
+  placeholder-worker,scaffold-job}.ts` and `scaffold/github-actions-runner.ts`. The Workflow
+  depends on the ports only.
+- **Waits are rounds**: `…poll#N` reads the ticket row (the truth) and asks whether the job
+  itself died, then `…wait#N` parks on the event for one round (15 × 2 min for the scaffold, 15 ×
+  3 min for the deploy). The event is a nudge.
+- **Retry** (`POST /api/apps/:id/pipeline/retry`, `manage App`, only a `failed` run): a new
+  instance `<runId>-rN` with the same run id, so succeeded steps are skipped and the failed one
+  resumes with `ctx.prior`; a failed wait restarts the job it waited on; a retried `placeholders`
+  sends only the DO migrations the script does not have. The live instance id is kept on
+  `apps.launch_instance_id`, and `/ci/scaffold/done` and `/ci/deploy/:id/finish` send their events
+  there (`pipeline/instance.ts`).
+- **UI**: "Create app" (a live slug check and a preview of `<slug>-staging.<apps domain>`, the
+  domain from `GET /api/apps`' `appsDomain`), the step list polled while a run is owed, "Retry from
+  failed step", the deploys card and Archive (`pages/apps/components/`).
+
+**Known gaps:** waits are rounds, so a lost event costs up to one round (2–3 minutes); the
+`production` step is always skipped (the first production release is a separate, approved
+deploy); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
+apply it); `write_config` answers only the kit's one KV binding (`RATE_LIMIT_KV`) — a toml declaring
+another fails the step by name; the owner group is not mapped to GitHub team access; everything is
+proven against the FakeCloud only (plan §5 lists what the first real run must confirm: the Neon
+`GRANT` on Postgres 17 and `db:migrate:ci` as `migrator`; version upload onto a placeholder with
+`v1`, workflows and consumers on it, schedules, a 5–10 MB upload, per-app routes over Launch's
+catch-all; the GitHub App's permissions, how soon a pushed workflow is dispatchable, whether an
+installation token may push workflow files, the OIDC claim shapes, `ci.yml` against the 45-minute
+wait).
+
+### 18.6 The scaffold job
+
+Launch cannot run the kit's rename, plugin install and gate in a Worker, so the `repo` step commits
+`.github/workflows/launch-scaffold.yml` and `.launch/scaffold.mjs` (`rocketflare/scaffold-job.ts`)
+and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
+(`GitHubActionsScaffoldRunner`, behind the `ScaffoldRunner` seam a P3 sandbox will also fill). The
+job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
+scoped to that repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files)
+and the plan, once per ticket; clones the pinned kit at its tag and checks the commit; patches
+around rocketflare#37; runs `rename.mjs`; installs the default plugins; deletes the kit-only
+workflows and `.launch/`; runs `lint`, `typecheck` and `test:config`; pushes `main`; revokes its
+token; and calls `POST /ci/scaffold/done {commit}`.
+
+**Known gaps:** only exercised by `tests/config/scaffold-script.test.ts` (a fixture kit, install and
+gate skipped) and the e2e test (the push simulated); the real run of kit 0.15.0 on a runner —
+rename, #37 patch, analytics plugin, a green gate — is unproven (plan §5.4).
+
+### 18.7 The deploy gateway
+
+An app's `deploy.yml` runs the kit's `scripts/deployer.mjs` against `/ci/deploy` (routes/CLAUDE.md)
+holding no credential. Tickets live in `deploy_tickets`, every transition a compare-and-set
+(`deploy/tickets.ts`, `pending → approved|rejected → uploaded → active → finished`, or `failed`).
+Staging is auto-approved; production opens `pending` for an app owner or admin to decide on the
+app page within the job's `WAIT_SECONDS`, or claims the pre-approval "Deploy to production" made
+(15 minutes). Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
+recorded KV ids, queues, bucket and workflows, in-script Durable Objects, `ai`, `assets` and vars,
+refusing every other binding kind, any route and a newer DO migration tag, each as `"<kind>
+<binding>=<value>"` — a refusal is 403, the ticket `failed`, and no Neon call. Otherwise the assets
+and version go up (`keep_bindings: ['secret_text']`, `RELEASE_VERSION`), the `migrator` password is
+reset and returned once as `migratorUrl`, and `activate` deploys it at 100%, applies the crons and
+workflows and resets the password again; `finish` revokes if still live.
+
+**Known gaps:** approver ≠ author is not enforced (the person who dispatched a production deploy
+may approve it); P4 replaces the decision source with the approvals engine; the Versions API does
+not do what `wrangler deploy` does — DO migrations (a new tag is refused), registering new
+workflows, queue consumers and crons are Launch's job, so only the ones Launch knows are applied.
+
+### 18.8 Archiving an app (teardown)
+
+`POST /api/apps/:id/teardown {confirmSlug, deleteRepo?}` (`manage App`) starts
+`APP_TEARDOWN_WORKFLOW`. It gathers the ids from EVERY create run's `app_operations` plus
+`app_environments` and deletes in reverse: routes, queue consumers, Worker scripts, workflows,
+queues, R2 (emptied first), KV, Resend keys, the Neon project; the OIDC client is disabled, not
+deleted; the repo is archived (deleted only with `deleteRepo`). A 404 is success, so a half-created
+app tears down too. It ends `archived` with `archived_at` and `app.archived`; retry is the same
+`<runId>-rN` rule.
+
+**Known gaps:** an IMPORTED app's teardown only disables its sign-in client — Launch did not create
+its resources and leaves them, and its repo, alone; a deleted repo is gone for good.
+
