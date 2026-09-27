@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Colour rocket launching from a cloud</title>
+  <desc id="desc">A simple playful vector rocket rising from a single orange launch-fume cloud.</desc>
+
+  <!-- Rocket -->
+  <path fill="#3B82C4" d="
+    M256 72
+    C222 100 205 144 205 200
+    L205 286
+    C205 302 216 313 232 313
+    L280 313
+    C296 313 307 302 307 286
+    L307 200
+    C307 144 290 100 256 72
+    Z"/>
+
+  <!-- Nose cone -->
+  <path fill="#F2C94C" d="
+    M256 72
+    C237 88 224 108 216 132
+    L296 132
+    C288 108 275 88 256 72
+    Z"/>
+
+  <!-- Window -->
+  <circle cx="256" cy="184" r="23" fill="#F4F1E8"/>
+  <circle cx="256" cy="184" r="15" fill="#91D4E8"/>
+
+  <!-- Fins -->
+  <path fill="#E65A3A" d="
+    M205 231
+    C180 245 165 270 160 307
+    L205 289
+    Z"/>
+  <path fill="#E65A3A" d="
+    M307 231
+    C332 245 347 270 352 307
+    L307 289
+    Z"/>
+
+  <!-- Engine / exhaust -->
+  <path fill="#5D6670" d="M232 307 H280 L274 333 H238 Z"/>
+  <path fill="#F2C94C" d="
+    M242 331
+    C246 349 251 361 256 371
+    C261 361 266 349 270 331
+    Z"/>
+  <path fill="#E65A3A" d="
+    M249 331
+    C251 344 253 353 256 360
+    C259 353 261 344 263 331
+    Z"/>
+
+  <!-- Single launch-fume cloud, matching the original icon style -->
+  <path fill="#E8872F" d="
+    M91 409
+    C91 377 117 351 149 351
+    C154 351 159 352 164 353
+    C174 320 205 296 241 296
+    C279 296 311 322 319 358
+    C328 351 339 347 351 347
+    C382 347 407 372 409 403
+    C431 405 449 423 449 446
+    L449 452
+    L63 452
+    L63 438
+    C63 422 75 410 91 409
+    Z"/>
+</svg>

@@ -1,0 +1,87 @@
+/**
+ * Realtime event contracts (D8). "DB is the truth, WebSocket is a nudge": an event names WHAT
+ * changed (its `type`, optionally an `entity.changed` payload `{ entity, id }`) and the client
+ * re-queries — it never treats a payload as state. `REALTIME_INVALIDATIONS` maps each event type
+ * to the TanStack query-key ROOTS the UI invalidates (the `queryKeys.<family>.all` prefixes in
+ * `apps/web/src/ui/lib/query-keys.ts`); the server emits, the UI reacts, both through this file.
+ */
+import { z } from 'zod'
+import { sharedPlugins } from './plugins/index'
+
+export const realtimeEventTypeSchema = z.enum([
+  'notification.created',
+  'notification.read',
+  'member.changed',
+  'invitation.changed',
+  'tenant.changed',
+  /** D29: this person's group membership changed — what they may READ has moved under them. */
+  'access.changed',
+  /** D30: a feature flag moved for this tenant — what EXISTS for them has changed. */
+  'features.changed',
+  'entity.changed',
+  'ping',
+])
+export type RealtimeEventType = z.infer<typeof realtimeEventTypeSchema>
+
+/** Generic nudge: `entity` is a query-key root (`'members'`, `'activity'`…), `id` narrows it. */
+export const entityChangedPayloadSchema = z.object({
+  entity: z.string().min(1),
+  id: z.string().optional(),
+})
+export type EntityChangedPayload = z.infer<typeof entityChangedPayloadSchema>
+
+/** What travels over the socket, `JSON.stringify`-ed. `at` is an ISO timestamp set by the emitter. */
+export const realtimeEventSchema = z.object({
+  type: realtimeEventTypeSchema,
+  tenantId: z.string(),
+  at: z.string().datetime(),
+  payload: z.unknown().optional(),
+})
+export type RealtimeEvent = z.infer<typeof realtimeEventSchema>
+
+/**
+ * Event type → query-key roots to invalidate. Roots are the first element(s) of the families in
+ * `queryKeys`; `entity.changed` is resolved from its payload at runtime and `ping` invalidates
+ * nothing. A ui test asserts every root here is a real `queryKeys` family.
+ */
+const CORE_REALTIME_INVALIDATIONS: Record<RealtimeEventType, string[][]> = {
+  'notification.created': [['notifications']],
+  'notification.read': [['notifications']],
+  'member.changed': [['members']],
+  'invitation.changed': [['invitations'], ['pending-invitations']],
+  'tenant.changed': [['tenant'], ['tenants'], ['auth']],
+  // Sent to the affected people only (`nudgeUsers`): their ability to see content changed, so the
+  // session (which carries their groups), both visibility-bearing resources and the groups view
+  // are all stale at once.
+  'access.changed': [['auth'], ['documents'], ['groups']],
+  // Features ride the session, so the session is what has to be re-fetched; `features` covers the
+  // read-only list the CLI and the debugging surface use.
+  'features.changed': [['auth'], ['features']],
+  'entity.changed': [],
+  ping: [],
+}
+
+/**
+ * The same map with every installed plugin's `realtimeRoots` added to `access.changed` (D29, D31).
+ *
+ * Only that event: a plugin whose rows carry `visibility` has to be re-fetched when somebody's
+ * group membership moves under them, or they keep looking at content they can no longer open.
+ * Everything else a plugin needs is an `entity.changed` nudge naming its own query-key root, which
+ * needs no registration at all.
+ */
+export const REALTIME_INVALIDATIONS: Record<RealtimeEventType, string[][]> = {
+  ...CORE_REALTIME_INVALIDATIONS,
+  'access.changed': [
+    ...CORE_REALTIME_INVALIDATIONS['access.changed'],
+    ...sharedPlugins.flatMap(p => (p.realtimeRoots ?? []).map(root => [root])),
+  ],
+}
+
+/** The query-key roots an event should invalidate, including the `entity.changed` payload root. */
+export function invalidationsFor(event: RealtimeEvent): string[][] {
+  if (event.type === 'entity.changed') {
+    const parsed = entityChangedPayloadSchema.safeParse(event.payload)
+    return parsed.success ? [[parsed.data.entity]] : []
+  }
+  return REALTIME_INVALIDATIONS[event.type]
+}

@@ -1,0 +1,93 @@
+# Copy to `.dev.vars` (git-ignored). `wrangler dev` reads it as Worker secrets/vars; the
+# db:*/seed scripts load it with dotenv-cli. Never put alternate credentials in comments.
+
+# --- Required ---------------------------------------------------------------------------
+# Local overrides of wrangler.toml [vars] (which are the PRODUCTION values). Without these
+# wrangler dev would run as APP_ENV=production with the prod APP_URL, and cookie-authed POSTs
+# from the Vite origin (:3000) would fail CSRF.
+APP_ENV=development
+# APP_URL follows the UI port: change it together with DEV_UI_PORT below.
+APP_URL=http://localhost:3000
+# Dev ports (scripts/lib/dev-ports.mjs), for a machine where :3000/:3001 are taken (a Cloudflare
+# Sandbox holds :3000). The shell wins over this file; unset means 3000 (Vite) / 3001 (wrangler).
+# `pnpm dev`, Vite, the bootstrap and the seed read them; `pnpm dev:api` alone reads only the shell.
+# DEV_UI_PORT=3000
+# DEV_API_PORT=3001
+# Extra hostnames Vite answers for, comma-separated (a sandbox preview URL's host).
+# DEV_ALLOWED_HOSTS=
+# Database driver (D35): overrides the toml's DATABASE_DRIVER (the DEPLOYED driver, "neon" in a
+# fresh copy) for wrangler dev, the db:*/seed scripts and drizzle-kit. `postgres` = postgres.js over
+# TCP to the compose Postgres, no proxy. `pnpm dev:db:up --neon` switches to `neon` through the local
+# proxy (and writes NEON_LOCAL_PROXY); `--postgres` switches back. The bootstrap writes this line.
+DATABASE_DRIVER=postgres
+# Owner connection string for local Postgres (docker-compose.dev.yml). Deployed, the Worker reads
+# the DATABASE_URL secret (neon) or the HYPERDRIVE binding (postgres); this is the local one, and
+# what scripts/migrate.ts, db-roles.ts, seed.ts and drizzle-kit use.
+DATABASE_URL=postgresql://launch:launch_pass@localhost:5432/launch_dev
+# The local Neon proxy (only with DATABASE_DRIVER=neon; written by `pnpm dev:db:up --neon`).
+NEON_LOCAL_PROXY=
+# AES-GCM key for OAuth tokens stored at rest. Generate: openssl rand -hex 32
+OAUTH_ENCRYPTION_KEY=
+# Feature flags, layer 1 (D30): comma-separated keys this machine ships AT ALL. Only consulted for
+# a flag whose registry entry sets `environmentGated`; an ordinary rollout flag ignores it.
+# Listed here because `wrangler dev` reads [vars] from wrangler.toml, which holds the PRODUCTION
+# value — so a key you ship dark in production is dark on every developer's laptop without this.
+FEATURES_ENABLED=
+# Agent human-in-the-loop (#17): how long a run parked on a person waits before it expires. Passed
+# verbatim to `step.waitForEvent`, so it must be a Workflows duration string ("168 hours", "7 days").
+# Workflows keeps a waiting instance for 30 days on Workers Paid but only 3 days on Free — past
+# retention the instance is gone and the resume event can never arrive, so keep this under 3 days
+# if you are not on Paid.
+AGENT_INTERRUPT_TIMEOUT=168 hours
+
+# --- Optional (feature-gated when absent) -----------------------------------------------
+# Email via Resend. Absent → magic-link URLs are logged to the wrangler dev console.
+RESEND_API_KEY=
+# Comma-separated emails promoted to global admin on their first *verified* login.
+BOOTSTRAP_ADMIN_EMAILS=
+# OAuth providers: leave blank to hide the button. Redirect URI is derived from APP_URL:
+#   {APP_URL}/auth/{provider}/callback
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+# Any OpenID Connect issuer (Keycloak, Okta, Entra single-tenant, Auth0…) — SETUP.md "Sign in with
+# any OIDC issuer". Blank OIDC_ISSUER = no SSO button. Redirect URI: {APP_URL}/auth/oidc/callback.
+# OIDC_ISSUER must equal the issuer's `issuer` value exactly (trailing slash included if it has one).
+# Deployed, OIDC_ISSUER/CLIENT_ID/LABEL/SCOPES and AUTH_OIDC_ONLY are [vars] in BOTH tomls;
+# OIDC_CLIENT_SECRET is a secret (omit it for a public client — PKCE only).
+OIDC_ISSUER=
+OIDC_CLIENT_ID=
+OIDC_CLIENT_SECRET=
+OIDC_LABEL=
+OIDC_SCOPES=
+# true = the login page goes straight to the issuer and hides the other methods (needs the two above).
+AUTH_OIDC_ONLY=
+# true = trust the issuer's email when it omits `email_verified` (single-tenant Entra does). Default
+# false: such a sign-in is refused. An explicit `email_verified: false` is refused either way.
+OIDC_TRUST_EMAIL=
+# AI layer (Phase 3): platform default key; tenants may override in Settings → AI. Optional — without
+# it chat falls back to Workers AI through the [ai] binding (zero key, billed to the Cloudflare account).
+ANTHROPIC_API_KEY=
+EMBEDDINGS_API_KEY=
+# Evals only (D33, docs/EVALS.md): `pnpm eval --provider fireworks|gemini` (and `--judge-provider`)
+# read these; the Worker never does, which is why they are comments here and not bindings.
+# FIREWORKS_API_KEY=
+# GEMINI_API_KEY=
+# AI tracing (D32). Spans ALWAYS land in the local `ai_spans` table (`pnpm cli traces list`);
+# these only add an OTLP backend. Langfuse: both keys are enough (preset auto-selected, Langfuse
+# Cloud unless OTEL_EXPORTER_OTLP_ENDPOINT points elsewhere). Phoenix locally:
+#   docker run -p 6006:6006 arizephoenix/phoenix  →  OBSERVABILITY_PRESET=phoenix,
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006 (protobuf by default — Phoenix takes nothing else).
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+OBSERVABILITY_PRESET=
+OTEL_EXPORTER_OTLP_ENDPOINT=
+# Extra request headers, k=v,k=v (URL-encode values) — e.g. authorization=Bearer%20<key>
+OTEL_EXPORTER_OTLP_HEADERS=
+# Link-out for `traces show`: {traceId} is substituted.
+OBSERVABILITY_TRACE_URL=
+
+# --- RLS (see docs/RLS.md) — leave as-is unless running the enforce spike ---------------
+# App-role credential for scripts/db-roles.ts; username must equal APP_ROLE in src/db/schema/rls.ts
+APP_DATABASE_URL=

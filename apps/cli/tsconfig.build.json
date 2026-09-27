@@ -1,0 +1,12 @@
+{
+  "//": "Kept for editor tooling only. The build is `esbuild` (see package.json + README) because @launch/shared is consumed as .ts source with extensionless imports, which Node cannot load from tsc output.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["src/**/*"]
+}

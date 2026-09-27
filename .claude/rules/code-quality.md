@@ -1,0 +1,82 @@
+---
+paths:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.mjs"
+  - "**/*.md"
+---
+
+# Code Quality
+
+## Pre-commit gate (zero tolerance)
+
+```bash
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+```
+
+`typecheck` regenerates `apps/web/worker-configuration.d.ts` (`wrangler types`); commit the regenerated
+file. CI fails on a dirty diff of it — a binding or var changed without the types following.
+
+## Style (Biome 2, `biome.json`)
+
+- Single quotes, `asNeeded` semicolons, 100 columns, 2-space indent, trailing commas `es5`
+- `import type` / `export type` are errors when violated; unused variables and imports are errors
+- `pnpm lint:fix` before manual fixes; `pnpm lint` (errors only) is what CI runs
+- `apps/*/tests/**` and `apps/*/scripts/**` may use `any`; `src/**` in any package may not without a
+  `// biome-ignore` line that states why
+
+## TypeScript
+
+- Strict, ES2022, bundler resolution, `noEmit` in `tsconfig.base.json`; each package extends it
+  (`apps/web/tsconfig.json` covers its `src`, `tests`, `scripts`; `apps/cli`, `packages/shared` theirs).
+  `pnpm typecheck` runs all three
+- Alias `@/*` → `apps/web/src/*` (web only). Shared contracts are imported as `@launch/shared/<module>`
+  (workspace link, resolved to `packages/shared/src/<module>.ts` — TS source, no build). `packages/shared`
+  imports nothing from `apps/web` or `apps/cli` — it must bundle for the browser; `apps/cli` never
+  imports `apps/web`
+- Bindings are typed by the generated `Cloudflare.Env`; do not hand-write an `Env` interface
+- Infer types from zod schemas (`z.infer`) rather than duplicating interfaces
+
+## Contracts first
+
+New or changed API surface starts as a zod schema in `packages/shared/src/` (`@launch/shared`), then
+server validation, then the UI and the CLI parse the response with the same schema. The error envelope is `{ error, statusCode, code?,
+details? }` (`packages/shared/src/errors.ts`) everywhere, including validation failures.
+
+## Docs in sync (Non-Negotiable)
+
+Changing behaviour changes the doc in the same PR:
+
+| You changed | Update |
+|---|---|
+| any behaviour an adopted copy could want | an entry in `docs/upgrades/unreleased.md` — the ONLY thing that carries a change into the copies people are running (`docs/upgrades/README.md`); CI fails a PR touching `apps/**` or `packages/**` without one. **Write it in the note format** (`docs/upgrades/README.md` § "Writing one"): four headings, paragraph 1 of "What changed" is lifted verbatim into `CHANGELOG.md` so it is one standalone sentence of ≤ 40 words, no `###` sub-headings, "How to apply" numbered and self-contained, ≤ 150 lines, rationale linked from `docs/CONCEPTS.md` rather than restated |
+| a capability, a mode, a default | `docs/CONCEPTS.md` section + its "Known gaps" |
+| a command, an env name, a setup step | `SETUP.md`, `apps/web/.dev.vars.example`, `README.md` commands; root `package.json` scripts if a new package script should be reachable from the root; `scripts/bootstrap.mjs` (the step that runs it and its verify line) and `.claude/skills/rf-setup/SKILL.md` (the step table) |
+| a skill or its flags | the skill's `SKILL.md` (and its companion `checklist.md` / `reference.md`), `README.md` "Getting started", `docs/CONCEPTS.md` §13 |
+| a binding, a toml key, the release flow | `docs/DEPLOY.md`, both `wrangler*.toml` comments |
+| a convention in a layer | the matching `.claude/rules/*.md` and `apps/web/src/<dir>/CLAUDE.md` / `packages/shared/CLAUDE.md` |
+| a plugin slot, the plugin contract or the reference plugin (D31) | `docs/CONCEPTS.md` §16 + the matching `.claude/rules/*.md` + `apps/web/src/plugins/CLAUDE.md` |
+| a MEMBER of a declared plugin API entry — `@/plugins/api`, `@/db/schema/kit`, `@/plugins/api/ui{,-wiring}`, `@launch/shared/plugins/*`, the CLI entry, `@testkit/*` (D31) | `node scripts/plugin-api-doc.mjs` and commit `docs/plugin-api.md` — the same shape as the `worker-configuration.d.ts` step beside it. There is no version to bump: the file's `## Surface ledger` block IS the contract, and a plugin naming a symbol it no longer carries fails `pnpm plugin check` by name, with its replacement import |
+| a CLI command, flag or exit code | `docs/CONCEPTS.md` → CLI, `.claude/rules/cli.md` |
+| a rename target | `docs/ADAPTING.md` |
+
+A superseded doc is deleted in the same PR that supersedes it — git history is the archive. Never
+leave a stale document sitting beside a current one.
+
+## Secrets hygiene
+
+- Secrets exist in `apps/web/.dev.vars` (git-ignored) locally and `wrangler secret put` in deployed envs.
+  `[vars]` and `apps/web/.env.test` hold non-secrets and dummy values only. The CLI keeps its API key
+  in `~/.launch/config.json` (0600) — never in the repo, never printed in full. The provisioning
+  tokens (Cloudflare, Neon, Resend full-access) live in `apps/web/.provision.env` (git-ignored, 0600,
+  written by `pnpm provision tokens`; an exported variable overrides it) — never in `.dev.vars`, never
+  printed: `redact()` masks the exact values
+- **`.dev.vars` comments are not a safe place for alternate credentials.** A commented-out
+  connection string is still a credential on disk read by every tool that opens the file. Keep
+  other environments' strings in your password manager, not in the file
+- `gitleaks` runs in CI over the full history. If it fires, rotate the credential first, then fix
+  the history. `.gitleaks.toml` allowlists deterministic test fixtures only (path + regex,
+  never a rule) — a real credential is never allowlisted
+- Never log a connection string, token or key; `apps/web/scripts/cf-provision.sh` redacts them for that
+  reason; the CLI prints key prefixes only
+- Resource ids (Hyperdrive, KV) are not secrets and are committed in the tomls

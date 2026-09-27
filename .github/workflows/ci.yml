@@ -1,0 +1,109 @@
+name: CI
+
+# The quality gate, in ONE place. It runs on every pull request and every push to main, and
+# deploy.yml calls this same file (`workflow_call`) before deploying a tag to staging, rather than
+# keeping a second copy of the job — a gate that drifts between main and deploy is worse than no
+# gate at all. The gate's STEPS live in `gate.yml`, which this file calls twice: once on the
+# checkout as it is, and once with the `defaultPlugins` installed (D31, decision 5).
+#
+# `pull_request` is the trigger that matters: a gate that only runs AFTER merge reports problems to
+# someone who has already moved on, and the porting-note check in gate.yml is written as a PR check
+# and can only do its job there. `push` stays on `main` alone, so a PR branch runs this once, not
+# twice.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  # Cancel superseded runs on a PR branch, never when called from the deploy path.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Gate
+    uses: ./.github/workflows/gate.yml
+
+  # The api suite again under the `neon` driver (D35). The gate runs `postgres` — local development
+  # does — but a fresh copy DEPLOYS on `neon`, so this job is what tests that path before a deploy.
+  # It uses the compose file rather than a `services:` container so the proxy image is pinned in
+  # one place and the database gets the same `max_connections=300`. Required: a copy that deploys
+  # on `postgres` everywhere may delete it (docs/NEON-DRIVER.md §5).
+  test-neon:
+    name: Tests under the neon driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `test:neon` starts the test Postgres + the Neon proxy (`--profile neon`) and runs the api,
+      # api-isolated and driver projects with DATABASE_DRIVER=neon.
+      - run: pnpm web test:neon
+
+  # What does a fresh clone of this kit install? (D31, decisions 2 and 5.)
+  #
+  # `defaultPlugins` in .rocketflare.json is a list of OBJECTS: `{ id, repo, ref?, subdir? }` —
+  # `repo` because a bare id says nothing about where a plugin comes from and decision 13 made a
+  # repository required of every plugin, `ref` because CI installs a PINNED version rather than
+  # whatever the default branch says this morning.
+  #
+  # This job always runs and always says what it found, including "none" — that answer is the one
+  # worth seeing on a bare kit, and it is also where a malformed entry is caught. The expensive
+  # second gate below is conditional on it, because with no default plugins that gate would be a
+  # verbatim re-run of `check`.
+  default-plugins:
+    name: Default plugins
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.read.outputs.count }}
+      ids: ${{ steps.read.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # One reader, in a file the kit's own rules can reach. This was a `node -e` heredoc here and
+      # another in gate.yml, and they had drifted in what they printed and what they refused —
+      # nothing lints a heredoc, nothing types it, and no test can run it.
+      - id: read
+        run: node scripts/default-plugins.mjs --github-output
+
+  # **The local oracle and the gating oracle must be the same command.** `pnpm plugin check` is
+  # what a person and an agent both run before committing an install, and until now CI ran no part
+  # of it — so a check that passed locally and a gate that failed (or the reverse) were the shape
+  # of both recent CI failures. This runs the identical command over the checkout as it is: plain
+  # Node, no `pnpm install`, no database, seconds. It audits whatever is recorded in
+  # `.rocketflare.json` — in the kit, the vendored reference plugin.
+  #
+  # Warnings and notes never reach the exit code — they are states worth saying rather than faults
+  # (a plugin that declares no `minKit`, or one vendored inside the kit) — so this fails only on a
+  # finding that names a file, a line and an edit. There is no longer a tier a plugin opts into:
+  # compatibility is measured from what it `uses` against the kit's ledger, so every installed
+  # plugin is checked strictly.
+  plugin-check:
+    name: Plugins are well formed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/plugin.mjs check
+
+  # The same gate again, with every default plugin installed and its migrations generated and
+  # applied. This is the kit's half of decision 5's "proof both ways": the other half is each
+  # plugin repository running `.github/workflows/plugin-ci.yml` against its own `minKit` floor and
+  # the kit's newest release.
+  plugins:
+    name: Gate with default plugins
+    needs: [check, default-plugins]
+    if: needs.default-plugins.outputs.count != '0'
+    uses: ./.github/workflows/gate.yml
+    with:
+      plugins: true

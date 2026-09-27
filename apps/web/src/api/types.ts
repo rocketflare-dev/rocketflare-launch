@@ -1,0 +1,95 @@
+/**
+ * Hono typing (04 §2, D13): bindings come from `wrangler types` (`Cloudflare.Env` in
+ * worker-configuration.d.ts), variables are declared once here, and every `Hono` instance is
+ * `Hono<AppEnv>` via `utils/routes/router.ts`. No `declare module 'hono'` augmentation.
+ */
+import type { GroupRef } from '@launch/shared/groups'
+import type { AppAbility } from '@launch/shared/permissions'
+import type { MembershipRole } from '@launch/shared/tenants'
+import type { Context } from 'hono'
+import type { PinoLogger } from 'hono-pino'
+import type { AppConfig } from '../config'
+import type { Database } from '../db/client'
+import type { User } from '../db/schema'
+import type { Tracer } from './observability/tracer'
+
+declare global {
+  namespace Cloudflare {
+    /**
+     * `AI` is declared here as well as by `wrangler types` so that the type exists in BOTH toml
+     * states: `pnpm bootstrap --offline` comments the `[ai]` block out of both tomls (no Cloudflare
+     * login needed), the regenerated `worker-configuration.d.ts` then has no `AI`, and every
+     * `c.env` handed to an `AiEnv` slice would fail TypeScript's weak-type check (TS2559). With
+     * `[ai]` present the two declarations are identical and merge. The runtime value is still
+     * absent offline — read it only through `AiEnv` (`AI?`) and `services/ai/resolve.ts`.
+     */
+    interface Env {
+      AI: Ai
+    }
+  }
+}
+
+/**
+ * What `authMiddleware` sets (D10, D25). Read ONLY through `withAuthAndDb` in routes and the
+ * helpers in `middleware/permissions.ts`. `tenantId`/`tenantUser` are null for a user with no
+ * membership (pending approval) — routes that need a tenant get 403 `no_tenant` before they run.
+ */
+export interface AuthContext {
+  user: User
+  /** The active tenant — the ONLY tenant id a query may filter by. */
+  tenantId: string | null
+  tenantUser: { role: MembershipRole } | null
+  /** Resolved tenant summary for `tenantId`; null when there is no membership. */
+  tenant: { id: string; name: string; slug: string } | null
+  /**
+   * The DB session row behind the cookie. Bearer (API-key) auth has no session row, so `id` is
+   * `api-key:<keyId>` — `isApiKeySession(auth)` tells the two apart (select-tenant is cookie-only).
+   */
+  session: { id: string }
+  /** Latest access request for the user's email — drives 403 `pending_approval` vs `no_tenant`. */
+  accessRequestStatus: 'pending' | 'approved' | 'rejected' | null
+  /** `buildAbility({ role, isGlobalAdmin, features })` for this request. */
+  ability: AppAbility
+  isGlobalAdmin: boolean
+  /** Feature flags on for the active tenant → `can('access', 'Feature:<f>')`. */
+  features: string[]
+  /**
+   * The groups this person belongs to IN THE ACTIVE TENANT (D29) — empty without a membership.
+   * Read it through `accessScopeOf(auth)` (`services/access.ts`) rather than directly: visibility
+   * is a SQL predicate, never a CASL condition.
+   */
+  groups: GroupRef[]
+}
+
+/**
+ * The generated `Cloudflare.Env` plus the one binding that exists only under
+ * `DATABASE_DRIVER = "postgres"` (D35): the kit's tomls ship without `[[hyperdrive]]`, so
+ * `wrangler types` omits it, while a copy on postgres has it. Optional either way.
+ */
+export type AppBindings = Cloudflare.Env & { HYPERDRIVE?: Hyperdrive }
+
+export interface AppVariables {
+  /** Validated config — routes read this, never `c.env` (D3). */
+  config: AppConfig
+  /** Per-request drizzle handle (owner connection). */
+  db: Database
+  /** Ends the request's DB client; the database middleware schedules it in `waitUntil`. */
+  dbClose?: () => Promise<void>
+  logger: PinoLogger
+  requestId: string
+  /** Per-request tracer (D16): Langfuse batcher when keys are set, else no-op. Set by `tracerMiddleware`. */
+  tracer: Tracer
+  /** Set by `authMiddleware`; absent on public routes. */
+  auth?: AuthContext
+  /**
+   * Opt-in from ONE route: this response may be framed by a same-origin page
+   * (`middleware/security-headers.ts` then relaxes `X-Frame-Options`/`frame-ancestors` for it
+   * alone). Only a route that has PROVED the content type may set it — `routes/files.ts` checks
+   * `isEmbeddableMimeType(row.contentType)` — because framing is the app shell's one clickjacking
+   * defence and a path allowlist would relax it for the `text/html` we deliberately download.
+   */
+  embeddable?: boolean
+}
+
+export type AppEnv = { Bindings: AppBindings; Variables: AppVariables }
+export type AppContext = Context<AppEnv>

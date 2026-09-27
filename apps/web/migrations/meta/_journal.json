@@ -1,0 +1,132 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788245169043,
+      "tag": "0000_cute_violations",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788254244465,
+      "tag": "0001_bored_zaladane",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788256161501,
+      "tag": "0002_workable_solo",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788258614143,
+      "tag": "0003_lowly_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788260748656,
+      "tag": "0004_petite_mysterio",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788277892050,
+      "tag": "0005_brainy_husk",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788498490585,
+      "tag": "0006_robust_hellfire_club",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789284342163,
+      "tag": "0007_medical_joseph",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789297087902,
+      "tag": "0008_fancy_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789359953542,
+      "tag": "0009_messy_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789443384223,
+      "tag": "0010_sad_jamie_braddock",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789532467496,
+      "tag": "0011_careful_bullseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789575315645,
+      "tag": "0012_plugin-example-feature-0.1.0",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789631557120,
+      "tag": "0013_kit-analytics-removed",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790316015619,
+      "tag": "0014_kit-ai-spans",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790396176507,
+      "tag": "0015_kit-ai-feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790405610571,
+      "tag": "0016_kit-documents-external-id",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790536317965,
+      "tag": "0017_plugin-analytics",
+      "breakpoints": true
+    }
+  ]
+}

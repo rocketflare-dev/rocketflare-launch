@@ -1,0 +1,333 @@
+#!/usr/bin/env node
+/**
+ * The local dev Postgres, addressed by ONE value: `DATABASE_URL` in `apps/web/.dev.vars`.
+ *
+ * `docker-compose.dev.yml` used to pin port 5432 and a fixed `container_name`, so a second
+ * checkout of the kit on the same machine could not start its database at all — it either
+ * collided on the port or silently attached to the other checkout's container (compose derives
+ * its project name from the directory, and every checkout's is `apps/web`). This script gives
+ * each checkout its own project, container and port, and writes the port it chose into
+ * `.dev.vars` so every other tool — `db:migrate`, `seed`, `drizzle-kit`, `wrangler dev` — follows
+ * without being told.
+ *
+ *   node scripts/dev-db.mjs up     [--json]   start it (idempotent; prints the port)
+ *        [--neon | --postgres]                also switch the LOCAL driver (D35): `--neon` starts the
+ *                                             Neon proxy in front of it and writes NEON_LOCAL_PROXY +
+ *                                             DATABASE_DRIVER=neon; `--postgres` stops the proxy.
+ *                                             Neither: keep whatever .dev.vars says (missing = postgres)
+ *   node scripts/dev-db.mjs down   [--json]   stop THIS checkout's database, never another's
+ *   node scripts/dev-db.mjs status [--json]   what is running, where, on which port
+ *   node scripts/dev-db.mjs env -- <cmd…>     run <cmd> with DATABASE_URL and the Worker's
+ *                                             Hyperdrive override pointing at this database
+ *
+ * The port is sticky: a re-run keeps the one already in `.dev.vars` whenever it is still ours or
+ * still free, so a working database never moves underneath a checkout.
+ */
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  checkoutTag,
+  chooseDevDbPort,
+  databaseUrlPort,
+  databaseUrlTarget,
+  isLocalDatabaseUrl,
+  readDevVars,
+  upsertDevVar,
+  withDatabaseUrlPort,
+} from '../../../scripts/lib/bootstrap-lib.mjs'
+
+const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const COMPOSE_FILE = path.join(WEB_DIR, 'docker-compose.dev.yml')
+const DEV_VARS = path.join(WEB_DIR, '.dev.vars')
+const DEV_VARS_EXAMPLE = path.join(WEB_DIR, '.dev.vars.example')
+/** Wrangler reads this for the local Hyperdrive binding; the toml's value is only a fallback. */
+const HYPERDRIVE_ENV = 'CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE'
+const SERVICE = 'postgres-dev'
+const PROXY_SERVICE = 'neon-proxy-dev'
+/** The proxy's per-checkout port range (the test proxy holds 4433). */
+const PROXY_PORT_START = 4444
+
+/** This checkout's compose project — unique per path, so two checkouts never share containers. */
+const PROJECT = `launch-dev-${checkoutTag(WEB_DIR)}`
+
+const sh = (cmd, args, opts = {}) =>
+  spawnSync(cmd, args, { encoding: 'utf8', cwd: WEB_DIR, ...opts })
+
+/** The DATABASE_URL a fresh checkout starts from (.dev.vars, else the example). */
+function currentUrl() {
+  for (const file of [DEV_VARS, DEV_VARS_EXAMPLE]) {
+    if (!existsSync(file)) continue
+    const url = readDevVars(readFileSync(file, 'utf8')).DATABASE_URL
+    if (url) return url
+  }
+  return 'postgresql://launch:launch_pass@localhost:5432/launch_dev'
+}
+
+/** Every port published by a container of THIS checkout's compose project. */
+function oursPorts() {
+  const ps = sh('docker', ['compose', '-p', PROJECT, '-f', COMPOSE_FILE, 'ps', '--format', 'json'])
+  if (ps.status !== 0) return new Set()
+  const ports = new Set()
+  for (const line of ps.stdout.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      for (const p of JSON.parse(line).Publishers ?? []) {
+        if (p.PublishedPort) ports.add(Number(p.PublishedPort))
+      }
+    } catch {
+      /* a docker version that prints something else: fall through to the free-port test */
+    }
+  }
+  return ports
+}
+
+/**
+ * `0.0.0.0`, not `127.0.0.1`: compose publishes on the wildcard address, and on macOS a
+ * loopback bind SUCCEEDS while Docker holds the same port — which is exactly how a second
+ * checkout used to sail past the check and then fail inside `docker compose up`.
+ */
+const portIsFree = port =>
+  new Promise(resolve => {
+    const server = createServer()
+    server.once('error', () => resolve(false))
+    server.once('listening', () => server.close(() => resolve(true)))
+    server.listen(port, '0.0.0.0')
+  })
+
+/**
+ * The port this checkout should use, and the URL carrying it. Sticky: the port already in
+ * `.dev.vars` wins whenever it is still ours or still free.
+ */
+async function resolvePort() {
+  const url = currentUrl()
+  const preferred = databaseUrlPort(url)
+  // An off-box DATABASE_URL (`pnpm bootstrap --db-url`, a Neon branch) is not ours to re-port:
+  // hand it through unchanged, and `up` has nothing to start.
+  if (!isLocalDatabaseUrl(url)) return { port: preferred, url, moved: false, external: true }
+  const ours = oursPorts()
+  const free = new Map()
+  for (let p = 5432; p < 5452; p += 1) free.set(p, await portIsFree(p))
+  const isAvailable = port => ours.has(port) || free.get(port) === true
+  const port = chooseDevDbPort({ preferred, isAvailable })
+  if (port === null) {
+    console.error('dev-db: no free port in 5432–5451 for the dev database')
+    process.exit(1)
+  }
+  return {
+    port,
+    url: withDatabaseUrlPort(url, port),
+    moved: preferred !== null && port !== preferred,
+  }
+}
+
+/** `.dev.vars` as key → value, or `{}` before the bootstrap has written it. */
+function devVars() {
+  return existsSync(DEV_VARS) ? readDevVars(readFileSync(DEV_VARS, 'utf8')) : {}
+}
+
+/** Persist values in `.dev.vars` so every other tool reads them through dotenv. */
+function writeDevVars(values) {
+  if (!existsSync(DEV_VARS)) return false
+  const text = readFileSync(DEV_VARS, 'utf8')
+  let next = text
+  for (const [key, value] of Object.entries(values)) next = upsertDevVar(next, key, value)
+  if (next === text) return false
+  writeFileSync(DEV_VARS, next)
+  return true
+}
+
+/** The local driver (D35): the flag if one was passed, else `.dev.vars`, else `postgres`. */
+function localDriver(argv) {
+  if (argv.includes('--neon')) return 'neon'
+  if (argv.includes('--postgres')) return 'postgres'
+  return devVars().DATABASE_DRIVER === 'neon' ? 'neon' : 'postgres'
+}
+
+/** The proxy's port for this checkout: sticky from NEON_LOCAL_PROXY, else the first free one. */
+async function resolveProxyPort() {
+  const current = devVars().NEON_LOCAL_PROXY
+  const preferred = current ? Number(new URL(current).port) || null : null
+  const ours = oursPorts()
+  const free = new Map()
+  for (let p = PROXY_PORT_START; p < PROXY_PORT_START + 20; p += 1) {
+    free.set(p, await portIsFree(p))
+  }
+  const port = chooseDevDbPort({
+    preferred,
+    isAvailable: p => ours.has(p) || free.get(p) === true,
+    start: PROXY_PORT_START,
+    count: 20,
+    skip: [4433],
+  })
+  if (port === null) {
+    console.error(
+      `dev-db: no free port in ${PROXY_PORT_START}–${PROXY_PORT_START + 19} for the Neon proxy`
+    )
+    process.exit(1)
+  }
+  return port
+}
+
+const composeEnv = (port, url, proxyPort = PROXY_PORT_START) => ({
+  ...process.env,
+  COMPOSE_PROJECT_NAME: PROJECT,
+  DEV_DB_PORT: String(port),
+  DEV_DB_CONTAINER: `launch-dev-postgres-${checkoutTag(WEB_DIR)}`,
+  DEV_NEON_PROXY_PORT: String(proxyPort),
+  DEV_NEON_PROXY_CONTAINER: `launch-dev-neon-proxy-${checkoutTag(WEB_DIR)}`,
+  DATABASE_URL: url,
+  [HYPERDRIVE_ENV]: url,
+})
+
+async function up(argv, json) {
+  const driver = localDriver(argv)
+  const { port, url, moved, external } = await resolvePort()
+  if (external) {
+    // Somebody else's database: under `neon` the driver talks to Neon directly, no proxy.
+    writeDevVars({ DATABASE_DRIVER: driver, NEON_LOCAL_PROXY: '' })
+    const target = databaseUrlTarget(url)
+    if (json) console.log(JSON.stringify({ external: true, target, driver }))
+    else {
+      console.log(`DATABASE_URL points at ${target} (not this machine) — nothing to start`)
+      console.log(`  local driver: ${driver}`)
+    }
+    return
+  }
+  const proxyPort = driver === 'neon' ? await resolveProxyPort() : PROXY_PORT_START
+  const env = composeEnv(port, url, proxyPort)
+  const compose = args =>
+    spawnSync('docker', ['compose', '-p', PROJECT, '-f', COMPOSE_FILE, ...args], {
+      cwd: WEB_DIR,
+      env,
+      stdio: json ? 'pipe' : 'inherit',
+    })
+  // `postgres`: the database alone, and a proxy left over from `--neon` is stopped.
+  const result =
+    driver === 'neon'
+      ? compose(['--profile', 'neon', 'up', '-d', '--wait'])
+      : compose(['up', '-d', '--wait', SERVICE])
+  if (result.status !== 0) {
+    if (json) process.stderr.write(result.stderr ?? '')
+    process.exit(result.status ?? 1)
+  }
+  if (driver === 'postgres') compose(['--profile', 'neon', 'rm', '-sf', PROXY_SERVICE])
+  const proxy = driver === 'neon' ? `http://localhost:${proxyPort}` : ''
+  const wrote = writeDevVars({
+    DATABASE_URL: url,
+    DATABASE_DRIVER: driver,
+    NEON_LOCAL_PROXY: proxy,
+  })
+  if (json) {
+    console.log(
+      JSON.stringify({ port, url, project: PROJECT, moved, wroteDevVars: wrote, driver, proxy })
+    )
+  } else {
+    console.log(`dev database ready on :${port}  (project ${PROJECT})`)
+    if (moved)
+      console.log(`  :${port} chosen because the previous port was taken by something else`)
+    console.log(
+      driver === 'neon'
+        ? `  local driver: neon, through the Neon proxy on :${proxyPort}`
+        : '  local driver: postgres (postgres.js over TCP)'
+    )
+    if (wrote) console.log('  apps/web/.dev.vars updated to match')
+  }
+}
+
+async function down(json) {
+  const { port, url } = await resolvePort()
+  const result = spawnSync(
+    'docker',
+    ['compose', '-p', PROJECT, '-f', COMPOSE_FILE, '--profile', 'neon', 'down'],
+    {
+      cwd: WEB_DIR,
+      env: composeEnv(port, url),
+      stdio: json ? 'pipe' : 'inherit',
+    }
+  )
+  if (json) console.log(JSON.stringify({ project: PROJECT, code: result.status ?? 0 }))
+  process.exit(result.status ?? 0)
+}
+
+/** Every dev database of this kit on the machine, whichever checkout started it. */
+function allDevDatabases() {
+  const ps = sh('docker', [
+    'ps',
+    '--filter',
+    `label=com.docker.compose.service=${SERVICE}`,
+    '--format',
+    '{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project.working_dir"}}',
+  ])
+  if (ps.status !== 0 || !ps.stdout) return [] // no docker (an external-database checkout)
+  return ps.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const [name, ports, dir] = line.split('\t')
+      return { name, ports, dir, ours: dir === WEB_DIR }
+    })
+}
+
+async function status(json) {
+  const { port, url, external } = await resolvePort()
+  const rows = allDevDatabases()
+  if (json) {
+    // An external URL carries a real password: report where it points, never the URL itself.
+    const where = external ? { external: true, target: databaseUrlTarget(url) } : { port, url }
+    const { DATABASE_DRIVER: driver = 'postgres', NEON_LOCAL_PROXY: proxy = '' } = devVars()
+    console.log(JSON.stringify({ project: PROJECT, ...where, driver, proxy, containers: rows }))
+    return
+  }
+  const vars = devVars()
+  console.log(`this checkout: ${WEB_DIR}`)
+  console.log(
+    `  local driver: ${vars.DATABASE_DRIVER || 'postgres'}` +
+      (vars.NEON_LOCAL_PROXY ? ` (proxy ${vars.NEON_LOCAL_PROXY})` : '')
+  )
+  if (external)
+    console.log(`  external database ${databaseUrlTarget(url)} (pnpm bootstrap --db-url)`)
+  else console.log(`  project ${PROJECT} · port ${port}`)
+  if (rows.length === 0) {
+    console.log('  no dev Postgres container is running')
+    return
+  }
+  console.log('running dev databases on this machine:')
+  for (const row of rows) {
+    console.log(`  ${row.ours ? '*' : ' '} ${row.name}  ${row.ports}  ${row.dir}`)
+  }
+}
+
+/** `env -- <cmd…>`: run a child against this checkout's database. */
+async function env(argv) {
+  const rest = argv.slice(argv.indexOf('--') + 1)
+  if (argv.indexOf('--') === -1 || rest.length === 0) {
+    console.error('usage: node scripts/dev-db.mjs env -- <command> [args…]')
+    process.exit(2)
+  }
+  const { port, url } = await resolvePort()
+  const child = spawn(rest[0], rest.slice(1), {
+    cwd: process.cwd(),
+    env: composeEnv(port, url),
+    stdio: 'inherit',
+  })
+  child.on('exit', (code, signal) => {
+    if (signal) process.kill(process.pid, signal)
+    else process.exit(code ?? 0)
+  })
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig))
+}
+
+const argv = process.argv.slice(2)
+const command = argv[0] ?? 'up'
+const json = argv.includes('--json')
+if (command === 'up') await up(argv, json)
+else if (command === 'down') await down(json)
+else if (command === 'status') await status(json)
+else if (command === 'env') await env(argv)
+else {
+  console.error(`dev-db: unknown command "${command}" (up | down | status | env -- <cmd>)`)
+  process.exit(2)
+}

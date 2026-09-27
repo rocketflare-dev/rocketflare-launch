@@ -1,0 +1,302 @@
+name: Deploy
+
+# "The release dance" (docs/DEPLOY.md):
+#
+#   1. Push a version tag  X.Y.Z          →  job `staging`     apps/web/wrangler.staging.toml
+#      (git tag 0.1.1 && git push origin 0.1.1)
+#   2. Publish a GitHub Release on that   →  job `production`  apps/web/wrangler.toml — checks out
+#      same tag                              the release's tag, so production ships exactly what
+#                                            staging validated.
+#
+# `workflow_dispatch` with an `environment` input is the manual escape hatch (uses the ref you
+# dispatch from; first deploy of a fresh account goes through here — see SETUP.md Part 3).
+#
+# Workspace note: this is a pnpm workspace. The tag must equal the version in the ROOT package.json
+# (one tag ships apps/web and apps/cli together; the apps/* versions are informational). Only
+# apps/web is deployed — the CLI is private and not published from here. Steps run at the repo
+# root and reach the web package with the root scripts or `pnpm --filter @launch/web …`; `wrangler
+# deploy` is executed INSIDE apps/web (via `--filter … exec`) so `wrangler.toml` and its
+# `[assets] directory = "./dist/ui"` resolve.
+#
+# The CI gate it calls is ci.yml, which since D31 is two passes of `gate.yml`: the ordinary one and
+# the same gate with every `defaultPlugins` entry installed. So a tag proves the kit AND what a
+# fresh clone of it installs; with no default plugins the second pass is skipped.
+#
+# Each job: verify tag == root package.json version → CI gate (staging only; production re-ships a
+# validated tag) → parity test with REQUIRE_PROVISIONED=1 (no <PLACEHOLDER> may remain) →
+# `pnpm db:migrate:ci` against that environment's Neon branch → build UI → `wrangler deploy`
+# with RELEASE_VERSION set to the tag.
+#
+# GitHub Environments `staging` and `production`, each with secrets:
+#   DATABASE_URL           that environment's Neon connection string (owner role; migrate.ts
+#                          strips a `-pooler` host itself so either form works)
+#   CLOUDFLARE_API_TOKEN   scoped token (docs/DEPLOY.md → Token scopes); may be shared
+#   CLOUDFLARE_ACCOUNT_ID
+# Runtime Worker secrets (OAUTH_ENCRYPTION_KEY, RESEND_API_KEY, …) are NOT
+# managed here: `pnpm --filter @launch/web exec wrangler secret put <NAME> [-c wrangler.staging.toml]`
+# once per worker.
+#
+# Deploying through an external deployer (docs/DEPLOYER.md, off by default): set the repository
+# variable DEPLOYER_URL (and optionally DEPLOYER_AUDIENCE) and both jobs take the second path. The
+# job then needs NO Cloudflare token and NO DATABASE_URL secret: it proves who it is with GitHub's
+# OIDC token (`id-token: write`) and `scripts/deployer.mjs` runs start (wait for approval) → build
+# (`wrangler deploy --dry-run --outdir`, no credentials) → upload (the deployer checks the build and
+# returns short-lived migration credentials) → `pnpm db:migrate:ci` with them → activate → finish
+# (always). With DEPLOYER_URL unset nothing below changes: migrate → build UI → `wrangler deploy`.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy (uses the ref you dispatch from)"
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Is there anything here to deploy? The kit's OWN repository has no Cloudflare or Neon resources —
+  # its tomls keep `<PLACEHOLDER>` ids on purpose, so a copy cannot deploy without provisioning
+  # first. Without this the kit goes red on every tag it cuts, and a deploy nobody reads is one that
+  # hides a real failure. A copy (`app` set in .rocketflare.json) always deploys, and still fails
+  # loudly at the parity check if it was never provisioned — that gate is the point of it.
+  guard:
+    name: Anything to deploy?
+    runs-on: ubuntu-latest
+    outputs:
+      deployable: ${{ steps.check.outputs.deployable }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: node scripts/release-check.mjs --deployable
+
+  # Step 1 of the dance: a tag has not necessarily been through a PR, so the gate runs here.
+  ci:
+    if: |
+      (github.event_name == 'push' && github.ref_type == 'tag') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+    uses: ./.github/workflows/ci.yml
+
+  staging:
+    name: Deploy to staging
+    needs: [guard, ci]
+    if: |
+      needs.guard.outputs.deployable == 'true' && (
+        (github.event_name == 'push' && github.ref_type == 'tag') ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      )
+    runs-on: ubuntu-latest
+    environment: staging
+    # id-token: the deployer path authenticates with a GitHub OIDC token; unused otherwise.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOYER_URL: ${{ vars.DEPLOYER_URL }}
+      DEPLOYER_AUDIENCE: ${{ vars.DEPLOYER_AUDIENCE }}
+      TOML: apps/web/wrangler.staging.toml
+      DEPLOYER_OUTDIR: apps/web/dist/deploy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="$GITHUB_REF_NAME"
+          else VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Deploying version: $VERSION"
+
+      # `release-check.mjs --tag` checks all four release facts at once: the tag equals the ROOT
+      # package.json version (apps/*/package.json are informational), `.rocketflare.json`'s
+      # kit.version agrees, the porting note exists and chains, and CHANGELOG.md has its section.
+      # The version comparison used to be a third copy of itself, in shell, in both deploy jobs.
+      #
+      # A release with no porting note is a gap every copy of the kit has to step over, permanently:
+      # `docs/upgrades/` is the chain `/rf-upgrade` walks. `pnpm kit:release <version>` writes all of
+      # it. Exits 0 immediately in an adopted copy, so it never gates somebody's own product.
+      #
+      # Only on a real tag: `workflow_dispatch` deploys `<branch>-<sha>`, which is not an X.Y.Z
+      # version and has no note of its own.
+      - name: Tag matches the root version and carries its porting note
+        if: github.ref_type == 'tag'
+        run: node scripts/release-check.mjs --tag "${{ steps.version.outputs.version }}"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Runs in apps/web (its `test:config` script loads .env.test itself); reads both tomls
+      # relative to the package, so no working-directory is needed.
+      - name: Wrangler parity (provisioned)
+        run: pnpm --filter @launch/web test:config
+        env:
+          REQUIRE_PROVISIONED: "1"
+
+      # Root script → apps/web `db:migrate:ci` (role → migrate → grants, env from this Environment).
+      - name: Run database migrations (staging)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      # Deployer path (docs/DEPLOYER.md): open a ticket and wait for approval (WAIT_SECONDS, 300).
+      # `start` exports DEPLOYER_TICKET for the later deployer steps.
+      - name: Ask the deployer to deploy (waits for approval)
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs start
+
+      # Both paths. It must precede the dry run below: wrangler refuses a missing `[assets]
+      # directory`, and the upload sends what it built.
+      - name: Build UI
+        run: pnpm --filter @launch/web build:ui
+
+      - name: Build the Worker (dry run, no credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm --filter @launch/web exec wrangler deploy --dry-run --outdir dist/deploy -c wrangler.staging.toml
+
+      # The deployer checks the bindings, stores an undeployed version and only then returns
+      # short-lived migration credentials, exported masked as MIGRATOR_URL.
+      - name: Hand the build to the deployer
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs upload
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Run database migrations (staging, deployer credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ env.MIGRATOR_URL }}
+
+      - name: Activate the uploaded version
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs activate
+
+      # `--filter … exec` runs wrangler with apps/web as cwd, where wrangler.staging.toml and
+      # `[assets] directory = "./dist/ui"` live.
+      - name: Deploy (apps/web/wrangler.staging.toml)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm --filter @launch/web exec wrangler deploy -c wrangler.staging.toml --var "RELEASE_VERSION:${{ steps.version.outputs.version }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Always, even after a failure or a rejection: the deployer revokes the migration
+      # credentials and closes the ticket. A no-op when `start` never opened one.
+      - name: Tell the deployer the deploy is over
+        if: always() && vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs finish
+
+  # Step 2: publishing the GitHub Release is the promotion gate ("required reviewers" is not
+  # available on private repos on the free plan). Ships the release's tag, already validated
+  # on staging, so the CI gate is not re-run here.
+  production:
+    name: Deploy to production
+    needs: guard
+    if: |
+      needs.guard.outputs.deployable == 'true' && (
+        github.event_name == 'release' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+      )
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOYER_URL: ${{ vars.DEPLOYER_URL }}
+      DEPLOYER_AUDIENCE: ${{ vars.DEPLOYER_AUDIENCE }}
+      TOML: apps/web/wrangler.toml
+      DEPLOYER_OUTDIR: apps/web/dist/deploy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then VERSION="${{ github.event.release.tag_name }}"
+          else VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Deploying version: $VERSION"
+
+      # As in the staging job: one script checks the tag against the root version, the manifest's
+      # kit.version, the porting note and the changelog section. Only on a real Release — a
+      # `workflow_dispatch` ships `<branch>-<sha>`, which is not an X.Y.Z version.
+      - name: Release tag matches the root version and carries its porting note
+        if: github.event_name == 'release'
+        run: node scripts/release-check.mjs --tag "${{ steps.version.outputs.version }}"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Wrangler parity (provisioned)
+        run: pnpm --filter @launch/web test:config
+        env:
+          REQUIRE_PROVISIONED: "1"
+
+      - name: Run database migrations (production)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Ask the deployer to deploy (waits for approval)
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs start
+
+      - name: Build UI
+        run: pnpm --filter @launch/web build:ui
+
+      - name: Build the Worker (dry run, no credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm --filter @launch/web exec wrangler deploy --dry-run --outdir dist/deploy
+
+      - name: Hand the build to the deployer
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs upload
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Run database migrations (production, deployer credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ env.MIGRATOR_URL }}
+
+      - name: Activate the uploaded version
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs activate
+
+      - name: Deploy (apps/web/wrangler.toml)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm --filter @launch/web exec wrangler deploy --var "RELEASE_VERSION:${{ steps.version.outputs.version }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Tell the deployer the deploy is over
+        if: always() && vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs finish

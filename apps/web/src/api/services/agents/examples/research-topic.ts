@@ -1,0 +1,470 @@
+/**
+ * `research-topic` — the kit's second example agent (D7, D17, D18), and the one that shows the
+ * agentic shape: `runToolLoop` over the built-in knowledge tools (`ctx.tools` — `search_knowledge`,
+ * `get_document`) until the model calls the terminal `submit_answer`. Where `summarize-text` is one
+ * forced tool call, this one lets the model decide how many searches it needs, capped by
+ * `AGENT_MAX_TURNS`. Copy it to start an agent that has to look things up.
+ *
+ * Two decisions worth knowing before you edit it:
+ *
+ * - **A loop that ends without the terminal tool is salvaged, not failed.** The zero-key floor is
+ *   Workers AI, which has no `tool_choice` (a model that answers in prose is a live failure mode,
+ *   not an edge case), so `no_tool_call` / `max_turns` falls back to ONE `callStructuredTool` over
+ *   the transcript — the same forced-tool + prose-JSON recovery the rest of the kit uses. Only if
+ *   that also fails does the run fail, carrying the model's own words in the error details.
+ * - **Citations are filtered to what search actually returned.** Every `documentId` the tools
+ *   reported is recorded during the loop; a citation naming anything else is dropped rather than
+ *   persisted, so a hallucinated id can never reach the UI. The title comes from the search hit,
+ *   not from the model.
+ *
+ * It is also the kit's full human-in-the-loop example (issue #17). Where `summarize-text` asks
+ * about a write IT decided to do, this one shows the three shapes a loop-driven agent needs:
+ *
+ * - **`index_finding` is gated by `Tool.requiresApproval`** — the MODEL decides to call it, so the
+ *   gate belongs on the tool, not in the agent. `runToolLoop` scans the whole turn after the
+ *   assistant message is pushed and **before any handler runs**, checkpoints and parks. Passing
+ *   `approvals: ctx.approvals` and `runApproved: ctx.once` is not optional: without the first the
+ *   answered gate is asked again, without the second an approved write repeats on a step retry.
+ * - **`ask_human` raises a `choice` interrupt from INSIDE its handler** — the natural place to ask
+ *   "which of these did you mean?". `runHandler` rethrows `InterruptRequested` and only that, so
+ *   the ask parks the run instead of becoming an `isError` result the model would simply retry.
+ * - **`beforeTurn` folds in steering notes** — what a person typed into the run page while it was
+ *   still working, delivered exactly once by `ctx.steering()` and appended through
+ *   `appendUserText` so a resumed transcript never gains two consecutive user turns.
+ *
+ * Finally it records what it produced: a `markdown` artifact for the answer and a `table` artifact
+ * for the sources, so the run page has something to open rather than only prose to read.
+ */
+import {
+  RESEARCH_TOPIC_MAX_CITATIONS,
+  type ResearchTopicInput,
+  type ResearchTopicOutput,
+  researchTopicInputSchema,
+  researchTopicOutputSchema,
+} from '@launch/shared/ai/agents'
+import type { TokenUsage } from '@launch/shared/ai/chat'
+import { choicePayloadSchema } from '@launch/shared/ai/interrupts'
+import { z } from 'zod'
+import { ingestText } from '../../ai/ingest'
+import { callStructuredTool, runToolLoop, type Tool } from '../../ai/kit'
+import type { ChatMessage } from '../../ai/types'
+import { recordUsage } from '../../ai/usage'
+import type { AgentContext, AgentDefinition } from '../registry'
+import { summariseToolResult } from '../tools'
+
+export const SUBMIT_ANSWER_TOOL = 'submit_answer'
+/** Asks a person to settle an ambiguity — a `choice` interrupt raised from inside the handler. */
+export const ASK_HUMAN_TOOL = 'ask_human'
+/** Writes into the knowledge base, so every call is gated on a person (`requiresApproval`). */
+export const INDEX_FINDING_TOOL = 'index_finding'
+/** Longest note `index_finding` may save. A research note, not a document dump. */
+export const INDEX_FINDING_MAX_CHARS = 10_000
+
+/**
+ * Per-turn output cap. `AGENT_MAX_OUTPUT_TOKENS` (16 384) is a per-agent ceiling, not a sensible
+ * per-turn ask: a research answer is a page of prose, and a 24B model on the Workers AI floor is
+ * being asked to reserve most of its window for output it will never produce.
+ */
+export const ANSWER_MAX_TOKENS = 4_096
+/**
+ * Turn cap for THIS agent, under `AGENT_MAX_TURNS`. Every turn appends its tool results to the
+ * transcript, so the loop's context grows with each search; a research question that needs more
+ * than a handful of searches needs a narrower question, not a longer loop.
+ */
+export const RESEARCH_MAX_TURNS = 8
+
+const submitAnswerSchema = z.object({
+  answer: z
+    .string()
+    .min(1)
+    .describe('The answer in Markdown, attributing each claim to the document it came from.'),
+  citations: z
+    .array(
+      z.object({
+        documentId: z.string().describe('The documentId exactly as search_knowledge reported it'),
+        title: z.string().describe('That document’s title'),
+      })
+    )
+    .max(RESEARCH_TOPIC_MAX_CITATIONS)
+    .describe('One entry per document actually used; empty when the knowledge base had nothing.'),
+})
+type SubmitAnswer = z.infer<typeof submitAnswerSchema>
+
+/** The terminal tool: no handler, so `runToolLoop` never executes it — its input is the answer. */
+const submitAnswerTool: Tool<SubmitAnswer> = {
+  name: SUBMIT_ANSWER_TOOL,
+  description:
+    'Submit the finished answer and the documents it cites. Call exactly once, when you can answer the question or have established that the knowledge base does not hold the answer.',
+  schema: submitAnswerSchema,
+}
+
+/**
+ * Document ids (→ titles) the tools actually returned this run. Written from every
+ * `search_knowledge` / `get_document` result, read when the citations are filtered.
+ */
+function collectDocuments(resultText: string, into: Map<string, string>): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultText)
+  } catch {
+    return // a prose answer from a tool (e.g. "not available") carries no ids
+  }
+  const named = z.object({ documentId: z.string().uuid(), title: z.string() })
+  const shape = z
+    .object({
+      // `get_document`: the document it read.
+      documentId: z.string().uuid().optional(),
+      title: z.string().optional(),
+      // `search_knowledge`: the documents its passages came from.
+      documents: z.array(named).optional(),
+      // `list_documents`, and the "nothing matched" / "unknown id" answers.
+      knowledgeBase: z.array(named).optional(),
+    })
+    .passthrough()
+    .safeParse(parsed)
+  if (!shape.success) return
+  if (shape.data.documentId && shape.data.title !== undefined) {
+    into.set(shape.data.documentId, shape.data.title)
+  }
+  for (const doc of [...(shape.data.documents ?? []), ...(shape.data.knowledgeBase ?? [])]) {
+    into.set(doc.documentId, doc.title)
+  }
+}
+
+/**
+ * Rebuild `seen` from a resumed transcript. A resumed loop does NOT replay its earlier turns, so
+ * without this the documents found before the retry would be absent from `seen` and every citation
+ * earned in the first attempt would be dropped by `verifyCitations` as if hallucinated. The
+ * transcript already holds every tool result verbatim, so the map is derived from it — the state is
+ * a fold of the log, which is the same reason the checkpoint is worth storing at all.
+ */
+function rehydrateSeen(messages: readonly ChatMessage[], into: Map<string, string>): void {
+  for (const message of messages) {
+    if (typeof message.content === 'string') continue
+    for (const block of message.content) {
+      if (block.type === 'tool_result' && !block.isError) collectDocuments(block.content, into)
+    }
+  }
+}
+
+/** Keep only citations naming a document the tools returned; take the title from the tool, not the model. */
+function verifyCitations(
+  citations: SubmitAnswer['citations'],
+  seen: Map<string, string>
+): ResearchTopicOutput['citations'] {
+  const kept = new Map<string, string>()
+  for (const citation of citations) {
+    const title = seen.get(citation.documentId)
+    if (title === undefined) continue
+    kept.set(citation.documentId, title || citation.title)
+  }
+  return [...kept].map(([documentId, title]) => ({ documentId, title }))
+}
+
+/**
+ * `ask_human` — a `choice` interrupt raised **from inside a tool handler** (issue #17). This is the
+ * natural place for "which of these three did you mean?": the model is mid-thought, it has the
+ * options, and the answer goes straight back to it as the tool's result.
+ *
+ * Two properties make it work, and both are easy to break:
+ *
+ * - **`runHandler` rethrows `InterruptRequested` and only that.** Every other throw becomes an
+ *   `isError` tool result the model recovers from; swallowing an ask that way would leave the model
+ *   asking the same question again, forever.
+ * - **The `key` is derived from the QUESTION, never from the call.** A handler-raised ask parks
+ *   before the loop checkpoints that turn, so the resumed loop calls the model again and may get a
+ *   fresh tool-call id. A question-derived key still lands on the same `(run_id, key)` row, so the
+ *   re-entered handler finds the ANSWER instead of asking again (T2). Asking the same question
+ *   twice in one run is therefore also answered once, which is what you want.
+ */
+function askHumanTool(ctx: AgentContext<ResearchTopicInput>): Tool {
+  const schema = z.object({
+    question: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe('The single question to put to the person, in plain language.'),
+    options: z
+      .array(z.string().min(1).max(200))
+      .min(2)
+      .max(6)
+      .describe('The answers to offer. The person may also type something else.'),
+  })
+  const tool: Tool<z.infer<typeof schema>> = {
+    name: ASK_HUMAN_TOOL,
+    description:
+      'Ask the person who started this run to settle an ambiguity you cannot resolve from the knowledge base. The run pauses until they answer, so use it only when the question genuinely changes the answer.',
+    schema,
+    handler: async ({ question, options }) => {
+      const answer = await ctx.interrupt({
+        key: `ask-human:${question}`,
+        spec: {
+          kind: 'choice',
+          title: 'The agent needs a steer',
+          message: question,
+          options: options.map(option => ({ value: option, label: option })),
+          allowOther: true,
+        },
+      })
+      // `choice` rejects as `tell_model` (the kind's default): declining to answer IS an answer, so
+      // it comes back here rather than cancelling the run.
+      if (answer.status === 'cancelled') {
+        return 'The person declined to answer. Carry on with what you have and say in the answer what is still unresolved.'
+      }
+      const payload = choicePayloadSchema.safeParse(answer.payload)
+      if (!payload.success) return 'The person answered, but the answer could not be read.'
+      const note = payload.data.note ? ` They added: ${payload.data.note}` : ''
+      return `The person answered: ${payload.data.value}.${note}`
+    },
+  }
+  return tool as Tool
+}
+
+/**
+ * `index_finding` — a WRITE the model chooses to make, so the gate lives on the tool
+ * (`requiresApproval`) rather than in the agent. `runToolLoop` scans the whole turn after the
+ * assistant message is pushed and **before any handler runs**, checkpoints, and raises
+ * `InterruptRequested`; nothing in this handler can bypass that, which is the point — a handler
+ * that checks for its own approval is a handler that has already run.
+ *
+ * `allowEdits` lets the approver correct the draft before it is saved; the route re-validates the
+ * edit against this same schema, because a client that can edit tool arguments is a client that can
+ * call anything. `onReject: 'tell_model'` because refusing to save a note is not a reason to
+ * abandon the research — the default for an approval (`cancel_run`) would stop the run.
+ *
+ * The handler does **not** wrap itself in `ctx.once`: the loop is passed `runApproved: ctx.once`,
+ * which is what makes an approved call run at most once across every attempt of the run.
+ */
+function indexFindingTool(ctx: AgentContext<ResearchTopicInput>): Tool {
+  const schema = z.object({
+    title: z.string().min(1).max(200).describe('A short title for the note.'),
+    text: z
+      .string()
+      .min(1)
+      .max(INDEX_FINDING_MAX_CHARS)
+      .describe('The finding itself, in Markdown, written to be useful on its own.'),
+  })
+  const tool: Tool<z.infer<typeof schema>> = {
+    name: INDEX_FINDING_TOOL,
+    description:
+      'Save a finding into this workspace’s knowledge base so later questions can find it. Only use it when the person asked you to record or save something; a person must approve every call.',
+    schema,
+    requiresApproval: true,
+    allowEdits: true,
+    approvalMessage:
+      'Save this finding into the knowledge base? It becomes searchable for everyone in this workspace.',
+    onReject: 'tell_model',
+    handler: async ({ title, text }) => {
+      const { document } = await ingestText(
+        ctx.db,
+        ctx.cfg,
+        ctx.env,
+        {
+          tenantId: ctx.tenantId,
+          userId: ctx.userId,
+          title,
+          text,
+          source: 'agent:research-topic',
+        },
+        { jobs: ctx.env.JOBS_QUEUE }
+      )
+      await ctx.artifact({
+        key: `finding:${document.id}`,
+        title,
+        description: 'Saved into the knowledge base by this run.',
+        data: { kind: 'document', documentId: document.id },
+      })
+      return `Saved as "${title}" (document ${document.id}). Do not save it again.`
+    },
+  }
+  return tool as Tool
+}
+
+export const researchTopicAgent: AgentDefinition<ResearchTopicInput, ResearchTopicOutput> = {
+  meta: {
+    key: 'research-topic',
+    title: 'Research a topic',
+    description:
+      'Researches a question against this workspace’s knowledge base — searching and reading documents as needed — and answers with citations.',
+    inputSchema: researchTopicInputSchema,
+    outputSchema: researchTopicOutputSchema,
+    promptKey: 'research-topic',
+    exclusive: true,
+  },
+
+  async run(ctx: AgentContext<ResearchTopicInput>) {
+    const topic = ctx.input.topic.trim()
+    const system = await ctx.prompt()
+    const messages: ChatMessage[] = [{ role: 'user', content: `Research this: ${topic}` }]
+    /** documentId → title, from the tools' own answers. */
+    const seen = new Map<string, string>()
+    /**
+     * Written the moment tokens are spent, not at the end: a failed salvage or a cancellation
+     * between turns must still leave the loop's tokens in the ledger. (`runToolLoop` has no
+     * per-turn usage tap, so a cancel mid-loop still loses that run's tokens — a kit gap.)
+     */
+    const ledger = (usage: TokenUsage) =>
+      recordUsage(ctx.db, {
+        tenantId: ctx.tenantId,
+        userId: ctx.userId,
+        feature: 'agent:research-topic',
+        provider: ctx.chat.client.provider,
+        model: ctx.chat.model,
+        usage,
+      }).catch(err => ctx.logger.warn({ err }, 'research-topic: usage write failed'))
+
+    // A retried `execute` step re-enters `run()` from the top; the checkpoint is what stops it
+    // paying for every turn again. Null on a first attempt (or an unreadable stored value).
+    const resume = await ctx.checkpoint.load()
+    if (resume) rehydrateSeen(resume.messages, seen)
+
+    await ctx.step('research', 'Searching the knowledge base', 'running')
+    const loop = await runToolLoop(ctx.chat.client, {
+      model: ctx.chat.model,
+      maxTokens: Math.min(ctx.chat.maxOutputTokens, ANSWER_MAX_TOKENS),
+      system,
+      messages,
+      tools: [...ctx.tools, askHumanTool(ctx), indexFindingTool(ctx), submitAnswerTool as Tool],
+      maxTurns: Math.min(ctx.cfg.AGENT_MAX_TURNS, RESEARCH_MAX_TURNS),
+      // The two halves of the HITL gate, and neither is optional once a tool declares
+      // `requiresApproval`: without `approvals` the answered gate is asked again on the next
+      // attempt; without `runApproved` the approved write runs a second time on a step retry —
+      // which is precisely the side effect somebody was asked about.
+      approvals: ctx.approvals,
+      runApproved: ctx.once,
+      // Steering: what a person typed into the run page while this loop was working. `ctx.steering`
+      // delivers each note exactly once across every attempt (the `agent_run_effects` ledger keyed
+      // by the note's event id), and returning it as a plain `user` message lets the loop fold it in
+      // with `appendUserText` — a resumed transcript usually ENDS in a user turn of tool results,
+      // and two consecutive user turns is a 400 on Anthropic.
+      beforeTurn: async () => {
+        const notes = await ctx.steering()
+        if (notes.length === 0) return
+        return [
+          {
+            role: 'user',
+            content: notes
+              .map(note => `A person watching this run added: ${note.text}`)
+              .join('\n\n'),
+          },
+        ]
+      },
+      // `maxTurns` is a budget for the RUN, not the attempt: `resume.turns` carries forward, so
+      // three attempts can never spend three times the cap.
+      ...(resume ? { resume } : {}),
+      onCheckpoint: checkpoint => ctx.checkpoint.save(checkpoint),
+      // The loop takes no AbortSignal, so these two callbacks ARE the cancellation poll: once per
+      // model turn, and once per tool result — a run doing slow tool work still stops promptly.
+      onStep: async step => {
+        await ctx.checkCancelled()
+        if (!step.terminal && step.toolNames.length > 0) {
+          await ctx.step(
+            'research',
+            'Searching the knowledge base',
+            'running',
+            `turn ${step.turn}: ${step.toolNames.join(', ')}`
+          )
+        }
+      },
+      onEvent: async event => {
+        // The terminal tool is not a tool call a person cares about: its "call" IS the answer,
+        // which the run's output already shows. Emitting it duplicated the answer twice over.
+        if (event.kind !== 'text' && event.name === SUBMIT_ANSWER_TOOL) return
+        if (event.kind === 'text') {
+          await ctx.emit({ type: 'text', data: { text: event.text } })
+        } else if (event.kind === 'tool_call') {
+          // The model's own call id travels with the row so the AG-UI projection can pair this
+          // start with its end. Pairing by tool NAME alone is wrong the moment one turn makes two
+          // `search_knowledge` calls: the second start overwrites the first and both results are
+          // attributed to the second call.
+          await ctx.emit({
+            type: 'tool.start',
+            data: { name: event.name, input: event.input, toolCallId: event.toolUseId },
+          })
+        } else {
+          await ctx.checkCancelled()
+          collectDocuments(event.resultText, seen)
+          await ctx.emit({
+            type: 'tool.end',
+            data: {
+              name: event.name,
+              toolCallId: event.toolUseId,
+              isError: event.isError,
+              // Structured and previewed, not a truncated JSON string: this row IS the audit trail
+              // for "where did the answer come from?".
+              result: summariseToolResult(event.name, event.resultText),
+            },
+          })
+        }
+      },
+    })
+    // Once per run, not once per attempt: `loop.usage` includes the resumed attempts' tokens.
+    await ctx.once('loop-usage', async () => {
+      await ledger(loop.usage)
+      return { inputTokens: loop.usage.inputTokens, outputTokens: loop.usage.outputTokens }
+    })
+    await ctx.step(
+      'research',
+      'Searching the knowledge base',
+      'done',
+      `${loop.turns} turn${loop.turns === 1 ? '' : 's'}, ${seen.size} document${seen.size === 1 ? '' : 's'} consulted`
+    )
+    await ctx.checkCancelled()
+
+    // Salvage: the model stopped without the terminal call (prose, or the turn cap). Ask once more
+    // with the tool forced over the transcript we already have.
+    let submitted = loop.terminalInput as SubmitAnswer | null
+    const salvaged = submitted === null
+    if (!submitted) {
+      await ctx.step('answer', 'Writing the answer', 'running', `recovering (${loop.stopReason})`)
+      submitted = await callStructuredTool(ctx.chat.client, {
+        model: ctx.chat.model,
+        maxTokens: Math.min(ctx.chat.maxOutputTokens, ANSWER_MAX_TOKENS),
+        system,
+        messages: loop.messages,
+        tool: {
+          name: SUBMIT_ANSWER_TOOL,
+          description: submitAnswerTool.description,
+          schema: submitAnswerSchema,
+        },
+        // The loop just sent this transcript with rolling breakpoints, so on a caching provider
+        // (Anthropic) the recovery reads the prefix instead of paying for it twice.
+        cache: true,
+        // Fires before `callStructuredTool` throws, so a failed recovery is still ledgered.
+        onUsage: extra => void ledger(extra),
+      })
+    }
+
+    const citations = verifyCitations(submitted.citations, seen)
+    // What this run PRODUCED, as things a person opens rather than prose to scroll (decision 4).
+    // `key` is the upsert key, so a re-entered attempt replaces these rows instead of piling up.
+    await ctx.artifact({
+      key: 'answer',
+      title: 'Answer',
+      data: { kind: 'markdown', markdown: submitted.answer },
+    })
+    if (citations.length > 0) {
+      await ctx.artifact({
+        key: 'sources',
+        title: 'Sources',
+        description: 'The documents this answer is drawn from.',
+        data: {
+          kind: 'table',
+          columns: [
+            { key: 'title', label: 'Document' },
+            { key: 'documentId', label: 'Id' },
+          ],
+          rows: citations.map(citation => ({ ...citation })),
+        },
+      })
+    }
+    // No `text` event for the answer: it is the run's output, rendered once by the output panel.
+    await ctx.step(
+      'answer',
+      'Writing the answer',
+      'done',
+      `${citations.length} citation${citations.length === 1 ? '' : 's'}`
+    )
+    return { answer: submitted.answer, citations, turns: loop.turns + (salvaged ? 1 : 0) }
+  },
+}

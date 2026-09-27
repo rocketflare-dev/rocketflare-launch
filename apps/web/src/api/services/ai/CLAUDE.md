@@ -1,0 +1,54 @@
+# AI services (D17, D18, D32)
+
+The provider seam and everything that calls a model. Feature code (routes, agents) never imports an
+SDK, never reads `ai_configs`, never decrypts a key — it asks `resolve.ts` for a client and calls it
+through `kit.ts`.
+
+| File | Role |
+|---|---|
+| `types.ts` | `ChatClient { stream, complete, countTokens? }`, `EmbeddingsClient { embed, dimension }`, block-shaped `ChatMessage`/`ContentBlock`, `SystemPrompt` (`string \| { stable, volatile }`), `ChatDelta`, `RequestDefaults`, `AiEnv` (`{ AI? }`) |
+| `providers.ts` | `PROVIDERS` catalog — DATA only: `scopes` (an adapter exists), `needsApiKey/BaseUrl`, `supportsThinking/ServiceTier`, presets, `suggestedModels` by scope, `modelsFixed` (the list IS the catalog → the form offers it and no free text). `WORKERS_AI_TOOL_CHOICE_MODELS` lives here and is ONE list with two jobs: the Workers AI chat picker AND `client.ts`'s `workersAiSupportsToolChoice`. Re-derive it from `wrangler ai models list --json` + `wrangler ai models schema`, and price every addition in `@launch/shared/ai/pricing` |
+| `client.ts` | Adapters: `createChatClient` (`anthropic` / `anthropic_compatible` via `@anthropic-ai/sdk`; `openai` / `openai_compatible` via fetch SSE; `workers_ai` via `env.AI.run` — OpenAI-shaped inputs; answers arrive in EITHER `{ response, tool_calls }` or the OpenAI `{ choices: [{ message \| delta }] }` envelope depending on the model, both read by `readWorkersAiPart`. A forced tool is sent as `tool_choice` (OpenAI shape) for the models in `WORKERS_AI_TOOL_CHOICE_MODELS` — the list in `providers.ts` that the settings picker ALSO offers, so a choosable model is always a constrainable one. Older models named by a stored config have no `tool_choice`, and there a forced tool is `forcedToolInstruction` in the system prompt + `recoverForcedToolCall` when the model writes the arguments as a JSON object in prose, including the call envelopes models emit (`{type:'function',name,parameters}`, `arguments` as a JSON string, nested `function`) — unwrapped only when the object names the tool or declares itself a function call, and `stream()` with tools is one non-streamed call replayed as deltas unless `workersAiStreamsTools` — the SAME list — allows it; nothing documents a stream shape, so each entry was driven through a real two-turn tool loop. Streamed tool calls arrive as FRAGMENTS keyed by `index` and are reassembled by `ToolCallAssembler`), `createEmbeddingsClient` (`openai*` `/embeddings`, `workers_ai` binding). Injects `service_tier` + `thinking` (explicitly `disabled` by default), `reconcileThinking`. An `anthropic_compatible` vendor that REFUSES `disabled` with a 400 about reasoning effort (Fireworks' gpt-oss: "Invalid reasoning effort: none") is retried once without the field, and the client remembers for the rest of its life; the explicit default stays, because GLM/Kimi on Fireworks bill for reasoning otherwise. `fetch` is injectable |
+| `client.ts` (workers_ai) | `env.AI.run` cannot be aborted → every call is raced against `WORKERS_AI_TIMEOUT_MS` (120 s) into a retryable `unavailable` `AiError`. Per-model schemas differ: null content is never sent, and a schema rejection (`5006`/`oneOf`, `isWorkersAiSchemaError`) retries ONCE with `flattenWorkersAiMessages` (system/user/assistant, string content, tool call + result as text) |
+| `resolve.ts` | `resolveChat` / `resolveEmbeddings` / `readiness` — tenant default row → `platformChat(cfg, env)` (`ANTHROPIC_API_KEY` → `workers_ai` + `WORKERS_AI_CHAT_MODEL` when `env.AI`) → `AiNotConfiguredError` (503 `ai_not_configured`). The ONLY reader of `ai_configs` and the ONLY decrypt. Tests `vi.mock` this module |
+| `kit.ts` | `cachedSystem`, `withRollingCacheBreakpoints`, `Tool` (zod schema + optional handler; no handler = terminal), `callStructuredTool` (forced tool, 1 retry; `StructuredOutputError.issues` = the zod issues or `{ reason, stopReason, text }` when there was no call), `runToolLoop` (Phase 3b engine — resumable: `onCheckpoint` per turn, `resume` to continue, so `maxTurns`/usage are run-wide), `parseToolLoopCheckpoint` (storage → `ToolLoopCheckpoint` or **null**, never a throw), `runStreamingChat` (chat engine). **The HITL gate (issue #17)**: `Tool.requiresApproval` / `requiresApprovalWhen` / `approvalMessage` / `allowEdits` / `onReject`; `InterruptRequested` + `InterruptDeclinedError`; `approvals` / `onInterrupt` / `runApproved` / `beforeTurn` on `RunToolLoopOptions`; `stopReason: 'interrupt'`; `appendUserText` (never two consecutive user turns — Anthropic rejects them, and that is exactly what naive steering produces). The gate scans the WHOLE turn after the assistant message is pushed and before any handler runs, checkpoints, then raises; `resumePendingToolCalls` answers a parked checkpoint's trailing `tool_use` blocks through **the same** `executeToolUses`. `runHandler` rethrows `InterruptRequested` and ONLY that; `runStreamingChat` deliberately does not — chat has no host that can park a turn |
+| `errors.ts` | `AiError { code: auth \| rate_limit \| invalid_request \| unavailable \| unknown }`, `normalizeAiError`, `describeAiError`, `redactSecrets`, `AiNotConfiguredError` |
+| `usage.ts` | `recordUsage` → `ai_usage` (cost frozen from `@launch/shared/ai/pricing` unless the caller passes one), `tapUsage(client, cb)`, `summarizeUsage` (prices rows with no stored cost from the same table; `unpricedCalls` counts what has no price at all) |
+| `connection-test.ts` | `testConfig` — 10-token completion / one embedding, same builders as the resolver, never throws a provider error |
+| `deterministic-embedding.ts` | `deterministicEmbedding` (hashed bag of words, `EMBEDDING_DIM` wide, L2-normalised, never zero) + `DETERMINISTIC_EMBEDDING_MODEL = 'seed:deterministic'` — for `pnpm seed --demo` and the test `RecordingAi` stub ONLY; nothing on the request path imports it, so the Worker bundle never carries it (`grep -rn deterministic-embedding apps/web/src` must list only this file) |
+
+Rules:
+
+- **Resolve before you stream.** A route calls `resolveChat` (and anything else that can 4xx/5xx)
+  BEFORE `streamSSE`, so a missing provider is a JSON 503, not a broken stream.
+- **Per-tenant request defaults live in the adapter**, never at call sites. Thinking is OFF unless
+  a config turns it on; `reconcileThinking` drops it on forced tool choice and lifts `max_tokens`.
+- **Wrap, don't fork.** Tracing (`observability/tracing.ts` `traceChatClient`) and usage
+  (`tapUsage`) are client wrappers; a new cross-cutting concern is another wrapper. The other D32
+  hooks are one line each and in ONE place: `kit.ts`'s `runHandler` (the single tool runner both
+  loops call) wraps every tool in `traceToolCall`, `retrieval.ts` wraps `searchChunks` in a
+  `retrieval` span and its query embedding in `traceEmbed`, `ingest.ts` wraps each embeddings batch.
+  All nest under the ACTIVE span (`observability/context.ts`) and are no-ops without one — never
+  add a `trace` parameter to a service to get nesting.
+- **Credentials never leave the server.** Routes answer `hasCredential`; errors pass `redactSecrets`.
+- **A streaming route needs its own DB client** (`streamDatabase(c)` in `utils/routes/route-helpers.ts`):
+  the request's client is closed in `waitUntil` the moment the Response is returned.
+- Adding a provider: enum value in `@launch/shared/ai/config` (append last) → `PROVIDERS` entry →
+  adapter branch in `client.ts` → `ai-client.test.ts` case. Adding a prompt: `CORE_PROMPT_REGISTRY` in
+  `../prompts.ts` (no migration). Per-agent model assignment (`agent_models`, Phase 3b — built) is
+  `resolveChat`'s `promptKey` branch (`planChat` — shared with `routes/ai-agent-models.ts`).
+- `chunking.ts` (pure paragraph-aware chunker, ~800 tokens / 100 overlap, 4 chars per token),
+  `ingest.ts` (`ingestText` and `ingestFile` — inline ≤ 50 chunks else the `document.index` job, or
+  `document.convert` for a binary upload; `indexDocument` is shared with
+  `queues/handlers/document-index.ts`, `convertAndIndexDocument` with `document-convert.ts`),
+  `convert.ts` (`needsConversion` / `canConvert` / `decodeText` / `convertToText` over
+  `env.AI.toMarkdown`; `ConversionFailedError` is the permanent case), `retrieval.ts` (`searchChunks(db, cfg, env, scope, request)` — dense `<=>` +
+  lexical `ts_rank_cd`, RRF `k = 60`; `RerankFn` is the documented, unbuilt seam) complete the D18 half.
+- **Reading a document takes an `AccessScope`, not a tenant id** (D29): `searchChunks` and the three
+  `document-content.ts` readers ALL take one, so a restricted document is absent from search, from
+  `get_document` and from the viewer by the same predicate. The scope carries the tenant, which is
+  why there is no separate `tenantId` argument to keep in step with it. `fullAccessScope(tenantId)`
+  is for maintenance paths only. The dense half additionally sets
+  `hnsw.iterative_scan = relaxed_order` `SET LOCAL` inside a transaction WHEN a visibility predicate
+  is in play — an approximate index can otherwise exhaust its candidate list before filling the pool
+  and hand back an empty dense half to a reader who may see very little.

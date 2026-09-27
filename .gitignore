@@ -1,7 +1,61 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+**/dist/
+**/.wrangler/
+
+# Secrets — never commit. `.dev.vars.example` and `.env.test` (dummy values) ARE committed.
+**/.dev.vars
+**/.dev.vars.*
+!**/.dev.vars.example
 .env
+.env.local
+*.local
+.secrets.*.json
+# the analytics plugin's local tooling config (D31) — never committed
+.drizzle-cube.json
+.cfld.json
+
+# Logs / coverage
+logs/
+*.log
+coverage/
+*.lcov
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Drizzle studio
+.drizzle/
+
+# Agent worktrees (transient, each is its own git repo)
+.claude/worktrees/
+.claude/settings.local.json
+# Kit update check cache (scripts/kit-update-check.mjs — the newest release, at most a day old)
+.claude/kit-update-check.json
+
+# Provisioning answer cache (ids and hostnames only — no secrets; scripts/provision.ts)
+apps/web/.provision.json
+# Provisioning tokens — the four vendor tokens (+ optional Worker secrets) read by scripts/provision.ts;
+# written 0600 by `pnpm provision tokens`. `.provision.env.example` (blank values) IS committed.
+apps/web/.provision.env
+
+# Plugins installed into THIS checkout only (D31): the kit, or `pnpm plugin add --local`.
+# An app records its plugins as surfaces in the committed `.rocketflare.json` instead.
+.rocketflare.local.json
+
+# Kit upgrade cache — the bare mirror of the kit and the working artifacts of
+# `pnpm kit:upgrade` (scripts/upgrade.mjs), plus `plugins/` holding the same two for every plugin
+# `pnpm plugin add|upgrade` has fetched (D31). Safe to delete at any time.
+.upgrade/
+
+# Launch
 spikes/.env
 spikes/.created.json
-node_modules/
 *.pem
 .state.json
 spikes/.ssh/

@@ -1,0 +1,172 @@
+/**
+ * Nightly prune (D12): expired sessions, expired/consumed magic links, expired invitations older
+ * than 30 days are removed; live rows stay.
+ */
+import { eq, inArray } from 'drizzle-orm'
+import { describe, expect, it } from 'vitest'
+import { dispatchScheduled, runPruneAiSpans, runPruneExpired } from '@/api/scheduled'
+import { hashToken } from '@/api/utils/core/hash'
+import { randomToken } from '@/api/utils/core/ids'
+import { aiSpans, magicLinkTokens, teamInvitations, userSessions } from '@/db/schema'
+import { createTestSession, createTestTenantWithUser, createTestUser } from '../helpers/auth'
+import { setupTestDatabase } from '../helpers/db'
+import { createExecutionContext, createTestEnv, waitOnExecutionContext } from '../mocks/bindings'
+
+const db = setupTestDatabase()
+const DAY = 86_400_000
+
+describe('pruneExpired', () => {
+  it('removes expired rows and keeps live ones', async () => {
+    const user = await createTestUser(db)
+    const expiredSession = await createTestSession(db, user.id, null, { expiresInDays: -1 })
+    const liveSession = await createTestSession(db, user.id, null, { expiresInDays: 5 })
+
+    const expiredLink = randomToken(32)
+    const consumedLink = randomToken(32)
+    const liveLink = randomToken(32)
+    await db.insert(magicLinkTokens).values([
+      {
+        email: user.email,
+        tokenHash: await hashToken(expiredLink),
+        expiresAt: new Date(Date.now() - 1000),
+      },
+      {
+        email: user.email,
+        tokenHash: await hashToken(consumedLink),
+        expiresAt: new Date(Date.now() + 60_000),
+        consumedAt: new Date(),
+      },
+      {
+        email: user.email,
+        tokenHash: await hashToken(liveLink),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ])
+
+    const { user: owner, tenant } = await createTestTenantWithUser(db, 'owner')
+    const oldExpired = randomToken(32)
+    const recentExpired = randomToken(32)
+    await db.insert(teamInvitations).values([
+      {
+        tenantId: tenant.id,
+        email: 'old@example.test',
+        role: 'member',
+        tokenHash: await hashToken(oldExpired),
+        invitedByUserId: owner.id,
+        expiresAt: new Date(Date.now() - 40 * DAY),
+        revokedAt: new Date(),
+      },
+      {
+        tenantId: tenant.id,
+        email: 'recent@example.test',
+        role: 'member',
+        tokenHash: await hashToken(recentExpired),
+        invitedByUserId: owner.id,
+        expiresAt: new Date(Date.now() - 2 * DAY),
+      },
+    ])
+
+    // Return counts are NOT asserted: `scheduled.test.ts` dispatches the same cron against the
+    // shared test database in another fork, so a concurrent prune may have already deleted these
+    // fixtures and this call legitimately reports 0. Row presence/absence below is what matters.
+    const counts = await runPruneExpired(db)
+    expect(counts).toEqual(
+      expect.objectContaining({
+        sessions: expect.any(Number),
+        magicLinks: expect.any(Number),
+        invitations: expect.any(Number),
+      })
+    )
+
+    expect(
+      await db
+        .select()
+        .from(userSessions)
+        .where(eq(userSessions.tokenHash, await hashToken(expiredSession)))
+    ).toHaveLength(0)
+    expect(
+      await db
+        .select()
+        .from(userSessions)
+        .where(eq(userSessions.tokenHash, await hashToken(liveSession)))
+    ).toHaveLength(1)
+    expect(
+      await db
+        .select()
+        .from(magicLinkTokens)
+        .where(eq(magicLinkTokens.tokenHash, await hashToken(expiredLink)))
+    ).toHaveLength(0)
+    expect(
+      await db
+        .select()
+        .from(magicLinkTokens)
+        .where(eq(magicLinkTokens.tokenHash, await hashToken(consumedLink)))
+    ).toHaveLength(0)
+    expect(
+      await db
+        .select()
+        .from(magicLinkTokens)
+        .where(eq(magicLinkTokens.tokenHash, await hashToken(liveLink)))
+    ).toHaveLength(1)
+    expect(
+      await db
+        .select()
+        .from(teamInvitations)
+        .where(eq(teamInvitations.tokenHash, await hashToken(oldExpired)))
+    ).toHaveLength(0)
+    expect(
+      await db
+        .select()
+        .from(teamInvitations)
+        .where(eq(teamInvitations.tokenHash, await hashToken(recentExpired)))
+    ).toHaveLength(1)
+  })
+
+  it('runs from the cron dispatcher', async () => {
+    const ctx = createExecutionContext()
+    const reports = await dispatchScheduled('0 4 * * *', createTestEnv(), ctx)
+    await waitOnExecutionContext(ctx)
+    expect(reports).toEqual([
+      expect.objectContaining({ task: 'pruneExpired', status: 'ok' }),
+      expect.objectContaining({ task: 'pruneAiSpans', status: 'ok' }),
+    ])
+  })
+})
+
+describe('pruneAiSpans (D32)', () => {
+  const span = (tenantId: string, spanId: string, startedAt: Date) => ({
+    tenantId,
+    traceId: 'a'.repeat(32),
+    spanId,
+    name: 'chat m',
+    kind: 'llm' as const,
+    status: 'ok' as const,
+    startedAt,
+    endedAt: startedAt,
+    durationMs: 0,
+    attributes: {},
+  })
+
+  it('drops spans older than the retention window in every tenant and keeps the rest', async () => {
+    const { tenant: a } = await createTestTenantWithUser(db)
+    const { tenant: b } = await createTestTenantWithUser(db)
+    const now = new Date()
+    await db
+      .insert(aiSpans)
+      .values([
+        span(a.id, '1'.repeat(16), new Date(now.getTime() - 15 * DAY)),
+        span(a.id, '2'.repeat(16), new Date(now.getTime() - 13 * DAY)),
+        span(b.id, '3'.repeat(16), new Date(now.getTime() - 30 * DAY)),
+      ])
+    const result = await runPruneAiSpans(db, 14, now)
+    expect(result.cutoff).toBe(new Date(now.getTime() - 14 * DAY).toISOString())
+    // Assert on THIS test's tenants, never on `result.spans`: the prune is cross-tenant by design,
+    // and the nightly-cron tests in other files run the same task concurrently — one of them can
+    // delete these rows first, which is correct behaviour and would make a count flaky.
+    const left = await db
+      .select({ spanId: aiSpans.spanId })
+      .from(aiSpans)
+      .where(inArray(aiSpans.tenantId, [a.id, b.id]))
+    expect(left.map(r => r.spanId)).toEqual(['2'.repeat(16)])
+  })
+})

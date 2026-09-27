@@ -1,0 +1,173 @@
+{
+  "id": "analytics",
+  "label": "Analytics",
+  "version": "3.4.1",
+  "repo": "https://github.com/rocketflare-dev/rocketflare-plugins.git",
+  "minKit": "0.13.0",
+  "skills": ["analytics", "analytics-cubes", "analytics-queries", "analytics-dashboards"],
+  "anchor": "apps/web/src/plugins/analytics/plugin.json",
+  "paths": [
+    "apps/web/src/plugins/analytics/**",
+    "packages/shared/src/plugins/analytics/**",
+    "apps/cli/src/plugins/analytics/**"
+  ],
+  "registries": [
+    "apps/web/src/plugins/server.ts",
+    "apps/web/src/plugins/ui.ts",
+    "apps/web/src/plugins/schema.ts",
+    "packages/shared/src/plugins/index.ts",
+    "apps/cli/src/plugins/index.ts"
+  ],
+  "requires": {
+    "surfaces": [],
+    "plugins": []
+  },
+  "uses": {
+    "'../api' (apps/cli/src/plugins/api.ts)": [
+      "CliError",
+      "CliPlugin",
+      "CommandContext",
+      "EXIT_ERROR",
+      "formatDate",
+      "renderTable",
+      "requireClient"
+    ],
+    "@/db/schema/kit": [
+      "activityEvents",
+      "groupMembers",
+      "groups",
+      "groupTypes",
+      "RESOURCE_VISIBILITY_VALUES",
+      "tenantIsolation",
+      "tenantRef",
+      "tenants",
+      "tenantUsers",
+      "timestamps",
+      "users"
+    ],
+    "@/plugins/api": [
+      "AccessScope",
+      "createRouter",
+      "cronCtx",
+      "CronCtx",
+      "Database",
+      "DetachedCtx",
+      "HookCtx",
+      "jobCtx",
+      "JobCtx",
+      "JobHandler",
+      "PluginLogger",
+      "recordActivity",
+      "requestCtx",
+      "RequestCtx",
+      "ScheduledTask",
+      "SeedCtx",
+      "ServerPlugin",
+      "sharedWithMyGroups",
+      "transaction",
+      "validate",
+      "VisibilityResource"
+    ],
+    "@/plugins/api/peers": ["allTables", "extensions", "extensionSources"],
+    "@/plugins/api/ui": [
+      "AccessBadge",
+      "api",
+      "ApiError",
+      "ConfirmModal",
+      "EmptyState",
+      "FieldError",
+      "fieldErrorFor",
+      "formatDate",
+      "LoadingIndicator",
+      "Modal",
+      "notifyUnauthorized",
+      "PageHeader",
+      "SectionPanel",
+      "setUnauthorizedHandler",
+      "showToast",
+      "SkeletonRows",
+      "timeAgo",
+      "useGroups",
+      "usePermissions",
+      "useToastStore",
+      "VisibilityModal"
+    ],
+    "@/plugins/api/ui-wiring": ["NavGuard", "UiPlugin"],
+    "@launch/shared/errors": ["ERROR_CODES"],
+    "@launch/shared/groups": [
+      "GroupRef",
+      "groupRefSchema",
+      "resourceVisibilitySchema",
+      "SetVisibilityRequest",
+      "setVisibilityRequestSchema"
+    ],
+    "@launch/shared/jobs": ["JobOf"],
+    "@launch/shared/plugins/types": ["SharedPlugin"],
+    "@launch/shared/tenants": ["MembershipRole", "slugify"],
+    "@testkit/integration": [
+      "createExecutionContext",
+      "createTestEnv",
+      "createTestSession",
+      "createTestTenant",
+      "createTestTenantWithUser",
+      "createTestUser",
+      "dispatchScheduled",
+      "IDS",
+      "json",
+      "jsonResponse",
+      "linkUserToTenant",
+      "makeSession",
+      "makeTenant",
+      "renderWithProviders",
+      "request",
+      "requestBody",
+      "RouteTable",
+      "sessionCookieHeader",
+      "setupTestDatabase",
+      "stubFetch",
+      "unauthorizedResponse",
+      "waitOnExecutionContext"
+    ],
+    "@testkit/unit": ["makeCronCtx", "makeRequestCtx"]
+  },
+  "dependencies": {
+    "apps/web": {
+      "d3": "^7.9.0",
+      "drizzle-cube": "0.8.3",
+      "react-grid-layout": "^2.2.4",
+      "react-is": "^19.3.0",
+      "recharts": "^3.10.1"
+    },
+    "packages/shared": {},
+    "apps/cli": {}
+  },
+  "bindings": [],
+  "crons": ["15 * * * *"],
+  "apiPrefixes": ["/cubejs-api", "/mcp"],
+  "coreEdits": [
+    {
+      "file": "apps/web/vite.config.ts",
+      "after": "'/ws': proxyTo(",
+      "lines": ["'/cubejs-api': proxyTo(),", "'/mcp': proxyTo(),"]
+    },
+    {
+      "file": "apps/web/vite.config.ts",
+      "after": "'@': path.resolve(",
+      "lines": [
+        "'@nivo/heatmap': path.resolve(__dirname, './src/plugins/analytics/ui/lib/nivo-heatmap.tsx'),"
+      ]
+    }
+  ],
+  "vars": [],
+  "workerExports": [],
+  "schema": {
+    "tables": ["analytics_pages", "analytics_page_groups", "analytics_tenant_activity_daily_facts"],
+    "rlsExcluded": []
+  },
+  "migrations": [
+    "analytics_pages \u2014 one dashboard per row, tenant-scoped, jsonb config, RLS policy",
+    "analytics_page_groups \u2014 which groups a `visibility: 'groups'` dashboard is shared with",
+    "analytics_tenant_activity_daily_facts \u2014 activity pre-aggregated to (tenant, day, user), UNIQUE NULLS NOT DISTINCT, RLS policy"
+  ],
+  "subdir": "plugins/analytics"
+}
