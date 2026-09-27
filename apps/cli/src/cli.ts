@@ -12,6 +12,14 @@ import { runFeedbackList } from './commands/feedback'
 import { runGroupMembers, runGroupsList } from './commands/groups'
 import { runLogin } from './commands/login'
 import { runLogout } from './commands/logout'
+import {
+  runSessionsEnd,
+  runSessionsList,
+  runSessionsPreviewUrl,
+  runSessionsSay,
+  runSessionsShip,
+  runSessionsStart,
+} from './commands/sessions'
 import { runStatus } from './commands/status'
 import { runTracesList, runTracesShow } from './commands/traces'
 import { runWhoami } from './commands/whoami'
@@ -189,6 +197,42 @@ evals
   .option('--id <caseId>', 'case id to write (default message-<8> / run-<8>)')
   .option('--yes', 'write without asking — the case contains tenant data')
   .action(action((ctx, cmd) => runEvalsPromote(ctx, cmd.args[0] ?? '', cmd.opts())))
+
+const sessions = program
+  .command('sessions')
+  .description('coding sessions — chat with a coding agent on an app, then ship a pull request')
+sessions
+  .command('start <app>')
+  .description('start a session on an app (by slug)')
+  .option('--title <title>', 'a name for the session')
+  .option('--base <ref>', 'branch, tag or commit to start from (default: the app’s default branch)')
+  .action(action((ctx, cmd) => runSessionsStart(ctx, cmd.args[0] ?? '', cmd.opts())))
+sessions
+  .command('say <id> <message>')
+  .description('send one message to a session')
+  .option('--follow', 'print the turn as it runs, until it ends')
+  .action(
+    action((ctx, cmd) => runSessionsSay(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+  )
+sessions
+  .command('ship <id>')
+  .description('run the checks, open a pull request and end the session')
+  .option('--wait', 'follow the checks until the pull request is open and its CI settles')
+  .action(action((ctx, cmd) => runSessionsShip(ctx, cmd.args[0] ?? '', cmd.opts())))
+sessions
+  .command('end <id>')
+  .description('end a session (its branch is kept)')
+  .action(action((ctx, cmd) => runSessionsEnd(ctx, cmd.args[0] ?? '')))
+sessions
+  .command('ls <app>')
+  .description('list an app’s sessions')
+  .option('--all', 'include finished sessions')
+  .action(action((ctx, cmd) => runSessionsList(ctx, cmd.args[0] ?? '', cmd.opts())))
+sessions
+  .command('preview-url <id>')
+  .description('print a one-minute sign-in URL for the session’s live preview')
+  .option('--open', 'open it in the browser')
+  .action(action((ctx, cmd) => runSessionsPreviewUrl(ctx, cmd.args[0] ?? '', cmd.opts())))
 
 // ---- config --------------------------------------------------------------------------------
 
