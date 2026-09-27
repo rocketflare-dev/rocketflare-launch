@@ -1,0 +1,149 @@
+/**
+ * Retrying a failed pipeline run (Launch P2, `POST /api/apps/:id/pipeline/retry`). A retry is a
+ * NEW Workflow instance `<runId>-rN` carrying the SAME `runId`, so every `app_operations` row that
+ * already succeeded is skipped by `runStep` and the run resumes at the step that failed — with the
+ * ids that step's earlier attempts recorded in `ctx.prior`.
+ *
+ * - Only the latest run of the kind, and only when it is `failed` (409 `run_not_failed`).
+ * - The run's options (`deployStaging`, `deleteRepo`) come back from the audit row that requested
+ *   it — the one place they were written.
+ * - `N` is the first free suffix: Cloudflare refuses an instance id that exists, and so does the
+ *   test double, so `instance.already_exists` moves on to the next.
+ * - A create retry puts the app back to `provisioning` (the `reserve` step, which would, is
+ *   skipped), and a failed WAIT re-opens the step that started its job (`RESTARTS`), so the
+ *   scaffold job or the staging deploy is dispatched again. Audited `app.pipeline.retried`.
+ */
+import type {
+  AppLaunchParams,
+  AppTeardownParams,
+  PipelineKind,
+  RetryPipelineResponse,
+} from '@launch/shared/launch-pipeline'
+import { and, eq, inArray } from 'drizzle-orm'
+import type { Database } from '../../../../db/client'
+import { type AppOperationRow, appOperations, apps } from '../../../../db/schema'
+import { ConflictError } from '../../../utils/core/errors'
+import { getAppRow } from '../apps'
+import { type AuditActor, recordAudit } from '../audit'
+import { requireWorkflow, type WorkflowStarter } from './create'
+import { deriveRunStatus, latestRunId, requestedOptions, runRows } from './runs'
+
+const MAX_RETRY_SUFFIX = 100
+
+/**
+ * A failed WAIT is retried by starting its job again: the job it waited on died (or never
+ * reported), so skipping its succeeded `…start` row would only wait on a dead job a second time.
+ */
+const RESTARTS: Record<string, string> = {
+  'scaffold.wait': 'scaffold.start',
+  'deploy_staging.wait': 'deploy_staging.start',
+  'deploy_staging.check': 'deploy_staging.start',
+}
+
+async function restartJobs(
+  db: Database,
+  tenantId: string,
+  runId: string,
+  rows: readonly Pick<AppOperationRow, 'step' | 'status'>[]
+): Promise<void> {
+  const starts = rows.flatMap(r => {
+    const start = r.status === 'failed' ? RESTARTS[r.step] : undefined
+    return start ? [start] : []
+  })
+  if (starts.length === 0) return
+  await db
+    .update(appOperations)
+    .set({ status: 'failed', error: 'Started again by a retry', updatedAt: new Date() })
+    .where(
+      and(
+        eq(appOperations.tenantId, tenantId),
+        eq(appOperations.runId, runId),
+        inArray(appOperations.step, starts)
+      )
+    )
+}
+
+export interface RetryWorkflows {
+  APP_LAUNCH_WORKFLOW?: WorkflowStarter<AppLaunchParams>
+  APP_TEARDOWN_WORKFLOW?: WorkflowStarter<AppTeardownParams>
+}
+
+async function createNextInstance<P>(
+  starter: WorkflowStarter<P>,
+  runId: string,
+  params: P
+): Promise<string> {
+  for (let n = 1; n <= MAX_RETRY_SUFFIX; n++) {
+    const id = `${runId}-r${n}`
+    try {
+      await starter.create({ id, params })
+      return id
+    } catch (err) {
+      if (err instanceof Error && /already.?exists/i.test(err.message)) continue
+      throw err
+    }
+  }
+  throw new ConflictError('This run has been retried too many times', 'retry_limit')
+}
+
+export async function retryPipeline(
+  db: Database,
+  workflows: RetryWorkflows,
+  tenantId: string,
+  appId: string,
+  kind: PipelineKind,
+  actor: AuditActor
+): Promise<RetryPipelineResponse> {
+  const app = await getAppRow(db, tenantId, appId)
+  const runId = await latestRunId(db, tenantId, app, kind)
+  if (!runId) throw new ConflictError(`This app has no ${kind} run to retry`, 'no_run')
+  const rows = await runRows(db, tenantId, runId)
+  const status =
+    rows.length === 0 && kind === 'create' && app.status === 'failed'
+      ? 'failed'
+      : deriveRunStatus(kind, rows)
+  if (status !== 'failed') {
+    throw new ConflictError(
+      `Only a failed run can be retried (this one is ${status})`,
+      'run_not_failed'
+    )
+  }
+  const options = await requestedOptions(db, tenantId, app.id, kind, runId)
+
+  let instanceId: string
+  if (kind === 'create') {
+    const starter = requireWorkflow(workflows.APP_LAUNCH_WORKFLOW, 'APP_LAUNCH_WORKFLOW')
+    await restartJobs(db, tenantId, runId, rows)
+    await db
+      .update(apps)
+      .set({ status: 'provisioning', updatedAt: new Date() })
+      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, app.id)))
+    instanceId = await createNextInstance(starter, runId, {
+      tenantId,
+      appId: app.id,
+      runId,
+      userId: app.createdByUserId,
+      options: { deployStaging: options.deployStaging !== false },
+    })
+  } else {
+    const starter = requireWorkflow(workflows.APP_TEARDOWN_WORKFLOW, 'APP_TEARDOWN_WORKFLOW')
+    instanceId = await createNextInstance(starter, runId, {
+      tenantId,
+      appId: app.id,
+      runId,
+      userId: actor.actorUserId,
+      deleteRepo: options.deleteRepo === true,
+    })
+  }
+
+  await recordAudit(db, {
+    tenantId,
+    ...actor,
+    action: 'app.pipeline.retried',
+    targetType: 'App',
+    targetId: app.id,
+    appId: app.id,
+    summary: { after: { kind, runId, instanceId } },
+  })
+  return { runId, instanceId }
+}
