@@ -149,6 +149,42 @@ describe('Admin → Setup', () => {
     expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toBeUndefined()
   })
 
+  it('offers the Neon regions as a select, with a free-text fallback for any other id', async () => {
+    const fetchMock = render()
+    const neon = await screen.findByRole('region', { name: /3\.\s*Neon/ })
+    const select = within(neon).getByLabelText('Region')
+    expect(select.tagName).toBe('SELECT')
+    expect(select).toHaveValue('')
+    expect(
+      within(select).getByRole('option', { name: /Frankfurt\) — aws-eu-central-1/ })
+    ).toBeTruthy()
+
+    fireEvent.change(select, { target: { value: 'aws-eu-central-1' } })
+    fireEvent.click(within(neon).getByRole('button', { name: 'Save and check' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toEqual({
+        neon_region_id: 'aws-eu-central-1',
+      })
+    )
+  })
+
+  it('keeps a Neon region id the list does not know through "Other…"', async () => {
+    const fetchMock = render()
+    const neon = await screen.findByRole('region', { name: /3\.\s*Neon/ })
+    const select = within(neon).getByLabelText('Region')
+    fireEvent.change(select, { target: { value: '__other__' } })
+    const other = within(neon).getByLabelText('Region (other)') as HTMLInputElement
+    expect(other.value).toBe('')
+    fireEvent.change(other, { target: { value: 'aws-ap-northeast-1' } })
+    expect(select).toHaveValue('__other__')
+    fireEvent.click(within(neon).getByRole('button', { name: 'Save and check' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toEqual({
+        neon_region_id: 'aws-ap-northeast-1',
+      })
+    )
+  })
+
   it("refuses a bad setting with the server's own message, before any request", async () => {
     const fetchMock = render()
     const github = await screen.findByRole('region', { name: /GitHub App/ })

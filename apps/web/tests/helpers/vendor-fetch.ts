@@ -15,7 +15,8 @@ export interface VendorCall {
   authorization: string | null
 }
 
-export type VendorRoute = unknown | ((url: string) => Response)
+/** A JSON body, or a factory given the URL and the request init (method, body). */
+export type VendorRoute = unknown | ((url: string, init?: RequestInit) => Response)
 
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -42,7 +43,7 @@ export function fakeVendorFetch(routes: Record<string, VendorRoute>) {
     if (!key) return jsonResponse({ message: `no fake for ${url}` }, 599)
     const route = routes[key]
     return typeof route === 'function'
-      ? (route as (u: string) => Response)(url)
+      ? (route as (u: string, i?: RequestInit) => Response)(url, init)
       : jsonResponse(route)
   }) as typeof fetch
   return { calls, fetch: fetchImpl }
@@ -89,12 +90,9 @@ export function happyVendors(f: HappyFixture): Record<string, VendorRoute> {
     'console.neon.tech/api/v2/projects': {
       projects: [{ id: 'p1', name: 'x', region_id: 'aws-us-east-2', org_id: 'org-test-12345' }],
     },
-    'console.neon.tech/api/v2/regions': {
-      regions: [
-        { region_id: 'aws-us-east-2', name: 'Ohio', default: true },
-        { region_id: 'aws-eu-central-1', name: 'Frankfurt', default: false },
-      ],
-    },
+    // What a real ORGANIZATION key gets; the setup check never calls it (see checkNeon).
+    'console.neon.tech/api/v2/regions': () =>
+      jsonResponse({ message: 'not allowed for organization API keys' }, 404),
     'api.resend.com/api-keys': { data: [{ id: 'k1', name: 'launch' }] },
     'api.resend.com/domains': {
       data: [{ id: 'd1', name: `notifications.${f.domain}`, status: 'verified' }],

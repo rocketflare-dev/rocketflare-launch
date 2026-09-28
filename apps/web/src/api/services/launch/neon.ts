@@ -9,8 +9,10 @@
  * - `GET /projects?limit=&org_id=` → `{ projects: [{ id, name, region_id, org_id }] }`. An
  *   ORGANIZATION key is scoped to its org; each project names that org, which is how the setup
  *   check discovers `org_id` when nobody entered it.
- * - `GET /regions?org_id=` → `{ regions: [{ region_id, name, default }] }` — the regions that org
- *   may create projects in.
+ * - `GET /regions` is NOT available to an organization key (404 "not allowed for organization API
+ *   keys", seen against a real org), so this client has no region call: the setup check validates
+ *   `neon_region_id` against the static `NEON_REGIONS` (`@launch/shared/launch-setup`) and learns
+ *   an unset one from the org's existing projects' `region_id`.
  * - Launch holds an org key, never a personal one, and an org key **cannot mint project-scoped
  *   keys** (S3), so apps only ever get connection strings.
  * - Neon answers **423 Locked** while a project operation runs. Every call here retries it —
@@ -79,12 +81,6 @@ export interface NeonProject {
   name: string
   region_id: string
   org_id?: string
-}
-
-export interface NeonRegion {
-  region_id: string
-  name: string
-  default: boolean
 }
 
 /** True for a Neon 404 — what teardown counts as "already gone". */
@@ -207,12 +203,6 @@ export class NeonClient {
     if (query.orgId) params.set('org_id', query.orgId)
     const body = await this.get<{ projects?: NeonProject[] }>(`/projects?${params}`)
     return body.projects ?? []
-  }
-
-  async listRegions(orgId?: string | null): Promise<NeonRegion[]> {
-    const query = orgId ? `?org_id=${encodeURIComponent(orgId)}` : ''
-    const body = await this.get<{ regions?: NeonRegion[] }>(`/regions${query}`)
-    return body.regions ?? []
   }
 
   // ---- P2 writes -------------------------------------------------------------------------------

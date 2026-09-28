@@ -52,6 +52,8 @@
  *   `{metadata, modules, secrets, secretPuts (names only, in order), migrationTag, workersDev,
  *   schedules, settings, versions[{id, metadata, bindings}], deployments, activeVersionId}`),
  *   `workflows` (name → `{class_name, script_name}`), `routes` (id → `{pattern, script, zoneId}`),
+ *   `dnsRecords` (id → `{type, name, content, proxied}`, FQDN names, seeded with the proxied
+ *   `*.<zone>` wildcard — clear it to watch the setup check create one),
  *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`. P5: secrets list (`GET`, names
  *   only) and `DELETE …/secrets/{name}` (`secretDeletes`, names in order); on a script with a live
  *   version every secret write or delete creates AND deploys a new version carrying the active

@@ -8,7 +8,8 @@
  * `/api/admin/setup` (spec/03, spec/04): global admin only; settings are validated and audited
  * with before/after; a credential PUT seals the value, runs the probes and audits `credential.set`
  * then `credential.rotated`; a check audits `credential.checked`; a delete audits
- * `credential.removed`. No response — and no audit row — ever carries a secret, and the stored
+ * `credential.removed`. A zone with no wildcard record gets one from the save or the check,
+ * audited `dns.wildcard.created` — never from the overview, which does not probe. No response — and no audit row — ever carries a secret, and the stored
  * row holds it only sealed.
  */
 import { generateKeyPairSync } from 'node:crypto'
@@ -32,6 +33,7 @@ import {
   cf,
   fakeVendorFetch,
   happyVendors,
+  jsonResponse,
   OTHER_ACCOUNT_ID,
   ZONE_ID,
 } from '../helpers/vendor-fetch'
@@ -295,6 +297,71 @@ describe('credentials', () => {
     expect(unsetCheck.status).toBe(404)
   })
 
+  it('Cloudflare: creates a missing wildcard on save and re-check, audited; GET creates none', async () => {
+    const records: Record<string, unknown>[] = []
+    const posts: Record<string, unknown>[] = []
+    vendors = fakeVendorFetch({
+      ...happyVendors({ domain: DOMAIN, org: ORG }),
+      [`api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records`]: (
+        _url: string,
+        init?: RequestInit
+      ) => {
+        if ((init?.method ?? 'GET') === 'GET') return jsonResponse(cf(records))
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        posts.push(body)
+        const record = { ...body, id: `rec${posts.length}`, name: `*.${DOMAIN}` }
+        records.push(record)
+        return jsonResponse(cf(record))
+      },
+    })
+    const wildcardOf = (body: unknown) =>
+      (body as SetupCheckResponse).checks.find(c => c.id === 'zone.wildcard')
+
+    const put = await call(
+      '/api/admin/setup/credentials/cloudflare_api_token',
+      { method: 'PUT' },
+      { apiToken: CF_TOKEN }
+    )
+    expect(put.status).toBe(200)
+    expect(wildcardOf(put.body)).toMatchObject({
+      status: 'ok',
+      detail: `Created proxied AAAA *.${DOMAIN} → 100::`,
+    })
+    expect(posts).toEqual([
+      expect.objectContaining({ type: 'AAAA', name: '*', content: '100::', proxied: true }),
+    ])
+    const [created, ...more] = await auditRows('dns.wildcard.created')
+    expect(more).toEqual([])
+    expect(created).toMatchObject({ targetType: 'Zone', targetId: ZONE_ID })
+    expect(created?.summary.after).toMatchObject({ name: `*.${DOMAIN}`, proxied: true })
+    expect(JSON.stringify(created)).not.toContain(CF_TOKEN)
+
+    // The overview reads stored results: no vendor call at all, so nothing can be created.
+    const seen = vendors.calls.length
+    expect((await call('/api/admin/setup')).status).toBe(200)
+    expect(vendors.calls.length).toBe(seen)
+
+    // Re-check finds the record it made: nothing new created or audited.
+    const check = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+      method: 'POST',
+    })
+    expect(wildcardOf(check.body)).toMatchObject({ status: 'ok', detail: `AAAA *.${DOMAIN}` })
+    expect(posts).toHaveLength(1)
+    expect(await auditRows('dns.wildcard.created')).toHaveLength(1)
+
+    // Deleted upstream → the next re-check creates it again.
+    records.length = 0
+    const recheck = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+      method: 'POST',
+    })
+    expect(wildcardOf(recheck.body)).toMatchObject({ status: 'ok' })
+    expect(posts).toHaveLength(2)
+    expect(await auditRows('dns.wildcard.created')).toHaveLength(2)
+
+    vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
+    await call('/api/admin/setup/credentials/cloudflare_api_token', { method: 'DELETE' })
+  })
+
   it('Neon: discovers the org and pins the region into the settings', async () => {
     const put = await call(
       '/api/admin/setup/credentials/neon_org_api_key',
@@ -309,6 +376,8 @@ describe('credentials', () => {
     const settings = await db.select().from(launchSettings)
     const byKey = Object.fromEntries(settings.map(s => [s.key, s.value]))
     expect(byKey).toMatchObject({ neon_org_id: 'org-test-12345', neon_region_id: 'aws-us-east-2' })
+    // An org key is refused `GET /regions` (404), so the check never asks.
+    expect(vendors.calls.some(c => c.url.includes('/regions'))).toBe(false)
     // Pinned now, so the next check is clean.
     const check = await call('/api/admin/setup/credentials/neon_org_api_key/check', {
       method: 'POST',

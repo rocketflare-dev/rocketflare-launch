@@ -761,8 +761,22 @@ lists projects, the Resend key is full-access and the notifications domain verif
 App is installed on the org with the required write set. The upstream IdP step is read-only (it is
 Launch's own `OIDC_*` config).
 
+Two probes do more than read. **The wildcard**: when the zone has no `*.<apps domain>` record at
+all, saving or re-checking the Cloudflare token (the domain card re-checks after a domain change)
+creates a proxied `AAAA * → 100::` and reports "Created …", audited `dns.wildcard.created` on the
+zone; a DNS-only record is never changed — the probe fails and says how to fix it — and a token
+without DNS Edit fails with Cloudflare's scrubbed error. `GET /api/admin/setup` never probes, so a
+page load changes nothing. **The Neon region** is never read from `GET /regions`, which refuses
+organization keys (404): a pinned id is checked against the static `NEON_REGIONS`
+(`@launch/shared/launch-setup`; an unknown one is a warning, Neon validates it on the first
+create), and an unset one is pinned to where most of the org's projects already are, else
+`DEFAULT_NEON_REGION` (`aws-us-east-2`, Neon's default for a new project), with a warning either
+way. The wizard offers the list as a select with an "Other…" free-text fallback.
+
 **Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
-creating a Worker; checks run only when a credential is saved or re-checked, not on a schedule;
+creating a Worker; `NEON_REGIONS` is a hand-kept list (a region Neon adds later is only a
+warning until it is added); saving the apps domain through the API alone (not the wizard)
+does not re-check, so the wildcard is created on the next save or check; checks run only when a credential is saved or re-checked, not on a schedule;
 one row per kind for the whole deployment, so a suite that needs credentials mocks the module
 over an in-memory store (`tests/helpers/credential-store.ts`) rather than racing the setup suite.
 

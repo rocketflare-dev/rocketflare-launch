@@ -99,6 +99,14 @@ interface AssetSession {
   pending: Set<string>
 }
 
+export interface FakeDnsRecord {
+  id: string
+  type: string
+  name: string
+  content: string
+  proxied: boolean
+}
+
 export interface FakeCloudflareOptions {
   accountId: string
   zoneId: string
@@ -129,6 +137,11 @@ export class FakeCloudflare implements VendorHandler {
   readonly scripts = new Map<string, FakeScript>()
   readonly workflows = new Map<string, FakeWorkflowReg>()
   readonly routes = new Map<string, FakeRoute>()
+  /**
+   * The zone's DNS records by id, FQDN names. Seeded with the proxied wildcard a set-up zone has;
+   * a test clears it to see the setup check create one (`POST …/dns_records`).
+   */
+  readonly dnsRecords = new Map<string, FakeDnsRecord>()
   /** Asset content hash → base64 body, across every upload. */
   readonly assetBlobs = new Map<string, string>()
   private readonly sessions = new Map<string, AssetSession>()
@@ -146,7 +159,15 @@ export class FakeCloudflare implements VendorHandler {
   constructor(
     private readonly ids: IdSource,
     readonly opts: FakeCloudflareOptions
-  ) {}
+  ) {
+    this.dnsRecords.set('dns-wildcard', {
+      id: 'dns-wildcard',
+      type: 'AAAA',
+      name: `*.${opts.zoneName}`,
+      content: '100::',
+      proxied: true,
+    })
+  }
 
   /** The script serving `host`, through a route whose pattern is `<host>/*`, or null. */
   scriptForHost(host: string): FakeScript | null {
@@ -290,12 +311,34 @@ export class FakeCloudflare implements VendorHandler {
     }
     match = path.match(/^\/zones\/([^/]+)\/dns_records$/)
     if (match && m === 'GET') {
+      if (match[1] !== this.opts.zoneId) return notFound('zone')
       const name = req.url.searchParams.get('name')
-      return ok(
-        name === `*.${this.opts.zoneName}`
-          ? [{ id: 'dns-wildcard', type: 'AAAA', name, content: '100::', proxied: true }]
-          : []
-      )
+      return ok([...this.dnsRecords.values()].filter(r => !name || r.name === name))
+    }
+    if (match && m === 'POST') {
+      if (match[1] !== this.opts.zoneId) return notFound('zone')
+      const body = (req.json ?? {}) as Record<string, unknown>
+      const rel = String(body.name ?? '')
+      // A name is relative to the zone unless it already ends with it, as Cloudflare reads it.
+      const name =
+        rel === '@'
+          ? this.opts.zoneName
+          : rel.endsWith(this.opts.zoneName)
+            ? rel
+            : `${rel}.${this.opts.zoneName}`
+      const type = String(body.type ?? '')
+      if ([...this.dnsRecords.values()].some(r => r.name === name && r.type === type)) {
+        return cfError(400, 81058, 'An identical record already exists.')
+      }
+      const record = {
+        id: this.ids.hex32(),
+        type,
+        name,
+        content: String(body.content ?? ''),
+        proxied: body.proxied === true,
+      }
+      this.dnsRecords.set(record.id, record)
+      return ok(record)
     }
     return notFound(`${m} ${path}`)
   }

@@ -8,11 +8,13 @@
  * a "Replace" action, never a value. Every dot comes from the overview the server computed from
  * the stored check results; nothing here decides a status on its own.
  */
-import type {
-  CredentialKind,
-  SetupOverview,
-  SetupStepId,
-  SetupStepStatus,
+import {
+  type CredentialKind,
+  DEFAULT_NEON_REGION,
+  NEON_REGIONS,
+  type SetupOverview,
+  type SetupStepId,
+  type SetupStepStatus,
 } from '@launch/shared/launch-setup'
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'
@@ -159,7 +161,9 @@ export default function Setup() {
             key: 'neon_region_id',
             label: 'Region',
             placeholder: 'aws-us-east-2',
-            hint: "Leave blank to pin Neon's current default on the first check.",
+            options: NEON_REGIONS.map(r => ({ value: r.id, label: `${r.label} — ${r.id}` })),
+            blankLabel: 'Pick on the first check',
+            hint: `Left to the check, Launch pins the region most of the org's projects are in, or ${DEFAULT_NEON_REGION} when it has none. Every app's database is created there.`,
           },
           {
             key: 'neon_org_id',

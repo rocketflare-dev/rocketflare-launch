@@ -10,6 +10,12 @@
   navigation, an app Config page, and `launch shared` / `launch grants` command groups — all
   stubs until the rest of P5 lands. A team that owns shared config can no longer be deleted
   (409 `group_owns_shared_config`).
+- Setup against real accounts: the Neon step no longer fails with "not allowed for organization
+  API keys" — the region is checked against Launch's list of Neon regions (and chosen from a
+  select in the wizard), or pinned from where the org's projects already are, else
+  `aws-us-east-2`, with a warning to change it before the first app. The Cloudflare step now
+  creates the apps domain's proxied `AAAA * → 100::` wildcard record itself when the zone has none
+  (audited `dns.wildcard.created`); an existing DNS-only record is left alone, with what to do.
 - Approvals (P4): one engine decides everything a second person must approve — who may decide
   each kind (the app's owners, the organisation's admins, named teams or people), how many
   approvals it needs (one rejection is final), whether it expires, and whether a senior enough

@@ -72,7 +72,9 @@ export function DomainCard({
       <ul className="text-sm text-secondary list-disc pl-5 space-y-0.5">
         <li>The zone must be in the Cloudflare account you enter in step 2.</li>
         <li>
-          Add one proxied wildcard record: <code>AAAA *</code> → <code>100::</code>.
+          It needs one proxied wildcard record, <code>AAAA *</code> → <code>100::</code>. With no{' '}
+          <code>*</code> record at all, Launch creates it when the Cloudflare token is saved or
+          checked (the token needs DNS Edit on the zone); an existing record is never changed.
         </li>
       </ul>
       <form className="space-y-4" onSubmit={e => void onSubmit(e).catch(() => undefined)}>
