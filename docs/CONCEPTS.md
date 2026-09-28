@@ -1282,7 +1282,9 @@ reload) is restarted as `<id>-rN` from the row.
 - **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` made in SQL by
   `neondb_owner`; the first session PREPARES it — migrate + seed — then branches) →
   `sandbox.start` → `repo` (clone, `session/<short>`,
-  `.claude/settings.local.json`) → `bootstrap` (the kit's bootstrap on the session's own database)
+  `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
+  `/workspace/.launch/repo.lock` so overlapping attempts queue, and a failure reports git's last
+  15 stderr lines) → `bootstrap` (the kit's bootstrap on the session's own database)
   → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
   step writes a `step` event (the page's checklist). The first successful `bootstrap` records the
   checkout's `apps/web/migrations` hash (`sessions.migrations_hash`); a later one (a cold resume) is
@@ -1420,11 +1422,18 @@ log stream crosses as a `ReadableStream` and is parsed locally (no `AbortSignal`
 preview goes through the binding's `fetch`, which carries the HMR upgrade. A remote sandbox's
 `sessions.sandbox_id` is `remote:<name>` (another Worker's Durable Object id cannot be computed).
 **How the container reaches Anthropic and GitHub (`SessionEgressPort`).** `proxied` (every
-in-process sandbox): the egress handlers below, the container holds no credential. `direct` (a
-remote sandbox — the host cannot reach Launch's database to run the handlers,
-`egress/direct.ts`): the turn's process gets the real `ANTHROPIC_API_KEY`, and git gets the
-session's sealed installation token (the git handler's own, `sessionGitToken`) in a 0600 credential
-file outside the checkout, refreshed before the clone, each turn and each checkpoint's push. The
+in-process sandbox): the egress handlers below. `host` (a remote sandbox — the host cannot reach
+Launch's database to run the handlers, `egress/host.ts`): Launch PUSHES the host what to inject —
+an `EgressGrant` (the repo, the session's branch and upstream, the session's sealed installation
+token (`sessionGitToken`, the git handler's own) with its expiry; the key and the policy's model)
+over the host's RPC (`setEgressGrant`) before the clone, each turn and each checkpoint's push.
+`HostedSessionSandbox` keeps it in its Durable Object storage (cleared on `destroy()` and
+`onStop`) and has its OWN outbound handlers for `github.com` and `api.anthropic.com`
+(`sandbox-host/egress.ts`), which find the grant from `ctx.containerId` and inject through the
+same pure cores as Launch's handlers (`egress/forward-git.ts`, `egress/forward-model.ts`): one
+repo, a push only to `session/<short>` and never a delete, the Messages API on the policy's model
+only, a fresh token's 401/404 retried. No grant → the same 403 as the proxies. The container holds
+no credential in EITHER mode — only the placeholder key, and no git credential or helper. The
 turn runner and the checkpoint are the same code in both — they ask the port and `proxied` answers
 "nothing to do" — and the transcript scrubs GitHub token shapes as well as Anthropic keys.
 **The database.** A session's database is ALWAYS a real Neon branch of the app's project, under
@@ -1441,7 +1450,11 @@ through the API with `session_app` and made again, and that `dev` is prepared af
 URI is still the only credential in the container.
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
 Claude Code and a warm pnpm store for the default pin's kit (0.15.5, `SESSION_KIT_TAG`). The checkout is `/workspace/app` and `$HOME` is
-`/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition).
+`/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
+turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
+`--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
+`.claude/settings.local.json` holds only deny rules (`git push`, `git remote`, `git config`),
+which bypass mode honours. Launch makes every push (`checkpoint.ts`) and opens the PR (`ship.ts`).
 The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
 `session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
 10 minutes left, an expired one included — the usual case after an idle hour; sealed back in a
@@ -1487,12 +1500,14 @@ unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitH
 consistency is inferred from one incident (re-mint at :21, "Repository not found" at :22, both
 services 200 minutes later), not reproduced; the retry is bounded at 3.5 s, and a token-lifetime
 change at GitHub would make the "sealed within a minute" test miss (the minting request itself
-still retries). **The `direct` mode (`SESSION_SANDBOX_HOST=remote`) gives up three of the proxies'
-guarantees, knowingly and for development only:** code the model runs can READ the key and the
-token (the allow-list still limits where they go, and the transcript scrubs them); the branch rule
-is gone — the token can push to or delete any branch of the app's repo, so protect `main`; and the
-budget is enforced per turn (checked before, the process killed when its running cost reaches what
-is left) rather than per request, so one response can overshoot. A remote container's time is not
+still retries). **The `host` mode (`SESSION_SANDBOX_HOST=remote`, development only) gives up one
+of the proxies' guarantees:** the host has no database, so it neither meters nor checks the budget
+per request — the budget is enforced per turn (checked before, the process killed when its
+running cost reaches what is left, §18.11), so one response can overshoot by its own size. The key
+and the token never reach the container, and the branch rule is kept. The grant crossing the
+remote binding and the host's handlers injecting on a real container are covered by unit tests
+(`session-host-egress`, `session-egress-forward`), not yet run end to end
+(`docs/plans/sandbox-session-issues.md`). A remote container's time is not
 metered (`container_seconds` stays 0; the host's `onStop` has nowhere to write), a container the
 platform put to sleep is not marked `suspended` by it, and the host keeps no workspace backups. JS
 RPC, a `ReadableStream` result and the HMR upgrade through a REMOTE binding are read from wrangler
@@ -1534,9 +1549,9 @@ Anthropic-shaped 403 and NO upstream call when over), swaps in the real key (the
 admin who is not the creator approves it in the same call (200), anyone else — the creator
 included — waits for one (202, `approvalId`). The approval extends the cap (audited
 `session.budget.extended` with the approval id) and wakes a blocked session.
-**The `direct` egress mode meters the turn instead** (`turn-meter.ts`, no proxy sees a remote
-container's requests): each `assistant` line's usage (per response id, repeated content lines
-counted once) is the running cost, compared with `budgetHeadroom` (the nearer of the session's and
+**The `host` egress mode meters the turn instead** (`turn-meter.ts`: the host's handlers inject
+but do not meter, having no database): each `assistant` line's usage (per response id, repeated
+content lines counted once) is the running cost, compared with `budgetHeadroom` (the nearer of the session's and
 the app month's remaining cap, read at the turn's start) — reached, the process is killed,
 `budget.reached` and a `turn.failed` saying why. At the end the `result` line's `modelUsage`
 (Claude Code's background calls included; else its `usage` under the policy's model; else what the

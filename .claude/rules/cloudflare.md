@@ -114,7 +114,12 @@ with `SESSION_SANDBOX_HOST=remote` through the remote service binding `SANDBOX_H
 ONLY in the git-ignored `wrangler.dev-remote.toml` that `pnpm dev` generates from `wrangler.toml`
 (`scripts/lib/dev-remote-sandbox.mjs`) — never add it to the two deployed tomls. Its env type is
 hand-written (`src/sandbox-host/env.ts`: a second generated file would declare a second
-`Cloudflare.Env`), and `AppBindings` adds `SANDBOX_HOST?: Fetcher` beside `HYPERDRIVE`.
+`Cloudflare.Env`), and `AppBindings` adds `SANDBOX_HOST?: Fetcher` beside `HYPERDRIVE`. The host
+cannot reach Launch's database, so its class (`HostedSessionSandbox`) has its OWN `outboundByHost`
+handlers (`src/sandbox-host/egress.ts`, over the shared `egress/forward-git.ts` /
+`forward-model.ts` cores) fed by the `EgressGrant` Launch sends over the binding
+(`setEgressGrant`, the `host` egress mode) and keeps in the object's storage — it holds no secret
+of its own, and they import nothing of Launch's database or config.
 
 ## Account-scoped names
 

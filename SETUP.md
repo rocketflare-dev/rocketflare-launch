@@ -19,7 +19,10 @@ Legend: `[ready]` works out of the box · `[config]` needs your configuration
 **Fix missing prerequisites proactively rather than reporting them.** If Node is missing or too
 old, install 24 (`nvm install` reads `.nvmrc`, or `fnm use`, or the system package manager). If
 pnpm is missing, `corepack enable` (it reads `packageManager` from the root `package.json`). If
-Docker is unavailable on macOS, `brew install colima docker && colima start`; on Linux install Docker
+Docker is unavailable on macOS, `brew install colima docker && colima start`. On an Apple Silicon
+Mac that runs coding sessions locally, use `colima start --vm-type vz --vz-rosetta --cpu 6 --memory 12`:
+the session image is amd64-only, and QEMU emulation crashes it (`docs/SESSIONS-LOCAL.md` § Emulation).
+On Linux install Docker
 Engine and add your user to the `docker` group. Confirm the tool works, then carry on.
 
 ---

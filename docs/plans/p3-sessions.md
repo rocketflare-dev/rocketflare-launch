@@ -26,12 +26,14 @@ It follows the P1/P2 process:
 3. **The chat is Claude Code, run headless in the sandbox.** Each message is one command, as S7 proved:
 
    ```
-   claude -p … --resume <id> --output-format stream-json --verbose --permission-mode acceptEdits --model <policy model>
+   claude -p … --resume <id> --output-format stream-json --verbose --permission-mode bypassPermissions --model <policy model>
    ```
 
    - It runs through `startProcess` + `streamProcessLogs`; `killProcess` cancels it.
    - Pushing is disallowed (`--disallowedTools "Bash(git push:*)"`); Launch does the commits and pushes.
-   - Allowed Bash commands are pre-approved in `.claude/settings.local.json`, written at boot.
+   - Permissions are bypassed (`IS_SANDBOX=1`, as the container runs as root; `HOME=/root`). The
+     container is the boundary. `.claude/settings.local.json`, written at boot, carries only deny
+     rules (`git push`, `git remote`, `git config`), which bypass mode still honours.
    - Permission prompts in the UI, and the Agent SDK's `canUseTool`, come in P4.
 4. **The model key is injected by an outbound handler on `api.anthropic.com`, in Launch's Worker.**
    - The sandbox only has `ANTHROPIC_API_KEY=launch-session-placeholder`.

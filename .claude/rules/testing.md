@@ -265,7 +265,9 @@ a fake `WebSocket` factory left set) is on you.
   branch — `schema-only`, `session_owner`, `session_app` — recorded ready in `apps.session_db`),
   `insertSession(db, fixture, overrides)`, `sessionAppRef(fixture)`, and
   `createFakeSessionPorts({ sessionDb?, repoHost?, model?, egress? })` (`egress` absent = the
-  `proxied` mode; `tests/api/session-direct-egress.test.ts` hands in a `DirectEgress`; the sandbox
+  `proxied` mode; `tests/api/session-host-egress.test.ts` hands in a `HostEgress` over a recording
+  grant sink, and `tests/config/session-egress-forward.test.ts` covers the shared forwarding cores
+  and the host's own handlers over a stored grant; the sandbox
   host is driven in-process in `tests/config/remote-sandbox.test.ts` — `RemoteSandbox` over the
   host's real entrypoint over a `FakeSandboxNamespace`, behind a binding that refuses an
   `AbortSignal` as RPC does) (one `FakeSandbox` per name in

@@ -134,7 +134,7 @@ export interface ClaudeTurnResult {
 /** Longest final answer kept from a `result` line (a PR body fits comfortably). */
 export const CLAUDE_RESULT_TEXT_MAX = 20_000
 
-/** One model response's usage, as an `assistant` line reports it (the `direct` egress mode meters it). */
+/** One model response's usage, as an `assistant` line reports it (the `host` egress mode meters it). */
 export interface ClaudeMessageUsage {
   /** The response's id: its content blocks arrive as several lines, each repeating the usage. */
   id: string
@@ -151,11 +151,11 @@ export interface ClaudeModelUsage {
 
 export interface ClaudeLineMapping {
   events: SessionEventInput[]
-  /** An `assistant` line's usage — the running total the `direct` mode's budget watches. */
+  /** An `assistant` line's usage — the running total the `host` mode's budget watches. */
   messageUsage?: ClaudeMessageUsage
   /**
    * The `result` line's usage per model — Claude Code's background calls included when it reports
-   * `modelUsage` — which the `direct` mode records as the turn's `ai_usage` rows.
+   * `modelUsage` — which the `host` mode records as the turn's `ai_usage` rows.
    */
   turnUsage?: ClaudeModelUsage[]
   /** `system.init`'s (or `result`'s) `session_id` — store it for the next `--resume`. */

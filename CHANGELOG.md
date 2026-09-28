@@ -2,19 +2,32 @@
 
 ## Unreleased
 
-- A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) can clone: its git credential helper is
-  set in the system config, not `$HOME/.gitconfig` (which the SDK's shells did not share with the
-  clone), and the setup fails with what git sees instead of leaving the clone to ask for a username. It then proves the credential the way the clone
-  uses it (`git credential fill`, `git ls-remote`) and fails with the HTTP exchange, redacted.
+- A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) gets its credentials the way Launch's
+  own sandboxes do: Launch sends the sandbox host an egress grant (the repo, the session branch,
+  the GitHub token, the Anthropic key and model) and `HostedSessionSandbox`'s own outbound handlers
+  inject them under the proxies' rules — one repo, a push only to `session/<short>`, the model
+  allow-list. Nothing credential-related is in the container any more: no key in the turn's
+  environment (only the placeholder), no git credential file or helper. The `direct` egress mode is
+  gone. Turns are still metered per turn and killed at the budget. Redeploy the host
+  (`pnpm --filter @launch/web deploy:sandbox-host`).
+- A coding session's turn runs Claude Code with `--permission-mode bypassPermissions`,
+  `IS_SANDBOX=1` and `HOME=/root` (`acceptEdits` silently denied every shell command in `-p` mode);
+  `.claude/settings.local.json` keeps only its deny rules (`git push`, `git remote`, `git config`).
+- A session's checkout sets `GIT_TERMINAL_PROMPT=0`, runs under a lock
+  (`/workspace/.launch/repo.lock`) so overlapping attempts queue instead of racing, and a failed
+  checkout reports git's last 15 stderr lines. A git server the egress handler cannot reach (the
+  local git server not running under `SESSION_BACKEND=local`) is a 502 naming it, not "Empty reply
+  from server".
+- Local coding sessions on Apple Silicon should run Docker in colima with Rosetta rather than QEMU
+  (docs/SESSIONS-LOCAL.md).
 - Coding sessions can run on REAL Cloudflare containers from a laptop instead of local Docker under
   amd64 emulation: set `SESSION_SANDBOX_HOST=remote` (with `SESSION_BACKEND=cloud`) in
   `apps/web/.dev.vars` and `pnpm dev` binds Launch to a new small Worker, `launch-sandbox-dev`
   (`apps/web/wrangler.sandbox-host.toml`), through a remote service binding declared only in a
   generated, git-ignored `wrangler.dev-remote.toml`, and skips the local image build. Development
-  only (`loadConfig` refuses it elsewhere); deployed Launch is unchanged. In this mode the container
-  holds the Anthropic key (in the turn's environment) and a repo-scoped GitHub token (a git
-  credential), each turn meters itself from Claude Code's own usage and is stopped when it reaches
-  the budget, and any branch of the repo is pushable — protect `main`. The host must be deployed
+  only (`loadConfig` refuses it elsewhere); deployed Launch is unchanged. In this mode each turn
+  meters itself from Claude Code's own usage and is stopped when it reaches the budget. The host
+  must be deployed
   once by hand (`pnpm --filter @launch/web deploy:sandbox-host`, docs/DEPLOY.md § The sandbox host).
   Session transcripts now also scrub GitHub token shapes.
 - A coding session's turn whose log stream Launch loses (or that is cancelled or times out) no

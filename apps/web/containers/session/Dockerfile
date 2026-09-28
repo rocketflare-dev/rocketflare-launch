@@ -4,8 +4,10 @@
 # Launch (linux/amd64), `wrangler dev` builds it with the local Docker (docs/SESSIONS-LOCAL.md).
 # What a Rocketflare checkout needs and nothing else — NO Postgres (each session gets its own Neon
 # branch, or a TEMPLATE database locally, reached over HTTP(S) because a locked sandbox has no TCP
-# out) and NO credential of any kind (the model key and the GitHub token are injected by Launch's
-# outbound handlers, `services/sessions/egress/*`).
+# out) and NO credential of any kind, wherever the container runs: the model key and the GitHub
+# token are injected on the way out — by Launch's outbound handlers (`services/sessions/egress/*`)
+# in Launch's own sandboxes, and by the sandbox host's (`src/sandbox-host/egress.ts`, from the
+# grant Launch sends) for SESSION_SANDBOX_HOST=remote. The container only ever sees a placeholder.
 #
 # **The base MUST stay on the same stable line as the Worker's `@cloudflare/sandbox` (0.12.10).**
 # Bumping either, or anything in this file, replaces running containers on deploy: DRAIN sessions

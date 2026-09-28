@@ -202,15 +202,22 @@ export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise
       body: body ?? undefined,
       redirect: 'manual',
     })
-  let res = await send()
-  // A fresh token GitHub has not settled yet: the same request again, after a backoff.
-  if (token?.fresh) {
-    for (const delay of FRESH_TOKEN_RETRY_DELAYS_MS) {
-      if (res.status !== 401 && res.status !== 404) break
-      await res.body?.cancel()
-      await opts.sleep(delay)
-      res = await send()
+  let res: Response
+  try {
+    res = await send()
+    // A fresh token GitHub has not settled yet: the same request again, after a backoff.
+    if (token?.fresh) {
+      for (const delay of FRESH_TOKEN_RETRY_DELAYS_MS) {
+        if (res.status !== 401 && res.status !== 404) break
+        await res.body?.cancel()
+        await opts.sleep(delay)
+        res = await send()
+      }
     }
+  } catch {
+    // An upstream that cannot be reached (the local git server not running, a network failure):
+    // a thrown handler reaches git as "Empty reply from server", which names nothing.
+    return refuseGit(502, `Launch could not reach the git server at ${upstream.origin}`)
   }
   const out = new Headers(res.headers)
   out.delete('Set-Cookie')

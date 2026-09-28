@@ -270,7 +270,7 @@ it: the `SANDBOX_HOST` remote service binding exists only in the `wrangler.dev-r
 | Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`) — nothing else |
 | Container | the SAME `./containers/session/Dockerfile` and `standard-3` as Launch (a config test pins both), `max_instances = 3`; container application `launch-sandbox-dev-hostedsessionsandbox` |
 | Reachability | `workers_dev = false`, `preview_urls = false`, no routes: only a service binding in the account reaches it |
-| Secrets | none. Its containers get the Anthropic key and a GitHub token per turn from the laptop's Launch (the `direct` egress mode) |
+| Secrets | none. The laptop's Launch sends each sandbox an egress grant (the GitHub token, the Anthropic key) over the binding before the clone, each turn and each push (the `host` egress mode); `HostedSessionSandbox` keeps it in its Durable Object storage and its own outbound handlers inject it — the containers hold no credential |
 | Build check | `pnpm build:sandbox-host` (a dry run, part of `pnpm build`; it builds the image with the local Docker) |
 
 **Deploy** (by hand, from a machine with Docker and `wrangler login` on the Launch account):

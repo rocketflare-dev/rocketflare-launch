@@ -208,6 +208,17 @@ describe('forwardGit', () => {
     expect(up.seen).toHaveLength(0)
   })
 
+  it('an upstream that cannot be reached is a 502 naming it, never a thrown handler', async () => {
+    const { opts } = gitOpts()
+    const res = await forwardGit(advertise(), {
+      ...opts,
+      upstream: 'http://localhost:9420',
+      fetch: () => Promise.reject(new Error('Network connection lost.')),
+    })
+    expect(res.status).toBe(502)
+    expect(await res.text()).toContain('http://localhost:9420')
+  })
+
   it('isFreshToken: minted within the last minute of an hour-long token', () => {
     const now = Date.now()
     expect(isFreshToken(now + INSTALLATION_TOKEN_TTL_MS - 10_000, now)).toBe(true)
