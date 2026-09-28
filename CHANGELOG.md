@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A launch whose Resend key or notifications domain is not ready records "email" as SKIPPED with
+  the reason ("notifications.example.com is not a verified Resend domain yet…") and carries on,
+  instead of throwing: a precondition cannot be fixed by the Workflow's retries.
 - "Set up GitHub environments" asks for an installation token with `administration: write` (and
   `actions_variables: write`): GitHub lists creating an environment under Administration, not
   Environments, so the narrower token was refused ("Resource not accessible by integration") on a

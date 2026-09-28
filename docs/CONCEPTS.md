@@ -936,7 +936,8 @@ step that mints one puts it on the Worker itself.
   handler that retries every message and a no-op `scheduled`, since Cloudflare refuses a consumer on a
   script without one — 11001) → `github_env`
   (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
-  `worker_secrets` → `email` (non-blocking) → `deploy_staging.start|wait|check` → `health` (up to
+  `worker_secrets` → `email` (non-blocking; skipped with its reason while Setup has no Resend key or
+  no verified notifications domain) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
 - **Why SQL roles** (verified on a real Neon project, Postgres 17.11): a role Neon's API creates
   is `cloud_admin`'s and a `neon_superuser` member (CREATEROLE, BYPASSRLS) — far too much for the

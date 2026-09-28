@@ -377,6 +377,20 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect(view.status).toBe('succeeded')
   })
 
+  it('skips email, without calling Resend, while the notifications domain is not verified', async () => {
+    const launch = await h.request()
+    const { outcome } = await h.run(launch, {
+      vendors: { resend: { apiKey: 're_test_0123456789', domainId: null } },
+    })
+    expect(outcome.status).toBe('live')
+    const byStep = await rows(launch)
+    expect(byStep.email).toMatchObject({ status: 'skipped' })
+    expect(byStep.email?.error).toMatch(/is not a verified Resend domain yet/)
+    expect(cloud.callsTo('resend')).toHaveLength(0)
+    // Nothing to retry: the step never threw, so the Workflow never retried it.
+    expect(byStep.email?.attempt ?? 0).toBeLessThanOrEqual(1)
+  })
+
   it('a failed scaffold job ends the wait at once, and a retry starts the job again', async () => {
     const launch = await h.request()
     launch.ports.pollStatus = 'failed'

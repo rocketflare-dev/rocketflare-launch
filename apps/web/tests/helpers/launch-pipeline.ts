@@ -332,11 +332,14 @@ export class LaunchHarness {
     }
   }
 
-  async run(launch: Launch, opts: { onWait?: (w: RecordedWait) => unknown } = {}) {
+  async run(
+    launch: Launch,
+    opts: { onWait?: (w: RecordedWait) => unknown; vendors?: Partial<PipelineVendors> } = {}
+  ) {
     const wf = new AppLaunchWorkflow(createExecutionContext(), createTestEnv())
     wf.overrides = {
       ports: launch.ports,
-      vendors: fakeVendors(this.cloud),
+      vendors: { ...fakeVendors(this.cloud), ...opts.vendors },
       sleep: async () => {},
       health: { timeoutMs: 2000 },
     }

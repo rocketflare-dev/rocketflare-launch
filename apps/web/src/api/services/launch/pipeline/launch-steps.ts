@@ -831,7 +831,26 @@ export function workerSecretsStep(d: PipelineDeps, params: AppLaunchParams) {
 
 // ---- 11. email (non-blocking) --------------------------------------------------------------------
 
-export function emailStep(d: PipelineDeps, params: AppLaunchParams) {
+/**
+ * Why the fleet cannot mint an email key at all (no Resend credential, or no verified notifications
+ * domain recorded by its Setup check), or null. A precondition, not a failure: retrying it cannot
+ * help, so the step is recorded `skipped` with this reason and the launch carries on.
+ */
+function emailUnavailable(vendors: PipelineVendors): string | null {
+  if (!vendors.resend) return 'Email not configured: no Resend key in Setup'
+  if (!vendors.resend.domainId) {
+    const domain = vendors.settings.notificationsDomain ?? 'the notifications domain'
+    return `Email not configured: ${domain} is not a verified Resend domain yet — verify it and re-run the Resend check in Setup`
+  }
+  return null
+}
+
+export async function emailStep(d: PipelineDeps, params: AppLaunchParams) {
+  const unavailable = emailUnavailable(await d.vendors())
+  if (unavailable) {
+    await skipStep(d.db, launchKey(params, 'email'), unavailable)
+    return
+  }
   return runStep(d.db, launchKey(params, 'email'), async ctx => {
     const vendors = await d.vendors()
     const domain = requireAppsDomain(vendors.settings)
