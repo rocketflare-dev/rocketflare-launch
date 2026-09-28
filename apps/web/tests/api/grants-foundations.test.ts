@@ -18,12 +18,11 @@ import { encrypt } from '@/api/auth/oauth-encryption'
 import { dispatchScheduled } from '@/api/scheduled'
 import { open } from '@/api/services/approvals/engine'
 import { kindHandler } from '@/api/services/approvals/kinds'
-import { canSeeHolders } from '@/api/services/grants/access'
 import { scanAppConfig } from '@/api/services/grants/detect'
 import { grantedKeys } from '@/api/services/grants/holders'
 import { startPush } from '@/api/services/grants/push'
 import { requestGrant } from '@/api/services/grants/requests'
-import { getResource, loadResource } from '@/api/services/grants/resources'
+import { loadResource } from '@/api/services/grants/resources'
 import { revokeGrant } from '@/api/services/grants/revoke'
 import { openValues, sealValues } from '@/api/services/grants/sealed'
 import {
@@ -33,7 +32,7 @@ import {
   rotationCandidates,
 } from '@/api/services/grants/sweep'
 import { NotWiredError, requireGrantPushWorkflow } from '@/api/services/grants/types'
-import { activeVersion, setValues } from '@/api/services/grants/values'
+import { activeVersion } from '@/api/services/grants/values'
 import { deleteGroup, deleteGroupType } from '@/api/services/groups'
 import { declaredConfig } from '@/api/services/launch/rocketflare/declared-config'
 import { GrantPushWorkflow } from '@/api/workflows/grant-push'
@@ -344,12 +343,15 @@ describe('grants, pushes and scans', () => {
 })
 
 describe('the P5 mounts', () => {
-  it('/api/shared-resources answers an empty list to any member; 400 on a bad query; 401 without a session', async () => {
-    const { tenant, carol } = await seedWorld()
+  it('/api/shared-resources answers the list to any member; 400 on a bad query; 401 without a session', async () => {
+    const { tenant, carol, resource } = await seedWorld()
     const headers = sessionCookieHeader(await createTestSession(db, carol.id, tenant.id))
     const list = await request('/api/shared-resources', { headers })
     expect(list.status).toBe(200)
-    expect(await json(list)).toEqual({ items: [] })
+    // Slice 5b fills the list (tests/api/shared-resources.test.ts covers it).
+    expect((await json<{ items: { id: string }[] }>(list)).items.map(i => i.id)).toEqual([
+      resource.id,
+    ])
     expect((await request('/api/shared-resources?archived=maybe', { headers })).status).toBe(400)
     expect((await request('/api/shared-resources')).status).toBe(401)
   })
@@ -358,7 +360,6 @@ describe('the P5 mounts', () => {
     const { tenant, admin, app, resource } = await seedWorld()
     const headers = sessionCookieHeader(await createTestSession(db, admin.id, tenant.id))
     for (const [method, url] of [
-      ['GET', `/api/shared-resources/${resource.id}`],
       ['GET', `/api/shared-resources/${resource.id}/pushes`],
       ['GET', `/api/apps/${app.id}/config`],
       ['POST', `/api/apps/${app.id}/grants`],
@@ -492,9 +493,6 @@ describe('the stubs before their slices', () => {
     const viewer = {} as never
     const actor = actorOf({ id: crypto.randomUUID(), email: 'a@example.com' })
     const cases: [() => unknown, RegExp][] = [
-      [() => canSeeHolders(viewer, {} as never), /access\.canSeeHolders .*P5 slice 5b/],
-      [() => getResource(db, cfg, viewer, 'x'), /resources\.getResource .*5b/],
-      [() => setValues(deps, viewer, 'x', 'staging', { values: {} }, actor), /setValues .*5b/],
       [() => startPush(deps, {} as never), /push\.startPush .*5c/],
       [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
       [() => requestGrant(deps, viewer, 'x', {} as never, actor), /requestGrant .*5d/],
