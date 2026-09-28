@@ -114,7 +114,7 @@ export function fakePorts(): FakePorts {
         : migrations
       const last = pending.at(-1)
       const module = [
-        'export default { fetch() { return new Response("placeholder", { status: 503 }) } }',
+        'export default { fetch() { return new Response("placeholder", { status: 503 }) }, queue(batch) { batch.retryAll() }, scheduled() {} }',
         ...classes.map(c => `export class ${c} {}`),
       ].join('\n')
       return {

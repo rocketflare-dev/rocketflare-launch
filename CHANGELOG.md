@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The placeholder Worker a launch uploads exports a `queue` handler (retrying every message) and a
+  no-op `scheduled`: Cloudflare refused to attach the app's queue consumer to a script without one
+  ("11001: Queue handler is missing"), which failed "Create the Workers" on a real account.
 - The launch's `neon` step creates `migrator` and `app` in SQL as `neondb_owner` instead of through
   Neon's role API. On real Neon an API-created role is a `neon_superuser` member that
   `neondb_owner` cannot grant, so `GRANT migrator TO app` failed ("permission denied to grant role

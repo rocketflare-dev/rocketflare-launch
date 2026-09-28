@@ -121,7 +121,12 @@ export async function seedDeployableApp(
         compatibility_date: '2026-06-01',
         migrations: { new_tag: 'v1', steps: [{ new_classes: ['NotificationsHub'] }] },
       },
-      [{ name: 'worker.js', content: 'export default { fetch() { return new Response("") } }' }]
+      [
+        {
+          name: 'worker.js',
+          content: 'export default { fetch() { return new Response("") }, queue() {} }',
+        },
+      ]
     )
     await cf.putWorkerSecret(accountId, n.worker, 'DATABASE_URL', 'postgresql://app:secret@x/app')
     await cf.putWorkflow(accountId, n.workflow, {
@@ -292,7 +297,9 @@ export function uploadBody(toml: string, version = '1.0.0') {
     version,
     main: 'worker.js',
     toml,
-    modules: { 'worker.js': b64('export default { fetch() { return new Response("ok") } }') },
+    modules: {
+      'worker.js': b64('export default { fetch() { return new Response("ok") }, queue() {} }'),
+    },
     assets: { '/index.html': b64('<!doctype html><title>shop</title>') },
   }
 }

@@ -932,7 +932,9 @@ step that mints one puts it on the Worker itself.
   environment) → `oidc_client` → `write_config` (both tomls, one commit: the ids, `APP_URL`,
   `EMAIL_FROM`, `TENANCY_MODE=single`, `SIGNUP_MODE=open`, Launch as `OIDC_ISSUER`,
   `AUTH_OIDC_ONLY`, `workers_dev=false`) → `placeholders` (a stub Worker per environment applying
-  the toml's DO migrations, its workflows, queue consumers and `<host>/*` route) → `github_env`
+  the toml's DO migrations, its workflows, queue consumers and `<host>/*` route; it exports a `queue`
+  handler that retries every message and a no-op `scheduled`, since Cloudflare refuses a consumer on a
+  script without one — 11001) → `github_env`
   (environments, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
   `worker_secrets` → `email` (non-blocking) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).

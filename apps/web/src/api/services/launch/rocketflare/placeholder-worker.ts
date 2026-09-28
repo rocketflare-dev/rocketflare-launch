@@ -7,7 +7,9 @@
  *   class for every DO `class_name` the migrations create.
  * - **Workflows.** `putWorkflow` points a Workflow name at a class in a script, so the class must
  *   already be exported: a stub `WorkflowEntrypoint` for every `[[workflows]] class_name`.
- * - A script for the route, the queue consumer and the secrets to attach to.
+ * - A script for the route, the queue consumer and the secrets to attach to. Cloudflare refuses a
+ *   consumer on a script with no `queue` handler (11001), so it has one: it retries every message
+ *   (a message sent before the first deploy is not lost), and a no-op `scheduled`.
  *
  * Its `fetch` answers 503 "being set up" with `Retry-After`, so the host is honest until the first
  * deploy replaces the code (the version keeps the Worker's secrets: `keep_bindings`).
@@ -71,7 +73,7 @@ function checkIdentifier(name: string): string {
   return name
 }
 
-/** The module's source: stub classes plus a 503 `fetch`. */
+/** The module's source: stub classes, a 503 `fetch`, a retrying `queue` and a no-op `scheduled`. */
 function placeholderSource(doClasses: string[], workflowClasses: string[]): string {
   const lines = [
     '// Placeholder Worker, uploaded by Launch until the first deploy replaces it.',
@@ -101,6 +103,13 @@ function placeholderSource(doClasses: string[], workflowClasses: string[]): stri
     "      status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '60' },",
     '    })',
     '  },',
+    // Cloudflare refuses a queue consumer on a script with no `queue` handler (11001). A message
+    // sent before the first deploy is retried later, not acknowledged and lost.
+    '  async queue(batch) {',
+    '    batch.retryAll({ delaySeconds: 300 })',
+    '  },',
+    // A cron attached before the first deploy has nothing to run yet.
+    '  async scheduled() {},',
     '}',
     ''
   )

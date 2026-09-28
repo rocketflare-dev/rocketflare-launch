@@ -418,6 +418,19 @@ export class FakeCloudflare implements VendorHandler {
       if (!consumerId && m === 'GET') return ok([...queue.consumers.values()])
       if (!consumerId && m === 'POST') {
         const script = String(body.script_name ?? '')
+        // Cloudflare's 11001: a Worker consumer needs a script that exports a `queue` handler.
+        const target = this.scripts.get(script)
+        if (
+          (body.type ?? 'worker') === 'worker' &&
+          target &&
+          !Object.values(target.modules).some(src => /\bqueue\s*\(/.test(src))
+        ) {
+          return cfError(
+            400,
+            11001,
+            'Queue handler is missing. Please see our docs for more information about creating handlers'
+          )
+        }
         if ([...queue.consumers.values()].some(c => c.script_name === script)) {
           return cfError(409, 11010, 'This queue already has a consumer for that script')
         }

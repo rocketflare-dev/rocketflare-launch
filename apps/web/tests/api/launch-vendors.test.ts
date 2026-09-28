@@ -138,7 +138,12 @@ describe('Cloudflare client', () => {
         compatibility_date: '2026-06-01',
         migrations: { new_tag: 'v1', steps: [{ new_classes: ['NotificationsHub'] }] },
       },
-      [{ name: 'index.js', content: 'export class NotificationsHub {}; export default {}' }]
+      [
+        {
+          name: 'index.js',
+          content: 'export class NotificationsHub {}; export default { queue() {} }',
+        },
+      ]
     )
     const script = cloud.cloudflare.scripts.get('shop-staging')
     expect(script?.migrationTag).toBe('v1')

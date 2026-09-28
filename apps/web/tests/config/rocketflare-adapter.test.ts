@@ -289,6 +289,10 @@ describe('placeholderScript', () => {
     expect(source).toContain('export class NotificationsHub extends DurableObject')
     expect(source).toContain('export class AgentRunWorkflow extends WorkflowEntrypoint')
     expect(source).toContain('status: 503')
+    // Cloudflare refuses a queue consumer on a script with no queue handler (11001).
+    expect(source).toContain('async queue(batch)')
+    expect(source).toContain('batch.retryAll(')
+    expect(source).toContain('async scheduled()')
   })
 
   it('sends nothing for a tag the script already has, and only what is newer otherwise', () => {
