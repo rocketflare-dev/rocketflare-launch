@@ -197,6 +197,13 @@
       "when": 1790591194108,
       "tag": "0027_launch-p5-deploy-activated",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790604607809,
+      "tag": "0028_launch-deploy-progress",
+      "breakpoints": true
     }
   ]
 }

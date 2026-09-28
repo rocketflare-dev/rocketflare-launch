@@ -1221,8 +1221,29 @@ reset and returned once as `migratorUrl`, and `activate` deploys it at 100%, app
 workflows and resets the password again; `finish` revokes if still live — including after an
 upload that was never activated.
 
+**Deploy progress** (`deploy/progress.ts`): the app overview's "Deploying" panel
+(`GET /api/apps/:id/deploys/latest`, each environment's newest ticket) and the catalogue's
+`latestDeploy` (the newest in-progress deploy, else the newest) show a deploy as it runs —
+dispatched → approved → uploaded → migrating → activating → live, or failed with a sentence — with
+its GitHub run. The phase is DERIVED from the ticket, never stored: an unclaimed approved
+pre-approval is `dispatched` (failed once it lapses), a run's approved ticket `approved`,
+`cf_version_id` `uploaded`, `credentials_issued_at` `migrating`, `activation_started_at` (migration
+0028; `activate` stamps it before its vendor calls, informational only) `activating`, and
+`activated_at` live; a pending production ticket is `awaiting_approval`. Like the launch's wait
+(`pipeline/wait-poll.ts`), the read polls: for each in-progress ticket a run has claimed
+(`approved`/`uploaded`, at most five per read) a compare-and-set on `run_polled_at` (0028) lets
+one request per 20 s ask GitHub for the run (`actions: read`, token revoked after); a run that
+completed, or whose latest attempt is newer than the ticket's, ended without the deploy, so the
+ticket goes `failed` (with `finished_at`) once, the migrator is revoked if still live (best effort),
+`deploy.failed` is audited by `system` with `polledOnRead`, and the release run fails. Nothing in
+the poll can throw into the read. The overview and the catalogue poll every 5 s while a deploy is
+in progress and not waiting on a person; when it settles the app's queries refresh once.
+
 **Known gaps:** a GitHub-only author (a person who dispatched or published by hand) is not a
-Launch user, so the approver ≠ author rule cannot exclude them; the Versions API does
+Launch user, so the approver ≠ author rule cannot exclude them; deploy progress sees a run only
+once it has claimed a ticket — a dispatched production run that dies in its gate before `start`
+shows `dispatched` until its pre-approval lapses (15 minutes), and an in-progress ticket nobody
+reads is never polled (no cron sweeps them); the Versions API does
 not do what `wrangler deploy` does — DO migrations (a new tag is refused), registering new
 workflows, queue consumers and crons are Launch's job, so only the ones Launch knows are applied.
 

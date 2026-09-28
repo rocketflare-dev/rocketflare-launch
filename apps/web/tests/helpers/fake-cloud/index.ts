@@ -82,7 +82,8 @@
  *   `repositories`, `permissions`, `revoked`), `issueToken(scope)`, `commits`, `trees`,
  *   `readFile(owner, repo, path, ref?)`, `filesAt(owner, repo, ref?)`,
  *   `pushCommit(owner, repo, files, message?)` (what a scaffold job's push leaves — no token),
- *   `runs` (every dispatch as a run), and `onDispatch = run => …` (awaited inside the dispatch
+ *   `runs` (every dispatch as a run; `GET …/actions/runs/{id}` reads one back — a test may push
+ *   its own and flip `status`/`conclusion`), and `onDispatch = run => …` (awaited inside the dispatch
  *   call — the test's stand-in for the job starting). P3: `pulls` (every PR opened: `{number, head,
  *   base, title, body, state, headSha}`), and the head commit's CI through
  *   `setCheckRuns(owner, repo, ref, [{ name, status, conclusion? }])` and

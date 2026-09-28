@@ -869,6 +869,24 @@ export class FakeGitHub implements VendorHandler {
         }))
       return json({ total_count: runs.length, workflow_runs: runs })
     }
+    // One run by id (the deploy progress read's poll): 404 for a run this repo never had.
+    match = rest.match(/^\/actions\/runs\/(\d+)$/)
+    if (match && m === 'GET') {
+      const id = Number(match[1])
+      const r = this.runs.find(x => x.owner === repo.owner && x.repo === repo.name && x.id === id)
+      if (!r) return ghError(404, 'Not Found')
+      return json({
+        id: r.id,
+        run_attempt: r.run_attempt,
+        status: r.status,
+        conclusion: r.conclusion,
+        head_sha: r.head_sha,
+        head_branch: r.ref.replace(/^refs\/(heads|tags)\//, ''),
+        event: 'workflow_dispatch',
+        created_at: r.created_at,
+        html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}`,
+      })
+    }
 
     // ---- P3: pull requests
     const readable = (permission: string) =>

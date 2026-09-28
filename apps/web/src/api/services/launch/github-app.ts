@@ -23,7 +23,8 @@
  *   content, `sha: null` deletes), `POST …/git/commits`, `PATCH …/git/refs/heads/{b}`.
  *   `commitFiles` is the four in a row.
  * - Actions: `POST …/actions/workflows/{file}/dispatches {ref, inputs}` (204; a workflow file
- *   GitHub has not registered yet is a 404, which the pipeline retries) and `GET …/runs`.
+ *   GitHub has not registered yet is a 404, which the pipeline retries), `GET …/runs`, and
+ *   `GET …/actions/runs/{id}` — one run, which the deploy progress read polls.
  * - Settings: `PUT …/environments/{name}`, repository variables (`PATCH`, falling back to `POST`
  *   when the variable does not exist yet), and `DELETE /installation/token` — a job revoking the
  *   token it was handed.
@@ -590,6 +591,24 @@ export async function listWorkflowRuns(
     opts
   )
   return body.workflow_runs ?? []
+}
+
+/** One run by id (its LATEST attempt's status), or null when the repo has no such run. */
+export async function getWorkflowRun(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubWorkflowRun | null> {
+  const path = `${repoPath(owner, repo)}/actions/runs/${encodeURIComponent(runId)}`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubWorkflowRun
 }
 
 // ---- P2: settings -----------------------------------------------------------------------------

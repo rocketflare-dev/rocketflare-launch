@@ -4,8 +4,10 @@
  * server would refuse, `manage App`).
  *
  * Health changes on the server's five-minute cron, not in response to anything the reader does,
- * so nothing here polls (ui.md: never poll a settled row) — a window refocus refetches, and
- * "Check now" writes the fresh result into the cache. Every mutation invalidates the `apps` root.
+ * so health alone never polls (ui.md: never poll a settled row) — a window refocus refetches, and
+ * "Check now" writes the fresh result into the cache. The catalogue polls only while a row's
+ * `latestDeploy` is in progress (`deployProgressPollInterval`, shared with the overview's
+ * stepper). Every mutation invalidates the `apps` root.
  *
  * The OIDC secret exists only in the create / rotate RESPONSE: the mutation hands it to the page,
  * which shows it once, and nothing puts it in the query cache.
@@ -25,6 +27,7 @@ import {
   type UpdateAppRequest,
 } from '@launch/shared/launch-apps'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { deployProgressPollInterval } from '@/ui/hooks/useDeploys'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 
@@ -36,6 +39,7 @@ export function useApps() {
     queryKey: queryKeys.apps.list(),
     queryFn: () => api.get('/api/apps', { schema: appListResponseSchema }),
     staleTime: HEALTH_STALE_MS,
+    refetchInterval: q => deployProgressPollInterval(q.state.data?.items.map(a => a.latestDeploy)),
   })
 }
 

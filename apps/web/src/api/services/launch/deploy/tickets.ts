@@ -433,6 +433,27 @@ export async function markCredentialsIssued(
   return row ?? null
 }
 
+/**
+ * Record that `activate` began on an `uploaded` ticket (the progress read's "activating"). Only
+ * informational — never "deployed" — so a retried `activate` simply stamps it again.
+ */
+export async function markActivationStarted(
+  db: Database,
+  ticket: Pick<DeployTicketRow, 'id' | 'tenantId'>,
+  now = new Date()
+): Promise<void> {
+  await db
+    .update(deployTickets)
+    .set({ activationStartedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(deployTickets.id, ticket.id),
+        eq(deployTickets.tenantId, ticket.tenantId),
+        eq(deployTickets.status, 'uploaded')
+      )
+    )
+}
+
 /** Statuses `finish` moves to `finished`; the terminal ones keep their status. */
 const OPEN_STATUSES = ['pending', 'approved', 'uploaded', 'active'] as const
 

@@ -234,13 +234,101 @@ export const appSummarySchema = z.object({
 })
 export type AppSummary = z.infer<typeof appSummarySchema>
 
+// ---- Deploy progress -----------------------------------------------------------------------------
+
+/**
+ * The milestones of one deploy, in order, as the app overview's stepper shows them — each DERIVED
+ * from its deploy ticket's columns (`deploy/progress.ts`), never stored:
+ *
+ * - `dispatched` — a run exists or was asked for: an approved pre-approval no run has claimed yet
+ *   (Promote / "Deploy to production"), or a run's own ticket;
+ * - `approved` — a run holds an approved ticket (staging by policy, production by an approval):
+ *   the job builds, checks and uploads;
+ * - `uploaded` — the build passed the binding check and is on Cloudflare as an undeployed version;
+ * - `migrating` — the job was handed the migrator credential and runs its migrations;
+ * - `activating` — `activate` began putting the version live;
+ * - `done` — `activated_at`: the version is live (THE answer to "did it deploy").
+ */
+export const DEPLOY_STEPS = [
+  'dispatched',
+  'approved',
+  'uploaded',
+  'migrating',
+  'activating',
+  'done',
+] as const
+export const deployStepSchema = z.enum(DEPLOY_STEPS)
+export type DeployStep = z.infer<typeof deployStepSchema>
+
+/**
+ * Where a deploy is now: one of the steps, `awaiting_approval` (a production run waiting on a
+ * person — it has `dispatched` and waits before `approved`), or `failed` (refused, rejected,
+ * expired, failed, closed without an activation, or its run ended early).
+ */
+export const DEPLOY_PHASES = [
+  'awaiting_approval',
+  'dispatched',
+  'approved',
+  'uploaded',
+  'migrating',
+  'activating',
+  'done',
+  'failed',
+] as const
+export const deployPhaseSchema = z.enum(DEPLOY_PHASES)
+export type DeployPhase = z.infer<typeof deployPhaseSchema>
+
+/** One deploy as the overview and the catalogue show it. Never a credential. */
+export const deployProgressSchema = z.object({
+  ticketId: z.string().uuid(),
+  environment: appEnvironmentNameSchema,
+  phase: deployPhaseSchema,
+  /** The last milestone it reached — for a failed deploy, where it stopped (null: none). */
+  reached: deployStepSchema.nullable(),
+  /** Not `done` and not `failed`: the server still owes an answer, so a reader polls. */
+  inProgress: z.boolean(),
+  version: z.string().nullable(),
+  sha: z.string().nullable(),
+  ref: z.string().nullable(),
+  actor: z.string().nullable(),
+  /** The GitHub Actions run, once a run claimed the ticket. */
+  runUrl: z.string().url().nullable(),
+  /** Why it failed, in a sentence (the ticket's error, the refused bindings, the expiry). */
+  error: z.string().nullable(),
+  /** The `deploy.production` approval behind it, when one gates or gated it. */
+  approvalId: z.string().uuid().nullable(),
+  startedAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  activatedAt: z.coerce.date().nullable(),
+  finishedAt: z.coerce.date().nullable(),
+})
+export type DeployProgress = z.infer<typeof deployProgressSchema>
+
+/**
+ * `GET /api/apps/:id/deploys/latest` — each environment's newest deploy (staging first), after the
+ * read has polled the GitHub run of any in progress. An environment with none is absent.
+ */
+export const appDeployProgressResponseSchema = z.object({
+  items: z.array(deployProgressSchema),
+})
+export type AppDeployProgressResponse = z.infer<typeof appDeployProgressResponseSchema>
+
+/**
+ * A catalogue row: the summary plus the app's latest deploy — an in-progress one when there is
+ * one (the newest), else the newest of all; null for an app that never deployed.
+ */
+export const appCatalogueItemSchema = appSummarySchema.extend({
+  latestDeploy: deployProgressSchema.nullable().default(null),
+})
+export type AppCatalogueItem = z.infer<typeof appCatalogueItemSchema>
+
 /**
  * `GET /api/apps` — the whole catalogue, by name. It is one company's apps, so no paging.
  * `appsDomain` is `launch_settings.apps_domain` (null until Setup sets it): what a created app's
  * hosts end in, so the create form can preview `<slug>-staging.<appsDomain>` for any member.
  */
 export const appListResponseSchema = z.object({
-  items: z.array(appSummarySchema),
+  items: z.array(appCatalogueItemSchema),
   appsDomain: z.string().nullable(),
 })
 export type AppListResponse = z.infer<typeof appListResponseSchema>

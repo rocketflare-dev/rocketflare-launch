@@ -84,6 +84,7 @@ import {
   getTenantTicket,
   isDeployed,
   linkTicket,
+  markActivationStarted,
   markCredentialsIssued,
   markCredentialsRevoked,
   openRunTicket,
@@ -708,6 +709,9 @@ export async function activateDeploy(
   const workerName = environment.workerName ?? ''
   const vendors = await ctx.vendors()
   const stored = storedBindings(ticket)
+  // The overview's "activating" (deploy/progress.ts): stamped before the first vendor call, so a
+  // hung or failed activation shows where it stopped.
+  await markActivationStarted(ctx.db, ticket, ctx.now?.() ?? new Date())
 
   try {
     // A version upload registers no Workflow and sets no cron (plan §0.2) — Launch does both,
