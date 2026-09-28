@@ -170,7 +170,7 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
       })
       .onExec('git rev-parse HEAD', () => ({ stdout: `${headOf()}\n` }))
       .onExec(/^bash -c 'pnpm lint/, { exitCode: 0, stdout: 'All checks passed' })
-      .onProcess(/^pnpm dev$/, { lines: ['ready'], ports: [5173, 8787], hang: true })
+      .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
       .onPort(
         5173,
         () =>

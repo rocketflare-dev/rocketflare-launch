@@ -177,6 +177,10 @@ export class NeonSessionDb implements SessionDbPort {
       preparedCommit: kept?.preparedCommit ?? null,
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',
+      // A prepare claim in flight stays with its holder (`claimDevPrepare`).
+      ...(kept?.status === 'preparing' && kept.preparingSessionId
+        ? { preparingSessionId: kept.preparingSessionId, preparingSince: kept.preparingSince }
+        : {}),
     }
   }
 

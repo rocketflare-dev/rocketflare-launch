@@ -247,7 +247,11 @@ a fake `WebSocket` factory left set) is on you.
   (`streamLogs` yields each line as a `stdout` chunk then `exit`; `hang` runs until `kill` → 137),
   `onPort(port, handler)` / `openPort`, `interruptNext()` (a ROLLOUT: the next `exec` throws
   `SandboxInterruptedError`, or the next stream after its first chunk — and files, ports and
-  processes are wiped), `failNext(method, err)`; inspect `execs`, `processes`, `killed`, `files`,
+  processes are wiped), `failNext(method, err)`, `hangNext(method)` (the next call never answers —
+  what the steps' deadlines are for), `recreate()` (the container came back EMPTY, no error — the
+  boot marker notices), and `waitForPort(port, { pidFile })` rejecting `SandboxProcessExitedError`
+  when no hanging process is alive; the Workflow takes `overrides.limits` so a deadline is
+  milliseconds (`tests/api/session-stall.test.ts`); inspect `execs`, `processes`, `killed`, `files`,
   `ports`, `fetches`, `allowedHosts`, `startCount`, `destroyed` / `destroyCount`, `interruptions`.
   `tests/helpers/fake-anthropic.ts`: `createFakeAnthropic(message)` → `{ upstream, requests,
   respond }` (every request's `apiKey` / `authorization` / `body` recorded — the "placeholder never

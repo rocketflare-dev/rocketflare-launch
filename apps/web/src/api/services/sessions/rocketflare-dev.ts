@@ -25,8 +25,13 @@
  *    environment), the ports, `DATABASE_DRIVER=neon` and an empty `NEON_LOCAL_PROXY` (never a
  *    proxy: the branch's endpoint is reached directly, on a laptop too).
  *
- * `startDevServer(sandbox, dev)` — the `dev` step: `pnpm dev` in the background, then
- * `:5173` answering and `:8787/api/health` 2xx.
+ * `startDevServer(sandbox, dev)` — the `dev` step: `pnpm dev` in the background (its pid and output
+ * in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
+ * for in short chunks, failing at once if the dev server exits.
+ *
+ * A failed command's error carries the last `ERROR_TAIL_LINES` of its stdout and stderr, the
+ * database URI scrubbed (`tailOf`), and the install and bootstrap run under one `flock`
+ * (`serialised`), so a re-run step attempt never races an earlier one's `pnpm install`.
  *
  * **Never port 3000**: it is the Sandbox SDK's own control server inside every sandbox (S7
  * finding 3); `tests/config/session-bootstrap.test.ts` pins that nothing here names it.
@@ -37,7 +42,7 @@
  * result or an event.
  */
 import { sessionDbEgressHosts } from './db/neon-session-db'
-import { type SandboxPort, sessionAllowedHosts } from './ports'
+import { type SandboxPort, SandboxProcessExitedError, sessionAllowedHosts } from './ports'
 
 /** Bump with `LABEL dev.rocketflare.launch.session-image` in `containers/session/Dockerfile`. */
 export const SESSION_IMAGE_VERSION = 'session-1'
@@ -152,6 +157,27 @@ export const BOOTSTRAP_COMMAND = `node --import ${NOT_ROOT_PRELOAD} scripts/boot
 
 export const DEV_COMMAND = 'pnpm dev'
 
+/** The dev server's pid (`startDevServer`) — what the port wait checks is still alive. */
+export const DEV_PID_FILE = `${SESSION_LAUNCH_DIR}/dev.pid`
+/** The dev server's output, for the error when it dies before its ports answer. */
+export const DEV_LOG_FILE = `${SESSION_LAUNCH_DIR}/dev.log`
+/**
+ * `pnpm dev` as the dev step starts it: its pid recorded (the shell `exec`s into pnpm, so `$$`
+ * IS pnpm) and its output kept in a file.
+ */
+export const DEV_START_COMMAND = `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${DEV_PID_FILE} && exec ${DEV_COMMAND} > ${DEV_LOG_FILE} 2>&1`
+
+/**
+ * The install and the bootstrap run one at a time per container (`flock`): a step attempt the
+ * platform re-runs while an earlier one is still going (a `wrangler dev` reload resumes a killed
+ * attempt later — docs/SESSIONS-LOCAL.md) must not run a second `pnpm install` into the same
+ * `node_modules` at once, which fails in seconds with nothing useful said.
+ */
+export const BOOTSTRAP_LOCK = `${SESSION_LAUNCH_DIR}/bootstrap.lock`
+export function serialised(command: string, waitMs: number): string {
+  return `mkdir -p ${SESSION_LAUNCH_DIR} && flock -w ${Math.ceil(waitMs / 1000)} ${BOOTSTRAP_LOCK} ${command}`
+}
+
 /**
  * Upserts `KEY=value` lines into a dotenv file from `LAUNCH_DEV_VARS` (JSON) — Node, not `sed`,
  * because a value may carry `&` or `/`, which a sed replacement would mangle.
@@ -224,13 +250,25 @@ export class SessionBootstrapError extends Error {
   }
 }
 
+/** How many lines of a failed command's output travel in its error (the page and the log). */
+export const ERROR_TAIL_LINES = 40
+
 /**
  * What a failed command said, for the person: its own error lines first (the kit's bootstrap
  * prints `bootstrap: …` for a usage error and `✖ n/10 …` for a failed step, before any usage text
- * or child output), then the tail.
+ * or child output), then the last {@link ERROR_TAIL_LINES} lines — stdout AND stderr, because the
+ * kit's bootstrap prints a failed child's output (pnpm's own error) under its `✖` line. `secrets`
+ * (the database URI) are replaced wherever they appear, and so is anything shaped like a
+ * connection string with a password.
  */
-function tailOf(text: string, lines = 12): string {
-  const all = text.split('\n').filter(line => line.trim() !== '')
+export function tailOf(text: string, secrets: readonly string[] = [], lines = ERROR_TAIL_LINES) {
+  let clean = text
+  for (const secret of secrets) if (secret) clean = clean.split(secret).join('<database url>')
+  clean = clean
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"@/]*:[^\s'"@/]*@[^\s'"]*/gi, '<connection string>')
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes from the kit's output
+    .replace(/\u001b\[[0-9;]*m/g, '')
+  const all = clean.split('\n').filter(line => line.trim() !== '')
   const headline = all.filter(line => /^(bootstrap:|\S*✖|error\b|Error\b|ERR_)/.test(line.trim()))
   const tail = all.slice(-lines).filter(line => !headline.includes(line))
   return [...headline.slice(0, 4), ...tail].join('\n')
@@ -247,7 +285,7 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(ctx.dbUri)))
 
   const t0 = Date.now()
-  const install = await sandbox.exec(INSTALL_COMMAND, {
+  const install = await sandbox.exec(serialised(INSTALL_COMMAND, BOOTSTRAP_TIMEOUTS.installMs), {
     cwd: SESSION_WORKSPACE,
     env,
     timeoutMs: BOOTSTRAP_TIMEOUTS.installMs,
@@ -255,22 +293,22 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   if (install.exitCode !== 0) {
     throw new SessionBootstrapError(
       'install',
-      `pnpm install failed (exit ${install.exitCode}): ${tailOf(install.stderr || install.stdout)}`
+      `pnpm install failed (exit ${install.exitCode}):\n${tailOf(`${install.stdout}\n${install.stderr}`, [ctx.dbUri])}`
     )
   }
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
-  const boot = await sandbox.exec(BOOTSTRAP_COMMAND, {
+  const boot = await sandbox.exec(serialised(BOOTSTRAP_COMMAND, BOOTSTRAP_TIMEOUTS.bootstrapMs), {
     cwd: SESSION_WORKSPACE,
     env: { ...env, LAUNCH_DB_URL: ctx.dbUri },
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
   })
   if (boot.exitCode !== 0) {
-    // The bootstrap prints its own `✖ n/10` line and the failing child's tail: that is the message.
+    // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
     throw new SessionBootstrapError(
       'bootstrap',
-      `The app's bootstrap failed (exit ${boot.exitCode}): ${tailOf(`${boot.stdout}\n${boot.stderr}`)}`
+      `The app's bootstrap failed (exit ${boot.exitCode}):\n${tailOf(`${boot.stdout}\n${boot.stderr}`, [ctx.dbUri])}`
     )
   }
   const t2 = Date.now()
@@ -295,26 +333,79 @@ export async function writeDevVars(
   }
 }
 
-/** `pnpm dev` in the background, then both ports answering. Returns the process id. */
+/** One port wait inside {@link startDevServer}: short, so an end request is seen between them. */
+export const DEV_WAIT_CHUNK_MS = 20_000
+
+export interface StartDevServerOptions {
+  /** Called between wait chunks; throw from it to stop waiting (the person ended the session). */
+  checkpoint?: () => Promise<void>
+  /** Test hook: the wait chunk length. */
+  chunkMs?: number
+}
+
+/**
+ * `pnpm dev` in the background, then both ports answering. Returns the process id. The waits are
+ * chunked ({@link DEV_WAIT_CHUNK_MS}) with `opts.checkpoint` between them, and each chunk fails at
+ * once when the dev server's process is gone (`DEV_PID_FILE`) — with the tail of its output
+ * (`DEV_LOG_FILE`) as the reason, rather than a curl loop against nothing for minutes.
+ */
 export async function startDevServer(
   sandbox: SandboxPort,
-  dev: SessionDevEnv
+  dev: SessionDevEnv,
+  opts: StartDevServerOptions = {}
 ): Promise<{ processId: string }> {
-  const proc = await sandbox.startProcess(DEV_COMMAND, {
+  const proc = await sandbox.startProcess(DEV_START_COMMAND, {
     cwd: SESSION_WORKSPACE,
     env: sessionProcessEnv(dev),
   })
+  const chunkMs = opts.chunkMs ?? DEV_WAIT_CHUNK_MS
+  const waitFor = async (port: number, path: string | undefined, totalMs: number) => {
+    const deadline = Date.now() + totalMs
+    for (;;) {
+      await opts.checkpoint?.()
+      const left = deadline - Date.now()
+      try {
+        await sandbox.waitForPort(port, {
+          ...(path ? { path } : {}),
+          timeoutMs: Math.max(1000, Math.min(chunkMs, left)),
+          pidFile: DEV_PID_FILE,
+        })
+        return
+      } catch (err) {
+        // Only "not yet" is retried; a dead process or a broken sandbox fails the step now.
+        if (!isChunkTimeout(err)) throw err
+        if (Date.now() >= deadline) {
+          throw new Error(`port ${port}${path ?? ''} did not answer within ${totalMs / 1000} s`)
+        }
+      }
+    }
+  }
   try {
-    await sandbox.waitForPort(SESSION_UI_PORT, { timeoutMs: BOOTSTRAP_TIMEOUTS.uiMs })
-    await sandbox.waitForPort(SESSION_API_PORT, {
-      path: '/api/health',
-      timeoutMs: BOOTSTRAP_TIMEOUTS.apiMs,
-    })
+    await waitFor(SESSION_UI_PORT, undefined, BOOTSTRAP_TIMEOUTS.uiMs)
+    await waitFor(SESSION_API_PORT, '/api/health', BOOTSTRAP_TIMEOUTS.apiMs)
   } catch (err) {
+    if (!(err instanceof SandboxProcessExitedError) && !isPortTimeout(err)) throw err
+    const log = await sandbox.readFile(DEV_LOG_FILE).catch(() => null)
+    const reason =
+      err instanceof SandboxProcessExitedError
+        ? 'the dev server exited before its ports answered'
+        : err instanceof Error
+          ? err.message
+          : String(err)
     throw new SessionBootstrapError(
       'dev',
-      `The app's dev server did not come up: ${err instanceof Error ? err.message : String(err)}`
+      `The app's dev server did not come up: ${reason}${log ? `\n${tailOf(log)}` : ''}`
     )
   }
   return { processId: proc.id }
 }
+
+const isPortTimeout = (err: unknown) =>
+  err instanceof Error && /^port \d+.* did not answer within/.test(err.message)
+
+/** One wait chunk ran out (the adapter's `Port N did not answer within`, the fake's `never opened`). */
+const isChunkTimeout = (err: unknown) =>
+  !(err instanceof SandboxProcessExitedError) &&
+  err instanceof Error &&
+  err.name !== 'SessionStepTimeoutError' &&
+  /did not answer within|never opened/.test(err.message)

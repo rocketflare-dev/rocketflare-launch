@@ -355,6 +355,12 @@ export const appSessionDbSchema = z.object({
   preparedCommit: z.string().nullable(),
   preparedAt: z.coerce.date().nullable(),
   status: z.enum(APP_SESSION_DB_STATUSES),
+  /**
+   * While `preparing`: the session holding the claim and since when. A claim whose session is no
+   * longer active, or older than 30 minutes, may be taken over (`claimDevPrepare`).
+   */
+  preparingSessionId: z.string().optional(),
+  preparingSince: z.string().optional(),
 })
 export type AppSessionDb = z.infer<typeof appSessionDbSchema>
 

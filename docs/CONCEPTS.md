@@ -1273,12 +1273,40 @@ reload) is restarted as `<id>-rN` from the row.
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
 - **Expiry** (`sessions.expire`, `*/5`): the backstop for a suspended session whose instance is
   gone — it asks for `end`, or cleans up inline without `SESSION_WORKFLOW`.
+- **Never hang silently.** Every sandbox call a step makes is bounded (`deadline.ts`:
+  `boundedSandbox` — 90 s for a control call, a command's own timeout plus a minute, 20 min at
+  most) and so is every Neon call (5 min); a call past its deadline fails the step with "<step>: the
+  sandbox (<call>) did not answer within N s". A failed command's error carries its last 40 lines
+  of output with the database URI scrubbed, shown in the checklist and `sessions.error`, and a
+  failed session's page offers "Start a new session". `sandbox.start` writes a boot id into the
+  container and every later boot step checks it: a container recreated EMPTY under the session
+  (Docker's OOM killer on a laptop) fails the step as "The session container stopped while … and
+  came back empty" rather than working on nothing. The dev step's port wait checks the dev
+  server's pid and fails at once, with its log's tail, when it exits. A boot step polls the row every
+  10 s: **End** mid-step stops it and the session ends (not fails) — the button reads "Ending…" —
+  and it writes a heartbeat (`last_activity_at`) every 30 s.
+- **Reconcile** (`reconcile.ts`, on `GET /api/sessions/:id`, on `POST /:id/end` with a 75 s window,
+  and on the `*/5` cron): a `requested`/`booting`/`ending` session with no heartbeat for 3 minutes
+  (15 for `ending`) is asked about its instance, once per window (a compare-and-set on
+  `last_activity_at`). Lost, errored or terminated — or "running" with a boot step that quiet,
+  which is how the local engine reports a step a `wrangler dev` reload killed — the instance is
+  terminated and the session settled: `ending` when the person asked to end it, else `failed`
+  naming the step that was running; then a FRESH instance (`restartSessionInstance`) does the
+  cleanup, because `claim` sends an `ending` session, and a settled one with no `ended_at`, straight
+  to `cleanup`. The same path cleans up a session settled `failed` by hand whose branch was never
+  deleted. **The app's `dev` prepare claim** (`apps.session_db.status = preparing`) records its
+  session and time; a claim whose session is no longer active, or older than 30 minutes, is taken
+  over, and `fail` / `cleanup` give back a claim their session still holds (`failed`).
 
-**Known gaps:** proven with fakes (`tests/api/session-e2e.test.ts` and the per-slice suites) and
-booted locally in slice 3b; never deployed. No real model turn or ship has run anywhere — only the
-fake Claude Code output (`claudeStreamJson`, reconstructed from the S7 transcripts). `wrangler dev`
-reloading the Worker drops every Workflow instance mid-step; a later message, resume or end
-restarts it from the row, but a boot in progress is lost until then.
+**Known gaps:** proven with fakes (`tests/api/session-e2e.test.ts`, `session-stall.test.ts` and the
+per-slice suites) and booted locally in slice 3b; never deployed. No real model turn or ship has run
+anywhere — only the fake Claude Code output (`claudeStreamJson`, reconstructed from the S7
+transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in
+the same checkout) kills the running step; the reconcile settles such a boot as failed after 3
+quiet minutes rather than resuming it — a new session is the recovery. A `working` turn whose
+instance died is not reconciled (the turn's own timeout and `turn-settle` cover a live instance
+only). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+what stops the command still running in the container.
 
 ### 18.10 The sandbox and the local backend
 
@@ -1309,14 +1337,22 @@ The git handler allows smart-HTTP on the session's one repo, refuses a push to a
 10 minutes). `SESSION_BACKEND=local` (development only) swaps only where the repo lives (the local
 git server, still through the git handler) — procedure and timings in `docs/SESSIONS-LOCAL.md`.
 Under `APP_ENV=development` (every `wrangler dev` container, whatever the backend) each command
-runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`).
+runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`). The allow-list is widened at
+RUNTIME by `sessionBootstrap` (`setAllowedHosts`, bounded at 90 s): measured under wrangler 4.127 /
+sandbox 0.12.10, a runtime `setAllowedHosts` on a running container returns at once and the next
+command runs, immediately and after 40 s idle — it re-registers the interception on the proxy
+sidecar and does not restart anything.
 
 **Known gaps:** the kit's bootstrap refuses root, so the session works around it
 (`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). On an ARM Mac the amd64 image runs
-under QEMU, where Go binaries (esbuild inside tsx, Vite and wrangler) crash in their GC ("The
-service was stopped" — what failed the first real session, whose Launch ran `wrangler dev` on the
-`cloud` backend): every `wrangler dev` session runs with `GOGC=off`, so each wants ~4 GB and two
-at once in an 8 GB VM are OOM-killed. The allow-list includes the region's shared `api.` SQL host
+under emulation (QEMU, or Rosetta under Docker Desktop), where Go binaries (esbuild inside tsx,
+Vite and wrangler) crash in their GC ("The service was stopped" — what failed the first real
+session, whose Launch ran `wrangler dev` on the `cloud` backend): every `wrangler dev` session runs
+with `GOGC=off`, so each wants ~4 GB (the SDK's own control server ~1 GiB idle, the dev stack ~3
+GiB) and in an 8 GB VM shared with other containers the VM's OOM killer takes the control server —
+hola-world's second session died that way at "Starting dev server" (`docs/SESSIONS-LOCAL.md`
+§ Memory). `workerd` itself runs under emulation. An arm64 local image is blocked upstream: the
+Sandbox base image is amd64-only and `wrangler dev` builds containers for `linux/amd64` only. The allow-list includes the region's shared `api.` SQL host
 (the neon-http driver's), which answers any endpoint in that region for whoever holds its
 credentials — the container holds only its branch's. An outbound `wss://` through the interception
 is proven locally against a public echo host, not yet against a Neon branch; workerd (the app's

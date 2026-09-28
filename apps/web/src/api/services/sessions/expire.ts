@@ -10,6 +10,9 @@
  * `cleanup` does the rest). Only when there is no `SESSION_WORKFLOW` at all does it clean up
  * inline: delete the branch, settle `ended`, audit `session.ended`.
  *
+ * The same task then runs the reconcile sweep (`reconcile.ts` `reconcileStaleSessions`): a boot or
+ * an end whose Workflow died, and a settled session whose cleanup never ran.
+ *
  * Cross-tenant by design, like every cron: the scan reads each row's `tenant_id` and every write
  * is scoped by it.
  */
@@ -23,6 +26,7 @@ import type { AppBindings } from '../../types'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { wakeOrRestart } from './lifecycle'
 import { defaultSessionPorts, type SessionPorts } from './ports'
+import { reconcileStaleSessions } from './reconcile'
 
 export interface ExpireResult {
   expired: number
@@ -156,5 +160,9 @@ export const expireSessions: ScheduledTask = {
   async run({ env, config, db, logger }) {
     const result = await expireSuspendedSessions(db, env, config)
     if (result.expired > 0) logger.info(result, 'sessions.expire: ended expired suspended sessions')
+    // The backstop for a boot or an end whose Workflow died, and a settled session never cleaned
+    // up, when nobody has the page open (`reconcile.ts`).
+    const reconciled = await reconcileStaleSessions(db, env, { logger })
+    if (reconciled > 0) logger.info({ reconciled }, 'sessions.expire: settled stalled sessions')
   },
 }

@@ -156,8 +156,12 @@ export function SessionHeader({
             onClick={() => setConfirm('end')}
             disabled={session.requestedAction === 'end'}
           >
-            <StopCircleIcon className="h-4 w-4" />
-            End
+            {session.requestedAction === 'end' ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              <StopCircleIcon className="h-4 w-4" />
+            )}
+            {session.requestedAction === 'end' ? 'Ending…' : 'End'}
           </button>
         )}
         {session.viewerCanManage &&

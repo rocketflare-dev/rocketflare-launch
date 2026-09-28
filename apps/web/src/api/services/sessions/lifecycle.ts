@@ -99,6 +99,19 @@ export async function wakeOrRestart(
   logger?: WarnLogger
 ): Promise<SessionRow> {
   if (await wakeSession(workflow, session, logger)) return session
+  return restartSessionInstance(db, workflow, session)
+}
+
+/**
+ * Start a fresh instance (`<id>-rN`) for `session` and record its id — without waking the old one
+ * first. What `wakeOrRestart` falls back to, and what the reconcile (`reconcile.ts`) uses after it
+ * terminated an instance that was alive in name only.
+ */
+export async function restartSessionInstance(
+  db: Database,
+  workflow: Workflow,
+  session: SessionRow
+): Promise<SessionRow> {
   let lastError: unknown
   let candidate = nextSessionInstanceId(session.id, session.instanceId)
   for (let attempt = 0; attempt < 3; attempt++) {
