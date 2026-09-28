@@ -738,9 +738,22 @@ describe('create an app, end to end against the FakeCloud', () => {
       'The staging deploy job ended without activating the new version (it stopped after upload — see the run)'
     )
     expect(view.steps.find(s => s.step === 'health')?.status).not.toBe('succeeded')
-    // Re-scaffold stays refused: no version went live, but the job WAS handed the migrator
-    // credential, so its migrations may have run (the rule `rescaffold-check.ts` keeps).
-    expect(view.canRescaffold).toBe(false)
+    // No version went live, but the job WAS handed the migrator credential: the view offers
+    // Re-scaffold with the note, and the POST asks staging's database first. Here the migrator got
+    // as far as applying some — so it is refused with the count.
+    expect(view).toMatchObject({ canRescaffold: true, rescaffoldChecksDatabase: true })
+    const stagingNeon = envs.staging.neon
+    if (!stagingNeon?.branchId) throw new Error('staging has no Neon branch')
+    cloud.neon.addMigrations(stagingNeon.projectId, stagingNeon.branchId, 'app', 3)
+    const refused = await request(
+      `/api/apps/${launched.appId}/pipeline/rescaffold`,
+      { method: 'POST', headers: admin.cookie },
+      { env }
+    )
+    expect(refused.status).toBe(409)
+    const refusal = (await refused.json()) as { code?: string; error?: string }
+    expect(refusal.code).toBe('app_already_deployed')
+    expect(refusal.error).toMatch(/staging has 3 applied migrations/)
 
     // Retry is offered, and a retried deploy that activates goes live.
     const retry = await request(

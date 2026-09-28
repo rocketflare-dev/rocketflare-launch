@@ -358,6 +358,13 @@ export const pipelineViewSchema = z.object({
    * viewer still needs `manage App`.
    */
   canRescaffold: z.boolean(),
+  /**
+   * With `canRescaffold`: a deploy was handed the migrator credential but never activated, so the
+   * POST first asks that environment's database whether any migration ran (409
+   * `app_already_deployed` with the count if one did, or if Neon cannot answer). The GET never
+   * asks — it makes no vendor call — so the page offers the button with that note.
+   */
+  rescaffoldChecksDatabase: z.boolean(),
   /** The kit tag a re-scaffold would use — set only when `canRescaffold`, else null. */
   templateTag: z.string().nullable(),
 })

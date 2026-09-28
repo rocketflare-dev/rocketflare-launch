@@ -26,7 +26,8 @@
  *   body) — scaffold an app that never deployed AGAIN from the CURRENT kit pin, keeping its
  *   repository, database, storage, Workers, sign-in client and secrets (`pipeline/rescaffold.ts`):
  *   after the same reconcile, only for a failed create run of an app that is not live or archived
- *   and has never deployed — else 409 `run_not_failed` / `app_live` / `app_archived` /
+ *   and has never deployed (a deploy handed the migrator credential but never activated: that
+ *   environment's database is asked first — the only Neon call here) — else 409 `run_not_failed` / `app_live` / `app_archived` /
  *   `app_already_deployed` / `no_run` (a deployed app takes a kit upgrade). It re-dispatches the
  *   scaffold job, so it is refused like a create while Launch is not reachable.
  * - `POST /:id/pipeline/cancel` → 200 `cancelPipelineResponseSchema` (`manage App`) — stop a create
@@ -64,6 +65,7 @@ import { defaultPorts } from '../services/launch/pipeline/ports'
 import { readPipeline } from '../services/launch/pipeline/read'
 import { reconcilePipelineSafely } from '../services/launch/pipeline/reconcile'
 import { rescaffoldPipeline } from '../services/launch/pipeline/rescaffold'
+import { loadNeonClient } from '../services/launch/pipeline/rescaffold-database'
 import { retryPipeline } from '../services/launch/pipeline/retry'
 import { requirePublicUrl } from '../services/launch/public-url'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
@@ -165,7 +167,8 @@ appPipelineRouter.post('/:id/pipeline/rescaffold', async c => {
     c.env,
     tenantId,
     id,
-    auditActor(c)
+    auditActor(c),
+    () => loadNeonClient(db, c.get('config'))
   )
   return c.json(result, 202)
 })

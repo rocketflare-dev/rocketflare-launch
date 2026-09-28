@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Re-scaffold no longer refuses an app just because a deploy job was handed the migrator
+  credential: when nothing was activated, Launch asks that environment's database (as
+  `neondb_owner` over Neon's HTTP SQL) and allows it when `drizzle.__drizzle_migrations` and
+  `public` are empty — a `db:migrate:ci` that failed in its role phase — else refuses with the count
+  ("staging has 12 applied migrations"), and refuses conservatively when Neon cannot answer. The
+  page offers the button with a note that the database is checked first; only the POST calls Neon.
 - New apps are scaffolded from Rocketflare kit 0.15.5, whose `db:migrate:ci` works as the app's
   `migrator` (no CREATEDB).
 - A staging deploy whose job stopped after upload (its `db:migrate:ci` failed, then `finish` ran)

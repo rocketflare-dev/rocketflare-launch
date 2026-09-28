@@ -74,7 +74,7 @@
  *   `superuser` (a `neon_superuser` member — the API's) and `createdBy`; HTTP SQL runs `CREATE
  *   ROLE`, `GRANT` (only by the role's creator, else "permission denied to grant role"), `CREATE
  *   EXTENSION` and the neon step's catalogue reads, one statement per call; roles and databases
- *   can be DELETEd; `addTable` / `sqlRole` / `grant` seed state directly.
+ *   can be DELETEd; `addTable` / `addMigrations` / `sqlRole` / `grant` seed state directly.
  * - `cloud.resend` (`FakeResend`): `apiKeys` (id → `{name, token, permission, domain_id}`),
  *   `domains`.
  * - `cloud.github` (`FakeGitHub`): `repos` (`owner/name` lower-case → `{id, archived, refs,

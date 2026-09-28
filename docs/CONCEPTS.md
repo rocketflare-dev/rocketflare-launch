@@ -1007,9 +1007,20 @@ step that mints one puts it on the Worker itself.
   repo holds only the scaffold and Launch's config commit, so it may be scaffolded again from the
   CURRENT pin — only while the create run is `failed`, the app is neither `live` nor `archived`,
   and it has never deployed (`rescaffold-check.ts`: no `deploy` ticket with `activated_at` — an
-  upload `finish` closed before activation never ran, and neither did a job that died at its gate
-  — nor one handed the migrator credential, whose migrations may have run; the 409 says which);
-  otherwise 409 `run_not_failed` / `app_live` / `app_archived` /
+  upload `finish` closed before activation never ran, and neither did a job that died at its gate).
+  A never-activated ticket that was handed the migrator credential is not evidence by itself — the
+  kit's `db:migrate:ci` runs its role phase (one transaction) before any migration, so a job can
+  get the credential and change nothing — so the POST asks that environment's DATABASE
+  (`rescaffold-database.ts`; staging, and production too if one of its tickets got the credential):
+  as `neondb_owner` over Neon's HTTP SQL (password reset on the branch, direct URI for `app`, one
+  statement per call, both dropped), it counts `drizzle.__drizzle_migrations` rows (drizzle's
+  default table, which the kit's migrate script writes) and tables in `public`. Zero and zero →
+  allowed; otherwise 409 `app_already_deployed` with the count ("staging has 12 applied
+  migrations"); Neon unreachable, not connected, or no branch recorded → refused conservatively,
+  saying why. Only that case makes a vendor call, and only the POST: `GET …/pipeline` never asks
+  Neon — it offers the button with `rescaffoldChecksDatabase: true`, and the confirm dialog says
+  Launch will check the database first (no cache to go stale; the 409's message is the answer).
+  Otherwise 409 `run_not_failed` / `app_live` / `app_archived` /
   `app_already_deployed` / `no_run`, saying a deployed app takes a kit upgrade. It is a retry with
   the repository's steps re-opened, their ids kept for `ctx.prior`: `scaffold.start` is failed
   "Reset by re-scaffold" (so the run stays retryable), `scaffold.wait|verify`, `write_config`,
@@ -1024,7 +1035,8 @@ step that mints one puts it on the Worker itself.
   secrets (`keep_bindings: ['secret_text']` — a script upload replaces the bindings otherwise).
   `reserve`, `repo`, `neon`, `cloudflare`, `oidc_client`, `github_env`, `worker_secrets` and `email`
   are kept: none reads the repository's content. `GET …/pipeline` answers `canRescaffold` (the
-  run allows it; the viewer still needs `manage App`) and `templateTag` (the pin, when it does).
+  run allows it, the database check aside; the viewer still needs `manage App`),
+  `rescaffoldChecksDatabase` and `templateTag` (the pin, when it is on offer).
   Audited `app.pipeline.rescaffolded` (old and new kit tag) beside the retry's own row.
 - **Stop** (`POST /api/apps/:id/pipeline/cancel`, `manage App`, only a `running` create run —
   409 `run_not_running`; `pipeline/cancel.ts`): the way out of a run stuck in a wait. Its running
@@ -1079,7 +1091,11 @@ free) is waited on for the full 30 minutes; a GitHub API error while polling is 
 step and then fails the run as that error (no run link); the
 `production` step is always skipped (the first production release is a separate, approved
 deploy); a re-scaffold replaces anything committed to `main` since the scaffold (history keeps
-it), and two retries or re-scaffolds posted at once can each start an instance (no claim row); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
+it), and two retries or re-scaffolds posted at once can each start an instance (no claim row);
+when a deploy got the migrator credential the page offers Re-scaffold before the database is
+checked, so the button stays on offer after the POST refused it (the 409 says why), and the check
+counts drizzle's own table and `public` only — a migration that wrote solely to another schema and
+recorded nothing would not be seen; a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
 apply it); `write_config` answers only the kit's one KV binding (`RATE_LIMIT_KV`) — a toml declaring
 another fails the step by name; the owner group is not mapped to GitHub team access; everything is
 proven against the FakeCloud only, except the Neon roles above (plan §5 lists what the first real
