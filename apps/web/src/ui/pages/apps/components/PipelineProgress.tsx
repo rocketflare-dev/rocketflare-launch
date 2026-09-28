@@ -241,19 +241,25 @@ function StepRow({ step }: { step: PipelineStep }) {
       data-status={step.status}
     >
       <StepIcon status={step.status} />
-      <span
-        className={`text-sm leading-5 flex-1 min-w-0 ${
-          step.status === 'pending' || step.status === 'skipped' ? 'text-muted' : ''
-        } ${active ? 'font-medium' : ''}`}
-      >
-        {step.label}
-      </span>
-      {step.url && <RunLink url={step.url} className="text-xs leading-5 shrink-0" />}
-      {step.attempt > 1 && (
-        <span className="status-badge no-dot tone-warning" title={`attempt ${step.attempt}`}>
-          ×{step.attempt}
+      <div className="flex-1 min-w-0">
+        <span
+          className={`block text-sm leading-5 ${
+            step.status === 'pending' || step.status === 'skipped' ? 'text-muted' : ''
+          } ${active ? 'font-medium' : ''}`}
+        >
+          {step.label}
         </span>
-      )}
+        {(step.url || step.attempt > 1) && (
+          <span className="mt-0.5 flex flex-wrap items-center gap-2">
+            {step.url && <RunLink url={step.url} className="text-xs leading-5" />}
+            {step.attempt > 1 && (
+              <span className="status-badge no-dot tone-warning" title={`attempt ${step.attempt}`}>
+                ×{step.attempt}
+              </span>
+            )}
+          </span>
+        )}
+      </div>
       <span className="text-xs leading-5 text-muted tabular-nums shrink-0">
         {step.status === 'running' && step.startedAt ? (
           <span title={formatDateTime(step.startedAt)}>

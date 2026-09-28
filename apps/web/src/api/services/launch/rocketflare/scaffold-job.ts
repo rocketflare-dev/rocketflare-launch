@@ -23,8 +23,9 @@
  *  4. **Patch the rename's `KIT.preserved`** (rocketflare#37): without it the rename rewrites every
  *     `rocketflare-dev/` org reference (the neon-proxy image, the plugin repos, the reusable
  *     workflow). The patched list is imported back and checked, longest first.
- *  5. `node scripts/rename.mjs <slug> "<Display>" --domain <domain> --force` (its own `pnpm install`
- *     and `pnpm lint:fix`).
+ *  5. `node scripts/rename.mjs <slug> "<Display>" --domain <domain> --force --skip-install`, then
+ *     `pnpm install --no-frozen-lockfile` and `pnpm lint:fix` here: the rename's own install is frozen
+ *     on a runner (`CI=true`) and fails on the workspace names it just changed.
  *  6. Install the default plugins exactly as the kit's `gate.yml` does (`default-plugins.mjs
  *     --tsv` → `pnpm plugin add … --apply --allow-dirty` → `pnpm db:generate --name
  *     plugin-<id>-<version>`), then write their declarations (crons, `run_worker_first` prefixes,
@@ -32,7 +33,7 @@
  *     `pnpm provision cloudflare <env>` would, so the app's deploy-time parity test
  *     (`REQUIRE_PROVISIONED=1`) finds them — the crons and prefixes by the script's own
  *     comment-aware append, because the kit's (0.15) counts a value quoted in a comment as present.
- *     Then `docs/plugin-api.md` regenerated and `pnpm install` so the lockfile matches.
+ *     Then `docs/plugin-api.md` regenerated and `pnpm install --no-frozen-lockfile` so the lockfile matches.
  *  7. Delete the kit-only workflows (`notify-plugins.yml`, `plugin-ci.yml` and the config test
  *     that reads it), `.launch/` and the scaffold workflow itself, and apply the exact edits to
  *     kit 0.15 tests a renamed, provisioned copy fails through no fault of its own
@@ -647,7 +648,7 @@ function installDefaultPlugins(appDir, slug) {
         run('node', ['scripts/plugin-api-doc.mjs'], { cwd: appDir })
       }
     }
-    run('pnpm', ['install'], { cwd: appDir })
+    run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: appDir })
     if (run('pnpm', ['lint:fix'], { cwd: appDir, allowFail: true }).status !== 0) {
       warn('pnpm lint:fix reported problems it could not fix; the gate will show them')
     }
@@ -742,9 +743,15 @@ async function main(argv) {
     patchPreserved(appDir)
 
     step('Rename the kit to ' + plan.slug)
-    const renameArgs = ['scripts/rename.mjs', plan.slug, plan.displayName, '--domain', plan.domain, '--force']
-    if (opts.skipInstall) renameArgs.push('--skip-install')
-    run('node', renameArgs, { cwd: appDir })
+    // Always --skip-install: the rename's own \`pnpm install\` is frozen on a runner (CI=true) and
+    // the rename has just changed the workspace names the lockfile records.
+    run('node', ['scripts/rename.mjs', plan.slug, plan.displayName, '--domain', plan.domain, '--force', '--skip-install'], { cwd: appDir })
+    if (!opts.skipInstall) {
+      run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: appDir })
+      if (run('pnpm', ['lint:fix'], { cwd: appDir, allowFail: true }).status !== 0) {
+        warn('pnpm lint:fix reported problems it could not fix; the gate will show them')
+      }
+    }
     git(appDir, ['add', '-A'])
     const leftovers = git(appDir, ['grep', '-n', '-F', plan.slug + '-dev/'], { allowFail: true, capture: true, quiet: true })
     if (leftovers.status === 0 && leftovers.stdout.trim()) {

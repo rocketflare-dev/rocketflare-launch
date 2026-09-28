@@ -27,6 +27,7 @@ Config tests run with `pnpm --dir apps/web exec vitest run --project config <fil
 | 9 | `docs/DEPLOYER.md` does not say what a version upload leaves out | rocketflare | Not filed |
 | 10 | Bootstrap refuses to run as root, with no opt-out for a container | rocketflare | Not filed |
 | 11 | `--driver neon --db-url` refuses any host but `*.neon.tech`, even with `NEON_LOCAL_PROXY` | rocketflare | Not filed |
+| 12 | `rename.mjs`'s `pnpm install` is frozen under `CI=true` and fails after the rename | rocketflare | Not filed |
 
 Related issues already filed, not repeated below:
 
@@ -482,5 +483,29 @@ not host), or check for the proxy instead of the host.
 **Launch workaround.** A local session's database URL uses the host `launch-local.neon.tech`,
 which is never resolved: `NEON_LOCAL_PROXY` sends every query to the proxy
 (`LOCAL_NEON_HOST` in `apps/web/src/api/services/sessions/db/local-session-db.ts`).
+
+**Status.** Not filed.
+
+---
+
+## 12. `rename.mjs`'s `pnpm install` is frozen under `CI=true` and fails after the rename
+
+**Where.** `scripts/rename.mjs` at 0.15.0, the `spawnSync('pnpm', ['install'])` after the files
+are written (around line 358).
+
+**What goes wrong.** The rename rewrites every workspace package name (`@rocketflare/shared` →
+`@<slug>/shared`) but not `pnpm-lock.yaml`, and relies on the `pnpm install` it runs next to
+rewrite the lockfile. Anywhere `CI=true` is set (every GitHub Actions runner), pnpm defaults to
+`--frozen-lockfile` and refuses: `ERR_PNPM_OUTDATED_LOCKFILE … 1 dependencies were added:
+@<slug>/shared@workspace:*`. The rename then exits 1.
+
+**Repro.** In a fresh kit checkout at `0.15.0`: `CI=true node scripts/rename.mjs demo-app "Demo"
+--force`. (Seen on a real GitHub Actions run of Launch's scaffold job.)
+
+**Suggested fix.** Run `pnpm install --no-frozen-lockfile` there. The rename knowingly changes the
+lockfile's inputs, so a frozen install can never succeed.
+
+**Launch workaround.** The scaffold job passes `--skip-install`, then runs `pnpm install
+--no-frozen-lockfile` and `pnpm lint:fix` itself (`apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`).
 
 **Status.** Not filed.

@@ -511,6 +511,34 @@ export async function commitFiles(
   return { sha: commit.sha }
 }
 
+/**
+ * `commitFiles`, but only when `files` change the branch: GitHub's trees are content-addressed,
+ * so a tree equal to the head's means the files are already there and nothing is committed.
+ */
+export async function commitFilesIfChanged(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  files: readonly CommitFile[],
+  message: string,
+  opts: GitHubOptions = {}
+): Promise<{ sha: string; changed: boolean }> {
+  const ref = await getRef(token, owner, repo, `heads/${branch}`, opts)
+  const head = await getCommit(token, owner, repo, ref.object.sha, opts)
+  const tree = await createTree(token, owner, repo, { baseTree: head.tree.sha, files }, opts)
+  if (tree.sha === head.tree.sha) return { sha: head.sha, changed: false }
+  const commit = await createCommit(
+    token,
+    owner,
+    repo,
+    { message, tree: tree.sha, parents: [head.sha] },
+    opts
+  )
+  await updateRef(token, owner, repo, `heads/${branch}`, commit.sha, opts)
+  return { sha: commit.sha, changed: true }
+}
+
 // ---- P2: Actions ------------------------------------------------------------------------------
 
 export interface GitHubWorkflowRun {

@@ -465,10 +465,13 @@ export class RecordingWorkflow {
   /** Make `sendEvent` fail the way a retention-expired or dev-restarted instance does. */
   notFoundOnSendEvent = false
   defaultStatus: FakeInstanceStatus = { status: 'running' }
+  /** Answer a duplicate id with the existing instance, as local wrangler does, instead of refusing. */
+  acceptDuplicateIds = false
 
   async create(options: { id?: string; params?: unknown } = {}) {
     const id = options.id ?? crypto.randomUUID()
     if (this.created.some(c => c.id === id)) {
+      if (this.acceptDuplicateIds) return this.instance(id)
       throw new Error(`instance.already_exists: an instance with id ${id} already exists`)
     }
     this.created.push({ id, params: options.params })

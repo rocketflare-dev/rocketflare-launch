@@ -44,6 +44,7 @@ import { notify } from '../../notifications'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
 import {
   commitFiles,
+  commitFilesIfChanged,
   dispatchWorkflow,
   getRef,
   listWorkflowRuns,
@@ -360,6 +361,25 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
       if (!ticket) throw new Error('deploy_tickets insert returned no row')
       ticketId = ticket.id
       await ctx.record({ scaffoldTicketId: ticketId })
+    }
+    if (prior) {
+      // A re-dispatch runs the job files on main, which the `repo` step (skipped on a retry)
+      // committed from an older Launch: bring them up to date so a fixed job is what runs.
+      const { token, owner } = await repoToken(
+        vendors,
+        repo.name,
+        { contents: 'write', workflows: 'write' },
+        ctx
+      )
+      const refreshed = await commitFilesIfChanged(
+        token,
+        owner,
+        repo.name,
+        repo.branch,
+        d.ports.scaffoldFiles(),
+        'Update the Launch scaffold job'
+      )
+      if (refreshed.changed) await ctx.record({ scaffoldFilesCommit: refreshed.sha })
     }
     const pin = vendors.settings.templatePin
     const plan: ScaffoldPlan = {

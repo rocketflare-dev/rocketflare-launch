@@ -252,7 +252,7 @@ export default function AppDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="max-w-6xl space-y-4">
+      <div className="space-y-4">
         <PageHeader title={slug} breadcrumbs={[{ label: 'Apps', to: '/apps' }, { label: slug }]} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <SectionPanelSkeleton rows={5} />
@@ -265,7 +265,7 @@ export default function AppDetailPage() {
   if (error || !app) {
     const missing = error instanceof ApiError && error.status === 404
     return (
-      <div className="max-w-6xl">
+      <div>
         <PageHeader title={slug} breadcrumbs={[{ label: 'Apps', to: '/apps' }, { label: slug }]} />
         <EmptyStateCard
           icon={missing ? Squares2X2Icon : ExclamationTriangleIcon}
@@ -300,7 +300,7 @@ export default function AppDetailPage() {
   const archivedAt = teardownView?.status === 'succeeded' ? lastFinished(teardownView) : null
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6">
       <PageHeader
         className="mb-0"
         title={app.displayName}

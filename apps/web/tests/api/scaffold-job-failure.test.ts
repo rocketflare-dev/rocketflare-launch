@@ -12,6 +12,7 @@ import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { cancelLaunch } from '@/api/services/launch/pipeline/cancel'
 import { retryPipeline } from '@/api/services/launch/pipeline/retry'
 import { pipelineView } from '@/api/services/launch/pipeline/runs'
+import { SCAFFOLD_SCRIPT_PATH } from '@/api/services/launch/rocketflare/scaffold-job'
 import { GitHubActionsScaffoldRunner } from '@/api/services/launch/scaffold/github-actions-runner'
 import { type AppRow, appOperations, apps, deployTickets } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
@@ -181,6 +182,9 @@ describe('a scaffold job that fails on GitHub', () => {
     // The job never reached Launch, so it never claimed its ticket.
     expect(ticket?.runId).toBeNull()
 
+    // The repo holds the job files of an older Launch; the retry must run the current ones.
+    const { owner, repo: name } = cloud.github.runs.at(-1) as FakeWorkflowRun
+    cloud.github.pushCommit(owner, name, { [SCAFFOLD_SCRIPT_PATH]: 'old' })
     const env = createTestEnv()
     await retryPipeline(
       db,
@@ -190,8 +194,14 @@ describe('a scaffold job that fails on GitHub', () => {
       'create',
       SYSTEM_ACTOR
     )
-    cloud.github.onDispatch = null
+    let scriptAtDispatch: string | null = null
+    cloud.github.onDispatch = run => {
+      if (run.workflow !== 'launch-scaffold.yml') return
+      scriptAtDispatch = cloud.github.readFile(owner, name, SCAFFOLD_SCRIPT_PATH)
+    }
     const again = await h.run(launch)
+    const current = launch.ports.scaffoldFiles().find(f => f.path === SCAFFOLD_SCRIPT_PATH)
+    expect(scriptAtDispatch).toBe(current?.content)
     expect(again.outcome.status).toBe('live')
     expect(cloud.github.runs.filter(r => r.workflow === 'launch-scaffold.yml')).toHaveLength(2)
     const tickets = await db

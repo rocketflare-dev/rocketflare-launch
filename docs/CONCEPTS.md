@@ -919,9 +919,13 @@ step that mints one puts it on the Worker itself.
   could not call Launch back. A poll that finds a failure answers `{ done, error }` and the
   Workflow throws outside the poll's `step.do`, so its retries do not fail it again.
 - **Retry** (`POST /api/apps/:id/pipeline/retry`, `manage App`, only a `failed` run): a new
-  instance `<runId>-rN` with the same run id, so succeeded steps are skipped and the failed one
-  resumes with `ctx.prior`; a failed wait restarts the job it waited on — for the scaffold on a
-  FRESH ticket (the old one is withdrawn even if no job ever claimed it); a retried `placeholders`
+  instance `<runId>-rN` with the same run id, `N` one past the highest an earlier retry's
+  `app.pipeline.retried` audit row recorded (local wrangler hands back an existing instance id
+  instead of refusing it, so trying `-r1` again silently started nothing), so succeeded steps are
+  skipped and the failed one resumes with `ctx.prior`; a failed wait restarts the job it waited
+  on — for the scaffold on a FRESH ticket (the old one is withdrawn even if no job ever claimed
+  it), with the job files on `main` first brought up to this Launch's (the skipped `repo` step
+  committed an older copy; an unchanged tree commits nothing); a retried `placeholders`
   sends only the DO migrations the script does not have. Refused 409 `launch_not_reachable` for a
   create run while the public URL fails its check (§18.2). The live instance id is kept on
   `apps.launch_instance_id`, and `/ci/scaffold/done` and `/ci/deploy/:id/finish` send their events
@@ -963,7 +967,9 @@ and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
 job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
 scoped to that repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files)
 and the plan, once per ticket; clones the pinned kit at its tag and checks the commit; patches
-around rocketflare#37; runs `rename.mjs`; installs the default plugins; deletes the kit-only
+around rocketflare#37; runs `rename.mjs --skip-install` and then `pnpm install
+--no-frozen-lockfile` itself (on a runner `CI=true` makes the rename's own install frozen, and it
+fails on the workspace names the rename just changed); installs the default plugins; deletes the kit-only
 workflows and `.launch/`; runs `lint`, `typecheck` and `test:config`; pushes `main`; revokes its
 token; and calls `POST /ci/scaffold/done {commit}`.
 

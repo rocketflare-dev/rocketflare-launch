@@ -311,6 +311,37 @@ describe('POST /api/apps/:id/pipeline/retry', () => {
     expect(row).toMatchObject({ launchRunId: runId, launchInstanceId: `${runId}-r2` })
   })
 
+  it('starts a new instance on every retry where wrangler hands back an existing id', async () => {
+    const { headers, tenant } = await signedIn('admin')
+    const env = createTestEnv()
+    const workflow = stubs(env).launchWorkflow
+    if (workflow) workflow.acceptDuplicateIds = true
+    const { res } = await create(headers, env)
+    const { app, runId } = createAppResponseSchema.parse(await res.json())
+    await db.insert(appOperations).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      runId,
+      kind: 'create',
+      step: 'cloudflare',
+      status: 'failed',
+      attempt: 1,
+      error: 'R2 said no',
+    })
+    await db.update(apps).set({ status: 'failed' }).where(eq(apps.id, app.id))
+
+    for (const n of [1, 2, 3]) {
+      const retried = await post(`/api/apps/${app.id}/pipeline/retry`, headers, {}, env)
+      expect(await retried.json()).toMatchObject({ instanceId: `${runId}-r${n}` })
+    }
+    expect(workflow?.created.map(c => c.id)).toEqual([
+      runId,
+      `${runId}-r1`,
+      `${runId}-r2`,
+      `${runId}-r3`,
+    ])
+  })
+
   it('is 403 for a member of the same tenant', async () => {
     const admin = await signedIn('admin')
     const { res } = await create(admin.headers)

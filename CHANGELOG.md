@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The scaffold job installs with `pnpm install --no-frozen-lockfile` after the kit's rename
+  (`--skip-install`): on GitHub's runners the rename's own install was frozen and failed on the
+  workspace names it had just changed. A retried scaffold first updates the job files in the app's
+  repo, so a fixed job is the one that runs, and every retry starts a new Workflow instance — under
+  `pnpm dev` a second retry used to reuse the first's id and silently do nothing. The app page now
+  uses the full width, and a step's "View run" link and attempt count sit under its name.
 - Creating an app no longer hides a scaffold job that died on GitHub: the step list shows the job
   RUNNING (not a tick on "Start the scaffold job") with a "View run" link to its GitHub Actions run,
   and a run that fails, is cancelled or never starts fails the step within a minute with a readable

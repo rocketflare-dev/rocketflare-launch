@@ -309,6 +309,14 @@ describe('the workflow file', () => {
     expect(bad.code).toBe(2)
     expect(bad.stderr).toContain('unknown option --nope')
   })
+
+  it('never lets pnpm install run frozen: the rename changes the workspace names (CI=true)', () => {
+    const installs = SCAFFOLD_SCRIPT.match(/run\('pnpm', \['install'[^\]]*\]/g) ?? []
+    expect(installs.length).toBe(2)
+    for (const call of installs) expect(call).toContain("'--no-frozen-lockfile'")
+    // The rename's own install would be frozen on a runner, so it is always skipped.
+    expect(SCAFFOLD_SCRIPT).toMatch(/'--force', '--skip-install'\]/)
+  })
 })
 
 describe('the scaffold, --token-from-env --skip-install --skip-gate', () => {
