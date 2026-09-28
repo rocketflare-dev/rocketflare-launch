@@ -51,6 +51,7 @@ import type { StorageService } from '../storage'
 import { checkpoint, outputTail, SESSION_REPO_DIR } from './checkpoint'
 import { appendSessionEvents } from './event-log'
 import type { RepoHostPort, RepoRef, SessionPorts } from './ports'
+import type { ShipTurnResult, ShipTurnRunner } from './turn'
 
 /** The Rocketflare gate (plan §1.10). */
 export const DEFAULT_SHIP_GATE = 'pnpm lint && pnpm typecheck && pnpm test'
@@ -61,19 +62,8 @@ export const SHIP_GATE_TIMEOUT_MS = 20 * 60 * 1000
 /** `GET /:id/pr` refreshes checks older than this. */
 export const PR_CHECKS_MAX_AGE_MS = 30_000
 
-/** What one ship turn came to. */
-export interface ShipTurnResult {
-  outcome: 'completed' | 'failed' | 'interrupted' | 'cancelled'
-  /** The turn number it ran as (its events carry it). */
-  turn: number
-  /** The assistant's final text; when absent it is read from the turn's `text` events. */
-  text?: string | null
-}
-
-export type ShipTurnRunner = (input: {
-  message: string
-  session: SessionRow
-}) => Promise<ShipTurnResult>
+/** The ship turn's runner (`createShipTurnRunner`, `turn.ts`) — the one definition is 3c's. */
+export type { ShipTurnResult, ShipTurnRunner }
 
 /** Appends events to the session's log — the Workflow's emitter (`events.ts`) in production. */
 export type ShipEventEmitter = (events: SessionEventInput[]) => Promise<void>

@@ -29,16 +29,12 @@
  */
 import { AguiEventType, KIT_CUSTOM_EVENTS, type KitAguiEvent } from '@launch/shared/ai/agui'
 import {
+  SESSION_CUSTOM_EVENTS,
   type SessionEvent,
   type SessionStatus,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import { kitCustom } from '../ai/agui'
-
-/** Launch's own CUSTOM namespace for sessions. The value is one `session_events` row. */
-export const SESSION_CUSTOM_EVENTS = {
-  event: 'launch.session.event',
-} as const
 
 /** The rows whose facts travel as `launch.session.event` (with or without other frames). */
 const CUSTOM_ROW_TYPES = new Set<SessionEvent['type']>([

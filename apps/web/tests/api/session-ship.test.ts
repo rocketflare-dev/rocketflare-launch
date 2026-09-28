@@ -308,8 +308,11 @@ describe('the routes', () => {
     const body = await json<{ session: { requestedAction: string; status: string } }>(res)
     expect(body.session).toMatchObject({ requestedAction: 'ship', status: 'ready' })
     expect(JSON.stringify(body)).not.toContain(row.previewToken)
-    // `inst-1` was never created: the failed wake is logged, not thrown — the row is the truth.
+    // `inst-1` was never created (a lost instance): no wake lands, and a fresh instance is
+    // started from the row instead (`wakeOrRestart`), its id recorded on the session.
     expect(stubs(e).sessionWorkflow?.events).toEqual([])
+    expect(stubs(e).sessionWorkflow?.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+    expect((await reload(row)).instanceId).toBe(`${row.id}-r1`)
     const again = await post(`/api/sessions/${row.id}/ship`, f.cookie, e)
     expect(again.status).toBe(409)
     expect(await json(again)).toMatchObject({ statusCode: 409, code: 'session_not_ready' })
@@ -333,11 +336,14 @@ describe('the routes', () => {
   it('POST /:id/end → 202 and a running turn is asked to stop; an ended session → 409', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const row = await insertSession(db, f, { status: 'working' })
-    const res = await post(`/api/sessions/${row.id}/end`, f.cookie)
+    const e = createTestEnv()
+    const res = await post(`/api/sessions/${row.id}/end`, f.cookie, e)
     expect(res.status).toBe(202)
     const after = await reload(row)
     expect(after.requestedAction).toBe('end')
     expect(after.cancelRequestedAt).not.toBeNull()
+    // The instance is gone (a `wrangler dev` reload): the end still reaches a Workflow.
+    expect(stubs(e).sessionWorkflow?.created.map(c => c.id)).toEqual([`${row.id}-r1`])
 
     const ended = await insertSession(db, f, { status: 'ended' })
     const again = await post(`/api/sessions/${ended.id}/end`, f.cookie)

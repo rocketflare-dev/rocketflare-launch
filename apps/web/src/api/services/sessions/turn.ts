@@ -393,7 +393,8 @@ async function executeTurn(
 export interface ShipTurnInput {
   /** Launch's own prompt (`session-ship`), not a person's message. */
   message: string
-  session: Pick<SessionRow, 'id' | 'tenantId'>
+  /** The row as the ship claimed it (`shipping`); the runner re-reads it by id. */
+  session: SessionRow
 }
 
 export interface ShipTurnResult {

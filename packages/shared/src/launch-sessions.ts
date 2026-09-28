@@ -12,6 +12,7 @@
  * - the request and response bodies of `/api/sessions`, `/api/apps/:id/sessions` and
  *   `/api/admin/sessions`;
  * - `SESSION_WAKE_EVENT`, golden-tested against Cloudflare's event-type rule;
+ * - `SESSION_CUSTOM_EVENTS` — the `launch.session.event` AG-UI `CUSTOM` event of the read stream;
  * - the preview host grammar: `previewLabel()` / `parsePreviewHost()` / `previewUrl()`.
  *
  * Money is microcents throughout (`@launch/shared/ai/pricing`: 100 000 000 per USD), as on
@@ -235,6 +236,19 @@ export const sessionEventSchema = z.object({
   at: z.coerce.date(),
 })
 export type SessionEvent = z.infer<typeof sessionEventSchema>
+
+/**
+ * Launch's own AG-UI `CUSTOM` event on a session's read stream (`GET /api/sessions/:id/agui/stream`,
+ * `services/sessions/agui-projection.ts`): an app's prefix (`launch.`), never the kit's `kit.`.
+ * Its `value` is one `session_events` row as `sessionEventSchema` draws it (`at` an ISO string on
+ * the wire) — the facts with no AG-UI frame of their own: `turn.end` / `turn.failed` /
+ * `turn.interrupted`, `status`, `preview.ready`, `budget.reached`, `ship.gate`, `ship.pr`, `error`.
+ */
+export const SESSION_CUSTOM_EVENTS = {
+  event: 'launch.session.event',
+} as const
+export const sessionCustomEventValueSchema = sessionEventSchema
+export type SessionCustomEventValue = z.infer<typeof sessionCustomEventValueSchema>
 
 /** What a writer hands the event log (the Workflow assigns `seq` and `at`). */
 export interface SessionEventInput<T extends SessionEventType = SessionEventType> {

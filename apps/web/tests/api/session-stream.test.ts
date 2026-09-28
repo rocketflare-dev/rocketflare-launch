@@ -9,12 +9,15 @@
  */
 import { RUN_STREAM_IDLE_CAP_MS, RUN_STREAM_POLL_MS } from '@launch/shared/ai/agents'
 import { AguiEventType, type KitAguiEvent, kitAguiEventSchema } from '@launch/shared/ai/agui'
-import type { SessionEventType } from '@launch/shared/launch-sessions'
+import {
+  SESSION_CUSTOM_EVENTS,
+  type SessionEventType,
+  sessionCustomEventValueSchema,
+} from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import {
   createSessionProjector,
   projectSessionToAgui,
-  SESSION_CUSTOM_EVENTS,
 } from '@/api/services/sessions/agui-projection'
 import { toSessionEvent } from '@/api/services/sessions/event-log'
 import { type SessionStreamSink, sessionStreamBody } from '@/api/services/sessions/session-stream'
@@ -117,6 +120,12 @@ describe('the session projection', () => {
     expect(events.at(-1)).toMatchObject({
       value: { type: 'preview.ready', data: { port: 5173 }, seq: 7 },
     })
+    // Every CUSTOM value parses as the shared contract's row.
+    for (const e of events.filter(e => e.type === AguiEventType.CUSTOM)) {
+      expect(sessionCustomEventValueSchema.safeParse((e as { value: unknown }).value).success).toBe(
+        true
+      )
+    }
     // Two projections of one log are byte-identical.
     expect(
       JSON.stringify(
