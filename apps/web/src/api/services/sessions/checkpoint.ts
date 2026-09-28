@@ -37,11 +37,12 @@ import { type SessionRow, sessions, users } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
 import type { StorageService } from '../storage'
 import type { SandboxExecResult, SandboxPort } from './ports'
+import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
 
-/** Where the Workflow clones the app's repo inside the sandbox. */
-export const SESSION_REPO_DIR = '/workspace/app'
-/** `$HOME` of the user Claude Code runs as in the session image. */
-export const SESSION_CLAUDE_HOME = '/root'
+/** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
+export const SESSION_REPO_DIR = SESSION_WORKSPACE
+/** `$HOME` of the user Claude Code runs as in the session image (`SESSION_HOME`). */
+export const SESSION_CLAUDE_HOME = SESSION_HOME
 /** Where the commit message is written (a file, so no message is ever parsed by a shell). */
 const COMMIT_MESSAGE_PATH = '/tmp/launch-commit-message.txt'
 

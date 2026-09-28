@@ -11,9 +11,10 @@
  *
  * `runTurn` is the turn runner (slice 3c's `runTurn`, adapted by the Workflow): it runs ONE Claude
  * Code turn with `message` as the user's message — writing `user.message` … `turn.end` as any turn
- * does — and answers `{ outcome, turn, text? }`. `ship` does not import it, so the two slices meet
- * only at this type. `emit` appends events (default: `appendSessionEvents`, seq = max + 1 — the
- * Workflow is the one writer, so there is no race to lose).
+ * does — and answers `{ outcome, turn, text? }` (`createShipTurnRunner` in `turn.ts`, bound in
+ * `hooks.ts`). `emit` appends events (the Workflow's emitter, which also nudges; default
+ * `appendSessionEvents` from `event-log.ts` — the Workflow is the one writer, so there is no race
+ * to lose).
  *
  * The steps:
  *
@@ -48,6 +49,7 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
 import type { StorageService } from '../storage'
 import { checkpoint, outputTail, SESSION_REPO_DIR } from './checkpoint'
+import { appendSessionEvents } from './event-log'
 import type { RepoHostPort, RepoRef, SessionPorts } from './ports'
 
 /** The Rocketflare gate (plan §1.10). */
@@ -73,7 +75,8 @@ export type ShipTurnRunner = (input: {
   session: SessionRow
 }) => Promise<ShipTurnResult>
 
-export type SessionEventWriter = (events: SessionEventInput[]) => Promise<void>
+/** Appends events to the session's log — the Workflow's emitter (`events.ts`) in production. */
+export type ShipEventEmitter = (events: SessionEventInput[]) => Promise<void>
 
 export interface ShipDeps {
   cfg: AppConfig
@@ -81,7 +84,7 @@ export interface ShipDeps {
   /** `createR2Storage(env.FILES)` for the final checkpoint's transcript; null skips it. */
   storage: StorageService | null
   runTurn: ShipTurnRunner
-  emit?: SessionEventWriter
+  emit?: ShipEventEmitter
   now?: () => Date
   gateCommand?: string
   maxAttempts?: number
@@ -93,39 +96,6 @@ export type ShipOutcome =
   | { status: 'gate_failed'; output: string }
   | { status: 'turn_failed'; reason: ShipTurnResult['outcome'] }
   | { status: 'skipped'; reason: string }
-
-// ---- events ------------------------------------------------------------------------------------
-
-/**
- * Append `events` to a session's log, numbering from the current maximum. The Workflow is the one
- * writer of `session_events`, so the read-then-insert cannot interleave with another writer.
- */
-export async function appendSessionEvents(
-  db: Database,
-  session: Pick<SessionRow, 'id' | 'tenantId'>,
-  events: SessionEventInput[],
-  now: Date = new Date()
-): Promise<void> {
-  if (events.length === 0) return
-  const [last] = await db
-    .select({ seq: sql<number>`coalesce(max(${sessionEvents.seq}), 0)::int` })
-    .from(sessionEvents)
-    .where(
-      and(eq(sessionEvents.tenantId, session.tenantId), eq(sessionEvents.sessionId, session.id))
-    )
-  const base = last?.seq ?? 0
-  await db.insert(sessionEvents).values(
-    events.map((event, i) => ({
-      sessionId: session.id,
-      tenantId: session.tenantId,
-      seq: base + i + 1,
-      turn: event.turn,
-      type: event.type,
-      data: event.data,
-      at: now,
-    }))
-  )
-}
 
 // ---- the reply ---------------------------------------------------------------------------------
 
@@ -295,10 +265,9 @@ export async function ship(
   ref: { tenantId: string; sessionId: string }
 ): Promise<ShipOutcome> {
   const now = deps.now ?? (() => new Date())
-  const emit: SessionEventWriter =
+  const emit: ShipEventEmitter =
     deps.emit ??
-    (events =>
-      appendSessionEvents(db, { id: ref.sessionId, tenantId: ref.tenantId }, events, now()))
+    (events => appendSessionEvents(db, { id: ref.sessionId, tenantId: ref.tenantId }, events))
   const current = await loadSession(db, ref.tenantId, ref.sessionId)
 
   // A retried step after the PR was opened: nothing left to do.

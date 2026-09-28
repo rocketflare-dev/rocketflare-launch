@@ -123,3 +123,19 @@ export async function createSessionEventWriter(
     },
   }
 }
+
+/**
+ * Append `events` in one INSERT, numbering from the stored maximum — the unbatched writer the
+ * lifecycle steps and the ship use (`events.ts`'s emitter). The Workflow is the one writer, so the
+ * read-then-insert cannot interleave with another.
+ */
+export async function appendSessionEvents(
+  db: Database,
+  session: { id: string; tenantId: string },
+  events: readonly SessionEventInput[]
+): Promise<void> {
+  if (events.length === 0) return
+  const writer = await createSessionEventWriter(db, session)
+  writer.append(...events)
+  await writer.flush()
+}

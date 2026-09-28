@@ -19,20 +19,17 @@
  *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks.
  *
  * Routes START work (plan §1.2): they write the request columns and wake the `SessionWorkflow`
- * (`SESSION_WAKE_EVENT`, empty payload — the row is the truth); a missing `SESSION_WORKFLOW` is a
- * 503 `sessions_not_configured` before any row is written.
+ * (`wakeOrRestart`, `lifecycle.ts`: `SESSION_WAKE_EVENT` with an empty payload — the row is the
+ * truth — or a fresh instance when the old one is gone); a missing `SESSION_WORKFLOW` is a 503
+ * `sessions_not_configured` before any row is written. The answer is `toSessionDetail` (`chat.ts`).
  */
 import {
   type PreviewGrantResponse,
   previewLabel,
   previewUrl,
-  resolveSessionPolicy,
-  SESSION_WAKE_EVENT,
-  type Session,
   type SessionDetailResponse,
   type SessionPrResponse,
   TERMINAL_SESSION_STATUSES,
-  usdToMicrocents,
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Database } from '../../db/client'
@@ -40,94 +37,18 @@ import { type SessionRow, sessions } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
+import { requireSessionWorkflow, toSessionDetail } from '../services/sessions/chat'
+import { nudgeSession } from '../services/sessions/events'
+import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { defaultSessionPorts } from '../services/sessions/ports'
 import { mintGrant, PREVIEW_GRANT_PATH, PREVIEW_UI_PORT } from '../services/sessions/preview'
 import { PR_CHECKS_MAX_AGE_MS, refreshChecks } from '../services/sessions/ship'
-import type { AppBindings, AppContext } from '../types'
+import type { AppContext } from '../types'
 import { ConflictError, ServiceUnavailableError } from '../utils/core/errors'
-import { type RouteContext, uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
+import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 
 export const sessionShipRouter = createRouter()
-
-/** The session as `sessionSchema` draws it — no token, no sealed column. */
-function toSession(row: SessionRow, viewerCanManage: boolean): Session {
-  const policy = resolveSessionPolicy(row.policy)
-  return {
-    id: row.id,
-    appId: row.appId,
-    kind: row.kind,
-    shortId: row.shortId,
-    title: row.title,
-    status: row.status,
-    createdByUserId: row.createdByUserId,
-    branch: row.branch,
-    turnCount: row.turnCount,
-    costMicrocents: row.costMicrocents,
-    prNumber: row.prNumber,
-    prUrl: row.prUrl,
-    lastActivityAt: row.lastActivityAt,
-    createdAt: row.createdAt,
-    baseRef: row.baseRef,
-    baseSha: row.baseSha,
-    headSha: row.headSha,
-    requestedAction: row.requestedAction,
-    pendingMessage: row.pendingMessage !== null,
-    cancelRequested: row.cancelRequestedAt !== null,
-    imageVersion: row.imageVersion,
-    policy,
-    usage: {
-      tokensIn: row.tokensIn,
-      tokensOut: row.tokensOut,
-      cacheRead: row.cacheRead,
-      cacheWrite: row.cacheWrite,
-    },
-    budget: {
-      spentMicrocents: row.costMicrocents,
-      capMicrocents: usdToMicrocents(policy.maxSessionUsd) + row.budgetExtraMicrocents,
-      extraMicrocents: row.budgetExtraMicrocents,
-    },
-    containerSeconds: row.containerSeconds,
-    prChecks: row.prChecks ?? null,
-    error: row.error,
-    readyAt: row.readyAt,
-    suspendedAt: row.suspendedAt,
-    endedAt: row.endedAt,
-    updatedAt: row.updatedAt,
-    viewerCanManage,
-  }
-}
-
-/** The Workflow binding, or the 503 — checked before any row is written. */
-function requireWorkflow(env: AppBindings): Workflow {
-  if (!env.SESSION_WORKFLOW) {
-    throw new ServiceUnavailableError(
-      'Coding sessions are not configured on this deployment',
-      'sessions_not_configured'
-    )
-  }
-  return env.SESSION_WORKFLOW
-}
-
-/**
- * Wake the session's Workflow. The row already says what to do, so a failed wake is logged, not
- * thrown: the instance also wakes on its idle timeout and re-reads the row.
- */
-async function wake(
-  workflow: Workflow,
-  row: SessionRow,
-  logger: RouteContext['logger']
-): Promise<void> {
-  try {
-    const instance = await workflow.get(row.instanceId ?? row.id)
-    await instance.sendEvent({ type: SESSION_WAKE_EVENT, payload: {} })
-  } catch (err) {
-    logger.warn(
-      { err, sessionId: row.id },
-      'session wake failed; the Workflow will re-read the row'
-    )
-  }
-}
 
 async function visible(c: AppContext, action: 'read' | 'update') {
   const auth = guardPermission(c, action, 'Session')
@@ -165,8 +86,8 @@ async function requestAction(
 }
 
 sessionShipRouter.post('/:id/ship', async c => {
-  const { db, tenantId, logger, row } = await visible(c, 'update')
-  const workflow = requireWorkflow(c.env)
+  const { db, tenantId, logger, realtime, row } = await visible(c, 'update')
+  const workflow = requireSessionWorkflow(c.env)
   if (row.status === 'working' || row.pendingMessage !== null) {
     throw new ConflictError(
       'Wait for the current turn to finish before shipping',
@@ -194,16 +115,17 @@ sessionShipRouter.post('/:id/ship', async c => {
     targetId: row.id,
     appId: row.appId,
   })
-  await wake(workflow, updated, logger)
-  return c.json({ session: toSession(updated, true) } satisfies SessionDetailResponse, 202)
+  const woken = await wakeOrRestart(db, workflow, updated, logger)
+  nudgeSession(realtime, woken)
+  return c.json({ session: toSessionDetail(woken, true) } satisfies SessionDetailResponse, 202)
 })
 
 /** The statuses a person may end from: anything live but a ship in flight or an end already asked. */
 const ENDABLE = ['requested', 'booting', 'ready', 'working', 'blocked', 'suspended'] as const
 
 sessionShipRouter.post('/:id/end', async c => {
-  const { db, logger, row } = await visible(c, 'update')
-  const workflow = requireWorkflow(c.env)
+  const { db, logger, realtime, row } = await visible(c, 'update')
+  const workflow = requireSessionWorkflow(c.env)
   const now = new Date()
   const updated = await requestAction(
     db,
@@ -223,8 +145,11 @@ sessionShipRouter.post('/:id/end', async c => {
       'session_not_endable'
     )
   }
-  await wake(workflow, updated, logger)
-  return c.json({ session: toSession(updated, true) } satisfies SessionDetailResponse, 202)
+  // A lost instance (a `wrangler dev` reload, retention) is restarted from the row, so an end
+  // always reaches a Workflow that cleans up.
+  const woken = await wakeOrRestart(db, workflow, updated, logger)
+  nudgeSession(realtime, woken)
+  return c.json({ session: toSessionDetail(woken, true) } satisfies SessionDetailResponse, 202)
 })
 
 sessionShipRouter.post('/:id/preview-grant', async c => {

@@ -45,15 +45,21 @@ export const SESSION_UI_PORT = 5173
 /** The app's `wrangler dev` API, behind Vite's `/api` proxy. */
 export const SESSION_API_PORT = 8787
 
-/** Where the checkout lives in the container. */
+/**
+ * Where the checkout lives in the container — THE one definition: the repo step clones here, the
+ * turn runs Claude Code here (`SESSION_WORKDIR`, `claude-stream.ts`), and the checkpoint and the
+ * ship gate run git and the gate here (`SESSION_REPO_DIR`, `checkpoint.ts`).
+ */
 export const SESSION_WORKSPACE = '/workspace/app'
+/** `$HOME` in the container: the image runs everything as root, so Claude Code's state is here. */
+export const SESSION_HOME = '/root'
 /** Launch's own helper files, outside the checkout. */
 export const SESSION_LAUNCH_DIR = '/workspace/.launch'
 /**
  * Claude Code's transcripts for a session run in `SESSION_WORKSPACE` (`~/.claude/projects/<cwd with
  * / as ->/<session id>.jsonl`) — what a checkpoint copies to R2 and a resume puts back.
  */
-export const CLAUDE_PROJECT_DIR = '/root/.claude/projects/-workspace-app'
+export const CLAUDE_PROJECT_DIR = `${SESSION_HOME}/.claude/projects/${SESSION_WORKSPACE.replace(/[^A-Za-z0-9]/g, '-')}`
 
 export const claudeTranscriptPath = (claudeSessionId: string): string =>
   `${CLAUDE_PROJECT_DIR}/${claudeSessionId}.jsonl`

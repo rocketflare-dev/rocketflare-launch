@@ -33,11 +33,12 @@
  */
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
+import { SESSION_WORKSPACE } from './rocketflare-dev'
 
 // ---- the command ---------------------------------------------------------------------------------
 
-/** Where a session's checkout lives in the sandbox (the repo step clones into it). */
-export const SESSION_WORKDIR = '/workspace/app'
+/** Where a session's checkout lives in the sandbox (`SESSION_WORKSPACE`; the repo step clones into it). */
+export const SESSION_WORKDIR = SESSION_WORKSPACE
 
 /** Pushing is Launch's job (plan §1.3): Claude Code may run anything else it was pre-approved. */
 export const CLAUDE_DISALLOWED_TOOLS = 'Bash(git push:*)'

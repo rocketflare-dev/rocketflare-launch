@@ -13,10 +13,10 @@
  * `cfg`, `ports`, `sandbox`, `storage`, `emit`, `realtime`, `logger`, the ids), so each binding
  * in `defaultSessionStepHooks` is one call.
  *
- * Paths the three agree on: the checkout is `/workspace/app` (`SESSION_WORKSPACE` here,
- * `SESSION_REPO_DIR` in `checkpoint.ts`, `SESSION_WORKDIR` in `claude-stream.ts`), commands run as
- * root with `HOME=/root`, so Claude Code's transcripts are under
- * `/root/.claude/projects/-workspace-app/`.
+ * Paths the three agree on, defined ONCE in `rocketflare-dev.ts`: the checkout is
+ * `SESSION_WORKSPACE` (`/workspace/app`; `SESSION_REPO_DIR` in `checkpoint.ts` and `SESSION_WORKDIR`
+ * in `claude-stream.ts` are aliases of it), commands run as root with `SESSION_HOME` (`/root`), so
+ * Claude Code's transcripts are under `CLAUDE_PROJECT_DIR` (`/root/.claude/projects/-workspace-app/`).
  *
  * **Who writes the status.** The hooks own the transitions INSIDE their work — `runTurn` claims
  * `ready → working` and settles back to `ready` / `blocked` / `suspended` (a rollout); `ship`

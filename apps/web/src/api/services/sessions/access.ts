@@ -1,7 +1,9 @@
 /**
  * Who may see and drive a coding session (Launch P3, plan §1.6): **the creator, the app's owners
  * (a named owner or a member of its owner group) and the organisation's admins** — the same people
- * for viewing the chat, the preview, shipping, ending and extending the budget. `Session` in the
+ * for viewing the chat and the preview, sending messages, shipping and ending. **Extending the
+ * budget is narrower: the app's owners and admins only** (plan §1.11 — the creator may see the cap
+ * but not raise it; `POST /:id/budget` checks `mayDeployApp` on top of this). `Session` in the
  * ability matrix only says a member may create and update sessions at all; WHICH ones is this
  * module, as `AgentRun`'s "own runs" is its route's filter.
  *

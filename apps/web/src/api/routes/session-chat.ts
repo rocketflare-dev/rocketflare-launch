@@ -5,7 +5,7 @@
  * (`services/sessions/access.ts`): another person's session, or another tenant's, is a 404.
  *
  * - `POST /:id/turns` `sessionTurnRequestSchema` → 202 `sessionDetailResponseSchema`: stores
- *   `pending_message` and wakes the Workflow (`SESSION_WAKE_EVENT`); 409 `turn_in_progress` while
+ *   `pending_message` and wakes the Workflow (`wakeOrRestart` — a lost instance is restarted); 409 `turn_in_progress` while
  *   one is pending or `working`, 409 `session_budget_exhausted` when `blocked`, 409
  *   `session_not_active` once it is shipping or over; 503 `sessions_not_configured` without the
  *   Workflow binding, before any write.
@@ -41,9 +41,9 @@ import {
   requestTurn,
   requireSessionWorkflow,
   toSessionDetail,
-  wakeSession,
 } from '../services/sessions/chat'
 import { listSessionEvents, toSessionEvent } from '../services/sessions/event-log'
+import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { streamSessionAgui } from '../services/sessions/session-stream'
 import type { AppContext } from '../types'
 import { ForbiddenError, ValidationError } from '../utils/core/errors'
@@ -80,9 +80,10 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
   const workflow = requireSessionWorkflow(c.env)
   const { message } = c.req.valid('json')
   const updated = await requestTurn(db, row, message)
-  await wakeSession(workflow, updated, logger)
-  changed(c, tenantId, updated.id)
-  return c.json<SessionDetailResponse>({ session: toSessionDetail(updated, true) }, 202)
+  // A lost instance (a `wrangler dev` reload, retention) is restarted from the row.
+  const woken = await wakeOrRestart(db, workflow, updated, logger)
+  changed(c, tenantId, woken.id)
+  return c.json<SessionDetailResponse>({ session: toSessionDetail(woken, true) }, 202)
 })
 
 // ---- POST /api/sessions/:id/cancel ---------------------------------------------------------------
@@ -163,7 +164,7 @@ sessionChatRouter.post('/:id/budget', validate('json', extendBudgetSchema), asyn
   })
   if (result.unblocked && result.session.pendingMessage) {
     const workflow = (c.env as { SESSION_WORKFLOW?: Workflow }).SESSION_WORKFLOW
-    if (workflow) await wakeSession(workflow, result.session, logger)
+    if (workflow) await wakeOrRestart(db, workflow, result.session, logger)
   }
   changed(c, tenantId, row.id)
   return c.json<SessionDetailResponse>({ session: toSessionDetail(result.session, true) })

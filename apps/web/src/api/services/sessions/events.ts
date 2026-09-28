@@ -3,8 +3,8 @@
  * steps (boot progress, `preview.ready`, status changes, errors), the realtime nudge, and the one
  * sentence-maker for a failure a person will read.
  *
- * The log itself is `event-log.ts` (slice 3c — the reads, and the batched writer a turn uses) and
- * `appendSessionEvents` (`ship.ts`, slice 3d — `seq = max + 1`). The Workflow is the ONE writer,
+ * The log itself is `event-log.ts` — the reads, the batched writer a turn uses, and
+ * `appendSessionEvents` (`seq = max + 1`, one INSERT). The Workflow is the ONE writer,
  * and only one step runs at a time per session, so the read-then-insert cannot interleave; this
  * emitter is `appendSessionEvents` plus the `entity.changed { entity: 'session', id }` nudge.
  *
@@ -14,8 +14,8 @@
 import { SESSION_REALTIME_ENTITY, type SessionEventInput } from '@launch/shared/launch-sessions'
 import type { Database } from '../../../db/client'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
+import { appendSessionEvents } from './event-log'
 import { redactModelKeyText } from './model-key'
-import { appendSessionEvents } from './ship'
 
 export interface SessionRef {
   id: string
