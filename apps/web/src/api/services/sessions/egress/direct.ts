@@ -46,6 +46,11 @@ export class ModelKeyMissingError extends Error {
   }
 }
 
+/** Belt and braces over git's own trace redaction: the token never reaches an error message. */
+function redactGitToken(text: string, token: string): string {
+  return token ? text.split(token).join('<redacted>') : text
+}
+
 /** git's `store` format: one URL with the credential in its userinfo. */
 export function gitCredentialLine(token: string): string {
   return `https://x-access-token:${encodeURIComponent(token)}@github.com\n`
@@ -67,6 +72,26 @@ export function gitCredentialSetupScript(path = GIT_CREDENTIALS_PATH): string {
     `seen=$(git config --get-urlmatch credential.helper https://github.com/ || true)`,
     `if [ "$seen" != '${helper}' ] || [ ! -s '${path}' ]; then`,
     `  echo "git sees credential.helper='$seen' (HOME=\${HOME:-unset}, uid=$(id -u))" >&2`,
+    '  exit 1',
+    'fi',
+  ].join('\n')
+}
+
+/**
+ * Prove the credential works the way the clone will use it: the helper must answer a username for
+ * github.com, and `git ls-remote` on the repo must succeed. On failure, print the HTTP exchange
+ * (`GIT_TRACE_CURL`, which git redacts the `Authorization` header in by default) — never the
+ * helper's `password=` line.
+ */
+export function gitProbeScript(url: string): string {
+  const q = `'${url.replace(/'/g, `'\\''`)}'`
+  return [
+    `if ! printf 'protocol=https\\nhost=github.com\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | grep -q '^username='; then`,
+    `  echo "git credential fill gave no username for github.com (helper: $(git config --get-urlmatch credential.helper https://github.com/ || echo none), file: $(wc -c < '${GIT_CREDENTIALS_PATH}' 2>/dev/null || echo missing) bytes)" >&2`,
+    '  exit 1',
+    'fi',
+    `if ! GIT_TERMINAL_PROMPT=0 GIT_TRACE_CURL=1 GIT_TRACE_CURL_NO_DATA=1 git ls-remote ${q} HEAD >/dev/null 2>/tmp/launch-git-probe; then`,
+    `  grep -iE '(=> Send header|<= Recv header): (GET|HTTP/|WWW-Authenticate|Authorization|Proxy|Location|Host)|fatal' /tmp/launch-git-probe | sed -E 's/Basic [A-Za-z0-9+/=]+/Basic <redacted>/' | tail -15 >&2`,
     '  exit 1',
     'fi',
   ].join('\n')
@@ -111,6 +136,14 @@ export class DirectEgress implements SessionEgressPort {
       const detail = setup.stderr.trim().split('\n').at(-1) ?? ''
       throw new Error(
         `Could not give git its credential in the sandbox${detail ? `: ${detail}` : ''}`
+      )
+    }
+    const url = `https://github.com/${app.repoOwner}/${app.repoName}.git`
+    const probe = await sandbox.exec(gitProbeScript(url), { timeoutMs: 60_000 })
+    if (probe.exitCode !== 0) {
+      const detail = redactGitToken(probe.stderr.trim(), token.token)
+      throw new Error(
+        `git cannot reach ${app.repoOwner}/${app.repoName} with its credential:\n${detail}`
       )
     }
   }

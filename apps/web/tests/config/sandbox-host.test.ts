@@ -16,7 +16,11 @@ import TOML from '@iarna/toml'
 import { describe, expect, it } from 'vitest'
 import type { ClaudeLineMapping } from '@/api/services/sessions/claude-stream'
 import { createClaudeStreamParser } from '@/api/services/sessions/claude-stream'
-import { DirectEgress, gitCredentialSetupScript } from '@/api/services/sessions/egress/direct'
+import {
+  DirectEgress,
+  gitCredentialSetupScript,
+  gitProbeScript,
+} from '@/api/services/sessions/egress/direct'
 import { redactModelKeyText } from '@/api/services/sessions/model-key'
 import { defaultSessionPorts, egressFor, PROXIED_EGRESS } from '@/api/services/sessions/ports'
 import { CloudflareSandbox } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
@@ -258,5 +262,13 @@ describe('the direct mode’s git credential', () => {
     expect(script).not.toContain('--global')
     expect(script).toContain('git config --get-urlmatch credential.helper https://github.com/')
     expect(script).toContain('exit 1')
+  })
+
+  it('probes the clone path without ever printing the helper’s password', () => {
+    const probe = gitProbeScript('https://github.com/o/r.git')
+    expect(probe).toContain("git credential fill 2>/dev/null | grep -q '^username='")
+    expect(probe).toContain("git ls-remote 'https://github.com/o/r.git' HEAD")
+    expect(probe).toContain('Basic <redacted>')
+    expect(probe).not.toMatch(/grep[^\n]*password/)
   })
 })
