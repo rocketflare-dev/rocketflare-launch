@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) can clone: its git credential helper is
+  set in the system config, not `$HOME/.gitconfig` (which the SDK's shells did not share with the
+  clone), and the setup fails with what git sees instead of leaving the clone to ask for a username.
 - Coding sessions can run on REAL Cloudflare containers from a laptop instead of local Docker under
   amd64 emulation: set `SESSION_SANDBOX_HOST=remote` (with `SESSION_BACKEND=cloud`) in
   `apps/web/.dev.vars` and `pnpm dev` binds Launch to a new small Worker, `launch-sandbox-dev`

@@ -16,7 +16,7 @@ import TOML from '@iarna/toml'
 import { describe, expect, it } from 'vitest'
 import type { ClaudeLineMapping } from '@/api/services/sessions/claude-stream'
 import { createClaudeStreamParser } from '@/api/services/sessions/claude-stream'
-import { DirectEgress } from '@/api/services/sessions/egress/direct'
+import { DirectEgress, gitCredentialSetupScript } from '@/api/services/sessions/egress/direct'
 import { redactModelKeyText } from '@/api/services/sessions/model-key'
 import { defaultSessionPorts, egressFor, PROXIED_EGRESS } from '@/api/services/sessions/ports'
 import { CloudflareSandbox } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
@@ -244,5 +244,19 @@ describe('the transcript scrubs what a direct-mode container holds', () => {
     expect(out).not.toContain(token)
     expect(out).not.toContain('sk-ant-api03')
     expect(out).not.toContain('github_pat_')
+  })
+})
+
+describe('the direct mode’s git credential', () => {
+  // The first remote clone found no helper: `--global` is `$HOME/.gitconfig`, and the SDK's shells
+  // inherit HOME from its control server. The system config does not depend on HOME.
+  it('goes in the system config, and the script proves git sees it', () => {
+    const script = gitCredentialSetupScript('/workspace/.launch/git-credentials')
+    expect(script).toContain(
+      "git config --system credential.https://github.com.helper 'store --file=/workspace/.launch/git-credentials'"
+    )
+    expect(script).not.toContain('--global')
+    expect(script).toContain('git config --get-urlmatch credential.helper https://github.com/')
+    expect(script).toContain('exit 1')
   })
 })

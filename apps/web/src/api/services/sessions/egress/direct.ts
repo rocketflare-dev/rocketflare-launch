@@ -52,15 +52,23 @@ export function gitCredentialLine(token: string): string {
 }
 
 /**
- * Lock the file down and point git at it — for `https://github.com` only, globally (the clone runs
- * `git init` in an empty directory, and a restored workspace keeps its own `.git/config`). The
- * script names the FILE, never the token.
+ * Lock the file down and point git at it — for `https://github.com` only, in the SYSTEM config
+ * (`/etc/gitconfig`; the sandbox runs as root). Not `--global`: that is `$HOME/.gitconfig`, and the
+ * SDK's shells inherit `HOME` from its control server, which on Cloudflare did not match what the
+ * clone read (the first remote session's clone found no helper). Then PROVE git sees the helper
+ * and the file, or fail with what git sees. The script names the FILE, never the token.
  */
 export function gitCredentialSetupScript(path = GIT_CREDENTIALS_PATH): string {
+  const helper = `store --file=${path}`
   return [
     'set -e',
     `chmod 600 '${path}'`,
-    `git config --global credential.https://github.com.helper 'store --file=${path}'`,
+    `git config --system credential.https://github.com.helper '${helper}'`,
+    `seen=$(git config --get-urlmatch credential.helper https://github.com/ || true)`,
+    `if [ "$seen" != '${helper}' ] || [ ! -s '${path}' ]; then`,
+    `  echo "git sees credential.helper='$seen' (HOME=\${HOME:-unset}, uid=$(id -u))" >&2`,
+    '  exit 1',
+    'fi',
   ].join('\n')
 }
 
@@ -95,9 +103,15 @@ export class DirectEgress implements SessionEgressPort {
       { owner: app.repoOwner, repo: app.repoName },
       this.now()
     )
-    if (!token) return
+    // A container that reaches GitHub itself has no other way in: no token is a failure, not a skip.
+    if (!token) throw new Error('Launch could not get a GitHub token for this repository')
     await sandbox.writeFile(GIT_CREDENTIALS_PATH, gitCredentialLine(token.token))
     const setup = await sandbox.exec(gitCredentialSetupScript(), { timeoutMs: 30_000 })
-    if (setup.exitCode !== 0) throw new Error('Could not give git its credential in the sandbox')
+    if (setup.exitCode !== 0) {
+      const detail = setup.stderr.trim().split('\n').at(-1) ?? ''
+      throw new Error(
+        `Could not give git its credential in the sandbox${detail ? `: ${detail}` : ''}`
+      )
+    }
   }
 }
