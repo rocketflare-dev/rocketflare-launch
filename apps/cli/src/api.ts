@@ -76,8 +76,25 @@ function defaultHint(status: number): string | undefined {
   return undefined
 }
 
+/** A streamed success body (`ApiClient.download`): read it once, chunk by chunk. */
+export interface DownloadResponse {
+  status: number
+  contentType: string | null
+  /** The body as it arrives — never buffered whole, so a large export costs one chunk of memory. */
+  body: AsyncIterable<Uint8Array>
+}
+
 export interface ApiClient {
   readonly serverUrl: string
+  /**
+   * `GET` a body that may be large (the audit export) and hand it back as a stream. Errors are the
+   * same `CliApiError`s as `request`; the timeout covers reaching the server and the headers, not
+   * the length of the download.
+   */
+  download(
+    path: string,
+    options?: { query?: Record<string, QueryValue> }
+  ): Promise<DownloadResponse>
   request<T = unknown>(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
@@ -101,27 +118,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   const fetchImpl: FetchLike = options.fetch ?? ((input, init) => fetch(input, init))
   const timeoutMs = options.timeoutMs ?? 30_000
 
-  async function request<T>(
-    method: 'GET' | 'POST' | 'DELETE',
-    path: string,
-    reqOptions: RequestOptions<T> = {}
-  ): Promise<ApiResponse<T>> {
-    const url = buildUrl(serverUrl, path, reqOptions.query)
+  function baseHeaders(accept: string): Record<string, string> {
     const headers: Record<string, string> = {
-      Accept: 'application/json',
+      Accept: accept,
       'User-Agent': `${BIN_NAME}-cli/${VERSION}`,
     }
     if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`
-    if (reqOptions.body !== undefined) headers['Content-Type'] = 'application/json'
+    return headers
+  }
 
-    let response: Response
+  async function send(url: string, init: RequestInit): Promise<Response> {
     try {
-      response = await fetchImpl(url, {
-        method,
-        headers,
-        body: reqOptions.body === undefined ? undefined : JSON.stringify(reqOptions.body),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
+      return await fetchImpl(url, init)
     } catch (cause) {
       throw new CliApiError({
         status: 0,
@@ -131,6 +139,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         cause,
       })
     }
+  }
+
+  async function request<T>(
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    reqOptions: RequestOptions<T> = {}
+  ): Promise<ApiResponse<T>> {
+    const url = buildUrl(serverUrl, path, reqOptions.query)
+    const headers = baseHeaders('application/json')
+    if (reqOptions.body !== undefined) headers['Content-Type'] = 'application/json'
+
+    const response = await send(url, {
+      method,
+      headers,
+      body: reqOptions.body === undefined ? undefined : JSON.stringify(reqOptions.body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
 
     const raw = await readBody(response)
     if (!response.ok) throw errorFromResponse(response.status, raw, method, path)
@@ -151,12 +176,54 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     return { status: response.status, raw, data: parsed.data }
   }
 
+  async function download(
+    path: string,
+    downloadOptions: { query?: Record<string, QueryValue> } = {}
+  ): Promise<DownloadResponse> {
+    // The timeout guards reaching the server; once the headers are in, the body takes as long as
+    // it takes (an abort mid-body would cut a large export short).
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('timed out')), timeoutMs)
+    let response: Response
+    try {
+      response = await send(buildUrl(serverUrl, path, downloadOptions.query), {
+        method: 'GET',
+        headers: baseHeaders('*/*'),
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!response.ok)
+      throw errorFromResponse(response.status, await readBody(response), 'GET', path)
+    return {
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      body: chunksOf(response.body),
+    }
+  }
+
   return {
     serverUrl,
     request,
+    download,
     get: (path, o) => request('GET', path, o).then(r => r.data),
     post: (path, o) => request('POST', path, o).then(r => r.data),
     del: (path, o) => request('DELETE', path, o).then(r => r.data),
+  }
+}
+
+async function* chunksOf(body: ReadableStream<Uint8Array> | null): AsyncIterable<Uint8Array> {
+  if (!body) return
+  const reader = body.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) return
+      if (value && value.byteLength > 0) yield value
+    }
+  } finally {
+    reader.releaseLock()
   }
 }
 

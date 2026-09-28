@@ -564,7 +564,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
   A `DocumentCard` as a one-liner: everything that survives the width, nothing that does not.
 - `interface DocumentLinkProps`
 - `function EmptyState({ icon: Icon, message, description, action, className = '', size = 'md', }: EmptyStateProps)`
-  "Nothing here yet" for lists and panels.
+  "Nothing here yet" for lists and panels. `starfield` is a no-op outside the dark theme.
 - `function EmptyStateCard(props: EmptyStateProps)`
   Panel-wrapped empty state for grid layouts.
 - `function FieldError({ message, id }: { message?: string \| null; id?: string })`
@@ -582,7 +582,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
 - `function LoadingIndicator({ size = 'md', centered = false, fullPage = false, className = '', }: LoadingIndicatorProps)`
   DaisyUI spinner in the primary colour.
 - `function LogoMark({ className = 'w-7 h-7' }: { className?: string })`
-  The Launch mark — a rocket launching from a cloud — inlined so it needs no request and scales with `className`. The fills are the brand illustration colours, fixed on purpose (the…
+  The Rocketflare mark — a rocket launching from a cloud — inlined so it needs no request and scales with `className`. The fills are the brand illustration colours, fixed on purpose…
 - `function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)`
   `<dialog>`-based modal: native focus trap, Escape and backdrop close, `aria-modal` for free. Controlled — the caller owns `open`. Falls back to the `open` attribute where…
 - `interface ModalProps`

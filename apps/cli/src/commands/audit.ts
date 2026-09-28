@@ -14,13 +14,15 @@
  *   hash offline, with no Launch and no dependencies. CSV is for reading (cells a spreadsheet would
  *   run as a formula are prefixed with `'`).
  *
- * `api.ts` is the only fetch site and reads a body whole, so the export is buffered rather than
- * piped to disk; the server streams it.
+ * The export is streamed end to end: the server writes it a page at a time and `api.ts`'s
+ * `download` hands the body over chunk by chunk, straight into the file (a cut-off download is
+ * removed, never left to verify as a shorter chain). A filtered JSON Lines export verifies with
+ * `--filtered`: each row carries the `prevHash` it was sealed on.
  *
  * `cli.ts` calls `registerAuditCommands(program, action)` once, after the kit's own commands (the
  * plugin `register` shape, `plugins/types.ts`), so this file never edits `cli.ts`.
  */
-import { writeFile } from 'node:fs/promises'
+import { type FileHandle, open, rm } from 'node:fs/promises'
 import {
   AUDIT_EXPORT_FORMATS,
   type AuditExportFormat,
@@ -69,14 +71,28 @@ export interface AuditExportOptions {
 }
 
 /**
- * `api.ts` hands back the body parsed as JSON when it parses — which a one-line JSON Lines export
- * does. The server wrote that line with `JSON.stringify`, so writing it back the same way is the
- * same bytes.
+ * Counts the lines of a streamed body across chunk boundaries: `\n` for JSON Lines, `\r\n` for
+ * CSV (whose quoted cells may hold a bare `\n`), plus a last line with no terminator.
  */
-function bodyText(raw: unknown): string {
-  if (raw === undefined || raw === null) return ''
-  if (typeof raw === 'string') return raw
-  return `${JSON.stringify(raw)}\n`
+function lineCounter(format: AuditExportFormat) {
+  let lines = 0
+  let bytes = 0
+  let previous = -1
+  return {
+    add(chunk: Uint8Array) {
+      for (const byte of chunk) {
+        if (byte === 0x0a && (format === 'json' || previous === 0x0d)) lines += 1
+        previous = byte
+      }
+      bytes += chunk.byteLength
+    },
+    get bytes() {
+      return bytes
+    },
+    get lines() {
+      return lines + (bytes > 0 && previous !== 0x0a ? 1 : 0)
+    },
+  }
 }
 
 export async function runAuditExport(
@@ -84,7 +100,9 @@ export async function runAuditExport(
   options: AuditExportOptions
 ): Promise<void> {
   const format = options.format ?? 'json'
-  const { raw } = await requireClient(ctx).request('GET', '/api/audit/export', {
+  const filtered = Boolean(options.app || options.action || options.from || options.to)
+  // The server streams the export; so does this — straight to the file, never whole in memory.
+  const { body } = await requireClient(ctx).download('/api/audit/export', {
     query: {
       format,
       appId: options.app,
@@ -93,9 +111,9 @@ export async function runAuditExport(
       to: options.to,
     },
   })
-  const text = bodyText(raw)
+  let file: FileHandle
   try {
-    await writeFile(options.out, text, { mode: 0o600, flag: options.force ? 'w' : 'wx' })
+    file = await open(options.out, options.force ? 'w' : 'wx', 0o600)
   } catch (error) {
     const code = (error as { code?: string }).code
     throw new CliError(
@@ -105,13 +123,29 @@ export async function runAuditExport(
       { exitCode: EXIT_ERROR, hint: code === 'EEXIST' ? 'Pass --force to replace it.' : undefined }
     )
   }
-  const lines = text.split(format === 'csv' ? '\r\n' : '\n').filter(Boolean).length
-  const rows = format === 'csv' ? Math.max(lines - 1, 0) : lines
-  const summary = { file: options.out, format, rows, bytes: Buffer.byteLength(text) }
+  const counter = lineCounter(format)
+  try {
+    for await (const chunk of body) {
+      counter.add(chunk)
+      await file.write(chunk)
+    }
+  } catch (error) {
+    await file.close()
+    // A half-written export is worse than none: it would verify as a shorter chain.
+    await rm(options.out, { force: true })
+    throw new CliError(`the export was cut off: ${(error as Error).message ?? error}`, {
+      exitCode: EXIT_ERROR,
+      hint: 'Nothing was kept; run the export again.',
+      cause: error,
+    })
+  }
+  await file.close()
+  const rows = format === 'csv' ? Math.max(counter.lines - 1, 0) : counter.lines
+  const summary = { file: options.out, format, rows, bytes: counter.bytes }
   ctx.out.data(summary, () => {
     const verify =
       format === 'json'
-        ? `\nVerify it offline: node scripts/verify-audit-export.mjs ${options.out}`
+        ? `\nVerify it offline: node scripts/verify-audit-export.mjs ${filtered ? '--filtered ' : ''}${options.out}`
         : ''
     return `Wrote ${rows} audit event(s) to ${options.out} (${format}).${verify}`
   })

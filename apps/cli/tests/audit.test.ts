@@ -165,6 +165,58 @@ describe('audit export', () => {
     })
   })
 
+  it('streams: counts lines across chunk boundaries and hints --filtered for a filtered export', async () => {
+    const store = await loggedInStore()
+    const encoder = new TextEncoder()
+    // Split mid-line and between the \r and \n of a CSV record end.
+    const parts = ['seq,hash,id\r', '\n1,abc,"a\nb"\r\n2,d', 'ef,y\r\n']
+    const stream = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const part of parts) controller.enqueue(encoder.encode(part))
+            controller.close()
+          },
+        }),
+        { headers: { 'content-type': 'text/csv' } }
+      )
+    const { fetch } = mockFetch({ '/api/audit/export': stream })
+    const dir = await tempDir()
+    const { ctx, out: output } = await testContext({ store, fetch, json: true })
+    await runAuditExport(ctx, { out: join(dir, 'a.csv'), format: 'csv' })
+    expect(await readFile(join(dir, 'a.csv'), 'utf8')).toBe(parts.join(''))
+    expect(JSON.parse(output.content())).toMatchObject({ rows: 2, bytes: parts.join('').length })
+
+    const json = mockFetch({
+      '/api/audit/export': () => textResponse(`${LINE_1}\n${LINE_2}`, 'application/x-ndjson'),
+    })
+    const plain = await testContext({ store, fetch: json.fetch })
+    await runAuditExport(plain.ctx, { out: join(dir, 'd.jsonl'), action: 'deploy' })
+    expect(plain.out.content()).toContain('Wrote 2 audit event(s)')
+    expect(plain.out.content()).toContain('verify-audit-export.mjs --filtered ')
+  })
+
+  it('a download cut off mid-body leaves no file behind', async () => {
+    const store = await loggedInStore()
+    const { fetch } = mockFetch({
+      '/api/audit/export': () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`${LINE_1}\n`))
+              controller.error(new Error('socket hang up'))
+            },
+          })
+        ),
+    })
+    const out = join(await tempDir(), 'cut.jsonl')
+    const { ctx } = await testContext({ store, fetch })
+    const error = await captureError(runAuditExport(ctx, { out }))
+    expect(exitCodeFor(error)).toBe(EXIT_ERROR)
+    expect(error.message).toContain('cut off')
+    await expect(stat(out)).rejects.toThrow()
+  })
+
   it('refuses to overwrite without --force', async () => {
     const store = await loggedInStore()
     const { fetch } = mockFetch({
