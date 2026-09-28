@@ -9,8 +9,14 @@
     "name": "launch",
     "zone": "clewro.com",
     "routes": [
-      { "host": "local.clewro.com", "port": 3000 },
-      { "host": "*.clewro.com", "port": 3001 }
+      {
+        "host": "local.clewro.com",
+        "port": 3000
+      },
+      {
+        "host": "*.clewro.com",
+        "port": 3001
+      }
     ]
   },
   "scripts": {
