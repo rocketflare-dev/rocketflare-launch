@@ -99,8 +99,10 @@ export async function seedDeployableApp(
   const created = await neon.createProject({ name: slug, regionId: 'aws-us-east-2' })
   const projectId = created.project.id
   const mainBranchId = created.branch.id
-  await neon.createRole(projectId, mainBranchId, 'migrator')
-  await neon.createRole(projectId, mainBranchId, 'app')
+  // As the neon step makes them: in SQL, by `neondb_owner` — not the API's `neon_superuser` roles.
+  cloud.neon.sqlRole(projectId, mainBranchId, 'migrator', { canCreateRole: true })
+  cloud.neon.sqlRole(projectId, mainBranchId, 'app')
+  cloud.neon.grant(projectId, mainBranchId, 'migrator', 'app')
   await neon.createDatabase(projectId, mainBranchId, { name: 'app', ownerName: 'migrator' })
   const { branch } = await neon.createBranch(projectId, { name: 'staging', parentId: mainBranchId })
 

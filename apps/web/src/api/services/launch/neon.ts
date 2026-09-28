@@ -30,6 +30,15 @@
  *   `…/roles/{name}/reset_password`, `…/databases {database:{name, owner_name}}`. A create or a
  *   reset answers with the PASSWORD — a secret the caller uses at once and never persists (and
  *   never returns from a Workflow step).
+ * - `DELETE …/branches/{b}/roles/{name}` and `DELETE …/branches/{b}/databases/{name}` →
+ *   `{ role | database, operations }` — the neon step's repair of a project whose roles the API
+ *   created (see `pipeline/provision-neon.ts`).
+ * - **API-created roles are too privileged for an app** (seen on a real project, Postgres 17.11):
+ *   `cloud_admin` creates them and makes each a `neon_superuser` member (CREATEROLE, BYPASSRLS),
+ *   and `neondb_owner` — a member too, without ADMIN OPTION — cannot grant membership in one on
+ *   PG16+ ("permission denied to grant role"). Roles `neondb_owner` creates in SQL are ordinary,
+ *   the API lists them, and `reset_password`, `connection_uri` and a database's `owner_name` all
+ *   work with them — so the pipeline creates its roles in SQL.
  * - `POST …/branches {branch:{name, parent_id?}, endpoints:[{type:'read_write'}]}`. A branch
  *   INHERITS its parent's role passwords, so the pipeline resets them on the new branch.
  * - `GET …/connection_uri?branch_id&database_name&role_name&pooled` → `{ uri }` — a secret.
@@ -44,7 +53,8 @@
  *   session (Neon caps branches per project — 10 on Launch, 25 on Scale).
  * - **HTTP SQL** (`runSql`): `POST https://api.<endpoint's region host>/sql` with the connection
  *   string in the `Neon-Connection-String` header and `{ query, params }` — what
- *   `@neondatabase/serverless`'s `neon()` does, without importing a driver into this module.
+ *   `@neondatabase/serverless`'s `neon()` does, without importing a driver into this module. ONE
+ *   statement per call.
  */
 
 export const NEON_API_BASE = 'https://console.neon.tech/api/v2'
@@ -288,6 +298,22 @@ export class NeonClient {
     )
   }
 
+  /**
+   * Delete a role on a branch — the way to drop a role Neon's API created (it is a
+   * `neon_superuser` member created by `cloud_admin`, so `neondb_owner` holds no ADMIN on it and
+   * cannot `DROP ROLE` it in SQL). A missing role is a 404 (`isNeonNotFound`).
+   */
+  deleteRole(
+    projectId: string,
+    branchId: string,
+    roleName: string
+  ): Promise<{ role: NeonRole; operations: NeonOperation[] }> {
+    return this.request(
+      'DELETE',
+      `/projects/${enc(projectId)}/branches/${enc(branchId)}/roles/${enc(roleName)}`
+    )
+  }
+
   createDatabase(
     projectId: string,
     branchId: string,
@@ -296,6 +322,23 @@ export class NeonClient {
     return this.request('POST', `/projects/${enc(projectId)}/branches/${enc(branchId)}/databases`, {
       database: { name: input.name, owner_name: input.ownerName },
     })
+  }
+
+  /** Delete a database on a branch, with everything in it. A missing one is a 404. */
+  deleteDatabase(
+    projectId: string,
+    branchId: string,
+    name: string
+  ): Promise<{ database: NeonDatabase; operations: NeonOperation[] }> {
+    return this.request(
+      'DELETE',
+      `/projects/${enc(projectId)}/branches/${enc(branchId)}/databases/${enc(name)}`
+    )
+  }
+
+  /** `runSql` through this client's injected `fetch` — ONE statement, as the URI's role. */
+  sql(uri: string, query: string, params: readonly unknown[] = []): Promise<NeonSqlResult> {
+    return runSql(uri, query, params, this.opts.fetch ?? fetch)
   }
 
   /**
@@ -379,7 +422,8 @@ export function neonSqlEndpoint(uri: string): string {
 /**
  * Run ONE statement over Neon's HTTP SQL endpoint as the URI's role — no driver, no socket. The
  * URI is a credential: it goes in a header, and neither it nor Neon's error echoing it is logged
- * here (the caller scrubs). Used once per app, to `GRANT migrator TO app` as `neondb_owner`.
+ * here (the caller scrubs). The neon step runs its role, extension and `GRANT` statements through
+ * it as `neondb_owner`, one per call.
  */
 export async function runSql(
   uri: string,

@@ -924,9 +924,11 @@ succeeded row skipped with its stored ids, failures scrubbed. No step result car
 step that mints one puts it on the Worker itself.
 
 - **Steps**: `reserve` → `repo` (private repo + the two scaffold files) → `scaffold.start|wait|
-  verify` (§18.6; `.rocketflare.json` and the toml names must match `names.ts`) → `neon` (project,
-  `migrator` owning database `app`, `app` inheriting it via `GRANT` over the HTTP SQL endpoint as
-  `neondb_owner`, a `staging` branch with both passwords reset) → `cloudflare` (KV, queue, R2 per
+  verify` (§18.6; `.rocketflare.json` and the toml names must match `names.ts`) → `neon` (project;
+  then, as `neondb_owner` over the HTTP SQL endpoint with a password minted for the step, one
+  statement per call: roles `migrator` (LOGIN CREATEROLE) and `app` (LOGIN) created IN SQL,
+  database `app` owned by `migrator` through the API, `CREATE EXTENSION IF NOT EXISTS vector` in
+  it, `GRANT migrator TO app`; a `staging` branch with both passwords reset) → `cloudflare` (KV, queue, R2 per
   environment) → `oidc_client` → `write_config` (both tomls, one commit: the ids, `APP_URL`,
   `EMAIL_FROM`, `TENANCY_MODE=single`, `SIGNUP_MODE=open`, Launch as `OIDC_ISSUER`,
   `AUTH_OIDC_ONLY`, `workers_dev=false`) → `placeholders` (a stub Worker per environment applying
@@ -934,6 +936,19 @@ step that mints one puts it on the Worker itself.
   (environments, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
   `worker_secrets` → `email` (non-blocking) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
+- **Why SQL roles** (verified on a real Neon project, Postgres 17.11): a role Neon's API creates
+  is `cloud_admin`'s and a `neon_superuser` member (CREATEROLE, BYPASSRLS) — far too much for the
+  Worker's `app` — and `neondb_owner`, a member without ADMIN OPTION, cannot grant it on PG16+
+  ("permission denied to grant role"). A role `neondb_owner` creates in SQL is ordinary, it may
+  grant it, and Neon's API lists it, resets its password, builds its `connection_uri` and accepts
+  it as a database owner. `migrator` is no `neon_superuser`, so the step creates `vector` itself
+  (the kit's `CREATE EXTENSION IF NOT EXISTS vector` is then a no-op); as `migrator` the kit can
+  create tables, its RLS role and `GRANT` that role to `app`. Each role, the membership and the
+  database is checked before it is written, so a retry repeats nothing. **Repair**: a project an
+  earlier Launch left with API-created `migrator`/`app` (either a `neon_superuser` member) has
+  database `app` deleted through the API — only when it has no table in `public` — and those roles
+  deleted through the API, then recreated in SQL; with tables, or a `staging` branch already cut
+  from them, the step fails saying so and deletes nothing.
 - **The adapter** is `pipeline/ports.ts` `defaultPorts()`: `rocketflare/{names,toml,
   placeholder-worker,scaffold-job}.ts` and `scaffold/github-actions-runner.ts`. The Workflow
   depends on the ports only.
@@ -989,8 +1004,9 @@ step and then fails the run as that error (no run link); the
 deploy); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
 apply it); `write_config` answers only the kit's one KV binding (`RATE_LIMIT_KV`) — a toml declaring
 another fails the step by name; the owner group is not mapped to GitHub team access; everything is
-proven against the FakeCloud only (plan §5 lists what the first real run must confirm: the Neon
-`GRANT` on Postgres 17 and `db:migrate:ci` as `migrator`; version upload onto a placeholder with
+proven against the FakeCloud only, except the Neon roles above (plan §5 lists what the first real
+run must still confirm: `db:migrate:ci` as `migrator` end to end; that deleting an API role through
+Neon's API works on the repair path; version upload onto a placeholder with
 `v1`, workflows and consumers on it, schedules, a 5–10 MB upload, per-app routes over Launch's
 catch-all; the GitHub App's permissions, how soon a pushed workflow is dispatchable, whether an
 installation token may push workflow files, the OIDC claim shapes, `ci.yml` against the 45-minute

@@ -69,7 +69,11 @@
  *   id → {name, parent_id, init_source, host, roles: name → {password, resets}, databases}}`),
  *   `branchNamed(projectId, name)`, `resetCount(projectId, role)`, `sql` (every HTTP SQL statement
  *   with its role), `grants`. P3: branches take `init_source` and `endpoints: []`, list their
- *   endpoints and can be DELETEd (not the default one, not one with children).
+ *   endpoints and can be DELETEd (not the default one, not one with children). Roles carry
+ *   `superuser` (a `neon_superuser` member — the API's) and `createdBy`; HTTP SQL runs `CREATE
+ *   ROLE`, `GRANT` (only by the role's creator, else "permission denied to grant role"), `CREATE
+ *   EXTENSION` and the neon step's catalogue reads, one statement per call; roles and databases
+ *   can be DELETEd; `addTable` / `sqlRole` / `grant` seed state directly.
  * - `cloud.resend` (`FakeResend`): `apiKeys` (id → `{name, token, permission, domain_id}`),
  *   `domains`.
  * - `cloud.github` (`FakeGitHub`): `repos` (`owner/name` lower-case → `{id, archived, refs,

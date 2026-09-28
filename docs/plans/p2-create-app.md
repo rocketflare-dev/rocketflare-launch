@@ -19,7 +19,8 @@ This is the P2 build plan ([spec/11](../../spec/11-roadmap.md)). It was checked 
    A later build that adds a new migration tag is refused with a clear error (known gap).
 3. **Database roles.** Kit 0.15's Worker needs owner-level rights, because RLS is inert for the owner.
    - `migrator` owns the database `app`, and `app` is `GRANT migrator TO app`, run once on `main` before branching.
-   - The grant runs as `neondb_owner` (password reset on demand, never stored) over Neon's HTTP SQL endpoint: `fetch https://<host>/sql` with the `Neon-Connection-String` header. It never imports a driver.
+   - The grant runs as `neondb_owner` (password reset on demand, never stored) over Neon's HTTP SQL endpoint: `fetch https://<host>/sql` with the `Neon-Connection-String` header, one statement per call. It never imports a driver.
+   - Both roles are created IN SQL by `neondb_owner`, not through Neon's role API: an API role is a `neon_superuser` member that `neondb_owner` cannot grant on PG16+ (verified on real Neon, Postgres 17.11). `neondb_owner` also creates `vector` in `app`.
 4. **The app's first deploy runs its whole gate** (`ci.yml`, then `test:config` with `REQUIRE_PROVISIONED=1`), so the scaffold must leave lint, typecheck and config tests green.
    - rocketflare#37 must be patched around.
    - `write_config` sets `TENANCY_MODE="single"`, `SIGNUP_MODE="open"`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `AUTH_OIDC_ONLY="true"` and `workers_dev=false`.
@@ -274,8 +275,9 @@ Later slices that need a change there stop and report.
    - `scaffold.verify`: `.rocketflare.json` must have `app.slug === slug` and `kit.version === tag`, and the toml names must equal `names.ts`. Then set `template_ref` and `template_commit`.
 4. **`neon`**:
    - create the project;
-   - create roles `migrator` and `app`, and database `app` owned by `migrator`;
-   - `runSql GRANT migrator TO app`, as `neondb_owner` after a password reset;
+   - reset `neondb_owner`'s password and read its direct URI;
+   - as `neondb_owner` in SQL: `CREATE ROLE migrator LOGIN CREATEROLE` and `CREATE ROLE app LOGIN` (throwaway passwords), each only if `pg_roles` lacks it — repairing first a project whose roles the API created (see `docs/CONCEPTS.md` §18.5);
+   - database `app` owned by `migrator` (API), `CREATE EXTENSION IF NOT EXISTS vector` in it, and `GRANT migrator TO app` unless `pg_auth_members` has it;
    - create branch `staging` and reset both roles' passwords on it (a branch inherits its parent's passwords);
    - record every id.
 5. **`cloudflare`**: KV, queue and R2 for each environment, recording each id as soon as it exists. On retry, a name conflict is adopted only if no other app records that id.
@@ -443,9 +445,9 @@ On an uncaught failure: status `failed` and audit `app.launch_failed`.
 ## 5. What is left for the real-infrastructure exit
 
 1. **Neon:**
-   - check `GRANT migrator TO app` as `neondb_owner` on Postgres 17;
-   - check that `db:migrate:ci` runs as `migrator`;
-   - fallback: create the roles by SQL and rotate them with `ALTER ROLE … PASSWORD`.
+   - ~~check `GRANT migrator TO app` as `neondb_owner` on Postgres 17~~ — verified on 17.11: it FAILS for API-created roles (`neon_superuser` members); roles created in SQL by `neondb_owner` work, and the API lists them, resets their passwords and accepts `migrator` as the database owner. The step now creates them in SQL;
+   - check that `db:migrate:ci` runs as `migrator` (the statements it needs — `CREATE EXTENSION IF NOT EXISTS vector` as a no-op, `CREATE TABLE`, `CREATE ROLE`, `GRANT <rls role> TO app` — were verified one by one);
+   - check that the repair path's `DELETE …/roles/{name}` removes an API-created role.
 2. **Cloudflare:**
    - a version upload onto a placeholder that already has migration `v1`;
    - `putWorkflow` and queue consumers on a script created by version upload;

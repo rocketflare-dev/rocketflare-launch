@@ -9,6 +9,17 @@
  * no data was meant to come along), `endpoints: []` for a branch with no compute,
  * `GET …/branches/{b}/endpoints`, and `DELETE …/branches/{b}` (a branch with children is refused,
  * as Neon refuses it; a deleted one is a 404). `branchNamed(projectId, name)` finds one.
+ *
+ * Roles are modelled as a real Neon project has them (checked on Postgres 17.11): one the API
+ * creates — and `neondb_owner` — is made by `cloud_admin` and is a `neon_superuser` member; one a
+ * role creates in SQL (`CREATE ROLE`, which needs CREATEROLE) is ordinary and records its
+ * creator. `GRANT r TO m` succeeds only for the role that created `r` (it holds ADMIN), else
+ * `permission denied to grant role "r"`, as PG16+ answers `neondb_owner` for an API role.
+ * `CREATE EXTENSION` needs a `neon_superuser` member unless it already exists (`IF NOT EXISTS`).
+ * The HTTP SQL endpoint takes ONE statement and understands the few Launch sends (see
+ * `execute`); anything else answers an empty SELECT. `DELETE …/roles/{r}` and
+ * `DELETE …/databases/{d}` exist; a role that owns a database is refused. `addTable` seeds a
+ * table (a database with data), `sqlRole` a role as if created in SQL.
  */
 import {
   belongsTo,
@@ -24,6 +35,12 @@ export interface FakeNeonRole {
   password: string
   /** How many times the password was reset on THIS branch. */
   resets: number
+  /** A `neon_superuser` member — every role Neon's API creates, and `neondb_owner`. */
+  superuser: boolean
+  /** Who created it: `cloud_admin` for the API's, else the role that ran `CREATE ROLE`. */
+  createdBy: string
+  /** CREATEROLE. */
+  canCreateRole: boolean
 }
 
 export interface FakeNeonBranch {
@@ -38,6 +55,11 @@ export interface FakeNeonBranch {
   host: string
   roles: Map<string, FakeNeonRole>
   databases: Map<string, { name: string; owner_name: string }>
+  /** Role memberships on this branch, as `"role->member"`. */
+  members: Set<string>
+  /** Per database: the tables in `public`, and the extensions created. */
+  tables: Map<string, Set<string>>
+  extensions: Map<string, Set<string>>
 }
 
 export interface FakeNeonProject {
@@ -65,6 +87,15 @@ const BASE = '/api/v2'
 
 const neonError = (status: number, message: string) =>
   json({ code: String(status), message }, status)
+
+const API_CREATOR = 'cloud_admin'
+
+/** A role as Neon's API makes it: `cloud_admin`'s, in `neon_superuser`. */
+function apiRole(name: string, password: string): FakeNeonRole {
+  return { name, password, resets: 0, superuser: true, createdBy: API_CREATOR, canCreateRole: true }
+}
+
+const bare = (name: string) => name.replace(/^"(.*)"$/, '$1')
 
 export class FakeNeon implements VendorHandler {
   readonly projects = new Map<string, FakeNeonProject>()
@@ -192,9 +223,12 @@ export class FakeNeon implements VendorHandler {
       const withCompute = !Array.isArray(endpoints) || endpoints.length > 0
       const branch = this.newBranch(project, name, parent.id, { initSource, withCompute })
       for (const role of parent.roles.values()) {
-        branch.roles.set(role.name, { name: role.name, password: role.password, resets: 0 })
+        branch.roles.set(role.name, { ...role, resets: 0 })
       }
       for (const db of parent.databases.values()) branch.databases.set(db.name, { ...db })
+      for (const m of parent.members) branch.members.add(m)
+      for (const [db, t] of parent.tables) branch.tables.set(db, new Set(t))
+      for (const [db, e] of parent.extensions) branch.extensions.set(db, new Set(e))
       return json(
         {
           branch: this.branchJson(branch),
@@ -242,7 +276,7 @@ export class FakeNeon implements VendorHandler {
     if (sub === '/roles' && m === 'POST') {
       const name = String(body.role?.name ?? '')
       if (branch.roles.has(name)) return neonError(409, `role ${name} already exists`)
-      const role: FakeNeonRole = { name, password: this.ids.secret('npg_'), resets: 0 }
+      const role = apiRole(name, this.ids.secret('npg_'))
       branch.roles.set(name, role)
       return json(
         { role: this.roleJson(branch, role, true), operations: [this.op(project, 'apply_config')] },
@@ -251,6 +285,36 @@ export class FakeNeon implements VendorHandler {
     }
     if (sub === '/roles' && m === 'GET') {
       return json({ roles: [...branch.roles.values()].map(r => this.roleJson(branch, r, false)) })
+    }
+    match = sub.match(/^\/roles\/([^/]+)$/)
+    if (match && m === 'DELETE') {
+      const name = decodeURIComponent(match[1])
+      const role = branch.roles.get(name)
+      if (!role) return neonError(404, 'role not found')
+      const owned = [...branch.databases.values()].find(d => d.owner_name === name)
+      if (owned) return neonError(422, `role ${name} owns database ${owned.name}`)
+      branch.roles.delete(name)
+      for (const key of [...branch.members]) {
+        const [r, member] = key.split('->')
+        if (r === name || member === name) branch.members.delete(key)
+      }
+      return json({
+        role: this.roleJson(branch, role, false),
+        operations: [this.op(project, 'apply_config')],
+      })
+    }
+    match = sub.match(/^\/databases\/([^/]+)$/)
+    if (match && m === 'DELETE') {
+      const name = decodeURIComponent(match[1])
+      const database = branch.databases.get(name)
+      if (!database) return neonError(404, 'database not found')
+      branch.databases.delete(name)
+      branch.tables.delete(name)
+      branch.extensions.delete(name)
+      return json({
+        database: { ...database, branch_id: branch.id },
+        operations: [this.op(project, 'apply_config')],
+      })
     }
     match = sub.match(/^\/roles\/([^/]+)\/reset_password$/)
     if (match && m === 'POST') {
@@ -298,6 +362,9 @@ export class FakeNeon implements VendorHandler {
         : '',
       roles: new Map(),
       databases: new Map(),
+      members: new Set(),
+      tables: new Map(),
+      extensions: new Map(),
     }
     project.branches.set(branch.id, branch)
     return branch
@@ -316,11 +383,7 @@ export class FakeNeon implements VendorHandler {
     }
     this.projects.set(project.id, project)
     const main = this.newBranch(project, 'main', null)
-    const owner: FakeNeonRole = {
-      name: 'neondb_owner',
-      password: this.ids.secret('npg_'),
-      resets: 0,
-    }
+    const owner = apiRole('neondb_owner', this.ids.secret('npg_'))
     main.roles.set(owner.name, owner)
     main.databases.set('neondb', { name: 'neondb', owner_name: owner.name })
     return json(
@@ -390,19 +453,162 @@ export class FakeNeon implements VendorHandler {
           return neonError(400, `database "${database}" does not exist`)
         const body = (req.json ?? {}) as { query?: string; params?: unknown[] }
         const query = String(body.query ?? '')
+        const params = body.params ?? []
         this.sql.push({
           projectId: project.id,
           branchId: branch.id,
           role: role.name,
           database,
           query,
-          params: body.params ?? [],
+          params,
         })
-        const grant = /^\s*GRANT\s+"?(\w+)"?\s+TO\s+"?(\w+)"?/i.exec(query)
-        if (grant) this.grants.push({ projectId: project.id, role: grant[1], member: grant[2] })
-        return json({ command: grant ? 'GRANT' : 'SELECT', rowCount: 0, rows: [], fields: [] })
+        return this.execute(project, branch, role, database, query, params)
       }
     }
     return neonError(404, `endpoint ${endpointId} not found`)
+  }
+
+  /**
+   * One statement, as `caller` in `database`. Understood: `CREATE ROLE`, `DROP ROLE`, `GRANT r TO
+   * m`, `CREATE EXTENSION`, `CREATE TABLE`, and the catalogue reads the neon step makes
+   * (`pg_roles` with `neon_superuser` membership, `pg_auth_members`, `pg_database`, `pg_tables`).
+   */
+  private execute(
+    project: FakeNeonProject,
+    branch: FakeNeonBranch,
+    caller: FakeNeonRole,
+    database: string,
+    raw: string,
+    params: unknown[]
+  ): Response {
+    const statements = raw
+      .split(';')
+      .map(s => s.trim())
+      .filter(Boolean)
+    if (statements.length > 1) {
+      return neonError(400, 'cannot insert multiple commands into a prepared statement')
+    }
+    const query = statements[0] ?? ''
+    const ok = (command: string, rows: Record<string, unknown>[] = []) =>
+      json({ command, rowCount: rows.length, rows, fields: [] })
+    let match: RegExpExecArray | null
+
+    match = /^CREATE\s+ROLE\s+("?\w+"?)(.*)$/is.exec(query)
+    if (match) {
+      const name = bare(match[1])
+      if (!caller.canCreateRole) return neonError(400, 'permission denied to create role')
+      if (branch.roles.has(name)) return neonError(400, `role "${name}" already exists`)
+      const attrs = match[2]
+      const password = /PASSWORD\s+'((?:[^']|'')*)'/i.exec(attrs)?.[1]?.replaceAll("''", "'")
+      branch.roles.set(name, {
+        name,
+        password: password ?? '',
+        resets: 0,
+        superuser: false,
+        createdBy: caller.name,
+        canCreateRole: /\bCREATEROLE\b/i.test(attrs),
+      })
+      return ok('CREATE')
+    }
+    match = /^DROP\s+ROLE\s+(IF\s+EXISTS\s+)?("?\w+"?)$/i.exec(query)
+    if (match) {
+      const name = bare(match[2])
+      const target = branch.roles.get(name)
+      if (!target) {
+        return match[1] ? ok('DROP') : neonError(400, `role "${name}" does not exist`)
+      }
+      if (target.createdBy !== caller.name) {
+        return neonError(400, `permission denied to drop role "${name}"`)
+      }
+      branch.roles.delete(name)
+      return ok('DROP')
+    }
+    match = /^GRANT\s+("?\w+"?)\s+TO\s+("?\w+"?)$/i.exec(query)
+    if (match) {
+      const [name, member] = [bare(match[1]), bare(match[2])]
+      const target = branch.roles.get(name)
+      if (!target) return neonError(400, `role "${name}" does not exist`)
+      if (!branch.roles.has(member)) return neonError(400, `role "${member}" does not exist`)
+      if (target.createdBy !== caller.name) {
+        return neonError(400, `permission denied to grant role "${name}"`)
+      }
+      branch.members.add(`${name}->${member}`)
+      this.grants.push({ projectId: project.id, role: name, member })
+      return ok('GRANT')
+    }
+    match = /^CREATE\s+EXTENSION\s+(IF\s+NOT\s+EXISTS\s+)?("?\w+"?)/i.exec(query)
+    if (match) {
+      const name = bare(match[2])
+      const installed = branch.extensions.get(database) ?? new Set<string>()
+      if (installed.has(name)) {
+        return match[1] ? ok('CREATE') : neonError(400, `extension "${name}" already exists`)
+      }
+      if (!caller.superuser)
+        return neonError(400, `permission denied to create extension "${name}"`)
+      installed.add(name)
+      branch.extensions.set(database, installed)
+      return ok('CREATE')
+    }
+    match = /^CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?(?:public\.)?("?\w+"?)/i.exec(query)
+    if (match) {
+      this.addTable(project.id, branch.id, database, bare(match[2]))
+      return ok('CREATE')
+    }
+    if (/FROM\s+pg_roles\s+r\s+WHERE\s+r\.rolname\s+IN/i.test(query)) {
+      const rows = params
+        .map(p => branch.roles.get(String(p)))
+        .filter((r): r is FakeNeonRole => r !== undefined)
+        .map(r => ({ name: r.name, superuser: r.superuser ? 't' : 'f' }))
+      return ok('SELECT', rows)
+    }
+    if (/^SELECT\s+1\s+FROM\s+pg_auth_members/i.test(query)) {
+      const member = branch.members.has(`${params[0]}->${params[1]}`)
+      return ok('SELECT', member ? [{ '?column?': '1' }] : [])
+    }
+    if (/FROM\s+pg_database\s+WHERE\s+datname/i.test(query)) {
+      return ok('SELECT', branch.databases.has(String(params[0])) ? [{ '?column?': '1' }] : [])
+    }
+    if (/FROM\s+pg_tables\s+WHERE\s+schemaname\s*=\s*'public'/i.test(query)) {
+      return ok('SELECT', [{ n: String(branch.tables.get(database)?.size ?? 0) }])
+    }
+    return ok('SELECT')
+  }
+
+  /** Seed a table in `public` of a branch's database — a database with data in it. */
+  addTable(projectId: string, branchId: string, database: string, table: string): void {
+    const branch = this.projects.get(projectId)?.branches.get(branchId)
+    if (!branch?.databases.has(database)) throw new Error(`no database ${database} to seed`)
+    const tables = branch.tables.get(database) ?? new Set<string>()
+    tables.add(table)
+    branch.tables.set(database, tables)
+  }
+
+  /** Seed a role as if `createdBy` had run `CREATE ROLE` (not a `neon_superuser` member). */
+  sqlRole(
+    projectId: string,
+    branchId: string,
+    name: string,
+    opts: { createdBy?: string; canCreateRole?: boolean } = {}
+  ): FakeNeonRole {
+    const branch = this.projects.get(projectId)?.branches.get(branchId)
+    if (!branch) throw new Error(`no branch ${branchId}`)
+    const role: FakeNeonRole = {
+      name,
+      password: this.ids.secret('npg_'),
+      resets: 0,
+      superuser: false,
+      createdBy: opts.createdBy ?? 'neondb_owner',
+      canCreateRole: opts.canCreateRole ?? false,
+    }
+    branch.roles.set(name, role)
+    return role
+  }
+
+  /** Record `GRANT role TO member` on a branch, as its creator would. */
+  grant(projectId: string, branchId: string, role: string, member: string): void {
+    const branch = this.projects.get(projectId)?.branches.get(branchId)
+    if (!branch) throw new Error(`no branch ${branchId}`)
+    branch.members.add(`${role}->${member}`)
+    this.grants.push({ projectId, role, member })
   }
 }

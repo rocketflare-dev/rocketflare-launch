@@ -375,8 +375,7 @@ describe('Neon client', () => {
     const client = neon()
     const created = await client.createProject({ name: 'sql', regionId: 'aws-us-east-2' })
     const main = created.branch.id
-    await client.createRole(created.project.id, main, 'migrator')
-    await client.createRole(created.project.id, main, 'app')
+    await client.createRole(created.project.id, main, 'api_role')
     const owner = await client.resetRolePassword(created.project.id, main, 'neondb_owner')
     const uri = await client.connectionUri(created.project.id, {
       branchId: main,
@@ -387,13 +386,45 @@ describe('Neon client', () => {
     expect(new URL(uri).password).toBe(owner.role.password)
     expect(neonSqlEndpoint(uri)).toMatch(/^https:\/\/api\.us-east-2\.aws\.neon\.tech\/sql$/)
 
+    // Roles made in SQL by the owner: it holds ADMIN on them, so it may grant them.
+    await runSql(uri, `CREATE ROLE migrator LOGIN CREATEROLE PASSWORD 'x1'`, [], cloud.fetch)
+    await client.sql(uri, `CREATE ROLE app LOGIN PASSWORD 'x2'`)
     const result = await runSql(uri, 'GRANT migrator TO app', [], cloud.fetch)
     expect(result.command).toBe('GRANT')
+    // An API role is cloud_admin's (a neon_superuser member): the owner cannot grant it.
+    await expect(runSql(uri, 'GRANT api_role TO app', [], cloud.fetch)).rejects.toThrow(
+      'permission denied to grant role "api_role"'
+    )
+    await expect(runSql(uri, 'SELECT 1; SELECT 2', [], cloud.fetch)).rejects.toThrow(
+      /multiple commands/
+    )
     expect(cloud.neon.grants).toEqual([
       { projectId: created.project.id, role: 'migrator', member: 'app' },
     ])
     const call = cloud.callsTo('neon-sql')[0]
     expect(call.url).not.toContain(owner.role.password as string)
+
+    // The API lists a SQL-created role, and resets it.
+    const listed = await client.get<{ roles: { name: string }[] }>(
+      `/projects/${created.project.id}/branches/${main}/roles`
+    )
+    expect(listed.roles.map(r => r.name)).toEqual(
+      expect.arrayContaining(['migrator', 'app', 'api_role'])
+    )
+    await client.resetRolePassword(created.project.id, main, 'app')
+
+    // Databases and roles delete through the API; a role owning a database is refused first.
+    await client.createDatabase(created.project.id, main, { name: 'app', ownerName: 'api_role' })
+    const owns = await client.deleteRole(created.project.id, main, 'api_role').catch(e => e)
+    expect(owns).toBeInstanceOf(NeonApiError)
+    await client.deleteDatabase(created.project.id, main, 'app')
+    await client.deleteRole(created.project.id, main, 'api_role')
+    const branch = cloud.neon.projects.get(created.project.id)?.branches.get(main)
+    expect(branch?.databases.has('app')).toBe(false)
+    expect(branch?.roles.has('api_role')).toBe(false)
+    expect(
+      isNeonNotFound(await client.deleteRole(created.project.id, main, 'api_role').catch(e => e))
+    ).toBe(true)
 
     const stale = uri.replace(owner.role.password as string, 'wrong-password')
     await expect(runSql(stale, 'SELECT 1', [], cloud.fetch)).rejects.toThrow(

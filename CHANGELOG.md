@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The launch's `neon` step creates `migrator` and `app` in SQL as `neondb_owner` instead of through
+  Neon's role API. On real Neon an API-created role is a `neon_superuser` member that
+  `neondb_owner` cannot grant, so `GRANT migrator TO app` failed ("permission denied to grant role
+  "migrator"") — and `app` was far too privileged. The step also creates `vector` in database
+  `app` itself, and checks each role and the membership before writing, so a retry repeats
+  nothing. A project an earlier launch left with API roles is repaired on retry — its database
+  `app` and those roles are deleted and recreated — but only while `app` has no tables; otherwise
+  the step fails and says so.
 - The launch's step list is shorter: each CI job is one row — "Scaffold from the template" covers
   starting, waiting on and checking the scaffold job, "Deploy staging" the same for the staging
   deploy — so a launch shows 15 rows instead of 19. The Workflow still runs (and retries) the
