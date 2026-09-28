@@ -66,6 +66,10 @@ const grantAdmin: RoleGrant = can => {
   can('read', 'AuditEvent')
   // Launch P3: every coding session in the organisation — ship, end, extend, drain.
   can('manage', 'Session')
+  // Launch P4: every approval (the `all` inbox, cancel anyone's) and the policies behind them.
+  // DECIDING is not a grant: the engine checks the request's approvers, whatever the role.
+  can('manage', 'Approval')
+  can('manage', 'ApprovalPolicy')
 }
 
 /**
@@ -92,6 +96,8 @@ const grantAdmin: RoleGrant = can => {
  * | App            | manage      | manage | manage | manage  | read   (Launch: the catalogue, spec/06) |
  * | AuditEvent     | manage      | read   | read   | read    | –      (Launch: append-only log, spec/08) |
  * | Session        | manage      | manage | manage | manage  | create+read+update (own only — the route filters by creator; app owners count, P3) |
+ * | Approval       | manage      | manage | manage | manage  | read   (Launch P4: the service filters rows; deciding is the engine's eligibility check) |
+ * | ApprovalPolicy | manage      | manage | manage | manage  | –      (Launch P4: an owner loosening their own gate defeats it) |
  * | Feature:<f>    | access all  | by ctx | by ctx | access all | by ctx |
  */
 export const rolePermissions: Record<EffectiveRole, RoleGrant> = {
@@ -131,6 +137,9 @@ export const rolePermissions: Record<EffectiveRole, RoleGrant> = {
     can('create', 'Session')
     can('read', 'Session')
     can('update', 'Session')
+    // Launch P4: anyone may see the approvals that concern them and decide the ones they are an
+    // approver for — the service filters the rows and the engine checks eligibility per request.
+    can('read', 'Approval')
   },
 }
 

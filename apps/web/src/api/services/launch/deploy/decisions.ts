@@ -74,6 +74,8 @@ export function toDeployTicket(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     finishedAt: row.finishedAt,
+    releaseId: row.releaseId,
+    approvalId: row.approvalId,
   }
 }
 

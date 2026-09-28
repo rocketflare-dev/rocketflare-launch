@@ -10,6 +10,7 @@
  * honest answer for `access_request_decided`: the decision IS the notification, and the requester
  * has no page to open.
  */
+import { APPROVAL_NOTIFICATION_TYPES, approvalPath } from '@launch/shared/launch-approvals'
 import type { Notification } from '@launch/shared/notifications'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -24,6 +25,14 @@ export function notificationLink(notification: Pick<Notification, 'type' | 'data
     case 'agent_run_awaiting_input': {
       const runId = id(notification.data.runId)
       return runId ? `/agents/runs/${runId}` : null
+    }
+    // Launch P4: an approval was requested of you, or yours was decided or expired. The request's
+    // page is where it is decided (or read), with the context that explains it.
+    case APPROVAL_NOTIFICATION_TYPES.requested:
+    case APPROVAL_NOTIFICATION_TYPES.decided:
+    case APPROVAL_NOTIFICATION_TYPES.expired: {
+      const approvalId = id(notification.data.approvalId)
+      return approvalId ? approvalPath(approvalId) : null
     }
     default:
       return null

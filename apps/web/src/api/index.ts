@@ -21,6 +21,7 @@ import { tracerMiddleware } from './middleware/tracing'
 import { accessRequestsRouter } from './routes/access-requests'
 import { activityRouter } from './routes/activity'
 import { adminRouter } from './routes/admin'
+import { adminApprovalPoliciesRouter } from './routes/admin-approval-policies'
 import { adminSessionsRouter } from './routes/admin-sessions'
 import { agentsRouter } from './routes/agents'
 import { aguiRouter } from './routes/agui'
@@ -30,6 +31,7 @@ import { aiDocumentsRouter } from './routes/ai-documents'
 import { aiPromptsRouter } from './routes/ai-prompts'
 import { aiUsageRouter } from './routes/ai-usage'
 import { appAccessRouter } from './routes/app-access'
+import { approvalsRouter } from './routes/approvals'
 import { appsRouter } from './routes/apps'
 import { auditRouter } from './routes/audit'
 import { authRouter } from './routes/auth/index'
@@ -180,6 +182,12 @@ const mounts: readonly (readonly [string, Hono<AppEnv>, MiddlewareHandler?])[] =
   // Launch P3 (spec/07): one coding session by id — lifecycle, chat, ship (three routers, one
   // prefix). Starting one is `POST /api/apps/:id/sessions`.
   ['/api/sessions', sessionsRouter],
+  // Launch P4 (spec/08): the approvals inbox and decisions, and the organisation's approval
+  // policies — an ORGANISATION admin's settings, so behind `authMiddleware` + `manage
+  // ApprovalPolicy` rather than under `/api/admin` (global admins only). An app's releases are
+  // `/api/apps/:id/releases` (`app-releases.ts`, mounted by `apps.ts`).
+  ['/api/approvals', approvalsRouter],
+  ['/api/approval-policies', adminApprovalPoliciesRouter],
   // D31: installed plugins, last, so a plugin can never shadow a kit prefix — Hono matches in
   // registration order. Each mount gets `authMiddleware` and its own optional gate exactly like a
   // kit mount; the convention is `/api/<plugin id>`, and `tests/config/plugins.test.ts` is what

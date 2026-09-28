@@ -1,6 +1,7 @@
 import {
   BookOpenIcon,
   ChatBubbleLeftRightIcon,
+  CheckBadgeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ClockIcon,
@@ -61,6 +62,16 @@ const CORE_NAVIGATION: NavConfig = [
         label: 'Apps',
         icon: Squares2X2Icon,
         guard: { action: 'read', subject: 'App' },
+      },
+      // Launch P4 (spec/08): the approvals inbox. The badge counts the requests waiting on THIS
+      // person, fed by the `approval` nudge; warning-toned because something is blocked on them.
+      {
+        to: '/approvals',
+        label: 'Approvals',
+        icon: CheckBadgeIcon,
+        guard: { action: 'read', subject: 'Approval' },
+        badgeKey: 'approvalsWaiting',
+        badgeTone: 'warning',
       },
       // D17: every role may chat (ownership is the route's userId filter)
       {

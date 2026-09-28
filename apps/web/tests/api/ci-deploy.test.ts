@@ -612,6 +612,7 @@ describe('production', () => {
       )
       expect(res.status).toBe(202)
       const { ticket } = productionDeployResponseSchema.parse(await res.json())
+      if (!ticket) throw new Error('expected the pre-approved ticket')
       expect(ticket).toMatchObject({ status: 'approved', decisionSource: 'intent', runId: null })
       expect(dispatched).toEqual([
         { workflow: 'deploy.yml', inputs: { environment: 'production' }, ref: 'main' },

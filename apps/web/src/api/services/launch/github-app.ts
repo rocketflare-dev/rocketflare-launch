@@ -36,6 +36,16 @@
  * - CI on the head commit, which is TWO APIs: `GET …/commits/{ref}/check-runs` (Actions and other
  *   Checks apps — `checks: read`) and `GET …/commits/{ref}/status`, the combined commit status
  *   (older integrations — `statuses: read`). A PR is green only when both are.
+ *
+ * P4 adds what Launch's own release dance needs (plan §1.8), under the same narrowed token:
+ *
+ * - `POST …/git/refs {ref: 'refs/tags/X.Y.Z', sha}` — the tag that starts `deploy.yml` staging
+ *   (`contents: write`; 422 "Reference already exists" for a second one).
+ * - `POST …/releases {tag_name}` — publishing the Release that starts production, and `GET
+ *   …/releases/tags/{tag}` (null on 404), which is what makes publishing idempotent.
+ * - `GET …/compare/{base}...{head}` — the commits a release adds — and `GET …/commits/{sha}/pulls`,
+ *   the pull requests a commit belongs to (a merge commit → the PR it merged; `merged_at`,
+ *   `merge_commit_sha` and `user.login` on each).
  */
 import { importPKCS8, SignJWT } from 'jose'
 
@@ -611,6 +621,12 @@ export interface GitHubPullRequest {
   title?: string
   head: { ref: string; sha: string }
   base: { ref: string }
+  /** P4: set once merged (ISO); what `pr.merged` records. */
+  merged_at?: string | null
+  /** P4: the merge commit on the base branch, once merged. */
+  merge_commit_sha?: string | null
+  /** P4: the author's login (the App's bot for a session PR). */
+  user?: { login: string } | null
 }
 
 /** Open a pull request from `head` into `base`. A second one from the same head is a 422. */
@@ -721,6 +737,142 @@ export function getCombinedStatus(
 ): Promise<GitHubCombinedStatus> {
   return githubJson<GitHubCombinedStatus>(
     `${repoPath(owner, repo)}/commits/${encodeURIComponent(ref)}/status`,
+    { token },
+    opts
+  )
+}
+
+// ---- P4: tags, releases, compare --------------------------------------------------------------
+
+/**
+ * Create a ref — `refs/tags/X.Y.Z` for a release (a lightweight tag on `sha`). A ref that already
+ * exists is GitHub's 422 "Reference already exists".
+ */
+export function createRef(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+  sha: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRef> {
+  return githubJson<GitHubRef>(
+    `${repoPath(owner, repo)}/git/refs`,
+    { method: 'POST', token, body: { ref, sha } },
+    opts
+  )
+}
+
+export interface GitHubRelease {
+  id: number
+  tag_name: string
+  name: string | null
+  body?: string | null
+  draft: boolean
+  prerelease: boolean
+  html_url: string
+  target_commitish?: string
+  published_at: string | null
+}
+
+/**
+ * Publish a GitHub Release on `tagName` — for a kit app, the `release: published` event that
+ * starts the production deploy job. A second release on the same tag is a 422
+ * (`already_exists`); callers check `getReleaseByTag` first.
+ */
+export function createRelease(
+  token: string,
+  owner: string,
+  repo: string,
+  input: {
+    tagName: string
+    name?: string
+    body?: string
+    /** Only used when the tag does not exist yet (GitHub then creates it here). */
+    targetCommitish?: string
+    draft?: boolean
+    prerelease?: boolean
+  },
+  opts: GitHubOptions = {}
+): Promise<GitHubRelease> {
+  return githubJson<GitHubRelease>(
+    `${repoPath(owner, repo)}/releases`,
+    {
+      method: 'POST',
+      token,
+      body: {
+        tag_name: input.tagName,
+        name: input.name ?? input.tagName,
+        body: input.body ?? '',
+        draft: input.draft ?? false,
+        prerelease: input.prerelease ?? false,
+        ...(input.targetCommitish ? { target_commitish: input.targetCommitish } : {}),
+      },
+    },
+    opts
+  )
+}
+
+/** The release on `tag`, or null when there is none. */
+export async function getReleaseByTag(
+  token: string,
+  owner: string,
+  repo: string,
+  tag: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRelease | null> {
+  const path = `${repoPath(owner, repo)}/releases/tags/${encodeURIComponent(tag)}`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubRelease
+}
+
+export interface GitHubCompareCommit {
+  sha: string
+  parents?: { sha: string }[]
+  commit: { message: string; author?: { name?: string; date?: string } | null }
+}
+
+export interface GitHubComparison {
+  status: 'ahead' | 'behind' | 'identical' | 'diverged' | string
+  ahead_by: number
+  behind_by: number
+  total_commits: number
+  html_url: string
+  /** Oldest first; GitHub returns at most 250. */
+  commits: GitHubCompareCommit[]
+}
+
+/** `base...head` (a tag, branch or sha each) — the commits `head` adds over `base`. */
+export function compareCommits(
+  token: string,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubComparison> {
+  return githubJson<GitHubComparison>(
+    `${repoPath(owner, repo)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+    { token },
+    opts
+  )
+}
+
+/** The pull requests `sha` belongs to — for a merge commit, the PR it merged. */
+export function listPullRequestsForCommit(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubPullRequest[]> {
+  return githubJson<GitHubPullRequest[]>(
+    `${repoPath(owner, repo)}/commits/${encodeURIComponent(sha)}/pulls?per_page=100`,
     { token },
     opts
   )

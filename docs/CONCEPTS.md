@@ -717,7 +717,8 @@ Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `packages/shared/src/launch-{apps,oidc,setup,audit}.ts`.
 
 **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
-`oidc_clients`, `oidc_client_grants`, `oidc_codes`, `app_access_requests`, `audit_events`) are
+`oidc_clients`, `oidc_client_grants`, `oidc_codes`, `audit_events`, and from P4 `approval_requests`,
+`approval_decisions`, `approval_policies`, `app_releases`, `audit_chain`) are
 tenant tables like any other, scoped to the single company tenant. Three are platform
 infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
 `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
@@ -779,6 +780,9 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
   `restricted` needs a user or group grant. A member refused is sent to `/request-access`
   (`app.access.requested`); the app's owners and admins decide on `/apps/:slug/access`
   (approve = a user grant). Every sign-in and refusal is audited (`oidc.signin`, `oidc.denied`).
+  From P4 a request is an `app.access` row in `approval_requests` (the P4 migration moved P1's
+  pending ones across with their ids and dropped `app_access_requests`); until P4 slice 4c puts
+  them on the engine, `services/oidc/policy.ts` reads and writes those rows with P1's rules.
 - **Re-authentication**: `prompt=login`, or a session older than `max_age`, ends the Launch
   session and sends the person to `/login` (the return URL carries a `launch_reauth` marker so it
   cannot loop); under `prompt=none` it is `login_required`.

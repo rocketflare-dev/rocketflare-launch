@@ -71,6 +71,20 @@ export const CORE_SUBJECTS = [
    * everyone's sessions through `MEMBER_READABLE`.
    */
   'Session',
+  /**
+   * Launch P4: an approval request (spec/08). Every member may `read` — the approvals SERVICE
+   * filters the rows (waiting on me, requested by me) and decides eligibility per request from its
+   * policy, exactly as `AgentRun` leaves "own" to the route. Admin+ `manage` (the `all` box, cancel
+   * anyone's). Deciding is NOT a CASL action: it is the engine's eligibility check (plan §1.3).
+   * Deliberately NOT in `ADMIN_MANAGED`.
+   */
+  'Approval',
+  /**
+   * Launch P4: an approval POLICY (who approves which kind, at tenant, group or app scope). Admin+
+   * `manage` only — an app owner loosening their own production gate would defeat it (plan §1.5).
+   * NOT in `ADMIN_MANAGED`, which would hand every member `read`.
+   */
+  'ApprovalPolicy',
 ] as const
 export type CoreSubject = (typeof CORE_SUBJECTS)[number]
 

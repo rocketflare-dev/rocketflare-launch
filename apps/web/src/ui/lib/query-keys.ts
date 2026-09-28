@@ -212,6 +212,33 @@ const CORE_QUERY_KEYS = {
     all: ['session-agui'] as const,
     detail: (id: string) => ['session-agui', id] as const,
   },
+  /**
+   * Launch P4: approvals (`/api/approvals`, spec/08). The root is `approval` ON PURPOSE — it is
+   * `APPROVAL_REALTIME_ENTITY`: every open, decision and expiry nudges
+   * `entity.changed { entity: 'approval', id }`, and `invalidationsFor()` resolves that to this
+   * root, so the inbox, the nav badge and a request's page refresh with no socket code in a hook.
+   */
+  approvals: {
+    all: ['approval'] as const,
+    list: (filters: object = {}) => ['approval', 'list', filters] as const,
+    count: ['approval', 'count'] as const,
+    detail: (id: string) => ['approval', 'detail', id] as const,
+  },
+  /** Launch P4: `/api/approval-policies` — admin settings; not nudged, invalidated on save. */
+  approvalPolicies: {
+    all: ['approval-policies'] as const,
+    list: (filters: object = {}) => ['approval-policies', 'list', filters] as const,
+  },
+  /**
+   * Launch P4: an app's releases (`/api/apps/:id/releases`). The root is `release` — it is
+   * `RELEASE_REALTIME_ENTITY`, the same pattern as `approvals` and `sessions`.
+   */
+  releases: {
+    all: ['release'] as const,
+    forApp: (appId: string) => ['release', 'app', appId] as const,
+    detail: (releaseId: string) => ['release', 'detail', releaseId] as const,
+    chain: (releaseId: string) => ['release', 'chain', releaseId] as const,
+  },
   /** Launch: `/api/app-access` — an app's sign-in policy, grants and access requests (spec/05) */
   appAccess: {
     all: ['app-access'] as const,
@@ -227,6 +254,8 @@ const CORE_QUERY_KEYS = {
   audit: {
     all: ['audit'] as const,
     list: (filters: object = {}) => ['audit', 'list', filters] as const,
+    /** P4: `GET /api/audit/verify` — the hash chain's check. */
+    verify: ['audit', 'verify'] as const,
   },
   /**
    * Launch: `/api/admin/setup` (spec/03) — under the `admin` root on purpose, so the one

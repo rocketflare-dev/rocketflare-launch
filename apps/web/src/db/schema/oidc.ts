@@ -1,7 +1,8 @@
 /**
  * Launch as the company's OIDC issuer (spec/05): the relying-party registrations, who may sign in
- * to each, the authorization codes, the signing keys, and the request-access queue that stands in
- * for P4 approvals.
+ * to each, the authorization codes and the signing keys. The P1 request-access queue
+ * (`app_access_requests`) is gone: from P4 a request is an `app.access` approval (`approvals.ts`),
+ * and the P4 migration moved the pending rows across.
  *
  * Decisions worth stating:
  *
@@ -20,7 +21,6 @@
  *   code's history must survive that.
  */
 import {
-  APP_ACCESS_REQUEST_STATUSES,
   OIDC_ACCESS_POLICIES,
   OIDC_SIGNING_KEY_STATUSES,
   type OidcPublicJwk,
@@ -51,12 +51,6 @@ export const oidcAccessPolicyEnum = pgEnum('oidc_access_policy', OIDC_ACCESS_POL
 
 /** Mirrors `OIDC_SIGNING_KEY_STATUSES`. */
 export const oidcSigningKeyStatusEnum = pgEnum('oidc_signing_key_status', OIDC_SIGNING_KEY_STATUSES)
-
-/** Mirrors `APP_ACCESS_REQUEST_STATUSES`. */
-export const appAccessRequestStatusEnum = pgEnum(
-  'app_access_request_status',
-  APP_ACCESS_REQUEST_STATUSES
-)
 
 export const oidcClients = pgTable(
   'oidc_clients',
@@ -189,41 +183,6 @@ export const oidcSigningKeys = pgTable(
   ]
 )
 
-export const appAccessRequests = pgTable(
-  'app_access_requests',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    tenantId: tenantRef(tenants),
-    appId: uuid('app_id')
-      .notNull()
-      .references(() => apps.id, { onDelete: 'cascade' }),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    message: text('message'),
-    status: appAccessRequestStatusEnum('status').notNull().default('pending'),
-    decidedByUserId: uuid('decided_by_user_id').references(() => users.id, {
-      onDelete: 'set null',
-    }),
-    decidedAt: timestamp('decided_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  table => [
-    // One OPEN request per person per app; a decided one never blocks asking again.
-    uniqueIndex('app_access_requests_pending_idx')
-      .on(table.appId, table.userId)
-      .where(sql`${table.status} = 'pending'`),
-    // The owner's queue for one app, newest first.
-    index('app_access_requests_tenant_app_status_idx').on(
-      table.tenantId,
-      table.appId,
-      table.status,
-      table.createdAt.desc()
-    ),
-    tenantIsolation('app_access_requests'),
-  ]
-)
-
 export const oidcClientsRelations = relations(oidcClients, ({ one }) => ({
   tenant: one(tenants, { fields: [oidcClients.tenantId], references: [tenants.id] }),
   app: one(apps, { fields: [oidcClients.appId], references: [apps.id] }),
@@ -240,11 +199,6 @@ export const oidcCodesRelations = relations(oidcCodes, ({ one }) => ({
   user: one(users, { fields: [oidcCodes.userId], references: [users.id] }),
 }))
 
-export const appAccessRequestsRelations = relations(appAccessRequests, ({ one }) => ({
-  app: one(apps, { fields: [appAccessRequests.appId], references: [apps.id] }),
-  user: one(users, { fields: [appAccessRequests.userId], references: [users.id] }),
-}))
-
 export type OidcClientRow = typeof oidcClients.$inferSelect
 export type NewOidcClientRow = typeof oidcClients.$inferInsert
 export type OidcClientGrantRow = typeof oidcClientGrants.$inferSelect
@@ -252,4 +206,3 @@ export type OidcCodeRow = typeof oidcCodes.$inferSelect
 export type NewOidcCodeRow = typeof oidcCodes.$inferInsert
 export type OidcSigningKeyRow = typeof oidcSigningKeys.$inferSelect
 export type NewOidcSigningKeyRow = typeof oidcSigningKeys.$inferInsert
-export type AppAccessRequestRow = typeof appAccessRequests.$inferSelect

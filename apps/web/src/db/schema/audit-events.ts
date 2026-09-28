@@ -14,7 +14,7 @@
  *   or "removed".
  */
 import { AUDIT_ACTOR_TYPES, type AuditSummary } from '@launch/shared/launch-audit'
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { index, jsonb, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { tenantRef } from './_helpers'
 import { tenantIsolation } from './rls'
@@ -53,6 +53,10 @@ export const auditEvents = pgTable(
     index('audit_events_tenant_target_idx').on(table.tenantId, table.targetType, table.targetId),
     // The app detail page's history.
     index('audit_events_tenant_app_at_idx').on(table.tenantId, table.appId, table.at.desc()),
+    // P4: an approval's whole trail (the release chain, `GET …/releases/:rid/chain`).
+    index('audit_events_tenant_approval_idx')
+      .on(table.tenantId, table.approvalId)
+      .where(sql`${table.approvalId} IS NOT NULL`),
     tenantIsolation('audit_events'),
   ]
 )

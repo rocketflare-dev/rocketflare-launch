@@ -50,10 +50,15 @@ export const createAppRequestSchema = z.object({
 })
 export type CreateAppRequest = z.infer<typeof createAppRequestSchema>
 
-/** `POST /api/apps` → 202: the `requested` row, and the run whose steps the page polls. */
+/**
+ * `POST /api/apps` → 202: the `requested` row, and the run whose steps the page polls. From P4 a
+ * creator below the `app.create` auto-approve role gets `approvalId` too: the run id is reserved,
+ * and its Workflow starts only when the approval is granted (plan §4c).
+ */
 export const createAppResponseSchema = z.object({
   app: appSummarySchema,
   runId: z.string().uuid(),
+  approvalId: z.string().uuid().nullable().optional(),
 })
 export type CreateAppResponse = z.infer<typeof createAppResponseSchema>
 
@@ -225,8 +230,11 @@ export const DEPLOY_TICKET_STATUSES = [
 export const deployTicketStatusSchema = z.enum(DEPLOY_TICKET_STATUSES)
 export type DeployTicketStatus = z.infer<typeof deployTicketStatusSchema>
 
-/** Who approved: staging's policy, a person on the app page, or "Deploy to production" (intent). */
-export const DEPLOY_DECISION_SOURCES = ['auto', 'user', 'intent'] as const
+/**
+ * Who approved: staging's policy, a person on the app page, "Deploy to production" (intent), or —
+ * from P4 — a `deploy.production` approval decided in the engine (`approval`). Append-only.
+ */
+export const DEPLOY_DECISION_SOURCES = ['auto', 'user', 'intent', 'approval'] as const
 export const deployDecisionSourceSchema = z.enum(DEPLOY_DECISION_SOURCES)
 export type DeployDecisionSource = z.infer<typeof deployDecisionSourceSchema>
 
@@ -256,6 +264,9 @@ export const deployTicketSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
   finishedAt: z.coerce.date().nullable(),
+  /** P4: the release whose tag this run deployed (set at `start`), and the approval behind it. */
+  releaseId: z.string().uuid().nullable().default(null),
+  approvalId: z.string().uuid().nullable().default(null),
 })
 export type DeployTicket = z.infer<typeof deployTicketSchema>
 
@@ -270,8 +281,15 @@ export const deployDecisionSchema = z.object({
 })
 export type DeployDecision = z.infer<typeof deployDecisionSchema>
 
-/** `POST /api/apps/:id/deploys/production` → the pre-approved ticket, and the dispatch. */
-export const productionDeployResponseSchema = z.object({ ticket: deployTicketSchema })
+/**
+ * `POST /api/apps/:id/deploys/production` → the pre-approved ticket, and the dispatch. From P4 the
+ * button opens a `deploy.production` approval instead (plan §4d): `ticket` is then null until the
+ * approval is decided, and `approvalId` names the request.
+ */
+export const productionDeployResponseSchema = z.object({
+  ticket: deployTicketSchema.nullable(),
+  approvalId: z.string().uuid().nullable().optional(),
+})
 export type ProductionDeployResponse = z.infer<typeof productionDeployResponseSchema>
 
 /** How long a "Deploy to production" pre-approval waits for its run to claim it. */

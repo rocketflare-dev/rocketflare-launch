@@ -70,3 +70,51 @@ export const auditListResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 })
 export type AuditListResponse = z.infer<typeof auditListResponseSchema>
+
+// ---- P4: the hash chain, verify and export (spec/08 "Integrity options") ----------------------
+
+/**
+ * `GET /api/audit/verify` (admin+). The `audit.seal` cron appends `audit_chain` rows —
+ * `hash = sha256(prev_hash ‖ canonical JSON of the event)` per tenant, in `seq` order — and verify
+ * recomputes them. `ok` is false at the first row whose hash does not follow; events newer than
+ * the last seal are counted as `unsealed`, not as a failure (tampering is evident within one
+ * five-minute seal, not instantly — plan §1.12).
+ */
+export const auditVerifySchema = z.object({
+  ok: z.boolean(),
+  /** Sealed rows checked. */
+  checked: z.number().int().nonnegative(),
+  /** The last sealed `seq`, or null before the first seal. */
+  sealedThrough: z.number().int().nonnegative().nullable(),
+  /** Events not sealed yet. */
+  unsealed: z.number().int().nonnegative(),
+  /** The first row that failed, when `ok` is false. */
+  firstBrokenSeq: z.number().int().nonnegative().nullable(),
+  firstBrokenEventId: z.string().uuid().nullable(),
+  verifiedAt: z.coerce.date(),
+})
+export type AuditVerify = z.infer<typeof auditVerifySchema>
+
+export const AUDIT_EXPORT_FORMATS = ['csv', 'json'] as const
+export const auditExportFormatSchema = z.enum(AUDIT_EXPORT_FORMATS)
+export type AuditExportFormat = z.infer<typeof auditExportFormatSchema>
+
+/**
+ * `GET /api/audit/export?format=csv|json` (admin+, audited `audit.exported`). `json` is JSON
+ * Lines — one `auditExportRowSchema` per line — so a large log streams; `from`/`to` bound `at`.
+ */
+export const auditExportQuerySchema = z.object({
+  format: auditExportFormatSchema.default('json'),
+  appId: z.string().uuid().optional(),
+  action: auditActionSchema.optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+})
+export type AuditExportQuery = z.infer<typeof auditExportQuerySchema>
+
+/** One exported row: the event plus its place in the chain (`null` for an unsealed event). */
+export const auditExportRowSchema = auditEventSchema.extend({
+  seq: z.number().int().nonnegative().nullable(),
+  hash: z.string().nullable(),
+})
+export type AuditExportRow = z.infer<typeof auditExportRowSchema>

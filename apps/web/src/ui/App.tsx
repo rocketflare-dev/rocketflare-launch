@@ -64,6 +64,9 @@ const AppDetailPage = lazy(() => import('@/ui/pages/apps/AppDetailPage'))
 const AppAccessPage = lazy(() => import('@/ui/pages/apps/AppAccessPage'))
 // Launch P3: a coding session — chat + live preview. Its own chunk: it carries `Markdown`.
 const SessionPage = lazy(() => import('@/ui/pages/sessions/SessionPage'))
+// Launch P4: the approvals inbox and one request (notifications link to it).
+const ApprovalsInboxPage = lazy(() => import('@/ui/pages/approvals/InboxPage'))
+const ApprovalPage = lazy(() => import('@/ui/pages/approvals/ApprovalPage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
 const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
@@ -243,6 +246,24 @@ function ShellRoutes() {
             element={
               <RequireGuard guard={{ action: 'read', subject: 'App' }}>
                 <AppAccessPage />
+              </RequireGuard>
+            }
+          />
+          {/* Launch P4 (spec/08): every member reads their approvals; the engine decides who may
+              decide each one, so the page, not the route, says why someone cannot. */}
+          <Route
+            path="/approvals"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'Approval' }}>
+                <ApprovalsInboxPage />
+              </RequireGuard>
+            }
+          />
+          <Route
+            path="/approvals/:id"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'Approval' }}>
+                <ApprovalPage />
               </RequireGuard>
             }
           />

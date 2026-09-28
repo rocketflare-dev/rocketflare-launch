@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Approvals foundations (P4, slice 4a): the approvals engine's tables (`approval_requests`,
+  append-only `approval_decisions`, `approval_policies`), releases (`app_releases`) and the audit
+  hash chain (`audit_chain`, append-only) in one migration, which also moves every pending
+  app-access request onto the new `approval_requests` table (same ids; the request-access page and
+  the app's access page work as before) and retires `app_access_requests`. An "Approvals" entry in
+  the navigation and Settings → Approvals are in place and empty until the engine lands.
 - Coding sessions (P3): "Start session" on an app boots a sandbox container with the app's repo on
   a `session/<short>` branch and its own database (a Neon branch of the app's `dev`, prepared by
   the first session), runs the kit's bootstrap and dev server, and then runs each message as a

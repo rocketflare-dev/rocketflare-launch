@@ -4,10 +4,11 @@
  * gate inside. In single mode the heading reads "Workspace settings". AI tabs (D17, D18): `ai`
  * and `prompts` degrade to read-only inside; `agent-models` and `usage` are `manage AiConfig` only and hidden otherwise.
  * `groups` (D29) is `manage Group` only and hidden otherwise — a picker that 403s on save is worse
- * than no tab.
+ * than no tab. `approvals` (Launch P4) is `manage ApprovalPolicy` only, for the same reason.
  */
 import {
   ChartBarIcon,
+  CheckBadgeIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   DocumentTextIcon,
@@ -24,6 +25,7 @@ import { usePermissions } from '@/ui/hooks/usePermissions'
 import AgentModelsSettings from './AgentModels'
 import AiSettings from './AI'
 import ApiKeys from './ApiKeys'
+import ApprovalPoliciesSettings from './ApprovalPolicies'
 import General from './General'
 import GroupsSettings from './Groups'
 import People from './People'
@@ -115,6 +117,17 @@ export default function SettingsLayout() {
             icon: <KeyIcon className="w-4 h-4" />,
             content: <ApiKeys />,
           },
+          // Launch P4: who approves what (plan §1.5) — admins only, at every scope.
+          ...(can('manage', 'ApprovalPolicy')
+            ? [
+                {
+                  id: 'approvals',
+                  label: 'Approvals',
+                  icon: <CheckBadgeIcon className="w-4 h-4" />,
+                  content: <ApprovalPoliciesSettings />,
+                },
+              ]
+            : []),
           ...aiTabs,
           ...pluginTabs,
         ]}

@@ -42,6 +42,11 @@ Hono routers mounted in `src/api/index.ts`. Thin controllers: validate → autho
   - `app-sessions.ts` (`POST /api/apps/:id/sessions` → 202, refused before any write with `sessions_not_configured`, `app_has_no_repo`, `sessions_paused`, `session_limit`, `session_budget_exhausted`; `GET /api/apps/:id/sessions?scope=` — owners and admins see all, others their own) — a sub-router mounted by `apps.ts` with `appsRouter.route('/', …)` BEFORE its `/:slug` routes.
   - `admin-sessions.ts` (`/api/admin/sessions` — list with `paused`, `POST /drain`, `POST /undrain`), mounted before `/api/admin` behind `globalAdminMiddleware`.
   - NOT routes: the preview gateway (`api/preview/gateway.ts`) — `worker.ts` sends preview HOSTS there before the Hono app — and the sandbox's egress handlers (`services/sessions/egress/{anthropic,github}.ts`), called by `SessionSandbox.outboundByHost`, never by a URL.
+- **Launch P4 (approvals and shipping, `docs/plans/p4-approvals.md`)**, contracts in `@launch/shared/launch-{approvals,releases,audit}`. Slice 4a mounted every router as a stub so the parallel slices only fill their own files:
+  - `approvals.ts` (`/api/approvals`, `read Approval` for every member — the ENGINE filters rows and decides eligibility; deciding is not a CASL action): list by `box`, `count` (the nav badge), `GET /:id`, `POST /:id/decide`, `POST /:id/cancel` over `services/approvals/engine.ts` (4b). From 4a the list answers `{ items: [] }` and the count `{ count: 0 }`.
+  - `admin-approval-policies.ts` at **`/api/approval-policies`** (`manage ApprovalPolicy`, the organisation's admins) — NOT under `/api/admin`, which is `globalAdminMiddleware`'s (platform staff) and unreachable with a CLI key.
+  - `app-releases.ts` (`/api/apps/:id/releases`, `…/:rid`, `…/:rid/promote`, `…/:rid/chain`) — a sub-router mounted by `apps.ts` BEFORE its `/:slug` routes (4d).
+  - The audit chain's `GET /api/audit/verify` and `/export` go in the existing `audit.ts` (4e).
 - An installed PLUGIN's routers are NOT in this directory (D31): they live in
   `src/plugins/<id>/api/` and reach the mount table through `ServerPlugin.mounts`, spread in last.
   The prefix is `/api/<id>`, the optional third element is its `requireFeature` gate, and the file

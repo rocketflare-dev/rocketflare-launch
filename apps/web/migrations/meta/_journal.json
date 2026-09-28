@@ -162,6 +162,13 @@
       "when": 1790550414548,
       "tag": "0022_launch-p3-sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790559896277,
+      "tag": "0023_launch-p4-approvals",
+      "breakpoints": true
     }
   ]
 }

@@ -61,6 +61,12 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
     'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
   'src/api/preview/gateway.ts':
     'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
+  // Launch P4: two crons that look across every tenant first (the due approvals; any unsealed
+  // audit event) and then act per row, each write naming that row's tenant.
+  'src/api/services/approvals/sweep.ts':
+    "cron: iterates tenants, every write names the row's tenant — dueForExpiry / dueForApplyRetry scan every tenant's due approvals",
+  'src/api/services/launch/audit-chain.ts':
+    "cron: iterates tenants, every write names the row's tenant — hasUnsealedEvents looks across every tenant before the per-tenant seal",
   // Launch: the analytics plugin (3.4.1) ships this test file without declaring it in its own
   // `unscopedAllowlist`, so the entry lives here until the plugin carries it (upstream issue).
   'src/plugins/analytics/tests/api/dashboard-visibility.test.ts':

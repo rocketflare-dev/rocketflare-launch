@@ -4,7 +4,8 @@
  * job (`/ci/scaffold`). Postgres rather than a Durable Object, as with P1's `oidc_codes`: it needs
  * no binding and it keeps the history the app page shows.
  *
- * Three decisions worth stating:
+ * Three decisions worth stating (and, from P4, `release_id` / `approval_id` link a ticket into a
+ * release's audit chain — `app-releases.ts`):
  *
  * - **Every transition is a compare-and-set** (`UPDATE … WHERE status = $from RETURNING`), so two
  *   calls racing on one ticket are one success and one 409, never a lost write.
@@ -34,6 +35,8 @@ import {
 } from 'drizzle-orm/pg-core'
 import { tenantRef, timestamps } from './_helpers'
 import { appEnvironments } from './app-environments'
+import { appReleases } from './app-releases'
+import { approvalRequests } from './approvals'
 import { apps } from './apps'
 import { tenantIsolation } from './rls'
 import { tenants } from './tenants'
@@ -100,6 +103,12 @@ export const deployTickets = pgTable(
 
     /** The launch run waiting on this ticket (`SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`). */
     launchRunId: uuid('launch_run_id'),
+    /** P4: the release whose tag this run carries, matched at `start` (the audit chain's link). */
+    releaseId: uuid('release_id').references(() => appReleases.id, { onDelete: 'set null' }),
+    /** P4: the `deploy.production` approval that decided (or pre-approved) this ticket. */
+    approvalId: uuid('approval_id').references(() => approvalRequests.id, {
+      onDelete: 'set null',
+    }),
     error: text('error'),
     ...timestamps(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

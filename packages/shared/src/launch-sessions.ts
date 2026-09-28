@@ -390,6 +390,8 @@ export type SessionTurnRequest = z.infer<typeof sessionTurnRequestSchema>
 /** `POST /api/sessions/:id/budget` — owners and admins; audited `session.budget.extended`. */
 export const extendBudgetSchema = z.object({
   extraUsd: z.number().positive().max(1000),
+  /** P4: why — shown on the `session.budget` approval the request opens (plan §4c). */
+  reason: z.string().trim().max(1000).optional(),
 })
 export type ExtendBudgetRequest = z.infer<typeof extendBudgetSchema>
 

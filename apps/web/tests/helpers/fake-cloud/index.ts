@@ -70,6 +70,12 @@
  *   base, title, body, state, headSha}`), and the head commit's CI through
  *   `setCheckRuns(owner, repo, ref, [{ name, status, conclusion? }])` and
  *   `setStatuses(owner, repo, ref, [{ context, state }])` — no statuses reads back `pending`.
+ *   P4: tags (`POST …/git/refs`), `releases` (every Release published: `{tag, sha, via:
+ *   'api'|'hook'}`, `releaseFor(owner, repo, tag)`) with `onRelease = release => …` (awaited after
+ *   an API publish — `release: published` starting the production job), compare and commit →
+ *   pulls, PRs with `author`/`merged`/`mergedAt`/`mergeSha`, and the hooks `openPull(owner, repo,
+ *   {head, title, author?})`, `merge(owner, repo, number)` (→ the merge commit's sha),
+ *   `closePull(owner, repo, number)` and `publish(owner, repo, tag)` (a Release published by hand).
  *
  * ## App hosts
  *

@@ -9,14 +9,17 @@
  * for a count they would not be shown.
  */
 import { useAwaitingInterruptCount } from './useAgents'
+import { useApprovalCount } from './useApprovals'
 import type { NavGuard } from './useNavGuard'
 import { useNavGuard } from './useNavGuard'
 
 /** The keys a `NavItem.badgeKey` may name. A key with no entry simply renders nothing. */
-export type NavBadgeKey = 'agentsAwaiting'
+export type NavBadgeKey = 'agentsAwaiting' | 'approvalsWaiting'
 
 const BADGE_GUARDS: Record<NavBadgeKey, NavGuard> = {
   agentsAwaiting: { action: 'read', subject: 'AgentRun' },
+  // Launch P4: approvals waiting on THIS person (the engine counts only what they may decide).
+  approvalsWaiting: { action: 'read', subject: 'Approval' },
 }
 
 export type NavBadges = Partial<Record<NavBadgeKey, number>>
@@ -24,7 +27,10 @@ export type NavBadges = Partial<Record<NavBadgeKey, number>>
 export function useNavBadges(): NavBadges {
   const canAccess = useNavGuard()
   const awaiting = useAwaitingInterruptCount(canAccess(BADGE_GUARDS.agentsAwaiting))
-  const count = awaiting.data ?? 0
+  const approvals = useApprovalCount(canAccess(BADGE_GUARDS.approvalsWaiting))
+  const badges: NavBadges = {}
   // Zero is not a badge — an empty inbox should look like an empty inbox, not like a nought.
-  return count > 0 ? { agentsAwaiting: count } : {}
+  if ((awaiting.data ?? 0) > 0) badges.agentsAwaiting = awaiting.data
+  if ((approvals.data ?? 0) > 0) badges.approvalsWaiting = approvals.data
+  return badges
 }

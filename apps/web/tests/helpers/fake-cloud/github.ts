@@ -16,6 +16,17 @@
  * statuses is `pending` with `total_count: 0`, as GitHub answers). A test sets CI with
  * `setCheckRuns(owner, repo, ref, runs)` / `setStatuses(owner, repo, ref, statuses)` (the ref is
  * resolved to its sha when set) and reads `pulls`.
+ *
+ * P4 adds the release dance (plan §1.8): `POST …/git/refs` (a tag; 422 when it exists),
+ * `POST …/releases` and `GET …/releases/tags/{tag}` (`releases`; `onRelease` is awaited after an
+ * API-published one — the test's stand-in for `release: published` starting the production job),
+ * `GET …/compare/{base}...{head}` (the commits reachable from head and not from base, oldest
+ * first) and `GET …/commits/{sha}/pulls` (the PR a merge commit merged, or whose head it is).
+ * Pull requests carry `merged_at`, `merge_commit_sha` and `user.login`. Test hooks:
+ * `openPull(owner, repo, {head, base?, title, author?})` (a PR nobody opened through the API — a
+ * person's, which a release's compare must still find), `merge(owner, repo, number)` (a merge
+ * commit on the base branch, the PR closed and merged), `closePull(owner, repo, number)`, and
+ * `publish(owner, repo, tag)` (a Release published in GitHub by hand — the job-originated path).
  */
 import {
   belongsTo,
@@ -84,6 +95,29 @@ export interface FakeGitHubPull {
   state: 'open' | 'closed'
   /** The head branch's sha when the PR was opened. */
   headSha: string
+  /** P4: the author's login — the App's bot for a PR opened through the API. */
+  author: string
+  /** P4: set by `merge()`. */
+  merged: boolean
+  mergedAt: string | null
+  mergeSha: string | null
+}
+
+/** P4: a GitHub Release (`POST …/releases`, or `publish()`). */
+export interface FakeGitHubRelease {
+  id: number
+  owner: string
+  repo: string
+  tag: string
+  name: string
+  body: string
+  draft: boolean
+  prerelease: boolean
+  /** The commit the tag points at. */
+  sha: string
+  publishedAt: string | null
+  /** `api` when Launch published it; `hook` when a test (a person in GitHub) did. */
+  via: 'api' | 'hook'
 }
 
 export interface FakeCheckRun {
@@ -138,6 +172,10 @@ export class FakeGitHub implements VendorHandler {
   /** P3: `owner/name@sha` (lower-case repo) → the commit's check runs / statuses. */
   readonly checkRuns = new Map<string, FakeCheckRun[]>()
   readonly statuses = new Map<string, FakeCommitStatus[]>()
+  /** P4: every release published, in order. */
+  readonly releases: FakeGitHubRelease[] = []
+  /** P4: called after each release published through the API (awaited) — `release: published`. */
+  onRelease: ((release: FakeGitHubRelease) => unknown | Promise<unknown>) | null = null
 
   constructor(
     private readonly ids: IdSource,
@@ -227,12 +265,183 @@ export class FakeGitHub implements VendorHandler {
     this.statuses.set(this.ciKey(owner, name, ref), statuses)
   }
 
+  /** P4: open a pull request directly (a person's PR, not the App's). The head branch must exist. */
+  openPull(
+    owner: string,
+    name: string,
+    input: { head: string; base?: string; title: string; body?: string; author?: string }
+  ): FakeGitHubPull {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const headSha = repo.refs.get(`heads/${input.head}`)
+    if (!headSha) throw new Error(`FakeGitHub: no branch ${input.head}`)
+    const pull = this.newPull(repo, {
+      head: input.head,
+      base: input.base ?? repo.default_branch,
+      title: input.title,
+      body: input.body ?? '',
+      headSha,
+      author: input.author ?? 'octocat',
+    })
+    return pull
+  }
+
+  /**
+   * P4: merge an open pull request — a merge commit on the base branch (the base's files with the
+   * head's on top, parents `[base, head]`), the PR closed with `merged_at` and `merge_commit_sha`.
+   * Returns the merge commit's sha.
+   */
+  merge(owner: string, name: string, number: number, at: Date = new Date()): string {
+    const repo = this.repo(owner, name)
+    const pull = this.findPull(owner, name, number)
+    if (!repo || !pull) throw new Error(`FakeGitHub: no pull request ${owner}/${name}#${number}`)
+    if (pull.state !== 'open') throw new Error(`FakeGitHub: #${number} is not open`)
+    const baseSha = repo.refs.get(`heads/${pull.base}`)
+    const headSha = repo.refs.get(`heads/${pull.head}`) ?? pull.headSha
+    if (!baseSha) throw new Error(`FakeGitHub: no base branch ${pull.base}`)
+    const baseFiles = this.trees.get(this.commits.get(baseSha)?.tree ?? '') ?? new Map()
+    const headFiles = this.trees.get(this.commits.get(headSha)?.tree ?? '') ?? new Map()
+    const tree = this.writeTree(baseFiles, [...headFiles.entries()])
+    const sha = this.writeCommit(
+      tree,
+      [baseSha, headSha],
+      `Merge pull request #${number} from ${owner}/${pull.head}`
+    )
+    repo.refs.set(`heads/${pull.base}`, sha)
+    pull.state = 'closed'
+    pull.merged = true
+    pull.mergedAt = at.toISOString()
+    pull.mergeSha = sha
+    return sha
+  }
+
+  /** P4: close a pull request without merging it. */
+  closePull(owner: string, name: string, number: number): void {
+    const pull = this.findPull(owner, name, number)
+    if (!pull) throw new Error(`FakeGitHub: no pull request ${owner}/${name}#${number}`)
+    pull.state = 'closed'
+  }
+
+  /**
+   * P4: publish a Release on an existing tag by hand, as a person in GitHub would — the
+   * job-originated production path. `onRelease` is NOT called: the test drives the job itself.
+   */
+  publish(owner: string, name: string, tag: string): FakeGitHubRelease {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const sha = repo.refs.get(`tags/${tag}`)
+    if (!sha) throw new Error(`FakeGitHub: no tag ${tag}`)
+    return this.newRelease(repo, { tag, sha, via: 'hook' })
+  }
+
+  /** P4: the release on `tag`, if one was published. */
+  releaseFor(owner: string, name: string, tag: string): FakeGitHubRelease | undefined {
+    return this.releases.find(
+      r =>
+        r.owner.toLowerCase() === owner.toLowerCase() &&
+        r.repo.toLowerCase() === name.toLowerCase() &&
+        r.tag === tag
+    )
+  }
+
   handle(req: FakeRequest): Promise<Response> | Response | null {
     if (req.url.hostname !== 'api.github.com') return null
     return this.route(req)
   }
 
   // ---- internals -------------------------------------------------------------------------------
+
+  private findPull(owner: string, name: string, number: number): FakeGitHubPull | undefined {
+    return this.pulls.find(
+      p =>
+        p.owner.toLowerCase() === owner.toLowerCase() &&
+        p.repo.toLowerCase() === name.toLowerCase() &&
+        p.number === number
+    )
+  }
+
+  private newPull(
+    repo: FakeRepo,
+    input: Pick<FakeGitHubPull, 'head' | 'base' | 'title' | 'body' | 'headSha' | 'author'>
+  ): FakeGitHubPull {
+    const pull: FakeGitHubPull = {
+      number: this.pulls.filter(p => p.owner === repo.owner && p.repo === repo.name).length + 1,
+      owner: repo.owner,
+      repo: repo.name,
+      state: 'open',
+      merged: false,
+      mergedAt: null,
+      mergeSha: null,
+      ...input,
+    }
+    this.pulls.push(pull)
+    return pull
+  }
+
+  private newRelease(
+    repo: FakeRepo,
+    input: { tag: string; sha: string; name?: string; body?: string; via: 'api' | 'hook' }
+  ): FakeGitHubRelease {
+    const release: FakeGitHubRelease = {
+      id: this.ids.number(),
+      owner: repo.owner,
+      repo: repo.name,
+      tag: input.tag,
+      name: input.name ?? input.tag,
+      body: input.body ?? '',
+      draft: false,
+      prerelease: false,
+      sha: input.sha,
+      publishedAt: new Date().toISOString(),
+      via: input.via,
+    }
+    this.releases.push(release)
+    return release
+  }
+
+  private releaseJson(r: FakeGitHubRelease) {
+    return {
+      id: r.id,
+      tag_name: r.tag,
+      name: r.name,
+      body: r.body,
+      draft: r.draft,
+      prerelease: r.prerelease,
+      target_commitish: r.sha,
+      html_url: `https://github.com/${r.owner}/${r.repo}/releases/tag/${r.tag}`,
+      published_at: r.publishedAt,
+    }
+  }
+
+  /** Every commit reachable from `sha` (itself included), following all parents. */
+  private ancestors(sha: string): Set<string> {
+    const seen = new Set<string>()
+    const stack = [sha]
+    while (stack.length > 0) {
+      const next = stack.pop() as string
+      if (seen.has(next)) continue
+      seen.add(next)
+      for (const parent of this.commits.get(next)?.parents ?? []) stack.push(parent)
+    }
+    return seen
+  }
+
+  /** The commits reachable from `head` and not from `base`, oldest first (parents before children). */
+  private commitsBetween(base: string, head: string): FakeCommit[] {
+    const excluded = this.ancestors(base)
+    const order: FakeCommit[] = []
+    const visited = new Set<string>()
+    const visit = (sha: string) => {
+      if (visited.has(sha) || excluded.has(sha)) return
+      visited.add(sha)
+      const commit = this.commits.get(sha)
+      if (!commit) return
+      for (const parent of commit.parents) visit(parent)
+      order.push(commit)
+    }
+    visit(head)
+    return order
+  }
 
   private resolveRef(repo: FakeRepo, ref: string): string | null {
     const bare = ref.replace(/^refs\//, '')
@@ -594,18 +803,14 @@ export class FakeGitHub implements VendorHandler {
       ) {
         return ghError(422, `A pull request already exists for ${repo.owner}:${head}.`)
       }
-      const pull: FakeGitHubPull = {
-        number: this.pulls.filter(p => p.owner === repo.owner && p.repo === repo.name).length + 1,
-        owner: repo.owner,
-        repo: repo.name,
+      const pull = this.newPull(repo, {
         head,
         base,
         title: String(body.title ?? ''),
         body: String(body.body ?? ''),
-        state: 'open',
         headSha,
-      }
-      this.pulls.push(pull)
+        author: 'company-launch[bot]',
+      })
       return json(this.pullJson(pull), 201)
     }
     if (rest === '/pulls' && m === 'GET') {
@@ -672,6 +877,97 @@ export class FakeGitHub implements VendorHandler {
       })
     }
 
+    // ---- P4: tags, releases, compare, commit → pulls
+    if (rest === '/git/refs' && m === 'POST') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const ref = String(body.ref ?? '').replace(/^refs\//, '')
+      const sha = String(body.sha ?? '')
+      if (!/^(heads|tags)\/.+/.test(ref)) return ghError(422, 'Reference name is invalid')
+      if (!this.commits.has(sha)) return ghError(422, 'Object does not exist')
+      if (repo.refs.has(ref)) return ghError(422, 'Reference already exists')
+      repo.refs.set(ref, sha)
+      return json({ ref: `refs/${ref}`, object: { sha, type: 'commit' } }, 201)
+    }
+    if (rest === '/releases' && m === 'POST') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const tag = String(body.tag_name ?? '')
+      if (!tag) return ghError(422, 'Validation Failed')
+      if (this.releaseFor(repo.owner, repo.name, tag)) {
+        return json(
+          {
+            message: 'Validation Failed',
+            errors: [{ resource: 'Release', code: 'already_exists' }],
+          },
+          422
+        )
+      }
+      let sha = repo.refs.get(`tags/${tag}`)
+      if (!sha && body.target_commitish) {
+        const target = this.resolveRef(repo, String(body.target_commitish))
+        if (target) {
+          repo.refs.set(`tags/${tag}`, target)
+          sha = target
+        }
+      }
+      if (!sha) return ghError(422, 'Validation Failed')
+      const release = this.newRelease(repo, {
+        tag,
+        sha,
+        name: body.name ? String(body.name) : undefined,
+        body: body.body ? String(body.body) : undefined,
+        via: 'api',
+      })
+      await this.onRelease?.(release)
+      return json(this.releaseJson(release), 201)
+    }
+    match = rest.match(/^\/releases\/tags\/(.+)$/)
+    if (match && m === 'GET') {
+      const release = this.releaseFor(repo.owner, repo.name, decodeURIComponent(match[1]))
+      return release ? json(this.releaseJson(release)) : ghError(404, 'Not Found')
+    }
+    match = rest.match(/^\/compare\/(.+)\.\.\.(.+)$/)
+    if (match && m === 'GET') {
+      const base = this.resolveRef(repo, decodeURIComponent(match[1]))
+      const head = this.resolveRef(repo, decodeURIComponent(match[2]))
+      if (!base || !head) return ghError(404, 'Not Found')
+      const ahead = this.commitsBetween(base, head)
+      const behind = this.commitsBetween(head, base)
+      return json({
+        status:
+          ahead.length === 0 && behind.length === 0
+            ? 'identical'
+            : behind.length === 0
+              ? 'ahead'
+              : ahead.length === 0
+                ? 'behind'
+                : 'diverged',
+        ahead_by: ahead.length,
+        behind_by: behind.length,
+        total_commits: ahead.length,
+        html_url: `https://github.com/${repo.owner}/${repo.name}/compare/${match[1]}...${match[2]}`,
+        commits: ahead.map(c => ({
+          sha: c.sha,
+          parents: c.parents.map(p => ({ sha: p })),
+          commit: { message: c.message, author: { name: 'octocat', date: null } },
+        })),
+      })
+    }
+    match = rest.match(/^\/commits\/([0-9a-f]+)\/pulls$/)
+    if (match && m === 'GET') {
+      const refused = readable('pull_requests')
+      if (refused) return refused
+      const sha = match[1]
+      const list = this.pulls.filter(
+        p =>
+          p.owner === repo.owner &&
+          p.repo === repo.name &&
+          (p.mergeSha === sha || p.headSha === sha)
+      )
+      return json(list.map(p => this.pullJson(p)))
+    }
+
     // ---- settings
     match = rest.match(/^\/environments\/([^/]+)$/)
     if (match && m === 'PUT') {
@@ -710,7 +1006,10 @@ export class FakeGitHub implements VendorHandler {
       title: p.title,
       body: p.body,
       draft: false,
-      merged: false,
+      merged: p.merged,
+      merged_at: p.mergedAt,
+      merge_commit_sha: p.mergeSha,
+      user: { login: p.author },
       head: { ref: p.head, sha: p.headSha },
       base: { ref: p.base },
     }

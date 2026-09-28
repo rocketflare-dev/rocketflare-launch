@@ -103,7 +103,7 @@ export const RLS_REVOKED_TABLES = [
  * Worker connects as the table owner, which no grant restricts, so the first line is the
  * `BEFORE UPDATE OR DELETE` trigger in the migration that created the table (spec/08).
  */
-export const APPEND_ONLY_TABLES = ['audit_events'] as const
+export const APPEND_ONLY_TABLES = ['audit_events', 'approval_decisions', 'audit_chain'] as const
 
 /**
  * Deliberately NOT policied — every exclusion is a decision recorded here rather than hidden

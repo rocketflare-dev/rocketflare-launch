@@ -65,6 +65,10 @@ const MATRIX: Record<string, Record<Role, Level>> = {
   AuditEvent: { owner: 'read', admin: 'read', support: 'read', member: 'none' },
   // Launch P3 — coding sessions: anyone starts one and drives their own; admin+ manage them all.
   Session: { owner: 'manage', admin: 'manage', support: 'manage', member: 'createUpdate' },
+  // Launch P4 — approvals: everyone reads (the service filters the rows and the engine decides
+  // who may decide); admin+ manage the organisation's. Policies are admin+ only.
+  Approval: { owner: 'manage', admin: 'manage', support: 'manage', member: 'read' },
+  ApprovalPolicy: { owner: 'manage', admin: 'manage', support: 'manage', member: 'none' },
 }
 
 const build = (role: Role | null, features: string[] = [], isGlobalAdmin = false) =>

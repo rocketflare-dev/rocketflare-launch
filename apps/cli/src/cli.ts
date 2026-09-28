@@ -5,6 +5,8 @@
  * `--server <url>` and `--json` apply to every command. The bin name comes from `package.json`.
  */
 import { Command, InvalidArgumentError } from 'commander'
+import { registerApprovalsCommands } from './commands/approvals'
+import { registerAuditCommands } from './commands/audit'
 import { runConfigGet, runConfigPath, runConfigSet } from './commands/config'
 import { runEvalsPromote } from './commands/evals'
 import { runFeaturesList } from './commands/features'
@@ -12,6 +14,7 @@ import { runFeedbackList } from './commands/feedback'
 import { runGroupMembers, runGroupsList } from './commands/groups'
 import { runLogin } from './commands/login'
 import { runLogout } from './commands/logout'
+import { registerReleasesCommands } from './commands/releases'
 import {
   runSessionsEnd,
   runSessionsList,
@@ -233,6 +236,12 @@ sessions
   .description('print a one-minute sign-in URL for the session’s live preview')
   .option('--open', 'open it in the browser')
   .action(action((ctx, cmd) => runSessionsPreviewUrl(ctx, cmd.args[0] ?? '', cmd.opts())))
+
+// ---- Launch P4: approvals, releases, audit (each file registers its own commands) ------------
+
+registerApprovalsCommands(program, action)
+registerReleasesCommands(program, action)
+registerAuditCommands(program, action)
 
 // ---- config --------------------------------------------------------------------------------
 
