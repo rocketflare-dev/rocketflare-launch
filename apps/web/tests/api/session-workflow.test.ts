@@ -366,7 +366,11 @@ describe('SessionWorkflow: the loop', () => {
     await h.env.FILES.put(`sessions/${h.row.id}/claude.jsonl`, '{"type":"user"}\n')
     let transcript: string | undefined
     const run = await drive(h, async (_wait, n) => {
-      if (n === 0) return undefined // nobody came: the idle timeout
+      if (n === 0) {
+        // Nobody came: the idle timeout, the whole idle window gone by.
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
       if (n === 1) {
         const suspended = await reload(h.row)
         expect(suspended.status).toBe('suspended')
@@ -426,6 +430,39 @@ describe('SessionWorkflow: the loop', () => {
     // The turn after the resume ran on the resumed session's own branch checkout.
     const after = await reload(h.row)
     expect(after).toMatchObject({ status: 'ended', turnCount: 1 })
+  })
+
+  it('an idle timeout while the person was using the preview does not suspend; it waits out the rest', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        // No turn, no wake — but the preview gateway bumped the activity 5 minutes ago.
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 5 * 60_000) })
+        return undefined
+      }
+      expect((await reload(h.row)).status).toBe('ready')
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'wait#0',
+      'suspend#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'end#2',
+      'cleanup',
+    ])
+    // Not suspended: no suspend checkpoint, and the second wait is only what is left of the window.
+    expect(h.checkpoints).toEqual(['end'])
+    expect(run.waits[0]?.timeout).toBe('30 minutes')
+    expect(run.waits[1]?.timeout).toBe('25 minutes')
+    expect(await typesOf(h.row)).not.toContain('turn.start')
+    const statuses = (await listSessionEvents(db, h.row.tenantId, h.row.id))
+      .filter(e => e.type === 'status')
+      .map(e => (e.data as { status?: string }).status)
+    expect(statuses).not.toContain('suspended')
   })
 
   it('a rollout under a turn: turn.interrupted, suspended, no checkpoint', async () => {

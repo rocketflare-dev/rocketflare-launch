@@ -5,11 +5,18 @@
  * `POST /api/sessions/:id/preview-grant` route.
  */
 import { previewLabel, previewUrl } from '@launch/shared/launch-sessions'
+import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { clearPreviewStatusCache, handlePreview, previewHostOf } from '@/api/preview/gateway'
+import {
+  bumpPreviewActivity,
+  clearPreviewStatusCache,
+  handlePreview,
+  PREVIEW_ACTIVITY_THROTTLE_MS,
+  previewHostOf,
+} from '@/api/preview/gateway'
 import { mintCookie, mintGrant, verifyCookie, verifyGrant } from '@/api/services/sessions/preview'
 import { loadConfig } from '@/config'
-import type { SessionRow } from '@/db/schema'
+import { type SessionRow, sessions } from '@/db/schema'
 import worker from '@/worker'
 import {
   createTestSession,
@@ -50,10 +57,29 @@ async function gateway(
   const req = new Request(url, init)
   const host = previewHostOf(req, env)
   if (!host) throw new Error(`not a preview host: ${url}`)
-  return handlePreview(req, env, createExecutionContext(), host, {
+  const ctx = createExecutionContext()
+  const res = await handlePreview(req, env, ctx, host, {
     ports: () => ports,
     ...(now ? { now: () => now } : {}),
   })
+  // The activity bump runs in `waitUntil`; settle it so a test reads what it wrote.
+  await waitOnExecutionContext(ctx)
+  return res
+}
+
+async function activityOf(row: SessionRow): Promise<Date | null> {
+  const [latest] = await db
+    .select({ at: sessions.lastActivityAt })
+    .from(sessions)
+    .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+  return latest?.at ?? null
+}
+
+async function setActivity(row: SessionRow, at: Date | null) {
+  await db
+    .update(sessions)
+    .set({ lastActivityAt: at })
+    .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
 }
 
 async function seeded(status: SessionRow['status'] = 'ready') {
@@ -328,6 +354,64 @@ describe('the gateway', () => {
     await waitOnExecutionContext(ctx)
     expect(res.status).toBe(401)
     expect(res.headers.get('X-Request-Id')).toBeNull()
+  })
+})
+
+describe('the preview is the person’s activity', () => {
+  const HOUR_AGO = () => new Date(Date.now() - 60 * 60_000)
+
+  it('a proxied request moves a ready session’s last_activity_at, at most once a minute per isolate', async () => {
+    const { f, row, ports, host } = await seeded('ready')
+    const cookie = await cookieFor(row, f.user.id)
+    await setActivity(row, HOUR_AGO())
+    const t0 = new Date()
+    expect(
+      (await gateway(previewEnv(), ports, `http://${host}/`, { headers: cookie }, t0)).status
+    ).toBe(200)
+    expect((await activityOf(row))?.getTime()).toBe(t0.getTime())
+
+    // Put it back: a second request inside the minute writes nothing (the isolate throttle).
+    await setActivity(row, HOUR_AGO())
+    const t1 = new Date(t0.getTime() + 10_000)
+    await gateway(previewEnv(), ports, `http://${host}/app.js`, { headers: cookie }, t1)
+    expect((await activityOf(row))?.getTime()).toBeLessThan(t0.getTime())
+
+    // A minute on, it writes again.
+    const t2 = new Date(t0.getTime() + PREVIEW_ACTIVITY_THROTTLE_MS + 1_000)
+    await gateway(previewEnv(), ports, `http://${host}/`, { headers: cookie }, t2)
+    expect((await activityOf(row))?.getTime()).toBe(t2.getTime())
+  })
+
+  it('an unauthenticated request, or a working session (the turn’s heartbeat), moves nothing', async () => {
+    const { row, ports, host } = await seeded('ready')
+    const old = HOUR_AGO()
+    await setActivity(row, old)
+    expect((await gateway(previewEnv(), ports, `http://${host}/`)).status).toBe(401)
+    expect((await activityOf(row))?.getTime()).toBe(old.getTime())
+
+    const working = await seeded('working')
+    await setActivity(working.row, old)
+    const cookie = await cookieFor(working.row, working.f.user.id)
+    expect(
+      (await gateway(previewEnv(), working.ports, `http://${working.host}/`, { headers: cookie }))
+        .status
+    ).toBe(200)
+    expect((await activityOf(working.row))?.getTime()).toBe(old.getTime())
+  })
+
+  it('the write itself is throttled in the database, tenant-first and status-guarded', async () => {
+    const { row } = await seeded('ready')
+    const now = new Date()
+    await setActivity(row, new Date(now.getTime() - 30_000))
+    expect(await bumpPreviewActivity(db, row, now)).toBe(false)
+    await setActivity(row, null)
+    expect(await bumpPreviewActivity(db, { ...row, tenantId: crypto.randomUUID() }, now)).toBe(
+      false
+    )
+    expect(await bumpPreviewActivity(db, row, now)).toBe(true)
+    expect((await activityOf(row))?.getTime()).toBe(now.getTime())
+    const { row: suspended } = await seeded('suspended')
+    expect(await bumpPreviewActivity(db, suspended, now)).toBe(false)
   })
 })
 

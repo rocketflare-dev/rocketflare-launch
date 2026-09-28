@@ -19,7 +19,12 @@
  * - Nothing staged → no commit; the push still happens when the checkout's HEAD is not the row's
  *   `head_sha` (a checkpoint cut off between commit and push, retried).
  * - The push goes through the GitHub egress handler (`egress/github.ts`), which injects the token
- *   and refuses any ref but the session's branch.
+ *   and refuses any ref but the session's branch. A push that fails TRANSIENTLY
+ *   (`TRANSIENT_PUSH_RE`: "Repository not found" — a token GitHub had not settled that outlasted
+ *   the proxy's own retries — a 5xx or 429, a dropped connection) is tried once more after
+ *   `PUSH_RETRY_DELAY_MS`: the push is idempotent (the same sha to the same ref), and the step
+ *   that runs a checkpoint has no retry of its own — a failed one is an error the person reads. A
+ *   rejection (non-fast-forward, Launch's own 403) is final and not retried.
  * - The transcript is Claude Code's own `~/.claude/projects/<cwd, non-alphanumerics → '-'>/
  *   <claude_session_id>.jsonl`, stored at `sessions/<id>/claude.jsonl` (`transcript_key`); resume
  *   writes it back before `--resume`.
@@ -45,6 +50,11 @@ export const SESSION_REPO_DIR = SESSION_WORKSPACE
 export const SESSION_CLAUDE_HOME = SESSION_HOME
 /** Where the commit message is written (a file, so no message is ever parsed by a shell). */
 const COMMIT_MESSAGE_PATH = '/tmp/launch-commit-message.txt'
+/** How long a transiently failed push waits before its one retry. */
+export const PUSH_RETRY_DELAY_MS = 3000
+/** git's output for a failure worth one more try — never a rejection of the ref itself. */
+export const TRANSIENT_PUSH_RE =
+  /Repository not found|returned error: (401|404|429|5\d\d)|Could not resolve host|Failed to connect|Connection (reset|timed out)|early EOF|RPC failed|remote end hung up/i
 
 export class CheckpointError extends Error {
   constructor(
@@ -62,6 +72,8 @@ export interface CheckpointDeps {
   /** `createR2Storage(env.FILES)`; null skips the transcript copy. */
   storage: StorageService | null
   now?: () => Date
+  /** The wait before a transiently failed push's retry (tests pass a recorder). */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export interface CheckpointOptions {
@@ -180,7 +192,16 @@ export async function checkpoint(
 
   let pushed = false
   if (committed || (head && head !== session.headSha)) {
-    await git('push', `git push --quiet origin HEAD:refs/heads/${branch}`)
+    const push = `git push --quiet origin HEAD:refs/heads/${branch}`
+    const first = await deps.sandbox.exec(push, { cwd, env: gitEnv, timeoutMs: 120_000 })
+    if (first.exitCode !== 0) {
+      if (!TRANSIENT_PUSH_RE.test(outputTail(first))) {
+        throw new CheckpointError('push', outputTail(first))
+      }
+      const sleep = deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)))
+      await sleep(PUSH_RETRY_DELAY_MS)
+      await git('push', push)
+    }
     pushed = true
   }
 

@@ -1284,6 +1284,15 @@ reload) is restarted as `<id>-rN` from the row.
   `.claude/settings.local.json`) → `bootstrap` (the kit's bootstrap on the session's own database)
   → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
   step writes a `step` event (the page's checklist).
+- **Idle** is judged by `last_activity_at`, not by the wait alone: a live session's `wait#N`
+  times out after what is left of the policy's `idleSuspendMinutes` counted from
+  `last_activity_at` (`idleMinutesLeft`), and `suspend#N` with reason `idle` re-reads the row and
+  does nothing when the stamp is younger than the window — the next `inspect` waits out the rest.
+  A turn, a checkpoint, the model proxy and **the person's use of the live preview** move the stamp
+  (the gateway, throttled to one write a minute, §18.12); nothing wakes the Workflow for a preview
+  request, which is why the timeout re-checks. An open session page alone (its event stream) does
+  NOT count: a forgotten background tab would keep a container up for the whole
+  `maxSessionHours`.
 - **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a suspended
   session's expiry: end), `turn#N` → `checkpoint#N`, `ship#N`, `suspend#N` (a drain), `resume#N`
   (boot again with `#K` names, then restore the transcript), `end#N`. A message that arrives while
@@ -1336,7 +1345,9 @@ the same checkout) kills the running step; the reconcile settles such a boot as 
 quiet minutes rather than resuming it — a new session is the recovery; a turn it kills is failed
 after 3 quiet minutes and the session re-boots, losing that turn's unsaved edits. A `shipping`
 session whose instance died is not reconciled (no heartbeat is read for it). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
-what stops the command still running in the container.
+what stops the command still running in the container. Presence is only the preview: someone
+reading the session page, or the diff, without touching the preview is idle after
+`idleSuspendMinutes` (a visible-tab heartbeat from the page is not built).
 
 ### 18.10 The sandbox and the local backend
 
@@ -1364,7 +1375,15 @@ Claude Code and a warm pnpm store for kit 0.15.0. The checkout is `/workspace/ap
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition).
 The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
 `session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
-10 minutes). `SESSION_BACKEND=local` (development only) swaps only where the repo lives (the local
+10 minutes left, an expired one included — the usual case after an idle hour; sealed back in a
+compare-and-set on the expiry it read, so two requests re-minting at once converge on the one
+token the row keeps). **A fresh token is retried**: GitHub does not always accept an installation
+token for a second or so after issuing it, and answers the anonymous-looking request for a private
+repo "Repository not found" (404) — seen on a real push one second after a re-mint. When the token
+was minted by this request, or sealed within the last minute (its expiry says so: GitHub's tokens
+live exactly an hour), a 401 or 404 is sent again after 0.5 s, 1 s and 2 s — the body is already
+buffered, and a 401/404 did nothing. An older token's 404 passes through at once.
+`SESSION_BACKEND=local` (development only) swaps only where the repo lives (the local
 git server, still through the git handler) — procedure and timings in `docs/SESSIONS-LOCAL.md`.
 Under `APP_ENV=development` (every `wrangler dev` container, whatever the backend) each command
 runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`). The allow-list is widened at
@@ -1388,7 +1407,11 @@ credentials — the container holds only its branch's. An outbound `wss://` thro
 is proven locally against a public echo host, not yet against a Neon branch; workerd (the app's
 `wrangler dev` inside the container) trusting the interception CA is unproven. First-start latency,
 `max_instances`, git through `interceptHttps` and whether a deploy stops running sandboxes are
-unproven on Cloudflare (plan §5).
+unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitHub's eventual
+consistency is inferred from one incident (re-mint at :21, "Repository not found" at :22, both
+services 200 minutes later), not reproduced; the retry is bounded at 3.5 s, and a token-lifetime
+change at GitHub would make the "sealed within a minute" test miss (the minting request itself
+still retries).
 
 ### 18.11 Chat, the model proxy and budgets
 
@@ -1433,17 +1456,27 @@ Partitioned; `launch-preview`, Lax, in development) and redirects to `/`. Every 
 the cookie for this host and session (401 otherwise), an ended session is 410, a booting or
 suspended one 503; only :5173 and :8787 are proxied (`SandboxPort.fetch`), with `frame-ancestors
 <APP_URL>` and a status cache of 15 s per isolate. The UI reloads the frame after every turn.
+**A preview request is the person's activity**: an authenticated request to a `ready` / `blocked`
+session moves `last_activity_at` (the idle clock, §18.9) in `waitUntil`, at most once a minute per
+session per isolate and only on a stamp older than a minute in the database, so a Vite page's
+hundred module requests cost one write. Never for `working`: there the stamp is the turn's
+heartbeat, which the reconcile reads, and a preview must not hide a dead turn.
 
 **Known gaps:** a grant is reusable within its 60 s (not single-use); Vite HMR over the WebSocket
 upgrade is untested, locally and deployed; an ended session is served for up to 15 s from the
 status cache; `SameSite=None` cookies inside the iframe are unproven on real browsers and hosts.
+A preview left open with nothing requesting (Vite's HMR socket idles silently) is idle; a
+running preview app that polls its API keeps its session live until `maxSessionHours`.
 
 ### 18.13 Checkpoints, ship and the PR
 
 **Checkpoint** (`checkpoint.ts`, after every turn and before a suspend or end): `git add -A`, a
 commit by Launch with the person as `Co-Authored-By`, `git push origin HEAD:refs/heads/session/
 <short>` through the git handler, and Claude's transcript to R2 (`sessions/<id>/claude.jsonl`) so
-a resume can `--resume`. A failed checkpoint is an `error` event, not a failed session.
+a resume can `--resume`. A failed checkpoint is an `error` event, not a failed session. A push
+that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped connection —
+`TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
+retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
 **Ship** (`ship.ts`, step `ship#N`): `ready → shipping`, the `session-ship` prompt as a turn (run
 the gate `pnpm lint && pnpm typecheck && pnpm test`, fix up to 3 times, print `{title, body,
 gatePassed}`), then **Launch runs the gate itself** — only its exit code counts. Red: a `ship.gate`

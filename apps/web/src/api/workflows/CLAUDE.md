@@ -94,7 +94,9 @@ hooks, a step realtime).
 Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (each
 wrapped in `withProgress`, which writes the boot checklist's `step` events) → a loop of
 `inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · wait) and one of
-`wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = the idle policy, or the suspended expiry),
+`wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = what is left of the idle policy counted
+from `last_activity_at`, or the suspended expiry; on an idle timeout `suspend#N` re-reads the stamp
+and does nothing when the preview moved it meanwhile — the next round waits out the rest),
 `turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `checkpoint#N` | `rollout#N`,
 `ship#N` (3d's `ship`), `suspend#N`, `resume#N` → `sandbox.start#K … transcript#K`, `end#N` →
 `fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless

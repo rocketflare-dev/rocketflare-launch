@@ -555,8 +555,14 @@ describe('a coding session, end to end', () => {
     let transcriptAfterResume: string | undefined
     const run = await drive(h, [
       () => say(h, 'First change'),
-      // wait#2: nobody comes back — the idle timeout.
-      () => undefined,
+      // wait#2: nobody comes back — the idle timeout, the idle window gone by.
+      async () => {
+        await db
+          .update(sessions)
+          .set({ lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+          .where(and(eq(sessions.tenantId, h.f.tenant.id), eq(sessions.id, h.session.id)))
+        return undefined
+      },
       // wait#3 (suspended): the person resumes.
       async () => {
         const row = await reload(h)

@@ -819,7 +819,27 @@ export async function inspectStep(scope: StepScope): Promise<NextAction> {
   if (status === 'ready' && session.pendingMessage !== null) {
     return { action: 'turn', maxTurnMinutes: policy.maxTurnMinutes }
   }
-  return { action: 'wait', waitingIn: status, timeoutMinutes: policy.idleSuspendMinutes }
+  return {
+    action: 'wait',
+    waitingIn: status,
+    timeoutMinutes: idleMinutesLeft(session, policy.idleSuspendMinutes, scope.now()),
+  }
+}
+
+/**
+ * The idle clock of a live session: minutes until it has been quiet for `idleMinutes`, counted
+ * from `last_activity_at` — which a turn, a checkpoint, the model proxy AND the person's use of
+ * the preview (`api/preview/gateway.ts`, throttled) move. At least one minute; the whole window
+ * when nothing was ever recorded.
+ */
+export function idleMinutesLeft(
+  session: Pick<SessionRow, 'lastActivityAt'>,
+  idleMinutes: number,
+  now: Date
+): number {
+  if (!session.lastActivityAt) return idleMinutes
+  const quietMinutes = (now.getTime() - session.lastActivityAt.getTime()) / 60_000
+  return Math.min(idleMinutes, Math.max(1, Math.ceil(idleMinutes - quietMinutes)))
 }
 
 /** A hook's context for this step: the fresh row, the sandbox, the emitter. */
@@ -943,6 +963,13 @@ export async function suspendStep(
 ): Promise<{ suspended: boolean }> {
   const session = await loadSession(scope)
   if (session.status !== 'ready' && session.status !== 'blocked') return { suspended: false }
+  if (reason === 'idle') {
+    // The wait timed out, but the person may have been using the preview meanwhile (nothing
+    // wakes the Workflow for that): not idle yet → the loop's next `inspect` waits out the rest.
+    const idleMinutes = resolveSessionPolicy(session.policy).idleSuspendMinutes
+    const lastActivity = session.lastActivityAt?.getTime() ?? 0
+    if (scope.now().getTime() - lastActivity < idleMinutes * 60_000) return { suspended: false }
+  }
   await checkpointStep(scope, 'suspend')
   await sandboxFor(scope, session).destroy()
   const now = scope.now()

@@ -11,6 +11,7 @@ import {
   checkpoint,
   claudeProjectDir,
   commitMessage,
+  PUSH_RETRY_DELAY_MS,
   SESSION_REPO_DIR,
 } from '@/api/services/sessions/checkpoint'
 import { createR2Storage } from '@/api/services/storage'
@@ -110,6 +111,53 @@ describe('checkpoint', () => {
     expect(err.output).toContain('remote: refused')
     const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
     expect(after?.headSha).toBeNull()
+  })
+
+  it('a transient push failure ("Repository not found") is retried once after a pause', async () => {
+    const { row, sandbox, deps, ref } = await setup()
+    let pushes = 0
+    sandbox.onExec('git push', () => {
+      pushes += 1
+      return pushes === 1
+        ? {
+            exitCode: 128,
+            stderr:
+              "remote: Repository not found.\nfatal: repository 'https://github.com/acme/app.git/' not found",
+          }
+        : { exitCode: 0 }
+    })
+    const delays: number[] = []
+    const result = await checkpoint(db, { ...deps, sleep: async ms => void delays.push(ms) }, ref)
+    expect(result.pushed).toBe(true)
+    expect(pushes).toBe(2)
+    expect(delays).toEqual([PUSH_RETRY_DELAY_MS])
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(after?.headSha).toBe(HEAD)
+  })
+
+  it('a rejected push is not retried; a transient one that fails twice throws', async () => {
+    const rejected = await setup()
+    let pushes = 0
+    rejected.sandbox.onExec('git push', () => {
+      pushes += 1
+      return { exitCode: 1, stderr: ' ! [rejected] HEAD -> session/abc (non-fast-forward)' }
+    })
+    const sleeps: number[] = []
+    const sleep = async (ms: number) => void sleeps.push(ms)
+    const err = await checkpoint(db, { ...rejected.deps, sleep }, rejected.ref).catch(e => e)
+    expect(err).toBeInstanceOf(CheckpointError)
+    expect(pushes).toBe(1)
+    expect(sleeps).toEqual([])
+
+    const down = await setup()
+    down.sandbox.onExec('git push', {
+      exitCode: 128,
+      stderr: 'fatal: unable to access: The requested URL returned error: 502',
+    })
+    const err2 = await checkpoint(db, { ...down.deps, sleep }, down.ref).catch(e => e)
+    expect(err2).toBeInstanceOf(CheckpointError)
+    expect(err2.step).toBe('push')
+    expect(down.sandbox.execs.filter(e => e.command.startsWith('git push'))).toHaveLength(2)
   })
 
   it('another tenant’s session is not found', async () => {
