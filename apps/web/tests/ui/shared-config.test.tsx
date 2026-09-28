@@ -330,7 +330,11 @@ describe('shared config model', () => {
   it('words a version and what is missing from it', () => {
     expect(valueLine({ version: null, setAt: null, setBy: null })).toBe('Not set')
     expect(
-      valueLine({ version: 1, setAt: new Date(), setBy: { id: IDS.user, name: null, email: 'c@x.test' } })
+      valueLine({
+        version: 1,
+        setAt: new Date(),
+        setBy: { id: IDS.user, name: null, email: 'c@x.test' },
+      })
     ).toMatch(/^Set — version 1, set .* by c@x\.test$/)
     expect(missingKeys([{ key: 'A' }, { key: 'B' }], { version: 2, keysSet: ['A'] })).toEqual(['B'])
     expect(missingKeys([{ key: 'A' }], { version: null, keysSet: [] })).toEqual([])
