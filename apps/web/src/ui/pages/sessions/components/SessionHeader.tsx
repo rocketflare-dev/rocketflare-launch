@@ -8,7 +8,9 @@
  * - **End** confirms too, and says what is kept (the branch) and what is not (the sandbox and its
  *   database). **Resume** is offered while the session is asleep.
  * - **The cost meter** is spent / cap with a bar that turns amber past 80 % and red at the cap;
- *   the person who may extend the budget (the app's owners and admins) gets "Extend" beside it.
+ *   the person who may extend the budget (the app's owners and admins) gets "Extend" beside it;
+ *   the session's creator without that right gets "Ask for more" (a `session.budget` approval,
+ *   P4), and while that request is open a link to it instead.
  * - Only the people who may act on the session (`viewerCanManage`) see the buttons at all.
  */
 import {
@@ -17,6 +19,7 @@ import {
   RocketLaunchIcon,
   StopCircleIcon,
 } from '@heroicons/react/24/outline'
+import { approvalPath } from '@launch/shared/launch-approvals'
 import type { Session } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -28,6 +31,7 @@ import {
   useResumeSession,
   useShipSession,
 } from '@/ui/hooks/useSessions'
+import type { BudgetAccess } from './budgetAccess'
 import { SessionStatusBadge } from './SessionStatusBadge'
 
 /** Spent as a fraction of the cap, and the tone of the bar. Pure. */
@@ -62,13 +66,13 @@ export function SessionHeader({
   session,
   appSlug,
   appName,
-  canExtend,
+  budget,
   onExtend,
 }: {
   session: Session
   appSlug: string
   appName: string
-  canExtend: boolean
+  budget: BudgetAccess
   onExtend: () => void
 }) {
   const [confirm, setConfirm] = useState<'ship' | 'end' | null>(null)
@@ -117,10 +121,20 @@ export function SessionHeader({
               aria-label="Budget used"
             />
           </div>
-          {canExtend && !settled && (
-            <button type="button" className="btn btn-ghost btn-xs" onClick={onExtend}>
-              Extend
-            </button>
+          {!settled && budget.pendingApprovalId && budget.mode !== 'extend' ? (
+            <Link
+              to={approvalPath(budget.pendingApprovalId)}
+              className="btn btn-ghost btn-xs text-warning"
+            >
+              Budget request pending
+            </Link>
+          ) : (
+            budget.mode &&
+            !settled && (
+              <button type="button" className="btn btn-ghost btn-xs" onClick={onExtend}>
+                {budget.mode === 'extend' ? 'Extend' : 'Ask for more'}
+              </button>
+            )
           )}
         </div>
 

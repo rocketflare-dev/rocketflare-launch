@@ -76,6 +76,17 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   RunPage's `useLiveRun` pattern. `pages/sessions/` is the lazy page (it carries `Markdown`); every
   panel is a selector in the pure `sessionChatModel.ts` (`buildSessionChat`, `toolSummary`,
   `bootSteps`, `latestPreviewChangeSeq`, `shipGates` — `tests/config/session-chat-model.test.ts`).
+  Launch P4 (approvals and shipping): `useApprovals` (`useApprovalCount` — the nav badge, never
+  polled; `useApprovals(filters)` for the inbox; `useApproval(id)` polling `APPROVAL_APPLY_POLL_MS`
+  only while `approvalOwesAnswer` — approved, `applyAfter` not yet landed nor failed; a `pending`
+  request waits on a PERSON; `useDecideApproval` / `useCancelApproval` with no optimistic write
+  and no error toast — `isApprovalConflict` is the 409-as-information test), `useApprovalPolicies`
+  (list + defaults, `usePutApprovalPolicy`, `useDeleteApprovalPolicy`), `useReleases`
+  (`useReleases(appId)` polling while `releaseInFlight` — `tagged`/`staging`/`promoting`;
+  `useReleaseChain` read only when opened; `useCreateRelease`, `usePromoteRelease`,
+  `releaseOfApproval`), `useAudit`'s `useAuditVerify` (on demand) / `auditExportUrl`, and in
+  `useSessions` `useExtendBudget` (answers `{ session, approvalId? }`) + `usePendingBudgetApproval`.
+  All sit under the `approval` / `release` roots the server nudges.
   An installed PLUGIN's hooks live in its own tree (`src/plugins/<id>/ui/hooks/`) and read its own
   query keys directly rather than the merged `queryKeys` — a plugin must work the same whether it is
   the only one installed or the fifth. The analytics plugin's are `useAnalyticsPages`, `useCubeMeta`
@@ -406,6 +417,36 @@ A `CUSTOM kit.notice` renders
   `expiryState`, `fieldsFromJsonSchema`)
   and `tests/config/document-helpers.test.ts`. Mount `AgentsPage` inside the same `<Routes>` pair
   App.tsx uses so `navigate('/agents/runs/:id')` really lands on `RunPage`.
+
+## Approvals and releases (Launch P4)
+
+- **`/approvals` and `/approvals/:id` are pages** (`pages/approvals/`, lazy). The inbox's boxes are
+  `URLTabs` with `param="box"` (All only for `isAdminLevel`), filters are `?kind=` / `?status=`.
+  **Everything the surfaces SAY is `approvalModel.ts`** — `approvalSummary` (an exhaustive switch
+  over the context union), `requesterName`, `whyNotSentence`, `approversSentence`, `progressLabel`
+  — pure and tested in `tests/config/approval-model.test.ts`, so a row, a heading and a panel can
+  never describe one request three ways.
+- **`ApprovalPanel` follows `ActionRequiredPanel`'s rules**: heading focus, one sentence for
+  somebody who may not decide (a 403 `self_approval` / `not_an_approver` at decide time becomes the
+  same sentence), 409 → `alert-info` + a refetch, no toast, no optimistic write, and the expiry
+  through `useExpiry` → `expiryState` (a second / a minute / no timer). Settled → `ApprovalOutcome`
+  (including approved-but-applying and `applyError`). `ApprovalContext` renders the per-kind
+  context; a deploy of a release adds `pages/apps/components/ReleaseChain` (windowed, never
+  virtualised). Group names come from `useGroupNames` — every group for `manage Group`, otherwise
+  the reader's own, and the rest are COUNTED in words rather than fetched.
+- **Settings → Approvals** (`settings/ApprovalPolicies.tsx` + `ApprovalPolicyModal.tsx`): the
+  organisation row or the SERVER-reported default per kind, then team/app overrides; the modal
+  validates with `putApprovalPolicySchema` and refuses a policy with no approver and no
+  auto-approve.
+- **The app page**: `ReleasesCard` (+ `PromoteButton`, which goes to the approval it opened; a 409
+  is shown in its dialog) and `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).
+  A pending production ticket with an `approvalId` links to the request instead of deciding in
+  place; the access page's requests link to their `app.access` approvals.
+- **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
+  extends (owners/admins — their click also approves), asks (the creator), or reads; header and
+  banner take the same object.
+- Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `audit-integrity`, the P4 cases
+  in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
 ## Feature flags (D30)
 

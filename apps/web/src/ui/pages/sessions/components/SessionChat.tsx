@@ -17,8 +17,10 @@
  *   the button; anyone else reads who can.
  */
 import { ArrowDownIcon, SparklesIcon } from '@heroicons/react/24/outline'
+import { approvalPath } from '@launch/shared/launch-approvals'
 import type { Session, SessionEvent } from '@launch/shared/launch-sessions'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChatBubble } from '@/ui/components/ai/ChatBubble'
 import { formatCost } from '@/ui/components/ai/StatRows'
 import { SkeletonRows } from '@/ui/components/shared'
@@ -27,6 +29,7 @@ import { ApiError } from '@/ui/lib/api-client'
 import { formatDuration } from '@/ui/lib/format'
 import { useStickToBottom } from '@/ui/pages/agents/run/timeline/useStickToBottom'
 import { buildSessionChat, type ChatItem, type NoticeTone } from '../sessionChatModel'
+import type { BudgetAccess } from './budgetAccess'
 import { SessionComposer, type SessionComposerHandle } from './SessionComposer'
 import { ToolBlock } from './ToolBlock'
 
@@ -117,13 +120,14 @@ function EmptyTranscript({
 
 function BudgetBanner({
   session,
-  canExtend,
+  budget,
   onExtend,
 }: {
   session: Session
-  canExtend: boolean
+  budget: BudgetAccess
   onExtend: () => void
 }) {
+  const waiting = budget.pendingApprovalId && budget.mode !== 'extend'
   return (
     <div className="alert alert-warning alert-soft mx-3 mb-2 text-sm" role="status">
       <div className="min-w-0 flex-1">
@@ -131,16 +135,28 @@ function BudgetBanner({
           This session has used its {formatCost(session.budget.capMicrocents)} budget.
         </p>
         <p className="text-xs">
-          {canExtend
-            ? 'Extend it to keep going — the next message runs as soon as you do.'
-            : 'Ask an owner of this app or an administrator to extend it.'}
+          {waiting
+            ? 'You asked for more — the next message runs as soon as it is approved.'
+            : budget.mode === 'extend'
+              ? 'Extend it to keep going — the next message runs as soon as you do.'
+              : budget.mode === 'ask'
+                ? 'Ask an owner of this app or an administrator for more to keep going.'
+                : 'Ask an owner of this app or an administrator to extend it.'}
         </p>
       </div>
-      {canExtend && (
+      {waiting && budget.pendingApprovalId ? (
+        <Link to={approvalPath(budget.pendingApprovalId)} className="btn btn-sm">
+          See the request
+        </Link>
+      ) : budget.mode === 'extend' ? (
         <button type="button" className="btn btn-sm" onClick={onExtend}>
           Extend budget
         </button>
-      )}
+      ) : budget.mode === 'ask' ? (
+        <button type="button" className="btn btn-sm" onClick={onExtend}>
+          Ask for more budget
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -155,13 +171,13 @@ export function SessionChat({
   session,
   events,
   isLoading,
-  canExtend,
+  budget,
   onExtend,
 }: {
   session: Session
   events: readonly SessionEvent[]
   isLoading: boolean
-  canExtend: boolean
+  budget: BudgetAccess
   onExtend: () => void
 }) {
   const items = useMemo(() => buildSessionChat(events), [events])
@@ -288,7 +304,7 @@ export function SessionChat({
       </div>
 
       {session.status === 'blocked' && (
-        <BudgetBanner session={session} canExtend={canExtend} onExtend={onExtend} />
+        <BudgetBanner session={session} budget={budget} onExtend={onExtend} />
       )}
 
       <SessionComposer

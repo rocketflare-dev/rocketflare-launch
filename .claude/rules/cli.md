@@ -61,6 +61,17 @@ A failed turn, a ship with no PR, or failing CI exit 1; with `--json` a follow p
 (`{ session, events[, pr] }`) at the end. The preview URL is a one-minute credential: printed only
 when asked for.
 
+Approvals and releases (Launch P4): `approvals ls [--box mine|requested|all] [--status] [--kind]
+[--app <slug>]`, `show <id>` (a plain-words summary per kind, the policy, N-of-M, the decisions and
+either the approve/reject commands or the `whyNot` sentence), `approve|reject <id> [--comment]`
+(a 409 `not_pending` / `already_decided` becomes a sentence and exits 1; 403 exits 3). An id may be
+an 8-character prefix, looked up in the caller's boxes. `releases ls <app>`, `create <app>
+[--bump patch|minor|major]`, `promote <app> <id|X.Y.Z> [--reason] [--wait]` — promote prints the
+approval's URL; `--wait` polls the approval to a terminal status, then the release to
+`production_active` (exit 1 on reject, expiry or failure; with `--json` ONE `{ release, approval }`
+document), with `sleep` / `pollMs` injectable. The CLI never approves its own promote — the
+promoter is excluded from deciding.
+
 ## Output
 
 - Human output goes to stdout via `chalk`; diagnostics and progress to stderr. `--json` on **every

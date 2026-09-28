@@ -8,6 +8,14 @@
   approvals inbox rather than on the app's Access page; and "extend budget" on a session opens a
   request in its creator's name that an owner or admin approves in one click — the creator
   extending their own session now waits for someone else.
+- Approvals inbox (P4, slice 4f): `/approvals` lists what is waiting on you, what you asked for
+  and (for admins) everything, with a badge in the navigation; each request has its own page with
+  what is being approved in plain words, who asked and why, who may decide, N-of-M progress, the
+  expiry, and Approve / Reject with a comment. Settings → Approvals edits who approves each kind,
+  for the organisation or one team or app. The app page gains Releases (cut a release, promote it
+  to production through an approval, see its whole history); a session's creator can ask for more
+  budget; the audit page can verify the hash chain and export the log. CLI: `launch approvals
+  ls|show|approve|reject` and `launch releases ls|create|promote [--wait]`.
 - Approvals foundations (P4, slice 4a): the approvals engine's tables (`approval_requests`,
   append-only `approval_decisions`, `approval_policies`), releases (`app_releases`) and the audit
   hash chain (`audit_chain`, append-only) in one migration, which also moves every pending

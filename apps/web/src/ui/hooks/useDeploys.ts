@@ -1,7 +1,7 @@
 /**
  * An app's deploys (Launch P2, DEPLOYER.md): `GET /api/apps/:id/deploys` (newest first), a decision
- * on a `pending` production ticket, and "Deploy to production" — a pre-approved ticket plus the
- * `deploy.yml` dispatch.
+ * on a `pending` production ticket, and "Deploy to production" — from P4 a `deploy.production`
+ * approval (approve → a pre-approved ticket plus the `deploy.yml` dispatch).
  *
  * Polling (ui.md): only while a deploy is IN FLIGHT — `approved` (a run is claiming it, and not
  * past its expiry) or `uploaded` (the build is on Cloudflare, activation is next). A `pending`
@@ -67,12 +67,15 @@ export function useDeployProduction(appId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: () =>
+      // P4: the answer is either a pre-approved ticket (a deployment without the approvals
+      // engine) or `{ ticket: null, approvalId }` — the caller says which, and goes to the request.
       api.post(`/api/apps/${appId}/deploys/production`, undefined, {
         schema: productionDeployResponseSchema,
         showErrorToast: true,
-        showSuccessToast: true,
-        successMessage: 'Production deploy started',
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.deploys(appId) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apps.deploys(appId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
+    },
   })
 }
