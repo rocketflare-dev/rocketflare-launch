@@ -62,6 +62,8 @@ const DocumentViewPage = lazy(() => import('@/ui/pages/documents/DocumentViewPag
 const CataloguePage = lazy(() => import('@/ui/pages/apps/CataloguePage'))
 const AppDetailPage = lazy(() => import('@/ui/pages/apps/AppDetailPage'))
 const AppAccessPage = lazy(() => import('@/ui/pages/apps/AppAccessPage'))
+// Launch P3: a coding session — chat + live preview. Its own chunk: it carries `Markdown`.
+const SessionPage = lazy(() => import('@/ui/pages/sessions/SessionPage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
 const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
@@ -73,6 +75,7 @@ const UserDetail = lazy(() => import('@/ui/pages/admin/UserDetail'))
 const FeatureFlags = lazy(() => import('@/ui/pages/admin/FeatureFlags'))
 const Setup = lazy(() => import('@/ui/pages/admin/Setup'))
 const Identity = lazy(() => import('@/ui/pages/admin/Identity'))
+const SessionsAdmin = lazy(() => import('@/ui/pages/admin/SessionsAdmin'))
 
 // Dev-only TanStack Query devtools. `import.meta.env.DEV` is replaced at build time, so the
 // dynamic import (and its chunk) is dropped from production bundles. Set
@@ -228,6 +231,14 @@ function ShellRoutes() {
             }
           />
           <Route
+            path="/apps/:slug/sessions/:id"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'Session' }}>
+                <SessionPage />
+              </RequireGuard>
+            }
+          />
+          <Route
             path="/apps/:slug/access"
             element={
               <RequireGuard guard={{ action: 'read', subject: 'App' }}>
@@ -278,6 +289,7 @@ function ShellRoutes() {
             <Route path="feature-flags" element={<FeatureFlags />} />
             <Route path="setup" element={<Setup />} />
             <Route path="identity" element={<Identity />} />
+            <Route path="sessions" element={<SessionsAdmin />} />
           </Route>
           {pluginRoutes('shell')}
           <Route path="*" element={<NotFound />} />

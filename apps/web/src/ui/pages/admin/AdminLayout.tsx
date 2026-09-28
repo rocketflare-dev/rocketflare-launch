@@ -21,6 +21,8 @@ export default function AdminLayout() {
     // Launch: the platform credentials (spec/03) and the OIDC issuer's keys (spec/05).
     { to: '/admin/setup', label: 'Setup' },
     { to: '/admin/identity', label: 'Identity' },
+    // Launch P3: live coding sessions and the drain before a session-image deploy.
+    { to: '/admin/sessions', label: 'Sessions' },
   ]
 
   return (

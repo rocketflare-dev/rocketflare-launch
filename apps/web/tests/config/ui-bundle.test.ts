@@ -63,6 +63,14 @@ describe.skipIf(!built)('the UI bundle', () => {
     expect(chunks().filter(f => f.startsWith('RunPage-'))).toHaveLength(1)
   })
 
+  /**
+   * The coding session page (Launch P3) carries `Markdown`, the timeline and the preview frame;
+   * only people who start a session pay for it, so it is its own lazy chunk too.
+   */
+  it('lands the coding session page in its own lazy chunk', () => {
+    expect(chunks().filter(f => f.startsWith('SessionPage-'))).toHaveLength(1)
+  })
+
   it('ships no protobuf in any chunk', () => {
     const offenders = chunks().filter(file => {
       const source = read(file)
