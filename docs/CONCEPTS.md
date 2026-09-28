@@ -369,8 +369,8 @@ Server: `api/services/{ai,agents}/**` (read their `CLAUDE.md`), `services/prompt
   `document.convert` jobs. `OBSERVABILITY_PRESET` (`langfuse|phoenix|generic`) fills endpoint and
   auth — existing `LANGFUSE_*` keys migrate with no new secret; `OBSERVABILITY_CAPTURE_CONTENT=false`
   strips prompts, completions and tool I/O from both sinks; `pruneAiSpans` on the nightly cron keeps
-  `OBSERVABILITY_SPAN_RETENTION_DAYS` (14). Read back through `GET /api/traces[/:id]` (`read
-  Trace`, admin+ — spans hold other people's prompts) and `launch traces list|show`; the
+  `OBSERVABILITY_SPAN_RETENTION_DAYS` (14), one DELETE across every tenant. Read back through
+  `GET /api/traces[/:id]` (`read Trace`, admin+ — spans hold other people's prompts) and `launch traces list|show`; the
   `launch-traces` skill teaches an agent to debug from the span tree. Switch recipes: `docs/DEPLOY.md`
   § Tracing.
 

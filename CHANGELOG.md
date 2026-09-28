@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The nightly `ai_spans` prune is one DELETE across every tenant instead of one per tenant (ported
+  from Rocketflare 0.15.3): Postgres answers the cutoff from the `(tenant_id, started_at)` index,
+  and under the `neon` driver the per-tenant loop cost a round trip per ten tenants. The web tests'
+  timeout is 20 s under `DATABASE_DRIVER=neon` (every query an HTTP request through the local
+  proxy) and stays 5 s for the `postgres` gate.
 - Coding sessions no longer stall silently. Every sandbox call a boot step makes has a deadline
   and a readable error ("Installing and seeding: the sandbox (setAllowedHosts) did not answer within
   90 s"), and so does every Neon call; a failed install, bootstrap or dev server shows its last 40
