@@ -39,7 +39,7 @@ import {
   SCAFFOLD_FINISHED_EVENT,
 } from '@launch/shared/launch-pipeline'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, isNotNull } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { app } from '@/api/index'
 import type { GitHubOidcClaims } from '@/api/services/launch/ci/github-oidc'
@@ -690,7 +690,8 @@ describe('create an app, end to end against the FakeCloud', () => {
           .where(
             and(
               eq(deployTickets.environmentId, envs.production.id),
-              eq(deployTickets.status, 'pending')
+              eq(deployTickets.status, 'pending'),
+              isNotNull(deployTickets.approvalId)
             )
           )
         if (!pending) await new Promise(r => setTimeout(r, 25))
@@ -710,7 +711,11 @@ describe('create an app, end to end against the FakeCloud', () => {
         expect(step.code, `${command}: ${step.stderr}`).toBe(0)
       }
       const [row] = await db.select().from(deployTickets).where(eq(deployTickets.id, pending.id))
-      expect(row).toMatchObject({ status: 'finished', version: '1.0.0', decisionSource: 'user' })
+      expect(row).toMatchObject({
+        status: 'finished',
+        version: '1.0.0',
+        decisionSource: 'approval',
+      })
       expect(cloud.cloudflare.activeVersion(launched.slug)?.id).toBe(row?.cfVersionId)
       const actions = (await auditTrail(launched.appId)).map(a => a.action)
       expect(actions).toEqual(expect.arrayContaining(['deploy.production.approved']))

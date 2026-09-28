@@ -905,9 +905,9 @@ rename, #37 patch, analytics plugin, a green gate — is unproven (plan §5.4).
 An app's `deploy.yml` runs the kit's `scripts/deployer.mjs` against `/ci/deploy` (routes/CLAUDE.md)
 holding no credential. Tickets live in `deploy_tickets`, every transition a compare-and-set
 (`deploy/tickets.ts`, `pending → approved|rejected → uploaded → active → finished`, or `failed`).
-Staging is auto-approved; production opens `pending` for an app owner or admin to decide on the
-app page within the job's `WAIT_SECONDS`, or claims the pre-approval "Deploy to production" made
-(15 minutes). Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
+Staging is auto-approved; production claims a live pre-approval bound to the run's ref (a granted
+Promote, or "Deploy to production" — §18.15), or opens `pending` plus a `deploy.production`
+approval that an owner or admin decides (inbox or app page) within the job's `WAIT_SECONDS`. Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
 recorded KV ids, queues, bucket and workflows, in-script Durable Objects, `ai`, `assets` and vars,
 refusing every other binding kind, any route and a newer DO migration tag, each as `"<kind>
 <binding>=<value>"` — a refusal is 403, the ticket `failed`, and no Neon call. Otherwise the assets
@@ -915,8 +915,8 @@ and version go up (`keep_bindings: ['secret_text']`, `RELEASE_VERSION`), the `mi
 reset and returned once as `migratorUrl`, and `activate` deploys it at 100%, applies the crons and
 workflows and resets the password again; `finish` revokes if still live.
 
-**Known gaps:** approver ≠ author is not enforced (the person who dispatched a production deploy
-may approve it); P4 replaces the decision source with the approvals engine; the Versions API does
+**Known gaps:** a GitHub-only author (a person who dispatched or published by hand) is not a
+Launch user, so the approver ≠ author rule cannot exclude them; the Versions API does
 not do what `wrangler deploy` does — DO migrations (a new tag is refused), registering new
 workflows, queue consumers and crons are Launch's job, so only the ones Launch knows are applied.
 
@@ -1107,3 +1107,30 @@ and `launch releases ls|create|promote [--wait]` (§11).
 **Known gaps:** the request detail carries the policy, not a resolved list of eligible people, so
 "who decides" is a sentence (teams a member cannot list are counted, not named); a budget request
 is found again after a reload through the creator's own `requested` box only.
+### 18.16 Releases, Promote and the production gate
+
+Launch does the kit's release dance itself (`services/launch/releases/*`, plan §1.8), under an
+installation token narrowed to the one repo and revoked after each call (`releases/github.ts`).
+**Release** (`POST /api/apps/:id/releases {bump}`, owners and admins) reads the root `package.json`
+on the default branch, commits the bump (only the version moves), tags the bump commit `X.Y.Z` —
+which starts `deploy.yml` staging — and records the merged PRs since the previous tag
+(`compareCommits` + `listPullRequestsForCommit`; an app's first release uses its merged session
+PRs), each matched to its Launch session; idempotent by the tag (a Release that died before
+tagging resumes rather than bumping twice). **Promote** (`…/:rid/promote`) needs staging to run the
+release and be `up` (probed now if the last reading is stale), then opens `deploy.production`
+(subject `release`) excluding the promoter, whoever cut it and its sessions' creators. **On
+approval** the kind (`approvals/kinds/deploy-production.ts`) writes a pre-approval bound to
+`refs/tags/X.Y.Z` in the decide transaction and publishes the GitHub Release after it
+(idempotent by `getReleaseByTag`); the production run's `start` claims it only if its ref matches.
+A run published or dispatched by hand in GitHub opens its own approval (subject `deploy_ticket`,
+requested by `github:<actor>`, expiring with the ticket); approving after its window is 409
+`deploy_run_gone`. "Deploy to production" with no release opens one with subject `app` (the
+default branch; approve → pre-approval + `workflow_dispatch`). A tag run links its ticket to the
+release (`release_id`); activation moves it `staging_active` / `production_active`. The
+`sessions.checks` cron follows shipped session PRs to their merge (`pr.merged` with the merge
+SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to production, linked by ids.
+
+**Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
+with no earlier tag lists only its session PRs; branch protection must let the App push the bump
+to the default branch; rate limits on the compare for a large release are untested; a failed
+production run marks the release `failed` but nothing re-dispatches.

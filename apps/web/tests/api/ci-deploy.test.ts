@@ -17,9 +17,17 @@ import {
   deployTicketSchema,
   productionDeployResponseSchema,
 } from '@launch/shared/launch-pipeline'
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { appEnvironments, appOwners, auditEvents, deployTickets } from '@/db/schema'
+import { decide as decideApproval, retryApply } from '@/api/services/approvals/engine'
+import {
+  appEnvironments,
+  appOwners,
+  approvalRequests,
+  auditEvents,
+  deployTickets,
+} from '@/db/schema'
+import { actorOf, approvalDeps, viewerOf } from '../helpers/approvals'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -73,7 +81,7 @@ async function tenant(role: 'owner' | 'admin' | 'member' = 'admin') {
   const { user, tenant } = await createTestTenantWithUser(db, role)
   tenantIds.push(tenant.id)
   const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
-  return { tenantId: tenant.id, userId: user.id, cookie }
+  return { tenantId: tenant.id, userId: user.id, email: user.email, cookie }
 }
 
 async function personIn(tenantId: string, role: 'owner' | 'admin' | 'member') {
@@ -81,8 +89,25 @@ async function personIn(tenantId: string, role: 'owner' | 'admin' | 'member') {
   await linkUserToTenant(db, user.id, tenantId, role)
   return {
     userId: user.id,
+    email: user.email,
     cookie: sessionCookieHeader(await createTestSession(db, user.id, tenantId)),
   }
+}
+
+/** Decide an approval as `person`, straight through the engine (the inbox's route is 4b's). */
+async function decideAs(
+  person: { userId: string; email: string },
+  tenantId: string,
+  requestId: string,
+  decision: 'approve' | 'reject' = 'approve'
+) {
+  const viewer = await viewerOf(db, tenantId, { id: person.userId, email: person.email })
+  return decideApproval(approvalDeps(db, env), {
+    requestId,
+    viewer,
+    decision,
+    actor: actorOf({ id: person.userId, email: person.email }),
+  })
 }
 
 /** A job of `seeded`'s repo calling `/ci/deploy…` as one run. */
@@ -532,19 +557,23 @@ describe('production', () => {
         { method: 'POST', headers: cookie },
         { env, json: { decision } }
       )
-    expect((await decide(bystander.cookie, 'approve')).status).toBe(403)
+    // A member with no part in the approval: the engine's answer, the same 404 as a missing one.
+    expect((await decide(bystander.cookie, 'approve')).status).toBe(404)
     const approved = await decide(owner.cookie, 'approve')
     expect(approved.status).toBe(200)
-    expect(deployTicketSchema.parse(await approved.json())).toMatchObject({
+    const decided = deployTicketSchema.parse(await approved.json())
+    expect(decided).toMatchObject({
       id: start.id,
       status: 'approved',
-      decisionSource: 'user',
+      decisionSource: 'approval',
       decidedByUserId: owner.userId,
     })
-    // A second decider loses the race: 409 in the shared envelope.
+    // P4: the ticket carries the `deploy.production` approval the run opened.
+    expect(decided.approvalId).toEqual(expect.any(String))
+    // A second decider is too late: the approval is no longer pending (409, shared envelope).
     const late = await decide(admin.cookie, 'reject')
     expect(late.status).toBe(409)
-    expect(await body(late)).toMatchObject({ statusCode: 409, code: 'deploy_ticket_state' })
+    expect(await body(late)).toMatchObject({ statusCode: 409, code: 'not_pending' })
 
     expect((await body(await call('GET', `/${start.id}`))).status).toBe('approved')
     const upload = await call(
@@ -594,12 +623,13 @@ describe('production', () => {
       { env, json: { decision: 'approve' } }
     )
     expect(late.status).toBe(409)
-    expect(await body(late)).toMatchObject({ code: 'deploy_ticket_expired' })
+    expect(await body(late)).toMatchObject({ code: 'deploy_run_gone' })
     expect((await body(await b.call('GET', `/${second.id}`))).status).toBe('rejected')
   })
 
-  it('"Deploy to production" pre-approves, dispatches deploy.yml, and is claimed exactly once', async () => {
+  it('"Deploy to production" asks a second person, then dispatches deploy.yml, claimed exactly once', async () => {
     const { admin, seeded } = await productionApp()
+    const other = await personIn(admin.tenantId, 'admin')
     const dispatched: Array<{ workflow: string; inputs: Record<string, string>; ref: string }> = []
     cloud.github.onDispatch = run => {
       dispatched.push({ workflow: run.workflow, inputs: run.inputs, ref: run.ref })
@@ -611,13 +641,41 @@ describe('production', () => {
         { env }
       )
       expect(res.status).toBe(202)
-      const { ticket } = productionDeployResponseSchema.parse(await res.json())
-      if (!ticket) throw new Error('expected the pre-approved ticket')
-      expect(ticket).toMatchObject({ status: 'approved', decisionSource: 'intent', runId: null })
+      const asked = productionDeployResponseSchema.parse(await res.json())
+      // P4: nothing is pre-approved and nothing dispatched until somebody else approves.
+      expect(asked.ticket).toBeNull()
+      expect(dispatched).toEqual([])
+      const approvalId = asked.approvalId as string
+      // Asking twice joins the open request.
+      const again = await request(
+        `/api/apps/${seeded.app.id}/deploys/production`,
+        { method: 'POST', headers: admin.cookie },
+        { env }
+      )
+      expect(productionDeployResponseSchema.parse(await again.json()).approvalId).toBe(approvalId)
+
+      // The clicker may not approve their own deploy.
+      await expect(decideAs(admin, admin.tenantId, approvalId)).rejects.toMatchObject({
+        statusCode: 403,
+        code: 'self_approval',
+      })
+      await decideAs(other, admin.tenantId, approvalId)
       expect(dispatched).toEqual([
         { workflow: 'deploy.yml', inputs: { environment: 'production' }, ref: 'main' },
       ])
-      // One intent at a time.
+      const [intent] = await db
+        .select()
+        .from(deployTickets)
+        .where(eq(deployTickets.approvalId, approvalId))
+      if (!intent) throw new Error('expected the pre-approval')
+      expect(intent).toMatchObject({
+        status: 'approved',
+        decisionSource: 'approval',
+        decidedByUserId: other.userId,
+        ref: 'refs/heads/main',
+        runId: null,
+      })
+      // One pre-approval at a time.
       const twice = await request(
         `/api/apps/${seeded.app.id}/deploys/production`,
         { method: 'POST', headers: admin.cookie },
@@ -626,26 +684,29 @@ describe('production', () => {
       expect(twice.status).toBe(409)
       expect(await body(twice)).toMatchObject({ code: 'production_deploy_pending' })
 
-      // The dispatched run claims it…
+      // A run on another ref cannot spend it…
+      const tagged = job(seeded, 'production')
+      const onTag = await body<{ id: string; status: string }>(
+        await tagged.call('POST', '/start', { protocol: 1 }, { ref: 'refs/tags/9.9.9' })
+      )
+      expect(onTag.id).not.toBe(intent.id)
+      expect(onTag.status).toBe('pending')
+      // …the dispatched run (on main) claims it…
       const run = job(seeded, 'production')
       const claimed = await body<{ id: string; status: string }>(
         await run.call('POST', '/start', { protocol: 1 })
       )
-      expect(claimed).toEqual(expect.objectContaining({ id: ticket.id, status: 'approved' }))
-      expect(await ticketRow(ticket.id)).toMatchObject({
-        runId: run.runId,
-        decisionSource: 'intent',
-      })
+      expect(claimed).toEqual(expect.objectContaining({ id: intent.id, status: 'approved' }))
+      expect(await ticketRow(intent.id)).toMatchObject({ runId: run.runId })
       // …a retried start of that run gets it back, and another run does not.
-      expect((await body(await run.call('POST', '/start', { protocol: 1 }))).id).toBe(ticket.id)
-      const other = job(seeded, 'production')
+      expect((await body(await run.call('POST', '/start', { protocol: 1 }))).id).toBe(intent.id)
       const second = await body<{ id: string; status: string }>(
-        await other.call('POST', '/start', { protocol: 1 })
+        await job(seeded, 'production').call('POST', '/start', { protocol: 1 })
       )
-      expect(second.id).not.toBe(ticket.id)
+      expect(second.id).not.toBe(intent.id)
       expect(second.status).toBe('pending')
       expect(
-        (await run.call('POST', `/${ticket.id}/upload`, uploadBody(appToml(seeded, 'production'))))
+        (await run.call('POST', `/${intent.id}/upload`, uploadBody(appToml(seeded, 'production'))))
           .status
       ).toBe(200)
     } finally {
@@ -653,8 +714,9 @@ describe('production', () => {
     }
   })
 
-  it('a failed dispatch fails the intent; a member may not deploy', async () => {
+  it('a failed dispatch is owed and retried; a member may not deploy', async () => {
     const { admin, seeded } = await productionApp()
+    const other = await personIn(admin.tenantId, 'admin')
     const member = await personIn(admin.tenantId, 'member')
     expect(
       (
@@ -665,22 +727,29 @@ describe('production', () => {
         )
       ).status
     ).toBe(403)
-    cloud.failNext('/dispatches', 500)
     const res = await request(
       `/api/apps/${seeded.app.id}/deploys/production`,
       { method: 'POST', headers: admin.cookie },
       { env }
     )
-    expect(res.status).toBe(502)
-    expect(await body(res)).toMatchObject({ code: 'deploy_dispatch_failed' })
-    const rows = await db
+    const { approvalId } = productionDeployResponseSchema.parse(await res.json())
+    cloud.failNext('/dispatches', 500)
+    await decideAs(other, admin.tenantId, approvalId as string)
+    const [owed] = await db
       .select()
-      .from(deployTickets)
-      .where(and(eq(deployTickets.appId, seeded.app.id), eq(deployTickets.status, 'failed')))
-    expect(rows).toHaveLength(1)
-    // The failed intent is not claimable.
-    const run = job(seeded, 'production')
-    expect((await body(await run.call('POST', '/start', { protocol: 1 }))).status).toBe('pending')
+      .from(approvalRequests)
+      .where(eq(approvalRequests.id, approvalId as string))
+    expect(owed).toMatchObject({ status: 'approved', appliedAt: null })
+    expect(owed?.applyError).toMatch(/GitHub|500/)
+    // The sweep's retry (after its backoff) dispatches: the pre-approval is still live and
+    // unclaimed. A second retry is a no-op — the dispatch is recorded.
+    const later = approvalDeps(db, env, () => new Date(Date.now() + 5 * 60_000))
+    const dispatchesBefore = cloud.github.runs.length
+    const retry = { tenantId: admin.tenantId, requestId: approvalId as string }
+    expect(await retryApply(later, retry)).toBe('applied')
+    expect(cloud.github.runs.length).toBe(dispatchesBefore + 1)
+    expect(await retryApply(later, retry)).toBe('not_owed')
+    expect(cloud.github.runs.length).toBe(dispatchesBefore + 1)
   })
 })
 
