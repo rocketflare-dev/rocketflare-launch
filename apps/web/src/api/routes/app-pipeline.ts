@@ -22,12 +22,20 @@
  *   reconcile, only when the latest run of that kind is `failed` (409 `run_not_failed`); a create
  *   retry re-dispatches CI, so it is refused like a create while Launch is not reachable (409
  *   `launch_not_reachable`).
+ * - `POST /:id/pipeline/rescaffold` → 202 `rescaffoldPipelineResponseSchema` (`manage App`, no
+ *   body) — scaffold an app that never deployed AGAIN from the CURRENT kit pin, keeping its
+ *   repository, database, storage, Workers, sign-in client and secrets (`pipeline/rescaffold.ts`):
+ *   after the same reconcile, only for a failed create run of an app that is not live or archived
+ *   and has never deployed — else 409 `run_not_failed` / `app_live` / `app_archived` /
+ *   `app_already_deployed` / `no_run` (a deployed app takes a kit upgrade). It re-dispatches the
+ *   scaffold job, so it is refused like a create while Launch is not reachable.
  * - `POST /:id/pipeline/cancel` → 200 `cancelPipelineResponseSchema` (`manage App`) — stop a create
  *   run that is still running (a stuck wait), so it can be retried; 409 `run_not_running`.
  * - `POST /:id/teardown` `{ confirmSlug, deleteRepo }` → 202 `{ runId }` — a wrong slug is 400
  *   `confirm_slug_mismatch`.
  *
- * Audited: `app.create.requested`, `app.pipeline.retried`, `app.pipeline.cancelled`,
+ * Audited: `app.create.requested`, `app.pipeline.retried`, `app.pipeline.rescaffolded`,
+ * `app.pipeline.cancelled`,
  * `app.teardown.requested`, `app.pipeline.reconciled` (and the
  * Workflows add `app.launched`, `app.launch_failed`, `app.archived`, `app.teardown_failed`; the
  * engine adds `approval.*`, and a rejected or expired `app.create` adds `app.create.rejected`).
@@ -40,6 +48,7 @@ import {
   type CreateAppResponse,
   createAppRequestSchema,
   pipelineQuerySchema,
+  type RescaffoldPipelineResponse,
   retryPipelineRequestSchema,
   teardownRequestSchema,
 } from '@launch/shared/launch-pipeline'
@@ -54,6 +63,7 @@ import { pipelineDeps } from '../services/launch/pipeline/launch-steps'
 import { defaultPorts } from '../services/launch/pipeline/ports'
 import { readPipeline } from '../services/launch/pipeline/read'
 import { reconcilePipelineSafely } from '../services/launch/pipeline/reconcile'
+import { rescaffoldPipeline } from '../services/launch/pipeline/rescaffold'
 import { retryPipeline } from '../services/launch/pipeline/retry'
 import { requirePublicUrl } from '../services/launch/public-url'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
@@ -141,6 +151,24 @@ appPipelineRouter.post(
     return c.json(result, 202)
   }
 )
+
+appPipelineRouter.post('/:id/pipeline/rescaffold', async c => {
+  guardPermission(c, 'manage', 'App')
+  const { db, tenantId, logger } = withAuthAndDb(c)
+  // The new scaffold job calls Launch back, as every create run's jobs do.
+  await requirePublicUrl(db, c.get('config'))
+  const id = uuidParam(c, 'id')
+  const app = await getAppRow(db, tenantId, id)
+  await reconcilePipelineSafely(db, c.env, tenantId, app, 'create', logger)
+  const result: RescaffoldPipelineResponse = await rescaffoldPipeline(
+    db,
+    c.env,
+    tenantId,
+    id,
+    auditActor(c)
+  )
+  return c.json(result, 202)
+})
 
 appPipelineRouter.post('/:id/pipeline/cancel', async c => {
   guardPermission(c, 'manage', 'App')

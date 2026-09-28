@@ -23,6 +23,7 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
+import { rescaffoldPipeline } from '@/api/services/launch/pipeline/rescaffold'
 import { retryPipeline } from '@/api/services/launch/pipeline/retry'
 import { pipelineView } from '@/api/services/launch/pipeline/runs'
 import {
@@ -39,10 +40,12 @@ import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 import { forgetApps } from '../helpers/launch-apps'
 import {
+  fakeVendors,
   finishScaffoldTicket,
   type Launch,
   LaunchHarness,
   pushScaffold,
+  TOML_PATHS,
 } from '../helpers/launch-pipeline'
 import { createTestEnv, stubs } from '../mocks/bindings'
 
@@ -441,6 +444,155 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     })
     expect(launch.ports.started).toHaveLength(2)
     expect((await rows(launch))['scaffold.start']?.attempt).toBe(2)
+  })
+
+  it('a re-scaffold after a failed deploy scaffolds the new pin again, keeps every resource and goes live', async () => {
+    const launch = await h.request()
+    const envs = await envRows(launch)
+    // The first launch: scaffolded from the default pin, then the staging deploy's gate went red.
+    const first = await h.run(launch, {
+      onWait: async wait => {
+        if (wait.type === SCAFFOLD_FINISHED_EVENT) return h.scaffoldJob(launch)
+        const [ticket] = await db
+          .insert(deployTickets)
+          .values({
+            tenantId: launch.tenantId,
+            appId: launch.params.appId,
+            environmentId: envs.staging.id,
+            purpose: 'deploy',
+            status: 'failed',
+            runId: '777',
+            runAttempt: 1,
+            error: 'The gate failed: a kit test',
+          })
+          .returning({ id: deployTickets.id })
+        return { ticketId: ticket?.id }
+      },
+    })
+    expect(first.outcome.status).toBe('failed')
+    const failed = await rows(launch)
+    expect(failed['deploy_staging.wait']?.error).toMatch(/The gate failed: a kit test/)
+    // That was minutes before the re-scaffold's own deploy (a scaffold job alone takes longer).
+    await db
+      .update(deployTickets)
+      .set({ createdAt: new Date(Date.now() - 10 * 60_000) })
+      .where(and(eq(deployTickets.appId, launch.params.appId), eq(deployTickets.runId, '777')))
+    const firstConfig = failed.write_config?.externalIds.configCommit
+    const org = cloud.opts.org
+    expect(cloud.github.readFile(org, launch.slug, '.launch/scaffold.mjs')).toBeNull()
+    const counts = () => {
+      const cf = cloud.callsTo('cloudflare').filter(c => c.method === 'POST')
+      return {
+        neon: cloud.callsTo('neon').filter(c => c.method === 'POST' && c.path.endsWith('/projects'))
+          .length,
+        kv: cf.filter(c => c.path.endsWith('/storage/kv/namespaces')).length,
+        queues: cf.filter(c => c.path.endsWith('/queues')).length,
+        r2: cf.filter(c => c.path.endsWith('/r2/buckets')).length,
+        routes: cf.filter(c => c.path.endsWith('/workers/routes')).length,
+      }
+    }
+    const before = counts()
+    expect(before).toMatchObject({ neon: 1, kv: 2, queues: 2, r2: 2 })
+    const secretsBefore = [
+      ...(cloud.cloudflare.scripts.get(`${launch.slug}-staging`)?.secrets ?? []),
+    ]
+    expect(secretsBefore.map(([name]) => name)).toContain('OIDC_CLIENT_SECRET')
+
+    // A newer kit is pinned; the re-scaffold re-opens the repository's steps.
+    const pin = { ...DEFAULT_TEMPLATE_PIN, tag: '0.15.9', commit: 'b'.repeat(40) }
+    const env = createTestEnv()
+    const started = await rescaffoldPipeline(
+      db,
+      { APP_LAUNCH_WORKFLOW: stubs(env).launchWorkflow },
+      launch.tenantId,
+      launch.params.appId,
+      SYSTEM_ACTOR
+    )
+    expect(started.instanceId).toBe(`${launch.params.runId}-r1`)
+    const reopened = await pipelineView(
+      db,
+      launch.tenantId,
+      (await appRow(launch)) as AppRow,
+      'create'
+    )
+    expect(reopened.status).toBe('failed')
+
+    let filesBackOnDispatch: string | null = null
+    const second = await h.run(launch, {
+      vendors: { settings: { ...fakeVendors(cloud).settings, templatePin: pin } },
+      onWait: async wait => {
+        if (wait.type === DEPLOY_FINISHED_EVENT) return h.deployJob(launch)
+        // The previous job deleted its own files: they are back on main for this dispatch.
+        filesBackOnDispatch = cloud.github.readFile(org, launch.slug, '.launch/scaffold.mjs')
+        const [ticket] = await db
+          .select()
+          .from(deployTickets)
+          .where(
+            and(
+              eq(deployTickets.tenantId, launch.tenantId),
+              eq(deployTickets.appId, launch.params.appId),
+              eq(deployTickets.purpose, 'scaffold'),
+              eq(deployTickets.status, 'approved')
+            )
+          )
+        const sha = pushScaffold(cloud, launch.slug, { kitVersion: pin.tag })
+        await finishScaffoldTicket(db, launch.tenantId, ticket?.id ?? '', sha)
+        return { ticketId: ticket?.id }
+      },
+    })
+    expect(
+      Object.values(await rows(launch))
+        .filter(r => r.status === 'failed')
+        .map(r => `${r.step}: ${r.error}`)
+    ).toEqual([])
+    expect(second.outcome.status).toBe('live')
+    expect(filesBackOnDispatch).toEqual(expect.any(String))
+
+    // The scaffold job ran again, on a fresh ticket, with the NEW pin; verify accepted it.
+    expect(launch.ports.started).toHaveLength(2)
+    const scaffoldTickets = await db
+      .select()
+      .from(deployTickets)
+      .where(
+        and(
+          eq(deployTickets.tenantId, launch.tenantId),
+          eq(deployTickets.appId, launch.params.appId),
+          eq(deployTickets.purpose, 'scaffold')
+        )
+      )
+    expect(scaffoldTickets.map(t => t.status).sort()).toEqual(['finished', 'finished'])
+    expect(await appRow(launch)).toMatchObject({
+      status: 'live',
+      templateVersion: '0.15.9',
+      templateCommit: pin.commit,
+    })
+
+    const done = await rows(launch)
+    for (const step of ['scaffold.start', 'scaffold.verify', 'write_config', 'placeholders']) {
+      expect(done[step], step).toMatchObject({ status: 'succeeded', attempt: 2 })
+    }
+    for (const step of ['neon', 'cloudflare', 'oidc_client', 'github_env', 'worker_secrets']) {
+      expect(done[step], step).toMatchObject({ status: 'succeeded', attempt: 1 })
+    }
+    // write_config committed the configuration again, onto the fresh tomls.
+    expect(done.write_config?.externalIds.configCommit).not.toBe(firstConfig)
+    const staging = cloud.github.readFile(org, launch.slug, TOML_PATHS.staging) ?? ''
+    expect(staging).toContain('AUTH_OIDC_ONLY = "true"')
+    expect(staging).not.toContain('<KV_RATE_LIMIT')
+
+    // No resource was created twice; the Workers kept their secrets through the placeholder PUT.
+    expect(counts()).toEqual(before)
+    expect([...cloud.neon.projects.values()].filter(p => p.name === launch.slug)).toHaveLength(1)
+    const clients = await db
+      .select()
+      .from(oidcClients)
+      .where(
+        and(eq(oidcClients.tenantId, launch.tenantId), eq(oidcClients.appId, launch.params.appId))
+      )
+    expect(clients).toHaveLength(1)
+    expect([...(cloud.cloudflare.scripts.get(`${launch.slug}-staging`)?.secrets ?? [])]).toEqual(
+      secretsBefore
+    )
   })
 
   it('refuses a scaffold whose manifest names another app', async () => {

@@ -993,6 +993,30 @@ step that mints one puts it on the Worker itself.
   create run while the public URL fails its check (§18.2). The live instance id is kept on
   `apps.launch_instance_id`, and `/ci/scaffold/done` and `/ci/deploy/:id/finish` send their events
   there (`pipeline/instance.ts`).
+- **Re-scaffold** (`POST /api/apps/:id/pipeline/rescaffold`, `manage App`, `pipeline/rescaffold.ts`):
+  the kit pin is read only by the scaffold, so a launch that failed LATER (the app's CI red on a
+  kit bug a newer release fixes) cannot pick a newer kit up by Retry. Before the first deploy the
+  repo holds only the scaffold and Launch's config commit, so it may be scaffolded again from the
+  CURRENT pin — only while the create run is `failed`, the app is neither `live` nor `archived`,
+  and it has never deployed (`rescaffold-check.ts`: no `deploy` ticket `active`/`finished` with an
+  uploaded version — a job that died at its gate still `finish`es its ticket, versionless — nor one
+  handed the migrator credential); otherwise 409 `run_not_failed` / `app_live` / `app_archived` /
+  `app_already_deployed` / `no_run`, saying a deployed app takes a kit upgrade. It is a retry with
+  the repository's steps re-opened, their ids kept for `ctx.prior`: `scaffold.start` is failed
+  "Reset by re-scaffold" (so the run stays retryable), `scaffold.wait|verify`, `write_config`,
+  `placeholders`, `deploy_staging.start|wait|check`, `health`, `production` and `live` go back to
+  `pending` (a run with a pending row derives `running`, so the page shows the new instance
+  working, and Stop and reconcile treat a pending row as the next step), then `retryPipeline`
+  starts `<runId>-rN`. `scaffold.start` finds its old ticket `finished`, opens a fresh one,
+  re-commits the job files the last job deleted and dispatches the job with the pin as it is now;
+  the job replaces the tree and fast-forwards `main` on the app's history; `scaffold.verify` checks
+  the NEW kit version; `write_config` re-applies the config onto the fresh tomls; `placeholders`
+  re-PUTs the Workers with the migrations after the recorded tag only, keeping the route and the
+  secrets (`keep_bindings: ['secret_text']` — a script upload replaces the bindings otherwise).
+  `reserve`, `repo`, `neon`, `cloudflare`, `oidc_client`, `github_env`, `worker_secrets` and `email`
+  are kept: none reads the repository's content. `GET …/pipeline` answers `canRescaffold` (the
+  run allows it; the viewer still needs `manage App`) and `templateTag` (the pin, when it does).
+  Audited `app.pipeline.rescaffolded` (old and new kit tag) beside the retry's own row.
 - **Stop** (`POST /api/apps/:id/pipeline/cancel`, `manage App`, only a `running` create run —
   409 `run_not_running`; `pipeline/cancel.ts`): the way out of a run stuck in a wait. Its running
   step (or, between steps, the next one) is marked failed "Stopped by <email>", an unclaimed
@@ -1021,7 +1045,9 @@ step that mints one puts it on the Worker itself.
   domain from `GET /api/apps`' `appsDomain`; a 409 `launch_not_reachable` says why and links to
   Setup › Public URL), the step list polled while a run is owed — running, done and failed each
   with its own glyph, a job's "View run" link to its GitHub Actions run, the failed step's error
-  — "Retry from failed step", "Stop" (with a confirm) while a launch runs, the deploys card and
+  — "Retry from failed step" and, while `canRescaffold`, "Re-scaffold from kit <tag>" (a confirm
+  saying `main` is replaced and the database, storage, Workers and secrets are kept), "Stop" (with
+  a confirm) while a launch runs, the deploys card and
   Archive (`pages/apps/components/`). The list is the VIEW's rows, not the Workflow's steps: a CI
   job's three rows read as one — "Scaffold from the template" (`scaffold` = `scaffold.start` +
   `.wait` + `.verify`) and "Deploy staging" (`deploy_staging` = `.start` + `.wait` + `.check`),
@@ -1043,7 +1069,8 @@ nudges it; a local instance that never wakes needs Stop and Retry); a run that G
 free) is waited on for the full 30 minutes; a GitHub API error while polling is retried by the poll
 step and then fails the run as that error (no run link); the
 `production` step is always skipped (the first production release is a separate, approved
-deploy); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
+deploy); a re-scaffold replaces anything committed to `main` since the scaffold (history keeps
+it), and two retries or re-scaffolds posted at once can each start an instance (no claim row); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
 apply it); `write_config` answers only the kit's one KV binding (`RATE_LIMIT_KV`) — a toml declaring
 another fails the step by name; the owner group is not mapped to GitHub team access; everything is
 proven against the FakeCloud only, except the Neon roles above (plan §5 lists what the first real
@@ -1074,7 +1101,9 @@ while it is not (§18.2). If it dies anyway (a red gate, a moved tag, Launch unr
 the next scaffold poll sees the run's conclusion through `GitHubActionsScaffoldRunner.poll` — which
 finds the run by listing the workflow's `workflow_dispatch` runs created since the dispatch, since
 the dispatch returns no run id — and fails `scaffold.wait` with the run's link; a retry dispatches
-a new job on a new ticket. Under `pnpm dev` the job reaches Launch only through the tunnel, and the
+a new job on a new ticket. A re-scaffold (§18.5) runs the same job over a repo that already
+holds a scaffold and Launch's config commit: the tree is replaced by the pinned kit's and the
+commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` covers it). Under `pnpm dev` the job reaches Launch only through the tunnel, and the
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 

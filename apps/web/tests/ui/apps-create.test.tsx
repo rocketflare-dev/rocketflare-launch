@@ -80,13 +80,21 @@ const t0 = Date.parse('2026-09-27T10:00:00Z')
 const at = (seconds: number) => new Date(t0 + seconds * 1000).toISOString()
 
 /** A launch view: every row before `failedAt` succeeded, that one failed, the rest pending. */
-function launchView(failedAt: string | null, status: 'running' | 'failed' | 'succeeded') {
+function launchView(
+  failedAt: string | null,
+  status: 'running' | 'failed' | 'succeeded',
+  rescaffold: { canRescaffold: boolean; templateTag: string | null } = {
+    canRescaffold: false,
+    templateTag: null,
+  }
+) {
   const failedIndex = APP_LAUNCH_VIEW_STEPS.findIndex(s => s.step === failedAt)
   return {
     appId: APP_ID,
     runId: RUN_ID,
     kind: 'create',
     status,
+    ...rescaffold,
     steps: APP_LAUNCH_VIEW_STEPS.map((def, i) => {
       const state =
         failedIndex === -1 || i < failedIndex
@@ -372,7 +380,15 @@ describe('AppDetailPage — the launch', () => {
 
   const pipelineRoute = (
     create: unknown,
-    teardown: unknown = { appId: APP_ID, runId: null, kind: 'teardown', status: 'none', steps: [] }
+    teardown: unknown = {
+      appId: APP_ID,
+      runId: null,
+      kind: 'teardown',
+      status: 'none',
+      steps: [],
+      canRescaffold: false,
+      templateTag: null,
+    }
   ) => ({
     [`/api/apps/${APP_ID}/pipeline`]: (_init: RequestInit | undefined, url: URL) =>
       url.searchParams.get('kind') === 'teardown' ? teardown : create,
@@ -384,7 +400,15 @@ describe('AppDetailPage — the launch', () => {
       member(),
       { status: 'requested', viewerCanDeploy: false },
       {
-        ...pipelineRoute({ appId: APP_ID, runId: null, kind: 'create', status: 'none', steps: [] }),
+        ...pipelineRoute({
+          appId: APP_ID,
+          runId: null,
+          kind: 'create',
+          status: 'none',
+          steps: [],
+          canRescaffold: false,
+          templateTag: null,
+        }),
         '/api/approvals': (_init: RequestInit | undefined, url: URL) => {
           expect(url.searchParams.get('box')).toBe('requested')
           expect(url.searchParams.get('kind')).toBe('app.create')
@@ -535,6 +559,67 @@ describe('AppDetailPage — the launch', () => {
     expect(screen.queryByRole('button', { name: /Archive app/ })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
   })
+  it('offers a re-scaffold from the current kit beside the retry, behind a confirmation', async () => {
+    let rescaffolded = 0
+    renderDetail(
+      makeSession(),
+      { status: 'failed' },
+      {
+        ...pipelineRoute(
+          launchView('deploy_staging', 'failed', { canRescaffold: true, templateTag: '0.15.2' })
+        ),
+        [`POST /api/apps/${APP_ID}/pipeline/rescaffold`]: () => {
+          rescaffolded++
+          return jsonResponse(
+            {
+              runId: RUN_ID,
+              instanceId: `${RUN_ID}-r1`,
+              templateTag: '0.15.2',
+              previousTemplateTag: '0.15.1',
+            },
+            202
+          )
+        },
+      }
+    )
+    const panel = await screen.findByRole('region', { name: 'Launch progress' })
+    const alert = within(panel).getByRole('alert')
+    expect(within(alert).getByRole('button', { name: /Retry from failed step/ })).toBeEnabled()
+    fireEvent.click(within(alert).getByRole('button', { name: 'Re-scaffold from kit 0.15.2' }))
+    // Nothing is posted until the modal is confirmed; it says what is replaced and what is kept.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('Re-scaffold from kit 0.15.2?')
+    expect(dialog).toHaveTextContent(/The code on main is replaced by a fresh scaffold/)
+    expect(dialog).toHaveTextContent(
+      /database, storage, Workers, sign-in client and secrets are kept/
+    )
+    expect(rescaffolded).toBe(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(rescaffolded).toBe(0)
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Re-scaffold from kit 0.15.2' }))
+    const again = await screen.findByRole('dialog')
+    fireEvent.click(within(again).getByRole('button', { name: 'Re-scaffold' }))
+    await waitFor(() => expect(rescaffolded).toBe(1))
+  })
+
+  it('hides the re-scaffold once the app has deployed (the view says it cannot)', async () => {
+    // The server says no (a deploy went out): only the retry is offered.
+    renderDetail(makeSession(), { status: 'failed' }, pipelineRoute(launchView('health', 'failed')))
+    const panel = await screen.findByRole('region', { name: 'Launch progress' })
+    expect(within(panel).getByRole('button', { name: /Retry from failed step/ })).toBeEnabled()
+    expect(within(panel).queryByRole('button', { name: /Re-scaffold/ })).not.toBeInTheDocument()
+  })
+
+  it('never shows the re-scaffold to a member, even when the run allows it', async () => {
+    renderDetail(
+      member(),
+      { status: 'failed' },
+      pipelineRoute(launchView('neon', 'failed', { canRescaffold: true, templateTag: '0.15.2' }))
+    )
+    const panel = await screen.findByRole('region', { name: 'Launch progress' })
+    expect(within(panel).queryByRole('button', { name: /Re-scaffold/ })).not.toBeInTheDocument()
+  })
 })
 
 describe('AppDetailPage — archive and deploys', () => {
@@ -554,6 +639,8 @@ describe('AppDetailPage — archive and deploys', () => {
         kind: 'teardown',
         status: 'none',
         steps: [],
+        canRescaffold: false,
+        templateTag: null,
       },
       ...routes,
     })

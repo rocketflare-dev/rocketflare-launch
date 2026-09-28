@@ -3,7 +3,9 @@
  * `APP_TEARDOWN_VIEW_STEPS` in order (a CI job's start / wait / check is one row), grouped into a few phases a person can follow, each with its
  * status, attempt count and duration; a link to the step's GitHub Actions run once it is known (the
  * scaffold and staging-deploy jobs); the failed step's error, verbatim; "Retry from failed step"
- * for whoever may retry; and, while a launch runs, "Stop" for whoever may retry — the way out of a
+ * for whoever may retry — beside it, when the view says `canRescaffold` (a failed launch that never
+ * deployed), "Re-scaffold from kit <tag>" behind a confirmation that says what is replaced and what
+ * is kept; and, while a launch runs, "Stop" for whoever may retry — the way out of a
  * wait that will never end.
  *
  * Presentational: the page owns the query (`usePipeline`, which decides when to poll) and the retry
@@ -13,6 +15,7 @@
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
+  ArrowUturnLeftIcon,
   CheckCircleIcon,
   MinusCircleIcon,
   RocketLaunchIcon,
@@ -28,6 +31,7 @@ import {
   type PipelineView,
 } from '@launch/shared/launch-pipeline'
 import { useState } from 'react'
+import { ConfirmModal } from '@/ui/components/shared'
 import { formatDateTime, formatDuration, timeAgo } from '@/ui/lib/format'
 
 // ---- Pure helpers ------------------------------------------------------------------------------------
@@ -333,6 +337,12 @@ export interface PipelineProgressProps {
   /** "Stop" a running launch (shown with `canRetry`): its step fails, and retry is offered. */
   onCancel?: () => void
   cancelling?: boolean
+  /**
+   * "Re-scaffold from kit <tag>" (shown with `canRetry` when the view's `canRescaffold`): the
+   * code on main is replaced by a fresh scaffold of the current pin; the resources are kept.
+   */
+  onRescaffold?: () => void
+  rescaffolding?: boolean
 }
 
 export function PipelineProgress({
@@ -344,8 +354,15 @@ export function PipelineProgress({
   compact = false,
   onCancel,
   cancelling = false,
+  onRescaffold,
+  rescaffolding = false,
 }: PipelineProgressProps) {
   const [confirmStop, setConfirmStop] = useState(false)
+  const [confirmRescaffold, setConfirmRescaffold] = useState(false)
+  const rescaffoldTag =
+    canRetry && onRescaffold && view.kind === 'create' && view.status === 'failed'
+      ? view.canRescaffold && view.templateTag
+      : null
   const canStop = canRetry && !!onCancel && view.kind === 'create' && view.status === 'running'
   const rows = pipelineRows(view)
   const summary = summarisePipeline(rows)
@@ -437,22 +454,70 @@ export function PipelineProgress({
               <p className="text-xs opacity-80">An administrator can retry from this step.</p>
             )}
           </div>
-          {canRetry && onRetry && (
-            <button
-              type="button"
-              className="btn btn-sm gap-1.5 shrink-0"
-              onClick={onRetry}
-              disabled={retrying}
-            >
-              {retrying ? (
-                <span className="loading loading-spinner loading-xs" />
-              ) : (
-                <ArrowPathIcon className="w-4 h-4" />
+          {canRetry && (onRetry || rescaffoldTag) && (
+            <div className="flex flex-col items-stretch gap-1.5 shrink-0">
+              {onRetry && (
+                <button
+                  type="button"
+                  className="btn btn-sm gap-1.5"
+                  onClick={onRetry}
+                  disabled={retrying || rescaffolding}
+                >
+                  {retrying ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <ArrowPathIcon className="w-4 h-4" />
+                  )}
+                  Retry from failed step
+                </button>
               )}
-              Retry from failed step
-            </button>
+              {rescaffoldTag && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost gap-1.5"
+                  onClick={() => setConfirmRescaffold(true)}
+                  disabled={retrying || rescaffolding}
+                >
+                  {rescaffolding ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <ArrowUturnLeftIcon className="w-4 h-4" />
+                  )}
+                  Re-scaffold from kit {rescaffoldTag}
+                </button>
+              )}
+            </div>
           )}
         </div>
+      )}
+
+      {rescaffoldTag && (
+        <ConfirmModal
+          isOpen={confirmRescaffold}
+          title={`Re-scaffold from kit ${rescaffoldTag}?`}
+          confirmText="Re-scaffold"
+          confirmButtonClass="btn-warning"
+          isLoading={rescaffolding}
+          onCancel={() => setConfirmRescaffold(false)}
+          onConfirm={() => {
+            setConfirmRescaffold(false)
+            onRescaffold?.()
+          }}
+          message={
+            <div className="space-y-2 text-sm">
+              <p>
+                The code on <span className="font-mono">main</span> is replaced by a fresh scaffold
+                of kit <span className="font-mono">{rescaffoldTag}</span>, and Launch writes its
+                configuration onto it again. Anything committed to the repository since the scaffold
+                is overwritten (its history is kept).
+              </p>
+              <p>
+                The database, storage, Workers, sign-in client and secrets are kept, and the launch
+                carries on from the scaffold to the staging deploy.
+              </p>
+            </div>
+          }
+        />
       )}
 
       {canStop && (

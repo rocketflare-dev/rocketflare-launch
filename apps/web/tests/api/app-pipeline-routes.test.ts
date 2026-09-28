@@ -10,12 +10,21 @@
 import {
   createAppResponseSchema,
   pipelineViewSchema,
+  rescaffoldPipelineResponseSchema,
   retryPipelineResponseSchema,
 } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PipelineSettings } from '@/api/services/launch/pipeline/context'
-import { appOperations, appOwners, approvalRequests, apps, auditEvents } from '@/db/schema'
+import {
+  appEnvironments,
+  appOperations,
+  appOwners,
+  approvalRequests,
+  apps,
+  auditEvents,
+  deployTickets,
+} from '@/db/schema'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -393,6 +402,221 @@ describe('POST /api/apps/:id/pipeline/retry', () => {
       { kind: 'create' }
     )
     expect(member.status).toBe(403)
+  })
+})
+
+describe('POST /api/apps/:id/pipeline/rescaffold', () => {
+  /** A launch that scaffolded, configured and then failed at the staging deploy's job. */
+  async function failedAfterScaffold(role: 'admin' | 'owner' = 'admin') {
+    const signed = await signedIn(role)
+    const env = createTestEnv()
+    const { res } = await create(signed.headers, env)
+    const { app, runId } = createAppResponseSchema.parse(await res.json())
+    const row = (step: string, status: 'succeeded' | 'failed' | 'skipped', ids = {}) => ({
+      tenantId: signed.tenant.id,
+      appId: app.id,
+      runId,
+      kind: 'create',
+      step,
+      status,
+      attempt: 1,
+      externalIds: ids,
+      error: status === 'failed' ? 'The staging deploy job failed: red gate' : null,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    })
+    await db
+      .insert(appOperations)
+      .values([
+        row('reserve', 'succeeded'),
+        row('repo', 'succeeded'),
+        row('scaffold.start', 'succeeded', { scaffoldTicketId: crypto.randomUUID() }),
+        row('scaffold.wait', 'succeeded', { runId: '11', runUrl: 'https://github.com/x/1' }),
+        row('scaffold.verify', 'succeeded'),
+        row('neon', 'succeeded', { neonProjectId: 'proj-1' }),
+        row('cloudflare', 'succeeded', { 'kv.staging': 'kv-1' }),
+        row('oidc_client', 'succeeded'),
+        row('write_config', 'succeeded', { configCommit: 'c'.repeat(40) }),
+        row('placeholders', 'succeeded', { 'migrationTag.staging': 'v1', 'route.staging': 'r-1' }),
+        row('github_env', 'succeeded'),
+        row('worker_secrets', 'succeeded'),
+        row('email', 'skipped'),
+        row('deploy_staging.start', 'succeeded', { dispatchedAt: new Date().toISOString() }),
+        row('deploy_staging.wait', 'failed', { runId: '12' }),
+      ])
+    await db
+      .update(apps)
+      .set({ status: 'failed', templateVersion: '0.14.9', templateRef: '0.14.9' })
+      .where(eq(apps.id, app.id))
+    return { ...signed, env, app, runId }
+  }
+
+  async function stagingId(appId: string) {
+    const [staging] = await db
+      .select()
+      .from(appEnvironments)
+      .where(and(eq(appEnvironments.appId, appId), eq(appEnvironments.name, 'staging')))
+    return staging?.id ?? ''
+  }
+
+  it('re-opens the repository steps and starts <runId>-rN from the current pin (202)', async () => {
+    const { headers, tenant, env, app, runId } = await failedAfterScaffold()
+    const before = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await before.json())).toMatchObject({
+      status: 'failed',
+      canRescaffold: true,
+      templateTag: '0.15.0',
+    })
+
+    const res = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(res.status).toBe(202)
+    expect(rescaffoldPipelineResponseSchema.parse(await res.json())).toEqual({
+      runId,
+      instanceId: `${runId}-r1`,
+      templateTag: '0.15.0',
+      previousTemplateTag: '0.14.9',
+    })
+    const created = stubs(env).launchWorkflow?.created ?? []
+    expect(created.map(c => c.id)).toEqual([runId, `${runId}-r1`])
+    expect(created[1]?.params).toMatchObject({ runId, options: { deployStaging: true } })
+
+    const rows = Object.fromEntries(
+      (await db.select().from(appOperations).where(eq(appOperations.runId, runId))).map(r => [
+        r.step,
+        r,
+      ])
+    )
+    // The scaffold's start is failed (the run stays retryable); the rest re-open as pending, ids kept.
+    expect(rows['scaffold.start']).toMatchObject({
+      status: 'failed',
+      error: 'Reset by re-scaffold',
+    })
+    expect(rows['scaffold.start']?.externalIds.scaffoldTicketId).toEqual(expect.any(String))
+    for (const step of [
+      'scaffold.wait',
+      'scaffold.verify',
+      'write_config',
+      'placeholders',
+      'deploy_staging.start',
+      'deploy_staging.wait',
+    ]) {
+      expect(rows[step], step).toMatchObject({ status: 'pending', error: null, finishedAt: null })
+    }
+    expect(rows.placeholders?.externalIds).toMatchObject({
+      'migrationTag.staging': 'v1',
+      'route.staging': 'r-1',
+    })
+    // What does not read the repository is kept.
+    for (const step of ['reserve', 'repo', 'neon', 'cloudflare', 'oidc_client', 'github_env']) {
+      expect(rows[step]?.status, step).toBe('succeeded')
+    }
+    expect(rows.worker_secrets?.status).toBe('succeeded')
+    expect(rows.email?.status).toBe('skipped')
+
+    const [row] = await db.select().from(apps).where(eq(apps.id, app.id))
+    expect(row).toMatchObject({ status: 'provisioning', launchInstanceId: `${runId}-r1` })
+    const audit = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, tenant.id), eq(auditEvents.appId, app.id)))
+    const rescaffolded = audit.find(a => a.action === 'app.pipeline.rescaffolded')
+    expect(rescaffolded?.summary).toMatchObject({
+      before: { templateTag: '0.14.9' },
+      after: { runId, instanceId: `${runId}-r1`, templateTag: '0.15.0' },
+    })
+    expect(audit.some(a => a.action === 'app.pipeline.retried')).toBe(true)
+
+    // A second request while the new instance owns the run: it is no longer failed.
+    await db
+      .update(appOperations)
+      .set({ status: 'running' })
+      .where(and(eq(appOperations.runId, runId), eq(appOperations.step, 'scaffold.start')))
+    const busy = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(busy.status).toBe(409)
+    expect(await busy.json()).toMatchObject({ code: 'run_not_failed' })
+  })
+
+  it('is 409 app_already_deployed once a deploy went out — not for a job that died at its gate', async () => {
+    const { headers, tenant, env, app } = await failedAfterScaffold()
+    const environmentId = await stagingId(app.id)
+    // The deploy job's gate went red: `finish` closed its approved ticket with no version.
+    await db.insert(deployTickets).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      environmentId,
+      purpose: 'deploy',
+      status: 'finished',
+      runId: '900',
+      runAttempt: 1,
+    })
+    const view = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await view.json()).canRescaffold).toBe(true)
+
+    await db.insert(deployTickets).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      environmentId,
+      purpose: 'deploy',
+      status: 'active',
+      runId: '901',
+      runAttempt: 1,
+      cfVersionId: 'ver-1',
+    })
+    const res = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { code?: string; error?: string }
+    expect(body).toMatchObject({ code: 'app_already_deployed' })
+    expect(body.error).toMatch(/kit upgrade/)
+    const after = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await after.json())).toMatchObject({
+      canRescaffold: false,
+      templateTag: null,
+    })
+    expect(stubs(env).launchWorkflow?.created).toHaveLength(1)
+  })
+
+  it('is 409 run_not_failed while the launch runs, and app_live for a live app', async () => {
+    const { headers, tenant } = await signedIn('admin')
+    const env = createTestEnv()
+    const { res } = await create(headers, env)
+    const { app, runId } = createAppResponseSchema.parse(await res.json())
+    await db.insert(appOperations).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      runId,
+      kind: 'create',
+      step: 'neon',
+      status: 'running',
+      attempt: 1,
+      startedAt: new Date(),
+    })
+    await db.update(apps).set({ status: 'provisioning' }).where(eq(apps.id, app.id))
+    const running = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(running.status).toBe(409)
+    expect(await running.json()).toMatchObject({ code: 'run_not_failed' })
+    const view = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await view.json()).canRescaffold).toBe(false)
+
+    await db.update(apps).set({ status: 'live' }).where(eq(apps.id, app.id))
+    const live = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(live.status).toBe(409)
+    expect(await live.json()).toMatchObject({ code: 'app_live' })
+    expect(stubs(env).launchWorkflow?.created).toHaveLength(1)
+  })
+
+  it('is 403 for a member of the same tenant', async () => {
+    const { tenant, env, app } = await failedAfterScaffold()
+    const user = await createTestUser(db)
+    await linkUserToTenant(db, user.id, tenant.id, 'member')
+    const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
+    const member = await post(
+      `/api/apps/${app.id}/pipeline/rescaffold`,
+      { ...cookie, 'X-Requested-With': 'fetch' },
+      undefined,
+      env
+    )
+    expect(member.status).toBe(403)
+    expect(stubs(env).launchWorkflow?.created).toHaveLength(1)
   })
 })
 

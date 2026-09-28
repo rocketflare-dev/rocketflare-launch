@@ -8,7 +8,8 @@
  * while a run is owed — `usePipeline`), its deploys (`DeploysCard`), and a danger zone whose
  * Archive runs the teardown, which then shows here the same way. Approving, rejecting and starting
  * a production deploy is for the app's owners as well as admins — the detail's `viewerCanDeploy`,
- * the server's own rule; retry and archive stay `manage App`.
+ * the server's own rule; retry, re-scaffold (a failed launch that never deployed, from the current
+ * kit pin) and archive stay `manage App`.
  *
  * P4: an app with a repository carries its releases (`ReleasesCard`) — cut one, watch it reach
  * staging, promote it to production through an approval — and a pending production deploy links
@@ -51,6 +52,7 @@ import {
   PIPELINE_KICK_GRACE_MS,
   useCancelPipeline,
   usePipeline,
+  useRescaffoldPipeline,
   useRetryPipeline,
 } from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
@@ -239,6 +241,7 @@ export default function AppDetailPage() {
   })
   const retry = useRetryPipeline(app?.id ?? '')
   const cancel = useCancelPipeline(app?.id ?? '')
+  const rescaffold = useRescaffoldPipeline(app?.id ?? '')
   const startWatching = (kind: PipelineKind) =>
     setKick({ kind, until: Date.now() + PIPELINE_KICK_GRACE_MS })
   const onRetry = (kind: PipelineKind) => () =>
@@ -366,11 +369,23 @@ export default function AppDetailPage() {
       {launching && (
         <PipelineProgress
           view={
-            createView ?? { appId: app.id, runId: null, kind: 'create', status: 'none', steps: [] }
+            createView ?? {
+              appId: app.id,
+              runId: null,
+              kind: 'create',
+              status: 'none',
+              steps: [],
+              canRescaffold: false,
+              templateTag: null,
+            }
           }
           canRetry={canManage}
           onRetry={onRetry('create')}
           retrying={retry.isPending}
+          onRescaffold={() =>
+            rescaffold.mutate(undefined, { onSuccess: () => startWatching('create') })
+          }
+          rescaffolding={rescaffold.isPending}
           onCancel={() => cancel.mutate()}
           cancelling={cancel.isPending}
           subject={stagingHost && <span className="font-mono text-xs">{stagingHost}</span>}

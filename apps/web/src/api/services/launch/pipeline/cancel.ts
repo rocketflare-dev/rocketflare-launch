@@ -16,7 +16,7 @@
  * A retry then restarts the step that failed, and a failed wait restarts the job it waited on
  * (`retry.ts`), on a fresh ticket.
  */
-import { APP_LAUNCH_STEPS, type CancelPipelineResponse } from '@launch/shared/launch-pipeline'
+import type { CancelPipelineResponse } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { apps, deployTickets } from '../../../../db/schema'
@@ -25,7 +25,7 @@ import { getAppRow } from '../apps'
 import { type AuditActor, recordAudit } from '../audit'
 import { launchInstanceOf } from './instance'
 import { failOpenStep } from './operations'
-import { deriveRunStatus, latestRunId, runRows } from './runs'
+import { deriveRunStatus, latestRunId, nextStepOf, runRows } from './runs'
 
 /** The slice of `APP_LAUNCH_WORKFLOW` a cancel needs. */
 export interface WorkflowTerminator {
@@ -51,7 +51,7 @@ export async function cancelLaunch(
   const message = `Stopped by ${actor.actorEmail ?? 'an administrator'}`
   const key = (step: string) => ({ tenantId, appId, runId, kind: 'create', step })
   const running = rows.filter(r => r.status === 'running').map(r => r.step)
-  const next = APP_LAUNCH_STEPS.find(def => !rows.some(r => r.step === def.step))?.step
+  const next = nextStepOf('create', rows)
   const stopped = running.length > 0 ? running : next ? [next] : []
   if (stopped.length === 0) {
     throw new ConflictError('Only a launch that is running can be stopped', 'run_not_running')

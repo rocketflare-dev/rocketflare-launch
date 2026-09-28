@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- "Re-scaffold from kit <tag>" (`POST /api/apps/:id/pipeline/rescaffold`, `manage App`): a launch
+  that failed after its scaffold — the app's CI red on a kit bug a newer kit release fixes — can
+  be scaffolded again from the CURRENT kit pin, which a Retry never picked up (it skips the
+  succeeded scaffold). Offered beside "Retry from failed step", behind a confirmation, only while
+  the create run is failed, the app is neither live nor archived and it has never deployed (409
+  `app_already_deployed` / `app_live` / `app_archived` / `run_not_failed` otherwise — a deployed
+  app takes a kit upgrade). The scaffold, its check, the config commit, the placeholder Workers
+  and the staging deploy run again on a new instance; the repository, database, storage, Workers,
+  sign-in client and secrets are kept. `GET …/pipeline` answers `canRescaffold` and `templateTag`;
+  audited `app.pipeline.rescaffolded` with the old and new kit tag. The placeholder upload now
+  keeps the Worker's secrets (`keep_bindings: ['secret_text']`), as a PUT over a Worker that has
+  them would otherwise drop them.
 - Reading a launch's pipeline polls the job its open wait is on (at most once per 20 s per wait):
   the GitHub run link appears as soon as GitHub lists the run, and a scaffold or staging deploy
   job that died on GitHub (a red gate never reaches `/ci/deploy`) fails its step with the run URL

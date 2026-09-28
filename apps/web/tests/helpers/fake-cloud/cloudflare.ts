@@ -715,6 +715,9 @@ export class FakeCloudflare implements VendorHandler {
     }
     script.metadata = metadata
     script.modules = modules
+    // As the real API: an upload replaces the bindings, so the secrets go unless it keeps them.
+    const keep = (metadata.keep_bindings as string[] | undefined) ?? []
+    if (!keep.includes('secret_text')) script.secrets.clear()
     if (migrations?.new_tag) script.migrationTag = migrations.new_tag
     this.scripts.set(name, script)
     return ok({ id: name, etag: this.ids.hex32(), modified_on: new Date().toISOString() })

@@ -121,6 +121,8 @@ export function fakePorts(): FakePorts {
         metadata: {
           main_module: 'placeholder.mjs',
           compatibility_date: String(doc.compatibility_date),
+          // As the real placeholder: a PUT over a Worker that has its secrets keeps them.
+          keep_bindings: ['secret_text'],
           ...(last
             ? {
                 migrations: {

@@ -97,6 +97,33 @@ export const cancelPipelineResponseSchema = z.object({
 })
 export type CancelPipelineResponse = z.infer<typeof cancelPipelineResponseSchema>
 
+/**
+ * `POST /api/apps/:id/pipeline/rescaffold` (`manage App`, no body) — scaffold an app that has not
+ * gone live AGAIN from the CURRENT kit pin, keeping its name, repository, database, storage,
+ * Workers, sign-in client and secrets. Only while the latest create run is `failed`, the app is
+ * neither `live` nor `archived`, and it has never had a deploy (409 `run_not_failed`, `app_live`,
+ * `app_archived`, `app_already_deployed`, `no_run` — a deployed app takes a kit upgrade instead).
+ * The steps that depend on the repository's content run again on a new instance `<runId>-rN`.
+ */
+export const RESCAFFOLD_PIPELINE_CODES = [
+  'no_run',
+  'run_not_failed',
+  'app_live',
+  'app_archived',
+  'app_already_deployed',
+] as const
+export type RescaffoldPipelineCode = (typeof RESCAFFOLD_PIPELINE_CODES)[number]
+
+export const rescaffoldPipelineResponseSchema = z.object({
+  runId: z.string().uuid(),
+  instanceId: z.string(),
+  /** The kit tag the new scaffold uses (`launch_settings.template_pin`, else the default). */
+  templateTag: z.string(),
+  /** The kit tag the app was scaffolded from before, when its scaffold was ever verified. */
+  previousTemplateTag: z.string().nullable(),
+})
+export type RescaffoldPipelineResponse = z.infer<typeof rescaffoldPipelineResponseSchema>
+
 /** `POST /api/apps/:id/teardown`. `confirmSlug` must equal the app's slug (else 400). */
 export const teardownRequestSchema = z.object({
   confirmSlug: z.string().trim().min(1),
@@ -325,6 +352,14 @@ export const pipelineViewSchema = z.object({
   kind: pipelineKindSchema,
   status: pipelineRunStatusSchema,
   steps: z.array(pipelineStepSchema),
+  /**
+   * Whether the RUN allows a re-scaffold (`POST …/pipeline/rescaffold`): a failed create run of an
+   * app that is not live or archived and has never deployed. Always false for a teardown. The
+   * viewer still needs `manage App`.
+   */
+  canRescaffold: z.boolean(),
+  /** The kit tag a re-scaffold would use — set only when `canRescaffold`, else null. */
+  templateTag: z.string().nullable(),
 })
 export type PipelineView = z.infer<typeof pipelineViewSchema>
 

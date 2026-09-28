@@ -166,6 +166,9 @@ export function placeholderScript(
       class_name: d.className,
     })),
     ...(migrations ? { migrations } : {}),
+    // A script upload replaces the Worker's bindings, secrets included: a placeholder PUT again
+    // over a Worker that already holds them (a re-scaffold's `placeholders`) must keep them.
+    keep_bindings: ['secret_text'],
   }
   return {
     metadata,

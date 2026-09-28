@@ -54,7 +54,8 @@
  *   `workflows` (name → `{class_name, script_name}`), `routes` (id → `{pattern, script, zoneId}`),
  *   `dnsRecords` (id → `{type, name, content, proxied}`, FQDN names, seeded with the proxied
  *   `*.<zone>` wildcard — clear it to watch the setup check create one),
- *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`. P5: secrets list (`GET`, names
+ *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`. A script PUT drops the secrets
+ *   unless its `keep_bindings` names `secret_text`, as the real upload does. P5: secrets list (`GET`, names
  *   only) and `DELETE …/secrets/{name}` (`secretDeletes`, names in order); on a script with a live
  *   version every secret write or delete creates AND deploys a new version carrying the active
  *   one's bindings; `envOf(script)` → the live version's string env (`plain_text`, `json`, and each

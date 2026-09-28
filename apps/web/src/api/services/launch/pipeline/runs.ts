@@ -6,7 +6,8 @@
  *
  * **How a run's status is derived**: `none` with no rows; `succeeded` once its FINAL step (`live`,
  * `archived`) has succeeded; `failed` when any row has failed, except a step the run carries on
- * past (`email` — plan step 11 is non-blocking); otherwise `running`.
+ * past (`email` — plan step 11 is non-blocking); otherwise `running` — which includes a run whose
+ * rows a re-scaffold re-opened as `pending` (`rescaffold.ts`) while its new instance works.
  */
 import type { AppOperationStatus } from '@launch/shared/launch-apps'
 import {
@@ -28,6 +29,8 @@ import {
   appOperations,
   auditEvents,
 } from '../../../../db/schema'
+import { loadPipelineSettings } from './context'
+import { rescaffoldBlock } from './rescaffold-check'
 
 export const PIPELINE_STEPS: Record<PipelineKind, readonly PipelineStepDefinition[]> = {
   create: APP_LAUNCH_STEPS,
@@ -108,6 +111,20 @@ export function deriveRunStatus(
   return 'running'
 }
 
+/**
+ * The step a run would run next when none is `running`: the first without a row, or whose row a
+ * re-scaffold re-opened (`pending`). What a Stop or a reconcile fails "between steps".
+ */
+export function nextStepOf(
+  kind: PipelineKind,
+  rows: readonly Pick<AppOperationRow, 'step' | 'status'>[]
+): string | undefined {
+  return PIPELINE_STEPS[kind].find(def => {
+    const row = rows.find(r => r.step === def.step)
+    return !row || row.status === 'pending'
+  })?.step
+}
+
 /** A wait's GitHub run page, when its row recorded one (`runUrl`, an https URL — nothing else). */
 function runUrlOf(ids: Record<string, string> | undefined): string | null {
   const url = ids?.runUrl
@@ -135,6 +152,10 @@ export async function pipelineView(
         ? 'failed'
         : 'running'
       : deriveRunStatus(kind, rows)
+  // A re-scaffold is a create run's; the pin is read only when it is on offer.
+  const allowed =
+    kind === 'create' && !(await rescaffoldBlock(db, tenantId, app, { runId, status }))
+  const templateTag = allowed ? (await loadPipelineSettings(db)).templatePin.tag : null
   const labels = new Map(PIPELINE_STEPS[kind].map(def => [def.step, def.label]))
   const partOf = (step: string): PipelineStep => {
     const row = byStep.get(step)
@@ -154,6 +175,8 @@ export async function pipelineView(
     runId,
     kind,
     status,
+    canRescaffold: allowed,
+    templateTag,
     steps: PIPELINE_VIEW_STEPS[kind].map(def => {
       const [only] = def.parts
       if (def.parts.length === 1 && only) return { ...partOf(only), label: def.label }

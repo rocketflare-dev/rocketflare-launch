@@ -34,6 +34,7 @@ import {
 
 const FIXTURES = path.resolve(__dirname, '../fixtures/rocketflare-0.15')
 const KIT_COMMIT_TAG = '0.15.0'
+const NEWER_KIT_TAG = '0.15.2'
 const PUSH_TOKEN = 'ghs_scaffoldTestToken0123456789'
 const OIDC_TOKEN = 'oidc.jwt.value-for-launch'
 
@@ -109,6 +110,7 @@ let root: string
 let server: Server
 let baseUrl: string
 let kitSha: string
+let newerKitSha: string
 const calls: Recorded[] = []
 let tokenPlan: Record<string, unknown>
 let tokenStatus = 200
@@ -175,6 +177,15 @@ beforeAll(async () => {
   git(kit, 'commit', '--quiet', '-m', 'Release 0.15.0')
   git(kit, 'tag', '-a', KIT_COMMIT_TAG, '-m', KIT_COMMIT_TAG)
   kitSha = git(kit, 'rev-parse', 'HEAD')
+  // A later kit release, for the re-scaffold of an app already scaffolded from 0.15.0.
+  const manifest = JSON.parse(readFileSync(path.join(kit, '.rocketflare.json'), 'utf8'))
+  manifest.kit.version = NEWER_KIT_TAG
+  write(kit, '.rocketflare.json', `${JSON.stringify(manifest, null, 2)}\n`)
+  write(kit, 'docs/NEW-IN-0.15.2.md', 'A kit fix.\n')
+  git(kit, 'add', '-A')
+  git(kit, 'commit', '--quiet', '-m', `Release ${NEWER_KIT_TAG}`)
+  git(kit, 'tag', '-a', NEWER_KIT_TAG, '-m', NEWER_KIT_TAG)
+  newerKitSha = git(kit, 'rev-parse', 'HEAD')
   mkdirSync(path.join(root, 'server/rocketflare-dev'), { recursive: true })
   git(root, 'clone', '--quiet', '--bare', kit, 'server/rocketflare-dev/rocketflare.git')
 
@@ -413,6 +424,50 @@ describe('the scaffold, --token-from-env --skip-install --skip-gate', () => {
       expect(output).not.toContain(PUSH_TOKEN)
       expect(output).not.toContain(basic)
     }
+  })
+})
+
+describe('a re-scaffold: the app repo already holds a scaffold and Launch’s config commit', () => {
+  it('replaces the tree with the newer kit and fast-forwards main on top of the app’s history', async () => {
+    const first = await runScript(['--token-from-env', '--skip-install', '--skip-gate'], envMode())
+    expect(first.code, first.stderr).toBe(0)
+
+    // What happened on main since: Launch's config commit (`write_config`), then — the
+    // re-scaffold's `scaffold.start` — the job files the first job deleted, committed back.
+    const work = mkdtempSync(path.join(root, 'launch-'))
+    git(root, 'clone', '--quiet', appRepo, work)
+    const toml = path.join(work, 'apps/web/wrangler.staging.toml')
+    writeFileSync(toml, `${readFileSync(toml, 'utf8')}\n# configured by Launch\n`)
+    git(work, 'commit', '--quiet', '-am', 'Configure the app for Launch')
+    for (const f of scaffoldFiles()) write(work, f.path, f.content ?? '')
+    git(work, 'add', '-A')
+    git(work, 'commit', '--quiet', '-m', 'Update the Launch scaffold job')
+    git(work, 'push', '--quiet', 'origin', 'main')
+    const beforeRescaffold = git(work, 'rev-parse', 'HEAD')
+
+    const again = await runScript(
+      ['--token-from-env', '--skip-install', '--skip-gate'],
+      envMode({ tag: NEWER_KIT_TAG, commit: newerKitSha })
+    )
+    expect(again.code, again.stderr).toBe(0)
+    const repo = pushed()
+    // A fast-forward: one commit on top of everything that was there, never forced.
+    expect(git(repo.dir, 'rev-parse', 'HEAD~1')).toBe(beforeRescaffold)
+    expect(git(repo.dir, 'rev-list', '--count', 'HEAD')).toBe('5')
+    expect(git(repo.dir, 'log', '-1', '--format=%s')).toBe(
+      `Start from Rocketflare ${NEWER_KIT_TAG}`
+    )
+    // The newer kit, stamped; the config commit's edit is gone (write_config re-applies it); the
+    // job's own files are gone again.
+    expect(JSON.parse(repo.read('.rocketflare.json')).kit).toMatchObject({
+      version: NEWER_KIT_TAG,
+      commit: newerKitSha,
+    })
+    expect(repo.files).toContain('docs/NEW-IN-0.15.2.md')
+    expect(repo.read('apps/web/wrangler.staging.toml')).not.toContain('configured by Launch')
+    expect(repo.read('apps/web/wrangler.staging.toml')).toContain('name = "shop-staging"')
+    expect(repo.files).not.toContain(SCAFFOLD_SCRIPT_PATH)
+    expect(repo.files).not.toContain(SCAFFOLD_WORKFLOW_PATH)
   })
 })
 

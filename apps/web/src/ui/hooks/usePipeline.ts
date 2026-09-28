@@ -1,7 +1,8 @@
 /**
  * Creating an app (Launch P2, `docs/plans/p2-create-app.md` §3 2e): `POST /api/apps`, the pipeline
  * view of a launch or a teardown (`GET /api/apps/:id/pipeline?kind=`), "Retry from failed step",
- * "Stop" for a launch stuck in a wait, and the teardown itself.
+ * "Re-scaffold" for a failed launch that never deployed, "Stop" for a launch stuck in a wait, and
+ * the teardown itself.
  *
  * Polling (ui.md): the pipeline has no server nudge, so it POLLS — but only while the server owes
  * an answer. That is `pipelinePollInterval`, a pure function on the cached status: a `running` run,
@@ -19,6 +20,7 @@ import {
   type PipelineRunStatus,
   pipelineViewSchema,
   type RetryPipelineRequest,
+  rescaffoldPipelineResponseSchema,
   retryPipelineResponseSchema,
   type TeardownRequest,
   teardownResponseSchema,
@@ -114,6 +116,22 @@ export function useRetryPipeline(appId: string) {
     mutationFn: (body: RetryPipelineRequest) =>
       api.post(`/api/apps/${appId}/pipeline/retry`, body, {
         schema: retryPipelineResponseSchema,
+        showErrorToast: true,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),
+  })
+}
+
+/**
+ * Scaffold a failed launch that never deployed again from the current kit pin (the view's
+ * `canRescaffold` / `templateTag`); the rest of its resources are kept.
+ */
+export function useRescaffoldPipeline(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post(`/api/apps/${appId}/pipeline/rescaffold`, undefined, {
+        schema: rescaffoldPipelineResponseSchema,
         showErrorToast: true,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),

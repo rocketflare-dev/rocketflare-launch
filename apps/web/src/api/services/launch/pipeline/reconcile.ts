@@ -27,7 +27,7 @@
  *      reload: the local engine keeps its persisted status `running` after the reload killed it,
  *      and nothing ever moves it again. The instance is terminated (best effort).
  *    - A lookup that fails any other way is logged and changes nothing.
- * 4. **Dead** → every `running` row (between steps: the next step without a row, as a cancel
+ * 4. **Dead** → every `running` row (between steps: the next step without a row or `pending`, as a cancel
  *    does) is `failed` "The launch's Workflow stopped (<status>) while this step ran — Retry
  *    resumes from here", keeping its recorded ids (`failOpenStep`), so a retry's `ctx.prior`
  *    adopts what the dead attempt created. A launch's app becomes `failed` with `app.launch_failed`
@@ -47,7 +47,7 @@ import { markLaunchFailed } from './create'
 import { launchInstanceOf } from './instance'
 import { failOpenStep } from './operations'
 import { lastRetrySuffix } from './retry'
-import { deriveRunStatus, latestRunId, PIPELINE_STEPS, runRows } from './runs'
+import { deriveRunStatus, latestRunId, nextStepOf, runRows } from './runs'
 
 /** How long a run must have written nothing before the runtime is asked about it. */
 export const RECONCILE_STALE_MS = 3 * 60_000
@@ -188,7 +188,7 @@ export async function reconcilePipeline(
     }
   }
 
-  const next = PIPELINE_STEPS[kind].find(def => !rows.some(r => r.step === def.step))?.step
+  const next = nextStepOf(kind, rows)
   const steps = running.length > 0 ? running.map(r => r.step) : next ? [next] : []
   if (steps.length === 0) return SKIPPED
   const what = kind === 'create' ? 'launch' : 'teardown'
