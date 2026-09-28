@@ -971,7 +971,9 @@ export class FakeGitHub implements VendorHandler {
     // ---- settings
     match = rest.match(/^\/environments\/([^/]+)$/)
     if (match && m === 'PUT') {
-      const refused = writable('environments')
+      // GitHub lists creating an environment under the "Administration" permission, not
+      // "Environments" (which covers an environment's own secrets and variables).
+      const refused = writable('administration')
       if (refused) return refused
       const name = decodeURIComponent(match[1])
       repo.environments.set(name, body)

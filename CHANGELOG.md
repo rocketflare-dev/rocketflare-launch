@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- "Set up GitHub environments" asks for an installation token with `administration: write` (and
+  `actions_variables: write`): GitHub lists creating an environment under Administration, not
+  Environments, so the narrower token was refused ("Resource not accessible by integration") on a
+  real repository. FakeCloud now enforces the same rule.
 - The placeholder Worker a launch uploads exports a `queue` handler (retrying every message) and a
   no-op `scheduled`: Cloudflare refused to attach the app's queue consumer to a script without one
   ("11001: Queue handler is missing"), which failed "Create the Workers" on a real account.

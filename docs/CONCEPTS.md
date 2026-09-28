@@ -935,7 +935,7 @@ step that mints one puts it on the Worker itself.
   the toml's DO migrations, its workflows, queue consumers and `<host>/*` route; it exports a `queue`
   handler that retries every message and a no-op `scheduled`, since Cloudflare refuses a consumer on a
   script without one — 11001) → `github_env`
-  (environments, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
+  (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
   `worker_secrets` → `email` (non-blocking) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
 - **Why SQL roles** (verified on a real Neon project, Postgres 17.11): a role Neon's API creates

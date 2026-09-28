@@ -757,7 +757,9 @@ export function githubEnvStep(d: PipelineDeps, params: AppLaunchParams) {
     const { token, owner } = await repoToken(
       vendors,
       repo.name,
-      { environments: 'write', actions_variables: 'write' },
+      // Creating an environment is GitHub's "Administration" permission, not "Environments";
+      // repository variables are "Variables" (`actions_variables`).
+      { administration: 'write', actions_variables: 'write' },
       ctx
     )
     for (const env of ENVIRONMENTS) await putEnvironment(token, owner, repo.name, env)
