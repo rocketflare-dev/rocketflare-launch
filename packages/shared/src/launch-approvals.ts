@@ -221,6 +221,17 @@ export const DEFAULT_APPROVAL_POLICIES: Record<ApprovalKind, ApprovalPolicy> = {
   },
 }
 
+/**
+ * The kinds whose handler adds approvers no policy names (`eligibleExtra`): a `grant.request` is
+ * always decidable by the resource's owner team, so a policy for it may name nobody else. The
+ * policy form's "name at least one approver" check skips these.
+ */
+export const KINDS_WITH_IMPLICIT_APPROVERS: readonly ApprovalKind[] = ['grant.request']
+
+export function hasImplicitApprovers(kind: ApprovalKind): boolean {
+  return KINDS_WITH_IMPLICIT_APPROVERS.includes(kind)
+}
+
 // ---- context (what the inbox shows) ------------------------------------------------------------
 
 export const appCreateContextSchema = z.object({

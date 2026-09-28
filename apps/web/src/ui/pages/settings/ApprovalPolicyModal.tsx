@@ -14,6 +14,7 @@ import {
   type ApprovalPolicyScope,
   AUTO_APPROVE_ROLES,
   type AutoApproveRole,
+  hasImplicitApprovers,
   putApprovalPolicySchema,
 } from '@launch/shared/launch-approvals'
 import { useState } from 'react'
@@ -142,7 +143,8 @@ export function ApprovalPolicyModal({
       !parsed.data.approvers.admins &&
       parsed.data.approvers.groupIds.length === 0 &&
       parsed.data.approvers.userIds.length === 0
-    if (none && parsed.data.autoApproveRole === null) {
+    // A shared resource's owner team always decides a grant request, so "nobody" is fine there.
+    if (none && parsed.data.autoApproveRole === null && !hasImplicitApprovers(target.kind)) {
       setError('Name at least one approver, or nothing could ever be approved')
       return
     }
@@ -202,6 +204,11 @@ export function ApprovalPolicyModal({
 
         <fieldset className="space-y-2">
           <legend className="text-xs text-muted mb-1">Who may approve</legend>
+          {hasImplicitApprovers(target.kind) && (
+            <p className="text-xs text-muted">
+              The shared resource’s owner team always may; anyone chosen here is added to it.
+            </p>
+          )}
           <Checkbox
             label="The app’s owners"
             hint="Its named owners and its team’s members, checked when they decide."

@@ -181,6 +181,33 @@ describe('ApprovalPoliciesSettings', () => {
     expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toBeUndefined()
   })
 
+  it('lets a shared-config policy name nobody: the resource’s owner team always decides', async () => {
+    const fetchMock = renderPolicies({
+      '/api/approval-policies': { items: [], defaults },
+      'PUT /api/approval-policies': (init: RequestInit | undefined) => ({
+        ...policyRow({ scopeType: 'tenant', scopeId: null }),
+        ...JSON.parse(String(init?.body)),
+        id: ROW_ID,
+      }),
+    })
+    const panel = (await screen.findByRole('heading', { name: 'Shared config' })).closest(
+      'section'
+    ) as HTMLElement
+    fireEvent.click(within(panel).getByRole('button', { name: /Edit/ }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/owner team always may/)).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Approvals needed'), { target: { value: '2' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toMatchObject({
+        kind: 'grant.request',
+        approvers: { appOwners: false, admins: false, groupIds: [], userIds: [] },
+        minApprovals: 2,
+      })
+    )
+    expect(within(dialog).queryByText(/Name at least one approver/)).toBeNull()
+  })
+
   it('removes an override after a confirmation', async () => {
     const fetchMock = renderPolicies({
       '/api/approval-policies': { items: [policyRow()], defaults },
