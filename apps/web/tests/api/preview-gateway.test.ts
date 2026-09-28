@@ -85,6 +85,20 @@ async function cookieFor(row: SessionRow, userId: string, host = hostOf(row)) {
   return { Cookie: `launch-preview=${token}; other=1` }
 }
 
+/**
+ * `token` with one bit of its MAC flipped — a forgery by construction. It works on the decoded
+ * bytes, never on a character: a regex over the base64url text misses a MAC starting with `-`
+ * (not a `\w`), and changing a trailing character can decode to the same bytes.
+ */
+function tamperMac(token: string): string {
+  const [payload, mac] = token.split('.')
+  const bytes = Buffer.from(mac ?? '', 'base64url')
+  bytes[0] = (bytes[0] ?? 0) ^ 0x01
+  const forged = `${payload}.${bytes.toString('base64url')}`
+  if (forged === token) throw new Error('tamperMac left the token unchanged')
+  return forged
+}
+
 beforeEach(() => clearPreviewStatusCache())
 
 describe('preview grants and cookies', () => {
@@ -116,6 +130,25 @@ describe('preview grants and cookies', () => {
     ).toBeNull()
     expect(await verifyGrant(cfg, 'garbage', { host: 'x.localhost:3001', now })).toBeNull()
   })
+
+  it('a cookie with any bit of its MAC flipped is refused, whatever character the MAC starts with', async () => {
+    // Fixed inputs make the MACs deterministic; walk session ids until the MAC starts with each
+    // non-`\w` base64url character — the `-` case once let a "tampered" test cookie through
+    // unchanged, 1 run in 64.
+    const cfg = loadConfig(previewEnv())
+    const now = new Date('2026-09-28T10:00:00Z')
+    const host = 'x.localhost:3001'
+    const seen = new Set<string>()
+    for (let i = 0; i < 2000 && !(seen.has('-') && seen.has('_')); i++) {
+      const { token } = await mintCookie(cfg, { sessionId: `s${i}`, userId: 'u1', host, now })
+      const first = token.split('.')[1]?.[0] ?? ''
+      if (first !== '-' && first !== '_') continue
+      seen.add(first)
+      expect(await verifyCookie(cfg, token, { host, now })).toMatchObject({ sid: `s${i}` })
+      expect(await verifyCookie(cfg, tamperMac(token), { host, now })).toBeNull()
+    }
+    expect([...seen].sort()).toEqual(['-', '_'])
+  })
 })
 
 describe('the gateway', () => {
@@ -131,11 +164,9 @@ describe('the gateway', () => {
     const { f, row, ports, host } = await seeded()
     const other = await insertSession(db, f, { status: 'ready' })
 
-    const forged = await cookieFor(row, f.user.id)
-    const tampered = forged.Cookie.replace(
-      /launch-preview=([^.]+)\.(\w)/,
-      (_m, p, c) => `launch-preview=${p}.${c === 'A' ? 'B' : 'A'}`
-    )
+    const cfg = loadConfig(previewEnv())
+    const genuine = (await mintCookie(cfg, { sessionId: row.id, userId: f.user.id, host })).token
+    const tampered = `launch-preview=${tamperMac(genuine)}; other=1`
     expect(
       (await gateway(previewEnv(), ports, `http://${host}/`, { headers: { Cookie: tampered } }))
         .status
@@ -146,7 +177,6 @@ describe('the gateway', () => {
     expect(
       (await gateway(previewEnv(), ports, `http://${host}/`, { headers: theirs })).status
     ).toBe(401)
-    const cfg = loadConfig(previewEnv())
     const { token } = await mintCookie(cfg, { sessionId: other.id, userId: f.user.id, host })
     const res = await gateway(previewEnv(), ports, `http://${host}/`, {
       headers: { Cookie: `launch-preview=${token}` },
