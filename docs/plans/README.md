@@ -67,6 +67,8 @@ The rest are unfiled.
 
 ## Found on real infrastructure (2026-09-28)
 
+**First end-to-end launch on real accounts: `hola-world` went LIVE at 11:50 UTC** (kit 0.15.5; Launch running locally through the `local.clewro.com` tunnel). Proven for real: the scaffold job on GitHub Actions, Re-scaffold, Neon SQL-created roles + `GRANT`, Cloudflare storage / placeholder Workers / secrets, GitHub environments, the deploy gateway (start → upload with the binding check → `db:migrate:ci` as `migrator` → activate → finish), health and live. Fixed on the way — Launch: fail-fast CI waits, public-URL gate, page-read polling of CI jobs, dead-instance reconcile, Neon roles by SQL, placeholder `queue` handler + `keep_bindings`, `administration` token for environments, email skipped when Resend is not ready, "deployed" = activated, Re-scaffold (DB-evidence check), commit pins from Setup. Kit: 0.15.1–0.15.5 (hyphenated-slug rename, default-plugins gate kit-only, gate once per commit, neon prune, parity-only deploy check, db-roles without CREATEDB). Still unproven: production promote, email (Resend domain not verified), teardown of a real app, commit-pin fetch on a real runner.
+
 - A real scaffold ran green on GitHub Actions with kit 0.15.1 (after the frozen-install and hyphenated-slug rename fixes).
 - Neon: roles made through the API are `neon_superuser` members that `neondb_owner` cannot grant, so the launch now creates `migrator` and `app` in SQL. **Still to do:** P3's `services/sessions/db/neon-session-db.ts` creates `session_owner` through the role API, so it has the same excess privilege and needs the same treatment.
 
