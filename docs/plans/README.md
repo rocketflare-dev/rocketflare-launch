@@ -65,6 +65,11 @@ The rest are unfiled.
    - File the remaining kit issues.
    - Replace the kit's example agents (`summarize-text`, `research-topic`) once Launch has a real agent.
 
+## Found on real infrastructure (2026-09-28)
+
+- A real scaffold ran green on GitHub Actions with kit 0.15.1 (after the frozen-install and hyphenated-slug rename fixes).
+- Neon: roles made through the API are `neon_superuser` members that `neondb_owner` cannot grant, so the launch now creates `migrator` and `app` in SQL. **Still to do:** P3's `services/sessions/db/neon-session-db.ts` creates `session_owner` through the role API, so it has the same excess privilege and needs the same treatment.
+
 ## Local dev notes
 
 - `pnpm dev:tunnel` runs only the tunnel (cfld). `pnpm dev` switches to the tunnel URL while that tunnel is up.
