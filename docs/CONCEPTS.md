@@ -1406,6 +1406,10 @@ push.
   (a slow GitHub read lengthens the request).
 - *Imported apps* must have their Workers in Launch's account with a recorded `worker_name`; one
   still deploying with its own `wrangler deploy` must drop the shadowed vars from its toml itself.
+- *Local development*: `pnpm dev` takes `GRANT_BACKEND` from the toml (`cloudflare`) unless
+  `.dev.vars` sets `local` (`.dev.vars.example` does; a `.dev.vars` made before P5 does not), so an
+  approval under `pnpm dev` with platform credentials stored pushes to the real Cloudflare account.
+  Add `GRANT_BACKEND=local` to `.dev.vars`.
 - The exit test drives `GrantPushWorkflow` step by step under Node, not in workerd; the real exit
   run (a connector installed through a session, real Entra credentials, a rotation in Entra) is a
   staging task.
