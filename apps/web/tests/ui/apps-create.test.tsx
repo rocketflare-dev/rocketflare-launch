@@ -138,6 +138,11 @@ const ticket = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
+function ApprovalStub() {
+  const { id } = useParams()
+  return <p>approval page {id}</p>
+}
+
 const member = () =>
   makeSession({ tenant: { id: IDS.tenant, name: 'Acme', slug: 'acme', role: 'member' } })
 
@@ -297,6 +302,7 @@ describe('AppDetailPage — the launch', () => {
     renderWithProviders(
       <Routes>
         <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/approvals/:id" element={<ApprovalStub />} />
       </Routes>,
       { session, route: '/apps/expenses' }
     )
@@ -389,6 +395,7 @@ describe('AppDetailPage — archive and deploys', () => {
     renderWithProviders(
       <Routes>
         <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/approvals/:id" element={<ApprovalStub />} />
       </Routes>,
       { session, route: '/apps/expenses' }
     )
@@ -496,7 +503,21 @@ describe('AppDetailPage — archive and deploys', () => {
     expect(screen.queryByRole('button', { name: /Archive app/ })).not.toBeInTheDocument()
   })
 
-  it('confirms before deploying to production', async () => {
+  it('confirms before deploying to production, then goes to the approval it opened (P4)', async () => {
+    const approvalId = '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a'
+    const fetchMock = renderLive(makeSession(), {
+      [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
+        jsonResponse({ ticket: null, approvalId }, 202),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /Deploy to production/ }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/someone other than you approves/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for approval' }))
+    expect(await screen.findByText(`approval page ${approvalId}`)).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
+  })
+
+  it('still accepts a pre-approved ticket from a server without the engine', async () => {
     const fetchMock = renderLive(makeSession(), {
       [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
         jsonResponse(
@@ -505,11 +526,22 @@ describe('AppDetailPage — archive and deploys', () => {
         ),
     })
     fireEvent.click(await screen.findByRole('button', { name: /Deploy to production/ }))
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText(/next 15 minutes/)).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Deploy to production' }))
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Ask for approval' })
+    )
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
     )
+    expect(screen.queryByText(/approval page/)).not.toBeInTheDocument()
+  })
+
+  it('links a pending production ticket to its approval instead of deciding it in place', async () => {
+    const approvalId = '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a'
+    renderLive(makeSession(), {
+      [`/api/apps/${APP_ID}/deploys`]: () => ({ items: [ticket({ approvalId })] }),
+    })
+    const link = await screen.findByRole('link', { name: 'Review and decide' })
+    expect(link).toHaveAttribute('href', `/approvals/${approvalId}`)
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
   })
 })

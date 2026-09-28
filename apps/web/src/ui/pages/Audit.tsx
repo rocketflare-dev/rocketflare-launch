@@ -3,7 +3,7 @@
  * change and app event Launch recorded, newest first. Admin-level (`read AuditEvent`); read-only,
  * because the log is append-only. Filter by action prefix (`oidc` → every `oidc.*` event).
  */
-import { ShieldCheckIcon } from '@heroicons/react/24/outline'
+import { ArrowDownTrayIcon, ShieldCheckIcon } from '@heroicons/react/24/outline'
 import { useState } from 'react'
 import {
   EmptyState,
@@ -12,7 +12,7 @@ import {
   SectionPanel,
   SkeletonRows,
 } from '@/ui/components/shared'
-import { useAudit } from '@/ui/hooks/useAudit'
+import { auditExportUrl, useAudit, useAuditVerify } from '@/ui/hooks/useAudit'
 import { formatDateTime } from '@/ui/lib/format'
 
 /** `{ after: { token: 'set' } }` → `token: set`. The summary never carries a secret value. */
@@ -27,6 +27,83 @@ function summaryText(summary: {
     .join(' · ')
 }
 
+/**
+ * P4 (spec/08 "Integrity"): the log is hash-chained by the `audit.seal` cron. Verify recomputes the
+ * chain on demand and says, in words, whether it holds — and how many recent events are not sealed
+ * yet, which is not a failure (tampering is evident within one five-minute seal). Export downloads
+ * the log with each row's `seq` and `hash` for an auditor to check independently.
+ */
+function Integrity({ action }: { action?: string }) {
+  const verify = useAuditVerify()
+  const result = verify.data
+  return (
+    <SectionPanel
+      title="Integrity"
+      description="Every event is sealed into a hash chain within five minutes."
+      actions={
+        <>
+          <button
+            type="button"
+            className="btn btn-sm gap-1.5"
+            disabled={verify.isFetching}
+            onClick={() => void verify.refetch()}
+          >
+            {verify.isFetching ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              <ShieldCheckIcon className="w-4 h-4" />
+            )}
+            Verify
+          </button>
+          <a
+            className="btn btn-sm btn-ghost gap-1.5"
+            href={auditExportUrl('csv', { action })}
+            download
+          >
+            <ArrowDownTrayIcon className="w-4 h-4" />
+            CSV
+          </a>
+          <a
+            className="btn btn-sm btn-ghost gap-1.5"
+            href={auditExportUrl('json', { action })}
+            download
+          >
+            <ArrowDownTrayIcon className="w-4 h-4" />
+            JSON Lines
+          </a>
+        </>
+      }
+    >
+      {verify.isError ? (
+        <p className="text-sm text-error" role="alert">
+          The chain could not be checked: {verify.error.message}
+        </p>
+      ) : !result ? (
+        <p className="text-sm text-muted">
+          Verify recomputes every sealed hash. Exports carry each row’s place in the chain.
+        </p>
+      ) : result.ok ? (
+        <div className="alert alert-success alert-soft text-sm" role="status">
+          <span>
+            The chain holds: {result.checked.toLocaleString()} sealed events checked
+            {result.sealedThrough !== null ? ` (through #${result.sealedThrough})` : ''}
+            {result.unsealed > 0 ? `, ${result.unsealed} newer ones not sealed yet` : ''}. Checked{' '}
+            {formatDateTime(result.verifiedAt)}.
+          </span>
+        </div>
+      ) : (
+        <div className="alert alert-error alert-soft text-sm" role="alert">
+          <span>
+            The chain breaks at #{result.firstBrokenSeq}
+            {result.firstBrokenEventId ? ` (event ${result.firstBrokenEventId.slice(0, 8)})` : ''}:
+            that row, or one before it, was changed after it was sealed.
+          </span>
+        </div>
+      )}
+    </SectionPanel>
+  )
+}
+
 export default function Audit() {
   // SearchInput debounces, so this is the settled value.
   const [search, setSearch] = useState('')
@@ -38,11 +115,13 @@ export default function Audit() {
   const items = data?.pages.flatMap(page => page.items) ?? []
 
   return (
-    <div className="max-w-5xl">
+    <div className="max-w-5xl space-y-4">
       <PageHeader
+        className="mb-0"
         title="Audit"
         description="Who did what to which app — recorded by Launch, and never edited."
       />
+      <Integrity action={validAction} />
       <SectionPanel
         flush
         actions={

@@ -21,8 +21,9 @@ import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
 import { useApp } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useSessionStream } from '@/ui/hooks/useSessionStream'
-import { useResumeSession, useSession } from '@/ui/hooks/useSessions'
+import { usePendingBudgetApproval, useResumeSession, useSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
+import { budgetAccess } from './components/budgetAccess'
 import { ExtendBudgetModal } from './components/ExtendBudgetModal'
 import { PreviewFrame } from './components/PreviewFrame'
 import { SessionChat } from './components/SessionChat'
@@ -38,6 +39,12 @@ export default function SessionPage() {
   const stream = useSessionStream(session)
   const resume = useResumeSession(id)
   const [extendOpen, setExtendOpen] = useState(false)
+  // P4: the creator's open `session.budget` request, so a reload still links to it. Only asked
+  // for by someone who may act on a session that can still run.
+  const pendingBudget = usePendingBudgetApproval(
+    id,
+    Boolean(session?.viewerCanManage && !['shipped', 'ended', 'failed'].includes(session.status))
+  )
 
   const events = stream.events
   const steps = useMemo(() => bootSteps(events), [events])
@@ -79,9 +86,11 @@ export default function SessionPage() {
   }
 
   // Extending is for the app's owners and administrators — the route's rule; the app detail's
-  // `viewerCanDeploy` is exactly "owner or admin of this app".
+  // `viewerCanDeploy` is exactly "owner or admin of this app". Anyone else who may act on the
+  // session (its creator) ASKS: a `session.budget` approval (P4).
   const canExtend =
     session.viewerCanManage && (can('manage', 'Session') || Boolean(app?.viewerCanDeploy))
+  const budget = budgetAccess(session, canExtend, pendingBudget?.id ?? null)
   const showShip = session.status === 'shipping' || session.prNumber !== null || gates.length > 0
 
   return (
@@ -90,7 +99,7 @@ export default function SessionPage() {
         session={session}
         appSlug={slug}
         appName={app?.displayName ?? slug}
-        canExtend={canExtend}
+        budget={budget}
         onExtend={() => setExtendOpen(true)}
       />
 
@@ -110,7 +119,7 @@ export default function SessionPage() {
             session={session}
             events={events}
             isLoading={stream.isLoading}
-            canExtend={canExtend}
+            budget={budget}
             onExtend={() => setExtendOpen(true)}
           />
         </section>
@@ -132,6 +141,7 @@ export default function SessionPage() {
       {extendOpen && (
         <ExtendBudgetModal
           session={session}
+          mode={budget.mode === 'ask' ? 'ask' : 'extend'}
           open={extendOpen}
           onClose={() => setExtendOpen(false)}
         />

@@ -1,44 +1,78 @@
 /**
- * "Extend budget" (Launch P3, plan §1.11): add dollars to one session's cap. For the app's owners
- * and administrators — the route's rule, audited `session.budget.extended` — and validated with
- * the same `extendBudgetSchema` the route applies. A few presets, because the question a person is
+ * More budget for one session (Launch P3 "Extend", P4 "Ask for more budget"), validated with the
+ * same `extendBudgetSchema` the route applies. A few presets, because the question a person is
  * answering is "how much more", not "type a number".
+ *
+ * From P4 it goes through a `session.budget` approval (plan §4c), and the modal has two modes:
+ *
+ * - `extend` — the app's owners and admins. Their click opens (or joins) the request AND records
+ *   their approval, so the cap usually moves at once (P3's one click). When they created the
+ *   session themselves they are its requester, so it waits for another approver instead.
+ * - `ask` — the session's creator without that right: the reason goes to the approvers and the
+ *   page then links to the request.
+ *
+ * The answer decides the toast: the cap moved ("Budget extended"), or it is waiting (and the
+ * request is one click away).
  */
+import { approvalPath } from '@launch/shared/launch-approvals'
 import { extendBudgetSchema, type Session } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { formatCost } from '@/ui/components/ai/StatRows'
-import { FieldError, Modal } from '@/ui/components/shared'
+import { FieldError, Modal, showToast } from '@/ui/components/shared'
 import { useExtendBudget } from '@/ui/hooks/useSessions'
 
 const PRESETS = [5, 10, 25] as const
 
+export type BudgetMode = 'extend' | 'ask'
+
 export function ExtendBudgetModal({
   session,
+  mode = 'extend',
   open,
   onClose,
 }: {
   session: Session
+  mode?: BudgetMode
   open: boolean
   onClose: () => void
 }) {
   const [amount, setAmount] = useState('10')
+  const [reason, setReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const extend = useExtendBudget(session.id)
+  const navigate = useNavigate()
+  const asking = mode === 'ask'
 
   const submit = () => {
-    const parsed = extendBudgetSchema.safeParse({ extraUsd: Number(amount) })
+    const parsed = extendBudgetSchema.safeParse({
+      extraUsd: Number(amount),
+      ...(reason.trim() ? { reason } : {}),
+    })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? 'Enter an amount')
       return
     }
-    extend.mutate(parsed.data, { onSuccess: onClose })
+    const capBefore = session.budget.capMicrocents
+    extend.mutate(parsed.data, {
+      onSuccess: ({ session: next, approvalId }) => {
+        onClose()
+        if (next.budget.capMicrocents > capBefore || !approvalId) {
+          showToast('Budget extended', 'success')
+          return
+        }
+        showToast(`Asked for $${parsed.data.extraUsd} more — waiting for approval`, 'success')
+        // The creator is the one who waits: take them to the request they can share.
+        if (asking) navigate(approvalPath(approvalId))
+      },
+    })
   }
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Extend this session's budget"
+      title={asking ? 'Ask for more budget' : "Extend this session's budget"}
       actions={
         <>
           <button type="button" className="btn btn-sm" onClick={onClose}>
@@ -50,7 +84,13 @@ export function ExtendBudgetModal({
             onClick={submit}
             disabled={extend.isPending}
           >
-            {extend.isPending ? <span className="loading loading-spinner loading-xs" /> : 'Extend'}
+            {extend.isPending ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : asking ? (
+              'Ask for approval'
+            ) : (
+              'Extend'
+            )}
           </button>
         </>
       }
@@ -64,7 +104,8 @@ export function ExtendBudgetModal({
       >
         <p className="text-sm text-secondary">
           It has spent {formatCost(session.budget.spentMicrocents)} of{' '}
-          {formatCost(session.budget.capMicrocents)}. The extra is added to this session only.
+          {formatCost(session.budget.capMicrocents)}. The extra is added to this session only
+          {asking ? ', once an owner of the app or an administrator approves it.' : '.'}
         </p>
         <div className="flex gap-2">
           {PRESETS.map(preset => (
@@ -96,6 +137,19 @@ export function ExtendBudgetModal({
             }}
             aria-invalid={Boolean(error)}
             aria-describedby="extend-budget-error"
+          />
+        </label>
+        <label className="block">
+          <span className="label-text text-xs">
+            {asking ? 'Why? (shown to the approvers)' : 'Note (optional)'}
+          </span>
+          <textarea
+            className="textarea w-full text-sm mt-1"
+            rows={2}
+            maxLength={1000}
+            value={reason}
+            placeholder={asking ? 'What is left to do, and why it needs more.' : undefined}
+            onChange={event => setReason(event.target.value)}
           />
         </label>
         <FieldError id="extend-budget-error" message={error} />

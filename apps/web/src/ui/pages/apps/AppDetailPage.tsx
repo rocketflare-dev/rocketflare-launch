@@ -10,6 +10,10 @@
  * a production deploy is for the app's owners as well as admins — the detail's `viewerCanDeploy`,
  * the server's own rule; retry and archive stay `manage App`.
  *
+ * P4: an app with a repository carries its releases (`ReleasesCard`) — cut one, watch it reach
+ * staging, promote it to production through an approval — and a pending production deploy links
+ * to its approval instead of being decided in place.
+ *
  * P3: an app with a repository also carries its coding sessions (`SessionsCard`) — "Start session"
  * and the sessions running on it. While the launch is under way the
  * parts that only make sense for a running app — health history, "Check now", the sign-in card the
@@ -51,6 +55,7 @@ import { HealthHistory } from './components/HealthHistory'
 import { OidcClientCard } from './components/OidcClientCard'
 import { OperationsLog } from './components/OperationsLog'
 import { PipelineProgress } from './components/PipelineProgress'
+import { ReleasesCard } from './components/ReleasesCard'
 import { SessionsCard } from './components/SessionsCard'
 import { TeardownModal } from './components/TeardownModal'
 
@@ -344,6 +349,12 @@ export default function AppDetailPage() {
           canDecide={app.viewerCanDeploy}
           canDeployProduction={app.viewerCanDeploy && app.status === 'live'}
         />
+      )}
+
+      {/* Launch P4: releases — tag, staging, then production through an approval. For an app with
+          a repository Launch can tag; cutting and promoting is for its owners and admins. */}
+      {hasRepo && !launching && app.status !== 'requested' && app.status !== 'archived' && (
+        <ReleasesCard appId={app.id} canRelease={app.viewerCanDeploy} />
       )}
 
       {/* Launch P3: the way into a coding session — for an app with a repository to work on. */}

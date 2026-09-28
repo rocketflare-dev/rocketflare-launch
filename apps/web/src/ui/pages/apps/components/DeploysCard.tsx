@@ -1,8 +1,13 @@
 /**
  * An app's deploys (Launch P2, DEPLOYER.md): the recent deploy tickets — environment, version,
  * status, who ran it and when — and the two things a person does here: decide a `pending`
- * production deploy (inside the job's wait), and "Deploy to production", which pre-approves one for
- * fifteen minutes and starts `deploy.yml`.
+ * production deploy (inside the job's wait), and "Deploy to production".
+ *
+ * From P4 both go through the approvals engine: a pending production ticket carries its
+ * `approvalId`, and the panel links to that request's page — where the context, the N-of-M
+ * progress and the policy are — instead of deciding in place (a ticket without one, from before the
+ * engine, keeps the in-place panel). "Deploy to production" opens a `deploy.production` approval
+ * for the default branch and goes to it; approval pre-approves the run and starts `deploy.yml`.
  *
  * The decision panel follows the "act on it" rules (ui.md): pinned above the list, focus lands on
  * its HEADING and never on a button, a person who may not decide reads one sentence instead of a
@@ -16,13 +21,21 @@ import {
   ShieldExclamationIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
+import { approvalPath } from '@launch/shared/launch-approvals'
 import {
   type DeployTicket,
   type DeployTicketStatus,
   PRODUCTION_INTENT_TTL_MS,
 } from '@launch/shared/launch-pipeline'
 import { useEffect, useRef, useState } from 'react'
-import { ConfirmModal, EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
+import { Link, useNavigate } from 'react-router-dom'
+import {
+  ConfirmModal,
+  EmptyState,
+  SectionPanel,
+  SkeletonRows,
+  showToast,
+} from '@/ui/components/shared'
 import { useDecideDeploy, useDeployProduction, useDeploys } from '@/ui/hooks/useDeploys'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
@@ -179,6 +192,38 @@ function DecisionPanel({
   )
 }
 
+/** A pending production ticket the approvals engine owns: say so, and link to the request. */
+function ApprovalLinkPanel({ ticket, canDecide }: { ticket: DeployTicket; canDecide: boolean }) {
+  return (
+    <section
+      className="rounded-lg border border-l-4 border-base-300 border-l-warning p-4 mb-4"
+      aria-label="Production deploy awaiting approval"
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <ShieldExclamationIcon className="w-5 h-5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold">
+            Production deploy of {ticketVersion(ticket)} is waiting for approval
+          </p>
+          <p className="text-xs text-secondary">
+            {ticket.actor ? <>Started by {ticket.actor} </> : 'Started '}
+            {timeAgo(ticket.createdAt)}
+            {ticket.expiresAt && <> · the job stops waiting {timeAgo(ticket.expiresAt)}</>}
+          </p>
+        </div>
+        {ticket.approvalId && (
+          <Link
+            to={approvalPath(ticket.approvalId)}
+            className={`btn btn-sm ${canDecide ? 'btn-primary' : 'btn-ghost'}`}
+          >
+            {canDecide ? 'Review and decide' : 'See the request'}
+          </Link>
+        )}
+      </div>
+    </section>
+  )
+}
+
 const WINDOW = 8
 
 export function DeploysCard({
@@ -193,6 +238,7 @@ export function DeploysCard({
   canDeployProduction: boolean
 }) {
   const { data, isLoading } = useDeploys(appId)
+  const navigate = useNavigate()
   const deployProduction = useDeployProduction(appId)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
@@ -218,9 +264,12 @@ export function DeploysCard({
         )
       }
     >
-      {pending && (
-        <DecisionPanel key={pending.id} ticket={pending} appId={appId} canDecide={canDecide} />
-      )}
+      {pending &&
+        (pending.approvalId ? (
+          <ApprovalLinkPanel ticket={pending} canDecide={canDecide} />
+        ) : (
+          <DecisionPanel key={pending.id} ticket={pending} appId={appId} canDecide={canDecide} />
+        ))}
 
       {isLoading ? (
         <SkeletonRows rows={3} />
@@ -315,18 +364,35 @@ export function DeploysCard({
         isOpen={confirmOpen}
         title="Deploy to production?"
         message={
-          <p>
-            Launch approves one production deploy for the next{' '}
-            {Math.round(PRODUCTION_INTENT_TTL_MS / 60_000)} minutes and starts the repository’s
-            deploy workflow on its default branch. The build runs the full gate first; nothing
-            changes if it fails.
-          </p>
+          <div className="space-y-2">
+            <p>
+              Launch asks this app’s approvers to deploy its default branch to production. Once
+              someone other than you approves, it starts the repository’s deploy workflow, which
+              runs the full gate first — nothing changes if that fails.
+            </p>
+            <p className="text-secondary text-sm">
+              To ship a tested version instead, promote a release that staging is running.
+            </p>
+          </div>
         }
-        confirmText="Deploy to production"
+        confirmText="Ask for approval"
         isLoading={deployProduction.isPending}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={() =>
-          deployProduction.mutate(undefined, { onSuccess: () => setConfirmOpen(false) })
+          deployProduction.mutate(undefined, {
+            onSuccess: ({ ticket, approvalId }) => {
+              setConfirmOpen(false)
+              if (approvalId && !ticket) {
+                showToast('Production deploy requested — waiting for approval', 'success')
+                navigate(approvalPath(approvalId))
+              } else {
+                showToast(
+                  `Production deploy started — approved for ${Math.round(PRODUCTION_INTENT_TTL_MS / 60_000)} minutes`,
+                  'success'
+                )
+              }
+            },
+          })
         }
       />
     </SectionPanel>

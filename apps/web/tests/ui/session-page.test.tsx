@@ -6,15 +6,17 @@
  *   cursor — tool calls as one-line rows (running ones spin), Claude's text as bubbles;
  * - the preview loads through a fresh grant, and reloads (with a fresh grant) after `turn.end`;
  * - Ship confirms, then the ship panel shows the gate attempts, the PR and its CI;
- * - over budget is a banner — with "Extend budget" for an owner or admin, a sentence for anyone else;
+ * - over budget is a banner — with "Extend budget" for an owner or admin, "Ask for more budget" for
+ *   its creator (a `session.budget` approval, P4, then a link to it), a sentence for anyone else;
  * - the composer: Enter sends (optimistically), Shift+Enter does not, a 409 is information and
  *   keeps the text, Stop cancels the running turn.
  */
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { queryKeys } from '@/ui/lib/query-keys'
 import SessionPage from '@/ui/pages/sessions/SessionPage'
+import { APPROVAL_ID, approvalRow } from './helpers/approvals'
 import {
   errorResponse,
   IDS,
@@ -26,6 +28,11 @@ import {
   stubFetch,
 } from './helpers/renderWithProviders'
 import { detailOf, eventsRoute, SESSION_ID, sessionEvent, sseFrames } from './helpers/sessions'
+
+function ApprovalStub() {
+  const { id } = useParams()
+  return <p>approval page {id}</p>
+}
 
 const BASE = `/api/sessions/${SESSION_ID}`
 
@@ -58,6 +65,7 @@ function renderPage(routes: RouteTable, session = makeSession()) {
   const view = renderWithProviders(
     <Routes>
       <Route path="/apps/:slug/sessions/:id" element={<SessionPage />} />
+      <Route path="/approvals/:id" element={<ApprovalStub />} />
     </Routes>,
     { session, route: `/apps/expenses/sessions/${SESSION_ID}` }
   )
@@ -261,10 +269,10 @@ describe('SessionPage', () => {
     )
   })
 
-  it('tells a member over budget who can extend it, with no button', async () => {
+  it('tells a reader over budget who can extend it, with no button', async () => {
     renderPage(
       {
-        [BASE]: detailOf({ status: 'blocked' }),
+        [BASE]: detailOf({ status: 'blocked', viewerCanManage: false }),
         [`${BASE}/events`]: eventsRoute(DONE_TURN),
       },
       member()
@@ -273,7 +281,78 @@ describe('SessionPage', () => {
       await screen.findByText('Ask an owner of this app or an administrator to extend it.')
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Extend budget' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Extend' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ask for more/ })).not.toBeInTheDocument()
+  })
+
+  it('lets its creator ask for more budget, with a reason, and goes to the request (P4)', async () => {
+    const { fetchMock } = renderPage(
+      {
+        [BASE]: detailOf({ status: 'blocked' }),
+        [`${BASE}/events`]: eventsRoute(DONE_TURN),
+        '/api/approvals': { items: [] },
+        [`POST ${BASE}/budget`]: () => ({
+          ...detailOf({ status: 'blocked' }),
+          approvalId: APPROVAL_ID,
+        }),
+      },
+      member()
+    )
+    expect(
+      await screen.findByText(
+        'Ask an owner of this app or an administrator for more to keep going.'
+      )
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask for more budget' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Ask for more budget')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '+$25' }))
+    fireEvent.change(within(dialog).getByLabelText(/Why\?/), {
+      target: { value: 'Two tests left to fix' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for approval' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/budget`)).toEqual({
+        extraUsd: 25,
+        reason: 'Two tests left to fix',
+      })
+    )
+    expect(await screen.findByText(`approval page ${APPROVAL_ID}`)).toBeInTheDocument()
+  })
+
+  it('links the creator to their open budget request instead of asking twice', async () => {
+    renderPage(
+      {
+        [BASE]: detailOf({ status: 'blocked' }),
+        [`${BASE}/events`]: eventsRoute(DONE_TURN),
+        '/api/approvals': (_init: RequestInit | undefined, url: URL) => {
+          expect(url.searchParams.get('box')).toBe('requested')
+          expect(url.searchParams.get('kind')).toBe('session.budget')
+          return {
+            items: [
+              approvalRow({
+                kind: 'session.budget',
+                subjectType: 'session',
+                subjectId: SESSION_ID,
+                requestedByUserId: IDS.user,
+                context: {
+                  kind: 'session.budget',
+                  sessionId: SESSION_ID,
+                  sessionTitle: 'Friendlier home page',
+                  extraUsd: 25,
+                  spentUsd: 10,
+                  capUsd: 10,
+                },
+              }),
+            ],
+          }
+        },
+      },
+      member()
+    )
+    const link = await screen.findByRole('link', { name: 'See the request' })
+    expect(link).toHaveAttribute('href', `/approvals/${APPROVAL_ID}`)
+    expect(screen.getByRole('link', { name: 'Budget request pending' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask for more budget' })).not.toBeInTheDocument()
   })
 
   it('sends on Enter (not Shift+Enter) and shows the message at once', async () => {

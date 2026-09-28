@@ -1,20 +1,14 @@
 /**
  * `/apps/:slug/access` (spec/05): who may sign in to this app through Launch — the access policy
  * (the whole organisation, or only the groups and people granted), the grants, and the queue of
- * access requests. For the app's owners and the organisation's admins; the server answers 404 to
+ * access requests — each an `app.access` approval, decided on its own page (P4). For the app's owners and the organisation's admins; the server answers 404 to
  * anyone else, which this page shows as "not yours to manage".
  *
  * The app's owners can always sign in, whatever the policy says — restricting an app can never
  * lock its owners out.
  */
-import {
-  CheckIcon,
-  InboxIcon,
-  KeyIcon,
-  TrashIcon,
-  UserGroupIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/outline'
+import { InboxIcon, KeyIcon, TrashIcon, UserGroupIcon } from '@heroicons/react/24/outline'
+import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppAccessRequestStatus, OidcAccessPolicy } from '@launch/shared/launch-oidc'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -31,7 +25,6 @@ import {
   useAppAccessGrants,
   useAppAccessPolicy,
   useAppAccessRequests,
-  useDecideAppAccessRequest,
   useRemoveAppAccessGrant,
   useUpdateAppAccessPolicy,
 } from '@/ui/hooks/useAppAccess'
@@ -232,7 +225,6 @@ const STATUS_LABEL: Record<AppAccessRequestStatus, string> = {
 function RequestsPanel({ app }: { app: string }) {
   const [showAll, setShowAll] = useState(false)
   const { data, isLoading } = useAppAccessRequests(app, showAll ? {} : { status: 'pending' })
-  const decide = useDecideAppAccessRequest(app)
   const items = data?.items ?? []
 
   return (
@@ -272,7 +264,7 @@ function RequestsPanel({ app }: { app: string }) {
                 <th>Asked</th>
                 <th>Status</th>
                 <th className="w-40">
-                  <span className="sr-only">Decide</span>
+                  <span className="sr-only">Open</span>
                 </th>
               </tr>
             </thead>
@@ -300,27 +292,15 @@ function RequestsPanel({ app }: { app: string }) {
                       {STATUS_LABEL[request.status]}
                     </span>
                   </td>
-                  <td>
-                    {request.status === 'pending' && (
-                      <div className="flex gap-1 justify-end">
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-xs"
-                          disabled={decide.isPending}
-                          onClick={() => decide.mutate({ id: request.id, decision: 'approve' })}
-                        >
-                          <CheckIcon className="w-4 h-4" /> Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-xs"
-                          disabled={decide.isPending}
-                          onClick={() => decide.mutate({ id: request.id, decision: 'reject' })}
-                        >
-                          <XMarkIcon className="w-4 h-4" /> Reject
-                        </button>
-                      </div>
-                    )}
+                  <td className="text-right">
+                    {/* P4: a request is an `app.access` approval (same id) — decided on its page,
+                        where the policy, the progress and who else may decide are. */}
+                    <Link
+                      to={approvalPath(request.id)}
+                      className={`btn btn-xs ${request.status === 'pending' ? 'btn-primary' : 'btn-ghost'}`}
+                    >
+                      {request.status === 'pending' ? 'Review' : 'View'}
+                    </Link>
                   </td>
                 </tr>
               ))}

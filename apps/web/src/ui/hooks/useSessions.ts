@@ -22,6 +22,7 @@ import {
   adminSessionListResponseSchema,
   type CreateSessionRequest,
   drainResponseSchema,
+  type ExtendBudgetRequest,
   isActiveSessionStatus,
   previewGrantResponseSchema,
   type Session,
@@ -34,8 +35,10 @@ import {
   sessionPrResponseSchema,
 } from '@launch/shared/launch-sessions'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { z } from 'zod'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
+import { useApprovals } from './useApprovals'
 
 export const SESSION_POLL_MS = 3000
 /** CI moves in minutes, and the server refreshes `pr_checks` at most every 30 s anyway. */
@@ -186,10 +189,49 @@ export function useResumeSession(id: string) {
   return useSessionAction(id, 'resume')
 }
 
+/**
+ * `POST /:id/budget` (P4: `session.budget` through the approvals engine). The route opens — or
+ * joins — a request whose requester is the session's creator; an eligible approver other than the
+ * creator records their approval in the same call (P3's one click). So the answer is the row as it
+ * is now, plus the request's id when one is open (`approvalId`, additive and optional: an answer
+ * without it is P3's), and the CALLER says which happened — the cap moved, or it is waiting.
+ */
+export const budgetResponseSchema = sessionDetailResponseSchema.extend({
+  approvalId: z.string().uuid().nullable().optional(),
+})
+
 export function useExtendBudget(id: string) {
-  return useSessionAction<{ extraUsd: number }>(id, 'budget', {
-    successMessage: 'Budget extended',
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ExtendBudgetRequest) =>
+      api.post(`${sessionPath(id)}/budget`, body, { schema: budgetResponseSchema }),
+    onSuccess: ({ session }) => {
+      queryClient.setQueryData(queryKeys.sessions.detail(id), session)
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessions.all,
+        predicate: q => q.queryKey[1] !== 'detail',
+      })
+      // A request may have opened, or been approved: the inbox, the badge and this page's link.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
+    },
   })
+}
+
+/**
+ * The creator's open `session.budget` request for this session, if any — so the page can say
+ * "waiting for approval" and link to it after a reload. Read from the requester's own box; the
+ * approval nudge keeps it fresh.
+ */
+export function usePendingBudgetApproval(sessionId: string, enabled: boolean) {
+  const { data } = useApprovals(
+    { box: 'requested', kind: 'session.budget', status: 'pending' },
+    enabled
+  )
+  return (
+    data?.items.find(
+      item => item.context.kind === 'session.budget' && item.context.sessionId === sessionId
+    ) ?? null
+  )
 }
 
 /** `POST /:id/cancel` — the turn polls `cancel_requested_at` and stops within a couple of seconds. */

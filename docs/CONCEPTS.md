@@ -453,7 +453,8 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
 case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
-drives Launch P3 coding sessions (§18.14). Exit codes: 0 ok · 1 error · 2 not logged in ·
+drives Launch P3 coding sessions (§18.14); `approvals ls|show|approve|reject` and `releases
+ls|create|promote [--wait]` are the P4 inbox and shipping (§18.15). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
 Detail: `.claude/rules/cli.md`.
@@ -1070,3 +1071,29 @@ cost against the cap and Ship / End / Resume / Extend budget, boot checklist, sh
 **Known gaps:** a drain wakes live sessions in EVERY organisation (it is about the deployment's
 image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
 drain → deploy → resume rehearsal has not been run.
+
+### 18.15 Approvals and releases: the UI and the CLI (P4f)
+
+**Inbox** `/approvals` (every member; nav badge = `GET /api/approvals/count`, refreshed by the
+`approval` nudge, never polled): `?box=mine|requested|all` tabs (All for admins), `?kind=` /
+`?status=` filters, each row a link saying in words what is being approved. **A request's page**
+`/approvals/:id` (where every approval notification links): the decision panel pinned above the
+context — focus on its heading, one sentence instead of buttons for someone who may not decide
+(`whyNot`), a 409 shown as information, N-of-M progress, an expiry that ticks at the rate
+`expiryState` chooses, an optional comment, Withdraw for the requester — then the requester's
+reason, the per-kind context (a production deploy: version, commit, staging health, the PRs with
+their CI) and, for a release, its chain (`GET …/releases/:rid/chain`), beside the policy snapshot
+and the decisions. It polls only while an approval is being carried out (`appliedAt` pending).
+**Settings → Approvals** (`manage ApprovalPolicy`): per kind, the organisation's policy or the
+server-reported default, plus team/app overrides. **The app page** gains a Releases card (New
+release with a version preview, Promote → the approval it opened, each release's chain on demand);
+a pending production ticket links to its approval; "Deploy to production" opens a
+`deploy.production` request; the access page's requests link to their approvals. **The session
+page**: an owner/admin's "Extend" still approves in one click; the creator gets "Ask for more
+budget" (amount + reason → a `session.budget` request) and then a link to it. **The audit page**:
+Verify (on demand) and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject`
+and `launch releases ls|create|promote [--wait]` (§11).
+
+**Known gaps:** the request detail carries the policy, not a resolved list of eligible people, so
+"who decides" is a sentence (teams a member cannot list are counted, not named); a budget request
+is found again after a reload through the creator's own `requested` box only.
