@@ -27,16 +27,17 @@ import {
 import { useApproval } from '@/ui/hooks/useApprovals'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { releaseOfApproval } from '@/ui/hooks/useReleases'
+import { useSharedResource } from '@/ui/hooks/useSharedResources'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
 import { ReleaseChain } from '@/ui/pages/apps/components/ReleaseChain'
 import {
   approvalSummary,
-  approversSentence,
   autoApproveLabel,
   KIND_LABELS,
   policyExpiryLabel,
   progressLabel,
+  requestApproversSentence,
   requesterName,
   STATUS_BADGE,
   waitingOn,
@@ -62,6 +63,11 @@ export default function ApprovalPage() {
   const { data: detail, isLoading, error } = useApproval(id)
   const { user } = useAuth()
   const groupNames = useGroupNames()
+  // P5: a grant request is decided by the resource's owner team, named from the resource (every
+  // member may read it) — the policy snapshot lists nobody.
+  const grantResourceId =
+    detail?.context.kind === 'grant.request' ? detail.context.resourceId : null
+  const ownerTeam = useSharedResource(grantResourceId).data?.ownerGroup.name ?? null
 
   if (isLoading) {
     return (
@@ -164,7 +170,9 @@ export default function ApprovalPage() {
         <div className="space-y-4">
           <SectionPanel title="Who decides">
             <dl>
-              <Fact label="Approvers">{approversSentence(policy.approvers, groupNames)}</Fact>
+              <Fact label="Approvers">
+                {requestApproversSentence(detail, groupNames, ownerTeam)}
+              </Fact>
               {detail.status === 'pending' && detail.eligible && (
                 <Fact label="Waiting on">
                   {detail.eligible.length > 0 ? (

@@ -25,6 +25,7 @@ import { useGroups } from '@/ui/hooks/useGroups'
 import { useMembers } from '@/ui/hooks/useMembers'
 import {
   autoApproveLabel,
+  extraApprovers,
   KIND_DESCRIPTIONS,
   KIND_LABELS,
   policyExpiryLabel,
@@ -68,15 +69,17 @@ interface Editing {
 }
 
 function PolicyFacts({
+  kind,
   policy,
   groupNames,
 }: {
+  kind: ApprovalKind
   policy: ApprovalPolicy
   groupNames: ReadonlyMap<string, string>
 }) {
   return (
     <div className="text-sm">
-      <p>{policySentence(policy, groupNames)}</p>
+      <p>{policySentence(policy, groupNames, extraApprovers(kind))}</p>
       <p className="text-xs text-muted mt-0.5">
         Expires {policyExpiryLabel(policy.expiresAfterMinutes)} ·{' '}
         {policy.allowSelfApproval ? 'self-approval allowed' : 'not self-approved'} · auto-approve:{' '}
@@ -170,7 +173,7 @@ export default function ApprovalPoliciesSettings() {
                       </span>
                     )}
                   </p>
-                  <PolicyFacts policy={current} groupNames={groupNames} />
+                  <PolicyFacts kind={kind} policy={current} groupNames={groupNames} />
                 </div>
                 <div className="flex items-center gap-1">
                   <button
@@ -201,7 +204,7 @@ export default function ApprovalPoliciesSettings() {
                 <div key={row.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-muted mb-1">{scopeName(row)}</p>
-                    <PolicyFacts policy={row} groupNames={groupNames} />
+                    <PolicyFacts kind={kind} policy={row} groupNames={groupNames} />
                   </div>
                   <div className="flex items-center gap-1">
                     <button

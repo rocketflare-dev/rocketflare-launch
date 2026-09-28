@@ -14,6 +14,9 @@
  * staging, promote it to production through an approval — and a pending production deploy links
  * to its approval instead of being decided in place.
  *
+ * P5: an app with a repository carries its shared config (`ConfigCard`) — what it declares, the
+ * shared resources that match, and per environment whether it holds each one, with Request.
+ *
  * P3: an app with a repository also carries its coding sessions (`SessionsCard`) — "Start session"
  * and the sessions running on it. While the launch is under way the
  * parts that only make sense for a running app — health history, "Check now", the sign-in card the
@@ -51,6 +54,7 @@ import {
 } from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDate, formatDateTime } from '@/ui/lib/format'
+import { ConfigCard } from './components/ConfigCard'
 import { DeploysCard } from './components/DeploysCard'
 import { EditAppModal } from './components/EditAppModal'
 import { EnvironmentCard } from './components/EnvironmentCard'
@@ -391,6 +395,12 @@ export default function AppDetailPage() {
           a repository Launch can tag; cutting and promoting is for its owners and admins. */}
       {hasRepo && !holding && app.status !== 'requested' && app.status !== 'archived' && (
         <ReleasesCard appId={app.id} canRelease={app.viewerCanDeploy} />
+      )}
+
+      {/* Launch P5: the shared config the app declares, and whether it holds it — read from the
+          repository, so for an app with one. */}
+      {hasRepo && !holding && app.status !== 'archived' && (
+        <ConfigCard appId={app.id} appSlug={app.slug} appName={app.displayName} />
       )}
 
       {/* Launch P3: the way into a coding session — for an app with a repository to work on. */}

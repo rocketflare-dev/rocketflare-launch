@@ -9,15 +9,23 @@
  *   the pull requests in it with their CI, and — for a job-originated ticket — the GitHub run that
  *   is waiting. The release's whole audit chain sits below it on the page (`ReleaseChain`).
  * - `session.budget`: the session, what it has spent against its cap, and the extra asked for.
+ * - `grant.request` (P5): which shared config, for which app and environment, the item NAMES and
+ *   kinds the app would receive (never a value), which of its plugins declared the need, when the
+ *   grant would lapse, and the owner team that decides (read from the resource, which every member
+ *   may; while it loads, or if it cannot be read, the sentence describes the team instead).
  *
  * User-written text (the access message, the reason) renders verbatim with `whitespace-pre-wrap`.
  */
 import { ArrowTopRightOnSquareIcon, CodeBracketIcon } from '@heroicons/react/24/outline'
 import type { ApprovalContextOf, ApprovalDetail } from '@launch/shared/launch-approvals'
+import { KIT_CONFIG_PLUGIN_ID, sharedResourcePath } from '@launch/shared/launch-grants'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { SectionPanel } from '@/ui/components/shared'
+import { useSharedResource } from '@/ui/hooks/useSharedResources'
+import { formatDateTime } from '@/ui/lib/format'
 import { HEALTH_LABEL, HealthDot } from '@/ui/pages/apps/components/HealthDot'
+import { extraApprovers } from '../approvalModel'
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -183,6 +191,68 @@ function DeployContext({
   )
 }
 
+function GrantRequestContext({
+  detail,
+  context,
+}: {
+  detail: ApprovalDetail
+  context: ApprovalContextOf<'grant.request'>
+}) {
+  const resource = useSharedResource(context.resourceId)
+  const team = extraApprovers('grant.request', resource.data?.ownerGroup.name)
+  const appName = detail.app?.displayName ?? context.appSlug
+  const plugins = context.declaredBy.map(id =>
+    id === KIT_CONFIG_PLUGIN_ID ? 'the kit’s optional config' : id
+  )
+  return (
+    <SectionPanel title="What the app would hold">
+      <dl>
+        <Row label="Shared config">
+          <Link to={sharedResourcePath(context.resourceId)} className="link link-hover">
+            {context.resourceName}
+          </Link>
+        </Row>
+        <Row label="App">
+          <AppLink detail={detail} />
+        </Row>
+        <Row label="Environment">
+          <span className="capitalize font-medium">{context.environment}</span>
+        </Row>
+        <Row label="It would receive">
+          <ul className="space-y-1" aria-label="Items">
+            {context.items.map(item => (
+              <li key={item.key} className="flex items-center gap-2">
+                <Mono>{item.key}</Mono>
+                <span className="status-badge no-dot" data-status="draft">
+                  {item.kind}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Row>
+        <Row label="Declared by">
+          {plugins.length > 0 ? (
+            plugins.join(', ')
+          ) : (
+            <span className="text-muted">
+              None of the app’s plugins — it was asked for by hand.
+            </span>
+          )}
+        </Row>
+        <Row label="Lapses">
+          {context.expiresAt ? formatDateTime(new Date(context.expiresAt)) : 'Never'}
+        </Row>
+        <Row label="Decided by">{team}</Row>
+      </dl>
+      <p className="text-xs text-muted mt-3">
+        Approving writes these values into {appName}’s {context.environment} Worker as secrets.
+        Nobody sees them — not you, not the app’s owners. The owner team can revoke the grant later
+        from the shared config’s page.
+      </p>
+    </SectionPanel>
+  )
+}
+
 function usd(value: number): string {
   return `$${value.toFixed(2)}`
 }
@@ -285,16 +355,8 @@ export function ApprovalContext({
           </p>
         </SectionPanel>
       )
-    // P5: the keys the app would receive, never a value (slice 5f owns the full renderer).
     case 'grant.request':
-      return (
-        <SectionPanel title="The request">
-          <p className="text-sm">
-            {context.resourceName} in {context.environment}:{' '}
-            {context.items.map(item => item.key).join(', ')}
-          </p>
-        </SectionPanel>
-      )
+      return <GrantRequestContext detail={detail} context={context} />
     case 'config.change':
     case 'app.teardown':
       return (

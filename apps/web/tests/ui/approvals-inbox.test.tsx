@@ -28,6 +28,7 @@ import {
   decision,
   RELEASE_ID,
 } from './helpers/approvals'
+import { grantRequestContext, memberDetail, RESOURCE_ID } from './helpers/grants'
 import {
   errorResponse,
   IDS,
@@ -386,5 +387,50 @@ describe('ApprovalPage', () => {
     expect(screen.getByText('I run payroll <b>now</b>')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Grant access' })).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Release chain' })).not.toBeInTheDocument()
+  })
+
+  it('renders a grant request: what the app would hold, never a value, decided by the owner team', async () => {
+    renderRequest(
+      {
+        [BASE]: approvalDetail({
+          kind: 'grant.request',
+          subjectType: 'grant',
+          subjectId: '9b000000-0000-4000-8000-000000000002',
+          reason: 'The M365 connector reads the shared mailbox',
+          context: grantRequestContext(),
+          policy: {
+            approvers: { appOwners: false, admins: false, groupIds: [], userIds: [] },
+            minApprovals: 1,
+            allowSelfApproval: false,
+            expiresAfterMinutes: 7 * 24 * 60,
+            autoApproveRole: null,
+          },
+          canDecide: false,
+          whyNot: 'not_an_approver',
+          eligible: [
+            { id: crypto.randomUUID(), name: 'Carol Checker', email: 'carol@example.test' },
+          ],
+        }),
+        [`/api/shared-resources/${RESOURCE_ID}`]: memberDetail(),
+      },
+      member()
+    )
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Let Expenses hold Microsoft 365 in production',
+      })
+    ).toBeInTheDocument()
+    const items = screen.getByRole('list', { name: 'Items' })
+    expect(within(items).getByText('M365_CLIENT_SECRET')).toBeInTheDocument()
+    expect(within(items).getByText('secret')).toBeInTheDocument()
+    expect(screen.getByText('m365-connector')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Microsoft 365' })).toHaveAttribute(
+      'href',
+      `/shared-config/${RESOURCE_ID}`
+    )
+    // Who decides comes from the resource's owner group, not the (empty) policy lists.
+    expect(await screen.findAllByText('the IT Identity team')).toHaveLength(2)
+    expect(screen.queryByText(/nobody \(the policy names no approvers\)/)).not.toBeInTheDocument()
+    expect(screen.getByText('Waiting for Carol Checker to decide.')).toBeInTheDocument()
   })
 })

@@ -7,6 +7,11 @@
  * Every fact here is a selector over rows the page already holds (`shipGates`) or the one PR read;
  * nothing is inferred. A gate's output tail sits behind a disclosure: it is the evidence, not the
  * headline.
+ *
+ * P5 (plan §1.14–§1.15): ship scans the PR head for declared config and reports the shared config
+ * the app does not hold as a `ship.config_needs` row (`shipConfigNeeds`, the latest one). The panel
+ * says so in one line, with a link to the app's Config page where it is requested — a session never
+ * receives a grant's values, so this is WHY the preview answers "not configured".
  */
 import {
   ArrowTopRightOnSquareIcon,
@@ -15,9 +20,41 @@ import {
   ExclamationCircleIcon,
   MinusCircleIcon,
 } from '@heroicons/react/24/outline'
-import type { PrCheckState, Session } from '@launch/shared/launch-sessions'
+import { appConfigPath } from '@launch/shared/launch-grants'
+import {
+  type PrCheckState,
+  type Session,
+  type SessionEvent,
+  type SessionShipConfigNeedsData,
+  sessionShipConfigNeedsDataSchema,
+} from '@launch/shared/launch-sessions'
+import { Link } from 'react-router-dom'
 import { useSessionPr } from '@/ui/hooks/useSessions'
 import type { ShipGate } from '../sessionChatModel'
+
+/** The latest `ship.config_needs` row's data, or null (none, or nothing needed). Pure. */
+export function shipConfigNeeds(
+  events: readonly SessionEvent[]
+): SessionShipConfigNeedsData | null {
+  let latest: { seq: number; data: SessionShipConfigNeedsData } | null = null
+  for (const event of events) {
+    if (event.type !== 'ship.config_needs') continue
+    const parsed = sessionShipConfigNeedsDataSchema.safeParse(event.data)
+    if (parsed.success && (!latest || event.seq > latest.seq))
+      latest = { seq: event.seq, data: parsed.data }
+  }
+  if (!latest || latest.data.needs.length === 0) return null
+  return latest.data
+}
+
+/** "M365 (M365_TENANT_ID, M365_CLIENT_SECRET)" joined with "and". Pure. */
+export function configNeedsSentence(needs: SessionShipConfigNeedsData['needs']): string {
+  const parts = needs.map(need =>
+    need.keys.length ? `${need.displayName} (${need.keys.join(', ')})` : need.displayName
+  )
+  if (parts.length <= 1) return parts[0] ?? ''
+  return `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+}
 
 const CHECK_ICON: Record<
   PrCheckState,
@@ -43,7 +80,17 @@ export function checksSummary(checks: {
   return parts.join(' · ')
 }
 
-export function ShipPanel({ session, gates }: { session: Session; gates: readonly ShipGate[] }) {
+export function ShipPanel({
+  session,
+  gates,
+  configNeeds = null,
+  appSlug,
+}: {
+  session: Session
+  gates: readonly ShipGate[]
+  configNeeds?: SessionShipConfigNeedsData | null
+  appSlug?: string
+}) {
   const hasPr = session.prNumber !== null
   const pr = useSessionPr(session.id, hasPr)
   const checks = pr.data?.checks ?? session.prChecks
@@ -117,6 +164,28 @@ export function ShipPanel({ session, gates }: { session: Session; gates: readonl
             </li>
           )}
         </ol>
+      )}
+
+      {configNeeds && (
+        <div
+          className="alert alert-info alert-soft text-sm"
+          role="status"
+          data-testid="config-needs"
+        >
+          <span>
+            This pull request needs shared config the app doesn’t hold yet:{' '}
+            {configNeedsSentence(configNeeds.needs)}. The preview answers “not configured” for it
+            until it is granted.
+            {appSlug && (
+              <>
+                {' '}
+                <Link to={appConfigPath(appSlug)} className="link font-medium">
+                  Request it
+                </Link>
+              </>
+            )}
+          </span>
+        </div>
       )}
 
       {hasPr && (

@@ -83,6 +83,17 @@ It prints the offline check — `node scripts/verify-audit-export.mjs [--filtere
 `z.ZodType<T, z.ZodTypeDef, unknown>`, so `T` is the contract's OUTPUT (its `.default()`s and
 coercions applied) and no call site casts.
 
+Shared config (Launch P5): `shared ls`, `show <slug>` (var values and holders only when the server
+sends them — the owner team and admins), `set <slug> --env <env> [--wait]`, `rotate <slug> --env`
+(= `set --wait`) and `pushes <slug> [--env] [--wait]`. A VALUE never travels in argv: `set` reads a
+hidden TTY prompt (raw mode, one per item, Enter keeps a set key; tests inject `promptHidden`) or,
+when stdin is not a terminal, `KEY=value` lines / one JSON object (`readStdin` injectable), and no
+output, log line or error ever repeats one. `--wait` polls the push and exits 1 on `partial` /
+`failed`, naming the apps. `grants needs|ls <app>`, `request <app> <resource> --reason [--env
+staging,production] [--expires]` (both environments by default; prints each approval's page) and
+`revoke <app> <grant>` (id, 8-char prefix, or resource slug with `--env`). `api.ts` accepts `PUT`
+for the values write.
+
 ## Output
 
 - Human output goes to stdout via `chalk`; diagnostics and progress to stderr. `--json` on **every
