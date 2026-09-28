@@ -9,15 +9,15 @@
  * - it has a create run (`no_run` — an imported app never has) and that run is `failed`
  *   (`run_not_failed`; Stop makes a stuck one failed);
  * - it has NEVER deployed (`app_already_deployed`): no `deploy`-purpose ticket that went out — one
- *   `active`/`finished` WITH an uploaded version (a job that died at its gate still calls `finish`,
- *   which closes an `approved` ticket as `finished` with no version, and that one never ran), or
- *   one that was handed the migrator credential (its migrations may have run against the
- *   database, whatever became of the upload after).
+ *   ACTIVATED (`activated_at`, set only by `activate`: a version merely uploaded, then closed by
+ *   `finish` because the job died before `activate`, never served a request), or one that was
+ *   handed the migrator credential (its migrations may have run against the database, whatever
+ *   became of the upload after).
  *
  * The checks run cheapest first, so the ticket query is only made for a failed run.
  */
 import type { PipelineRunStatus, RescaffoldPipelineCode } from '@launch/shared/launch-pipeline'
-import { and, eq, inArray, isNotNull, or } from 'drizzle-orm'
+import { and, eq, isNotNull, or, sql } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { type AppRow, deployTickets } from '../../../../db/schema'
 
@@ -28,31 +28,31 @@ export interface RescaffoldBlock {
 
 const UPGRADE = 'a deployed app takes a kit upgrade instead'
 
-/** Whether any deploy of the app ever went out (see the header). */
-export async function hasEverDeployed(
+/**
+ * Whether any deploy of the app ever went out (see the header): `activated` when a version went
+ * live, `migrated` when none did but a job was handed the migrator credential, else null.
+ */
+export async function deployEvidence(
   db: Database,
   tenantId: string,
   appId: string
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: deployTickets.id })
+): Promise<'activated' | 'migrated' | null> {
+  const rows = await db
+    .select({ activatedAt: deployTickets.activatedAt })
     .from(deployTickets)
     .where(
       and(
         eq(deployTickets.tenantId, tenantId),
         eq(deployTickets.appId, appId),
         eq(deployTickets.purpose, 'deploy'),
-        or(
-          and(
-            inArray(deployTickets.status, ['active', 'finished']),
-            isNotNull(deployTickets.cfVersionId)
-          ),
-          isNotNull(deployTickets.credentialsIssuedAt)
-        )
+        or(isNotNull(deployTickets.activatedAt), isNotNull(deployTickets.credentialsIssuedAt))
       )
     )
+    .orderBy(sql`${deployTickets.activatedAt} IS NULL`)
     .limit(1)
-  return Boolean(row)
+  const [row] = rows
+  if (!row) return null
+  return row.activatedAt ? 'activated' : 'migrated'
 }
 
 /** Why the app may not be re-scaffolded now, or null when it may. */
@@ -80,10 +80,17 @@ export async function rescaffoldBlock(
       message: `Only a failed launch can be re-scaffolded (this one is ${run.status})`,
     }
   }
-  if (await hasEverDeployed(db, tenantId, app.id)) {
+  const evidence = await deployEvidence(db, tenantId, app.id)
+  if (evidence === 'activated') {
     return {
       code: 'app_already_deployed',
       message: `This app has already deployed, so a new scaffold would replace code that ran: ${UPGRADE}`,
+    }
+  }
+  if (evidence === 'migrated') {
+    return {
+      code: 'app_already_deployed',
+      message: `A deploy of this app was given its database migration credentials, so its migrations may have run: ${UPGRADE}`,
     }
   }
   return null

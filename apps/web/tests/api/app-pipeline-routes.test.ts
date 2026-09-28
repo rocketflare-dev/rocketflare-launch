@@ -536,7 +536,7 @@ describe('POST /api/apps/:id/pipeline/rescaffold', () => {
     expect(await busy.json()).toMatchObject({ code: 'run_not_failed' })
   })
 
-  it('is 409 app_already_deployed once a deploy went out — not for a job that died at its gate', async () => {
+  it('is 409 app_already_deployed once a deploy went out — not for a job that died at its gate or before activate', async () => {
     const { headers, tenant, env, app } = await failedAfterScaffold()
     const environmentId = await stagingId(app.id)
     // The deploy job's gate went red: `finish` closed its approved ticket with no version.
@@ -552,21 +552,57 @@ describe('POST /api/apps/:id/pipeline/rescaffold', () => {
     const view = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
     expect(pipelineViewSchema.parse(await view.json()).canRescaffold).toBe(true)
 
+    // A version uploaded, then `finish` closed the ticket without `activate`: it never ran.
+    // (Status + version is not a deploy — only `activated_at` is.)
+    await db.insert(deployTickets).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      environmentId,
+      purpose: 'deploy',
+      status: 'finished',
+      runId: '901',
+      runAttempt: 1,
+      cfVersionId: 'ver-0',
+      error: 'finished before activate',
+    })
+    const unactivated = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await unactivated.json()).canRescaffold).toBe(true)
+
+    // A job handed the migrator credential blocks it, activated or not: its migrations may have run.
+    await db.insert(deployTickets).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      environmentId,
+      purpose: 'deploy',
+      status: 'finished',
+      runId: '902',
+      runAttempt: 1,
+      cfVersionId: 'ver-1',
+      credentialsIssuedAt: new Date(),
+      credentialsRevokedAt: new Date(),
+    })
+    const migrated = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+    expect(migrated.status).toBe(409)
+    const migratedBody = (await migrated.json()) as { code?: string; error?: string }
+    expect(migratedBody).toMatchObject({ code: 'app_already_deployed' })
+    expect(migratedBody.error).toMatch(/migrations may have run/)
+
     await db.insert(deployTickets).values({
       tenantId: tenant.id,
       appId: app.id,
       environmentId,
       purpose: 'deploy',
       status: 'active',
-      runId: '901',
+      runId: '903',
       runAttempt: 1,
-      cfVersionId: 'ver-1',
+      cfVersionId: 'ver-2',
+      activatedAt: new Date(),
     })
     const res = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
     expect(res.status).toBe(409)
     const body = (await res.json()) as { code?: string; error?: string }
     expect(body).toMatchObject({ code: 'app_already_deployed' })
-    expect(body.error).toMatch(/kit upgrade/)
+    expect(body.error).toMatch(/already deployed.*kit upgrade/)
     const after = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
     expect(pipelineViewSchema.parse(await after.json())).toMatchObject({
       canRescaffold: false,

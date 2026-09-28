@@ -27,7 +27,9 @@
  *   a grant pushed after the upload began gets a `repair` push, because the version carries the
  *   secrets as of its upload.
  * - **finish** — idempotent: revokes the migrator if still live, closes the ticket once, and
- *   wakes the launch run waiting on it (`DEPLOY_FINISHED_EVENT`).
+ *   wakes the launch run waiting on it (`DEPLOY_FINISHED_EVENT`). A ticket it closes without an
+ *   activation (the job died after upload — at its migration, say) records
+ *   `FINISHED_BEFORE_ACTIVATE` as its `error`: it is closed, not deployed (`isDeployed`).
  *
  * Every call that names a ticket must come from the run attempt and environment that opened it
  * (`assertRunOwnsTicket`), so one run cannot spend another's approval. Every transition is a
@@ -80,6 +82,7 @@ import {
   closeTicket,
   expirePending,
   getTenantTicket,
+  isDeployed,
   linkTicket,
   markCredentialsIssued,
   markCredentialsRevoked,
@@ -740,9 +743,12 @@ export async function activateDeploy(
     )
   }
 
-  const active = await transitionTicket(ctx.db, ticket, ['uploaded'], 'active')
-  if (!active) wrongState(ticket, 'uploaded')
+  // `activated_at` is set HERE and nowhere else: it is what "deployed" means (`isDeployed`).
   const now = ctx.now?.() ?? new Date()
+  const active = await transitionTicket(ctx.db, ticket, ['uploaded'], 'active', {
+    activatedAt: now,
+  })
+  if (!active) wrongState(ticket, 'uploaded')
   await ctx.db
     .update(appEnvironments)
     .set({
@@ -804,6 +810,8 @@ export async function finishDeploy(
     status: closed.status,
     version: closed.version,
     versionId: closed.cfVersionId,
+    activated: isDeployed(closed),
+    ...(closed.error ? { error: closed.error } : {}),
   })
   if (closed.launchRunId && ctx.launchWorkflow) {
     try {

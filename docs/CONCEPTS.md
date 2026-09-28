@@ -939,6 +939,14 @@ step that mints one puts it on the Worker itself.
   `worker_secrets` → `email` (non-blocking; skipped with its reason while Setup has no Resend key or
   no verified notifications domain) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
+  The deploy wait and check succeed only on an ACTIVATED staging ticket (`activated_at`, §18.7) —
+  never on `finished` + a version: a job that died between upload and activate (its
+  `db:migrate:ci` failed) still calls `finish`, and that ticket fails the wait at once with "The
+  staging deploy job ended without activating the new version (it stopped after upload — see the
+  run)" (plus the ticket's own error), so the launch fails and offers Retry instead of probing
+  `health` against the placeholder. The wait reads the newest ticket opened since the dispatch
+  (less 30 s of skew) that was not already closed before it, so a Retry never re-reads the ticket
+  it is retrying.
 - **Why SQL roles** (verified on a real Neon project, Postgres 17.11): a role Neon's API creates
   is `cloud_admin`'s and a `neon_superuser` member (CREATEROLE, BYPASSRLS) — far too much for the
   Worker's `app` — and `neondb_owner`, a member without ADMIN OPTION, cannot grant it on PG16+
@@ -998,9 +1006,10 @@ step that mints one puts it on the Worker itself.
   kit bug a newer release fixes) cannot pick a newer kit up by Retry. Before the first deploy the
   repo holds only the scaffold and Launch's config commit, so it may be scaffolded again from the
   CURRENT pin — only while the create run is `failed`, the app is neither `live` nor `archived`,
-  and it has never deployed (`rescaffold-check.ts`: no `deploy` ticket `active`/`finished` with an
-  uploaded version — a job that died at its gate still `finish`es its ticket, versionless — nor one
-  handed the migrator credential); otherwise 409 `run_not_failed` / `app_live` / `app_archived` /
+  and it has never deployed (`rescaffold-check.ts`: no `deploy` ticket with `activated_at` — an
+  upload `finish` closed before activation never ran, and neither did a job that died at its gate
+  — nor one handed the migrator credential, whose migrations may have run; the 409 says which);
+  otherwise 409 `run_not_failed` / `app_live` / `app_archived` /
   `app_already_deployed` / `no_run`, saying a deployed app takes a kit upgrade. It is a retry with
   the repository's steps re-opened, their ids kept for `ctx.prior`: `scaffold.start` is failed
   "Reset by re-scaffold" (so the run stays retryable), `scaffold.wait|verify`, `write_config`,
@@ -1108,14 +1117,16 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.4**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.5**: 0.15.0 plus the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
 `docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
 copy can pass (0.15.3: the default-plugins gate — which failed every Launch-made app with "already
 installed" — runs only in the kit, a commit already green in CI skips the deploy's gate, and the
 neon run's cron tests no longer time out), then a deploy job that runs only the parity test (0.15.4:
-the whole config project needed git history its depth-1 checkout lacks). A
+the whole config project needed git history its depth-1 checkout lacks), then a role setup that
+works as `migrator` (0.15.5: the kit's db-roles no longer alters CREATEDB/CREATEROLE when they are
+already off, which Postgres 16+ refuses to a role without CREATEDB). A
 `launch_settings.template_pin` row overrides it.
 
 **Known gaps:** a real scaffold on a GitHub runner has run green (kit 0.15.1: token trade, clone,
@@ -1123,13 +1134,24 @@ rename, install, plugins, gate, push), but that app's own CI then failed on the 
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image still carries kit 0.15.0's pnpm store
-(`SESSION_KIT_TAG`); 0.15.1–0.15.4 change no dependency.
+(`SESSION_KIT_TAG`); 0.15.1–0.15.5 change no dependency.
 
 ### 18.7 The deploy gateway
 
 An app's `deploy.yml` runs the kit's `scripts/deployer.mjs` against `/ci/deploy` (routes/CLAUDE.md)
 holding no credential. Tickets live in `deploy_tickets`, every transition a compare-and-set
 (`deploy/tickets.ts`, `pending → approved|rejected → uploaded → active → finished`, or `failed`).
+**Deployed means `activated_at`**, set by the `uploaded → active` compare-and-set in `activate`
+and nothing else (`isDeployed`): an uploaded version is not a deploy, and `finish` — which the job
+runs `if: always()` — closes a ticket `finished` from any open status, so `finished` + `cf_version_id`
+may be an upload that never went live. A deploy ticket `finish` closes without an activation gets
+`error = 'finished before activate'` (kept if it already had one; audited on `deploy.finished` with
+`activated: false`), and the app page badges it "not activated". Every "has it deployed" reader —
+the launch's deploy wait/check, re-scaffold, the deploys card — uses `activated_at`; the
+environment's `last_deploy_*` (Promote's "staging runs this release"), a release's
+`staging_active`/`production_active` and P5's grant repair pushes are all written by `activate`
+itself. Migration 0027 backfilled it from each ticket's `deploy.activated` audit event (then
+`updated_at` for a still-`active` ticket with none); a `finished` ticket with neither stays NULL.
 Staging is auto-approved; production claims a live pre-approval bound to the run's ref (a granted
 Promote, or "Deploy to production" — §18.17), or opens `pending` plus a `deploy.production`
 approval that an owner or admin decides (inbox or app page) within the job's `WAIT_SECONDS`. Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
@@ -1138,7 +1160,8 @@ refusing every other binding kind, any route and a newer DO migration tag, each 
 <binding>=<value>"` — a refusal is 403, the ticket `failed`, and no Neon call. Otherwise the assets
 and version go up (`keep_bindings: ['secret_text']`, `RELEASE_VERSION`), the `migrator` password is
 reset and returned once as `migratorUrl`, and `activate` deploys it at 100%, applies the crons and
-workflows and resets the password again; `finish` revokes if still live.
+workflows and resets the password again; `finish` revokes if still live — including after an
+upload that was never activated.
 
 **Known gaps:** a GitHub-only author (a person who dispatched or published by hand) is not a
 Launch user, so the approver ≠ author rule cannot exclude them; the Versions API does
@@ -1401,7 +1424,8 @@ A run published or dispatched by hand in GitHub opens its own approval (subject 
 requested by `github:<actor>`, expiring with the ticket); approving after its window is 409
 `deploy_run_gone`. "Deploy to production" with no release opens one with subject `app` (the
 default branch; approve → pre-approval + `workflow_dispatch`). A tag run links its ticket to the
-release (`release_id`); activation moves it `staging_active` / `production_active`. The
+release (`release_id`); activation (never a mere `finish` — §18.7) moves it `staging_active` /
+`production_active`. The
 `sessions.checks` cron follows shipped session PRs to their merge (`pr.merged` with the merge
 SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to production, linked by ids.
 

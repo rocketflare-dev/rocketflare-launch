@@ -368,6 +368,46 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect(cloud.github.repos.size).toBe(1)
   })
 
+  it('a deploy job that stops after upload fails the deploy — never deployed, never health-checked', async () => {
+    // guidemode/hola-world run 36408593621: `db:migrate:ci` failed between upload and activate,
+    // `finish` (always) closed the ticket `finished` with a version that never went live.
+    const launch = await h.request()
+    const { outcome, fake } = await h.run(launch, {
+      onWait: async wait => {
+        if (wait.type === SCAFFOLD_FINISHED_EVENT) return h.scaffoldJob(launch)
+        return h.deployJob(launch, { activate: false })
+      },
+    })
+    expect(outcome.status).toBe('failed')
+    const byStep = await rows(launch)
+    expect(byStep['deploy_staging.wait']?.status).toBe('failed')
+    expect(byStep['deploy_staging.wait']?.error).toBe(
+      'The staging deploy job ended without activating the new version (it stopped after upload — see the run)'
+    )
+    expect(byStep['deploy_staging.check']?.status).not.toBe('succeeded')
+    expect(fake.names.some(n => n.startsWith('health'))).toBe(false)
+    expect((await appRow(launch))?.status).toBe('failed')
+    const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
+    expect(view.status).toBe('failed')
+    // The job was handed the migrator credential, so re-scaffold stays refused (its migrations
+    // may have run) even though nothing was activated.
+    expect(view.canRescaffold).toBe(false)
+
+    // Retry is offered: it re-dispatches the deploy, and one that activates goes live.
+    const env = createTestEnv()
+    const retried = await retryPipeline(
+      db,
+      { APP_LAUNCH_WORKFLOW: stubs(env).launchWorkflow },
+      launch.tenantId,
+      launch.params.appId,
+      'create',
+      SYSTEM_ACTOR
+    )
+    expect(retried.instanceId).toBe(`${launch.params.runId}-r1`)
+    const second = await h.run(launch)
+    expect(second.outcome.status).toBe('live')
+  })
+
   it('an email failure does not block the launch', async () => {
     const launch = await h.request()
     cloud.failNext('POST https://api.resend.com/api-keys', 500)

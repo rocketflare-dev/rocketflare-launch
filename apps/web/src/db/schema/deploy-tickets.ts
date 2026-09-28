@@ -4,7 +4,7 @@
  * job (`/ci/scaffold`). Postgres rather than a Durable Object, as with P1's `oidc_codes`: it needs
  * no binding and it keeps the history the app page shows.
  *
- * Three decisions worth stating (and, from P4, `release_id` / `approval_id` link a ticket into a
+ * Four decisions worth stating (and, from P4, `release_id` / `approval_id` link a ticket into a
  * release's audit chain — `app-releases.ts`):
  *
  * - **Every transition is a compare-and-set** (`UPDATE … WHERE status = $from RETURNING`), so two
@@ -13,6 +13,9 @@
  *   retried call from the same run attempt gets the same ticket back. `run_id` is NULL on a
  *   "Deploy to production" pre-approval until the run it dispatched claims it, and Postgres treats
  *   NULLs as distinct, so any number of unclaimed intents may exist; the partial index finds them.
+ * - **Deployed means `activated_at`.** Only `activate` sets it; `finished` + `cf_version_id` is
+ *   an upload that may never have gone live (a job that died at its migration still calls
+ *   `finish`), so no reader infers a deploy from status and version.
  * - **No credential is ever stored.** The migrator URL is minted on upload and revoked by
  *   `credentials_revoked_at`'s password reset; the columns record only WHEN.
  */
@@ -81,8 +84,15 @@ export const deployTickets = pgTable(
     // The deploy itself.
     /** The release version the job sent (`RELEASE_VERSION`). */
     version: text('version'),
-    /** The Workers version id the upload created. */
+    /** The Workers version id the upload created. An uploaded version is NOT a deploy. */
     cfVersionId: text('cf_version_id'),
+    /**
+     * When `activate` put `cf_version_id` live at 100% — set by the `uploaded → active`
+     * compare-and-set and by nothing else. THE answer to "did this ticket deploy": a ticket
+     * `finish` closed without it (the job died between upload and activate) never served a request,
+     * whatever its status or version say.
+     */
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
     /** The bindings the build declared, as checked (`binding-check.ts`). Ids and names only. */
     bindings: jsonb('bindings').$type<Record<string, unknown>>(),
     /** `"<kind> <binding>=<value>"` per refused binding. */

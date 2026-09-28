@@ -48,6 +48,7 @@ export function toDeployTicket(
     actor: row.actor,
     version: row.version,
     cfVersionId: row.cfVersionId,
+    activatedAt: row.activatedAt,
     refused: row.refused ?? null,
     decisionSource: row.decisionSource,
     decidedByUserId: row.decidedByUserId,

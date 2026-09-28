@@ -692,6 +692,8 @@ describe('AppDetailPage — archive and deploys', () => {
             environmentId: STAGING_ID,
             status: 'finished',
             version: '1.1.0',
+            cfVersionId: 'ver-110',
+            activatedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
             decisionSource: 'auto',
           }),
         ],

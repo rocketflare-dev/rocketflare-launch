@@ -421,7 +421,13 @@ export const deployTicketSchema = z.object({
   ref: z.string().nullable(),
   actor: z.string().nullable(),
   version: z.string().nullable(),
+  /** The Workers version the upload created — uploaded, not necessarily ever live. */
   cfVersionId: z.string().nullable(),
+  /**
+   * When `activate` put that version live. THE answer to "did it deploy": a `finished` ticket
+   * without it closed before activation (the job died after upload) and never served a request.
+   */
+  activatedAt: z.coerce.date().nullable().default(null),
   /** `"<kind> <binding>=<value>"` per refused binding, when the build was refused. */
   refused: z.array(z.string()).nullable(),
   decisionSource: deployDecisionSourceSchema.nullable(),

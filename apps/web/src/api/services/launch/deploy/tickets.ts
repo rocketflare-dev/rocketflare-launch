@@ -10,8 +10,13 @@
  * | `pending`                         | `approved` / `rejected` | a `deploy.production` approval (P4), or expiry |
  * | `approved`                        | `uploaded` | a build that passed the check               |
  * | `approved` / `uploaded`           | `failed`   | a refused build, a failed upload/activation |
- * | `uploaded`                        | `active`   | `activate`                                  |
+ * | `uploaded`                        | `active`   | `activate` (sets `activated_at`)            |
  * | `pending`/`approved`/`uploaded`/`active` | `finished` | `finish`                            |
+ *
+ * **Deployed = `activated_at`** (`isDeployed`), never status + version: `finished` is where every
+ * ticket ends, and one `finish` closed straight from `uploaded` (the job's migration failed, so it
+ * never called `activate`) carries a version that never served a request. `closeTicket` records
+ * `FINISHED_BEFORE_ACTIVATE` as its `error` so that is visible on the row.
  *
  * **Every transition is `UPDATE … WHERE id = $id AND status IN ($from) RETURNING`**: a caller that
  * lost a race gets `null` and answers 409, never a lost write. A pre-approval is CLAIMED the same
@@ -33,6 +38,16 @@ import {
   deployTickets,
   type NewDeployTicketRow,
 } from '../../../../db/schema'
+
+/** The `error` `finish` records on a deploy ticket it closes without an activation. */
+export const FINISHED_BEFORE_ACTIVATE = 'finished before activate'
+
+/** Whether the ticket's version went live: `activate` ran (never inferred from status). */
+export function isDeployed(
+  ticket: Pick<DeployTicketRow, 'activatedAt' | 'cfVersionId'> | null | undefined
+): boolean {
+  return !!ticket?.activatedAt && !!ticket.cfVersionId
+}
 
 /** A ticket by id, whatever its tenant, or null. The caller checks app, environment and run. */
 export async function getTicketById(
@@ -283,6 +298,7 @@ export type TicketPatch = Partial<
     NewDeployTicketRow,
     | 'version'
     | 'cfVersionId'
+    | 'activatedAt'
     | 'bindings'
     | 'refused'
     | 'credentialsIssuedAt'
@@ -422,7 +438,9 @@ const OPEN_STATUSES = ['pending', 'approved', 'uploaded', 'active'] as const
 
 /**
  * Close a ticket, once: `finished_at` is set by exactly one call (the one that gets a row back),
- * and an open status becomes `finished`. A `rejected` or `failed` ticket keeps its status.
+ * and an open status becomes `finished`. A `rejected` or `failed` ticket keeps its status. A
+ * DEPLOY ticket closed without an activation keeps a reason: `error` becomes
+ * `FINISHED_BEFORE_ACTIVATE` unless it already has one.
  */
 export async function closeTicket(
   db: Database,
@@ -436,6 +454,8 @@ export async function closeTicket(
         OPEN_STATUSES.map(s => sql`${s}`),
         sql`, `
       )}) THEN 'finished'::deploy_ticket_status ELSE ${deployTickets.status} END`,
+      error: sql`CASE WHEN ${deployTickets.purpose} = 'deploy' AND ${deployTickets.activatedAt} IS NULL
+        AND ${deployTickets.error} IS NULL THEN ${FINISHED_BEFORE_ACTIVATE} ELSE ${deployTickets.error} END`,
       finishedAt: now,
       updatedAt: now,
     })

@@ -10,7 +10,8 @@
  *   (the credential store is global and the setup suite owns it).
  * - `pushScaffold` / `finishDeploy` — what the scaffold job and the staging deploy leave behind,
  *   for the `onWait` hook: the rename's files committed to FakeGitHub and the ticket finished;
- *   an `active` staging ticket and a deployed version the fake host serves health from.
+ *   an ACTIVATED staging ticket and a deployed version the fake host serves health from (or,
+ *   `activate: false`, one closed after upload without activating).
  */
 import { generateKeyPairSync } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -25,6 +26,7 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
+import { FINISHED_BEFORE_ACTIVATE } from '@/api/services/launch/deploy/tickets'
 import { dispatchWorkflow } from '@/api/services/launch/github-app'
 import type { PipelineVendors } from '@/api/services/launch/pipeline/context'
 import { createApp } from '@/api/services/launch/pipeline/create'
@@ -235,14 +237,18 @@ export async function finishScaffoldTicket(
 }
 
 /**
- * What a successful staging deploy leaves: an `active` ticket with a version, and the fake
- * script serving that version (so `/api/health` answers 200 with its `RELEASE_VERSION`).
+ * What a successful staging deploy leaves: an ACTIVATED ticket (`active`, `activated_at` — what
+ * `/ci/deploy/:id/activate` sets) with a version, and the fake script serving that version (so
+ * `/api/health` answers 200 with its `RELEASE_VERSION`). `activate: false` is a job that stopped
+ * after upload (its migration failed) and went to `finish`: the version uploaded but never live,
+ * the migrator credential issued and revoked, the ticket `finished` with `FINISHED_BEFORE_ACTIVATE`.
  */
 export async function finishDeploy(
   db: Database,
   cloud: FakeCloud,
-  input: { tenantId: string; appId: string; slug: string; version?: string }
+  input: { tenantId: string; appId: string; slug: string; version?: string; activate?: boolean }
 ): Promise<string> {
+  const activate = input.activate ?? true
   const [env] = await db
     .select()
     .from(appEnvironments)
@@ -265,7 +271,8 @@ export async function finishDeploy(
     bindings: [{ type: 'plain_text', name: 'RELEASE_VERSION', text: version }],
     createdAt: new Date(),
   })
-  script.activeVersionId = versionId
+  if (activate) script.activeVersionId = versionId
+  const now = new Date()
   const [ticket] = await db
     .insert(deployTickets)
     .values({
@@ -273,12 +280,16 @@ export async function finishDeploy(
       appId: input.appId,
       environmentId: env.id,
       purpose: 'deploy',
-      status: 'active',
       runId: String(Date.now()),
       runAttempt: 1,
       version,
       cfVersionId: versionId,
       decisionSource: 'auto',
+      credentialsIssuedAt: now,
+      credentialsRevokedAt: now,
+      ...(activate
+        ? { status: 'active' as const, activatedAt: now }
+        : { status: 'finished' as const, finishedAt: now, error: FINISHED_BEFORE_ACTIVATE }),
     })
     .returning({ id: deployTickets.id })
   if (!ticket) throw new Error('no ticket')
@@ -396,12 +407,13 @@ export class LaunchHarness {
     return { ticketId: ticket.id }
   }
 
-  /** The staging deploy, through `finish`. */
-  async deployJob(launch: Launch) {
+  /** The staging deploy, through `activate` (or, `activate: false`, stopping after upload). */
+  async deployJob(launch: Launch, opts: { activate?: boolean } = {}) {
     const ticketId = await finishDeploy(this.db, this.cloud, {
       tenantId: launch.tenantId,
       appId: launch.params.appId,
       slug: launch.slug,
+      ...opts,
     })
     return { ticketId }
   }

@@ -26,7 +26,7 @@ import type {
   AppOperationExternalIds,
 } from '@launch/shared/launch-apps'
 import type { AppLaunchParams, ScaffoldPlan } from '@launch/shared/launch-pipeline'
-import { and, desc, eq, gte } from 'drizzle-orm'
+import { and, desc, eq, gte, isNull, or } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import {
@@ -42,6 +42,7 @@ import {
 import { decryptToken, encryptToken } from '../../../auth/oauth-encryption'
 import { notify } from '../../notifications'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
+import { FINISHED_BEFORE_ACTIVATE, isDeployed } from '../deploy/tickets'
 import {
   commitFiles,
   commitFilesIfChanged,
@@ -898,15 +899,20 @@ export function deployStartStep(d: PipelineDeps, params: AppLaunchParams) {
   })
 }
 
-/** The newest staging deploy ticket opened since the dispatch (less a little clock skew). */
+/**
+ * The newest staging deploy ticket opened since the dispatch (less a little clock skew), leaving
+ * out one CLOSED before the dispatch: `finished_at` and `dispatchedAt` are both Launch's clock, so
+ * a ticket `finish` closed before this dispatch was made belongs to an earlier job — the one a
+ * Retry is retrying, which now fails its wait the moment it closes unactivated, well inside the
+ * skew window.
+ */
 async function latestStagingTicket(
   d: PipelineDeps,
   params: AppLaunchParams
 ): Promise<DeployTicketRow | null> {
   const started = await stepIds(d.db, launchKey(params, 'deploy_staging.start'))
-  const since = started.dispatchedAt
-    ? new Date(new Date(started.dispatchedAt).getTime() - DISPATCH_SKEW_MS)
-    : new Date(0)
+  const dispatchedAt = started.dispatchedAt ? new Date(started.dispatchedAt) : null
+  const since = dispatchedAt ? new Date(dispatchedAt.getTime() - DISPATCH_SKEW_MS) : new Date(0)
   const envs = await loadEnvironments(d.db, params)
   const [row] = await d.db
     .select()
@@ -917,7 +923,10 @@ async function latestStagingTicket(
         eq(deployTickets.appId, params.appId),
         eq(deployTickets.environmentId, envs.staging.id),
         eq(deployTickets.purpose, 'deploy'),
-        gte(deployTickets.createdAt, since)
+        gte(deployTickets.createdAt, since),
+        ...(dispatchedAt
+          ? [or(isNull(deployTickets.finishedAt), gte(deployTickets.finishedAt, dispatchedAt))]
+          : [])
       )
     )
     .orderBy(desc(deployTickets.createdAt))
@@ -925,11 +934,28 @@ async function latestStagingTicket(
   return row ?? null
 }
 
-/** Live: `active` or `finished`, with the version the upload created. */
+/**
+ * Live: `activate` ran (`activated_at`, with the version it put live). Never status + version — a
+ * job that died between upload and activate still calls `finish`, which closes the ticket
+ * `finished` with an uploaded version that never served a request (guidemode/hola-world run
+ * 36408593621: `db:migrate:ci` failed, and the launch went on to `health` against the placeholder).
+ */
 function deployed(ticket: DeployTicketRow | null): boolean {
-  return (
-    !!ticket && (ticket.status === 'active' || ticket.status === 'finished') && !!ticket.cfVersionId
-  )
+  return isDeployed(ticket)
+}
+
+/**
+ * A ticket `finish` closed without an activation: the job has ended (`finish` is its last call and
+ * nothing moves a closed ticket), so the deploy failed. The sentence for the wait row, or null.
+ */
+function unactivatedClose(ticket: DeployTicketRow | null): string | null {
+  if (!ticket || ticket.status !== 'finished' || isDeployed(ticket)) return null
+  const where = ticket.cfVersionId
+    ? 'it stopped after upload — see the run'
+    : 'it stopped before uploading — see the run'
+  const detail =
+    ticket.error && ticket.error !== FINISHED_BEFORE_ACTIVATE ? `: ${ticket.error}` : ''
+  return `The staging deploy job ended without activating the new version (${where})${detail}`
 }
 
 /** One round's look at the staging deploy: the ticket first, then the GitHub run behind it. */
@@ -939,6 +965,8 @@ export async function deployPoll(d: PipelineDeps, params: AppLaunchParams): Prom
   if (settled) return settled
   const ticket = await latestStagingTicket(d, params)
   if (deployed(ticket)) return { done: true }
+  const unactivated = unactivatedClose(ticket)
+  if (unactivated) return failWait(d.db, waitKey, unactivated)
   if (ticket && (ticket.status === 'failed' || ticket.status === 'rejected')) {
     const refused = ticket.refused?.length ? ` (refused: ${ticket.refused.join(', ')})` : ''
     return failWait(
@@ -989,7 +1017,9 @@ export function deployWaitStep(d: PipelineDeps, params: AppLaunchParams) {
     async () => {
       const ticket = await latestStagingTicket(d, params)
       if (!ticket || !deployed(ticket)) {
-        throw new Error('The staging deploy did not finish within 45 minutes')
+        throw new Error(
+          unactivatedClose(ticket) ?? 'The staging deploy did not finish within 45 minutes'
+        )
       }
       return { deployTicketId: ticket.id }
     },
@@ -997,13 +1027,14 @@ export function deployWaitStep(d: PipelineDeps, params: AppLaunchParams) {
   )
 }
 
-/** The staging ticket is `active`/`finished` with a version — safe even when the event was lost. */
+/** The staging ticket was ACTIVATED (`activated_at`) — safe even when the event was lost. */
 export function deployCheckStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'deploy_staging.check'), async () => {
     const ticket = await latestStagingTicket(d, params)
     if (!ticket || !deployed(ticket)) {
       throw new Error(
-        `The staging deploy is not live (ticket ${ticket ? ticket.status : 'missing'})`
+        unactivatedClose(ticket) ??
+          `The staging deploy is not live (ticket ${ticket ? ticket.status : 'missing'})`
       )
     }
     return {

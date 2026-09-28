@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- New apps are scaffolded from Rocketflare kit 0.15.5, whose `db:migrate:ci` works as the app's
+  `migrator` (no CREATEDB).
+- A staging deploy whose job stopped after upload (its `db:migrate:ci` failed, then `finish` ran)
+  is now a FAILED deploy: the launch's deploy wait fails with "The staging deploy job ended without
+  activating the new version (it stopped after upload — see the run)" and offers Retry, instead of
+  marking the deploy done and probing `health` against the placeholder. "Deployed" is the new
+  `deploy_tickets.activated_at`, set only by `activate` (migration 0027 backfills it from the
+  `deploy.activated` audit events); `finish` records `error: 'finished before activate'` on a
+  deploy ticket it closes unactivated, the app's deploys list badges it "not activated", and
+  re-scaffold no longer counts an unactivated upload as a deploy (a job handed the migrator
+  credential still blocks it, now with its own reason). A Retry's deploy wait no longer re-reads the
+  ticket it is retrying.
 - New apps are scaffolded from Rocketflare kit 0.15.4, whose deploy job checks wrangler parity with
   the parity test alone (the whole config project failed on the job's shallow checkout).
 - New apps are scaffolded from Rocketflare kit 0.15.3: an app's deploy no longer fails on the

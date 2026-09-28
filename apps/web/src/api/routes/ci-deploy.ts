@@ -9,7 +9,7 @@
  * | `GET /:id`               | 200 `{ id, status, … }` — the job polls it until `approved` / `rejected` |
  * | `POST /:id/upload`       | 200 `{ id, status: 'uploaded', versionId, migratorUrl }`; 409 unless `approved`; 403 `{ error, refused }` |
  * | `POST /:id/activate`     | 200 `{ id, status: 'active' }`; 409 unless `uploaded`             |
- * | `POST /:id/finish`       | 200 `{ id, status }`, idempotent, on any ticket this run owns     |
+ * | `POST /:id/finish`       | 200 `{ id, status, error? }`, idempotent, on any ticket this run owns; `error: 'finished before activate'` when it closed an unactivated deploy |
  *
  * Every call: `verifyGitHubOidc(bearer, { audience: APP_URL })` (401) → `resolveCaller(…, {
  * workflowFile: 'deploy.yml' })` (403) → for a ticket, the run attempt and environment that opened

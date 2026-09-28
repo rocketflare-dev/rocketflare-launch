@@ -409,12 +409,20 @@ function deployer(job: Job, command: string, version = '0.1.0') {
   })
 }
 
-/** The whole staging deploy job. Returns each command's result. */
-async function stagingDeploy(launched: Launched, tamper?: (committed: string) => string) {
+/**
+ * The whole staging deploy job. Returns each command's result. `migrationFails` plays a red
+ * `db:migrate:ci` between upload and activate: the job skips `activate` and goes to `finish`.
+ */
+async function stagingDeploy(
+  launched: Launched,
+  tamper?: (committed: string) => string,
+  migrationFails = false
+) {
   const job = await deployWorkspace(launched, 'staging', tamper)
   const results: Record<string, { code: number; stdout: string; stderr: string }> = {}
   try {
     for (const command of ['start', 'upload', 'activate']) {
+      if (command === 'activate' && migrationFails) break
       results[command] = await deployer(job, command)
       if (results[command].code !== 0) break
     }
@@ -438,7 +446,7 @@ interface Driven {
 async function drive(
   launched: Launched,
   instanceId: string,
-  opts: { tamper?: (committed: string) => string } = {}
+  opts: { tamper?: (committed: string) => string; migrationFails?: boolean } = {}
 ): Promise<Driven> {
   const wf = new AppLaunchWorkflow(createExecutionContext(), env)
   // Only the clock is faked: Neon's operation polls and the health probe's timeout.
@@ -451,7 +459,7 @@ async function drive(
         return { ticketId: 'from-the-event' }
       }
       if (wait.type === DEPLOY_FINISHED_EVENT) {
-        deploys.push(await stagingDeploy(launched, opts.tamper))
+        deploys.push(await stagingDeploy(launched, opts.tamper, opts.migrationFails))
         return { ticketId: 'from-the-event' }
       }
       return undefined
@@ -685,6 +693,75 @@ describe('create an app, end to end against the FakeCloud', () => {
     const deployRow = (await pipeline(launched.appId)).steps.find(s => s.step === 'deploy_staging')
     expect(deployRow).toMatchObject({ status: 'failed' })
     expect(deployRow?.error).toContain('VICTIM')
+  })
+
+  it('a job that stops after upload (its migration failed) is a failed deploy, not a live one', async () => {
+    // guidemode/hola-world run 36408593621: start → upload → `db:migrate:ci` failed → `finish`
+    // (always). The version was uploaded and never activated; staging still served the placeholder.
+    const launched = await requestLaunch()
+    const driven = await drive(launched, launched.runId, { migrationFails: true })
+
+    const deploy = driven.deploys[0] ?? {}
+    expect(deploy.upload?.code).toBe(0)
+    expect(deploy.activate).toBeUndefined()
+    expect(deploy.finish?.code).toBe(0)
+    const envs = await environments(launched.appId)
+    const [ticket] = await db
+      .select()
+      .from(deployTickets)
+      .where(and(eq(deployTickets.appId, launched.appId), eq(deployTickets.purpose, 'deploy')))
+    expect(ticket).toMatchObject({
+      status: 'finished',
+      activatedAt: null,
+      error: 'finished before activate',
+    })
+    expect(ticket?.cfVersionId).toBeTruthy()
+    // The migrator credential it was handed is revoked by `finish`.
+    expect(ticket?.credentialsIssuedAt).toBeInstanceOf(Date)
+    expect(ticket?.credentialsRevokedAt).toBeInstanceOf(Date)
+    // The uploaded version never went live; staging has no deploy recorded.
+    expect(cloud.cloudflare.activeVersion(`${launched.slug}-staging`)?.id).not.toBe(
+      ticket?.cfVersionId
+    )
+    expect(envs.staging.lastDeployVersion).toBeNull()
+
+    // The launch fails at the deploy wait — never reaching `health` — with a readable reason.
+    expect(driven.outcome.status).toBe('failed')
+    expect(driven.names).not.toContain('deploy_staging.check')
+    expect(driven.names.some(n => n.startsWith('health'))).toBe(false)
+    expect((await appRow(launched.appId)).status).toBe('failed')
+    const view = await pipeline(launched.appId)
+    expect(view.status).toBe('failed')
+    const deployRow = view.steps.find(s => s.step === 'deploy_staging')
+    expect(deployRow).toMatchObject({ status: 'failed' })
+    expect(deployRow?.error).toContain(
+      'The staging deploy job ended without activating the new version (it stopped after upload — see the run)'
+    )
+    expect(view.steps.find(s => s.step === 'health')?.status).not.toBe('succeeded')
+    // Re-scaffold stays refused: no version went live, but the job WAS handed the migrator
+    // credential, so its migrations may have run (the rule `rescaffold-check.ts` keeps).
+    expect(view.canRescaffold).toBe(false)
+
+    // Retry is offered, and a retried deploy that activates goes live.
+    const retry = await request(
+      `/api/apps/${launched.appId}/pipeline/retry`,
+      { method: 'POST', headers: admin.cookie },
+      { env, json: { kind: 'create' } }
+    )
+    expect(retry.status, await retry.clone().text()).toBe(202)
+    const { instanceId } = retryPipelineResponseSchema.parse(await retry.json())
+    const second = await drive(launched, instanceId)
+    expect(
+      second.outcome.status,
+      JSON.stringify({ view: await pipeline(launched.appId), deploys: second.deploys })
+    ).toBe('live')
+    const [activated] = await db
+      .select()
+      .from(deployTickets)
+      .where(and(eq(deployTickets.appId, launched.appId), isNotNull(deployTickets.activatedAt)))
+    expect(cloud.cloudflare.activeVersion(`${launched.slug}-staging`)?.id).toBe(
+      activated?.cfVersionId
+    )
   })
 
   it('releases to production once an admin approves it on the app page', async () => {

@@ -51,6 +51,20 @@ const BADGE: Record<DeployTicketStatus, { tone: string; label: string }> = {
   failed: { tone: 'failed', label: 'failed' },
 }
 
+/**
+ * The badge for a ticket. `finished` alone is not "deployed": a ticket `finish` closed without an
+ * activation (the job died after upload) went nowhere, and reads as such. Pure.
+ */
+export function ticketBadge(ticket: Pick<DeployTicket, 'status' | 'activatedAt'>): {
+  tone: string
+  label: string
+} {
+  if (ticket.status === 'finished' && !ticket.activatedAt) {
+    return { tone: 'failed', label: 'not activated' }
+  }
+  return BADGE[ticket.status]
+}
+
 /** Newest first, deploys only (the scaffold job's ticket is the launch's business). Pure. */
 export function deployRows(items: readonly DeployTicket[]): DeployTicket[] {
   return items.filter(t => t.purpose === 'deploy')
@@ -295,7 +309,7 @@ export function DeploysCard({
               </thead>
               <tbody>
                 {shown.map(ticket => {
-                  const badge = BADGE[ticket.status]
+                  const badge = ticketBadge(ticket)
                   const url = runUrl(ticket)
                   const detail = ticket.refused?.length
                     ? `Refused: ${ticket.refused.join(', ')}`

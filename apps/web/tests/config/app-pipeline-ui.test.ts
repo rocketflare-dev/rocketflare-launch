@@ -20,7 +20,11 @@ import {
   pipelinePollInterval,
 } from '@/ui/hooks/usePipeline'
 import { hostPreview, slugFromName } from '@/ui/pages/apps/components/CreateAppModal'
-import { pendingProduction, ticketVersion } from '@/ui/pages/apps/components/DeploysCard'
+import {
+  pendingProduction,
+  ticketBadge,
+  ticketVersion,
+} from '@/ui/pages/apps/components/DeploysCard'
 import {
   groupPhases,
   pipelineRows,
@@ -52,6 +56,21 @@ describe('pipelinePollInterval', () => {
     expect(pipelinePollInterval('failed', { expectUntil: now + 1, now })).toBe(3000)
     expect(pipelinePollInterval('failed', { expectUntil: now, now })).toBe(false)
     expect(pipelinePollInterval('succeeded', { expectUntil: null, now })).toBe(false)
+  })
+})
+
+describe('ticketBadge', () => {
+  it('reads a ticket finished without an activation as not deployed', () => {
+    const at = new Date()
+    expect(ticketBadge({ status: 'finished', activatedAt: at })).toEqual({
+      tone: 'completed',
+      label: 'finished',
+    })
+    expect(ticketBadge({ status: 'finished', activatedAt: null })).toEqual({
+      tone: 'failed',
+      label: 'not activated',
+    })
+    expect(ticketBadge({ status: 'active', activatedAt: at }).label).toBe('live')
   })
 })
 

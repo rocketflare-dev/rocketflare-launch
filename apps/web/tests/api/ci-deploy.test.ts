@@ -396,6 +396,9 @@ describe('upload → activate → finish (staging)', () => {
     expect(row.credentialsIssuedAt).toBeInstanceOf(Date)
     expect(row.credentialsRevokedAt).toBeInstanceOf(Date)
     expect(row.finishedAt).toBeInstanceOf(Date)
+    // `activate` — and only activate — records that the version went live.
+    expect(row.activatedAt).toBeInstanceOf(Date)
+    expect(row.error).toBeNull()
 
     const audits = await auditRows(t.tenantId)
     expect(audits.map(a => a.action)).toEqual(
@@ -428,10 +431,23 @@ describe('upload → activate → finish (staging)', () => {
       (await call('POST', `/${id}/upload`, uploadBody(appToml(seeded, 'staging')))).status
     ).toBe(200)
     const finish = await call('POST', `/${id}/finish`)
-    expect(await body(finish)).toMatchObject({ status: 'finished' })
+    // The job's log says why: closed, not deployed.
+    expect(await body(finish)).toMatchObject({
+      status: 'finished',
+      error: 'finished before activate',
+    })
     expect(cloud.neon.resetCount(seeded.projectId, 'migrator')).toBe(resets + 2)
     expect(cloud.cloudflare.activeVersion(seeded.staging.workerName ?? '')).toBeNull()
     expect((await call('POST', `/${id}/activate`)).status).toBe(409)
+    const row = await ticketRow(id)
+    expect(row).toMatchObject({ status: 'finished', activatedAt: null })
+    expect(row.cfVersionId).toBeTruthy()
+    expect(row.credentialsRevokedAt).toBeInstanceOf(Date)
+    const finished = (await auditRows(t.tenantId)).find(a => a.action === 'deploy.finished')
+    expect(finished?.summary.after).toMatchObject({
+      activated: false,
+      error: 'finished before activate',
+    })
     // No launch run was waiting: no event.
     expect(stubs(env).launchWorkflow?.events).toEqual([])
   })
