@@ -7,6 +7,10 @@
  *   PUT    /settings                  apps domain, account id, Neon org/region, notifications domain, org
  *   PUT    /credentials/:kind         validate → seal → check → audit credential.set | .rotated
  *   POST   /credentials/:kind/check   re-run the probes → audit credential.checked
+ *
+ * The PUT and the check are the only calls that may change something upstream: the Cloudflare
+ * check creates the apps zone's proxied `*` record when there is none, audited
+ * `dns.wildcard.created` (target the zone) before the credential's own row. `GET /` never probes.
  *   DELETE /credentials/:kind         → audit credential.removed
  *
  * **A value never leaves.** The body of a PUT is sealed by `putCredential` and every response is
@@ -29,6 +33,7 @@ import type { Database } from '../../db/client'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import { putCredential, removeCredential } from '../services/launch/credentials'
 import {
+  type CheckEffect,
   fingerprint,
   runCredentialCheck,
   setupCredential,
@@ -77,6 +82,25 @@ function audit(
   })
 }
 
+/** One audit row per upstream change a check made (the Cloudflare wildcard). */
+async function auditEffects(
+  c: AppContext,
+  db: Database,
+  tenantId: string,
+  effects: readonly CheckEffect[]
+) {
+  for (const effect of effects) {
+    await recordAudit(db, {
+      tenantId,
+      ...auditActor(c),
+      action: effect.action,
+      targetType: effect.targetType,
+      targetId: effect.targetId,
+      summary: { after: effect.after },
+    })
+  }
+}
+
 setupRouter.get('/', async c => {
   const { db, cfg } = withAuth(c)
   return c.json(await setupOverview(db, cfg))
@@ -116,7 +140,8 @@ setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async 
     ...(kind === 'github_app' ? { appId: (secret as { appId: string }).appId } : {}),
   }
   const { rotated } = await putCredential(db, cfg, kind, secret, metadata, user.id)
-  const { status, checks } = await runCredentialCheck(db, cfg, kind, user.id)
+  const { status, checks, effects } = await runCredentialCheck(db, cfg, kind, user.id)
+  await auditEffects(c, db, auditTenantId, effects)
   await audit(c, db, auditTenantId, rotated ? 'credential.rotated' : 'credential.set', kind, {
     value: rotated ? 'rotated' : 'set',
     fingerprint: metadata.fingerprint,
@@ -129,7 +154,8 @@ setupRouter.post('/credentials/:kind/check', validate('param', kindParamSchema),
   const { db, cfg, user, tenantId } = withAuth(c)
   const { kind } = c.req.valid('param')
   const auditTenantId = await auditTenant(db, tenantId)
-  const { status, checks } = await runCredentialCheck(db, cfg, kind, user.id)
+  const { status, checks, effects } = await runCredentialCheck(db, cfg, kind, user.id)
+  await auditEffects(c, db, auditTenantId, effects)
   await audit(c, db, auditTenantId, 'credential.checked', kind, {
     checkStatus: status,
     failed: checks.filter(ch => ch.status === 'failed').map(ch => ch.id),

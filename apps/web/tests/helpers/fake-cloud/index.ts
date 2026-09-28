@@ -52,7 +52,9 @@
  *   `{metadata, modules, secrets, secretPuts (names only, in order), migrationTag, workersDev,
  *   schedules, settings, versions[{id, metadata, bindings}], deployments, activeVersionId}`),
  *   `workflows` (name → `{class_name, script_name}`), `routes` (id → `{pattern, script, zoneId}`),
- *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`.
+ *   `dnsRecords` (id → `{type, name, content, proxied}`, FQDN names, seeded with the proxied
+ *   `*.<zone>` wildcard — clear it to watch the setup check create one), `assetBlobs`,
+ *   `activeVersion(script)`, `scriptForHost(host)`.
  * - `cloud.neon` (`FakeNeon`): `projects` (id → `{name, region_id, org_id, pg_version, branches:
  *   id → {name, parent_id, init_source, host, roles: name → {password, resets}, databases}}`),
  *   `branchNamed(projectId, name)`, `resetCount(projectId, role)`, `sql` (every HTTP SQL statement

@@ -17,6 +17,10 @@
  *   with no Zone scope gets `[]`, not an error, so "no zone" and "no permission" look alike.
  * - `GET /zones/{id}/dns_records?name=<fqdn>` matches the name exactly, `*.<zone>` included, and
  *   each record carries `proxied`.
+ * - `POST /zones/{id}/dns_records {type, name, content, proxied, comment}` → the record; `name`
+ *   is relative to the zone (`*` is the wildcard). The setup check creates the apps domain's
+ *   proxied `AAAA * → 100::` with it when the zone has no `*` record at all (spike S2's
+ *   `ensureWildcard`); it needs DNS Edit on the zone.
  * - `GET /zones/{id}/workers/routes` → `result: [{ id, pattern, script }]` (S2).
  *
  * The writes P2 adds (checked against the same reference and spikes S1/S2/S5):
@@ -322,6 +326,14 @@ export class CloudflareClient {
       `/zones/${encodeURIComponent(zoneId)}/dns_records?name=${encodeURIComponent(name)}&per_page=100`
     )
     return records.filter(r => r.name === name)
+  }
+
+  /** Create one DNS record (the setup check's wildcard). A secret never goes in one. */
+  createDnsRecord(
+    zoneId: string,
+    record: { type: string; name: string; content: string; proxied: boolean; comment?: string }
+  ): Promise<CloudflareDnsRecord> {
+    return this.call('POST', `/zones/${enc(zoneId)}/dns_records`, { json: record })
   }
 
   listWorkerRoutes(zoneId: string): Promise<CloudflareWorkerRoute[]> {

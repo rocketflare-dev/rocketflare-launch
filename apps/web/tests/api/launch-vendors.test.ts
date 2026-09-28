@@ -195,6 +195,25 @@ describe('Cloudflare client', () => {
     expect(cloud.resourcesFor('shop')).toEqual([])
   })
 
+  it('DNS: the seeded wildcard is listed, and a created record is too (relative name → FQDN)', async () => {
+    const client = cf()
+    const wildcard = `*.${cloud.opts.domain}`
+    expect((await client.listDnsRecords(zone, wildcard)).map(r => r.proxied)).toEqual([true])
+    cloud.cloudflare.dnsRecords.clear()
+    expect(await client.listDnsRecords(zone, wildcard)).toEqual([])
+    const created = await client.createDnsRecord(zone, {
+      type: 'AAAA',
+      name: '*',
+      content: '100::',
+      proxied: true,
+    })
+    expect(created).toMatchObject({ name: wildcard, type: 'AAAA', content: '100::', proxied: true })
+    expect(await client.listDnsRecords(zone, wildcard)).toEqual([created])
+    await expect(
+      client.createDnsRecord(zone, { type: 'AAAA', name: '*', content: '100::', proxied: true })
+    ).rejects.toBeInstanceOf(CloudflareApiError)
+  })
+
   it('deploys: assets session → buckets under the session jwt → version → deployment → schedules → settings', async () => {
     const client = cf()
     await client.putWorkerScript(account, 'shop-staging', { main_module: 'index.js' }, [

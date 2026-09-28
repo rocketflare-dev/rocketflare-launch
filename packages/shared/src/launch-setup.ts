@@ -219,6 +219,39 @@ export const launchSettingValueSchemas = {
     .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, 'A GitHub organization login'),
 } as const satisfies Record<SetupSettingKey, z.ZodTypeAny>
 
+/**
+ * The Neon regions a project can be created in (neon.com/docs/introduction/regions, checked
+ * 2026-09-28). A static list because `GET /regions` answers an ORGANIZATION key — the only kind
+ * Launch holds — with 404 "not allowed for organization API keys". The setup check validates a
+ * pinned `neon_region_id` against it (an id missing here is a warning, not a failure: Neon itself
+ * decides on the first create) and the wizard offers it as a select with a free-text fallback.
+ */
+export const NEON_REGIONS = [
+  { id: 'aws-us-east-1', label: 'AWS US East (N. Virginia)' },
+  { id: 'aws-us-east-2', label: 'AWS US East (Ohio)' },
+  { id: 'aws-us-west-2', label: 'AWS US West (Oregon)' },
+  { id: 'aws-eu-central-1', label: 'AWS Europe (Frankfurt)' },
+  { id: 'aws-eu-west-2', label: 'AWS Europe (London)' },
+  { id: 'aws-ap-southeast-1', label: 'AWS Asia Pacific (Singapore)' },
+  { id: 'aws-ap-southeast-2', label: 'AWS Asia Pacific (Sydney)' },
+  { id: 'aws-sa-east-1', label: 'AWS South America (São Paulo)' },
+  { id: 'azure-eastus2', label: 'Azure East US 2 (Virginia)' },
+  { id: 'azure-westus3', label: 'Azure West US 3 (Arizona)' },
+  { id: 'azure-gwc', label: 'Azure Germany West Central (Frankfurt)' },
+] as const
+
+/**
+ * What the setup check pins when nobody chose a region and the org has no project to learn one
+ * from: Neon's own default for a new project (the console preselects it, and two of S3's four
+ * unpinned creates landed there). The check says so with a warning, so the admin changes it
+ * before the first app if their apps belong elsewhere.
+ */
+export const DEFAULT_NEON_REGION = 'aws-us-east-2'
+
+export function neonRegionLabel(id: string): string | null {
+  return NEON_REGIONS.find(r => r.id === id)?.label ?? null
+}
+
 /** `PUT /api/admin/setup/settings` — any subset of the keys; `null` clears one. */
 export const setupSettingsUpdateSchema = z
   .object(

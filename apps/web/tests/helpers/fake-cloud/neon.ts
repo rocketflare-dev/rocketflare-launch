@@ -150,8 +150,9 @@ export class FakeNeon implements VendorHandler {
       })
     }
     if (path === '/projects' && m === 'POST') return this.createProject(body.project ?? {})
+    // A real ORGANIZATION key is refused here; Launch never calls it (setup uses NEON_REGIONS).
     if (path === '/regions' && m === 'GET') {
-      return json({ regions: [{ region_id: 'aws-us-east-2', name: 'Ohio', default: true }] })
+      return neonError(404, 'not allowed for organization API keys')
     }
 
     match = path.match(/^\/projects\/([^/]+)(\/.*)?$/)

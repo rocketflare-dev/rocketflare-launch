@@ -35,6 +35,88 @@ export interface SettingFieldSpec {
   label: string
   placeholder?: string
   hint?: string
+  /**
+   * Known values, offered as a select (the Neon region). The server validates the free text the
+   * same way either way; "Other…" keeps a value the list does not know yet.
+   */
+  options?: readonly { value: string; label: string }[]
+  /** The select's blank choice, e.g. "Pick on the first check". */
+  blankLabel?: string
+}
+
+const OTHER = '__other__'
+
+/** A setting's input: plain text, or a select of `options` with a free-text fallback. */
+function SettingInput({
+  id,
+  field,
+  value,
+  invalid,
+  onChange,
+}: {
+  id: string
+  field: SettingFieldSpec
+  value: string
+  invalid: boolean
+  onChange: (value: string) => void
+}) {
+  const known = field.options?.some(o => o.value === value) ?? false
+  const [other, setOther] = useState(value !== '' && !known)
+  // Follow a value the server wrote (a check pins the region): known → the select, else free text.
+  useEffect(() => {
+    if (value !== '') setOther(!known)
+  }, [value, known])
+
+  if (!field.options) {
+    return (
+      <input
+        id={id}
+        className="input input-bordered w-full"
+        value={value}
+        placeholder={field.placeholder}
+        onChange={e => onChange(e.target.value)}
+        aria-invalid={invalid}
+      />
+    )
+  }
+  return (
+    <>
+      <select
+        id={id}
+        className="select select-bordered w-full"
+        value={other ? OTHER : value}
+        onChange={e => {
+          if (e.target.value === OTHER) {
+            setOther(true)
+            if (known) onChange('')
+          } else {
+            setOther(false)
+            onChange(e.target.value)
+          }
+        }}
+        aria-invalid={invalid && !other}
+      >
+        <option value="">{field.blankLabel ?? '—'}</option>
+        {field.options.map(o => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        <option value={OTHER}>Other…</option>
+      </select>
+      {other && (
+        <input
+          id={`${id}-other`}
+          aria-label={`${field.label} (other)`}
+          className="input input-bordered w-full"
+          value={value}
+          placeholder={field.placeholder}
+          onChange={e => onChange(e.target.value)}
+          aria-invalid={invalid}
+        />
+      )}
+    </>
+  )
 }
 
 export interface PayloadFieldSpec {
@@ -142,13 +224,12 @@ export function CredentialCard({
             <label htmlFor={`${id}-${field.key}`} className="block text-sm font-medium">
               {field.label}
             </label>
-            <input
+            <SettingInput
               id={`${id}-${field.key}`}
-              className="input input-bordered w-full"
+              field={field}
               value={settingValues[field.key] ?? ''}
-              placeholder={field.placeholder}
-              onChange={e => setSettingValues(v => ({ ...v, [field.key]: e.target.value }))}
-              aria-invalid={Boolean(errors[field.key])}
+              invalid={Boolean(errors[field.key])}
+              onChange={value => setSettingValues(v => ({ ...v, [field.key]: value }))}
             />
             {field.hint && <p className="text-xs text-muted">{field.hint}</p>}
             <FieldError message={errors[field.key]} />

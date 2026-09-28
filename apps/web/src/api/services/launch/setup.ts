@@ -21,6 +21,18 @@
  * default model is one it can see. It has no setup STEP — coding sessions fall back to the
  * Worker's `ANTHROPIC_API_KEY` secret without it — so the wizard's dots never wait on it.
  *
+ * **The one probe that WRITES.** A zone with no `*.<apps domain>` record at all gets a proxied
+ * `AAAA * → 100::` created by the Cloudflare check (spike S2), reported `ok` ("Created …") and
+ * returned as an `effects` entry the route audits `dns.wildcard.created`. Only
+ * `runCredentialCheck` — the save and re-check actions — turns that on (`createWildcard`); the
+ * overview never probes at all, so a page load cannot change a zone. An EXISTING record, even a
+ * DNS-only one, is never touched: that is someone's decision, so the check explains it instead.
+ * A second run finds the record it made and creates nothing, so the check stays idempotent.
+ *
+ * **Neon regions** never come from `GET /regions`, which refuses organization keys (404). A pinned
+ * `neon_region_id` is checked against the static `NEON_REGIONS`; an unset one is learned from
+ * where the org's projects already are, else pinned to `DEFAULT_NEON_REGION` with a warning.
+ *
  * **What is deliberately NOT probed.** Cloudflare write scope: nothing proves "can create a Worker"
  * short of creating one, so it is reported as a standing `warning` ("write scope unverified") rather
  * than a green light the check did not earn.
@@ -34,7 +46,10 @@ import {
   type CredentialKind,
   type CredentialMetadata,
   type CredentialPayload,
+  DEFAULT_NEON_REGION,
   type LaunchSettingKey,
+  NEON_REGIONS,
+  neonRegionLabel,
   SETUP_SETTING_KEYS,
   type SetupCredential,
   type SetupIdentity,
@@ -60,7 +75,7 @@ import {
   recordCheck,
 } from './credentials'
 import { GitHubApiError, type GitHubPermissions, getApp, listInstallations } from './github-app'
-import { NeonApiError, NeonClient } from './neon'
+import { NeonApiError, NeonClient, type NeonProject } from './neon'
 import { ResendApiError, ResendClient } from './resend'
 
 /** What every vendor call takes, so tests hand in a fake and nothing reaches the network. */
@@ -68,10 +83,23 @@ export interface VendorOptions {
   fetch?: typeof fetch
 }
 
+/**
+ * A change a check MADE upstream, for the route to audit — only ever the Cloudflare wildcard, and
+ * only when the caller allowed it (`createWildcard`). `after` is non-secret by construction.
+ */
+export interface CheckEffect {
+  action: 'dns.wildcard.created'
+  targetType: 'Zone'
+  targetId: string
+  after: Record<string, unknown>
+}
+
 export interface CheckOutcome {
   checks: CredentialCheck[]
   metadata: CredentialMetadata
   settings: Partial<Record<LaunchSettingKey, string>>
+  /** What the check changed upstream; absent (or empty) for a read-only one. */
+  effects?: CheckEffect[]
 }
 
 // ---- helpers ---------------------------------------------------------------------------------
@@ -140,14 +168,23 @@ const CLOUDFLARE_READ_PROBES = [
   { id: 'account.r2', label: 'R2 buckets readable', call: 'listR2Buckets' },
 ] as const
 
+export interface CloudflareCheckOptions extends VendorOptions {
+  /**
+   * Create the proxied `AAAA * → 100::` record when the zone has no `*.<apps domain>` record at
+   * all. Off by default: only the save and re-check actions (`runCredentialCheck`) pass it.
+   */
+  createWildcard?: boolean
+}
+
 export async function checkCloudflare(
   secret: CredentialPayload<'cloudflare_api_token'>,
   settings: Partial<SetupSettings>,
-  opts: VendorOptions = {}
+  opts: CloudflareCheckOptions = {}
 ): Promise<CheckOutcome> {
   const secrets = [secret.apiToken]
   const checks: CredentialCheck[] = []
   const metadata: CredentialMetadata = {}
+  const effects: CheckEffect[] = []
   const accountId = settings.cloudflare_account_id
   const domain = settings.apps_domain
   const cf = new CloudflareClient(secret.apiToken, { fetch: opts.fetch })
@@ -194,7 +231,12 @@ export async function checkCloudflare(
     }
   }
 
-  checks.push(...(await checkZone(cf, accountId, domain, metadata, secrets)))
+  checks.push(
+    ...(await checkZone(cf, accountId, domain, metadata, secrets, {
+      createWildcard: opts.createWildcard ?? false,
+      effects,
+    }))
+  )
 
   checks.push(
     warn(
@@ -203,7 +245,7 @@ export async function checkCloudflare(
       'Write scope unverified: Launch cannot prove it may create Workers, KV, Queues, R2, DNS or routes without creating one. Check the token has Workers Scripts, KV, Queues, R2 and Workflows (Edit) on the account and DNS + Workers Routes (Edit) on the zone.'
     )
   )
-  return { checks, metadata, settings: {} }
+  return { checks, metadata, settings: {}, effects }
 }
 
 /** The zone probes (spec/04): in this account, a proxied `*` record, routes readable. */
@@ -212,7 +254,8 @@ async function checkZone(
   accountId: string,
   domain: string | null | undefined,
   metadata: CredentialMetadata,
-  secrets: readonly string[]
+  secrets: readonly string[],
+  wildcardOpts: { createWildcard: boolean; effects: CheckEffect[] }
 ): Promise<CredentialCheck[]> {
   const label = 'Apps zone in this account'
   if (!domain) return [fail('zone.account', label, 'Set the apps domain first.')]
@@ -243,30 +286,7 @@ async function checkZone(
   metadata.zoneId = zone.id
   const out: CredentialCheck[] = [ok('zone.account', label, `Zone ${zone.id} (${zone.status})`)]
 
-  const wildcard = `*.${domain}`
-  try {
-    const records = await cf.listDnsRecords(zone.id, wildcard)
-    const proxied = records.find(r => r.proxied)
-    out.push(
-      proxied
-        ? ok('zone.wildcard', 'Proxied wildcard DNS record', `${proxied.type} ${wildcard}`)
-        : records.length > 0
-          ? fail(
-              'zone.wildcard',
-              'Proxied wildcard DNS record',
-              `${wildcard} exists but is DNS-only; turn the proxy on so Worker routes answer.`
-            )
-          : fail(
-              'zone.wildcard',
-              'Proxied wildcard DNS record',
-              `No ${wildcard} record. Add a proxied AAAA ${wildcard} → 100:: record.`
-            )
-    )
-  } catch (err) {
-    out.push(
-      fail('zone.wildcard', 'Proxied wildcard DNS record', errorDetail(err, 'Cloudflare', secrets))
-    )
-  }
+  out.push(await checkWildcard(cf, zone.id, domain, secrets, wildcardOpts))
 
   try {
     const routes = await cf.listWorkerRoutes(zone.id)
@@ -277,7 +297,89 @@ async function checkZone(
   return out
 }
 
+/** What Launch creates when the zone has no wildcard: the discard prefix, proxied (spike S2). */
+const WILDCARD_RECORD = { type: 'AAAA', name: '*', content: '100::', proxied: true } as const
+
+/**
+ * `zone.wildcard`: a proxied `*.<domain>` passes; none at all is CREATED when the caller allows it
+ * (see the header); a DNS-only one is left alone and fails with what to do about it.
+ */
+async function checkWildcard(
+  cf: CloudflareClient,
+  zoneId: string,
+  domain: string,
+  secrets: readonly string[],
+  { createWildcard, effects }: { createWildcard: boolean; effects: CheckEffect[] }
+): Promise<CredentialCheck> {
+  const id = 'zone.wildcard'
+  const label = 'Proxied wildcard DNS record'
+  const wildcard = `*.${domain}`
+  const wanted = `a proxied AAAA ${wildcard} → 100:: record`
+  let records: Awaited<ReturnType<CloudflareClient['listDnsRecords']>>
+  try {
+    records = await cf.listDnsRecords(zoneId, wildcard)
+  } catch (err) {
+    return fail(id, label, errorDetail(err, 'Cloudflare', secrets))
+  }
+  const proxied = records.find(r => r.proxied)
+  if (proxied) return ok(id, label, `${proxied.type} ${wildcard}`)
+  const dnsOnly = records[0]
+  if (dnsOnly) {
+    return fail(
+      id,
+      label,
+      `${wildcard} is a DNS-only ${dnsOnly.type} record (→ ${dnsOnly.content}), so requests never reach the Worker routes. Launch does not change a record it did not create: turn on its proxy (orange cloud) in the zone's DNS settings, or delete it and re-check so Launch creates ${wanted}.`
+    )
+  }
+  if (!createWildcard) {
+    return fail(id, label, `No ${wildcard} record. Save or re-check the token to create ${wanted}.`)
+  }
+  try {
+    const created = await cf.createDnsRecord(zoneId, {
+      ...WILDCARD_RECORD,
+      comment: 'Launch: apps wildcard — Worker routes answer, not an origin',
+    })
+    effects.push({
+      action: 'dns.wildcard.created',
+      targetType: 'Zone',
+      targetId: zoneId,
+      after: {
+        recordId: created.id,
+        name: wildcard,
+        type: 'AAAA',
+        content: '100::',
+        proxied: true,
+      },
+    })
+    return ok(id, label, `Created proxied AAAA ${wildcard} → 100::`)
+  } catch (err) {
+    return fail(
+      id,
+      label,
+      `${errorDetail(err, 'Cloudflare', secrets)} — Launch could not create ${wanted}. Give the token DNS Edit on the zone, or add the record yourself, then re-check.`
+    )
+  }
+}
+
 // ---- Neon ------------------------------------------------------------------------------------
+
+/** How many projects the check reads: enough to see where the org's databases already live. */
+const NEON_PROJECT_SAMPLE = 100
+
+/** The `region_id` most of `projects` are in (the first seen wins a tie), or null for none. */
+export function mostCommonRegion(
+  projects: readonly Pick<NeonProject, 'region_id'>[]
+): { regionId: string; count: number } | null {
+  const counts = new Map<string, number>()
+  for (const p of projects) {
+    if (p.region_id) counts.set(p.region_id, (counts.get(p.region_id) ?? 0) + 1)
+  }
+  let best: { regionId: string; count: number } | null = null
+  for (const [regionId, count] of counts) {
+    if (!best || count > best.count) best = { regionId, count }
+  }
+  return best
+}
 
 export async function checkNeon(
   secret: CredentialPayload<'neon_org_api_key'>,
@@ -291,11 +393,13 @@ export async function checkNeon(
   const discovered: CheckOutcome['settings'] = {}
 
   let orgId = settings.neon_org_id ?? null
+  let projects: NeonProject[]
   try {
-    const projects = await neon.listProjects({ limit: 1, orgId })
+    projects = await neon.listProjects({ limit: NEON_PROJECT_SAMPLE, orgId })
     checks.push(ok('projects.list', 'Projects readable'))
-    if (!orgId && projects[0]?.org_id) {
-      orgId = projects[0].org_id
+    const withOrg = projects.find(p => p.org_id)
+    if (!orgId && withOrg?.org_id) {
+      orgId = withOrg.org_id
       discovered.neon_org_id = orgId
     }
   } catch (err) {
@@ -316,39 +420,44 @@ export async function checkNeon(
     )
   }
 
-  try {
-    const regions = await neon.listRegions(orgId)
-    const pinned = settings.neon_region_id
-    if (pinned) {
-      checks.push(
-        regions.some(r => r.region_id === pinned)
-          ? ok('region', 'Region pinned', pinned)
-          : fail(
-              'region',
-              'Region pinned',
-              `${pinned} is not available to this org. Available: ${regions.map(r => r.region_id).join(', ') || 'none'}.`
-            )
-      )
-    } else {
-      // S3: the implicit default moves between creates, so pin whatever it is today, once.
-      const fallback = regions.find(r => r.default) ?? regions[0]
-      if (fallback) {
-        discovered.neon_region_id = fallback.region_id
-        checks.push(
-          warn(
-            'region',
-            'Region pinned',
-            `Pinned ${fallback.region_id} (Neon's current default). Change it before the first app if your apps belong elsewhere.`
-          )
-        )
-      } else {
-        checks.push(fail('region', 'Region pinned', 'Neon listed no regions for this org.'))
-      }
-    }
-  } catch (err) {
-    checks.push(fail('region', 'Region pinned', errorDetail(err, 'Neon', secrets)))
-  }
+  checks.push(neonRegionCheck(settings.neon_region_id ?? null, projects, discovered))
   return { checks, metadata, settings: discovered }
+}
+
+/**
+ * `region`: never from `GET /regions` (see the header). A pinned id Launch knows is `ok`; one it
+ * does not is a `warning` — Neon adds regions, and it validates the id itself on the first create.
+ * Unset, it pins where most of the org's projects are, else `DEFAULT_NEON_REGION`, and warns
+ * either way so the admin looks before the first app (S3: the implicit default moves).
+ */
+function neonRegionCheck(
+  pinned: string | null,
+  projects: readonly NeonProject[],
+  discovered: CheckOutcome['settings']
+): CredentialCheck {
+  const label = 'Region pinned'
+  if (pinned) {
+    const known = neonRegionLabel(pinned)
+    return known
+      ? ok('region', label, `${pinned} — ${known}`)
+      : warn(
+          'region',
+          label,
+          `${pinned} is not a Neon region id Launch recognises (${NEON_REGIONS.map(r => r.id).join(', ')}); Neon will validate it when the first project is created.`
+        )
+  }
+  const common = mostCommonRegion(projects)
+  const regionId = common?.regionId ?? DEFAULT_NEON_REGION
+  discovered.neon_region_id = regionId
+  const name = neonRegionLabel(regionId)
+  const where = name ? `${regionId} (${name})` : regionId
+  return warn(
+    'region',
+    label,
+    common
+      ? `Pinned ${where}, where ${common.count} of the org's ${projects.length} projects are. Change it before the first app if your apps belong elsewhere.`
+      : `Pinned ${where}, Neon's default for new projects — the org has no project to learn a region from. Change it before the first app if your apps belong elsewhere.`
+  )
 }
 
 // ---- Resend ----------------------------------------------------------------------------------
@@ -610,32 +719,36 @@ export function identityStatus(cfg: AppConfig): SetupIdentity {
 
 // ---- running a check -------------------------------------------------------------------------
 
-/** Run `kind`'s probes against its stored value; store the result. 404 when none is set. */
+/**
+ * Run `kind`'s probes against its stored value; store the result. 404 when none is set. Only the
+ * save and re-check actions call this, so it is the one place a probe may WRITE upstream (the
+ * Cloudflare wildcard); what it wrote comes back as `effects` for the caller to audit.
+ */
 export async function runCredentialCheck(
   db: Database,
   cfg: AppConfig,
   kind: CredentialKind,
   userId: string | null,
   opts: VendorOptions = {}
-): Promise<{ status: CredentialCheckStatus; checks: CredentialCheck[] }> {
+): Promise<{ status: CredentialCheckStatus; checks: CredentialCheck[]; effects: CheckEffect[] }> {
   const stored = await getCredential(db, cfg, kind)
   if (!stored) throw new NotFoundError(`No ${kind} credential is set`, 'credential_not_set')
   const settings = await readSettings(db)
-  const outcome = await probe(kind, stored.secret, settings, opts)
+  const outcome = await probe(kind, stored.secret, settings, { ...opts, createWildcard: true })
   for (const [key, value] of Object.entries(outcome.settings)) {
     await putSetting(db, key as LaunchSettingKey, value, userId)
   }
   const status =
     (await recordCheck(db, kind, outcome.checks, outcome.metadata)) ??
     overallCheckStatus(outcome.checks)
-  return { status, checks: outcome.checks }
+  return { status, checks: outcome.checks, effects: outcome.effects ?? [] }
 }
 
 function probe(
   kind: CredentialKind,
   secret: CredentialPayload,
   settings: Partial<SetupSettings>,
-  opts: VendorOptions
+  opts: CloudflareCheckOptions
 ): Promise<CheckOutcome> {
   switch (kind) {
     case 'cloudflare_api_token':

@@ -1,12 +1,18 @@
 /**
  * The setup wizard's vendor probes (`services/launch/setup.ts`), driven through an INJECTED fake
  * `fetch` — no network, no database. Happy paths for each vendor, and the failures the wizard
- * exists to catch: a zone in the wrong account, no wildcard record, an unverified notifications
- * domain, a sending-only Resend key, a GitHub permission missing (Variables, S5), an app not
+ * exists to catch: a zone in the wrong account, no wildcard record (created when the caller allows
+ * it), a DNS-only one (left alone), a Neon region pinned without `GET /regions`, an unverified
+ * notifications domain, a sending-only Resend key, a GitHub permission missing (Variables, S5), an app not
  * installed on the org, and a vendor error that must not echo the secret back.
  */
 import { generateKeyPairSync } from 'node:crypto'
-import type { SetupSettings } from '@launch/shared/launch-setup'
+import {
+  DEFAULT_NEON_REGION,
+  launchSettingValueSchemas,
+  NEON_REGIONS,
+  type SetupSettings,
+} from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
 import {
   checkAnthropic,
@@ -16,6 +22,7 @@ import {
   checkResend,
   identityStatus,
   missingGitHubPermissions,
+  mostCommonRegion,
   scrub,
   stepStatuses,
 } from '@/api/services/launch/setup'
@@ -107,7 +114,7 @@ describe('checkCloudflare', () => {
     expect(byId(out.checks)['zone.account']).toBe('failed')
   })
 
-  it('fails with no wildcard record, and with a DNS-only one', async () => {
+  it('fails with no wildcard record and creates nothing unless the caller allows it', async () => {
     const none = fakeVendorFetch({
       ...happyVendors({ domain: DOMAIN, org: ORG }),
       [`${CF}/zones/${ZONE_ID}/dns_records`]: cf([]),
@@ -117,17 +124,106 @@ describe('checkCloudflare', () => {
       status: 'failed',
       detail: expect.stringContaining('No *.'),
     })
+    expect(a.effects).toEqual([])
+    expect(none.calls.every(c => c.method === 'GET')).toBe(true)
+  })
 
-    const unproxied = fakeVendorFetch({
-      ...happyVendors({ domain: DOMAIN, org: ORG }),
-      [`${CF}/zones/${ZONE_ID}/dns_records`]: cf([
-        { id: 'r', type: 'AAAA', name: `*.${DOMAIN}`, content: '100::', proxied: false },
-      ]),
+  describe('the wildcard record, when the caller allows creating it', () => {
+    /** A zone's DNS, stateful: GET lists `records`, POST appends (or answers `postError`). */
+    function dnsZone(
+      records: Record<string, unknown>[],
+      postError?: { status: number; message: string }
+    ) {
+      const posts: Record<string, unknown>[] = []
+      const fake = fakeVendorFetch({
+        ...happyVendors({ domain: DOMAIN, org: ORG }),
+        [`${CF}/zones/${ZONE_ID}/dns_records`]: (_url: string, init?: RequestInit) => {
+          if ((init?.method ?? 'GET') === 'GET') return jsonResponse(cf(records))
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+          posts.push(body)
+          if (postError) {
+            return jsonResponse(
+              { success: false, errors: [{ code: 10000, message: postError.message }] },
+              postError.status
+            )
+          }
+          const record = { ...body, id: `rec${posts.length}`, name: `*.${DOMAIN}` }
+          records.push(record)
+          return jsonResponse(cf(record))
+        },
+      })
+      return { ...fake, posts, records }
+    }
+
+    it('creates a proxied AAAA * → 100:: when the zone has none, once', async () => {
+      const zone = dnsZone([])
+      const out = await checkCloudflare({ apiToken: TOKEN }, settings, {
+        fetch: zone.fetch,
+        createWildcard: true,
+      })
+      expect(out.checks.find(c => c.id === 'zone.wildcard')).toEqual({
+        id: 'zone.wildcard',
+        label: 'Proxied wildcard DNS record',
+        status: 'ok',
+        detail: `Created proxied AAAA *.${DOMAIN} → 100::`,
+      })
+      expect(zone.posts).toEqual([
+        expect.objectContaining({ type: 'AAAA', name: '*', content: '100::', proxied: true }),
+      ])
+      expect(out.effects).toEqual([
+        {
+          action: 'dns.wildcard.created',
+          targetType: 'Zone',
+          targetId: ZONE_ID,
+          after: expect.objectContaining({ recordId: 'rec1', name: `*.${DOMAIN}`, proxied: true }),
+        },
+      ])
+      expect(JSON.stringify(out.effects)).not.toContain(TOKEN)
+
+      // Idempotent: the next run finds the record it made and creates nothing.
+      const again = await checkCloudflare({ apiToken: TOKEN }, settings, {
+        fetch: zone.fetch,
+        createWildcard: true,
+      })
+      expect(again.checks.find(c => c.id === 'zone.wildcard')).toMatchObject({
+        status: 'ok',
+        detail: `AAAA *.${DOMAIN}`,
+      })
+      expect(again.effects).toEqual([])
+      expect(zone.posts).toHaveLength(1)
     })
-    const b = await checkCloudflare({ apiToken: TOKEN }, settings, { fetch: unproxied.fetch })
-    expect(b.checks.find(c => c.id === 'zone.wildcard')).toMatchObject({
-      status: 'failed',
-      detail: expect.stringContaining('DNS-only'),
+
+    it('leaves a DNS-only record alone and says what to do about it', async () => {
+      const zone = dnsZone([
+        { id: 'r', type: 'A', name: `*.${DOMAIN}`, content: '192.0.2.1', proxied: false },
+      ])
+      const out = await checkCloudflare({ apiToken: TOKEN }, settings, {
+        fetch: zone.fetch,
+        createWildcard: true,
+      })
+      const check = out.checks.find(c => c.id === 'zone.wildcard')
+      expect(check).toMatchObject({ status: 'failed' })
+      expect(check?.detail).toContain('DNS-only A record (→ 192.0.2.1)')
+      expect(check?.detail).toContain('turn on its proxy')
+      expect(zone.posts).toEqual([])
+      expect(out.effects).toEqual([])
+    })
+
+    it('fails with the scrubbed vendor error when the token cannot create it', async () => {
+      const zone = dnsZone([], {
+        status: 403,
+        message: `Authentication error for ${TOKEN}`,
+      })
+      const out = await checkCloudflare({ apiToken: TOKEN }, settings, {
+        fetch: zone.fetch,
+        createWildcard: true,
+      })
+      const check = out.checks.find(c => c.id === 'zone.wildcard')
+      expect(check).toMatchObject({ status: 'failed' })
+      expect(check?.detail).toContain('Cloudflare 403: 10000: Authentication error for [redacted]')
+      expect(check?.detail).toContain('DNS Edit')
+      expect(JSON.stringify(out)).not.toContain(TOKEN)
+      expect(out.effects).toEqual([])
     })
   })
 
@@ -161,16 +257,55 @@ describe('checkCloudflare', () => {
 describe('checkNeon', () => {
   const KEY = 'napi_orgkey_0123456789abcdefghij'
 
-  it('discovers the org and pins the default region when none is set', async () => {
-    const fake = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
-    const out = await checkNeon({ apiKey: KEY }, {}, { fetch: fake.fetch })
-    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'warning' })
-    expect(out.settings).toEqual({ neon_org_id: 'org-test-12345', neon_region_id: 'aws-us-east-2' })
-    expect(fake.calls[0]?.url).toBe('https://console.neon.tech/api/v2/projects?limit=1')
-    expect(fake.calls[1]?.url).toContain('/regions?org_id=org-test-12345')
+  const neonProjects = (...regions: string[]) => ({
+    'console.neon.tech/api/v2/projects': {
+      projects: regions.map((region_id, i) => ({
+        id: `p${i}`,
+        name: `p${i}`,
+        region_id,
+        org_id: 'org-test-12345',
+      })),
+    },
   })
 
-  it('accepts a pinned region the org offers, and fails one it does not', async () => {
+  it('discovers the org and pins the region its projects are in, never calling /regions', async () => {
+    const fake = fakeVendorFetch({
+      ...happyVendors({ domain: DOMAIN, org: ORG }),
+      ...neonProjects('aws-eu-central-1', 'aws-us-east-2', 'aws-eu-central-1'),
+    })
+    const out = await checkNeon({ apiKey: KEY }, {}, { fetch: fake.fetch })
+    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'warning' })
+    expect(out.settings).toEqual({
+      neon_org_id: 'org-test-12345',
+      neon_region_id: 'aws-eu-central-1',
+    })
+    expect(out.checks.find(c => c.id === 'region')?.detail).toContain(
+      "where 2 of the org's 3 projects are"
+    )
+    expect(fake.calls.map(c => c.url)).toEqual([
+      'https://console.neon.tech/api/v2/projects?limit=100',
+    ])
+  })
+
+  it("pins Neon's default for new projects when the org has none, with a warning", async () => {
+    const fake = fakeVendorFetch({
+      ...happyVendors({ domain: DOMAIN, org: ORG }),
+      ...neonProjects(),
+    })
+    const out = await checkNeon(
+      { apiKey: KEY },
+      { neon_org_id: 'org-test-12345' },
+      { fetch: fake.fetch }
+    )
+    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'warning' })
+    expect(out.settings).toEqual({ neon_region_id: DEFAULT_NEON_REGION })
+    expect(out.checks.find(c => c.id === 'region')?.detail).toContain(
+      'Change it before the first app'
+    )
+    expect(fake.calls.some(c => c.url.includes('/regions'))).toBe(false)
+  })
+
+  it('accepts a pinned region Launch knows, and only warns about one it does not', async () => {
     const fake = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
     const good = await checkNeon(
       { apiKey: KEY },
@@ -178,15 +313,35 @@ describe('checkNeon', () => {
       { fetch: fake.fetch }
     )
     expect(byId(good.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'ok' })
+    expect(good.checks.find(c => c.id === 'region')?.detail).toContain('Frankfurt')
     expect(good.settings).toEqual({})
     expect(fake.calls[0]?.url).toContain('org_id=org-test-12345')
 
-    const bad = await checkNeon(
+    const unknown = await checkNeon(
       { apiKey: KEY },
-      { neon_org_id: 'org-test-12345', neon_region_id: 'azure-mars-1' },
+      { neon_org_id: 'org-test-12345', neon_region_id: 'aws-mars-1' },
       { fetch: fake.fetch }
     )
-    expect(bad.checks.find(c => c.id === 'region')).toMatchObject({ status: 'failed' })
+    expect(unknown.checks.find(c => c.id === 'region')).toMatchObject({
+      status: 'warning',
+      detail: expect.stringContaining('Neon will validate it when the first project is created'),
+    })
+    expect(unknown.settings).toEqual({})
+    expect(fake.calls.some(c => c.url.includes('/regions'))).toBe(false)
+  })
+
+  it('offers only well-formed, distinct region ids, the default among them', () => {
+    const ids = NEON_REGIONS.map(r => r.id)
+    expect(ids).toContain(DEFAULT_NEON_REGION)
+    for (const id of ids) expect(launchSettingValueSchemas.neon_region_id.parse(id)).toBe(id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('reads the most common region, first seen winning a tie', () => {
+    expect(mostCommonRegion([])).toBeNull()
+    expect(
+      mostCommonRegion([{ region_id: 'aws-us-west-2' }, { region_id: 'aws-us-east-1' }])
+    ).toEqual({ regionId: 'aws-us-west-2', count: 1 })
   })
 
   it('fails on a rejected key without probing further', async () => {
