@@ -6,9 +6,10 @@
  *   `wrangler dev`. Its outbound handlers ARE the egress handlers, and its container time goes
  *   straight to Launch's database.
  * - `HostedSessionSandbox` (`src/sandbox-host/hosted-session-sandbox.ts`) — in the sandbox host
- *   Worker a laptop reaches over a remote service binding (`SESSION_SANDBOX_HOST=remote`). It has
- *   NO outbound handlers (its container calls Anthropic and GitHub directly, with credentials
- *   Launch hands it — the `direct` egress mode) and records no container time.
+ *   Worker a laptop reaches over a remote service binding (`SESSION_SANDBOX_HOST=remote`). Its
+ *   outbound handlers run the same forwarding cores over an EGRESS GRANT Launch pushes to it (the
+ *   host cannot reach Launch's database — the `host` egress mode), and it records no container
+ *   time.
  *
  * One of the TWO files that import the Sandbox SDK (the other is `sandbox/cloudflare-sandbox.ts`).
  * It imports nothing of Launch's database or config, so the host Worker bundles without them.
@@ -22,11 +23,12 @@
  * - **`interceptHttps = true`, set explicitly.** It defaults to `false` on the stable packages
  *   (containers 0.3.7 / sandbox 0.12.10) despite the docs, and without it no HTTPS leaves a locked
  *   sandbox, allow-listed or not (S7 finding 1).
- * - `SessionSandbox` sets `outboundByHost` for `api.anthropic.com` and `github.com`. The registry
- *   is keyed by CLASS NAME (`@cloudflare/containers`), so the host's class inherits none. A host
+ * - EACH subclass sets its own `outboundByHost` for `api.anthropic.com` and `github.com`: the
+ *   registry is keyed by CLASS NAME (`@cloudflare/containers`), so nothing is inherited. A host
  *   must ALSO be on the allow-list for its handler to run (S7: otherwise the proxy answers 520).
- *   A handler identifies the session by `ctx.containerId` — this object's id — never by anything
- *   the sandbox sends.
+ *   A handler identifies the sandbox by `ctx.containerId` — this object's id,
+ *   `this.ctx.id.toString()` — never by anything the sandbox sends. Either way the container holds
+ *   no credential.
  *
  * Container time: `onStart` stamps the start in this object's storage, `onStop` hands the elapsed
  * seconds to the subclass's `recordStop`, bounded at {@link ON_STOP_DB_MS}.

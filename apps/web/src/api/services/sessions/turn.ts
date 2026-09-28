@@ -87,9 +87,8 @@ import {
   createClaudeStreamParser,
   SESSION_WORKDIR,
 } from './claude-stream'
-import { ModelKeyMissingError } from './egress/direct'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
-import { redactModelKeyText } from './model-key'
+import { ModelKeyMissingError, redactModelKeyText } from './model-key'
 import {
   egressFor,
   SandboxInterruptedError,
@@ -475,7 +474,7 @@ async function executeTurn(
     egress: egressFor(ports, db),
   })
 
-  // The turn's cost is what was metered while it ran — by the model proxy, or (`direct`) by the
+  // The turn's cost is what was metered while it ran — by the model proxy, or (`host`) by the
   // turn itself as it ended: either way the row's running total moved.
   const after = await readRow(db, row)
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
@@ -652,8 +651,9 @@ async function streamTurn(
 ): Promise<StreamTurnResult> {
   const out: StreamTurnResult = { result: null, stop: null, failure: null }
 
-  // `direct` (a remote sandbox): the turn carries the key, git gets a fresh token, and the turn
-  // meters itself against what the budget has left (`turn-meter.ts`). `proxied`: none of it.
+  // `host` (a remote sandbox): the host is granted the key and a fresh token (the process gets
+  // only the placeholder), and the turn meters itself against what the budget has left
+  // (`turn-meter.ts`). `proxied`: none of it.
   let egressEnv: Record<string, string>
   let meter: TurnMeter | null = null
   let headroom: BudgetHeadroom = {
@@ -664,8 +664,8 @@ async function streamTurn(
   }
   try {
     await p.egress.prepareGit(sandbox, row)
-    egressEnv = await p.egress.turnEnv()
-    if (p.egress.mode === 'direct') {
+    egressEnv = await p.egress.turnEnv(sandbox, row)
+    if (p.egress.mode === 'host') {
       meter = createTurnMeter(p.policy.model)
       headroom = await budgetHeadroom(db, row, new Date(p.now()))
     }
@@ -765,7 +765,7 @@ async function streamTurn(
   })()
 
   /**
-   * `direct` only: the turn's running cost reached the headroom — stop reading and say why; the
+   * `host` only: the turn's running cost reached the headroom — stop reading and say why; the
    * process itself is stopped below by `terminateTurnProcess` (SIGTERM, then SIGKILL by pid).
    */
   const stopForBudget = async () => {
@@ -842,7 +842,7 @@ async function streamTurn(
   // Launch has stopped reading a process that may still be running: stop it too, or it spends
   // tokens and edits the workspace unseen. Not after a rollout (the container is gone) and not
   // after an `exit` (it is over); a cancel/timeout already sent the SDK kill, so only escalate.
-  // A `direct` turn that reached its budget stops here too (the SDK kill, then the pid).
+  // A `host` turn that reached its budget stops here too (the SDK kill, then the pid).
   const cutOff = out.stop === 'cancelled' || out.stop === 'timeout'
   if (out.stop !== 'rollout' && !exited && (readFailed || cutOff || overBudget || !out.result)) {
     await terminateTurnProcess(sandbox, processId, {

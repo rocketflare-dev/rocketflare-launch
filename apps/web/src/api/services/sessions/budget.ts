@@ -139,7 +139,7 @@ export interface BudgetHeadroom {
 
 /**
  * The spend left before the session's cap or the app's month cap, whichever is nearer — what a
- * `direct`-mode turn (`turn-meter.ts`) may run up before it is stopped, since no proxy checks each
+ * `host`-mode turn (`turn-meter.ts`) may run up before it is stopped, since no proxy checks each
  * of its requests. Read once at the start of the turn: the turn's own cost is not in the ledger
  * until it ends.
  */

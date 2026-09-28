@@ -1,6 +1,6 @@
 /**
- * Metering a turn from Claude Code's own output — the `direct` egress mode (`egress/direct.ts`),
- * where no model proxy sees the requests. Same ledger as the proxy: the same pricing
+ * Metering a turn from Claude Code's own output — the `host` egress mode (`egress/host.ts`), where
+ * the sandbox host's handler keys the requests but cannot reach Launch's database to meter them. Same ledger as the proxy: the same pricing
  * (`@launch/shared/ai/pricing`) and the same write (`recordSessionUsage`: one `ai_usage` row and the
  * session's running totals in ONE transaction, feature `session`).
  *

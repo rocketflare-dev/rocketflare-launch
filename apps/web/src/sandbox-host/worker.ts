@@ -11,10 +11,13 @@
  * in-process — answered as a `HostResult` so an error keeps its name across the binding. Its
  * `fetch` is the preview's way in (a WebSocket upgrade crosses a service binding's `fetch`, never
  * RPC). `ContainerProxy` is exported because the platform routes the container's intercepted
- * traffic through it (with no outbound handlers it passes allow-listed hosts straight through).
+ * traffic through it — and runs `HostedSessionSandbox`'s outbound handlers in it, which inject the
+ * token and key from the sandbox's EGRESS GRANT (`setEgressGrant` / `clearEgressGrant`, stored on
+ * the sandbox's Durable Object, `sandbox-host/egress.ts`).
  *
- * It has no public URL (`workers_dev = false`, `preview_urls = false`) and no secrets: only a
- * binding in the same account reaches it, and it knows nothing about Launch but a sandbox's name.
+ * It has no public URL (`workers_dev = false`, `preview_urls = false`) and no secrets of its own:
+ * only a binding in the same account reaches it, and it knows nothing about Launch but a sandbox's
+ * name and the grant Launch pushed for it.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import {
@@ -23,6 +26,7 @@ import {
   mapSandboxError,
 } from '../api/services/sessions/sandbox/cloudflare-sandbox'
 import {
+  type EgressGrant,
   type HostResult,
   PREVIEW_HEADERS,
   type SandboxHostRpc,
@@ -86,6 +90,13 @@ export default class SandboxHost
     return new CloudflareSandbox(this.env.SESSION_SANDBOX, name, { cfg: SANDBOX_HOST_CONFIG })
   }
 
+  /** The sandbox's Durable Object itself — the same one `getSandbox(ns, name)` reaches. */
+  private object(name: string) {
+    if (!SANDBOX_NAME.test(name)) throw new Error('Not a Launch sandbox name')
+    const ns = this.env.SESSION_SANDBOX
+    return ns.get(ns.idFromName(name))
+  }
+
   start(name: string, opts: SandboxStartOptions = {}) {
     return hostCall(() => done(this.sandbox(name).start(opts)))
   }
@@ -136,6 +147,14 @@ export default class SandboxHost
 
   deleteBackup(name: string, backup: SandboxBackup) {
     return hostCall(() => done(this.sandbox(name).deleteBackup(backup)))
+  }
+
+  setEgressGrant(name: string, grant: EgressGrant) {
+    return hostCall(() => done(this.object(name).setEgressGrant(grant)))
+  }
+
+  clearEgressGrant(name: string) {
+    return hostCall(() => done(this.object(name).clearEgressGrant()))
   }
 
   /** The preview: plain HTTP or the HMR WebSocket upgrade, to one port of one sandbox. */

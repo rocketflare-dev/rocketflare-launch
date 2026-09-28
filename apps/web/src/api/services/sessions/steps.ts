@@ -54,6 +54,7 @@ import type { CheckpointReason, SessionStepContext, SessionStepHooks, TurnOutcom
 import { sessionsPaused } from './lifecycle'
 import {
   egressFor,
+  type SandboxExecResult,
   SandboxInterruptedError,
   type SandboxPort,
   SandboxRestartedError,
@@ -350,9 +351,27 @@ export const repoCloneUrl = (app: Pick<SessionAppRef, 'repoOwner' | 'repoName'>)
   `https://github.com/${app.repoOwner}/${app.repoName}.git`
 
 /**
+ * The lock one checkout holds while it rebuilds the workspace. A step that timed out on Launch's
+ * side leaves its script running in the container (the SDK cannot cancel an `exec`), and the
+ * step's retry would otherwise `rm -rf` and `git init` the same directory underneath it.
+ */
+export const REPO_LOCK_FILE = `${SESSION_LAUNCH_DIR}/repo.lock`
+
+/** How long a checkout waits for an earlier one to finish before it gives up. */
+export const REPO_LOCK_WAIT_SECONDS = 120
+
+/** How many of git's last stderr lines a failed checkout reports. */
+export const CHECKOUT_ERROR_LINES = 15
+
+/**
  * The checkout script: fetch `baseRef` (branch, tag or sha) at depth 50, then check out the
  * session's branch — from the remote when an earlier run pushed it (a resume), else fresh from
  * the base. Prints `base=<sha>` and `head=<sha>`.
+ *
+ * - `GIT_TERMINAL_PROMPT=0`: git never waits for a username on a terminal nobody is at — a
+ *   refused credential fails at once, with git's own message, instead of hanging to the timeout.
+ * - The whole body runs under `flock` on {@link REPO_LOCK_FILE} (file descriptor 9, released when
+ *   the shell exits), waiting up to {@link REPO_LOCK_WAIT_SECONDS} for an abandoned earlier attempt.
  */
 export function checkoutScript(input: {
   url: string
@@ -362,6 +381,10 @@ export function checkoutScript(input: {
   const q = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
   const lines = [
     'set -e',
+    'export GIT_TERMINAL_PROMPT=0',
+    `mkdir -p ${SESSION_LAUNCH_DIR}`,
+    `exec 9>${REPO_LOCK_FILE}`,
+    `flock -w ${REPO_LOCK_WAIT_SECONDS} 9 || { echo "An earlier checkout still holds ${REPO_LOCK_FILE}" >&2; exit 1; }`,
     `rm -rf ${SESSION_WORKSPACE}`,
     `git init -q ${SESSION_WORKSPACE}`,
     `cd ${SESSION_WORKSPACE}`,
@@ -560,13 +583,28 @@ export async function repoStep(
   return inOurContainer(scope, sandbox, bootId, () => checkOut(scope, session, app, sandbox))
 }
 
+/**
+ * A failed checkout, with git's last {@link CHECKOUT_ERROR_LINES} stderr lines — not just its last
+ * one: the cause (an auth refusal, a missing ref, the lock) is usually a line or two above
+ * `fatal:`. Through `safeErrorMessage`, so no token or connection string survives into the event.
+ */
+export function checkoutFailure(
+  app: Pick<SessionAppRef, 'repoOwner' | 'repoName'>,
+  result: Pick<SandboxExecResult, 'exitCode' | 'stderr'>
+): Error {
+  const tail = result.stderr.trim().split('\n').slice(-CHECKOUT_ERROR_LINES).join('\n')
+  return new Error(
+    `Could not check out ${app.repoOwner}/${app.repoName}: ${safeErrorMessage(tail, `git exited ${result.exitCode}`, 2_000)}`
+  )
+}
+
 async function checkOut(
   scope: StepScope,
   session: SessionRow,
   app: SessionAppRef,
   sandbox: SandboxPort
 ): Promise<{ baseSha: string; headSha: string }> {
-  // `direct` (a remote sandbox): the clone authenticates itself; `proxied`: the git proxy does.
+  // `host` (a remote sandbox): the host's git handler is granted the token; `proxied`: nothing.
   await egressFor(scope.ports, scope.db).prepareGit(sandbox, session)
   const result = await sandbox.exec(
     checkoutScript({
@@ -576,11 +614,7 @@ async function checkOut(
     }),
     { timeoutMs: 5 * 60_000 }
   )
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `Could not check out ${app.repoOwner}/${app.repoName}: ${safeErrorMessage(result.stderr.trim().split('\n').at(-1) ?? '', `git exited ${result.exitCode}`)}`
-    )
-  }
+  if (result.exitCode !== 0) throw checkoutFailure(app, result)
   const baseSha = /base=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? ''
   const headSha = /head=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? baseSha
   await sandbox.writeFile(`${SESSION_WORKSPACE}/.claude/settings.local.json`, claudeSettingsLocal())

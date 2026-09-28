@@ -6,8 +6,9 @@
 # `.dev.vars` says `SESSION_SANDBOX_HOST=remote` (docs/SESSIONS-LOCAL.md § Real containers from a
 # laptop); `pnpm dev` then generates `wrangler.dev-remote.toml` with that binding.
 #
-# Its containers call Anthropic and GitHub DIRECTLY with a key and a token local Launch hands them
-# per turn (the `direct` egress mode) — there are no outbound handlers here, and no secrets.
+# Its containers hold no credential: `HostedSessionSandbox`'s outbound handlers inject the GitHub
+# token and the Anthropic key local Launch grants each sandbox over the binding (the `host` egress
+# mode), kept in the sandbox's Durable Object storage. No secrets of its own.
 
 name = "launch-sandbox-dev"
 main = "src/sandbox-host/worker.ts"

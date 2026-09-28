@@ -38,7 +38,7 @@ import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { AppBindings } from '../../types'
 import { NeonSessionDb } from './db/neon-session-db'
-import { DirectEgress } from './egress/direct'
+import { HostEgress } from './egress/host'
 import { GitHubRepoHost } from './repo/github-repo-host'
 import { LocalRepoHost } from './repo/local-repo-host'
 import { CloudflareSandbox } from './sandbox/cloudflare-sandbox'
@@ -156,28 +156,30 @@ export interface ModelUpstream {
 
 /**
  * How a session's container reaches Anthropic and GitHub — the one thing that differs between a
- * container in Launch's own Worker and one on the sandbox host (`SESSION_SANDBOX_HOST=remote`):
+ * container in Launch's own Worker and one on the sandbox host (`SESSION_SANDBOX_HOST=remote`). In
+ * BOTH the container holds no credential and an outbound handler injects it on the way out:
  *
  * | mode      | model calls | git | metering and budget |
  * |-----------|-------------|-----|---------------------|
- * | `proxied` | the placeholder key; `egress/anthropic.ts` swaps the real one in OUTSIDE the container | no credential; `egress/github.ts` injects a token, only for the session's repo and branch | per request, in the model proxy; over budget → 403 before the call |
- * | `direct`  | the real key in the turn process's environment | a repo-scoped installation token as a git credential (`egress/direct.ts`) | per turn, from Claude Code's own usage (`turn-meter.ts`): checked before the turn, and the turn is killed when its running cost reaches the budget |
+ * | `proxied` | the placeholder key; `egress/anthropic.ts` swaps the real one in, in Launch's Worker | `egress/github.ts` injects the session's token, only for its repo and branch | per request, in the model proxy; over budget → 403 before the call |
+ * | `host`    | the placeholder key; the host's handler swaps in the key Launch granted it (`egress/host.ts`) | the host's handler injects the token Launch granted it — same repo and branch rules | per turn, from Claude Code's own usage (`turn-meter.ts`): checked before the turn, and the turn is killed when its running cost reaches the budget |
  *
- * `proxied` is every deployed Launch and `wrangler dev` on local Docker; `direct` is development
- * only (the host cannot reach Launch's database to run the proxies). The turn runner and the
- * checkpoint are the same code in both: they ask this port for the process's extra environment and
- * to make git able to reach the remote, and `proxied` answers "nothing to do".
+ * `proxied` is every deployed Launch and `wrangler dev` on local Docker; `host` is development
+ * only (the host cannot reach Launch's database, so Launch pushes the handlers an egress grant).
+ * The turn runner and the checkpoint are the same code in both: they ask this port to grant git
+ * and the model before they are used, and `proxied` answers "nothing to do".
  */
 export interface SessionEgressPort {
-  readonly mode: 'proxied' | 'direct'
+  readonly mode: 'proxied' | 'host'
   /**
-   * Variables the turn's process gets on top of `claudeTurnEnv`. `direct`: `ANTHROPIC_API_KEY` —
-   * a SECRET, for that one process: never an event, a log line or a step result.
+   * Before a turn: variables the turn's process gets on top of `claudeTurnEnv` — never a secret.
+   * `host` grants the sandbox the model key (on the host, not in the container) and returns only
+   * the placeholder; throws `ModelKeyMissingError` when no key is configured.
    */
-  turnEnv(): Promise<Record<string, string>>
+  turnEnv(sandbox: SandboxPort, session: SessionRow): Promise<Record<string, string>>
   /**
-   * Before git talks to the remote (the clone, a turn, a checkpoint's push): `direct` writes a
-   * fresh installation token as the container's git credential. `proxied`: nothing.
+   * Before git talks to the remote (the clone, a turn, a checkpoint's push): `host` grants the
+   * sandbox a fresh-enough installation token for its repo and branch. `proxied`: nothing.
    */
   prepareGit(sandbox: SandboxPort, session: SessionRow): Promise<void>
 }
@@ -220,7 +222,7 @@ export interface SessionRuntimeContext {
  * session's database is ALWAYS a real Neon branch of the app's project, reached directly from the
  * container. `SESSION_BACKEND=local` swaps only the repo host (the local git server).
  * `SESSION_SANDBOX_HOST=remote` (development only, never with `local`) swaps the sandbox for
- * `RemoteSandbox` over the `SANDBOX_HOST` binding and the egress mode for `direct`; otherwise the
+ * `RemoteSandbox` over the `SANDBOX_HOST` binding and the egress mode for `host`; otherwise the
  * container is this Worker's `SESSION_SANDBOX` (`wrangler dev`'s Docker locally) behind the proxies.
  */
 export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPorts {
@@ -239,7 +241,12 @@ export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPo
     sessionDb: db => new NeonSessionDb(db, cfg),
     repoHost,
     model: { fetch: req => fetch(req) },
-    egress: db => (remote ? new DirectEgress(db, cfg, repoHost(db)) : PROXIED_EGRESS),
+    egress: db =>
+      remote
+        ? new HostEgress(db, cfg, repoHost(db), {
+            setEgressGrant: (name, grant) => sandboxHostBinding(env).setEgressGrant(name, grant),
+          })
+        : PROXIED_EGRESS,
   }
 }
 

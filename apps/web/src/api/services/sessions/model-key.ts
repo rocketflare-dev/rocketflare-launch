@@ -4,8 +4,10 @@
  *
  * - **Source**: the admin credential `anthropic_api_key` (sealed in `admin_credentials`, set in the
  *   setup wizard), falling back to the Worker's `ANTHROPIC_API_KEY` secret (`.dev.vars` locally).
- *   Read per request by the model proxy (`egress/anthropic.ts`), which is the ONLY caller: the key
- *   is swapped into the upstream request and dropped.
+ *   Read per request by the model proxy (`egress/anthropic.ts`): the key is swapped into the
+ *   upstream request and dropped. For a remote sandbox (`egress/host.ts`) it is read per turn and
+ *   pushed to the sandbox host's Durable Object, whose handler swaps it in the same way — it never
+ *   enters the container in either mode.
  * - **The placeholder**: a sandbox is started with `ANTHROPIC_API_KEY=launch-session-placeholder`
  *   (`claudeTurnEnv`, `claude-stream.ts`), so Claude Code believes it has a key and the handler can
  *   tell the call came through a session. It is not a secret, but a session's transcript is shown
@@ -19,6 +21,14 @@ import { getCredential } from '../launch/credentials'
 
 /** What the sandbox holds instead of a key. It must never reach Anthropic, or an event. */
 export const MODEL_KEY_PLACEHOLDER = 'launch-session-placeholder'
+
+/** No key is configured: a turn cannot start (the same sentence the model proxy answers). */
+export class ModelKeyMissingError extends Error {
+  constructor() {
+    super('Launch has no Anthropic key configured')
+    this.name = 'ModelKeyMissingError'
+  }
+}
 
 /** Where the key came from — for a log line or a status, never the key itself. */
 export type ModelKeySource = 'credential' | 'env'
@@ -39,9 +49,9 @@ export async function resolveModelKey(db: Database, cfg: AppConfig): Promise<Mod
 
 /**
  * Anthropic key shapes (`sk-ant-api03-…`, `sk-ant-admin01-…`), the placeholder, and GitHub token
- * shapes (`ghs_…` installation tokens, `ghp_…`, `github_pat_…`) — in the `direct` egress mode
- * (`egress/direct.ts`) the container holds a real key and a real token, and a tool that ran `env`
- * or read the git credential would otherwise print them into the transcript.
+ * shapes (`ghs_…` installation tokens, `ghp_…`, `github_pat_…`) — belt and braces: no container
+ * holds a real key or token, but a repository or a tool's output can still carry one, and the
+ * transcript is shown to people and kept for ever.
  */
 const KEY_PATTERN = new RegExp(
   `sk-ant-[A-Za-z0-9_-]{4,}|${MODEL_KEY_PLACEHOLDER}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}`,

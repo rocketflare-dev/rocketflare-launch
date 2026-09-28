@@ -25,6 +25,10 @@ export class Sandbox<Env = unknown> extends DurableObject<Env> {
   enableInternet: boolean | undefined = true
   allowedHosts?: string[]
   defaultPort?: number
+  /** Lifecycle no-ops, so a subclass's `super.…()` resolves (`HostedSessionSandbox`'s grant). */
+  async onStart(): Promise<void> {}
+  async onStop(_params?: unknown): Promise<void> {}
+  async destroy(): Promise<void> {}
 }
 
 export class ContainerProxy {

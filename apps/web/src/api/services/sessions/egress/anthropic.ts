@@ -26,6 +26,10 @@
  * so the session lookup names no tenant and the tenant is then taken from the row — the entry for
  * this file in `tests/config/unscoped-allowlist.test.ts`.
  *
+ * Steps 2 and 4 are `readModelCall` / `keyedModelRequest` (`forward-model.ts`, no database), which
+ * the sandbox host's `HostedSessionSandbox` runs too — without 3 and 5, which need the database
+ * (`SESSION_SANDBOX_HOST=remote`: the turn meters itself, `turn-meter.ts`).
+ *
  * `count_tokens` is free, so it is keyed but not metered. A response the reader abandons half way
  * (the container died mid-stream) records nothing — the TransformStream's `flush` never runs; the
  * row's running cost is then short by that one call.
@@ -43,15 +47,17 @@ import { recordUsage } from '../../ai/usage'
 import { checkBudget } from '../budget'
 import { MODEL_KEY_PLACEHOLDER, resolveModelKey } from '../model-key'
 import type { ModelUpstream } from '../ports'
+import type { EgressContext } from './forward-git'
+import { anthropicError, keyedModelRequest, type ModelCall, readModelCall } from './forward-model'
 
+export type { EgressContext } from './forward-git'
+export {
+  ALLOWED_MODEL_PATHS,
+  ANTHROPIC_UPSTREAM_ORIGIN,
+  anthropicError,
+  isAllowedModel,
+} from './forward-model'
 export { MODEL_KEY_PLACEHOLDER }
-
-/** What the platform hands an outbound handler (`OutboundHandlerContext` in `@cloudflare/containers`). */
-export interface EgressContext {
-  /** The Durable Object id of the sandbox — `sessions.sandbox_id`. */
-  containerId: string
-  className?: string
-}
 
 /** Everything the handler reaches, injectable so a test drives it with fakes. */
 export interface AnthropicEgressDeps {
@@ -60,19 +66,8 @@ export interface AnthropicEgressDeps {
   now: () => Date
 }
 
-/** Where a keyed request goes. The path and query come from the sandbox's request; the host never does. */
-export const ANTHROPIC_UPSTREAM_ORIGIN = 'https://api.anthropic.com'
-
-/** The only paths a session may call; everything else is a 403. */
-export const ALLOWED_MODEL_PATHS = ['/v1/messages', '/v1/messages/count_tokens'] as const
-
 /** The `ai_usage.feature` a session's model calls are recorded under. */
 export const SESSION_USAGE_FEATURE = 'session'
-
-/** An error in Anthropic's own shape, so Claude Code reports it as the API would. */
-export function anthropicError(status: number, type: string, message: string): Response {
-  return Response.json({ type: 'error', error: { type, message } }, { status })
-}
 
 /**
  * The live session a container belongs to, or null. PRE-TENANT: `sandbox_id` is unique and the
@@ -92,19 +87,6 @@ export async function sessionForSandbox(
   return row ?? null
 }
 
-/** Is `requested` the policy's model — exactly, or a dated id of it (`<model>-YYYYMMDD`)? */
-export function isAllowedModel(requested: unknown, policyModel: string): boolean {
-  if (typeof requested !== 'string' || !requested) return false
-  const want = policyModel.trim().toLowerCase()
-  const got = requested.trim().toLowerCase()
-  return (
-    got === want || new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{8}$`).test(got)
-  )
-}
-
-/** Request headers never forwarded: the sandbox's credentials, and what the new request sets itself. */
-const DROPPED_HEADERS = ['authorization', 'x-api-key', 'host', 'content-length', 'cookie']
-
 const defaultDeps = (): AnthropicEgressDeps => ({
   upstream: { fetch: req => fetch(req) },
   openDb: (env, cfg) => openDatabase({ ...cfg, HYPERDRIVE: env.HYPERDRIVE }),
@@ -123,10 +105,7 @@ export async function handleAnthropic(
   const handle = deps.openDb(env, cfg)
   let session: SessionRow
   let apiKey: string
-  let body: string
-  let model: string
-  let path: string
-  let upstreamUrl: string
+  let call: ModelCall
   try {
     const found = await sessionForSandbox(handle.db, ctx.containerId)
     if (!found) {
@@ -134,32 +113,10 @@ export async function handleAnthropic(
     }
     session = found
 
-    const url = new URL(req.url)
-    path = url.pathname
-    if (req.method !== 'POST' || !(ALLOWED_MODEL_PATHS as readonly string[]).includes(path)) {
-      return anthropicError(
-        403,
-        'permission_error',
-        `Launch sessions may only call POST ${ALLOWED_MODEL_PATHS.join(' and ')}`
-      )
-    }
-
-    body = await req.text()
-    let parsed: Record<string, unknown> | null = null
-    try {
-      parsed = body ? (JSON.parse(body) as Record<string, unknown>) : null
-    } catch {
-      parsed = null
-    }
-    const policy = resolveSessionPolicy(session.policy)
-    if (!parsed || !isAllowedModel(parsed.model, policy.model)) {
-      return anthropicError(
-        403,
-        'permission_error',
-        `This Launch session may only use the model ${policy.model}`
-      )
-    }
-    model = String(parsed.model)
+    // The path and model allow-list (`forward-model.ts`, shared with the sandbox host).
+    const read = await readModelCall(req, resolveSessionPolicy(session.policy).model)
+    if (read instanceof Response) return read
+    call = read
 
     const verdict = await checkBudget(handle.db, session, deps.now())
     if (!verdict.ok) {
@@ -177,26 +134,21 @@ export async function handleAnthropic(
       return anthropicError(503, 'api_error', 'Launch has no Anthropic key configured')
     }
     apiKey = key.apiKey
-    upstreamUrl = `${ANTHROPIC_UPSTREAM_ORIGIN}${path}${url.search}`
   } finally {
     await handle.close()
   }
 
-  const headers = new Headers(req.headers)
-  for (const name of DROPPED_HEADERS) headers.delete(name)
-  headers.set('x-api-key', apiKey)
-  const upstreamReq = new Request(upstreamUrl, { method: 'POST', headers, body })
-
   let res: Response
   try {
-    res = await deps.upstream.fetch(upstreamReq)
+    res = await deps.upstream.fetch(keyedModelRequest(req, call, apiKey))
   } catch (err) {
     logger.warn({ err, sessionId: session.id }, 'model proxy: upstream unreachable')
     return anthropicError(502, 'api_error', 'Launch could not reach the Anthropic API')
   }
 
-  if (path !== '/v1/messages' || !res.ok || !res.body) return res
+  if (call.path !== '/v1/messages' || !res.ok || !res.body) return res
 
+  const model = call.model
   const meter = createUsageMeter(res.headers.get('content-type') ?? '')
   const record = async (): Promise<void> => {
     const usage = meter.result()

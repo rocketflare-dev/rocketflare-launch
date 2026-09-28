@@ -185,7 +185,7 @@ export interface CheckpointDeps {
   emit?: (events: SessionEventInput[]) => Promise<void>
   /** Overrides {@link CHECKPOINT_MAX_FILE_BYTES}. */
   maxFileBytes?: number
-  /** `direct` (a remote sandbox): git gets a fresh token before the push. Absent = `proxied`. */
+  /** `host` (a remote sandbox): the host is granted a fresh token before the push. Absent = `proxied`. */
   egress?: SessionEgressPort
 }
 

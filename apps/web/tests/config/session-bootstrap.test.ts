@@ -37,7 +37,14 @@ import {
   parseLogStream,
   shellQuote,
 } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
-import { checkoutScript, devEnvFor } from '@/api/services/sessions/steps'
+import {
+  CHECKOUT_ERROR_LINES,
+  checkoutFailure,
+  checkoutScript,
+  devEnvFor,
+  REPO_LOCK_FILE,
+  REPO_LOCK_WAIT_SECONDS,
+} from '@/api/services/sessions/steps'
 import type { AppConfig } from '@/config'
 import { FakeSandbox } from '../helpers/fake-sandbox'
 
@@ -182,6 +189,42 @@ describe('the checkout', () => {
     expect(script).toContain('.git/info/exclude')
     const prepare = checkoutScript({ url: 'u', baseRef: 'v1.0.0', branch: null })
     expect(prepare).toContain('git checkout -q --detach "$base"')
+  })
+
+  it('never prompts, and holds the repo lock for the whole checkout', () => {
+    const lines = checkoutScript({ url: 'u', baseRef: 'main', branch: 'session/x' }).split('\n')
+    const at = (needle: string) => lines.findIndex(l => l.includes(needle))
+    expect(lines[0]).toBe('set -e')
+    expect(lines[1]).toBe('export GIT_TERMINAL_PROMPT=0')
+    expect(lines).toContain('mkdir -p /workspace/.launch')
+    expect(lines).toContain(`exec 9>${REPO_LOCK_FILE}`)
+    expect(REPO_LOCK_FILE).toBe('/workspace/.launch/repo.lock')
+    expect(lines[at('flock')]).toMatch(
+      new RegExp(`^flock -w ${REPO_LOCK_WAIT_SECONDS} 9 \\|\\| \\{ echo .*>&2; exit 1; \\}$`)
+    )
+    // The lock is taken before anything touches the workspace, and never released early.
+    expect(at('flock')).toBeLessThan(at('rm -rf'))
+    expect(at('exec 9>')).toBeLessThan(at('flock'))
+    expect(lines.some(l => /flock -u|exec 9>&-/.test(l))).toBe(false)
+  })
+
+  it('a failed checkout reports git’s last lines, redacted — not only the last one', () => {
+    const stderr = [
+      ...Array.from({ length: 20 }, (_, i) => `noise ${i}`),
+      `remote: Invalid username or token for x-access-token:${'ghs_'.padEnd(40, 'x')}@github.com`,
+      "fatal: Authentication failed for 'https://github.com/acme/app.git/'",
+    ].join('\n')
+    const err = checkoutFailure({ repoOwner: 'acme', repoName: 'app' }, { exitCode: 128, stderr })
+    expect(err.message).toMatch(/^Could not check out acme\/app: /)
+    expect(err.message).toContain('Invalid username or token')
+    expect(err.message).toContain('fatal: Authentication failed')
+    expect(err.message).not.toContain('ghs_xxxx')
+    const kept = err.message.split('\n')
+    expect(kept).toHaveLength(CHECKOUT_ERROR_LINES)
+    expect(err.message).not.toContain('noise 6\n')
+    expect(
+      checkoutFailure({ repoOwner: 'a', repoName: 'b' }, { exitCode: 1, stderr: '' }).message
+    ).toBe('Could not check out a/b: git exited 1')
   })
 
   it('quotes so no ref can break out of the shell', () => {

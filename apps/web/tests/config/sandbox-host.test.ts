@@ -6,9 +6,11 @@
  * - the dev config `pnpm dev` generates: `wrangler.toml` untouched plus the remote binding — so the
  *   two deployed tomls never carry it;
  * - `loadConfig` refuses `remote` outside development and with the local git server;
- * - `defaultSessionPorts` picks `RemoteSandbox` + the `direct` egress mode only when asked, and a
+ * - `defaultSessionPorts` picks `RemoteSandbox` + the `host` egress mode only when asked, and a
  *   missing binding fails by name;
- * - the `direct` mode's turn meter and the transcript's scrubbing of GitHub tokens.
+ * - the host Worker's own outbound handlers, and nothing credential-shaped written into a container
+ *   (no credential file, no git credential helper);
+ * - the `host` mode's turn meter and the transcript's scrubbing of GitHub tokens.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -16,11 +18,7 @@ import TOML from '@iarna/toml'
 import { describe, expect, it } from 'vitest'
 import type { ClaudeLineMapping } from '@/api/services/sessions/claude-stream'
 import { createClaudeStreamParser } from '@/api/services/sessions/claude-stream'
-import {
-  DirectEgress,
-  gitCredentialSetupScript,
-  gitProbeScript,
-} from '@/api/services/sessions/egress/direct'
+import { HostEgress } from '@/api/services/sessions/egress/host'
 import { redactModelKeyText } from '@/api/services/sessions/model-key'
 import { defaultSessionPorts, egressFor, PROXIED_EGRESS } from '@/api/services/sessions/ports'
 import { CloudflareSandbox } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
@@ -29,6 +27,7 @@ import { createTurnMeter } from '@/api/services/sessions/turn-meter'
 import type { AppBindings } from '@/api/types'
 import { ConfigError, loadConfig } from '@/config'
 import type { Database } from '@/db/client'
+import { HostedSessionSandbox } from '@/sandbox-host/hosted-session-sandbox'
 import {
   REMOTE_DEV_CONFIG,
   remoteDevConfigText,
@@ -150,7 +149,7 @@ describe('defaultSessionPorts', () => {
     expect(egressFor(ports, db)).toBe(PROXIED_EGRESS)
   })
 
-  it('remote: RemoteSandbox over SANDBOX_HOST, and the direct egress mode', () => {
+  it('remote: RemoteSandbox over SANDBOX_HOST, and the host egress mode', () => {
     const env = {
       ...createTestEnv({ APP_ENV: 'development', SESSION_SANDBOX_HOST: 'remote' }),
       SANDBOX_HOST: { fetch: async () => new Response('ok') },
@@ -159,8 +158,8 @@ describe('defaultSessionPorts', () => {
     const sandbox = ports.sandbox('s-1')
     expect(sandbox).toBeInstanceOf(RemoteSandbox)
     expect(sandbox.id).toBe('remote:s-1')
-    expect(egressFor(ports, db)).toBeInstanceOf(DirectEgress)
-    expect(egressFor(ports, db).mode).toBe('direct')
+    expect(egressFor(ports, db)).toBeInstanceOf(HostEgress)
+    expect(egressFor(ports, db).mode).toBe('host')
   })
 
   it('remote without the binding fails by name when a sandbox is asked for', () => {
@@ -170,7 +169,7 @@ describe('defaultSessionPorts', () => {
   })
 })
 
-describe('the direct mode’s turn meter', () => {
+describe('the host mode’s turn meter', () => {
   const mappingsOf = (lines: string[]): ClaudeLineMapping[] => {
     const parser = createClaudeStreamParser(1)
     return [...parser.push(`${lines.join('\n')}\n`), ...parser.end()]
@@ -240,7 +239,7 @@ describe('the direct mode’s turn meter', () => {
   })
 })
 
-describe('the transcript scrubs what a direct-mode container holds', () => {
+describe('the transcript scrubs key and token shapes', () => {
   it('redacts GitHub tokens as well as Anthropic keys', () => {
     const token = `ghs_${'a'.repeat(36)}`
     const line = `https://x-access-token:${token}@github.com and sk-ant-api03-abcdefgh and github_pat_${'b'.repeat(40)}`
@@ -251,24 +250,30 @@ describe('the transcript scrubs what a direct-mode container holds', () => {
   })
 })
 
-describe('the direct mode’s git credential', () => {
-  // The first remote clone found no helper: `--global` is `$HOME/.gitconfig`, and the SDK's shells
-  // inherit HOME from its control server. The system config does not depend on HOME.
-  it('goes in the system config, and the script proves git sees it', () => {
-    const script = gitCredentialSetupScript('/workspace/.launch/git-credentials')
-    expect(script).toContain(
-      "git config --system credential.https://github.com.helper 'store --file=/workspace/.launch/git-credentials'"
-    )
-    expect(script).not.toContain('--global')
-    expect(script).toContain('git config --get-urlmatch credential.helper https://github.com/')
-    expect(script).toContain('exit 1')
+describe('the host mode puts no credential in the container', () => {
+  // The first design wrote the token to a file for git's `store` helper, which erases the file on
+  // a fresh token's 401 — the clone then failed "could not read Username". The token and the key
+  // now live only in the host Durable Object's grant, injected by its outbound handlers.
+  it('the host class declares its own handlers for both hosts', () => {
+    expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
+      'api.anthropic.com',
+      'github.com',
+    ])
   })
 
-  it('probes the clone path without ever printing the helper’s password', () => {
-    const probe = gitProbeScript('https://github.com/o/r.git')
-    expect(probe).toContain("git credential fill 2>/dev/null | grep -q '^username='")
-    expect(probe).toContain("git ls-remote 'https://github.com/o/r.git' HEAD")
-    expect(probe).toContain('Basic <redacted>')
-    expect(probe).not.toMatch(/grep[^\n]*password/)
+  it('no session source writes a git credential file or configures a credential helper', () => {
+    const dirs = ['src/api/services/sessions', 'src/sandbox-host']
+    const files = dirs.flatMap(dir =>
+      fs
+        .readdirSync(path.join(WEB_DIR, dir), { recursive: true, encoding: 'utf8' })
+        .filter(f => f.endsWith('.ts'))
+        .map(f => path.join(WEB_DIR, dir, f))
+    )
+    expect(files.length).toBeGreaterThan(10)
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf8')
+      expect(source, file).not.toMatch(/credential\.helper|credential\.https|git-credentials/)
+      expect(source, file).not.toMatch(/helper '?store/)
+    }
   })
 })
