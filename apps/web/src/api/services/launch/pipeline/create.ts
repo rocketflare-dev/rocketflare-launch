@@ -29,7 +29,7 @@ import {
   newAppSlugProblem,
   type TeardownRequest,
 } from '@launch/shared/launch-pipeline'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { type AppRow, appEnvironments, appOwners, apps, tenantUsers } from '../../../../db/schema'
 import {
@@ -256,7 +256,12 @@ export async function launchRequestedApp(
   return 'started'
 }
 
-/** Status `failed` and `app.launch_failed` — the one terminal write both the route and the run make. */
+/**
+ * Status `failed` and `app.launch_failed` — the one terminal write the route, the run, the
+ * reconcile and a wait failed on read (`wait-poll.ts`) make. Once: an app that is already `failed`
+ * is left alone and audited no second time, so the Workflow's own failure path after a read (or a
+ * stop) failed the app first is a no-op. A retry sets `provisioning` again before it starts.
+ */
 export async function markLaunchFailed(
   db: Database,
   tenantId: string,
@@ -266,10 +271,12 @@ export async function markLaunchFailed(
 ): Promise<void> {
   const error = err instanceof Error ? err.message : String(err)
   await db.transaction(async tx => {
-    await tx
+    const changed = await tx
       .update(apps)
       .set({ status: 'failed', updatedAt: new Date() })
-      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId)))
+      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId), ne(apps.status, 'failed')))
+      .returning({ id: apps.id })
+    if (changed.length === 0) return
     await recordAudit(tx, {
       tenantId,
       ...SYSTEM_ACTOR,

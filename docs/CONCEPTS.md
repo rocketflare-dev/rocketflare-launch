@@ -966,6 +966,21 @@ step that mints one puts it on the Worker itself.
   at that poll with a scrubbed sentence — and, when `APP_URL` is not public, says that the job
   could not call Launch back. A poll that finds a failure answers `{ done, error }` and the
   Workflow throws outside the poll's `step.do`, so its retries do not fail it again.
+  **The same poll also runs on READ** (`pipeline/wait-poll.ts`, from `GET /api/apps/:id/pipeline`
+  through `pipeline/read.ts`; never throws into the request): for the latest create run whose
+  `scaffold.wait` or `deploy_staging.wait` row is `running`, the one request whose compare-and-set
+  on a `readPolledAt` stamp in the row's `external_ids` lands (at most once per 20 s per wait,
+  `WAIT_POLL_WINDOW_MS`; the row's `updated_at` — the reconcile's staleness clock — is left alone)
+  runs `scaffoldPoll` / `deployPoll` with the request's credentials. So the run link appears as soon
+  as GitHub lists the run, and a job that died (a red gate never reaches `/ci/deploy`, so no event
+  comes) fails its wait at the next page read instead of the Workflow's next round — which, under
+  local wrangler, may never come (a `waitForEvent` timeout does not always wake the instance, and
+  the reconcile rightly leaves a `waiting` one alone). A wait that settled on read sends its event
+  (`SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`) to `apps.launch_instance_id`, so a live
+  instance wakes and its next poll proceeds or fails the run; a failed one also fails the app with
+  `app.launch_failed` there and then. `markLaunchFailed` writes only a status change, so the
+  Workflow's own failure path after it (or after a Stop) adds no second audit row. The run derives
+  `failed` from the row, so Retry is offered even if the instance never wakes.
 - **Retry** (`POST /api/apps/:id/pipeline/retry`, `manage App`, only a `failed` run): a new
   instance `<runId>-rN` with the same run id, `N` one past the highest an earlier retry's
   `app.pipeline.retried` audit row recorded (local wrangler hands back an existing instance id
@@ -1021,7 +1036,10 @@ step that mints one puts it on the Worker itself.
 minutes after its last row at the earliest — about 9 for a stalled local step; under `wrangler dev`
 a WAIT whose instance died, or a run that died between steps, can still read `waiting`/`running`
 from the local engine and is left alone — Stop it (a teardown has no Stop); waits are rounds, so a lost event — or a job's failure — costs up to one round (1
-minute for the scaffold, 3 for the deploy); a run that GitHub lists but leaves `queued` (no runner
+minute for the scaffold, 3 for the deploy) while nobody has the app's page open (with it open, the
+read poll sees a dead job within 20 s; nothing polls a wait without a reader), and a job that
+SUCCEEDED but whose event was lost still waits for the Workflow's next poll to go on (the read
+nudges it; a local instance that never wakes needs Stop and Retry); a run that GitHub lists but leaves `queued` (no runner
 free) is waited on for the full 30 minutes; a GitHub API error while polling is retried by the poll
 step and then fails the run as that error (no run link); the
 `production` step is always skipped (the first production release is a separate, approved
