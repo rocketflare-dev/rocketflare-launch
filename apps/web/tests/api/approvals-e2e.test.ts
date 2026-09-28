@@ -18,7 +18,14 @@
  * 5. Bob approves in the inbox: a published GitHub Release, and a pre-approval bound to the tag.
  * 6. The production run on the tag claims it at `start` → upload → activate → finish →
  *    `production_active`.
- * 7. The audit log is sealed, and `GET /api/audit/verify` is ok.
+ * 7. The `audit.seal` task seals the log, `GET /api/audit/verify` is ok, and every link of the
+ *    chain is in the export with its `seq` and `hash`.
+ *
+ * Asserted on the way: the request waits in bob's inbox (`box=mine`, the badge) and in alice's
+ * `requested`, never her `mine`; the detail names who it waits on (`eligible`: bob and the owner,
+ * not alice); `/chain` is every link in time order — `session.shipped` → `pr.merged` →
+ * `release.created` → staging `deploy.*` → `release.staging_active` → `approval.*` → production
+ * `deploy.*` → `release.production` — with the approval rows carrying its id.
  *
  * Variants: two approvals required (N=2), expiry (the sweep), and a job-originated run (a Release
  * published by hand while the job waits) approved from the app page.
@@ -29,8 +36,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { approvalDetailSchema } from '@launch/shared/launch-approvals'
-import { auditVerifySchema } from '@launch/shared/launch-audit'
+import {
+  approvalCountSchema,
+  approvalDetailSchema,
+  approvalListResponseSchema,
+} from '@launch/shared/launch-approvals'
+import { auditExportRowSchema, auditVerifySchema } from '@launch/shared/launch-audit'
 import {
   promoteReleaseResponseSchema,
   releaseChainSchema,
@@ -39,8 +50,9 @@ import {
 import { and, eq, isNotNull } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '@/api/index'
+import { dispatchScheduled } from '@/api/scheduled'
 import { sweepApprovals } from '@/api/services/approvals/sweep'
-import { sealTenant } from '@/api/services/launch/audit-chain'
+import { auditSealTask } from '@/api/services/launch/audit-chain'
 import type { GitHubOidcClaims } from '@/api/services/launch/ci/github-oidc'
 import { followMergedPullRequests, githubPullReader } from '@/api/services/sessions/checks-cron'
 import { loadConfig } from '@/config'
@@ -324,6 +336,25 @@ describe('P4 exit: a production deploy waits in the inbox and the approval relea
       await (await request(`/api/approvals/${approvalId}`, { headers: bob.cookie }, { env })).json()
     )
     expect(pending).toMatchObject({ status: 'pending', kind: 'deploy.production', canDecide: true })
+    // It waits in bob's inbox and on his badge — and in alice's "requested", never her "mine".
+    const box = async (who: Person, which: 'mine' | 'requested') =>
+      approvalListResponseSchema
+        .parse(
+          await (
+            await request(`/api/approvals?box=${which}`, { headers: who.cookie }, { env })
+          ).json()
+        )
+        .items.map(i => i.id)
+    const badge = async (who: Person) =>
+      approvalCountSchema.parse(
+        await (await request('/api/approvals/count', { headers: who.cookie }, { env })).json()
+      ).count
+    expect(await box(bob, 'mine')).toContain(approvalId)
+    expect(await badge(bob)).toBe(1)
+    expect(await box(alice, 'requested')).toContain(approvalId)
+    expect(await box(alice, 'mine')).not.toContain(approvalId)
+    // Named: who it waits on — bob and the organisation's owner, never alice (the author).
+    expect(pending.eligible?.map(p => p.id).sort()).toEqual([admin.id, bob.id].sort())
     const told = await db
       .select()
       .from(notifications)
@@ -341,6 +372,8 @@ describe('P4 exit: a production deploy waits in the inbox and the approval relea
     // 5. Bob approves: the GitHub Release is published and the pre-approval bound to the tag.
     const approved = await decideRoute(approvalId, bob)
     expect(approved.status, await approved.clone().text()).toBe(200)
+    expect(await box(bob, 'mine')).not.toContain(approvalId)
+    expect(await badge(bob)).toBe(0)
     expect(cloud.github.releaseFor(seeded.owner, seeded.repo, '0.1.1')).toMatchObject({
       via: 'api',
     })
@@ -394,15 +427,43 @@ describe('P4 exit: a production deploy waits in the inbox and the approval relea
     for (const e of chain.events.filter(e => e.action.startsWith('approval.'))) {
       expect(e.approvalId).toBe(approvalId)
     }
+    // In time order; staging's deploy before the approval, production's after it.
+    const times = chain.events.map(e => e.at.getTime())
+    expect(times).toEqual([...times].sort((a, b) => a - b))
+    const deployEnvs = chain.events
+      .filter(e => e.action === 'deploy.activated')
+      .map(e => e.summary.after?.environment)
+    expect(deployEnvs).toEqual(['staging', 'production'])
+    const decidedAt = actions.indexOf('approval.approved')
+    const productionStart = chain.events.findIndex(
+      e => e.action === 'deploy.started' && e.summary.after?.environment === 'production'
+    )
+    expect(productionStart).toBeGreaterThan(decidedAt)
+    expect(chain.events.find(e => e.action === 'pr.merged')?.summary.after).toMatchObject({
+      number: f.shipped.number,
+    })
     // No migrator URL anywhere: not in the chain, not in any audit row.
     const everything = await db.select().from(auditEvents).where(eq(auditEvents.tenantId, tenantId))
     expect(JSON.stringify([chain, everything])).not.toMatch(/postgres(ql)?:\/\//)
 
-    // 7. Sealed and verified.
-    await sealTenant(db, tenantId)
+    // 7. Sealed by the audit.seal cron task (scoped to this tenant) and verified.
+    const cron = createExecutionContext()
+    const reports = await dispatchScheduled('*/5 * * * *', env, cron, {
+      '*/5 * * * *': [auditSealTask({ tenantIds: [tenantId] })],
+    })
+    await waitOnExecutionContext(cron)
+    expect(reports).toEqual([expect.objectContaining({ task: 'audit.seal', status: 'ok' })])
     const verify = await request('/api/audit/verify', { headers: admin.cookie }, { env })
     expect(verify.status, await verify.clone().text()).toBe(200)
     expect(auditVerifySchema.parse(await verify.json())).toMatchObject({ ok: true, unsealed: 0 })
+    // Every link of the chain is in the export with its seq and hash.
+    const exported = await request('/api/audit/export', { headers: admin.cookie }, { env })
+    const rows = (await exported.text())
+      .split('\n')
+      .filter(Boolean)
+      .map(line => auditExportRowSchema.parse(JSON.parse(line)))
+    const sealedIds = new Set(rows.filter(r => r.seq !== null && r.hash).map(r => r.id))
+    expect(chain.events.every(e => sealedIds.has(e.id))).toBe(true)
   })
 })
 
