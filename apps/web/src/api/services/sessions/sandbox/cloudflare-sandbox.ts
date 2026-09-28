@@ -285,6 +285,11 @@ export class CloudflareSandbox implements SandboxPort {
   }
 
   fetch(port: number, req: Request): Promise<Response> {
+    // A WebSocket upgrade (Vite HMR) cannot cross `containerFetch` — an RPC, which carries no
+    // socket. `wsConnect` sends it through the Durable Object's own `fetch`, which upgrades.
+    if (req.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+      return this.sandbox.wsConnect(req, port)
+    }
     return this.sandbox.containerFetch(req, port)
   }
 

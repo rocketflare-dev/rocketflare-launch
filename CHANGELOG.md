@@ -22,6 +22,8 @@
   GitHub run died (cancelled, runner lost mid-migration) is now marked failed when the page reads
   it, its migration credential revoked, instead of staying "deploying" for ever. Migration 0028
   adds `deploy_tickets.activation_started_at` and `run_polled_at`: run `pnpm db:migrate`.
+- A session preview's Vite HMR WebSocket now connects: an upgrade goes through the Sandbox SDK's
+  `wsConnect` instead of `containerFetch`, which is an RPC and cannot carry a socket.
 - Coding sessions no longer stall silently. Every sandbox call a boot step makes has a deadline
   and a readable error ("Installing and seeding: the sandbox (setAllowedHosts) did not answer within
   90 s"), and so does every Neon call; a failed install, bootstrap or dev server shows its last 40

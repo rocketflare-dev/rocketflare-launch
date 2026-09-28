@@ -285,7 +285,8 @@ export interface RecordedSandboxCall {
  * Stub `SESSION_SANDBOX` namespace (Launch P3). `idFromName(name)` is a stable id whose
  * `toString()` is `fake-sandbox-<name>` — what `CloudflareSandbox.id` (and so `sessions.sandbox_id`)
  * reads under test. `get(id)` answers a stub whose every RPC method records `{ name, method, args }`
- * in `calls` and resolves `undefined`, except `containerFetch(req, port)` / `fetch(req)`, which
+ * in `calls` and resolves `undefined`, except `containerFetch(req, port)` / `wsConnect(req, port)`
+ * / `fetch(req)`, which
  * answer through `respond` (default 502) — enough for a preview-gateway test that goes through
  * `getSandbox`. The container itself is `FakeSandbox` (`tests/helpers/fake-sandbox.ts`): code under
  * test takes a `SandboxPort`, not this.
@@ -326,6 +327,10 @@ export class FakeSandboxNamespace {
         },
         containerFetch: async (req: Request, port?: number) => {
           this.calls.push({ name, method: 'containerFetch', args: [req.url, port] })
+          return this.respond(name, req, port)
+        },
+        wsConnect: async (req: Request, port: number) => {
+          this.calls.push({ name, method: 'wsConnect', args: [req.url, port] })
           return this.respond(name, req, port)
         },
       } as Record<string, unknown>,
