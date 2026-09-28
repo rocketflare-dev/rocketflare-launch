@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The launch step list no longer shows an attempt counter ("×8") or "failed after N attempts":
+  the count summed every Retry and Re-scaffold and never reset. The API still reports `attempt`.
 - New apps are scaffolded from Rocketflare kit 0.15.5, whose `db:migrate:ci` works as the app's
   `migrator` (no CREATEDB).
 - A staging deploy whose job stopped after upload (its `db:migrate:ci` failed, then `finish` ran)

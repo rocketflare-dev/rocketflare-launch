@@ -1,7 +1,7 @@
 /**
  * A launch or a teardown as it happens (Launch P2): every row of `APP_LAUNCH_VIEW_STEPS` /
  * `APP_TEARDOWN_VIEW_STEPS` in order (a CI job's start / wait / check is one row), grouped into a few phases a person can follow, each with its
- * status, attempt count and duration; a link to the step's GitHub Actions run once it is known (the
+ * status and duration; a link to the step's GitHub Actions run once it is known (the
  * scaffold and staging-deploy jobs); the failed step's error, verbatim; "Retry from failed step"
  * for whoever may retry — beside it, when the view says `canRescaffold` (a failed launch that never
  * deployed), "Re-scaffold from kit <tag>" behind a confirmation that says what is replaced and what
@@ -244,14 +244,9 @@ function StepRow({ step }: { step: PipelineStep }) {
         >
           {step.label}
         </span>
-        {(step.url || step.attempt > 1) && (
+        {step.url && (
           <span className="mt-0.5 flex flex-wrap items-center gap-2">
-            {step.url && <RunLink url={step.url} className="text-xs leading-5" />}
-            {step.attempt > 1 && (
-              <span className="status-badge no-dot tone-warning" title={`attempt ${step.attempt}`}>
-                ×{step.attempt}
-              </span>
-            )}
+            <RunLink url={step.url} className="text-xs leading-5" />
           </span>
         )}
       </div>
@@ -440,10 +435,7 @@ export function PipelineProgress({
         <div className="alert alert-error alert-soft items-start text-sm" role="alert">
           <XCircleIcon className="w-5 h-5 shrink-0" />
           <div className="min-w-0 flex-1 space-y-1.5">
-            <p className="font-medium">
-              {failed.label} failed
-              {failed.attempt > 1 ? ` after ${failed.attempt} attempts` : ''}
-            </p>
+            <p className="font-medium">{failed.label} failed</p>
             {failed.error && (
               <pre className="font-mono text-xs whitespace-pre-wrap break-words opacity-90">
                 {failed.error}

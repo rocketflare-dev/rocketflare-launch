@@ -455,7 +455,8 @@ describe('AppDetailPage — the launch', () => {
     expect(within(panel).getByText(/Step 5 of 15/)).toBeInTheDocument()
     expect(within(panel).getAllByRole('img', { name: 'Done' })).toHaveLength(4)
     expect(within(panel).getAllByRole('img', { name: 'Running' })).toHaveLength(1)
-    expect(within(panel).getByTitle('attempt 3')).toBeInTheDocument()
+    // No attempt counter: it summed every Retry and Re-scaffold and never reset.
+    expect(within(panel).queryByTitle(/^attempt /)).not.toBeInTheDocument()
     expect(within(panel).getAllByText('4s').length).toBeGreaterThan(0)
     // The sign-in card waits: the pipeline registers the client itself.
     expect(screen.queryByRole('button', { name: /Register OIDC client/ })).not.toBeInTheDocument()
@@ -477,7 +478,8 @@ describe('AppDetailPage — the launch', () => {
     )
     const panel = await screen.findByRole('region', { name: 'Launch progress' })
     const alert = within(panel).getByRole('alert')
-    expect(alert).toHaveTextContent('Create storage, queue and KV failed after 3 attempts')
+    expect(alert).toHaveTextContent('Create storage, queue and KV failed')
+    expect(alert).not.toHaveTextContent(/attempts/)
     expect(alert).toHaveTextContent('R2: bucket expenses-files-staging: HTTP 500 internal error')
     fireEvent.click(within(alert).getByRole('button', { name: /Retry from failed step/ }))
     await waitFor(() => expect(retried).toBe(true))
