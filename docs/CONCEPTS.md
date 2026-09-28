@@ -1293,7 +1293,16 @@ reload) is restarted as `<id>-rN` from the row.
   terminated and the session settled: `ending` when the person asked to end it, else `failed`
   naming the step that was running; then a FRESH instance (`restartSessionInstance`) does the
   cleanup, because `claim` sends an `ending` session, and a settled one with no `ended_at`, straight
-  to `cleanup`. The same path cleans up a session settled `failed` by hand whose branch was never
+  to `cleanup`. **A `working` turn** is covered the same way — a running turn writes the heartbeat
+  every 30 s from its cancel watch (`turn.ts`) — but a dead turn is not a dead session: the turn
+  ends `turn.failed` ("This turn stopped (its Workflow ended errored). Launch is restarting the
+  session from its last checkpoint; send your message again."), the row goes back to `ready`, and
+  the fresh instance's `claim` takes its lost-instance path: destroy the container, `suspended`
+  with a `resume`, boot again from the branch. The container is never kept, even when it is still
+  up — the dead turn's Claude Code process may still be running in it with nobody reading its
+  output, and a new instance cannot adopt it — so the dead turn's unsaved edits are lost; the
+  branch holds the previous turn's checkpoint. A `claim` that finds a turn `working` by any other
+  road (a wake that had to restart a lost instance) closes it with `turn.failed` too. The same path cleans up a session settled `failed` by hand whose branch was never
   deleted. **The app's `dev` prepare claim** (`apps.session_db.status = preparing`) records its
   session and time; a claim whose session is no longer active, or older than 30 minutes, is taken
   over, and `fail` / `cleanup` give back a claim their session still holds (`failed`).
@@ -1303,9 +1312,9 @@ per-slice suites) and booted locally in slice 3b; never deployed. No real model 
 anywhere — only the fake Claude Code output (`claudeStreamJson`, reconstructed from the S7
 transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in
 the same checkout) kills the running step; the reconcile settles such a boot as failed after 3
-quiet minutes rather than resuming it — a new session is the recovery. A `working` turn whose
-instance died is not reconciled (the turn's own timeout and `turn-settle` cover a live instance
-only). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+quiet minutes rather than resuming it — a new session is the recovery; a turn it kills is failed
+after 3 quiet minutes and the session re-boots, losing that turn's unsaved edits. A `shipping`
+session whose instance died is not reconciled (no heartbeat is read for it). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container.
 
 ### 18.10 The sandbox and the local backend

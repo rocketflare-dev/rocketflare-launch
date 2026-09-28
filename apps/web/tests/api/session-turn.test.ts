@@ -270,6 +270,35 @@ describe('runTurn: a turn that does not finish', () => {
     expect((await reload(row)).status).toBe('ready')
   })
 
+  it('a running turn writes the heartbeat the reconcile reads, only while working', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ hang: true }))
+    )
+    const base = Date.parse('2030-01-01T00:00:00Z')
+    let clock = base
+    const beats: number[] = []
+    await runTurn(db, ports, row, {
+      ...FAST,
+      now: () => clock,
+      sleep: async ms => {
+        clock += ms
+        await tick()
+        const current = await reload(row)
+        if (current.status === 'working' && current.lastActivityAt) {
+          beats.push(current.lastActivityAt.getTime() - base)
+        }
+      },
+      cancelPollMs: 2_000,
+      flushMs: 250,
+      heartbeatMs: 4_000,
+      timeoutMs: 10_000,
+    })
+    // The claim's own write is 0; the watcher moves it every 4 s while the process runs.
+    expect(beats.some(ms => ms >= 4_000 && ms < 10_000)).toBe(true)
+    expect((await reload(row)).status).toBe('ready')
+  })
+
   it('a rollout mid-turn: turn.interrupted { rollout } and the session is suspended', async () => {
     const { row } = await readySession()
     const ports = createFakeSessionPorts().script(sb =>

@@ -13,18 +13,20 @@
  *   session that fails holding it gives it back;
  * - a settled session never cleaned up (a07e371e, failed by hand) is cleaned up by a fresh instance;
  * - the reconcile (`services/sessions/reconcile.ts`) settles a boot whose Workflow died, throttled,
- *   on read.
+ *   on read — and a TURN whose Workflow died: the turn fails, the session goes back to `ready`, and
+ *   a fresh instance boots it again from its branch.
  */
 import { SESSION_WAKE_EVENT } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
+import { encryptToken } from '@/api/auth/oauth-encryption'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import { reconcileSession, reconcileStaleSessions } from '@/api/services/sessions/reconcile'
 import { DEV_LOG_FILE } from '@/api/services/sessions/rocketflare-dev'
-import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
+import { BOOT_STEP_LABELS, LOST_TURN_MESSAGE } from '@/api/services/sessions/steps'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { apps, auditEvents, type SessionRow, sessionEvents, sessions } from '@/db/schema'
@@ -500,5 +502,142 @@ describe('reconcile (a Workflow that died under a quiet session)', () => {
     expect(workflowOf(h).created.map(c => c.id)).toEqual(
       expect.arrayContaining([`${quiet.id}-r1`, `${leftover.id}-r1`])
     )
+  })
+})
+
+describe('reconcile (a Workflow that died under a running turn)', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+  const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+
+  /** A booted session in the middle of turn 1, its heartbeat `quietFor` minutes old. */
+  async function working(h: Harness, quietFor: number, set: Partial<SessionRow> = {}) {
+    const cfg = loadConfig(h.env)
+    await patch(h.row, {
+      status: 'working',
+      instanceId: h.row.id,
+      turnCount: 1,
+      baseSha: BASE_SHA,
+      sandboxId: h.sandbox().id,
+      dbUriSealed: await encryptToken(
+        cfg,
+        'postgresql://session_owner:pw@ep-x.us-east-2.aws.neon.tech/session_app'
+      ),
+      lastActivityAt: minutesAgo(quietFor),
+      ...set,
+    })
+    await db.insert(sessionEvents).values([
+      {
+        sessionId: h.row.id,
+        tenantId: h.row.tenantId,
+        seq: 1,
+        turn: 1,
+        type: 'turn.start',
+        data: { turn: 1 },
+      },
+    ])
+    return reload(h.row)
+  }
+  const turnEvents = async (row: SessionRow) =>
+    (await listSessionEvents(db, row.tenantId, row.id)).filter(e => e.type.startsWith('turn.'))
+
+  it('a turn with a fresh heartbeat costs nothing', async () => {
+    const h = await harness()
+    const row = await working(h, 1)
+    expect(await reconcileSession(db, h.env, row)).toEqual({ outcome: 'skipped' })
+    expect(workflowOf(h).statusCalls).toEqual([])
+  })
+
+  it('an errored Workflow: the TURN fails with a sentence, the session is ready again, and a fresh instance boots it from its branch', async () => {
+    const h = await harness()
+    const row = await working(h, 4, { cancelRequestedAt: minutesAgo(5) })
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'errored' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'ready',
+      instanceStatus: 'errored',
+      restartedAs: `${row.id}-r1`,
+    })
+    const after = await reload(row)
+    expect(after).toMatchObject({
+      status: 'ready',
+      error: null,
+      cancelRequestedAt: null,
+      instanceId: `${row.id}-r1`,
+    })
+    const closed = (await turnEvents(row)).at(-1)
+    expect(closed).toMatchObject({ type: 'turn.failed', turn: 1 })
+    expect((closed?.data as { message?: string } | undefined)?.message).toBe(
+      'This turn stopped (its Workflow ended errored). Launch is restarting the session from its last checkpoint; send your message again.'
+    )
+
+    // The fresh instance's claim finds a live row: the old container goes, the session boots again.
+    let statusAtWait: string | undefined
+    const run = await drive(h, async () => {
+      statusAtWait ??= (await reload(row)).status
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(0, 8)).toEqual([
+      'claim',
+      'inspect#0',
+      'resume#0',
+      'sandbox.start#1',
+      'repo#1',
+      'bootstrap#1',
+      'dev#1',
+      'transcript#1',
+    ])
+    expect(statusAtWait).toBe('ready')
+    expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
+    // Closed once: the claim found `ready`, not `working`, so it wrote no second turn.failed.
+    expect((await turnEvents(row)).filter(e => e.type === 'turn.failed')).toHaveLength(1)
+  })
+
+  it('a turn quiet for 3 minutes under a "running" instance is dead too: terminated first', async () => {
+    const h = await harness()
+    const row = await working(h, 4)
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'running' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({ outcome: 'settled', status: 'ready' })
+    expect(wf.terminated).toEqual([row.id])
+    const closed = (await turnEvents(row)).at(-1)
+    expect((closed?.data as { message?: string } | undefined)?.message).toMatch(
+      /its Workflow was running, but its turn had not moved for 3 minutes/
+    )
+  })
+
+  it('End asked during a dead turn ends the session', async () => {
+    const h = await harness()
+    await working(h, 2, { requestedAction: 'end', cancelRequestedAt: minutesAgo(1) })
+    const result = await reconcileSession(db, h.env, await reload(h.row), { stallMs: 75_000 })
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'ending',
+      instanceStatus: 'not found',
+    })
+    expect(await reload(h.row)).toMatchObject({ status: 'ending', requestedAction: null })
+  })
+
+  it('the cron sweep covers a dead turn', async () => {
+    const h = await harness()
+    const row = await working(h, 6)
+    workflowOf(h).setStatus(row.id, { status: 'terminated' })
+    await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })
+    expect((await reload(row)).status).toBe('ready')
+  })
+
+  it('a lost instance found by a fresh claim (a wake that restarted it) closes the turn too', async () => {
+    const h = await harness()
+    const row = await working(h, 0)
+    await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
+    expect(failed).toHaveLength(1)
+    expect(failed[0]?.data).toEqual({ turn: 1, message: LOST_TURN_MESSAGE })
   })
 })
