@@ -24,7 +24,7 @@
  *    and GitHub answers an unauthenticated request for a private repo with a 404. So when the
  *    token is fresh (minted by this request, or sealed within the last `FRESH_TOKEN_WINDOW_MS`)
  *    and the answer is 401 or 404, the SAME request is sent again after each of
- *    `FRESH_TOKEN_RETRY_DELAYS_MS` (0.5 s, 1 s, 2 s). Replaying is safe: the body is already
+ *    `FRESH_TOKEN_RETRY_DELAYS_MS` (0.5, 1, 2 and 4 s). Replaying is safe: the body is already
  *    buffered, and a 401/404 means GitHub did nothing with it. A token that has been valid for a
  *    while gets no retry — its 404 is real.
  *

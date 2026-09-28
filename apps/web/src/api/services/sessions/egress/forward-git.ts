@@ -21,8 +21,12 @@
 export const INSTALLATION_TOKEN_TTL_MS = 60 * 60 * 1000
 /** A token minted this recently may still be settling at GitHub. */
 export const FRESH_TOKEN_WINDOW_MS = 60 * 1000
-/** The backoff before each retry of a fresh token's 401/404. */
-export const FRESH_TOKEN_RETRY_DELAYS_MS: readonly number[] = [500, 1000, 2000]
+/**
+ * The backoff before each retry of a fresh token's 401/404: about 7.5 s in all. A session's first
+ * clone was seen still refused 3.5 s after the mint (2026-09-28); Octokit's auth-app retries a
+ * fresh installation token's 401 for 5 s after its creation for the same reason.
+ */
+export const FRESH_TOKEN_RETRY_DELAYS_MS: readonly number[] = [500, 1000, 2000, 4000]
 /** The largest push the proxy buffers (it must read the ref commands before forwarding). */
 export const MAX_PUSH_BYTES = 100 * 1024 * 1024
 
