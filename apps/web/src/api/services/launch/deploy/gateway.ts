@@ -18,10 +18,14 @@
  *   to the app's release `X.Y.Z` (`release_id`) — the release chain's link (plan §1.11).
  * - **get** — the ticket's state; a pending ticket past its window becomes `rejected`.
  * - **upload** — only on `approved` (409). The toml is parsed here and `checkBindings` decides;
- *   a refusal is 403 `{ error, refused }` and the ticket `failed`.
+ *   a refusal is 403 `{ error, refused }` and the ticket `failed`. P5 (plan §1.5): a toml var a
+ *   live grant of the app and environment supplies is dropped from the upload and recorded as
+ *   `shadowedVars` (on the ticket and in `deploy.uploaded`) — the grant's secret wins.
  * - **activate** — only on `uploaded` (409): registers the build's Workflows and cron schedules
  *   (a version upload does neither), deploys the version at 100%, revokes the migrator. A release's
- *   run moves it to `staging_active` / `production_active` (audited `release.*`).
+ *   run moves it to `staging_active` / `production_active` (audited `release.*`). P5 (plan §1.6):
+ *   a grant pushed after the upload began gets a `repair` push, because the version carries the
+ *   secrets as of its upload.
  * - **finish** — idempotent: revokes the migrator if still live, closes the ticket once, and
  *   wakes the launch run waiting on it (`DEPLOY_FINISHED_EVENT`).
  *
@@ -36,7 +40,12 @@ import { and, eq } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
-import { type AppReleaseRow, appEnvironments, type DeployTicketRow } from '../../../../db/schema'
+import {
+  type AppReleaseRow,
+  appEnvironments,
+  appGrants,
+  type DeployTicketRow,
+} from '../../../../db/schema'
 import {
   ApiError,
   BadRequestError,
@@ -48,6 +57,9 @@ import {
 } from '../../../utils/core/errors'
 import { open as openApproval } from '../../approvals/engine'
 import type { ApprovalDeps } from '../../approvals/types'
+import { grantedKeys, pushedSince } from '../../grants/holders'
+import { startPush } from '../../grants/push'
+import { activeVersion } from '../../grants/values'
 import { type AuditActor, recordAudit } from '../audit'
 import type { ResolvedCaller } from '../ci/caller'
 import { CloudflareClient } from '../cloudflare'
@@ -418,15 +430,30 @@ export async function getDeploy(
 
 // ---- upload -------------------------------------------------------------------------------------
 
-/** What `deploy_tickets.bindings` keeps of a checked build: names and ids, never a var's value. */
+/**
+ * What `deploy_tickets.bindings` keeps of a checked build: names and ids, never a var's value.
+ * P5 adds two facts about the upload itself (plan §1.5, §1.6): `shadowedVars` — the toml vars a
+ * live grant supplies, dropped from the upload — and `uploadedAt`, when the upload began (the
+ * moment `keep_bindings` copied the Worker's secrets), which `activate` compares with the grants'
+ * pushes.
+ */
 export interface TicketBindings {
   bindings: { type: string; name: string; target?: string }[]
   crons: string[]
   workflows: CheckedWorkflow[]
   migrationTag: string | null
+  shadowedVars: string[]
+  /** ISO timestamp; null on a ticket uploaded before P5. */
+  uploadedAt: string | null
 }
 
-function ticketBindings(check: BindingCheckResult): TicketBindings {
+function ticketBindings(
+  check: BindingCheckResult,
+  upload: Pick<TicketBindings, 'shadowedVars' | 'uploadedAt'> = {
+    shadowedVars: [],
+    uploadedAt: null,
+  }
+): TicketBindings {
   const targetKeys = ['namespace_id', 'queue_name', 'bucket_name', 'workflow_name', 'class_name']
   return {
     bindings: check.bindings.map(b => {
@@ -436,6 +463,8 @@ function ticketBindings(check: BindingCheckResult): TicketBindings {
     crons: check.crons,
     workflows: check.workflows,
     migrationTag: check.migrationTag,
+    shadowedVars: upload.shadowedVars,
+    uploadedAt: upload.uploadedAt,
   }
 }
 
@@ -446,7 +475,31 @@ function storedBindings(ticket: DeployTicketRow): TicketBindings {
     crons: raw.crons ?? [],
     workflows: raw.workflows ?? [],
     migrationTag: raw.migrationTag ?? null,
+    shadowedVars: raw.shadowedVars ?? [],
+    uploadedAt: raw.uploadedAt ?? null,
   }
+}
+
+/**
+ * Launch P5 (plan §1.5): drop the toml's `plain_text` / `json` bindings whose name a live grant of
+ * this app and environment supplies. The grant is pushed as a Worker secret and kept by
+ * `keep_bindings`; a var of the same name beside it is Cloudflare's 10053 "Binding name already in
+ * use" — and the grant is what the app should read. The app's repo needs no change.
+ */
+async function withoutShadowedVars(
+  ctx: GatewayContext,
+  ticket: DeployTicketRow,
+  check: BindingCheckResult
+): Promise<{ check: BindingCheckResult; shadowedVars: string[] }> {
+  const granted = new Set(
+    await grantedKeys(ctx.db, ticket.tenantId, ticket.appId, ctx.caller.environment.name)
+  )
+  if (granted.size === 0) return { check, shadowedVars: [] }
+  const shadows = (b: BindingCheckResult['bindings'][number]) =>
+    (b.type === 'plain_text' || b.type === 'json') && granted.has(b.name)
+  const shadowedVars = check.bindings.filter(shadows).map(b => b.name)
+  if (shadowedVars.length === 0) return { check, shadowedVars }
+  return { check: { ...check, bindings: check.bindings.filter(b => !shadows(b)) }, shadowedVars }
 }
 
 /** Fail an in-flight ticket and audit it; the caller throws the response. */
@@ -512,14 +565,18 @@ export async function uploadDeploy(
     })
   }
 
+  const { check: uploading, shadowedVars } = await withoutShadowedVars(ctx, ticket, check)
   const vendors = await ctx.vendors()
   const workerName = environment.workerName ?? ''
+  // Before the upload call: a push landing while it runs may or may not be copied, and a repair
+  // push at `activate` for one that was is harmless.
+  const uploadedAt = (ctx.now?.() ?? new Date()).toISOString()
   let versionId: string
   try {
     versionId = await uploadVersion(vendors.cf, vendors.accountId, {
       workerName,
       config,
-      check,
+      check: uploading,
       upload: body,
       ticketId: ticket.id,
     })
@@ -533,7 +590,10 @@ export async function uploadDeploy(
   const uploaded = await transitionTicket(ctx.db, ticket, ['approved'], 'uploaded', {
     version: body.version,
     cfVersionId: versionId,
-    bindings: ticketBindings(check) as unknown as Record<string, unknown>,
+    bindings: ticketBindings(uploading, { shadowedVars, uploadedAt }) as unknown as Record<
+      string,
+      unknown
+    >,
   })
   if (!uploaded) {
     throw new ConflictError(
@@ -559,7 +619,8 @@ export async function uploadDeploy(
   await audit(ctx, uploaded, 'deploy.uploaded', {
     version: body.version,
     versionId,
-    bindings: ticketBindings(check).bindings.map(b => `${b.type}:${b.name}`),
+    bindings: ticketBindings(uploading).bindings.map(b => `${b.type}:${b.name}`),
+    ...(shadowedVars.length > 0 ? { shadowedVars } : {}),
     migrator: 'issued',
   })
   return { ticket: uploaded, migratorUrl }
@@ -576,6 +637,61 @@ async function revokeIfLive(
   if (!ticket.credentialsIssuedAt || ticket.credentialsRevokedAt) return
   await revokeMigrator(vendors.neon, ctx.caller.environment.neon)
   await markCredentialsRevoked(ctx.db, ticket)
+}
+
+/**
+ * Launch P5 (plan §1.6): the version just activated carries the grant secrets as of its UPLOAD
+ * (`keep_bindings`). A grant pushed after that — a rotation, a first push, a repair — was undone by
+ * activating, so each one gets a `repair` push of its resource's active version. Best-effort: the
+ * deploy is live whatever happens here, so a push that cannot start (a rotation's push still
+ * running, 409 `push_in_progress`; no approvals context) is logged and left on the grant's
+ * `push_error` for its owners to re-push. Returns what it started, for the audit row.
+ */
+async function repairNewerPushes(
+  ctx: GatewayContext,
+  ticket: DeployTicketRow,
+  uploadedAt: string | null
+): Promise<{ grantId: string; pushId: string | null }[]> {
+  if (!uploadedAt) return []
+  const environment = ctx.caller.environment.name
+  const grants = await pushedSince(
+    ctx.db,
+    ticket.tenantId,
+    ticket.appId,
+    environment,
+    new Date(uploadedAt)
+  )
+  const out: { grantId: string; pushId: string | null }[] = []
+  for (const grant of grants) {
+    let pushId: string | null = null
+    try {
+      if (!ctx.approvals) throw new Error('no grant push context')
+      const version = await activeVersion(ctx.db, grant.tenantId, grant.resourceId, environment)
+      if (!version) throw new Error(`no values for ${environment}`)
+      pushId = (
+        await startPush(ctx.approvals, {
+          tenantId: grant.tenantId,
+          resourceId: grant.resourceId,
+          environment,
+          reason: 'repair',
+          grantId: grant.id,
+          versionId: version.id,
+        })
+      ).pushId
+    } catch (err) {
+      const error = `Deploy ${ticket.version ?? ticket.id} replaced a newer push; re-push this grant (${vendorMessage(err)})`
+      ctx.logger?.warn(
+        { ticketId: ticket.id, grantId: grant.id, err: vendorMessage(err) },
+        'deploy: could not start the grant repair push'
+      )
+      await ctx.db
+        .update(appGrants)
+        .set({ pushError: error.slice(0, 1000), updatedAt: ctx.now?.() ?? new Date() })
+        .where(and(eq(appGrants.tenantId, grant.tenantId), eq(appGrants.id, grant.id)))
+    }
+    out.push({ grantId: grant.id, pushId })
+  }
+  return out
 }
 
 /** `POST /deploy/:id/activate`: workflows + schedules, the version live at 100%, migrator revoked. */
@@ -638,11 +754,13 @@ export async function activateDeploy(
     .where(
       and(eq(appEnvironments.id, environment.id), eq(appEnvironments.tenantId, ctx.caller.tenantId))
     )
+  const grantRepairs = await repairNewerPushes(ctx, active, stored.uploadedAt)
   await audit(ctx, active, 'deploy.activated', {
     version: active.version,
     versionId: active.cfVersionId,
     workflows: stored.workflows.map(w => w.name),
     crons: stored.crons,
+    ...(grantRepairs.length > 0 ? { grantRepairs } : {}),
   })
   if (active.releaseId) {
     await releaseRunActivated(ctx.db, {

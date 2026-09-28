@@ -20,9 +20,7 @@ import { open } from '@/api/services/approvals/engine'
 import { kindHandler } from '@/api/services/approvals/kinds'
 import { canSeeHolders } from '@/api/services/grants/access'
 import { scanAppConfig } from '@/api/services/grants/detect'
-import { grantedKeys } from '@/api/services/grants/holders'
 import { startPush } from '@/api/services/grants/push'
-import { requestGrant } from '@/api/services/grants/requests'
 import { getResource, loadResource } from '@/api/services/grants/resources'
 import { revokeGrant } from '@/api/services/grants/revoke'
 import { openValues, sealValues } from '@/api/services/grants/sealed'
@@ -360,8 +358,6 @@ describe('the P5 mounts', () => {
     for (const [method, url] of [
       ['GET', `/api/shared-resources/${resource.id}`],
       ['GET', `/api/shared-resources/${resource.id}/pushes`],
-      ['GET', `/api/apps/${app.id}/config`],
-      ['POST', `/api/apps/${app.id}/grants`],
       ['POST', `/api/apps/${app.id}/config/scan`],
     ] as const) {
       const res = await request(url, { method, headers })
@@ -497,11 +493,8 @@ describe('the stubs before their slices', () => {
       [() => setValues(deps, viewer, 'x', 'staging', { values: {} }, actor), /setValues .*5b/],
       [() => startPush(deps, {} as never), /push\.startPush .*5c/],
       [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
-      [() => requestGrant(deps, viewer, 'x', {} as never, actor), /requestGrant .*5d/],
-      [() => grantedKeys(db, 'x', 'x', 'staging'), /grantedKeys .*5d/],
       [() => scanAppConfig(deps, {} as never), /scanAppConfig .*5e/],
       [() => declaredConfig(async () => null), /declaredConfig .*5e/],
-      [() => kindHandler('grant.request').applyAfter({} as never, deps), /applyAfter .*5d/],
       [() => new GrantPushWorkflow({} as never, env).run({} as never, {} as never), /run .*5c/],
     ]
     for (const [call, message] of cases) {
