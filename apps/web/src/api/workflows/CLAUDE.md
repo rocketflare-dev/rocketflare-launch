@@ -111,3 +111,12 @@ Tests (`tests/api/session-workflow.test.ts`) set `workflow.overrides = { ports, 
 `createFakeSessionPorts()` with the real `NeonSessionDb` over the FakeCloud, 3c's real `runTurn`
 with fast timers, recording checkpoint/ship fakes — and drive `run` with
 `createFakeWorkflowStep({ onWait })`, asserting the exact step names.
+
+## Launch P5: `grant-push.ts`
+
+`GrantPushWorkflow` (`GRANT_PUSH_WORKFLOW`, `launch-grant-push[-staging]`) delivers one
+`grant_pushes` row; params `GrantPushParams` (`{ tenantId, pushId }`, `@launch/shared/launch-grants`),
+instance id = the push id (`<pushId>-rN` on a retry). Shape (slice 5c): `plan` (materialise
+`grant_push_targets`, an idempotent insert) → `push#N` (up to `GRANT_PUSH_BATCH` targets per step
+through the `GrantBacking`, skipping succeeded targets and grants already on a newer version) →
+`finish`. Values are opened inside a step and never returned. From 5a `run` throws `NotWiredError`.

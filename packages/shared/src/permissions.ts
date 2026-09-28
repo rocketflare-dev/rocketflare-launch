@@ -85,6 +85,15 @@ export const CORE_SUBJECTS = [
    * NOT in `ADMIN_MANAGED`, which would hand every member `read`.
    */
   'ApprovalPolicy',
+  /**
+   * Launch P5: a shared resource (spec/09 — shared config: a bundle of vars and secrets many apps
+   * may hold). Every member may `read` the list, the item names and the policy — what they need to
+   * ASK for it — and admin+ `manage` (create, archive, owner group, policies). In `ADMIN_MANAGED`,
+   * so members get `read` through `MEMBER_READABLE`. The OWNER group's rights (set values, edit
+   * items, see holders) are not a grant: the service checks group membership (plan §1.3). Values
+   * are never readable through any subject.
+   */
+  'SharedResource',
 ] as const
 export type CoreSubject = (typeof CORE_SUBJECTS)[number]
 

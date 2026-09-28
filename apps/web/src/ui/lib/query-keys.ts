@@ -239,6 +239,36 @@ const CORE_QUERY_KEYS = {
     detail: (releaseId: string) => ['release', 'detail', releaseId] as const,
     chain: (releaseId: string) => ['release', 'chain', releaseId] as const,
   },
+  /**
+   * Launch P5: shared config (`/api/shared-resources`, spec/09). Invalidated on save; the push
+   * progress lives under `grantPushes` (nudged), and 5c's finish also nudges this root so the
+   * holders' versions refresh (`SHARED_RESOURCE_REALTIME_ENTITY`, the same value).
+   */
+  sharedResources: {
+    all: ['shared_resource'] as const,
+    list: (filters: object = {}) => ['shared_resource', 'list', filters] as const,
+    detail: (id: string) => ['shared_resource', 'detail', id] as const,
+  },
+  /**
+   * Launch P5: a resource's pushes (`/api/shared-resources/:id/pushes`). The root is `grant_push`
+   * ON PURPOSE — it is `GRANT_PUSH_REALTIME_ENTITY`: every settled target nudges
+   * `entity.changed { entity: 'grant_push', id }`, so the progress bar refreshes with no socket code.
+   */
+  grantPushes: {
+    all: ['grant_push'] as const,
+    forResource: (resourceId: string, filters: object = {}) =>
+      ['grant_push', 'resource', resourceId, filters] as const,
+    detail: (pushId: string) => ['grant_push', 'detail', pushId] as const,
+  },
+  /**
+   * Launch P5: an app's declared config and grants (`/api/apps/:id/config`). The root is
+   * `app_config` — `APP_CONFIG_REALTIME_ENTITY`, nudged by a scan, a grant transition and a push
+   * landing.
+   */
+  appConfig: {
+    all: ['app_config'] as const,
+    detail: (appId: string) => ['app_config', 'detail', appId] as const,
+  },
   /** Launch: `/api/app-access` — an app's sign-in policy, grants and access requests (spec/05) */
   appAccess: {
     all: ['app-access'] as const,

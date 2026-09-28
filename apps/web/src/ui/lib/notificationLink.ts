@@ -11,12 +11,23 @@
  * has no page to open.
  */
 import { APPROVAL_NOTIFICATION_TYPES, approvalPath } from '@launch/shared/launch-approvals'
+import {
+  appConfigPath,
+  GRANT_NOTIFICATION_TYPES,
+  sharedResourcePath,
+} from '@launch/shared/launch-grants'
 import type { Notification } from '@launch/shared/notifications'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const id = (value: unknown): string | null =>
   typeof value === 'string' && UUID.test(value) ? value : null
+
+/** An app slug as spec/04 spells one — never a path fragment smuggled in through `data`. */
+const SLUG = /^[a-z][a-z0-9-]{0,62}$/
+
+const slug = (value: unknown): string | null =>
+  typeof value === 'string' && SLUG.test(value) ? value : null
 
 export function notificationLink(notification: Pick<Notification, 'type' | 'data'>): string | null {
   switch (notification.type) {
@@ -33,6 +44,20 @@ export function notificationLink(notification: Pick<Notification, 'type' | 'data
     case APPROVAL_NOTIFICATION_TYPES.expired: {
       const approvalId = id(notification.data.approvalId)
       return approvalId ? approvalPath(approvalId) : null
+    }
+    // Launch P5: an app needs shared config, or one of its grants is about to lapse — the app's
+    // config page is where it is requested (or renewed).
+    case GRANT_NOTIFICATION_TYPES.needed:
+    case GRANT_NOTIFICATION_TYPES.expiring: {
+      const appSlug = slug(notification.data.appSlug)
+      return appSlug ? appConfigPath(appSlug) : null
+    }
+    // Launch P5: a push failed for some holders, or a secret is due for rotation — the resource's
+    // page is where the owners retry or set new values.
+    case GRANT_NOTIFICATION_TYPES.pushFailed:
+    case GRANT_NOTIFICATION_TYPES.rotationDue: {
+      const resourceId = id(notification.data.resourceId)
+      return resourceId ? sharedResourcePath(resourceId) : null
     }
     default:
       return null

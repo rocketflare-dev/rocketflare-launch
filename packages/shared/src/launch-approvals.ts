@@ -13,10 +13,11 @@
  *   `/api/approval-policies`;
  * - the realtime entity, the notification types and the error codes every slice answers with.
  *
- * `grant.request`, `config.change` and `app.teardown` are NAMED (spec/08's table) but not built:
- * no handler, no route opens one (P5/P6). `BUILT_APPROVAL_KINDS` is the four that are.
+ * `config.change` and `app.teardown` are NAMED (spec/08's table) but not built: no handler, no
+ * route opens one (P6). `BUILT_APPROVAL_KINDS` is the five that are — P5 (`docs/plans/p5-grants.md`
+ * §1.7–§1.9) added `grant.request`, its `grant` subject and `grantRequestContextSchema`.
  *
- * Slice 4a owns this file; 4b–4f import from it and never edit it.
+ * Slice 4a owned this file, and 5a its P5 lines; every other slice imports from it and never edits it.
  */
 import { z } from 'zod'
 import { appEnvironmentNameSchema, healthStatusSchema } from './launch-apps'
@@ -38,12 +39,13 @@ export const APPROVAL_KINDS = [
 export const approvalKindSchema = z.enum(APPROVAL_KINDS)
 export type ApprovalKind = z.infer<typeof approvalKindSchema>
 
-/** The kinds P4 builds a handler for. The kind registry (`kinds/index.ts`) is keyed by these. */
+/** The kinds with a handler (P4's four, P5's `grant.request`). The kind registry is keyed by these. */
 export const BUILT_APPROVAL_KINDS = [
   'app.create',
   'app.access',
   'deploy.production',
   'session.budget',
+  'grant.request',
 ] as const satisfies readonly ApprovalKind[]
 export type BuiltApprovalKind = (typeof BUILT_APPROVAL_KINDS)[number]
 
@@ -72,13 +74,17 @@ export const TERMINAL_APPROVAL_STATUSES = [
   'cancelled',
 ] as const satisfies readonly ApprovalStatus[]
 
-/** What an approval is ABOUT — `(kind, subject_type, subject_id)` is unique while pending. */
+/**
+ * What an approval is ABOUT — `(kind, subject_type, subject_id)` is unique while pending. P5's
+ * `grant` is one `app_grants` row (one app × resource × environment, plan §1.7).
+ */
 export const APPROVAL_SUBJECT_TYPES = [
   'app',
   'user',
   'release',
   'deploy_ticket',
   'session',
+  'grant',
 ] as const
 export const approvalSubjectTypeSchema = z.enum(APPROVAL_SUBJECT_TYPES)
 export type ApprovalSubjectType = z.infer<typeof approvalSubjectTypeSchema>
@@ -187,14 +193,18 @@ export const DEFAULT_APPROVAL_POLICIES: Record<ApprovalKind, ApprovalPolicy> = {
     expiresAfterMinutes: DEFAULT_SESSION_POLICY.suspendedExpiryHours * 60,
     autoApproveRole: null,
   },
-  // Named, not built (P5/P6): defaults exist so the record is total and a policy row can be set.
+  // P5 (plan §1.8, spec/12 #9): the RESOURCE's owner group decides — they are the kind's
+  // `eligibleExtra`, so neither the app's owners nor the admins approve by default, and both
+  // environments need an approval. A resource's own `policies[env]` is snapshotted in place of
+  // this (`OpenApprovalInput.policy`); staging self-serve is `autoApproveRole: 'member'` there.
   'grant.request': {
-    approvers: { appOwners: false, admins: true, groupIds: [], userIds: [] },
+    approvers: { appOwners: false, admins: false, groupIds: [], userIds: [] },
     minApprovals: 1,
     allowSelfApproval: false,
     expiresAfterMinutes: 7 * MINUTES_PER_DAY,
     autoApproveRole: null,
   },
+  // Named, not built (P6): defaults exist so the record is total and a policy row can be set.
   'config.change': {
     approvers: { appOwners: true, admins: false, groupIds: [], userIds: [] },
     minApprovals: 1,
@@ -259,8 +269,31 @@ export const sessionBudgetContextSchema = z.object({
   capUsd: z.number().nonnegative(),
 })
 
-/** The three named-but-unbuilt kinds carry a free description until P5/P6 give them a shape. */
-const unbuiltContext = <K extends 'grant.request' | 'config.change' | 'app.teardown'>(kind: K) =>
+/** A shared resource's item kinds (`@launch/shared/launch-grants` re-exports them). */
+export const GRANT_ITEM_KINDS = ['var', 'secret'] as const
+export const grantItemKindSchema = z.enum(GRANT_ITEM_KINDS)
+export type GrantItemKind = z.infer<typeof grantItemKindSchema>
+
+/**
+ * P5 (plan §1.7): an app asks to hold a shared resource in ONE environment. The subject is the
+ * `app_grants` row; the approvers see what the app would receive (item names and kinds — never a
+ * value), which of its plugins declared the need, and when the grant would lapse.
+ */
+export const grantRequestContextSchema = z.object({
+  kind: z.literal('grant.request'),
+  resourceId: z.string().uuid(),
+  resourceName: z.string(),
+  environment: appEnvironmentNameSchema,
+  items: z.array(z.object({ key: z.string(), kind: grantItemKindSchema })),
+  /** The plugin ids whose declared config matched this resource (`kit` for the kit's own). */
+  declaredBy: z.array(z.string()).default([]),
+  appSlug: z.string(),
+  /** ISO timestamp (the context is jsonb, so a string both ways); null = never expires. */
+  expiresAt: z.string().datetime({ offset: true }).nullable(),
+})
+
+/** The two named-but-unbuilt kinds carry a free description until P6 gives them a shape. */
+const unbuiltContext = <K extends 'config.change' | 'app.teardown'>(kind: K) =>
   z.object({ kind: z.literal(kind), description: z.string().max(2000) })
 
 export const approvalContextSchema = z.discriminatedUnion('kind', [
@@ -268,7 +301,7 @@ export const approvalContextSchema = z.discriminatedUnion('kind', [
   appAccessContextSchema,
   deployProductionContextSchema,
   sessionBudgetContextSchema,
-  unbuiltContext('grant.request'),
+  grantRequestContextSchema,
   unbuiltContext('config.change'),
   unbuiltContext('app.teardown'),
 ])
@@ -299,7 +332,7 @@ export const APPROVAL_ERROR_CODES = {
   notPending: 'not_pending',
   /** A job-originated ticket is no longer pending: the run is gone, use Promote (plan §1.9). */
   deployRunGone: 'deploy_run_gone',
-  /** A kind named in spec/08 that P4 does not build. */
+  /** A kind named in spec/08 that is not built yet (`config.change`, `app.teardown`). */
   kindNotBuilt: 'approval_kind_not_built',
 } as const
 

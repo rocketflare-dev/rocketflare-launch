@@ -4,9 +4,10 @@
  * through `kindHandler(kind)` and never names a kind itself.
  *
  * Each handler file is owned by one slice (4c: `app-create`, `app-access`, `session-budget`; 4d:
- * `deploy-production`); 4a registered them all here so nobody else edits this file. The three
- * kinds spec/08 names but P4 does not build (`grant.request`, `config.change`, `app.teardown`)
- * have no handler, and asking for one is `approval_kind_not_built`.
+ * `deploy-production`; P5's 5d: `grant-request`); the foundations slices (4a, 5a) registered them
+ * all here so nobody else edits this file. The two kinds spec/08 names but nothing builds yet
+ * (`config.change`, `app.teardown`) have no handler, and asking for one is
+ * `approval_kind_not_built`.
  */
 import {
   APPROVAL_ERROR_CODES,
@@ -19,6 +20,7 @@ import type { KindHandler } from '../types'
 import { appAccessHandler } from './app-access'
 import { appCreateHandler } from './app-create'
 import { deployProductionHandler } from './deploy-production'
+import { grantRequestHandler } from './grant-request'
 import { sessionBudgetHandler } from './session-budget'
 
 export const KIND_HANDLERS: { readonly [K in BuiltApprovalKind]: KindHandler<K> } = {
@@ -26,6 +28,7 @@ export const KIND_HANDLERS: { readonly [K in BuiltApprovalKind]: KindHandler<K> 
   'app.access': appAccessHandler,
   'deploy.production': deployProductionHandler,
   'session.budget': sessionBudgetHandler,
+  'grant.request': grantRequestHandler,
 }
 
 /** The handler for `kind`; 409 `approval_kind_not_built` for a named-but-unbuilt kind. */

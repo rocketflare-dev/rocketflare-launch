@@ -260,6 +260,27 @@ describe('wrangler parity: coding sessions (Launch P3)', () => {
   })
 })
 
+describe('wrangler parity: shared config and grants (Launch P5)', () => {
+  it.each([
+    ['production', prod, 'launch-grant-push'],
+    ['staging', staging, 'launch-grant-push-staging'],
+  ] as const)('%s binds the push Workflow and pushes to Worker secrets', (_label, config, name) => {
+    expect(rows(config, 'workflows')).toContainEqual({
+      name,
+      binding: 'GRANT_PUSH_WORKFLOW',
+      class_name: 'GrantPushWorkflow',
+    })
+    // `local` is refused by loadConfig outside development; a toml must never carry it.
+    expect(get(config, 'vars.GRANT_BACKEND')).toBe('cloudflare')
+  })
+
+  it('the grants sweep rides the five-minute cron both files already declare', () => {
+    for (const config of [prod, staging]) {
+      expect(get(config, 'triggers.crons')).toContain('*/5 * * * *')
+    }
+  })
+})
+
 // ---- the database driver (D35) -------------------------------------------------------------
 
 describe('wrangler parity: database driver', () => {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Shared config and grants, foundations (P5): the tables for shared resources (a named bundle of
+  vars and secrets owned by a team, with sealed values per environment), app grants, the pushes
+  that deliver them and each app's declared config (one migration, 0025); the `grant.request`
+  approval kind, approved by the resource's owner team; the `GRANT_PUSH_WORKFLOW` binding and the
+  `GRANT_BACKEND` var (`cloudflare`, or `local` in development only); a Shared config page in the
+  navigation, an app Config page, and `launch shared` / `launch grants` command groups — all
+  stubs until the rest of P5 lands. A team that owns shared config can no longer be deleted
+  (409 `group_owns_shared_config`).
 - Approvals (P4): one engine decides everything a second person must approve — who may decide
   each kind (the app's owners, the organisation's admins, named teams or people), how many
   approvals it needs (one rejection is final), whether it expires, and whether a senior enough

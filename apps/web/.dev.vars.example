@@ -109,6 +109,11 @@ SESSION_LOCAL_NEON_PROXY=
 # The local git server sessions clone from and push to (`pnpm sessions:local-git serve`).
 SESSION_LOCAL_GIT_URL=http://localhost:9420
 
+# --- Shared config and grants (Launch P5, docs/plans/p5-grants.md) ----------------------
+# `local` records the names a push would put on an app's Worker and calls no vendor. Only with
+# APP_ENV=development: loadConfig refuses `local` anywhere else. The tomls say `cloudflare`.
+GRANT_BACKEND=local
+
 # --- RLS (see docs/RLS.md) — leave as-is unless running the enforce spike ---------------
 # App-role credential for scripts/db-roles.ts; username must equal APP_ROLE in src/db/schema/rls.ts
 APP_DATABASE_URL=

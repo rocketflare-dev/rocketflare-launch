@@ -10,7 +10,14 @@
 import type { Group, GroupDetail, GroupMember, GroupRef, GroupType } from '@launch/shared/groups'
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm'
 import type { Database } from '../../db/client'
-import { groupMembers, groups, groupTypes, tenantUsers, users } from '../../db/schema'
+import {
+  groupMembers,
+  groups,
+  groupTypes,
+  sharedResources,
+  tenantUsers,
+  users,
+} from '../../db/schema'
 import {
   BadRequestError,
   ConflictError,
@@ -240,6 +247,7 @@ export async function groupIdsOfType(
  * That fail-closed direction is the whole reason `visibility` is a column.
  */
 export async function deleteGroup(db: Database, tenantId: string, id: string): Promise<void> {
+  await refuseWhileOwningSharedConfig(db, tenantId, eq(groups.id, id))
   const rows = await db
     .delete(groups)
     .where(and(eq(groups.id, id), eq(groups.tenantId, tenantId)))
@@ -248,11 +256,34 @@ export async function deleteGroup(db: Database, tenantId: string, id: string): P
 }
 
 export async function deleteGroupType(db: Database, tenantId: string, id: string): Promise<void> {
+  await refuseWhileOwningSharedConfig(db, tenantId, eq(groups.groupTypeId, id))
   const rows = await db
     .delete(groupTypes)
     .where(and(eq(groupTypes.id, id), eq(groupTypes.tenantId, tenantId)))
     .returning({ id: groupTypes.id })
   if (rows.length === 0) throw new NotFoundError('Group type not found')
+}
+
+/**
+ * Launch P5: a shared resource's owner group decides who holds it, so it may not vanish from under
+ * one (`shared_resources.owner_group_id` refuses the delete too; this says why, as a 409, and
+ * `?force=1` does not override it). `which` selects the groups about to go.
+ */
+async function refuseWhileOwningSharedConfig(
+  db: Database,
+  tenantId: string,
+  which: ReturnType<typeof eq>
+): Promise<void> {
+  const owned = await db
+    .select({ slug: sharedResources.slug })
+    .from(sharedResources)
+    .innerJoin(groups, eq(groups.id, sharedResources.ownerGroupId))
+    .where(and(eq(sharedResources.tenantId, tenantId), eq(groups.tenantId, tenantId), which))
+  if (owned.length === 0) return
+  throw new ConflictError(
+    `This group owns shared config (${owned.map(r => r.slug).join(', ')}). Give it another owner group first.`,
+    'group_owns_shared_config'
+  )
 }
 
 // ---- Membership -------------------------------------------------------------------------------

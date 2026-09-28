@@ -46,6 +46,9 @@ export const ADMIN_MANAGED: readonly Subjects[] = [
   'Group',
   // Launch: the app registry (spec/06) — members read the catalogue, admins import and manage.
   'App',
+  // Launch P5: shared config (spec/09) — members read what they could ask for, admins manage; the
+  // owner group's rights are the service's check, not a grant.
+  'SharedResource',
 ]
 
 /** What every member may at least read. */
@@ -98,6 +101,7 @@ const grantAdmin: RoleGrant = can => {
  * | Session        | manage      | manage | manage | manage  | create+read+update (own only — the route filters by creator; app owners count, P3) |
  * | Approval       | manage      | manage | manage | manage  | read   (Launch P4: the service filters rows; deciding is the engine's eligibility check) |
  * | ApprovalPolicy | manage      | manage | manage | manage  | –      (Launch P4: an owner loosening their own gate defeats it) |
+ * | SharedResource | manage      | manage | manage | manage  | read   (Launch P5: the owner group sets values — a service check, not a grant) |
  * | Feature:<f>    | access all  | by ctx | by ctx | access all | by ctx |
  */
 export const rolePermissions: Record<EffectiveRole, RoleGrant> = {

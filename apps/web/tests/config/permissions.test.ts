@@ -69,6 +69,9 @@ const MATRIX: Record<string, Record<Role, Level>> = {
   // who may decide); admin+ manage the organisation's. Policies are admin+ only.
   Approval: { owner: 'manage', admin: 'manage', support: 'manage', member: 'read' },
   ApprovalPolicy: { owner: 'manage', admin: 'manage', support: 'manage', member: 'none' },
+  // Launch P5 — shared config: everyone reads what they could ask for; admin+ manage. The owner
+  // group's rights (values, items, holders) are the service's check, not a role grant.
+  SharedResource: { owner: 'manage', admin: 'manage', support: 'manage', member: 'read' },
 }
 
 const build = (role: Role | null, features: string[] = [], isGlobalAdmin = false) =>

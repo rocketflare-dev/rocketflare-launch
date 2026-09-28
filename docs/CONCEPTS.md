@@ -716,13 +716,16 @@ append-only audit log (spec/03–06, 08; the build plans are `docs/plans/p1-foun
 `docs/plans/p2-create-app.md`). From P2 it also creates apps (§18.5–18.8), and from P3 it runs
 coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESSIONS-LOCAL.md`);
 from P4 a second person approves what needs one, releases ship through a production gate, and the
-audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`).
+audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`); from P5 apps hold shared
+config through approved grants (§18.20, `docs/plans/p5-grants.md`).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
-`packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases}.ts`.
+`packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases,grants}.ts`.
 
 **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
 `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `audit_events`, and from P4 `approval_requests`,
-`approval_decisions`, `approval_policies`, `app_releases`, `audit_chain`) are
+`approval_decisions`, `approval_policies`, `app_releases`, `audit_chain`, and from P5
+`shared_resources`, `shared_resource_values`, `app_grants`, `grant_pushes`, `grant_push_targets`,
+`app_config_scans`) are
 tenant tables like any other, scoped to the single company tenant. Three are platform
 infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
 `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
@@ -1241,3 +1244,33 @@ ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list to
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
 naming them; the releases card shows only what the audit log recorded (a release cut outside
 Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.
+
+### 18.20 Shared config and grants (P5 — foundations)
+
+Spec/09's catalogue is called **shared config** (`/shared-config`, `/api/shared-resources`),
+because "catalogue" already means the apps list. A **shared resource** is a named bundle of items
+(`{key, kind: var|secret, rotationDays?}`) owned by a kit group, with values sealed per
+environment as one versioned blob (`services/grants/sealed.ts`, `encryptToken` — the
+`admin_credentials` pattern). An app **holds** it through a grant — one app × resource ×
+environment, approved as a `grant.request` (subject `grant`) whose approvers are the resource's
+owner group — and `GRANT_PUSH_WORKFLOW` (`GrantPushWorkflow`, `launch-grant-push[-staging]`) puts
+the values on the app's Worker as secrets, vars included (a `plain_text` would be overwritten by
+the app's own toml on its next deploy). One live grant per app × resource × environment, one active
+version per resource × environment, and one running push per resource × environment are partial
+unique indexes rendered from the shared closed sets. The engine takes an optional `policy` at open
+(`OpenApprovalInput.policy`), so a resource's own per-environment policy is snapshotted in place of
+`resolvePolicy`. `GRANT_BACKEND` is `cloudflare` (Worker secrets) or `local` (records the names,
+development only — `loadConfig` refuses it elsewhere). A group that owns a resource cannot be
+deleted (409 `group_owns_shared_config`); a resource is archived, never deleted, while a grant
+points at it. The `grants.sweep` task runs on `*/5` (reminders, expiry, rotation due).
+
+Slice 5a built the schema (migration 0025), the contracts, the `SharedResource` subject (members
+read, admins manage; the owner group's rights are a service check), the stub routes (`GET
+/api/shared-resources` answers `{ items: [] }`), pages, CLI hooks and service stubs that fail by
+name (`NotWiredError`, `services/grants/types.ts` maps each file to its slice); 5b–5f fill them.
+
+**Known gaps:** nothing is wired end to end yet (slices 5b–5f); every secret write on Cloudflare is
+a new deployed version, so a three-item push is three versions (a mixed state lasting seconds);
+Secrets Store is not a backing yet; an app whose LIVE version still carries one of the keys as a
+toml var cannot take the secret until a deploy through the gateway drops that var (Cloudflare's
+10053 "binding name already in use", modelled by the FakeCloud).

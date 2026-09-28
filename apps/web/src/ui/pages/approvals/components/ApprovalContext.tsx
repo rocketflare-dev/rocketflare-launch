@@ -285,7 +285,16 @@ export function ApprovalContext({
           </p>
         </SectionPanel>
       )
+    // P5: the keys the app would receive, never a value (slice 5f owns the full renderer).
     case 'grant.request':
+      return (
+        <SectionPanel title="The request">
+          <p className="text-sm">
+            {context.resourceName} in {context.environment}:{' '}
+            {context.items.map(item => item.key).join(', ')}
+          </p>
+        </SectionPanel>
+      )
     case 'config.change':
     case 'app.teardown':
       return (

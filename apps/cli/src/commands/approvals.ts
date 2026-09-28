@@ -87,7 +87,9 @@ export function describeApproval(request: ApprovalRequest): string {
     }
     case 'session.budget':
       return `Add ${money(context.extraUsd)} to the session "${context.sessionTitle ?? context.sessionId}" on ${app} (spent ${money(context.spentUsd)} of ${money(context.capUsd)}).`
+    // P5: the minimal sentence (slice 5f owns the richer lines).
     case 'grant.request':
+      return `Let ${app} hold ${context.resourceName} in ${context.environment}.`
     case 'config.change':
     case 'app.teardown':
       return context.description

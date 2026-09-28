@@ -67,6 +67,10 @@ const SessionPage = lazy(() => import('@/ui/pages/sessions/SessionPage'))
 // Launch P4: the approvals inbox and one request (notifications link to it).
 const ApprovalsInboxPage = lazy(() => import('@/ui/pages/approvals/InboxPage'))
 const ApprovalPage = lazy(() => import('@/ui/pages/approvals/ApprovalPage'))
+// Launch P5: shared config — the bundles, one resource, and an app's config page.
+const SharedConfigPage = lazy(() => import('@/ui/pages/shared-config/SharedConfigPage'))
+const SharedResourcePage = lazy(() => import('@/ui/pages/shared-config/SharedResourcePage'))
+const AppConfigPage = lazy(() => import('@/ui/pages/apps/AppConfigPage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
 const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
@@ -246,6 +250,34 @@ function ShellRoutes() {
             element={
               <RequireGuard guard={{ action: 'read', subject: 'App' }}>
                 <AppAccessPage />
+              </RequireGuard>
+            }
+          />
+          {/* Launch P5 (spec/09): an app's declared config and grants — readers see it, the app's
+              owners and admins request; the server decides who may do what. */}
+          <Route
+            path="/apps/:slug/config"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
+                <AppConfigPage />
+              </RequireGuard>
+            }
+          />
+          {/* Launch P5 (spec/09): shared config — every member reads the list (they need it to
+              ask); owners and admins act, which the page and the server decide per resource. */}
+          <Route
+            path="/shared-config"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'SharedResource' }}>
+                <SharedConfigPage />
+              </RequireGuard>
+            }
+          />
+          <Route
+            path="/shared-config/:id"
+            element={
+              <RequireGuard guard={{ action: 'read', subject: 'SharedResource' }}>
+                <SharedResourcePage />
               </RequireGuard>
             }
           />

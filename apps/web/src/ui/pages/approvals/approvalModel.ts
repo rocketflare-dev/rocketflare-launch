@@ -29,7 +29,7 @@ export const KIND_LABELS: Record<ApprovalKind, string> = {
   'app.access': 'App access',
   'deploy.production': 'Production deploy',
   'session.budget': 'Session budget',
-  'grant.request': 'Grant',
+  'grant.request': 'Shared config',
   'config.change': 'Config change',
   'app.teardown': 'App teardown',
 }
@@ -40,12 +40,13 @@ export const KIND_DESCRIPTIONS: Record<ApprovalKind, string> = {
   'app.access': 'Somebody asks to sign in to an app its policy does not let them into.',
   'deploy.production': 'A release is promoted, or a build asks to deploy, to production.',
   'session.budget': 'A coding session has spent its budget and asks for more.',
-  'grant.request': 'Somebody asks for a grant on an app.',
+  'grant.request':
+    'An app asks to hold shared config in one environment; the resource’s owner team decides.',
   'config.change': 'Somebody changes an app’s configuration.',
   'app.teardown': 'Somebody asks to archive an app and delete its resources.',
 }
 
-/** The kinds a filter or a policy page offers: the four P4 builds. */
+/** The kinds a filter or a policy page offers: the built ones (P4's four and P5's grants). */
 export const FILTER_KINDS = BUILT_APPROVAL_KINDS
 
 /** Status → the `.status-badge` vocabulary in `index.css`, and the word shown. */
@@ -90,7 +91,9 @@ export function approvalSummary(req: SummaryInput): string {
       return `Add ${usd(context.extraUsd)} to ${
         context.sessionTitle ? `the session “${context.sessionTitle}”` : 'a coding session'
       } on ${appName(req)}`
+    // P5: the one-line title (slice 5f owns the context panel's detail).
     case 'grant.request':
+      return `Let ${appName(req)} hold ${context.resourceName} in ${context.environment}`
     case 'config.change':
     case 'app.teardown':
       return context.description

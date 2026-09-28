@@ -2,6 +2,13 @@
  * FakeCloudflare — the v4 API surface Launch touches, stateful. One account (`accountId`) and one
  * zone (`zoneId` / `zoneName`); any other account or zone is a 403 / 404. Every resource is kept
  * by id and a deleted one answers 404, exactly as Cloudflare does. See `index.ts` for the API.
+ *
+ * Secrets (Launch P5): `PUT …/secrets`, `DELETE …/secrets/{name}` and `GET …/secrets` (names and
+ * types only). On a script with a LIVE version, a secret write or delete creates AND deploys a new
+ * version carrying the active one's bindings (as Cloudflare does), and a secret whose name is
+ * already a `plain_text` / `json` binding of the live version is refused 10053 "Binding name
+ * already in use" (`secretNameClash = false` turns that off). Each version snapshots the secret
+ * VALUES it carries, so `envOf(script)` answers what the running Worker's `env` would hold.
  */
 import {
   belongsTo,
@@ -42,6 +49,8 @@ export interface FakeVersion {
   modules: Record<string, string>
   /** The bindings as uploaded, plus `secret_text` kept from the script when `keep_bindings` says so. */
   bindings: Record<string, unknown>[]
+  /** The values of the `secret_text` bindings as of this version (P5 — `envOf` reads them). */
+  secrets?: Record<string, string>
   createdAt: Date
 }
 
@@ -56,9 +65,10 @@ export interface FakeScript {
   /** The metadata of the last `PUT` (the placeholder), or of the version last deployed. */
   metadata: Record<string, unknown>
   modules: Record<string, string>
-  /** Secret NAME → value. `secretPuts` records only the names, in order. */
+  /** Secret NAME → value. `secretPuts` / `secretDeletes` record only the names, in order. */
   secrets: Map<string, string>
   secretPuts: string[]
+  secretDeletes: string[]
   /** The newest DO migration tag applied by a script PUT (`metadata.migrations.new_tag`). */
   migrationTag: string | null
   workersDev: boolean
@@ -122,6 +132,11 @@ export class FakeCloudflare implements VendorHandler {
   /** Asset content hash → base64 body, across every upload. */
   readonly assetBlobs = new Map<string, string>()
   private readonly sessions = new Map<string, AssetSession>()
+  /**
+   * Refuse a secret whose name is a `plain_text` / `json` binding of the live version (Cloudflare's
+   * 10053). On by default; a test of something else may turn it off.
+   */
+  secretNameClash = true
   /** Completion jwt → the manifest it completes, so a version can bind it. */
   readonly completions = new Map<
     string,
@@ -147,6 +162,66 @@ export class FakeCloudflare implements VendorHandler {
     const script = this.scripts.get(scriptName)
     if (!script?.activeVersionId) return null
     return script.versions.find(v => v.id === script.activeVersionId) ?? null
+  }
+
+  /**
+   * What the running Worker's `env` holds as strings (P5): the ACTIVE version's `plain_text` and
+   * `json` bindings and its `secret_text` values, by name — null when the script has no live
+   * version (a placeholder, or no script). Other bindings (KV, queues…) are not strings and are
+   * left out.
+   */
+  envOf(scriptName: string): Record<string, string> | null {
+    const version = this.activeVersion(scriptName)
+    if (!version) return null
+    const script = this.scripts.get(scriptName)
+    const out: Record<string, string> = {}
+    for (const b of version.bindings) {
+      const name = String(b.name ?? '')
+      if (b.type === 'plain_text') out[name] = String(b.text ?? '')
+      else if (b.type === 'json') out[name] = JSON.stringify(b.json ?? null)
+      else if (b.type === 'secret_text') {
+        out[name] = version.secrets?.[name] ?? script?.secrets.get(name) ?? ''
+      }
+    }
+    return out
+  }
+
+  /**
+   * A secret write on a live script: a new version with the active one's bindings, `name` replaced
+   * (or removed when `value` is null), deployed at 100% — Cloudflare's "each secret change is a
+   * version" (plan §5).
+   */
+  private secretVersion(script: FakeScript, name: string, value: string | null): void {
+    const active = script.activeVersionId
+      ? script.versions.find(v => v.id === script.activeVersionId)
+      : undefined
+    if (!active) return
+    const bindings = active.bindings.filter(b => b.name !== name)
+    const secrets = { ...(active.secrets ?? {}) }
+    delete secrets[name]
+    if (value !== null) {
+      bindings.push({ type: 'secret_text', name })
+      secrets[name] = value
+    }
+    const version: FakeVersion = {
+      id: crypto.randomUUID(),
+      metadata: {
+        ...active.metadata,
+        bindings,
+        annotations: { 'workers/triggered_by': value === null ? 'secret_delete' : 'secret' },
+      },
+      modules: active.modules,
+      bindings,
+      secrets,
+      createdAt: new Date(),
+    }
+    script.versions.push(version)
+    script.deployments.push({
+      id: this.ids.hex32(),
+      versions: [{ version_id: version.id, percentage: 100 }],
+      createdAt: new Date(),
+    })
+    script.activeVersionId = version.id
   }
 
   resourcesFor(slug: string): ResourceLabel[] {
@@ -407,9 +482,36 @@ export class FakeCloudflare implements VendorHandler {
       }
       if (sub === 'secrets' && m === 'PUT') {
         const secretName = String(body.name ?? '')
-        script.secrets.set(secretName, String(body.text ?? ''))
+        const live = this.activeVersion(name)
+        if (
+          this.secretNameClash &&
+          live?.bindings.some(
+            b => b.name === secretName && (b.type === 'plain_text' || b.type === 'json')
+          )
+        ) {
+          return cfError(
+            400,
+            10053,
+            `Binding name '${secretName}' already in use. Please use a different name and try again.`
+          )
+        }
+        const text = String(body.text ?? '')
+        script.secrets.set(secretName, text)
         script.secretPuts.push(secretName)
+        this.secretVersion(script, secretName, text)
         return ok({ name: secretName, type: 'secret_text' })
+      }
+      if (sub === 'secrets' && m === 'GET') {
+        return ok([...script.secrets.keys()].map(n => ({ name: n, type: 'secret_text' })))
+      }
+      const secretMatch = sub.match(/^secrets\/([^/]+)$/)
+      if (secretMatch && m === 'DELETE') {
+        const secretName = decodeURIComponent(secretMatch[1])
+        if (!script.secrets.has(secretName)) return cfError(404, 10056, 'secret not found')
+        script.secrets.delete(secretName)
+        script.secretDeletes.push(secretName)
+        this.secretVersion(script, secretName, null)
+        return ok(null)
       }
       if (sub === 'versions' && m === 'POST') return this.createVersion(script, req)
       if (sub === 'versions' && m === 'GET') {
@@ -505,6 +607,7 @@ export class FakeCloudflare implements VendorHandler {
       modules: {},
       secrets: new Map(),
       secretPuts: [],
+      secretDeletes: [],
       migrationTag: null,
       workersDev: true,
       schedules: [],
@@ -533,14 +636,40 @@ export class FakeCloudflare implements VendorHandler {
     }
     const uploaded = (metadata.bindings as Record<string, unknown>[] | undefined) ?? []
     const keep = (metadata.keep_bindings as string[] | undefined) ?? []
-    const kept = keep.includes('secret_text')
-      ? [...script.secrets.keys()].map(name => ({ type: 'secret_text', name }))
+    const keepsSecrets = keep.includes('secret_text')
+    // P5 plan §1.5: a var the upload declares under the name of a secret it keeps clashes — the
+    // deploy gateway drops such a var (`shadowedVars`) before it gets here.
+    const clash = uploaded.find(
+      b =>
+        (b.type === 'plain_text' || b.type === 'json') &&
+        keepsSecrets &&
+        script.secrets.has(String(b.name))
+    )
+    if (clash && this.secretNameClash) {
+      return cfError(
+        400,
+        10053,
+        `Binding name '${String(clash.name)}' already in use. Please use a different name and try again.`
+      )
+    }
+    const kept = keepsSecrets
+      ? [...script.secrets.keys()]
+          .filter(name => !uploaded.some(b => b.name === name))
+          .map(name => ({ type: 'secret_text', name }))
       : []
+    // The secret values as of THIS upload: an uploaded `secret_text` carries its own text, a kept
+    // one the script's current value (so a later secret write does not change this version).
+    const secrets: Record<string, string> = {}
+    for (const b of uploaded) {
+      if (b.type === 'secret_text') secrets[String(b.name)] = String(b.text ?? '')
+    }
+    for (const b of kept) secrets[b.name] = script.secrets.get(b.name) ?? ''
     const version: FakeVersion = {
       id: crypto.randomUUID(),
       metadata,
       modules,
       bindings: [...uploaded, ...kept],
+      secrets,
       createdAt: new Date(),
     }
     script.versions.push(version)

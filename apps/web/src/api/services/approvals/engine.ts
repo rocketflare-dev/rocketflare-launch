@@ -200,7 +200,10 @@ export async function open<K extends BuiltApprovalKind>(
   if (existing) return { request: existing, created: false, autoApproved: false }
 
   const now = nowOf(deps)
-  const policy = await resolvePolicy(deps.db, input.tenantId, input.kind, input.appId)
+  // P5 (plan §1.9): a caller that resolves the policy itself (a shared resource's own
+  // `policies[env]`) hands it in, and it is snapshotted exactly as a resolved one would be.
+  const policy =
+    input.policy ?? (await resolvePolicy(deps.db, input.tenantId, input.kind, input.appId))
   const requester = 'userId' in input.requester ? input.requester : null
   const autoApproved = Boolean(
     requester?.role &&

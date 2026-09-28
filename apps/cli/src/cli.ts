@@ -11,6 +11,7 @@ import { runConfigGet, runConfigPath, runConfigSet } from './commands/config'
 import { runEvalsPromote } from './commands/evals'
 import { runFeaturesList } from './commands/features'
 import { runFeedbackList } from './commands/feedback'
+import { registerGrantsCommands } from './commands/grants'
 import { runGroupMembers, runGroupsList } from './commands/groups'
 import { runLogin } from './commands/login'
 import { runLogout } from './commands/logout'
@@ -23,6 +24,7 @@ import {
   runSessionsShip,
   runSessionsStart,
 } from './commands/sessions'
+import { registerSharedCommands } from './commands/shared'
 import { runStatus } from './commands/status'
 import { runTracesList, runTracesShow } from './commands/traces'
 import { runWhoami } from './commands/whoami'
@@ -242,6 +244,11 @@ sessions
 registerApprovalsCommands(program, action)
 registerReleasesCommands(program, action)
 registerAuditCommands(program, action)
+
+// ---- Launch P5: shared config and grants (each file registers its own commands) ---------------
+
+registerSharedCommands(program, action)
+registerGrantsCommands(program, action)
 
 // ---- config --------------------------------------------------------------------------------
 

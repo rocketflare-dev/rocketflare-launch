@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { dispatchScheduled, SCHEDULED_TASKS, type ScheduledTask, scheduled } from '@/api/scheduled'
 import { approvalsSweep } from '@/api/services/approvals/sweep'
+import { grantsSweep } from '@/api/services/grants/sweep'
 import { auditSeal } from '@/api/services/launch/audit-chain'
 import { healthPoll, healthPollTask } from '@/api/services/launch/health'
 import { sessionsChecks } from '@/api/services/sessions/checks-cron'
@@ -23,12 +24,14 @@ describe('scheduled dispatcher', () => {
     expect(SCHEDULED_TASKS['0 4 * * *']?.map(t => t.name)).toEqual(['pruneExpired', 'pruneAiSpans'])
   })
 
-  it("registers Launch's health poll, the P3 session tasks and the P4 approval and audit tasks on the five-minute cron", () => {
+  it("registers Launch's health poll, the P3 session tasks, the P4 approval and audit tasks and the P5 grants sweep on the five-minute cron", () => {
+    // The grants sweep runs BEFORE the seal, so the audit rows it writes join the same run's chain.
     expect(SCHEDULED_TASKS['*/5 * * * *']).toEqual([
       healthPoll,
       expireSessions,
       sessionsChecks,
       approvalsSweep,
+      grantsSweep,
       auditSeal,
     ])
     expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual([
@@ -36,6 +39,7 @@ describe('scheduled dispatcher', () => {
       'sessions.expire',
       'sessions.checks',
       'approvals.sweep',
+      'grants.sweep',
       'audit.seal',
     ])
   })

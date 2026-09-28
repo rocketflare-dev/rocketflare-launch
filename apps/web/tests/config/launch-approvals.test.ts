@@ -12,6 +12,7 @@ import {
   APPROVAL_NOTIFICATION_TYPES,
   APPROVAL_REALTIME_ENTITY,
   APPROVAL_STATUSES,
+  APPROVAL_SUBJECT_TYPES,
   approvalContextSchema,
   approvalDetailSchema,
   approvalListQuerySchema,
@@ -48,7 +49,7 @@ import { WEB_ROOT } from '../helpers/source-files'
 const UUID = '6f1c1a3e-2b1f-4d5e-9a3b-1c2d3e4f5a6b'
 
 describe('approval closed sets', () => {
-  it('names every spec/08 kind, builds four, and keeps the order (values are stored)', () => {
+  it('names every spec/08 kind, builds five (P5 adds grant.request), and keeps the order (values are stored)', () => {
     expect(APPROVAL_KINDS).toEqual([
       'app.create',
       'app.access',
@@ -63,7 +64,10 @@ describe('approval closed sets', () => {
       'app.access',
       'deploy.production',
       'session.budget',
+      'grant.request',
     ])
+    expect(isBuiltApprovalKind('grant.request')).toBe(true)
+    expect(APPROVAL_SUBJECT_TYPES).toContain('grant')
     expect(isBuiltApprovalKind('deploy.production')).toBe(true)
     expect(isBuiltApprovalKind('app.teardown')).toBe(false)
     expect(APPROVAL_STATUSES).toEqual(['pending', 'approved', 'rejected', 'expired', 'cancelled'])
@@ -72,7 +76,7 @@ describe('approval closed sets', () => {
   it('the kind registry has exactly the built kinds, and refuses the unbuilt by name', () => {
     expect(Object.keys(KIND_HANDLERS).sort()).toEqual([...BUILT_APPROVAL_KINDS].sort())
     for (const kind of BUILT_APPROVAL_KINDS) expect(kindHandler(kind).kind).toBe(kind)
-    expect(() => kindHandler('grant.request')).toThrow(
+    expect(() => kindHandler('config.change')).toThrow(
       expect.objectContaining({ statusCode: 409, code: APPROVAL_ERROR_CODES.kindNotBuilt })
     )
   })
@@ -185,8 +189,12 @@ describe('context, requests and responses', () => {
     expect(approvalContextSchema.safeParse({ kind: 'app.access', sessionId: UUID }).success).toBe(
       false
     )
+    // P5: grant.request has its own shape now; the two still unbuilt kinds keep a description.
     expect(
       approvalContextSchema.safeParse({ kind: 'grant.request', description: 'later' }).success
+    ).toBe(false)
+    expect(
+      approvalContextSchema.safeParse({ kind: 'config.change', description: 'later' }).success
     ).toBe(true)
   })
 

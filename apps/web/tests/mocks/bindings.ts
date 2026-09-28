@@ -606,6 +606,8 @@ export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
     // Launch P3: coding sessions — the container namespace and the lifecycle Workflow.
     SESSION_SANDBOX: new FakeSandboxNamespace() as unknown as DurableObjectNamespace,
     SESSION_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
+    // Launch P5: shared config pushes — the same recorder; tests drive the class.
+    GRANT_PUSH_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     APP_ENV: process.env.APP_ENV ?? 'development',
     APP_URL: process.env.APP_URL ?? 'http://localhost:3001',
     APP_NAME: process.env.APP_NAME ?? 'Launch Test',
@@ -643,6 +645,8 @@ export function stubs(env: TestEnv) {
     sessionWorkflow: env.SESSION_WORKFLOW as unknown as RecordingWorkflow | undefined,
     /** Launch P3: `SESSION_SANDBOX` — every RPC call on a sandbox stub, and `respond` for fetches. */
     sandboxes: env.SESSION_SANDBOX as unknown as FakeSandboxNamespace | undefined,
+    /** Launch P5: `GRANT_PUSH_WORKFLOW` — `created[i]` is `{ id: pushId, params: GrantPushParams }`. */
+    grantPushWorkflow: env.GRANT_PUSH_WORKFLOW as unknown as RecordingWorkflow | undefined,
   }
 }
 

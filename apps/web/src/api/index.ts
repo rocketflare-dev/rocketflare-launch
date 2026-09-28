@@ -53,6 +53,7 @@ import { oidcRouter, wellKnownRouter } from './routes/oidc'
 import { oidcAdminRouter } from './routes/oidc-admin'
 import { sessionsRouter } from './routes/sessions'
 import { setupRouter } from './routes/setup'
+import { sharedResourcesRouter } from './routes/shared-resources'
 import { tenantRouter } from './routes/tenant'
 import { tenantsRouter } from './routes/tenants'
 import { tracesRouter } from './routes/traces'
@@ -188,6 +189,10 @@ const mounts: readonly (readonly [string, Hono<AppEnv>, MiddlewareHandler?])[] =
   // `/api/apps/:id/releases` (`app-releases.ts`, mounted by `apps.ts`).
   ['/api/approvals', approvalsRouter],
   ['/api/approval-policies', adminApprovalPoliciesRouter],
+  // Launch P5 (spec/09): shared config — the bundles, their sealed values, who holds them and the
+  // pushes that deliver them. An app's grants are `/api/apps/:id/{config,grants}` (`app-config.ts`,
+  // mounted by `apps.ts`).
+  ['/api/shared-resources', sharedResourcesRouter],
   // D31: installed plugins, last, so a plugin can never shadow a kit prefix — Hono matches in
   // registration order. Each mount gets `authMiddleware` and its own optional gate exactly like a
   // kit mount; the convention is `/api/<plugin id>`, and `tests/config/plugins.test.ts` is what

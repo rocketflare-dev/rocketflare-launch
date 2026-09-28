@@ -30,7 +30,10 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   (`[ai] binding = "AI"`, Workers AI embeddings). Launch P2: `APP_LAUNCH_WORKFLOW`,
   `APP_TEARDOWN_WORKFLOW`. Launch P3: `SESSION_SANDBOX` (the `SessionSandbox` container + Durable
   Object, below) and `SESSION_WORKFLOW` (`launch-session[-staging]`, class `SessionWorkflow`); a
-  missing `SESSION_WORKFLOW` is a 503 `sessions_not_configured` before any row is written. The analytics PLUGIN (D19, D31) adds **no binding**:
+  missing `SESSION_WORKFLOW` is a 503 `sessions_not_configured` before any row is written.
+  Launch P5: `GRANT_PUSH_WORKFLOW` (`launch-grant-push[-staging]`, class `GrantPushWorkflow`); a
+  missing one is a 503 `grants_not_configured` before any row, and `[vars] GRANT_BACKEND =
+  "cloudflare"` (`local` is development only). The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`
   dataset is deliberately NOT wired (the toml comment is the only trace). Optional: `ANALYTICS_ENGINE`,
   `HYPERDRIVE_APP`

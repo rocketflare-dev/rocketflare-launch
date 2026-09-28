@@ -52,7 +52,13 @@
  *   `{metadata, modules, secrets, secretPuts (names only, in order), migrationTag, workersDev,
  *   schedules, settings, versions[{id, metadata, bindings}], deployments, activeVersionId}`),
  *   `workflows` (name → `{class_name, script_name}`), `routes` (id → `{pattern, script, zoneId}`),
- *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`.
+ *   `assetBlobs`, `activeVersion(script)`, `scriptForHost(host)`. P5: secrets list (`GET`, names
+ *   only) and `DELETE …/secrets/{name}` (`secretDeletes`, names in order); on a script with a live
+ *   version every secret write or delete creates AND deploys a new version carrying the active
+ *   one's bindings; `envOf(script)` → the live version's string env (`plain_text`, `json`, and each
+ *   `secret_text`'s value as of that version) or null; a secret named like a live `plain_text`
+ *   binding, and an upload whose var shadows a kept secret, answer 10053 "Binding name already in
+ *   use" (`cloudflare.secretNameClash = false` turns both off).
  * - `cloud.neon` (`FakeNeon`): `projects` (id → `{name, region_id, org_id, pg_version, branches:
  *   id → {name, parent_id, init_source, host, roles: name → {password, resets}, databases}}`),
  *   `branchNamed(projectId, name)`, `resetCount(projectId, role)`, `sql` (every HTTP SQL statement

@@ -7,6 +7,7 @@
  * `c.env`. Nothing in `src/` reads `process.env` — the validation style is the Node reference app's
  * `src/config.ts`, the source is the env object Cloudflare hands us.
  */
+import { GRANT_BACKENDS } from '@launch/shared/launch-grants'
 import { sharedPlugins } from '@launch/shared/plugins'
 import { z } from 'zod'
 
@@ -229,6 +230,16 @@ const coreConfigSchema = z.object({
       )
       .optional()
   ),
+  /**
+   * Launch P5 (shared config and grants, plan §1.11): where a grant's values are pushed.
+   * `cloudflare` — the app Worker's secrets (the tomls). `local` — record the names, call no vendor
+   * (`.dev.vars`). `loadConfig` refuses `local` outside `APP_ENV=development`: a deployed Launch
+   * that "pushed" nothing would leave every app on its missing-config 503.
+   */
+  GRANT_BACKEND: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(GRANT_BACKENDS).default('cloudflare')
+  ),
   /** `SESSION_BACKEND=local`: the git server sessions clone from and push to (`pnpm sessions:local-git`). */
   SESSION_LOCAL_GIT_URL: z.preprocess(
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
@@ -323,6 +334,14 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       code: z.ZodIssueCode.custom,
       path: ['SESSION_BACKEND'],
       message: 'SESSION_BACKEND=local is only allowed with APP_ENV=development',
+    })
+  }
+  // The local grant backing pushes nothing: never in a deployed Worker.
+  if (cfg.GRANT_BACKEND === 'local' && cfg.APP_ENV !== 'development') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['GRANT_BACKEND'],
+      message: 'GRANT_BACKEND=local is only allowed with APP_ENV=development',
     })
   }
   // A Neon deployment has no HYPERDRIVE fallback: fail here, not on the first query.

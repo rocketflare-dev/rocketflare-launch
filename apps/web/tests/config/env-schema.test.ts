@@ -126,6 +126,23 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, SESSION_BACKEND: 'laptop' })).toThrow(/SESSION_BACKEND/)
   })
 
+  it('shared config (P5): the cloudflare backing by default; `local` only under APP_ENV=development', () => {
+    expect(loadConfig(base).GRANT_BACKEND).toBe('cloudflare')
+    expect(loadConfig({ ...base, GRANT_BACKEND: '' }).GRANT_BACKEND).toBe('cloudflare')
+    expect(loadConfig({ ...base, GRANT_BACKEND: 'local' }).GRANT_BACKEND).toBe('local')
+    for (const APP_ENV of ['staging', 'production']) {
+      expect(() =>
+        loadConfig({
+          ...base,
+          APP_ENV,
+          APP_URL: 'https://launch.example.com',
+          GRANT_BACKEND: 'local',
+        })
+      ).toThrow(/GRANT_BACKEND=local is only allowed with APP_ENV=development/)
+    }
+    expect(() => loadConfig({ ...base, GRANT_BACKEND: 'secrets-store' })).toThrow(/GRANT_BACKEND/)
+  })
+
   it('SESSION_PREVIEW_URL is an origin whose host starts with {label}', () => {
     expect(
       loadConfig({ ...base, SESSION_PREVIEW_URL: 'https://{label}.clewro.com' }).SESSION_PREVIEW_URL

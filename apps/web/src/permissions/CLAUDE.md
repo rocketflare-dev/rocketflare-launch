@@ -28,6 +28,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `Session` (Launch P3, spec/07) | manage | manage | manage | manage | create + read + update (own only — `maySeeSession` / `mayManageSession` in `services/sessions/access.ts`: the creator and the app's owners; another member's session is 404) |
 | `Approval` (Launch P4, spec/08) | manage | manage | manage | manage | read (the approvals service filters the rows — waiting on me, requested by me; DECIDING is the engine's per-request eligibility check from the snapshotted policy, never a CASL action) |
 | `ApprovalPolicy` (Launch P4) | manage | manage | manage | manage | – (an app owner loosening their own production gate would defeat it — plan §1.5) |
+| `SharedResource` (Launch P5, spec/09) | manage | manage | manage | manage | read (in `ADMIN_MANAGED`: members see the bundles, item names and policy — what they need to ask; the owner GROUP's rights — values, items, holders — are `services/grants/access.ts`, never a grant; no subject reads a value) |
 
 - Actions: `manage` (wildcard) · `create` · `read` · `update` · `delete` · `access` (features only)
 - Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`

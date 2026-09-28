@@ -32,7 +32,7 @@ vitest 3 resolves `isolate` per run, not per project.
   is the test URL, under `neon` NO `HYPERDRIVE` (a deployed `neon` Worker has none) plus
   `DATABASE_DRIVER` / `NEON_LOCAL_PROXY`; `ctx = createExecutionContext()` collects `waitUntil`
   promises so a test can `await waitOnExecutionContext(ctx)` before asserting side effects
-- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow, launchWorkflow, teardownWorkflow, sessionWorkflow, sandboxes }`: `queue.messages`
+- Reach the stubs through **`stubs(env)`** → `{ kv, queue, files, hub, ai, workflow, launchWorkflow, teardownWorkflow, sessionWorkflow, sandboxes, grantPushWorkflow }`: `queue.messages`
   (what a route enqueued — `[{ body, options }]`), `files.objects` (key → stored bytes/metadata),
   `hub.broadcasts` (`[{ tenantId, args: [method, ...args] }]` — every RPC call on any stub, e.g.
   `['broadcast', event]`; the stub's `fetch` answers 501), `kv.store`, `ai.runs` (`[{ model, inputs }]`),
@@ -225,7 +225,14 @@ a fake `WebSocket` factory left set) is on you.
   `POST /api/apps`) runs over `tests/helpers/credential-store.ts`: `vi.mock` the credentials
   module with `mockCredentialsModule(real, store)` and seed through `putCredential` /
   `putSetting` — those tables are global, and writing them races `setup.test.ts`.
-  `tests/api/app-create-e2e.test.ts` is the whole create → deploy → teardown path in one file
+  `tests/api/app-create-e2e.test.ts` is the whole create → deploy → teardown path in one file.
+  Launch P5: secret `DELETE` / list, and on a LIVE script every secret write or delete is a new
+  deployed version carrying the active one's bindings; `cloud.cloudflare.envOf(script)` is the
+  running Worker's string env (secret values as of that version, so `keep_bindings` copies them as
+  of the upload); a secret named like a live var, or an upload whose var shadows a kept secret, is
+  10053 (`secretNameClash = false` turns it off). `tests/helpers/grants.ts` seeds resources, sealed
+  values and grants directly (`seedSharedResource`, `seedResourceValues`, `seedGrant`, `M365_ITEMS`,
+  `M365_VALUES` — the secret is a sentinel a "never echoed" test searches for)
 - **Launch P3's coding sessions: fakes behind four ports** (`services/sessions/ports.ts` —
   `SandboxPort`, `SessionDbPort`, `RepoHostPort`, `ModelUpstream`; `defaultSessionPorts(env, cfg)` is
   never reached by a test: the Workflow takes `overrides.ports`, route suites mock the module).

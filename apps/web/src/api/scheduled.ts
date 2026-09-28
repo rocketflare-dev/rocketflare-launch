@@ -15,6 +15,7 @@ import { aiSpans, tenants, userSessions } from '../db/schema'
 import { serverPlugins } from '../plugins/server'
 import { pruneMagicLinkTokens } from './auth/magic-link'
 import { approvalsSweep } from './services/approvals/sweep'
+import { grantsSweep } from './services/grants/sweep'
 import { pruneInvitations } from './services/invitations'
 import { auditSeal } from './services/launch/audit-chain'
 import { healthPoll } from './services/launch/health'
@@ -115,8 +116,17 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   '0 4 * * *': [pruneExpired, pruneAiSpans],
   // Launch (spec/06): every registered app environment's `/api/health` + `/api/ready`; P3: end
   // suspended coding sessions past their expiry, and refresh shipped sessions' pending PR checks;
-  // P4: expire approvals and retry their owed effects, then seal new audit events into the chain.
-  '*/5 * * * *': [healthPoll, expireSessions, sessionsChecks, approvalsSweep, auditSeal],
+  // P4: expire approvals and retry their owed effects, then seal new audit events into the chain;
+  // P5: remind and expire grants, and flag secrets due for rotation — before the seal, so its
+  // audit rows join this run's chain.
+  '*/5 * * * *': [
+    healthPoll,
+    expireSessions,
+    sessionsChecks,
+    approvalsSweep,
+    grantsSweep,
+    auditSeal,
+  ],
 }
 
 /**

@@ -30,7 +30,10 @@
  * - Scripts: `PUT …/workers/scripts/{name}` is multipart — a `metadata` JSON part (main module,
  *   compatibility, bindings, and the DO `migrations` the Versions API cannot apply) plus one part
  *   per module. `DELETE …?force=true` also removes a script other things still bind.
- *   `…/subdomain {enabled}` turns `workers.dev` off; `…/secrets` PUTs one `secret_text`.
+ *   `…/subdomain {enabled}` turns `workers.dev` off; `…/secrets` PUTs one `secret_text`. P5:
+ *   `GET …/secrets` lists names and types (never a value), `DELETE …/secrets/{name}` removes one
+ *   (404 for a name the script lacks). Each secret write creates AND deploys a new version carrying
+ *   the active one's bindings — so a three-item push is three versions (plan §5).
  * - Workflows `PUT /accounts/{a}/workflows/{name} {class_name, script_name}` registers one against
  *   a script — `wrangler deploy` does it implicitly, a version upload does not.
  * - Routes `POST /zones/{z}/workers/routes {pattern, script}` → `{ id }`.
@@ -490,6 +493,25 @@ export class CloudflareClient {
         json: { name, text: value, type: 'secret_text' },
       }
     )
+  }
+
+  /**
+   * Remove one secret from the script (Launch P5, a grant's revoke). Cloudflare answers 404 for a
+   * name the script does not have; callers that treat that as done check `isCloudflareNotFound`.
+   */
+  async deleteWorkerSecret(accountId: string, scriptName: string, name: string): Promise<void> {
+    await this.call(
+      'DELETE',
+      `/accounts/${enc(accountId)}/workers/scripts/${enc(scriptName)}/secrets/${enc(name)}`
+    )
+  }
+
+  /** The script's secrets — NAMES and types only; Cloudflare never returns a secret's value. */
+  listWorkerSecrets(
+    accountId: string,
+    scriptName: string
+  ): Promise<{ name: string; type: string }[]> {
+    return this.get(`/accounts/${enc(accountId)}/workers/scripts/${enc(scriptName)}/secrets`)
   }
 
   // ---- Workflows and routes (P2) ---------------------------------------------------------------

@@ -64,6 +64,17 @@ the `approval` decision source, `releaseId` / `approvalId` on a ticket and `appr
 create and production-deploy answers; `launch-sessions.ts` an optional `reason` on
 `extendBudgetSchema` and `extendBudgetResponseSchema` (the session plus the `session.budget`
 `approvalId`) ·
+Launch (P5, `docs/plans/p5-grants.md`): `launch-grants.ts` (shared config and grants — the closed
+sets `SHARED_RESOURCE_VALUE_STATUSES`, `GRANT_STATUSES` + `LIVE_GRANT_STATUSES`,
+`GRANT_PUSH_REASONS`, `GRANT_PUSH_STATUSES` + `ACTIVE_GRANT_PUSH_STATUSES` (both index predicates
+are rendered from these), `GRANT_PUSH_TARGET_STATUSES`, `GRANT_BACKENDS`; `sharedResourceItemSchema`
+/ `sharedResourcePoliciesSchema` (the jsonb columns); the `/api/shared-resources` bodies and answers
+— **values are write-only**: no response schema has a field for a secret, and `vars` only reaches
+owners and admins; `appConfigSchema`, `requestGrantSchema`, `grantPushSchema`, `grantPushParamsSchema`;
+the realtime entities `shared_resource` / `grant_push` / `app_config`, `GRANT_NOTIFICATION_TYPES`,
+`GRANT_ERROR_CODES`, `sharedResourcePath` / `appConfigPath`); `launch-approvals.ts` built
+`grant.request` (`BUILT_APPROVAL_KINDS` has five, `grant` subject, `grantRequestContextSchema`,
+`GRANT_ITEM_KINDS`, the owner-group default); `launch-sessions.ts` the `ship.config_needs` event ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

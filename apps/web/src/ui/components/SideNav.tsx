@@ -9,6 +9,7 @@ import {
   CpuChipIcon,
   DocumentMagnifyingGlassIcon,
   HomeIcon,
+  KeyIcon,
   MagnifyingGlassIcon,
   ShieldCheckIcon,
   Squares2X2Icon,
@@ -62,6 +63,13 @@ const CORE_NAVIGATION: NavConfig = [
         label: 'Apps',
         icon: Squares2X2Icon,
         guard: { action: 'read', subject: 'App' },
+      },
+      // Launch P5 (spec/09): shared config — every member reads it, so they can ask for it.
+      {
+        to: '/shared-config',
+        label: 'Shared config',
+        icon: KeyIcon,
+        guard: { action: 'read', subject: 'SharedResource' },
       },
       // Launch P4 (spec/08): the approvals inbox. The badge counts the requests waiting on THIS
       // person, fed by the `approval` nudge; warning-toned because something is blocked on them.

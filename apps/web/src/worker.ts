@@ -3,7 +3,7 @@
  * Durable Object classes (`NotificationsHub`, D8; Launch P3's `SessionSandbox`, the coding
  * session's container, with the Sandbox SDK's `ContainerProxy` its outbound handlers run through)
  * and the Workflow classes (`AgentRunWorkflow`, D7; Launch P2's `AppLaunchWorkflow` and
- * `AppTeardownWorkflow`; P3's `SessionWorkflow`).
+ * `AppTeardownWorkflow`; P3's `SessionWorkflow`; P5's `GrantPushWorkflow`).
  * The classes are exported HERE — never from api/index.ts, which must stay importable from Node
  * tests.
  *
@@ -30,6 +30,7 @@ export { ContainerProxy, SessionSandbox } from './api/durable-objects/session-sa
 export { AgentRunWorkflow } from './api/workflows/agent-run'
 export { AppLaunchWorkflow } from './api/workflows/app-launch'
 export { AppTeardownWorkflow } from './api/workflows/app-teardown'
+export { GrantPushWorkflow } from './api/workflows/grant-push'
 export { SessionWorkflow } from './api/workflows/session'
 export * from './plugins/worker-exports'
 

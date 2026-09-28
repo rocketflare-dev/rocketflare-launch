@@ -106,6 +106,12 @@ export interface OpenApprovalInput<K extends BuiltApprovalKind = BuiltApprovalKi
   expiresNoLaterThan?: Date | null
   /** Who clicked (for the audit row); defaults to the requester. */
   actor?: AuditActor
+  /**
+   * Launch P5 (plan §1.9): the policy to snapshot, in place of `resolvePolicy` — the grant service
+   * passes `resource.policies[env] ?? resolvePolicy(…)`, because `resolvePolicy` knows only app,
+   * group and tenant scopes. Absent: resolved as always.
+   */
+  policy?: ApprovalPolicy
 }
 
 export interface OpenApprovalResult {

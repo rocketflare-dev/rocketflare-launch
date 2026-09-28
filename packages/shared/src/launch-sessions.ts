@@ -147,6 +147,8 @@ export const SESSION_EVENT_TYPES = [
   'ship.gate',
   'ship.pr',
   'error',
+  // P5 (plan §1.14–§1.15): the shared config the PR's head declares and the app does not hold.
+  'ship.config_needs',
 ] as const
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
@@ -204,6 +206,28 @@ export const sessionShipPrDataSchema = z.object({
   url: z.string(),
 })
 
+/**
+ * P5: what ship's scan of the PR head found (`services/grants/detect.ts`) — reported to the author
+ * as an event and never stored as the app's scan. Names only: a session never receives a grant's
+ * values (spec/03), so the sandbox runs on the kit's missing-config 503 and this line says why.
+ */
+export const sessionShipConfigNeedsDataSchema = z.object({
+  /** Matched shared resources that no environment of the app holds yet. */
+  needs: z.array(
+    z.object({
+      resourceId: z.string().uuid(),
+      slug: z.string(),
+      displayName: z.string(),
+      keys: z.array(z.string()),
+    })
+  ),
+  /** Declared keys that match no shared resource. */
+  unmatched: z.array(z.string()).default([]),
+  /** The PR head the scan read. */
+  sha: z.string().nullable().optional(),
+})
+export type SessionShipConfigNeedsData = z.infer<typeof sessionShipConfigNeedsDataSchema>
+
 /** Event type → the schema its `data` parses with; one lookup for the timeline and the projection. */
 export const SESSION_EVENT_DATA = {
   'user.message': sessionUserMessageDataSchema,
@@ -221,6 +245,7 @@ export const SESSION_EVENT_DATA = {
   'ship.gate': sessionShipGateDataSchema,
   'ship.pr': sessionShipPrDataSchema,
   error: agentErrorEventDataSchema,
+  'ship.config_needs': sessionShipConfigNeedsDataSchema,
 } as const satisfies Record<SessionEventType, z.ZodTypeAny>
 
 /** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */

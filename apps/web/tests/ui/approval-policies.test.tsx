@@ -98,7 +98,8 @@ describe('ApprovalPoliciesSettings', () => {
     expect(screen.getByRole('heading', { name: 'New app' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'App access' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Session budget' })).toBeInTheDocument()
-    expect(screen.getAllByText('default')).toHaveLength(4)
+    expect(screen.getByRole('heading', { name: 'Shared config' })).toBeInTheDocument()
+    expect(screen.getAllByText('default')).toHaveLength(5)
     expect(screen.getByText(/App: Expenses/)).toBeInTheDocument()
     expect(
       screen.getByText('2 approvals from the app’s owners or the organisation’s admins')

@@ -72,8 +72,14 @@ closes a cycle back through `plugins/schema.ts`.
 | `approval_decisions` | `approvals.ts` | `tenant_id` | ✓ | Launch P4: **append-only** (trigger + `APPEND_ONLY_TABLES`); unique `(request_id, user_id)` → 409 `already_decided`; `user_id` has NO FK and `user_email` is copied (the `audit_events` rule) |
 | `approval_policies` | `approvals.ts` | `tenant_id` | ✓ | Launch P4: per kind × scope (`tenant\|group\|app`, `scope_id` a plain uuid), unique NULLS NOT DISTINCT `(tenant_id, kind, scope_type, scope_id)`; resolved app → owner group → tenant → code default |
 | `app_releases` | `app-releases.ts` | `tenant_id` | ✓ | Launch P4: one release — `version`, `tag` (= version), bump `sha`, `previous_tag`, `prs` jsonb (`releasePrSchema[]`), `release_status` pg enum, `approval_id` → `approval_requests` set null, staging/production ticket ids (plain uuids — the FK is `deploy_tickets.release_id`); unique `(app_id, tag)`; `(tenant_id, app_id, created_at DESC)` |
+| `shared_resources` | `shared-resources.ts` | `tenant_id` | ✓ | Launch P5: a shared-config bundle — unique `(tenant_id, slug)`, `owner_group_id` → `groups` **NO ACTION** (a group owning one cannot be deleted; `deleteGroup` answers 409 `group_owns_shared_config`; NO ACTION rather than the plan's RESTRICT so a tenant's cascade still works), `items` / `policies` jsonb typed from `@launch/shared/launch-grants`, `archived_at` |
+| `shared_resource_values` | `shared-resources.ts` | `tenant_id` | ✓ | Launch P5: one sealed version per write — `(resource_id, environment, version)` unique, `sealed` (`sealValues`, never returned), `status` text `active\|retiring\|retired` with a partial unique ONE `active` per resource × environment |
+| `app_grants` | `app-grants.ts` | `tenant_id` | ✓ | Launch P5: app × resource × environment; `status` text from `GRANT_STATUSES`, partial unique `app_grants_live_idx` over `LIVE_GRANT_STATUSES` (rendered); `resource_id` NO ACTION (archive, never delete), `approval_id` / `pushed_version_id` set null; `(tenant_id, resource_id, environment, status)`, `(tenant_id, app_id)` |
+| `grant_pushes` | `app-grants.ts` | `tenant_id` | ✓ | Launch P5: one `GRANT_PUSH` run — partial unique ONE running (`ACTIVE_GRANT_PUSH_STATUSES`, rendered) per resource × environment (→ 409 `push_in_progress`), partial unique `approval_id` (a retried `applyAfter` finds its push), counts, `instance_id` |
+| `grant_push_targets` | `app-grants.ts` | `tenant_id` | ✓ | Launch P5: one app's part of a push — unique `(push_id, grant_id)` (the idempotent `plan` insert), `error` scrubbed, `names` jsonb (keys only) |
+| `app_config_scans` | `app-grants.ts` | `tenant_id` | ✓ | Launch P5: what the app last declared — PK `app_id` (one row per app, overwritten), `declared` / `needs` jsonb, `error` |
 
-46 policies (`tenants`, `users` + 44 tenant tables); 7 revoked tables = `RLS_REVOKED_TABLES` =
+52 policies (`tenants`, `users` + 50 tenant tables); 7 revoked tables = `RLS_REVOKED_TABLES` =
 `RLS_EXCLUDED_TABLES` minus `feature_flags`. jsonb columns are `$type<>()`d from `@launch/shared` (type-only imports).
 
 ## Conventions

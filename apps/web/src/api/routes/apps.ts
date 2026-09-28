@@ -7,7 +7,8 @@
  * Every lookup is tenant-first (`services/launch/apps.ts`), so another tenant's app is a 404.
  *
  * P2 mounts two sub-routers first (`app-pipeline.ts`, `app-deploys.ts`), P3 a third
- * (`app-sessions.ts`, an app's coding sessions) and P4 a fourth (`app-releases.ts`); see below.
+ * (`app-sessions.ts`, an app's coding sessions), P4 a fourth (`app-releases.ts`) and P5 two more
+ * (`app-config.ts`, `app-config-scan.ts` — shared config and grants); see below.
  *
  * `POST /:id/health-check` probes inline rather than enqueueing: it is two GETs per environment
  * with a five-second cap, and the person who pressed the button is waiting for the answer.
@@ -43,6 +44,8 @@ import {
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
+import { appConfigRouter } from './app-config'
+import { appConfigScanRouter } from './app-config-scan'
 import { appDeploysRouter, appViewer } from './app-deploys'
 import { appPipelineRouter } from './app-pipeline'
 import { appReleasesRouter } from './app-releases'
@@ -59,6 +62,10 @@ appsRouter.route('/', appDeploysRouter)
 appsRouter.route('/', appSessionsRouter)
 // Launch P4: `GET|POST /:id/releases`, `…/:rid`, `…/:rid/promote`, `…/:rid/chain`.
 appsRouter.route('/', appReleasesRouter)
+// Launch P5: `GET /:id/config`, `POST /:id/grants`, `DELETE /:id/grants/:gid`, `…/:gid/repush`
+// (5d), and `POST /:id/config/scan` (5e).
+appsRouter.route('/', appConfigRouter)
+appsRouter.route('/', appConfigScanRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')
