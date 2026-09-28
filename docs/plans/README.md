@@ -73,6 +73,12 @@ The rest are unfiled.
 - Neon: roles made through the API are `neon_superuser` members that `neondb_owner` cannot grant, so the launch now creates `migrator` and `app` in SQL. P3's `session_owner` now gets the same treatment (`neon-session-db.ts`, made in SQL by `neondb_owner`; an API-made one on an app's `dev` is repaired).
 - The first real coding session (hola-world, under `wrangler dev`) failed its prepare at the kit's `4/10 database`: `tsx`'s esbuild crashed under amd64 emulation because `GOGC=off` followed `SESSION_BACKEND=local` and the backend was `cloud` (fixed: it follows `APP_ENV=development`), and the sandbox's allow-list had no Neon host (fixed: exactly the database's endpoint and its region's `api.` host; a session's database is now always a real Neon branch, local included). Still unproven: a real session boot against Neon through the egress interception (checked locally only with a public `wss://` echo host), and workerd inside the container trusting the interception CA.
 
+## Next fixes from real testing
+
+- **Deploys in progress are invisible outside the pipeline.** A production deploy (approved, dispatched, uploaded, activated at 12:20–12:22 on 2026-09-28) never showed as in progress on the app's overview page. Only the audit log recorded it. The overview should show a live deploy state for staging and production, from the deploy ticket: dispatched, approved, uploaded, migrating, activating, done or failed, with the GitHub run link. Poll it on page read the way the launch's CI waits are (`pipeline/wait-poll.ts`), and put the same state on the catalogue row.
+- **Coding sessions stall silently.** On hola-world's second session, the container went idle after the clone (while preparing the `dev` database: the first-session repair of the API-made `session_owner`), and the page kept saying "Preparing the app's database". The session Workflow needs what launches got: a dead-instance check (`pipeline/reconcile.ts`), a stuck-step timeout, and the error shown on the page. Under investigation.
+- **Kit deploy step names.** Rename "Deploy (apps/web/wrangler.staging.toml)" (the no-deployer path, skipped under Launch) to "Deploy with wrangler (no deployer)", and "Activate the uploaded version" to "Deploy: activate the uploaded version". Ship it with the next kit change, through a commit pin.
+
 ## Local dev notes
 
 - `pnpm dev:tunnel` runs only the tunnel (cfld). `pnpm dev` switches to the tunnel URL while that tunnel is up.
