@@ -26,7 +26,13 @@ import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import { reconcileSession, reconcileStaleSessions } from '@/api/services/sessions/reconcile'
 import { DEV_LOG_FILE } from '@/api/services/sessions/rocketflare-dev'
-import { BOOT_STEP_LABELS, LOST_TURN_MESSAGE } from '@/api/services/sessions/steps'
+import {
+  BOOT_STEP_LABELS,
+  lostTurnMessage,
+  SESSION_BOOT_MARKER,
+  salvagedCancelMessage,
+} from '@/api/services/sessions/steps'
+import { CONVERSATION_LOST_MESSAGE, turnKillScript } from '@/api/services/sessions/turn'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { apps, auditEvents, type SessionRow, sessionEvents, sessions } from '@/db/schema'
@@ -138,11 +144,12 @@ const endOnWait = (h: Harness) => async () => {
 async function drive(
   h: Harness,
   onWait: () => unknown,
-  limits: Partial<SessionCallLimits> = FAST
+  limits: Partial<SessionCallLimits> = FAST,
+  hookOverrides: Partial<SessionStepHooks> = {}
 ): Promise<{ names: string[] }> {
   const fake = createFakeWorkflowStep({ onWait })
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
-  workflow.overrides = { ports: h.ports, hooks, limits }
+  workflow.overrides = { ports: h.ports, hooks: { ...hooks, ...hookOverrides }, limits }
   await workflow.run(
     {
       payload: { sessionId: h.row.id, tenantId: h.row.tenantId },
@@ -505,9 +512,11 @@ describe('reconcile (a Workflow that died under a quiet session)', () => {
   })
 })
 
-describe('reconcile (a Workflow that died under a running turn)', () => {
+describe('reconcile (a Workflow that died under a running turn) and the salvage', () => {
   const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+  const secondsAgo = (n: number) => new Date(Date.now() - n * 1000)
   const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+  const BOOT_ID = 'boot-before-the-reload'
 
   /** A booted session in the middle of turn 1, its heartbeat `quietFor` minutes old. */
   async function working(h: Harness, quietFor: number, set: Partial<SessionRow> = {}) {
@@ -537,8 +546,36 @@ describe('reconcile (a Workflow that died under a running turn)', () => {
     ])
     return reload(h.row)
   }
+  /** The container outlived the instance: its boot marker is still there. */
+  const containerStillUp = (h: Harness) => h.sandbox().files.set(SESSION_BOOT_MARKER, BOOT_ID)
   const turnEvents = async (row: SessionRow) =>
     (await listSessionEvents(db, row.tenantId, row.id)).filter(e => e.type.startsWith('turn.'))
+  const messageOf = (event: { data: unknown } | undefined) =>
+    (event?.data as { message?: string } | undefined)?.message
+  const errorsOf = async (row: SessionRow) =>
+    (await listSessionEvents(db, row.tenantId, row.id))
+      .filter(e => e.type === 'error')
+      .map(e => messageOf(e))
+
+  /** The checkpoint hook, recording each reason and whether the orphaned turn was stopped first. */
+  function recordingCheckpoint(h: Harness, fail?: Error) {
+    const calls: { reason: string; killedFirst: boolean }[] = []
+    const checkpoint: SessionStepHooks['checkpoint'] = async (_ctx, reason) => {
+      calls.push({
+        reason,
+        killedFirst: h.sandbox().execs.some(e => e.command === turnKillScript()),
+      })
+      if (fail && reason === 'salvage') throw fail
+    }
+    return { calls, checkpoint }
+  }
+  /** At the first wait: note the status and the destroys so far, then End. */
+  const endOnFirstWait = (h: Harness, seen: { status?: string; destroys?: number }) => async () => {
+    seen.status ??= (await reload(h.row)).status
+    seen.destroys ??= h.sandbox().destroyCount
+    await patch(h.row, { requestedAction: 'end' })
+    return WAKE
+  }
 
   it('a turn with a fresh heartbeat costs nothing', async () => {
     const h = await harness()
@@ -547,40 +584,60 @@ describe('reconcile (a Workflow that died under a running turn)', () => {
     expect(workflowOf(h).statusCalls).toEqual([])
   })
 
-  it('an errored Workflow: the TURN fails with a sentence, the session is ready again, and a fresh instance boots it from its branch', async () => {
+  it('an errored Workflow: the turn is left for a fresh instance, whose salvage stops the process, checkpoints, keeps the container and resumes WARM', async () => {
     const h = await harness()
-    const row = await working(h, 4, { cancelRequestedAt: minutesAgo(5) })
+    const row = await working(h, 4)
+    containerStillUp(h)
     const wf = workflowOf(h)
     wf.setStatus(row.id, { status: 'errored' })
     const result = await reconcileSession(db, h.env, row)
     expect(result).toMatchObject({
       outcome: 'settled',
-      status: 'ready',
+      status: 'working',
       instanceStatus: 'errored',
       restartedAs: `${row.id}-r1`,
     })
-    const after = await reload(row)
-    expect(after).toMatchObject({
-      status: 'ready',
-      error: null,
-      cancelRequestedAt: null,
-      instanceId: `${row.id}-r1`,
-    })
-    const closed = (await turnEvents(row)).at(-1)
-    expect(closed).toMatchObject({ type: 'turn.failed', turn: 1 })
-    expect((closed?.data as { message?: string } | undefined)?.message).toBe(
-      'This turn stopped (its Workflow ended errored). Launch is restarting the session from its last checkpoint; send your message again.'
-    )
+    // Nothing closed yet, nothing destroyed: the salvage decides what to say.
+    expect(await reload(row)).toMatchObject({ status: 'working', instanceId: `${row.id}-r1` })
+    expect((await turnEvents(row)).map(e => e.type)).toEqual(['turn.start'])
 
-    // The fresh instance's claim finds a live row: the old container goes, the session boots again.
-    let statusAtWait: string | undefined
-    const run = await drive(h, async () => {
-      statusAtWait ??= (await reload(row)).status
-      await patch(h.row, { requestedAction: 'end' })
-      return WAKE
-    })
-    expect(run.names.slice(0, 9)).toEqual([
+    const { calls, checkpoint } = recordingCheckpoint(h)
+    const seen: { status?: string; destroys?: number } = {}
+    const run = await drive(h, endOnFirstWait(h, seen), FAST, { checkpoint })
+    expect(run.names.slice(0, 7)).toEqual([
       'claim',
+      'salvage',
+      'inspect#0',
+      'resume#0',
+      'sandbox.start#1',
+      'dev#1',
+      'inspect#1',
+    ])
+    expect(run.names).not.toContain('repo#1')
+    expect(new Set(run.names).size).toBe(run.names.length)
+    // Killed (SIGTERM → SIGKILL by pid) BEFORE the checkpoint, which ran as a salvage.
+    expect(calls[0]).toEqual({ reason: 'salvage', killedFirst: true })
+    expect(seen).toEqual({ status: 'ready', destroys: 0 })
+    const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
+    expect(failed).toHaveLength(1)
+    expect(messageOf(failed[0])).toBe(lostTurnMessage('saved'))
+    expect(messageOf(failed[0])).toMatch(/saved your work/)
+  })
+
+  it('a container that is gone: no checkpoint, destroyed, a cold resume — and the conversation it cannot restore is forgotten', async () => {
+    const h = await harness()
+    const row = await working(h, 4, { claudeSessionId: 'claude-never-checkpointed' })
+    workflowOf(h).setStatus(row.id, { status: 'running' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({ outcome: 'settled', status: 'working' })
+    expect(workflowOf(h).terminated).toEqual([row.id])
+
+    const { calls, checkpoint } = recordingCheckpoint(h)
+    const seen: { status?: string; destroys?: number } = {}
+    const run = await drive(h, endOnFirstWait(h, seen), FAST, { checkpoint })
+    expect(run.names.slice(0, 10)).toEqual([
+      'claim',
+      'salvage',
       'inspect#0',
       'resume#0',
       'sandbox.start#1',
@@ -590,24 +647,38 @@ describe('reconcile (a Workflow that died under a running turn)', () => {
       'dev#1',
       'transcript#1',
     ])
-    expect(statusAtWait).toBe('ready')
-    expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
-    // Closed once: the claim found `ready`, not `working`, so it wrote no second turn.failed.
-    expect((await turnEvents(row)).filter(e => e.type === 'turn.failed')).toHaveLength(1)
+    expect(calls.map(c => c.reason)).not.toContain('salvage')
+    expect(h.sandbox().execs.some(e => e.command === turnKillScript())).toBe(false)
+    expect(seen.status).toBe('ready')
+    expect(seen.destroys).toBeGreaterThanOrEqual(1)
+    const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
+    expect(failed.map(messageOf)).toEqual([lostTurnMessage('lost')])
+    expect(messageOf(failed[0])).toMatch(/could not save its work/)
+    // No transcript was ever checkpointed: `--resume` would fail every turn, so it is forgotten.
+    expect((await reload(row)).claudeSessionId).toBeNull()
+    expect(await errorsOf(row)).toContain(CONVERSATION_LOST_MESSAGE)
   })
 
-  it('a turn quiet for 3 minutes under a "running" instance is dead too: terminated first', async () => {
+  it('a checkpoint that fails: the container is KEPT (the workspace is the only copy) and the turn says so', async () => {
     const h = await harness()
-    const row = await working(h, 4)
-    const wf = workflowOf(h)
-    wf.setStatus(row.id, { status: 'running' })
-    const result = await reconcileSession(db, h.env, row)
-    expect(result).toMatchObject({ outcome: 'settled', status: 'ready' })
-    expect(wf.terminated).toEqual([row.id])
-    const closed = (await turnEvents(row)).at(-1)
-    expect((closed?.data as { message?: string } | undefined)?.message).toMatch(
-      /its Workflow was running, but its turn had not moved for 3 minutes/
-    )
+    const row = await working(h, 0)
+    containerStillUp(h)
+    const { calls, checkpoint } = recordingCheckpoint(h, new Error('push rejected'))
+    const seen: { status?: string; destroys?: number } = {}
+    const run = await drive(h, endOnFirstWait(h, seen), FAST, { checkpoint })
+    expect(run.names.slice(0, 6)).toEqual([
+      'claim',
+      'salvage',
+      'inspect#0',
+      'resume#0',
+      'sandbox.start#1',
+      'dev#1',
+    ])
+    expect(calls[0]?.reason).toBe('salvage')
+    expect(seen.destroys).toBe(0)
+    const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
+    expect(failed.map(messageOf)).toEqual([lostTurnMessage('kept', 'push rejected')])
+    expect(messageOf(failed[0])).toMatch(/could not save your work .*push rejected.*still in/)
   })
 
   it('End asked during a dead turn ends the session', async () => {
@@ -622,23 +693,102 @@ describe('reconcile (a Workflow that died under a running turn)', () => {
     expect(await reload(h.row)).toMatchObject({ status: 'ending', requestedAction: null })
   })
 
-  it('the cron sweep covers a dead turn', async () => {
+  it('the cron sweep covers a dead turn: a fresh instance is started for its salvage', async () => {
     const h = await harness()
     const row = await working(h, 6)
     workflowOf(h).setStatus(row.id, { status: 'terminated' })
     await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })
-    expect((await reload(row)).status).toBe('ready')
+    expect(await reload(row)).toMatchObject({ status: 'working', instanceId: `${row.id}-r1` })
   })
 
-  it('a lost instance found by a fresh claim (a wake that restarted it) closes the turn too', async () => {
+  it('no fresh instance can be started: the turn is closed here, so it does not spin', async () => {
+    const h = await harness()
+    const row = await working(h, 4)
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'errored' })
+    wf.create = async () => {
+      throw new Error('the engine is down')
+    }
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({ outcome: 'settled', status: 'ready', restartedAs: null })
+    expect(await reload(row)).toMatchObject({ status: 'ready' })
+    const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
+    expect(messageOf(failed[0])).toMatch(/could not restart the session to save its work/)
+  })
+
+  it('a lost instance found by a fresh claim (a wake that restarted it) salvages too', async () => {
     const h = await harness()
     const row = await working(h, 0)
-    await drive(h, async () => {
-      await patch(h.row, { requestedAction: 'end' })
-      return WAKE
-    })
+    containerStillUp(h)
+    const { calls, checkpoint } = recordingCheckpoint(h)
+    await drive(h, endOnFirstWait(h, {}), FAST, { checkpoint })
+    expect(calls[0]).toEqual({ reason: 'salvage', killedFirst: true })
     const failed = (await turnEvents(row)).filter(e => e.type === 'turn.failed')
-    expect(failed).toHaveLength(1)
-    expect(failed[0]?.data).toEqual({ turn: 1, message: LOST_TURN_MESSAGE })
+    expect(failed.map(messageOf)).toEqual([lostTurnMessage('saved')])
+  })
+
+  describe('Stop without a live turn step', () => {
+    it('a stale heartbeat + a pending Stop is lost at once (30 s), not after 3 minutes', async () => {
+      const h = await harness()
+      const quiet = await working(h, 0, { lastActivityAt: secondsAgo(40) })
+      workflowOf(h).setStatus(quiet.id, { status: 'running' })
+      // Without a Stop, 40 s of quiet is nothing.
+      expect(await reconcileSession(db, h.env, quiet)).toEqual({ outcome: 'skipped' })
+      await patch(h.row, { cancelRequestedAt: new Date() })
+      const result = await reconcileSession(db, h.env, await reload(h.row))
+      expect(result).toMatchObject({ outcome: 'settled', status: 'working' })
+      expect(workflowOf(h).terminated).toEqual([quiet.id])
+    })
+
+    it('POST /cancel with a stale heartbeat acts without the turn step: terminated, and the fresh instance stops, saves and settles the turn as cancelled', async () => {
+      const h = await harness()
+      const row = await working(h, 1)
+      containerStillUp(h)
+      const wf = workflowOf(h)
+      wf.setStatus(row.id, { status: 'running' })
+      const res = await request(
+        `/api/sessions/${row.id}/cancel`,
+        { method: 'POST', headers: h.f.cookie },
+        { env: h.env, json: {} }
+      )
+      expect(res.status).toBe(200)
+      expect(wf.terminated).toEqual([row.id])
+      expect(wf.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+      expect(await reload(row)).toMatchObject({ status: 'working', instanceId: `${row.id}-r1` })
+
+      const { calls, checkpoint } = recordingCheckpoint(h)
+      const seen: { status?: string; destroys?: number } = {}
+      const run = await drive(h, endOnFirstWait(h, seen), FAST, { checkpoint })
+      expect(run.names.slice(0, 2)).toEqual(['claim', 'salvage'])
+      expect(calls[0]).toEqual({ reason: 'salvage', killedFirst: true })
+      expect(seen).toEqual({ status: 'ready', destroys: 0 })
+      const closed = await turnEvents(row)
+      expect(closed.map(e => e.type)).toEqual(['turn.start', 'turn.interrupted'])
+      expect(closed[1]?.data).toEqual({
+        turn: 1,
+        reason: 'cancelled',
+        message: salvagedCancelMessage('saved'),
+      })
+      expect((await reload(row)).cancelRequestedAt).toBeNull()
+    })
+
+    it('POST /cancel with a fresh heartbeat is unchanged: the live turn step reads it', async () => {
+      const h = await harness()
+      const row = await working(h, 0, { lastActivityAt: secondsAgo(5) })
+      const wf = workflowOf(h)
+      wf.setStatus(row.id, { status: 'running' })
+      const res = await request(
+        `/api/sessions/${row.id}/cancel`,
+        { method: 'POST', headers: h.f.cookie },
+        { env: h.env, json: {} }
+      )
+      expect(res.status).toBe(200)
+      expect(wf.statusCalls).toEqual([])
+      expect(wf.terminated).toEqual([])
+      expect(wf.created).toEqual([])
+      const after = await reload(row)
+      expect(after.status).toBe('working')
+      expect(after.cancelRequestedAt).toBeInstanceOf(Date)
+    })
   })
 })

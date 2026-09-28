@@ -38,9 +38,13 @@
  *    `user.message` and `turn.start`.
  * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`: each
  *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
- *    `system.init`'s session id is stored at once (the next turn `--resume`s it).
+ *    `system.init`'s session id is stored at once (the next turn `--resume`s it). **A resume that
+ *    cannot work never breaks the session**: when the container answers that the transcript is
+ *    missing (`test -s`), or Claude Code ends a `--resume` at once with `error_during_execution`,
+ *    no tokens and nothing said, `claude_session_id` is cleared, an `error` event says so
+ *    ({@link CONVERSATION_LOST_MESSAGE}) and the turn runs (again, once) as a new conversation.
  * 5. **Watch**, concurrently: every 2 s re-read `cancel_requested_at` (→ `kill`, `cancelled`) and
- *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`); every 30 s write the
+ *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`); every 10 s write the
  *    heartbeat (`last_activity_at` of a `working` row) that `reconcile.ts` reads to tell a live
  *    turn from one whose Workflow died under it.
  * 6. **End** with exactly one of `turn.end` (the `result` line, with the turn's METERED cost — the
@@ -96,7 +100,7 @@ import {
   type SessionEgressPort,
   type SessionPorts,
 } from './ports'
-import { SESSION_LAUNCH_DIR } from './rocketflare-dev'
+import { claudeTranscriptPath, SESSION_LAUNCH_DIR } from './rocketflare-dev'
 import { createTurnMeter, recordTurnUsage, type TurnMeter } from './turn-meter'
 
 /** Write buffered events at least this often while a turn streams (plan §3c). */
@@ -107,9 +111,12 @@ export const TURN_FLUSH_EVERY = 20
 export const TURN_CANCEL_POLL_MS = 2_000
 /**
  * How often a running turn writes its heartbeat (`last_activity_at`, while `working`) — the clock
- * `reconcile.ts` reads; the same cadence as a boot step's (`deadline.ts` `heartbeatMs`).
+ * `reconcile.ts` reads. A third of a boot step's (`deadline.ts` `heartbeatMs`) because a Stop reads
+ * it too: a cancel whose turn has not beaten for `SESSION_CANCEL_STALL_MS` (30 s — three missed
+ * beats) is acted on without the turn step (`reconcile.ts`), and a live turn must never look that
+ * quiet. One small UPDATE every 10 s of a turn.
  */
-export const TURN_HEARTBEAT_MS = 30_000
+export const TURN_HEARTBEAT_MS = 10_000
 /** The step timeout's margin over the turn's own, so the turn's timeout always fires first. */
 export const TURN_STEP_TIMEOUT_MARGIN_MINUTES = 2
 
@@ -122,6 +129,17 @@ export const TURN_PID_FILE = `${SESSION_LAUNCH_DIR}/turn.pid`
 export const TURN_KILL_GRACE_SECONDS = 5
 /** The bound on each call {@link terminateTurnProcess} makes: it never holds the turn up longer. */
 export const TURN_KILL_CALL_MS = 30_000
+
+/**
+ * What the person reads when the conversation a turn would `--resume` is gone (its transcript was
+ * never checkpointed, or did not come back with a resume): Claude starts a new one.
+ */
+export const CONVERSATION_LOST_MESSAGE =
+  'The earlier conversation could not be restored; Claude starts fresh with the code as it is.'
+
+/** `test -s` on the transcript `--resume` needs: exit 1 = missing or empty. */
+export const transcriptCheckCommand = (claudeSessionId: string) =>
+  `test -s ${claudeTranscriptPath(claudeSessionId)}`
 
 /** The process a turn starts: its pid recorded, then `exec` into Claude Code. */
 export function turnProcessCommand(claudeCommand: string): string {
@@ -458,7 +476,8 @@ async function executeTurn(
 ): Promise<ExecutedTurn> {
   const { turn, policy } = input
   const costBefore = Number(row.costMicrocents)
-  const run = await streamTurn(db, ports.sandbox(row.id), row, writer, {
+  const sandbox = ports.sandbox(row.id)
+  const params: StreamTurnParams = {
     turn,
     message: input.message,
     policy,
@@ -472,7 +491,27 @@ async function executeTurn(
     heartbeatMs: opts.heartbeatMs ?? TURN_HEARTBEAT_MS,
     logger: opts.logger,
     egress: egressFor(ports, db),
-  })
+  }
+
+  // A conversation to resume whose transcript is not in the container (a resume that had nothing
+  // to restore, a turn that died before any checkpoint): `claude --resume` would fail every turn
+  // from now on, so start a fresh conversation instead — the code is all in the checkout.
+  let resumeId = row.claudeSessionId
+  if (resumeId && (await transcriptMissing(sandbox, resumeId, opts.logger))) {
+    await forgetConversation(db, row, writer, turn)
+    resumeId = null
+  }
+  let run = await streamTurn(db, sandbox, { ...row, claudeSessionId: resumeId }, writer, params)
+  if (resumeId && resumeRefused(run)) {
+    // The transcript was there but Claude Code would not resume it (an `error_during_execution`
+    // with no tokens and nothing said): the same turn once more, as a new conversation.
+    opts.logger?.warn(
+      { sessionId: row.id, turn },
+      'session turn: --resume ended at once with nothing done; retrying without it'
+    )
+    await forgetConversation(db, row, writer, turn)
+    run = await streamTurn(db, sandbox, { ...row, claudeSessionId: null }, writer, params)
+  }
 
   // The turn's cost is what was metered while it ran — by the model proxy, or (`host`) by the
   // turn itself as it ended: either way the row's running total moved.
@@ -505,6 +544,54 @@ async function executeTurn(
   }
   await writer.flush()
   return executed
+}
+
+/**
+ * True only when the container ANSWERED that the transcript `--resume` needs is missing or empty;
+ * a check that failed (the container busy, a rollout on its way) is not evidence, and the turn
+ * resumes as asked — {@link resumeRefused} still catches a resume that cannot work.
+ */
+async function transcriptMissing(
+  sandbox: SandboxPort,
+  claudeSessionId: string,
+  logger?: Logger
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9-]+$/.test(claudeSessionId)) return true
+  try {
+    const result = await bounded(TURN_KILL_CALL_MS, () =>
+      sandbox.exec(transcriptCheckCommand(claudeSessionId), { timeoutMs: 15_000 })
+    )
+    return result.exitCode === 1
+  } catch (err) {
+    logger?.warn({ err }, 'session turn: could not check the transcript; resuming as asked')
+    return false
+  }
+}
+
+/**
+ * A `--resume` that Claude Code refused: a `result` of `error_during_execution` with no tokens at
+ * all and nothing said — what it prints when the session it was told to resume does not exist.
+ * A turn that did any work (tokens, text, a tool) is never re-run.
+ */
+function resumeRefused(run: StreamTurnResult): boolean {
+  if (run.stop || run.output || run.result?.subtype !== 'error_during_execution') return false
+  const u = run.result.usage
+  return !u || u.tokensIn + u.tokensOut + u.cacheRead + u.cacheWrite === 0
+}
+
+/** Clear `claude_session_id` (the next `claude -p` starts a conversation) and say so. */
+async function forgetConversation(
+  db: Database,
+  row: SessionRow,
+  writer: SessionEventWriter,
+  turn: number
+): Promise<void> {
+  await db
+    .update(sessions)
+    .set({ claudeSessionId: null })
+    .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+  writer.append({ type: 'error', turn, data: { message: CONVERSATION_LOST_MESSAGE } })
+  await writer.flush()
 }
 
 // ---- the ship turn -------------------------------------------------------------------------------
@@ -633,6 +720,8 @@ interface StreamTurnResult {
   stop: TurnInterruptReason | null
   /** A human sentence for `turn.failed` — redacted and clipped. */
   failure: string | null
+  /** Claude Code said or did something (a text, a tool call) — {@link resumeRefused} reads it. */
+  output: boolean
 }
 
 /** A sentence for `turn.failed`, safe to store and show. */
@@ -649,7 +738,7 @@ async function streamTurn(
   writer: SessionEventWriter,
   p: StreamTurnParams
 ): Promise<StreamTurnResult> {
-  const out: StreamTurnResult = { result: null, stop: null, failure: null }
+  const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
 
   // `host` (a remote sandbox): the host is granted the key and a fresh token (the process gets
   // only the placeholder), and the turn meters itself against what the budget has left
@@ -801,7 +890,10 @@ async function streamTurn(
           .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
       }
       if (mapping.result) out.result = mapping.result
-      if (mapping.events.length > 0) writer.append(...mapping.events)
+      if (mapping.events.length > 0) {
+        out.output = true
+        writer.append(...mapping.events)
+      }
       if (meter) {
         meter.observe(mapping)
         if (meter.runningCostMicrocents() >= headroom.microcents) await stopForBudget()

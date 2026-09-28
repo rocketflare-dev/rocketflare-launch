@@ -6,7 +6,7 @@
  * | Hook         | Slice | Function                                   | Called from step             |
  * |--------------|-------|--------------------------------------------|------------------------------|
  * | `runTurn`    | 3c    | `runTurn(db, ports, session, opts)`         | `turn#N`                     |
- * | `checkpoint` | 3d    | `checkpoint(db, deps, ref, opts)`           | `checkpoint#N`, `suspend#N`, `end#N` |
+ * | `checkpoint` | 3d    | `checkpoint(db, deps, ref, opts)`           | `checkpoint#N`, `suspend#N`, `end#N`, `salvage` |
  * | `ship`       | 3d    | `ship(db, deps, ref)` with 3c's ship turn   | `ship#N`                     |
  *
  * Every hook gets ONE argument, a `SessionStepContext` carrying what those functions take (`db`,
@@ -62,7 +62,7 @@ export interface SessionStepContext {
   now: () => Date
 }
 
-export type CheckpointReason = 'turn' | 'suspend' | 'end'
+export type CheckpointReason = 'turn' | 'suspend' | 'end' | 'salvage'
 
 export interface SessionStepHooks {
   runTurn(ctx: SessionStepContext): Promise<TurnOutcome>
@@ -116,4 +116,5 @@ const CHECKPOINT_MESSAGES: Record<
 > = {
   suspend: shortId => `Launch session ${shortId}: saved before suspending`,
   end: shortId => `Launch session ${shortId}: saved at the end of the session`,
+  salvage: shortId => `Launch session ${shortId}: saved after its turn was interrupted`,
 }

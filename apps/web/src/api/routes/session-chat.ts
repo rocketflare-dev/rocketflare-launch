@@ -10,7 +10,11 @@
  *   `session_not_active` once it is shipping or over; 503 `sessions_not_configured` without the
  *   Workflow binding, before any write.
  * - `POST /:id/cancel` → `sessionCancelResponseSchema` (`cancel_requested_at`; the turn polls it
- *   and kills the process — or a waiting message is withdrawn); 409 `no_turn_in_progress`.
+ *   and kills the process — or a waiting message is withdrawn); 409 `no_turn_in_progress`. A
+ *   running turn whose heartbeat is stale (`SESSION_CANCEL_STALL_MS`: its turn step is gone, so
+ *   nothing would ever read the cancel) is reconciled AT ONCE: the dead instance is terminated and
+ *   a fresh one's `salvage` step stops the process, saves the work and closes the turn
+ *   (`reconcile.ts`) — the route itself runs nothing in the sandbox.
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
  * - `GET /:id/events[?afterSeq=]` → `sessionEventsResponseSchema`.
@@ -47,6 +51,7 @@ import {
 } from '../services/sessions/chat'
 import { listSessionEvents, toSessionEvent } from '../services/sessions/event-log'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
+import { reconcileSessionSafely } from '../services/sessions/reconcile'
 import { streamSessionAgui } from '../services/sessions/session-stream'
 import type { AppContext } from '../types'
 import { ValidationError } from '../utils/core/errors'
@@ -94,8 +99,14 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
 
 sessionChatRouter.post('/:id/cancel', async c => {
   guardPermission(c, 'update', 'Session')
-  const { db, tenantId, row } = await visibleSession(c)
-  await requestCancel(db, row)
+  const { db, tenantId, logger, realtime, row } = await visibleSession(c)
+  const result = await requestCancel(db, row)
+  if (result.cancelled === 'running') {
+    // A live turn step polls the cancel within 2 s. When the turn's heartbeat is already stale
+    // its step is gone and nothing would read it: the reconcile acts now (a fresh heartbeat costs
+    // nothing — no Workflow call is made).
+    await reconcileSessionSafely(db, c.env, result.row, { logger, realtime })
+  }
   changed(c, tenantId, row.id)
   return c.json({ cancelRequested: true as const })
 })

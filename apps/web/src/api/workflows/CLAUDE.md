@@ -91,7 +91,8 @@ instance id is the session id (`<id>-rN` after a restart — `wakeOrRestart`,
 functions in `../services/sessions/steps.ts` over a `StepScope` (one DB client, the ports, the
 hooks, a step realtime).
 
-Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (each
+Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (or
+`salvage` instead, for a live session whose instance was lost) (each
 wrapped in `withProgress`, which writes the boot checklist's `step` events) → a loop of
 `inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · wait) and one of
 `wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = what is left of the idle policy counted
@@ -113,15 +114,25 @@ boot steps after it take that id as a closure argument and refuse a container th
 carries it (`SandboxRestartedError`). Every boot step runs under `withProgress`, which also polls
 the row (an End stops the step — `fail` then settles `ending`, not `failed`) and writes the
 heartbeat `services/sessions/reconcile.ts` reads (a running turn writes the same heartbeat,
-`turn.ts`); `claim` sends an `ending` session, and a settled one with no `ended_at`, straight to
-`cleanup` — which is how the reconcile's fresh instance cleans up — and closes a turn it finds
-`working` under a lost instance with `turn.failed` before its destroy-and-resume. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) for tests.
+`turn.ts`, every 10 s); `claim` sends an `ending` session, and a settled one with no `ended_at`,
+straight to `cleanup` — which is how the reconcile's fresh instance cleans up — and a LIVE one
+(`ready`/`working`/`blocked`/`shipping`: its instance was lost) to `salvage` (`SALVAGE_STEP`: one
+retry, 15 min) before the loop: with the container still carrying its boot marker, stop the
+orphaned turn by `TURN_PID_FILE` (the turn's `turnKillScript`), checkpoint (`reason: 'salvage'`,
+transcript included), KEEP the container when the process is confirmed stopped (the loop's
+`resume#N` then goes warm), else destroy it; then `suspended` + `resume` and close a `working` turn
+saying whether the work was saved (`turn.failed`, or `turn.interrupted { cancelled }` for a pending
+Stop). It writes the heartbeat while it runs, and catches every sandbox error — a salvage never fails
+the session. A `booting` row under a lost instance is destroyed and resumed as before. The
+reconcile leaves a dead `working` turn `working` for exactly this, and judges one with a Stop
+pending after 30 s (`SESSION_CANCEL_STALL_MS`), which the cancel route calls at once. `transcript#K`
+clears a `claude_session_id` it cannot restore (with an `error` event), so a lost transcript never
+fails every later turn. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`)
+for tests.
 
 The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
 bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`
-claims `ready → working`, `ship` claims `shipping`), and the Workflow reads the row afterwards. A
-`claim` that finds a live row (its instance was lost) destroys the container and resumes from the
-branch.
+claims `ready → working`, `ship` claims `shipping`), and the Workflow reads the row afterwards.
 
 Tests (`tests/api/session-workflow.test.ts`) set `workflow.overrides = { ports, hooks }` —
 `createFakeSessionPorts()` with the real `NeonSessionDb` over the FakeCloud, 3c's real `runTurn`

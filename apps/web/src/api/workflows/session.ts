@@ -7,7 +7,8 @@
  * The shape (every step name DISTINCT — a name is its identity to the platform, and a repeated
  * one replays the first call's result, `workflows/CLAUDE.md`):
  *
- *   claim
+ *   claim → salvage (a live session whose instance was lost: stop the orphaned turn, checkpoint,
+ *            keep the container for a warm resume or destroy it — `salvageStep`)
  *   boot:    db → sandbox.start → repo → [prepare → branch]* → bootstrap → dev (`preview.ready`)
  *            (* only when this session prepares the app's `dev`; a `prepare` run stops after it)
  *   loop N:  inspect#N → one of
@@ -75,6 +76,7 @@ import {
   resumeStep,
   rolloutStep,
   type StepScope,
+  salvageStep,
   shipStep,
   startSandboxStep,
   suspendStep,
@@ -123,6 +125,11 @@ const BOOT_STEP: WorkflowStepConfig = {
   retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
   timeout: '20 minutes',
 }
+/** Salvage: its sandbox calls are bounded and caught, so a retry only covers the database. */
+const SALVAGE_STEP: WorkflowStepConfig = {
+  retries: { limit: 1, delay: '5 seconds', backoff: 'constant' },
+  timeout: '15 minutes',
+}
 /** Cleanup must happen: more retries, patient. */
 const CLEANUP_STEP: WorkflowStepConfig = {
   retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' },
@@ -167,6 +174,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     if (claim.start === 'skip') return { sessionId: params.sessionId, status: claim.status }
 
     try {
+      if (claim.start === 'salvage') await run('salvage', salvageStep, SALVAGE_STEP)
       if (claim.start === 'boot') {
         const db = await run('db', withProgress('db', dbStep), BOOT_STEP)
         const { bootId } = await run(

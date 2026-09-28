@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Coding sessions recover a lost turn without throwing its work away. When a turn's Workflow dies
+  under it (a `wrangler dev` reload, a deploy), the fresh instance first SALVAGES the container
+  that outlived it: it stops the orphaned Claude Code process (SIGTERM, then SIGKILL), checkpoints
+  (commit, push, transcript) and keeps the container for a warm resume, and the turn's
+  `turn.failed` says whether the work was saved. Stop now works when the turn step is gone: a
+  cancel on a turn with a stale heartbeat (30 s, the turn now beats every 10 s) is acted on at once
+  — the same salvage, closing the turn as cancelled — instead of 3 minutes later with the work
+  lost. A conversation that cannot be resumed (no transcript was ever checkpointed) is forgotten
+  with an event instead of failing every later turn, and a turn whose `--resume` is refused
+  retries once as a new conversation.
 - `.dev.vars.example` sets `SANDBOX_LOG_LEVEL=warn` and `SANDBOX_LOG_FORMAT=pretty`: the Sandbox SDK's
   Durable Object no longer prints a multi-line object for every exec and destroy under `pnpm dev`.
 - A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) gets its credentials the way Launch's

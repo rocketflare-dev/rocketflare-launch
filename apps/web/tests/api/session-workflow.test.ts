@@ -23,8 +23,8 @@ import {
   DEV_STOP_COMMAND,
   SESSION_IMAGE_VERSION,
 } from '@/api/services/sessions/rocketflare-dev'
-import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
-import { runTurn } from '@/api/services/sessions/turn'
+import { BOOT_STEP_LABELS, SESSION_BOOT_MARKER } from '@/api/services/sessions/steps'
+import { runTurn, turnKillScript } from '@/api/services/sessions/turn'
 import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
@@ -820,7 +820,7 @@ describe('SessionWorkflow: the loop', () => {
     expect(h.cloud.neon.branchNamed(h.f.neonProjectId, `session-${h.row.shortId}`)).toBeUndefined()
   })
 
-  it('a lost instance under a live session starts over from its branch', async () => {
+  it('a lost instance under a live session whose container is gone: salvage saves nothing and it starts over from its branch', async () => {
     const h = await harness()
     // A fresh instance finds a `ready` row: the instance that booted it is gone.
     const cfg = loadConfig(h.env)
@@ -836,8 +836,11 @@ describe('SessionWorkflow: the loop', () => {
       await patch(h.row, { requestedAction: 'end' })
       return WAKE
     })
-    expect(run.names.slice(0, 9)).toEqual([
+    // No boot marker: nothing to stop, nothing to checkpoint.
+    expect(h.checkpoints).not.toContain('salvage')
+    expect(run.names.slice(0, 10)).toEqual([
       'claim',
+      'salvage',
       'inspect#0',
       'resume#0',
       'sandbox.start#1',
@@ -850,6 +853,42 @@ describe('SessionWorkflow: the loop', () => {
     // The old container was destroyed before starting over.
     expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
     expect((await reload(h.row)).status).toBe('ended')
+  })
+
+  it('a lost instance under a live session whose container is still up: salvage stops the orphaned turn, checkpoints, and resumes WARM onto it', async () => {
+    const h = await harness()
+    const cfg = loadConfig(h.env)
+    await patch(h.row, {
+      status: 'ready',
+      baseSha: BASE_SHA,
+      dbUriSealed: await encryptToken(
+        cfg,
+        'postgresql://session_owner:pw@ep-x.us-east-2.aws.neon.tech/session_app'
+      ),
+    })
+    h.sandbox().files.set(SESSION_BOOT_MARKER, 'boot-of-the-lost-instance')
+    let destroysAtWait: number | undefined
+    const run = await drive(h, async () => {
+      destroysAtWait ??= h.sandbox().destroyCount
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(0, 6)).toEqual([
+      'claim',
+      'salvage',
+      'inspect#0',
+      'resume#0',
+      'sandbox.start#1',
+      'dev#1',
+    ])
+    expect(new Set(run.names).size).toBe(run.names.length)
+    expect(h.checkpoints[0]).toBe('salvage')
+    expect(h.sandbox().execs.some(e => e.command === turnKillScript())).toBe(true)
+    expect(destroysAtWait).toBe(0)
+    // A `ready` session had no turn to close: no turn.failed, no error.
+    const types = await typesOf(h.row)
+    expect(types).not.toContain('turn.failed')
+    expect(types).not.toContain('error')
   })
 })
 
