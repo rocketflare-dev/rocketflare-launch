@@ -18,6 +18,7 @@ import {
   SESSION_REPO_DIR,
 } from '@/api/services/sessions/checkpoint'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
+import { SESSION_HOME } from '@/api/services/sessions/rocketflare-dev'
 import { createR2Storage } from '@/api/services/storage'
 import { loadConfig } from '@/config'
 import { sessions } from '@/db/schema'
@@ -79,6 +80,7 @@ describe('checkpoint', () => {
       GIT_AUTHOR_NAME: 'Launch',
       GIT_AUTHOR_EMAIL: 'launch@localhost',
       GIT_COMMITTER_NAME: 'Launch',
+      HOME: SESSION_HOME,
     })
     const message = sandbox.files.get('/tmp/launch-commit-message.txt') ?? ''
     expect(message).toContain(`Launch session ${row.shortId}: turn 3`)

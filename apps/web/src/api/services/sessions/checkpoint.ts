@@ -277,6 +277,8 @@ export async function checkpoint(
     GIT_COMMITTER_NAME: identity.name,
     GIT_COMMITTER_EMAIL: identity.email,
     GIT_TERMINAL_PROMPT: '0',
+    // The same HOME the turn runs with (`claudeTurnEnv`): git's global config and credentials.
+    HOME: SESSION_HOME,
   }
   const run = async (step: string, command: string) => {
     try {

@@ -161,10 +161,14 @@ describe('the bootstrap command', () => {
     ).toBe('http://localhost:5173')
   })
 
-  it('pre-approves safe commands and denies pushing', () => {
+  it('denies pushing and the remote, with no allow list (turns bypass permissions)', () => {
     const settings = JSON.parse(claudeSettingsLocal())
-    expect(settings.permissions.deny).toContain('Bash(git push:*)')
-    expect(settings.permissions.allow).toContain('Bash(pnpm:*)')
+    expect(settings.permissions.deny).toEqual([
+      'Bash(git push:*)',
+      'Bash(git remote:*)',
+      'Bash(git config:*)',
+    ])
+    expect(settings.permissions.allow).toBeUndefined()
   })
 })
 
