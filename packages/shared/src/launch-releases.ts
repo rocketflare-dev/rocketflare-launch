@@ -38,6 +38,20 @@ export const RELEASE_STATUSES = [
 export const releaseStatusSchema = z.enum(RELEASE_STATUSES)
 export type ReleaseStatus = z.infer<typeof releaseStatusSchema>
 
+/**
+ * The statuses Promote accepts: live on staging, or rejected before (asking again, once staging
+ * still runs it). The route refuses anything else with 409 `release_not_promotable`, and the UI
+ * offers the button on exactly these.
+ */
+export const PROMOTABLE_RELEASE_STATUSES = [
+  'staging_active',
+  'rejected',
+] as const satisfies readonly ReleaseStatus[]
+
+export function isPromotableRelease(status: ReleaseStatus): boolean {
+  return (PROMOTABLE_RELEASE_STATUSES as readonly string[]).includes(status)
+}
+
 /** Which part of `X.Y.Z` the Release button bumps. */
 export const RELEASE_BUMPS = ['patch', 'minor', 'major'] as const
 export const releaseBumpSchema = z.enum(RELEASE_BUMPS)

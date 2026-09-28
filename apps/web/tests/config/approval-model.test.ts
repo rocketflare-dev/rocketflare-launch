@@ -233,6 +233,8 @@ describe('releases', () => {
     expect(canPromote({ status: 'staging_active' })).toBe(true)
     expect(canPromote({ status: 'staging' })).toBe(false)
     expect(canPromote({ status: 'awaiting_approval' })).toBe(false)
+    // As the route: a rejected release may be asked for again.
+    expect(canPromote({ status: 'rejected' })).toBe(true)
   })
 
   it('finds the release a deploy approval is about, and nothing else', () => {
@@ -252,6 +254,16 @@ describe('releases', () => {
     expect(
       chainEntry({ action: 'deploy.activated', summary: { after: { environment: 'staging' } } })
     ).toMatchObject({ label: 'Deploy activated', environment: 'staging' })
+    // The server's own keys: session.shipped says prNumber, deploy.started names the release tag.
+    expect(
+      chainEntry({ action: 'session.shipped', summary: { after: { prNumber: 7, prUrl: 'x' } } })
+    ).toMatchObject({ detail: '#7' })
+    expect(
+      chainEntry({
+        action: 'deploy.started',
+        summary: { after: { environment: 'production', release: '0.1.1', ref: 'refs/tags/0.1.1' } },
+      })
+    ).toMatchObject({ environment: 'production', detail: '0.1.1' })
     expect(chainEntry({ action: 'something.new', summary: {} })).toMatchObject({
       label: 'something.new',
       tone: 'neutral',

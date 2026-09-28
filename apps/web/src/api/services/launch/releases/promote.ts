@@ -17,7 +17,11 @@
  * that was rejected (or whose approval expired) may be promoted again — a new request.
  */
 import type { ApprovalContextOf } from '@launch/shared/launch-approvals'
-import { releaseTagRef } from '@launch/shared/launch-releases'
+import {
+  isPromotableRelease,
+  PROMOTABLE_RELEASE_STATUSES,
+  releaseTagRef,
+} from '@launch/shared/launch-releases'
 import type { MembershipRole } from '@launch/shared/tenants'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { AppEnvironmentRow, AppReleaseRow, AppRow } from '../../../../db/schema'
@@ -40,8 +44,6 @@ export interface PromoteReleaseInput {
 }
 
 /** Statuses a release may be promoted from. */
-const PROMOTABLE = ['staging_active', 'rejected'] as const
-
 type ApprovalPrChecks = NonNullable<ApprovalContextOf<'deploy.production'>['prs'][number]['checks']>
 
 /** A session PR's CI, as the approver sees it. */
@@ -130,7 +132,7 @@ export async function promoteRelease(
   if (release.status === 'awaiting_approval' && release.approvalId) {
     return { release, approvalId: release.approvalId }
   }
-  if (!(PROMOTABLE as readonly string[]).includes(release.status)) {
+  if (!isPromotableRelease(release.status)) {
     throw new ConflictError(
       `The release is ${release.status}; only a release live on staging can be promoted`,
       'release_not_promotable'
@@ -171,10 +173,16 @@ export async function promoteRelease(
   })
   const approvalId = opened.request.id
 
-  const moved = await moveRelease(deps.db, release, PROMOTABLE, 'awaiting_approval', {
-    approvalId,
-    error: null,
-  })
+  const moved = await moveRelease(
+    deps.db,
+    release,
+    PROMOTABLE_RELEASE_STATUSES,
+    'awaiting_approval',
+    {
+      approvalId,
+      error: null,
+    }
+  )
   const current =
     moved ?? (await getRelease(deps, { tenantId, appId: app.id, releaseId: release.id }))
   nudgeRelease(deps, current)

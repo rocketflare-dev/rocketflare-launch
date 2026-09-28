@@ -13,6 +13,7 @@
 import type { AuditEvent } from '@launch/shared/launch-audit'
 import {
   bumpVersion,
+  isPromotableRelease,
   parseReleaseVersion,
   type Release,
   type ReleaseBump,
@@ -36,9 +37,9 @@ export function nextVersion(latest: string | null | undefined, bump: ReleaseBump
   return bumpVersion(latest, bump)
 }
 
-/** Whether Promote is offered: staging runs this release and nothing has been asked yet. */
+/** Whether Promote is offered: the statuses the route accepts (live on staging, or rejected). */
 export function canPromote(release: Pick<Release, 'status'>): boolean {
-  return release.status === 'staging_active'
+  return isPromotableRelease(release.status)
 }
 
 /** The newest release (the list is newest first) — what "latest" means for the bump preview. */
@@ -104,7 +105,9 @@ export function chainEntry(event: Pick<AuditEvent, 'action' | 'summary'>): Chain
     const number = text(field(event, 'number') ?? field(event, 'prNumber'))
     detail = number ? `#${number}` : null
   } else if (event.action.startsWith('release.') || event.action.startsWith('deploy.')) {
-    detail = text(field(event, 'version') ?? field(event, 'tag'))
+    // `release.*` carry `version`/`tag`; `deploy.activated` the deployed `version`; `deploy.started`
+    // only the release's tag, as `release` (the version is not known until the upload).
+    detail = text(field(event, 'version') ?? field(event, 'tag') ?? field(event, 'release'))
   } else if (event.action === 'approval.decided') {
     detail = text(field(event, 'decision'))
   }
