@@ -3,28 +3,162 @@
  * stable): `getSandbox(env.SESSION_SANDBOX, name)` → `exec`, `startProcess` + `streamProcessLogs`
  * + `killProcess`, `waitForPort` (on the process), `writeFile` / `readFile`, `setAllowedHosts`,
  * `containerFetch(req, port)` and `destroy()`. Used by BOTH backends — locally the container is
- * `wrangler dev`'s own.
+ * `wrangler dev`'s own, which honours the same egress settings (checked in slice 3b:
+ * `outboundByHost`, `interceptHttps`, `enableInternet = false` and a runtime `setAllowedHosts` all
+ * behave as deployed; `docs/SESSIONS-LOCAL.md`).
  *
- * **Slice 3b owns this file.** From 3a it is a stub: the constructor and `id` are real (the
- * Durable Object id is what the platform hands outbound handlers as `ctx.containerId`), every
- * command throws `NotWiredError`. When 3b fills it in, this is one of the TWO files that import the
- * SDK (the other is `durable-objects/session-sandbox.ts`); map the SDK's "interrupted while the
- * platform was updating" error to `SandboxInterruptedError`.
+ * This is one of the TWO files that import the SDK (the other is
+ * `durable-objects/session-sandbox.ts`). Everything else sees `SandboxPort`.
+ *
+ * Choices worth knowing:
+ *
+ * - **`sleepAfter` is a backstop, not the idle policy.** The Workflow suspends an idle session
+ *   itself (`idleSuspendMinutes`, default 30) and ALWAYS destroys the container; the SDK's own
+ *   sleep (`SESSION_SANDBOX_SLEEP_AFTER`) only reaps a container whose Workflow died. When it does
+ *   fire, the Durable Object's `onStop` marks a `ready` session `suspended`, so the next wake boots
+ *   again instead of talking to an empty container.
+ * - **Every command runs in its own `bash -c`** (S7 finding 7): `exec` shares ONE persistent shell
+ *   per sandbox, and a bare `exit` in a command would end it for every later command.
+ * - **A rollout surfaces as `SandboxInterruptedError`.** The SDK raises
+ *   `OperationInterruptedError` / `SessionTerminatedError` (or a platform message about the runtime
+ *   being replaced) when the container goes away under a command; the error is matched by NAME and
+ *   message, never `instanceof`, so the test alias of the SDK need not carry the classes.
+ * - `streamLogs` parses the SDK's SSE log stream itself (`data: {type, data, exitCode}` frames) —
+ *   small, and testable without the SDK.
  */
+import { getSandbox } from '@cloudflare/sandbox'
 import type { AppConfig } from '../../../../config'
 import type { SessionSandbox } from '../../../durable-objects/session-sandbox'
 import {
-  NotWiredError,
   type SandboxExecOptions,
   type SandboxExecResult,
+  SandboxInterruptedError,
   type SandboxLogEvent,
   type SandboxPort,
   type SandboxProcess,
   type SandboxStartOptions,
+  SESSION_BASE_ALLOWED_HOSTS,
 } from '../ports'
+
+/** The SDK's own idle sleep — a backstop for a dead Workflow, well past the idle policy. */
+export const SESSION_SANDBOX_SLEEP_AFTER = '90m'
+
+/** Default command timeout when a caller gives none (`pnpm install` on a cold store is ~20 s). */
+const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000
+
+/** The extra host a LOCAL sandbox needs: the laptop (the Neon proxy, the local git server). */
+export const LOCAL_SANDBOX_HOST = 'host.docker.internal'
 
 export interface CloudflareSandboxOptions {
   cfg: AppConfig
+}
+
+/** The allow-list a session's container runs with: the base, plus the laptop when local. */
+export function sessionAllowedHosts(cfg: AppConfig, extra: readonly string[] = []): string[] {
+  const local = cfg.SESSION_BACKEND === 'local' ? [LOCAL_SANDBOX_HOST] : []
+  return [...new Set([...SESSION_BASE_ALLOWED_HOSTS, ...local, ...extra])]
+}
+
+/** Quote one argument for `bash -c '…'`. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** `command` wrapped so an `exit` in it ends a subshell, never the sandbox's session shell. */
+export function inSubshell(command: string): string {
+  return `bash -c ${shellQuote(command)}`
+}
+
+const INTERRUPTED_NAMES = new Set(['OperationInterruptedError', 'SessionTerminatedError'])
+const INTERRUPTED_MESSAGE =
+  /interrupted while the platform|updating the sandbox runtime|runtime_replaced|container stopped while/i
+
+/** The SDK's "the container went away under you" errors, as `SandboxInterruptedError`. */
+export function mapSandboxError(err: unknown): unknown {
+  if (err instanceof SandboxInterruptedError) return err
+  const name = err instanceof Error ? err.name : ''
+  const message = err instanceof Error ? err.message : String(err)
+  if (INTERRUPTED_NAMES.has(name) || INTERRUPTED_MESSAGE.test(message)) {
+    return new SandboxInterruptedError(message)
+  }
+  return err
+}
+
+async function mapped<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (err) {
+    throw mapSandboxError(err)
+  }
+}
+
+interface RawLogEvent {
+  type?: string
+  data?: string
+  exitCode?: number | null
+}
+
+/**
+ * The SDK's process-log SSE stream (`data: <LogEvent JSON>` frames, blank-line separated) as
+ * `SandboxLogEvent`s: `stdout` / `stderr` chunks in order, then ONE `exit`. An `error` frame is
+ * the process failing to run — reported as exit 1 with its message on stderr.
+ */
+export async function* parseLogStream(
+  stream: ReadableStream<Uint8Array>
+): AsyncIterable<SandboxLogEvent> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let exited = false
+  const toEvents = (frame: string): SandboxLogEvent[] => {
+    const data = frame
+      .split('\n')
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, ''))
+      .join('\n')
+    if (!data) return []
+    let event: RawLogEvent
+    try {
+      event = JSON.parse(data) as RawLogEvent
+    } catch {
+      return []
+    }
+    if (event.type === 'stdout' || event.type === 'stderr') {
+      return event.data ? [{ type: event.type, data: event.data }] : []
+    }
+    if (event.type === 'exit') return [{ type: 'exit', exitCode: event.exitCode ?? 0 }]
+    if (event.type === 'error') {
+      return [
+        { type: 'stderr', data: event.data ?? 'the process failed' },
+        { type: 'exit', exitCode: 1 },
+      ]
+    }
+    return []
+  }
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (value) buffer += decoder.decode(value, { stream: true })
+      let at = buffer.indexOf('\n\n')
+      while (at >= 0) {
+        for (const event of toEvents(buffer.slice(0, at))) {
+          if (exited) break
+          if (event.type === 'exit') exited = true
+          yield event
+        }
+        buffer = buffer.slice(at + 2)
+        at = buffer.indexOf('\n\n')
+      }
+      if (done) break
+    }
+    for (const event of toEvents(buffer)) {
+      if (exited) break
+      if (event.type === 'exit') exited = true
+      yield event
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export class CloudflareSandbox implements SandboxPort {
@@ -39,47 +173,114 @@ export class CloudflareSandbox implements SandboxPort {
     return this.ns.idFromName(this.name).toString()
   }
 
-  start(_opts?: SandboxStartOptions): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.start', '3b')
+  private get sandbox() {
+    return getSandbox(this.ns, this.name, { sleepAfter: SESSION_SANDBOX_SLEEP_AFTER })
   }
 
-  exec(_command: string, _opts?: SandboxExecOptions): Promise<SandboxExecResult> {
-    throw new NotWiredError('CloudflareSandbox.exec', '3b')
+  async start(opts: SandboxStartOptions = {}): Promise<void> {
+    await mapped(async () => {
+      // The allow-list first, so nothing the container does before it is on the base list only.
+      await this.sandbox.setAllowedHosts(sessionAllowedHosts(this.opts.cfg, opts.extraAllowedHosts))
+      // The first command boots the container; `true` is the cheapest one.
+      const probe = await this.sandbox.exec('true')
+      if (probe.exitCode !== 0) throw new Error('The session container did not start')
+    })
   }
 
-  startProcess(_command: string, _opts?: SandboxExecOptions): Promise<SandboxProcess> {
-    throw new NotWiredError('CloudflareSandbox.startProcess', '3b')
+  exec(command: string, opts: SandboxExecOptions = {}): Promise<SandboxExecResult> {
+    return mapped(async () => {
+      const result = await this.sandbox.exec(inSubshell(command), {
+        cwd: opts.cwd,
+        env: opts.env,
+        timeout: opts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
+      })
+      return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }
+    })
   }
 
-  streamLogs(_processId: string, _opts?: { signal?: AbortSignal }): AsyncIterable<SandboxLogEvent> {
-    throw new NotWiredError('CloudflareSandbox.streamLogs', '3b')
+  startProcess(command: string, opts: SandboxExecOptions = {}): Promise<SandboxProcess> {
+    return mapped(async () => {
+      const proc = await this.sandbox.startProcess(inSubshell(command), {
+        cwd: opts.cwd,
+        env: opts.env,
+        ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        // Keep the record after exit, so a stream that attaches late still sees the `exit`.
+        autoCleanup: false,
+      })
+      return { id: proc.id }
+    })
   }
 
-  kill(_processId: string, _signal?: 'SIGTERM' | 'SIGKILL' | 'SIGINT'): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.kill', '3b')
+  async *streamLogs(
+    processId: string,
+    opts: { signal?: AbortSignal } = {}
+  ): AsyncIterable<SandboxLogEvent> {
+    let stream: ReadableStream<Uint8Array>
+    try {
+      stream = await this.sandbox.streamProcessLogs(processId, { signal: opts.signal })
+    } catch (err) {
+      throw mapSandboxError(err)
+    }
+    try {
+      yield* parseLogStream(stream)
+    } catch (err) {
+      if (opts.signal?.aborted) return
+      throw mapSandboxError(err)
+    }
   }
 
-  waitForPort(_port: number, _opts?: { path?: string; timeoutMs?: number }): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.waitForPort', '3b')
+  kill(processId: string, signal: 'SIGTERM' | 'SIGKILL' | 'SIGINT' = 'SIGTERM'): Promise<void> {
+    return mapped(() => this.sandbox.killProcess(processId, signal))
   }
 
-  writeFile(_path: string, _content: string): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.writeFile', '3b')
+  async waitForPort(port: number, opts: { path?: string; timeoutMs?: number } = {}): Promise<void> {
+    // The SDK waits on a PROCESS; a port is waited for with a tiny poller of its own, so a dev
+    // server started by an earlier step (or a resumed one) can be waited on too.
+    const timeoutS = Math.max(1, Math.ceil((opts.timeoutMs ?? 120_000) / 1000))
+    const url = `http://127.0.0.1:${port}${opts.path ?? '/'}`
+    const probe = opts.path
+      ? `code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 ${shellQuote(url)}); [ "\${code:0:1}" = "2" ]`
+      : `curl -s -o /dev/null -m 2 ${shellQuote(url)}`
+    const script = `for i in $(seq 1 ${timeoutS * 2}); do if ${probe}; then exit 0; fi; sleep 0.5; done; exit 1`
+    const result = await this.exec(script, { timeoutMs: (timeoutS + 30) * 1000 })
+    if (result.exitCode !== 0) {
+      throw new Error(`Port ${port}${opts.path ?? ''} did not answer within ${timeoutS}s`)
+    }
   }
 
-  readFile(_path: string): Promise<string | null> {
-    throw new NotWiredError('CloudflareSandbox.readFile', '3b')
+  writeFile(path: string, content: string): Promise<void> {
+    return mapped(async () => {
+      const dir = path.slice(0, path.lastIndexOf('/'))
+      if (dir) await this.sandbox.mkdir(dir, { recursive: true })
+      await this.sandbox.writeFile(path, content)
+    })
   }
 
-  setAllowedHosts(_hosts: readonly string[]): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.setAllowedHosts', '3b')
+  readFile(path: string): Promise<string | null> {
+    return mapped(async () => {
+      const exists = await this.sandbox.exists(path)
+      if (!exists.exists) return null
+      const file = await this.sandbox.readFile(path)
+      return file.content
+    })
   }
 
-  fetch(_port: number, _req: Request): Promise<Response> {
-    throw new NotWiredError('CloudflareSandbox.fetch', '3b')
+  setAllowedHosts(hosts: readonly string[]): Promise<void> {
+    return mapped(() => this.sandbox.setAllowedHosts([...hosts]))
   }
 
-  destroy(): Promise<void> {
-    throw new NotWiredError('CloudflareSandbox.destroy', '3b')
+  fetch(port: number, req: Request): Promise<Response> {
+    return this.sandbox.containerFetch(req, port)
+  }
+
+  async destroy(): Promise<void> {
+    try {
+      await this.sandbox.destroy()
+    } catch (err) {
+      // Already gone is success: destroy is called on every end AND every failure (S7 finding 9).
+      const mappedErr = mapSandboxError(err)
+      if (mappedErr instanceof SandboxInterruptedError) return
+      throw mappedErr
+    }
   }
 }

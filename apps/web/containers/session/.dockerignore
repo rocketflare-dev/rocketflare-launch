@@ -1,0 +1,3 @@
+# The session image copies nothing from this directory: the build context is only the Dockerfile.
+*
+!Dockerfile
