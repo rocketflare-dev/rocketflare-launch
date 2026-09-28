@@ -35,6 +35,7 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
+import { sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
   SESSION_CALL_LIMITS,
@@ -55,6 +56,7 @@ import {
   claudeSettingsLocal,
   claudeTranscriptPath,
   previewHostSuffix,
+  resumeDevServer,
   SESSION_IMAGE_VERSION,
   SESSION_LAUNCH_DIR,
   SESSION_UI_PORT,
@@ -63,6 +65,7 @@ import {
   sessionBootstrap,
   startDevServer,
 } from './rocketflare-dev'
+import { warmMinutesLeft } from './warm'
 
 /** One step's world. Built by the Workflow for each `step.do`, closed with it. */
 export interface StepScope {
@@ -481,20 +484,54 @@ export async function branchStep(scope: StepScope): Promise<{ branched: true }> 
   return { branched: true }
 }
 
+export interface StartSandboxResult {
+  sandboxId: string
+  bootId: string
+  /**
+   * The container an idle suspend KEPT is still there (its boot marker survived): the resume
+   * skips the clone, the install and the bootstrap (`warm.ts`). Always false on a first boot.
+   */
+  warm: boolean
+}
+
+/**
+ * The Neon hosts the session's own database needs on the allow-list — from the sealed URI, so a
+ * warm resume (which skips the bootstrap that would add them) reaches its branch at once. Empty
+ * before the session has a database, or when the URI is not a Neon endpoint's (the bootstrap then
+ * fails with the reason).
+ */
+async function dbEgressHostsOf(scope: StepScope, session: SessionRow): Promise<string[]> {
+  const uri = session.dbUriSealed ? await decryptToken(scope.cfg, session.dbUriSealed) : null
+  if (!uri) return []
+  try {
+    return sessionDbEgressHosts(uri)
+  } catch {
+    return []
+  }
+}
+
 /**
  * Step `sandbox.start[#K]`: boot the container and mark it (`SESSION_BOOT_MARKER`) — the `bootId`
- * it returns is what every later boot step checks it is still talking to.
+ * it returns is what every later boot step checks it is still talking to. On a resume of a session
+ * whose container an idle suspend kept (`container_kept_at`), a marker that is still there means
+ * it is the SAME container, workspace and dev server included: `warm`, and its marker is reused.
+ * A container that was recreated under it (the SDK's sleep, Docker's OOM killer) has no marker and
+ * boots cold like any other.
  */
-export async function startSandboxStep(
-  scope: StepScope
-): Promise<{ sandboxId: string; bootId: string }> {
+export async function startSandboxStep(scope: StepScope): Promise<StartSandboxResult> {
   const session = await loadSession(scope)
   const sandbox = sandboxFor(scope, session)
-  await updateSession(scope, { sandboxId: sandbox.id })
-  await sandbox.start()
+  const kept = session.containerKeptAt !== null
+  // The kept container is being used (or is gone): either way the row no longer promises one.
+  await updateSession(scope, { sandboxId: sandbox.id, containerKeptAt: null })
+  await sandbox.start({ extraAllowedHosts: await dbEgressHostsOf(scope, session) })
+  if (kept) {
+    const marker = (await sandbox.readFile(SESSION_BOOT_MARKER))?.trim()
+    if (marker) return { sandboxId: sandbox.id, bootId: marker, warm: true }
+  }
   const bootId = crypto.randomUUID()
   await sandbox.writeFile(SESSION_BOOT_MARKER, bootId)
-  return { sandboxId: sandbox.id, bootId }
+  return { sandboxId: sandbox.id, bootId, warm: false }
 }
 
 /** Step `repo[#K]`: clone and check out; `.claude/settings.local.json`. Returns the shas. */
@@ -592,21 +629,26 @@ export async function bootstrapStep(
 export async function devStep(
   scope: StepScope,
   bootId?: string,
-  opts: { chunkMs?: number } = {}
+  opts: { chunkMs?: number; warm?: boolean } = {}
 ): Promise<{ ready: boolean }> {
   const session = await loadSession(scope)
   const sandbox = sandboxFor(scope, session)
-  await inOurContainer(scope, sandbox, bootId, () =>
-    startDevServer(sandbox, devEnvFor(scope.cfg, session), {
-      ...opts,
-      checkpoint: async () => {
-        await throwIfEndRequested(scope)
-        if (bootId && (await containerIsOurs(sandbox, bootId)) === false) {
-          throw new SandboxRestartedError(scope.phase ?? 'starting the dev server')
-        }
-      },
-    })
-  )
+  const { warm = false, ...waitOpts } = opts
+  const startOpts = {
+    ...waitOpts,
+    checkpoint: async () => {
+      await throwIfEndRequested(scope)
+      if (bootId && (await containerIsOurs(sandbox, bootId)) === false) {
+        throw new SandboxRestartedError(scope.phase ?? 'starting the dev server')
+      }
+    },
+  }
+  const dev = devEnvFor(scope.cfg, session)
+  // A warm resume reuses the kept container's dev server when it still answers.
+  await inOurContainer(scope, sandbox, bootId, async () => {
+    if (warm) await resumeDevServer(sandbox, dev, startOpts)
+    else await startDevServer(sandbox, dev, startOpts)
+  })
   const now = scope.now()
   const ready = await transition(scope, ['booting'], 'ready', {
     readyAt: session.readyAt ?? now,
@@ -787,7 +829,14 @@ export type NextAction =
   | { action: 'end'; reason: string }
   | { action: 'resume' }
   | { action: 'suspend'; reason: 'drain' }
-  | { action: 'wait'; waitingIn: SessionStatus; timeoutMinutes: number }
+  | { action: 'cool'; reason: 'idle' | 'drain' }
+  | {
+      action: 'wait'
+      waitingIn: SessionStatus
+      timeoutMinutes: number
+      /** A timeout means the kept container's warm window is over: cool it, do not end. */
+      cool?: boolean
+    }
   | { action: 'done'; status: SessionStatus }
 
 /**
@@ -810,10 +859,19 @@ export async function inspectStep(scope: StepScope): Promise<NextAction> {
   const live = status === 'ready' || status === 'blocked'
   if (live && (await sessionsPaused(scope.db))) return { action: 'suspend', reason: 'drain' }
   if (status === 'suspended') {
-    if (session.requestedAction === 'resume' && !(await sessionsPaused(scope.db))) {
-      return { action: 'resume' }
+    const paused = await sessionsPaused(scope.db)
+    if (session.requestedAction === 'resume' && !paused) return { action: 'resume' }
+    const expiryMinutes = policy.suspendedExpiryHours * 60
+    const warmLeft = warmMinutesLeft(session.containerKeptAt, scope.now())
+    if (warmLeft !== null) {
+      // A kept container: a drain destroys it now; otherwise it waits out its warm window.
+      if (paused) return { action: 'cool', reason: 'drain' }
+      if (warmLeft === 0) return { action: 'cool', reason: 'idle' }
+      if (warmLeft < expiryMinutes) {
+        return { action: 'wait', waitingIn: status, timeoutMinutes: warmLeft, cool: true }
+      }
     }
-    return { action: 'wait', waitingIn: status, timeoutMinutes: policy.suspendedExpiryHours * 60 }
+    return { action: 'wait', waitingIn: status, timeoutMinutes: expiryMinutes }
   }
   if (status === 'ready' && session.requestedAction === 'ship') return { action: 'ship' }
   if (status === 'ready' && session.pendingMessage !== null) {
@@ -954,8 +1012,10 @@ export async function checkpointStep(
 }
 
 /**
- * Step `suspend#N`: checkpoint, destroy the container, `suspended` — the branch and database are
- * kept, and a resume boots again from them. For an idle session and a drain alike.
+ * Step `suspend#N`: checkpoint, then `suspended` — the branch and database are kept. An IDLE
+ * suspend keeps the container too (`container_kept_at`, `warm.ts`): a resume inside the warm
+ * window reuses it, and `cool#N` destroys it after. A DRAIN destroys it now (a deploy is about to
+ * replace it), and a resume boots again from the branch.
  */
 export async function suspendStep(
   scope: StepScope,
@@ -971,20 +1031,42 @@ export async function suspendStep(
     if (scope.now().getTime() - lastActivity < idleMinutes * 60_000) return { suspended: false }
   }
   await checkpointStep(scope, 'suspend')
-  await sandboxFor(scope, session).destroy()
+  const keep = reason === 'idle'
+  if (!keep) await sandboxFor(scope, session).destroy()
   const now = scope.now()
-  // `onStop` in the Sandbox Durable Object may have got there first: suspended is suspended.
-  const row = await transition(scope, ['ready', 'blocked', 'suspended'], 'suspended', {
+  // `onStop` in the Sandbox Durable Object may have got there first: suspended is suspended — and
+  // then there is no container left to keep.
+  const row = await transition(scope, ['ready', 'blocked'], 'suspended', {
     suspendedAt: now,
+    containerKeptAt: keep ? now : null,
   })
-  if (row) {
+  const settled = row ?? (await transition(scope, ['suspended'], 'suspended', { suspendedAt: now }))
+  if (settled) {
     await emitterFor(scope)({
       type: 'status',
       turn: session.turnCount,
       data: { status: 'suspended', reason },
     })
   }
-  return { suspended: row !== null }
+  return { suspended: settled !== null }
+}
+
+/**
+ * Step `cool#N`: a suspended session's KEPT container is destroyed — its warm window is over
+ * (`idle`) or a drain wants every container gone (`drain`). Nothing to do when the row no longer
+ * keeps one (a resume took it, `onStop` saw it go), or when a resume is waiting: the loop's next
+ * `inspect` resumes onto it instead.
+ */
+export async function coolStep(
+  scope: StepScope,
+  reason: 'idle' | 'drain'
+): Promise<{ cooled: boolean }> {
+  const session = await loadSession(scope)
+  if (session.status !== 'suspended' || session.containerKeptAt === null) return { cooled: false }
+  if (reason === 'idle' && session.requestedAction === 'resume') return { cooled: false }
+  await sandboxFor(scope, session).destroy()
+  await updateSession(scope, { containerKeptAt: null })
+  return { cooled: true }
 }
 
 /** Step `resume#N`: `suspended → booting`, the request consumed. The boot steps follow. */

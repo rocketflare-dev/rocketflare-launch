@@ -32,7 +32,7 @@ import {
   type SessionStatus,
   sessionBranchName,
 } from '@launch/shared/launch-sessions'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type AppRow, apps, type SessionRow, sessions } from '../../../db/schema'
 import type { AppBindings } from '../../types'
@@ -293,7 +293,8 @@ const DRAINABLE: readonly SessionStatus[] = ['requested', 'booting', 'ready', 'w
 /**
  * `POST /api/admin/sessions/drain`: pause new sessions and wake every live one — the Workflow's
  * `inspect#N` sees `sessions_paused` and suspends it (checkpoint first; a running turn finishes
- * first). Across every organisation: a drain is about the deployment's image. Audited
+ * first) — and every suspended one that still KEEPS its container (`container_kept_at`, a warm
+ * idle suspend), which `inspect#N` cools (destroys) at once. Across every organisation: a drain is about the deployment's image. Audited
  * `sessions.drained` in each organisation that had a live session, and in the operator's own.
  */
 export async function drainSessions(
@@ -310,7 +311,12 @@ export async function drainSessions(
   const live = await db
     .select()
     .from(sessions)
-    .where(inArray(sessions.status, [...DRAINABLE]))
+    .where(
+      or(
+        inArray(sessions.status, [...DRAINABLE]),
+        and(eq(sessions.status, 'suspended'), isNotNull(sessions.containerKeptAt))
+      )
+    )
     .orderBy(desc(sessions.createdAt))
   const byTenant = new Map<string, number>()
   const workflow = env.SESSION_WORKFLOW
@@ -402,7 +408,8 @@ export async function listAllSessions(
 /**
  * `SessionSandbox.onStop`: add the container's run time to its session and — when the container
  * went away under a session that thinks it is live (the SDK's idle sleep, a rollout) — mark it
- * `suspended`, so the next wake boots again rather than talking to an empty container. Found by
+ * `suspended`, so the next wake boots again rather than talking to an empty container — and
+ * forget a container a warm suspend kept (`container_kept_at`). Found by
  * `sandbox_id` (the Durable Object's own id; pre-tenant), then written inside its tenant.
  */
 export async function recordContainerStop(
@@ -422,6 +429,8 @@ export async function recordContainerStop(
     .update(sessions)
     .set({
       containerSeconds: sql`${sessions.containerSeconds} + ${Math.max(0, Math.round(seconds))}`,
+      // Whatever an idle suspend kept is gone now: the next resume boots cold.
+      containerKeptAt: null,
     })
     .where(where)
   await db

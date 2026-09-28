@@ -98,6 +98,12 @@ export const sessions = pgTable(
     instanceId: text('instance_id'),
     /** The container id the platform hands outbound handlers (`ctx.containerId`). Unique. */
     sandboxId: text('sandbox_id'),
+    /**
+     * Set when an idle suspend KEPT the container (warm, `services/sessions/warm.ts`): a resume
+     * inside `SESSION_WARM_KEEP_MINUTES` reuses it. Null once it is destroyed (the cool step, a
+     * drain, the Durable Object's `onStop`) or reused.
+     */
+    containerKeptAt: timestamp('container_kept_at', { withTimezone: true }),
 
     // ---- database
     db: jsonb('db').$type<SessionDb>(),

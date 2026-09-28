@@ -223,8 +223,10 @@ needs, beyond the bindings above:
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409
      `sessions_paused`, and every live session is woken to checkpoint (commit + push + transcript
-     to R2) and suspend; a running turn finishes first.
-  2. Wait until Admin → Sessions shows no `ready` / `working` / `booting` session.
+     to R2) and suspend; a running turn finishes first. A suspended session that still keeps a
+     warm container (an idle suspend, below) is woken too, and its Workflow destroys the container.
+  2. Wait until Admin → Sessions shows no `ready` / `working` / `booting` session (and give the
+     warm-suspended ones a few seconds to be cooled).
   3. Deploy.
   4. **Undrain** (`POST /api/admin/sessions/undrain`). People resume their own sessions (a message
      or Resume boots them again from their branch).
@@ -232,6 +234,11 @@ needs, beyond the bindings above:
   A turn a rollout cuts off anyway is recorded `turn.interrupted` and the session goes `suspended`.
 - **Capacity.** `max_instances` (10) caps live sessions across the deployment, and each app's Neon
   project caps its branches (10 on Launch, 25 on Scale) against `maxConcurrentPerApp` (3).
+- **Warm suspends.** An idle session (`idleSuspendMinutes`, 30) is suspended with its container
+  KEPT for `SESSION_WARM_KEEP_MINUTES` (45, `services/sessions/warm.ts`), so a resume inside that
+  window skips the clone, install and bootstrap. A kept container is billed container time and
+  counts against `max_instances` until it is cooled; lower the constant to trade resume speed for
+  cost. The SDK's own `sleepAfter` (90 min) must stay longer than it (a config test pins it).
 
 ## Crons
 

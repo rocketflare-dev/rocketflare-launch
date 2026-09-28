@@ -120,6 +120,44 @@ back EMPTY fails the step with "The session container stopped while … and came
 of cloning into nothing or curling a dev server that is not there. Pressing **End** while a step
 runs stops it within ten seconds (each boot step polls the row) and ends the session.
 
+## Suspend and resume
+
+A session quiet for `idleSuspendMinutes` (30 by default) is **suspended warm**: checkpointed
+(commit, push, transcript to R2), the preview answers 503, and the container is KEPT — workspace,
+`node_modules` and the running dev server (`sessions.container_kept_at`,
+`services/sessions/warm.ts`). A resume within `SESSION_WARM_KEEP_MINUTES` (45) after that is
+**warm**: "Starting sandbox" finds the boot marker it wrote on the first boot and "Starting dev
+server" reuses the dev server if both ports still answer (else `pnpm dev:stop`, then `pnpm dev`) —
+no clone, install or bootstrap. After the 45 minutes the Workflow's `cool#N` destroys the container
+and the next resume is **cold**: the whole boot again from the pushed branch. A drain cools at
+once; a container Docker killed meanwhile (no marker) resumes cold.
+
+To see both locally without waiting: give a NEW session a short idle window — the policy is
+frozen onto the row at create, from `launch_settings.session_policy` (e.g. `{"idleSuspendMinutes":
+2}` in Launch's database; there is no UI for it) — and for a cold resume, `docker rm -f` the session's container while it is
+suspended (it comes back empty, so the resume boots cold).
+
+## A start that never answers
+
+Seen twice under `wrangler dev` (2026-09-28): an idle suspend DESTROYED the container, a resume
+~10 s later started the same Durable Object, and "Starting sandbox" never answered within its 4
+minutes although Docker showed the new container up. Not reproduced since. What the SDK's code
+(`@cloudflare/sandbox` 0.12.10 over `@cloudflare/containers` 0.3.7) makes plausible:
+
+- `Sandbox.destroy()` SIGKILLs the container but runs no `onStop`. The Containers base class runs
+  a pending `onStop` at the HEAD of the next start (`startAndWaitForPorts` →
+  `syncPendingStoppedEvents`), and Launch's `onStop` wrote to Postgres with no deadline — a write
+  that hangs would hang the start with it. It is now bounded at 10 s (`ON_STOP_DB_MS`).
+- Right after a destroy, `container.running` may still read true, so the next start takes the
+  "already running" fast path and talks to a container that is going away; the old start ALSO
+  called `setAllowedHosts` first, which re-registers the egress interception on that container.
+  `CloudflareSandbox.start` now boots first (`exec('true')`), applies the allow-list after, bounds
+  each attempt at 100 s, and on a timeout destroys again (a reset) and tries once more.
+
+Warm suspends avoid the destroy → start sequence for any resume inside the warm window. If it
+happens again, the Worker's log (`sandbox.destroy`, `version.check` and the `Container error`
+lines) and `docker ps -a` around the resume are what to capture.
+
 ## Measured (slice 3b, an M-series Mac, colima 8 GB, amd64 emulation)
 
 These were measured when a local session's database was a TEMPLATE copy on the laptop's Postgres

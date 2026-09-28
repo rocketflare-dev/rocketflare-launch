@@ -16,9 +16,14 @@ import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
-import { claudeTranscriptPath, DEV_START_COMMAND } from '@/api/services/sessions/rocketflare-dev'
+import {
+  claudeTranscriptPath,
+  DEV_START_COMMAND,
+  DEV_STOP_COMMAND,
+} from '@/api/services/sessions/rocketflare-dev'
 import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
 import { runTurn } from '@/api/services/sessions/turn'
+import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { auditEvents, type SessionRow, sessions } from '@/db/schema'
@@ -360,11 +365,8 @@ describe('SessionWorkflow: the loop', () => {
     expect((await reload(h.row)).turnCount).toBe(1)
   })
 
-  it('idle → suspend (checkpoint, destroy) → resume clones again and restores the transcript', async () => {
+  it('idle → suspend keeps the container → a resume inside the warm window reuses it', async () => {
     const h = await harness()
-    const claudeSessionId = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
-    await h.env.FILES.put(`sessions/${h.row.id}/claude.jsonl`, '{"type":"user"}\n')
-    let transcript: string | undefined
     const run = await drive(h, async (_wait, n) => {
       if (n === 0) {
         // Nobody came: the idle timeout, the whole idle window gone by.
@@ -374,6 +376,144 @@ describe('SessionWorkflow: the loop', () => {
       if (n === 1) {
         const suspended = await reload(h.row)
         expect(suspended.status).toBe('suspended')
+        expect(suspended.containerKeptAt).toBeInstanceOf(Date)
+        // Checkpointed, but the container, its workspace and its dev server are still there.
+        expect(h.sandbox().destroyed).toBe(false)
+        await patch(h.row, { requestedAction: 'resume', pendingMessage: 'And make it blue' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+
+    expect(run.names).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'bootstrap',
+      'dev',
+      'inspect#0',
+      'wait#0',
+      'suspend#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'resume#2',
+      'sandbox.start#1',
+      'dev#1',
+      'inspect#3',
+      'turn#3',
+      'checkpoint#3',
+      'inspect#4',
+      'wait#4',
+      'inspect#5',
+      'end#5',
+      'cleanup',
+    ])
+    expect(new Set(run.names).size).toBe(run.names.length)
+    expect(h.checkpoints).toEqual(['suspend', 'turn', 'end'])
+    const sandbox = h.sandbox()
+    // No second clone, install or bootstrap, and the running dev server was reused.
+    expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
+    expect(sandbox.execs.filter(e => e.command.includes('pnpm install'))).toHaveLength(1)
+    expect(sandbox.execs.filter(e => e.command.includes('scripts/bootstrap.mjs'))).toHaveLength(1)
+    expect(sandbox.processes.filter(p => p.command === DEV_START_COMMAND)).toHaveLength(1)
+    expect(sandbox.startCount).toBe(2)
+    expect(sandbox.destroyCount).toBe(1) // cleanup's
+    // The idle wait used the policy's idle timeout; the suspended one the warm window.
+    expect(run.waits[0]?.timeout).toBe('30 minutes')
+    expect(run.waits[1]?.timeout).toBe(`${SESSION_WARM_KEEP_MINUTES} minutes`)
+    const after = await reload(h.row)
+    expect(after).toMatchObject({ status: 'ended', turnCount: 1, containerKeptAt: null })
+  })
+
+  it('a warm resume keeps the session database on the allow-list', async () => {
+    const h = await harness()
+    let hosts: string[] = []
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        // What the start re-applies: pretend the list was reset to the base one meanwhile.
+        await h.sandbox().setAllowedHosts(['registry.npmjs.org'])
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      hosts = [...h.sandbox().allowedHosts]
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(hosts.some(host => host.includes('neon'))).toBe(true)
+  })
+
+  it('a warm resume whose dev server stopped answering restarts it', async () => {
+    const h = await harness()
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        // The kept dev server died while the session waited.
+        h.sandbox().ports.clear()
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    const sandbox = h.sandbox()
+    expect(sandbox.execs.some(e => e.command === DEV_STOP_COMMAND)).toBe(true)
+    expect(sandbox.processes.filter(p => p.command === DEV_START_COMMAND)).toHaveLength(2)
+    expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
+  })
+
+  it('a kept container that was recreated meanwhile (no boot marker) resumes cold', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        h.sandbox().recreate()
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(12, 18)).toEqual([
+      'resume#2',
+      'sandbox.start#1',
+      'repo#1',
+      'bootstrap#1',
+      'dev#1',
+      'transcript#1',
+    ])
+    expect(h.sandbox().execs.filter(e => e.command.includes('git init'))).toHaveLength(2)
+  })
+
+  it('past the warm window the container is cooled; a later resume clones again and restores the transcript', async () => {
+    const h = await harness()
+    const claudeSessionId = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
+    await h.env.FILES.put(`sessions/${h.row.id}/claude.jsonl`, '{"type":"user"}\n')
+    let transcript: string | undefined
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        // Nobody came back inside the warm window either.
+        return undefined
+      }
+      if (n === 2) {
+        const cooled = await reload(h.row)
+        expect(cooled).toMatchObject({ status: 'suspended', containerKeptAt: null })
         expect(h.sandbox().destroyed).toBe(true)
         // The last checkpoint recorded the transcript; the person comes back with a message.
         await patch(h.row, {
@@ -401,20 +541,23 @@ describe('SessionWorkflow: the loop', () => {
       'suspend#0',
       'inspect#1',
       'wait#1',
+      'cool#1',
       'inspect#2',
-      'resume#2',
+      'wait#2',
+      'inspect#3',
+      'resume#3',
       'sandbox.start#1',
       'repo#1',
       'bootstrap#1',
       'dev#1',
       'transcript#1',
-      'inspect#3',
-      'turn#3',
-      'checkpoint#3',
       'inspect#4',
-      'wait#4',
+      'turn#4',
+      'checkpoint#4',
       'inspect#5',
-      'end#5',
+      'wait#5',
+      'inspect#6',
+      'end#6',
       'cleanup',
     ])
     expect(new Set(run.names).size).toBe(run.names.length)
@@ -424,12 +567,40 @@ describe('SessionWorkflow: the loop', () => {
     expect(sandbox.startCount).toBe(2)
     // Restored where `--resume` finds it (the file is written after the second boot).
     expect(transcript).toBe('{"type":"user"}\n')
-    // The idle wait used the policy's idle timeout, the suspended one its expiry.
-    expect(run.waits[0]?.timeout).toBe('30 minutes')
-    expect(run.waits[1]?.timeout).toBe(`${24 * 60} minutes`)
-    // The turn after the resume ran on the resumed session's own branch checkout.
-    const after = await reload(h.row)
-    expect(after).toMatchObject({ status: 'ended', turnCount: 1 })
+    expect(run.waits.map(w => w.timeout)).toEqual([
+      '30 minutes',
+      `${SESSION_WARM_KEEP_MINUTES} minutes`,
+      `${24 * 60} minutes`,
+      '30 minutes',
+    ])
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 1 })
+  })
+
+  it('a drain cools a warm-suspended session at once', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        paused.value = true
+        return WAKE
+      }
+      return undefined
+    })
+    expect(run.names.slice(8)).toEqual([
+      'suspend#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'cool#2',
+      'inspect#3',
+      'wait#3',
+      'end#3',
+      'cleanup',
+    ])
+    expect(h.sandbox().destroyCount).toBe(2) // the cool, then cleanup's
   })
 
   it('an idle timeout while the person was using the preview does not suspend; it waits out the rest', async () => {
@@ -602,5 +773,19 @@ describe('SessionWorkflow: the loop', () => {
     // The old container was destroyed before starting over.
     expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
     expect((await reload(h.row)).status).toBe('ended')
+  })
+})
+
+describe('the Sandbox Durable Object’s onStop', () => {
+  it('forgets a container a warm suspend kept, and meters its time', async () => {
+    const h = await harness()
+    const { recordContainerStop } = await import('@/api/services/sessions/lifecycle')
+    await patch(h.row, { status: 'suspended', sandboxId: 'do-warm-1', containerKeptAt: new Date() })
+    await recordContainerStop(db, 'do-warm-1', 42)
+    expect(await reload(h.row)).toMatchObject({
+      status: 'suspended',
+      containerKeptAt: null,
+      containerSeconds: 42,
+    })
   })
 })

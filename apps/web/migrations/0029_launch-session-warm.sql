@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "container_kept_at" timestamp with time zone;

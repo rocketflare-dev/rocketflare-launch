@@ -550,7 +550,7 @@ describe('a coding session, end to end', () => {
     await expectCleanedUp(h, undefined)
   })
 
-  it('idle → suspended (checkpointed) → resume boots again, restores the transcript, and carries on', async () => {
+  it('idle → suspended (checkpointed, container kept) → resume reuses it and carries on', async () => {
     const h = await start()
     let transcriptAfterResume: string | undefined
     const run = await drive(h, [
@@ -568,12 +568,14 @@ describe('a coding session, end to end', () => {
         const row = await reload(h)
         expect(row.status).toBe('suspended')
         expect(row.transcriptKey).toBe(`sessions/${row.id}/claude.jsonl`)
-        expect(h.sandbox().destroyed).toBe(true)
+        // A warm suspend: the container is kept for the warm window (services/sessions/warm.ts).
+        expect(row.containerKeptAt).toBeInstanceOf(Date)
+        expect(h.sandbox().destroyed).toBe(false)
         const res = await act.post(h, '/resume')
         expect(res.status).toBe(202)
         return WAKE
       },
-      // After the second boot: the transcript is back, and the next turn resumes Claude.
+      // After the warm resume: the transcript never left, and the next turn resumes Claude.
       async () => {
         transcriptAfterResume = h.sandbox().files.get(claudeTranscriptPath(CLAUDE_SESSION))
         return say(h, 'Second change')
@@ -585,16 +587,11 @@ describe('a coding session, end to end', () => {
     ])
     expect(run.status).toBe('ended')
     expect(run.names).toEqual(
-      expect.arrayContaining([
-        'suspend#2',
-        'resume#4',
-        'sandbox.start#1',
-        'repo#1',
-        'bootstrap#1',
-        'dev#1',
-        'transcript#1',
-      ])
+      expect.arrayContaining(['suspend#2', 'resume#4', 'sandbox.start#1', 'dev#1'])
     )
+    // No clone, install or bootstrap the second time.
+    expect(run.names).not.toContain('repo#1')
+    expect(run.names).not.toContain('bootstrap#1')
     expect(transcriptAfterResume).toContain('"type":"user"')
     expect(h.sandbox().startCount).toBe(2)
     const claudeCommands = h.sandbox().processes.filter(p => p.command.startsWith('claude '))

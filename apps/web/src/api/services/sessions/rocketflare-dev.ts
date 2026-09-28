@@ -400,6 +400,43 @@ export async function startDevServer(
   return { processId: proc.id }
 }
 
+/** The kit's own "stop this checkout's dev tree" (its supervisor owns the ports). */
+export const DEV_STOP_COMMAND = 'pnpm dev:stop'
+
+/** How long a warm resume gives each port to answer before it restarts the dev server. */
+export const DEV_PROBE_MS = 3_000
+
+/** Both dev ports answer now (`:5173`, and `:8787/api/health` with a 2xx) — no waiting. */
+export async function devServerAnswers(sandbox: SandboxPort): Promise<boolean> {
+  try {
+    await sandbox.waitForPort(SESSION_UI_PORT, { timeoutMs: DEV_PROBE_MS })
+    await sandbox.waitForPort(SESSION_API_PORT, { path: '/api/health', timeoutMs: DEV_PROBE_MS })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The dev step of a WARM resume (`warm.ts`): the kept container's dev server is reused when both
+ * ports still answer; otherwise whatever is left of it is stopped (`pnpm dev:stop` — a half-dead
+ * tree would hold the strict ports) and it is started again.
+ */
+export async function resumeDevServer(
+  sandbox: SandboxPort,
+  dev: SessionDevEnv,
+  opts: StartDevServerOptions = {}
+): Promise<{ reused: boolean }> {
+  if (await devServerAnswers(sandbox)) return { reused: true }
+  await sandbox.exec(DEV_STOP_COMMAND, {
+    cwd: SESSION_WORKSPACE,
+    env: sessionProcessEnv(dev),
+    timeoutMs: 60_000,
+  })
+  await startDevServer(sandbox, dev, opts)
+  return { reused: false }
+}
+
 const isPortTimeout = (err: unknown) =>
   err instanceof Error && /^port \d+.* did not answer within/.test(err.message)
 

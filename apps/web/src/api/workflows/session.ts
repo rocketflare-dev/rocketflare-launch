@@ -11,11 +11,15 @@
  *   boot:    db → sandbox.start → repo → [prepare → branch]* → bootstrap → dev (`preview.ready`)
  *            (* only when this session prepares the app's `dev`; a `prepare` run stops after it)
  *   loop N:  inspect#N → one of
- *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / expiry timeout) → on a
- *                timeout suspend#N (live) or end#N (suspended past expiry)
+ *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout) →
+ *                on a timeout suspend#N (live; an idle suspend KEEPS the container), cool#N
+ *                (suspended with a kept container past its warm window) or end#N (suspended
+ *                past expiry)
  *              turn#N (3c's `runTurn`) → checkpoint#N · turn-settle#N if the step itself died
  *              ship#N (3d's `ship`) → shipped: leave the loop
- *              suspend#N (a drain) · resume#N → sandbox.start#K → repo#K → bootstrap#K → dev#K →
+ *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
+ *              resume#N → sandbox.start#K → warm (the kept container is still there,
+ *                `services/sessions/warm.ts`): dev#K only · cold: repo#K → bootstrap#K → dev#K →
  *                transcript#K
  *              end#N → leave the loop
  *   fail     (a step gave up: `failed`, with a secret-free sentence)
@@ -56,6 +60,7 @@ import {
   checkpointStep,
   claimStep,
   cleanupStep,
+  coolStep,
   dbStep,
   devStep,
   endStep,
@@ -227,6 +232,9 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         case 'suspend':
           await run(`suspend#${n}`, scope => suspendStep(scope, next.reason))
           break
+        case 'cool':
+          await run(`cool#${n}`, scope => coolStep(scope, next.reason))
+          break
         case 'wait': {
           try {
             await step.waitForEvent(`wait#${n}`, {
@@ -236,6 +244,10 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           } catch {
             // Nobody woke us inside the window: an idle live session suspends; a suspended one
             // that nobody resumed before its expiry ends.
+            if (next.waitingIn === 'suspended' && next.cool) {
+              await run(`cool#${n}`, scope => coolStep(scope, 'idle'))
+              break
+            }
             if (next.waitingIn === 'suspended') {
               await run(`end#${n}`, scope => endStep(scope, 'expired'))
               return
@@ -272,11 +284,20 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           if (!resumed.resumed) break
           resumes += 1
           const k = resumes
-          const { bootId } = await run(
+          const { bootId, warm } = await run(
             `sandbox.start#${k}`,
             withProgress('sandbox', startSandboxStep),
             BOOT_STEP
           )
+          if (warm) {
+            // The kept container: workspace, dependencies, database and transcript are all there.
+            await run(
+              `dev#${k}`,
+              withProgress('dev', s => devStep(s, bootId, { warm: true })),
+              BOOT_STEP
+            )
+            break
+          }
           await run(
             `repo#${k}`,
             withProgress('repo', s => repoStep(s, bootId)),

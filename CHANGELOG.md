@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Resuming a coding session that went idle is fast again. An idle suspend (after
+  `idleSuspendMinutes`) still checkpoints, but now KEEPS the container, dependencies and running
+  dev server for 45 minutes (`SESSION_WARM_KEEP_MINUTES`); a resume inside that window restarts
+  only the dev server, and only when it stopped answering — no clone, install or bootstrap (under
+  local amd64 emulation that was ~3 minutes). After the window, on a drain, or when the container
+  went away, the container is destroyed and the next resume is a full boot as before. Starting a
+  session container is now bounded per attempt (100 s) and retried once after a reset, booting
+  before the allow-list is applied, and the sandbox's `onStop` database write is bounded — two
+  resumes right after an idle destroy had hung at "Starting sandbox" under `wrangler dev`.
+  Migration 0029 adds `sessions.container_kept_at`: run `pnpm db:migrate`.
 - The coding-session image's warm pnpm store is fetched for kit 0.15.5 (was 0.15.0), the kit
   a new app is cut from (`DEFAULT_TEMPLATE_PIN`), so a session's `pnpm install --prefer-offline`
   stops falling back to the registry for what changed since 0.15.0; a config test fails when the

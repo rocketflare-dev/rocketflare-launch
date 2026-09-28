@@ -1294,12 +1294,24 @@ reload) is restarted as `<id>-rN` from the row.
   request, which is why the timeout re-checks. An open session page alone (its event stream) does
   NOT count: a forgotten background tab would keep a container up for the whole
   `maxSessionHours`.
-- **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a suspended
-  session's expiry: end), `turn#N` → `checkpoint#N`, `ship#N`, `suspend#N` (a drain), `resume#N`
-  (boot again with `#K` names, then restore the transcript), `end#N`. A message that arrives while
+- **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a warm
+  suspended session's window: cool; a suspended session's expiry: end), `turn#N` →
+  `checkpoint#N`, `ship#N`, `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
+  over), `resume#N` (boot again with `#K` names — warm: `sandbox.start#K` → `dev#K` only; cold:
+  the whole boot, then restore the transcript), `end#N`. A message that arrives while
   booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
   the container, delete the database branch, forget the sealed credentials, settle `ended` (a
   `shipped` or `failed` session keeps its status), audit `session.ended`.
+- **Warm suspend** (`warm.ts`, two thresholds): an IDLE suspend (`idleSuspendMinutes`)
+  checkpoints and KEEPS the container, dev server and all (`sessions.container_kept_at`); the
+  preview answers 503 as for any suspended session. A resume inside `SESSION_WARM_KEEP_MINUTES`
+  (45) finds the boot marker `sandbox.start` wrote, reuses that `bootId`, re-applies the allow-list
+  with the session database's hosts, and runs only `dev#K` — which reuses the dev server when both
+  ports still answer, else `pnpm dev:stop` and starts it again. After the window `cool#N` destroys
+  the container and the next resume boots cold; a drain cools at once, and the SDK's `sleepAfter`
+  (90 min, longer than the window — a config test pins it) or a recreated container (no marker)
+  makes the resume cold too (`onStop` clears `container_kept_at`). A drain, a rollout, an end and a
+  lost instance still destroy at once. A warm container is billed as container time while it waits.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
 - **Expiry** (`sessions.expire`, `*/5`): the backstop for a suspended session whose instance is
@@ -1348,7 +1360,13 @@ after 3 quiet minutes and the session re-boots, losing that turn's unsaved edits
 session whose instance died is not reconciled (no heartbeat is read for it). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
 reading the session page, or the diff, without touching the preview is idle after
-`idleSuspendMinutes` (a visible-tab heartbeat from the page is not built).
+`idleSuspendMinutes` (a visible-tab heartbeat from the page is not built). The warm resume is
+proven with the `FakeSandbox` only: that a kept container's dev server (Vite, `wrangler dev`)
+survives 45 idle minutes, and that the SDK does not stop it earlier, need a real container. A start
+on the same Durable Object seconds after a destroy has twice never answered under `wrangler dev`
+(`docs/SESSIONS-LOCAL.md` § A start that never answers): `CloudflareSandbox.start` now bounds each
+attempt (100 s) and retries once after a reset, and `onStop`'s database write is bounded (10 s) —
+the cause is not reproduced, so whether that is enough is unproven.
 
 ### 18.10 The sandbox and the local backend
 
@@ -1372,7 +1390,7 @@ a role an earlier Launch made through Neon's role API (a `neon_superuser` member
 through the API with `session_app` and made again, and that `dev` is prepared afresh. The branch
 URI is still the only credential in the container.
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code and a warm pnpm store for kit 0.15.0. The checkout is `/workspace/app` and `$HOME` is
+Claude Code and a warm pnpm store for the default pin's kit (0.15.5, `SESSION_KIT_TAG`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition).
 The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
 `session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
@@ -1497,7 +1515,8 @@ sandbox has (a service, a secret) cannot pass; after shipping there is no "keep 
 
 **Drain** (`POST /api/admin/sessions/drain`, global admins, Admin → Sessions) sets
 `launch_settings.sessions_paused` (new sessions 409) and wakes every live session, whose
-`inspect#N` checkpoints and suspends it; `/undrain` clears it and people resume their own.
+`inspect#N` checkpoints and suspends it, and every suspended one that still keeps a warm container,
+whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume their own.
 `docs/DEPLOY.md` makes it a required step before a deploy that touches the image. **UI**: the
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
