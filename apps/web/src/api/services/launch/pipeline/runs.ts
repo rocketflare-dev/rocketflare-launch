@@ -12,8 +12,11 @@ import type { AppOperationStatus } from '@launch/shared/launch-apps'
 import {
   APP_LAUNCH_STEPS,
   APP_TEARDOWN_STEPS,
+  mergePipelineParts,
+  PIPELINE_VIEW_STEPS,
   type PipelineKind,
   type PipelineRunStatus,
+  type PipelineStep,
   type PipelineStepDefinition,
   type PipelineView,
 } from '@launch/shared/launch-pipeline'
@@ -111,7 +114,11 @@ function runUrlOf(ids: Record<string, string> | undefined): string | null {
   return typeof url === 'string' && /^https:\/\/[^\s]+$/.test(url) ? url : null
 }
 
-/** The whole run, every step of `kind` in order (`pending` where no row exists yet). */
+/**
+ * The whole run as `PIPELINE_VIEW_STEPS[kind]` rows, in order (`pending` where no row exists yet):
+ * a CI job's start / wait / check rows read as ONE row (`mergePipelineParts`); every other step is
+ * its own row, as recorded. Cancel and retry never read this — they work on the raw rows.
+ */
 export async function pipelineView(
   db: Database,
   tenantId: string,
@@ -128,23 +135,29 @@ export async function pipelineView(
         ? 'failed'
         : 'running'
       : deriveRunStatus(kind, rows)
+  const labels = new Map(PIPELINE_STEPS[kind].map(def => [def.step, def.label]))
+  const partOf = (step: string): PipelineStep => {
+    const row = byStep.get(step)
+    return {
+      step,
+      label: labels.get(step) ?? step,
+      status: (row?.status ?? 'pending') as AppOperationStatus,
+      attempt: row?.attempt ?? 0,
+      error: row?.error ?? null,
+      startedAt: row?.startedAt ?? null,
+      finishedAt: row?.finishedAt ?? null,
+      url: runUrlOf(row?.externalIds),
+    }
+  }
   return {
     appId: app.id,
     runId,
     kind,
     status,
-    steps: PIPELINE_STEPS[kind].map(def => {
-      const row = byStep.get(def.step)
-      return {
-        step: def.step,
-        label: def.label,
-        status: (row?.status ?? 'pending') as AppOperationStatus,
-        attempt: row?.attempt ?? 0,
-        error: row?.error ?? null,
-        startedAt: row?.startedAt ?? null,
-        finishedAt: row?.finishedAt ?? null,
-        url: runUrlOf(row?.externalIds),
-      }
+    steps: PIPELINE_VIEW_STEPS[kind].map(def => {
+      const [only] = def.parts
+      if (def.parts.length === 1 && only) return { ...partOf(only), label: def.label }
+      return mergePipelineParts(def, def.parts.map(partOf))
     }),
   }
 }

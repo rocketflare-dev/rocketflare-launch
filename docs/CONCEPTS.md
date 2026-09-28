@@ -941,7 +941,7 @@ step that mints one puts it on the Worker itself.
   itself died, then `…wait#N` parks on the event for one round (30 × 1 min for the scaffold, 15 ×
   3 min for the deploy). The event is a nudge — it only ever says SUCCESS, so a round is how long a
   job's failure can go unseen. The `…wait` row is opened `running` by the step that dispatched the
-  job (`openWait`), so the step list shows the job running rather than a tick on "Start …"; each
+  job (`openWait`), so the job's row shows it running between dispatch and finish; each
   poll records the job's GitHub run on it (`runId`, `runUrl` = `html_url`) the moment the run is
   listed, and the view returns it as the step's `url`. A run that ends `failure`/`cancelled`, or a
   dispatch GitHub lists no run for within 10 minutes (`SCAFFOLD_START_WINDOW_MS`), fails the wait
@@ -969,9 +969,17 @@ step that mints one puts it on the Worker itself.
 - **UI**: "Create app" (a live slug check and a preview of `<slug>-staging.<apps domain>`, the
   domain from `GET /api/apps`' `appsDomain`; a 409 `launch_not_reachable` says why and links to
   Setup › Public URL), the step list polled while a run is owed — running, done and failed each
-  with its own glyph, a wait's "View run" link to its GitHub Actions run, the failed step's error
+  with its own glyph, a job's "View run" link to its GitHub Actions run, the failed step's error
   — "Retry from failed step", "Stop" (with a confirm) while a launch runs, the deploys card and
-  Archive (`pages/apps/components/`).
+  Archive (`pages/apps/components/`). The list is the VIEW's rows, not the Workflow's steps: a CI
+  job's three rows read as one — "Scaffold from the template" (`scaffold` = `scaffold.start` +
+  `.wait` + `.verify`) and "Deploy staging" (`deploy_staging` = `.start` + `.wait` + `.check`),
+  so a launch is 15 rows (`APP_LAUNCH_VIEW_STEPS`), the teardown's 12 unchanged. `pipelineView`
+  merges them with the pure `mergePipelineParts` (`@launch/shared/launch-pipeline`): failed if a
+  part failed (its error, the latest failure's), running while a part runs or between parts,
+  succeeded when all are done, skipped when all were; the wait's run URL, the highest attempt,
+  the earliest start and — once settled — the last finish. The rows stay separate underneath, and
+  cancel, retry and the audit name the real step (`scaffold.wait`).
 
 **Known gaps:** waits are rounds, so a lost event — or a job's failure — costs up to one round (1
 minute for the scaffold, 3 for the deploy); a run that GitHub lists but leaves `queued` (no runner

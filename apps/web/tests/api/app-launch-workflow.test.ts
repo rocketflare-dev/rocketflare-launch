@@ -15,6 +15,7 @@
  */
 import {
   APP_LAUNCH_STEPS,
+  APP_LAUNCH_VIEW_STEPS,
   DEPLOY_FINISHED_EVENT,
   SCAFFOLD_FINISHED_EVENT,
 } from '@launch/shared/launch-pipeline'
@@ -164,6 +165,13 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
 
     const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
     expect(view.status).toBe('succeeded')
+    // The view reads each CI job's start / wait / check as ONE row.
+    expect(view.steps.map(s => s.step)).toEqual(APP_LAUNCH_VIEW_STEPS.map(s => s.step))
+    expect(view.steps).toHaveLength(15)
+    const scaffold = view.steps.find(s => s.step === 'scaffold')
+    expect(scaffold).toMatchObject({ status: 'succeeded', label: 'Scaffold from the template' })
+    expect(scaffold?.startedAt?.getTime()).toBe(byStep['scaffold.start']?.startedAt?.getTime())
+    expect(scaffold?.finishedAt?.getTime()).toBe(byStep['scaffold.verify']?.finishedAt?.getTime())
 
     // The app and its environments carry what was created, by id.
     const app = await appRow(launch)
@@ -435,6 +443,10 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect(outcome.status).toBe('failed')
     const byStep = await rows(launch)
     expect(byStep['scaffold.verify']?.error).toMatch(/names the app someone-else/)
+    const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
+    const scaffold = view.steps.find(s => s.step === 'scaffold')
+    expect(scaffold).toMatchObject({ status: 'failed' })
+    expect(scaffold?.error).toMatch(/names the app someone-else/)
   })
 
   it('without deployStaging, records the deploy and health as skipped and still goes live', async () => {
@@ -444,6 +456,8 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     const byStep = await rows(launch)
     expect(byStep['deploy_staging.start']?.status).toBe('skipped')
     expect(byStep.health?.status).toBe('skipped')
+    const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
+    expect(view.steps.find(s => s.step === 'deploy_staging')?.status).toBe('skipped')
     expect(fake.waits.map(w => w.type)).toEqual([SCAFFOLD_FINISHED_EVENT])
   })
 })

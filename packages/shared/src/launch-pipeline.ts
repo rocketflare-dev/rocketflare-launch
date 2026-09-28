@@ -188,6 +188,11 @@ export const PIPELINE_RUN_STATUSES = ['none', 'running', 'succeeded', 'failed'] 
 export const pipelineRunStatusSchema = z.enum(PIPELINE_RUN_STATUSES)
 export type PipelineRunStatus = z.infer<typeof pipelineRunStatusSchema>
 
+/**
+ * One row of the view: a step, or a CI job's parts merged (`PIPELINE_VIEW_STEPS`,
+ * `mergePipelineParts`). `step` is the row's key — never an enum, so a newer server's row still
+ * parses and an older UI shows it at the end.
+ */
 export const pipelineStepSchema = z.object({
   step: z.string(),
   label: z.string(),
@@ -205,7 +210,115 @@ export const pipelineStepSchema = z.object({
 })
 export type PipelineStep = z.infer<typeof pipelineStepSchema>
 
-/** `GET /api/apps/:id/pipeline[?kind=]` — the latest run of that kind, every step in order. */
+// ---- The view's rows ---------------------------------------------------------------------------------
+
+/** One row of the pipeline VIEW: a step, or a job whose Workflow steps (`parts`) read as one. */
+export interface PipelineViewStepDefinition {
+  /** The row's key: the step's own key, or the job's (`scaffold`) when it has several parts. */
+  step: string
+  label: string
+  /** The `app_operations.step` keys the row covers, in run order. */
+  parts: readonly string[]
+}
+
+/**
+ * The launch as a person reads it. A CI job is three Workflow steps and three rows underneath
+ * (dispatch, wait, check — kept apart for exactly-once dispatch and retry), but one thing to watch:
+ * `scaffold` = `scaffold.start` + `.wait` + `.verify`, `deploy_staging` = `deploy_staging.start` +
+ * `.wait` + `.check`. Every other step is its own row.
+ */
+const JOBS: Record<string, { label: string; parts: readonly AppLaunchStep[] }> = {
+  scaffold: {
+    label: 'Scaffold from the template',
+    parts: ['scaffold.start', 'scaffold.wait', 'scaffold.verify'],
+  },
+  deploy_staging: {
+    label: 'Deploy staging',
+    parts: ['deploy_staging.start', 'deploy_staging.wait', 'deploy_staging.check'],
+  },
+}
+
+function viewSteps(steps: readonly PipelineStepDefinition[]): PipelineViewStepDefinition[] {
+  const rows: PipelineViewStepDefinition[] = []
+  for (const def of steps) {
+    const job = Object.entries(JOBS).find(([, j]) =>
+      (j.parts as readonly string[]).includes(def.step)
+    )
+    if (!job) rows.push({ step: def.step, label: def.label, parts: [def.step] })
+    else if (!rows.some(r => r.step === job[0])) {
+      rows.push({ step: job[0], label: job[1].label, parts: job[1].parts })
+    }
+  }
+  return rows
+}
+
+export const APP_LAUNCH_VIEW_STEPS: readonly PipelineViewStepDefinition[] =
+  viewSteps(APP_LAUNCH_STEPS)
+export const APP_TEARDOWN_VIEW_STEPS: readonly PipelineViewStepDefinition[] =
+  viewSteps(APP_TEARDOWN_STEPS)
+export const PIPELINE_VIEW_STEPS: Record<PipelineKind, readonly PipelineViewStepDefinition[]> = {
+  create: APP_LAUNCH_VIEW_STEPS,
+  teardown: APP_TEARDOWN_VIEW_STEPS,
+}
+
+const SETTLED = ['succeeded', 'failed', 'skipped'] as const
+
+/**
+ * A job's parts as ONE row (`pending` placeholders for parts with no row). Pure.
+ * - status: `failed` if any part failed; else `running` if a part runs, or some are done and
+ *   others still pending (the job is between parts); `succeeded` once every part is done (a
+ *   skipped one counts as done), `skipped` if all were; else `pending`.
+ * - error and a failed row's times from the LATEST failed part; `url` from whichever part has one
+ *   (the wait's run); `attempt` the max; `startedAt` the earliest start; `finishedAt` the last
+ *   finish, only once the row is settled.
+ */
+export function mergePipelineParts(
+  row: Pick<PipelineViewStepDefinition, 'step' | 'label'>,
+  parts: readonly PipelineStep[]
+): PipelineStep {
+  const statuses = parts.map(p => p.status)
+  const failed = parts
+    .filter(p => p.status === 'failed')
+    .reduce<PipelineStep | null>(
+      (latest, p) =>
+        !latest || (p.finishedAt?.getTime() ?? 0) >= (latest.finishedAt?.getTime() ?? 0)
+          ? p
+          : latest,
+      null
+    )
+  const done = (s: string) => s === 'succeeded' || s === 'skipped'
+  const status: PipelineStep['status'] = failed
+    ? 'failed'
+    : statuses.includes('running')
+      ? 'running'
+      : statuses.length > 0 && statuses.every(s => s === 'skipped')
+        ? 'skipped'
+        : statuses.length > 0 && statuses.every(done)
+          ? 'succeeded'
+          : statuses.some(done)
+            ? 'running'
+            : 'pending'
+  const times = (pick: (p: PipelineStep) => Date | null) =>
+    parts.flatMap(p => {
+      const at = pick(p)
+      return at ? [at.getTime()] : []
+    })
+  const starts = times(p => p.startedAt)
+  const ends = times(p => p.finishedAt)
+  const settled = (SETTLED as readonly string[]).includes(status)
+  return {
+    step: row.step,
+    label: row.label,
+    status,
+    attempt: Math.max(0, ...parts.map(p => p.attempt)),
+    error: failed?.error ?? null,
+    url: parts.find(p => p.url)?.url ?? null,
+    startedAt: starts.length ? new Date(Math.min(...starts)) : null,
+    finishedAt: settled && ends.length ? new Date(Math.max(...ends)) : null,
+  }
+}
+
+/** `GET /api/apps/:id/pipeline[?kind=]` — the latest run of that kind, every view row in order. */
 export const pipelineViewSchema = z.object({
   appId: z.string().uuid(),
   runId: z.string().uuid().nullable(),

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The launch's step list is shorter: each CI job is one row — "Scaffold from the template" covers
+  starting, waiting on and checking the scaffold job, "Deploy staging" the same for the staging
+  deploy — so a launch shows 15 rows instead of 19. The Workflow still runs (and retries) the
+  parts as separate steps; `GET /api/apps/:id/pipeline` returns the merged rows (`scaffold`,
+  `deploy_staging`), with the failed part's error, the job's run link and the highest attempt.
 - New apps are scaffolded from Rocketflare kit 0.15.1 (the default template pin), whose rename
   leaves a hyphenated slug's evals script parseable — 0.15.0 failed the scaffold's lint gate on it.
 - The scaffold job installs with `pnpm install --no-frozen-lockfile` after the kit's rename

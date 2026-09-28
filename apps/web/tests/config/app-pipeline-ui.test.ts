@@ -6,7 +6,7 @@
  */
 import type { AppSummary } from '@launch/shared/launch-apps'
 import {
-  APP_LAUNCH_STEPS,
+  APP_LAUNCH_VIEW_STEPS,
   APP_TEARDOWN_STEPS,
   newAppSlugProblem,
   type PipelineStep,
@@ -98,8 +98,13 @@ describe('pipeline rows, summary and phases', () => {
       kind: 'create',
       steps: [step('repo', 'succeeded'), step('reserve', 'succeeded'), step('mystery', 'failed')],
     })
-    expect(rows.map(r => r.step)).toEqual([...APP_LAUNCH_STEPS.map(s => s.step), 'mystery'])
-    expect(rows[2]).toMatchObject({ step: 'scaffold.start', status: 'pending', attempt: 0 })
+    expect(rows.map(r => r.step)).toEqual([...APP_LAUNCH_VIEW_STEPS.map(s => s.step), 'mystery'])
+    expect(rows[2]).toMatchObject({
+      step: 'scaffold',
+      label: 'Scaffold from the template',
+      status: 'pending',
+      attempt: 0,
+    })
     expect(pipelineRows({ kind: 'teardown', steps: [] })).toHaveLength(APP_TEARDOWN_STEPS.length)
   })
 
@@ -127,7 +132,10 @@ describe('pipeline rows, summary and phases', () => {
     })
     const phases = groupPhases('create', rows)
     expect(phases.map(p => p.label)).toEqual(['Repository', 'Infrastructure', 'Staging', 'Go live'])
-    expect(phases.flatMap(p => p.rows).map(r => r.step)).toEqual(APP_LAUNCH_STEPS.map(s => s.step))
+    expect(phases.flatMap(p => p.rows).map(r => r.step)).toEqual(
+      APP_LAUNCH_VIEW_STEPS.map(s => s.step)
+    )
+    expect(phases.map(p => p.rows.length)).toEqual([3, 8, 2, 2])
     expect(phases.map(p => p.status)).toEqual(['running', 'pending', 'pending', 'pending'])
 
     const teardown = groupPhases('teardown', pipelineRows({ kind: 'teardown', steps: [] }))

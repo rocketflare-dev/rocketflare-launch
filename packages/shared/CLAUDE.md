@@ -30,8 +30,9 @@ public JWK, the key-admin responses and the `/api/app-access` request/policy/gra
 keys — the wizard's string `SETUP_SETTING_KEYS` plus P2's `template_pin` / `app_create_role` with
 their code defaults and `meetsAppCreateRole`), `launch-audit.ts` (audit event, `auditListQuerySchema` / `auditListResponseSchema`, cursor-paged) ·
 Launch (P2): `launch-pipeline.ts` (`newAppSlugProblem` — the `launch-` rule on top of
-`appSlugProblem` — `createAppRequestSchema`, `APP_LAUNCH_STEPS` / `APP_TEARDOWN_STEPS`, the
-`pipelineViewSchema`, retry/teardown bodies, the Workflow params, deploy tickets and decisions, the
+`appSlugProblem` — `createAppRequestSchema`, `APP_LAUNCH_STEPS` / `APP_TEARDOWN_STEPS` (the
+Workflow's steps) and the view's rows over them, `PIPELINE_VIEW_STEPS` (a CI job's start / wait /
+check as one row) + the pure `mergePipelineParts`, the `pipelineViewSchema`, retry/teardown bodies, the Workflow params, deploy tickets and decisions, the
 DEPLOYER.md v1 bodies behind `/ci/deploy`, the `/ci/scaffold` token and done bodies, and the event
 types `SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`, golden-tested against Cloudflare's
 `/^[A-Za-z0-9_-]{1,100}$/`) ·

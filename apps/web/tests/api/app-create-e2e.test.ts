@@ -30,6 +30,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AppEnvironmentName } from '@launch/shared/launch-apps'
 import {
+  APP_LAUNCH_VIEW_STEPS,
   type AppLaunchParams,
   type AppTeardownParams,
   createAppResponseSchema,
@@ -521,6 +522,7 @@ describe('create an app, end to end against the FakeCloud', () => {
     expect((await appRow(appId)).status).toBe('live')
     const view = await pipeline(appId)
     expect(view).toMatchObject({ runId, kind: 'create', status: 'succeeded' })
+    expect(view.steps.map(s => s.step)).toEqual(APP_LAUNCH_VIEW_STEPS.map(s => s.step))
     for (const s of view.steps) {
       expect([s.step, s.status]).toEqual([
         s.step,
@@ -679,9 +681,10 @@ describe('create an app, end to end against the FakeCloud', () => {
     // The launch stops at the wait with the refusal as its reason.
     expect(driven.outcome.status).toBe('failed')
     expect((await appRow(launched.appId)).status).toBe('failed')
-    const wait = (await pipeline(launched.appId)).steps.find(s => s.step === 'deploy_staging.wait')
-    expect(wait).toMatchObject({ status: 'failed' })
-    expect(wait?.error).toContain('VICTIM')
+    // The staging deploy is one row in the view: failed, with the wait's refusal.
+    const deployRow = (await pipeline(launched.appId)).steps.find(s => s.step === 'deploy_staging')
+    expect(deployRow).toMatchObject({ status: 'failed' })
+    expect(deployRow?.error).toContain('VICTIM')
   })
 
   it('releases to production once an admin approves it on the app page', async () => {

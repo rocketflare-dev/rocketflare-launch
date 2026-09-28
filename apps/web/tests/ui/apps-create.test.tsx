@@ -4,7 +4,7 @@
  * modal's typed confirmation; and a pending production deploy decided on the app page. The server
  * is a `stubFetch` route table built from the shared P2 contracts' shapes.
  */
-import { APP_LAUNCH_STEPS } from '@launch/shared/launch-pipeline'
+import { APP_LAUNCH_VIEW_STEPS } from '@launch/shared/launch-pipeline'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -79,15 +79,15 @@ const detail = (overrides: Record<string, unknown> = {}) => ({
 const t0 = Date.parse('2026-09-27T10:00:00Z')
 const at = (seconds: number) => new Date(t0 + seconds * 1000).toISOString()
 
-/** A launch view: every step before `failedAt` succeeded, that one failed, the rest pending. */
+/** A launch view: every row before `failedAt` succeeded, that one failed, the rest pending. */
 function launchView(failedAt: string | null, status: 'running' | 'failed' | 'succeeded') {
-  const failedIndex = APP_LAUNCH_STEPS.findIndex(s => s.step === failedAt)
+  const failedIndex = APP_LAUNCH_VIEW_STEPS.findIndex(s => s.step === failedAt)
   return {
     appId: APP_ID,
     runId: RUN_ID,
     kind: 'create',
     status,
-    steps: APP_LAUNCH_STEPS.map((def, i) => {
+    steps: APP_LAUNCH_VIEW_STEPS.map((def, i) => {
       const state =
         failedIndex === -1 || i < failedIndex
           ? 'succeeded'
@@ -424,9 +424,12 @@ describe('AppDetailPage — the launch', () => {
     // Before the first read the panel already says a launch is owed; then the steps arrive.
     await screen.findByRole('heading', { name: /Launching · Create storage, queue and KV/ })
     const panel = screen.getByRole('region', { name: 'Launch progress' })
-    for (const def of APP_LAUNCH_STEPS)
+    for (const def of APP_LAUNCH_VIEW_STEPS)
       expect(within(panel).getByText(def.label)).toBeInTheDocument()
-    expect(within(panel).getAllByRole('img', { name: 'Done' })).toHaveLength(6)
+    // A CI job is one row: the scaffold's start / wait / verify read as "Scaffold from the template".
+    expect(within(panel).queryByText('Start the scaffold job')).not.toBeInTheDocument()
+    expect(within(panel).getByText(/Step 5 of 15/)).toBeInTheDocument()
+    expect(within(panel).getAllByRole('img', { name: 'Done' })).toHaveLength(4)
     expect(within(panel).getAllByRole('img', { name: 'Running' })).toHaveLength(1)
     expect(within(panel).getByTitle('attempt 3')).toBeInTheDocument()
     expect(within(panel).getAllByText('4s').length).toBeGreaterThan(0)
@@ -460,10 +463,10 @@ describe('AppDetailPage — the launch', () => {
   })
 
   it('shows the scaffold job running with a link to its GitHub run, and stops a stuck launch', async () => {
-    const view = launchView('scaffold.wait', 'running')
+    const view = launchView('scaffold', 'running')
     const runUrl = 'https://github.com/acme/expenses/actions/runs/4242'
-    const wait = view.steps.find(s => s.step === 'scaffold.wait') as Record<string, unknown>
-    wait.url = runUrl
+    const job = view.steps.find(s => s.step === 'scaffold') as Record<string, unknown>
+    job.url = runUrl
     let cancelled = false
     const fetchMock = renderDetail(
       makeSession(),
@@ -478,10 +481,9 @@ describe('AppDetailPage — the launch', () => {
     )
     await screen.findByRole('heading', { name: /Launching · Scaffold from the template/ })
     const panel = screen.getByRole('region', { name: 'Launch progress' })
-    // "Start the scaffold job" is done; the scaffold itself is RUNNING, not ticked.
-    const start = panel.querySelector('[data-step="scaffold.start"]')
-    const row = panel.querySelector('[data-step="scaffold.wait"]') as HTMLElement
-    expect(start?.getAttribute('data-status')).toBe('succeeded')
+    // The job is ONE row, running, with its GitHub run.
+    expect(panel.querySelector('[data-step="scaffold.start"]')).toBeNull()
+    const row = panel.querySelector('[data-step="scaffold"]') as HTMLElement
     expect(row.getAttribute('data-status')).toBe('running')
     expect(within(row).getByRole('img', { name: 'Running' })).toBeInTheDocument()
     expect(within(row).getByRole('link', { name: /View run/ })).toHaveAttribute('href', runUrl)
@@ -500,10 +502,10 @@ describe('AppDetailPage — the launch', () => {
   })
 
   it('shows a failed scaffold with its reason and run link, and offers the retry', async () => {
-    const view = launchView('scaffold.wait', 'failed')
+    const view = launchView('scaffold', 'failed')
     const runUrl = 'https://github.com/acme/expenses/actions/runs/4242'
-    const wait = view.steps.find(s => s.step === 'scaffold.wait') as Record<string, unknown>
-    Object.assign(wait, {
+    const job = view.steps.find(s => s.step === 'scaffold') as Record<string, unknown>
+    Object.assign(job, {
       url: runUrl,
       attempt: 1,
       error:
@@ -511,7 +513,7 @@ describe('AppDetailPage — the launch', () => {
     })
     renderDetail(makeSession(), { status: 'failed' }, pipelineRoute(view))
     const panel = await screen.findByRole('region', { name: 'Launch progress' })
-    const row = panel.querySelector('[data-step="scaffold.wait"]') as HTMLElement
+    const row = panel.querySelector('[data-step="scaffold"]') as HTMLElement
     expect(row.getAttribute('data-status')).toBe('failed')
     expect(within(row).getByRole('img', { name: 'Failed' })).toBeInTheDocument()
     const alert = within(panel).getByRole('alert')

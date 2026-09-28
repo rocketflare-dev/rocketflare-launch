@@ -1,8 +1,8 @@
 /**
- * A launch or a teardown as it happens (Launch P2): every step of `APP_LAUNCH_STEPS` /
- * `APP_TEARDOWN_STEPS` in order, grouped into a few phases a person can follow, each with its
+ * A launch or a teardown as it happens (Launch P2): every row of `APP_LAUNCH_VIEW_STEPS` /
+ * `APP_TEARDOWN_VIEW_STEPS` in order (a CI job's start / wait / check is one row), grouped into a few phases a person can follow, each with its
  * status, attempt count and duration; a link to the step's GitHub Actions run once it is known (the
- * scaffold and staging-deploy waits); the failed step's error, verbatim; "Retry from failed step"
+ * scaffold and staging-deploy jobs); the failed step's error, verbatim; "Retry from failed step"
  * for whoever may retry; and, while a launch runs, "Stop" for whoever may retry — the way out of a
  * wait that will never end.
  *
@@ -22,8 +22,7 @@ import {
 } from '@heroicons/react/24/outline'
 import type { AppOperationStatus } from '@launch/shared/launch-apps'
 import {
-  APP_LAUNCH_STEPS,
-  APP_TEARDOWN_STEPS,
+  PIPELINE_VIEW_STEPS,
   type PipelineKind,
   type PipelineStep,
   type PipelineView,
@@ -33,19 +32,14 @@ import { formatDateTime, formatDuration, timeAgo } from '@/ui/lib/format'
 
 // ---- Pure helpers ------------------------------------------------------------------------------------
 
-const DEFINITIONS: Record<PipelineKind, readonly { step: string; label: string }[]> = {
-  create: APP_LAUNCH_STEPS,
-  teardown: APP_TEARDOWN_STEPS,
-}
-
 /**
- * Every defined step in order, each with the server's row when there is one and a `pending`
+ * Every defined view row in order, each with the server's row when there is one and a `pending`
  * placeholder when there is not; a step the server knows and this build does not is kept, at the
  * end, rather than hidden. Pure.
  */
 export function pipelineRows(view: Pick<PipelineView, 'kind' | 'steps'>): PipelineStep[] {
   const byStep = new Map(view.steps.map(step => [step.step, step]))
-  const rows: PipelineStep[] = DEFINITIONS[view.kind].map(
+  const rows: PipelineStep[] = PIPELINE_VIEW_STEPS[view.kind].map(
     def =>
       byStep.get(def.step) ?? {
         step: def.step,
@@ -105,7 +99,7 @@ interface Phase {
 const LAUNCH_PHASES: readonly Phase[] = [
   {
     label: 'Repository',
-    steps: ['reserve', 'repo', 'scaffold.start', 'scaffold.wait', 'scaffold.verify'],
+    steps: ['reserve', 'repo', 'scaffold'],
   },
   {
     label: 'Infrastructure',
@@ -120,10 +114,7 @@ const LAUNCH_PHASES: readonly Phase[] = [
       'email',
     ],
   },
-  {
-    label: 'Staging',
-    steps: ['deploy_staging.start', 'deploy_staging.wait', 'deploy_staging.check', 'health'],
-  },
+  { label: 'Staging', steps: ['deploy_staging', 'health'] },
   { label: 'Go live', steps: ['production', 'live'] },
 ]
 

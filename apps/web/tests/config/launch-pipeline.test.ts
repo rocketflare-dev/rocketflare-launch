@@ -5,13 +5,17 @@
  */
 import {
   APP_LAUNCH_STEPS,
+  APP_LAUNCH_VIEW_STEPS,
   APP_TEARDOWN_STEPS,
+  APP_TEARDOWN_VIEW_STEPS,
   createAppRequestSchema,
   DEPLOY_FINISHED_EVENT,
   DEPLOYER_PROTOCOL_VERSIONS,
   deployStartSchema,
   deployUploadSchema,
+  mergePipelineParts,
   newAppSlugProblem,
+  type PipelineStep,
   SCAFFOLD_FINISHED_EVENT,
   teardownRequestSchema,
 } from '@launch/shared/launch-pipeline'
@@ -69,6 +73,138 @@ describe('pipeline steps', () => {
       'production',
       'live',
     ])
+  })
+})
+
+describe('the pipeline view’s rows', () => {
+  it('reads each CI job’s start / wait / check as one row, every other step as its own', () => {
+    expect(APP_LAUNCH_VIEW_STEPS.map(s => [s.step, s.label])).toEqual([
+      ['reserve', 'Reserve the name'],
+      ['repo', 'Create the repository'],
+      ['scaffold', 'Scaffold from the template'],
+      ['neon', 'Create the database'],
+      ['cloudflare', 'Create storage, queue and KV'],
+      ['oidc_client', 'Register sign-in'],
+      ['write_config', 'Write the configuration'],
+      ['placeholders', 'Create the Workers'],
+      ['github_env', 'Set up GitHub environments'],
+      ['worker_secrets', 'Set the Worker secrets'],
+      ['email', 'Create the email key'],
+      ['deploy_staging', 'Deploy staging'],
+      ['health', 'Wait for staging to answer'],
+      ['production', 'Production'],
+      ['live', 'Live'],
+    ])
+    expect(APP_LAUNCH_VIEW_STEPS.find(s => s.step === 'scaffold')?.parts).toEqual([
+      'scaffold.start',
+      'scaffold.wait',
+      'scaffold.verify',
+    ])
+    expect(APP_LAUNCH_VIEW_STEPS.find(s => s.step === 'deploy_staging')?.parts).toEqual([
+      'deploy_staging.start',
+      'deploy_staging.wait',
+      'deploy_staging.check',
+    ])
+    // Every Workflow step is covered by exactly one row, in run order.
+    expect(APP_LAUNCH_VIEW_STEPS.flatMap(s => s.parts)).toEqual(APP_LAUNCH_STEPS.map(s => s.step))
+    // The teardown has no job: one row per step.
+    expect(APP_TEARDOWN_VIEW_STEPS.map(s => s.step)).toEqual(APP_TEARDOWN_STEPS.map(s => s.step))
+  })
+})
+
+describe('mergePipelineParts', () => {
+  const row = { step: 'scaffold', label: 'Scaffold from the template' }
+  const at = (s: number) => new Date(Date.UTC(2026, 8, 28, 10, 0, s))
+  const part = (
+    step: string,
+    status: PipelineStep['status'],
+    extra: Partial<PipelineStep> = {}
+  ): PipelineStep => ({
+    step,
+    label: step,
+    status,
+    attempt: status === 'pending' ? 0 : 1,
+    error: null,
+    url: null,
+    startedAt: null,
+    finishedAt: null,
+    ...extra,
+  })
+  const url = 'https://github.com/acme/shop/actions/runs/42'
+
+  it('is pending before any part starts, and keeps the row’s own key and label', () => {
+    const merged = mergePipelineParts(row, [part('s', 'pending'), part('w', 'pending')])
+    expect(merged).toMatchObject({ step: 'scaffold', label: row.label, status: 'pending' })
+    expect(merged).toMatchObject({ attempt: 0, error: null, url: null, startedAt: null })
+  })
+
+  it('is running while a part runs, with the wait’s run URL and the earliest start', () => {
+    const merged = mergePipelineParts(row, [
+      part('s', 'succeeded', { startedAt: at(0), finishedAt: at(2) }),
+      part('w', 'running', { startedAt: at(3), url }),
+      part('v', 'pending'),
+    ])
+    expect(merged).toMatchObject({ status: 'running', url, startedAt: at(0), finishedAt: null })
+  })
+
+  it('is running BETWEEN parts: one done, the next not started yet', () => {
+    const merged = mergePipelineParts(row, [
+      part('s', 'succeeded', { startedAt: at(0), finishedAt: at(2) }),
+      part('w', 'pending'),
+      part('v', 'pending'),
+    ])
+    expect(merged.status).toBe('running')
+    expect(merged.finishedAt).toBeNull()
+  })
+
+  it('fails with the failed part’s error, its URL and the highest attempt', () => {
+    const merged = mergePipelineParts(row, [
+      part('s', 'succeeded', { attempt: 2, startedAt: at(0), finishedAt: at(2) }),
+      part('w', 'failed', {
+        attempt: 1,
+        error: 'the GitHub Actions run ended “failure”',
+        url,
+        startedAt: at(3),
+        finishedAt: at(9),
+      }),
+      part('v', 'pending'),
+    ])
+    expect(merged).toMatchObject({
+      status: 'failed',
+      error: 'the GitHub Actions run ended “failure”',
+      url,
+      attempt: 2,
+      startedAt: at(0),
+      finishedAt: at(9),
+    })
+  })
+
+  it('takes the LATEST failure when more than one part failed', () => {
+    const merged = mergePipelineParts(row, [
+      part('s', 'failed', { error: 'older', finishedAt: at(2) }),
+      part('w', 'failed', { error: 'newer', finishedAt: at(8) }),
+    ])
+    expect(merged.error).toBe('newer')
+  })
+
+  it('succeeds once every part has, finishing with the last part', () => {
+    const merged = mergePipelineParts(row, [
+      part('s', 'succeeded', { startedAt: at(0), finishedAt: at(2) }),
+      part('w', 'succeeded', { startedAt: at(3), finishedAt: at(40), url }),
+      part('v', 'succeeded', { startedAt: at(41), finishedAt: at(43) }),
+    ])
+    expect(merged).toMatchObject({
+      status: 'succeeded',
+      url,
+      startedAt: at(0),
+      finishedAt: at(43),
+      error: null,
+    })
+  })
+
+  it('is skipped when every part was', () => {
+    const skipped = [part('s', 'skipped'), part('w', 'skipped'), part('v', 'skipped')]
+    expect(mergePipelineParts(row, skipped).status).toBe('skipped')
   })
 })
 

@@ -97,8 +97,11 @@ describe('a scaffold job that fails on GitHub', () => {
     // The page sees a failed run it may retry, and the URL to open.
     const view = await pipelineView(db, launch.tenantId, await appRow(launch), 'create')
     expect(view.status).toBe('failed')
-    const wait = view.steps.find(s => s.step === 'scaffold.wait')
-    expect(wait).toMatchObject({ status: 'failed', url: runUrl(run) })
+    // One row for the job: failed, with the wait's error, attempt and run URL.
+    const job = view.steps.find(s => s.step === 'scaffold')
+    expect(job).toMatchObject({ status: 'failed', attempt: 1, url: runUrl(run) })
+    expect(job?.error).toMatch(/the GitHub Actions run ended “failure”/)
+    expect(view.steps.some(s => s.step.startsWith('scaffold.'))).toBe(false)
   })
 
   it('a run GitHub never lists fails the wait once the start window passes', async () => {
@@ -157,11 +160,11 @@ describe('a scaffold job that fails on GitHub', () => {
     })
     const view = seen as unknown as Awaited<ReturnType<typeof pipelineView>>
     expect(view.status).toBe('running')
-    const start = view.steps.find(s => s.step === 'scaffold.start')
-    const wait = view.steps.find(s => s.step === 'scaffold.wait')
-    expect(start?.status).toBe('succeeded')
-    expect(wait?.status).toBe('running')
-    expect(wait?.url).toMatch(/\/actions\/runs\/\d+$/)
+    // Start succeeded, the wait runs: the job's one row is running, with the run URL.
+    const job = view.steps.find(s => s.step === 'scaffold')
+    expect(job?.status).toBe('running')
+    expect(job?.finishedAt).toBeNull()
+    expect(job?.url).toMatch(/\/actions\/runs\/\d+$/)
     expect((await rows(launch))['scaffold.wait']?.error).toMatch(/cancelled/)
   })
 
@@ -250,6 +253,10 @@ describe('a scaffold job that fails on GitHub', () => {
     })
     const view = await pipelineView(db, launch.tenantId, await appRow(launch), 'create')
     expect(view.status).toBe('failed')
+    expect(view.steps.find(s => s.step === 'scaffold')).toMatchObject({
+      status: 'failed',
+      error: 'Stopped by ops@example.com',
+    })
     const [ticket] = await db
       .select()
       .from(deployTickets)
