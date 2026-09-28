@@ -7,7 +7,7 @@
  * (`turnKillScript`, `turn.ts`) against real processes.
  */
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -92,7 +92,12 @@ describe('the checkpoint scan', () => {
 
   it('removes a stale index.lock that a timed-out git left behind', () => {
     const dir = repo()
-    writeFileSync(path.join(dir, '.git/index.lock'), '')
+    const lock = path.join(dir, '.git/index.lock')
+    writeFileSync(lock, '')
+    // Older than any checkpoint command may run, so it is stale even while some other git runs
+    // on this machine (the test must not depend on what else the host is doing).
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000)
+    utimesSync(lock, tenMinutesAgo, tenMinutesAgo)
     writeFileSync(path.join(dir, 'new.txt'), 'n\n')
     bash(dir, checkpointScanScript())
     bash(dir, CHECKPOINT_ADD_COMMAND)

@@ -96,8 +96,9 @@ export function checkpointScanScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): stri
     'set -e',
     'mkdir -p .git/info',
     // A git that an earlier, timed-out checkpoint left behind dies without removing its lock, and
-    // every later `git add` would fail on it. Only when no git is running at all.
-    'if [ -f .git/index.lock ] && ! pgrep -x git >/dev/null 2>&1; then rm -f .git/index.lock; fi',
+    // every later `git add` would fail on it. Stale = no git running at all, or older than any
+    // checkpoint command may run (5 min) — a git the model started keeps a young lock alive.
+    'if [ -f .git/index.lock ] && { ! pgrep -x git >/dev/null 2>&1 || [ -n "$(find .git/index.lock -mmin +5 2>/dev/null)" ]; }; then rm -f .git/index.lock; fi',
     `for p in ${CORE_DUMP_EXCLUDES.map(q).join(' ')}; do grep -qxF -- "$p" .git/info/exclude 2>/dev/null || printf '%s\\n' "$p" >> .git/info/exclude; done`,
     `printf '.\\0' > ${ADD_PATHSPEC_PATH}`,
     "git ls-files -z --others --modified --exclude-standard | while IFS= read -r -d '' f; do",
