@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A session preview's Vite HMR WebSocket now connects: an upgrade goes through the Sandbox SDK's
+  `wsConnect` instead of `containerFetch`, which is an RPC and cannot carry a socket.
 - Coding sessions no longer stall silently. Every sandbox call a boot step makes has a deadline
   and a readable error ("Installing and seeding: the sandbox (setAllowedHosts) did not answer within
   90 s"), and so does every Neon call; a failed install, bootstrap or dev server shows its last 40
