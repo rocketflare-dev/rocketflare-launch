@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- When a coding session's container is destroyed after its warm window (or by a drain), its
+  workspace — checkout, `node_modules` and `.dev.vars` — is backed up with the Sandbox SDK's
+  `createBackup`, and a later cold resume restores it instead of cloning and installing when the
+  branch head is still the backup's commit (a new "Restoring the saved workspace" step; "Cloning
+  instead" when it cannot). On by default under `wrangler dev` (`SESSION_WORKSPACE_BACKUP=binding`),
+  off deployed until `presigned` and its R2 credentials are set (docs/DEPLOY.md). A new
+  `BACKUP_BUCKET` binding on the `FILES` bucket in both tomls. Migration 0031 adds
+  `sessions.workspace_backup`: run `pnpm db:migrate`.
+- A coding session resumed COLD (its container was destroyed) no longer re-seeds its database or
+  re-runs the database check, and migrates only when the checkout's `apps/web/migrations` changed
+  since its last successful bootstrap (hashed, `sessions.migrations_hash`). A first boot is
+  unchanged. Migration 0030 adds the column: run `pnpm db:migrate`.
+- Resuming a coding session that went idle is fast again. An idle suspend (after
+  `idleSuspendMinutes`) still checkpoints, but now KEEPS the container, dependencies and running
+  dev server for 45 minutes (`SESSION_WARM_KEEP_MINUTES`); a resume inside that window restarts
+  only the dev server, and only when it stopped answering — no clone, install or bootstrap (under
+  local amd64 emulation that was ~3 minutes). After the window, on a drain, or when the container
+  went away, the container is destroyed and the next resume is a full boot as before. Starting a
+  session container is now bounded per attempt (100 s) and retried once after a reset, booting
+  before the allow-list is applied, and the sandbox's `onStop` database write is bounded — two
+  resumes right after an idle destroy had hung at "Starting sandbox" under `wrangler dev`.
+  Migration 0029 adds `sessions.container_kept_at`: run `pnpm db:migrate`.
+- The coding-session image's warm pnpm store is fetched for kit 0.15.5 (was 0.15.0), the kit
+  a new app is cut from (`DEFAULT_TEMPLATE_PIN`), so a session's `pnpm install --prefer-offline`
+  stops falling back to the registry for what changed since 0.15.0; a config test fails when the
+  two drift apart. The image is `session-2`: deploying it replaces running session containers, so
+  drain sessions first (docs/DEPLOY.md § Coding sessions).
 - A coding session's checkpoint push no longer fails with "Repository not found" right after its
   GitHub token is re-minted (a session idle past the token's hour). GitHub does not always accept
   a just-issued installation token for a second or so and answers a private repo's anonymous-looking

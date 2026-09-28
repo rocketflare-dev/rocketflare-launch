@@ -148,7 +148,10 @@ describe('the Rocketflare manifest and tomls', () => {
     })
     expect(production.resources).toEqual({
       queues: [{ binding: 'JOBS_QUEUE', queue: 'launch-jobs' }],
-      r2: [{ binding: 'FILES', bucketName: 'launch-files' }],
+      r2: [
+        { binding: 'FILES', bucketName: 'launch-files' },
+        { binding: 'BACKUP_BUCKET', bucketName: 'launch-files' },
+      ],
       durableObjects: [
         { binding: 'NOTIFICATIONS_HUB', className: 'NotificationsHub' },
         { binding: 'SESSION_SANDBOX', className: 'SessionSandbox' },
@@ -256,6 +259,7 @@ describe('importApp', () => {
     })
     expect(byName.staging?.resources.r2).toEqual([
       { binding: 'FILES', bucketName: 'launch-files-staging' },
+      { binding: 'BACKUP_BUCKET', bucketName: 'launch-files-staging' },
     ])
 
     const ops = await db

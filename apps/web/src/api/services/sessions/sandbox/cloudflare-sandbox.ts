@@ -13,10 +13,17 @@
  * Choices worth knowing:
  *
  * - **`sleepAfter` is a backstop, not the idle policy.** The Workflow suspends an idle session
- *   itself (`idleSuspendMinutes`, default 30) and ALWAYS destroys the container; the SDK's own
- *   sleep (`SESSION_SANDBOX_SLEEP_AFTER`) only reaps a container whose Workflow died. When it does
- *   fire, the Durable Object's `onStop` marks a `ready` session `suspended`, so the next wake boots
- *   again instead of talking to an empty container.
+ *   itself (`idleSuspendMinutes`, default 30), keeps its container for `SESSION_WARM_KEEP_MINUTES`
+ *   (`warm.ts`) and then destroys it; the SDK's own sleep (`SESSION_SANDBOX_SLEEP_AFTER`, longer
+ *   than the warm window — a config test pins it) only reaps a container whose Workflow died. When
+ *   it does fire, the Durable Object's `onStop` marks a `ready` session `suspended` (and forgets a
+ *   kept container), so the next wake boots again instead of talking to an empty container.
+ * - **`start` is bounded per attempt and retried once after a reset** (`START_ATTEMPT_MS`): a
+ *   start on the same Durable Object seconds after a `destroy` was seen to never answer under
+ *   `wrangler dev` (docs/SESSIONS-LOCAL.md § A start that never answers). The container boots
+ *   first (`exec('true')`, under the class's own base allow-list) and the allow-list is applied
+ *   after, so a runtime `setAllowedHosts` is never the first thing sent to a container that may
+ *   still be going away.
  * - **Every command runs in its own `bash -c`** (S7 finding 7): `exec` shares ONE persistent shell
  *   per sandbox, and a bare `exit` in a command would end it for every later command.
  * - **A rollout surfaces as `SandboxInterruptedError`.** The SDK raises
@@ -30,6 +37,9 @@ import { getSandbox } from '@cloudflare/sandbox'
 import type { AppConfig } from '../../../../config'
 import type { SessionSandbox } from '../../../durable-objects/session-sandbox'
 import {
+  type SandboxBackup,
+  type SandboxBackupOptions,
+  SandboxBackupUnavailableError,
   type SandboxExecOptions,
   type SandboxExecResult,
   SandboxInterruptedError,
@@ -41,15 +51,53 @@ import {
   type SandboxWaitForPortOptions,
   sessionAllowedHosts,
 } from '../ports'
+import { backupEgressHosts, backupObjectKeys, workspaceBackupMode } from '../workspace-backup'
 
-/** The SDK's own idle sleep — a backstop for a dead Workflow, well past the idle policy. */
+/**
+ * The SDK's own idle sleep — a backstop for a dead Workflow, well past the idle policy AND the
+ * warm window (`SESSION_WARM_KEEP_MINUTES`, `warm.ts`): a config test keeps it longer.
+ */
 export const SESSION_SANDBOX_SLEEP_AFTER = '90m'
+
+/** One attempt at booting the container and applying the allow-list. */
+export const START_ATTEMPT_MS = 100_000
+/** Attempts before `start` gives up; a reset (`destroy`) runs between them. */
+export const START_ATTEMPTS = 2
+/** How long the reset between two start attempts may take. */
+const START_RESET_MS = 30_000
+
+/** One start attempt that did not answer in time. */
+export class SandboxStartTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`The session container did not start within ${Math.round(ms / 1000)} s`)
+    this.name = 'SandboxStartTimeoutError'
+  }
+}
+
+/** `work`, or a {@link SandboxStartTimeoutError} after `ms` (the work itself cannot be cancelled). */
+async function attempt<T>(ms: number, work: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const promise = work()
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SandboxStartTimeoutError(ms)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+    promise.catch(() => {})
+  }
+}
 
 /** Default command timeout when a caller gives none (`pnpm install` on a cold store is ~20 s). */
 const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000
 
 export interface CloudflareSandboxOptions {
   cfg: AppConfig
+  /** `BACKUP_BUCKET` — where the SDK keeps workspace backups; what `deleteBackup` deletes from. */
+  backupBucket?: R2Bucket
+  /** Tests: a shorter {@link START_ATTEMPT_MS}. */
+  startAttemptMs?: number
 }
 
 /** Quote one argument for `bash -c '…'`. */
@@ -194,12 +242,27 @@ export class CloudflareSandbox implements SandboxPort {
   }
 
   async start(opts: SandboxStartOptions = {}): Promise<void> {
+    const hosts = sessionAllowedHosts(opts.extraAllowedHosts)
+    const attemptMs = this.opts.startAttemptMs ?? START_ATTEMPT_MS
     await mapped(async () => {
-      // The allow-list first, so nothing the container does before it is on the base list only.
-      await this.sandbox.setAllowedHosts(sessionAllowedHosts(opts.extraAllowedHosts))
-      // The first command boots the container; `true` is the cheapest one.
-      const probe = await this.sandbox.exec('true')
-      if (probe.exitCode !== 0) throw new Error('The session container did not start')
+      for (let n = 1; ; n++) {
+        try {
+          await attempt(attemptMs, async () => {
+            // The first command boots the container; `true` is the cheapest one. It boots under
+            // the class's own allow-list (the base hosts, `SessionSandbox.allowedHosts`) or this
+            // session's previous one, and nothing of ours runs in it before the next line.
+            const probe = await this.sandbox.exec('true')
+            if (probe.exitCode !== 0) throw new Error('The session container did not start')
+            await this.sandbox.setAllowedHosts(hosts)
+          })
+          return
+        } catch (err) {
+          if (!(err instanceof SandboxStartTimeoutError) || n >= START_ATTEMPTS) throw err
+          // A start that never answers (seen right after a destroy): drop whatever the Durable
+          // Object still holds about the old container, then try once more.
+          await attempt(START_RESET_MS, () => this.sandbox.destroy()).catch(() => {})
+        }
+      }
     })
   }
 
@@ -302,5 +365,47 @@ export class CloudflareSandbox implements SandboxPort {
       if (mappedErr instanceof SandboxInterruptedError) return
       throw mappedErr
     }
+  }
+
+  // ---- workspace backups (`workspace-backup.ts`) ----------------------------------------------
+
+  get backupHosts(): readonly string[] {
+    return backupEgressHosts(this.opts.cfg)
+  }
+
+  async backup(opts: SandboxBackupOptions): Promise<SandboxBackup> {
+    const mode = workspaceBackupMode(this.opts.cfg)
+    if (mode === 'off' || !this.opts.backupBucket) throw new SandboxBackupUnavailableError()
+    return mapped(async () => {
+      const handle = await this.sandbox.createBackup({
+        dir: opts.dir,
+        ttl: opts.ttlSeconds,
+        ...(opts.name ? { name: opts.name } : {}),
+        // node_modules and .dev.vars are git-ignored and are the point of the backup.
+        gitignore: false,
+        ...(mode === 'binding' ? { localBucket: true } : {}),
+      })
+      return {
+        id: handle.id,
+        dir: handle.dir,
+        ...(handle.localBucket ? { localBucket: true } : {}),
+      }
+    })
+  }
+
+  async restore(backup: SandboxBackup): Promise<void> {
+    if (!this.opts.backupBucket) throw new SandboxBackupUnavailableError()
+    await mapped(async () => {
+      const result = await this.sandbox.restoreBackup({
+        id: backup.id,
+        dir: backup.dir,
+        ...(backup.localBucket ? { localBucket: true } : {}),
+      })
+      if (!result.success) throw new Error(`The backup ${backup.id} could not be restored`)
+    })
+  }
+
+  async deleteBackup(backup: SandboxBackup): Promise<void> {
+    await this.opts.backupBucket?.delete(backupObjectKeys(backup.id))
   }
 }

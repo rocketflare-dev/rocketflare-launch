@@ -105,7 +105,10 @@ The Workflow's steps, as the session page's checklist shows them (`step` events)
    `scripts/bootstrap.mjs --db-url … --driver neon --offline --no-dev --no-plugins`
    (`DATABASE_DRIVER=neon` in the environment and `.dev.vars`, no `NEON_LOCAL_PROXY`). The two run
    one at a time per container (`flock` on `/workspace/.launch/bootstrap.lock`), so a re-run step
-   attempt never races an earlier one's `pnpm install`.
+   attempt never races an earlier one's `pnpm install`. On a COLD resume (the database is already
+   prepared: `sessions.migrations_hash` is set) the kit's seed and `db:check` are skipped, and its
+   migrate too unless `apps/web/migrations` hashes differently from the last bootstrap — the
+   preload answers those `pnpm` children (`LAUNCH_BOOTSTRAP_SKIP`).
 6. **Starting dev server** — `pnpm dev` with Vite on **:5173** and `wrangler dev` on **:8787**
    (never :3000, the Sandbox SDK's own port), until `:8787/api/health` answers. Its pid and output
    go to `/workspace/.launch/dev.{pid,log}`; the wait gives up at once when the process is gone,
@@ -119,6 +122,55 @@ id to `/workspace/.launch/boot-id`; every later step checks it, so a container t
 back EMPTY fails the step with "The session container stopped while … and came back empty" instead
 of cloning into nothing or curling a dev server that is not there. Pressing **End** while a step
 runs stops it within ten seconds (each boot step polls the row) and ends the session.
+
+## Suspend and resume
+
+A session quiet for `idleSuspendMinutes` (30 by default) is **suspended warm**: checkpointed
+(commit, push, transcript to R2), the preview answers 503, and the container is KEPT — workspace,
+`node_modules` and the running dev server (`sessions.container_kept_at`,
+`services/sessions/warm.ts`). A resume within `SESSION_WARM_KEEP_MINUTES` (45) after that is
+**warm**: "Starting sandbox" finds the boot marker it wrote on the first boot and "Starting dev
+server" reuses the dev server if both ports still answer (else `pnpm dev:stop`, then `pnpm dev`) —
+no clone, install or bootstrap. After the 45 minutes the Workflow's `cool#N` destroys the container
+and the next resume is **cold**. A drain cools at once; a container Docker killed meanwhile (no
+marker) resumes cold.
+
+Before a cool (or a drain) destroys the container, the workspace is **backed up** — `/workspace/app`
+with `node_modules` and `.dev.vars`, through the Durable Object into the local `BACKUP_BUCKET`
+(`SESSION_WORKSPACE_BACKUP=binding`, the development default; `.wrangler/` holds it). A cold resume
+whose branch head is still the backup's commit then shows **Restoring the saved workspace** instead
+of **Cloning repo**, and its **Installing and seeding** step only re-applies the allow-list and the
+dev-server keys (when the migrations did not change). A restore that fails says "Cloning instead: …"
+on that line and the boot goes on the old way. Unmeasured: on the SDK's default HTTP transport the
+restore carries the whole archive through the Durable Object as base64, which for a checkout with
+`node_modules` may be slower than the clone and install it replaces — set
+`SESSION_WORKSPACE_BACKUP=off` in `.dev.vars` if it is.
+
+To see both locally without waiting: give a NEW session a short idle window — the policy is
+frozen onto the row at create, from `launch_settings.session_policy` (e.g. `{"idleSuspendMinutes":
+2}` in Launch's database; there is no UI for it) — and for a cold resume, `docker rm -f` the session's container while it is
+suspended (it comes back empty, so the resume boots cold).
+
+## A start that never answers
+
+Seen twice under `wrangler dev` (2026-09-28): an idle suspend DESTROYED the container, a resume
+~10 s later started the same Durable Object, and "Starting sandbox" never answered within its 4
+minutes although Docker showed the new container up. Not reproduced since. What the SDK's code
+(`@cloudflare/sandbox` 0.12.10 over `@cloudflare/containers` 0.3.7) makes plausible:
+
+- `Sandbox.destroy()` SIGKILLs the container but runs no `onStop`. The Containers base class runs
+  a pending `onStop` at the HEAD of the next start (`startAndWaitForPorts` →
+  `syncPendingStoppedEvents`), and Launch's `onStop` wrote to Postgres with no deadline — a write
+  that hangs would hang the start with it. It is now bounded at 10 s (`ON_STOP_DB_MS`).
+- Right after a destroy, `container.running` may still read true, so the next start takes the
+  "already running" fast path and talks to a container that is going away; the old start ALSO
+  called `setAllowedHosts` first, which re-registers the egress interception on that container.
+  `CloudflareSandbox.start` now boots first (`exec('true')`), applies the allow-list after, bounds
+  each attempt at 100 s, and on a timeout destroys again (a reset) and tries once more.
+
+Warm suspends avoid the destroy → start sequence for any resume inside the warm window. If it
+happens again, the Worker's log (`sandbox.destroy`, `version.check` and the `Container error`
+lines) and `docker ps -a` around the resume are what to capture.
 
 ## Measured (slice 3b, an M-series Mac, colima 8 GB, amd64 emulation)
 

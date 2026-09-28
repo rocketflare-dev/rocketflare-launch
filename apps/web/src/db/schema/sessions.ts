@@ -63,6 +63,20 @@ export const sessionStatusEnum = pgEnum('session_status', SESSION_STATUSES)
  * `'requested', 'booting', …` as SQL literals, derived from the shared list rather than typed out
  * (`sql.raw` because this renders into DDL — a partial index predicate cannot hold a parameter).
  */
+/** `sessions.workspace_backup` — see the column. */
+export interface SessionWorkspaceBackup {
+  /** The SDK's backup id (a UUID) and the directory it restores into. */
+  id: string
+  dir: string
+  /** Made through the Durable Object and the R2 binding (`binding` mode). */
+  localBucket?: boolean
+  /** `git rev-parse HEAD` in the workspace when it was taken. */
+  headSha: string
+  /** `SESSION_IMAGE_VERSION` it was taken on: `node_modules` is only good on the same image. */
+  imageVersion: string
+  createdAt: string
+}
+
 const ACTIVE_STATUS_LITERALS = ACTIVE_SESSION_STATUSES.map(status => `'${status}'`).join(', ')
 
 export const sessions = pgTable(
@@ -98,11 +112,30 @@ export const sessions = pgTable(
     instanceId: text('instance_id'),
     /** The container id the platform hands outbound handlers (`ctx.containerId`). Unique. */
     sandboxId: text('sandbox_id'),
+    /**
+     * Set when an idle suspend KEPT the container (warm, `services/sessions/warm.ts`): a resume
+     * inside `SESSION_WARM_KEEP_MINUTES` reuses it. Null once it is destroyed (the cool step, a
+     * drain, the Durable Object's `onStop`) or reused.
+     */
+    containerKeptAt: timestamp('container_kept_at', { withTimezone: true }),
+    /**
+     * The workspace backup the last destroying suspend made (`SESSION_WORKSPACE_BACKUP`): the
+     * Sandbox SDK's handle plus the commit and image it was taken at. A cold resume restores it
+     * when both still match; `cleanup` deletes it. Not a secret, but it points at one: the archive
+     * holds the checkout's `.dev.vars` (the branch URI) — never in a response.
+     */
+    workspaceBackup: jsonb('workspace_backup').$type<SessionWorkspaceBackup>(),
 
     // ---- database
     db: jsonb('db').$type<SessionDb>(),
     /** The session branch's connection string, sealed. Server-only. */
     dbUriSealed: text('db_uri_sealed'),
+    /**
+     * The hash of the checkout's `apps/web/migrations` at the last SUCCESSFUL bootstrap against
+     * this session's own branch. Non-null means the branch is prepared: a later bootstrap never
+     * re-seeds, and migrates only when the hash changed (`bootstrapStep`).
+     */
+    migrationsHash: text('migrations_hash'),
 
     // ---- GitHub token (the egress handler's; re-minted under 10 minutes left)
     githubTokenSealed: text('github_token_sealed'),

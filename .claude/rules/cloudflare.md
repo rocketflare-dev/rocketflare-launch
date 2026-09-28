@@ -31,6 +31,9 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   `APP_TEARDOWN_WORKFLOW`. Launch P3: `SESSION_SANDBOX` (the `SessionSandbox` container + Durable
   Object, below) and `SESSION_WORKFLOW` (`launch-session[-staging]`, class `SessionWorkflow`); a
   missing `SESSION_WORKFLOW` is a 503 `sessions_not_configured` before any row is written.
+  `BACKUP_BUCKET` (fast resume) is a second R2 binding on the `FILES` bucket, the Sandbox SDK's
+  fixed name for workspace backups — optional in code: without it a backup is refused and the
+  resume clones.
   Launch P5: `GRANT_PUSH_WORKFLOW` (`launch-grant-push[-staging]`, class `GrantPushWorkflow`); a
   missing one is a 503 `grants_not_configured` before any row, and `[vars] GRANT_BACKEND =
   "cloudflare"` (`local` is development only). The analytics PLUGIN (D19, D31) adds **no binding**:

@@ -82,6 +82,10 @@ async function cleanUpInline(
       )
     }
   }
+  // A warm-suspended session still has its container, and a cooled one its workspace backup.
+  const sandbox = ports.sandbox(session.id)
+  if (session.containerKeptAt) await sandbox.destroy().catch(() => {})
+  if (session.workspaceBackup) await sandbox.deleteBackup(session.workspaceBackup).catch(() => {})
   const [ended] = await db
     .update(sessions)
     .set({
@@ -91,6 +95,8 @@ async function cleanUpInline(
       githubTokenSealed: null,
       requestedAction: null,
       pendingMessage: null,
+      containerKeptAt: null,
+      workspaceBackup: null,
     })
     .where(
       and(

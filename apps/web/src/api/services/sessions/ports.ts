@@ -138,6 +138,33 @@ export interface SandboxStartOptions {
 }
 
 /**
+ * A directory backup (the Sandbox SDK's `DirectoryBackup` handle): serialisable, stored on the
+ * session row, and restorable into ANY later container of the same image.
+ */
+export interface SandboxBackup {
+  id: string
+  dir: string
+  /** Made through the Durable Object and the R2 binding (`binding` mode, `wrangler dev`). */
+  localBucket?: boolean
+}
+
+export interface SandboxBackupOptions {
+  /** Absolute, under `/workspace` — `SESSION_WORKSPACE`. */
+  dir: string
+  /** When the SDK treats it as expired (R2 lifecycle rules delete the object itself). */
+  ttlSeconds: number
+  name?: string
+}
+
+/** Workspace backups are off (`SESSION_WORKSPACE_BACKUP=off`, or no `BACKUP_BUCKET`). */
+export class SandboxBackupUnavailableError extends Error {
+  constructor(message = 'Workspace backups are off') {
+    super(message)
+    this.name = 'SandboxBackupUnavailableError'
+  }
+}
+
+/**
  * One session's container (`SessionSandbox`, reached with `getSandbox(env.SESSION_SANDBOX, name)`).
  * `:3000` belongs to the SDK's control server inside a sandbox (S7): the app's dev UI is `:5173`.
  */
@@ -178,6 +205,17 @@ export interface SandboxPort {
   fetch(port: number, req: Request): Promise<Response>
   /** Tear the container down. Idempotent; ALWAYS called on end and on failure (S7 finding 9). */
   destroy(): Promise<void>
+  /**
+   * The hosts a backup or restore needs on the allow-list — the R2 endpoint when the container
+   * moves the archive itself (`presigned`); none when it moves through the Durable Object.
+   */
+  readonly backupHosts: readonly string[]
+  /** Archive `dir` into R2 (`createBackup`). Throws `SandboxBackupUnavailableError` when off. */
+  backup(opts: SandboxBackupOptions): Promise<SandboxBackup>
+  /** Put a backup back into `backup.dir` (`restoreBackup`), replacing what is there. */
+  restore(backup: SandboxBackup): Promise<void>
+  /** Delete a backup's objects. Idempotent: an already-gone backup is success. */
+  deleteBackup(backup: SandboxBackup): Promise<void>
 }
 
 /** The hosts a session reaches with internet off (`enableInternet = false`, plan §3b). */
@@ -316,7 +354,8 @@ export interface SessionRuntimeContext {
 export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPorts {
   const local = cfg.SESSION_BACKEND === 'local'
   return {
-    sandbox: name => new CloudflareSandbox(env.SESSION_SANDBOX, name, { cfg }),
+    sandbox: name =>
+      new CloudflareSandbox(env.SESSION_SANDBOX, name, { cfg, backupBucket: env.BACKUP_BUCKET }),
     sessionDb: db => new NeonSessionDb(db, cfg),
     repoHost: db => (local ? new LocalRepoHost(cfg) : new GitHubRepoHost(db, cfg)),
     model: { fetch: req => fetch(req) },

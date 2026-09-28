@@ -98,7 +98,14 @@ wrapped in `withProgress`, which writes the boot checklist's `step` events) → 
 from `last_activity_at`, or the suspended expiry; on an idle timeout `suspend#N` re-reads the stamp
 and does nothing when the preview moved it meanwhile — the next round waits out the rest),
 `turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `checkpoint#N` | `rollout#N`,
-`ship#N` (3d's `ship`), `suspend#N`, `resume#N` → `sandbox.start#K … transcript#K`, `end#N` →
+`ship#N` (3d's `ship`), `suspend#N` (an IDLE suspend keeps the container: `container_kept_at`,
+`services/sessions/warm.ts`), `cool#N` (a kept container's warm window is over — the suspended
+`wait#N` then times out after `SESSION_WARM_KEEP_MINUTES`, `cool: true` — or a drain), `resume#N`
+→ `sandbox.start#K` → WARM (it found its own boot marker: `dev#K` only, reusing the dev server when
+it answers) or COLD (`restore.check#K` → `restore#K` when the workspace backup is at the branch
+head, else `repo#K` → `bootstrap#K` — never re-seeds, migrates only when `sessions.migrations_hash`
+differs, and does nothing after a restore with unchanged migrations — → `dev#K` → `transcript#K`),
+`end#N` →
 `fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless
 `shipped`/`failed`, audit `session.ended`). A pending message after boot or resume runs at once
 (`inspect` before any wait). `sandbox.start` returns a `bootId` (written into the container); the

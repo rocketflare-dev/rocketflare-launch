@@ -204,6 +204,27 @@
       "when": 1790604607809,
       "tag": "0028_launch-deploy-progress",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790612967724,
+      "tag": "0029_launch-session-warm",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790613513761,
+      "tag": "0030_launch-session-migrations-hash",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790613909685,
+      "tag": "0031_launch-session-workspace-backup",
+      "breakpoints": true
     }
   ]
 }

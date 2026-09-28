@@ -295,6 +295,8 @@ export class FakeSandboxNamespace {
   readonly calls: RecordedSandboxCall[] = []
   respond: (name: string, req: Request, port?: number) => Response | Promise<Response> = () =>
     new Response('no sandbox (FakeSandboxNamespace)', { status: 502 })
+  /** What an RPC method answers (recorded either way); unset methods answer `undefined`. */
+  handlers: Record<string, (name: string, ...args: unknown[]) => unknown> = {}
 
   idFromName(name: string) {
     return {
@@ -315,7 +317,7 @@ export class FakeSandboxNamespace {
       (method: string) =>
       async (...args: unknown[]) => {
         this.calls.push({ name, method, args })
-        return undefined
+        return this.handlers[method]?.(name, ...args)
       }
     return new Proxy(
       {

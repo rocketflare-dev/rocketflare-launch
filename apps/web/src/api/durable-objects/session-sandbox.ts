@@ -38,6 +38,7 @@
 import { ContainerProxy, Sandbox } from '@cloudflare/sandbox'
 import { type AppConfig, loadConfig } from '../../config'
 import { openDatabase } from '../../db/client'
+import { withDeadline } from '../services/sessions/deadline'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
 import { handleGitHub } from '../services/sessions/egress/github'
 import { recordContainerStop } from '../services/sessions/lifecycle'
@@ -49,6 +50,13 @@ export { ContainerProxy }
 
 /** Where `onStart` stamps the container's start (ms since the epoch). */
 const STARTED_AT_KEY = 'launch:container-started-at'
+
+/**
+ * The most `onStop`'s database write may take. The Containers base class runs a pending `onStop`
+ * at the head of the NEXT start (`startAndWaitForPorts` → `syncPendingStoppedEvents`), so a write
+ * that hangs would hang that start — the session's `sandbox.start` step — with it.
+ */
+export const ON_STOP_DB_MS = 10_000
 
 export class SessionSandbox extends Sandbox<AppBindings> {
   /** Off by default on the stable packages despite the docs — see the header (S7 finding 1). */
@@ -74,7 +82,9 @@ export class SessionSandbox extends Sandbox<AppBindings> {
     }
     const handle = openDatabase({ ...cfg, HYPERDRIVE: this.env.HYPERDRIVE })
     try {
-      await recordContainerStop(handle.db, this.ctx.id.toString(), (Date.now() - startedAt) / 1000)
+      await withDeadline('session-sandbox: recording the container stop', ON_STOP_DB_MS, () =>
+        recordContainerStop(handle.db, this.ctx.id.toString(), (Date.now() - startedAt) / 1000)
+      )
     } catch (err) {
       // Metering is best-effort: a lost stop costs a few seconds of accounting, never the session.
       loggerFor(cfg, { durableObject: 'session-sandbox' }).warn(
@@ -82,7 +92,9 @@ export class SessionSandbox extends Sandbox<AppBindings> {
         'session-sandbox: could not record container time'
       )
     } finally {
-      await handle.close()
+      await withDeadline('session-sandbox: closing the database', ON_STOP_DB_MS, () =>
+        handle.close()
+      ).catch(() => {})
     }
   }
 }

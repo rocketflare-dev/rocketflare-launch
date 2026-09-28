@@ -45,9 +45,9 @@ import { sessionDbEgressHosts } from './db/neon-session-db'
 import { type SandboxPort, SandboxProcessExitedError, sessionAllowedHosts } from './ports'
 
 /** Bump with `LABEL dev.rocketflare.launch.session-image` in `containers/session/Dockerfile`. */
-export const SESSION_IMAGE_VERSION = 'session-1'
+export const SESSION_IMAGE_VERSION = 'session-2'
 /** The kit tag whose pnpm store the image carries (`ARG KIT_TAG`). */
-export const SESSION_KIT_TAG = '0.15.0'
+export const SESSION_KIT_TAG = '0.15.5'
 
 /** The app's Vite UI — the preview port. */
 export const SESSION_UI_PORT = 5173
@@ -146,12 +146,62 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  * sandbox's commands run as root — the container is the isolation boundary, not the user. This
  * preload tells the bootstrap's ONE check otherwise; everything it runs (pnpm, migrate, seed)
  * still runs as root. A kit gap to report upstream: an explicit opt-out for sandboxes.
+ *
+ * **It also makes a resume's bootstrap lighter** (`BOOTSTRAP_SKIP_ENV`): the kit's bootstrap has
+ * no flag to skip its migrate, seed or database check, and reaches each ONLY as a `pnpm <script>`
+ * child (`spawn('pnpm', ['db:migrate'])`, `['seed', …]`, `['web', 'db:check']`). For each part
+ * named in `LAUNCH_BOOTSTRAP_SKIP` the preload answers that child with a one-line `node -e` that
+ * prints what the kit's step checks for ("Migrations applied") and exits 0 — the `spawn` binding
+ * the bootstrap imported is swapped through `syncBuiltinESMExports`, before the bootstrap loads.
+ * Everything else (`.dev.vars`, the `[ai]` toggle, the install) runs as on a first boot.
  */
 export const NOT_ROOT_PRELOAD = `${SESSION_LAUNCH_DIR}/bootstrap-in-sandbox.mjs`
-export const NOT_ROOT_PRELOAD_SCRIPT = `import os from 'node:os'
+export const NOT_ROOT_PRELOAD_SCRIPT = `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import os from 'node:os'
 const userInfo = os.userInfo
 os.userInfo = options => ({ ...userInfo(options), uid: 1000 })
+const skip = new Set((process.env.LAUNCH_BOOTSTRAP_SKIP || '').split(',').filter(Boolean))
+const stand = {
+  seed: ['seed', 'seed skipped by Launch: a resume never re-seeds'],
+  'db:migrate': ['migrate', 'Migrations applied (skipped by Launch: unchanged since the last bootstrap)'],
+  'db:check': ['db-check', 'db:check skipped by Launch: the database was checked at the first boot'],
+}
+if (skip.size > 0) {
+  const spawn = cp.spawn
+  cp.spawn = function (cmd, args, opts) {
+    const list = Array.isArray(args) ? args : []
+    const script = cmd === 'pnpm' ? (list[0] === 'web' ? list[1] : list[0]) : undefined
+    const hit = script && Object.hasOwn(stand, script) ? stand[script] : undefined
+    if (hit && skip.has(hit[0])) {
+      return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[1]) + ')'], opts)
+    }
+    return spawn.apply(this, arguments)
+  }
+  syncBuiltinESMExports()
+}
 `
+
+/** What a resume's bootstrap may leave out (`BOOTSTRAP_SKIP_ENV`, see {@link NOT_ROOT_PRELOAD}). */
+export type BootstrapSkip = 'seed' | 'migrate' | 'db-check'
+/** The environment variable the preload reads: comma-separated {@link BootstrapSkip}s. */
+export const BOOTSTRAP_SKIP_ENV = 'LAUNCH_BOOTSTRAP_SKIP'
+
+/** Where the kit keeps its SQL migrations — what a resume's migrate decision hashes. */
+export const MIGRATIONS_DIR = 'apps/web/migrations'
+
+/**
+ * One sha256 over every file under {@link MIGRATIONS_DIR} (path and content, sorted), printed as
+ * `migrations=<hex>`: equal hashes mean the session's database already has these migrations.
+ */
+export const MIGRATIONS_HASH_COMMAND = `cd ${SESSION_WORKSPACE} && h=$( (find ${MIGRATIONS_DIR} -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum) | sha256sum | cut -c1-64) && echo "migrations=$h"`
+
+/** The migrations hash of the checkout in `sandbox`, or null when it could not be computed. */
+export async function migrationsHash(sandbox: SandboxPort): Promise<string | null> {
+  const result = await sandbox.exec(MIGRATIONS_HASH_COMMAND, { timeoutMs: 60_000 })
+  if (result.exitCode !== 0) return null
+  return /migrations=([0-9a-f]{64})/.exec(result.stdout)?.[1] ?? null
+}
 
 export const BOOTSTRAP_COMMAND = `node --import ${NOT_ROOT_PRELOAD} scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev --no-open --no-plugins --yes`
 
@@ -232,6 +282,8 @@ export interface SessionBootstrapContext {
   /** The database the checkout runs on — a SECRET (see the header). */
   dbUri: string
   dev: SessionDevEnv
+  /** A resume against an already-prepared database: the parts of the kit bootstrap to leave out. */
+  skip?: readonly BootstrapSkip[]
 }
 
 export interface BootstrapTimings {
@@ -299,9 +351,12 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
+  const skip: Record<string, string> = ctx.skip?.length
+    ? { [BOOTSTRAP_SKIP_ENV]: ctx.skip.join(',') }
+    : {}
   const boot = await sandbox.exec(serialised(BOOTSTRAP_COMMAND, BOOTSTRAP_TIMEOUTS.bootstrapMs), {
     cwd: SESSION_WORKSPACE,
-    env: { ...env, LAUNCH_DB_URL: ctx.dbUri },
+    env: { ...env, ...skip, LAUNCH_DB_URL: ctx.dbUri },
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
   })
   if (boot.exitCode !== 0) {
@@ -398,6 +453,43 @@ export async function startDevServer(
     )
   }
   return { processId: proc.id }
+}
+
+/** The kit's own "stop this checkout's dev tree" (its supervisor owns the ports). */
+export const DEV_STOP_COMMAND = 'pnpm dev:stop'
+
+/** How long a warm resume gives each port to answer before it restarts the dev server. */
+export const DEV_PROBE_MS = 3_000
+
+/** Both dev ports answer now (`:5173`, and `:8787/api/health` with a 2xx) — no waiting. */
+export async function devServerAnswers(sandbox: SandboxPort): Promise<boolean> {
+  try {
+    await sandbox.waitForPort(SESSION_UI_PORT, { timeoutMs: DEV_PROBE_MS })
+    await sandbox.waitForPort(SESSION_API_PORT, { path: '/api/health', timeoutMs: DEV_PROBE_MS })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The dev step of a WARM resume (`warm.ts`): the kept container's dev server is reused when both
+ * ports still answer; otherwise whatever is left of it is stopped (`pnpm dev:stop` — a half-dead
+ * tree would hold the strict ports) and it is started again.
+ */
+export async function resumeDevServer(
+  sandbox: SandboxPort,
+  dev: SessionDevEnv,
+  opts: StartDevServerOptions = {}
+): Promise<{ reused: boolean }> {
+  if (await devServerAnswers(sandbox)) return { reused: true }
+  await sandbox.exec(DEV_STOP_COMMAND, {
+    cwd: SESSION_WORKSPACE,
+    env: sessionProcessEnv(dev),
+    timeoutMs: 60_000,
+  })
+  await startDevServer(sandbox, dev, opts)
+  return { reused: false }
 }
 
 const isPortTimeout = (err: unknown) =>

@@ -14,7 +14,7 @@
 FROM docker.io/cloudflare/sandbox:0.12.10
 
 # Recorded on every session row (`sessions.image_version`) so a drain can tell who ran on what.
-LABEL dev.rocketflare.launch.session-image="session-1"
+LABEL dev.rocketflare.launch.session-image="session-2"
 
 # Node 24 FIRST on PATH (S7 finding 6): the base image ships Node 22 in /usr/local/bin, ahead of
 # /usr/bin, and the kit refuses anything below 24. The base's own server is not Node, so replacing
@@ -41,10 +41,12 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
  && pnpm -v && claude --version
 
 # A warm pnpm store for the pinned kit tag (~12 s saved per session, S7): a session's
-# `pnpm install --frozen-lockfile --prefer-offline` resolves from here, not the registry.
-ARG KIT_TAG=0.15.0
+# `pnpm install --frozen-lockfile --prefer-offline` resolves from here, not the registry. Only the
+# STORE is kept, so no lifecycle script needs to run (`ignore-scripts`): kit 0.15.5's fetch runs
+# esbuild's postinstall, whose Go binary segfaults under amd64 emulation on an ARM Mac.
+ARG KIT_TAG=0.15.5
 RUN git clone --depth 1 --branch "${KIT_TAG}" https://github.com/rocketflare-dev/rocketflare /tmp/kit \
- && cd /tmp/kit && pnpm fetch --frozen-lockfile \
+ && cd /tmp/kit && pnpm fetch --frozen-lockfile --config.ignore-scripts=true \
  && rm -rf /tmp/kit
 
 # Non-secret defaults every session shares. No key: `ANTHROPIC_API_KEY` is a placeholder the model

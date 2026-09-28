@@ -12,11 +12,12 @@ import {
   sessionDetailResponseSchema,
   sessionListResponseSchema,
 } from '@launch/shared/launch-sessions'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { afterEach, describe, expect, it } from 'vitest'
 import { putSetting } from '@/api/services/launch/credentials'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { expireSuspendedSessions } from '@/api/services/sessions/expire'
+import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/rocketflare-dev'
 import { loadConfig } from '@/config'
 import { aiUsage, apps, auditEvents, sessions } from '@/db/schema'
 import {
@@ -76,7 +77,7 @@ describe('POST /api/apps/:id/sessions', () => {
       baseRef: 'main',
       branch: `session/${body.session.shortId}`,
       viewerCanManage: true,
-      imageVersion: 'session-1',
+      imageVersion: SESSION_IMAGE_VERSION,
     })
     // Nothing secret-shaped in the answer.
     expect(JSON.stringify(body)).not.toMatch(/previewToken|preview_token|sealed/)
@@ -167,6 +168,16 @@ describe('drain and undrain', () => {
     const adminCookie = sessionCookieHeader(await createTestSession(db, admin.id, f.tenant.id))
     const env = createTestEnv()
     stubs(env).sessionWorkflow?.setStatus(live.id, { status: 'waiting' })
+    // A suspended session that still KEEPS its container (a warm idle suspend) is woken too, so
+    // its Workflow destroys the container; a cold suspended one has nothing to drain.
+    const warm = await insertSession(db, f, { status: 'suspended', containerKeptAt: new Date() })
+    const cold = await insertSession(db, f, { status: 'suspended' })
+    await db
+      .update(sessions)
+      .set({ instanceId: sql`${sessions.id}::text` })
+      .where(and(eq(sessions.tenantId, f.tenant.id), inArray(sessions.id, [warm.id, cold.id])))
+    stubs(env).sessionWorkflow?.setStatus(warm.id, { status: 'waiting' })
+    stubs(env).sessionWorkflow?.setStatus(cold.id, { status: 'waiting' })
 
     const drained = drainResponseSchema.parse(
       await json(await post('/api/admin/sessions/drain', adminCookie, env))
@@ -178,6 +189,13 @@ describe('drain and undrain', () => {
       type: 'session_wake',
       payload: {},
     })
+    const woken = stubs(env).sessionWorkflow?.events.map(e => e.instanceId) ?? []
+    expect(woken).toContain(warm.id)
+    expect(woken).not.toContain(cold.id)
+    // Out of the app's concurrency count for the create below.
+    await db
+      .delete(sessions)
+      .where(and(eq(sessions.tenantId, f.tenant.id), inArray(sessions.id, [warm.id, cold.id])))
 
     const refused = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, env)
     expect(refused.status).toBe(409)

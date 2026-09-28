@@ -31,12 +31,19 @@
  *   ports and processes are gone, no error is thrown. The boot marker check is what notices.
  * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
  *   and no hanging process is alive (a dev server that exited).
+ * - `backup({ dir })` snapshots the files under `dir` (kept in `backups` by id — they survive
+ *   `destroy` and `recreate`, as R2 would), `restore(handle)` puts them back (`restores`),
+ *   `deleteBackup` forgets one (`deletedBackups`); `backupHosts` is settable (`presigned` mode).
+ *   `backupsOff()` makes `backup` throw `SandboxBackupUnavailableError`.
  *
  * Inspect: `execs` (`{ command, opts, result }`), `processes` (`{ id, command, opts, killed,
  * exitCode }`), `killed` (process ids, in order), `files` (path → text), `ports`, `allowedHosts`,
  * `started` / `startCount`, `destroyed` / `destroyCount`, `fetches` (`{ port, url, method }`).
  */
 import {
+  type SandboxBackup,
+  type SandboxBackupOptions,
+  SandboxBackupUnavailableError,
   type SandboxExecOptions,
   type SandboxExecResult,
   SandboxInterruptedError,
@@ -90,6 +97,8 @@ type Method =
   | 'setAllowedHosts'
   | 'fetch'
   | 'destroy'
+  | 'backup'
+  | 'restore'
 
 const matches = (m: Match, text: string) =>
   typeof m === 'string' ? text.includes(m) : m.test(text)
@@ -109,6 +118,14 @@ export class FakeSandbox implements SandboxPort {
   destroyed = false
   destroyCount = 0
   interruptions = 0
+  /** Every backup taken, by id: the files under its `dir`, as they were. */
+  readonly backups = new Map<string, { dir: string; files: Map<string, string> }>()
+  readonly restores: string[] = []
+  readonly deletedBackups: string[] = []
+  /** The allow-list each backup and restore ran under (the R2 host in `presigned` mode). */
+  readonly backupAllowedHosts: string[][] = []
+  backupHosts: readonly string[] = []
+  private backupsEnabled = true
 
   private readonly execScripts: { match: Match; script: ExecScript }[] = []
   private readonly processScripts: { match: Match; script: ProcessScript }[] = []
@@ -163,6 +180,11 @@ export class FakeSandbox implements SandboxPort {
 
   hangNext(method: Method): this {
     this.hangs.add(method)
+    return this
+  }
+
+  backupsOff(): this {
+    this.backupsEnabled = false
     return this
   }
 
@@ -309,6 +331,36 @@ export class FakeSandbox implements SandboxPort {
       return new Response(`FakeSandbox: port ${port} is closed`, { status: 502 })
     const handler = this.ports.get(port)
     return handler ? handler(req) : new Response('ok', { status: 200 })
+  }
+
+  async backup(opts: SandboxBackupOptions): Promise<SandboxBackup> {
+    await this.guard('backup')
+    if (!this.backupsEnabled) throw new SandboxBackupUnavailableError()
+    this.backupAllowedHosts.push([...this.allowedHosts])
+    const id = crypto.randomUUID()
+    const files = new Map<string, string>()
+    for (const [path, content] of this.files) {
+      if (path === opts.dir || path.startsWith(`${opts.dir}/`)) files.set(path, content)
+    }
+    this.backups.set(id, { dir: opts.dir, files })
+    return { id, dir: opts.dir, localBucket: true }
+  }
+
+  async restore(backup: SandboxBackup): Promise<void> {
+    await this.guard('restore')
+    const saved = this.backups.get(backup.id)
+    if (!saved) throw new Error(`FakeSandbox: no backup ${backup.id}`)
+    this.backupAllowedHosts.push([...this.allowedHosts])
+    for (const path of [...this.files.keys()]) {
+      if (path.startsWith(`${backup.dir}/`)) this.files.delete(path)
+    }
+    for (const [path, content] of saved.files) this.files.set(path, content)
+    this.restores.push(backup.id)
+  }
+
+  async deleteBackup(backup: SandboxBackup): Promise<void> {
+    this.backups.delete(backup.id)
+    this.deletedBackups.push(backup.id)
   }
 
   async destroy(): Promise<void> {

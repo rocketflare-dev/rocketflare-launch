@@ -579,11 +579,12 @@ describe('reconcile (a Workflow that died under a running turn)', () => {
       await patch(h.row, { requestedAction: 'end' })
       return WAKE
     })
-    expect(run.names.slice(0, 8)).toEqual([
+    expect(run.names.slice(0, 9)).toEqual([
       'claim',
       'inspect#0',
       'resume#0',
       'sandbox.start#1',
+      'restore.check#1',
       'repo#1',
       'bootstrap#1',
       'dev#1',
