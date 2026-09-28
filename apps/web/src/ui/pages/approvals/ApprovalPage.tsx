@@ -39,6 +39,7 @@ import {
   progressLabel,
   requesterName,
   STATUS_BADGE,
+  waitingOn,
 } from './approvalModel'
 import { ApprovalContext } from './components/ApprovalContext'
 import { ApprovalOutcome, ApprovalPanel } from './components/ApprovalPanel'
@@ -132,7 +133,12 @@ export default function ApprovalPage() {
       />
 
       {detail.status === 'pending' ? (
-        <ApprovalPanel key={detail.id} detail={detail} groupNames={groupNames} />
+        <ApprovalPanel
+          key={detail.id}
+          detail={detail}
+          groupNames={groupNames}
+          viewerIsRequester={Boolean(user?.id) && detail.requestedByUserId === user?.id}
+        />
       ) : (
         <ApprovalOutcome detail={detail} />
       )}
@@ -159,6 +165,17 @@ export default function ApprovalPage() {
           <SectionPanel title="Who decides">
             <dl>
               <Fact label="Approvers">{approversSentence(policy.approvers, groupNames)}</Fact>
+              {detail.status === 'pending' && detail.eligible && (
+                <Fact label="Waiting on">
+                  {detail.eligible.length > 0 ? (
+                    waitingOn(detail, groupNames).who
+                  ) : (
+                    <span className="text-warning">
+                      Nobody — everyone the policy names is excluded or has decided
+                    </span>
+                  )}
+                </Fact>
+              )}
               <Fact label="Needs">
                 {progressLabel(detail)}
                 {detail.requiredApprovals > 1 && (

@@ -108,9 +108,12 @@ function Progress({ detail }: { detail: ApprovalDetail }) {
 export function ApprovalPanel({
   detail,
   groupNames,
+  viewerIsRequester = true,
 }: {
   detail: ApprovalDetail
   groupNames?: ReadonlyMap<string, string>
+  /** False for an admin withdrawing somebody else's request — the copy says so. */
+  viewerIsRequester?: boolean
 }) {
   const decide = useDecideApproval(detail.id)
   const cancel = useCancelApproval(detail.id)
@@ -247,7 +250,9 @@ export function ApprovalPanel({
           {detail.canCancel && !conflict && (
             <div className="border-t border-[color:var(--border-subtle)] pt-3 flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-muted">
-                Changed your mind? Withdrawing closes the request without a decision.
+                {viewerIsRequester
+                  ? 'Changed your mind? Withdrawing closes the request without a decision.'
+                  : 'As an admin you may withdraw this request: it closes without a decision.'}
               </p>
               <button
                 type="button"

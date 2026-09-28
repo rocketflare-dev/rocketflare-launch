@@ -331,6 +331,24 @@ describe('ApprovalPage', () => {
     await waitFor(() => expect(requestBody(fetchMock, `POST ${BASE}/cancel`)).toEqual({}))
   })
 
+  it('names who a pending request waits on, and words an admin’s withdraw as an admin’s', async () => {
+    renderRequest({
+      [BASE]: approvalDetail({
+        canCancel: true,
+        eligible: [
+          { id: crypto.randomUUID(), name: 'Bob Owner', email: 'bob@example.test' },
+          { id: crypto.randomUUID(), name: null, email: 'ada@example.test' },
+        ],
+      }),
+    })
+    await screen.findByRole('heading', { name: 'Your decision' })
+    expect(screen.getByText('Waiting on')).toBeInTheDocument()
+    expect(screen.getByText('Bob Owner or ada@example.test')).toBeInTheDocument()
+    // Somebody else asked (the fixture's requester is another user): not "changed your mind?".
+    expect(screen.getByText(/As an admin you may withdraw this request/)).toBeInTheDocument()
+    expect(screen.queryByText(/Changed your mind/)).not.toBeInTheDocument()
+  })
+
   it('says when an approval is still being carried out, or failed to apply', async () => {
     renderRequest({
       [BASE]: approvalDetail({
