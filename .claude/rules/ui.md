@@ -163,8 +163,10 @@ Components subscribe to query state, never to the socket; `WebSocketStatus` (hea
   guards (authenticated, owner/admin, global admin) and fine ability guards (`RequireAbility`,
   `<Can I="manage" a="Tenant">` from `components/permissions/`). `SideNav` item flags use the SAME
   guard as the page they open; `ProtectedRoute` requires a tenant for the whole shell EXCEPT
-  `/admin/*` for a global admin (no membership needed — `useNavGuard` then passes only
-  `'globalAdmin'` guards, so nothing tenant-scoped is linked)
+  `/admin/*` and `/settings/platform/*` for a global admin (no membership needed — `useNavGuard`
+  then passes only `'globalAdmin'` / `'platformAdmin'` guards, so nothing tenant-scoped is linked).
+  `'platformAdmin'` is `canAdministerPlatform` from `@launch/shared/permissions` — the server's own
+  function — so Settings → Platform shows exactly to whom `/api/platform/*` answers
 - OAuth is a full-page redirect to `/auth/:provider?returnUrl=`; magic link via
   `POST /auth/magic-link/request`; `GET /auth/methods` drives which buttons render. `oidcOnly`
   auto-redirects to `/auth/oidc` — never on `?signedOut=1` / `?error=` / `?as=`, which would loop

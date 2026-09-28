@@ -165,3 +165,30 @@ export const packedRuleSchema = z.tuple([z.string(), z.string()]).rest(z.unknown
 export const packedRulesSchema = z.array(packedRuleSchema)
 export type PackedRules = z.infer<typeof packedRulesSchema>
 export type PackedRule = PackRule<RawRuleOf<AppAbility>>
+
+/**
+ * The tenant roles that administer the Launch DEPLOYMENT itself in single mode: the setup wizard
+ * (credentials, apps domain, public URL), the OIDC issuer's keys and the access-request queue.
+ * `support` is absent on purpose — it is a global admin visiting, who passes on the flag.
+ */
+export const PLATFORM_ADMIN_ROLES = ['owner', 'admin'] as const satisfies readonly MembershipRole[]
+
+/**
+ * THE one predicate for the platform surface (`/api/platform/*`, `/settings/platform/*`): a global
+ * admin anywhere, or — in a single-tenant deployment, where the one organisation IS the company
+ * that runs Launch — its owner or admin. In multi mode it is exactly `isGlobalAdmin`, as before:
+ * one tenant's admin must never hold deployment-wide credentials that every tenant depends on.
+ *
+ * Not a CASL subject: the answer varies on DEPLOYMENT configuration, not on the role alone, and the
+ * matrix is role × subject by design (`apps/web/src/permissions/CLAUDE.md`). Pure, so the server's
+ * middleware and the UI's nav guard call the same function and cannot disagree.
+ */
+export function canAdministerPlatform(input: {
+  isGlobalAdmin: boolean
+  role: MembershipRole | null | undefined
+  tenancyMode: 'multi' | 'single'
+}): boolean {
+  if (input.isGlobalAdmin) return true
+  if (input.tenancyMode !== 'single' || !input.role) return false
+  return (PLATFORM_ADMIN_ROLES as readonly MembershipRole[]).includes(input.role)
+}

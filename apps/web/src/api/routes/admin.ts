@@ -1,12 +1,11 @@
 /**
- * `/api/admin/*` (D9, D10, D25) behind `globalAdminMiddleware` — the only cross-tenant surface.
- * Thin: every operation lives in services/admin.ts. `GET /tenants` (the list) is 404
- * `tenancy_mode_single` in single mode; detail, suspend and support enter/leave still work.
+ * `/api/admin/*` (D10, D25, D30) behind `globalAdminMiddleware` — the only cross-tenant surface:
+ * organisations (list, detail, suspend, enter/leave as support), users (the global-admin flag,
+ * blocking) and feature flags. Thin: every operation lives in services/admin.ts. `GET /tenants`
+ * (the list) is 404 `tenancy_mode_single` in single mode; detail, suspend and support enter/leave
+ * still work. The access-request queue moved to `/api/platform/access-requests`
+ * (`platform-access-requests.ts`), which a single-mode owner/admin may also reach.
  */
-import {
-  accessRequestListQuerySchema,
-  decideAccessRequestSchema,
-} from '@launch/shared/access-requests'
 import {
   adminTenantListQuerySchema,
   adminUserListQuerySchema,
@@ -22,12 +21,10 @@ import {
 import type { FeatureName } from '@launch/shared/permissions'
 import { resolveCookieAuth } from '../middleware/auth'
 import {
-  decideAccessRequest,
   enterSupport,
   getAdminTenant,
   getAdminUser,
   leaveSupport,
-  listAccessRequests,
   listAdminTenants,
   listAdminUsers,
   setGlobalAdmin,
@@ -55,32 +52,6 @@ import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 
 export const adminRouter = createRouter()
-
-// ---- Access requests ------------------------------------------------------------------------
-
-adminRouter.get('/access-requests', validate('query', accessRequestListQuerySchema), async c => {
-  const { db } = withAuth(c)
-  const query = c.req.valid('query')
-  const { items, total } = await listAccessRequests(db, query)
-  return c.json(paginated(items, total, query))
-})
-
-adminRouter.post(
-  '/access-requests/:id/decide',
-  validate('json', decideAccessRequestSchema),
-  async c => {
-    const { db, cfg, logger, user } = withAuth(c)
-    const decision = c.req.valid('json')
-    if (decision.decision === 'approve' && decision.approve.mode === 'new_org')
-      requireMultiTenant(cfg)
-    const result = await decideAccessRequest(db, cfg, logger, c.env.JOBS_QUEUE, {
-      id: uuidParam(c, 'id'),
-      decision,
-      admin: user,
-    })
-    return c.json(result)
-  }
-)
 
 // ---- Tenants --------------------------------------------------------------------------------
 

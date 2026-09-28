@@ -13,6 +13,7 @@ import {
   MagnifyingGlassIcon,
   ShieldCheckIcon,
   Squares2X2Icon,
+  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline'
 import type { ComponentType, ReactNode } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
@@ -22,6 +23,7 @@ import { useAppInfo } from '@/ui/hooks/useAppInfo'
 import { useBooleanPreference } from '@/ui/hooks/useLocalStoragePreference'
 import { type NavBadgeKey, type NavBadges, useNavBadges } from '@/ui/hooks/useNavBadges'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
+import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 import { BrandLockup, LogoMark } from './shared/LogoMark'
 
 export interface NavItem {
@@ -125,7 +127,18 @@ const CORE_NAVIGATION: NavConfig = [
   },
   {
     label: 'Platform',
-    items: [{ to: '/admin', label: 'Admin', icon: ShieldCheckIcon, guard: 'globalAdmin' }],
+    items: [
+      // The deployment's own administration: a global admin, or in single mode the organisation's
+      // owner/admin (`canAdministerPlatform`) — the same guard as its route.
+      {
+        to: PLATFORM_SETTINGS_PATH,
+        label: 'Setup',
+        icon: WrenchScrewdriverIcon,
+        guard: 'platformAdmin',
+      },
+      // The operator's cross-tenant area — global admins only, in single mode too.
+      { to: '/admin', label: 'Admin', icon: ShieldCheckIcon, guard: 'globalAdmin' },
+    ],
   },
 ]
 
@@ -179,6 +192,14 @@ export function isPathActive(pathname: string, to: string): boolean {
   return pathname === to || pathname.startsWith(`${to}/`)
 }
 
+/**
+ * The ONE item to highlight: the longest `to` that `isPathActive` matches, so a nested entry
+ * (`/settings/platform` under `/settings`) lights alone rather than beside its parent.
+ */
+export function activeNavPath(pathname: string, tos: readonly string[]): string | undefined {
+  return tos.filter(to => isPathActive(pathname, to)).sort((a, b) => b.length - a.length)[0]
+}
+
 /** Close the mobile drawer after navigating (the desktop drawer is always open). */
 function closeMobileDrawer() {
   const toggle = document.getElementById('drawer-toggle') as HTMLInputElement | null
@@ -209,6 +230,10 @@ export default function SideNav({ items = navigationConfig, footer }: SideNavPro
   const [isCollapsed, setIsCollapsed] = useBooleanPreference('sideNavCollapsed', false)
 
   const visible = filterNavConfig(items, canAccess)
+  const activeTo = activeNavPath(
+    pathname,
+    visible.flatMap(item => (isNavGroup(item) ? item.items : [item])).map(item => item.to)
+  )
 
   const renderItem = (item: NavItem) => {
     const badge = badgeValueFor(item, badges)
@@ -218,7 +243,7 @@ export default function SideNav({ items = navigationConfig, footer }: SideNavPro
         <NavLink
           to={item.to}
           onClick={closeMobileDrawer}
-          data-active={isPathActive(pathname, item.to)}
+          data-active={item.to === activeTo}
           className={`nav-item flex items-center gap-2.5 ${
             isCollapsed ? 'justify-center px-3 py-2.5' : 'px-2.5 py-1.5'
           }`}

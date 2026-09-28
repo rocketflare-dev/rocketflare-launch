@@ -22,3 +22,4 @@ export {
   unpackRules,
 } from './abilities'
 export { type FeatureSubjectContext, hasFeature, resolveFeatures } from './features'
+export { canAdministerPlatform, type PlatformAdminView } from './platform'

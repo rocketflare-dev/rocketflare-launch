@@ -1,33 +1,40 @@
 /**
- * `/admin/*` (D10, D25): the cross-tenant area, gated by `RequireGuard guard="globalAdmin"` on
- * the route (server: global-admin middleware). Sub-navigation as tabs with a pending-requests
- * count; in single mode "Organisations" collapses to the one tenant (see TenantList).
+ * `/admin/*` (D10, D25): the operator's cross-tenant area, gated by `RequireGuard
+ * guard="globalAdmin"` on the route (server: `globalAdminMiddleware`) in every tenancy mode —
+ * organisations (in single mode collapsed to the one tenant, see TenantList), users, feature flags
+ * and live coding sessions. Setup, Identity and Access requests are not here: they administer the
+ * deployment, which a single-mode owner/admin may do too, so they live under `/settings/platform`
+ * (`canAdministerPlatform`); the header links there, and the old `/admin/*` paths redirect.
  */
-import { NavLink, Outlet } from 'react-router-dom'
+import { WrenchScrewdriverIcon } from '@heroicons/react/24/outline'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 import { PageHeader } from '@/ui/components/shared'
-import { useAdminAccessRequests } from '@/ui/hooks/useAdminAccessRequests'
 import { useAuth } from '@/ui/hooks/useAuth'
+import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 
 export default function AdminLayout() {
   const { tenancyMode } = useAuth()
-  const { data } = useAdminAccessRequests({ status: 'pending', pageSize: 1 })
-  const pendingCount = data?.pagination.total ?? 0
 
   const tabs = [
-    { to: '/admin/access-requests', label: 'Access requests', badge: pendingCount },
     { to: '/admin/tenants', label: tenancyMode === 'single' ? 'Organisation' : 'Organisations' },
     { to: '/admin/users', label: 'Users' },
     { to: '/admin/feature-flags', label: 'Feature flags' },
-    // Launch: the platform credentials (spec/03) and the OIDC issuer's keys (spec/05).
-    { to: '/admin/setup', label: 'Setup' },
-    { to: '/admin/identity', label: 'Identity' },
     // Launch P3: live coding sessions and the drain before a session-image deploy.
     { to: '/admin/sessions', label: 'Sessions' },
   ]
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Admin" description="Across every organisation on this deployment." />
+      <PageHeader
+        title="Admin"
+        description="Across every organisation on this deployment."
+        actions={
+          <Link to={PLATFORM_SETTINGS_PATH} className="btn btn-ghost btn-sm gap-1.5">
+            <WrenchScrewdriverIcon className="w-4 h-4" />
+            Setup & access requests
+          </Link>
+        }
+      />
       <div
         role="tablist"
         className="tabs tabs-border border-b border-[color:var(--border-default)] mb-6"
@@ -40,9 +47,6 @@ export default function AdminLayout() {
             className={({ isActive }) => `tab gap-2 ${isActive ? 'tab-active font-semibold' : ''}`}
           >
             {tab.label}
-            {tab.badge !== undefined && tab.badge > 0 && (
-              <span className="badge badge-sm badge-warning tabular-nums">{tab.badge}</span>
-            )}
           </NavLink>
         ))}
       </div>

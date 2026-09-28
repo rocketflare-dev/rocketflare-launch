@@ -17,7 +17,9 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   + `UserMenu`, `sidebarFooter`), `SideNav` (config-driven, `guard` flags), `AuthCard` (public-page
   card), `PendingInvitationsBanner`, `RoleBadge`, `EnvironmentBadge`, `ThemeToggle`, `ErrorBoundary`.
   Guards: `ProtectedRoute` (session + tenant → `noTenantRoute`; a global admin with NO tenant is
-  let through to `/admin/*` only — `isAdminPath`), `RequireGuard` (any `NavGuard`),
+  let through to `/admin/*` and `/settings/platform/*` only — `isAdminPath`), `RequireGuard` (any
+  `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`),
+  `Moved` (a redirect that keeps `?query#hash` — the old `/admin/{setup,identity,access-requests}`),
   `AdminRoute`/`GlobalAdminRoute` (sugar over it). `components/permissions/` — `AbilityProvider`
   (unpacks `session.permissions`), `Can`, `IfCan`/`IfCannot`. Realtime (D8): `WebSocketProvider`
   (connects the singleton once authenticated with a tenant, `useQueryClient()` →
@@ -121,7 +123,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   hidden, not disabled. `useAuth().logout` follows a `200 { endSessionUrl }` with `hardNavigate`,
   else lands on `/login?signedOut=1`. `settings/`
   is one page with `URLTabs` (`?tab=general|people|groups|api-keys|ai|prompts|agent-models|usage`;
-  `groups` only for `manage Group`, `agent-models` and `usage` only for `manage AiConfig`); `admin/` is nested routes under `AdminLayout`; `chat/ChatPage.tsx` is
+  `groups` only for `manage Group`, `agent-models` and `usage` only for `manage AiConfig`); `admin/` is nested routes under `AdminLayout` (the operator's area: organisations, users, feature flags, sessions — `globalAdmin`); `platform/` is nested routes under `PlatformLayout` at `/settings/platform` (`setup`, `identity`, `access-requests` — `'platformAdmin'`: a global admin, or in single mode the organisation's owner/admin; real paths rather than a `?tab=` because a global admin with no membership must open them and the Create-app modal deep-links `/settings/platform/setup#setup-public_url`; paths live in `lib/platform-paths.ts` so no link imports a lazy page); `chat/ChatPage.tsx` is
   `/chat/:conversationId?` (D17, guard `read Conversation`, lazy — its chunk carries the markdown
   renderer). `agents/` — `/agents` (`AgentsPage`, the roster + runs table) and `/agents/runs/:runId`
   (`RunPage`, its OWN lazy chunk), both `read AgentRun`; `documents/DocumentsPage.tsx` —
@@ -168,9 +170,10 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   (`hardNavigate`) so the cookie round-trips cleanly.
 - No active tenant → `noTenantRoute(session)`: access request → `/pending`; memberships →
   `/select-tenant`; `signupMode === 'approval'` → `/pending`; else `/no-access`. Exception: a
-  global admin opens `/admin/*` with no membership (the bootstrap admin must be able to approve
-  the first request), and `/pending` / `/no-access` show them an "Open the admin area" link. In
-  that state `useNavGuard` allows ONLY `'globalAdmin'` guards (every tenant page hides),
+  global admin opens `/admin/*` and `/settings/platform/*` with no membership (the bootstrap admin
+  must be able to approve the first request and finish Setup), and `/pending` / `/no-access` show
+  them an "Open the admin area" link. In that state `useNavGuard` allows ONLY `'globalAdmin'` and
+  `'platformAdmin'` guards (every tenant page hides),
   `OrgSwitcher` reads "No organisation", `NotificationsBell` and the Profile / Notifications
   menu links render nothing, and `WebSocketProvider` never connects (it needs a tenant id).
 - Single-tenant mode (D25) hides: `OrgSwitcher`, `/select-tenant` (redirects home), org

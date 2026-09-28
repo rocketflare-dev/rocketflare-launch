@@ -15,7 +15,9 @@ response with the same schema. `pnpm test:config` covers the pure parts.
 ## Files
 
 `auth.ts` session/login · `tenants.ts` roles, slugs, members, invitations · `access-requests.ts` ·
-`permissions.ts` actions/subjects/`AppAbility`/packed rules (matrix lives in `apps/web/src/permissions/`) ·
+`permissions.ts` actions/subjects/`AppAbility`/packed rules (matrix lives in `apps/web/src/permissions/`) and
+`canAdministerPlatform` + `PLATFORM_ADMIN_ROLES` — the pure platform-admin rule the server's
+`platformAdminMiddleware` and the UI's `'platformAdmin'` nav guard both call ·
 `api-keys.ts` · `tenant-settings.ts` · `user-settings.ts` · `notifications.ts` · `admin.ts` ·
 `activity.ts` · `errors.ts` envelope + codes · `pagination.ts` ·
 Launch (P1): `launch-apps.ts` (registry enums + environment jsonb shapes, spec/04 slug rules

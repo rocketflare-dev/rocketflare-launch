@@ -21,6 +21,7 @@ import { useGroups } from '@/ui/hooks/useGroups'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useAppsDomain, useCreateApp } from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
+import { PLATFORM_SETUP_PATH } from '@/ui/lib/platform-paths'
 
 /**
  * What to do next, for the refusals a person can act on — keyed on the HTTP status, since that is
@@ -29,8 +30,8 @@ import { ApiError } from '@/ui/lib/api-client'
  */
 const HINTS: Record<number, string> = {
   409: 'Pick another slug — slugs name hostnames, so each is used once.',
-  403: 'Creating apps is limited to a higher role (Admin → Setup).',
-  503: 'An owner finishes Admin → Setup first: the credentials and the apps domain.',
+  403: 'Creating apps is limited to a higher role (set in Setup).',
+  503: 'An administrator finishes Setup first: the credentials and the apps domain.',
 }
 
 /**
@@ -44,7 +45,7 @@ export function notReachable(error: unknown): LaunchNotReachableDetails | null {
 }
 
 /** Where Setup's public-URL step lives (its card's anchor). */
-export const PUBLIC_URL_SETUP_PATH = '/admin/setup#setup-public_url'
+export const PUBLIC_URL_SETUP_PATH = `${PLATFORM_SETUP_PATH}#setup-public_url`
 
 /**
  * A slug suggested from the display name — lower-case, hyphenated, starting with a letter, at most

@@ -502,7 +502,7 @@ The only host module a plugin's `ui/index.ts` may import — it ships in the mai
   `Array.isArray` widens a `readonly T[]` to `any[]` rather than narrowing the union, so this.
 - `type NavConfig = (NavItem \| NavGroup)[]`
 - `interface NavGroup`
-- `type NavGuard = \| 'admin' \| 'globalAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
+- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
   Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,…
 - `interface NavItem`
 - `interface PluginNavGroup`
@@ -586,7 +586,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
 - `function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)`
   `<dialog>`-based modal: native focus trap, Escape and backdrop close, `aria-modal` for free. Controlled — the caller owns `open`. Falls back to the `open` attribute where…
 - `interface ModalProps`
-- `type NavGuard = \| 'admin' \| 'globalAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
+- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
   Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,…
 - `function notifyUnauthorized(error: ApiError): void`
   Invoke the 401 handler. A stale session makes every in-flight query fail at once, so calls within the same tick are coalesced into ONE handler invocation. Called by `request()`…
@@ -1238,7 +1238,7 @@ nothing in the comparison that can throw.
 @/plugins/api/ui-wiring :: const :: isGuardList :: const isGuardList: (guard: NavGuard) => guard is readonly NavGuard[]
 @/plugins/api/ui-wiring :: type :: NavConfig :: type NavConfig = (NavItem | NavGroup)[]
 @/plugins/api/ui-wiring :: interface :: NavGroup :: interface NavGroup
-@/plugins/api/ui-wiring :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
+@/plugins/api/ui-wiring :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
 @/plugins/api/ui-wiring :: interface :: NavItem :: interface NavItem
 @/plugins/api/ui-wiring :: interface :: PluginNavGroup :: interface PluginNavGroup
 @/plugins/api/ui-wiring :: member :: PluginNavGroup.label :: label?: string
@@ -1288,7 +1288,7 @@ nothing in the comparison that can throw.
 @/plugins/api/ui :: function :: LogoMark :: function LogoMark({ className = 'w-7 h-7' }: { className?: string })
 @/plugins/api/ui :: function :: Modal :: function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)
 @/plugins/api/ui :: interface :: ModalProps :: interface ModalProps
-@/plugins/api/ui :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
+@/plugins/api/ui :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
 @/plugins/api/ui :: function :: notifyUnauthorized :: function notifyUnauthorized(error: ApiError): void
 @/plugins/api/ui :: function :: PageHeader :: function PageHeader({ title, description, breadcrumbs, badge, actions, className = '', }: PageHeaderProps)
 @/plugins/api/ui :: function :: PaginationControls :: function PaginationControls({ pagination, onPageChange, isLoading = false, className = '', }: PaginationControlsProps)

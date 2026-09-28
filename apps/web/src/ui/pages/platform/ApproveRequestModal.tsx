@@ -1,7 +1,10 @@
 /**
- * Decide an access request (D9, D25). Approve = join an existing organisation (picker from
- * `/api/admin/tenants`, role) or create a new one owned by the requester — the latter hidden when
- * `tenancyMode === 'single'`. Reject = optional reason. Both post `decideAccessRequestSchema`.
+ * Decide an access request (D9, D25). Approve = join an existing organisation (role, and in multi
+ * mode a picker from the global admin's `/api/admin/tenants`) or create a new one owned by the
+ * requester. In single mode there is one organisation — the reviewer's own, which is all the
+ * server accepts from an owner/admin who is not a global admin — so the picker shows only it, the
+ * `new_org` branch is hidden, and `owner` is offered only to an owner (or a global admin).
+ * Reject = optional reason. Both post `decideAccessRequestSchema`.
  */
 import { type AccessRequest, decideAccessRequestSchema } from '@launch/shared/access-requests'
 import { slugify, type TenantRole, tenantRoleSchema } from '@launch/shared/tenants'
@@ -20,11 +23,24 @@ export function ApproveRequestModal({
   request: AccessRequest
   onClose: () => void
 }) {
-  const { tenancyMode } = useAuth()
+  const { tenancyMode, tenant, isGlobalAdmin } = useAuth()
   const decide = useDecideAccessRequest()
-  const { data: orgs } = useAdminTenants({ pageSize: 200, status: 'active' })
-  const organisations = orgs?.items ?? []
-  const allowNewOrg = tenancyMode === 'multi'
+  const single = tenancyMode === 'single'
+  // `/api/admin/tenants` is the global admin's cross-tenant list, and 404 `tenancy_mode_single` in
+  // single mode — where the reviewer's own organisation is the only one there is.
+  const { data: orgs } = useAdminTenants(
+    { pageSize: 200, status: 'active' },
+    { enabled: !single && isGlobalAdmin }
+  )
+  const organisations = single
+    ? tenant
+      ? [{ id: tenant.id, name: tenant.name, slug: tenant.slug }]
+      : []
+    : (orgs?.items ?? [])
+  const allowNewOrg = !single
+  const roles = tenantRoleSchema.options.filter(
+    r => r !== 'owner' || isGlobalAdmin || tenant?.role === 'owner'
+  )
 
   const [mode, setMode] = useState<'join' | 'new_org'>('join')
   const [tenantId, setTenantId] = useState(request.requestedTenantId ?? '')
@@ -128,7 +144,7 @@ export function ApproveRequestModal({
                 value={role}
                 onChange={e => setRole(e.target.value as TenantRole)}
               >
-                {tenantRoleSchema.options.map(r => (
+                {roles.map(r => (
                   <option key={r} value={r}>
                     {r}
                   </option>

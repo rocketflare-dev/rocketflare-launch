@@ -1,9 +1,10 @@
 /**
- * `/admin/setup` (spec/03, spec/04): the setup wizard — a stepper over seven cards, in the order a
+ * `/settings/platform/setup` (spec/03, spec/04): the setup wizard — a stepper over seven cards, in the order a
  * company sets Launch up: the apps domain and zone, then the Cloudflare, Neon, Resend and GitHub
  * App credentials Launch acts with, then the upstream IdP (read-only), then whether Launch's own
- * public URL is reachable from the internet (the CI jobs call it back). Global admin (the `/admin`
- * layout's guard; the server's `globalAdminMiddleware`).
+ * public URL is reachable from the internet (the CI jobs call it back). `canAdministerPlatform` — a
+ * global admin, or in single mode the organisation's owner/admin (the platform layout's guard; the
+ * server's `platformAdminMiddleware`).
  *
  * Secrets are WRITE-ONLY: the API never returns one, so a set credential shows "Set — hidden" and
  * a "Replace" action, never a value. Every dot comes from the overview the server computed from

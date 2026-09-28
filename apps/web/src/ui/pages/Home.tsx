@@ -8,6 +8,7 @@ import {
   Cog6ToothIcon,
   ShieldCheckIcon,
   UserCircleIcon,
+  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline'
 import type { ComponentType } from 'react'
 import { Link } from 'react-router-dom'
@@ -18,6 +19,7 @@ import { useActivity } from '@/ui/hooks/useActivity'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
 import { timeAgo } from '@/ui/lib/format'
+import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 
 export interface QuickLink {
   to: string
@@ -53,6 +55,13 @@ const CORE_QUICK_LINKS: QuickLink[] = [
     description: 'The audit log',
     icon: ClockIcon,
     guard: 'admin',
+  },
+  {
+    to: PLATFORM_SETTINGS_PATH,
+    label: 'Setup',
+    description: 'Credentials, domain, sign-in keys, access requests',
+    icon: WrenchScrewdriverIcon,
+    guard: 'platformAdmin',
   },
   {
     to: '/admin',

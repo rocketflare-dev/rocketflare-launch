@@ -23,7 +23,9 @@ Hyperdrive), chosen per deployment. Never add `pg`. **No driver import outside
 - Every query filters by `tenantId` from the auth context (`withAuthAndDb`), never from a client-
   supplied id. This predicate is what keeps the `(tenant_id, …)` indexes selective; it never goes away
 - Cross-tenant SQL lives in exactly two places: `apps/web/src/api/routes/admin.ts` (behind
-  `globalAdminMiddleware`) and the pre-tenant auth path (`middleware/auth.ts`, `routes/auth/*`,
+  `globalAdminMiddleware`; with `routes/platform-access-requests.ts` behind
+  `platformAdminMiddleware`, which reads the deployment-wide `access_requests` queue through the same
+  `services/admin.ts`) and the pre-tenant auth path (`middleware/auth.ts`, `routes/auth/*`,
   invite accept). `apps/web/tests/config/unscoped-allowlist.test.ts` pins the exceptions — it fails when
   any function queries a `tenant_id` table without naming a tenant — so adding one is a design
   decision (an entry there, with a reason, and a line in the PR), not a refactor

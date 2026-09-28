@@ -3,7 +3,8 @@
  * tenant `Acme` (`acme`) with owner/admin/member `*@example.test` (verified), a pending invitation
  * for `invited@example.test`, one API key printed ONCE (only its hash is stored) and a global
  * admin `admin@clewro.com`. `TENANCY_MODE=single`: the single tenant is named after `APP_NAME`
- * with slug `default` instead. Node-only script; the Worker never imports it.
+ * with slug `default` instead, and the global admin is also its owner (single mode's owner/admin
+ * is the platform admin — `owner@example.test` reaches Setup without the global flag). Node-only script; the Worker never imports it.
  *
  * `pnpm seed --demo` (or `SEED_DEMO=1`) additionally runs every installed plugin's `seedDemo` hook
  * (the analytics plugin seeds dashboards and rebuilds its fact table).
@@ -122,8 +123,22 @@ async function main() {
   }
 
   const globalAdmin = await upsertUser(db, { ...GLOBAL_ADMIN, isGlobalAdmin: true })
-  if (TENANCY_MODE === 'single') await ensureMembership(db, tenant.id, globalAdmin.id, 'member')
-  log(`  user    ${GLOBAL_ADMIN.email.padEnd(24)} global admin`)
+  // Single mode: the organisation's owner/admin IS the platform admin (`canAdministerPlatform`), so
+  // the platform admin is seeded as an OWNER — the same role `admitBootstrapAdmin` gives a
+  // `BOOTSTRAP_ADMIN_EMAILS` address — and reaches Setup on the tenant role, not only the flag.
+  // Upgraded on a re-seed (earlier seeds made it a member).
+  if (TENANCY_MODE === 'single') {
+    await db
+      .insert(tenantUsers)
+      .values({ tenantId: tenant.id, userId: globalAdmin.id, role: 'owner' })
+      .onConflictDoUpdate({
+        target: [tenantUsers.tenantId, tenantUsers.userId],
+        set: { role: 'owner' },
+      })
+  }
+  log(
+    `  user    ${GLOBAL_ADMIN.email.padEnd(24)} global admin${TENANCY_MODE === 'single' ? ' + owner' : ''}`
+  )
 
   const pendingInvite = await db.query.teamInvitations.findFirst({
     where: and(

@@ -1,4 +1,8 @@
-/** Global-admin review queue (D9, D25): list + the one `decide` endpoint (approve/reject). */
+/**
+ * The sign-up review queue (D9, D25): `/api/platform/access-requests` — a global admin's, or in
+ * single mode the organisation's owner/admin (`canAdministerPlatform`). List + the one `decide`
+ * endpoint (approve/reject).
+ */
 import {
   type AccessRequestStatus,
   accessRequestSchema,
@@ -26,9 +30,9 @@ export interface AccessRequestsFilters {
 
 export function adminAccessRequestsQueryOptions(filters: AccessRequestsFilters = {}) {
   return queryOptions({
-    queryKey: queryKeys.admin.accessRequests.list(cleanFilters(filters)),
+    queryKey: queryKeys.platform.accessRequests.list(cleanFilters(filters)),
     queryFn: () =>
-      api.get(`/api/admin/access-requests${toSearchParams(filters)}`, {
+      api.get(`/api/platform/access-requests${toSearchParams(filters)}`, {
         schema: accessRequestsResponseSchema,
       }),
     placeholderData: keepPreviousData,
@@ -43,10 +47,17 @@ export function useDecideAccessRequest() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ id, decision }: { id: string; decision: DecideAccessRequest }) =>
-      api.post<unknown>(`/api/admin/access-requests/${id}/decide`, decision, {
+      api.post<unknown>(`/api/platform/access-requests/${id}/decide`, decision, {
         showSuccessToast: true,
         successMessage: decision.decision === 'approve' ? 'Request approved' : 'Request rejected',
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.admin.all }),
+    // An approval adds a membership (and maybe a user or an organisation): the queue, the
+    // organisation's people and the operator's lists all move.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.platform.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.members.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.admin.all }),
+      ]),
   })
 }

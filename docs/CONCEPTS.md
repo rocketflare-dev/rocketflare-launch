@@ -30,7 +30,8 @@ suites on vitest 4, §9 — never part of the gate).
 
 - **`TENANCY_MODE = multi | single` (D25)** is configuration, not a fork. `multi`: users join many
   tenants via `tenant_users`, the session carries the current one. `single`: one tenant, every
-  admitted user auto-joins as `member`; multi-only surface is 404 `tenancy_mode_single`
+  admitted user auto-joins as `member` (a `BOOTSTRAP_ADMIN_EMAILS` address as `owner` — below);
+  multi-only surface is 404 `tenancy_mode_single`
   (`requireMultiTenant`) and hidden via `useTenancyMode()`. Switching to `multi` needs no migration.
   Launch deploys `single` (both tomls, and `.dev.vars.example` for the seed); the test suite runs
   `multi`, because the kit's tests exercise the multi-tenant paths.
@@ -43,9 +44,27 @@ suites on vitest 4, §9 — never part of the gate).
   `manage`, member `read` with route-scoped writes. "Own row" is always a route predicate — **CASL
   conditions are used nowhere**. Deleting a tenant and changing `owner` need an explicit
   `role === 'owner'` check. The matrix lives in `apps/web/src/permissions/` (+ its `CLAUDE.md`).
-- **Admin area.** `/admin` + `/api/admin/*` behind `globalAdminMiddleware` is the only cross-tenant
-  surface. A global admin with no membership can still reach it, so there is always someone to
-  approve the first request. Entering a tenant creates a real `support` membership.
+- **One admin in single mode: `canAdministerPlatform`.** Two surfaces administer more than one
+  organisation's data. **`/api/platform/*` + `/settings/platform/*`** is the DEPLOYMENT: the setup
+  wizard (credentials, apps domain, public URL, template pin — every `launch_settings` /
+  `admin_credentials` write), the OIDC issuer's signing keys and the access-request queue. Its gate
+  is `canAdministerPlatform(auth, config)` (`@launch/shared/permissions`, wrapped by
+  `apps/web/src/permissions/platform.ts`, enforced by `platformAdminMiddleware`, mirrored by the
+  UI's `platformAdmin` nav guard): a global admin, or **in `single` mode the one organisation's
+  `owner` or `admin`** — there the organisation IS the company running Launch, so its admins own
+  the platform too. In `multi` mode it is `isGlobalAdmin` alone, exactly as before: one tenant's
+  admin never holds credentials every tenant depends on. Those tables stay deployment-wide (no
+  `tenant_id`); an action is audited in the admin's organisation with them as the actor.
+  **`/admin` + `/api/admin/*`** behind `globalAdminMiddleware` stays the operator's cross-tenant
+  surface in every mode — organisations (list, suspend, enter as `support`, which creates a real
+  membership), users (the global flag, blocking), feature flags and live coding sessions — and its
+  nav entry shows only to global admins. Both are cookie-only (a tenant API key never passes), and a
+  global admin with no membership reaches both, so there is always someone to approve the first
+  request and finish Setup. A single-mode reviewer who is not a global admin approves only into
+  their own organisation, and grants `owner` only as an owner. The first admin (a
+  `BOOTSTRAP_ADMIN_EMAILS` address on a verified login, and the seed's platform admin) is the
+  organisation's **owner** in single mode (`admitBootstrapAdmin`: created as it, joined as it, or
+  promoted to it), so Setup is theirs on the tenant role, not only the global flag.
 - **Deleting a tenant has two halves.** The `tenantRef()` FK cascade removes everything in
   Postgres; the **`tenant.purge`** job (§5) removes the R2 prefix and runs each plugin's
   `onTenantDeleted`. The queue binding is checked *before* the `DELETE`.
@@ -60,7 +79,10 @@ suites on vitest 4, §9 — never part of the gate).
   `access.changed` nudges the affected users.
 - **Isolation = predicates + inert RLS (D1)** — §4, `docs/RLS.md`.
 
-**Known gaps:** no IdP group sync (SCIM/SAML claims); no group hierarchy or per-group roles;
+**Known gaps:** in single mode the users list, blocking a user and feature flags stay on `/admin`
+(global admins only) — a single-company admin removes people from Settings → People instead;
+dev-login does not apply `BOOTSTRAP_ADMIN_EMAILS` (the seed makes its admin an owner instead);
+no IdP group sync (SCIM/SAML claims); no group hierarchy or per-group roles;
 conversations, runs, prompts and non-Knowledge files have no visibility; agent-written documents
 are always `tenant`; no audit log beyond `activity_events`; no personal API keys (tenant keys only).
 
@@ -93,6 +115,12 @@ are always `tenant`; no audit log beyond `activity_events`; no personal API keys
 - **Hardening (D12)**: random tokens hashed with SHA-256, a required encryption key, CSRF by origin
   allow-list (Bearer is exempt), and a KV sliding-window rate limit on login routes that no-ops
   without `RATE_LIMIT_KV`.
+- **Bootstrap admin (D9)**: an address in `BOOTSTRAP_ADMIN_EMAILS` becomes a global admin on its
+  first VERIFIED login (magic link, OAuth, OIDC — `admitUser`). In single mode it is also made the
+  organisation's `owner` (`admitBootstrapAdmin`: the tenant is created with them as owner when
+  there is none, otherwise they join as, or are promoted to, owner — idempotent), because there the
+  owner/admin IS the platform admin (§1). In multi mode it only gets what any member-less user
+  gets. Dev-login bypasses `admitUser`, so it grants neither.
 - **CLI handoff (D26)**: `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback` only allows
   loopback redirects. It mints a revocable tenant key `cli:<hostname>` and 302s back with it.
   Details: `.claude/rules/api.md`.
@@ -749,7 +777,9 @@ action.
 
 ### 18.2 Admin credentials and setup checks
 
-The setup wizard (`/admin/setup`, `routes/setup.ts`, global admins) holds the Cloudflare account
+The setup wizard (`/settings/platform/setup`, `routes/setup.ts` at `/api/platform/setup`;
+`canAdministerPlatform` — a global admin, or in single mode the organisation's owner/admin, §1;
+the old `/admin/setup` link redirects, anchors kept) holds the Cloudflare account
 token, the Neon org key, a full-access Resend key and the GitHub App (id, PEM, org), plus the
 settings beside them (apps domain, account id, Neon region, notifications domain, GitHub org). A
 credential is validated, SEALED with `OAUTH_ENCRYPTION_KEY` (one row per kind in
@@ -765,7 +795,7 @@ Two probes do more than read. **The wildcard**: when the zone has no `*.<apps do
 all, saving or re-checking the Cloudflare token (the domain card re-checks after a domain change)
 creates a proxied `AAAA * → 100::` and reports "Created …", audited `dns.wildcard.created` on the
 zone; a DNS-only record is never changed — the probe fails and says how to fix it — and a token
-without DNS Edit fails with Cloudflare's scrubbed error. `GET /api/admin/setup` never probes, so a
+without DNS Edit fails with Cloudflare's scrubbed error. `GET /api/platform/setup` never probes, so a
 page load changes nothing. **The Neon region** is never read from `GET /regions`, which refuses
 organization keys (404): a pinned id is checked against the static `NEON_REGIONS`
 (`@launch/shared/launch-setup`; an unknown one is a warning, Neon validates it on the first
@@ -787,7 +817,7 @@ hostname routes to THIS Launch (through the tunnel locally), not merely to somet
 proof or a non-ping answer fails; unreachable fails under `APP_ENV=development` and is a
 `warning` in a deployment (see the gap). The result is stored as `launch_settings.public_url_check`
 for the URL it ran against. The wizard's card shows it (the static half alone until someone clicks
-"Check now", `POST /api/admin/setup/public-url/check`, audited `public_url.checked`; the overview
+"Check now", `POST /api/platform/setup/public-url/check`, audited `public_url.checked`; the overview
 still never probes). **The gate**: `POST /api/apps`, a create run's retry and "Deploy to
 production" call `requirePublicUrl` first and refuse with 409 `launch_not_reachable` (`details`:
 the URL and the probes) — before any write. It reuses a passing result for 10 minutes and a
@@ -823,8 +853,8 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
   `client_secret_basic` or `_post` against a hashed secret, compared in constant time.
 - **Keys** (`services/oidc/keys.ts`): `next → active → retiring → retired`; the next key is
   published before it signs, a retiring one stays in the JWKS until the longest token plus a
-  cache margin has passed. Private JWKs are sealed; `/api/admin/oidc` lists and rotates
-  (`oidc.key.rotated`).
+  cache margin has passed. Private JWKs are sealed; `/api/platform/oidc` lists and rotates
+  (`oidc.key.rotated`) — Settings → Platform → Identity, `canAdministerPlatform` (§1).
 - **Access policy** (`services/oidc/policy.ts`): the person must be a member of the client's
   tenant; app owners (named or the owner group) always pass; `company` admits every member,
   `restricted` needs a user or group grant. A member refused is sent to `/request-access`

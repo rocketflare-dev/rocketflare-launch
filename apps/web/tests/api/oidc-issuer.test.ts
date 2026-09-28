@@ -1002,7 +1002,7 @@ describe('signing-key rotation', () => {
   it('the admin API lists keys without material and rotates, for global admins only', async () => {
     const member = await createTestSession(db, alice.id, tenantId)
     const forbidden = await request(
-      '/api/admin/oidc/keys',
+      '/api/platform/oidc/keys',
       { headers: sessionCookieHeader(member) },
       { env }
     )
@@ -1012,7 +1012,7 @@ describe('signing-key rotation', () => {
     await linkUserToTenant(db, admin.id, tenantId, 'owner')
     const cookie = await createTestSession(db, admin.id, tenantId)
     const list = await request(
-      '/api/admin/oidc/keys',
+      '/api/platform/oidc/keys',
       { headers: sessionCookieHeader(cookie) },
       { env }
     )
@@ -1027,7 +1027,7 @@ describe('signing-key rotation', () => {
     expect(JSON.stringify(body)).not.toMatch(/"d"|privateJwk|sealed/i)
 
     const rotated = await request(
-      '/api/admin/oidc/keys/rotate',
+      '/api/platform/oidc/keys/rotate',
       { method: 'POST', headers: sessionCookieHeader(cookie) },
       { env }
     )

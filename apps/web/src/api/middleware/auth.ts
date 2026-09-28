@@ -11,11 +11,13 @@
  * `pending_approval`, while tenant-free routes (`withAuth`) keep working.
  *
  * `globalAdminMiddleware` (`/api/admin/*`): cookie session with `users.isGlobalAdmin`, tenant-free
- * by design — the only cross-tenant auth path.
+ * by design — the only cross-tenant auth path. `platformAdminMiddleware` (`/api/platform/*`): the
+ * same cookie-only resolution, gated on `canAdministerPlatform` — the global flag, or in single
+ * mode the organisation's owner/admin.
  */
 import { ERROR_CODES } from '@launch/shared/errors'
 import { createMiddleware } from 'hono/factory'
-import { buildAbility, resolveFeatures } from '../../permissions'
+import { buildAbility, canAdministerPlatform, resolveFeatures } from '../../permissions'
 import { touchApiKeyUsage, validateApiKey } from '../auth/api-keys'
 import { readSessionToken } from '../auth/cookies'
 import {
@@ -166,6 +168,23 @@ export const globalAdminMiddleware = createMiddleware<AppEnv>(async (c, next) =>
   const auth = await resolveCookieAuth(c)
   if (!auth) throw new UnauthorizedError('Authentication required')
   if (!auth.isGlobalAdmin) throw new ForbiddenError('Global admin access required')
+  c.set('auth', auth)
+  await next()
+})
+
+/**
+ * `/api/platform/*`: administering the Launch deployment itself — setup credentials, the OIDC
+ * issuer's keys, the access-request queue. `canAdministerPlatform` decides: a global admin (with or
+ * without a membership, as on `/api/admin/*`), or in `TENANCY_MODE=single` the one organisation's
+ * owner or admin. Cookie session only, like `globalAdminMiddleware` — a tenant API key never writes
+ * a deployment-wide credential. In multi mode this is `globalAdminMiddleware` exactly.
+ */
+export const platformAdminMiddleware = createMiddleware<AppEnv>(async (c, next) => {
+  const auth = await resolveCookieAuth(c)
+  if (!auth) throw new UnauthorizedError('Authentication required')
+  if (!canAdministerPlatform(auth, c.get('config'))) {
+    throw new ForbiddenError('Platform administrator access required')
+  }
   c.set('auth', auth)
   await next()
 })
