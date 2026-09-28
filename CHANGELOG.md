@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New apps are scaffolded from Rocketflare kit 0.15.3: an app's deploy no longer fails on the
+  kit-only "Gate with default plugins" job ("analytics is already installed"), a commit already
+  green in CI is not gated again on deploy, and the neon test run no longer times out.
 - New apps are scaffolded from Rocketflare kit 0.15.2 (the default template pin): a hyphenated
   slug now gets the `<snake>_` API-key prefix its tests expect, so the app's first CI gate is green.
 - The scaffold job skips its rocketflare#37 patch when the kit already carries `KIT.preservedPattern`

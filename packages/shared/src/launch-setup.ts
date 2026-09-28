@@ -160,14 +160,15 @@ export const templatePinSchema = z.object({
 export type TemplatePin = z.infer<typeof templatePinSchema>
 
 /**
- * Rocketflare kit 0.15.2: 0.15.0 (the release P2 was built against) plus the rename fixes a
+ * Rocketflare kit 0.15.3: 0.15.0 (the release P2 was built against) plus the rename fixes a
  * hyphenated slug needs: the evals script's identifiers (0.15.1), the API-key prefix, the
- * `rocketflare-dev/` references and the test Compose project (0.15.2).
+ * `rocketflare-dev/` references and the test Compose project (0.15.2); and CI a copy can pass —
+ * the default-plugins gate kit-only, one gate per commit, the neon run fixed (0.15.3).
  */
 export const DEFAULT_TEMPLATE_PIN: TemplatePin = {
   repo: 'rocketflare-dev/rocketflare',
-  tag: '0.15.2',
-  commit: '305f4648f36f4ecbaaa6a11c979e95ef90bff157',
+  tag: '0.15.3',
+  commit: '668beb097645b6450a7edc73c174266492e44cbe',
 }
 
 /**

@@ -1108,18 +1108,20 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.2**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.3**: 0.15.0 plus the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
-`docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`). A
+`docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
+copy can pass (0.15.3: the default-plugins gate — which failed every Launch-made app with "already
+installed" — runs only in the kit, a commit already green in CI skips the deploy's gate, and the
+neon run's cron tests no longer time out). A
 `launch_settings.template_pin` row overrides it.
 
 **Known gaps:** a real scaffold on a GitHub runner has run green (kit 0.15.1: token trade, clone,
 rename, install, plugins, gate, push), but that app's own CI then failed on the API-key prefix,
-fixed in 0.15.2 — a staging deploy of a 0.15.2 scaffold is still unproven. The app's `test:neon`
-job also hit 5 s timeouts in a few tests on GitHub's runners that do not reproduce locally
-(0.3–2.9 s); watch for them. The session image still carries kit 0.15.0's pnpm store
-(`SESSION_KIT_TAG`); 0.15.2 changes no dependency.
+fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
+0.15.3 — a staging deploy of a 0.15.3 scaffold is still unproven. The session image still carries kit 0.15.0's pnpm store
+(`SESSION_KIT_TAG`); 0.15.1–0.15.3 change no dependency.
 
 ### 18.7 The deploy gateway
 
