@@ -1,6 +1,5 @@
 // @vitest-isolate
-// Installs a FakeCloud as the global fetch, mocks the platform credential store and 5d's
-// `appConfigView` (the re-scan route's answer).
+// Installs a FakeCloud as the global fetch and mocks the platform credential store.
 /**
  * Detecting declared config needs (Launch P5, slice 5e): `scanAppConfig` reads the app's repo
  * through the GitHub App (the fake M365 connector installed in it), matches the declared keys to
@@ -17,11 +16,7 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import {
-  type AppConfigView,
-  appConfigSchema,
-  GRANT_NOTIFICATION_TYPES,
-} from '@launch/shared/launch-grants'
+import { appConfigSchema, GRANT_NOTIFICATION_TYPES } from '@launch/shared/launch-grants'
 import { sessionBranchName } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -63,36 +58,6 @@ const store = vi.hoisted(() => ({
 vi.mock('@/api/services/launch/credentials', async importOriginal =>
   (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
 )
-// 5d builds `appConfigView`; the re-scan route answers with it, so stand in for it here with a
-// view built from the scan row this slice writes.
-vi.mock('@/api/services/grants/requests', async importOriginal => {
-  const real = await importOriginal<typeof import('@/api/services/grants/requests')>()
-  const { appConfigScans: table } = await import('@/db/schema')
-  const { eq: equals } = await import('drizzle-orm')
-  return {
-    ...real,
-    appConfigView: async (
-      db: import('@/db/client').Database,
-      _viewer: unknown,
-      appId: string
-    ): Promise<AppConfigView> => {
-      const [row] = await db.select().from(table).where(equals(table.appId, appId))
-      return {
-        appId,
-        scan: row
-          ? { ref: row.ref, sha: row.sha, scannedAt: row.scannedAt, error: row.error }
-          : null,
-        declared: row?.declared ?? [],
-        matched: [],
-        needs: row?.needs ?? [],
-        unmatched: [],
-        grants: [],
-        canRequest: true,
-      }
-    },
-  }
-})
-
 const db = setupTestDatabase()
 const env = createTestEnv()
 const cfg = loadConfig(env)
@@ -595,6 +560,13 @@ describe('the call sites', () => {
     const body = appConfigSchema.parse(await ok.json())
     expect(body.needs).toEqual([m365.id])
     expect(body.scan).toMatchObject({ ref: 'main', error: null })
+    // The real view (5d's `appConfigView`) matches the three keys to M365 with no grant yet.
+    expect(body.matched.map(m => m.resource.id)).toEqual([m365.id])
+    expect(body.matched[0]?.keys.sort()).toEqual(
+      ['M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_TENANT_ID'].sort()
+    )
+    expect(body.matched[0]?.grants).toEqual({ staging: null, production: null })
+    expect(body.canRequest).toBe(true)
 
     // The tenant's owner (an admin) may too.
     expect((await post(f.app.id, f.cookie)).status).toBe(200)
