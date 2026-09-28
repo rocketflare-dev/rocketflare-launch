@@ -7,14 +7,20 @@
  *
  * ```
  * claude -p '<message>' [--resume <id>] --output-format stream-json --verbose
- *        --permission-mode acceptEdits --model <policy model> --disallowedTools "Bash(git push:*)"
+ *        --permission-mode bypassPermissions --model <policy model> --disallowedTools "Bash(git push:*)"
  * ```
  *
  * - `--model` is the session POLICY's model — the only one the model proxy lets through — and the
  *   env points Claude Code's background model at it too (`claudeTurnEnv`), or its small-model calls
  *   (titles, command-prefix checks) would be refused by the allow-list.
- * - Pushing is Launch's job (the checkpoint after each turn), so the agent may not `git push`.
- *   Everything else it may run is pre-approved in `.claude/settings.local.json`, written at boot.
+ * - `bypassPermissions`: the sandbox IS the boundary (egress allow-list, placeholder key, its own
+ *   database branch), so the agent runs any tool without asking — in `-p` mode nobody could answer
+ *   a prompt, and `acceptEdits` silently denied every Bash command outside an allow-list. Claude
+ *   Code refuses that mode as root unless `IS_SANDBOX=1` is set, which `claudeTurnEnv` does, with
+ *   `HOME=SESSION_HOME` so its transcripts land where the checkpoint and the restore read them.
+ * - Pushing is Launch's job (the checkpoint after each turn), so the agent may not `git push`:
+ *   `--disallowedTools` here, and the `deny` rules in `.claude/settings.local.json` (written at
+ *   boot) — deny rules still hold in bypass mode; allow rules have no effect there.
  * - The message is shell-quoted here, never interpolated raw: it is user text.
  *
  * The stream-json lines, and what each becomes (`mapClaudeLine`):
@@ -34,14 +40,14 @@
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
-import { SESSION_WORKSPACE } from './rocketflare-dev'
+import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
 
 // ---- the command ---------------------------------------------------------------------------------
 
 /** Where a session's checkout lives in the sandbox (`SESSION_WORKSPACE`; the repo step clones into it). */
 export const SESSION_WORKDIR = SESSION_WORKSPACE
 
-/** Pushing is Launch's job (plan §1.3): Claude Code may run anything else it was pre-approved. */
+/** Pushing is Launch's job (plan §1.3): Claude Code may run anything else (bypass mode). */
 export const CLAUDE_DISALLOWED_TOOLS = 'Bash(git push:*)'
 
 export interface ClaudeCommandInput {
@@ -77,7 +83,7 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
     'stream-json',
     '--verbose',
     '--permission-mode',
-    'acceptEdits',
+    'bypassPermissions',
     '--model',
     input.model,
     '--disallowedTools',
@@ -90,6 +96,8 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
  * The turn process's environment. NON-secret by construction: the key is a placeholder the model
  * proxy replaces outside the sandbox (plan §1.4), and the background model is pinned to the
  * policy's so the proxy's allow-list does not refuse Claude Code's own small-model calls.
+ * `IS_SANDBOX=1` lets `bypassPermissions` run as root (the session image's user); `HOME` is pinned
+ * to `SESSION_HOME` because the transcript path (`CLAUDE_PROJECT_DIR`) is derived from it.
  */
 export function claudeTurnEnv(model: string): Record<string, string> {
   return {
@@ -99,6 +107,8 @@ export function claudeTurnEnv(model: string): Record<string, string> {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_AUTOUPDATER: '1',
     NODE_USE_SYSTEM_CA: '1',
+    IS_SANDBOX: '1',
+    HOME: SESSION_HOME,
   }
 }
 

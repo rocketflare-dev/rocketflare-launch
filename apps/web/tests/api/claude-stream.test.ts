@@ -21,6 +21,7 @@ import {
   shellQuote,
 } from '@/api/services/sessions/claude-stream'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
+import { CLAUDE_PROJECT_DIR, SESSION_HOME } from '@/api/services/sessions/rocketflare-dev'
 import { claudeStreamJsonLines } from '../helpers/fake-anthropic'
 
 const fixture = (name: string) =>
@@ -171,7 +172,7 @@ describe('the turn command', () => {
       resumeSessionId: S7_SESSION,
     })
     expect(cmd).toBe(
-      `claude -p 'Change the heading' --resume ${S7_SESSION} --output-format stream-json --verbose --permission-mode acceptEdits --model claude-sonnet-4-5 --disallowedTools "Bash(git push:*)"`
+      `claude -p 'Change the heading' --resume ${S7_SESSION} --output-format stream-json --verbose --permission-mode bypassPermissions --model claude-sonnet-4-5 --disallowedTools "Bash(git push:*)"`
     )
     expect(buildClaudeCommand({ message: 'hi', model: 'm' })).not.toContain('--resume')
   })
@@ -191,5 +192,13 @@ describe('the turn command', () => {
     expect(env.ANTHROPIC_API_KEY).toBe(MODEL_KEY_PLACEHOLDER)
     expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('claude-sonnet-4-5')
     expect(JSON.stringify(env)).not.toContain('sk-ant-')
+  })
+
+  it('may bypass permissions as root, with the HOME its transcripts are read from', () => {
+    const env = claudeTurnEnv('claude-sonnet-4-5')
+    // Claude Code refuses bypassPermissions as root without IS_SANDBOX=1.
+    expect(env.IS_SANDBOX).toBe('1')
+    expect(env.HOME).toBe(SESSION_HOME)
+    expect(CLAUDE_PROJECT_DIR.startsWith(`${env.HOME}/.claude/projects/`)).toBe(true)
   })
 })

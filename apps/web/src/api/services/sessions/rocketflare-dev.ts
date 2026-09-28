@@ -246,29 +246,17 @@ writeFileSync(file, text)
 `
 
 /**
- * `.claude/settings.local.json` in the checkout (plan §1.3): the Bash commands a turn may run
- * without asking, and a hard `deny` on pushing — Launch commits and pushes (checkpoint), never
- * the agent. Excluded from git through `.git/info/exclude`, so it never lands in a commit.
+ * `.claude/settings.local.json` in the checkout (plan §1.3): a hard `deny` on pushing and on
+ * touching the remote or git config. Launch owns pushes and PRs — `checkpoint.ts` pushes
+ * `session/<short>`, `ship.ts` opens the PR through the GitHub App — never the agent. Turns run
+ * with `--permission-mode bypassPermissions` (`claude-stream.ts`), where deny rules are still
+ * honoured and allow rules have no effect, so there is no allow list. Excluded from git through
+ * `.git/info/exclude`, so it never lands in a commit.
  */
 export function claudeSettingsLocal(): string {
   return `${JSON.stringify(
     {
       permissions: {
-        allow: [
-          'Bash(pnpm:*)',
-          'Bash(node:*)',
-          'Bash(npx:*)',
-          'Bash(git status:*)',
-          'Bash(git diff:*)',
-          'Bash(git log:*)',
-          'Bash(git show:*)',
-          'Bash(ls:*)',
-          'Bash(cat:*)',
-          'Bash(grep:*)',
-          'Bash(rg:*)',
-          'Bash(find:*)',
-          'Bash(curl http://localhost:*)',
-        ],
         deny: ['Bash(git push:*)', 'Bash(git remote:*)', 'Bash(git config:*)'],
       },
     },

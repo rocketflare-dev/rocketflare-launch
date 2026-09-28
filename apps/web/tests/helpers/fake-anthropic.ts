@@ -223,7 +223,7 @@ export function claudeStreamJsonLines(turn: FakeClaudeTurn = {}): string[] {
       tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'],
       mcp_servers: [],
       model,
-      permissionMode: 'acceptEdits',
+      permissionMode: 'bypassPermissions',
       apiKeySource: 'ANTHROPIC_API_KEY',
     }),
   ]
