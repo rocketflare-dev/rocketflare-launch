@@ -7,7 +7,7 @@
  *   `switch` over the shared union: a new kind is a type error until it has a sentence);
  * - `requesterName(req, viewerId)` — "You", the person, "GitHub: octocat" for a CI-opened request;
  * - `whyNotSentence(whyNot, detail)` — the ONE sentence a person who may not decide reads instead
- *   of a disabled button;
+ *   of a disabled button, naming who it waits on (`waitingOn`, from the server's `eligible`);
  * - `approversSentence(approvers, groupNames)` — who may decide, from the policy snapshot;
  * - `progressLabel`, `STATUS_BADGE`, `KIND_LABELS`, `policyExpiryLabel`.
  */
@@ -152,25 +152,57 @@ export function approversSentence(
   return parts.length ? orList(parts) : 'nobody (the policy names no approvers)'
 }
 
+/** How many eligible approvers a sentence names before "and N others". */
+const NAMED_APPROVERS = 3
+
+/**
+ * Who a pending request waits on, by NAME when the server listed them (`detail.eligible`): "Alice,
+ * Bob or Carol", "Alice, Bob or 4 others". Falls back to the policy's words when the list is absent
+ * (an older answer), and says plainly when nobody at all can approve it.
+ */
+export function waitingOn(
+  detail: Pick<ApprovalDetail, 'policy'> & { eligible?: ApprovalDetail['eligible'] },
+  groupNames?: ReadonlyMap<string, string>
+): { who: string; nobody: boolean } {
+  const eligible = detail.eligible
+  if (!eligible)
+    return { who: approversSentence(detail.policy.approvers, groupNames), nobody: false }
+  if (eligible.length === 0) return { who: '', nobody: true }
+  const names = eligible.map(p => p.name?.trim() || p.email)
+  if (names.length <= NAMED_APPROVERS) return { who: orList(names), nobody: false }
+  const rest = names.length - (NAMED_APPROVERS - 1)
+  return {
+    who: `${names.slice(0, NAMED_APPROVERS - 1).join(', ')} or ${rest} others`,
+    nobody: false,
+  }
+}
+
+const NOBODY_SENTENCE =
+  'Nobody can approve this request: everyone the policy names is excluded or has already ' +
+  'decided. An admin can change the policy in Settings → Approvals.'
+
 /**
  * The one sentence a person who may NOT decide reads instead of the buttons. Null when they may,
  * or when the request is settled (the status says it).
  */
 export function whyNotSentence(
   whyNot: ApprovalWhyNot | null,
-  detail: Pick<ApprovalDetail, 'policy' | 'status'>,
+  detail: Pick<ApprovalDetail, 'policy' | 'status'> & { eligible?: ApprovalDetail['eligible'] },
   groupNames?: ReadonlyMap<string, string>
 ): string | null {
+  if (whyNot === null || whyNot === 'not_pending') return null
+  const { who, nobody } = waitingOn(detail, groupNames)
   switch (whyNot) {
-    case null:
-    case 'not_pending':
-      return null
     case 'already_decided':
-      return 'You have already decided this request. It is waiting for the other approvals.'
+      return nobody
+        ? 'You have already decided this request.'
+        : `You have already decided this request. It is waiting for ${who}.`
     case 'self_approval':
-      return 'You can’t approve a request you asked for or are part of — someone else has to.'
+      return nobody
+        ? `You can’t approve a request you asked for or are part of. ${NOBODY_SENTENCE}`
+        : `You can’t approve a request you asked for or are part of — someone else has to: ${who}.`
     case 'not_an_approver':
-      return `Waiting for ${approversSentence(detail.policy.approvers, groupNames)} to decide.`
+      return nobody ? NOBODY_SENTENCE : `Waiting for ${who} to decide.`
   }
 }
 

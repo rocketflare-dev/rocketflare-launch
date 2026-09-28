@@ -25,6 +25,7 @@ import {
   policyExpiryLabel,
   progressLabel,
   requesterName,
+  waitingOn,
   whyNotSentence,
 } from '@/ui/pages/approvals/approvalModel'
 import { canPromote, chainEntry, nextVersion } from '@/ui/pages/apps/components/releaseModel'
@@ -132,6 +133,37 @@ describe('who may decide, and why not', () => {
     expect(whyNotSentence('already_decided', detail)).toMatch(/already decided/)
     expect(whyNotSentence('not_pending', detail)).toBeNull()
     expect(whyNotSentence(null, detail)).toBeNull()
+  })
+
+  it('names who it waits on when the server lists them, and says when nobody can', () => {
+    const person = (name: string | null, email: string) => ({
+      id: crypto.randomUUID(),
+      name,
+      email,
+    })
+    const base = {
+      policy: DEFAULT_APPROVAL_POLICIES['deploy.production'],
+      status: 'pending' as const,
+    }
+    const two = { ...base, eligible: [person('Alice', 'a@x.test'), person(null, 'bob@x.test')] }
+    expect(whyNotSentence('not_an_approver', two)).toBe(
+      'Waiting for Alice or bob@x.test to decide.'
+    )
+    expect(whyNotSentence('self_approval', two)).toBe(
+      'You can’t approve a request you asked for or are part of — someone else has to: Alice or bob@x.test.'
+    )
+    expect(whyNotSentence('already_decided', two)).toBe(
+      'You have already decided this request. It is waiting for Alice or bob@x.test.'
+    )
+    const five = {
+      ...base,
+      eligible: ['A', 'B', 'C', 'D', 'E'].map(n => person(n, `${n}@x.test`)),
+    }
+    expect(waitingOn(five).who).toBe('A, B or 3 others')
+    const nobody = { ...base, eligible: [] }
+    expect(waitingOn(nobody)).toEqual({ who: '', nobody: true })
+    expect(whyNotSentence('not_an_approver', nobody)).toMatch(/^Nobody can approve this request/)
+    expect(whyNotSentence('self_approval', nobody)).toMatch(/Settings → Approvals/)
   })
 
   it('counts progress as N of M, never past M', () => {

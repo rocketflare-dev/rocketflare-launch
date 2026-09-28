@@ -305,6 +305,9 @@ export const APPROVAL_ERROR_CODES = {
 
 // ---- responses ---------------------------------------------------------------------------------
 
+/** At most this many eligible approvers are named on a request's detail. */
+export const APPROVAL_ELIGIBLE_MAX = 25
+
 const personRefSchema = z.object({
   id: z.string().uuid(),
   name: z.string().nullable(),
@@ -360,6 +363,14 @@ export const approvalDetailSchema = approvalRequestSchema.extend({
   whyNot: approvalWhyNotSchema.nullable(),
   /** The requester or an admin, while pending. */
   canCancel: z.boolean(),
+  /**
+   * While pending: the people who may still decide it now — eligible under the snapshotted policy,
+   * not excluded, not yet decided — so the panel can NAME who it waits on. Capped at
+   * `APPROVAL_ELIGIBLE_MAX`; empty once settled (the decisions say who decided). An empty list on a
+   * pending request means nobody can approve it: the policy needs an admin's attention. Optional so
+   * an answer without it still parses (readers then fall back to the policy's words).
+   */
+  eligible: z.array(personRefSchema).optional(),
 })
 export type ApprovalDetail = z.infer<typeof approvalDetailSchema>
 

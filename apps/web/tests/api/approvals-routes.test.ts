@@ -91,7 +91,7 @@ describe('/api/approvals', () => {
   })
 
   it('lists by box, counts the badge, and shows a request with who may decide', async () => {
-    const { tenant, app, carol, deps, headers } = await fixture()
+    const { tenant, app, admin, alice, bob, carol, deps, headers } = await fixture()
     const { request: row } = await open(deps, accessOpen(tenant.id, app.id, carol))
 
     const mine = approvalListResponseSchema.parse(
@@ -121,6 +121,13 @@ describe('/api/approvals', () => {
       whyNot: null,
       canCancel: false,
       decisions: [],
+    })
+    // Who it waits on, named: the owners and the admin — never Carol, who asked.
+    expect(asAlice.eligible?.map(p => p.id).sort()).toEqual([admin.id, alice.id, bob.id].sort())
+    expect(asAlice.eligible?.find(p => p.id === bob.id)).toEqual({
+      id: bob.id,
+      name: bob.name ?? null,
+      email: bob.email,
     })
     const asCarol = await json<ApprovalDetail>(
       await request(`/api/approvals/${row.id}`, { headers: headers.carol })
@@ -230,7 +237,7 @@ describe('/api/approvals', () => {
       { json: { reason: 'Changed my mind' }, env }
     )
     expect(res.status).toBe(200)
-    expect(await json(res)).toMatchObject({ status: 'cancelled', canCancel: false })
+    expect(await json(res)).toMatchObject({ status: 'cancelled', canCancel: false, eligible: [] })
     const nudge = stubs(env).hub.broadcasts.find(
       b => (b.args[2] as { type?: string } | undefined)?.type === 'entity.changed'
     )

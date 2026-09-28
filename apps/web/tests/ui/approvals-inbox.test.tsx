@@ -271,13 +271,22 @@ describe('ApprovalPage', () => {
 
   it('shows somebody who may not decide one sentence and no buttons', async () => {
     renderRequest(
-      { [BASE]: approvalDetail({ canDecide: false, whyNot: 'self_approval' }) },
+      {
+        [BASE]: approvalDetail({
+          canDecide: false,
+          whyNot: 'self_approval',
+          eligible: [{ id: crypto.randomUUID(), name: 'Bob Owner', email: 'bob@example.test' }],
+        }),
+      },
       member()
     )
     expect(
       await screen.findByRole('heading', { name: 'Waiting for a decision' })
     ).toBeInTheDocument()
-    expect(screen.getByText(/can’t approve a request you asked for/)).toBeInTheDocument()
+    // The server names who it waits on (`eligible`), so the sentence does too.
+    expect(
+      screen.getByText(/can’t approve a request you asked for.*someone else has to: Bob Owner\./)
+    ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Approve/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
   })

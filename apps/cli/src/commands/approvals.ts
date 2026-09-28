@@ -24,7 +24,6 @@ import {
   type ApprovalContext,
   type ApprovalDecisionValue,
   type ApprovalDetail,
-  type ApprovalListResponse,
   type ApprovalPolicy,
   type ApprovalRequest,
   type ApprovalWhyNot,
@@ -35,20 +34,11 @@ import {
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import chalk from 'chalk'
 import { type Command, InvalidArgumentError } from 'commander'
-import type { z } from 'zod'
 import { type ApiResponse, CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
 import { formatDate, renderTable } from '../utils/output'
-
-/**
- * The contract's schemas carry `.default()`s (the policy's approver lists), so their INPUT type is
- * looser than their output — and `api.ts` infers `T` from `z.ZodType<T>`, i.e. the input. Pinning
- * them to the parsed type keeps `data` the shape the server's parse produced.
- */
-export const detailSchema = approvalDetailSchema as unknown as z.ZodType<ApprovalDetail>
-const listSchema = approvalListResponseSchema as unknown as z.ZodType<ApprovalListResponse>
 
 const approvalApiPath = (id: string) => `/api/approvals/${encodeURIComponent(id)}`
 
@@ -193,6 +183,15 @@ function renderDetail(ctx: CommandContext, detail: ApprovalDetail): string {
     `Progress: ${detail.approvals} of ${detail.requiredApprovals} approval${detail.requiredApprovals === 1 ? '' : 's'}`,
     `Who:      ${describeApprovers(detail.policy)}`
   )
+  // While pending, the server names who it still waits on (`eligible`); an empty list means
+  // nobody can approve it under the policy.
+  if (detail.status === 'pending' && detail.eligible) {
+    lines.push(
+      detail.eligible.length > 0
+        ? `Waiting:  ${detail.eligible.map(p => p.name ?? p.email).join(', ')}`
+        : chalk.yellow('Waiting:  nobody can approve this — an admin must change the policy')
+    )
+  }
   if (detail.status === 'pending' && detail.expiresAt)
     lines.push(`Expires:  ${formatDate(detail.expiresAt)}`)
   if (detail.decidedAt) lines.push(`Decided:  ${formatDate(detail.decidedAt)}`)
@@ -240,7 +239,7 @@ export async function runApprovalsList(
       ).id
     : undefined
   const { data, raw } = await client.request('GET', '/api/approvals', {
-    schema: listSchema,
+    schema: approvalListResponseSchema,
     query: { box: options.box ?? 'mine', status: options.status, kind: options.kind, appId },
   })
   ctx.out.data(raw, () =>
@@ -270,7 +269,7 @@ async function resolveApprovalId(ctx: CommandContext, id: string): Promise<strin
   const matches = new Set<string>()
   for (const box of APPROVAL_BOXES) {
     const list = await client.get('/api/approvals', {
-      schema: listSchema,
+      schema: approvalListResponseSchema,
       query: { box, limit: 200 },
     })
     for (const item of list.items)
@@ -288,7 +287,7 @@ async function resolveApprovalId(ctx: CommandContext, id: string): Promise<strin
 export async function runApprovalsShow(ctx: CommandContext, id: string): Promise<void> {
   const fullId = await resolveApprovalId(ctx, id)
   const { data, raw } = await requireClient(ctx).request('GET', approvalApiPath(fullId), {
-    schema: detailSchema,
+    schema: approvalDetailSchema,
   })
   ctx.out.data(raw, () => renderDetail(ctx, data))
 }
@@ -304,7 +303,7 @@ export async function runApprovalsDecide(
   let result: ApiResponse<ApprovalDetail>
   try {
     result = await requireClient(ctx).request('POST', `${approvalApiPath(fullId)}/decide`, {
-      schema: detailSchema,
+      schema: approvalDetailSchema,
       body: { decision, ...(comment ? { comment } : {}) },
     })
   } catch (error) {

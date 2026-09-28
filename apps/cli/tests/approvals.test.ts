@@ -83,12 +83,32 @@ describe('approvals show', () => {
   it('gives the reason a person may not decide instead of the commands', async () => {
     const { fetch } = mockFetch({
       [`/api/approvals/${APPROVAL_ID}`]: () =>
-        jsonResponse(detail({ canDecide: false, whyNot: 'self_approval' })),
+        jsonResponse(
+          detail({
+            canDecide: false,
+            whyNot: 'self_approval',
+            eligible: [
+              { id: crypto.randomUUID(), name: 'Bob Owner', email: 'bob@example.test' },
+              { id: crypto.randomUUID(), name: null, email: 'admin@example.test' },
+            ],
+          })
+        ),
     })
     const { ctx, out } = await testContext({ store: await store(), fetch })
     await runApprovalsShow(ctx, APPROVAL_ID)
     expect(out.content()).toContain('someone else must decide')
+    expect(out.content()).toContain('Waiting:  Bob Owner, admin@example.test')
     expect(out.content()).not.toContain('approvals approve')
+  })
+
+  it('says so when nobody can approve a pending request', async () => {
+    const { fetch } = mockFetch({
+      [`/api/approvals/${APPROVAL_ID}`]: () =>
+        jsonResponse(detail({ canDecide: false, whyNot: 'not_an_approver', eligible: [] })),
+    })
+    const { ctx, out } = await testContext({ store: await store(), fetch })
+    await runApprovalsShow(ctx, APPROVAL_ID)
+    expect(out.content()).toContain('nobody can approve this')
   })
 
   it('resolves a short id from the list', async () => {

@@ -26,6 +26,7 @@
  * Every query names the tenant. Every transition is audited with `approval_id`.
  */
 import {
+  APPROVAL_ELIGIBLE_MAX,
   APPROVAL_ERROR_CODES,
   APPROVAL_MAX_APPLY_ATTEMPTS,
   type ApprovalDetail,
@@ -34,7 +35,7 @@ import {
   type BuiltApprovalKind,
   meetsAutoApproveRole,
 } from '@launch/shared/launch-approvals'
-import { and, desc, eq, inArray, isNull, lt, lte, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, lt, lte, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import {
   type ApprovalRequestRow,
@@ -775,7 +776,34 @@ export async function detail(
     whyNot: verdict.whyNot,
     canCancel:
       row.status === 'pending' && (row.requestedByUserId === viewer.userId || viewer.isAdmin),
+    eligible: await stillEligible(
+      db,
+      row,
+      decisions.map(d => d.userId)
+    ),
   }
+}
+
+/**
+ * Who a pending request still waits on, named: the eligible approvers (the same list the engine
+ * notifies — members of this tenant, minus the excluded set) who have not decided yet. Anyone who
+ * may read the request may read this: it is who they are waiting for.
+ */
+async function stillEligible(
+  db: Database,
+  row: ApprovalRequestRow,
+  decidedBy: readonly string[]
+): Promise<ApprovalDetail['eligible']> {
+  if (row.status !== 'pending') return []
+  const decided = new Set(decidedBy)
+  const ids = (await eligibleApprovers(db, row)).filter(id => !decided.has(id))
+  if (ids.length === 0) return []
+  return db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(inArray(users.id, ids))
+    .orderBy(asc(sql`coalesce(${users.name}, ${users.email})`))
+    .limit(APPROVAL_ELIGIBLE_MAX)
 }
 
 /** Pending requests waiting on `viewer` — the nav badge. */
