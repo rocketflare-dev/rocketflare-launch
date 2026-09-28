@@ -85,7 +85,7 @@ export default function SharedConfigPage() {
       ) : !resources || resources.length === 0 ? (
         <EmptyStateCard
           icon={KeyIcon}
-          message={showArchived ? 'Nothing is archived.' : 'No shared config yet.'}
+          message="No shared config yet."
           description={
             canCreate
               ? 'Create one for a credential several apps need — its owner team sets the values.'

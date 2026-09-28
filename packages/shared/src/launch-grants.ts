@@ -238,7 +238,7 @@ export const sharedResourceSchema = z.object({
 export type SharedResource = z.infer<typeof sharedResourceSchema>
 
 export const sharedResourceListQuerySchema = z.object({
-  /** Archived resources are hidden unless asked for. */
+  /** Archived resources are hidden unless asked for; `true` lists them WITH the live ones. */
   archived: z
     .enum(['true', 'false'])
     .optional()
