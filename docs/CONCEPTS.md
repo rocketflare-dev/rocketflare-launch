@@ -1302,8 +1302,8 @@ reload) is restarted as `<id>-rN` from the row.
   NOT count: a forgotten background tab would keep a container up for the whole
   `maxSessionHours`.
 - **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a warm
-  suspended session's window: cool; a suspended session's expiry: end), `turn#N` →
-  `checkpoint#N`, `ship#N`, `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
+  suspended session's window: cool; a suspended session's expiry: end; the checkpoint debounce:
+  `checkpoint#N` and wait on), `turn#N`, `checkpoint#N` (a debounce already due), `ship#N`, `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
   over), `resume#N` (boot again with `#K` names — warm: `sandbox.start#K` → `dev#K` only; cold:
   the whole boot, then restore the transcript), `end#N`. A message that arrives while
   booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
@@ -1591,7 +1591,18 @@ running preview app that polls its API keeps its session live until `maxSessionH
 
 ### 18.13 Checkpoints, ship and the PR
 
-**Checkpoint** (`checkpoint.ts`, after every turn and before a suspend or end): `git add -A`, a
+**When** (debounced, `session.ts`): after a turn that ran with the container up, `turn#N` asks
+the checkout whether anything is unsaved (`workspaceChanged`: `git status --porcelain`, and HEAD
+against `head_sha` — a turn may commit itself; a check that fails counts as a change). Nothing →
+no checkpoint. Something → the loop remembers it (`DirtyState`: when the first unsaved turn
+ended, when the latest one did — ISO times from the step results, never a clock read outside a
+step) and the next `wait#N` times out after `SESSION_CHECKPOINT_DEBOUNCE_MS` (30 s) from the
+latest turn: a message inside it runs and the 30 s start again from ITS end; 30 quiet seconds →
+`checkpoint#N`, and the session waits on (no suspend). A session that has held unsaved changes
+for `SESSION_CHECKPOINT_MAX_DEFER_MS` (5 min) checkpoints straight after its next turn however
+busy the conversation, and a debounce wait is cut to that cap. A suspend, an end and a ship still
+checkpoint first; a turn step that died checkpoints at once; a rollout has nothing left to save.
+**Checkpoint** (`checkpoint.ts`): `git add -A`, a
 commit by Launch with the person as `Co-Authored-By`, `git push origin HEAD:refs/heads/session/
 <short>` through the git handler, and Claude's transcript to R2 (`sessions/<id>/claude.jsonl`) so
 a resume can `--resume`. **Nothing huge is staged**: the repo step writes the core-dump names
@@ -1604,7 +1615,8 @@ core (5.8 GB)"), and the save goes on. The scan also drops a `.git/index.lock` a
 behind, when no git is running. A git command that does not answer within 120 s is a
 `CheckpointError` naming the step and the limit. A failed checkpoint is an `error` event ("Could not
 save the session's work: …"), not a failed session: the session stays `ready`, the next turn runs
-and its checkpoint tries again, and the branch holds the previous one. A push
+(its dirty check finds the work still unsaved, so the debounce tries again), and the branch holds
+the previous one. A push
 that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped connection —
 `TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
 retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
@@ -1618,7 +1630,12 @@ audit `session.shipped` — and the Workflow then cleans up (shipping ends the s
 30 s) and by `sessions.checks` on `*/5` while pending, unread, or `none` within an hour of the
 ship (GitHub has not queued the workflows yet when the PR opens).
 
-**Known gaps:** a file over the size limit that is already TRACKED keeps its last committed
+**Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
+conversation) the work and the transcript live only in the container — a crash or a lost instance
+then loses them (a rollout always did); a turn that changed no file does not copy the transcript to
+R2 until the next checkpoint (a suspend always makes one); an oversized untracked file keeps the
+workspace dirty, so every turn is followed by a checkpoint that re-reports it; a file over the size
+limit that is already TRACKED keeps its last committed
 version (its new content is not saved); the scan and the stale-lock check are proven against real
 git and bash locally (`tests/config/session-checkpoint-scan.test.ts`), not yet inside the session
 image; no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes

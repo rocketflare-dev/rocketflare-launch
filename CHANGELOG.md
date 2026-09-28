@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A coding session no longer commits and pushes after every message. A turn that changed nothing is
+  not checkpointed at all; one that changed files is saved 30 s after the latest turn (a message
+  inside those 30 s runs first and the wait starts again), and never more than 5 minutes after the
+  first unsaved change however busy the conversation. A suspend, an end and a ship still save
+  first.
 - `.dev.vars.example` sets `SANDBOX_LOG_LEVEL=warn` and `SANDBOX_LOG_FORMAT=pretty`: the Sandbox SDK's
   Durable Object no longer prints a multi-line object for every exec and destroy under `pnpm dev`.
 - A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) gets its credentials the way Launch's

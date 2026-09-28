@@ -10,12 +10,16 @@
  *   claim
  *   boot:    db → sandbox.start → repo → [prepare → branch]* → bootstrap → dev (`preview.ready`)
  *            (* only when this session prepares the app's `dev`; a `prepare` run stops after it)
- *   loop N:  inspect#N → one of
- *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout) →
+ *   loop N:  inspect#N (given the loop's `DirtyState`) → one of
+ *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout, or
+ *                the checkpoint DEBOUNCE's when the workspace holds unsaved changes) →
  *                on a timeout suspend#N (live; an idle suspend KEEPS the container), cool#N
- *                (suspended with a kept container past its warm window) or end#N (suspended
- *                past expiry)
- *              turn#N (3c's `runTurn`) → checkpoint#N · turn-settle#N if the step itself died
+ *                (suspended with a kept container past its warm window), end#N (suspended
+ *                past expiry) or, for a debounce wait, checkpoint#N — and the loop waits on
+ *              turn#N (3c's `runTurn`; reports `changed` + `endedAt`) → nothing (the debounce
+ *                runs from the next inspect) · checkpoint#N when the session has been dirty for
+ *                the cap · rollout#N · turn-settle#N → checkpoint#N if the step itself died
+ *              checkpoint#N (the debounce already due)
  *              ship#N (3d's `ship`) → shipped: leave the loop
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
@@ -33,6 +37,14 @@
  * - The row is the truth: a wake carries nothing, and `inspect#N` re-reads `pending_message`,
  *   `requested_action`, the status and `sessions_paused`. Every transition is a compare-and-set.
  * - No secret in any step result or event: steps return ids, flags and timings.
+ * - **Checkpoints are debounced** (`services/sessions/checkpoint.ts`): a turn that left the
+ *   workspace changed is saved `SESSION_CHECKPOINT_DEBOUNCE_MS` (30 s) after the LATEST turn — a
+ *   message inside the window runs first and the window restarts from its end — or straight after
+ *   a turn once the session has held unsaved work for `SESSION_CHECKPOINT_MAX_DEFER_MS` (5 min).
+ *   The loop's `DirtyState` is built ONLY from step results (`turn#N`'s `endedAt`); every clock
+ *   read and every sum over it happens inside a step (`inspectStep`, `turnStep`), because the
+ *   code out here is replayed and a clock read here would differ on each replay. `suspend#N`,
+ *   `end#N` and a green ship checkpoint first, so nothing unsaved outlives the container.
  * - The turn step runs with `retries: 0` (a turn is not idempotent — it spends money and edits
  *   files) and the policy's `maxTurnMinutes` as its timeout; the boot steps keep the platform's
  *   default retries, which is why each of them is idempotent.
@@ -62,8 +74,10 @@ import {
   claimStep,
   cleanupStep,
   coolStep,
+  type DirtyState,
   dbStep,
   devStep,
+  dirtyAfterTurn,
   endStep,
   failStep,
   inspectStep,
@@ -79,9 +93,9 @@ import {
   startSandboxStep,
   suspendStep,
   type TurnStepResult,
-  turnNeedsCheckpoint,
   turnSettleStep,
   turnStep,
+  waitDuration,
   withProgress,
 } from '../services/sessions/steps'
 import { turnStepConfig } from '../services/sessions/turn'
@@ -224,27 +238,47 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
   /** The turn loop — see the header. Returns when the session should be cleaned up. */
   private async loop(run: StepRunner, step: WorkflowStep): Promise<void> {
     let resumes = 0
+    // Unsaved work (debounced checkpoints): derived ONLY from step results, never from a clock
+    // read here — this code is replayed, a step's result is not. Null = nothing to save.
+    let dirty: DirtyState | null = null
+    const saveNow = async (n: number) => {
+      await run(`checkpoint#${n}`, scope => checkpointStep(scope, 'turn'))
+      dirty = null
+    }
     for (let n = 0; n < MAX_SESSION_ROUNDS; n++) {
-      const next = await run(`inspect#${n}`, inspectStep)
+      const before = dirty
+      const next = await run(`inspect#${n}`, scope => inspectStep(scope, before))
       switch (next.action) {
         case 'done':
           return
         case 'end':
+          // `endStep` checkpoints a live session first.
           await run(`end#${n}`, scope => endStep(scope, next.reason))
           return
-        case 'suspend':
-          await run(`suspend#${n}`, scope => suspendStep(scope, next.reason))
+        case 'suspend': {
+          // `suspendStep` checkpoints before it suspends.
+          const { suspended } = await run(`suspend#${n}`, scope => suspendStep(scope, next.reason))
+          if (suspended) dirty = null
           break
+        }
         case 'cool':
           await run(`cool#${n}`, scope => coolStep(scope, next.reason))
+          break
+        case 'checkpoint':
+          await saveNow(n)
           break
         case 'wait': {
           try {
             await step.waitForEvent(`wait#${n}`, {
               type: SESSION_WAKE_EVENT,
-              timeout: `${next.timeoutMinutes} minutes` as WorkflowSleepDuration,
+              timeout: waitDuration(next.timeoutSeconds) as WorkflowSleepDuration,
             })
           } catch {
+            // Quiet for the checkpoint debounce: save, and carry on waiting (never a suspend).
+            if (next.debounce) {
+              await saveNow(n)
+              break
+            }
             // Nobody woke us inside the window: an idle live session suspends; a suspended one
             // that nobody resumed before its expiry ends.
             if (next.waitingIn === 'suspended' && next.cool) {
@@ -255,29 +289,40 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
               await run(`end#${n}`, scope => endStep(scope, 'expired'))
               return
             }
-            await run(`suspend#${n}`, scope => suspendStep(scope, 'idle'))
+            // `suspendStep` checkpoints first; it does nothing when the preview kept it busy.
+            const { suspended } = await run(`suspend#${n}`, scope => suspendStep(scope, 'idle'))
+            if (suspended) dirty = null
           }
           break
         }
         case 'turn': {
           let outcome: TurnStepResult
           try {
-            outcome = await run(`turn#${n}`, turnStep, turnStepConfig(next))
+            outcome = await run(`turn#${n}`, scope => turnStep(scope, before), turnStepConfig(next))
           } catch (err) {
-            // The step itself died (its timeout, the database): repair a row left `working`.
+            // The step itself died (its timeout, the database): repair a row left `working`, and
+            // save at once — nothing measured the workspace, so assume it changed.
             await run(`turn-settle#${n}`, scope =>
               turnSettleStep(scope, safeErrorMessage(err, 'The turn took too long and was stopped'))
             )
-            outcome = { status: 'failed' }
+            await saveNow(n)
+            break
           }
           if (outcome.status === 'interrupted' && outcome.reason === 'rollout') {
+            // The container, and whatever it had not saved, is gone.
             await run(`rollout#${n}`, rolloutStep)
-          } else if (turnNeedsCheckpoint(outcome)) {
-            await run(`checkpoint#${n}`, scope => checkpointStep(scope, 'turn'))
+            dirty = null
+          } else if (outcome.checkpointNow) {
+            // Unsaved for the cap already: a busy conversation does not defer it further.
+            await saveNow(n)
+          } else {
+            // Changed → debounce (the next `inspect` waits it out); unchanged → nothing to save.
+            dirty = dirtyAfterTurn(dirty, outcome)
           }
           break
         }
         case 'ship': {
+          // A green ship checkpoints inside `ship()`; a red one leaves the dirty state as it was.
           const shipped = await run(`ship#${n}`, shipStep)
           if (shipped.status === 'shipped') return
           break

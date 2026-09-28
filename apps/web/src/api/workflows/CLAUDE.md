@@ -93,11 +93,21 @@ hooks, a step realtime).
 
 Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (each
 wrapped in `withProgress`, which writes the boot checklist's `step` events) → a loop of
-`inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · wait) and one of
+`inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · checkpoint · wait) and
+one of
 `wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = what is left of the idle policy counted
 from `last_activity_at`, or the suspended expiry; on an idle timeout `suspend#N` re-reads the stamp
 and does nothing when the preview moved it meanwhile — the next round waits out the rest),
-`turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `checkpoint#N` | `rollout#N`,
+`turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `rollout#N` | `checkpoint#N` (only
+when the session has held unsaved changes for `SESSION_CHECKPOINT_MAX_DEFER_MS`, or the turn step
+itself died) | nothing — the checkpoint is DEBOUNCED: the turn step reports `changed` (a
+`git status` + HEAD-vs-`head_sha` check, fail-safe true) and `endedAt`, the loop keeps a
+`DirtyState` built ONLY from those step results (never a clock read — the loop is replayed), and
+passes it to `inspect#N`, which does the time arithmetic with `scope.now()`: a `wait#N` whose
+timeout is what is left of `SESSION_CHECKPOINT_DEBOUNCE_MS` after the latest turn (`debounce:
+true`; a timeout there is `checkpoint#N` and the loop waits on, never a suspend) or, already due,
+the `checkpoint` action itself. Timeouts render through `waitDuration` (`N minutes` when whole, else
+`N seconds`). `suspend#N`, `end#N` and a green ship checkpoint first and clear the state;
 `ship#N` (3d's `ship`), `suspend#N` (an IDLE suspend keeps the container: `container_kept_at`,
 `services/sessions/warm.ts`), `cool#N` (a kept container's warm window is over — the suspended
 `wait#N` then times out after `SESSION_WARM_KEEP_MINUTES`, `cool: true` — or a drain), `resume#N`
@@ -115,7 +125,9 @@ the row (an End stops the step — `fail` then settles `ending`, not `failed`) a
 heartbeat `services/sessions/reconcile.ts` reads (a running turn writes the same heartbeat,
 `turn.ts`); `claim` sends an `ending` session, and a settled one with no `ended_at`, straight to
 `cleanup` — which is how the reconcile's fresh instance cleans up — and closes a turn it finds
-`working` under a lost instance with `turn.failed` before its destroy-and-resume. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) for tests.
+`working` under a lost instance with `turn.failed` before its destroy-and-resume. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) — and the checkpoint
+debounce and its cap (`checkpointDebounceMs`, `checkpointMaxDeferMs`) — for tests; `overrides.now`
+is the steps' clock.
 
 The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
 bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`
