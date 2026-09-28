@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A launch or teardown whose Workflow died mid-step no longer shows that step running for ever:
+  reading the app's pipeline (or retrying it) asks the Workflow about a run that has written
+  nothing for 3 minutes, and if the instance errored, was terminated, finished or is gone — or,
+  under `pnpm dev`, a reload left a step stalled for over 7 minutes — the step is marked failed
+  ("The launch's Workflow stopped (…) while this step ran — Retry resumes from here"), the app is
+  failed, `app.pipeline.reconciled` is audited, and "Retry from failed step" resumes from it.
+  Waits parked on their job are left alone.
 - The launch's step list is shorter: each CI job is one row — "Scaffold from the template" covers
   starting, waiting on and checking the scaffold job, "Deploy staging" the same for the staging
   deploy — so a launch shows 15 rows instead of 19. The Workflow still runs (and retries) the

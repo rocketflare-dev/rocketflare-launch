@@ -96,7 +96,7 @@ export interface RetryWorkflows {
  * Local wrangler does not refuse an instance id that exists — it hands back the old instance and
  * nothing runs — so the next id cannot be found by trying `-r1` again.
  */
-async function lastRetrySuffix(
+export async function lastRetrySuffix(
   db: Database,
   tenantId: string,
   appId: string,

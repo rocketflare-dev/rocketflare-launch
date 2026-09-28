@@ -254,6 +254,44 @@ describe('GET /api/apps/:id/pipeline', () => {
     })
   })
 
+  it('fails a step whose Workflow died under it, so the retry is offered', async () => {
+    const { headers, tenant } = await signedIn('admin')
+    const env = createTestEnv()
+    const { res } = await create(headers, env)
+    const { app, runId } = createAppResponseSchema.parse(await res.json())
+    const stale = new Date(Date.now() - 4 * 60_000)
+    await db.insert(appOperations).values({
+      tenantId: tenant.id,
+      appId: app.id,
+      runId,
+      kind: 'create',
+      step: 'neon',
+      status: 'running',
+      attempt: 1,
+      externalIds: { neonProjectId: 'proj-1' },
+      startedAt: stale,
+      updatedAt: stale,
+    })
+    await db.update(apps).set({ status: 'provisioning' }).where(eq(apps.id, app.id))
+    // `wrangler dev` reloaded mid-step: the instance it started is gone.
+    stubs(env).launchWorkflow?.clear()
+
+    const view = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    const body = pipelineViewSchema.parse(await view.json())
+    expect(body.status).toBe('failed')
+    expect(body.steps.find(s => s.step === 'neon')).toMatchObject({
+      status: 'failed',
+      error:
+        "The launch's Workflow stopped (not found) while this step ran — Retry resumes from here",
+    })
+    const [row] = await db.select().from(apps).where(eq(apps.id, app.id))
+    expect(row?.status).toBe('failed')
+
+    const retried = await post(`/api/apps/${app.id}/pipeline/retry`, headers, {}, env)
+    expect(retried.status).toBe(202)
+    expect(await retried.json()).toMatchObject({ runId, instanceId: `${runId}-r1` })
+  })
+
   it("is 404 for another tenant's app and 401 without a session", async () => {
     const a = await signedIn('admin')
     const { res } = await create(a.headers)

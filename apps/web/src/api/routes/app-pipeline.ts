@@ -13,17 +13,20 @@
  *   (503 `launch_not_set_up`), no `APP_LAUNCH_WORKFLOW` binding (503
  *   `app_pipeline_not_configured`), or Launch not reachable from the internet at `APP_URL` (409
  *   `launch_not_reachable` — the scaffold and deploy jobs call it back; `public-url.ts`).
- * - `GET /:id/pipeline[?kind=create|teardown]` → `pipelineViewSchema` (`read App`).
- * - `POST /:id/pipeline/retry` `{ kind }` → 202 `{ runId, instanceId }` — only when the latest run
- *   of that kind is `failed` (409 `run_not_failed`); a create retry re-dispatches CI, so it is
- *   refused like a create while Launch is not reachable (409 `launch_not_reachable`).
+ * - `GET /:id/pipeline[?kind=create|teardown]` → `pipelineViewSchema` (`read App`). It first
+ *   reconciles a stale running run against its Workflow instance (`pipeline/reconcile.ts`): one
+ *   that died mid-step is failed there, so Retry is offered.
+ * - `POST /:id/pipeline/retry` `{ kind }` → 202 `{ runId, instanceId }` — after the same
+ *   reconcile, only when the latest run of that kind is `failed` (409 `run_not_failed`); a create
+ *   retry re-dispatches CI, so it is refused like a create while Launch is not reachable (409
+ *   `launch_not_reachable`).
  * - `POST /:id/pipeline/cancel` → 200 `cancelPipelineResponseSchema` (`manage App`) — stop a create
  *   run that is still running (a stuck wait), so it can be retried; 409 `run_not_running`.
  * - `POST /:id/teardown` `{ confirmSlug, deleteRepo }` → 202 `{ runId }` — a wrong slug is 400
  *   `confirm_slug_mismatch`.
  *
  * Audited: `app.create.requested`, `app.pipeline.retried`, `app.pipeline.cancelled`,
- * `app.teardown.requested` (and the
+ * `app.teardown.requested`, `app.pipeline.reconciled` (and the
  * Workflows add `app.launched`, `app.launch_failed`, `app.archived`, `app.teardown_failed`; the
  * engine adds `approval.*`, and a rejected or expired `app.create` adds `app.create.rejected`).
  *
@@ -46,6 +49,7 @@ import { auditActor } from '../services/launch/audit'
 import { cancelLaunch } from '../services/launch/pipeline/cancel'
 import { markLaunchFailed, requestApp, startTeardown } from '../services/launch/pipeline/create'
 import { defaultPorts } from '../services/launch/pipeline/ports'
+import { reconcilePipelineSafely } from '../services/launch/pipeline/reconcile'
 import { retryPipeline } from '../services/launch/pipeline/retry'
 import { pipelineView } from '../services/launch/pipeline/runs'
 import { requirePublicUrl } from '../services/launch/public-url'
@@ -110,9 +114,14 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
 
 appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), async c => {
   guardPermission(c, 'read', 'App')
-  const { db, tenantId } = withAuthAndDb(c)
-  const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
-  return c.json(await pipelineView(db, tenantId, app, c.req.valid('query').kind))
+  const { db, tenantId, logger } = withAuthAndDb(c)
+  const kind = c.req.valid('query').kind
+  const id = uuidParam(c, 'id')
+  const app = await getAppRow(db, tenantId, id)
+  // A run whose Workflow died mid-step is failed here, so Retry is offered (never throws).
+  const reconciled = await reconcilePipelineSafely(db, c.env, tenantId, app, kind, logger)
+  const current = reconciled.outcome === 'failed' ? await getAppRow(db, tenantId, id) : app
+  return c.json(await pipelineView(db, tenantId, current, kind))
 })
 
 appPipelineRouter.post(
@@ -120,16 +129,14 @@ appPipelineRouter.post(
   validate('json', retryPipelineRequestSchema),
   async c => {
     guardPermission(c, 'manage', 'App')
-    const { db, tenantId } = withAuthAndDb(c)
-    if (c.req.valid('json').kind === 'create') await requirePublicUrl(db, c.get('config'))
-    const result = await retryPipeline(
-      db,
-      c.env,
-      tenantId,
-      uuidParam(c, 'id'),
-      c.req.valid('json').kind,
-      auditActor(c)
-    )
+    const { db, tenantId, logger } = withAuthAndDb(c)
+    const kind = c.req.valid('json').kind
+    if (kind === 'create') await requirePublicUrl(db, c.get('config'))
+    const id = uuidParam(c, 'id')
+    // A run stuck on a dead instance is retryable without a page load first reconciling it.
+    const app = await getAppRow(db, tenantId, id)
+    await reconcilePipelineSafely(db, c.env, tenantId, app, kind, logger)
+    const result = await retryPipeline(db, c.env, tenantId, id, kind, auditActor(c))
     return c.json(result, 202)
   }
 )

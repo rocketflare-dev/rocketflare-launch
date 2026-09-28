@@ -966,6 +966,24 @@ step that mints one puts it on the Worker itself.
   scaffold ticket is withdrawn, the live instance is terminated (best effort — one that refuses
   finds its wait row failed at its next poll and fails the run itself), the app is `failed` and
   `app.pipeline.cancelled` is audited. Retry then restarts that step.
+- **Reconcile** (`pipeline/reconcile.ts`, from `GET /api/apps/:id/pipeline` and before a retry;
+  never throws into the request): a run whose Workflow died under a step — `wrangler dev`
+  reloading the Worker mid-step, an uncaught throw outside `runStep`, the platform's limits — is
+  failed on read, so Retry is offered instead of a step `running` for ever. Only a run that derives
+  `running` and wrote no row for 3 minutes (`RECONCILE_STALE_MS`) is looked at, and only by the
+  one request whose compare-and-set on its newest row's `updated_at` lands, so a run is asked about
+  at most once per 3 minutes (no migration: the timestamp is the throttle). The instance is
+  `apps.launch_instance_id` for a launch, and for a teardown `<runId>` or the `<runId>-rN` its
+  latest `app.pipeline.retried` row recorded. `errored`, `terminated`, `complete`, `unknown` or
+  not found → every `running` row (between steps: the next step) is failed "The launch's Workflow
+  stopped (<status>) while this step ran — Retry resumes from here", keeping its recorded ids for
+  the retry's `ctx.prior`; a launch's app becomes `failed` with `app.launch_failed` (as the
+  Workflow's own failure path), and `app.pipeline.reconciled` is audited. `queued`, `running`,
+  `waiting` (a wait parked in `step.waitForEvent`) and `paused` are left alone — except a non-wait
+  step whose attempt started over 7 minutes ago (`STALLED_STEP_MS`) while the instance claims
+  `queued|running`: an attempt is capped at 5 minutes and every retry re-claims the row, so that
+  is the local engine keeping its persisted `running` after a reload killed the step; it is failed
+  the same way and the instance terminated (best effort).
 - **UI**: "Create app" (a live slug check and a preview of `<slug>-staging.<apps domain>`, the
   domain from `GET /api/apps`' `appsDomain`; a 409 `launch_not_reachable` says why and links to
   Setup › Public URL), the step list polled while a run is owed — running, done and failed each
@@ -981,7 +999,10 @@ step that mints one puts it on the Worker itself.
   the earliest start and — once settled — the last finish. The rows stay separate underneath, and
   cancel, retry and the audit name the real step (`scaffold.wait`).
 
-**Known gaps:** waits are rounds, so a lost event — or a job's failure — costs up to one round (1
+**Known gaps:** a dead run is only noticed when someone reads its page (there is no cron), 3
+minutes after its last row at the earliest — about 9 for a stalled local step; under `wrangler dev`
+a WAIT whose instance died, or a run that died between steps, can still read `waiting`/`running`
+from the local engine and is left alone — Stop it (a teardown has no Stop); waits are rounds, so a lost event — or a job's failure — costs up to one round (1
 minute for the scaffold, 3 for the deploy); a run that GitHub lists but leaves `queued` (no runner
 free) is waited on for the full 30 minutes; a GitHub API error while polling is retried by the poll
 step and then fails the run as that error (no run link); the
@@ -1059,7 +1080,9 @@ workflows, queue consumers and crons are Launch's job, so only the ones Launch k
 queues, R2 (emptied first), KV, Resend keys, the Neon project; the OIDC client is disabled, not
 deleted; the repo is archived (deleted only with `deleteRepo`). A 404 is success, so a half-created
 app tears down too. It ends `archived` with `archived_at` and `app.archived`; retry is the same
-`<runId>-rN` rule.
+`<runId>-rN` rule, and the same reconcile (§18.5) fails a step whose teardown Workflow died under it
+— audited `app.teardown_failed` and `app.pipeline.reconciled`, the app keeping its status — so the
+retry is offered.
 
 **Known gaps:** an IMPORTED app's teardown only disables its sign-in client — Launch did not create
 its resources and leaves them, and its repo, alone; a deleted repo is gone for good.
