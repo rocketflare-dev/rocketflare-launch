@@ -1,3 +1,7 @@
+// @vitest-isolate
+// Runs the nightly prune, which deletes EVERY expired session, magic link and invitation in the
+// shared test database — in the shared `api` run it raced files asserting on their own expired rows
+// (auth-magic-link's `expired`). The isolated run starts after the shared one.
 import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { dispatchScheduled, SCHEDULED_TASKS, type ScheduledTask, scheduled } from '@/api/scheduled'

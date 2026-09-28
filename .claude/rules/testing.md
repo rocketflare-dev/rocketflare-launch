@@ -93,6 +93,12 @@ its FIRST line must be **exactly** the marker, with nothing after it; the reason
 // Spies on the global fetch, so this file needs its own module registry.
 ```
 
+The marker is also how a file that runs a GLOBAL cron body (the nightly prune, an unscoped seal
+or health poll) keeps it out of the shared run, where it deletes or changes other files' rows
+mid-assertion (`scheduled.test.ts`, `scheduled-prune.test.ts`). Better still, scope the task to the
+test's own tenants — `healthPollTask({ tenantIds })`, `auditSealTask({ tenantIds })` — as every
+P4 cron test does.
+
 `isMarkedIsolated` (`apps/web/tests/helpers/isolation.ts`) compares the trimmed first line to
 `// @vitest-isolate` — `// @vitest-isolate — mocks a module` does NOT match, and `vitest.config.ts`
 then places the file in the shared `api` project. Forgetting it does not fail in your file; it hands

@@ -1,3 +1,7 @@
+// @vitest-isolate
+// Runs the nightly prune, which deletes EVERY expired session, magic link and invitation in the
+// shared test database — in the shared `api` run it raced files asserting on their own expired rows
+// (auth-magic-link's `expired`). The isolated run starts after the shared one.
 /**
  * Nightly prune (D12): expired sessions, expired/consumed magic links, expired invitations older
  * than 30 days are removed; live rows stay.
