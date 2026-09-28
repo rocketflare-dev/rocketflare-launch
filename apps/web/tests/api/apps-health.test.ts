@@ -13,7 +13,7 @@
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { healthPoll, runHealthPoll, verdictOf } from '@/api/services/launch/health'
+import { healthPollTask, runHealthPoll, verdictOf } from '@/api/services/launch/health'
 import { appEnvironments, appHealthChecks, auditEvents } from '@/db/schema'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
@@ -85,12 +85,14 @@ async function newTenant() {
   return tenant
 }
 
-async function runCron() {
+async function runCron(tenantId: string) {
   const ctx = createExecutionContext()
-  // Only the health poll: the session tasks on the same cron scan every tenant's sessions, which
-  // belong to other suites in the shared test database.
+  // Only the health poll, and only this test's tenant: the registered task probes EVERY live
+  // environment in the shared test database — every other suite's apps too — which made this file
+  // slow enough to time out under a loaded run. The session tasks on the same cron would likewise
+  // scan other suites' sessions.
   const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
-    '*/5 * * * *': [healthPoll],
+    '*/5 * * * *': [healthPollTask({ tenantIds: [tenantId] })],
   })
   await waitOnExecutionContext(ctx)
   expect(reports).toEqual([expect.objectContaining({ task: 'healthPoll', status: 'ok' })])
@@ -171,7 +173,7 @@ describe('the */5 health poll', () => {
     const down = await appAnswering(tenant.id, 'down')
     const timeout = await appAnswering(tenant.id, 'timeout')
 
-    await runCron()
+    await runCron(tenant.id)
 
     expect(await envRow(up.env.id)).toMatchObject({
       healthStatus: 'up',
@@ -203,15 +205,15 @@ describe('the */5 health poll', () => {
   it('audits a transition once, and a steady state never', async () => {
     const tenant = await newTenant()
     const target = await appAnswering(tenant.id, 'up')
-    await runCron()
+    await runCron(tenant.id)
     const firstChange = (await envRow(target.env.id))?.healthChangedAt
 
-    await runCron() // up → up
+    await runCron(tenant.id) // up → up
     expect(await healthAudits(tenant.id)).toEqual([])
     expect((await envRow(target.env.id))?.healthChangedAt).toEqual(firstChange)
 
     hosts.set(target.host, 'down')
-    await runCron() // up → down
+    await runCron(tenant.id) // up → down
     const audits = await healthAudits(tenant.id)
     expect(audits).toHaveLength(1)
     expect(audits[0]).toMatchObject({
@@ -229,7 +231,7 @@ describe('the */5 health poll', () => {
     )
     expect(await checksOf(tenant.id, target.env.id)).toHaveLength(3)
 
-    await runCron() // down → down
+    await runCron(tenant.id) // down → down
     expect(await healthAudits(tenant.id)).toHaveLength(1)
   })
 
@@ -237,7 +239,7 @@ describe('the */5 health poll', () => {
     const tenant = await newTenant()
     const archived = await appAnswering(tenant.id, 'up', 'archived')
     const { environments } = await seedApp(db, tenant.id, { environments: { staging: null } })
-    await runCron()
+    await runCron(tenant.id)
     expect(await envRow(archived.env.id)).toMatchObject({ healthStatus: 'unknown' })
     expect(await envRow(environments[0]?.id ?? '')).toMatchObject({ healthStatus: 'unknown' })
     expect(seen.some(u => u.includes(archived.host))).toBe(false)
@@ -261,7 +263,7 @@ describe('the */5 health poll', () => {
         status: 'up',
       },
     ])
-    await runCron()
+    await runCron(tenant.id)
     const remaining = await checksOf(tenant.id, target.env.id)
     expect(remaining).toHaveLength(2) // the six-day-old row and this run's
     expect(remaining.every(r => r.checkedAt.getTime() > Date.now() - 7 * day)).toBe(true)
@@ -270,8 +272,8 @@ describe('the */5 health poll', () => {
   it('aborts a probe that hangs at the timeout', async () => {
     const tenant = await newTenant()
     const target = await appAnswering(tenant.id, 'hang')
-    const result = await runHealthPoll(db, { timeoutMs: 50 })
-    expect(result.environments).toBeGreaterThan(0)
+    const result = await runHealthPoll(db, { timeoutMs: 50, tenantIds: [tenant.id] })
+    expect(result.environments).toBe(1)
     expect(await envRow(target.env.id)).toMatchObject({
       healthStatus: 'down',
       healthError: 'health: timed out after 50 ms; ready: timed out after 50 ms',

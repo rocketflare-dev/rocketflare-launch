@@ -236,9 +236,10 @@ describe('sealTenant', () => {
     await record(b.tenant.id, 1)
     const logs: unknown[] = []
     const logger = { info: (o: object) => logs.push(o), warn: (o: object) => logs.push(o) }
-    const result = await runAuditSeal(db, logger)
-    expect(result.failed).toBe(0)
-    expect(result.sealed).toBeGreaterThanOrEqual(3)
+    // Scoped to this test's tenants: an unscoped seal would also seal other files' events in the
+    // shared database, and their "still unsealed" assertions would flake.
+    const result = await runAuditSeal(db, logger, { tenantIds: [a.tenant.id, b.tenant.id] })
+    expect(result).toEqual({ tenants: 2, sealed: 3, failed: 0 })
     expect(await verifyChain(db, a.tenant.id)).toMatchObject({ ok: true, sealedThrough: 2 })
     expect(await verifyChain(db, b.tenant.id)).toMatchObject({ ok: true, sealedThrough: 1 })
     expect(auditSeal.name).toBe('audit.seal')

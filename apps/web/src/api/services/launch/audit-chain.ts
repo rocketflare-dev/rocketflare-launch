@@ -50,7 +50,7 @@
  * allow-list entry goes stale and its test fails).
  */
 import type { AuditEvent, AuditVerify } from '@launch/shared/launch-audit'
-import { and, asc, count, desc, eq, gt, isNull, max, notExists, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gt, inArray, isNull, max, notExists, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type AuditEventRow, auditChain, auditEvents } from '../../../db/schema'
 import type { ScheduledTask } from '../../scheduled'
@@ -152,13 +152,25 @@ export async function hasUnsealedEvents(db: Database): Promise<boolean> {
   return Boolean(row)
 }
 
-/** Every tenant with at least one unsealed event — the cron's work list. */
-export async function tenantsWithUnsealedEvents(db: Database): Promise<string[]> {
+/**
+ * Every tenant with at least one unsealed event — the cron's work list. `only` narrows it to
+ * those tenants (a test seals its own and never another file's).
+ */
+export async function tenantsWithUnsealedEvents(
+  db: Database,
+  only?: readonly string[]
+): Promise<string[]> {
+  if (only && only.length === 0) return []
   const found = await db
     .selectDistinct({ id: auditEvents.tenantId })
     .from(auditEvents)
     .leftJoin(auditChain, eq(auditChain.auditEventId, auditEvents.id))
-    .where(isNull(auditChain.auditEventId))
+    .where(
+      and(
+        isNull(auditChain.auditEventId),
+        only ? inArray(auditEvents.tenantId, [...only]) : undefined
+      )
+    )
   return found.map(r => r.id)
 }
 
@@ -299,11 +311,12 @@ export async function verifyChain(db: Database, tenantId: string): Promise<Audit
  */
 export async function runAuditSeal(
   db: Database,
-  logger: { info: (o: object, m: string) => void; warn: (o: object, m: string) => void }
+  logger: { info: (o: object, m: string) => void; warn: (o: object, m: string) => void },
+  opts: AuditSealOptions = {}
 ): Promise<{ tenants: number; sealed: number; failed: number }> {
   const result = { tenants: 0, sealed: 0, failed: 0 }
   if (!(await hasUnsealedEvents(db))) return result
-  for (const tenantId of await tenantsWithUnsealedEvents(db)) {
+  for (const tenantId of await tenantsWithUnsealedEvents(db, opts.tenantIds)) {
     result.tenants += 1
     try {
       for (let i = 0; i < AUDIT_SEAL_MAX_BATCHES; i++) {
@@ -325,11 +338,25 @@ export async function runAuditSeal(
   return result
 }
 
-/** Registered on `*` + `/5` in `api/scheduled.ts`. */
-export const auditSeal: ScheduledTask = {
-  name: 'audit.seal',
-  async run({ db, logger }) {
-    const result = await runAuditSeal(db, logger)
-    if (result.tenants > 0) logger.info(result, 'audit.seal: sealed new audit events')
-  },
+export interface AuditSealOptions {
+  /**
+   * Seal only these tenants. The cron passes nothing (every tenant); a test passes its own, so a
+   * seal in one test file never seals — and so never changes — another file's rows (the suite
+   * shares one database, `.claude/rules/testing.md`).
+   */
+  tenantIds?: readonly string[]
 }
+
+/** The `audit.seal` task over the given options (the `healthPollTask` pattern). */
+export function auditSealTask(opts: AuditSealOptions = {}): ScheduledTask {
+  return {
+    name: 'audit.seal',
+    async run({ db, logger }) {
+      const result = await runAuditSeal(db, logger, opts)
+      if (result.tenants > 0) logger.info(result, 'audit.seal: sealed new audit events')
+    },
+  }
+}
+
+/** Registered on `*` + `/5` in `api/scheduled.ts`: every tenant. */
+export const auditSeal: ScheduledTask = auditSealTask()

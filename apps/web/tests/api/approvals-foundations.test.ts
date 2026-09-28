@@ -11,7 +11,11 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
 import { approvalsSweep, dueForApplyRetry, dueForExpiry } from '@/api/services/approvals/sweep'
 import { recordAudit, SYSTEM_ACTOR } from '@/api/services/launch/audit'
-import { auditSeal, hasUnsealedEvents } from '@/api/services/launch/audit-chain'
+import {
+  auditSealTask,
+  hasUnsealedEvents,
+  tenantsWithUnsealedEvents,
+} from '@/api/services/launch/audit-chain'
 import {
   appReleases,
   approvalDecisions,
@@ -301,10 +305,13 @@ describe('the P4 mounts', () => {
 })
 
 describe('the P4 crons', () => {
-  it('both tasks are registered and harmless until their slices fill them', async () => {
+  it('both tasks run from the */5 dispatch', async () => {
     const ctx = createExecutionContext()
+    const { tenant } = await seedTenant()
+    // The seal is scoped to this test's tenant (`auditSealTask`): the registered one seals every
+    // tenant, which in the shared database would seal other files' "still unsealed" events.
     const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
-      '*/5 * * * *': [approvalsSweep, auditSeal],
+      '*/5 * * * *': [approvalsSweep, auditSealTask({ tenantIds: [tenant.id] })],
     })
     await waitOnExecutionContext(ctx)
     expect(reports.map(r => [r.task, r.status])).toEqual([
@@ -351,7 +358,21 @@ describe('the P4 crons', () => {
 
   it('the seal sees an unsealed event in any tenant', async () => {
     const { tenant } = await seedTenant()
-    await recordAudit(db, { tenantId: tenant.id, ...SYSTEM_ACTOR, action: 'a.b' })
-    expect(await hasUnsealedEvents(db)).toBe(true)
+    // Inside a transaction that is rolled back: the event is visible to this check and to no other
+    // connection, so a seal running in another file cannot seal it first (the check is global).
+    class Rollback extends Error {}
+    let seen: boolean | undefined
+    await db
+      .transaction(async tx => {
+        const scoped = tx as unknown as typeof db
+        await recordAudit(scoped, { tenantId: tenant.id, ...SYSTEM_ACTOR, action: 'a.b' })
+        seen = await hasUnsealedEvents(scoped)
+        expect(await tenantsWithUnsealedEvents(scoped, [tenant.id])).toEqual([tenant.id])
+        throw new Rollback()
+      })
+      .catch(err => {
+        if (!(err instanceof Rollback)) throw err
+      })
+    expect(seen).toBe(true)
   })
 })
