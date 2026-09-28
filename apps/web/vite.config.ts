@@ -17,7 +17,7 @@ function onProxyError(proxy: HttpProxy.Server) {
   })
 }
 
-// When served through a Cloudflare tunnel (`pnpm dev:tunnel`), cfld injects the public HTTPS
+// When served through a Cloudflare tunnel (`pnpm dev:tunnel` beside `pnpm dev`), dev-server.mjs passes the public HTTPS
 // URL as PUBLIC_URL. Allow that host and point HMR at the tunnel's wss endpoint.
 const tunnelHost = process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).host : undefined
 

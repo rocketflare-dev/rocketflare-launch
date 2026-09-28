@@ -284,10 +284,20 @@ adapter carries its MCP transport, `docs/DEPLOY.md` "Bundle size" — and `pnpm 
 For OAuth callbacks, emailed magic links or webhooks against your laptop:
 ```bash
 pnpm web exec cfld setup   # once: picks a Cloudflare zone, stores apps/web/.cfld.json (git-ignored)
-pnpm dev:tunnel            # cfld → :3000; apps/web/scripts/tunnel-dev.mjs passes the URL to wrangler as APP_URL
+pnpm dev:tunnel            # terminal 1: the tunnel only (cfld → :3000); writes PUBLIC_URL to apps/web/.env
+pnpm dev                   # terminal 2: sees the tunnel running and serves under its URL
 ```
+While the tunnel is up, `pnpm dev` lets Vite answer for the tunnel host (HMR over its `wss`) and
+passes the URL to wrangler as `APP_URL`, so OAuth redirects, magic links and CSRF use it; localhost
+still works. With no tunnel running it serves localhost only. `pnpm dev --public` / `--no-public`
+override the check. Restart `pnpm dev` after starting or stopping the tunnel.
 Verify: the printed `https://…` host opens the app; `/auth/methods` there reports the same providers
-as localhost. `.dev.vars` and the tomls are untouched; plain `pnpm dev` still uses localhost. Add
+as localhost. `.dev.vars` and the tomls are untouched.
+
+**cfld and the zone's cert.** cfld routes DNS with the Cloudflare cert for the tunnel's zone. If
+that cert belongs to another zone, cloudflared silently creates `<host>.<that zone>` instead, and
+the real host answers 522 (or hits the apps wildcard). Check `dig <host>.<other zone>`; fix with
+`pnpm web exec cfld login --reauth` for the right zone, then restart the tunnel. Add
 the tunnel host to each OAuth app's redirect URIs (Part 2) to test those flows. The CLI can log in
 through the tunnel too: `pnpm cli login --server https://<tunnel-host>`.
 

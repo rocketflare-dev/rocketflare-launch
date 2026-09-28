@@ -17,6 +17,9 @@
  *                 `workerd` ignores SIGTERM often enough to need SIGKILL.
  *   --status      (`pnpm dev:status`) print what is running and who holds the ports; no signals.
  *
+ * Tunnel: run `pnpm dev:tunnel` (cfld only) beside `pnpm dev`. While that tunnel is up, --start
+ * serves under its public URL (PUBLIC_URL from apps/web/.env); `--public` / `--no-public` override.
+ *
  * Ownership is deliberate: a process counts as ours only when its command line or its cwd is
  * inside THIS repository. Another checkout (or another app) on a dev port is reported, never
  * killed.
@@ -303,9 +306,42 @@ function databaseEnv() {
   return url ? { CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE: url } : {}
 }
 
+/**
+ * The public tunnel URL to serve under, or null. `pnpm dev:tunnel` runs cfld on its own; cfld
+ * writes the URL to `apps/web/.env` as PUBLIC_URL (or its `envKey`) and keeps a cloudflared
+ * running as `run cfld-<name>`. We use that URL only while that tunnel is actually up, so a stale
+ * `.env` never points OAuth and magic links at a dead host. `--public` forces it, `--no-public`
+ * turns it off.
+ */
+function tunnelUrl(flags) {
+  if (flags.includes('--no-public')) return null
+  const pkg = JSON.parse(readFileSync(path.join(WEB_DIR, 'package.json'), 'utf8'))
+  const envKey = pkg.cfld?.envKey ?? 'PUBLIC_URL'
+  let url = process.env[envKey]
+  const envFile = path.join(WEB_DIR, '.env')
+  if (!url && existsSync(envFile)) url = readDevVars(readFileSync(envFile, 'utf8'))[envKey]
+  if (!url) return null
+  if (flags.includes('--public')) return url
+  let running = false
+  try {
+    execFileSync('pgrep', ['-f', `cloudflared.* run cfld-${pkg.cfld?.name ?? pkg.name}$`], {
+      stdio: 'ignore',
+    })
+    running = true
+  } catch {
+    // pgrep exits 1 when nothing matches: no tunnel, serve on localhost only.
+  }
+  return running ? url : null
+}
+
 async function start({ verbose }) {
   await preflight()
   mkdirSync(path.join(WEB_DIR, 'dist/ui'), { recursive: true })
+  // Behind `pnpm dev:tunnel`: Vite allows the host and sends HMR over its wss (vite.config.ts reads
+  // PUBLIC_URL), and the Worker's APP_URL follows so OAuth redirects, magic links and the CSRF
+  // allowlist use the public origin. Localhost origins stay allowed in dev either way.
+  const publicUrl = tunnelUrl(args)
+  if (publicUrl) process.env.PUBLIC_URL = publicUrl
 
   const startedAt = Date.now()
   const tty = process.stdout.isTTY === true && !verbose
@@ -346,7 +382,7 @@ async function start({ verbose }) {
     spinner.clear()
     const secs = ((Date.now() - startedAt) / 1000).toFixed(1)
     process.stdout.write(
-      `${COLOR.ui}✔${COLOR.reset} dev ready in ${secs}s  ${COLOR.ui}${state.url || `http://localhost:${DEV_PORTS.ui}`}${COLOR.reset}\n` +
+      `${COLOR.ui}✔${COLOR.reset} dev ready in ${secs}s  ${COLOR.ui}${publicUrl || state.url || `http://localhost:${DEV_PORTS.ui}`}${COLOR.reset}\n` +
         `${COLOR.dim}  api http://localhost:${DEV_PORTS.api} · stop with pnpm dev:stop${COLOR.reset}\n`
     )
   }
@@ -426,7 +462,8 @@ async function start({ verbose }) {
   process.on('SIGTERM', () => void shutdown(0))
 
   phase()
-  launch('api', 'wrangler', ['dev', '--port', String(DEV_PORTS.api)])
+  const apiVars = publicUrl ? ['--var', `APP_URL:${publicUrl}`] : []
+  launch('api', 'wrangler', ['dev', '--port', String(DEV_PORTS.api), ...apiVars])
   launch('ui', 'vite', [])
 }
 
