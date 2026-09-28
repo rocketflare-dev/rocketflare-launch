@@ -10,10 +10,11 @@
  *
  * Egress (plan §1.4, §1.5, S7):
  *
- * - `enableInternet = false` and an allow-list: `SESSION_BASE_ALLOWED_HOSTS`, plus
- *   `host.docker.internal` under `SESSION_BACKEND=local` (the laptop's Neon proxy and git server).
- *   The session adapter re-applies the same list with `setAllowedHosts` at start
- *   (`sessionAllowedHosts`), so the field and the runtime list cannot disagree.
+ * - `enableInternet = false` and an allow-list: `SESSION_BASE_ALLOWED_HOSTS` — the same on a
+ *   laptop. The session adapter re-applies it with `setAllowedHosts` at start
+ *   (`sessionAllowedHosts`), and the prepare and bootstrap steps widen it by EXACTLY the hosts of
+ *   the Neon endpoint the container's database lives on (`sessionDbEgressHosts`: the endpoint for
+ *   the driver's WebSocket, its region's `api.` host for its HTTP queries) — never a wildcard.
  * - **`interceptHttps = true`, set explicitly.** It defaults to `false` on the stable packages
  *   (containers 0.3.7 / sandbox 0.12.10) despite the docs, and without it no HTTPS leaves a locked
  *   sandbox, allow-listed or not (S7 finding 1).
@@ -24,9 +25,10 @@
  *   sends.
  * - **`wrangler dev` honours all of it** (checked in slice 3b against 0.12.10 / wrangler 4.127: a
  *   handler runs for HTTP and HTTPS, `ctx.containerId` is `idFromName(name).toString()`, a host off
- *   the list answers 520, `setAllowedHosts` applies at runtime). One local difference:
- *   `host.docker.internal` is reachable from a local container even when it is NOT on the list —
- *   it is on the list anyway, so the deployed behaviour is what the code states.
+ *   the list answers 520, `setAllowedHosts` applies at runtime; an outbound `wss://` to an
+ *   allow-listed host with no handler passes through the interception). One local difference:
+ *   `host.docker.internal` is reachable from a local container even when it is NOT on the list.
+ *   Nothing in a session uses it.
  *
  * Container time (`sessions.container_seconds`): `onStart` stamps the start in this object's
  * storage, `onStop` adds the elapsed seconds to the session (`recordContainerStop`) — and, when the
@@ -39,8 +41,7 @@ import { openDatabase } from '../../db/client'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
 import { handleGitHub } from '../services/sessions/egress/github'
 import { recordContainerStop } from '../services/sessions/lifecycle'
-import { SESSION_BASE_ALLOWED_HOSTS } from '../services/sessions/ports'
-import { sessionAllowedHosts } from '../services/sessions/sandbox/cloudflare-sandbox'
+import { sessionAllowedHosts } from '../services/sessions/ports'
 import type { AppBindings } from '../types'
 import { loggerFor } from '../utils/core/logger'
 
@@ -49,21 +50,11 @@ export { ContainerProxy }
 /** Where `onStart` stamps the container's start (ms since the epoch). */
 const STARTED_AT_KEY = 'launch:container-started-at'
 
-/** The allow-list for this deployment: the base, plus the laptop under `SESSION_BACKEND=local`. */
-export function sandboxAllowedHosts(env: AppBindings): string[] {
-  try {
-    return sessionAllowedHosts(loadConfig(env))
-  } catch {
-    // A config that does not load is the Worker's problem to report; never widen the list for it.
-    return [...SESSION_BASE_ALLOWED_HOSTS]
-  }
-}
-
 export class SessionSandbox extends Sandbox<AppBindings> {
   /** Off by default on the stable packages despite the docs — see the header (S7 finding 1). */
   interceptHttps = true
   enableInternet = false
-  allowedHosts = sandboxAllowedHosts(this.env)
+  allowedHosts = sessionAllowedHosts()
 
   override async onStart(): Promise<void> {
     await super.onStart()

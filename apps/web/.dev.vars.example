@@ -94,18 +94,13 @@ OTEL_EXPORTER_OTLP_HEADERS=
 OBSERVABILITY_TRACE_URL=
 
 # --- Coding sessions (Launch P3, docs/SESSIONS-LOCAL.md) --------------------------------
-# `local` runs a session's sandbox in wrangler dev's local containers (Docker), its database on the
-# local Postgres and its repo on the local git server. Only with APP_ENV=development: loadConfig
-# refuses `local` anywhere else. The tomls say `cloud`.
+# Under wrangler dev a session's sandbox is always a local Docker container, and its database is
+# always a real Neon branch of the app's project (Neon connected in Setup). `local` swaps only the
+# repo: the local git server instead of GitHub. Only with APP_ENV=development: loadConfig refuses
+# `local` anywhere else. The tomls say `cloud`.
 SESSION_BACKEND=local
 # Preview origins: {label} becomes <port>-<shortId>-<token>; *.localhost resolves to 127.0.0.1.
 SESSION_PREVIEW_URL=http://{label}.localhost:3001
-# An OWNER connection to the local Postgres that session databases are cloned on (CREATE DATABASE …
-# TEMPLATE …) — e.g. the DATABASE_URL above.
-SESSION_LOCAL_DB_URL=
-# The local Neon proxy as a CONTAINER sees it (a locked sandbox speaks only HTTP(S) to Postgres):
-# http://host.docker.internal:<the NEON_LOCAL_PROXY port>.
-SESSION_LOCAL_NEON_PROXY=
 # The local git server sessions clone from and push to (`pnpm sessions:local-git serve`).
 SESSION_LOCAL_GIT_URL=http://localhost:9420
 

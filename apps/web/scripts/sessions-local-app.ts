@@ -5,12 +5,14 @@
  * so `POST /api/apps/:id/sessions` has something to clone. Node-only; the Worker never imports it.
  *
  *   pnpm sessions:local-app --slug demo --from /path/to/rocketflare --ref 0.15.0
- *     [--owner local] [--tenant <tenant slug>] [--git-root <dir>]
+ *     --neon-project <id> [--owner local] [--tenant <tenant slug>] [--git-root <dir>]
  *
  * - The repo is `<owner>/<slug>` (default owner `local`), with `main` at `--ref`.
  * - The app is `imported` and `live`, in `--tenant` (default: the single tenant, else `acme` —
- *   what `pnpm seed` creates), with a production environment and no Neon project: a local app's
- *   `dev` database is `launch_sessdev_<slug>` on `SESSION_LOCAL_DB_URL`, made by its first session.
+ *   what `pnpm seed` creates), with a production environment on the Neon project `--neon-project`:
+ *   a session's database is ALWAYS a real Neon branch (its `dev` branch is made by the first
+ *   session), so a local app needs a Neon project too — a throwaway one of your own, reached with
+ *   the Neon credential connected in Setup. Without it a session is refused `app_has_no_database`.
  * - Re-running is safe: an existing repo is kept, and the row is updated in place.
  */
 import { spawnSync } from 'node:child_process'
@@ -109,10 +111,20 @@ async function main() {
         eq(appEnvironments.name, 'production')
       )
     )
+  const neonProject = flag('neon-project')
+  const neon = neonProject ? { projectId: neonProject } : null
   if (!production) {
     await db
       .insert(appEnvironments)
-      .values({ tenantId: tenant.id, appId, name: 'production', workerName: slug })
+      .values({ tenantId: tenant.id, appId, name: 'production', workerName: slug, neon })
+  } else if (neon) {
+    await db
+      .update(appEnvironments)
+      .set({ neon })
+      .where(and(eq(appEnvironments.tenantId, tenant.id), eq(appEnvironments.id, production.id)))
+  }
+  if (!neon) {
+    console.warn('no --neon-project: a session needs the app’s Neon project (kept if it had one)')
   }
   console.log(`app ${slug} (${appId}) in tenant ${tenant.slug} → ${owner}/${slug}@main`)
   console.log(

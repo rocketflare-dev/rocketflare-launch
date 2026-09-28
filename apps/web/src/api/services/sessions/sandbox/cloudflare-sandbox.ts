@@ -37,7 +37,7 @@ import {
   type SandboxPort,
   type SandboxProcess,
   type SandboxStartOptions,
-  SESSION_BASE_ALLOWED_HOSTS,
+  sessionAllowedHosts,
 } from '../ports'
 
 /** The SDK's own idle sleep — a backstop for a dead Workflow, well past the idle policy. */
@@ -46,17 +46,8 @@ export const SESSION_SANDBOX_SLEEP_AFTER = '90m'
 /** Default command timeout when a caller gives none (`pnpm install` on a cold store is ~20 s). */
 const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000
 
-/** The extra host a LOCAL sandbox needs: the laptop (the Neon proxy, the local git server). */
-export const LOCAL_SANDBOX_HOST = 'host.docker.internal'
-
 export interface CloudflareSandboxOptions {
   cfg: AppConfig
-}
-
-/** The allow-list a session's container runs with: the base, plus the laptop when local. */
-export function sessionAllowedHosts(cfg: AppConfig, extra: readonly string[] = []): string[] {
-  const local = cfg.SESSION_BACKEND === 'local' ? [LOCAL_SANDBOX_HOST] : []
-  return [...new Set([...SESSION_BASE_ALLOWED_HOSTS, ...local, ...extra])]
 }
 
 /** Quote one argument for `bash -c '…'`. */
@@ -180,7 +171,7 @@ export class CloudflareSandbox implements SandboxPort {
   async start(opts: SandboxStartOptions = {}): Promise<void> {
     await mapped(async () => {
       // The allow-list first, so nothing the container does before it is on the base list only.
-      await this.sandbox.setAllowedHosts(sessionAllowedHosts(this.opts.cfg, opts.extraAllowedHosts))
+      await this.sandbox.setAllowedHosts(sessionAllowedHosts(opts.extraAllowedHosts))
       // The first command boots the container; `true` is the cheapest one.
       const probe = await this.sandbox.exec('true')
       if (probe.exitCode !== 0) throw new Error('The session container did not start')

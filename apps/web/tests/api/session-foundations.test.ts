@@ -247,10 +247,13 @@ describe('defaultSessionPorts', () => {
     const local = defaultSessionPorts(localEnv, loadConfig(localEnv))
     expect(local.repoHost(db).gitUpstream({ owner: 'o', repo: 'r' })).toBe('http://localhost:9420')
     expect(await local.repoHost(db).gitAuth({ owner: 'o', repo: 'r' })).toBeNull()
-    // No SESSION_LOCAL_DB_URL: the local database port refuses by name.
-    await expect(local.sessionDb(db).devUriFor({ slug: 'demo' } as never)).rejects.toThrow(
-      /SESSION_LOCAL_DB_URL/
-    )
+    // The database is a real Neon branch under `local` too: no Neon project, no database.
+    await expect(
+      local.sessionDb(db).createBranch({ slug: 'x', neonProjectId: null } as never, {
+        id: 'x',
+        shortId: 'y',
+      })
+    ).rejects.toThrow(/no Neon project/)
     expect(stubs(env).sessionWorkflow?.created).toEqual([])
   })
 })
@@ -262,8 +265,8 @@ describe('the fakes', () => {
       .onExec('exit 3', () => ({ exitCode: 3, stderr: 'nope' }))
       .onProcess(/pnpm dev/, { lines: ['ready'], ports: [5173], hang: true })
       .onPort(5173, () => new Response('<h1>app</h1>'))
-    await sandbox.start({ extraAllowedHosts: ['host.docker.internal'] })
-    expect(sandbox.allowedHosts).toContain('host.docker.internal')
+    await sandbox.start({ extraAllowedHosts: ['ep-x.us-east-2.aws.neon.tech'] })
+    expect(sandbox.allowedHosts).toContain('ep-x.us-east-2.aws.neon.tech')
     expect((await sandbox.exec('git clone x')).stdout).toBe('cloned')
     expect((await sandbox.exec('bash -c "exit 3"')).exitCode).toBe(3)
     expect((await sandbox.exec('ls')).exitCode).toBe(0)

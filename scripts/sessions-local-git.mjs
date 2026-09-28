@@ -16,8 +16,10 @@
  * `--ref` (a tag such as the kit's `0.15.0`), which is what a session branches from.
  *
  * `serve` runs `git http-backend` (git's own CGI) per request — the one server that speaks the
- * protocol exactly as git expects, v2 included. It binds 0.0.0.0 so a container can reach it as
- * `host.docker.internal`; it takes no credential, so run it only on a machine you trust.
+ * protocol exactly as git expects, v2 included. A session's container never reaches it directly:
+ * it clones `https://github.com/…`, and Launch's git egress handler (in the Worker) forwards that to
+ * `SESSION_LOCAL_GIT_URL`. It binds 0.0.0.0 and takes no credential, so run it only on a machine
+ * you trust.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync } from 'node:fs'

@@ -44,9 +44,9 @@ export const APP_ROLE = 'app'
 export const APP_DATABASE = 'app'
 export const STAGING_BRANCH = 'staging'
 const OWNER_ROLE = 'neondb_owner'
-const OWNER_DATABASE = 'neondb'
+export const OWNER_DATABASE = 'neondb'
 /** The group Neon's role API puts every role it creates in. */
-const NEON_SUPERUSER = 'neon_superuser'
+export const NEON_SUPERUSER = 'neon_superuser'
 /** The only extension the kit's migrations create. */
 const EXTENSIONS = ['vector'] as const
 /** `CREATE ROLE <name> <attributes>` for each role the step creates, in order. */
@@ -96,24 +96,27 @@ export function quoteLiteral(value: string): string {
 }
 
 /** A random password for a role the API resets before anyone uses it (192 bits, hex). */
-function throwawayPassword(): string {
+export function throwawayPassword(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(24))
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Neon's HTTP SQL answers a boolean as `t`/`f` text; a driver would parse it. Accept both. */
-function isTrue(value: unknown): boolean {
+export function isTrue(value: unknown): boolean {
   return value === true || value === 't' || value === 'true'
 }
 
-/** `neondb_owner` on `main`, with one freshly minted password, able to reach any database. */
-interface OwnerSession {
+/**
+ * `neondb_owner` on a branch (`main` here, a session app's `dev` in `NeonSessionDb`), with one
+ * freshly minted password, able to reach any database.
+ */
+export interface OwnerSession {
   sql(database: string, query: string, params?: readonly unknown[]): Promise<NeonSqlResult>
 }
 
-async function ownerSession(
+export async function ownerSession(
   client: NeonClient,
-  ctx: StepContext,
+  ctx: Pick<StepContext, 'redact'>,
   projectId: string,
   branchId: string
 ): Promise<OwnerSession> {

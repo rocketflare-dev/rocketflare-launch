@@ -26,7 +26,7 @@ Config tests run with `pnpm --dir apps/web exec vitest run --project config <fil
 | 8 | Analytics plugin points at `docs/ADAPTING.md` §2 for something §2 no longer covers | rocketflare-plugins | Not filed |
 | 9 | `docs/DEPLOYER.md` does not say what a version upload leaves out | rocketflare | Not filed |
 | 10 | Bootstrap refuses to run as root, with no opt-out for a container | rocketflare | Not filed |
-| 11 | `--driver neon --db-url` refuses any host but `*.neon.tech`, even with `NEON_LOCAL_PROXY` | rocketflare | Not filed |
+| 11 | `--driver neon --db-url` refuses any host but `*.neon.tech`, even with `NEON_LOCAL_PROXY` (no longer hit by Launch) | rocketflare | Not filed |
 | 12 | `rename.mjs`'s `pnpm install` is frozen under `CI=true` and fails after the rename | rocketflare | Not filed |
 
 Related issues already filed, not repeated below:
@@ -480,9 +480,9 @@ NEON_LOCAL_PROXY=http://localhost:4444 node scripts/bootstrap.mjs \
 **Suggested fix.** Accept any host when `NEON_LOCAL_PROXY` is set (the proxy routes by database,
 not host), or check for the proxy instead of the host.
 
-**Launch workaround.** A local session's database URL uses the host `launch-local.neon.tech`,
-which is never resolved: `NEON_LOCAL_PROXY` sends every query to the proxy
-(`LOCAL_NEON_HOST` in `apps/web/src/api/services/sessions/db/local-session-db.ts`).
+**Launch workaround.** None needed any more: a session's database is always a real Neon branch
+(the local-Postgres session database and its `launch-local.neon.tech` host were removed), so Launch
+no longer hits this. Still a kit gap for anyone else.
 
 **Status.** Not filed.
 

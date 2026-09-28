@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Coding sessions boot their app's database under `wrangler dev`. The first real session
+  (hola-world) failed at the kit bootstrap's `4/10 database` with "The service was stopped": Launch
+  ran on a laptop with `SESSION_BACKEND` unset, so the amd64 container ran under emulation WITHOUT
+  `GOGC=off` and `tsx`'s esbuild crashed in its garbage collector on every `db:check` attempt.
+  `GOGC=off GOMEMLIMIT=1536MiB` now follows `APP_ENV=development` (every `wrangler dev` container)
+  rather than `SESSION_BACKEND=local`. Behind it, the database was unreachable anyway: the
+  sandbox's allow-list had no Neon host. Before the bootstrap runs, the allow-list now gains EXACTLY
+  the Neon endpoint of the database it is handed (plus that region's `api.` host for the driver's
+  HTTP queries), replacing any earlier one, and never a wildcard; the app runs `DATABASE_DRIVER=neon`
+  with no proxy. A session's database is ALWAYS a real Neon branch, `SESSION_BACKEND=local`
+  included: the local-Postgres `LocalSessionDb`, `SESSION_LOCAL_DB_URL`, `SESSION_LOCAL_NEON_PROXY`
+  and `host.docker.internal` on the sandbox's allow-list are gone (`pnpm sessions:local-app` takes
+  `--neon-project`). `session_owner` is now created IN SQL by `neondb_owner` (`LOGIN CREATEROLE`,
+  `vector` made as the owner), no longer through Neon's role API as a `neon_superuser` member; an
+  app `dev` branch made the old way is repaired on the next session and prepared again.
 - The launch step list no longer shows an attempt counter ("×8") or "failed after N attempts":
   the count summed every Retry and Re-scaffold and never reset. The API still reports `attempt`.
 - Re-scaffold no longer refuses an app just because a deploy job was handed the migrator

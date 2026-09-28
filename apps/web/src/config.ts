@@ -205,11 +205,11 @@ const coreConfigSchema = z.object({
   OIDC_TRUST_EMAIL: optionalBoolean(false),
 
   /**
-   * Launch P3 (coding sessions): where a session's sandbox, database and repo live. `cloud` —
-   * Cloudflare Sandbox, a Neon branch, GitHub (the tomls). `local` — `wrangler dev`'s local
-   * containers, a database cloned on the local Postgres, the local git server
-   * (`docs/SESSIONS-LOCAL.md`). `loadConfig` refuses `local` outside `APP_ENV=development`: it
-   * points sessions at a laptop's Postgres and git.
+   * Launch P3 (coding sessions): where a session's repo lives. `cloud` — GitHub (the tomls).
+   * `local` — the local git server (`docs/SESSIONS-LOCAL.md`). Either way the database is a real
+   * Neon branch of the app's project and the container is the platform's (`wrangler dev`'s own
+   * locally). `loadConfig` refuses `local` outside `APP_ENV=development`: it points sessions at a
+   * laptop's git.
    */
   SESSION_BACKEND: z.preprocess(
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
@@ -245,14 +245,6 @@ const coreConfigSchema = z.object({
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().url().optional()
   ),
-  /**
-   * `SESSION_BACKEND=local`: the Neon proxy as a CONTAINER reaches it
-   * (`http://host.docker.internal:<port>`) — a locked sandbox speaks only HTTP(S) to Postgres (S7).
-   */
-  SESSION_LOCAL_NEON_PROXY: z.preprocess(
-    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
-    z.string().url().optional()
-  ),
 
   // ---- Secrets (.dev.vars locally, `wrangler secret put` deployed) — all optional here;
   //      features gate on presence (zero-creds first run) or demand them at use time. -------
@@ -271,11 +263,6 @@ const coreConfigSchema = z.object({
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().url().optional()
   ),
-  /**
-   * `SESSION_BACKEND=local`: an owner connection to the local Postgres that sessions clone their
-   * databases on (`CREATE DATABASE launch_sess_<short> TEMPLATE launch_sessdev_<slug>`). A secret.
-   */
-  SESSION_LOCAL_DB_URL: optionalString,
   /** AES-GCM key for OAuth tokens at rest (D12). */
   OAUTH_ENCRYPTION_KEY: optionalSecret(32),
   RESEND_API_KEY: optionalString,

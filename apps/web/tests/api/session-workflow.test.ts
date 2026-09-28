@@ -540,7 +540,7 @@ describe('SessionWorkflow: the loop', () => {
       baseSha: BASE_SHA,
       dbUriSealed: await encryptToken(
         cfg,
-        'postgresql://session_owner:pw@ep-x.neon.tech/session_app'
+        'postgresql://session_owner:pw@ep-x.us-east-2.aws.neon.tech/session_app'
       ),
     })
     const run = await drive(h, async () => {
