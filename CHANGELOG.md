@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New apps are scaffolded from Rocketflare kit 0.15.2 (the default template pin): a hyphenated
+  slug now gets the `<snake>_` API-key prefix its tests expect, so the app's first CI gate is green.
 - The scaffold job skips its rocketflare#37 patch when the kit already carries `KIT.preservedPattern`
   (kit 0.15.2+, where the rename keeps `rocketflare-dev/` references itself); older pins are still
   patched.
