@@ -137,6 +137,7 @@ export default function SessionPage() {
               canManage={session.viewerCanManage}
               onResume={() => resume.mutate()}
               resuming={resume.isPending}
+              appSlug={slug}
             />
           </div>
         </div>

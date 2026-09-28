@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Coding sessions no longer stall silently. Every sandbox call a boot step makes has a deadline
+  and a readable error ("Installing and seeding: the sandbox (setAllowedHosts) did not answer within
+  90 s"), and so does every Neon call; a failed install, bootstrap or dev server shows its last 40
+  lines of output (database URI scrubbed) on the checklist and the failed session's page, which now
+  offers "Start a new session". A container that died and came back empty (Docker's OOM killer on a
+  laptop) fails the step with a sentence that says so instead of a bare "HTTP error 500" and minutes of
+  waiting on nothing; the dev server's wait fails at once when its process exits. End during a boot
+  step takes effect within 10 seconds ("Ending…"). A boot whose Workflow died — a `wrangler dev`
+  reload, which a build rewriting `dist/ui` in the same checkout also triggers — is settled on the
+  session page's read, on End and by the five-minute cron, and a settled session whose cleanup never
+  ran has its container destroyed and its Neon branch deleted. An app's `dev` database left
+  `preparing` by a session that died is prepared again by the next one. `docs/SESSIONS-LOCAL.md`
+  § Memory: one session wants ~4 GB under emulation; give Docker 12 GB.
 - Coding sessions boot their app's database under `wrangler dev`. The first real session
   (hola-world) failed at the kit bootstrap's `4/10 database` with "The service was stopped": Launch
   ran on a laptop with `SESSION_BACKEND` unset, so the amd64 container ran under emulation WITHOUT

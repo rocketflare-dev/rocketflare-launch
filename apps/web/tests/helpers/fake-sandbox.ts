@@ -25,6 +25,12 @@
  *   `streamLogs` yields its first chunk and then throws it. The container is gone afterwards, so
  *   files, ports and processes are wiped (`interruptions` counts them) — resume must clone again.
  * - `failNext(method, error)` — the next call of `method` throws `error` once.
+ * - `hangNext(method)` — the next call of `method` never answers (a stuck Durable Object RPC): what
+ *   the steps' deadlines (`services/sessions/deadline.ts`) are for.
+ * - `recreate()` — the container died and came back EMPTY (Docker's OOM killer on a laptop): files,
+ *   ports and processes are gone, no error is thrown. The boot marker check is what notices.
+ * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
+ *   and no hanging process is alive (a dev server that exited).
  *
  * Inspect: `execs` (`{ command, opts, result }`), `processes` (`{ id, command, opts, killed,
  * exitCode }`), `killed` (process ids, in order), `files` (path → text), `ports`, `allowedHosts`,
@@ -37,7 +43,9 @@ import {
   type SandboxLogEvent,
   type SandboxPort,
   type SandboxProcess,
+  SandboxProcessExitedError,
   type SandboxStartOptions,
+  type SandboxWaitForPortOptions,
   SESSION_BASE_ALLOWED_HOSTS,
 } from '@/api/services/sessions/ports'
 
@@ -105,6 +113,8 @@ export class FakeSandbox implements SandboxPort {
   private readonly execScripts: { match: Match; script: ExecScript }[] = []
   private readonly processScripts: { match: Match; script: ProcessScript }[] = []
   private readonly failures = new Map<Method, Error>()
+  private readonly hangs = new Set<Method>()
+  recreations = 0
   private readonly killWaiters = new Map<string, () => void>()
   private interruptArmed = false
   private nextPid = 1
@@ -151,9 +161,32 @@ export class FakeSandbox implements SandboxPort {
     return this
   }
 
+  hangNext(method: Method): this {
+    this.hangs.add(method)
+    return this
+  }
+
+  /** The container died and came back empty — see the header. */
+  recreate(): this {
+    this.recreations++
+    this.files.clear()
+    this.ports.clear()
+    for (const p of this.processes) {
+      if (p.exitCode === null) {
+        p.exitCode = -1
+        this.killWaiters.get(p.id)?.()
+      }
+    }
+    return this
+  }
+
   // ---- SandboxPort -----------------------------------------------------------------------------
 
-  private guard(method: Method): void {
+  private async guard(method: Method): Promise<void> {
+    if (this.hangs.has(method)) {
+      this.hangs.delete(method)
+      await new Promise<never>(() => {})
+    }
     const failure = this.failures.get(method)
     if (failure) {
       this.failures.delete(method)
@@ -173,7 +206,7 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async start(opts: SandboxStartOptions = {}): Promise<void> {
-    this.guard('start')
+    await this.guard('start')
     this.started = true
     this.destroyed = false
     this.startCount++
@@ -183,7 +216,7 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async exec(command: string, opts?: SandboxExecOptions): Promise<SandboxExecResult> {
-    this.guard('exec')
+    await this.guard('exec')
     if (this.interruptArmed) this.interrupt()
     const script = this.execScripts.find(s => matches(s.match, command))?.script
     const partial = typeof script === 'function' ? await script(command, opts) : (script ?? {})
@@ -193,7 +226,7 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async startProcess(command: string, opts?: SandboxExecOptions): Promise<SandboxProcess> {
-    this.guard('startProcess')
+    await this.guard('startProcess')
     const script = this.processScripts.find(s => matches(s.match, command))?.script ?? { lines: [] }
     const id = `proc-${this.nextPid++}`
     this.processes.push({ id, command, opts, script, killed: false, exitCode: null })
@@ -205,7 +238,7 @@ export class FakeSandbox implements SandboxPort {
     processId: string,
     opts: { signal?: AbortSignal } = {}
   ): AsyncIterable<SandboxLogEvent> {
-    this.guard('streamLogs')
+    await this.guard('streamLogs')
     const proc = this.processes.find(p => p.id === processId)
     if (!proc) throw new Error(`FakeSandbox: no process ${processId}`)
     const interrupting = this.interruptArmed
@@ -231,7 +264,7 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async kill(processId: string): Promise<void> {
-    this.guard('kill')
+    await this.guard('kill')
     const proc = this.processes.find(p => p.id === processId)
     if (!proc) return
     proc.killed = true
@@ -239,8 +272,14 @@ export class FakeSandbox implements SandboxPort {
     this.killWaiters.get(processId)?.()
   }
 
-  async waitForPort(port: number, opts: { path?: string; timeoutMs?: number } = {}): Promise<void> {
-    this.guard('waitForPort')
+  async waitForPort(port: number, opts: SandboxWaitForPortOptions = {}): Promise<void> {
+    await this.guard('waitForPort')
+    const alive = this.processes.some(p => p.script.hang && !p.killed && p.exitCode === null)
+    if (!this.ports.has(port) && opts.pidFile && !alive) {
+      throw new SandboxProcessExitedError(
+        `The process that should open port ${port} exited before it answered`
+      )
+    }
     if (!this.ports.has(port)) {
       throw new Error(
         `FakeSandbox: port ${port} never opened (timeout ${opts.timeoutMs ?? 'default'})`
@@ -249,22 +288,22 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    this.guard('writeFile')
+    await this.guard('writeFile')
     this.files.set(path, content)
   }
 
   async readFile(path: string): Promise<string | null> {
-    this.guard('readFile')
+    await this.guard('readFile')
     return this.files.get(path) ?? null
   }
 
   async setAllowedHosts(hosts: readonly string[]): Promise<void> {
-    this.guard('setAllowedHosts')
+    await this.guard('setAllowedHosts')
     this.allowedHosts = [...hosts]
   }
 
   async fetch(port: number, req: Request): Promise<Response> {
-    this.guard('fetch')
+    await this.guard('fetch')
     this.fetches.push({ port, url: req.url, method: req.method })
     if (!this.ports.has(port))
       return new Response(`FakeSandbox: port ${port} is closed`, { status: 502 })
@@ -273,7 +312,7 @@ export class FakeSandbox implements SandboxPort {
   }
 
   async destroy(): Promise<void> {
-    this.guard('destroy')
+    await this.guard('destroy')
     this.destroyed = true
     this.started = false
     this.destroyCount++

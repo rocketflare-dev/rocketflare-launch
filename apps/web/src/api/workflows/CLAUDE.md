@@ -99,7 +99,13 @@ wrapped in `withProgress`, which writes the boot checklist's `step` events) → 
 `ship#N` (3d's `ship`), `suspend#N`, `resume#N` → `sandbox.start#K … transcript#K`, `end#N` →
 `fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless
 `shipped`/`failed`, audit `session.ended`). A pending message after boot or resume runs at once
-(`inspect` before any wait).
+(`inspect` before any wait). `sandbox.start` returns a `bootId` (written into the container); the
+boot steps after it take that id as a closure argument and refuse a container that no longer
+carries it (`SandboxRestartedError`). Every boot step runs under `withProgress`, which also polls
+the row (an End stops the step — `fail` then settles `ending`, not `failed`) and writes the
+heartbeat `services/sessions/reconcile.ts` reads; `claim` sends an `ending` session, and a settled
+one with no `ended_at`, straight to `cleanup` — which is how the reconcile's fresh instance cleans
+up. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) for tests.
 
 The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
 bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`

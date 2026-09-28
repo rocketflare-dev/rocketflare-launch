@@ -36,7 +36,9 @@ import {
   type SandboxLogEvent,
   type SandboxPort,
   type SandboxProcess,
+  SandboxProcessExitedError,
   type SandboxStartOptions,
+  type SandboxWaitForPortOptions,
   sessionAllowedHosts,
 } from '../ports'
 
@@ -58,6 +60,29 @@ export function shellQuote(value: string): string {
 /** `command` wrapped so an `exit` in it ends a subshell, never the sandbox's session shell. */
 export function inSubshell(command: string): string {
   return `bash -c ${shellQuote(command)}`
+}
+
+/** `waitForPort`'s script exits with this when the `pidFile` process is gone. */
+export const PROCESS_EXITED_CODE = 3
+
+const waitSeconds = (opts: SandboxWaitForPortOptions) =>
+  Math.max(1, Math.ceil((opts.timeoutMs ?? 120_000) / 1000))
+
+/**
+ * The port poller: the SDK waits on a PROCESS, so a port is waited for with a tiny loop of its own
+ * (a dev server started by an earlier step, or a resumed one, can be waited on too). With
+ * `pidFile` it also checks, every half second, that the process which should open the port is
+ * alive — a dev server that crashed fails the wait at once instead of after `timeoutMs`.
+ */
+export function waitForPortScript(port: number, opts: SandboxWaitForPortOptions = {}): string {
+  const url = `http://127.0.0.1:${port}${opts.path ?? '/'}`
+  const probe = opts.path
+    ? `code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 ${shellQuote(url)}); [ "\${code:0:1}" = "2" ]`
+    : `curl -s -o /dev/null -m 2 ${shellQuote(url)}`
+  const alive = opts.pidFile
+    ? `pid=$(cat ${shellQuote(opts.pidFile)} 2>/dev/null); if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then exit ${PROCESS_EXITED_CODE}; fi; `
+    : ''
+  return `for i in $(seq 1 ${waitSeconds(opts) * 2}); do if ${probe}; then exit 0; fi; ${alive}sleep 0.5; done; exit 1`
 }
 
 const INTERRUPTED_NAMES = new Set(['OperationInterruptedError', 'SessionTerminatedError'])
@@ -224,18 +249,17 @@ export class CloudflareSandbox implements SandboxPort {
     return mapped(() => this.sandbox.killProcess(processId, signal))
   }
 
-  async waitForPort(port: number, opts: { path?: string; timeoutMs?: number } = {}): Promise<void> {
-    // The SDK waits on a PROCESS; a port is waited for with a tiny poller of its own, so a dev
-    // server started by an earlier step (or a resumed one) can be waited on too.
-    const timeoutS = Math.max(1, Math.ceil((opts.timeoutMs ?? 120_000) / 1000))
-    const url = `http://127.0.0.1:${port}${opts.path ?? '/'}`
-    const probe = opts.path
-      ? `code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 ${shellQuote(url)}); [ "\${code:0:1}" = "2" ]`
-      : `curl -s -o /dev/null -m 2 ${shellQuote(url)}`
-    const script = `for i in $(seq 1 ${timeoutS * 2}); do if ${probe}; then exit 0; fi; sleep 0.5; done; exit 1`
-    const result = await this.exec(script, { timeoutMs: (timeoutS + 30) * 1000 })
+  async waitForPort(port: number, opts: SandboxWaitForPortOptions = {}): Promise<void> {
+    const result = await this.exec(waitForPortScript(port, opts), {
+      timeoutMs: (waitSeconds(opts) + 30) * 1000,
+    })
+    if (result.exitCode === PROCESS_EXITED_CODE) {
+      throw new SandboxProcessExitedError(
+        `The process that should open port ${port} exited before it answered`
+      )
+    }
     if (result.exitCode !== 0) {
-      throw new Error(`Port ${port}${opts.path ?? ''} did not answer within ${timeoutS}s`)
+      throw new Error(`Port ${port}${opts.path ?? ''} did not answer within ${waitSeconds(opts)}s`)
     }
   }
 

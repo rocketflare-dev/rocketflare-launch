@@ -17,13 +17,14 @@
  *   on ship, on failure (S7 finding 9: a leftover container counts against `max_instances`).
  */
 import {
+  ACTIVE_SESSION_STATUSES,
   previewLabel,
   previewUrl,
   resolveSessionPolicy,
   type SessionStatus,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { appEnvironments, apps, type SessionRow, sessions } from '../../../db/schema'
@@ -34,12 +35,19 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
+import {
+  boundedSandbox,
+  SESSION_CALL_LIMITS,
+  type SessionCallLimits,
+  withDeadline,
+} from './deadline'
 import { createSessionEmitter, nudgeSession, type SessionEmitter, safeErrorMessage } from './events'
 import type { CheckpointReason, SessionStepContext, SessionStepHooks, TurnOutcome } from './hooks'
 import { sessionsPaused } from './lifecycle'
 import {
   SandboxInterruptedError,
   type SandboxPort,
+  SandboxRestartedError,
   type SessionAppRef,
   type SessionPorts,
 } from './ports'
@@ -48,6 +56,7 @@ import {
   claudeTranscriptPath,
   previewHostSuffix,
   SESSION_IMAGE_VERSION,
+  SESSION_LAUNCH_DIR,
   SESSION_UI_PORT,
   SESSION_WORKSPACE,
   type SessionDevEnv,
@@ -66,6 +75,22 @@ export interface StepScope {
   logger: Logger
   now: () => Date
   params: { sessionId: string; tenantId: string }
+  /** The deadlines and poll intervals (`deadline.ts`); tests pass smaller ones. */
+  limits?: SessionCallLimits
+  /** The boot step running (its checklist label) — what a timeout names. Set by `withProgress`. */
+  phase?: string
+}
+
+export const limitsOf = (scope: Pick<StepScope, 'limits'>): SessionCallLimits =>
+  scope.limits ?? SESSION_CALL_LIMITS
+
+/** A vendor call (Neon) from a step, bounded: `<phase>: <what> did not answer within N min`. */
+function vendorCall<T>(scope: StepScope, what: string, work: () => Promise<T>): Promise<T> {
+  return withDeadline(
+    scope.phase ? `${scope.phase}: ${what}` : what,
+    limitsOf(scope).vendorMs,
+    work
+  )
 }
 
 // ---- rows --------------------------------------------------------------------------------------
@@ -165,20 +190,76 @@ async function saveAppSessionDb(
     .where(and(eq(apps.tenantId, scope.params.tenantId), eq(apps.id, appId)))
 }
 
+/** A `preparing` claim older than this is abandoned (its session died without saying so). */
+export const PREPARE_STALE_MS = 30 * 60_000
+
+const ACTIVE_STATUS_SQL = sql.raw(ACTIVE_SESSION_STATUSES.map(status => `'${status}'`).join(', '))
+
 /**
- * Claim the app's `dev` for preparing: `none | failed → preparing`, atomically on the jsonb. False
- * when another session is preparing it (or it is ready) — that session's branch then comes from
- * an unprepared `dev` and its own bootstrap migrates and seeds it (the slow path, still correct).
+ * Claim the app's `dev` for preparing: `none | failed → preparing`, atomically on the jsonb, with
+ * who claimed it and when (`preparingSessionId`, `preparingSince`). False when another session is
+ * preparing it (or it is ready) — that session's branch then comes from an unprepared `dev` and its
+ * own bootstrap migrates and seeds it (the slow path, still correct).
+ *
+ * **A stuck `preparing` is claimable again**: when the session holding it is no longer active
+ * (failed, ended — or the claim predates these fields) or the claim is older than
+ * {@link PREPARE_STALE_MS}. Without this, a prepare run that died without reaching its `catch` (a
+ * `wrangler dev` reload, a crashed container, a terminated instance) left `preparing` for ever and
+ * no later session prepared `dev` again.
  */
 async function claimDevPrepare(scope: StepScope, appId: string): Promise<boolean> {
+  const now = scope.now()
+  const staleBefore = new Date(now.getTime() - PREPARE_STALE_MS).toISOString()
+  const claim = JSON.stringify({
+    status: 'preparing',
+    preparingSessionId: scope.params.sessionId,
+    preparingSince: now.toISOString(),
+  })
+  const tenantId = scope.params.tenantId
   const updated = await scope.db
     .update(apps)
-    .set({ sessionDb: sql`jsonb_set(${apps.sessionDb}, '{status}', '"preparing"')` })
+    .set({ sessionDb: sql`coalesce(${apps.sessionDb}, '{}'::jsonb) || ${claim}::jsonb` })
     .where(
       and(
-        eq(apps.tenantId, scope.params.tenantId),
+        eq(apps.tenantId, tenantId),
         eq(apps.id, appId),
-        sql`coalesce(${apps.sessionDb}->>'status', 'none') in ('none', 'failed')`
+        or(
+          sql`coalesce(${apps.sessionDb}->>'status', 'none') in ('none', 'failed')`,
+          and(
+            sql`${apps.sessionDb}->>'status' = 'preparing'`,
+            or(
+              sql`${apps.sessionDb}->>'preparingSessionId' = ${scope.params.sessionId}`,
+              sql`coalesce(${apps.sessionDb}->>'preparingSince', '') < ${staleBefore}`,
+              sql`not exists (select 1 from ${sessions} where ${sessions.tenantId} = ${tenantId} and ${sessions.id}::text = ${apps.sessionDb}->>'preparingSessionId' and ${sessions.status} in (${ACTIVE_STATUS_SQL}))`
+            )
+          )
+        )
+      )
+    )
+    .returning({ id: apps.id })
+  return updated.length > 0
+}
+
+/**
+ * Give the app's `dev` back when THIS session held the prepare claim and is going away without
+ * finishing it: `preparing → failed`, so the next session prepares again at once. A no-op when
+ * the claim is someone else's or already settled. Called by `fail`, `cleanup` and the reconcile.
+ */
+export async function releaseDevPrepare(
+  db: Database,
+  ref: { tenantId: string; appId: string; sessionId: string }
+): Promise<boolean> {
+  const updated = await db
+    .update(apps)
+    .set({
+      sessionDb: sql`(${apps.sessionDb} || '{"status":"failed"}'::jsonb) - 'preparingSessionId' - 'preparingSince'`,
+    })
+    .where(
+      and(
+        eq(apps.tenantId, ref.tenantId),
+        eq(apps.id, ref.appId),
+        sql`${apps.sessionDb}->>'status' = 'preparing'`,
+        sql`${apps.sessionDb}->>'preparingSessionId' = ${ref.sessionId}`
       )
     )
     .returning({ id: apps.id })
@@ -187,8 +268,50 @@ async function claimDevPrepare(scope: StepScope, appId: string): Promise<boolean
 
 // ---- the sandbox side --------------------------------------------------------------------------
 
+/** The session's sandbox, every call bounded (`deadline.ts`) and named after the running step. */
 export function sandboxFor(scope: StepScope, session: Pick<SessionRow, 'id'>): SandboxPort {
-  return scope.ports.sandbox(session.id)
+  return boundedSandbox(scope.ports.sandbox(session.id), scope.phase, limitsOf(scope))
+}
+
+/**
+ * Where `sandbox.start` writes this boot's id. Every later boot step compares it with the id the
+ * start returned: a container that died and came back EMPTY (Docker's OOM killer on a laptop, the
+ * platform replacing it) has no marker, and the step says so (`SandboxRestartedError`) rather than
+ * cloning into nothing or curling a dev server that is not there.
+ */
+export const SESSION_BOOT_MARKER = `${SESSION_LAUNCH_DIR}/boot-id`
+
+/** True / false when the marker could be read; null when the sandbox could not even be asked. */
+async function containerIsOurs(sandbox: SandboxPort, bootId: string): Promise<boolean | null> {
+  try {
+    return (await sandbox.readFile(SESSION_BOOT_MARKER))?.trim() === bootId
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Run `work` in the container `bootId` booted: refused up front when the marker is gone, and a
+ * failure is re-explained as `SandboxRestartedError` when the marker vanished under it (the SDK's
+ * own error for that is a bare `HTTP error! status: 500`). No `bootId` (a caller outside the
+ * Workflow's boot) runs `work` as is.
+ */
+export async function inOurContainer<T>(
+  scope: StepScope,
+  sandbox: SandboxPort,
+  bootId: string | undefined,
+  work: () => Promise<T>
+): Promise<T> {
+  if (!bootId) return work()
+  const phase = scope.phase ?? 'booting'
+  if ((await containerIsOurs(sandbox, bootId)) === false) throw new SandboxRestartedError(phase)
+  try {
+    return await work()
+  } catch (err) {
+    if (err instanceof SandboxRestartedError) throw err
+    if ((await containerIsOurs(sandbox, bootId)) === false) throw new SandboxRestartedError(phase)
+    throw err
+  }
 }
 
 /** What the dev stack is told about where it is served from. */
@@ -276,7 +399,11 @@ export async function claimStep(scope: StepScope): Promise<ClaimResult> {
     return claimed ? { start: 'boot', kind: session.kind } : { start: 'skip', status: 'requested' }
   }
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(session.status)) {
-    return { start: 'skip', status: session.status }
+    // Settled but never cleaned up (its instance died between `fail` and `cleanup`, or it was
+    // settled by hand): an instance started by the reconcile does the cleanup now.
+    return session.endedAt === null
+      ? { start: 'cleanup' }
+      : { start: 'skip', status: session.status }
   }
   if (session.status === 'ending') return { start: 'cleanup' }
   if (session.status !== 'suspended') {
@@ -311,7 +438,7 @@ export async function dbStep(scope: StepScope): Promise<DbStepResult> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
   const port = scope.ports.sessionDb(scope.db)
-  const dev = await port.ensureDev(app)
+  const dev = await vendorCall(scope, "Neon (the app's dev branch)", () => port.ensureDev(app))
   await saveAppSessionDb(scope, app.id, dev)
   if (session.kind === 'prepare') {
     await claimDevPrepare(scope, app.id)
@@ -328,7 +455,9 @@ export async function dbStep(scope: StepScope): Promise<DbStepResult> {
 export async function branchStep(scope: StepScope): Promise<{ branched: true }> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
-  const branch = await scope.ports.sessionDb(scope.db).createBranch(app, session)
+  const branch = await vendorCall(scope, "Neon (the session's branch)", () =>
+    scope.ports.sessionDb(scope.db).createBranch(app, session)
+  )
   await updateSession(scope, {
     db: branch.db,
     dbUriSealed: await encryptToken(scope.cfg, branch.uri),
@@ -336,20 +465,39 @@ export async function branchStep(scope: StepScope): Promise<{ branched: true }> 
   return { branched: true }
 }
 
-/** Step `sandbox.start[#K]`. */
-export async function startSandboxStep(scope: StepScope): Promise<{ sandboxId: string }> {
+/**
+ * Step `sandbox.start[#K]`: boot the container and mark it (`SESSION_BOOT_MARKER`) — the `bootId`
+ * it returns is what every later boot step checks it is still talking to.
+ */
+export async function startSandboxStep(
+  scope: StepScope
+): Promise<{ sandboxId: string; bootId: string }> {
   const session = await loadSession(scope)
   const sandbox = sandboxFor(scope, session)
   await updateSession(scope, { sandboxId: sandbox.id })
   await sandbox.start()
-  return { sandboxId: sandbox.id }
+  const bootId = crypto.randomUUID()
+  await sandbox.writeFile(SESSION_BOOT_MARKER, bootId)
+  return { sandboxId: sandbox.id, bootId }
 }
 
 /** Step `repo[#K]`: clone and check out; `.claude/settings.local.json`. Returns the shas. */
-export async function repoStep(scope: StepScope): Promise<{ baseSha: string; headSha: string }> {
+export async function repoStep(
+  scope: StepScope,
+  bootId?: string
+): Promise<{ baseSha: string; headSha: string }> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
   const sandbox = sandboxFor(scope, session)
+  return inOurContainer(scope, sandbox, bootId, () => checkOut(scope, session, app, sandbox))
+}
+
+async function checkOut(
+  scope: StepScope,
+  session: SessionRow,
+  app: SessionAppRef,
+  sandbox: SandboxPort
+): Promise<{ baseSha: string; headSha: string }> {
   const result = await sandbox.exec(
     checkoutScript({
       url: repoCloneUrl(app),
@@ -377,24 +525,29 @@ export async function repoStep(scope: StepScope): Promise<{ baseSha: string; hea
  * Step `prepare`: the kit's migrate + seed into the app's `dev` (`devUriFor` resets the role's
  * password, so the URI is this run's alone), then `apps.session_db` → ready at the base commit.
  */
-export async function prepareStep(scope: StepScope): Promise<{ prepared: true }> {
+export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ prepared: true }> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
   const port = scope.ports.sessionDb(scope.db)
-  const dev = app.sessionDb ?? (await port.ensureDev(app))
+  const dev =
+    app.sessionDb ??
+    (await vendorCall(scope, "Neon (the app's dev branch)", () => port.ensureDev(app)))
+  // The claim fields go when the prepare settles, either way.
+  const { preparingSessionId: _holder, preparingSince: _since, ...settled } = dev
   try {
-    const uri = await port.devUriFor({ ...app, sessionDb: dev })
-    await sessionBootstrap({
-      sandbox: sandboxFor(scope, session),
-      dbUri: uri,
-      dev: devEnvFor(scope.cfg, session),
-    })
+    const uri = await vendorCall(scope, "Neon (the dev branch's password)", () =>
+      port.devUriFor({ ...app, sessionDb: dev })
+    )
+    const sandbox = sandboxFor(scope, session)
+    await inOurContainer(scope, sandbox, bootId, () =>
+      sessionBootstrap({ sandbox, dbUri: uri, dev: devEnvFor(scope.cfg, session) })
+    )
   } catch (err) {
-    await saveAppSessionDb(scope, app.id, { ...dev, status: 'failed' })
+    await saveAppSessionDb(scope, app.id, { ...settled, status: 'failed' })
     throw err
   }
   await saveAppSessionDb(scope, app.id, {
-    ...dev,
+    ...settled,
     status: 'ready',
     preparedCommit: session.baseSha,
     preparedAt: scope.now(),
@@ -404,22 +557,40 @@ export async function prepareStep(scope: StepScope): Promise<{ prepared: true }>
 
 /** Step `bootstrap[#K]`: the kit bootstrap against the session's own branch. */
 export async function bootstrapStep(
-  scope: StepScope
+  scope: StepScope,
+  bootId?: string
 ): Promise<{ installMs: number; bootstrapMs: number }> {
   const session = await loadSession(scope)
   const uri = await decryptToken(scope.cfg, session.dbUriSealed)
   if (!uri) throw new Error('The session has no database')
-  return sessionBootstrap({
-    sandbox: sandboxFor(scope, session),
-    dbUri: uri,
-    dev: devEnvFor(scope.cfg, session),
-  })
+  const sandbox = sandboxFor(scope, session)
+  return inOurContainer(scope, sandbox, bootId, () =>
+    sessionBootstrap({ sandbox, dbUri: uri, dev: devEnvFor(scope.cfg, session) })
+  )
 }
 
-/** Step `dev[#K]`: `pnpm dev`, both ports up → `ready` and `preview.ready`. */
-export async function devStep(scope: StepScope): Promise<{ ready: boolean }> {
+/**
+ * Step `dev[#K]`: `pnpm dev`, both ports up → `ready` and `preview.ready`. Between wait chunks it
+ * stops for an end request and for a container that died (`startDevServer`'s `checkpoint`).
+ */
+export async function devStep(
+  scope: StepScope,
+  bootId?: string,
+  opts: { chunkMs?: number } = {}
+): Promise<{ ready: boolean }> {
   const session = await loadSession(scope)
-  await startDevServer(sandboxFor(scope, session), devEnvFor(scope.cfg, session))
+  const sandbox = sandboxFor(scope, session)
+  await inOurContainer(scope, sandbox, bootId, () =>
+    startDevServer(sandbox, devEnvFor(scope.cfg, session), {
+      ...opts,
+      checkpoint: async () => {
+        await throwIfEndRequested(scope)
+        if (bootId && (await containerIsOurs(sandbox, bootId)) === false) {
+          throw new SandboxRestartedError(scope.phase ?? 'starting the dev server')
+        }
+      },
+    })
+  )
   const now = scope.now()
   const ready = await transition(scope, ['booting'], 'ready', {
     readyAt: session.readyAt ?? now,
@@ -438,16 +609,21 @@ export async function devStep(scope: StepScope): Promise<{ ready: boolean }> {
  * Step `transcript#K`: put Claude Code's transcript back where `--resume` finds it, from the R2
  * copy the last checkpoint made (`transcript_key`). Nothing to restore is not an error.
  */
-export async function restoreTranscriptStep(scope: StepScope): Promise<{ restored: boolean }> {
+export async function restoreTranscriptStep(
+  scope: StepScope,
+  bootId?: string
+): Promise<{ restored: boolean }> {
   const session = await loadSession(scope)
-  if (!session.transcriptKey || !session.claudeSessionId || !scope.env.FILES) {
+  const claudeSessionId = session.claudeSessionId
+  if (!session.transcriptKey || !claudeSessionId || !scope.env.FILES) {
     return { restored: false }
   }
   const object = await scope.env.FILES.get(session.transcriptKey)
   if (!object) return { restored: false }
-  await sandboxFor(scope, session).writeFile(
-    claudeTranscriptPath(session.claudeSessionId),
-    await object.text()
+  const text = await object.text()
+  const sandbox = sandboxFor(scope, session)
+  await inOurContainer(scope, sandbox, bootId, () =>
+    sandbox.writeFile(claudeTranscriptPath(claudeSessionId), text)
   )
   return { restored: true }
 }
@@ -470,23 +646,117 @@ export const BOOT_STEP_LABELS = {
 
 export type BootPhase = keyof typeof BOOT_STEP_LABELS
 
+/** How much of a failed boot step's reason the checklist and `sessions.error` carry. */
+export const BOOT_ERROR_MAX_CHARS = 4000
+
+/** The person asked to end the session while a boot step was running. */
+export class SessionEndRequestedError extends Error {
+  constructor() {
+    super('The session was ended while it was starting')
+    this.name = 'SessionEndRequestedError'
+  }
+}
+
+const endRequested = (row: Pick<SessionRow, 'status' | 'requestedAction'>) =>
+  row.requestedAction === 'end' ||
+  row.status === 'ending' ||
+  (TERMINAL_SESSION_STATUSES as readonly string[]).includes(row.status)
+
+/** Throw {@link SessionEndRequestedError} when the row says the session is being ended. */
+export async function throwIfEndRequested(scope: StepScope): Promise<void> {
+  const [row] = await scope.db
+    .select({ status: sessions.status, requestedAction: sessions.requestedAction })
+    .from(sessions)
+    .where(
+      and(eq(sessions.tenantId, scope.params.tenantId), eq(sessions.id, scope.params.sessionId))
+    )
+  if (row && endRequested(row)) throw new SessionEndRequestedError()
+}
+
+/** "I am alive": `last_activity_at` of a booting session — the clock `reconcile.ts` reads. */
+async function heartbeat(scope: StepScope): Promise<void> {
+  await scope.db
+    .update(sessions)
+    .set({ lastActivityAt: scope.now() })
+    .where(
+      and(
+        eq(sessions.tenantId, scope.params.tenantId),
+        eq(sessions.id, scope.params.sessionId),
+        inArray(sessions.status, ['requested', 'booting'])
+      )
+    )
+}
+
+/**
+ * Run a boot step's body while watching the row: every `endPollMs` an end request (or a session
+ * already ending) stops the step at once with {@link SessionEndRequestedError} — the Workflow then
+ * ends the session instead of failing it — and every `heartbeatMs` the session's heartbeat is
+ * written. The body cannot be cancelled; the container's destruction in `cleanup` ends it.
+ */
+async function watched<T>(scope: StepScope, body: Promise<T>): Promise<T> {
+  const limits = limitsOf(scope)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+  let lastBeat = Date.now()
+  const watcher = new Promise<never>((_, reject) => {
+    const tick = async () => {
+      if (stopped) return
+      try {
+        await throwIfEndRequested(scope)
+        if (Date.now() - lastBeat >= limits.heartbeatMs) {
+          lastBeat = Date.now()
+          await heartbeat(scope)
+        }
+      } catch (err) {
+        if (err instanceof SessionEndRequestedError) {
+          reject(err)
+          return
+        }
+        // A failed poll is not a failed step.
+      }
+      if (!stopped) timer = setTimeout(tick, limits.endPollMs)
+    }
+    timer = setTimeout(tick, limits.endPollMs)
+  })
+  try {
+    return await Promise.race([body, watcher])
+  } finally {
+    stopped = true
+    clearTimeout(timer)
+    body.catch(() => {})
+    watcher.catch(() => {})
+  }
+}
+
 export function withProgress<T>(
   phase: BootPhase,
   body: (scope: StepScope) => Promise<T>
 ): (scope: StepScope) => Promise<T> {
-  return async scope => {
-    const emit = emitterFor(scope)
+  return async outer => {
     const label = BOOT_STEP_LABELS[phase]
+    const scope: StepScope = { ...outer, phase: label }
+    const emit = emitterFor(scope)
+    // An end asked before (or between) steps: stop before starting anything.
+    await throwIfEndRequested(scope)
+    await heartbeat(scope)
     await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'running' } })
     try {
-      const result = await body(scope)
+      const result = await watched(scope, body(scope))
       await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'done' } })
       return result
     } catch (err) {
       await emit({
         type: 'step',
         turn: 0,
-        data: { key: phase, label, status: 'error', detail: safeErrorMessage(err).slice(0, 300) },
+        data: {
+          key: phase,
+          label,
+          status: 'error',
+          detail:
+            err instanceof SessionEndRequestedError
+              ? 'Stopped: the session is being ended'
+              : safeErrorMessage(err, 'The step failed', BOOT_ERROR_MAX_CHARS),
+        },
       })
       throw err
     }
@@ -743,10 +1013,24 @@ export async function endStep(scope: StepScope, reason: string): Promise<{ endin
   return { ending: row !== null }
 }
 
-/** Step `fail`: a boot or loop step gave up — `failed`, with a secret-free sentence. */
+/**
+ * Step `fail`: a boot or loop step gave up — `failed`, with a secret-free sentence. When the person
+ * had asked to END the session (a boot step stopped for it, `SessionEndRequestedError`), it is an
+ * end, not a failure: `ending`, and `cleanup` settles it `ended`. Either way a prepare claim this
+ * session held on the app's `dev` is given back (`releaseDevPrepare`).
+ */
 export async function failStep(scope: StepScope, message: string): Promise<void> {
   const session = await loadSession(scope)
+  await releaseDevPrepare(scope.db, {
+    tenantId: session.tenantId,
+    appId: session.appId,
+    sessionId: session.id,
+  })
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(session.status)) return
+  if (session.requestedAction === 'end' || session.status === 'ending') {
+    await endStep(scope, 'requested')
+    return
+  }
   await transition(
     scope,
     ['requested', 'booting', 'ready', 'working', 'blocked', 'suspended', 'shipping', 'ending'],
@@ -770,8 +1054,16 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
   await sandboxFor(scope, session).destroy()
   if (session.db && session.kind === 'session') {
     const app = await loadAppRef(scope, session.appId)
-    await scope.ports.sessionDb(scope.db).deleteBranch(app, session.db)
+    const db = session.db
+    await vendorCall(scope, "Deleting the session's database branch", () =>
+      scope.ports.sessionDb(scope.db).deleteBranch(app, db)
+    )
   }
+  await releaseDevPrepare(scope.db, {
+    tenantId: session.tenantId,
+    appId: session.appId,
+    sessionId: session.id,
+  })
   const now = scope.now()
   const keep = session.status === 'shipped' || session.status === 'failed'
   const [row] = await scope.db

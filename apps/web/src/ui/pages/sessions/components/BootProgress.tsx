@@ -56,9 +56,19 @@ export function BootProgress({
               )}
               <span className="min-w-0">
                 <span className={step.status === 'done' ? 'text-secondary' : ''}>{step.label}</span>
-                {step.detail && (
-                  <span className="block text-xs text-muted truncate">{step.detail}</span>
-                )}
+                {step.detail &&
+                  (step.status === 'error' ? (
+                    // A failed step carries the command's own output (the last ~40 lines): keep
+                    // its lines, and let it scroll rather than grow the pane.
+                    <pre
+                      className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-base-200 p-2 font-mono text-xs text-muted"
+                      data-testid="boot-step-error"
+                    >
+                      {step.detail}
+                    </pre>
+                  ) : (
+                    <span className="block text-xs text-muted truncate">{step.detail}</span>
+                  ))}
               </span>
             </li>
           ))}

@@ -16,9 +16,10 @@
  * here must never shadow `/:id/turns` there.
  */
 import { guardPermission } from '../middleware/permissions'
-import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
+import { getSessionRow, getVisibleSession, sessionViewerOf } from '../services/sessions/access'
 import { toSessionDetail } from '../services/sessions/chat'
 import { requestAction } from '../services/sessions/lifecycle'
+import { reconcileSessionSafely } from '../services/sessions/reconcile'
 import type { AppContext } from '../types'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
@@ -44,9 +45,16 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
 }
 
 sessionsRouter.get('/:id', async c => {
-  const { session } = await visibleSession(c, 'read')
+  const { db, logger, realtime, session } = await visibleSession(c, 'read')
+  // A boot whose Workflow died under it is settled here, throttled (`reconcile.ts`): a quiet
+  // session costs one compare-and-set per window, a fresh one nothing.
+  const reconciled = await reconcileSessionSafely(db, c.env, session, { logger, realtime })
+  const current =
+    reconciled.outcome === 'settled'
+      ? await getSessionRow(db, session.tenantId, session.id)
+      : session
   // Visible means drivable: the creator, the app's owners and admins (`access.ts`).
-  return c.json({ session: toSessionDetail(session, true) })
+  return c.json({ session: toSessionDetail(current, true) })
 })
 
 /** Resume a suspended session: `requested_action = 'resume'` + a wake → 202. */

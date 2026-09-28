@@ -45,10 +45,12 @@ import {
 import { SESSION_WAKE_EVENT, type SessionWorkflowParams } from '@launch/shared/launch-sessions'
 import { loadConfig } from '../../config'
 import { createStepRealtime } from '../services/agents/runtime'
+import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
 import { defaultSessionStepHooks, type SessionStepHooks } from '../services/sessions/hooks'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
 import {
+  BOOT_ERROR_MAX_CHARS,
   bootstrapStep,
   branchStep,
   checkpointStep,
@@ -86,6 +88,8 @@ export interface SessionWorkflowOverrides {
   /** A no-wait sleep for the polling helpers. */
   sleep?: (ms: number) => Promise<void>
   now?: () => Date
+  /** Smaller deadlines and poll intervals (`services/sessions/deadline.ts`). */
+  limits?: Partial<SessionCallLimits>
 }
 
 export interface SessionOutcome {
@@ -132,13 +136,14 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     const ports = this.overrides.ports ?? defaultSessionPorts(env, cfg)
     const hooks = this.overrides.hooks ?? defaultSessionStepHooks
     const now = this.overrides.now ?? (() => new Date())
+    const limits = { ...SESSION_CALL_LIMITS, ...this.overrides.limits }
 
     /** One step's scope: its own DB client and realtime, both closed when it ends. */
     const inStep = <T>(fn: (scope: StepScope) => Promise<T>): Promise<T> =>
       withStepDatabase(env, cfg, async db => {
         const { realtime, settle } = createStepRealtime(env, logger)
         try {
-          return await fn({ db, env, cfg, ports, hooks, realtime, logger, now, params })
+          return await fn({ db, env, cfg, ports, hooks, realtime, logger, now, params, limits })
         } finally {
           await settle()
         }
@@ -156,22 +161,46 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     try {
       if (claim.start === 'boot') {
         const db = await run('db', withProgress('db', dbStep), BOOT_STEP)
-        await run('sandbox.start', withProgress('sandbox', startSandboxStep), BOOT_STEP)
-        await run('repo', withProgress('repo', repoStep), BOOT_STEP)
+        const { bootId } = await run(
+          'sandbox.start',
+          withProgress('sandbox', startSandboxStep),
+          BOOT_STEP
+        )
+        await run(
+          'repo',
+          withProgress('repo', s => repoStep(s, bootId)),
+          BOOT_STEP
+        )
         if (db.prepare) {
-          await run('prepare', withProgress('prepare', prepareStep), BOOT_STEP)
+          await run(
+            'prepare',
+            withProgress('prepare', s => prepareStep(s, bootId)),
+            BOOT_STEP
+          )
           if (claim.kind === 'prepare') {
             return await this.finish(run, params.sessionId)
           }
           await run('branch', withProgress('branch', branchStep), BOOT_STEP)
         }
-        await run('bootstrap', withProgress('bootstrap', bootstrapStep), BOOT_STEP)
-        await run('dev', withProgress('dev', devStep), BOOT_STEP)
+        await run(
+          'bootstrap',
+          withProgress('bootstrap', s => bootstrapStep(s, bootId)),
+          BOOT_STEP
+        )
+        await run(
+          'dev',
+          withProgress('dev', s => devStep(s, bootId)),
+          BOOT_STEP
+        )
       }
       if (claim.start !== 'cleanup') await this.loop(run, step)
     } catch (err) {
       logger.error({ err }, 'session: giving up')
-      const message = safeErrorMessage(err, 'The session stopped unexpectedly')
+      const message = safeErrorMessage(
+        err,
+        'The session stopped unexpectedly',
+        BOOT_ERROR_MAX_CHARS
+      )
       await run('fail', scope => failStep(scope, message)).catch(failErr =>
         logger.error({ err: failErr }, 'session: could not record the failure')
       )
@@ -243,11 +272,31 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           if (!resumed.resumed) break
           resumes += 1
           const k = resumes
-          await run(`sandbox.start#${k}`, withProgress('sandbox', startSandboxStep), BOOT_STEP)
-          await run(`repo#${k}`, withProgress('repo', repoStep), BOOT_STEP)
-          await run(`bootstrap#${k}`, withProgress('bootstrap', bootstrapStep), BOOT_STEP)
-          await run(`dev#${k}`, withProgress('dev', devStep), BOOT_STEP)
-          await run(`transcript#${k}`, withProgress('transcript', restoreTranscriptStep), BOOT_STEP)
+          const { bootId } = await run(
+            `sandbox.start#${k}`,
+            withProgress('sandbox', startSandboxStep),
+            BOOT_STEP
+          )
+          await run(
+            `repo#${k}`,
+            withProgress('repo', s => repoStep(s, bootId)),
+            BOOT_STEP
+          )
+          await run(
+            `bootstrap#${k}`,
+            withProgress('bootstrap', s => bootstrapStep(s, bootId)),
+            BOOT_STEP
+          )
+          await run(
+            `dev#${k}`,
+            withProgress('dev', s => devStep(s, bootId)),
+            BOOT_STEP
+          )
+          await run(
+            `transcript#${k}`,
+            withProgress('transcript', s => restoreTranscriptStep(s, bootId)),
+            BOOT_STEP
+          )
           break
         }
       }

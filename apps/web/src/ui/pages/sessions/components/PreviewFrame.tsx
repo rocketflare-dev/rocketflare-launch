@@ -27,6 +27,7 @@ import {
 } from '@heroicons/react/24/outline'
 import type { Session } from '@launch/shared/launch-sessions'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { EmptyState } from '@/ui/components/shared'
 import { sessionHasSandbox, usePreviewGrant } from '@/ui/hooks/useSessions'
 import type { BootStep } from '../sessionChatModel'
@@ -63,6 +64,40 @@ function PaneState({
   )
 }
 
+/** A failed session's reason, first line only — the rest is the command's output (below). */
+function failedHeadline(error: string | null): string {
+  return error?.split('\n')[0]?.trim() || 'The sandbox stopped unexpectedly.'
+}
+
+/**
+ * Under a failed session: the whole reason when it carries a command's output (the last ~40 lines
+ * a boot step captured), and the way on — a session cannot be retried in place; its app starts a
+ * new one from the prepared database in about a minute.
+ */
+function FailedDetails({ error, appSlug }: { error: string | null; appSlug?: string }) {
+  const rest = error?.split('\n').slice(1).join('\n').trim()
+  return (
+    <div className="flex w-full max-w-xl flex-col items-center gap-3">
+      {rest && (
+        <details className="w-full text-left">
+          <summary className="cursor-pointer text-xs text-muted">What it printed</summary>
+          <pre
+            className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-base-200 p-2 font-mono text-xs"
+            data-testid="session-error-output"
+          >
+            {rest}
+          </pre>
+        </details>
+      )}
+      {appSlug && (
+        <Link to={`/apps/${appSlug}`} className="btn btn-sm">
+          Start a new session
+        </Link>
+      )}
+    </div>
+  )
+}
+
 export function PreviewFrame({
   session,
   changeSeq,
@@ -70,8 +105,11 @@ export function PreviewFrame({
   canManage,
   onResume,
   resuming,
+  appSlug,
 }: {
   session: Session
+  /** Where a failed session sends the person to start a new one. */
+  appSlug?: string
   /** Undefined until the transcript has loaded, so the first load is not followed by a reload. */
   changeSeq: number | undefined
   steps: readonly BootStep[]
@@ -232,7 +270,8 @@ export function PreviewFrame({
       <PaneState
         icon={ExclamationTriangleIcon}
         message="This session failed"
-        description={session.error ?? 'The sandbox stopped unexpectedly.'}
+        description={failedHeadline(session.error)}
+        action={<FailedDetails error={session.error} appSlug={appSlug} />}
       />
     )
   } else if (session.status === 'ending' || session.status === 'ended') {

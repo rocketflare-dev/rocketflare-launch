@@ -57,12 +57,16 @@ export function createSessionEmitter(
  * failure text is shown to the person on the session page, so it must never carry a credential a
  * vendor or a child process echoed.
  */
-export function safeErrorMessage(err: unknown, fallback = 'Something went wrong'): string {
+export function safeErrorMessage(
+  err: unknown,
+  fallback = 'Something went wrong',
+  maxChars = 600
+): string {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
   const text = raw.trim()
   if (!text) return fallback
   return redactModelKeyText(text)
     .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"@/]*:[^\s'"@/]*@[^\s'"]*/gi, '<connection string>')
     .replace(/\b(gh[psuor]_[A-Za-z0-9]{8,}|x-access-token:[^\s@]+)/g, '<secret>')
-    .slice(0, 600)
+    .slice(0, maxChars)
 }

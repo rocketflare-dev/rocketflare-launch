@@ -36,12 +36,13 @@ import type { Database } from '../../db/client'
 import { type SessionRow, sessions } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
+import { getSessionRow, getVisibleSession, sessionViewerOf } from '../services/sessions/access'
 import { requireSessionWorkflow, toSessionDetail } from '../services/sessions/chat'
 import { nudgeSession } from '../services/sessions/events'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { defaultSessionPorts } from '../services/sessions/ports'
 import { mintGrant, PREVIEW_GRANT_PATH, PREVIEW_UI_PORT } from '../services/sessions/preview'
+import { reconcileSessionSafely, SESSION_END_STALL_MS } from '../services/sessions/reconcile'
 import { PR_CHECKS_MAX_AGE_MS, refreshChecks } from '../services/sessions/ship'
 import type { AppContext } from '../types'
 import { ConflictError, ServiceUnavailableError } from '../utils/core/errors'
@@ -146,10 +147,19 @@ sessionShipRouter.post('/:id/end', async c => {
     )
   }
   // A lost instance (a `wrangler dev` reload, retention) is restarted from the row, so an end
-  // always reaches a Workflow that cleans up.
+  // always reaches a Workflow that cleans up. A live boot step sees the request within seconds
+  // (`withProgress` polls the row); an instance alive in name only — a boot step with no
+  // heartbeat for over a minute — is settled now rather than on the next read (`reconcile.ts`).
   const woken = await wakeOrRestart(db, workflow, updated, logger)
-  nudgeSession(realtime, woken)
-  return c.json({ session: toSessionDetail(woken, true) } satisfies SessionDetailResponse, 202)
+  const reconciled = await reconcileSessionSafely(db, c.env, woken, {
+    logger,
+    realtime,
+    stallMs: SESSION_END_STALL_MS,
+  })
+  const current =
+    reconciled.outcome === 'settled' ? await getSessionRow(db, row.tenantId, row.id) : woken
+  nudgeSession(realtime, current)
+  return c.json({ session: toSessionDetail(current, true) } satisfies SessionDetailResponse, 202)
 })
 
 sessionShipRouter.post('/:id/preview-grant', async c => {

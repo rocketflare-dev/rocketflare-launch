@@ -67,6 +67,33 @@ export class SandboxInterruptedError extends Error {
   }
 }
 
+/**
+ * The container the step is talking to is not the one the boot prepared: its boot marker
+ * (`SESSION_BOOT_MARKER`, written by `sandbox.start`) is gone or different, so the container was
+ * recreated under the session — on a laptop almost always Docker's VM running out of memory and
+ * killing the sandbox's control server (the SDK then answers `HTTP error! status: 500` and the
+ * next call boots an EMPTY container). The step fails with this sentence instead of working on an
+ * empty `/workspace` (docs/SESSIONS-LOCAL.md § Memory).
+ */
+export class SandboxRestartedError extends Error {
+  constructor(phase: string) {
+    super(
+      `The session container stopped while ${phase.charAt(0).toLowerCase()}${phase.slice(1)} and came back empty` +
+        ' — on a laptop this is usually Docker running out of memory (docs/SESSIONS-LOCAL.md § Memory).' +
+        ' Start a new session.'
+    )
+    this.name = 'SandboxRestartedError'
+  }
+}
+
+/** A background process (the app's dev server) exited while a step waited on it. */
+export class SandboxProcessExitedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SandboxProcessExitedError'
+  }
+}
+
 // ---- SandboxPort -------------------------------------------------------------------------------
 
 export interface SandboxExecOptions {
@@ -95,6 +122,12 @@ export interface SandboxProcess {
 export type SandboxLogEvent =
   | { type: 'stdout' | 'stderr'; data: string }
   | { type: 'exit'; exitCode: number }
+
+export interface SandboxWaitForPortOptions {
+  path?: string
+  timeoutMs?: number
+  pidFile?: string
+}
 
 export interface SandboxStartOptions {
   /**
@@ -130,8 +163,12 @@ export interface SandboxPort {
   streamLogs(processId: string, opts?: { signal?: AbortSignal }): AsyncIterable<SandboxLogEvent>
   /** Kill a background process (a cancelled or timed-out turn). */
   kill(processId: string, signal?: 'SIGTERM' | 'SIGKILL' | 'SIGINT'): Promise<void>
-  /** Resolve once `port` answers (`path` returns 2xx when given); throws after `timeoutMs`. */
-  waitForPort(port: number, opts?: { path?: string; timeoutMs?: number }): Promise<void>
+  /**
+   * Resolve once `port` answers (`path` returns 2xx when given); throws after `timeoutMs`. With
+   * `pidFile` (a file holding the pid of the process that should open the port), throws
+   * `SandboxProcessExitedError` as soon as that process is gone instead of waiting out the time.
+   */
+  waitForPort(port: number, opts?: SandboxWaitForPortOptions): Promise<void>
   writeFile(path: string, content: string): Promise<void>
   /** The file's text, or null when it does not exist. */
   readFile(path: string): Promise<string | null>

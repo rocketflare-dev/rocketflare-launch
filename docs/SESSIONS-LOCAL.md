@@ -97,12 +97,28 @@ The Workflow's steps, as the session page's checklist shows them (`step` events)
    when a checkpoint pushed it — a resume).
 4. **Preparing the app's database (first session only)** — the allow-list gains `dev`'s endpoint,
    then the kit bootstrap into its `session_app` (migrate + seed), then `apps.session_db` → ready.
+   The app's `dev` is CLAIMED for this (`preparing`, with the claiming session and the time); a
+   claim whose session is no longer active, or older than 30 minutes, is taken over by the next
+   session, and a session that fails holding it gives it back (`failed`).
 5. **Installing and seeding** — the allow-list swaps to the session branch's endpoint, then
    `pnpm install --prefer-offline` (the image's warm store) and the kit's
    `scripts/bootstrap.mjs --db-url … --driver neon --offline --no-dev --no-plugins`
-   (`DATABASE_DRIVER=neon` in the environment and `.dev.vars`, no `NEON_LOCAL_PROXY`).
+   (`DATABASE_DRIVER=neon` in the environment and `.dev.vars`, no `NEON_LOCAL_PROXY`). The two run
+   one at a time per container (`flock` on `/workspace/.launch/bootstrap.lock`), so a re-run step
+   attempt never races an earlier one's `pnpm install`.
 6. **Starting dev server** — `pnpm dev` with Vite on **:5173** and `wrangler dev` on **:8787**
-   (never :3000, the Sandbox SDK's own port), until `:8787/api/health` answers.
+   (never :3000, the Sandbox SDK's own port), until `:8787/api/health` answers. Its pid and output
+   go to `/workspace/.launch/dev.{pid,log}`; the wait gives up at once when the process is gone,
+   with the log's tail as the reason.
+
+Every step is bounded and says what it was waiting for: each sandbox call has a deadline
+(`services/sessions/deadline.ts` — 90 s for a control call, a command's own timeout plus a minute),
+each Neon call 5 minutes, and a failure puts the step's error (a failed command's last 40 lines,
+the database URI scrubbed) on the checklist and in `sessions.error`. `sandbox.start` writes a boot
+id to `/workspace/.launch/boot-id`; every later step checks it, so a container that died and came
+back EMPTY fails the step with "The session container stopped while … and came back empty" instead
+of cloning into nothing or curling a dev server that is not there. Pressing **End** while a step
+runs stops it within ten seconds (each boot step polls the row) and ends the session.
 
 ## Measured (slice 3b, an M-series Mac, colima 8 GB, amd64 emulation)
 
@@ -145,13 +161,46 @@ session in an 8 GB colima VM was OOM-killed during `pnpm install`. (Keying it on
 containers are native and get neither variable. colima with Rosetta (`--vm-type vz
 --vz-rosetta`) is likely faster; not measured.
 
+## Memory
+
+**One session container wants ~4 GB under emulation, and the Docker VM is shared.** Measured
+2026-09-28 on an M-series Mac, Docker Desktop's 8 GB VM with Rosetta for amd64 (not QEMU — the
+same amd64-only image either way): the Sandbox SDK's control server (`sandbox`) alone holds ~1 GiB
+resident in an IDLE container; the app's dev stack under `GOGC=off GOMEMLIMIT=1536MiB` adds ~3 GiB
+(two `workerd` at ~0.6 and ~0.36 GiB, two Node processes at ~0.77 and ~0.6 GiB, two esbuild at
+~0.35 and ~0.27 GiB) and was up in 14 s. `workerd` itself runs fine under emulation (the kit's
+`workerd-linux-64` served a request); what fails is memory. hola-world's second session died at
+"Starting dev server" to the VM's **global OOM killer**: `dmesg` in the VM shows `Out of memory:
+Killed process … (sandbox)` in the session container's cgroup at 7.7 GB anonymous memory and no
+swap, and the SDK's answer to the next call was a bare `HTTP error! status: 500` before the
+container was recreated EMPTY.
+
+What to do on a laptop:
+
+- give Docker's VM **12 GB or more** (Docker Desktop → Resources, or `colima start --memory 12`),
+  or run one session at a time;
+- stop what else lives in the VM while a session runs (`docker stats --no-stream` shows it — other
+  Postgres, MinIO or Mongo containers count against the same 8 GB);
+- `docker run --rm --privileged alpine dmesg | grep -i "killed process"` says whether the OOM
+  killer took a session (the cgroup is `/docker/<container id>`).
+
+**An arm64 image is not an option today**: `cloudflare/sandbox:0.12.10` is published for
+`linux/amd64` only, and `wrangler dev` (4.127) builds every `[[containers]]` image with
+`--platform linux/amd64` hard-coded. Both are upstream.
+
 ## Gotchas
 
-- **Editing `apps/web/src` while a session boots loses it.** `wrangler dev` reloads the Worker, and
-  a reload drops every Workflow instance mid-step; the row stays `booting`. End it (or send a
-  message, or resume): every route that wakes a session restarts a lost instance from the row
-  (`wakeOrRestart`), and the new instance's `claim` starts the session over from its branch. If
-  its `workerd-*` containers linger, `docker rm -f` them.
+- **Editing `apps/web/src` — or building in the same checkout — while a session boots kills its
+  running step.** `wrangler dev` reloads the Worker on a source change AND on a change to
+  `apps/web/dist/ui` (the `[assets]` directory it watches), so a `pnpm build` or `pnpm typecheck`
+  in the checkout that runs `pnpm dev` reloads it too (hola-world's second session, 2026-09-28: a
+  gate run rebuilt `dist/ui` at 12:22:02–04 and the `prepare` step died mid-call). Measured with a
+  throwaway Workflow under wrangler 4.127: the killed step never finishes, the local engine keeps
+  reporting the instance `running`, and the step is re-run only when something next pokes the
+  engine (a later reload, or a request to the instance) — minutes later, or never. The session
+  page's read reconciles it (`services/sessions/reconcile.ts`): a boot with no heartbeat for 3
+  minutes has its instance terminated, is failed naming the step, and a fresh instance cleans up.
+  Run the gate in a separate worktree.
 - **`pnpm dev:stop` can leave a container's proxy sidecar** for a few seconds; `docker ps | grep
   workerd` and `docker rm -f` if it lingers.
 - **The kit's bootstrap refuses to run as root** (kit 0.15). A sandbox runs as root, so the
@@ -159,6 +208,9 @@ containers are native and get neither variable. colima with Rosetta (`--vm-type 
   gap to report upstream.
 - **A branch is real Neon, even on a laptop.** A session left running after `pnpm dev:stop` (or a
   lost Workflow) leaves its `session-<short>` branch until the session is ended or expires
-  (`sessions.expire` cleans up); check the project's branches if you killed things by hand.
+  (`sessions.expire` cleans up). A session settled `failed` or `ended` whose cleanup never ran (its
+  instance died between the two, or somebody settled the row by hand) is found by the same cron and
+  by the page's read, and a fresh instance destroys its container and deletes its branch. Check
+  the project's branches if you killed things by hand.
 - Cron: `sessions.expire` runs on `*/5`; fire it by hand with
   `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"`.

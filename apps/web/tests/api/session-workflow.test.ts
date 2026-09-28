@@ -13,9 +13,10 @@ import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptToken } from '@/api/auth/oauth-encryption'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
-import { claudeTranscriptPath } from '@/api/services/sessions/rocketflare-dev'
+import { claudeTranscriptPath, DEV_START_COMMAND } from '@/api/services/sessions/rocketflare-dev'
 import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
 import { runTurn } from '@/api/services/sessions/turn'
 import { SessionWorkflow } from '@/api/workflows/session'
@@ -76,7 +77,7 @@ async function harness(
   }).script(sandbox =>
     sandbox
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
-      .onProcess(/^pnpm dev$/, { lines: ['ready'], ports: [5173, 8787], hang: true })
+      .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
       .onProcess(/claude -p/, claudeStreamJson({ text: 'Changed the heading.' }))
   )
   const checkpoints: string[] = []
@@ -126,7 +127,11 @@ async function patch(row: SessionRow, set: Partial<SessionRow>) {
 }
 
 /** Run the Workflow with `onWait` playing the routes; every step's RESULT is kept too. */
-async function drive(h: Harness, onWait: (wait: RecordedWait, n: number) => unknown) {
+async function drive(
+  h: Harness,
+  onWait: (wait: RecordedWait, n: number) => unknown,
+  limits?: Partial<SessionCallLimits>
+) {
   let waits = 0
   const fake = createFakeWorkflowStep({ onWait: wait => onWait(wait, waits++) })
   const results: unknown[] = []
@@ -137,7 +142,7 @@ async function drive(h: Harness, onWait: (wait: RecordedWait, n: number) => unkn
     return result
   }
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
-  workflow.overrides = { ports: h.ports, hooks: h.hooks }
+  workflow.overrides = { ports: h.ports, hooks: h.hooks, limits }
   const outcome = await workflow.run(
     {
       payload: { sessionId: h.row.id, tenantId: h.row.tenantId },
@@ -185,14 +190,14 @@ describe('SessionWorkflow: boot', () => {
     // The clone, the kit bootstrap and the dev server, in that order; never port 3000.
     const commands = sandbox.execs.map(e => e.command)
     const clone = commands.findIndex(c => c.includes('git init'))
-    const install = commands.findIndex(c => c.startsWith('pnpm install'))
+    const install = commands.findIndex(c => c.includes('pnpm install'))
     const bootstrap = commands.findIndex(c => c.includes('scripts/bootstrap.mjs'))
     expect(clone).toBeGreaterThanOrEqual(0)
     expect(install).toBeGreaterThan(clone)
     expect(bootstrap).toBeGreaterThan(install)
     expect(commands[clone]).toContain(`https://github.com/${h.f.repo.owner}/${h.f.repo.repo}.git`)
     expect(commands[clone]).toContain(`session/${h.row.shortId}`)
-    expect(sandbox.processes.map(p => p.command)).toEqual(['pnpm dev'])
+    expect(sandbox.processes.map(p => p.command)).toEqual([DEV_START_COMMAND])
     expect(JSON.stringify(sandbox.execs.map(e => e.opts?.env))).not.toContain('3000')
     expect(settings).toContain('Bash(git push:*)')
 
@@ -430,7 +435,7 @@ describe('SessionWorkflow: the loop', () => {
     h.hooks.runTurn = async ctx => {
       if (!armed) {
         armed = true
-        ;(ctx.sandbox as FakeSandbox).interruptNext()
+        h.sandbox().interruptNext()
       }
       return runTurn(ctx.db, ctx.ports, ctx.session, { sleep: tick, cancelPollMs: 5, flushMs: 5 })
     }
