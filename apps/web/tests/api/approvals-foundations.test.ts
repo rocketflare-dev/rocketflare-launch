@@ -9,9 +9,7 @@ import { DEFAULT_APPROVAL_POLICIES } from '@launch/shared/launch-approvals'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { open } from '@/api/services/approvals/engine'
 import { approvalsSweep, dueForApplyRetry, dueForExpiry } from '@/api/services/approvals/sweep'
-import { NotWiredError } from '@/api/services/approvals/types'
 import { recordAudit, SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { auditSeal, hasUnsealedEvents } from '@/api/services/launch/audit-chain'
 import {
@@ -293,10 +291,10 @@ describe('the P4 mounts', () => {
     expect((await request('/api/approval-policies')).status).toBe(401)
   })
 
-  it('the routes 4b and 4d fill are mounted but register nothing yet (a JSON 404)', async () => {
+  it('the routes 4d fills are mounted but register nothing yet (a JSON 404)', async () => {
     const { tenant, user, app } = await seedTenant()
     const headers = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
-    for (const path of ['/api/approval-policies', `/api/apps/${app.id}/releases`]) {
+    for (const path of [`/api/apps/${app.id}/releases`]) {
       const res = await request(path, { headers })
       expect(res.status, path).toBe(404)
       expect(res.headers.get('content-type')).toContain('application/json')
@@ -357,13 +355,5 @@ describe('the P4 crons', () => {
     const { tenant } = await seedTenant()
     await recordAudit(db, { tenantId: tenant.id, ...SYSTEM_ACTOR, action: 'a.b' })
     expect(await hasUnsealedEvents(db)).toBe(true)
-  })
-})
-
-describe('the engine before 4b', () => {
-  it('fails by name, pointing at the slice that builds it', async () => {
-    const error = await caught(open({} as never, {} as never))
-    expect(error).toBeInstanceOf(NotWiredError)
-    expect(String((error as Error).message)).toMatch(/approvals\.open .*P4 slice 4b/)
   })
 })
