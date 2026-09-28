@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { putSetting } from '@/api/services/launch/credentials'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { expireSuspendedSessions } from '@/api/services/sessions/expire'
+import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/rocketflare-dev'
 import { loadConfig } from '@/config'
 import { aiUsage, apps, auditEvents, sessions } from '@/db/schema'
 import {
@@ -76,7 +77,7 @@ describe('POST /api/apps/:id/sessions', () => {
       baseRef: 'main',
       branch: `session/${body.session.shortId}`,
       viewerCanManage: true,
-      imageVersion: 'session-1',
+      imageVersion: SESSION_IMAGE_VERSION,
     })
     // Nothing secret-shaped in the answer.
     expect(JSON.stringify(body)).not.toMatch(/previewToken|preview_token|sealed/)

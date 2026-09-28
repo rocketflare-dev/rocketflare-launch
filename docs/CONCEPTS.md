@@ -1186,8 +1186,9 @@ version the manifest reported (e.g. 0.15.4). `app.scaffold.token_issued` audits 
 rename, install, plugins, gate, push), but that app's own CI then failed on the API-key prefix,
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
-0.15.4 — a staging deploy past the parity step is still unproven. The session image still carries kit 0.15.0's pnpm store
-(`SESSION_KIT_TAG`); 0.15.1–0.15.5 change no dependency. The Kit version card's GitHub lookups
+0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
+kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.5; a config test fails when they drift);
+an app pinned to another kit still falls back to the registry for what differs. The Kit version card's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
 SHA that is not a branch tip, are unconfirmed; the catalogue still shows a commit-pinned app by

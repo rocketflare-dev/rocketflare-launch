@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The coding-session image's warm pnpm store is fetched for kit 0.15.5 (was 0.15.0), the kit
+  a new app is cut from (`DEFAULT_TEMPLATE_PIN`), so a session's `pnpm install --prefer-offline`
+  stops falling back to the registry for what changed since 0.15.0; a config test fails when the
+  two drift apart. The image is `session-2`: deploying it replaces running session containers, so
+  drain sessions first (docs/DEPLOY.md § Coding sessions).
 - A coding session's checkpoint push no longer fails with "Repository not found" right after its
   GitHub token is re-minted (a session idle past the token's hour). GitHub does not always accept
   a just-issued installation token for a second or so and answers a private repo's anonymous-looking

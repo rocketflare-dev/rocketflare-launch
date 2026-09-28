@@ -73,7 +73,7 @@ It follows the P1/P2 process:
    - `sessions.image_version` records which image a session ran on.
 9. **The image** is `apps/web/containers/session/Dockerfile`:
    - Node 24 first on `PATH`, corepack pnpm 10, and a pinned `@anthropic-ai/claude-code`;
-   - a `pnpm fetch` store for `KIT_TAG=0.15.0`;
+   - a `pnpm fetch` store for `KIT_TAG` = the default pin's tag (0.15.0 at P3; 0.15.5 since, a config test keeps them together);
    - `EXPOSE 5173 8787` (not 3000).
 
    `wrangler deploy` builds and pushes it with Launch; `wrangler dev` builds it with Docker.

@@ -8,6 +8,7 @@
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
 import { sessionDbEgressHosts } from '@/api/services/sessions/db/neon-session-db'
 import {
@@ -94,6 +95,13 @@ describe('the image and the code agree', () => {
     expect(dockerfile).toContain(
       `FROM docker.io/cloudflare/sandbox:${pkg.dependencies['@cloudflare/sandbox']}`
     )
+  })
+
+  it('warms the pnpm store for the kit a new app is cut from (DEFAULT_TEMPLATE_PIN)', () => {
+    // A drifted store makes `pnpm install --prefer-offline` fall back to the registry for every
+    // dependency the pinned kit changed: bump `ARG KIT_TAG` and `SESSION_KIT_TAG` with the pin.
+    expect(SESSION_KIT_TAG).toBe(DEFAULT_TEMPLATE_PIN.tag)
+    expect(dockerfile).toContain(`ARG KIT_TAG=${DEFAULT_TEMPLATE_PIN.tag}`)
   })
 
   it('puts Node 24 first on PATH and pins Claude Code; holds no credential', () => {
