@@ -97,12 +97,24 @@ and parity-checked like a binding. The class is a Durable Object too — `SESSIO
 `[[migrations]] tag = "v2", new_sqlite_classes` (the Sandbox SDK needs SQLite storage) — and
 `src/worker.ts` also exports the SDK's `ContainerProxy`, which the platform routes the container's
 outbound traffic through so `outboundByHost` runs in this Worker. `wrangler deploy` builds and pushes
-the image (Docker); `pnpm build:api`'s dry run does not build it but refuses a missing Dockerfile.
+the image (Docker); `pnpm build:api`'s dry run builds it locally too (wrangler 4.127) and refuses a
+missing Dockerfile.
 **A change to the image or the block replaces running containers — drain sessions first**
 (`docs/DEPLOY.md` § Coding sessions). `@cloudflare/sandbox` (0.12.10, stable) and the image's
 `cloudflare/sandbox:<version>` base must stay on the SAME version, and the SDK is imported in two
-files only (the DO class and `services/sessions/sandbox/cloudflare-sandbox.ts`); tests alias it to
+files only (the DO base `durable-objects/session-sandbox-base.ts` and
+`services/sessions/sandbox/cloudflare-sandbox.ts`); tests alias it to
 `tests/mocks/cloudflare-sandbox.ts`.
+
+**The sandbox host (development only).** `apps/web/wrangler.sandbox-host.toml` is a THIRD toml
+and a second Worker (`launch-sandbox-dev`, entry `src/sandbox-host/worker.ts`) — outside the parity
+test on purpose, never deployed by CI, pinned by `tests/config/sandbox-host.test.ts` (no public URL,
+the same image, instance type and compatibility date as `wrangler.toml`). Local Launch reaches it
+with `SESSION_SANDBOX_HOST=remote` through the remote service binding `SANDBOX_HOST`, which lives
+ONLY in the git-ignored `wrangler.dev-remote.toml` that `pnpm dev` generates from `wrangler.toml`
+(`scripts/lib/dev-remote-sandbox.mjs`) — never add it to the two deployed tomls. Its env type is
+hand-written (`src/sandbox-host/env.ts`: a second generated file would declare a second
+`Cloudflare.Env`), and `AppBindings` adds `SANDBOX_HOST?: Fetcher` beside `HYPERDRIVE`.
 
 ## Account-scoped names
 

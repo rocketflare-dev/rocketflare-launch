@@ -204,8 +204,9 @@ needs, beyond the bindings above:
 - **The image.** `apps/web/containers/session/Dockerfile` (a placeholder until slice 3b; the real
   one adds Node 24, pnpm 10, a pinned Claude Code and a warm pnpm store). `wrangler deploy` builds it
   with Docker and pushes it — the first push from an ARM Mac took ~5 minutes in S7 (amd64
-  emulation), a cached one ~14 s. `pnpm build:api` (`wrangler deploy --dry-run`) does NOT build it,
-  but refuses a missing Dockerfile. Deleting the Worker leaves the container application and its
+  emulation), a cached one ~14 s. `pnpm build:api` (`wrangler deploy --dry-run`) builds it too, with
+  the local Docker (observed under wrangler 4.127; nothing is pushed), and refuses a missing
+  Dockerfile. Deleting the Worker leaves the container application and its
   images behind: `wrangler containers delete`, `wrangler containers images delete`.
 - **`[vars]`.** `SESSION_BACKEND = "cloud"` (`local` is `wrangler dev` only — `loadConfig` refuses it
   elsewhere) and `SESSION_PREVIEW_URL = "https://{label}.<domain>"`: `{label}` becomes
@@ -254,6 +255,39 @@ needs, beyond the bindings above:
   HTTPS interception, FUSE in the session container, and the time for an archive with
   `node_modules`. The `binding` mode `wrangler dev` uses is not for a deployed Worker — on the SDK's
   default HTTP transport its restore holds the archive in the Durable Object's 128 MB.
+
+## The sandbox host (development only)
+
+`launch-sandbox-dev` (`apps/web/wrangler.sandbox-host.toml`, entry `src/sandbox-host/worker.ts`) is
+a second, small Worker that gives a LAPTOP's Launch real Cloudflare session containers
+(`SESSION_SANDBOX_HOST=remote`, `docs/SESSIONS-LOCAL.md` § Real containers from a laptop). It is
+NOT part of Launch's deploy — no CI job, no provisioning phase, and deployed Launch never binds to
+it: the `SANDBOX_HOST` remote service binding exists only in the `wrangler.dev-remote.toml` that
+`pnpm dev` generates, and `loadConfig` refuses the setting outside `APP_ENV=development`.
+
+| | |
+|---|---|
+| Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`) — nothing else |
+| Container | the SAME `./containers/session/Dockerfile` and `standard-3` as Launch (a config test pins both), `max_instances = 3`; container application `launch-sandbox-dev-hostedsessionsandbox` |
+| Reachability | `workers_dev = false`, `preview_urls = false`, no routes: only a service binding in the account reaches it |
+| Secrets | none. Its containers get the Anthropic key and a GitHub token per turn from the laptop's Launch (the `direct` egress mode) |
+| Build check | `pnpm build:sandbox-host` (a dry run, part of `pnpm build`; it builds the image with the local Docker) |
+
+**Deploy** (by hand, from a machine with Docker and `wrangler login` on the Launch account):
+
+```bash
+pnpm --filter @launch/web deploy:sandbox-host   # = wrangler deploy -c wrangler.sandbox-host.toml
+```
+
+The first push builds the amd64 image (minutes under emulation on an ARM Mac; cached after). The
+same rules as Launch's own containers: a change to the image or the `[[containers]]` block replaces
+running containers (end or suspend dev sessions first), and `@cloudflare/sandbox` and the image's
+base stay on one version. **Costs:** a `standard-3` bills memory and disk while awake (~$0.076/hour)
+and CPU when used; a session's container lives through its idle window plus the 45-minute warm keep,
+and the SDK's 90-minute sleep reaps one whose laptop went away. **Remove it:**
+`pnpm --filter @launch/web exec wrangler delete -c wrangler.sandbox-host.toml`, then
+`wrangler containers list` / `wrangler containers delete <id>` and `wrangler containers images
+delete` for what the Worker leaves behind.
 
 ## Crons
 

@@ -1402,9 +1402,31 @@ is untried. A tenant's deletion leaves its sessions' backups to the bucket's lif
 session-sandbox.ts`) with internet off and an allow-list (npm, github.com, codeload,
 api.anthropic.com — the same on a laptop), `interceptHttps = true` set explicitly, and
 `outboundByHost` handing `api.anthropic.com` and `github.com` to handlers IN LAUNCH'S WORKER. The
-SDK is imported in two files only; everything else talks to `SandboxPort` (`ports.ts`), with
-`SessionDbPort` (`NeonSessionDb`, always), `RepoHostPort` (GitHub, or the local git server) and
-`ModelUpstream`, all bound once in `defaultSessionPorts`.
+SDK is imported in two files only (the Durable Object base `session-sandbox-base.ts`, shared with
+the sandbox host's class, and the `CloudflareSandbox` adapter); everything else talks to
+`SandboxPort` (`sandbox-port.ts`, re-exported by `ports.ts`), with `SessionDbPort` (`NeonSessionDb`,
+always), `RepoHostPort` (GitHub, or the local git server), `ModelUpstream` and `SessionEgressPort`,
+all bound once in `defaultSessionPorts`.
+**Where the container runs (`SESSION_SANDBOX_HOST`).** `local` (the default, and every deployed
+Launch): this Worker's `SESSION_SANDBOX` — under `wrangler dev`, local Docker. `remote`
+(development only, never with `SESSION_BACKEND=local`): a real Cloudflare container in the SANDBOX
+HOST Worker (`launch-sandbox-dev`, `wrangler.sandbox-host.toml`), because `wrangler dev` runs every
+`[[containers]]` on Docker and a Durable Object cannot be a remote binding, but a service binding
+can. `RemoteSandbox` drives it through the remote binding `SANDBOX_HOST` (declared only in the
+`wrangler.dev-remote.toml` that `pnpm dev` generates — the two deployed tomls never carry it): its
+`WorkerEntrypoint` is `SandboxPort` with the sandbox name first, run by the same `CloudflareSandbox`
+adapter, errors returned as `{ name, message }` so a rollout is still `SandboxInterruptedError`; the
+log stream crosses as a `ReadableStream` and is parsed locally (no `AbortSignal` crosses); the
+preview goes through the binding's `fetch`, which carries the HMR upgrade. A remote sandbox's
+`sessions.sandbox_id` is `remote:<name>` (another Worker's Durable Object id cannot be computed).
+**How the container reaches Anthropic and GitHub (`SessionEgressPort`).** `proxied` (every
+in-process sandbox): the egress handlers below, the container holds no credential. `direct` (a
+remote sandbox — the host cannot reach Launch's database to run the handlers,
+`egress/direct.ts`): the turn's process gets the real `ANTHROPIC_API_KEY`, and git gets the
+session's sealed installation token (the git handler's own, `sessionGitToken`) in a 0600 credential
+file outside the checkout, refreshed before the clone, each turn and each checkpoint's push. The
+turn runner and the checkpoint are the same code in both — they ask the port and `proxied` answers
+"nothing to do" — and the transcript scrubs GitHub token shapes as well as Anthropic keys.
 **The database.** A session's database is ALWAYS a real Neon branch of the app's project, under
 either `SESSION_BACKEND`, reached DIRECTLY from the container: there is no TCP out, so the app runs
 `DATABASE_DRIVER=neon` (the `Pool`'s `wss://<endpoint>/v2` for the kit's migrate, seed and
@@ -1458,7 +1480,17 @@ unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitH
 consistency is inferred from one incident (re-mint at :21, "Repository not found" at :22, both
 services 200 minutes later), not reproduced; the retry is bounded at 3.5 s, and a token-lifetime
 change at GitHub would make the "sealed within a minute" test miss (the minting request itself
-still retries).
+still retries). **The `direct` mode (`SESSION_SANDBOX_HOST=remote`) gives up three of the proxies'
+guarantees, knowingly and for development only:** code the model runs can READ the key and the
+token (the allow-list still limits where they go, and the transcript scrubs them); the branch rule
+is gone — the token can push to or delete any branch of the app's repo, so protect `main`; and the
+budget is enforced per turn (checked before, the process killed when its running cost reaches what
+is left) rather than per request, so one response can overshoot. A remote container's time is not
+metered (`container_seconds` stays 0; the host's `onStop` has nowhere to write), a container the
+platform put to sleep is not marked `suspended` by it, and the host keeps no workspace backups. JS
+RPC, a `ReadableStream` result and the HMR upgrade through a REMOTE binding are read from wrangler
+4.127's remote-proxy source (capnweb over a WebSocket; `Upgrade` passed through), not yet run; nor
+is a single `exec` call held open for minutes across it.
 
 ### 18.11 Chat, the model proxy and budgets
 
@@ -1486,6 +1518,14 @@ Anthropic-shaped 403 and NO upstream call when over), swaps in the real key (the
 admin who is not the creator approves it in the same call (200), anyone else — the creator
 included — waits for one (202, `approvalId`). The approval extends the cap (audited
 `session.budget.extended` with the approval id) and wakes a blocked session.
+**The `direct` egress mode meters the turn instead** (`turn-meter.ts`, no proxy sees a remote
+container's requests): each `assistant` line's usage (per response id, repeated content lines
+counted once) is the running cost, compared with `budgetHeadroom` (the nearer of the session's and
+the app month's remaining cap, read at the turn's start) — reached, the process is killed,
+`budget.reached` and a `turn.failed` saying why. At the end the `result` line's `modelUsage`
+(Claude Code's background calls included; else its `usage` under the policy's model; else what the
+running sum saw, so a killed turn is still paid for) is written through the proxy's own
+`recordSessionUsage`: the same pricing, one transaction per row.
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); a model with no price (`estimateCostMicrocents` → null) costs nothing to the

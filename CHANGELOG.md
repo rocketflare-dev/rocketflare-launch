@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Coding sessions can run on REAL Cloudflare containers from a laptop instead of local Docker under
+  amd64 emulation: set `SESSION_SANDBOX_HOST=remote` (with `SESSION_BACKEND=cloud`) in
+  `apps/web/.dev.vars` and `pnpm dev` binds Launch to a new small Worker, `launch-sandbox-dev`
+  (`apps/web/wrangler.sandbox-host.toml`), through a remote service binding declared only in a
+  generated, git-ignored `wrangler.dev-remote.toml`, and skips the local image build. Development
+  only (`loadConfig` refuses it elsewhere); deployed Launch is unchanged. In this mode the container
+  holds the Anthropic key (in the turn's environment) and a repo-scoped GitHub token (a git
+  credential), each turn meters itself from Claude Code's own usage and is stopped when it reaches
+  the budget, and any branch of the repo is pushable — protect `main`. The host must be deployed
+  once by hand (`pnpm --filter @launch/web deploy:sandbox-host`, docs/DEPLOY.md § The sandbox host).
+  Session transcripts now also scrub GitHub token shapes.
 - A coding session's turn no longer fails at once with "Launch lost the connection to Claude Code":
   reading the process's logs passed an `AbortSignal` into the Sandbox SDK's RPC stub, which
   workerd cannot serialise. The signal now cancels the log reader on Launch's side.

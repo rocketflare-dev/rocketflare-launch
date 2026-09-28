@@ -264,7 +264,11 @@ a fake `WebSocket` factory left set) is on you.
   FakeCloud's GitHub, a Neon project on the production environment, and with `prepared` a `dev`
   branch — `schema-only`, `session_owner`, `session_app` — recorded ready in `apps.session_db`),
   `insertSession(db, fixture, overrides)`, `sessionAppRef(fixture)`, and
-  `createFakeSessionPorts({ sessionDb?, repoHost?, model? })` (one `FakeSandbox` per name in
+  `createFakeSessionPorts({ sessionDb?, repoHost?, model?, egress? })` (`egress` absent = the
+  `proxied` mode; `tests/api/session-direct-egress.test.ts` hands in a `DirectEgress`; the sandbox
+  host is driven in-process in `tests/config/remote-sandbox.test.ts` — `RemoteSandbox` over the
+  host's real entrypoint over a `FakeSandboxNamespace`, behind a binding that refuses an
+  `AbortSignal` as RPC does) (one `FakeSandbox` per name in
   `sandboxes`, `script(fn)` applied to each; an unprovided port throws by name). The FakeCloud
   covers the vendor half: Neon `init_source`, `endpoints: []`, branch endpoints and DELETE; GitHub
   `pulls`, `setCheckRuns` / `setStatuses`. `tests/api/session-foundations.test.ts` shows each
