@@ -295,6 +295,8 @@ A worker merges 6b–6g in order: b, d, f (the gateway hunks), c, e, g. It resol
 
 ## 7. Open questions
 
+Decided on 2026-09-28: the user took every recommendation below (questions 1–3 and 5 explicitly; 4, polling, by default).
+
 1. **The upgrade target: the pin, or the kit's latest release?** Recommend **the pin** (§1.1). An admin decides when the fleet moves, and new and old apps converge on one version. "Latest" would open PRs the moment the kit tags.
 2. **Per-PR previews: build them in P6, and on workers.dev?** spec/10 marks them "later", and they are the only P6 item that puts app code on a host outside the apps domain (a `*.workers.dev` alias, reachable to anyone with the URL, though the app still asks for Launch sign-in). Recommend **building 6f last, opt-in per app, off by default**. The exit test doesn't depend on it. Drop the slice if you'd rather not enable `preview_urls` on any app Worker.
 3. **Does "upgrade all" itself need an approval?** Recommend **no**. It only opens PRs. What ships still passes the production gate, and each session is metered against its app's budget. A cap per run (`fleet_policy.upgradeConcurrency`) bounds the spend.
