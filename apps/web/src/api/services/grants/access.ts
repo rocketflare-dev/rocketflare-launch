@@ -4,30 +4,28 @@
  *
  * - `isResourceOwner`: the viewer is a member of the resource's owner group;
  * - `canManageResource`: may edit the owner group and the policies, create and archive — admins;
- * - `canSeeHolders`: may see which apps hold it, and the var values — owners and admins.
+ * - `canSeeHolders`: may see which apps hold it, and the var values — owners and admins. The same
+ *   people may set values and edit the description and items (`canSetValues` on the detail).
  *
- * **Slice 5b owns this file.** From 5a each throws `NotWiredError`.
+ * Every check names the tenant first: a viewer of another organisation is nobody here, whatever
+ * group ids they carry. "Admin" is the approvals engine's `isAdmin` (`isAdminLevel`: owner, admin,
+ * support, a global admin) — the roles CASL gives `manage SharedResource`.
+ *
+ * **Slice 5b owns this file.**
  */
 import type { SharedResourceRow } from '../../../db/schema'
-import { type GrantViewer, NotWiredError } from './types'
+import type { GrantViewer } from './types'
 
-export function isResourceOwner(
-  _viewer: GrantViewer,
-  _resource: Pick<SharedResourceRow, 'tenantId' | 'ownerGroupId'>
-): boolean {
-  throw new NotWiredError('grants/access.isResourceOwner', '5b')
+type ResourceOwnership = Pick<SharedResourceRow, 'tenantId' | 'ownerGroupId'>
+
+export function isResourceOwner(viewer: GrantViewer, resource: ResourceOwnership): boolean {
+  return viewer.tenantId === resource.tenantId && viewer.groupIds.includes(resource.ownerGroupId)
 }
 
-export function canManageResource(
-  _viewer: GrantViewer,
-  _resource: Pick<SharedResourceRow, 'tenantId' | 'ownerGroupId'>
-): boolean {
-  throw new NotWiredError('grants/access.canManageResource', '5b')
+export function canManageResource(viewer: GrantViewer, resource: ResourceOwnership): boolean {
+  return viewer.tenantId === resource.tenantId && viewer.isAdmin
 }
 
-export function canSeeHolders(
-  _viewer: GrantViewer,
-  _resource: Pick<SharedResourceRow, 'tenantId' | 'ownerGroupId'>
-): boolean {
-  throw new NotWiredError('grants/access.canSeeHolders', '5b')
+export function canSeeHolders(viewer: GrantViewer, resource: ResourceOwnership): boolean {
+  return canManageResource(viewer, resource) || isResourceOwner(viewer, resource)
 }
