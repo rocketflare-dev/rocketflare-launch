@@ -74,7 +74,7 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
 
 ## Next, in order
 
-1. **Re-test a coding session on hola-world.** The fixes are merged but haven't run against a real session yet.
+1. **Re-test a coding session on hola-world.** **Current state and the open failures are in [sandbox-session-issues](sandbox-session-issues.md)** (remote-mode clone gets no GitHub credential; no Anthropic key configured). The fixes are merged but haven't run against a real session yet.
    - Give Docker Desktop **at least 12 GB** of memory. The last session was killed by the Docker VM's out-of-memory killer at dev-server start.
    - Open the old failed session `a07e371e…` once. Its reconcile deletes the leftover Neon branch (`ep-wild-silence-…`).
    - Start a new session. The `dev` database is already prepared.
