@@ -37,7 +37,8 @@ import {
 } from '../services/launch/deploy/gateway'
 import { getTicketById } from '../services/launch/deploy/tickets'
 import type { AppContext } from '../types'
-import { uuidParam } from '../utils/routes/route-helpers'
+import { loggerFor } from '../utils/core/logger'
+import { makeDefer, uuidParam } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 
@@ -68,6 +69,7 @@ async function proveJob(c: AppContext): Promise<GatewayContext> {
     audience: cfg.APP_URL,
   })
   const caller = await resolveCaller(db, claims, { workflowFile: DEPLOY_WORKFLOW_FILE })
+  const logger = c.get('logger')
   return {
     db,
     caller,
@@ -75,7 +77,16 @@ async function proveJob(c: AppContext): Promise<GatewayContext> {
     actor: { ...auditActor(c), actorType: 'app', actorUserId: null, actorEmail: null },
     vendors: () => loadDeployVendors(db, cfg),
     launchWorkflow: c.env.APP_LAUNCH_WORKFLOW,
-    logger: c.get('logger'),
+    logger,
+    // P4: a production run with nothing to claim opens a `deploy.production` approval.
+    // (`approvalDepsOf` in `approvals.ts` needs a session; a CI job has none, so built here.)
+    approvals: {
+      db,
+      env: c.env,
+      cfg,
+      logger: loggerFor(cfg, { component: 'approvals' }),
+      realtime: { defer: makeDefer(c), env: c.env },
+    },
   }
 }
 

@@ -291,14 +291,12 @@ describe('the P4 mounts', () => {
     expect((await request('/api/approval-policies')).status).toBe(401)
   })
 
-  it('the routes 4d fills are mounted but register nothing yet (a JSON 404)', async () => {
+  it('the releases router 4d fills is mounted under /api/apps (an app with none lists none)', async () => {
     const { tenant, user, app } = await seedTenant()
     const headers = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
-    for (const path of [`/api/apps/${app.id}/releases`]) {
-      const res = await request(path, { headers })
-      expect(res.status, path).toBe(404)
-      expect(res.headers.get('content-type')).toContain('application/json')
-    }
+    const res = await request(`/api/apps/${app.id}/releases`, { headers })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ items: [] })
   })
 })
 

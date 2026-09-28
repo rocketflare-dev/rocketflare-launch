@@ -7,7 +7,7 @@
  * |-----------------------------------|------------|---------------------------------------------|
  * | (none)                            | `approved` | staging `start` (policy), or a pre-approval |
  * | (none)                            | `pending`  | production `start` with no pre-approval     |
- * | `pending`                         | `approved` / `rejected` | a person on the app page, or expiry |
+ * | `pending`                         | `approved` / `rejected` | a `deploy.production` approval (P4), or expiry |
  * | `approved`                        | `uploaded` | a build that passed the check               |
  * | `approved` / `uploaded`           | `failed`   | a refused build, a failed upload/activation |
  * | `uploaded`                        | `active`   | `activate`                                  |
@@ -15,7 +15,8 @@
  *
  * **Every transition is `UPDATE … WHERE id = $id AND status IN ($from) RETURNING`**: a caller that
  * lost a race gets `null` and answers 409, never a lost write. A pre-approval is CLAIMED the same
- * way (`run_id IS NULL` in the predicate), so two runs cannot both take it.
+ * way (`run_id IS NULL` in the predicate), so two runs cannot both take it — and, from P4, only by a
+ * run on the ref it was bound to.
  *
  * **Lookups by ticket id are pre-tenant by design** (allow-listed in
  * `tests/config/unscoped-allowlist.test.ts`): a CI call names a ticket id and carries a GitHub
@@ -24,7 +25,7 @@
  * row's, never the request's. Every write after that names the row's tenant too.
  */
 import type { DeployDecisionSource, DeployTicketStatus } from '@launch/shared/launch-pipeline'
-import { and, asc, desc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import {
   appEnvironments,
@@ -94,7 +95,8 @@ export async function openRunTicket(
   values: Pick<
     NewDeployTicketRow,
     'purpose' | 'status' | 'decisionSource' | 'decidedAt' | 'expiresAt' | 'launchRunId'
-  >
+  > &
+    Partial<Pick<NewDeployTicketRow, 'releaseId'>>
 ): Promise<{ ticket: DeployTicketRow; created: boolean }> {
   const [row] = await db
     .insert(deployTickets)
@@ -115,8 +117,11 @@ export async function openRunTicket(
 }
 
 /**
- * Claim the environment's oldest live pre-approval ("Deploy to production") for `run`: the row
- * takes the run's claims, and `run_id IS NULL` in the UPDATE makes it claimable exactly once.
+ * Claim the environment's oldest live pre-approval ("Deploy to production", or a Promote's
+ * approval) for `run`: the row takes the run's claims, and `run_id IS NULL` in the UPDATE makes it
+ * claimable exactly once. From P4 a pre-approval may be BOUND to a ref (`refs/tags/X.Y.Z` for a
+ * release, the default branch for "Deploy to production"): only a run carrying that ref may claim
+ * it (`ref IS NULL OR ref = run.ref`), so an approval of tag A is never spent by a run of tag B.
  * Returns null when there is none (the caller opens a `pending` ticket instead).
  */
 export async function claimIntent(
@@ -136,7 +141,8 @@ export async function claimIntent(
         eq(deployTickets.purpose, 'deploy'),
         eq(deployTickets.status, 'approved'),
         isNull(deployTickets.runId),
-        gt(deployTickets.expiresAt, now)
+        gt(deployTickets.expiresAt, now),
+        or(isNull(deployTickets.ref), eq(deployTickets.ref, run.ref))
       )
     )
     .orderBy(asc(deployTickets.createdAt))
@@ -151,7 +157,8 @@ export async function claimIntent(
           eq(deployTickets.tenantId, scope.tenantId),
           eq(deployTickets.status, 'approved'),
           isNull(deployTickets.runId),
-          gt(deployTickets.expiresAt, now)
+          gt(deployTickets.expiresAt, now),
+          or(isNull(deployTickets.ref), eq(deployTickets.ref, run.ref))
         )
       )
       .returning()
@@ -183,11 +190,25 @@ export async function findOpenIntent(
   return row ?? null
 }
 
-/** Insert a "Deploy to production" pre-approval: `approved`, no run yet, expiring soon. */
+/**
+ * Insert a pre-approval: `approved`, no run yet, expiring soon. P2's "Deploy to production" wrote
+ * one directly (`source: 'intent'`); from P4 a granted `deploy.production` approval writes it
+ * (`source: 'approval'`), bound to the ref its run must carry and linked to the approval and the
+ * release — the chain's links (plan §1.11).
+ */
 export async function insertIntent(
   db: Database,
   scope: TicketScope,
-  input: { userId: string; expiresAt: Date; now?: Date }
+  input: {
+    userId: string | null
+    expiresAt: Date
+    now?: Date
+    /** Only a run on this ref may claim it (`claimIntent`); null = any ref (P2's intents). */
+    ref?: string | null
+    approvalId?: string | null
+    releaseId?: string | null
+    source?: 'intent' | 'approval'
+  }
 ): Promise<DeployTicketRow> {
   const now = input.now ?? new Date()
   const [row] = await db
@@ -196,14 +217,64 @@ export async function insertIntent(
       ...scope,
       purpose: 'deploy',
       status: 'approved',
-      decisionSource: 'intent',
+      decisionSource: input.source ?? 'intent',
       decidedByUserId: input.userId,
       decidedAt: now,
       expiresAt: input.expiresAt,
+      ref: input.ref ?? null,
+      approvalId: input.approvalId ?? null,
+      releaseId: input.releaseId ?? null,
     })
     .returning()
   if (!row) throw new Error('deploy_tickets insert returned no row')
   return row
+}
+
+/** The pre-approval (claimed or not) a `deploy.production` approval wrote, if any. */
+export async function findApprovalIntent(
+  db: Database,
+  tenantId: string,
+  approvalId: string
+): Promise<DeployTicketRow | null> {
+  const [row] = await db
+    .select()
+    .from(deployTickets)
+    .where(and(eq(deployTickets.tenantId, tenantId), eq(deployTickets.approvalId, approvalId)))
+    .orderBy(desc(deployTickets.createdAt))
+    .limit(1)
+  return row ?? null
+}
+
+/** A ticket of the tenant by id, or null. */
+export async function getTenantTicket(
+  db: Database,
+  tenantId: string,
+  ticketId: string
+): Promise<DeployTicketRow | null> {
+  const [row] = await db
+    .select()
+    .from(deployTickets)
+    .where(and(eq(deployTickets.tenantId, tenantId), eq(deployTickets.id, ticketId)))
+    .limit(1)
+  return row ?? null
+}
+
+/** Link a ticket into the audit chain: the release its tag names, the approval that gates it. */
+export async function linkTicket(
+  db: Database,
+  ticket: Pick<DeployTicketRow, 'id' | 'tenantId'>,
+  links: { releaseId?: string | null; approvalId?: string | null }
+): Promise<DeployTicketRow | null> {
+  const set: Partial<NewDeployTicketRow> = {}
+  if (links.releaseId !== undefined) set.releaseId = links.releaseId
+  if (links.approvalId !== undefined) set.approvalId = links.approvalId
+  if (Object.keys(set).length === 0) return null
+  const [row] = await db
+    .update(deployTickets)
+    .set({ ...set, updatedAt: new Date() })
+    .where(and(eq(deployTickets.id, ticket.id), eq(deployTickets.tenantId, ticket.tenantId)))
+    .returning()
+  return row ?? null
 }
 
 /** Columns a transition may set beside the status. */

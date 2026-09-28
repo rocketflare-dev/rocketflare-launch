@@ -17,7 +17,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from '@/api/index'
 import type { GitHubOidcClaims } from '@/api/services/launch/ci/github-oidc'
@@ -194,13 +194,22 @@ async function ticket(id: string) {
   return row
 }
 
-/** Resolve once the app has a ticket in `status` (the job is waiting on it). */
+/**
+ * Resolve once the app has a ticket in `status` (the job is waiting on it) and, from P4, its
+ * `deploy.production` approval is open (the gateway links it just after the insert).
+ */
 async function waitForTicket(environmentId: string, status: 'pending') {
   for (let i = 0; i < 200; i++) {
     const [row] = await db
       .select()
       .from(deployTickets)
-      .where(and(eq(deployTickets.environmentId, environmentId), eq(deployTickets.status, status)))
+      .where(
+        and(
+          eq(deployTickets.environmentId, environmentId),
+          eq(deployTickets.status, status),
+          isNotNull(deployTickets.approvalId)
+        )
+      )
     if (row) return row
     await new Promise(resolve => setTimeout(resolve, 25))
   }

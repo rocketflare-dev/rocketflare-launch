@@ -8,6 +8,13 @@
   app-access request onto the new `approval_requests` table (same ids; the request-access page and
   the app's access page work as before) and retires `app_access_requests`. An "Approvals" entry in
   the navigation and Settings → Approvals are in place and empty until the engine lands.
+- Releases and the production gate (P4, slice 4d): "Release" on an app bumps its version, tags it
+  (starting staging) and lists the merged pull requests since the last release; "Promote" asks for
+  a production deploy once staging runs the release, and a second person — never its author —
+  approves it, which publishes the GitHub Release and lets exactly that tag's production run
+  through. A production run started by hand in GitHub waits for an approval too, and "Deploy to
+  production" now asks a second person. Merged session PRs are recorded, and each release shows
+  its whole chain from pull request to production.
 - Coding sessions (P3): "Start session" on an app boots a sandbox container with the app's repo on
   a `session/<short>` branch and its own database (a Neon branch of the app's `dev`, prepared by
   the first session), runs the kit's bootstrap and dev server, and then runs each message as a

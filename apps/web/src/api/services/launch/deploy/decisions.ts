@@ -1,49 +1,32 @@
 /**
- * Deploy decisions on the app page (Launch P2) — the human side of the deploy gateway, behind
- * `routes/app-deploys.ts`. P4 swaps the decision source for the approvals engine (spec/08); until
- * then an app's owners and the organisation's admins decide here.
+ * Deploy decisions on the app page (Launch P2, moved onto the approvals engine in P4) — the human
+ * side of the deploy gateway, behind `routes/app-deploys.ts`.
  *
  * - **List** — the app's deploy tickets, newest first, as `deployTicketSchema`. Never a credential:
  *   the migrator URL is not stored anywhere to show.
- * - **Decide** — approve or reject a `pending` PRODUCTION ticket while its run is still waiting
- *   (compare-and-set: a second decider, or one after the window closed, gets 409). Audited as
- *   `deploy.production.approved` / `deploy.production.rejected`.
- * - **Deploy to production** — a pre-approval (an `approved` ticket with no run, expiring after
- *   `PRODUCTION_INTENT_TTL_MS`), then `workflow_dispatch` of `deploy.yml` with
- *   `environment=production` on the default branch. The run's `start` claims it
- *   (`claimIntent`), so it is spent exactly once. A failed dispatch fails the intent.
+ * - **Decide** — a thin redirect (plan §4d): a waiting production ticket carries its
+ *   `deploy.production` approval (`deploy_tickets.approval_id`, opened by the gateway's `start`),
+ *   and deciding the ticket is `engine.decide` on that approval — the same eligibility, the same
+ *   "not the author" rule, the same audit as the inbox. The kind's `applyInTx` moves the ticket
+ *   (`decidePending(source: 'approval')`), and 409 `deploy_run_gone` once the run stopped waiting.
+ * - **Deploy to production** — for an app with no release to promote (an imported app, a hotfix
+ *   off the default branch): opens `deploy.production` with subject `app`. On approval the kind
+ *   writes a pre-approval bound to the default branch and dispatches `deploy.yml` with
+ *   `environment=production`; the run's `start` claims it (`claimIntent`) exactly once.
  */
-import {
-  type DeployDecision,
-  type DeployTicket,
-  PRODUCTION_INTENT_TTL_MS,
-} from '@launch/shared/launch-pipeline'
+import type { DeployDecision, DeployTicket } from '@launch/shared/launch-pipeline'
+import type { MembershipRole } from '@launch/shared/tenants'
 import { and, eq } from 'drizzle-orm'
-import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { type AppRow, appEnvironments, type DeployTicketRow } from '../../../../db/schema'
-import { ApiError, ConflictError, NotFoundError } from '../../../utils/core/errors'
-import { type AuditActor, recordAudit } from '../audit'
-import {
-  dispatchWorkflow,
-  type GitHubOptions,
-  installationToken,
-  listInstallations,
-  revokeInstallationToken,
-} from '../github-app'
-import { type ImportGitHub, loadImportGitHub } from '../import'
-import {
-  decidePending,
-  expirePending,
-  findOpenIntent,
-  getAppTicket,
-  insertIntent,
-  listAppTickets,
-  transitionTicket,
-} from './tickets'
+import { ConflictError, NotFoundError } from '../../../utils/core/errors'
+import { decide, open } from '../../approvals/engine'
+import type { ApprovalDeps, ApprovalViewer } from '../../approvals/types'
+import type { AuditActor } from '../audit'
+import { DEPLOY_WORKFLOW_FILE, repoOf } from '../releases/github'
+import { findApprovalIntent, findOpenIntent, getAppTicket, listAppTickets } from './tickets'
 
-/** The workflow file every deploy runs (DEPLOYER.md; `resolveCaller` checks the same name). */
-export const DEPLOY_WORKFLOW_FILE = 'deploy.yml'
+export { DEPLOY_WORKFLOW_FILE }
 
 /** A row as the app page shows it. */
 export function toDeployTicket(
@@ -88,180 +71,135 @@ export async function listDeploys(
   return rows.map(r => toDeployTicket(r.ticket, r.environment))
 }
 
-/** Approve or reject a pending production ticket. 404 / 409 as the header says. */
+/**
+ * Approve or reject a waiting production ticket: `engine.decide` on its approval. 404 for a ticket
+ * that is not this app's; 409 for one that is not a production ticket waiting on an approval.
+ * The engine's own 403/409s (`not_an_approver`, `self_approval`, `already_decided`, `not_pending`)
+ * and the kind's `deploy_run_gone` pass through.
+ */
 export async function decideDeploy(
-  db: Database,
+  deps: ApprovalDeps,
   input: {
     tenantId: string
     app: Pick<AppRow, 'id'>
     ticketId: string
     decision: DeployDecision
-    userId: string
+    viewer: ApprovalViewer
     actor: AuditActor
-    now?: Date
   }
 ): Promise<DeployTicket> {
-  const now = input.now ?? new Date()
+  const { db } = deps
   const found = await getAppTicket(db, input.tenantId, input.app.id, input.ticketId)
   if (!found || found.ticket.purpose !== 'deploy') {
     throw new NotFoundError('Deploy not found', 'deploy_ticket_not_found')
   }
   const { ticket, environment } = found
-  if (environment !== 'production' || ticket.status !== 'pending') {
+  if (environment === 'production' && ticket.status === 'pending' && !ticket.approvalId) {
+    // `start` inserts the ticket, then opens its approval: a click in between waits a moment.
     throw new ConflictError(
-      `Only a pending production deploy can be decided (this one is ${environment}, ${ticket.status})`,
+      'This deploy is still opening its approval; try again in a moment',
       'deploy_ticket_state'
     )
   }
-  const approve = input.decision.decision === 'approve'
-  const decided = await decidePending(
-    db,
-    ticket,
-    {
-      approve,
-      userId: input.userId,
-      source: 'user',
-      error: approve ? undefined : input.decision.reason,
-    },
-    now
-  )
-  if (!decided) {
-    // Lost a race, or the window closed while the page was open.
-    const expired = await expirePending(db, ticket, now)
+  if (environment !== 'production' || !ticket.approvalId) {
     throw new ConflictError(
-      expired ? 'The run stopped waiting for approval' : 'Someone else decided this deploy first',
-      expired ? 'deploy_ticket_expired' : 'deploy_ticket_state'
+      `Only a production deploy waiting on an approval can be decided (this one is ${environment}, ${ticket.status})`,
+      'deploy_ticket_state'
     )
   }
-  await recordAudit(db, {
-    tenantId: input.tenantId,
-    ...input.actor,
-    action: approve ? 'deploy.production.approved' : 'deploy.production.rejected',
-    targetType: 'deploy_ticket',
-    targetId: decided.id,
-    appId: decided.appId,
-    summary: {
-      before: { status: 'pending' },
-      after: {
-        status: decided.status,
-        source: 'user',
-        runId: decided.runId,
-        sha: decided.sha,
-        ...(input.decision.reason ? { reason: input.decision.reason } : {}),
-      },
-    },
+  await decide(deps, {
+    requestId: ticket.approvalId,
+    viewer: input.viewer,
+    decision: input.decision.decision,
+    comment: input.decision.reason ?? null,
+    actor: input.actor,
   })
-  return toDeployTicket(decided, environment)
+  const after = await getAppTicket(db, input.tenantId, input.app.id, ticket.id)
+  return toDeployTicket(after?.ticket ?? ticket, environment)
 }
 
-/** The installation that can act on `owner`'s repos. */
-async function installationFor(
-  github: ImportGitHub,
-  owner: string,
-  opts: GitHubOptions
-): Promise<number | string> {
-  const sameOrg = !github.org || github.org.toLowerCase() === owner.toLowerCase()
-  if (github.installationId !== null && sameOrg) return github.installationId
-  const match = (await listInstallations(github.auth, opts)).find(
-    i => i.account?.login.toLowerCase() === owner.toLowerCase()
-  )
-  if (!match) {
+async function productionOf(db: Database, tenantId: string, appId: string) {
+  const [row] = await db
+    .select()
+    .from(appEnvironments)
+    .where(
+      and(
+        eq(appEnvironments.tenantId, tenantId),
+        eq(appEnvironments.appId, appId),
+        eq(appEnvironments.name, 'production')
+      )
+    )
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * "Deploy to production" without a release: open `deploy.production` with subject `app`, the
+ * clicker as requester (so a second person approves). Returns the approval, and the pre-approval
+ * when a policy auto-approved it on the spot.
+ */
+export async function requestProductionDeploy(
+  deps: ApprovalDeps,
+  input: {
+    tenantId: string
+    app: AppRow
+    user: { id: string; email: string; role: MembershipRole | null }
+    actor: AuditActor
+    reason?: string | null
+  }
+): Promise<{ ticket: DeployTicket | null; approvalId: string }> {
+  const { db } = deps
+  const { tenantId, app } = input
+  const production = await productionOf(db, tenantId, app.id)
+  if (!production) {
+    throw new ConflictError('This app has no production environment', 'app_environment_missing')
+  }
+  const { branch } = repoOf(app)
+  const scope = { tenantId, appId: app.id, environmentId: production.id }
+  if (await findOpenIntent(db, scope, deps.now?.() ?? new Date())) {
     throw new ConflictError(
-      `The GitHub App is not installed on ${owner}`,
-      'github_app_not_installed'
+      'A production deploy is already approved and waiting for its run',
+      'production_deploy_pending'
     )
   }
-  return match.id
-}
-
-export interface ProductionDeployOptions extends Pick<GitHubOptions, 'fetch' | 'apiBase'> {
-  github?: ImportGitHub
-}
-
-/** "Deploy to production": a pre-approval, then the dispatch. Returns the intent ticket. */
-export async function requestProductionDeploy(
-  db: Database,
-  cfg: AppConfig,
-  input: { tenantId: string; app: AppRow; userId: string; actor: AuditActor; now?: Date },
-  opts: ProductionDeployOptions = {}
-): Promise<DeployTicket> {
-  const { tenantId, app } = input
-  const now = input.now ?? new Date()
-  const [production] = await db
+  const staging = await db
     .select()
     .from(appEnvironments)
     .where(
       and(
         eq(appEnvironments.tenantId, tenantId),
         eq(appEnvironments.appId, app.id),
-        eq(appEnvironments.name, 'production')
+        eq(appEnvironments.name, 'staging')
       )
     )
     .limit(1)
-  if (!production) {
-    throw new ConflictError('This app has no production environment', 'app_environment_missing')
-  }
-  if (!app.repoOwner || !app.repoName) {
-    throw new ConflictError('This app has no repository to deploy from', 'app_repo_missing')
-  }
-  const scope = { tenantId, appId: app.id, environmentId: production.id }
-  if (await findOpenIntent(db, scope, now)) {
-    throw new ConflictError(
-      'A production deploy is already approved and waiting for its run',
-      'production_deploy_pending'
-    )
-  }
+    .then(rows => rows[0] ?? null)
 
-  const github = opts.github ?? (await loadImportGitHub(db, cfg))
-  const intent = await insertIntent(db, scope, {
-    userId: input.userId,
-    expiresAt: new Date(now.getTime() + PRODUCTION_INTENT_TTL_MS),
-    now,
-  })
-
-  try {
-    const installationId = await installationFor(github, app.repoOwner, opts)
-    const { token } = await installationToken(
-      github.auth,
-      installationId,
-      { repositories: [app.repoName], permissions: { actions: 'write' } },
-      opts
-    )
-    try {
-      await dispatchWorkflow(
-        token,
-        app.repoOwner,
-        app.repoName,
-        DEPLOY_WORKFLOW_FILE,
-        { ref: app.defaultBranch ?? 'main', inputs: { environment: 'production' } },
-        opts
-      )
-    } finally {
-      await revokeInstallationToken(token, opts).catch(() => {})
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    const error = `Launch could not start the production deploy: ${message}`
-    await transitionTicket(db, intent, ['approved'], 'failed', { error })
-    if (err instanceof ApiError) throw err
-    throw new ApiError(502, error, 'deploy_dispatch_failed')
-  }
-
-  await recordAudit(db, {
+  const opened = await open(deps, {
     tenantId,
-    ...input.actor,
-    action: 'deploy.production.approved',
-    targetType: 'deploy_ticket',
-    targetId: intent.id,
+    kind: 'deploy.production',
+    subject: { type: 'app', id: app.id },
     appId: app.id,
-    summary: {
-      after: {
-        status: 'approved',
-        source: 'intent',
-        expiresAt: intent.expiresAt?.toISOString() ?? null,
-        workflow: DEPLOY_WORKFLOW_FILE,
-      },
+    requester: { userId: input.user.id, email: input.user.email, role: input.user.role },
+    reason: input.reason ?? `Deploy ${branch} to production (${DEPLOY_WORKFLOW_FILE})`,
+    context: {
+      kind: 'deploy.production',
+      environment: 'production',
+      version: null,
+      tag: null,
+      sha: null,
+      ref: `refs/heads/${branch}`,
+      compareUrl: null,
+      prs: [],
+      stagingHealth: staging?.healthStatus ?? null,
+      stagingVersion: staging?.healthVersion ?? staging?.lastDeployVersion ?? null,
     },
+    excludedUserIds: [input.user.id],
+    actor: input.actor,
   })
-  return toDeployTicket(intent, 'production')
+  const intent: DeployTicketRow | null = await findApprovalIntent(db, tenantId, opened.request.id)
+  return {
+    ticket: intent ? toDeployTicket(intent, 'production') : null,
+    approvalId: opened.request.id,
+  }
 }

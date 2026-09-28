@@ -10,14 +10,18 @@
  * A refused build therefore never reaches Neon at all: no password reset, no URI, no migration.
  *
  * - **start** — a retried call from the same run attempt gets the same ticket. Staging is
- *   approved by policy (`auto`). Production claims the environment's live "Deploy to production"
- *   pre-approval (`intent`) if there is one, or opens `pending` for an owner to decide on the app
- *   page within `PENDING_APPROVAL_TTL_MS`.
+ *   approved by policy (`auto`; spec/12 #9 keeps it outside the approvals engine). Production
+ *   claims the environment's live pre-approval if there is one bound to the run's ref (a granted
+ *   Promote, or "Deploy to production"), or opens `pending` AND a `deploy.production` approval
+ *   (subject `deploy_ticket`, requester `github:<actor>`, expiring with the ticket) that an owner
+ *   decides within `PENDING_APPROVAL_TTL_MS` (P4, plan §1.9). A run on `refs/tags/X.Y.Z` is linked
+ *   to the app's release `X.Y.Z` (`release_id`) — the release chain's link (plan §1.11).
  * - **get** — the ticket's state; a pending ticket past its window becomes `rejected`.
  * - **upload** — only on `approved` (409). The toml is parsed here and `checkBindings` decides;
  *   a refusal is 403 `{ error, refused }` and the ticket `failed`.
  * - **activate** — only on `uploaded` (409): registers the build's Workflows and cron schedules
- *   (a version upload does neither), deploys the version at 100%, revokes the migrator.
+ *   (a version upload does neither), deploys the version at 100%, revokes the migrator. A release's
+ *   run moves it to `staging_active` / `production_active` (audited `release.*`).
  * - **finish** — idempotent: revokes the migrator if still live, closes the ticket once, and
  *   wakes the launch run waiting on it (`DEPLOY_FINISHED_EVENT`).
  *
@@ -26,12 +30,13 @@
  * compare-and-set (`tickets.ts`) and is audited. **The migrator URI is never logged, stored or
  * put in an error** — it is returned from `uploadDeploy` and nowhere else.
  */
+import { githubRequesterLabel } from '@launch/shared/launch-approvals'
 import { DEPLOY_FINISHED_EVENT, type DeployUpload } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
-import { appEnvironments, type DeployTicketRow } from '../../../../db/schema'
+import { type AppReleaseRow, appEnvironments, type DeployTicketRow } from '../../../../db/schema'
 import {
   ApiError,
   BadRequestError,
@@ -41,18 +46,29 @@ import {
   NotFoundError,
   ServiceUnavailableError,
 } from '../../../utils/core/errors'
+import { open as openApproval } from '../../approvals/engine'
+import type { ApprovalDeps } from '../../approvals/types'
 import { type AuditActor, recordAudit } from '../audit'
 import type { ResolvedCaller } from '../ci/caller'
 import { CloudflareClient } from '../cloudflare'
 import { getCredential, getSetting } from '../credentials'
 import { NeonClient, type NeonOptions } from '../neon'
 import { launchInstanceOf } from '../pipeline/instance'
+import {
+  releaseExclusions,
+  releaseForRef,
+  releaseRunActivated,
+  releaseRunFailed,
+  releaseRunStarted,
+} from '../releases/lifecycle'
 import { type BindingCheckResult, type CheckedWorkflow, checkBindings } from './binding-check'
 import { issueMigratorUrl, revokeMigrator } from './migrator'
 import {
   claimIntent,
   closeTicket,
   expirePending,
+  getTenantTicket,
+  linkTicket,
   markCredentialsIssued,
   markCredentialsRevoked,
   openRunTicket,
@@ -152,6 +168,11 @@ export interface GatewayContext {
   launchWorkflow?: LaunchWorkflowBinding
   logger?: Logger
   now?: () => Date
+  /**
+   * What the approvals engine runs with (P4): a production `start` with nothing to claim opens a
+   * `deploy.production` approval through it. Absent, the ticket waits with no approval and expires.
+   */
+  approvals?: ApprovalDeps
 }
 
 /** `start` and `get`'s body: `{ id, status }` plus what the job's log may find useful. */
@@ -197,6 +218,7 @@ async function audit(
     targetType: 'deploy_ticket',
     targetId: ticket.id,
     appId: ticket.appId,
+    approvalId: ticket.approvalId ?? null,
     summary: {
       after: {
         environment: ctx.caller.environment.name,
@@ -262,21 +284,30 @@ export async function startDeploy(
   const run = runOf(caller)
   // A launch run still provisioning is waiting for this deploy (`deploy_staging.wait`).
   const launchRunId = caller.app.status === 'live' ? null : (caller.app.launchRunId ?? null)
+  const environment = caller.environment.name
+  // A run on `refs/tags/X.Y.Z` deploys the app's release X.Y.Z, when Launch cut one.
+  const release = await releaseForRef(db, caller.tenantId, caller.app.id, run.ref)
 
-  if (caller.environment.name === 'production') {
-    const claimed = await claimIntent(db, scope, run, launchRunId, now)
-    if (claimed) {
+  if (environment === 'production') {
+    const intent = await claimIntent(db, scope, run, launchRunId, now)
+    if (intent) {
+      const claimed =
+        release && intent.releaseId !== release.id
+          ? ((await linkTicket(db, intent, { releaseId: release.id })) ?? intent)
+          : intent
+      if (release) await releaseRunStarted(db, release, 'production', claimed)
       await audit(ctx, claimed, 'deploy.started', {
         status: claimed.status,
-        decisionSource: 'intent',
+        decisionSource: claimed.decisionSource,
         sha: run.sha,
         ref: run.ref,
+        ...(release ? { release: release.tag } : {}),
       })
       return claimed
     }
   }
 
-  const staging = caller.environment.name === 'staging'
+  const staging = environment === 'staging'
   const { ticket, created } = await openRunTicket(db, scope, run, {
     purpose: 'deploy',
     status: staging ? 'approved' : 'pending',
@@ -284,16 +315,87 @@ export async function startDeploy(
     decidedAt: staging ? now : null,
     expiresAt: staging ? null : new Date(now.getTime() + PENDING_APPROVAL_TTL_MS),
     launchRunId,
+    releaseId: release?.id ?? null,
   })
   if (created) {
+    if (release) await releaseRunStarted(db, release, environment, ticket)
     await audit(ctx, ticket, 'deploy.started', {
       status: ticket.status,
       decisionSource: ticket.decisionSource,
       sha: run.sha,
       ref: run.ref,
+      ...(release ? { release: release.tag } : {}),
     })
   }
+  // A job-originated production run (a Release published, or a dispatch made, by hand in GitHub)
+  // waits on an approval. Checked on every `start`, not only the first, so a retried call heals a
+  // ticket whose approval could not be opened the first time.
+  if (!staging && ticket.status === 'pending' && !ticket.approvalId) {
+    return openTicketApproval(ctx, ticket, release)
+  }
   return ticket
+}
+
+/**
+ * Open the `deploy.production` approval a waiting production ticket needs (plan §1.9): subject the
+ * ticket, requested by `github:<actor>`, excluding the release's authors, expiring no later than
+ * the ticket. Returns the ticket as it stands afterwards (a policy may auto-approve it).
+ */
+async function openTicketApproval(
+  ctx: GatewayContext,
+  ticket: DeployTicketRow,
+  release: AppReleaseRow | null
+): Promise<DeployTicketRow> {
+  const { caller, db } = ctx
+  if (!ctx.approvals) {
+    ctx.logger?.warn(
+      { ticketId: ticket.id },
+      'deploy: no approvals engine in this context; the ticket waits unapproved'
+    )
+    return ticket
+  }
+  const [stagingEnv] = await db
+    .select()
+    .from(appEnvironments)
+    .where(
+      and(
+        eq(appEnvironments.tenantId, caller.tenantId),
+        eq(appEnvironments.appId, caller.app.id),
+        eq(appEnvironments.name, 'staging')
+      )
+    )
+    .limit(1)
+  const actor = ticket.actor ?? 'unknown'
+  const opened = await openApproval(ctx.approvals, {
+    tenantId: caller.tenantId,
+    kind: 'deploy.production',
+    subject: { type: 'deploy_ticket', id: ticket.id },
+    appId: caller.app.id,
+    requester: { label: githubRequesterLabel(actor) },
+    reason: `A production deploy of ${ticket.ref ?? 'a build'} started in GitHub by ${actor}`,
+    context: {
+      kind: 'deploy.production',
+      environment: 'production',
+      version: release?.version ?? null,
+      tag: release?.tag ?? null,
+      sha: ticket.sha,
+      ref: ticket.ref,
+      compareUrl: null,
+      prs: release?.prs.map(p => ({ ...p, checks: null })) ?? [],
+      stagingHealth: stagingEnv?.healthStatus ?? null,
+      stagingVersion: stagingEnv?.healthVersion ?? stagingEnv?.lastDeployVersion ?? null,
+      runUrl:
+        ticket.repository && ticket.runId
+          ? `https://github.com/${ticket.repository}/actions/runs/${ticket.runId}`
+          : null,
+      actor,
+    },
+    excludedUserIds: release ? await releaseExclusions(db, release) : [],
+    expiresNoLaterThan: ticket.expiresAt,
+    actor: ctx.actor,
+  })
+  await linkTicket(db, ticket, { approvalId: opened.request.id })
+  return (await getTenantTicket(db, ticket.tenantId, ticket.id)) ?? ticket
 }
 
 // ---- get ----------------------------------------------------------------------------------------
@@ -355,7 +457,10 @@ async function failTicket(
   error: string
 ): Promise<void> {
   const failed = await transitionTicket(ctx.db, ticket, [from], 'failed', { error })
-  if (failed) await audit(ctx, failed, 'deploy.failed', { from, error })
+  if (failed) {
+    await audit(ctx, failed, 'deploy.failed', { from, error })
+    await releaseRunFailed(ctx.db, failed, ctx.caller.environment.name, error)
+  }
 }
 
 export interface UploadResult {
@@ -398,7 +503,10 @@ export async function uploadDeploy(
       version: body.version,
       error,
     })
-    if (failed) await audit(ctx, failed, 'deploy.refused', { refused: check.refused })
+    if (failed) {
+      await audit(ctx, failed, 'deploy.refused', { refused: check.refused })
+      await releaseRunFailed(ctx.db, failed, environment.name, error)
+    }
     throw new DeployerProtocolError(403, error, 'deploy_bindings_refused', {
       refused: check.refused,
     })
@@ -536,6 +644,15 @@ export async function activateDeploy(
     workflows: stored.workflows.map(w => w.name),
     crons: stored.crons,
   })
+  if (active.releaseId) {
+    await releaseRunActivated(ctx.db, {
+      releaseId: active.releaseId,
+      tenantId: active.tenantId,
+      environment: environment.name,
+      ticket: active,
+      actor: ctx.actor,
+    })
+  }
   return active
 }
 
