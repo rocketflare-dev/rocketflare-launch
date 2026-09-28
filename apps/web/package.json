@@ -7,7 +7,11 @@
   "type": "module",
   "cfld": {
     "name": "launch",
-    "port": 3000
+    "zone": "clewro.com",
+    "routes": [
+      { "host": "local.clewro.com", "port": 3000 },
+      { "host": "*.clewro.com", "port": 3001 }
+    ]
   },
   "scripts": {
     "dev": "node scripts/dev-server.mjs --start",

@@ -79,7 +79,7 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
    - Open the old failed session `a07e371e…` once. Its reconcile deletes the leftover Neon branch (`ep-wild-silence-…`).
    - Start a new session. The `dev` database is already prepared.
    - **Unproven:** Neon over WebSocket through the egress interception, `workerd` inside the container trusting the interception CA, and a real Claude turn (the Anthropic key must be set in Setup).
-   - **Local preview routing.** Preview hosts (`<port>-<shortId>-<token>.clewro.com`) need `*.clewro.com` pointed at the cfld tunnel, with an ingress rule to `localhost:3001` (the Worker, where the preview gateway runs; Vite on :3000 would rewrite the `Host` header). cfld must quote a wildcard hostname in its YAML. Until then the preview returns a 522.
+   - **Local preview routing works.** `*.clewro.com` is a CNAME to the cfld tunnel, which sends it to `localhost:3001`: the Worker, where the preview gateway runs. Vite on :3000 would rewrite the `Host` header. cfld quotes wildcard hostnames in its YAML, a local patch in `~/work/cfld`. The HMR WebSocket goes through `wsConnect`.
    - **Investigate: faster session boot through a persistent dependency cache.** Run `pnpm install` once per lockfile into an R2-backed store, then mount it into every sandbox, keyed by a hash of `pnpm-lock.yaml` ([Sandbox persistent storage](https://developers.cloudflare.com/sandbox/tutorials/persistent-storage/)).
      - **Why:** the image's warm store (`containers/session/Dockerfile`) is fetched for `KIT_TAG=0.15.0`. Apps are on 0.15.5 and drift further with every dependency change, so `--prefer-offline` falls back to the registry more over time. S7 measured about 5 s warm against about 17 s cold.
      - **Questions:**
@@ -90,13 +90,12 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
        - How is the cache evicted?
        - Does it work locally under `wrangler dev`, or only on real containers?
      - **Where:** `services/sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, step 1 of `sessionBootstrap`).
-2. **Show deploys in progress on the app overview and the catalogue.** A production deploy never showed as in progress: only the audit log recorded it. The overview should show, from the deploy ticket, dispatched → approved → uploaded → migrating → activating → done or failed, with the run link, polled on page read like `pipeline/wait-poll.ts`.
+2. **Deploys in progress on the app overview and the catalogue.** Built (migration 0028), not yet seen on a real deploy. The next production promote should show its steps live. Known gaps are in CONCEPTS §18.7: a run that dies before `start` stays "dispatched" until its pre-approval expires (15 minutes), and nothing sweeps a ticket that nobody opens.
 3. **Small fixes found along the way:**
    - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the next kit change, through a commit pin.
    - **Email:** have Setup verify `notifications.clewro.com` in Resend (create the domain and write its DNS records to the zone). Email is skipped until then.
-   - **Launch's `ai_spans` prune:** port the kit 0.15.3 single-statement prune; Launch still deletes per tenant.
    - **The site's `check:releases`** accepts a `TODO` summary. Make it refuse one.
-   - **Sessions:** a `working` turn whose Workflow died isn't covered by the stalled-session check.
+   - **Sessions:** a `shipping` session whose Workflow died isn't reconciled yet. (Done: a `working` turn whose Workflow died is now reconciled, and the `ai_spans` prune is a single statement.)
 4. **Prove the rest on real infrastructure.** Not yet run for real:
    - archiving and tearing down a real app;
    - P5 grants (push, rotate, revoke onto a live Worker);
