@@ -8,7 +8,10 @@
  * - `requesterName(req, viewerId)` — "You", the person, "GitHub: octocat" for a CI-opened request;
  * - `whyNotSentence(whyNot, detail)` — the ONE sentence a person who may not decide reads instead
  *   of a disabled button, naming who it waits on (`waitingOn`, from the server's `eligible`);
- * - `approversSentence(approvers, groupNames)` — who may decide, from the policy snapshot;
+ * - `approversSentence(approvers, groupNames, extra)` — who may decide, from the policy snapshot,
+ *   plus whoever the kind's `eligibleExtra` adds (`extraApprovers`: a `grant.request` is decided
+ *   by the RESOURCE's owner team, which no policy list names — "the IT Identity team");
+ *   `requestApproversSentence(detail, groupNames, ownerTeam)` is the two together for one request;
  * - `progressLabel`, `STATUS_BADGE`, `KIND_LABELS`, `policyExpiryLabel`.
  */
 import {
@@ -91,7 +94,6 @@ export function approvalSummary(req: SummaryInput): string {
       return `Add ${usd(context.extraUsd)} to ${
         context.sessionTitle ? `the session “${context.sessionTitle}”` : 'a coding session'
       } on ${appName(req)}`
-    // P5: the one-line title (slice 5f owns the context panel's detail).
     case 'grant.request':
       return `Let ${appName(req)} hold ${context.resourceName} in ${context.environment}`
     case 'config.change':
@@ -131,14 +133,33 @@ export function orList(items: readonly string[]): string {
 }
 
 /**
+ * Who a kind's `eligibleExtra` makes an approver beyond the policy's own lists, in words — or null
+ * when the kind adds nobody. P5 (plan §1.8): a `grant.request` is decided by the members of the
+ * resource's OWNER group, which the policy never names (its default lists nobody at all), so
+ * without this the page would say "nobody" about a request a whole team may approve. The team's
+ * name comes from the resource when the reader could load it; otherwise a description stands in.
+ */
+export function extraApprovers(kind: ApprovalKind, ownerTeam?: string | null): string | null {
+  switch (kind) {
+    case 'grant.request':
+      return ownerTeam ? `the ${ownerTeam} team` : 'the team that owns the shared config'
+    default:
+      return null
+  }
+}
+
+/**
  * Who may decide, in words, from the policy snapshot. Group names are resolved by the caller when
  * the reader may list groups; otherwise a count stands in (a member cannot read every group).
+ * `extra` (from `extraApprovers`) leads the sentence: for a kind that has one, it is who decides.
  */
 export function approversSentence(
   approvers: ApprovalApprovers,
-  groupNames: ReadonlyMap<string, string> = new Map()
+  groupNames: ReadonlyMap<string, string> = new Map(),
+  extra: string | null = null
 ): string {
   const parts: string[] = []
+  if (extra) parts.push(extra)
   if (approvers.appOwners) parts.push('the app’s owners')
   if (approvers.admins) parts.push('the organisation’s admins')
   const named = approvers.groupIds.map(id => groupNames.get(id)).filter(Boolean) as string[]
@@ -155,6 +176,19 @@ export function approversSentence(
   return parts.length ? orList(parts) : 'nobody (the policy names no approvers)'
 }
 
+/** Who may decide ONE request: its policy snapshot plus whoever its kind adds. */
+export function requestApproversSentence(
+  detail: Pick<ApprovalDetail, 'kind' | 'policy'>,
+  groupNames?: ReadonlyMap<string, string>,
+  ownerTeam?: string | null
+): string {
+  return approversSentence(
+    detail.policy.approvers,
+    groupNames,
+    extraApprovers(detail.kind, ownerTeam)
+  )
+}
+
 /** How many eligible approvers a sentence names before "and N others". */
 const NAMED_APPROVERS = 3
 
@@ -164,12 +198,17 @@ const NAMED_APPROVERS = 3
  * (an older answer), and says plainly when nobody at all can approve it.
  */
 export function waitingOn(
-  detail: Pick<ApprovalDetail, 'policy'> & { eligible?: ApprovalDetail['eligible'] },
+  detail: Pick<ApprovalDetail, 'policy'> & {
+    eligible?: ApprovalDetail['eligible']
+    kind?: ApprovalKind
+  },
   groupNames?: ReadonlyMap<string, string>
 ): { who: string; nobody: boolean } {
   const eligible = detail.eligible
-  if (!eligible)
-    return { who: approversSentence(detail.policy.approvers, groupNames), nobody: false }
+  if (!eligible) {
+    const extra = detail.kind ? extraApprovers(detail.kind) : null
+    return { who: approversSentence(detail.policy.approvers, groupNames, extra), nobody: false }
+  }
   if (eligible.length === 0) return { who: '', nobody: true }
   const names = eligible.map(p => p.name?.trim() || p.email)
   if (names.length <= NAMED_APPROVERS) return { who: orList(names), nobody: false }
@@ -190,7 +229,10 @@ const NOBODY_SENTENCE =
  */
 export function whyNotSentence(
   whyNot: ApprovalWhyNot | null,
-  detail: Pick<ApprovalDetail, 'policy' | 'status'> & { eligible?: ApprovalDetail['eligible'] },
+  detail: Pick<ApprovalDetail, 'policy' | 'status'> & {
+    eligible?: ApprovalDetail['eligible']
+    kind?: ApprovalKind
+  },
   groupNames?: ReadonlyMap<string, string>
 ): string | null {
   if (whyNot === null || whyNot === 'not_pending') return null
@@ -236,13 +278,18 @@ export function policyExpiryLabel(minutes: number | null): string {
   return `after ${minutes} minutes`
 }
 
-/** One line for a policy: "1 approval from the app's owners · expires after 7 days". */
+/**
+ * One line for a policy: "1 approval from the app's owners". `extra` (from `extraApprovers`) names
+ * whoever the kind adds — a `grant.request` policy row reads "from the team that owns the shared
+ * config", not "from nobody".
+ */
 export function policySentence(
   policy: ApprovalPolicy,
-  groupNames?: ReadonlyMap<string, string>
+  groupNames?: ReadonlyMap<string, string>,
+  extra: string | null = null
 ): string {
   const noun = policy.minApprovals === 1 ? 'approval' : 'approvals'
-  return `${policy.minApprovals} ${noun} from ${approversSentence(policy.approvers, groupNames)}`
+  return `${policy.minApprovals} ${noun} from ${approversSentence(policy.approvers, groupNames, extra)}`
 }
 
 /** The inbox's "when": expiry for a waiting request, the decision time otherwise. */

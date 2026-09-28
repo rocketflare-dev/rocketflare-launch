@@ -21,9 +21,12 @@ import { ApiError } from '@/ui/lib/api-client'
 import {
   approvalSummary,
   approversSentence,
+  extraApprovers,
   orList,
   policyExpiryLabel,
+  policySentence,
   progressLabel,
+  requestApproversSentence,
   requesterName,
   waitingOn,
   whyNotSentence,
@@ -285,5 +288,39 @@ describe('budgetAccess', () => {
       mode: null,
       pendingApprovalId: null,
     })
+  })
+})
+
+describe('grant.request approvers (P5): the owner team, which no policy list names', () => {
+  const policy = DEFAULT_APPROVAL_POLICIES['grant.request']
+
+  it('names the team when known, describes it otherwise, and adds nothing for other kinds', () => {
+    expect(extraApprovers('grant.request', 'IT Identity')).toBe('the IT Identity team')
+    expect(extraApprovers('grant.request')).toBe('the team that owns the shared config')
+    expect(extraApprovers('deploy.production', 'IT Identity')).toBeNull()
+  })
+
+  it('never says "nobody" about a grant request under the default policy', () => {
+    expect(approversSentence(policy.approvers)).toBe('nobody (the policy names no approvers)')
+    expect(requestApproversSentence({ kind: 'grant.request', policy }, undefined, 'IT')).toBe(
+      'the IT team'
+    )
+    expect(
+      requestApproversSentence(
+        {
+          kind: 'grant.request',
+          policy: { ...policy, approvers: { ...policy.approvers, admins: true } },
+        },
+        undefined,
+        'IT'
+      )
+    ).toBe('the IT team or the organisation’s admins')
+    expect(policySentence(policy, undefined, extraApprovers('grant.request'))).toBe(
+      '1 approval from the team that owns the shared config'
+    )
+    // Without the server's `eligible`, the waiting sentence falls back to the same words.
+    expect(waitingOn({ kind: 'grant.request', policy }).who).toBe(
+      'the team that owns the shared config'
+    )
   })
 })

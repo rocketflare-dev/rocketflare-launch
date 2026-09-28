@@ -54,7 +54,7 @@ const KIND_LABELS: Record<ApprovalContext['kind'], string> = {
   'app.access': 'Access to an app',
   'deploy.production': 'Deploy to production',
   'session.budget': 'More session budget',
-  'grant.request': 'A grant',
+  'grant.request': 'Shared config for an app',
   'config.change': 'A configuration change',
   'app.teardown': 'Tear down an app',
 }
@@ -87,7 +87,6 @@ export function describeApproval(request: ApprovalRequest): string {
     }
     case 'session.budget':
       return `Add ${money(context.extraUsd)} to the session "${context.sessionTitle ?? context.sessionId}" on ${app} (spent ${money(context.spentUsd)} of ${money(context.capUsd)}).`
-    // P5: the minimal sentence (slice 5f owns the richer lines).
     case 'grant.request':
       return `Let ${app} hold ${context.resourceName} in ${context.environment}.`
     case 'config.change':
@@ -127,8 +126,18 @@ function contextLines(context: ApprovalContext): string[] {
       return context.description ? [`About:    ${context.description}`] : []
     case 'app.access':
       return context.message ? [`Message:  ${context.message}`] : []
+    // P5: what the app would receive — item names and kinds, never a value.
+    case 'grant.request': {
+      const lines = [
+        `Resource: ${context.resourceName}`,
+        `Env:      ${context.environment}`,
+        `Items:    ${context.items.map(item => `${item.key} (${item.kind})`).join(', ')}`,
+      ]
+      if (context.declaredBy.length) lines.push(`Declared: ${context.declaredBy.join(', ')}`)
+      lines.push(`Lapses:   ${context.expiresAt ? formatDate(context.expiresAt) : 'never'}`)
+      return lines
+    }
     case 'session.budget':
-    case 'grant.request':
     case 'config.change':
     case 'app.teardown':
       return []
@@ -139,9 +148,13 @@ function contextLines(context: ApprovalContext): string[] {
   }
 }
 
-/** Who may decide, in words. */
-export function describeApprovers(policy: ApprovalPolicy): string {
+/**
+ * Who may decide, in words. A `grant.request` is decided by the resource's OWNER team — the kind's
+ * `eligibleExtra`, which the policy's own lists never name (P5, plan §1.8).
+ */
+export function describeApprovers(policy: ApprovalPolicy, kind?: ApprovalContext['kind']): string {
   const who: string[] = []
+  if (kind === 'grant.request') who.push("the resource's owner team")
   if (policy.approvers.appOwners) who.push("the app's owners")
   if (policy.approvers.admins) who.push("the organisation's admins")
   if (policy.approvers.groupIds.length > 0) who.push(`${policy.approvers.groupIds.length} group(s)`)
@@ -183,7 +196,7 @@ function renderDetail(ctx: CommandContext, detail: ApprovalDetail): string {
   lines.push(...contextLines(detail.context))
   lines.push(
     `Progress: ${detail.approvals} of ${detail.requiredApprovals} approval${detail.requiredApprovals === 1 ? '' : 's'}`,
-    `Who:      ${describeApprovers(detail.policy)}`
+    `Who:      ${describeApprovers(detail.policy, detail.kind)}`
   )
   // While pending, the server names who it still waits on (`eligible`); an empty list means
   // nobody can approve it under the policy.

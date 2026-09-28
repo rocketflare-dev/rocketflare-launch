@@ -96,7 +96,7 @@ export interface ApiClient {
     options?: { query?: Record<string, QueryValue> }
   ): Promise<DownloadResponse>
   request<T = unknown>(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     options?: RequestOptions<T>
   ): Promise<ApiResponse<T>>
@@ -142,7 +142,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   async function request<T>(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     reqOptions: RequestOptions<T> = {}
   ): Promise<ApiResponse<T>> {

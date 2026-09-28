@@ -28,7 +28,7 @@ import { ExtendBudgetModal } from './components/ExtendBudgetModal'
 import { PreviewFrame } from './components/PreviewFrame'
 import { SessionChat } from './components/SessionChat'
 import { SessionHeader } from './components/SessionHeader'
-import { ShipPanel } from './components/ShipPanel'
+import { ShipPanel, shipConfigNeeds } from './components/ShipPanel'
 import { bootSteps, latestPreviewChangeSeq, shipGates } from './sessionChatModel'
 
 export default function SessionPage() {
@@ -49,6 +49,8 @@ export default function SessionPage() {
   const events = stream.events
   const steps = useMemo(() => bootSteps(events), [events])
   const gates = useMemo(() => shipGates(events), [events])
+  // P5: the shared config ship's scan of the PR head found the app does not hold (names only).
+  const configNeeds = useMemo(() => shipConfigNeeds(events), [events])
   const changeSeq = useMemo(
     () => (stream.isLoading ? undefined : latestPreviewChangeSeq(events)),
     [events, stream.isLoading]
@@ -124,7 +126,9 @@ export default function SessionPage() {
           />
         </section>
         <div className="flex min-h-0 flex-col gap-4">
-          {showShip && <ShipPanel session={session} gates={gates} />}
+          {showShip && (
+            <ShipPanel session={session} gates={gates} configNeeds={configNeeds} appSlug={slug} />
+          )}
           <div className="h-[32rem] min-h-0 lg:h-auto lg:flex-1">
             <PreviewFrame
               session={session}

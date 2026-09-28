@@ -452,6 +452,31 @@ A `CUSTOM kit.notice` renders
 - Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
+## Shared config and grants (Launch P5)
+
+- **Values are write-only in the UI too.** `ValuesModal` never pre-fills an input: a key the active
+  version carries reads "Set — hidden" with Replace, secrets are `type=password`, a blank keeps the
+  current value (the server merges), and the modal unmounts on close so nothing typed survives.
+  Var values render only from the detail's `vars`, which the server sends to owners and admins.
+- **`holders` present = the reader is the owner team or an admin** — the page's one signal for the
+  holders table, the var values and the push history (`useGrantPushes` is not even called for a
+  member: the route 404s them).
+- Everything the pages SAY is `shared-config/sharedConfigModel.ts` (`valueLine`, `missingKeys`,
+  `pushProgress`, `holderBehind`, the badge maps) and `apps/components/configModel.ts`
+  (`envGrantState` — held / pushing / push_failed / requested / revoking / missing —
+  `missingEnvironments`, `declaredByPlugin`); `MatchList` / `ScanLine` / `RescanButton` are shared
+  by `AppConfigPage` and the app page's `ConfigCard`. `RequestGrantModal` pre-selects only the
+  missing environments and renders refusals as sentences.
+- Hooks: `useSharedResources` (`useSharedResource`, create/patch/values, `useGrantPushes`,
+  `useGrantPush`, `useRetryGrantPush`; `grantPushPollInterval` polls only while `queued`/`running`)
+  and `useAppConfig` (request, `useRevokeGrant()` — the app id travels with the call — re-push,
+  re-scan; `appConfigPollInterval` polls only while a push is landing on a grant, never while one
+  is `requested`, which waits on a person). Roots `shared_resource`, `grant_push`, `app_config`.
+- A `grant.request` is decided by the resource's owner team (`eligibleExtra`), which no policy list
+  names: `extraApprovers(kind, ownerTeam)` in `approvalModel.ts` leads `approversSentence` /
+  `policySentence` / the `waitingOn` fallback, and `ApprovalPage` reads the team's name from the
+  resource. Tests: `shared-config`, `app-config`, the grant case in `approvals-inbox`.
+
 ## Feature flags (D30)
 
 - `lib/feature-guards.ts` is the client-side spelling: one `NavGuard` const per feature plus

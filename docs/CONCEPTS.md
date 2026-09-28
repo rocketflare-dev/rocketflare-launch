@@ -1283,6 +1283,22 @@ read, admins manage; the owner group's rights are a service check), the stub rou
 /api/shared-resources` answers `{ items: [] }`), pages, CLI hooks and service stubs that fail by
 name (`NotWiredError`, `services/grants/types.ts` maps each file to its slice); 5b–5f fill them.
 
+**The UI and the CLI (5f).** `/shared-config` lists every resource with its value STATUS per
+environment ("v3 · 2 apps"); admins create one (`CreateResourceModal`). `/shared-config/:id` says
+what is set ("Set — version 3, rotated 2 days ago by Carol"), shows var values and the holders to the
+owner team and admins only (the detail's `holders` is the signal), and its values modal is
+write-only: a set key reads "Set — hidden" with Replace, inputs are never pre-filled (secrets are
+password inputs), a blank keeps the current value, and saving where apps hold it is a rotation whose
+push shows N/M with the failed apps and Retry (`PushProgress`, polled only while queued/running).
+Revoke per holder is confirmed; admins edit the per-environment policy (`ResourcePolicyForm`). An
+app's `/apps/:slug/config` and the Config card on its page show the matched resources with a state
+per environment (held / pushing / requested with the request's link / missing with Request), the
+declared keys by plugin and the keys nothing matches. A `grant.request` approval names what the app
+would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team, because
+the policy's own lists are empty. Ship's `ship.config_needs` row is one line in the session's ship
+panel. CLI: `launch shared ls|show|set|rotate|pushes` (values from a hidden TTY prompt or stdin,
+never argv) and `launch grants needs|ls|request|revoke`.
+
 **Known gaps:** nothing is wired end to end yet (slices 5b–5f); every secret write on Cloudflare is
 a new deployed version, so a three-item push is three versions (a mixed state lasting seconds);
 Secrets Store is not a backing yet; an app whose LIVE version still carries one of the keys as a

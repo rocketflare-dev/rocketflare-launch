@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Shared config pages and commands (P5): the Shared config list and a page per resource — what is
+  set in each environment (never a value), a write-only values form ("Set — hidden", Replace, a
+  blank keeps what is set), rotation with live push progress and Retry, holders with Revoke, and
+  the approval policy per environment; an app's Config page and card with each shared resource's
+  state per environment and a Request button; grant requests in the approvals inbox name what the
+  app would receive and the team that decides; a session's ship panel says when the PR needs
+  shared config. `launch shared ls|show|set|rotate|pushes` and `launch grants
+  needs|ls|request|revoke`; `set` reads values from a hidden prompt or stdin, never the command line.
 - Shared config and grants, foundations (P5): the tables for shared resources (a named bundle of
   vars and secrets owned by a team, with sealed values per environment), app grants, the pushes
   that deliver them and each app's declared config (one migration, 0025); the `grant.request`
