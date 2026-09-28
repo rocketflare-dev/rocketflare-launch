@@ -111,9 +111,14 @@ SESSION_WORKSPACE_BACKUP=
 # remote (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker, reached through
 # a remote service binding — `pnpm dev` generates wrangler.dev-remote.toml and skips the local
 # image build). remote needs SESSION_BACKEND=cloud, `wrangler login`, and the host deployed
-# (docs/DEPLOY.md § The sandbox host); the container then holds a real Anthropic key and GitHub
-# token (docs/SESSIONS-LOCAL.md § Real containers from a laptop). Development only.
+# (docs/DEPLOY.md § The sandbox host); the host's outbound handlers inject the key and token Launch
+# grants it, as Launch's own do (docs/SESSIONS-LOCAL.md § Real containers from a laptop).
+# Development only.
 SESSION_SANDBOX_HOST=
+# The Sandbox SDK's own Durable Object logs (every exec, every destroy, at info). `warn` keeps only
+# what went wrong; `pretty` prints it on one line instead of a multi-line object.
+SANDBOX_LOG_LEVEL=warn
+SANDBOX_LOG_FORMAT=pretty
 
 # --- Shared config and grants (Launch P5, docs/plans/p5-grants.md) ----------------------
 # `local` records the names a push would put on an app's Worker and calls no vendor. Only with

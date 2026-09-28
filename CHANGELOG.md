@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `.dev.vars.example` sets `SANDBOX_LOG_LEVEL=warn` and `SANDBOX_LOG_FORMAT=pretty`: the Sandbox SDK's
+  Durable Object no longer prints a multi-line object for every exec and destroy under `pnpm dev`.
 - A remote-sandbox session (`SESSION_SANDBOX_HOST=remote`) gets its credentials the way Launch's
   own sandboxes do: Launch sends the sandbox host an egress grant (the repo, the session branch,
   the GitHub token, the Anthropic key and model) and `HostedSessionSandbox`'s own outbound handlers
