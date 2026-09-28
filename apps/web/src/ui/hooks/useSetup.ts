@@ -7,11 +7,13 @@
 import {
   type CredentialKind,
   type CredentialPayload,
+  kitTagsResponseSchema,
   publicUrlCheckResponseSchema,
   type SetupSettingsUpdate,
   setupCheckResponseSchema,
   setupOverviewSchema,
   setupRemoveResponseSchema,
+  type TemplatePinRequest,
 } from '@launch/shared/launch-setup'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/ui/lib/api-client'
@@ -76,6 +78,39 @@ export function useCheckPublicUrl() {
   return useMutation({
     mutationFn: () =>
       api.post(`${BASE}/public-url/check`, undefined, { schema: publicUrlCheckResponseSchema }),
+    onSuccess: () => invalidate(),
+  })
+}
+
+/** The kit repo's tags, for the Kit version card's picker — fetched only when the picker opens. */
+export function useKitTags(repo: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.setup.kitTags(repo),
+    queryFn: () =>
+      api.get(`${BASE}/template-pin/tags?repo=${encodeURIComponent(repo)}`, {
+        schema: kitTagsResponseSchema,
+      }),
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+/** Pin new apps to a release tag or an unreleased commit; the server resolves it via GitHub. */
+export function useSetTemplatePin() {
+  const invalidate = useInvalidateSetup()
+  return useMutation({
+    mutationFn: (body: TemplatePinRequest) =>
+      api.put(`${BASE}/template-pin`, body, { schema: setupOverviewSchema }),
+    onSuccess: () => invalidate(),
+  })
+}
+
+/** Back to the code default (`DEFAULT_TEMPLATE_PIN`). */
+export function useResetTemplatePin() {
+  const invalidate = useInvalidateSetup()
+  return useMutation({
+    mutationFn: () =>
+      api.delete(`${BASE}/template-pin`, undefined, { schema: setupOverviewSchema }),
     onSuccess: () => invalidate(),
   })
 }

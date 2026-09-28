@@ -32,6 +32,7 @@
  * `app.pipeline.retried`, which numbers the instance).
  */
 import type { RescaffoldPipelineResponse } from '@launch/shared/launch-pipeline'
+import { templatePinLabel } from '@launch/shared/launch-setup'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { appOperations } from '../../../../db/schema'
@@ -108,7 +109,12 @@ export async function rescaffoldPipeline(
   })
 
   const started = await retryPipeline(db, workflows, tenantId, app.id, 'create', actor)
-  const previousTemplateTag = app.templateVersion ?? app.templateRef ?? null
+  // An app cut from an unreleased commit recorded the SHA as its ref: shown as @<short sha>.
+  const previousTemplateTag =
+    app.templateRef && /^[0-9a-f]{40}$/.test(app.templateRef)
+      ? templatePinLabel({ commit: app.templateRef })
+      : (app.templateVersion ?? app.templateRef ?? null)
+  const templateTag = templatePinLabel(pin)
   await recordAudit(db, {
     tenantId,
     ...actor,
@@ -121,11 +127,11 @@ export async function rescaffoldPipeline(
       after: {
         runId: started.runId,
         instanceId: started.instanceId,
-        templateTag: pin.tag,
+        templateTag,
         templateCommit: pin.commit,
         steps: [...RESCAFFOLD_STEPS],
       },
     },
   })
-  return { ...started, templateTag: pin.tag, previousTemplateTag }
+  return { ...started, templateTag, previousTemplateTag }
 }

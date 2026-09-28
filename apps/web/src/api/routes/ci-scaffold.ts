@@ -69,7 +69,9 @@ ciScaffoldRouter.post('/token', async c => {
         actor: caller.claims.actor,
         permissions: SCAFFOLD_TOKEN_PERMISSIONS,
         expiresAt: response.expiresAt,
-        kit: `${response.plan.kitRepo}@${response.plan.tag}`,
+        // A release: repo@tag; an unreleased commit (no tag): repo@<full sha>.
+        kit: `${response.plan.kitRepo}@${response.plan.tag ?? response.plan.commit}`,
+        kitCommit: response.plan.commit,
       },
     },
   })

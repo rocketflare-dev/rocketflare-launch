@@ -117,7 +117,10 @@ export type RescaffoldPipelineCode = (typeof RESCAFFOLD_PIPELINE_CODES)[number]
 export const rescaffoldPipelineResponseSchema = z.object({
   runId: z.string().uuid(),
   instanceId: z.string(),
-  /** The kit tag the new scaffold uses (`launch_settings.template_pin`, else the default). */
+  /**
+   * The kit the new scaffold uses (`launch_settings.template_pin`, else the default), as a label:
+   * the tag, or `@<short sha>` for an unreleased commit (`templatePinLabel`).
+   */
   templateTag: z.string(),
   /** The kit tag the app was scaffolded from before, when its scaffold was ever verified. */
   previousTemplateTag: z.string().nullable(),
@@ -358,7 +361,10 @@ export const pipelineViewSchema = z.object({
    * viewer still needs `manage App`.
    */
   canRescaffold: z.boolean(),
-  /** The kit tag a re-scaffold would use — set only when `canRescaffold`, else null. */
+  /**
+   * The kit a re-scaffold would use, as a label — the tag, or `@<short sha>` for an unreleased
+   * commit (`templatePinLabel`). Set only when `canRescaffold`, else null.
+   */
   templateTag: z.string().nullable(),
 })
 export type PipelineView = z.infer<typeof pipelineViewSchema>
@@ -529,7 +535,12 @@ export const scaffoldPlanSchema = z.object({
   /** `owner/name` of the new repository. */
   repo: z.string(),
   kitRepo: z.string(),
-  tag: z.string(),
+  /**
+   * The kit release tag; `null` for a commit pin (an unreleased commit — the job fetches `commit`
+   * itself). A plan from before commit pins always carried a tag.
+   */
+  tag: z.string().nullable(),
+  /** The full kit commit SHA the job must end up on. */
   commit: z.string(),
 })
 export type ScaffoldPlan = z.infer<typeof scaffoldPlanSchema>

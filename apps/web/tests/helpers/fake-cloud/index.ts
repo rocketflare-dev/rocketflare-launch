@@ -93,6 +93,10 @@
  *   pulls, PRs with `author`/`merged`/`mergedAt`/`mergeSha`, and the hooks `openPull(owner, repo,
  *   {head, title, author?})`, `merge(owner, repo, number)` (→ the merge commit's sha),
  *   `closePull(owner, repo, number)` and `publish(owner, repo, tag)` (a Release published by hand).
+ *   The kit pin: `seedRepo(owner, repo, files?)` (a repo in ANY org — the public kit), `tag(owner,
+ *   repo, tag, { ref?, annotated? })` (an annotated tag answers `type: 'tag'` and dereferences
+ *   through `GET …/git/tags/{sha}`), `GET …/tags`, and `GET …/commits/{ref}` (branch, tag, full or
+ *   short sha reachable in that repo → `{ sha }`, else 422 "No commit found").
  *
  * ## App hosts
  *

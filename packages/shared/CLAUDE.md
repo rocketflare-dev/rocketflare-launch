@@ -27,7 +27,7 @@ catalogue/detail/health/operations responses, the OIDC client and its once-only
 both show), `launch-oidc.ts` (access policy, signing-key and access-request statuses, redirect URIs,
 public JWK, the key-admin responses and the `/api/app-access` request/policy/grant contracts), `launch-setup.ts`
 (credential kinds, per-kind payloads, checks, the value-free `credentialStatusSchema`, setting
-keys — the wizard's string `SETUP_SETTING_KEYS` plus P2's `template_pin` / `app_create_role` with
+keys — the wizard's string `SETUP_SETTING_KEYS` plus P2's `template_pin` (a release tag, or with no `tag` an unreleased commit — `isCommitPin`, `templatePinLabel`, `templatePinRef`, and the Kit version card's `templatePinRequestSchema` / `templatePinStatusSchema` / `kitTagsResponseSchema`) / `app_create_role` with
 their code defaults and `meetsAppCreateRole`), `launch-audit.ts` (audit event, `auditListQuerySchema` / `auditListResponseSchema`, cursor-paged) ·
 Launch (P2): `launch-pipeline.ts` (`newAppSlugProblem` — the `launch-` rule on top of
 `appSlugProblem` — `createAppRequestSchema`, `APP_LAUNCH_STEPS` / `APP_TEARDOWN_STEPS` (the

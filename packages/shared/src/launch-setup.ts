@@ -116,7 +116,8 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  * `launch_settings` keys — non-secret platform configuration, one row each. The wizard's strings,
  * plus two that the pipeline reads with a CODE default and nobody has to set (P2):
  *
- * - `template_pin` — `{ repo, tag, commit }`, the kit a new app is cut from (`DEFAULT_TEMPLATE_PIN`).
+ * - `template_pin` — `{ repo, tag?, commit }`, the kit a new app is cut from (`DEFAULT_TEMPLATE_PIN`):
+ *   a release tag, or an unreleased commit (no tag). Set on the Setup page's Kit version card.
  * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
  *
  * And P3's two (`@launch/shared/launch-sessions`):
@@ -142,22 +143,104 @@ export const LAUNCH_SETTING_KEYS = [
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
 
+const kitRepoSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name')
+
 /**
- * `launch_settings.template_pin`. The scaffold job clones `repo` at `tag` and refuses to go on
- * unless the tag resolves to `commit` — a moved tag is a different kit.
+ * `launch_settings.template_pin` — the ONE source of the kit a new app is cut from (absent:
+ * `DEFAULT_TEMPLATE_PIN`). Two kinds:
+ *
+ * - a **release pin** (`tag` set): the scaffold job clones `repo` at `tag` and refuses to go on
+ *   unless the tag resolves to `commit` — a moved tag is a different kit.
+ * - a **commit pin** (no `tag`): an unreleased commit on a branch, for trying a kit fix before it
+ *   is released. The job fetches exactly `commit` and checks HEAD is it.
+ *
+ * A row stored before commit pins existed (always with a tag) parses unchanged.
  */
 export const templatePinSchema = z.object({
-  repo: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name'),
-  tag: z.string().trim().min(1).max(100),
+  repo: kitRepoSchema,
+  tag: z.string().trim().min(1).max(100).optional(),
   commit: z
     .string()
     .trim()
     .regex(/^[0-9a-f]{40}$/, 'A full 40-character commit SHA'),
 })
 export type TemplatePin = z.infer<typeof templatePinSchema>
+
+/** A pin with no release tag: an unreleased commit. */
+export function isCommitPin(pin: { tag?: string | null }): boolean {
+  return !pin.tag
+}
+
+/** The short SHA a commit is shown by (7 characters, as git abbreviates). */
+export function shortSha(commit: string): string {
+  return commit.slice(0, 7)
+}
+
+/**
+ * How a pin reads in a label ("kit <label>", "Re-scaffold from kit <label>"): the tag, or
+ * `@<short sha>` for an unreleased commit.
+ */
+export function templatePinLabel(pin: { tag?: string | null; commit: string }): string {
+  return pin.tag ? pin.tag : `@${shortSha(pin.commit)}`
+}
+
+/** The git ref a pin names — the tag, else the commit (`apps.template_ref`). */
+export function templatePinRef(pin: { tag?: string | null; commit: string }): string {
+  return pin.tag ? pin.tag : pin.commit
+}
+
+/**
+ * `PUT /api/platform/setup/template-pin` — what the admin chose; the SERVER resolves it to a full
+ * pin through GitHub (`repo` defaults to the current pin's):
+ *
+ * - `{ kind: 'tag', tag }` — a release; the tag is resolved to its commit (an annotated tag
+ *   dereferenced), 422 `kit_ref_not_found` when the repo has no such tag.
+ * - `{ kind: 'commit', ref }` — an unreleased commit: a SHA (7–40 hex) or a branch name (`main`
+ *   is "latest main"), resolved to the full SHA; 422 `kit_ref_not_found` when it is not in the repo.
+ */
+export const templatePinRequestSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('tag'),
+    repo: kitRepoSchema.optional(),
+    tag: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/, 'A tag name'),
+  }),
+  z.object({
+    kind: z.literal('commit'),
+    repo: kitRepoSchema.optional(),
+    ref: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/, 'A commit SHA or a branch name'),
+  }),
+])
+export type TemplatePinRequest = z.infer<typeof templatePinRequestSchema>
+
+/** The kit pin as the Setup page sees it: what new apps use, and whether it is the code default. */
+export const templatePinStatusSchema = z.object({
+  pin: templatePinSchema,
+  /** No `launch_settings.template_pin` row: `DEFAULT_TEMPLATE_PIN` applies. */
+  isDefault: z.boolean(),
+  default: templatePinSchema,
+})
+export type TemplatePinStatus = z.infer<typeof templatePinStatusSchema>
+
+/** `GET /api/platform/setup/template-pin/tags[?repo=]` — the repo's recent tags, newest first. */
+export const kitTagsQuerySchema = z.object({ repo: kitRepoSchema.optional() })
+export const kitTagsResponseSchema = z.object({
+  repo: z.string(),
+  tags: z.array(z.object({ name: z.string(), commit: z.string() })),
+})
+export type KitTagsResponse = z.infer<typeof kitTagsResponseSchema>
 
 /**
  * Rocketflare kit 0.15.5: 0.15.0 (the release P2 was built against) plus the rename fixes a
@@ -391,6 +474,8 @@ export const setupOverviewSchema = z.object({
     checks: credentialLastCheckSchema,
     checkedAt: z.coerce.date().nullable(),
   }),
+  /** The kit new apps are cut from (`launch_settings.template_pin`, else the default). */
+  templatePin: templatePinStatusSchema,
 })
 export type SetupOverview = z.infer<typeof setupOverviewSchema>
 

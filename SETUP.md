@@ -405,6 +405,15 @@ public URL, template pin), the OIDC issuer's keys and the access-request queue a
 admins. `/admin` (organisations, users, feature flags, live sessions) stays global-admin only;
 the old `/admin/setup` links redirect. Verify: `/settings/platform/setup` opens as the first admin.
 
+**Kit version.** The last card on Setup is the Rocketflare kit every new app is cut from: Launch's
+default release unless you change it. Pin a **release tag** (type it, or "List tags"), or — to try
+a kit fix before it is released — a **commit**: paste a SHA from any branch of the kit repo, or
+"Pin latest main". Launch looks either up in the kit repo through the GitHub App (connect it first)
+and stores the full commit; a commit pin is marked "Unreleased commit — for development". "Reset
+to default" goes back to Launch's pin. Apps already launched keep their kit; a re-scaffold uses the
+pin as it is then. Verify: the card shows the tag or `Unreleased commit` with the short SHA you
+pinned.
+
 ### 2.5 AI — chat, agents, embeddings
 Resolution (`docs/CONCEPTS.md` §9): a per-agent assignment → the tenant's default provider in
 Settings → AI → the platform `ANTHROPIC_API_KEY` → **Workers AI through the `AI` binding**. That last

@@ -51,9 +51,12 @@ export interface ScaffoldedFiles {
 
 export interface ScaffoldExpectation {
   slug: string
-  /** The kit tag the job was pinned to (`kit.version` must equal it, less any leading `v`). */
-  tag: string
-  /** The pinned kit commit; checked against `kit.commit` when given. */
+  /**
+   * The kit tag the job was pinned to (`kit.version` must equal it, less any leading `v`); null or
+   * absent for a commit pin, whose `kit.version` need only be present.
+   */
+  tag?: string | null
+  /** The pinned kit commit; checked against `kit.commit` when given (a commit pin's proof). */
   commit?: string
 }
 
@@ -73,9 +76,13 @@ export function scaffoldProblems(files: ScaffoldedFiles, expected: ScaffoldExpec
         `.rocketflare.json names the app ${identity.slug ?? '(none)'}, not ${expected.slug}`
       )
     }
-    const tag = expected.tag.replace(/^v/, '')
-    if (identity.kitVersion !== tag) {
-      problems.push(`.rocketflare.json says kit ${identity.kitVersion ?? '(none)'}, not ${tag}`)
+    if (expected.tag) {
+      const tag = expected.tag.replace(/^v/, '')
+      if (identity.kitVersion !== tag) {
+        problems.push(`.rocketflare.json says kit ${identity.kitVersion ?? '(none)'}, not ${tag}`)
+      }
+    } else if (!identity.kitVersion) {
+      problems.push('.rocketflare.json records no kit version')
     }
     if (expected.commit && identity.kitCommit !== expected.commit) {
       problems.push(

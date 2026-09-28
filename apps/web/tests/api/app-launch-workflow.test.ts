@@ -191,6 +191,19 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect(app?.githubRepoId).toBe(String(repo?.id))
     expect(byStep.repo?.externalIds).toMatchObject({ repoId: String(repo?.id) })
 
+    // The job's own files go in `[skip ci]` (the app's ci.yml would lint `.launch/` red on main);
+    // the configuration commit is app code and runs CI (the deploy's gate-once relies on it).
+    const messages = [...cloud.github.commits.values()].map(c => c.message)
+    expect(messages).toContain('Add the Launch scaffold job [skip ci]')
+    expect(messages).toContain('Configure the app for Launch')
+    expect(messages.filter(m => m.includes('Configure')).join()).not.toContain('[skip ci]')
+    // A release pin: the job is handed the tag and its commit.
+    expect(launch.ports.started[0]?.plan).toMatchObject({
+      kitRepo: DEFAULT_TEMPLATE_PIN.repo,
+      tag: DEFAULT_TEMPLATE_PIN.tag,
+      commit: DEFAULT_TEMPLATE_PIN.commit,
+    })
+
     const envs = await envRows(launch)
     const kvStaging = [...cloud.cloudflare.kv.values()].find(
       k => k.title === `${launch.slug}-rate-limit-staging`
@@ -587,6 +600,10 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     ).toEqual([])
     expect(second.outcome.status).toBe('live')
     expect(filesBackOnDispatch).toEqual(expect.any(String))
+    // Brought back `[skip ci]`, like the first time.
+    expect([...cloud.github.commits.values()].map(c => c.message)).toContain(
+      'Update the Launch scaffold job [skip ci]'
+    )
 
     // The scaffold job ran again, on a fresh ticket, with the NEW pin; verify accepted it.
     expect(launch.ports.started).toHaveLength(2)
@@ -653,6 +670,57 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     const scaffold = view.steps.find(s => s.step === 'scaffold')
     expect(scaffold).toMatchObject({ status: 'failed' })
     expect(scaffold?.error).toMatch(/names the app someone-else/)
+  })
+
+  describe('a commit pin: an unreleased kit commit, no tag', () => {
+    const commitPin = { repo: DEFAULT_TEMPLATE_PIN.repo, commit: 'c0ffee'.padEnd(40, '1') }
+    const vendors = () => ({
+      settings: { ...fakeVendors(cloud).settings, templatePin: commitPin },
+    })
+    const scaffoldWith =
+      (launch: Launch, manifest: { kitVersion: string; kitCommit?: string }) =>
+      async (wait: { type: string }) => {
+        if (wait.type === DEPLOY_FINISHED_EVENT) return h.deployJob(launch)
+        if (wait.type !== SCAFFOLD_FINISHED_EVENT) return undefined
+        const ticket = await h.scaffoldTicket(launch)
+        const sha = pushScaffold(cloud, launch.slug, manifest)
+        await finishScaffoldTicket(db, launch.tenantId, ticket?.id, sha)
+        return { ticketId: ticket?.id }
+      }
+
+    it('hands the job no tag, verifies the commit and records the kit version it reported', async () => {
+      const launch = await h.request()
+      const { outcome } = await h.run(launch, {
+        vendors: vendors(),
+        onWait: scaffoldWith(launch, { kitVersion: '0.15.4', kitCommit: commitPin.commit }),
+      })
+      expect(outcome.status).toBe('live')
+      expect(launch.ports.started[0]?.plan).toMatchObject({
+        kitRepo: commitPin.repo,
+        tag: null,
+        commit: commitPin.commit,
+      })
+      // The ref is the SHA; the version is what the kit's manifest said (no tag to name it).
+      expect(await appRow(launch)).toMatchObject({
+        templateRef: commitPin.commit,
+        templateCommit: commitPin.commit,
+        templateVersion: '0.15.4',
+      })
+    })
+
+    it('fails verify when the scaffold records another kit commit, or none', async () => {
+      for (const kitCommit of ['d'.repeat(40), undefined]) {
+        const launch = await h.request()
+        const { outcome } = await h.run(launch, {
+          vendors: vendors(),
+          onWait: scaffoldWith(launch, { kitVersion: '0.15.4', kitCommit }),
+        })
+        expect(outcome.status).toBe('failed')
+        expect((await rows(launch))['scaffold.verify']?.error).toContain(
+          `says kit commit ${kitCommit ?? 'unknown'}, not ${commitPin.commit}`
+        )
+      }
+    })
   })
 
   it('without deployStaging, records the deploy and health as skipped and still goes live', async () => {

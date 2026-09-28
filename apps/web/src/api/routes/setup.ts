@@ -14,6 +14,9 @@
  * check creates the apps zone's proxied `*` record when there is none, audited
  * `dns.wildcard.created` (target the zone) before the credential's own row. `GET /` never probes.
  *   DELETE /credentials/:kind         → audit credential.removed
+ *   GET    /template-pin/tags[?repo]  the kit repo's tags (the Kit version card's picker)
+ *   PUT    /template-pin              a tag or a commit, resolved through GitHub → setting.changed
+ *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the row deleted) → setting.changed
  *
  * **A value never leaves.** The body of a PUT is sealed by `putCredential` and every response is
  * built from `credentialStatus` (which does not even select the sealed column); audit summaries say
@@ -29,12 +32,21 @@ import {
   type CredentialKind,
   credentialKindSchema,
   credentialPayloadSchemas,
+  kitTagsQuerySchema,
   setupSettingsUpdateSchema,
+  type TemplatePin,
+  templatePinRequestSchema,
 } from '@launch/shared/launch-setup'
 import { z } from 'zod'
 import type { Database } from '../../db/client'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import { putCredential, removeCredential } from '../services/launch/credentials'
+import {
+  getSetting,
+  putCredential,
+  putSetting,
+  removeCredential,
+} from '../services/launch/credentials'
+import { listKitTags, resolveTemplatePinRequest } from '../services/launch/kit-pin'
 import { runPublicUrlCheck } from '../services/launch/public-url'
 import {
   type CheckEffect,
@@ -197,4 +209,51 @@ setupRouter.delete('/credentials/:kind', validate('param', kindParamSchema), asy
   }
   await audit(c, db, auditTenantId, 'credential.removed', kind, { value: 'removed' })
   return c.json({ removed: true as const })
+})
+
+// ---- the kit pin (`launch_settings.template_pin`) ------------------------------------------------
+
+setupRouter.get('/template-pin/tags', validate('query', kitTagsQuerySchema), async c => {
+  const { db, cfg } = withAuth(c)
+  return c.json(await listKitTags(db, cfg, c.req.valid('query').repo))
+})
+
+/** A pin change (or reset) is `setting.changed`, before and after — a pin is never a secret. */
+async function auditPinChange(
+  c: AppContext,
+  db: Database,
+  tenantId: string,
+  before: unknown,
+  after: TemplatePin | null
+) {
+  await recordAudit(db, {
+    tenantId,
+    ...auditActor(c),
+    action: 'setting.changed',
+    targetType: 'Setting',
+    targetId: 'template_pin',
+    summary: { before: { template_pin: before ?? null }, after: { template_pin: after } },
+  })
+}
+
+setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const pin = await resolveTemplatePinRequest(db, cfg, c.req.valid('json'))
+  const before = await getSetting(db, 'template_pin')
+  await putSetting(db, 'template_pin', pin, user.id)
+  await auditPinChange(c, db, auditTenantId, before, pin)
+  return c.json(await setupOverview(db, cfg))
+})
+
+/** Reset to the code default: the row is deleted, so the default moves with Launch again. */
+setupRouter.delete('/template-pin', async c => {
+  const { db, cfg, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const before = await getSetting(db, 'template_pin')
+  if (before !== null) {
+    await putSetting(db, 'template_pin', null, null)
+    await auditPinChange(c, db, auditTenantId, before, null)
+  }
+  return c.json(await setupOverview(db, cfg))
 })

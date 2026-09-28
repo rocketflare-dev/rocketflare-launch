@@ -75,6 +75,7 @@ import {
   recordCheck,
 } from './credentials'
 import { GitHubApiError, type GitHubPermissions, getApp, listInstallations } from './github-app'
+import { templatePinStatus } from './kit-pin'
 import { NeonApiError, NeonClient, type NeonProject } from './neon'
 import { publicUrlOverview } from './public-url'
 import { ResendApiError, ResendClient } from './resend'
@@ -877,10 +878,11 @@ export function stepStatuses(
 }
 
 export async function setupOverview(db: Database, cfg: AppConfig): Promise<SetupOverview> {
-  const [settings, credentials, publicUrl] = await Promise.all([
+  const [settings, credentials, publicUrl, templatePin] = await Promise.all([
     readSettings(db),
     setupCredentials(db),
     publicUrlOverview(db, cfg),
+    templatePinStatus(db),
   ])
   const identity = identityStatus(cfg)
   return {
@@ -894,5 +896,6 @@ export async function setupOverview(db: Database, cfg: AppConfig): Promise<Setup
       return found
     }),
     identity,
+    templatePin,
   }
 }

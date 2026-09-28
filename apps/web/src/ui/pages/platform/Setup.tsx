@@ -2,7 +2,8 @@
  * `/settings/platform/setup` (spec/03, spec/04): the setup wizard — a stepper over seven cards, in the order a
  * company sets Launch up: the apps domain and zone, then the Cloudflare, Neon, Resend and GitHub
  * App credentials Launch acts with, then the upstream IdP (read-only), then whether Launch's own
- * public URL is reachable from the internet (the CI jobs call it back). `canAdministerPlatform` — a
+ * public URL is reachable from the internet (the CI jobs call it back). After the steps, the Kit
+ * version card: the kit new apps are cut from (not a step — it has a default). `canAdministerPlatform` — a
  * global admin, or in single mode the organisation's owner/admin (the platform layout's guard; the
  * server's `platformAdminMiddleware`).
  *
@@ -23,6 +24,7 @@ import { useSetupOverview } from '@/ui/hooks/useSetup'
 import { CredentialCard } from './setup/CredentialCard'
 import { DomainCard } from './setup/DomainCard'
 import { IdentityCard } from './setup/IdentityCard'
+import { KitVersionCard } from './setup/KitVersionCard'
 import { PublicUrlCard } from './setup/PublicUrlCard'
 import { StatusDot, statusLabel } from './setup/StatusDot'
 import { stepAnchor } from './setup/StepCard'
@@ -238,6 +240,8 @@ export default function Setup() {
       <IdentityCard status={status('identity')} identity={data.identity} />
 
       <PublicUrlCard status={status('public_url')} publicUrl={data.publicUrl} />
+
+      <KitVersionCard templatePin={data.templatePin} />
     </div>
   )
 }

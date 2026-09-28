@@ -21,6 +21,7 @@ import {
   type PipelineStepDefinition,
   type PipelineView,
 } from '@launch/shared/launch-pipeline'
+import { templatePinLabel } from '@launch/shared/launch-setup'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import {
@@ -155,7 +156,9 @@ export async function pipelineView(
   // A re-scaffold is a create run's; the pin is read only when it is on offer.
   const allowed =
     kind === 'create' && !(await rescaffoldBlock(db, tenantId, app, { runId, status }))
-  const templateTag = allowed ? (await loadPipelineSettings(db)).templatePin.tag : null
+  const templateTag = allowed
+    ? templatePinLabel((await loadPipelineSettings(db)).templatePin)
+    : null
   const labels = new Map(PIPELINE_STEPS[kind].map(def => [def.step, def.label]))
   const partOf = (step: string): PipelineStep => {
     const row = byStep.get(step)

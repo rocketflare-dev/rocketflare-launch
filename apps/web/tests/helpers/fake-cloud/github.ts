@@ -334,6 +334,51 @@ export class FakeGitHub implements VendorHandler {
     return this.newRelease(repo, { tag, sha, via: 'hook' })
   }
 
+  /**
+   * A repository anywhere (another org's public kit repo, say), with a first commit of `files`
+   * on its default branch. No token is involved: a test fixture, not an API create.
+   */
+  seedRepo(
+    owner: string,
+    name: string,
+    files: Record<string, string> = { 'README.md': `# ${name}\n` }
+  ): FakeRepo {
+    const repo: FakeRepo = {
+      id: this.ids.number(),
+      owner,
+      name,
+      description: null,
+      private: false,
+      archived: false,
+      default_branch: 'main',
+      refs: new Map(),
+      environments: new Map(),
+      variables: new Map(),
+    }
+    this.repos.set(`${owner}/${name}`.toLowerCase(), repo)
+    const tree = this.writeTree(new Map(), Object.entries(files))
+    repo.refs.set('heads/main', this.writeCommit(tree, [], 'Initial commit'))
+    return repo
+  }
+
+  /**
+   * Tag `ref` (a branch or a sha; default the default branch). `annotated` makes it a tag OBJECT,
+   * as `git tag -a` does: `GET …/git/ref/tags/{tag}` then answers `type: 'tag'` with the object's
+   * sha, and `GET …/git/tags/{sha}` dereferences it to the commit. Returns the COMMIT sha.
+   */
+  tag(owner: string, name: string, tag: string, opts: { ref?: string; annotated?: boolean } = {}) {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const sha = this.resolveRef(repo, opts.ref ?? repo.default_branch)
+    if (!sha) throw new Error(`FakeGitHub: no ref ${opts.ref}`)
+    repo.refs.set(`tags/${tag}`, sha)
+    if (opts.annotated) this.tagObjects.set(`${repo.owner}/${repo.name}@${tag}`, this.ids.sha())
+    return sha
+  }
+
+  /** `owner/name@tag` → the annotated tag object's sha (a tag made with `tag({ annotated })`). */
+  readonly tagObjects = new Map<string, string>()
+
   /** P4: the release on `tag`, if one was published. */
   releaseFor(owner: string, name: string, tag: string): FakeGitHubRelease | undefined {
     return this.releases.find(
@@ -664,7 +709,51 @@ export class FakeGitHub implements VendorHandler {
     if (match && m === 'GET') {
       const sha = repo.refs.get(match[1])
       if (!sha) return ghError(404, 'Not Found')
+      const tagName = match[1].startsWith('tags/') ? match[1].slice('tags/'.length) : null
+      const tagObject = tagName
+        ? this.tagObjects.get(`${repo.owner}/${repo.name}@${tagName}`)
+        : null
+      if (tagObject) {
+        return json({ ref: `refs/${match[1]}`, object: { sha: tagObject, type: 'tag' } })
+      }
       return json({ ref: `refs/${match[1]}`, object: { sha, type: 'commit' } })
+    }
+    // An annotated tag object → the commit it tags.
+    match = rest.match(/^\/git\/tags\/([0-9a-f]+)$/)
+    if (match && m === 'GET') {
+      const prefix = `${repo.owner}/${repo.name}@`
+      const entry = [...this.tagObjects.entries()].find(
+        ([key, sha]) => sha === match?.[1] && key.startsWith(prefix)
+      )
+      const tagName = entry?.[0].slice(prefix.length)
+      const commit = tagName ? repo.refs.get(`tags/${tagName}`) : undefined
+      if (!entry || !commit) return ghError(404, 'Not Found')
+      return json({ sha: entry[1], tag: tagName, object: { sha: commit, type: 'commit' } })
+    }
+    // `GET …/tags` — every tag with its commit, newest first (last created first here).
+    if (rest === '/tags' && m === 'GET') {
+      const tags = [...repo.refs.entries()]
+        .filter(([ref]) => ref.startsWith('tags/'))
+        .map(([ref, sha]) => ({ name: ref.slice('tags/'.length), commit: { sha } }))
+        .reverse()
+      return json(tags)
+    }
+    // `GET …/commits/{ref}` — a branch, tag, full or SHORT sha → the commit; 422 when none.
+    match = rest.match(/^\/commits\/([^/]+)$/)
+    if (match && m === 'GET') {
+      const ref = decodeURIComponent(match[1])
+      // Only a commit reachable from one of THIS repo's refs (the commit store is shared).
+      const reachable = new Set<string>()
+      for (const head of repo.refs.values()) for (const s of this.ancestors(head)) reachable.add(s)
+      let sha = this.resolveRef(repo, ref)
+      if (!sha && /^[0-9a-f]{7,39}$/.test(ref)) {
+        const hits = [...reachable].filter(s => s.startsWith(ref))
+        sha = hits.length === 1 ? (hits[0] ?? null) : null
+      }
+      if (sha && !reachable.has(sha)) sha = null
+      if (!sha) return ghError(422, `No commit found for SHA: ${ref}`)
+      const commit = this.commits.get(sha)
+      return json({ sha, commit: { message: commit?.message ?? '' } })
     }
     match = rest.match(/^\/git\/commits\/([0-9a-f]+)$/)
     if (match && m === 'GET') {
