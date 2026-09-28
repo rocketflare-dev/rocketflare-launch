@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New apps are scaffolded from Rocketflare kit 0.15.4, whose deploy job checks wrangler parity with
+  the parity test alone (the whole config project failed on the job's shallow checkout).
 - New apps are scaffolded from Rocketflare kit 0.15.3: an app's deploy no longer fails on the
   kit-only "Gate with default plugins" job ("analytics is already installed"), a commit already
   green in CI is not gated again on deploy, and the neon test run no longer times out.
