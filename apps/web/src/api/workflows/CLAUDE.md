@@ -103,9 +103,10 @@ wrapped in `withProgress`, which writes the boot checklist's `step` events) → 
 boot steps after it take that id as a closure argument and refuse a container that no longer
 carries it (`SandboxRestartedError`). Every boot step runs under `withProgress`, which also polls
 the row (an End stops the step — `fail` then settles `ending`, not `failed`) and writes the
-heartbeat `services/sessions/reconcile.ts` reads; `claim` sends an `ending` session, and a settled
-one with no `ended_at`, straight to `cleanup` — which is how the reconcile's fresh instance cleans
-up. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) for tests.
+heartbeat `services/sessions/reconcile.ts` reads (a running turn writes the same heartbeat,
+`turn.ts`); `claim` sends an `ending` session, and a settled one with no `ended_at`, straight to
+`cleanup` — which is how the reconcile's fresh instance cleans up — and closes a turn it finds
+`working` under a lost instance with `turn.failed` before its destroy-and-resume. `overrides.limits` shrinks the deadlines (`services/sessions/deadline.ts`) for tests.
 
 The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
 bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`

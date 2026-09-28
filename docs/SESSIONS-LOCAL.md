@@ -200,7 +200,9 @@ What to do on a laptop:
   engine (a later reload, or a request to the instance) — minutes later, or never. The session
   page's read reconciles it (`services/sessions/reconcile.ts`): a boot with no heartbeat for 3
   minutes has its instance terminated, is failed naming the step, and a fresh instance cleans up.
-  Run the gate in a separate worktree.
+  A TURN killed the same way (no turn heartbeat for 3 minutes) fails as a turn, not a session: the
+  session goes back to `ready`, a fresh instance boots it again from its branch, and the message
+  has to be sent again. Run the gate in a separate worktree.
 - **`pnpm dev:stop` can leave a container's proxy sidecar** for a few seconds; `docker ps | grep
   workerd` and `docker rm -f` if it lingers.
 - **The kit's bootstrap refuses to run as root** (kit 0.15). A sandbox runs as root, so the

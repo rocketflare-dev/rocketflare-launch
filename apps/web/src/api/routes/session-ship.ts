@@ -149,7 +149,8 @@ sessionShipRouter.post('/:id/end', async c => {
   // A lost instance (a `wrangler dev` reload, retention) is restarted from the row, so an end
   // always reaches a Workflow that cleans up. A live boot step sees the request within seconds
   // (`withProgress` polls the row); an instance alive in name only — a boot step with no
-  // heartbeat for over a minute — is settled now rather than on the next read (`reconcile.ts`).
+  // heartbeat for over a minute, or a turn as quiet — is settled now rather than on the next read
+  // (`reconcile.ts`).
   const woken = await wakeOrRestart(db, workflow, updated, logger)
   const reconciled = await reconcileSessionSafely(db, c.env, woken, {
     logger,

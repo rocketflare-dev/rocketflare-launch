@@ -40,7 +40,9 @@
  *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
  *    `system.init`'s session id is stored at once (the next turn `--resume`s it).
  * 5. **Watch**, concurrently: every 2 s re-read `cancel_requested_at` (→ `kill`, `cancelled`) and
- *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`).
+ *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`); every 30 s write the
+ *    heartbeat (`last_activity_at` of a `working` row) that `reconcile.ts` reads to tell a live
+ *    turn from one whose Workflow died under it.
  * 6. **End** with exactly one of `turn.end` (the `result` line, with the turn's METERED cost — the
  *    model proxy's `ai_usage` rows, as the row's running total moved), `turn.failed` (the process
  *    exited without a result, or would not start) or `turn.interrupted` (`rollout` — the
@@ -90,6 +92,11 @@ export const TURN_FLUSH_MS = 250
 export const TURN_FLUSH_EVERY = 20
 /** How often a running turn re-reads `cancel_requested_at` (and checks its timeout). */
 export const TURN_CANCEL_POLL_MS = 2_000
+/**
+ * How often a running turn writes its heartbeat (`last_activity_at`, while `working`) — the clock
+ * `reconcile.ts` reads; the same cadence as a boot step's (`deadline.ts` `heartbeatMs`).
+ */
+export const TURN_HEARTBEAT_MS = 30_000
 /** The step timeout's margin over the turn's own, so the turn's timeout always fires first. */
 export const TURN_STEP_TIMEOUT_MARGIN_MINUTES = 2
 
@@ -116,6 +123,7 @@ export interface RunTurnOptions {
   flushMs?: number
   flushEvery?: number
   cancelPollMs?: number
+  heartbeatMs?: number
 }
 
 export type TurnInterruptReason = 'rollout' | 'cancelled' | 'timeout'
@@ -352,6 +360,7 @@ async function executeTurn(
     flushMs: opts.flushMs ?? TURN_FLUSH_MS,
     flushEvery: opts.flushEvery ?? TURN_FLUSH_EVERY,
     cancelPollMs: opts.cancelPollMs ?? TURN_CANCEL_POLL_MS,
+    heartbeatMs: opts.heartbeatMs ?? TURN_HEARTBEAT_MS,
     logger: opts.logger,
   })
 
@@ -501,6 +510,7 @@ interface StreamTurnParams {
   flushMs: number
   flushEvery: number
   cancelPollMs: number
+  heartbeatMs: number
   logger?: Logger
 }
 
@@ -570,11 +580,30 @@ async function streamTurn(
     reader.abort()
   }
 
+  let lastBeat = startedAt
   const watcher = (async () => {
     while (!finished) {
       await pause(p.cancelPollMs)
       if (finished) return
       if (p.now() - startedAt >= p.timeoutMs) return stop('timeout')
+      if (p.now() - lastBeat >= p.heartbeatMs) {
+        lastBeat = p.now()
+        // "This turn is alive" — only while `working` (a ship turn's `shipping` is not reconciled).
+        // A failed beat is not a failed turn: the next one tries again.
+        await db
+          .update(sessions)
+          .set({ lastActivityAt: new Date(lastBeat) })
+          .where(
+            and(
+              eq(sessions.tenantId, row.tenantId),
+              eq(sessions.id, row.id),
+              eq(sessions.status, 'working')
+            )
+          )
+          .catch(err =>
+            p.logger?.warn({ err, sessionId: row.id }, 'session turn: heartbeat failed')
+          )
+      }
       const [flags] = await db
         .select({ cancelRequestedAt: sessions.cancelRequestedAt })
         .from(sessions)

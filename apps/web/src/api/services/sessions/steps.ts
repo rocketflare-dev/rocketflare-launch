@@ -376,6 +376,10 @@ export function checkoutScript(input: {
 
 // ---- claim -------------------------------------------------------------------------------------
 
+/** `turn.failed` for a turn whose instance was lost under it (`claim`). */
+export const LOST_TURN_MESSAGE =
+  'This turn stopped: its Workflow was lost. Launch is restarting the session from its last checkpoint; send your message again.'
+
 export type ClaimResult =
   | { start: 'boot'; kind: 'session' | 'prepare' }
   | { start: 'loop' }
@@ -385,7 +389,8 @@ export type ClaimResult =
 /**
  * Step `claim`. `requested → booting` for a fresh session; a session this instance finds already
  * live (its previous instance was lost) is put back to `suspended` with a `resume` request, so the
- * loop boots it again from its branch; `ending` goes straight to cleanup; a settled one is left.
+ * loop boots it again from its branch — a turn it finds `working` is closed with `turn.failed`
+ * ({@link LOST_TURN_MESSAGE}); `ending` goes straight to cleanup; a settled one is left.
  */
 export async function claimStep(scope: StepScope): Promise<ClaimResult> {
   const session = await loadSession(scope)
@@ -412,10 +417,21 @@ export async function claimStep(scope: StepScope): Promise<ClaimResult> {
     await sandboxFor(scope, session)
       .destroy()
       .catch(() => {})
-    await transition(scope, ['booting', 'ready', 'working', 'blocked', 'shipping'], 'suspended', {
-      suspendedAt: scope.now(),
-      requestedAction: 'resume',
-    })
+    const moved = await transition(
+      scope,
+      ['booting', 'ready', 'working', 'blocked', 'shipping'],
+      'suspended',
+      { suspendedAt: scope.now(), requestedAction: 'resume', cancelRequestedAt: null }
+    )
+    if (moved && session.status === 'working') {
+      // The turn it was running died with the instance: close it, so it does not spin for ever.
+      const turn = Math.max(1, session.turnCount)
+      await emitterFor(scope)({
+        type: 'turn.failed',
+        turn,
+        data: { turn, message: LOST_TURN_MESSAGE },
+      })
+    }
   }
   return { start: 'loop' }
 }

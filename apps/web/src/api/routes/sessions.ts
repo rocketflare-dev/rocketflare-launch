@@ -46,8 +46,8 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
 
 sessionsRouter.get('/:id', async c => {
   const { db, logger, realtime, session } = await visibleSession(c, 'read')
-  // A boot whose Workflow died under it is settled here, throttled (`reconcile.ts`): a quiet
-  // session costs one compare-and-set per window, a fresh one nothing.
+  // A boot or turn whose Workflow died under it is settled here, throttled (`reconcile.ts`): a
+  // quiet session costs one compare-and-set per window, a fresh one nothing.
   const reconciled = await reconcileSessionSafely(db, c.env, session, { logger, realtime })
   const current =
     reconciled.outcome === 'settled'

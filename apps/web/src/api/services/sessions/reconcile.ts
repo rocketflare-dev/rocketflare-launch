@@ -4,27 +4,40 @@
  * recording anything: a `wrangler dev` reload kills the running step and the local engine keeps
  * reporting the instance `running` while nothing runs (measured: until something pokes the engine
  * again, minutes later), the platform can lose an instance, a step can wedge on an RPC. The row
- * then says `booting` for ever and the page spins. On read (`GET /api/sessions/:id`), on an end
+ * then says `booting` (or `working`) for ever and the page spins. On read (`GET /api/sessions/:id`), on an end
  * request (`POST /:id/end`) and from the five-minute cron (`sessions.expire`), this asks:
  *
- * 1. **Only a quiet session.** `requested` / `booting` / `ending` with no heartbeat for
- *    {@link SESSION_STALL_MS} (a boot step writes `last_activity_at` every 30 s while it runs —
- *    `withProgress` in `steps.ts`; `ending` gets {@link SESSION_ENDING_STALL_MS}, because cleanup
- *    retries patiently). Anything fresher costs nothing.
+ * 1. **Only a quiet session.** `requested` / `booting` / `working` / `ending` with no heartbeat
+ *    for {@link SESSION_STALL_MS} (a boot step writes `last_activity_at` every 30 s while it runs —
+ *    `withProgress` in `steps.ts` — and so does a running turn, `turn.ts`; `ending` gets
+ *    {@link SESSION_ENDING_STALL_MS}, because cleanup retries patiently). Anything fresher costs
+ *    nothing.
  * 2. **Throttled in the database**: `last_activity_at` is moved to now in a compare-and-set, and
  *    only the request whose update landed goes on — so a session is reconciled at most once per
  *    window however many tabs poll it.
  * 3. **Ask the instance** (`instance_id`): not found, `errored`, `terminated`, `complete` → dead. A
- *    live status with a stale heartbeat is ALSO dead for `booting` and `ending` — no live boot step
- *    is that quiet — and the instance is terminated (best effort). A `requested` session whose
- *    instance is live is only queued: left alone.
+ *    live status with a stale heartbeat is ALSO dead for `booting`, `working` and `ending` — no live
+ *    boot step or turn is that quiet — and the instance is terminated (best effort). A `requested`
+ *    session whose instance is live is only queued: left alone.
  * 4. **Dead** → an end the person asked for (`requested_action = 'end'`, or `ending`) becomes
- *    `ending`; anything else `failed`, with the step that was running named ("The session stopped
- *    while Starting dev server was running (its Workflow was running, but its step had not moved for
- *    3 minutes). Start a new session."), the checklist's line marked failed, and an `error` event.
+ *    `ending`. A dead TURN (`working`) is not a dead session: the turn ends `turn.failed` with a
+ *    sentence ("This turn stopped (its Workflow ended errored). Launch is restarting the session
+ *    from its last checkpoint; send your message again.") and the row goes back to `ready`. Anything
+ *    else becomes `failed`, with the step that was running named ("The session stopped while
+ *    Starting dev server was running (its Workflow was running, but its step had not moved for 3
+ *    minutes). Start a new session."), the checklist's line marked failed, and an `error` event.
  *    Then a FRESH instance (`restartSessionInstance`) runs the one thing still owed — `claim` sends
  *    an `ending` or unsettled session straight to `cleanup` (destroy the container, delete the
- *    branch, give back a prepare claim) — so no route ever runs the vendor work itself.
+ *    branch, give back a prepare claim), and a `ready` one through its lost-instance path: destroy
+ *    the container, `suspended` with a `resume`, boot again from the branch — so no route ever runs
+ *    the vendor work itself.
+ *
+ * **Why a dead turn's container is not kept**, even when it is still up: the turn's Claude Code
+ * process may still be running in it (the step that would have killed it on a cancel or a timeout
+ * is gone), spending and editing with nobody reading its output, and a new instance cannot adopt a
+ * process it did not start. Destroying it is what `claim` already does for a lost instance under
+ * a live session; what is lost is the dead turn's unsaved edits, since the branch holds the state
+ * of the last checkpoint (the end of the previous turn).
  *
  * **Leftovers**: a `failed` / `ended` / `shipped` session with no `ended_at` (settled, but its
  * cleanup never ran — or settled by hand) older than {@link SESSION_CLEANUP_GRACE_MS} gets the same
@@ -55,7 +68,7 @@ export const SESSION_CLEANUP_GRACE_MS = 2 * 60_000
 export const SESSION_END_STALL_MS = 75_000
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'waitingForPause', 'paused'])
-const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'ending']
+const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'working', 'ending']
 
 export interface ReconcileLogger {
   warn(obj: object, msg: string): void
@@ -191,7 +204,7 @@ export async function reconcileSession(
     return { outcome: 'settled', status: session.status, instanceStatus: 'n/a', restartedAs }
   }
 
-  // ---- a quiet boot or end
+  // ---- a quiet boot, turn or end
   if (!QUIET_STATUSES.includes(session.status)) return SKIPPED
   const stallMs =
     session.status === 'ending' ? SESSION_ENDING_STALL_MS : (options.stallMs ?? SESSION_STALL_MS)
@@ -206,7 +219,8 @@ export async function reconcileSession(
   if (LIVE_STATUSES.has(status)) {
     // A live `requested` instance is queued behind others; a boot or an end that quiet is dead.
     if (session.status === 'requested') return { outcome: 'alive', instanceStatus: status }
-    label = `its Workflow was ${status}, but its step had not moved for ${Math.round(stallMs / 60_000)} minutes`
+    const what = session.status === 'working' ? 'its turn' : 'its step'
+    label = `its Workflow was ${status}, but ${what} had not moved for ${Math.round(stallMs / 60_000)} minutes`
     try {
       await (await workflow.get(instanceId)).terminate()
     } catch {
@@ -231,6 +245,25 @@ export async function reconcileSession(
           inArray(sessions.status, [...QUIET_STATUSES])
         )
       )
+  } else if (session.status === 'working') {
+    // A dead turn: fail the TURN, not the session (see the header).
+    settledStatus = 'ready'
+    const message = `This turn stopped (${label}). Launch is restarting the session from its last checkpoint; send your message again.`
+    const [settled] = await db
+      .update(sessions)
+      .set({ status: 'ready', cancelRequestedAt: null })
+      .where(
+        and(
+          eq(sessions.tenantId, session.tenantId),
+          eq(sessions.id, session.id),
+          eq(sessions.status, 'working')
+        )
+      )
+      .returning({ turnCount: sessions.turnCount })
+    if (settled) {
+      const turn = Math.max(1, settled.turnCount)
+      await emit([{ type: 'turn.failed' as const, turn, data: { turn, message } }])
+    }
   } else {
     settledStatus = 'failed'
     const step = await runningStep(db, session)
@@ -300,7 +333,7 @@ export async function reconcileSessionSafely(
 }
 
 /**
- * The cron's sweep (`sessions.expire`): every quiet boot or end, and every settled session never
+ * The cron's sweep (`sessions.expire`): every quiet boot, turn or end, and every settled session never
  * cleaned up, across organisations — each reconciled inside its own tenant.
  */
 export async function reconcileStaleSessions(
