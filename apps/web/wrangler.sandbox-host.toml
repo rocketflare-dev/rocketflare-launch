@@ -1,0 +1,41 @@
+# The SANDBOX HOST Worker — real Cloudflare containers for a laptop's Launch (development only).
+# NOT part of Launch's deploy: Launch is `wrangler.toml` / `wrangler.staging.toml`, and this file is
+# outside their parity test on purpose (it is one small Worker with one binding). Deployed once, by
+# hand, as `launch-sandbox-dev`: `pnpm --filter @launch/web deploy:sandbox-host` (docs/DEPLOY.md §
+# The sandbox host). Local Launch reaches it through the REMOTE service binding `SANDBOX_HOST` when
+# `.dev.vars` says `SESSION_SANDBOX_HOST=remote` (docs/SESSIONS-LOCAL.md § Real containers from a
+# laptop); `pnpm dev` then generates `wrangler.dev-remote.toml` with that binding.
+#
+# Its containers call Anthropic and GitHub DIRECTLY with a key and a token local Launch hands them
+# per turn (the `direct` egress mode) — there are no outbound handlers here, and no secrets.
+
+name = "launch-sandbox-dev"
+main = "src/sandbox-host/worker.ts"
+compatibility_date = "2026-06-01"          # = wrangler.toml (the SDK runs the same code on both)
+compatibility_flags = ["nodejs_compat"]
+
+# No public URL: only a service binding in this account reaches the RPC surface.
+workers_dev = false
+preview_urls = false
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
+
+# The same image and instance type as Launch's `SessionSandbox` (wrangler.toml), so a session
+# behaves as it will deployed. `max_instances` caps the containers a laptop can run at once — and
+# what can bill at once. Changing the image or this block replaces running instances.
+[[containers]]
+class_name = "HostedSessionSandbox"
+image = "./containers/session/Dockerfile"
+instance_type = "standard-3"
+max_instances = 3
+
+[[durable_objects.bindings]]
+name = "SESSION_SANDBOX"
+class_name = "HostedSessionSandbox"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HostedSessionSandbox"]

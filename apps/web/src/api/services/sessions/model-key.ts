@@ -37,8 +37,16 @@ export async function resolveModelKey(db: Database, cfg: AppConfig): Promise<Mod
   return null
 }
 
-/** Anthropic key shapes (`sk-ant-api03-…`, `sk-ant-admin01-…`) and the placeholder. */
-const KEY_PATTERN = new RegExp(`sk-ant-[A-Za-z0-9_-]{4,}|${MODEL_KEY_PLACEHOLDER}`, 'g')
+/**
+ * Anthropic key shapes (`sk-ant-api03-…`, `sk-ant-admin01-…`), the placeholder, and GitHub token
+ * shapes (`ghs_…` installation tokens, `ghp_…`, `github_pat_…`) — in the `direct` egress mode
+ * (`egress/direct.ts`) the container holds a real key and a real token, and a tool that ran `env`
+ * or read the git credential would otherwise print them into the transcript.
+ */
+const KEY_PATTERN = new RegExp(
+  `sk-ant-[A-Za-z0-9_-]{4,}|${MODEL_KEY_PLACEHOLDER}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}`,
+  'g'
+)
 
 export const REDACTED = '[redacted]'
 

@@ -34,7 +34,7 @@ import type { Realtime } from '../realtime'
 import type { StorageService } from '../storage'
 import { checkpoint } from './checkpoint'
 import type { SessionEmitter } from './events'
-import type { SandboxPort, SessionPorts } from './ports'
+import { egressFor, type SandboxPort, type SessionPorts } from './ports'
 import { ship } from './ship'
 import { createShipTurnRunner, runTurn, type TurnOutcome } from './turn'
 
@@ -79,7 +79,13 @@ export const defaultSessionStepHooks: SessionStepHooks = {
   checkpoint: (ctx, reason) =>
     checkpoint(
       ctx.db,
-      { cfg: ctx.cfg, sandbox: ctx.sandbox, storage: ctx.storage, now: ctx.now },
+      {
+        cfg: ctx.cfg,
+        sandbox: ctx.sandbox,
+        storage: ctx.storage,
+        now: ctx.now,
+        egress: egressFor(ctx.ports, ctx.db),
+      },
       ctx.ref,
       reason === 'turn' ? {} : { message: CHECKPOINT_MESSAGES[reason](ctx.session.shortId) }
     ),

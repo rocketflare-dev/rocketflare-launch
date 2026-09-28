@@ -7,8 +7,10 @@
  * `outboundByHost`, `interceptHttps`, `enableInternet = false` and a runtime `setAllowedHosts` all
  * behave as deployed; `docs/SESSIONS-LOCAL.md`).
  *
- * This is one of the TWO files that import the SDK (the other is
- * `durable-objects/session-sandbox.ts`). Everything else sees `SandboxPort`.
+ * This is one of the TWO files that import the SDK (the other is the Durable Object base,
+ * `durable-objects/session-sandbox-base.ts`). Everything else sees `SandboxPort`. The sandbox
+ * host Worker (`src/sandbox-host/`, `SESSION_SANDBOX_HOST=remote`) runs THIS adapter on its side
+ * of the RPC, so the two paths drive the SDK identically.
  *
  * Choices worth knowing:
  *
@@ -33,9 +35,8 @@
  * - `streamLogs` parses the SDK's SSE log stream itself (`data: {type, data, exitCode}` frames) —
  *   small, and testable without the SDK.
  */
-import { getSandbox } from '@cloudflare/sandbox'
+import { getSandbox, type Sandbox } from '@cloudflare/sandbox'
 import type { AppConfig } from '../../../../config'
-import type { SessionSandbox } from '../../../durable-objects/session-sandbox'
 import {
   type SandboxBackup,
   type SandboxBackupOptions,
@@ -50,7 +51,7 @@ import {
   type SandboxStartOptions,
   type SandboxWaitForPortOptions,
   sessionAllowedHosts,
-} from '../ports'
+} from '../sandbox-port'
 import { backupEgressHosts, backupObjectKeys, workspaceBackupMode } from '../workspace-backup'
 
 /**
@@ -92,8 +93,19 @@ async function attempt<T>(ms: number, work: () => Promise<T>): Promise<T> {
 /** Default command timeout when a caller gives none (`pnpm install` on a cold store is ~20 s). */
 const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000
 
+/** The settings the adapter reads — all of them about workspace backups. */
+export type CloudflareSandboxConfig = Pick<
+  AppConfig,
+  | 'SESSION_WORKSPACE_BACKUP'
+  | 'APP_ENV'
+  | 'BACKUP_BUCKET_ENDPOINT'
+  | 'CLOUDFLARE_R2_ACCOUNT_ID'
+  | 'CLOUDFLARE_ACCOUNT_ID'
+>
+
 export interface CloudflareSandboxOptions {
-  cfg: AppConfig
+  /** Launch's config, or the sandbox host Worker's own few settings (`src/sandbox-host/`). */
+  cfg: CloudflareSandboxConfig
   /** `BACKUP_BUCKET` — where the SDK keeps workspace backups; what `deleteBackup` deletes from. */
   backupBucket?: R2Bucket
   /** Tests: a shorter {@link START_ATTEMPT_MS}. */
@@ -236,9 +248,13 @@ export async function* parseLogStream(
   }
 }
 
-export class CloudflareSandbox implements SandboxPort {
+/** Any session sandbox class: Launch's own `SessionSandbox`, or the host Worker's. */
+// biome-ignore lint/suspicious/noExplicitAny: the SDK's own bound (`getSandbox<T extends Sandbox<any>>`)
+type AnySandbox = Sandbox<any>
+
+export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements SandboxPort {
   constructor(
-    private readonly ns: DurableObjectNamespace<SessionSandbox>,
+    private readonly ns: DurableObjectNamespace<S>,
     readonly name: string,
     readonly opts: CloudflareSandboxOptions
   ) {}
@@ -301,17 +317,21 @@ export class CloudflareSandbox implements SandboxPort {
     })
   }
 
+  /**
+   * The SDK's raw SSE log stream for a process — what `streamLogs` parses, and what the sandbox
+   * host Worker hands back over RPC (a `ReadableStream` crosses RPC; an async iterable does not).
+   * No `signal` here: the stub is RPC and cannot carry one.
+   */
+  logStream(processId: string): Promise<ReadableStream<Uint8Array>> {
+    return mapped(() => this.sandbox.streamProcessLogs(processId))
+  }
+
   async *streamLogs(
     processId: string,
     opts: { signal?: AbortSignal } = {}
   ): AsyncIterable<SandboxLogEvent> {
-    let stream: ReadableStream<Uint8Array>
-    try {
-      // No `signal` here: the stub is RPC and cannot carry one. `parseLogStream` honours it.
-      stream = await this.sandbox.streamProcessLogs(processId)
-    } catch (err) {
-      throw mapSandboxError(err)
-    }
+    // `parseLogStream` honours the signal, on THIS side of the RPC.
+    const stream = await this.logStream(processId)
     try {
       yield* parseLogStream(stream, opts.signal)
     } catch (err) {

@@ -216,6 +216,20 @@ const coreConfigSchema = z.object({
     z.enum(['cloud', 'local']).default('cloud')
   ),
   /**
+   * Launch P3, development only: where a session's CONTAINER runs. `local` — `SESSION_SANDBOX` in
+   * this Worker (deployed: Cloudflare; under `wrangler dev`: local Docker, amd64-emulated on an ARM
+   * Mac). `remote` — a real Cloudflare container in the sandbox host Worker
+   * (`wrangler.sandbox-host.toml`), reached through the remote service binding `SANDBOX_HOST`
+   * (`RemoteSandbox`), which `pnpm dev` declares in the dev-only config it generates. The container
+   * then reaches Anthropic and GitHub DIRECTLY, with a key and a token it holds (the `direct`
+   * egress mode, `egress/direct.ts`). `loadConfig` refuses `remote` outside `APP_ENV=development`,
+   * and with `SESSION_BACKEND=local` (a Cloudflare container cannot reach a laptop's git server).
+   */
+  SESSION_SANDBOX_HOST: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(['local', 'remote']).default('local')
+  ),
+  /**
    * The preview origin template: `{label}` becomes `<port>-<shortId>-<token>`
    * (`https://{label}.clewro.com`; `http://{label}.localhost:3001` locally). Unset, previews are
    * off and `worker.ts` sends nothing to the preview gateway.
@@ -347,6 +361,22 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       code: z.ZodIssueCode.custom,
       path: ['SESSION_BACKEND'],
       message: 'SESSION_BACKEND=local is only allowed with APP_ENV=development',
+    })
+  }
+  // A remote sandbox holds a real key and token (the `direct` egress mode): a laptop only.
+  if (cfg.SESSION_SANDBOX_HOST === 'remote' && cfg.APP_ENV !== 'development') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SESSION_SANDBOX_HOST'],
+      message: 'SESSION_SANDBOX_HOST=remote is only allowed with APP_ENV=development',
+    })
+  }
+  if (cfg.SESSION_SANDBOX_HOST === 'remote' && cfg.SESSION_BACKEND === 'local') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SESSION_SANDBOX_HOST'],
+      message:
+        "SESSION_SANDBOX_HOST=remote needs SESSION_BACKEND=cloud: a Cloudflare container cannot reach the laptop's git server",
     })
   }
   // The local grant backing pushes nothing: never in a deployed Worker.

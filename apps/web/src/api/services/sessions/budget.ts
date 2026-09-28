@@ -128,6 +128,48 @@ export async function checkBudget(
   return { ok: true }
 }
 
+/** What a turn may still spend, and which cap it would reach first. */
+export interface BudgetHeadroom {
+  /** Microcents left under the nearer cap (≤ 0: nothing left). */
+  microcents: number
+  scope: 'session' | 'app_month'
+  spentMicrocents: number
+  capMicrocents: number
+}
+
+/**
+ * The spend left before the session's cap or the app's month cap, whichever is nearer — what a
+ * `direct`-mode turn (`turn-meter.ts`) may run up before it is stopped, since no proxy checks each
+ * of its requests. Read once at the start of the turn: the turn's own cost is not in the ledger
+ * until it ends.
+ */
+export async function budgetHeadroom(
+  db: Database,
+  session: Pick<
+    SessionRow,
+    'tenantId' | 'appId' | 'policy' | 'costMicrocents' | 'budgetExtraMicrocents'
+  >,
+  now: Date = new Date()
+): Promise<BudgetHeadroom> {
+  const own = sessionSpend(session)
+  const month = await appMonthSpend(db, session, now)
+  const ownLeft = own.capMicrocents - own.spentMicrocents
+  const monthLeft = month.capMicrocents - month.spentMicrocents
+  return ownLeft <= monthLeft
+    ? {
+        microcents: ownLeft,
+        scope: 'session',
+        spentMicrocents: own.spentMicrocents,
+        capMicrocents: own.capMicrocents,
+      }
+    : {
+        microcents: monthLeft,
+        scope: 'app_month',
+        spentMicrocents: month.spentMicrocents,
+        capMicrocents: month.capMicrocents,
+      }
+}
+
 export interface ExtendBudgetInput {
   tenantId: string
   sessionId: string

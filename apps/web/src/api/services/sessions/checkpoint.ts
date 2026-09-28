@@ -41,7 +41,7 @@ import type { Database } from '../../../db/client'
 import { type SessionRow, sessions, users } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
 import type { StorageService } from '../storage'
-import type { SandboxExecResult, SandboxPort } from './ports'
+import type { SandboxExecResult, SandboxPort, SessionEgressPort } from './ports'
 import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
 
 /** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
@@ -74,6 +74,8 @@ export interface CheckpointDeps {
   now?: () => Date
   /** The wait before a transiently failed push's retry (tests pass a recorder). */
   sleep?: (ms: number) => Promise<void>
+  /** `direct` (a remote sandbox): git gets a fresh token before the push. Absent = `proxied`. */
+  egress?: SessionEgressPort
 }
 
 export interface CheckpointOptions {
@@ -193,6 +195,7 @@ export async function checkpoint(
   let pushed = false
   if (committed || (head && head !== session.headSha)) {
     const push = `git push --quiet origin HEAD:refs/heads/${branch}`
+    await deps.egress?.prepareGit(deps.sandbox, session)
     const first = await deps.sandbox.exec(push, { cwd, env: gitEnv, timeoutMs: 120_000 })
     if (first.exitCode !== 0) {
       if (!TRANSIENT_PUSH_RE.test(outputTail(first))) {

@@ -155,7 +155,7 @@ export function receivePackCommands(
 const ZERO_SHA = /^0+$/
 
 /** The token to inject, and whether GitHub may not accept it yet. */
-interface GitToken {
+export interface GitToken {
   token: string
   /** Minted by this request, or sealed by another within {@link FRESH_TOKEN_WINDOW_MS}. */
   fresh: boolean
@@ -179,9 +179,11 @@ async function usableSealed(
 /**
  * The token to inject: the sealed one while it has 10 minutes left, else a fresh one, sealed back
  * in a compare-and-set on the expiry this request read — a request that loses the race adopts the
- * token the winner stored (see the header). Null when the host takes no credential.
+ * token the winner stored (see the header). Null when the host takes no credential. Also what the
+ * `direct` egress mode writes into a remote container (`egress/direct.ts`): one token per session,
+ * whichever path asks.
  */
-async function gitToken(
+export async function sessionGitToken(
   db: Database,
   cfg: AppConfig,
   host: RepoHostPort,
@@ -279,7 +281,7 @@ export async function handleGitHub(
     const host = deps.repoHost(handle.db, cfg)
     let token: GitToken | null
     try {
-      token = await gitToken(handle.db, cfg, host, session, repo, deps.now())
+      token = await sessionGitToken(handle.db, cfg, host, session, repo, deps.now())
     } catch {
       return refuse(502, 'Launch could not get a token for this repository')
     }

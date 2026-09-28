@@ -31,6 +31,7 @@
  * Every string that lands in an event goes through `redactModelKeys` (a tool that ran `env` prints
  * the placeholder) and is clipped, because a `Read` of a large file must not become a megabyte row.
  */
+import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
 import { SESSION_WORKSPACE } from './rocketflare-dev'
@@ -123,8 +124,30 @@ export interface ClaudeTurnResult {
 /** Longest final answer kept from a `result` line (a PR body fits comfortably). */
 export const CLAUDE_RESULT_TEXT_MAX = 20_000
 
+/** One model response's usage, as an `assistant` line reports it (the `direct` egress mode meters it). */
+export interface ClaudeMessageUsage {
+  /** The response's id: its content blocks arrive as several lines, each repeating the usage. */
+  id: string
+  model: string | null
+  usage: TokenUsage
+}
+
+/** A model's share of a whole turn, from the `result` line's `modelUsage` (or its `usage`). */
+export interface ClaudeModelUsage {
+  /** Null when the line names none (a `usage` with no `modelUsage`): the policy's model. */
+  model: string | null
+  usage: TokenUsage
+}
+
 export interface ClaudeLineMapping {
   events: SessionEventInput[]
+  /** An `assistant` line's usage — the running total the `direct` mode's budget watches. */
+  messageUsage?: ClaudeMessageUsage
+  /**
+   * The `result` line's usage per model — Claude Code's background calls included when it reports
+   * `modelUsage` — which the `direct` mode records as the turn's `ai_usage` rows.
+   */
+  turnUsage?: ClaudeModelUsage[]
   /** `system.init`'s (or `result`'s) `session_id` — store it for the next `--resume`. */
   claudeSessionId: string | null
   /** Set by the `result` line: the turn is over. */
@@ -189,6 +212,46 @@ export function usageFromAnthropic(value: unknown): SessionUsage | null {
   }
 }
 
+/** Anthropic's snake_case usage object as a `TokenUsage` (the `ai_usage` shape). */
+export function tokenUsageFromAnthropic(value: unknown): TokenUsage | null {
+  const u = asRecord(value)
+  if (!u) return null
+  return {
+    inputTokens: asCount(u.input_tokens),
+    outputTokens: asCount(u.output_tokens),
+    cacheReadTokens: asCount(u.cache_read_input_tokens),
+    cacheWriteTokens: asCount(u.cache_creation_input_tokens),
+  }
+}
+
+/**
+ * The `result` line's usage per model: Claude Code's `modelUsage` (camelCase, one entry per model
+ * the turn called — its background calls included), else the line's own `usage` (the main loop's
+ * calls only, no model named).
+ */
+export function turnUsageOf(msg: Record<string, unknown>): ClaudeModelUsage[] {
+  const byModel = asRecord(msg.modelUsage)
+  if (byModel) {
+    const out: ClaudeModelUsage[] = []
+    for (const [model, value] of Object.entries(byModel)) {
+      const u = asRecord(value)
+      if (!u) continue
+      out.push({
+        model,
+        usage: {
+          inputTokens: asCount(u.inputTokens),
+          outputTokens: asCount(u.outputTokens),
+          cacheReadTokens: asCount(u.cacheReadInputTokens),
+          cacheWriteTokens: asCount(u.cacheCreationInputTokens),
+        },
+      })
+    }
+    if (out.length > 0) return out
+  }
+  const usage = tokenUsageFromAnthropic(msg.usage)
+  return usage ? [{ model: null, usage }] : []
+}
+
 /** A `tool_result`'s content — a string, or `[{ type: 'text', text }…]` — as one string. */
 function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
@@ -231,7 +294,13 @@ export function mapClaudeLine(line: string, ctx: ClaudeLineContext): ClaudeLineM
       return out
     }
     case 'assistant': {
-      const content = asRecord(msg.message)?.content
+      const message = asRecord(msg.message)
+      const usage = tokenUsageFromAnthropic(message?.usage)
+      const messageId = asString(message?.id)
+      if (usage && messageId) {
+        out.messageUsage = { id: messageId, model: asString(message?.model), usage }
+      }
+      const content = message?.content
       if (!Array.isArray(content)) return out
       for (const block of content) {
         const b = asRecord(block)
@@ -280,6 +349,7 @@ export function mapClaudeLine(line: string, ctx: ClaudeLineContext): ClaudeLineM
     }
     case 'result': {
       out.claudeSessionId = asString(msg.session_id)
+      out.turnUsage = turnUsageOf(msg)
       const subtype = asString(msg.subtype) ?? 'success'
       out.result = {
         subtype,

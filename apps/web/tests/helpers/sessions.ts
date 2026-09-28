@@ -34,6 +34,7 @@ import type {
   RepoHostPort,
   SessionAppRef,
   SessionDbPort,
+  SessionEgressPort,
   SessionPorts,
 } from '@/api/services/sessions/ports'
 import type { Database } from '@/db/client'
@@ -238,6 +239,8 @@ export function createFakeSessionPorts(
     sessionDb?: SessionDbPort | ((db: Database) => SessionDbPort)
     repoHost?: RepoHostPort | ((db: Database) => RepoHostPort)
     model?: ModelUpstream
+    /** The egress mode (default: none — `egressFor` answers `proxied`). */
+    egress?: SessionEgressPort | ((db: Database) => SessionEgressPort)
   } = {}
 ): FakeSessionPorts {
   const sandboxes = new Map<string, FakeSandbox>()
@@ -267,6 +270,14 @@ export function createFakeSessionPorts(
     sessionDb: db => pick(overrides.sessionDb, missingDb, db),
     repoHost: db => pick(overrides.repoHost, missingRepo, db),
     model: overrides.model ?? { fetch: () => missing('model upstream') },
+    ...(overrides.egress
+      ? {
+          egress: (db: Database) =>
+            typeof overrides.egress === 'function'
+              ? overrides.egress(db)
+              : (overrides.egress as SessionEgressPort),
+        }
+      : {}),
   }
   return ports
 }

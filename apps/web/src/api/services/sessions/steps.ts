@@ -52,6 +52,7 @@ import { createSessionEmitter, nudgeSession, type SessionEmitter, safeErrorMessa
 import type { CheckpointReason, SessionStepContext, SessionStepHooks, TurnOutcome } from './hooks'
 import { sessionsPaused } from './lifecycle'
 import {
+  egressFor,
   SandboxInterruptedError,
   type SandboxPort,
   SandboxRestartedError,
@@ -563,6 +564,8 @@ async function checkOut(
   app: SessionAppRef,
   sandbox: SandboxPort
 ): Promise<{ baseSha: string; headSha: string }> {
+  // `direct` (a remote sandbox): the clone authenticates itself; `proxied`: the git proxy does.
+  await egressFor(scope.ports, scope.db).prepareGit(sandbox, session)
   const result = await sandbox.exec(
     checkoutScript({
       url: repoCloneUrl(app),

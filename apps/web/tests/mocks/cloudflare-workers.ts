@@ -14,6 +14,19 @@ export class DurableObject<Env = unknown> {
   }
 }
 
+/** A service's entrypoint (the sandbox host Worker's `SandboxHost`): tests construct it directly. */
+export class WorkerEntrypoint<Env = unknown> {
+  protected ctx: unknown
+  protected env: Env
+  constructor(ctx: unknown, env: Env) {
+    this.ctx = ctx
+    this.env = env
+  }
+  fetch(_request: Request): Promise<Response> {
+    return Promise.resolve(new Response('WorkerEntrypoint stub', { status: 501 }))
+  }
+}
+
 export class WorkflowEntrypoint<Env = unknown, Params = unknown> {
   protected ctx: unknown
   protected env: Env

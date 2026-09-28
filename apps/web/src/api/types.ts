@@ -62,11 +62,20 @@ export interface AuthContext {
 }
 
 /**
- * The generated `Cloudflare.Env` plus the one binding that exists only under
- * `DATABASE_DRIVER = "postgres"` (D35): the kit's tomls ship without `[[hyperdrive]]`, so
- * `wrangler types` omits it, while a copy on postgres has it. Optional either way.
+ * The generated `Cloudflare.Env` plus two bindings `wrangler types` cannot see: `HYPERDRIVE`, which
+ * exists only under `DATABASE_DRIVER = "postgres"` (D35 — the kit's tomls ship without
+ * `[[hyperdrive]]`, while a copy on postgres has it), and the dev-only `SANDBOX_HOST`. Optional.
  */
-export type AppBindings = Cloudflare.Env & { HYPERDRIVE?: Hyperdrive }
+export type AppBindings = Cloudflare.Env & {
+  HYPERDRIVE?: Hyperdrive
+  /**
+   * Launch P3, development only: the sandbox host Worker (`wrangler.sandbox-host.toml`) as a
+   * REMOTE service binding, declared only in the dev config `pnpm dev` generates when `.dev.vars`
+   * says `SESSION_SANDBOX_HOST=remote` — never in the two tomls, so `wrangler types` omits it.
+   * Its RPC surface is `SandboxHostBinding` (`services/sessions/sandbox-host/protocol.ts`).
+   */
+  SANDBOX_HOST?: Fetcher
+}
 
 export interface AppVariables {
   /** Validated config — routes read this, never `c.env` (D3). */

@@ -107,6 +107,13 @@ SESSION_LOCAL_GIT_URL=http://localhost:9420
 # | presigned. Unset = binding under APP_ENV=development (the archive goes through the Durable
 # Object into the local BACKUP_BUCKET); `off` if a restore is slower than a clone on your machine.
 SESSION_WORKSPACE_BACKUP=
+# Where a session's CONTAINER runs: local (wrangler dev's Docker, amd64-emulated on an ARM Mac) |
+# remote (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker, reached through
+# a remote service binding — `pnpm dev` generates wrangler.dev-remote.toml and skips the local
+# image build). remote needs SESSION_BACKEND=cloud, `wrangler login`, and the host deployed
+# (docs/DEPLOY.md § The sandbox host); the container then holds a real Anthropic key and GitHub
+# token (docs/SESSIONS-LOCAL.md § Real containers from a laptop). Development only.
+SESSION_SANDBOX_HOST=
 
 # --- Shared config and grants (Launch P5, docs/plans/p5-grants.md) ----------------------
 # `local` records the names a push would put on an app's Worker and calls no vendor. Only with

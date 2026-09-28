@@ -8,6 +8,10 @@
  * WorkerEntrypoint the platform routes a container's outbound traffic through, which is what lets
  * `outboundByHost` run IN THIS WORKER.
  *
+ * The egress settings and the container-time stamp live in `SessionSandboxBase`
+ * (`session-sandbox-base.ts`), shared with the sandbox host Worker's `HostedSessionSandbox`; this
+ * class adds what only Launch's own Worker can do — the handlers and the database write.
+ *
  * Egress (plan §1.4, §1.5, S7):
  *
  * - `enableInternet = false` and an allow-list: `SESSION_BASE_ALLOWED_HOSTS` — the same on a
@@ -35,45 +39,20 @@
  * container went away under a session that still thinks it is live (the SDK's idle sleep, a
  * rollout), marks it `suspended` so the next wake boots again.
  */
-import { ContainerProxy, Sandbox } from '@cloudflare/sandbox'
 import { type AppConfig, loadConfig } from '../../config'
 import { openDatabase } from '../../db/client'
 import { withDeadline } from '../services/sessions/deadline'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
 import { handleGitHub } from '../services/sessions/egress/github'
 import { recordContainerStop } from '../services/sessions/lifecycle'
-import { sessionAllowedHosts } from '../services/sessions/ports'
 import type { AppBindings } from '../types'
 import { loggerFor } from '../utils/core/logger'
+import { ON_STOP_DB_MS, type SandboxStopParams, SessionSandboxBase } from './session-sandbox-base'
 
-export { ContainerProxy }
+export { ContainerProxy, ON_STOP_DB_MS } from './session-sandbox-base'
 
-/** Where `onStart` stamps the container's start (ms since the epoch). */
-const STARTED_AT_KEY = 'launch:container-started-at'
-
-/**
- * The most `onStop`'s database write may take. The Containers base class runs a pending `onStop`
- * at the head of the NEXT start (`startAndWaitForPorts` → `syncPendingStoppedEvents`), so a write
- * that hangs would hang that start — the session's `sandbox.start` step — with it.
- */
-export const ON_STOP_DB_MS = 10_000
-
-export class SessionSandbox extends Sandbox<AppBindings> {
-  /** Off by default on the stable packages despite the docs — see the header (S7 finding 1). */
-  interceptHttps = true
-  enableInternet = false
-  allowedHosts = sessionAllowedHosts()
-
-  override async onStart(): Promise<void> {
-    await super.onStart()
-    await this.ctx.storage.put(STARTED_AT_KEY, Date.now())
-  }
-
-  override async onStop(params: Parameters<Sandbox<AppBindings>['onStop']>[0]): Promise<void> {
-    await super.onStop(params)
-    const startedAt = await this.ctx.storage.get<number>(STARTED_AT_KEY)
-    await this.ctx.storage.delete(STARTED_AT_KEY)
-    if (!startedAt) return
+export class SessionSandbox extends SessionSandboxBase<AppBindings> {
+  protected override async recordStop(seconds: number, params: SandboxStopParams): Promise<void> {
     let cfg: AppConfig
     try {
       cfg = loadConfig(this.env)
@@ -83,7 +62,7 @@ export class SessionSandbox extends Sandbox<AppBindings> {
     const handle = openDatabase({ ...cfg, HYPERDRIVE: this.env.HYPERDRIVE })
     try {
       await withDeadline('session-sandbox: recording the container stop', ON_STOP_DB_MS, () =>
-        recordContainerStop(handle.db, this.ctx.id.toString(), (Date.now() - startedAt) / 1000)
+        recordContainerStop(handle.db, this.ctx.id.toString(), seconds)
       )
     } catch (err) {
       // Metering is best-effort: a lost stop costs a few seconds of accounting, never the session.

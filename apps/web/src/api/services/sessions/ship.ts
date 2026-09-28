@@ -57,7 +57,7 @@ import { resolvePrompt } from '../prompts'
 import type { StorageService } from '../storage'
 import { checkpoint, outputTail, SESSION_REPO_DIR } from './checkpoint'
 import { appendSessionEvents } from './event-log'
-import type { RepoHostPort, RepoRef, SessionPorts } from './ports'
+import { egressFor, type RepoHostPort, type RepoRef, type SessionPorts } from './ports'
 import type { ShipTurnResult, ShipTurnRunner } from './turn'
 
 /** The Rocketflare gate (plan §1.10). */
@@ -77,7 +77,7 @@ export type ShipEventEmitter = (events: SessionEventInput[]) => Promise<void>
 
 export interface ShipDeps {
   cfg: AppConfig
-  ports: Pick<SessionPorts, 'sandbox' | 'repoHost'>
+  ports: Pick<SessionPorts, 'sandbox' | 'repoHost' | 'egress'>
   /** `createR2Storage(env.FILES)` for the final checkpoint's transcript; null skips it. */
   storage: StorageService | null
   runTurn: ShipTurnRunner
@@ -349,7 +349,7 @@ export async function ship(
   const title = reply?.title ?? session.title ?? `Changes from Launch session ${session.shortId}`
   await checkpoint(
     db,
-    { cfg: deps.cfg, sandbox, storage: deps.storage, now },
+    { cfg: deps.cfg, sandbox, storage: deps.storage, now, egress: egressFor(deps.ports, db) },
     { tenantId: session.tenantId, sessionId: session.id },
     { message: title, repoDir: deps.repoDir }
   )

@@ -26,11 +26,17 @@
  * `ps`/`lsof` only — no pidfile to go stale, no dependency to install.
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readDevVars } from '../../../scripts/lib/bootstrap-lib.mjs'
 import { devPorts } from '../../../scripts/lib/dev-ports.mjs'
+import {
+  REMOTE_DEV_CONFIG,
+  remoteDevConfigText,
+  remoteDevWranglerArgs,
+  remoteSandboxEnabled,
+} from '../../../scripts/lib/dev-remote-sandbox.mjs'
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = path.resolve(WEB_DIR, '../..')
@@ -334,6 +340,23 @@ function tunnelUrl(flags) {
   return running ? url : null
 }
 
+/**
+ * `SESSION_SANDBOX_HOST=remote` in `.dev.vars`: write `wrangler.dev-remote.toml` (wrangler.toml
+ * plus the `SANDBOX_HOST` remote service binding) and run wrangler on it without local containers
+ * (`scripts/lib/dev-remote-sandbox.mjs`). Otherwise nothing: wrangler reads `wrangler.toml`.
+ */
+function remoteSandboxArgs() {
+  const file = path.join(WEB_DIR, '.dev.vars')
+  const devVars = existsSync(file) ? readDevVars(readFileSync(file, 'utf8')) : {}
+  if (!remoteSandboxEnabled(devVars)) return []
+  const base = readFileSync(path.join(WEB_DIR, 'wrangler.toml'), 'utf8')
+  writeFileSync(path.join(WEB_DIR, REMOTE_DEV_CONFIG), remoteDevConfigText(base))
+  process.stdout.write(
+    `${COLOR.dim}  sessions: real Cloudflare containers (SESSION_SANDBOX_HOST=remote, ${REMOTE_DEV_CONFIG})${COLOR.reset}\n`
+  )
+  return remoteDevWranglerArgs()
+}
+
 async function start({ verbose }) {
   await preflight()
   mkdirSync(path.join(WEB_DIR, 'dist/ui'), { recursive: true })
@@ -463,7 +486,13 @@ async function start({ verbose }) {
 
   phase()
   const apiVars = publicUrl ? ['--var', `APP_URL:${publicUrl}`] : []
-  launch('api', 'wrangler', ['dev', '--port', String(DEV_PORTS.api), ...apiVars])
+  launch('api', 'wrangler', [
+    'dev',
+    ...remoteSandboxArgs(),
+    '--port',
+    String(DEV_PORTS.api),
+    ...apiVars,
+  ])
   launch('ui', 'vite', [])
 }
 

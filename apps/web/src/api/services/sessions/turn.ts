@@ -72,7 +72,7 @@ import { type SessionRow, sessions } from '../../../db/schema'
 import type { Logger } from '../../utils/core/logger'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
-import { checkBudget } from './budget'
+import { type BudgetHeadroom, budgetHeadroom, checkBudget } from './budget'
 import {
   buildClaudeCommand,
   type ClaudeLineMapping,
@@ -82,9 +82,17 @@ import {
   createClaudeStreamParser,
   SESSION_WORKDIR,
 } from './claude-stream'
+import { ModelKeyMissingError } from './egress/direct'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
 import { redactModelKeyText } from './model-key'
-import { SandboxInterruptedError, type SandboxPort, type SessionPorts } from './ports'
+import {
+  egressFor,
+  SandboxInterruptedError,
+  type SandboxPort,
+  type SessionEgressPort,
+  type SessionPorts,
+} from './ports'
+import { createTurnMeter, recordTurnUsage, type TurnMeter } from './turn-meter'
 
 /** Write buffered events at least this often while a turn streams (plan §3c). */
 export const TURN_FLUSH_MS = 250
@@ -362,9 +370,11 @@ async function executeTurn(
     cancelPollMs: opts.cancelPollMs ?? TURN_CANCEL_POLL_MS,
     heartbeatMs: opts.heartbeatMs ?? TURN_HEARTBEAT_MS,
     logger: opts.logger,
+    egress: egressFor(ports, db),
   })
 
-  // The turn's cost is what the model proxy metered while it ran: the row's running total moved.
+  // The turn's cost is what was metered while it ran — by the model proxy, or (`direct`) by the
+  // turn itself as it ended: either way the row's running total moved.
   const after = await readRow(db, row)
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
   let executed: ExecutedTurn
@@ -512,6 +522,8 @@ interface StreamTurnParams {
   cancelPollMs: number
   heartbeatMs: number
   logger?: Logger
+  /** How the container reaches Anthropic and GitHub (`proxied` unless the sandbox is remote). */
+  egress: SessionEgressPort
 }
 
 interface StreamTurnResult {
@@ -538,6 +550,33 @@ async function streamTurn(
 ): Promise<StreamTurnResult> {
   const out: StreamTurnResult = { result: null, stop: null, failure: null }
 
+  // `direct` (a remote sandbox): the turn carries the key, git gets a fresh token, and the turn
+  // meters itself against what the budget has left (`turn-meter.ts`). `proxied`: none of it.
+  let egressEnv: Record<string, string>
+  let meter: TurnMeter | null = null
+  let headroom: BudgetHeadroom = {
+    microcents: Number.POSITIVE_INFINITY,
+    scope: 'session',
+    spentMicrocents: 0,
+    capMicrocents: 0,
+  }
+  try {
+    await p.egress.prepareGit(sandbox, row)
+    egressEnv = await p.egress.turnEnv()
+    if (p.egress.mode === 'direct') {
+      meter = createTurnMeter(p.policy.model)
+      headroom = await budgetHeadroom(db, row, new Date(p.now()))
+    }
+  } catch (err) {
+    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
+    else if (err instanceof ModelKeyMissingError) out.failure = err.message
+    else {
+      p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not prepare the sandbox')
+      out.failure = 'Launch could not give the sandbox its repository credential'
+    }
+    return out
+  }
+
   let processId: string
   try {
     const proc = await sandbox.startProcess(
@@ -546,7 +585,7 @@ async function streamTurn(
         model: p.policy.model,
         resumeSessionId: row.claudeSessionId,
       }),
-      { cwd: p.cwd, env: claudeTurnEnv(p.policy.model) }
+      { cwd: p.cwd, env: { ...claudeTurnEnv(p.policy.model), ...egressEnv } }
     )
     processId = proc.id
   } catch (err) {
@@ -568,8 +607,9 @@ async function streamTurn(
   const reader = new AbortController()
   const startedAt = p.now()
 
+  let overBudget = false
   const stop = async (reason: 'cancelled' | 'timeout') => {
-    if (out.stop || finished) return
+    if (out.stop || overBudget || finished) return
     out.stop = reason
     try {
       await sandbox.kill(processId, 'SIGTERM')
@@ -620,6 +660,31 @@ async function streamTurn(
     }
   })()
 
+  /** `direct` only: the turn's running cost reached the headroom — kill it, say why. */
+  const stopForBudget = async () => {
+    if (out.stop || overBudget || finished || !meter) return
+    overBudget = true
+    writer.append({
+      type: 'budget.reached',
+      turn: p.turn,
+      data: {
+        spentMicrocents: headroom.spentMicrocents + meter.runningCostMicrocents(),
+        capMicrocents: headroom.capMicrocents,
+        scope: headroom.scope,
+      },
+    })
+    out.failure =
+      headroom.scope === 'session'
+        ? 'This turn was stopped: the session reached its budget. Ask an app owner to extend it.'
+        : "This turn was stopped: this app's coding sessions reached their monthly budget."
+    try {
+      await sandbox.kill(processId, 'SIGTERM')
+    } catch (err) {
+      p.logger?.warn({ err, sessionId: row.id }, 'session turn: kill failed')
+    }
+    reader.abort()
+  }
+
   let claudeSessionId = row.claudeSessionId
   let exitCode: number | null = null
   let stderrTail = ''
@@ -635,6 +700,10 @@ async function streamTurn(
       }
       if (mapping.result) out.result = mapping.result
       if (mapping.events.length > 0) writer.append(...mapping.events)
+      if (meter) {
+        meter.observe(mapping)
+        if (meter.runningCostMicrocents() >= headroom.microcents) await stopForBudget()
+      }
     }
     if (writer.pending >= p.flushEvery) await writer.flush()
   }
@@ -649,7 +718,7 @@ async function streamTurn(
     await apply(parser.end())
   } catch (err) {
     if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (!out.stop) {
+    else if (!out.stop && !overBudget) {
       p.logger?.warn({ err, sessionId: row.id }, 'session turn: reading the process failed')
       out.failure = 'Launch lost the connection to Claude Code in the sandbox'
     }
@@ -662,6 +731,13 @@ async function streamTurn(
     p.logger?.warn({ err: watched.reason, sessionId: row.id }, 'session turn: watch failed')
   }
   if (flushed.status === 'rejected') throw flushed.reason
+
+  if (meter) {
+    // Before `executeTurn` reads the row's total back: the turn's cost IS this write.
+    await recordTurnUsage(db, row, meter).catch(err =>
+      p.logger?.error({ err, sessionId: row.id }, 'session turn: could not record usage')
+    )
+  }
 
   // A `result` line is the end of the turn whatever the exit code; no `result` is a failure.
   if (!out.stop && !out.failure && !out.result) {
