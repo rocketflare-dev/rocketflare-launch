@@ -509,3 +509,18 @@ lockfile's inputs, so a frozen install can never succeed.
 --no-frozen-lockfile` and `pnpm lint:fix` itself (`apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`).
 
 **Status.** Not filed.
+
+## 13. Bootstrap has no way to skip the seed or an unchanged migrate
+
+**What.** `scripts/bootstrap.mjs` always runs `pnpm db:migrate`, `pnpm seed` and `pnpm web db:check`.
+A re-run against a database it already prepared (a coding session resuming on its own Neon
+branch) repeats all three, and has no flag to skip them.
+
+**Proposed fix.** `--skip-seed` and `--skip-migrate` flags, or `--resume`, which skips the seed and
+migrates only when `apps/web/migrations` changed.
+
+**Launch workaround.** The session's root-check preload intercepts those three child commands by
+name when `LAUNCH_BOOTSTRAP_SKIP` lists them (`services/sessions/rocketflare-dev.ts`). It breaks
+silently if the kit renames them.
+
+**Status.** Not filed.
