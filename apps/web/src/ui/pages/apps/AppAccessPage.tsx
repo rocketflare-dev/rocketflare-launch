@@ -1,8 +1,9 @@
 /**
  * `/apps/:slug/access` (spec/05): who may sign in to this app through Launch — the access policy
  * (the whole organisation, or only the groups and people granted), the grants, and the queue of
- * access requests — each an `app.access` approval, decided on its own page (P4). For the app's owners and the organisation's admins; the server answers 404 to
- * anyone else, which this page shows as "not yours to manage".
+ * access requests — each an `app.access` approval, decided on its own page (P4). For the app's
+ * owners and the organisation's admins; the server answers 404 to anyone else, which this page
+ * shows as "not yours to manage".
  *
  * The app's owners can always sign in, whatever the policy says — restricting an app can never
  * lock its owners out.
