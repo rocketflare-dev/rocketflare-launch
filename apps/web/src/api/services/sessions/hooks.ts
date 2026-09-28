@@ -84,6 +84,7 @@ export const defaultSessionStepHooks: SessionStepHooks = {
         sandbox: ctx.sandbox,
         storage: ctx.storage,
         now: ctx.now,
+        emit: events => ctx.emit(events),
         egress: egressFor(ctx.ports, ctx.db),
       },
       ctx.ref,

@@ -9,6 +9,7 @@
  * the preview — plain HTTP through `containerFetch`, the HMR upgrade through `wsConnect`.
  */
 import { describe, expect, it } from 'vitest'
+import { inSubshell } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from '@/api/services/sessions/sandbox/remote-sandbox'
 import type { SandboxHostBinding } from '@/api/services/sessions/sandbox-host/protocol'
 import { remoteSandboxId } from '@/api/services/sessions/sandbox-host/protocol'
@@ -92,7 +93,8 @@ describe('RemoteSandbox over the sandbox host', () => {
     expect(await sandbox.readFile('/workspace/.launch/boot-id')).toBe('boot-1')
     await sandbox.writeFile('/workspace/.launch/boot-id', 'boot-2')
     await sandbox.kill('p-1', 'SIGKILL')
-    expect(ns.calls.find(c => c.method === 'exec')?.args[0]).toBe("bash -c 'echo hi'")
+    // The host wraps it exactly as the in-process adapter does (its own subshell, no core dumps).
+    expect(ns.calls.find(c => c.method === 'exec')?.args[0]).toBe(inSubshell('echo hi'))
     expect(ns.calls.find(c => c.method === 'killProcess')?.args).toEqual(['p-1', 'SIGKILL'])
     expect(ns.calls.find(c => c.method === 'writeFile')?.args).toEqual([
       '/workspace/.launch/boot-id',

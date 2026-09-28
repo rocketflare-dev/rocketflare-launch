@@ -303,6 +303,23 @@ session in an 8 GB colima VM was OOM-killed during `pnpm install`. (Keying it on
 containers are native and get neither variable. colima with Rosetta (`--vm-type vz
 --vz-rosetta`) is likely faster; not measured.
 
+**Crashes leave core dumps, and a crashed turn could leave Claude Code running.** Emulation still
+crashes things `GOGC=off` does not cover — Claude Code itself among them. One real session (2026-09)
+ended with a 5.8 GB `core` and a 5.7 GB `qemu_claude_<date>_<pid>.core` (QEMU user mode writes the
+guest's core itself) in `/workspace/app`; the next checkpoint's `git add -A` spent its 120 s
+hashing them and failed, and three turns whose log stream Launch lost left their `claude -p`
+running for minutes, still spending tokens and editing the checkout. Now:
+
+- every command runs under `ulimit -c 0` (`inSubshell`), which should stop both kinds of core file
+  (read from QEMU's source, not reproduced with a real crash);
+- the checkpoint never stages a core dump (`.git/info/exclude`) or any file over 50 MB — it names
+  the file in an `error` event ("Saved, but left out …") and saves the rest; delete it by hand
+  (`docker exec <container> rm /workspace/app/core`) or ask Claude to;
+- a turn Launch stops reading has its process SIGTERMed and, after 5 s, SIGKILLed by pid.
+
+If a session predates this and holds such files, the first checkpoint after the upgrade leaves them
+out and says so.
+
 ## Memory
 
 **One session container wants ~4 GB under emulation, and the Docker VM is shared.** Measured

@@ -275,7 +275,9 @@ export class FakeSandbox implements SandboxPort {
     if (proc.script.hang && !proc.killed && proc.exitCode === null) {
       await new Promise<void>(resolve => {
         this.killWaiters.set(processId, resolve)
-        opts.signal?.addEventListener('abort', () => resolve(), { once: true })
+        // An already-aborted reader (a cancel mid-stream) must not wait for an event that fired.
+        if (opts.signal?.aborted) resolve()
+        else opts.signal?.addEventListener('abort', () => resolve(), { once: true })
       })
       this.killWaiters.delete(processId)
       if (opts.signal?.aborted && !proc.killed) return

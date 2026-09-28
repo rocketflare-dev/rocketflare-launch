@@ -6,6 +6,7 @@
  * - The image and the code agree on the image version, the kit tag and the SDK line.
  * - The checkout script, the allow-list, the SDK adapter's log-stream parser and error mapping.
  */
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
@@ -185,7 +186,15 @@ describe('the checkout', () => {
 
   it('quotes so no ref can break out of the shell', () => {
     expect(shellQuote("it's")).toBe(`'it'\\''s'`)
-    expect(inSubshell('exit 3')).toBe(`bash -c 'exit 3'`)
+    expect(inSubshell('exit 3')).toBe(`bash -c 'ulimit -c 0 2>/dev/null\nexit 3'`)
+  })
+
+  it('runs every command with core dumps off, and keeps its exit code', () => {
+    const run = (command: string) =>
+      spawnSync('bash', ['-c', inSubshell(command)], { encoding: 'utf8' })
+    expect(run('ulimit -c').stdout.trim()).toBe('0')
+    expect(run('exit 3').status).toBe(3)
+    expect(run('set -e\nfalse\necho unreachable').stdout).toBe('')
   })
 })
 

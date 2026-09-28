@@ -18,7 +18,7 @@ import {
 } from '@/api/services/sessions/egress/direct'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { RepoHostPort, RepoRef } from '@/api/services/sessions/ports'
-import { type RunTurnOptions, runTurn } from '@/api/services/sessions/turn'
+import { type RunTurnOptions, runTurn, TURN_PID_FILE } from '@/api/services/sessions/turn'
 import { loadConfig } from '@/config'
 import { aiUsage, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
@@ -172,6 +172,8 @@ describe('runTurn in the direct mode', () => {
 
     const sandbox = ports.sandboxes.get(row.id)
     expect(sandbox?.killed).toHaveLength(1)
+    // …and through the pid the turn recorded, because the SDK's kill drops its signal.
+    expect(sandbox?.execs.some(e => e.command.includes(TURN_PID_FILE))).toBe(true)
     const events = await listSessionEvents(db, row.tenantId, row.id)
     const types = events.map(e => e.type)
     expect(types).toContain('budget.reached')

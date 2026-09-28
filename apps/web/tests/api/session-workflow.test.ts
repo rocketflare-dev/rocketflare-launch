@@ -12,6 +12,7 @@ import { SESSION_WAKE_EVENT, type SessionEventType } from '@launch/shared/launch
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptToken } from '@/api/auth/oauth-encryption'
+import { CheckpointError } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
@@ -379,6 +380,36 @@ describe('SessionWorkflow: the loop', () => {
     const types = await typesOf(h.row)
     expect(types).toEqual(expect.arrayContaining(['user.message', 'turn.start', 'turn.end']))
     expect((await reload(h.row)).turnCount).toBe(1)
+  })
+
+  it('a checkpoint that times out is a readable error event, and the session takes the next turn', async () => {
+    let failed = 0
+    const h = await harness({
+      hooks: {
+        checkpoint: async (_ctx, reason) => {
+          if (reason === 'turn' && failed++ === 0) {
+            throw new CheckpointError('add', 'the add did not finish within 120 s (timed out)')
+          }
+        },
+      },
+    })
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        expect((await reload(h.row)).status).toBe('ready')
+        await patch(h.row, { pendingMessage: 'And make it blue' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    const error = events.find(e => e.type === 'error')
+    expect((error?.data as { message?: string } | undefined)?.message).toBe(
+      "Could not save the session's work: Checkpoint failed at add: the add did not finish within 120 s (timed out)"
+    )
+    expect(events.filter(e => e.type === 'turn.end')).toHaveLength(2)
+    expect((await reload(h.row)).turnCount).toBe(2)
   })
 
   it('idle → suspend keeps the container → a resume inside the warm window reuses it', async () => {

@@ -1469,7 +1469,14 @@ session, whose Launch ran `wrangler dev` on the `cloud` backend): every `wrangle
 with `GOGC=off`, so each wants ~4 GB (the SDK's own control server ~1 GiB idle, the dev stack ~3
 GiB) and in an 8 GB VM shared with other containers the VM's OOM killer takes the control server —
 hola-world's second session died that way at "Starting dev server" (`docs/SESSIONS-LOCAL.md`
-§ Memory). `workerd` itself runs under emulation. An arm64 local image is blocked upstream: the
+§ Memory). A process that crashes under emulation used to leave its core dumps in the checkout —
+one crash left a 5.8 GB `core` and a 5.7 GB `qemu_claude_<date>_<pid>.core` in `/workspace/app`,
+and the checkpoint's `git add -A` timed out on them. Every command now runs with `ulimit -c 0`
+(`RLIMIT_CORE` 0, inherited by all it starts); QEMU user mode writes the guest's `qemu_*.core`
+only when `RLIMIT_CORE` allows it, so the one limit should cover both — read from QEMU's source,
+not reproduced with a crash. The image cannot set it (Docker's `--ulimit` is the platform's run
+option); the checkpoint's exclusions and size limit (§18.13) are the second line. `workerd` itself
+runs under emulation. An arm64 local image is blocked upstream: the
 Sandbox base image is amd64-only and `wrangler dev` builds containers for `linux/amd64` only. The allow-list includes the region's shared `api.` SQL host
 (the neon-http driver's), which answers any endpoint in that region for whoever holds its
 credentials — the container holds only its branch's. An outbound `wss://` through the interception
@@ -1500,6 +1507,15 @@ checks the budget, claims `ready → working`, writes `user.message` + `turn.sta
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
 events. `cancel_requested_at` is polled every 2 s and kills the process; a rollout is
 `turn.interrupted` and `suspended`. Pushing is disallowed to Claude — Launch commits and pushes.
+**Launch never leaves a turn's process running unread**: the command records its pid
+(`/workspace/.launch/turn.pid`, then `exec claude …`), and whenever the turn stops reading a
+process that has not reported its exit — the log stream failed (`turn.failed`, "Launch lost the
+connection…") or closed early, or a cancel/timeout aborted the reader — `terminateTurnProcess`
+sends the SDK kill and then, in the container, SIGTERM to the pid and its children and SIGKILL
+after 5 s. Each call is bounded at 30 s, logged, and never fails the turn; after a rollout there is
+no container to stop. The escalation goes by pid because the SDK's `killProcess` (0.12.10) drops
+its signal argument. Every command and process also runs with `ulimit -c 0` (`inSubshell`), so a
+crash leaves no core file behind (§18.10, §18.13).
 The page reads the rows (`GET /:id/events?afterSeq=`, paged by `nextSeq`) and uses
 `GET /:id/agui/stream` (the four run-stream rules; facts with no AG-UI frame travel as the
 `launch.session.event` CUSTOM event, `SESSION_CUSTOM_EVENTS` in `@launch/shared/launch-sessions`)
@@ -1528,7 +1544,10 @@ running sum saw, so a killed turn is still paid for) is written through the prox
 `recordSessionUsage`: the same pricing, one transaction per row.
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
-the body's end); a model with no price (`estimateCostMicrocents` → null) costs nothing to the
+the body's end); the turn's kill reaches Claude Code and its DIRECT children (`pkill -P`), not a
+grandchild that detached into a process group of its own; the pid file is read at kill time, so a
+pid the kernel reused meanwhile would be signalled (not seen); the kill escalation is proven
+against real processes locally, not yet inside the session image; a model with no price (`estimateCostMicrocents` → null) costs nothing to the
 budget, so the allow-list must name a priced model; the ship turn's prompt is not in the transcript
 (no `user.message`); the proxy's streaming overhead is unmeasured.
 
@@ -1560,7 +1579,17 @@ running preview app that polls its API keeps its session live until `maxSessionH
 **Checkpoint** (`checkpoint.ts`, after every turn and before a suspend or end): `git add -A`, a
 commit by Launch with the person as `Co-Authored-By`, `git push origin HEAD:refs/heads/session/
 <short>` through the git handler, and Claude's transcript to R2 (`sessions/<id>/claude.jsonl`) so
-a resume can `--resume`. A failed checkpoint is an `error` event, not a failed session. A push
+a resume can `--resume`. **Nothing huge is staged**: the repo step writes the core-dump names
+(`core` as a file — `!core/` keeps a directory of that name — `core.[0-9]*`, `*.core`,
+`qemu_*.core`) into the checkout's `.git/info/exclude`, never the app's `.gitignore`; every
+checkpoint re-asserts them (a restored workspace may predate them) and first lists every untracked
+or modified file over 50 MB (`CHECKPOINT_MAX_FILE_BYTES`). Each is left out of `git add` by a
+literal pathspec exclusion — not deleted — and named in an `error` event ("Saved, but left out …
+core (5.8 GB)"), and the save goes on. The scan also drops a `.git/index.lock` a timed-out git left
+behind, when no git is running. A git command that does not answer within 120 s is a
+`CheckpointError` naming the step and the limit. A failed checkpoint is an `error` event ("Could not
+save the session's work: …"), not a failed session: the session stays `ready`, the next turn runs
+and its checkpoint tries again, and the branch holds the previous one. A push
 that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped connection —
 `TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
 retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
@@ -1574,7 +1603,10 @@ audit `session.shipped` — and the Workflow then cleans up (shipping ends the s
 30 s) and by `sessions.checks` on `*/5` while pending, unread, or `none` within an hour of the
 ship (GitHub has not queued the workflows yet when the PR opens).
 
-**Known gaps:** no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes
+**Known gaps:** a file over the size limit that is already TRACKED keeps its last committed
+version (its new content is not saved); the scan and the stale-lock check are proven against real
+git and bash locally (`tests/config/session-checkpoint-scan.test.ts`), not yet inside the session
+image; no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes
 to `session/*` are not set up (only the git handler enforces it); a gate that needs more than the
 sandbox has (a service, a secret) cannot pass; after shipping there is no "keep working" in the UI
 — a new session starts from the default branch unless the API is given `baseRef`.
