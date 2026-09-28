@@ -9,6 +9,9 @@
  * already a `plain_text` / `json` binding of the live version is refused 10053 "Binding name
  * already in use" (`secretNameClash = false` turns that off). Each version snapshots the secret
  * VALUES it carries, so `envOf(script)` answers what the running Worker's `env` would hold.
+ * A version can be read back (`GET …/versions/{id}`, secrets without their text), its code too
+ * (`GET …/content/v2?version=`, multipart with `cf-entrypoint`), and deployments list newest first
+ * — what copying the live version needs (P5 slice 5c's var-shadow remedy).
  */
 import {
   belongsTo,
@@ -528,7 +531,45 @@ export class FakeCloudflare implements VendorHandler {
         if (full) script.activeVersionId = full.version_id
         return ok(deployment)
       }
-      if (sub === 'deployments' && m === 'GET') return ok({ deployments: script.deployments })
+      // Newest first, as Cloudflare lists them: the first is the one serving.
+      if (sub === 'deployments' && m === 'GET') {
+        return ok({ deployments: [...script.deployments].reverse() })
+      }
+      const versionMatch = sub.match(/^versions\/([^/]+)$/)
+      if (versionMatch && m === 'GET') {
+        const version = script.versions.find(v => v.id === decodeURIComponent(versionMatch[1]))
+        if (!version) return notFound('version')
+        // A secret's text is never read back — not in the bindings, not in the metadata.
+        const hide = (bindings: Record<string, unknown>[]) =>
+          bindings.map(b => (b.type === 'secret_text' ? { type: 'secret_text', name: b.name } : b))
+        const uploaded = version.metadata.bindings as Record<string, unknown>[] | undefined
+        return ok({
+          id: version.id,
+          number: script.versions.indexOf(version) + 1,
+          metadata: { ...version.metadata, ...(uploaded ? { bindings: hide(uploaded) } : {}) },
+          resources: {
+            bindings: hide(version.bindings),
+            script: { main_module: version.metadata.main_module },
+            script_runtime: {
+              compatibility_date: version.metadata.compatibility_date,
+              compatibility_flags: version.metadata.compatibility_flags ?? [],
+            },
+          },
+        })
+      }
+      if (sub === 'content/v2' && m === 'GET') {
+        const id = req.url.searchParams.get('version')
+        const version = id ? script.versions.find(v => v.id === id) : null
+        if (!version) return notFound('version')
+        const form = new FormData()
+        for (const [part, content] of Object.entries(version.modules)) {
+          form.append(part, new File([content], part, { type: 'application/javascript+module' }))
+        }
+        const res = new Response(form)
+        const headers = new Headers(res.headers)
+        headers.set('cf-entrypoint', String(version.metadata.main_module ?? ''))
+        return new Response(await res.arrayBuffer(), { status: 200, headers })
+      }
       if (sub === 'schedules' && m === 'PUT') {
         const list = (Array.isArray(req.json) ? req.json : []) as { cron: string }[]
         script.schedules = list.map(s => s.cron)
@@ -664,6 +705,10 @@ export class FakeCloudflare implements VendorHandler {
       if (b.type === 'secret_text') secrets[String(b.name)] = String(b.text ?? '')
     }
     for (const b of kept) secrets[b.name] = script.secrets.get(b.name) ?? ''
+    // A version that UPLOADS a secret (a copy of the live version, P5) sets it on the script too.
+    for (const b of uploaded) {
+      if (b.type === 'secret_text') script.secrets.set(String(b.name), String(b.text ?? ''))
+    }
     const version: FakeVersion = {
       id: crypto.randomUUID(),
       metadata,

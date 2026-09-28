@@ -58,7 +58,11 @@
  *   one's bindings; `envOf(script)` → the live version's string env (`plain_text`, `json`, and each
  *   `secret_text`'s value as of that version) or null; a secret named like a live `plain_text`
  *   binding, and an upload whose var shadows a kept secret, answer 10053 "Binding name already in
- *   use" (`cloudflare.secretNameClash = false` turns both off).
+ *   use" (`cloudflare.secretNameClash = false` turns both off). Copying the live version (5c's
+ *   var-shadow remedy): `GET …/deployments` lists newest first, `GET …/versions/{id}` answers
+ *   `{ metadata, resources: { bindings, script, script_runtime } }` with no secret text,
+ *   `GET …/content/v2?version=` the modules as multipart (`cf-entrypoint`), and a version that
+ *   uploads a `secret_text` sets it on the script.
  * - `cloud.neon` (`FakeNeon`): `projects` (id → `{name, region_id, org_id, pg_version, branches:
  *   id → {name, parent_id, init_source, host, roles: name → {password, resets}, databases}}`),
  *   `branchNamed(projectId, name)`, `resetCount(projectId, role)`, `sql` (every HTTP SQL statement

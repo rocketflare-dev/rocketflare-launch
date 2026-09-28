@@ -21,10 +21,8 @@ import { kindHandler } from '@/api/services/approvals/kinds'
 import { canSeeHolders } from '@/api/services/grants/access'
 import { scanAppConfig } from '@/api/services/grants/detect'
 import { grantedKeys } from '@/api/services/grants/holders'
-import { startPush } from '@/api/services/grants/push'
 import { requestGrant } from '@/api/services/grants/requests'
 import { getResource, loadResource } from '@/api/services/grants/resources'
-import { revokeGrant } from '@/api/services/grants/revoke'
 import { openValues, sealValues } from '@/api/services/grants/sealed'
 import {
   dueForExpiry,
@@ -359,7 +357,6 @@ describe('the P5 mounts', () => {
     const headers = sessionCookieHeader(await createTestSession(db, admin.id, tenant.id))
     for (const [method, url] of [
       ['GET', `/api/shared-resources/${resource.id}`],
-      ['GET', `/api/shared-resources/${resource.id}/pushes`],
       ['GET', `/api/apps/${app.id}/config`],
       ['POST', `/api/apps/${app.id}/grants`],
       ['POST', `/api/apps/${app.id}/config/scan`],
@@ -388,7 +385,7 @@ describe('GRANT_PUSH_WORKFLOW', () => {
 })
 
 describe('the grants cron', () => {
-  it('is registered and harmless until 5c fills it', async () => {
+  it('is registered and runs clean', async () => {
     const ctx = createExecutionContext()
     const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
       '*/5 * * * *': [grantsSweep],
@@ -495,14 +492,11 @@ describe('the stubs before their slices', () => {
       [() => canSeeHolders(viewer, {} as never), /access\.canSeeHolders .*P5 slice 5b/],
       [() => getResource(db, cfg, viewer, 'x'), /resources\.getResource .*5b/],
       [() => setValues(deps, viewer, 'x', 'staging', { values: {} }, actor), /setValues .*5b/],
-      [() => startPush(deps, {} as never), /push\.startPush .*5c/],
-      [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
       [() => requestGrant(deps, viewer, 'x', {} as never, actor), /requestGrant .*5d/],
       [() => grantedKeys(db, 'x', 'x', 'staging'), /grantedKeys .*5d/],
       [() => scanAppConfig(deps, {} as never), /scanAppConfig .*5e/],
       [() => declaredConfig(async () => null), /declaredConfig .*5e/],
       [() => kindHandler('grant.request').applyAfter({} as never, deps), /applyAfter .*5d/],
-      [() => new GrantPushWorkflow({} as never, env).run({} as never, {} as never), /run .*5c/],
     ]
     for (const [call, message] of cases) {
       const error = await caught(call)
