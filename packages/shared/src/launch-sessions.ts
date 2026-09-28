@@ -465,6 +465,17 @@ export type Session = z.infer<typeof sessionSchema>
 export const sessionDetailResponseSchema = z.object({ session: sessionSchema })
 export type SessionDetailResponse = z.infer<typeof sessionDetailResponseSchema>
 
+/**
+ * `POST /api/sessions/:id/budget` (P4, plan §4c) — the session as it is now, plus the
+ * `session.budget` approval the call opened or joined. 200 when the caller's own approval raised
+ * the cap in the same call; 202 when the request waits in the approvals inbox. `approvalId` is
+ * optional and nullable so a P3-shaped answer still parses.
+ */
+export const extendBudgetResponseSchema = sessionDetailResponseSchema.extend({
+  approvalId: z.string().uuid().nullable().optional(),
+})
+export type ExtendBudgetResponse = z.infer<typeof extendBudgetResponseSchema>
+
 export const sessionListResponseSchema = z.object({ items: z.array(sessionSummarySchema) })
 export type SessionListResponse = z.infer<typeof sessionListResponseSchema>
 

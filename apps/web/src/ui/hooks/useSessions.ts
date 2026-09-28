@@ -23,6 +23,7 @@ import {
   type CreateSessionRequest,
   drainResponseSchema,
   type ExtendBudgetRequest,
+  extendBudgetResponseSchema,
   isActiveSessionStatus,
   previewGrantResponseSchema,
   type Session,
@@ -35,7 +36,6 @@ import {
   sessionPrResponseSchema,
 } from '@launch/shared/launch-sessions'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { z } from 'zod'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 import { useApprovals } from './useApprovals'
@@ -192,19 +192,15 @@ export function useResumeSession(id: string) {
 /**
  * `POST /:id/budget` (P4: `session.budget` through the approvals engine). The route opens — or
  * joins — a request whose requester is the session's creator; an eligible approver other than the
- * creator records their approval in the same call (P3's one click). So the answer is the row as it
- * is now, plus the request's id when one is open (`approvalId`, additive and optional: an answer
- * without it is P3's), and the CALLER says which happened — the cap moved, or it is waiting.
+ * creator records their approval in the same call (P3's one click). The answer
+ * (`extendBudgetResponseSchema`) is the row as it is now plus the request's `approvalId`, and the
+ * CALLER says which happened — the cap moved, or it is waiting.
  */
-export const budgetResponseSchema = sessionDetailResponseSchema.extend({
-  approvalId: z.string().uuid().nullable().optional(),
-})
-
 export function useExtendBudget(id: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: ExtendBudgetRequest) =>
-      api.post(`${sessionPath(id)}/budget`, body, { schema: budgetResponseSchema }),
+      api.post(`${sessionPath(id)}/budget`, body, { schema: extendBudgetResponseSchema }),
     onSuccess: ({ session }) => {
       queryClient.setQueryData(queryKeys.sessions.detail(id), session)
       void queryClient.invalidateQueries({

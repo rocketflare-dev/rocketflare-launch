@@ -14,16 +14,18 @@
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
  * - `GET /:id/events[?afterSeq=]` → `sessionEventsResponseSchema`.
- * - `POST /:id/budget` `extendBudgetSchema` (`{extraUsd, reason?}`) → `sessionDetailResponseSchema`
- *   plus `approvalId`: from P4 a `session.budget` approval (plan §4c, `budget-request.ts`), opened
- *   (or joined) in the creator's name. When the caller is an eligible approver other than the
- *   creator their approval is recorded in the same call — 200, the cap already raised
+ * - `POST /:id/budget` `extendBudgetSchema` (`{extraUsd, reason?}`) →
+ *   `extendBudgetResponseSchema` (the session plus `approvalId`): from P4 a `session.budget`
+ *   approval (plan §4c, `budget-request.ts`), opened (or joined) in the creator's name. When the
+ *   caller is an eligible approver other than the creator their approval is recorded in the same
+ *   call — 200, the cap already raised
  *   (`session.budget.extended`) and a `blocked` session under both caps `ready` and woken;
  *   otherwise 202 and the request waits in the approvals inbox (the creator's own ask always does).
  *
  * Routes write request columns and wake the Workflow; they never run a turn.
  */
 import {
+  type ExtendBudgetResponse,
   extendBudgetSchema,
   SESSION_REALTIME_ENTITY,
   type SessionDetailResponse,
@@ -155,10 +157,9 @@ sessionChatRouter.post('/:id/budget', validate('json', extendBudgetSchema), asyn
     actor: auditActor(c),
   })
   changed(c, tenantId, row.id)
-  const approved = result.request.status === 'approved'
-  // `approvalId` rides beside the P3 body; `sessionDetailResponseSchema` has no field for it yet.
-  return c.json(
-    { session: toSessionDetail(result.session, true), approvalId: result.request.id },
-    approved ? 200 : 202
-  )
+  const body: ExtendBudgetResponse = {
+    session: toSessionDetail(result.session, true),
+    approvalId: result.request.id,
+  }
+  return c.json(body, result.request.status === 'approved' ? 200 : 202)
 })
