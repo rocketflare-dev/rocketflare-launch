@@ -10,7 +10,10 @@
  * 4. the PRs since the previous tag (`prs.ts`) → `app_releases.prs`, each matched to the Launch
  *    session that shipped it; with no earlier tag at all, the app's shipped session PRs that are
  *    merged (read live) instead;
- * 5. audit `pr.merged` for any PR not recorded yet, then `release.created`.
+ * 5. audit `pr.merged` for any PR not recorded yet, then `release.created`;
+ * 6. scan the declared config AT THE TAG (Launch P5, `grants/detect.scanAppConfig`) — a plugin the
+ *    release brings in asks for its shared config now, before the deploy needs it. A scan failure
+ *    is recorded on the scan row and never fails the Release.
  *
  * **Idempotent by the tag.** A Release that died after committing the bump and before tagging is
  * recognised on the next click — the head commit is our bump commit and its tag does not exist —
@@ -31,6 +34,7 @@ import type { Database } from '../../../../db/client'
 import { type AppReleaseRow, type AppRow, appReleases, sessions } from '../../../../db/schema'
 import { ApiError, ConflictError, isApiError, NotFoundError } from '../../../utils/core/errors'
 import type { ApprovalDeps } from '../../approvals/types'
+import { scanAppConfig } from '../../grants/detect'
 import { nudge, realtimeEvent } from '../../realtime'
 import { type AuditActor, recordAudit } from '../audit'
 import {
@@ -338,6 +342,13 @@ export async function createRelease(
     },
   })
   nudgeRelease(deps, inserted)
+  await scanAppConfig(deps, {
+    tenantId,
+    appId: app.id,
+    ref: inserted.tag,
+    sha: inserted.sha,
+    trigger: 'release',
+  }).catch(() => {})
   return inserted
 }
 

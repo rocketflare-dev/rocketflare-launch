@@ -14,12 +14,14 @@
  * | what the tomls declare / writing the answers back | `toml.ts` (`resources`, `writeConfig`) |
  * | the placeholder script | `placeholder-worker.ts` |
  * | Worker secrets, release, health, sign-in vars | the constants below |
+ * | the config an app declares (P5) | `declared-config.ts` (`declaredConfig`) |
  *
- * `declaredConfig` and `devBootstrap` (spec/02) are P3+ and not here yet.
+ * `devBootstrap` (spec/02) is not here yet.
  */
 import type { AppEnvironmentName } from '@launch/shared/launch-apps'
 import type { CommitFile } from '../github-app'
 import { ManifestError, parseManifest, WRANGLER_PATHS } from '../rocketflare-manifest'
+import { declaredConfig } from './declared-config'
 import { accountScopedNames, appResourceNames, KIT_BINDINGS } from './names'
 import { placeholderScript } from './placeholder-worker'
 import { SCAFFOLD_WORKFLOW_FILE, scaffoldFiles } from './scaffold-job'
@@ -154,6 +156,8 @@ export interface TemplateAdapter {
   health: { live: string; ready: string }
   /** The var and secret names the app reads for OIDC sign-in (spec/05). */
   auth: { issuer: string; clientId: string; clientSecret: string }
+  /** The config keys the app's plugins and the kit declare, read through a file reader (P5). */
+  declaredConfig: typeof declaredConfig
 }
 
 export const rocketflareAdapter: TemplateAdapter = {
@@ -173,4 +177,5 @@ export const rocketflareAdapter: TemplateAdapter = {
   release: { workflowFile: 'deploy.yml', environmentInput: 'environment' },
   health: { live: '/api/health', ready: '/api/ready' },
   auth: { issuer: 'OIDC_ISSUER', clientId: 'OIDC_CLIENT_ID', clientSecret: 'OIDC_CLIENT_SECRET' },
+  declaredConfig,
 }
