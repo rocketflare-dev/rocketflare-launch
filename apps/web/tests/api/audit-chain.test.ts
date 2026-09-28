@@ -350,12 +350,17 @@ describe('verifyChain', () => {
 
 // ---- export formats (golden) ------------------------------------------------------------------
 
-const GOLDEN_ROW: AuditExportRow = { seq: 7, hash: 'ab'.repeat(32), ...GOLDEN_EVENT }
+const GOLDEN_ROW: AuditExportRow = {
+  seq: 7,
+  prevHash: 'cd'.repeat(32),
+  hash: 'ab'.repeat(32),
+  ...GOLDEN_EVENT,
+}
 
 describe('export formats', () => {
   it('JSON Lines: one object per line, the documented column order', () => {
     expect(toJsonLine(GOLDEN_ROW)).toBe(
-      `{"seq":7,"hash":"${'ab'.repeat(32)}","id":"0f0e0d0c-0b0a-4908-8706-050403020100",` +
+      `{"seq":7,"prevHash":"${'cd'.repeat(32)}","hash":"${'ab'.repeat(32)}","id":"0f0e0d0c-0b0a-4908-8706-050403020100",` +
         '"tenantId":"11111111-2222-4333-8444-555555555555","at":"2026-09-28T10:00:00.123Z",' +
         '"actorType":"user","actorUserId":"99999999-8888-4777-8666-555555555555",' +
         '"actorEmail":"ada@example.test","action":"deploy.started","targetType":"DeployTicket",' +
@@ -369,11 +374,11 @@ describe('export formats', () => {
 
   it('CSV: RFC 4180 quoting, nulls empty, summary as sorted JSON, formulas defused', () => {
     expect(CSV_HEADER).toBe(
-      'seq,hash,id,tenantId,at,actorType,actorUserId,actorEmail,action,targetType,targetId,' +
+      'seq,prevHash,hash,id,tenantId,at,actorType,actorUserId,actorEmail,action,targetType,targetId,' +
         'appId,summary,requestId,approvalId,ip,userAgent\r\n'
     )
     expect(toCsvLine(GOLDEN_ROW)).toBe(
-      `7,${'ab'.repeat(32)},0f0e0d0c-0b0a-4908-8706-050403020100,` +
+      `7,${'cd'.repeat(32)},${'ab'.repeat(32)},0f0e0d0c-0b0a-4908-8706-050403020100,` +
         '11111111-2222-4333-8444-555555555555,2026-09-28T10:00:00.123Z,user,' +
         '99999999-8888-4777-8666-555555555555,ada@example.test,deploy.started,DeployTicket,t-1,,' +
         '"{""after"":{""a"":""é \\""q\\"""",""list"":[{""a"":1,""b"":2}],""n"":null,""z"":1},""before"":{}}",' +
@@ -382,11 +387,12 @@ describe('export formats', () => {
     const hostile = toCsvLine({
       ...GOLDEN_ROW,
       seq: null,
+      prevHash: null,
       hash: null,
       actorEmail: '=HYPERLINK("http://x")',
       userAgent: 'a,b\nc',
     })
-    expect(hostile.startsWith(',,')).toBe(true)
+    expect(hostile.startsWith(',,,')).toBe(true)
     expect(hostile).toContain(`"'=HYPERLINK(""http://x"")"`)
     expect(hostile).toContain('"a,b\nc"')
   })
@@ -449,7 +455,11 @@ describe('GET /api/audit/export', () => {
     // 3 sealed + 1 unsealed + the `audit.exported` row this very export recorded.
     expect(rows.map(r => r.seq)).toEqual([1, 2, 3, null, null])
     expect(rows.slice(0, 3).map(r => r.hash)).toEqual((await chainOf(tenant.id)).map(c => c.hash))
-    expect(rows[3]).toMatchObject({ action: 'unsealed_0', hash: null })
+    expect(rows.slice(0, 3).map(r => r.prevHash)).toEqual(
+      (await chainOf(tenant.id)).map(c => c.prevHash)
+    )
+    expect(rows[0]?.prevHash).toBe('')
+    expect(rows[3]).toMatchObject({ action: 'unsealed_0', prevHash: null, hash: null })
     expect(rows[4]).toMatchObject({
       action: 'audit.exported',
       actorUserId: user.id,
@@ -493,6 +503,54 @@ describe('GET /api/audit/export', () => {
     }
   })
 
+  it('a filtered export verifies row by row from each prevHash (--filtered)', async () => {
+    const { tenant, cookie } = await owner()
+    for (const action of ['deploy.started', 'app.imported', 'deploy.finished', 'app.renamed']) {
+      await recordAudit(db, { tenantId: tenant.id, ...SYSTEM_ACTOR, action })
+    }
+    await sealTenant(db, tenant.id)
+    const text = await (
+      await request('/api/audit/export?action=deploy', { headers: cookie })
+    ).text()
+    expect(parseLines(text).map(r => r.seq)).toEqual([1, 3])
+
+    const run = (args: string[]) => {
+      try {
+        return {
+          status: 0,
+          stdout: execFileSync(process.execPath, [VERIFIER, ...args], { encoding: 'utf8' }),
+        }
+      } catch (error) {
+        return error as { status: number; stdout: string }
+      }
+    }
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-filtered-'))
+    try {
+      const file = path.join(dir, 'deploys.jsonl')
+      writeFileSync(file, text)
+      // Strict by default: a gap is what a deleted row looks like.
+      const strict = run([file])
+      expect(strict.status).toBe(1)
+      expect(strict.stdout).toMatch(/expected seq 2, found 3 .*pass --filtered/)
+      // --filtered: each sealed row re-derives from its own prevHash.
+      const filtered = run(['--filtered', file])
+      expect(filtered.status).toBe(0)
+      expect(filtered.stdout).toMatch(/^ok: 2 sealed row\(s\) verified one by one/)
+      // A tampered row still fails, gap or no gap.
+      writeFileSync(file, text.replace('deploy.finished', 'deploy.forged'))
+      expect(run(['--filtered', file]).stdout).toMatch(/^BROKEN at seq 3 .*hash does not match/)
+      // So does a forged prevHash on a row that follows its neighbour.
+      const whole = await (await request('/api/audit/export', { headers: cookie })).text()
+      const lines = whole.split('\n')
+      const second = JSON.parse(lines[1] ?? '{}')
+      lines[1] = JSON.stringify({ ...second, prevHash: 'f'.repeat(64) })
+      writeFileSync(file, lines.join('\n'))
+      expect(run([file]).stdout).toMatch(/^BROKEN at seq 2 .*prevHash is not seq 1's hash/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('CSV, and filters: appId, action prefix, from/to', async () => {
     const { tenant, cookie } = await owner()
     const appId = crypto.randomUUID()
@@ -505,7 +563,7 @@ describe('GET /api/audit/export', () => {
     expect(csv.headers.get('content-type')).toContain('text/csv')
     const lines = (await csv.text()).split('\r\n').filter(Boolean)
     expect(lines[0]).toBe(CSV_HEADER.trimEnd())
-    expect(lines.slice(1).map(l => l.split(',')[8])).toEqual(['deploy.started', 'deploy.finished'])
+    expect(lines.slice(1).map(l => l.split(',')[9])).toEqual(['deploy.started', 'deploy.finished'])
     expect(lines.slice(1).map(l => l.split(',')[0])).toEqual(['1', '2'])
 
     const byApp = parseLines(

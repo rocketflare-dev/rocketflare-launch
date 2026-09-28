@@ -112,9 +112,15 @@ export const auditExportQuerySchema = z.object({
 })
 export type AuditExportQuery = z.infer<typeof auditExportQuerySchema>
 
-/** One exported row: the event plus its place in the chain (`null` for an unsealed event). */
+/**
+ * One exported row: the event plus its place in the chain (`null` for an unsealed event).
+ * `prevHash` is the chain's previous hash as sealed (`""` for seq 1), so every sealed row can be
+ * re-derived on its own — which is what makes a FILTERED export verifiable row by row
+ * (`scripts/verify-audit-export.mjs`), where the previous row in the file is not the previous link.
+ */
 export const auditExportRowSchema = auditEventSchema.extend({
   seq: z.number().int().nonnegative().nullable(),
+  prevHash: z.string().nullable(),
   hash: z.string().nullable(),
 })
 export type AuditExportRow = z.infer<typeof auditExportRowSchema>

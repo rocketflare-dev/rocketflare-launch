@@ -4,6 +4,8 @@
  *
  *   launch audit export --format json --out audit.jsonl
  *   node scripts/verify-audit-export.mjs audit.jsonl          # or: … | node scripts/verify-audit-export.mjs -
+ *   launch audit export --action deploy --out deploys.jsonl
+ *   node scripts/verify-audit-export.mjs --filtered deploys.jsonl
  *
  * It re-derives every sealed row's hash from the row itself and checks the rows link up. Exit 0:
  * the chain in the file is intact; 1: a link is broken (the first one is printed); 2: the file
@@ -19,10 +21,18 @@
  * - hash = hex SHA-256 over the UTF-8 of (prevHash + canonical); prevHash is the previous row's
  *   hash and "" for seq 1; seq runs 1, 2, 3 … with no gap.
  *
- * Only an UNFILTERED export is a whole chain. Rows with `seq: null` were not sealed when exported
- * and are counted, not checked. Remember what a chain cannot show on its own: rows missing from the
- * END of the log, or a log rewritten and re-sealed from some point on. Keep the last `seq`/`hash`
- * of each export and compare it with the next one.
+ * Each exported row carries its own `prevHash`, so every sealed row is checked on its own
+ * (`hash = sha256(prevHash + canonical)`) AND against its neighbour wherever the next row in the
+ * file is the next `seq` (`prevHash` = the previous row's `hash`). By default the file must be the
+ * WHOLE chain — seq 1, 2, 3 … with no gap — which is what an unfiltered export is. `--filtered`
+ * accepts gaps (an export narrowed by `--app`, `--action`, `--from` or `--to`): each row is still
+ * proven to be the row that was sealed, but a filtered file cannot show that nothing between two
+ * rows is missing. An older export without `prevHash` can only be verified whole.
+ *
+ * Rows with `seq: null` were not sealed when exported and are counted, not checked. Remember what a
+ * chain cannot show on its own: rows missing from the END of the log, or a log rewritten and
+ * re-sealed from some point on. Keep the last `seq`/`hash` of each export and compare it with the
+ * next one.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -73,37 +83,71 @@ export function chainHash(prevHash, row) {
 }
 
 /**
- * Check parsed export rows. Returns `{ ok, checked, unsealed, lastSeq, lastHash, broken }`, where
- * `broken` is `{ seq, id, reason }` for the first failure.
+ * Check parsed export rows. Returns `{ ok, checked, unsealed, whole, lastSeq, lastHash, broken }`,
+ * where `whole` says the sealed rows are seq 1…N with no gap, and `broken` is `{ seq, id, reason }`
+ * for the first failure. `filtered` accepts gaps in `seq` (see the header).
  */
-export function verifyRows(rows) {
-  let prevHash = ''
-  let expectedSeq = 1
+export function verifyRows(rows, { filtered = false } = {}) {
+  let prev = null
   let checked = 0
   let unsealed = 0
+  let whole = true
+  const fail = (row, reason) => ({
+    ok: false,
+    checked,
+    unsealed,
+    whole,
+    broken: { seq: row.seq, id: row.id, reason },
+  })
   for (const row of rows) {
     if (row.seq === null || row.seq === undefined) {
       unsealed += 1
       continue
     }
     checked += 1
-    let reason = null
-    if (row.seq !== expectedSeq) reason = `expected seq ${expectedSeq}, found ${row.seq}`
-    else if (chainHash(prevHash, row) !== row.hash) reason = 'hash does not match the row'
-    if (reason) {
-      return { ok: false, checked, unsealed, broken: { seq: row.seq, id: row.id, reason } }
+    const expectedSeq = prev ? prev.seq + 1 : 1
+    const follows = row.seq === expectedSeq
+    const hasPrevHash = typeof row.prevHash === 'string'
+    if (!follows) {
+      whole = false
+      if (!filtered || !hasPrevHash) {
+        const hint = !hasPrevHash
+          ? ' (this export has no prevHash: only a whole, unfiltered export can be verified)'
+          : ' (if the export was filtered — --app, --action, --from, --to — pass --filtered)'
+        return fail(row, `expected seq ${expectedSeq}, found ${row.seq}${hint}`)
+      }
+      if (prev && row.seq <= prev.seq) {
+        return fail(row, `seq ${row.seq} is out of order after seq ${prev.seq}`)
+      }
     }
-    prevHash = row.hash
-    expectedSeq += 1
+    // The link: the previous hash this row was sealed on.
+    const prevHash = hasPrevHash ? row.prevHash : prev ? prev.hash : ''
+    if (row.seq === 1 && prevHash !== '') return fail(row, 'seq 1 must have an empty prevHash')
+    if (follows && prev && prevHash !== prev.hash) {
+      return fail(row, `prevHash is not seq ${prev.seq}'s hash`)
+    }
+    if (chainHash(prevHash, row) !== row.hash) return fail(row, 'hash does not match the row')
+    prev = row
   }
-  const lastSeq = expectedSeq - 1
-  return { ok: true, checked, unsealed, lastSeq, lastHash: prevHash || null, broken: null }
+  return {
+    ok: true,
+    checked,
+    unsealed,
+    whole,
+    lastSeq: prev ? prev.seq : 0,
+    lastHash: prev ? prev.hash : null,
+    broken: null,
+  }
 }
 
 function main(argv) {
-  const source = argv[2]
+  const args = argv.slice(2)
+  const filtered = args.includes('--filtered')
+  const source = args.find(a => a !== '--filtered')
   if (!source) {
-    process.stderr.write('usage: node scripts/verify-audit-export.mjs <export.jsonl | ->\n')
+    process.stderr.write(
+      'usage: node scripts/verify-audit-export.mjs [--filtered] <export.jsonl | ->\n'
+    )
     return 2
   }
   let rows
@@ -117,10 +161,13 @@ function main(argv) {
     process.stderr.write(`cannot read ${source} as JSON Lines: ${error.message}\n`)
     return 2
   }
-  const result = verifyRows(rows)
+  const result = verifyRows(rows, { filtered })
   if (result.ok) {
+    const how = result.whole
+      ? `verified through seq ${result.lastSeq}`
+      : `verified one by one (a filtered export: gaps between rows are not checked; last seq ${result.lastSeq})`
     process.stdout.write(
-      `ok: ${result.checked} sealed row(s) verified through seq ${result.lastSeq}` +
+      `ok: ${result.checked} sealed row(s) ${how}` +
         (result.lastHash ? ` (hash ${result.lastHash})` : '') +
         `; ${result.unsealed} unsealed\n`
     )

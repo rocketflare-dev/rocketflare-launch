@@ -10,7 +10,9 @@
  *
  * **Filters** (`auditExportQuerySchema`): `appId`; `action`, the action or anything beneath it, as
  * `GET /api/audit` reads it; `from`/`to`, the half-open range `from ≤ at < to`. A filtered export
- * is still one row per event with its own `seq`/`hash`, but it is not a whole chain.
+ * is still one row per event with its own `seq`/`prevHash`/`hash`, but it is not a whole chain:
+ * each sealed row re-derives from its own `prevHash`, and links are checkable where rows are
+ * consecutive.
  *
  * **Formats**:
  * - JSON Lines: one `auditExportRowSchema` object per line, keys in `EXPORT_COLUMNS` order, `at`
@@ -33,6 +35,7 @@ export const AUDIT_EXPORT_PAGE = 500
 /** The column order of both formats. */
 export const EXPORT_COLUMNS = [
   'seq',
+  'prevHash',
   'hash',
   'id',
   'tenantId',
@@ -89,7 +92,12 @@ export async function* auditExportPages(
   let afterSeq = 0
   while (afterSeq < through) {
     const page = await db
-      .select({ seq: auditChain.seq, hash: auditChain.hash, event: auditEvents })
+      .select({
+        seq: auditChain.seq,
+        prevHash: auditChain.prevHash,
+        hash: auditChain.hash,
+        event: auditEvents,
+      })
       .from(auditChain)
       .innerJoin(auditEvents, eq(auditEvents.id, auditChain.auditEventId))
       .where(
@@ -103,7 +111,12 @@ export async function* auditExportPages(
       .orderBy(asc(auditChain.seq))
       .limit(pageSize)
     if (page.length > 0) {
-      yield page.map(r => ({ seq: Number(r.seq), hash: r.hash, ...toAuditEvent(r.event) }))
+      yield page.map(r => ({
+        seq: Number(r.seq),
+        prevHash: r.prevHash,
+        hash: r.hash,
+        ...toAuditEvent(r.event),
+      }))
     }
     const last = page.at(-1)
     if (!last || page.length < pageSize) break
@@ -142,7 +155,7 @@ export async function* auditExportPages(
       .orderBy(asc(auditEvents.at), asc(auditEvents.id))
       .limit(pageSize)
     if (page.length > 0) {
-      yield page.map(r => ({ seq: null, hash: null, ...toAuditEvent(r) }))
+      yield page.map(r => ({ seq: null, prevHash: null, hash: null, ...toAuditEvent(r) }))
     }
     const last = page.at(-1)
     if (!last || page.length < pageSize) break
