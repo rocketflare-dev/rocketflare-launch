@@ -116,7 +116,17 @@ with fast timers, recording checkpoint/ship fakes — and drive `run` with
 
 `GrantPushWorkflow` (`GRANT_PUSH_WORKFLOW`, `launch-grant-push[-staging]`) delivers one
 `grant_pushes` row; params `GrantPushParams` (`{ tenantId, pushId }`, `@launch/shared/launch-grants`),
-instance id = the push id (`<pushId>-rN` on a retry). Shape (slice 5c): `plan` (materialise
-`grant_push_targets`, an idempotent insert) → `push#N` (up to `GRANT_PUSH_BATCH` targets per step
-through the `GrantBacking`, skipping succeeded targets and grants already on a newer version) →
-`finish`. Values are opened inside a step and never returned. From 5a `run` throws `NotWiredError`.
+instance id = the push id (`<pushId>-rN` on a retry — `retryPush`). Shape: `plan` (the push
+`running`; materialise `grant_push_targets`, an idempotent insert) → `push#N` (targets
+`N*GRANT_PUSH_BATCH…` in id order through the `GrantBacking`; a succeeded/skipped target is never
+touched again, a grant already on a newer version is skipped) → `finish` (counts, status, retire the
+replaced versions when a rotation reached everyone, audit, notify) → `fail` only when a step threw
+past `PIPELINE_STEP_CONFIG`'s retries (the push `failed`, its active slot released). The bodies are
+`services/grants/push-steps.ts`; the class opens one DB client and one `createStepRealtime` per
+step and settles the nudges before the step returns. A target's failure is caught and recorded (the
+push ends `partial`), so a vendor error never retries a whole batch. Values are opened inside
+`push#N`, scrubbed from every error, and never returned — a step returns counts.
+
+Tests (`tests/api/grant-push-workflow.test.ts`) set `workflow.overrides = { backing }` — a
+`WorkerSecretsBacking` whose client has `cloud.fetch`, or a `LocalGrantBacking` — and drive `run`
+with `createFakeWorkflowStep()`, asserting the step names.

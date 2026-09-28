@@ -46,6 +46,11 @@
  *   the completion jwt); `…/versions` (multipart, like a script) → `{ id }`; `…/deployments
  *   {strategy:'percentage', versions:[…100]}`; `PUT …/schedules [{cron}]`; `PATCH
  *   …/script-settings` (JSON).
+ * - Copying the live version (P5, a grant replacing a plain var — the `wrangler versions secret
+ *   put` path): `GET …/deployments` lists NEWEST first (the first is the one serving),
+ *   `GET …/versions/{id}` → `{ id, metadata, resources: { bindings, script, script_runtime } }`
+ *   (a `secret_text` binding carries no text), and `GET …/content/v2?version={id}` answers the
+ *   version's modules as `multipart/form-data`, the main module named by `cf-entrypoint`.
  */
 
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
@@ -192,6 +197,19 @@ export interface CloudflareVersion {
 export interface CloudflareDeployment {
   id: string
   versions?: { version_id: string; percentage: number }[]
+}
+
+/** `GET …/versions/{id}`: what a version binds and runs with. Secrets come without their text. */
+export interface CloudflareVersionDetail extends CloudflareVersion {
+  resources?: {
+    bindings?: Record<string, unknown>[]
+    script?: { etag?: string; handlers?: string[]; main_module?: string }
+    script_runtime?: {
+      compatibility_date?: string
+      compatibility_flags?: string[]
+      usage_model?: string
+    }
+  }
 }
 
 /** `assets-upload-session`: the files Cloudflare lacks, grouped into buckets, and the session jwt. */
@@ -621,6 +639,67 @@ export class CloudflareClient {
         },
       }
     )
+  }
+
+  /** The script's deployments, NEWEST first — the first is the one serving traffic. */
+  async listDeployments(accountId: string, scriptName: string): Promise<CloudflareDeployment[]> {
+    const result = await this.get<{ deployments?: CloudflareDeployment[] }>(
+      `/accounts/${enc(accountId)}/workers/scripts/${enc(scriptName)}/deployments`
+    )
+    return result?.deployments ?? []
+  }
+
+  /** One version's metadata and bindings (`secret_text` without its text). */
+  getVersion(
+    accountId: string,
+    scriptName: string,
+    versionId: string
+  ): Promise<CloudflareVersionDetail> {
+    return this.get(
+      `/accounts/${enc(accountId)}/workers/scripts/${enc(scriptName)}/versions/${enc(versionId)}`
+    )
+  }
+
+  /**
+   * One version's code: the modules as `multipart/form-data` and the main module's name
+   * (`cf-entrypoint`) — what a copy of the version re-uploads.
+   */
+  async getVersionContent(
+    accountId: string,
+    scriptName: string,
+    versionId: string
+  ): Promise<{ mainModule: string | null; modules: WorkerModule[] }> {
+    const doFetch = this.opts.fetch ?? fetch
+    const path = `/accounts/${enc(accountId)}/workers/scripts/${enc(scriptName)}/content/v2?version=${enc(versionId)}`
+    const res = await doFetch(`${this.opts.apiBase ?? CLOUDFLARE_API_BASE}${path}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${this.apiToken}` },
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      const envelope = (await res.json().catch(() => ({}))) as Envelope<unknown>
+      const message =
+        (envelope.errors ?? [])
+          .map(e => [e.code, e.message].filter(Boolean).join(': '))
+          .filter(Boolean)
+          .join('; ') || `Cloudflare ${res.status}`
+      throw new CloudflareApiError(res.status, message, path)
+    }
+    const form = await res.formData()
+    const modules: WorkerModule[] = []
+    for (const [name, value] of form.entries()) {
+      if (typeof value === 'string') {
+        modules.push({ name, content: value })
+      } else {
+        const file = value as File
+        modules.push({
+          name: file.name || name,
+          content: new Uint8Array(await file.arrayBuffer()),
+          ...(file.type ? { contentType: file.type } : {}),
+        })
+      }
+    }
+    return { mainModule: res.headers.get('cf-entrypoint'), modules }
   }
 
   /** Replace the script's cron triggers (`[]` clears them). */

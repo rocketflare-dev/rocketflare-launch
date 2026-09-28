@@ -20,17 +20,37 @@
  * `overrides` is for tests (a backing, the clock). Exported from `src/worker.ts`, never from
  * `api/index.ts`.
  *
- * **Slice 5c owns this file.** From 5a it is a stub whose `run` throws `NotWiredError`.
+ * The bodies are `services/grants/push-steps.ts`. A step that throws past its retries ends in
+ * `fail` (the push `failed`, its active slot released, Retry offered) and the run RETURNS — the
+ * row, not the instance status, is what the resource page and the retry route read.
+ *
+ * **Slice 5c owns this file.**
  */
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers'
 import type { GrantPushParams, GrantPushStatus } from '@launch/shared/launch-grants'
-import { type GrantBacking, NotWiredError } from '../services/grants/types'
+import { loadConfig } from '../../config'
+import type { Database } from '../../db/client'
+import { createStepRealtime } from '../services/agents/runtime'
+import {
+  batchCount,
+  failPush,
+  finishPush,
+  type PushStepDeps,
+  planPush,
+  pushBatch,
+} from '../services/grants/push-steps'
+import type { GrantBacking } from '../services/grants/types'
 import type { AppBindings } from '../types'
+import { loggerFor } from '../utils/core/logger'
+import { withStepDatabase } from './agent-run'
+import { type LooseStep, PIPELINE_STEP_CONFIG } from './app-launch'
 
 /** What the tests hand the class instead of the configured backing. */
 export interface GrantPushWorkflowOverrides {
   backing?: GrantBacking
   now?: () => Date
+  /** Vendor calls (the Cloudflare backing) go through this — FakeCloud in tests. */
+  fetch?: typeof fetch
 }
 
 export interface GrantPushOutcome {
@@ -42,10 +62,44 @@ export class GrantPushWorkflow extends WorkflowEntrypoint<AppBindings, GrantPush
   /** Tests only — see the header. */
   overrides: GrantPushWorkflowOverrides = {}
 
-  async run(
-    _event: WorkflowEvent<GrantPushParams>,
-    _step: WorkflowStep
-  ): Promise<GrantPushOutcome> {
-    throw new NotWiredError('GrantPushWorkflow.run', '5c')
+  async run(event: WorkflowEvent<GrantPushParams>, step: WorkflowStep): Promise<GrantPushOutcome> {
+    const params = event.payload
+    const env = this.env
+    const cfg = loadConfig(env)
+    const logger = loggerFor(cfg, { handler: 'workflow', workflow: 'grant-push', ...params })
+    const run = <T>(name: string, body: (d: PushStepDeps) => Promise<T>): Promise<T> =>
+      (step as unknown as LooseStep).do(name, PIPELINE_STEP_CONFIG, () =>
+        withStepDatabase(env, cfg, async (db: Database) => {
+          const { realtime, settle } = createStepRealtime(env, logger)
+          try {
+            return await body({
+              db,
+              env,
+              cfg,
+              logger,
+              realtime,
+              ...(this.overrides.backing ? { backing: this.overrides.backing } : {}),
+              ...(this.overrides.now ? { now: this.overrides.now } : {}),
+              ...(this.overrides.fetch ? { fetch: this.overrides.fetch } : {}),
+            })
+          } finally {
+            await settle()
+          }
+        })
+      ) as Promise<T>
+
+    try {
+      const plan = await run('plan', d => planPush(d, params))
+      if (!plan.go) return { pushId: params.pushId, status: 'failed' }
+      for (let n = 0; n < batchCount(plan.total); n++) {
+        await run(`push#${n}`, d => pushBatch(d, params, n))
+      }
+      const done = await run('finish', d => finishPush(d, params))
+      return { pushId: params.pushId, status: done.status }
+    } catch (err) {
+      logger.error({ err }, 'grant-push: a step failed past its retries')
+      await run('fail', d => failPush(d, params))
+      return { pushId: params.pushId, status: 'failed' }
+    }
   }
 }

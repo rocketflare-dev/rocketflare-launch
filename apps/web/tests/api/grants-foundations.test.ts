@@ -18,9 +18,7 @@ import { encrypt } from '@/api/auth/oauth-encryption'
 import { dispatchScheduled } from '@/api/scheduled'
 import { open } from '@/api/services/approvals/engine'
 import { kindHandler } from '@/api/services/approvals/kinds'
-import { startPush } from '@/api/services/grants/push'
 import { loadResource } from '@/api/services/grants/resources'
-import { revokeGrant } from '@/api/services/grants/revoke'
 import { openValues, sealValues } from '@/api/services/grants/sealed'
 import {
   dueForExpiry,
@@ -28,7 +26,7 @@ import {
   grantsSweep,
   rotationCandidates,
 } from '@/api/services/grants/sweep'
-import { NotWiredError, requireGrantPushWorkflow } from '@/api/services/grants/types'
+import { requireGrantPushWorkflow } from '@/api/services/grants/types'
 import { activeVersion } from '@/api/services/grants/values'
 import { deleteGroup, deleteGroupType } from '@/api/services/groups'
 import { GrantPushWorkflow } from '@/api/workflows/grant-push'
@@ -351,16 +349,6 @@ describe('the P5 mounts', () => {
     expect((await request('/api/shared-resources?archived=maybe', { headers })).status).toBe(400)
     expect((await request('/api/shared-resources')).status).toBe(401)
   })
-
-  it('the routes 5b–5e fill are mounted but register nothing yet (a JSON 404)', async () => {
-    const { tenant, admin, resource } = await seedWorld()
-    const headers = sessionCookieHeader(await createTestSession(db, admin.id, tenant.id))
-    for (const [method, url] of [['GET', `/api/shared-resources/${resource.id}/pushes`]] as const) {
-      const res = await request(url, { method, headers })
-      expect(res.status, `${method} ${url}`).toBe(404)
-      expect(res.headers.get('content-type')).toContain('application/json')
-    }
-  })
 })
 
 describe('GRANT_PUSH_WORKFLOW', () => {
@@ -380,7 +368,7 @@ describe('GRANT_PUSH_WORKFLOW', () => {
 })
 
 describe('the grants cron', () => {
-  it('is registered and harmless until 5c fills it', async () => {
+  it('is registered and runs clean', async () => {
     const ctx = createExecutionContext()
     const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
       '*/5 * * * *': [grantsSweep],
@@ -474,23 +462,5 @@ describe('the engine and the grant.request kind', () => {
         },
       } as never)
     ).toBe('M365 for shop (production)')
-  })
-})
-
-describe('the stubs before their slices', () => {
-  it('fail by name, pointing at the slice that builds them', async () => {
-    const env = createTestEnv()
-    const deps = approvalDeps(db, env)
-    const viewer = {} as never
-    const cases: [() => unknown, RegExp][] = [
-      [() => startPush(deps, {} as never), /push\.startPush .*5c/],
-      [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
-      [() => new GrantPushWorkflow({} as never, env).run({} as never, {} as never), /run .*5c/],
-    ]
-    for (const [call, message] of cases) {
-      const error = await caught(call)
-      expect(error, String(message)).toBeInstanceOf(NotWiredError)
-      expect(String((error as Error).message)).toMatch(message)
-    }
   })
 })
