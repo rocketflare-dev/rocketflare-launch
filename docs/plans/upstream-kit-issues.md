@@ -1,8 +1,9 @@
-# Upstream kit issues found while building P2
+# Upstream kit issues found while building P2 and P3
 
 Launch was seeded from the Rocketflare starter kit **0.15.0** (commit
 `c7fd5dfbf9cfbc197c60f1993f18d524ec28bd66`). These are the kit and plugin problems we hit while
-building P2 ("create an app"). They are collected here to report upstream.
+building P2 ("create an app") and P3 (coding sessions, items 10-11). They are collected here to
+report upstream.
 
 Every item was checked against the kit source at that commit (`rocketflare-dev/rocketflare`,
 tag `0.15.0`) or the plugins repo (`rocketflare-dev/rocketflare-plugins`, tag `3.4.1`). Line
@@ -24,6 +25,8 @@ Config tests run with `pnpm --dir apps/web exec vitest run --project config <fil
 | 7 | Two kit apps on one host share the `__Host-session` cookie | rocketflare | Not filed |
 | 8 | Analytics plugin points at `docs/ADAPTING.md` §2 for something §2 no longer covers | rocketflare-plugins | Not filed |
 | 9 | `docs/DEPLOYER.md` does not say what a version upload leaves out | rocketflare | Not filed |
+| 10 | Bootstrap refuses to run as root, with no opt-out for a container | rocketflare | Not filed |
+| 11 | `--driver neon --db-url` refuses any host but `*.neon.tech`, even with `NEON_LOCAL_PROXY` | rocketflare | Not filed |
 
 Related issues already filed, not repeated below:
 
@@ -408,5 +411,76 @@ the version upload, and when:
 **Launch workaround.** A placeholder Worker applies the DO migrations; Launch registers workflows
 and queue consumers itself; `activate` applies the schedules. A later build with a new migration
 tag is refused with a clear error.
+
+**Status.** Not filed.
+
+---
+
+## 10. Bootstrap refuses to run as root, with no opt-out for a container
+
+**Where.** `scripts/bootstrap.mjs` lines 854-857:
+
+```js
+if (typeof os.userInfo === 'function' && os.userInfo().uid === 0) {
+  process.stderr.write('bootstrap: refusing to run as root — run as your own user\n')
+```
+
+There is no flag or environment variable that skips it.
+
+**What goes wrong.** The check protects a laptop (a root-owned `node_modules` or `.dev.vars`), but
+a container is a different case: there the container is the isolation boundary and everything
+runs as root. Launch P3 runs the kit's bootstrap inside a Cloudflare Sandbox container (the base
+image `cloudflare/sandbox:0.12.10` runs commands as root) to migrate and seed each coding
+session's database, and the bootstrap exits there before doing anything. A CI job in a root
+container (a common Docker default) hits the same wall.
+
+**Repro.** In any container running as root, with the kit at `0.15.0` and `pnpm install` done:
+
+```bash
+node scripts/bootstrap.mjs --db-url postgres://u:p@db:5432/app --driver postgres --no-dev --yes
+# bootstrap: refusing to run as root — run as your own user
+```
+
+**Suggested fix.** Keep the refusal on a workstation, but allow an explicit opt-out: a
+`--allow-root` flag (or `ROCKETFLARE_ALLOW_ROOT=1`), documented for containers and CI.
+
+**Launch workaround.** The session runs the bootstrap with `node --import <preload>`, where the
+preload makes `os.userInfo()` report uid 1000 (`NOT_ROOT_PRELOAD` in
+`apps/web/src/api/services/sessions/rocketflare-dev.ts`). Everything the bootstrap starts still
+runs as root.
+
+**Status.** Not filed.
+
+---
+
+## 11. `--driver neon --db-url` refuses any host but `*.neon.tech`, even with `NEON_LOCAL_PROXY`
+
+**Where.** `scripts/lib/bootstrap-lib.mjs` lines 480-485 (the check) and 503-509
+(`isNeonDatabaseUrl`, which is `hostname.endsWith('.neon.tech')`).
+
+**What goes wrong.** The `neon` driver can reach a plain Postgres through the kit's own local Neon
+proxy (`NEON_LOCAL_PROXY`, which `pnpm dev:db:up --neon` starts) — the error message itself says
+so ("or to the local proxy in front of the Docker database"). But the check looks only at the URL's
+host, so a local database URL is refused with `--driver neon` whether or not `NEON_LOCAL_PROXY` is
+set. There is then no way to bootstrap an app on the `neon` driver against a local database from
+the command line. Launch needs exactly that: a local coding session's app is on the `neon` driver
+(as it is deployed) and its database is on the laptop's Postgres, behind the proxy.
+
+**Repro.** With the kit at `0.15.0`:
+
+```bash
+NEON_LOCAL_PROXY=http://localhost:4444 node scripts/bootstrap.mjs \
+  --db-url postgres://u:p@localhost:5432/app --driver neon --no-dev --yes
+# --driver neon needs a Neon --db-url (*.neon.tech): ...
+```
+
+(Reasoned from the code, not run here.)
+
+**Suggested fix.** Accept any host when `NEON_LOCAL_PROXY` is set (the proxy routes by database,
+not host), or check for the proxy instead of the host.
+
+**Launch workaround.** A local session's database URL uses the host `launch-local.neon.tech`,
+which is never resolved: `NEON_LOCAL_PROXY` sends every query to the proxy
+(`LOCAL_NEON_HOST` in `apps/web/src/api/services/sessions/db/local-session-db.ts`).
 
 **Status.** Not filed.

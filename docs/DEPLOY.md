@@ -219,9 +219,16 @@ needs, beyond the bindings above:
   stable packages default it to `false`. The model key and the GitHub token are injected by the
   outbound handlers IN THIS WORKER — the sandbox never holds either.
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
-  running containers and cuts off a running turn (S7 finding 8). Until slice 3b lands the procedure
-  (`POST /api/admin/sessions/drain` → deploy → `/undrain`, the Sessions admin page), no session
-  runs, so there is nothing to drain; this section is where the steps will live.
+  running containers and cuts off a running turn (S7 finding 8). The steps:
+  1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409
+     `sessions_paused`, and every live session is woken to checkpoint (commit + push + transcript
+     to R2) and suspend; a running turn finishes first.
+  2. Wait until Admin → Sessions shows no `ready` / `working` / `booting` session.
+  3. Deploy.
+  4. **Undrain** (`POST /api/admin/sessions/undrain`). People resume their own sessions (a message
+     or Resume boots them again from their branch).
+
+  A turn a rollout cuts off anyway is recorded `turn.interrupted` and the session goes `suspended`.
 - **Capacity.** `max_instances` (10) caps live sessions across the deployment, and each app's Neon
   project caps its branches (10 on Launch, 25 on Scale) against `maxConcurrentPerApp` (3).
 
@@ -234,6 +241,7 @@ needs, beyond the bindings above:
 |---|---|---|---|
 | `0 4 * * *` | `pruneExpired`, `pruneAiSpans` | deletes expired sessions, consumed/expired magic links, invitations older than 30 days; then `ai_spans` older than `OBSERVABILITY_SPAN_RETENTION_DAYS` (14), one DELETE per tenant (D32) | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=0+4+*+*+*"` |
 | `*/5 * * * *` | `healthPoll` (Launch, spec/06) | polls `/api/health` + `/api/ready` of every registered app environment, records the check, audits a status change, prunes checks older than 7 days; on demand, `POST /api/apps/:id/health-check` ("Check now") | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=*/5+*+*+*+*"` |
+| `*/5 * * * *` | `sessions.expire`, `sessions.checks` (Launch P3) | ends a coding session suspended longer than its policy's `suspendedExpiryHours` (a backstop: its Workflow's own wait normally does it); refreshes the CI of shipped sessions' PRs that are pending, unread, or `none` within an hour of the ship | same as above |
 | `15 * * * *` | `analytics.refreshFactTables` (the analytics PLUGIN, D31) | every registered fact table, per tenant, DELETE+INSERT in one transaction; per-tenant failures collected, logged as a warning, never abort the run. The expression is the plugin's `crons` declaration and the task is `ServerPlugin.scheduledTasks` — **a task under an expression no toml declares simply never runs** | `curl "http://localhost:3001/cdn-cgi/local/scheduled?cron=15+*+*+*+*"` — or, for one organisation, `launch analytics refresh-facts` |
 
 Launch P2 (creating apps) adds **no cron of its own**. The crons an APP runs are the app's: the

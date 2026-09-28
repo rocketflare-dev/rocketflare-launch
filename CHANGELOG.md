@@ -2,12 +2,36 @@
 
 ## Unreleased
 
-- P3 coding-session UI and CLI (slice 3e): the session page (`/apps/:slug/sessions/:id` — chat
+- Coding sessions (P3): "Start session" on an app boots a sandbox container with the app's repo on
+  a `session/<short>` branch and its own database (a Neon branch of the app's `dev`, prepared by
+  the first session), runs the kit's bootstrap and dev server, and then runs each message as a
+  headless Claude Code turn whose text and tool calls stream into the chat. Every turn is
+  committed and pushed; an idle session suspends after 30 minutes (checkpointed, container
+  destroyed) and resumes where it left off; a suspended one ends after 24 hours; a turn can be
+  cancelled; a session can be ended at any time, which deletes its container and database.
+- Session preview: the app running in the session is shown beside the chat through Launch itself,
+  on a per-session host that needs a short-lived grant from the session page (no public tunnel);
+  it reloads after every turn and only the creator, the app's owners and admins can open it.
+- Model proxy and budgets: the sandbox never holds the Anthropic key — Launch adds it on the way
+  out, allows only the policy's model, and meters every call into `ai_usage` against the session.
+  Sessions have a per-session cap ($10) and a per-app monthly cap ($200, overridable per app); a
+  session over its cap is blocked until an app owner or admin extends it, and a call over budget
+  is refused before it reaches Anthropic.
+- Ship: "Ship" runs the app's gate (`pnpm lint && pnpm typecheck && pnpm test`) in the session,
+  lets Claude fix failures, re-runs the gate itself, and only when it is green opens a pull
+  request from `session/<short>` with the title and description Claude wrote; the PR's CI is
+  shown on the session and refreshed every 5 minutes until it settles. Shipping ends the session.
+- Drain: Admin → Sessions → Drain pauses new sessions and suspends every live one (checkpointed)
+  before a deploy that changes the session image; Undrain lets people start and resume again.
+- CLI: `launch sessions start|say --follow|ship --wait|end|ls|preview-url` — start a session,
+  send a message and follow the turn, ship and wait for CI, end, list an app's sessions, and print
+  a preview link.
+- P3 coding-session UI (slice 3e): the session page (`/apps/:slug/sessions/:id` — chat
   with one-line tool rows and a keyboard-first composer beside a live, grant-gated preview that
   reloads after every turn; header with status, cost against the cap, Ship / End / Resume and
   Extend budget; the ship panel with gate attempts, the PR and its CI; boot progress), a
-  "Coding sessions" card with Start session on the app page, Admin → Sessions with Drain /
-  Undrain, and `launch sessions start|say --follow|ship --wait|end|ls|preview-url`.
+  "Coding sessions" card with Start session on the app page, and Admin → Sessions with Drain /
+  Undrain.
 - P3 foundations (slice 3a) for coding sessions: the `sessions` and `session_events` tables,
   `ai_usage.session_id`, the app's session database and monthly budget columns (one migration);
   the `SESSION_SANDBOX` container (`@cloudflare/sandbox` 0.12.10, a placeholder image) and

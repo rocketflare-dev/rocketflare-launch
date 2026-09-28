@@ -8,7 +8,8 @@ control of credentials, sign-in, approvals and audit.
 
 > Status: **P0 done; P1 built locally, not yet deployed: the app registry, health, the OIDC issuer,
 > setup and audit. P2 (create an app) built and tested locally against a simulated cloud; not yet
-> deployed** (September 2026).
+> deployed. P3 (coding sessions) built and tested locally (fakes + a real local container); not
+> yet deployed** (September 2026).
 > Results: [spikes/SUMMARY.md](spikes/SUMMARY.md).
 
 ## Why

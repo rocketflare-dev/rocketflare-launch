@@ -54,14 +54,14 @@ pnpm dev:db:up --neon && pnpm db:migrate && pnpm seed        # note the API key 
 #    ANTHROPIC_API_KEY=<only if you want real turns>
 
 # 3. The git server, and an app whose repo lives in it (here: the kit itself at a tag).
-node scripts/sessions-local-git.mjs serve &                   # ~/.launch/sessions-git, :9420
-pnpm --filter @launch/web sessions:local-app --slug demo --from /path/to/rocketflare --ref 0.15.0
+pnpm sessions:local-git serve &                              # ~/.launch/sessions-git, :9420
+pnpm sessions:local-app --slug demo --from /path/to/rocketflare --ref 0.15.0   # an ABSOLUTE --from
 
 # 4. Launch. The first start builds the session image with Docker (below).
 pnpm dev
 
 # 5. One session, as a person would drive it: boot, a message, the gated preview, end.
-node scripts/sessions-smoke.mjs --app demo --key <api key> \
+pnpm sessions:smoke --app demo --key <api key> \
   [--message "Change the Home page heading to 'Hello from Launch'"] [--ship] [--keep]
 ```
 
@@ -70,7 +70,7 @@ still exercised. `--keep` leaves the session up and prints its URL.
 
 Then check what the plan asks for:
 
-- the pushed branch: `node scripts/sessions-local-git.mjs log local/demo session/<short>`;
+- the pushed branch: `pnpm sessions:local-git log local/demo session/<short>`;
 - the `ai_usage` rows of a session with a turn (`session_id`);
 - the container is gone after End: `docker ps | grep workerd`;
 - no key in the container: `docker exec <container> env | grep -c sk-ant` → 0;
@@ -126,9 +126,10 @@ Deployed containers are native and get neither variable. colima with Rosetta (`-
 ## Gotchas
 
 - **Editing `apps/web/src` while a session boots loses it.** `wrangler dev` reloads the Worker, and
-  a reload drops every Workflow instance mid-step; the row stays `booting`. Ending it needs the
-  instance (a resume or a message restarts a lost instance; an end or a turn from 3c's routes
-  does not yet). Mark it failed by hand and remove its `workerd-*` containers.
+  a reload drops every Workflow instance mid-step; the row stays `booting`. End it (or send a
+  message, or resume): every route that wakes a session restarts a lost instance from the row
+  (`wakeOrRestart`), and the new instance's `claim` starts the session over from its branch. If
+  its `workerd-*` containers linger, `docker rm -f` them.
 - **`pnpm dev:stop` can leave a container's proxy sidecar** for a few seconds; `docker ps | grep
   workerd` and `docker rm -f` if it lingers.
 - **The kit's bootstrap refuses to run as root, and wants `--driver neon` URLs on `*.neon.tech`**

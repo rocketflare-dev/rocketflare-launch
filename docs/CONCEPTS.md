@@ -452,7 +452,8 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `~/.launch/config.json` (0600); `LAUNCH_API_KEY`/`LAUNCH_URL` override it for CI.
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
-case to `apps/evals/datasets/` (D33, both admin+). Exit codes: 0 ok · 1 error · 2 not logged in ·
+case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
+drives Launch P3 coding sessions (§18.14). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
 Detail: `.claude/rules/cli.md`.
@@ -710,7 +711,8 @@ no MCP client; directory sync does not provision kit users or groups (it only ma
 What makes this copy Launch rather than the kit: a registry of the company's Rocketflare apps, an
 OIDC issuer they sign in through, the sealed platform credentials Launch acts with, and an
 append-only audit log (spec/03–06, 08; the build plans are `docs/plans/p1-foundation.md` and
-`docs/plans/p2-create-app.md`). From P2 it also creates apps (§18.5–18.8).
+`docs/plans/p2-create-app.md`). From P2 it also creates apps (§18.5–18.8), and from P3 it runs
+coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESSIONS-LOCAL.md`).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `packages/shared/src/launch-{apps,oidc,setup,audit}.ts`.
 
@@ -921,3 +923,146 @@ app tears down too. It ends `archived` with `archived_at` and `app.archived`; re
 **Known gaps:** an IMPORTED app's teardown only disables its sign-in client — Launch did not create
 its resources and leaves them, and its repo, alone; a deleted repo is gone for good.
 
+### 18.9 Coding sessions: the lifecycle
+
+A session is a container running Claude Code against one app's repo, with a live preview, ending in
+a pull request (spec/07). State lives in Postgres — `sessions` (status, request columns, sealed
+credentials, metering, PR) and `session_events` (the append-only log the page, the CLI and the
+stream read) — and one `SessionWorkflow` instance per session (`workflows/session.ts`, step bodies
+in `services/sessions/steps.ts`) does all the work. **Routes never run anything**: they write a
+request column as a compare-and-set on `status` (`pending_message`, `requested_action` =
+`ship|end|resume`, `cancel_requested_at`) and wake the instance (`SESSION_WAKE_EVENT`, empty
+payload) with `wakeOrRestart` (`lifecycle.ts`) — a lost instance (retention, a `wrangler dev`
+reload) is restarted as `<id>-rN` from the row.
+
+- **Start** (`POST /api/apps/:id/sessions`, `create Session` on an app the caller can read): refused
+  before any write with 503 `sessions_not_configured`, 409 `app_has_no_repo`, `sessions_paused`,
+  `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
+  then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
+- **Boot**: `claim` → `db` (the app's `dev` branch ensured; the first session PREPARES it —
+  migrate + seed — then branches) → `sandbox.start` → `repo` (clone, `session/<short>`,
+  `.claude/settings.local.json`) → `bootstrap` (the kit's bootstrap on the session's own database)
+  → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
+  step writes a `step` event (the page's checklist).
+- **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a suspended
+  session's expiry: end), `turn#N` → `checkpoint#N`, `ship#N`, `suspend#N` (a drain), `resume#N`
+  (boot again with `#K` names, then restore the transcript), `end#N`. A message that arrives while
+  booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
+  the container, delete the database branch, forget the sealed credentials, settle `ended` (a
+  `shipped` or `failed` session keeps its status), audit `session.ended`.
+- **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
+  other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
+- **Expiry** (`sessions.expire`, `*/5`): the backstop for a suspended session whose instance is
+  gone — it asks for `end`, or cleans up inline without `SESSION_WORKFLOW`.
+
+**Known gaps:** proven with fakes (`tests/api/session-e2e.test.ts` and the per-slice suites) and
+booted locally in slice 3b; never deployed. No real model turn or ship has run anywhere — only the
+fake Claude Code output (`claudeStreamJson`, reconstructed from the S7 transcripts). `wrangler dev`
+reloading the Worker drops every Workflow instance mid-step; a later message, resume or end
+restarts it from the row, but a boot in progress is lost until then.
+
+### 18.10 The sandbox and the local backend
+
+`SessionSandbox extends Sandbox` (`@cloudflare/sandbox` 0.12.10 stable, `durable-objects/
+session-sandbox.ts`) with internet off and an allow-list (npm, github.com, codeload,
+api.anthropic.com; `host.docker.internal` when local), `interceptHttps = true` set explicitly, and
+`outboundByHost` handing `api.anthropic.com` and `github.com` to handlers IN LAUNCH'S WORKER. The
+SDK is imported in two files only; everything else talks to `SandboxPort` (`ports.ts`), with
+`SessionDbPort` (Neon branches, or `LocalSessionDb`'s `CREATE DATABASE … TEMPLATE`), `RepoHostPort`
+(GitHub, or the local git server) and `ModelUpstream`, all bound once in `defaultSessionPorts`.
+The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
+Claude Code and a warm pnpm store for kit 0.15.0. The checkout is `/workspace/app` and `$HOME` is
+`/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition).
+The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
+`session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
+10 minutes). `SESSION_BACKEND=local` (development only) swaps where the database, repo and model
+live, not the Workflow or the handlers — procedure and timings in `docs/SESSIONS-LOCAL.md`.
+
+**Known gaps:** the kit's bootstrap refuses root and `--driver neon` URLs off `*.neon.tech`, so the
+session works around both (`NOT_ROOT_PRELOAD`, `launch-local.neon.tech`;
+`docs/plans/upstream-kit-issues.md` 10–11). On an ARM Mac the amd64 image runs under QEMU, where
+Go binaries (esbuild inside tsx, Vite and wrangler) crash in their GC: local sessions run every
+command with `GOGC=off GOMEMLIMIT=1536MiB`, so each wants ~4 GB and two at once in an 8 GB VM are
+OOM-killed. First-start latency, `max_instances`, git through `interceptHttps`, `wss://` to a Neon
+branch and whether a deploy stops running sandboxes are unproven on Cloudflare (plan §5).
+
+### 18.11 Chat, the model proxy and budgets
+
+A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `maxTurnMinutes`)
+checks the budget, claims `ready → working`, writes `user.message` + `turn.start`, and runs
+`claude -p … --resume <id> --output-format stream-json` in the sandbox; `claude-stream.ts` maps
+each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
+events. `cancel_requested_at` is polled every 2 s and kills the process; a rollout is
+`turn.interrupted` and `suspended`. Pushing is disallowed to Claude — Launch commits and pushes.
+The page reads the rows (`GET /:id/events?afterSeq=`, paged by `nextSeq`) and uses
+`GET /:id/agui/stream` (the four run-stream rules; facts with no AG-UI frame travel as the
+`launch.session.event` CUSTOM event, `SESSION_CUSTOM_EVENTS` in `@launch/shared/launch-sessions`)
+only as a cadence.
+
+**The model proxy** (`egress/anthropic.ts`): the sandbox holds only `launch-session-placeholder`.
+The handler finds the session from the platform's `ctx.containerId` (never from the request),
+allows only `POST /v1/messages` and `/count_tokens` on the policy's model, checks the budget (an
+Anthropic-shaped 403 and NO upstream call when over), swaps in the real key (the
+`anthropic_api_key` credential, else `ANTHROPIC_API_KEY`) and meters the SSE or JSON usage into
+`ai_usage` (`session_id`, feature `session`) and the session's totals in one transaction.
+**Budgets**: `maxSessionUsd` (plus any extension) per session and `appMonthlyUsd` (or
+`apps.session_monthly_budget_microcents`) per app, checked at create, before each turn (→
+`blocked`, `budget.reached`, audit `session.budget.reached`) and per call; `POST /:id/budget
+{extraUsd}` (owners and admins, audited `session.budget.extended`) unblocks.
+
+**Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
+the body's end); a model with no price (`estimateCostMicrocents` → null) costs nothing to the
+budget, so the allow-list must name a priced model; the ship turn's prompt is not in the transcript
+(no `user.message`); the proxy's streaming overhead is unmeasured.
+
+### 18.12 The preview gateway
+
+A preview host is `<port>-<shortId>-<token>.<SESSION_PREVIEW_URL domain>`; `worker.ts` sends it to
+`api/preview/gateway.ts` before the Hono app (so no `X-Frame-Options`; `run_worker_first = true`
+keeps `[assets]` from answering `/`). `POST /:id/preview-grant` mints a 60 s HMAC grant (HKDF of
+`OAUTH_ENCRYPTION_KEY`, info `launch-preview`) for that host and person; the iframe loads
+`/__launch/grant?g=…`, which sets the host-only cookie `__Host-launch-preview` (SameSite=None,
+Partitioned; `launch-preview`, Lax, in development) and redirects to `/`. Every later request needs
+the cookie for this host and session (401 otherwise), an ended session is 410, a booting or
+suspended one 503; only :5173 and :8787 are proxied (`SandboxPort.fetch`), with `frame-ancestors
+<APP_URL>` and a status cache of 15 s per isolate. The UI reloads the frame after every turn.
+
+**Known gaps:** a grant is reusable within its 60 s (not single-use); Vite HMR over the WebSocket
+upgrade is untested, locally and deployed; an ended session is served for up to 15 s from the
+status cache; `SameSite=None` cookies inside the iframe are unproven on real browsers and hosts.
+
+### 18.13 Checkpoints, ship and the PR
+
+**Checkpoint** (`checkpoint.ts`, after every turn and before a suspend or end): `git add -A`, a
+commit by Launch with the person as `Co-Authored-By`, `git push origin HEAD:refs/heads/session/
+<short>` through the git handler, and Claude's transcript to R2 (`sessions/<id>/claude.jsonl`) so
+a resume can `--resume`. A failed checkpoint is an `error` event, not a failed session.
+**Ship** (`ship.ts`, step `ship#N`): `ready → shipping`, the `session-ship` prompt as a turn (run
+the gate `pnpm lint && pnpm typecheck && pnpm test`, fix up to 3 times, print `{title, body,
+gatePassed}`), then **Launch runs the gate itself** — only its exit code counts. Red: a `ship.gate`
+event with the output's tail and back to `ready`. Green: a final checkpoint, `openPullRequest`
+(head `session/<short>`, base the default branch), `pr_number`/`pr_url`, `shipped`, `ship.pr`,
+audit `session.shipped` — and the Workflow then cleans up (shipping ends the session). CI
+(`pr_checks`, check runs + combined status) is read at once, on `GET /:id/pr` (at most every
+30 s) and by `sessions.checks` on `*/5` while pending, unread, or `none` within an hour of the
+ship (GitHub has not queued the workflows yet when the PR opens).
+
+**Known gaps:** no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes
+to `session/*` are not set up (only the git handler enforces it); a gate that needs more than the
+sandbox has (a service, a secret) cannot pass; after shipping there is no "keep working" in the UI
+— a new session starts from the default branch unless the API is given `baseRef`.
+
+### 18.14 Drain, the UI and the CLI
+
+**Drain** (`POST /api/admin/sessions/drain`, global admins, Admin → Sessions) sets
+`launch_settings.sessions_paused` (new sessions 409) and wakes every live session, whose
+`inspect#N` checkpoints and suspends it; `/undrain` clears it and people resume their own.
+`docs/DEPLOY.md` makes it a required step before a deploy that touches the image. **UI**: the
+session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
+cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
+"Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start|say
+[--follow]|ship [--wait]|end|ls|preview-url` (§11).
+
+**Known gaps:** a drain wakes live sessions in EVERY organisation (it is about the deployment's
+image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
+drain → deploy → resume rehearsal has not been run.
