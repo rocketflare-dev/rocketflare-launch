@@ -172,7 +172,9 @@ describe('ApprovalPoliciesSettings', () => {
     ) as HTMLElement
     fireEvent.click(within(panel).getByRole('button', { name: /Edit/ }))
     const dialog = screen.getByRole('dialog')
+    // App access defaults to the app's owners and the organisation's admins: untick both.
     fireEvent.click(within(dialog).getByLabelText(/The app’s owners/))
+    fireEvent.click(within(dialog).getByLabelText(/The organisation’s admins/))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     expect(await within(dialog).findByText(/Name at least one approver/)).toBeInTheDocument()
     expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toBeUndefined()

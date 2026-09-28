@@ -16,7 +16,7 @@ import {
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { open } from '@/api/services/approvals/engine'
-import { approvalDecisions, approvalRequests } from '@/db/schema'
+import { approvalDecisions, approvalPolicies, approvalRequests } from '@/db/schema'
 import {
   accessOpen,
   approvalDeps,
@@ -161,7 +161,15 @@ describe('/api/approvals', () => {
     const late = await post(path, headers.admin, { decision: 'reject' })
     expect(await json(late)).toMatchObject({ statusCode: 409, code: 'not_pending' })
 
-    // An admin the policy does not name (app.access is owners only) is not an approver.
+    // An admin a policy does not name is not an approver: an app-scope policy that narrows
+    // app.access to the app's owners (the code default also names admins — P1 parity).
+    await db.insert(approvalPolicies).values({
+      tenantId: tenant.id,
+      kind: 'app.access',
+      scopeType: 'app',
+      scopeId: app.id,
+      approvers: { appOwners: true, admins: false, groupIds: [], userIds: [] },
+    })
     const access = await open(
       deps,
       accessOpen(tenant.id, app.id, (await fixtureCarol(tenant.id)).user)

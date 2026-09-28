@@ -165,8 +165,9 @@ export const DEFAULT_APPROVAL_POLICIES: Record<ApprovalKind, ApprovalPolicy> = {
     expiresAfterMinutes: 7 * MINUTES_PER_DAY,
     autoApproveRole: 'admin',
   },
+  // Owners AND admins: in P1 an organisation admin decided any app's access requests.
   'app.access': {
-    approvers: { appOwners: true, admins: false, groupIds: [], userIds: [] },
+    approvers: { appOwners: true, admins: true, groupIds: [], userIds: [] },
     minApprovals: 1,
     allowSelfApproval: false,
     expiresAfterMinutes: 14 * MINUTES_PER_DAY,

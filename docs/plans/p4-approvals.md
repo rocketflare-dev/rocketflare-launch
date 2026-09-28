@@ -53,7 +53,7 @@ It follows the P1–P3 process:
    | Kind | Approvers | Auto-approve | Expiry |
    |---|---|---|---|
    | `app.create` | admins | `autoApproveRole` = `launch_settings.app_create_role ?? 'admin'` | 7 days |
-   | `app.access` | owners | — | 14 days |
+   | `app.access` | owners + admins (P1 parity; `0024` widens the rows `0023` moved) | — | 14 days |
    | `deploy.production` | owners + admins, N=1, not self | — | 24 h, or the ticket's `expires_at` |
    | `session.budget` | owners + admins | — | the session's `suspendedExpiryHours` |
 

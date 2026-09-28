@@ -169,6 +169,13 @@
       "when": 1790559896277,
       "tag": "0023_launch-p4-approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790562876045,
+      "tag": "0024_launch-p4-access-admins",
+      "breakpoints": true
     }
   ]
 }

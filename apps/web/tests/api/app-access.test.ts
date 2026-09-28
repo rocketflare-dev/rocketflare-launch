@@ -402,6 +402,44 @@ describe('the owner side', () => {
     expect(again.status).toBe(201)
   })
 
+  it('an admin who does not own the app decides too, from the inbox (P1 parity)', async () => {
+    const asker = await newMember()
+    await call('/requests', asker.cookie, { method: 'POST', json: { clientId: client.clientId } })
+    const queue = await json<{ items: { id: string; userId: string }[] }>(
+      await call(`/${app.id}/requests?status=pending`, adminCookie)
+    )
+    const id = queue.items.find(r => r.userId === asker.user.id)?.id ?? ''
+    expect(id).not.toBe('')
+
+    // It waits on the admin (the app.access default names owners AND admins)…
+    const inbox = await json<{ items: { id: string }[] }>(
+      await request(
+        '/api/approvals?box=mine&kind=app.access',
+        { headers: sessionCookieHeader(adminCookie) },
+        { env }
+      )
+    )
+    expect(inbox.items.map(i => i.id)).toContain(id)
+    // …and the admin's approval grants the person.
+    const decided = await request(
+      `/api/approvals/${id}/decide`,
+      { method: 'POST', headers: sessionCookieHeader(adminCookie) },
+      { env, json: { decision: 'approve' } }
+    )
+    expect(decided.status).toBe(200)
+    expect(await json(decided)).toMatchObject({ status: 'approved', canDecide: false })
+    const grants = await db
+      .select()
+      .from(oidcClientGrants)
+      .where(
+        and(
+          eq(oidcClientGrants.clientId, client.row.id),
+          eq(oidcClientGrants.userId, asker.user.id)
+        )
+      )
+    expect(grants).toHaveLength(1)
+  })
+
   it("P1's decide route is gone: 410 with the approval's path for owners, 404 for anyone else", async () => {
     const id = crypto.randomUUID()
     const res = await call(`/${app.id}/requests/${id}/decide`, ownerCookie, {

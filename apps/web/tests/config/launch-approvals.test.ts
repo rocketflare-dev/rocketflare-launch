@@ -98,7 +98,7 @@ describe('policies', () => {
       expiresAfterMinutes: 7 * 24 * 60,
     })
     expect(d['app.access']).toMatchObject({
-      approvers: { appOwners: true, admins: false },
+      approvers: { appOwners: true, admins: true },
       autoApproveRole: null,
       expiresAfterMinutes: 14 * 24 * 60,
     })
@@ -113,11 +113,19 @@ describe('policies', () => {
     })
   })
 
-  it("the P4 migration snapshots exactly app.access's code default onto the moved rows", () => {
-    const sql = readFileSync(path.join(WEB_ROOT, 'migrations/0023_launch-p4-approvals.sql'), 'utf8')
-    const literal = /'(\{"approvers".*?\})'::jsonb/.exec(sql)?.[1]
-    expect(literal).toBeDefined()
-    expect(JSON.parse(literal ?? '{}')).toEqual(DEFAULT_APPROVAL_POLICIES['app.access'])
+  it("the P4 migrations leave exactly app.access's code default on the moved rows", () => {
+    const read = (file: string) => readFileSync(path.join(WEB_ROOT, 'migrations', file), 'utf8')
+    const literalOf = (sql: string) => /'(\{"approvers".*?\})'::jsonb/.exec(sql)?.[1]
+    // 0023 snapshotted the owners-only default it was written with; 0024 widens exactly that
+    // snapshot to owners + admins (P1 parity). Together they must land on today's default.
+    const moved = literalOf(read('0023_launch-p4-approvals.sql'))
+    const widened = read('0024_launch-p4-access-admins.sql')
+    expect(moved).toBeDefined()
+    expect(literalOf(widened)).toBe(moved)
+    expect(widened).toContain(`jsonb_set("policy", '{approvers,admins}', 'true'::jsonb)`)
+    const after = JSON.parse(moved ?? '{}')
+    after.approvers.admins = true
+    expect(after).toEqual(DEFAULT_APPROVAL_POLICIES['app.access'])
   })
 
   it('fills the optional fields, and bounds N and the expiry', () => {

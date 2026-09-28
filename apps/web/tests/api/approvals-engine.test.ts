@@ -124,7 +124,7 @@ async function setTenantPolicy(
 
 describe('open', () => {
   it('snapshots the policy, audits, notifies the approvers (not the requester) and is idempotent', async () => {
-    const { tenant, app, alice, bob, carol, deps, env } = await fixture()
+    const { tenant, app, admin, alice, bob, carol, deps, env } = await fixture()
     const first = await open(deps, accessOpen(tenant.id, app.id, carol))
     expect(first).toMatchObject({ created: true, autoApproved: false })
     expect(first.request).toMatchObject({
@@ -147,16 +147,19 @@ describe('open', () => {
     expect(audit.map(a => a.action)).toEqual(['approval.requested'])
     expect(audit[0]).toMatchObject({ actorUserId: carol.id, appId: app.id, targetType: 'user' })
 
+    // The app's owners and the organisation's admins (app.access's default, P1 parity).
     const asked = await notificationsOf(tenant.id, 'approval_requested')
-    expect(asked.map(n => n.userId).sort()).toEqual([alice.id, bob.id].sort())
+    expect(asked.map(n => n.userId).sort()).toEqual([admin.id, alice.id, bob.id].sort())
     expect(asked[0]?.data).toEqual({ approvalId: first.request.id, kind: 'app.access' })
     expect(asked[0]?.title).toContain('Fake app.access')
 
     const emails = stubs(env).queue.messages.map(
       m => m.body as { type: string; payload: { to: string; link: string } }
     )
-    expect(emails.map(e => e.type)).toEqual(['email.send', 'email.send'])
-    expect(emails.map(e => e.payload.to).sort()).toEqual([alice.email, bob.email].sort())
+    expect(emails.map(e => e.type)).toEqual(['email.send', 'email.send', 'email.send'])
+    expect(emails.map(e => e.payload.to).sort()).toEqual(
+      [admin.email, alice.email, bob.email].sort()
+    )
     expect(emails[0]?.payload.link).toBe(`http://localhost:3001/approvals/${first.request.id}`)
 
     const nudges = stubs(env).hub.broadcasts.filter(b => b.args[0] === 'broadcastToUsers')
@@ -165,7 +168,7 @@ describe('open', () => {
       tenantId: tenant.id,
       payload: { entity: 'approval', id: first.request.id },
     })
-    expect(entity?.args[1]).toEqual(expect.arrayContaining([alice.id, bob.id, carol.id]))
+    expect(entity?.args[1]).toEqual(expect.arrayContaining([admin.id, alice.id, bob.id, carol.id]))
   })
 
   it('caps the expiry at a hard deadline (a deploy ticket expires with its run)', async () => {
@@ -645,10 +648,10 @@ describe('list and count', () => {
     expect(ids(await list(deps, { viewer: aliceView, query: q('requested') }))).toEqual([
       deploy.request.id,
     ])
-    // The admin is an approver of the deploy only (app.access is owners).
-    expect(ids(await list(deps, { viewer: adminView, query: q('mine') }))).toEqual([
-      deploy.request.id,
-    ])
+    // The admin is an approver of both (app.access is owners + admins, P1 parity).
+    expect(ids(await list(deps, { viewer: adminView, query: q('mine') }))).toEqual(
+      [access.request.id, deploy.request.id].sort()
+    )
     expect(ids(await list(deps, { viewer: adminView, query: q('all') }))).toEqual(
       [access.request.id, deploy.request.id].sort()
     )
