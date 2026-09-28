@@ -20,6 +20,7 @@ import {
   claudeTranscriptPath,
   DEV_START_COMMAND,
   DEV_STOP_COMMAND,
+  SESSION_IMAGE_VERSION,
 } from '@/api/services/sessions/rocketflare-dev'
 import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
 import { runTurn } from '@/api/services/sessions/turn'
@@ -79,9 +80,13 @@ interface Harness {
 
 /** A prepared app, a `requested` session, the ports and hooks, the sandbox scripted like a kit app. */
 async function harness(
-  opts: { prepared?: boolean; hooks?: Partial<SessionStepHooks> } = {}
+  opts: {
+    prepared?: boolean
+    hooks?: Partial<SessionStepHooks>
+    env?: Parameters<typeof createTestEnv>[0]
+  } = {}
 ): Promise<Harness> {
-  const env = createTestEnv()
+  const env = createTestEnv(opts.env)
   const cfg = loadConfig(env)
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud, { prepared: opts.prepared ?? true })
@@ -497,9 +502,10 @@ describe('SessionWorkflow: the loop', () => {
       await patch(h.row, { requestedAction: 'end' })
       return WAKE
     })
-    expect(run.names.slice(12, 18)).toEqual([
+    expect(run.names.slice(12, 19)).toEqual([
       'resume#2',
       'sandbox.start#1',
+      'restore.check#1',
       'repo#1',
       'bootstrap#1',
       'dev#1',
@@ -558,6 +564,7 @@ describe('SessionWorkflow: the loop', () => {
       'inspect#3',
       'resume#3',
       'sandbox.start#1',
+      'restore.check#1',
       'repo#1',
       'bootstrap#1',
       'dev#1',
@@ -798,11 +805,12 @@ describe('SessionWorkflow: the loop', () => {
       await patch(h.row, { requestedAction: 'end' })
       return WAKE
     })
-    expect(run.names.slice(0, 8)).toEqual([
+    expect(run.names.slice(0, 9)).toEqual([
       'claim',
       'inspect#0',
       'resume#0',
       'sandbox.start#1',
+      'restore.check#1',
       'repo#1',
       'bootstrap#1',
       'dev#1',
@@ -811,6 +819,162 @@ describe('SessionWorkflow: the loop', () => {
     // The old container was destroyed before starting over.
     expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
     expect((await reload(h.row)).status).toBe('ended')
+  })
+})
+
+describe('SessionWorkflow: workspace backups', () => {
+  /** Idle past the idle window, then past the warm window: the container is cooled (backed up). */
+  const coolThenResume =
+    (h: Harness, between?: () => Promise<void>, after?: () => void) =>
+    async (_wait: RecordedWait, n: number) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) return undefined
+      if (n === 2) {
+        await between?.()
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      after?.()
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    }
+
+  it('the cool backs the workspace up; a cold resume restores it instead of cloning and installing', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    let backup = null as SessionRow['workspaceBackup']
+    let settings: string | undefined
+    const run = await drive(
+      h,
+      coolThenResume(
+        h,
+        async () => {
+          backup = (await reload(h.row)).workspaceBackup
+        },
+        () => {
+          settings = h.sandbox().files.get('/workspace/app/.claude/settings.local.json')
+        }
+      )
+    )
+    expect(backup).toMatchObject({
+      dir: '/workspace/app',
+      headSha: BASE_SHA,
+      imageVersion: SESSION_IMAGE_VERSION,
+    })
+    expect(run.names.slice(15, 22)).toEqual([
+      'resume#3',
+      'sandbox.start#1',
+      'restore.check#1',
+      'restore#1',
+      'bootstrap#1',
+      'dev#1',
+      'transcript#1',
+    ])
+    const sandbox = h.sandbox()
+    expect(sandbox.restores).toEqual([backup?.id])
+    // One clone, one install, one kit bootstrap: the restored workspace needed none of them again.
+    expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
+    expect(sandbox.execs.filter(e => e.command.includes('pnpm install'))).toHaveLength(1)
+    expect(bootstrapSkips(sandbox)).toEqual([''])
+    expect(run.results).toContainEqual(expect.objectContaining({ reused: true, migrated: false }))
+    // The restored checkout's settings came back with it; the dev-server keys were re-written.
+    expect(settings).toContain('git push')
+    // Cleanup deletes the backup and forgets it.
+    expect(sandbox.deletedBackups).toContain(backup?.id)
+    expect((await reload(h.row)).workspaceBackup).toBeNull()
+    const steps = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'step' && (e.data as { key: string }).key === 'restore'
+    )
+    expect(steps.map(e => (e.data as { status: string }).status)).toEqual(['running', 'done'])
+  })
+
+  it('a backup the branch has moved past is not restored: the resume clones', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    const run = await drive(
+      h,
+      coolThenResume(h, async () => {
+        // A later checkpoint (elsewhere) moved the branch head.
+        await patch(h.row, { headSha: 'f'.repeat(40) })
+      })
+    )
+    expect(run.names).toContain('restore.check#1')
+    expect(run.names).not.toContain('restore#1')
+    expect(run.names).toContain('repo#1')
+    expect(h.sandbox().restores).toEqual([])
+  })
+
+  it('a restore that fails falls back to the clone, and the checklist says so', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    const run = await drive(
+      h,
+      coolThenResume(h, async () => {
+        h.sandbox().failNext('restore', new Error('BACKUP_RESTORE_FAILED: unsquashfs exited 1'))
+      })
+    )
+    expect(run.names.slice(16, 20)).toEqual([
+      'sandbox.start#1',
+      'restore.check#1',
+      'restore#1',
+      'repo#1',
+    ])
+    expect(h.sandbox().execs.filter(e => e.command.includes('git init'))).toHaveLength(2)
+    const restore = (await listSessionEvents(db, h.row.tenantId, h.row.id)).find(
+      e =>
+        e.type === 'step' &&
+        (e.data as { key: string; status: string }).key === 'restore' &&
+        (e.data as { status: string }).status === 'done'
+    )
+    expect((restore?.data as { detail?: string } | undefined)?.detail).toMatch(/^Cloning instead: /)
+    expect((await reload(h.row)).status).toBe('ended')
+  })
+
+  it('a drain backs up before it destroys; a presigned backup widens the allow-list only while it runs', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => {
+      sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` })
+      sandbox.backupHosts = ['acct.r2.cloudflarestorage.com']
+    })
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        paused.value = true
+        return WAKE
+      }
+      return undefined
+    })
+    const sandbox = h.sandbox()
+    expect(sandbox.backupAllowedHosts).toHaveLength(1)
+    expect(sandbox.backupAllowedHosts[0]).toContain('acct.r2.cloudflarestorage.com')
+    expect(sandbox.backupAllowedHosts[0]?.some(host => host.includes('neon'))).toBe(true)
+    expect(sandbox.allowedHosts).not.toContain('acct.r2.cloudflarestorage.com')
+  })
+
+  it('a backup that fails never fails the suspend', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        h.sandbox().failNext('backup', new Error('BACKUP_CREATE_FAILED'))
+        paused.value = true
+        return WAKE
+      }
+      expect((await reload(h.row)).status).toBe('suspended')
+      return undefined
+    })
+    expect(run.names).toContain('suspend#1')
+    expect((await reload(h.row)).workspaceBackup).toBeNull()
+  })
+
+  it('with backups off, nothing is backed up', async () => {
+    const h = await harness({ env: { SESSION_WORKSPACE_BACKUP: 'off' } })
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    const run = await drive(h, coolThenResume(h))
+    expect(h.sandbox().backups.size).toBe(0)
+    expect(run.names).toContain('repo#1')
   })
 })
 

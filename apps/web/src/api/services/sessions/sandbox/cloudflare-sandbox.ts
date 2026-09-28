@@ -37,6 +37,9 @@ import { getSandbox } from '@cloudflare/sandbox'
 import type { AppConfig } from '../../../../config'
 import type { SessionSandbox } from '../../../durable-objects/session-sandbox'
 import {
+  type SandboxBackup,
+  type SandboxBackupOptions,
+  SandboxBackupUnavailableError,
   type SandboxExecOptions,
   type SandboxExecResult,
   SandboxInterruptedError,
@@ -48,6 +51,7 @@ import {
   type SandboxWaitForPortOptions,
   sessionAllowedHosts,
 } from '../ports'
+import { backupEgressHosts, backupObjectKeys, workspaceBackupMode } from '../workspace-backup'
 
 /**
  * The SDK's own idle sleep — a backstop for a dead Workflow, well past the idle policy AND the
@@ -90,6 +94,8 @@ const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000
 
 export interface CloudflareSandboxOptions {
   cfg: AppConfig
+  /** `BACKUP_BUCKET` — where the SDK keeps workspace backups; what `deleteBackup` deletes from. */
+  backupBucket?: R2Bucket
   /** Tests: a shorter {@link START_ATTEMPT_MS}. */
   startAttemptMs?: number
 }
@@ -359,5 +365,47 @@ export class CloudflareSandbox implements SandboxPort {
       if (mappedErr instanceof SandboxInterruptedError) return
       throw mappedErr
     }
+  }
+
+  // ---- workspace backups (`workspace-backup.ts`) ----------------------------------------------
+
+  get backupHosts(): readonly string[] {
+    return backupEgressHosts(this.opts.cfg)
+  }
+
+  async backup(opts: SandboxBackupOptions): Promise<SandboxBackup> {
+    const mode = workspaceBackupMode(this.opts.cfg)
+    if (mode === 'off' || !this.opts.backupBucket) throw new SandboxBackupUnavailableError()
+    return mapped(async () => {
+      const handle = await this.sandbox.createBackup({
+        dir: opts.dir,
+        ttl: opts.ttlSeconds,
+        ...(opts.name ? { name: opts.name } : {}),
+        // node_modules and .dev.vars are git-ignored and are the point of the backup.
+        gitignore: false,
+        ...(mode === 'binding' ? { localBucket: true } : {}),
+      })
+      return {
+        id: handle.id,
+        dir: handle.dir,
+        ...(handle.localBucket ? { localBucket: true } : {}),
+      }
+    })
+  }
+
+  async restore(backup: SandboxBackup): Promise<void> {
+    if (!this.opts.backupBucket) throw new SandboxBackupUnavailableError()
+    await mapped(async () => {
+      const result = await this.sandbox.restoreBackup({
+        id: backup.id,
+        dir: backup.dir,
+        ...(backup.localBucket ? { localBucket: true } : {}),
+      })
+      if (!result.success) throw new Error(`The backup ${backup.id} could not be restored`)
+    })
+  }
+
+  async deleteBackup(backup: SandboxBackup): Promise<void> {
+    await this.opts.backupBucket?.delete(backupObjectKeys(backup.id))
   }
 }

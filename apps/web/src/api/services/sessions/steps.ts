@@ -27,7 +27,13 @@ import {
 import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
-import { appEnvironments, apps, type SessionRow, sessions } from '../../../db/schema'
+import {
+  appEnvironments,
+  apps,
+  type SessionRow,
+  type SessionWorkspaceBackup,
+  sessions,
+} from '../../../db/schema'
 import { decryptToken, encryptToken } from '../../auth/oauth-encryption'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
@@ -51,6 +57,7 @@ import {
   SandboxRestartedError,
   type SessionAppRef,
   type SessionPorts,
+  sessionAllowedHosts,
 } from './ports'
 import {
   type BootstrapSkip,
@@ -65,9 +72,12 @@ import {
   SESSION_WORKSPACE,
   type SessionDevEnv,
   sessionBootstrap,
+  sessionDevVars,
   startDevServer,
+  writeDevVars,
 } from './rocketflare-dev'
 import { warmMinutesLeft } from './warm'
+import { BACKUP_TTL_MARGIN_SECONDS, workspaceBackupMode } from './workspace-backup'
 
 /** One step's world. Built by the Workflow for each `step.do`, closed with it. */
 export interface StepScope {
@@ -617,6 +627,11 @@ export interface BootstrapStepResult {
   migrated: boolean
   /** False on every bootstrap after the first successful one: a resume never re-seeds. */
   seeded: boolean
+  /**
+   * A restored workspace (`restore#K`) whose migrations had not changed: no install and no kit
+   * bootstrap at all — `node_modules` and `.dev.vars` came back with it.
+   */
+  reused?: boolean
 }
 
 /**
@@ -628,7 +643,8 @@ export interface BootstrapStepResult {
  */
 export async function bootstrapStep(
   scope: StepScope,
-  bootId?: string
+  bootId?: string,
+  opts: { restored?: boolean } = {}
 ): Promise<BootstrapStepResult> {
   const session = await loadSession(scope)
   const uri = await decryptToken(scope.cfg, session.dbUriSealed)
@@ -638,13 +654,21 @@ export async function bootstrapStep(
     const hash = await migrationsHash(sandbox)
     const prepared = session.migrationsHash !== null
     const migrate = !prepared || hash === null || hash !== session.migrationsHash
+    const dev = devEnvFor(scope.cfg, session)
+    if (opts.restored && prepared && !migrate) {
+      // The restored workspace IS the last bootstrap's result: only the allow-list (this
+      // container's) and the dev-server keys (non-secret, re-derived) are put back.
+      await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(uri)))
+      await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
+      return { installMs: 0, bootstrapMs: 0, migrated: false, seeded: false, reused: true }
+    }
     const skip: BootstrapSkip[] = prepared
       ? ['seed', 'db-check', ...(migrate ? [] : (['migrate'] as const))]
       : []
     const timings = await sessionBootstrap({
       sandbox,
       dbUri: uri,
-      dev: devEnvFor(scope.cfg, session),
+      dev,
       skip,
     })
     if (hash) await updateSession(scope, { migrationsHash: hash })
@@ -726,6 +750,7 @@ export const BOOT_STEP_LABELS = {
   prepare: "Preparing the app's database (first session only)",
   branch: 'Creating database branch',
   sandbox: 'Starting sandbox',
+  restore: 'Restoring the saved workspace',
   repo: 'Cloning repo',
   bootstrap: 'Installing and seeding',
   dev: 'Starting dev server',
@@ -830,7 +855,18 @@ export function withProgress<T>(
     await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'running' } })
     try {
       const result = await watched(scope, body(scope))
-      await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'done' } })
+      // A step that finished another way than planned says how (`restore#K`: "Cloning instead").
+      const detail = (result as { stepDetail?: unknown } | null)?.stepDetail
+      await emit({
+        type: 'step',
+        turn: 0,
+        data: {
+          key: phase,
+          label,
+          status: 'done',
+          ...(typeof detail === 'string' ? { detail } : {}),
+        },
+      })
       return result
     } catch (err) {
       await emit({
@@ -1062,7 +1098,11 @@ export async function suspendStep(
   }
   await checkpointStep(scope, 'suspend')
   const keep = reason === 'idle'
-  if (!keep) await sandboxFor(scope, session).destroy()
+  if (!keep) {
+    const sandbox = sandboxFor(scope, session)
+    await backupWorkspace(scope, await loadSession(scope), sandbox)
+    await sandbox.destroy()
+  }
   const now = scope.now()
   // `onStop` in the Sandbox Durable Object may have got there first: suspended is suspended — and
   // then there is no container left to keep.
@@ -1094,9 +1134,137 @@ export async function coolStep(
   const session = await loadSession(scope)
   if (session.status !== 'suspended' || session.containerKeptAt === null) return { cooled: false }
   if (reason === 'idle' && session.requestedAction === 'resume') return { cooled: false }
-  await sandboxFor(scope, session).destroy()
+  const sandbox = sandboxFor(scope, session)
+  // Only the kept container's own workspace is worth saving: one recreated under the session
+  // (no boot marker) is empty, and a backup of it would restore nothing.
+  if ((await sandbox.readFile(SESSION_BOOT_MARKER).catch(() => null)) !== null) {
+    await backupWorkspace(scope, session, sandbox)
+  }
+  await sandbox.destroy()
   await updateSession(scope, { containerKeptAt: null })
   return { cooled: true }
+}
+
+// ---- workspace backups (`workspace-backup.ts`) ------------------------------------------------
+
+/**
+ * Back the workspace up before its container is destroyed, and record it on the row (replacing —
+ * and deleting — the previous one). Best effort: a backup that fails, or is off, costs the next
+ * resume a clone and an install, never the suspend. True when a backup was recorded.
+ */
+async function backupWorkspace(
+  scope: StepScope,
+  session: SessionRow,
+  sandbox: SandboxPort
+): Promise<boolean> {
+  if (session.kind !== 'session' || workspaceBackupMode(scope.cfg) === 'off') return false
+  try {
+    const head = await sandbox.exec(`git -C ${SESSION_WORKSPACE} rev-parse HEAD`, {
+      timeoutMs: 30_000,
+    })
+    const headSha = head.exitCode === 0 ? head.stdout.trim() : ''
+    if (!/^[0-9a-f]{40}$/.test(headSha)) return false
+    const dbHosts = await dbEgressHostsOf(scope, session)
+    const extra = sandbox.backupHosts
+    if (extra.length) await sandbox.setAllowedHosts(sessionAllowedHosts([...dbHosts, ...extra]))
+    try {
+      const policy = resolveSessionPolicy(session.policy)
+      const handle = await sandbox.backup({
+        dir: SESSION_WORKSPACE,
+        ttlSeconds: policy.suspendedExpiryHours * 3600 + BACKUP_TTL_MARGIN_SECONDS,
+        name: `session-${session.shortId}`,
+      })
+      const backup: SessionWorkspaceBackup = {
+        ...handle,
+        headSha,
+        imageVersion: SESSION_IMAGE_VERSION,
+        createdAt: scope.now().toISOString(),
+      }
+      await updateSession(scope, { workspaceBackup: backup })
+      const previous = session.workspaceBackup
+      if (previous && previous.id !== backup.id) {
+        await sandbox.deleteBackup(previous).catch(err => {
+          scope.logger.warn({ err }, 'session: could not delete the previous workspace backup')
+        })
+      }
+      return true
+    } finally {
+      if (extra.length) {
+        await sandbox.setAllowedHosts(sessionAllowedHosts(dbHosts)).catch(() => {})
+      }
+    }
+  } catch (err) {
+    scope.logger.warn({ err }, 'session: workspace backup failed; the next resume clones')
+    return false
+  }
+}
+
+/** Why a recorded backup cannot be restored now, or null when it can. */
+function unusableBackup(scope: StepScope, session: SessionRow): string | null {
+  const backup = session.workspaceBackup
+  if (workspaceBackupMode(scope.cfg) === 'off') return 'backups are off'
+  if (!backup) return 'no backup'
+  if (!session.headSha || backup.headSha !== session.headSha) return 'the branch moved on'
+  if (backup.imageVersion !== SESSION_IMAGE_VERSION) return 'another session image'
+  return null
+}
+
+/**
+ * Step `restore.check#K` (no checklist line): whether a cold resume can restore the workspace
+ * backup instead of cloning — the backup's commit is the branch head and its image is this one.
+ */
+export async function restoreCheckStep(scope: StepScope): Promise<{ usable: boolean }> {
+  return { usable: unusableBackup(scope, await loadSession(scope)) === null }
+}
+
+/**
+ * Step `restore#K`: put the workspace backup back into the fresh container, then check its HEAD
+ * is the backup's. Never throws for the restore itself: a failed or wrong restore is cleared and
+ * `{ restored: false }` sends the resume down the clone-and-install path (the checklist line says
+ * so in its detail).
+ */
+export async function restoreStep(
+  scope: StepScope,
+  bootId?: string
+): Promise<{ restored: boolean; stepDetail?: string }> {
+  const session = await loadSession(scope)
+  const backup = session.workspaceBackup
+  const why = unusableBackup(scope, session)
+  if (why || !backup) return { restored: false, stepDetail: `Cloning instead: ${why}` }
+  const sandbox = sandboxFor(scope, session)
+  return inOurContainer(scope, sandbox, bootId, async () => {
+    const dbHosts = await dbEgressHostsOf(scope, session)
+    const extra = sandbox.backupHosts
+    try {
+      if (extra.length) await sandbox.setAllowedHosts(sessionAllowedHosts([...dbHosts, ...extra]))
+      await sandbox.restore(backup)
+      const head = await sandbox.exec(`git -C ${SESSION_WORKSPACE} rev-parse HEAD`, {
+        timeoutMs: 30_000,
+      })
+      if (head.exitCode !== 0 || head.stdout.trim() !== backup.headSha) {
+        throw new Error('the restored workspace is not at the backup’s commit')
+      }
+      return { restored: true }
+    } catch (err) {
+      if (err instanceof SandboxRestartedError) throw err
+      scope.logger.warn({ err }, 'session: workspace restore failed; cloning instead')
+      // Leave nothing half-restored behind for the clone (a presigned restore is a FUSE mount).
+      await sandbox
+        .exec(
+          `fusermount3 -uz ${SESSION_WORKSPACE} 2>/dev/null; rm -rf ${SESSION_WORKSPACE}; true`,
+          { timeoutMs: 120_000 }
+        )
+        .catch(() => {})
+      return {
+        restored: false,
+        stepDetail: `Cloning instead: ${safeErrorMessage(err, 'the restore failed')}`,
+      }
+    } finally {
+      if (extra.length) {
+        await sandbox.setAllowedHosts(sessionAllowedHosts(dbHosts)).catch(() => {})
+      }
+    }
+  })
 }
 
 /** Step `resume#N`: `suspended → booting`, the request consumed. The boot steps follow. */
@@ -1207,6 +1375,12 @@ export async function failStep(scope: StepScope, message: string): Promise<void>
 export async function cleanupStep(scope: StepScope): Promise<{ status: SessionStatus }> {
   const session = await loadSession(scope)
   await sandboxFor(scope, session).destroy()
+  if (session.workspaceBackup) {
+    // Best effort: an R2 lifecycle rule on `backups/` is the backstop (docs/DEPLOY.md).
+    await sandboxFor(scope, session)
+      .deleteBackup(session.workspaceBackup)
+      .catch(err => scope.logger.warn({ err }, 'session: could not delete the workspace backup'))
+  }
   if (session.db && session.kind === 'session') {
     const app = await loadAppRef(scope, session.appId)
     const db = session.db
@@ -1231,6 +1405,8 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
       githubTokenExpiresAt: null,
       pendingMessage: null,
       requestedAction: null,
+      workspaceBackup: null,
+      containerKeptAt: null,
     })
     .where(
       and(eq(sessions.tenantId, scope.params.tenantId), eq(sessions.id, scope.params.sessionId))

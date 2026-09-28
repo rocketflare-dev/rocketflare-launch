@@ -240,6 +240,32 @@ const coreConfigSchema = z.object({
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.enum(GRANT_BACKENDS).default('cloudflare')
   ),
+  /**
+   * Launch P3, fast resume: whether a session's workspace (`/workspace/app`, `node_modules` and
+   * `.dev.vars` included) is backed up when its container is destroyed, so a cold resume restores
+   * it instead of cloning and installing (`services/sessions/steps.ts`, the Sandbox SDK's
+   * `createBackup` / `restoreBackup` into the `BACKUP_BUCKET` binding). `off`; `binding` — the
+   * archive moves through the Durable Object and the R2 binding (`localBucket`, what `wrangler dev`
+   * supports); `presigned` — the container moves it itself over presigned R2 URLs (the SDK's
+   * deployed path: needs the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` secrets, `BACKUP_BUCKET_NAME`
+   * and an account id — `docs/DEPLOY.md` § Coding sessions). Unset: `binding` under
+   * `APP_ENV=development`, else `off` (`workspaceBackupMode`).
+   */
+  SESSION_WORKSPACE_BACKUP: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(['off', 'binding', 'presigned']).optional()
+  ),
+  /**
+   * `SESSION_WORKSPACE_BACKUP=presigned`: where the container reaches R2 — the allow-list gains
+   * this origin's host, else `<account>.r2.cloudflarestorage.com` from the account id below. The
+   * SDK reads the same three names from the Worker's environment.
+   */
+  BACKUP_BUCKET_ENDPOINT: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().url().optional()
+  ),
+  CLOUDFLARE_R2_ACCOUNT_ID: optionalString,
+  CLOUDFLARE_ACCOUNT_ID: optionalString,
   /** `SESSION_BACKEND=local`: the git server sessions clone from and push to (`pnpm sessions:local-git`). */
   SESSION_LOCAL_GIT_URL: z.preprocess(
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),

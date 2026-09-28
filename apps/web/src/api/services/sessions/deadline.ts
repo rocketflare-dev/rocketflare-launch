@@ -36,6 +36,8 @@ export interface SessionCallLimits {
   /** No command waits longer than this, whatever its own `timeoutMs` (tests shrink it). */
   execMaxMs: number
   destroyMs: number
+  /** One workspace backup or restore (an archive of the checkout and its `node_modules`). */
+  backupMs: number
   /** One vendor operation from a step (a Neon branch, a role reset, a delete). */
   vendorMs: number
   /** How often a boot step checks whether the person asked to end the session. */
@@ -51,6 +53,7 @@ export const SESSION_CALL_LIMITS: SessionCallLimits = {
   execDefaultMs: 10 * 60_000,
   execMaxMs: 20 * 60_000,
   destroyMs: 3 * 60_000,
+  backupMs: 10 * 60_000,
   vendorMs: 5 * 60_000,
   endPollMs: 10_000,
   heartbeatMs: 30_000,
@@ -144,5 +147,12 @@ export function boundedSandbox(
       withDeadline(label('setAllowedHosts'), limits.controlMs, () => port.setAllowedHosts(hosts)),
     fetch: (p, req) => port.fetch(p, req),
     destroy: () => withDeadline(label('destroy'), limits.destroyMs, () => port.destroy()),
+    get backupHosts() {
+      return port.backupHosts
+    },
+    backup: opts => withDeadline(label('backup'), limits.backupMs, () => port.backup(opts)),
+    restore: backup => withDeadline(label('restore'), limits.backupMs, () => port.restore(backup)),
+    deleteBackup: backup =>
+      withDeadline(label('deleteBackup'), limits.controlMs, () => port.deleteBackup(backup)),
   }
 }

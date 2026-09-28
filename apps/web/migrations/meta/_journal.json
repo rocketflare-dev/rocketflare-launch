@@ -218,6 +218,13 @@
       "when": 1790613513761,
       "tag": "0030_launch-session-migrations-hash",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790613909685,
+      "tag": "0031_launch-session-workspace-backup",
+      "breakpoints": true
     }
   ]
 }

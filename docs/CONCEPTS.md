@@ -1317,6 +1317,18 @@ reload) is restarted as `<id>-rN` from the row.
   (90 min, longer than the window — a config test pins it) or a recreated container (no marker)
   makes the resume cold too (`onStop` clears `container_kept_at`). A drain, a rollout, an end and a
   lost instance still destroy at once. A warm container is billed as container time while it waits.
+- **Workspace backups** (`workspace-backup.ts`, `SESSION_WORKSPACE_BACKUP`: `binding` under
+  `APP_ENV=development`, `off` deployed unless `presigned` is set up — `docs/DEPLOY.md`): before a
+  destroying suspend (a drain, after its checkpoint) or a `cool#N` destroys the container, the
+  Sandbox SDK's `createBackup` archives `/workspace/app` (`node_modules` and the app's `.dev.vars`
+  included) into `BACKUP_BUCKET` (the `FILES` bucket, under `backups/`), recorded on
+  `sessions.workspace_backup` with its `git rev-parse HEAD` and image version; a newer backup and
+  `cleanup` delete the old one. A cold resume runs `restore.check#K` and, when the backup's commit
+  is the branch head (`head_sha`) and its image is this one, `restore#K` (`restoreBackup`, then the
+  HEAD re-checked) instead of `repo#K`; the `bootstrap#K` after a restore whose migrations did not
+  change installs and bootstraps nothing — it re-applies the allow-list and the dev-server keys.
+  Anything else — no backup, the branch moved on, a restore that fails — clones and installs, and
+  the checklist line says "Cloning instead: …". A backup never fails a suspend or a resume.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
 - **Expiry** (`sessions.expire`, `*/5`): the backstop for a suspended session whose instance is
@@ -1375,7 +1387,14 @@ the cause is not reproduced, so whether that is enough is unproven. The lighter 
 bootstrap swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
 `pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
 in full again (slower, still correct); the preload is proven under real Node with a stand-in
-bootstrap, not yet in a container.
+bootstrap, not yet in a container. Workspace backups are proven against the `FakeSandbox` and the
+SDK's call shapes only: whether `binding` mode's restore (the whole archive through the Durable
+Object, base64, on the SDK's default HTTP transport) beats a clone and an install under `wrangler
+dev`, and everything about `presigned` on Cloudflare (the upload through the HTTPS interception,
+FUSE in the container, the size and time of an archive with `node_modules`), need real containers.
+`SANDBOX_TRANSPORT=rpc` would stream the `binding` restore instead, but changes every SDK call and
+is untried. A tenant's deletion leaves its sessions' backups to the bucket's lifecycle rule
+(`tenant.purge` pages `tenants/<id>/` only).
 
 ### 18.10 The sandbox and the local backend
 

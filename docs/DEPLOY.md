@@ -134,6 +134,7 @@ in both files (one local database).
 | Analytics Engine (optional) | `ANALYTICS_ENGINE` | `<app>_analytics[_staging]` | declared in toml — deliberately NOT wired by the kit (only a comment in both tomls) |
 | Static Assets | `ASSETS` | — | `[assets] directory = "./dist/ui"` uploaded atomically with each deploy; `run_worker_first = true` sends every request to the Worker first (Launch P3's session previews), so `/api`, `/auth`, `/ws`, Launch's issuer prefixes `/oidc` and `/.well-known`, its GitHub-OIDC surface `/ci` (P2: the deployer protocol and the scaffold job; 64 MB body cap on `POST /ci/deploy/:id/upload`, 1 MB elsewhere) and every prefix an installed plugin declares never meet the asset router — the Hono catch-all serves `ASSETS` for the rest |
 | Session containers (Launch P3) | `SESSION_SANDBOX` | class `SessionSandbox`; container application `launch-sessionsandbox` / `launch-staging-sessionsandbox` (wrangler names it from the Worker and the class) | `[[containers]]` (`image = "./containers/session/Dockerfile"`, `instance_type = "standard-3"`, `max_instances = 10`) + `[[durable_objects.bindings]]` + `[[migrations]] tag = "v2", new_sqlite_classes` — no create step: `wrangler deploy` builds the image (Docker, amd64) and pushes it to Cloudflare's registry. See § Coding sessions |
+| R2 (Launch P3, fast resume) | `BACKUP_BUCKET` | the SAME bucket as `FILES` (`launch-files` / `launch-files-staging`) | no create step — a second binding on the `FILES` bucket, the Sandbox SDK's fixed name for workspace backups (objects under `backups/`). Give the bucket an R2 lifecycle rule deleting `backups/` after a few days (`wrangler r2 bucket lifecycle add <bucket> …` or the dashboard): `cleanup` deletes a session's backup, the rule catches the rest. Unused until `SESSION_WORKSPACE_BACKUP` is set — see § Coding sessions |
 | Workflow (Launch P3) | `SESSION_WORKFLOW` | `launch-session` / `launch-session-staging` | `[[workflows]]` with `class_name = "SessionWorkflow"` — registered by `wrangler deploy`; **account-scoped name**. One instance per coding session (id = the session id, `<id>-rN` on a restart) |
 | Workflow (Launch P5) | `GRANT_PUSH_WORKFLOW` | `launch-grant-push` / `launch-grant-push-staging` | `[[workflows]]` with `class_name = "GrantPushWorkflow"` — registered by `wrangler deploy`; **account-scoped name**. One instance per shared-config push (id = the `grant_pushes` id, `<id>-rN` on a retry); a missing binding is 503 `grants_not_configured` before any row. `[vars] GRANT_BACKEND = "cloudflare"` in both files (`local` is development only) |
 | RLS app role (optional, docs/RLS.md, not wired yet) | `postgres`: `HYPERDRIVE_APP`; `neon`: an `APP_DATABASE_URL` Worker secret | `<app>-<env>-app` | `postgres`: `… hyperdrive create … --caching-disabled`; `neon`: `wrangler secret put APP_DATABASE_URL` |
@@ -239,6 +240,20 @@ needs, beyond the bindings above:
   window skips the clone, install and bootstrap. A kept container is billed container time and
   counts against `max_instances` until it is cooled; lower the constant to trade resume speed for
   cost. The SDK's own `sleepAfter` (90 min) must stay longer than it (a config test pins it).
+- **Workspace backups (off unless set).** When a container IS destroyed (after the warm window, or
+  by a drain) the SDK's `createBackup` can save `/workspace/app` — checkout, `node_modules` and the
+  app's `.dev.vars` (the session branch's URI: a credential, kept in Launch's own bucket, deleted
+  with the session) — so a cold resume restores it instead of cloning and installing. Deployed it
+  needs the SDK's presigned path: `SESSION_WORKSPACE_BACKUP = "presigned"` in BOTH tomls' `[vars]`,
+  and on the Worker `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` (an R2 API token with object
+  read/write on the bucket, `wrangler secret put`), `BACKUP_BUCKET_NAME` (the bucket's name) and
+  `CLOUDFLARE_ACCOUNT_ID` (or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction endpoint) — as vars in
+  both tomls or as secrets. The session's allow-list gains `<account>.r2.cloudflarestorage.com`
+  only while a backup or restore runs; a restore mounts the archive with FUSE (the SDK's
+  squashfuse + overlay). **Unproven on Cloudflare**: the presigned upload through the container's
+  HTTPS interception, FUSE in the session container, and the time for an archive with
+  `node_modules`. The `binding` mode `wrangler dev` uses is not for a deployed Worker — on the SDK's
+  default HTTP transport its restore holds the archive in the Durable Object's 128 MB.
 
 ## Crons
 

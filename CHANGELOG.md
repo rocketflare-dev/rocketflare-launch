@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- When a coding session's container is destroyed after its warm window (or by a drain), its
+  workspace — checkout, `node_modules` and `.dev.vars` — is backed up with the Sandbox SDK's
+  `createBackup`, and a later cold resume restores it instead of cloning and installing when the
+  branch head is still the backup's commit (a new "Restoring the saved workspace" step; "Cloning
+  instead" when it cannot). On by default under `wrangler dev` (`SESSION_WORKSPACE_BACKUP=binding`),
+  off deployed until `presigned` and its R2 credentials are set (docs/DEPLOY.md). A new
+  `BACKUP_BUCKET` binding on the `FILES` bucket in both tomls. Migration 0031 adds
+  `sessions.workspace_backup`: run `pnpm db:migrate`.
 - A coding session resumed COLD (its container was destroyed) no longer re-seeds its database or
   re-runs the database check, and migrates only when the checkout's `apps/web/migrations` changed
   since its last successful bootstrap (hashed, `sessions.migrations_hash`). A first boot is

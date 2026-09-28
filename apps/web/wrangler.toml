@@ -36,6 +36,8 @@ OBSERVABILITY_SPAN_RETENTION_DAYS = "14"   # Tracing (D32): days of ai_spans the
 SESSION_BACKEND = "cloud"              # Coding sessions (P3): cloud | local (local = wrangler dev only; loadConfig refuses it elsewhere)
 SESSION_PREVIEW_URL = "https://{label}.clewro.com"  # P3: preview origins, {label} = <port>-<shortId>-<token> (docs/DEPLOY.md § Coding sessions)
 GRANT_BACKEND = "cloudflare"            # Shared config (P5): cloudflare | local (local = wrangler dev only; loadConfig refuses it elsewhere)
+# Coding sessions' workspace backups (P3) — add to BOTH files, with the R2 secrets, to turn them on
+# deployed (docs/DEPLOY.md § Coding sessions):  SESSION_WORKSPACE_BACKUP = "presigned"
 # Tracing backend (D32) — add these to BOTH files when you pick one (docs/DEPLOY.md § Tracing):
 #   OBSERVABILITY_PRESET = "langfuse"    # langfuse | phoenix | generic (unset + Langfuse keys = langfuse)
 #   OTEL_EXPORTER_OTLP_ENDPOINT = "https://…"   # unset + Langfuse keys = <LANGFUSE_BASE_URL>/api/public/otel
@@ -155,6 +157,13 @@ new_sqlite_classes = ["SessionSandbox"]
 # File storage (D23): R2 behind `services/storage.ts`. Create: wrangler r2 bucket create launch-files
 [[r2_buckets]]
 binding = "FILES"
+bucket_name = "launch-files"
+
+# Coding sessions' workspace backups (P3, fast resume): the Sandbox SDK's FIXED binding name, on the
+# SAME bucket as FILES (the SDK writes under backups/). Used by SESSION_WORKSPACE_BACKUP (off when
+# deployed unless set; binding under wrangler dev). Give backups/ an R2 lifecycle rule (docs/DEPLOY.md).
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
 bucket_name = "launch-files"
 
 # Workers AI (D17/D18): the zero-key floor for chat (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`),

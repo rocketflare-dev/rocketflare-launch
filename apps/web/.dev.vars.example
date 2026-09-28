@@ -103,6 +103,10 @@ SESSION_BACKEND=local
 SESSION_PREVIEW_URL=http://{label}.localhost:3001
 # The local git server sessions clone from and push to (`pnpm sessions:local-git serve`).
 SESSION_LOCAL_GIT_URL=http://localhost:9420
+# Workspace backups for a cold resume (docs/SESSIONS-LOCAL.md § Suspend and resume): off | binding
+# | presigned. Unset = binding under APP_ENV=development (the archive goes through the Durable
+# Object into the local BACKUP_BUCKET); `off` if a restore is slower than a clone on your machine.
+SESSION_WORKSPACE_BACKUP=
 
 # --- Shared config and grants (Launch P5, docs/plans/p5-grants.md) ----------------------
 # `local` records the names a push would put on an app's Worker and calls no vendor. Only with

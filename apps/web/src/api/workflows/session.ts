@@ -19,8 +19,9 @@
  *              ship#N (3d's `ship`) → shipped: leave the loop
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
- *                `services/sessions/warm.ts`): dev#K only · cold: repo#K → bootstrap#K → dev#K →
- *                transcript#K
+ *                `services/sessions/warm.ts`): dev#K only · cold: restore.check#K →
+ *                [restore#K] (the workspace backup, when it is at the branch head) → repo#K
+ *                (unless restored) → bootstrap#K → dev#K → transcript#K
  *              end#N → leave the loop
  *   fail     (a step gave up: `failed`, with a secret-free sentence)
  *   cleanup  ALWAYS: destroy the sandbox, delete the branch, settle `ended` (or keep `shipped` /
@@ -68,6 +69,8 @@ import {
   inspectStep,
   prepareStep,
   repoStep,
+  restoreCheckStep,
+  restoreStep,
   restoreTranscriptStep,
   resumeStep,
   rolloutStep,
@@ -298,14 +301,27 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             )
             break
           }
-          await run(
-            `repo#${k}`,
-            withProgress('repo', s => repoStep(s, bootId)),
-            BOOT_STEP
-          )
+          // Cold: the workspace backup the last destroying suspend made, when it is still the
+          // branch head — else (or when it will not restore) the clone and the install.
+          const { usable } = await run(`restore.check#${k}`, restoreCheckStep)
+          let restored = false
+          if (usable) {
+            ;({ restored } = await run(
+              `restore#${k}`,
+              withProgress('restore', s => restoreStep(s, bootId)),
+              BOOT_STEP
+            ))
+          }
+          if (!restored) {
+            await run(
+              `repo#${k}`,
+              withProgress('repo', s => repoStep(s, bootId)),
+              BOOT_STEP
+            )
+          }
           await run(
             `bootstrap#${k}`,
-            withProgress('bootstrap', s => bootstrapStep(s, bootId)),
+            withProgress('bootstrap', s => bootstrapStep(s, bootId, { restored })),
             BOOT_STEP
           )
           await run(

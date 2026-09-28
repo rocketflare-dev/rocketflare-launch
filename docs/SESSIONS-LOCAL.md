@@ -132,8 +132,19 @@ A session quiet for `idleSuspendMinutes` (30 by default) is **suspended warm**: 
 **warm**: "Starting sandbox" finds the boot marker it wrote on the first boot and "Starting dev
 server" reuses the dev server if both ports still answer (else `pnpm dev:stop`, then `pnpm dev`) —
 no clone, install or bootstrap. After the 45 minutes the Workflow's `cool#N` destroys the container
-and the next resume is **cold**: the whole boot again from the pushed branch. A drain cools at
-once; a container Docker killed meanwhile (no marker) resumes cold.
+and the next resume is **cold**. A drain cools at once; a container Docker killed meanwhile (no
+marker) resumes cold.
+
+Before a cool (or a drain) destroys the container, the workspace is **backed up** — `/workspace/app`
+with `node_modules` and `.dev.vars`, through the Durable Object into the local `BACKUP_BUCKET`
+(`SESSION_WORKSPACE_BACKUP=binding`, the development default; `.wrangler/` holds it). A cold resume
+whose branch head is still the backup's commit then shows **Restoring the saved workspace** instead
+of **Cloning repo**, and its **Installing and seeding** step only re-applies the allow-list and the
+dev-server keys (when the migrations did not change). A restore that fails says "Cloning instead: …"
+on that line and the boot goes on the old way. Unmeasured: on the SDK's default HTTP transport the
+restore carries the whole archive through the Durable Object as base64, which for a checkout with
+`node_modules` may be slower than the clone and install it replaces — set
+`SESSION_WORKSPACE_BACKUP=off` in `.dev.vars` if it is.
 
 To see both locally without waiting: give a NEW session a short idle window — the policy is
 frozen onto the row at create, from `launch_settings.session_policy` (e.g. `{"idleSuspendMinutes":
