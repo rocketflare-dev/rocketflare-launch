@@ -18,9 +18,7 @@ import { encrypt } from '@/api/auth/oauth-encryption'
 import { dispatchScheduled } from '@/api/scheduled'
 import { open } from '@/api/services/approvals/engine'
 import { kindHandler } from '@/api/services/approvals/kinds'
-import { grantedKeys } from '@/api/services/grants/holders'
 import { startPush } from '@/api/services/grants/push'
-import { requestGrant } from '@/api/services/grants/requests'
 import { loadResource } from '@/api/services/grants/resources'
 import { revokeGrant } from '@/api/services/grants/revoke'
 import { openValues, sealValues } from '@/api/services/grants/sealed'
@@ -357,11 +355,7 @@ describe('the P5 mounts', () => {
   it('the routes 5b–5e fill are mounted but register nothing yet (a JSON 404)', async () => {
     const { tenant, admin, app, resource } = await seedWorld()
     const headers = sessionCookieHeader(await createTestSession(db, admin.id, tenant.id))
-    for (const [method, url] of [
-      ['GET', `/api/shared-resources/${resource.id}/pushes`],
-      ['GET', `/api/apps/${app.id}/config`],
-      ['POST', `/api/apps/${app.id}/grants`],
-    ] as const) {
+    for (const [method, url] of [['GET', `/api/shared-resources/${resource.id}/pushes`]] as const) {
       const res = await request(url, { method, headers })
       expect(res.status, `${method} ${url}`).toBe(404)
       expect(res.headers.get('content-type')).toContain('application/json')
@@ -492,9 +486,6 @@ describe('the stubs before their slices', () => {
     const cases: [() => unknown, RegExp][] = [
       [() => startPush(deps, {} as never), /push\.startPush .*5c/],
       [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
-      [() => requestGrant(deps, viewer, 'x', {} as never, actor), /requestGrant .*5d/],
-      [() => grantedKeys(db, 'x', 'x', 'staging'), /grantedKeys .*5d/],
-      [() => kindHandler('grant.request').applyAfter({} as never, deps), /applyAfter .*5d/],
       [() => new GrantPushWorkflow({} as never, env).run({} as never, {} as never), /run .*5c/],
     ]
     for (const [call, message] of cases) {
