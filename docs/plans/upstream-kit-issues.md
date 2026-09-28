@@ -31,10 +31,10 @@ Config tests run with `pnpm --dir apps/web exec vitest run --project config <fil
 
 Related issues already filed, not repeated below:
 
-- **rocketflare#37**: `rename.mjs` rewrites `rocketflare-dev` org references. Launch patches
+- **rocketflare#37**: `rename.mjs` rewrites `rocketflare-dev` org references. **Fixed by PR #39 (merged 2026-09-28, ships in 0.15.2)**; Launch's patch now skips a kit with `KIT.preservedPattern`. Launch patches
   `KIT.preserved` in the scaffold job (`PRESERVED_ORG_REFS` in
   `apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`).
-- **rocketflare#38**: the test DB compose project is always `web`, so copies of the kit replace
+- **rocketflare#38** (fixed by PR #39, 0.15.2): the test DB compose project is always `web`, so copies of the kit replace
   each other's test Postgres.
 - **rocketflare-plugins#8**: analytics 3.4.1's `dashboard-visibility.test.ts` fails the host kit's
   `unscoped-allowlist` test. The plugins repo `main` has a commit after 3.4.1 (`714db3b`,

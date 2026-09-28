@@ -384,12 +384,18 @@ function stampKitCommit(appDir, commit) {
   fs.writeFileSync(file, text)
 }
 
-/** rocketflare#37: keep every rocketflare-dev/ reference through the rename. */
+/** rocketflare#37: keep every rocketflare-dev/ reference through the rename (kits before 0.15.2). */
 function patchPreserved(appDir) {
   const rel = 'scripts/lib/rename-lib.mjs'
   const file = path.join(appDir, rel)
   if (!fs.existsSync(file)) fail(rel + ' is missing: this is not a Rocketflare kit', 1)
   let text = fs.readFileSync(file, 'utf8')
+  // Kit 0.15.2+ fixes rocketflare#37 itself: KIT.preservedPattern keeps every rocketflare-dev/
+  // reference, and KIT.preserved no longer lists the org (the anchor below is gone).
+  if (/\bpreservedPattern\s*:/.test(text)) {
+    log('KIT.preservedPattern keeps the rocketflare-dev/ references: nothing to patch (rocketflare#37 is fixed in this kit).')
+    return
+  }
   const missing = PRESERVE_EXTRA.filter(l => !text.includes("'" + l + "'"))
   if (missing.length) {
     const at = text.indexOf(PRESERVE_ANCHOR)

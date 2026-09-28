@@ -73,6 +73,14 @@ const RENAME_LIB = `export const KIT = Object.freeze({
 })
 `
 
+/** Kit 0.15.2's rename-lib (rocketflare#37 fixed): a pattern keeps the org, the list only files. */
+const RENAME_LIB_FIXED = `export const KIT = Object.freeze({
+  slug: 'rocketflare',
+  preservedPattern: /\\brocketflare-dev(?:\\/[\\w.-]+|(?![\\w-]))/g,
+  preserved: ['.rocketflare.local.json', 'rocketflare-plugin.json', '.rocketflare.json'],
+})
+`
+
 /**
  * A stand-in for the kit's rename: records its argv, exits with STUB_RENAME_EXIT when set, and
  * otherwise renames every listed text file the way the real one does — the preserved literals
@@ -88,9 +96,12 @@ const domain = args[args.indexOf('--domain') + 1]
 for (const file of ['apps/web/wrangler.toml', 'apps/web/wrangler.staging.toml', 'apps/web/docker-compose.dev.yml', 'docs/PLUGINS.md', '.github/workflows/ci.yml']) {
   if (!existsSync(file)) continue
   let text = readFileSync(file, 'utf8')
+  const kept = []
+  if (KIT.preservedPattern) text = text.replace(KIT.preservedPattern, ref => { kept.push(ref); return '\\u0001' + (kept.length - 1) + '\\u0001' })
   KIT.preserved.forEach((literal, i) => { text = text.split(literal).join('\\u0000' + i + '\\u0000') })
   text = text.replaceAll('rocketflare.dev', domain).replaceAll('Rocketflare', display).replaceAll('rocketflare', slug)
   KIT.preserved.forEach((literal, i) => { text = text.split('\\u0000' + i + '\\u0000').join(literal) })
+  kept.forEach((ref, i) => { text = text.split('\\u0001' + i + '\\u0001').join(ref) })
   writeFileSync(file, text)
 }
 const manifest = JSON.parse(readFileSync('.rocketflare.json', 'utf8'))
@@ -182,6 +193,7 @@ beforeAll(async () => {
   manifest.kit.version = NEWER_KIT_TAG
   write(kit, '.rocketflare.json', `${JSON.stringify(manifest, null, 2)}\n`)
   write(kit, 'docs/NEW-IN-0.15.2.md', 'A kit fix.\n')
+  write(kit, 'scripts/lib/rename-lib.mjs', RENAME_LIB_FIXED)
   git(kit, 'add', '-A')
   git(kit, 'commit', '--quiet', '-m', `Release ${NEWER_KIT_TAG}`)
   git(kit, 'tag', '-a', NEWER_KIT_TAG, '-m', NEWER_KIT_TAG)
@@ -468,6 +480,13 @@ describe('a re-scaffold: the app repo already holds a scaffold and Launch’s co
     expect(repo.read('apps/web/wrangler.staging.toml')).toContain('name = "shop-staging"')
     expect(repo.files).not.toContain(SCAFFOLD_SCRIPT_PATH)
     expect(repo.files).not.toContain(SCAFFOLD_WORKFLOW_PATH)
+    // 0.15.2 fixes rocketflare#37 itself: no patch, its rename-lib untouched, the org kept.
+    expect(again.stdout).toContain('nothing to patch (rocketflare#37 is fixed in this kit)')
+    expect(repo.read('scripts/lib/rename-lib.mjs')).toBe(RENAME_LIB_FIXED)
+    expect(repo.read('apps/web/docker-compose.dev.yml')).toContain(
+      'ghcr.io/rocketflare-dev/local-neon-proxy@sha256:abc'
+    )
+    expect(repo.read('docs/PLUGINS.md')).not.toContain('shop-dev/')
   })
 })
 

@@ -84,16 +84,27 @@ export async function rescaffoldPipeline(
   const pin = (await loadPipelineSettings(db)).templatePin
 
   const now = new Date()
-  const scope = and(eq(appOperations.tenantId, tenantId), eq(appOperations.runId, runId))
   await db.transaction(async tx => {
     await tx
       .update(appOperations)
       .set({ status: 'failed', error: RESCAFFOLD_RESET_ERROR, finishedAt: now, updatedAt: now })
-      .where(and(scope, eq(appOperations.step, 'scaffold.start')))
+      .where(
+        and(
+          eq(appOperations.tenantId, tenantId),
+          eq(appOperations.runId, runId),
+          eq(appOperations.step, 'scaffold.start')
+        )
+      )
     await tx
       .update(appOperations)
       .set({ status: 'pending', error: null, startedAt: null, finishedAt: null, updatedAt: now })
-      .where(and(scope, inArray(appOperations.step, RESCAFFOLD_STEPS.slice(1))))
+      .where(
+        and(
+          eq(appOperations.tenantId, tenantId),
+          eq(appOperations.runId, runId),
+          inArray(appOperations.step, RESCAFFOLD_STEPS.slice(1))
+        )
+      )
   })
 
   const started = await retryPipeline(db, workflows, tenantId, app.id, 'create', actor)

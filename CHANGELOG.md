@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The scaffold job skips its rocketflare#37 patch when the kit already carries `KIT.preservedPattern`
+  (kit 0.15.2+, where the rename keeps `rocketflare-dev/` references itself); older pins are still
+  patched.
 - "Re-scaffold from kit <tag>" (`POST /api/apps/:id/pipeline/rescaffold`, `manage App`): a launch
   that failed after its scaffold — the app's CI red on a kit bug a newer kit release fixes — can
   be scaffolded again from the CURRENT kit pin, which a Retry never picked up (it skips the

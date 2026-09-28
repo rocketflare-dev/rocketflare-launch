@@ -1090,7 +1090,8 @@ and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
 job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
 scoped to that repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files)
 and the plan, once per ticket; clones the pinned kit at its tag and checks the commit; patches
-around rocketflare#37; runs `rename.mjs --skip-install` and then `pnpm install
+around rocketflare#37 (kits before 0.15.2 only — from 0.15.2 `KIT.preservedPattern` keeps the org and the
+patch is skipped); runs `rename.mjs --skip-install` and then `pnpm install
 --no-frozen-lockfile` itself (on a runner `CI=true` makes the rename's own install frozen, and it
 fails on the workspace names the rename just changed); installs the default plugins; deletes the kit-only
 workflows and `.launch/`; runs `lint`, `typecheck` and `test:config`; pushes `main`; revokes its

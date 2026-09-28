@@ -919,7 +919,8 @@ describe('P5 exit: request M365, the owner team approves, the app works; one rot
         expect(hay.includes(sentinel), `${where} carried a secret`).toBe(false)
       }
     }
-  })
+    // The whole P5 flow in one test (~4.5 s alone): the default 5 s flaked under full-suite load.
+  }, 30_000)
 })
 
 describe('variants', () => {
