@@ -97,11 +97,14 @@ export interface ScaffoldRunnerPort {
   id: string
   /** Start the job. Returns ids (`runId`…) to record — never a secret. May throw to be retried. */
   start(ctx: ScaffoldRunnerContext, plan: ScaffoldPlan): Promise<Record<string, string>>
-  /** Where the job is. `failed` ends the wait at once instead of after its 30 minutes. */
+  /**
+   * Where the job is. `failed` ends the wait at once instead of after its 30 minutes; `runId` and
+   * `url` (the run's page) are recorded on the `scaffold.wait` row as soon as they are known.
+   */
   poll(
     ctx: ScaffoldRunnerContext,
     ids: Record<string, string>
-  ): Promise<{ status: ScaffoldRunStatus; detail?: string }>
+  ): Promise<{ status: ScaffoldRunStatus; detail?: string; runId?: string; url?: string }>
 }
 
 export interface PipelinePorts {

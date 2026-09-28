@@ -7,6 +7,7 @@
  *   PUT    /settings                  apps domain, account id, Neon org/region, notifications domain, org
  *   PUT    /credentials/:kind         validate → seal → check → audit credential.set | .rotated
  *   POST   /credentials/:kind/check   re-run the probes → audit credential.checked
+ *   POST   /public-url/check          probe APP_URL from the internet now → audit public_url.checked
  *
  * The PUT and the check are the only calls that may change something upstream: the Cloudflare
  * check creates the apps zone's proxied `*` record when there is none, audited
@@ -32,6 +33,7 @@ import { z } from 'zod'
 import type { Database } from '../../db/client'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import { putCredential, removeCredential } from '../services/launch/credentials'
+import { runPublicUrlCheck } from '../services/launch/public-url'
 import {
   type CheckEffect,
   fingerprint,
@@ -161,6 +163,27 @@ setupRouter.post('/credentials/:kind/check', validate('param', kindParamSchema),
     failed: checks.filter(ch => ch.status === 'failed').map(ch => ch.id),
   })
   return c.json({ credential: await setupCredential(db, kind), status, checks })
+})
+
+setupRouter.post('/public-url/check', async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const result = await runPublicUrlCheck(db, cfg, user.id)
+  await recordAudit(db, {
+    tenantId: auditTenantId,
+    ...auditActor(c),
+    action: 'public_url.checked',
+    targetType: 'Setting',
+    targetId: 'public_url_check',
+    summary: {
+      after: {
+        url: result.url,
+        checkStatus: result.status,
+        failed: result.checks.filter(ch => ch.status === 'failed').map(ch => ch.id),
+      },
+    },
+  })
+  return c.json(result)
 })
 
 setupRouter.delete('/credentials/:kind', validate('param', kindParamSchema), async c => {

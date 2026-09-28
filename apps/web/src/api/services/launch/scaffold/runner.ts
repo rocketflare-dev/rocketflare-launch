@@ -39,8 +39,12 @@ export interface ScaffoldRunContext {
 
 export interface ScaffoldPollResult {
   status: ScaffoldRunState
-  /** A sentence for the step's error, e.g. the run's conclusion and URL. */
+  /** A sentence for the step's error, e.g. the run's conclusion. */
   detail?: string
+  /** The job's run, once the runner can see it — recorded on the wait's row. */
+  runId?: string
+  /** Where a person reads the job's log (a GitHub Actions run's `html_url`). */
+  url?: string
 }
 
 export interface ScaffoldRunner {

@@ -105,6 +105,12 @@ export function deriveRunStatus(
   return 'running'
 }
 
+/** A wait's GitHub run page, when its row recorded one (`runUrl`, an https URL — nothing else). */
+function runUrlOf(ids: Record<string, string> | undefined): string | null {
+  const url = ids?.runUrl
+  return typeof url === 'string' && /^https:\/\/[^\s]+$/.test(url) ? url : null
+}
+
 /** The whole run, every step of `kind` in order (`pending` where no row exists yet). */
 export async function pipelineView(
   db: Database,
@@ -137,6 +143,7 @@ export async function pipelineView(
         error: row?.error ?? null,
         startedAt: row?.startedAt ?? null,
         finishedAt: row?.finishedAt ?? null,
+        url: runUrlOf(row?.externalIds),
       }
     }),
   }

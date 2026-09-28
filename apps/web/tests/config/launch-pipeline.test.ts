@@ -125,6 +125,8 @@ describe('P2 settings', () => {
       'app_create_role',
       'session_policy',
       'sessions_paused',
+      // Written by Launch itself: the cached public-URL check (`services/launch/public-url.ts`).
+      'public_url_check',
     ])
     expect(templatePinSchema.parse(DEFAULT_TEMPLATE_PIN)).toEqual({
       repo: 'rocketflare-dev/rocketflare',

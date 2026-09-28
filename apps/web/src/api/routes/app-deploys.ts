@@ -13,6 +13,8 @@
  * - `POST /:id/deploys/production` — "Deploy to production" with no release (the app's owners and
  *   admins, `mayDeployApp`): opens a `deploy.production` approval → 202 `{ ticket: null,
  *   approvalId }` (`ticket` is the pre-approval when a policy auto-approved it on the spot).
+ *   409 `launch_not_reachable` while Launch's public URL fails its check (`public-url.ts`): the
+ *   run it dispatches calls Launch back.
  *
  * Mounted by `routes/apps.ts` with `appsRouter.route('/', appDeploysRouter)` BEFORE its own
  * `/:slug` routes, behind the `/api/apps` mount's `authMiddleware`. Every lookup is tenant-first,
@@ -28,6 +30,7 @@ import {
   listDeploys,
   requestProductionDeploy,
 } from '../services/launch/deploy/decisions'
+import { requirePublicUrl } from '../services/launch/public-url'
 import type { AppContext } from '../types'
 import { ForbiddenError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
@@ -83,6 +86,8 @@ appDeploysRouter.post(
 
 appDeploysRouter.post('/:id/deploys/production', async c => {
   const ctx = await deployableApp(c)
+  // The dispatched `deploy.yml` calls Launch back at `/ci/deploy`: refuse while it cannot.
+  await requirePublicUrl(ctx.db, c.get('config'))
   const body: ProductionDeployResponse = await requestProductionDeploy(approvalDepsOf(c), {
     tenantId: ctx.tenantId,
     app: ctx.app,

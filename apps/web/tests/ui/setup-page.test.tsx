@@ -37,6 +37,7 @@ const overview: SetupOverview = {
     { id: 'resend', status: 'failed' },
     { id: 'github', status: 'todo' },
     { id: 'identity', status: 'ok' },
+    { id: 'public_url', status: 'failed' },
   ],
   settings: {
     apps_domain: 'company-apps.test',
@@ -90,6 +91,19 @@ const overview: SetupOverview = {
     oidcOnly: false,
     checks: [{ id: 'providers', label: 'Single sign-on configured', status: 'ok' }],
   },
+  publicUrl: {
+    url: 'http://localhost:3000',
+    status: 'failed',
+    checks: [
+      {
+        id: 'url',
+        label: 'Public URL',
+        status: 'failed',
+        detail: 'http://localhost:3000 is only reachable from this machine or network',
+      },
+    ],
+    checkedAt: null,
+  },
 }
 
 const checkResponse = {
@@ -103,6 +117,12 @@ function render() {
     '/api/admin/setup': overview,
     'PUT /api/admin/setup/credentials/cloudflare_api_token': checkResponse,
     'PUT /api/admin/setup/settings': overview,
+    'POST /api/admin/setup/public-url/check': {
+      url: 'http://localhost:3000',
+      status: 'failed',
+      checks: overview.publicUrl.checks,
+      checkedAt: '2026-09-28T00:00:00.000Z',
+    },
   })
   renderWithProviders(<Setup />, {
     session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
@@ -125,6 +145,24 @@ describe('Admin → Setup', () => {
     const cloudflare = screen.getByRole('region', { name: /2\.\s*Cloudflare/ })
     expect(within(cloudflare).getByText('Write permissions')).toBeInTheDocument()
     expect(within(cloudflare).getByText(/by ada@example.test/)).toBeInTheDocument()
+  })
+
+  it('shows the public URL step failing with why, and "Check now" probes it', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: /7\.\s*Public URL/ })
+    expect(card.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('failed')
+    expect(within(card).getByText('http://localhost:3000')).toBeInTheDocument()
+    expect(within(card).getByText(/only reachable from this machine/)).toBeInTheDocument()
+    expect(within(card).getByText('Never')).toBeInTheDocument()
+    fireEvent.click(within(card).getByRole('button', { name: 'Check now' }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith('/api/admin/setup/public-url/check') && init?.method === 'POST'
+        )
+      ).toBe(true)
+    )
   })
 
   it('shows a set secret as hidden, and Replace opens an empty field that PUTs what was typed', async () => {

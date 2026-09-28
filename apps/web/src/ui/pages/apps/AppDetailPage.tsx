@@ -49,6 +49,7 @@ import { usePermissions } from '@/ui/hooks/usePermissions'
 import {
   appAwaitsPipeline,
   PIPELINE_KICK_GRACE_MS,
+  useCancelPipeline,
   usePipeline,
   useRetryPipeline,
 } from '@/ui/hooks/usePipeline'
@@ -237,6 +238,7 @@ export default function AppDetailPage() {
     expectUntil: kick?.kind === 'teardown' ? kick.until : null,
   })
   const retry = useRetryPipeline(app?.id ?? '')
+  const cancel = useCancelPipeline(app?.id ?? '')
   const startWatching = (kind: PipelineKind) =>
     setKick({ kind, until: Date.now() + PIPELINE_KICK_GRACE_MS })
   const onRetry = (kind: PipelineKind) => () =>
@@ -369,6 +371,8 @@ export default function AppDetailPage() {
           canRetry={canManage}
           onRetry={onRetry('create')}
           retrying={retry.isPending}
+          onCancel={() => cancel.mutate()}
+          cancelling={cancel.isPending}
           subject={stagingHost && <span className="font-mono text-xs">{stagingHost}</span>}
         />
       )}

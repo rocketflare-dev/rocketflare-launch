@@ -291,6 +291,43 @@ describe('CreateAppModal', () => {
     expect(within(dialog).getByText(/Pick another slug/)).toBeInTheDocument()
   })
 
+  it('explains a Launch GitHub cannot reach, and links to its setup step, creating nothing', async () => {
+    renderCatalogue({
+      'POST /api/apps': jsonResponse(
+        {
+          error: 'Launch is not reachable from the internet at http://localhost:3000',
+          statusCode: 409,
+          code: 'launch_not_reachable',
+          details: {
+            url: 'http://localhost:3000',
+            checks: [
+              {
+                id: 'url',
+                label: 'Public URL',
+                status: 'failed',
+                detail: 'http://localhost:3000 is only reachable from this machine or network',
+              },
+            ],
+          },
+        },
+        409
+      ),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /Create app/ }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Payroll' } })
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    const alert = await within(dialog).findByRole('alert')
+    expect(alert).toHaveTextContent('Launch is not reachable from the internet')
+    expect(alert).toHaveTextContent('only reachable from this machine or network')
+    // Not the 409 "slug taken" hint.
+    expect(alert).not.toHaveTextContent(/Pick another slug/)
+    expect(within(alert).getByRole('link', { name: 'Setup › Public URL' })).toHaveAttribute(
+      'href',
+      '/admin/setup#setup-public_url'
+    )
+  })
+
   it('shows no host preview while the apps domain is unknown', async () => {
     // An empty catalogue reveals no domain, and a tenant admin cannot read the setup settings.
     const fetchMock = stubFetch({
@@ -422,6 +459,70 @@ describe('AppDetailPage — the launch', () => {
     })
   })
 
+  it('shows the scaffold job running with a link to its GitHub run, and stops a stuck launch', async () => {
+    const view = launchView('scaffold.wait', 'running')
+    const runUrl = 'https://github.com/acme/expenses/actions/runs/4242'
+    const wait = view.steps.find(s => s.step === 'scaffold.wait') as Record<string, unknown>
+    wait.url = runUrl
+    let cancelled = false
+    const fetchMock = renderDetail(
+      makeSession(),
+      { status: 'provisioning' },
+      {
+        ...pipelineRoute(view),
+        [`POST /api/apps/${APP_ID}/pipeline/cancel`]: () => {
+          cancelled = true
+          return jsonResponse({ runId: RUN_ID, step: 'scaffold.wait', terminated: true })
+        },
+      }
+    )
+    await screen.findByRole('heading', { name: /Launching · Scaffold from the template/ })
+    const panel = screen.getByRole('region', { name: 'Launch progress' })
+    // "Start the scaffold job" is done; the scaffold itself is RUNNING, not ticked.
+    const start = panel.querySelector('[data-step="scaffold.start"]')
+    const row = panel.querySelector('[data-step="scaffold.wait"]') as HTMLElement
+    expect(start?.getAttribute('data-status')).toBe('succeeded')
+    expect(row.getAttribute('data-status')).toBe('running')
+    expect(within(row).getByRole('img', { name: 'Running' })).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: /View run/ })).toHaveAttribute('href', runUrl)
+
+    // Stop asks first, then posts.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Stop' }))
+    expect(cancelled).toBe(false)
+    fireEvent.click(within(panel).getByRole('button', { name: 'Stop the launch' }))
+    await waitFor(() => expect(cancelled).toBe(true))
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith(`/api/apps/${APP_ID}/pipeline/cancel`) && init?.method === 'POST'
+      )
+    ).toBe(true)
+  })
+
+  it('shows a failed scaffold with its reason and run link, and offers the retry', async () => {
+    const view = launchView('scaffold.wait', 'failed')
+    const runUrl = 'https://github.com/acme/expenses/actions/runs/4242'
+    const wait = view.steps.find(s => s.step === 'scaffold.wait') as Record<string, unknown>
+    Object.assign(wait, {
+      url: runUrl,
+      attempt: 1,
+      error:
+        "The scaffold job failed: the GitHub Actions run ended “failure”. It calls Launch back at http://localhost:3000, which GitHub's runners cannot reach — see Setup › Public URL.",
+    })
+    renderDetail(makeSession(), { status: 'failed' }, pipelineRoute(view))
+    const panel = await screen.findByRole('region', { name: 'Launch progress' })
+    const row = panel.querySelector('[data-step="scaffold.wait"]') as HTMLElement
+    expect(row.getAttribute('data-status')).toBe('failed')
+    expect(within(row).getByRole('img', { name: 'Failed' })).toBeInTheDocument()
+    const alert = within(panel).getByRole('alert')
+    expect(alert).toHaveTextContent('Scaffold from the template failed')
+    expect(alert).toHaveTextContent('the GitHub Actions run ended “failure”')
+    expect(within(alert).getByRole('link', { name: /View run/ })).toHaveAttribute('href', runUrl)
+    expect(within(alert).getByRole('button', { name: /Retry from failed step/ })).toBeEnabled()
+    // A failed run is not running: nothing to stop.
+    expect(within(panel).queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+  })
+
   it('tells a member who cannot retry who can', async () => {
     renderDetail(member(), { status: 'failed' }, pipelineRoute(launchView('neon', 'failed')))
     const panel = await screen.findByRole('region', { name: 'Launch progress' })
@@ -430,6 +531,7 @@ describe('AppDetailPage — the launch', () => {
     ).toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Archive app/ })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
   })
 })
 

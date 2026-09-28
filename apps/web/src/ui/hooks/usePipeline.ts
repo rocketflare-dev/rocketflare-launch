@@ -1,7 +1,7 @@
 /**
  * Creating an app (Launch P2, `docs/plans/p2-create-app.md` §3 2e): `POST /api/apps`, the pipeline
- * view of a launch or a teardown (`GET /api/apps/:id/pipeline?kind=`), "Retry from failed step"
- * and the teardown itself.
+ * view of a launch or a teardown (`GET /api/apps/:id/pipeline?kind=`), "Retry from failed step",
+ * "Stop" for a launch stuck in a wait, and the teardown itself.
  *
  * Polling (ui.md): the pipeline has no server nudge, so it POLLS — but only while the server owes
  * an answer. That is `pipelinePollInterval`, a pure function on the cached status: a `running` run,
@@ -13,6 +13,7 @@
 import type { AppStatus, AppSummary } from '@launch/shared/launch-apps'
 import {
   type CreateAppRequest,
+  cancelPipelineResponseSchema,
   createAppResponseSchema,
   type PipelineKind,
   type PipelineRunStatus,
@@ -113,6 +114,19 @@ export function useRetryPipeline(appId: string) {
     mutationFn: (body: RetryPipelineRequest) =>
       api.post(`/api/apps/${appId}/pipeline/retry`, body, {
         schema: retryPipelineResponseSchema,
+        showErrorToast: true,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),
+  })
+}
+
+/** Stop a create run that is still running (a stuck wait), so it can be retried. */
+export function useCancelPipeline(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post(`/api/apps/${appId}/pipeline/cancel`, undefined, {
+        schema: cancelPipelineResponseSchema,
         showErrorToast: true,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),
