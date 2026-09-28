@@ -52,9 +52,19 @@ const NEON_KEY = 'neon-test-key-abcdefghijklmnop'
 const BASE_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 1))
 
+/** What the checkout's `apps/web/migrations` hashes to now (a turn may add a migration). */
+const migrations = { hash: 'a'.repeat(64) }
+
 beforeEach(() => {
   paused.value = false
+  migrations.hash = 'a'.repeat(64)
 })
+
+/** The parts of the kit bootstrap each `scripts/bootstrap.mjs` run left out, in order. */
+const bootstrapSkips = (sandbox: FakeSandbox) =>
+  sandbox.execs
+    .filter(e => e.command.includes('scripts/bootstrap.mjs'))
+    .map(e => e.opts?.env?.LAUNCH_BOOTSTRAP_SKIP ?? '')
 
 interface Harness {
   env: TestEnv
@@ -82,6 +92,7 @@ async function harness(
   }).script(sandbox =>
     sandbox
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
+      .onExec(/sha256sum/, () => ({ stdout: `migrations=${migrations.hash}\n` }))
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
       .onProcess(/claude -p/, claudeStreamJson({ text: 'Changed the heading.' }))
   )
@@ -574,6 +585,33 @@ describe('SessionWorkflow: the loop', () => {
       '30 minutes',
     ])
     expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 1 })
+    // The cold resume's bootstrap is against a prepared database: no seed, no check, and no
+    // migrate — the migrations did not change.
+    expect(bootstrapSkips(sandbox)).toEqual(['', 'seed,db-check,migrate'])
+  })
+
+  it('a cold resume migrates when the checkout’s migrations changed, and still never re-seeds', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        expect((await reload(h.row)).migrationsHash).toBe('a'.repeat(64))
+        // A turn added a migration; then a drain destroys the container.
+        migrations.hash = 'b'.repeat(64)
+        paused.value = true
+        return WAKE
+      }
+      if (n === 1) {
+        paused.value = false
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names).toContain('bootstrap#1')
+    expect(bootstrapSkips(h.sandbox())).toEqual(['', 'seed,db-check'])
+    expect(run.results).toContainEqual(expect.objectContaining({ migrated: true, seeded: false }))
+    expect((await reload(h.row)).migrationsHash).toBe('b'.repeat(64))
   })
 
   it('a drain cools a warm-suspended session at once', async () => {

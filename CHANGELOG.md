@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A coding session resumed COLD (its container was destroyed) no longer re-seeds its database or
+  re-runs the database check, and migrates only when the checkout's `apps/web/migrations` changed
+  since its last successful bootstrap (hashed, `sessions.migrations_hash`). A first boot is
+  unchanged. Migration 0030 adds the column: run `pnpm db:migrate`.
 - Resuming a coding session that went idle is fast again. An idle suspend (after
   `idleSuspendMinutes`) still checkpoints, but now KEEPS the container, dependencies and running
   dev server for 45 minutes (`SESSION_WARM_KEEP_MINUTES`); a resume inside that window restarts

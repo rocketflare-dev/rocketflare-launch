@@ -146,12 +146,62 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  * sandbox's commands run as root — the container is the isolation boundary, not the user. This
  * preload tells the bootstrap's ONE check otherwise; everything it runs (pnpm, migrate, seed)
  * still runs as root. A kit gap to report upstream: an explicit opt-out for sandboxes.
+ *
+ * **It also makes a resume's bootstrap lighter** (`BOOTSTRAP_SKIP_ENV`): the kit's bootstrap has
+ * no flag to skip its migrate, seed or database check, and reaches each ONLY as a `pnpm <script>`
+ * child (`spawn('pnpm', ['db:migrate'])`, `['seed', …]`, `['web', 'db:check']`). For each part
+ * named in `LAUNCH_BOOTSTRAP_SKIP` the preload answers that child with a one-line `node -e` that
+ * prints what the kit's step checks for ("Migrations applied") and exits 0 — the `spawn` binding
+ * the bootstrap imported is swapped through `syncBuiltinESMExports`, before the bootstrap loads.
+ * Everything else (`.dev.vars`, the `[ai]` toggle, the install) runs as on a first boot.
  */
 export const NOT_ROOT_PRELOAD = `${SESSION_LAUNCH_DIR}/bootstrap-in-sandbox.mjs`
-export const NOT_ROOT_PRELOAD_SCRIPT = `import os from 'node:os'
+export const NOT_ROOT_PRELOAD_SCRIPT = `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import os from 'node:os'
 const userInfo = os.userInfo
 os.userInfo = options => ({ ...userInfo(options), uid: 1000 })
+const skip = new Set((process.env.LAUNCH_BOOTSTRAP_SKIP || '').split(',').filter(Boolean))
+const stand = {
+  seed: ['seed', 'seed skipped by Launch: a resume never re-seeds'],
+  'db:migrate': ['migrate', 'Migrations applied (skipped by Launch: unchanged since the last bootstrap)'],
+  'db:check': ['db-check', 'db:check skipped by Launch: the database was checked at the first boot'],
+}
+if (skip.size > 0) {
+  const spawn = cp.spawn
+  cp.spawn = function (cmd, args, opts) {
+    const list = Array.isArray(args) ? args : []
+    const script = cmd === 'pnpm' ? (list[0] === 'web' ? list[1] : list[0]) : undefined
+    const hit = script && Object.hasOwn(stand, script) ? stand[script] : undefined
+    if (hit && skip.has(hit[0])) {
+      return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[1]) + ')'], opts)
+    }
+    return spawn.apply(this, arguments)
+  }
+  syncBuiltinESMExports()
+}
 `
+
+/** What a resume's bootstrap may leave out (`BOOTSTRAP_SKIP_ENV`, see {@link NOT_ROOT_PRELOAD}). */
+export type BootstrapSkip = 'seed' | 'migrate' | 'db-check'
+/** The environment variable the preload reads: comma-separated {@link BootstrapSkip}s. */
+export const BOOTSTRAP_SKIP_ENV = 'LAUNCH_BOOTSTRAP_SKIP'
+
+/** Where the kit keeps its SQL migrations — what a resume's migrate decision hashes. */
+export const MIGRATIONS_DIR = 'apps/web/migrations'
+
+/**
+ * One sha256 over every file under {@link MIGRATIONS_DIR} (path and content, sorted), printed as
+ * `migrations=<hex>`: equal hashes mean the session's database already has these migrations.
+ */
+export const MIGRATIONS_HASH_COMMAND = `cd ${SESSION_WORKSPACE} && h=$( (find ${MIGRATIONS_DIR} -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum) | sha256sum | cut -c1-64) && echo "migrations=$h"`
+
+/** The migrations hash of the checkout in `sandbox`, or null when it could not be computed. */
+export async function migrationsHash(sandbox: SandboxPort): Promise<string | null> {
+  const result = await sandbox.exec(MIGRATIONS_HASH_COMMAND, { timeoutMs: 60_000 })
+  if (result.exitCode !== 0) return null
+  return /migrations=([0-9a-f]{64})/.exec(result.stdout)?.[1] ?? null
+}
 
 export const BOOTSTRAP_COMMAND = `node --import ${NOT_ROOT_PRELOAD} scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev --no-open --no-plugins --yes`
 
@@ -232,6 +282,8 @@ export interface SessionBootstrapContext {
   /** The database the checkout runs on — a SECRET (see the header). */
   dbUri: string
   dev: SessionDevEnv
+  /** A resume against an already-prepared database: the parts of the kit bootstrap to leave out. */
+  skip?: readonly BootstrapSkip[]
 }
 
 export interface BootstrapTimings {
@@ -299,9 +351,12 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
+  const skip: Record<string, string> = ctx.skip?.length
+    ? { [BOOTSTRAP_SKIP_ENV]: ctx.skip.join(',') }
+    : {}
   const boot = await sandbox.exec(serialised(BOOTSTRAP_COMMAND, BOOTSTRAP_TIMEOUTS.bootstrapMs), {
     cwd: SESSION_WORKSPACE,
-    env: { ...env, LAUNCH_DB_URL: ctx.dbUri },
+    env: { ...env, ...skip, LAUNCH_DB_URL: ctx.dbUri },
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
   })
   if (boot.exitCode !== 0) {

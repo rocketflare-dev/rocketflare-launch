@@ -1284,7 +1284,12 @@ reload) is restarted as `<id>-rN` from the row.
   `sandbox.start` → `repo` (clone, `session/<short>`,
   `.claude/settings.local.json`) → `bootstrap` (the kit's bootstrap on the session's own database)
   → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
-  step writes a `step` event (the page's checklist).
+  step writes a `step` event (the page's checklist). The first successful `bootstrap` records the
+  checkout's `apps/web/migrations` hash (`sessions.migrations_hash`); a later one (a cold resume) is
+  against a prepared database, so it never re-seeds or re-checks it and migrates only when the hash
+  changed — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
+  `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): the kit has no flag for
+  it. The first boot is unchanged.
 - **Idle** is judged by `last_activity_at`, not by the wait alone: a live session's `wait#N`
   times out after what is left of the policy's `idleSuspendMinutes` counted from
   `last_activity_at` (`idleMinutesLeft`), and `suspend#N` with reason `idle` re-reads the row and
@@ -1366,7 +1371,11 @@ survives 45 idle minutes, and that the SDK does not stop it earlier, need a real
 on the same Durable Object seconds after a destroy has twice never answered under `wrangler dev`
 (`docs/SESSIONS-LOCAL.md` § A start that never answers): `CloudflareSandbox.start` now bounds each
 attempt (100 s) and retries once after a reset, and `onStop`'s database write is bounded (10 s) —
-the cause is not reproduced, so whether that is enough is unproven.
+the cause is not reproduced, so whether that is enough is unproven. The lighter cold-resume
+bootstrap swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
+`pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
+in full again (slower, still correct); the preload is proven under real Node with a stand-in
+bootstrap, not yet in a container.
 
 ### 18.10 The sandbox and the local backend
 

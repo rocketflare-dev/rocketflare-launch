@@ -109,6 +109,12 @@ export const sessions = pgTable(
     db: jsonb('db').$type<SessionDb>(),
     /** The session branch's connection string, sealed. Server-only. */
     dbUriSealed: text('db_uri_sealed'),
+    /**
+     * The hash of the checkout's `apps/web/migrations` at the last SUCCESSFUL bootstrap against
+     * this session's own branch. Non-null means the branch is prepared: a later bootstrap never
+     * re-seeds, and migrates only when the hash changed (`bootstrapStep`).
+     */
+    migrationsHash: text('migrations_hash'),
 
     // ---- GitHub token (the egress handler's; re-minted under 10 minutes left)
     githubTokenSealed: text('github_token_sealed'),

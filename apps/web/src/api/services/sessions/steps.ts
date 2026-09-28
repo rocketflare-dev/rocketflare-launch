@@ -53,8 +53,10 @@ import {
   type SessionPorts,
 } from './ports'
 import {
+  type BootstrapSkip,
   claudeSettingsLocal,
   claudeTranscriptPath,
+  migrationsHash,
   previewHostSuffix,
   resumeDevServer,
   SESSION_IMAGE_VERSION,
@@ -608,18 +610,46 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
   return { prepared: true }
 }
 
-/** Step `bootstrap[#K]`: the kit bootstrap against the session's own branch. */
+export interface BootstrapStepResult {
+  installMs: number
+  bootstrapMs: number
+  /** False on a resume whose migrations had not changed since the last bootstrap. */
+  migrated: boolean
+  /** False on every bootstrap after the first successful one: a resume never re-seeds. */
+  seeded: boolean
+}
+
+/**
+ * Step `bootstrap[#K]`: the kit bootstrap against the session's own branch. The FIRST successful
+ * one records the checkout's migrations hash (`sessions.migrations_hash`); a later one (a cold
+ * resume) is against a database that is already prepared, so it never re-seeds (nor re-checks
+ * the database), and migrates only when `apps/web/migrations` hashes differently now — the
+ * session's own turns may have added a migration.
+ */
 export async function bootstrapStep(
   scope: StepScope,
   bootId?: string
-): Promise<{ installMs: number; bootstrapMs: number }> {
+): Promise<BootstrapStepResult> {
   const session = await loadSession(scope)
   const uri = await decryptToken(scope.cfg, session.dbUriSealed)
   if (!uri) throw new Error('The session has no database')
   const sandbox = sandboxFor(scope, session)
-  return inOurContainer(scope, sandbox, bootId, () =>
-    sessionBootstrap({ sandbox, dbUri: uri, dev: devEnvFor(scope.cfg, session) })
-  )
+  return inOurContainer(scope, sandbox, bootId, async () => {
+    const hash = await migrationsHash(sandbox)
+    const prepared = session.migrationsHash !== null
+    const migrate = !prepared || hash === null || hash !== session.migrationsHash
+    const skip: BootstrapSkip[] = prepared
+      ? ['seed', 'db-check', ...(migrate ? [] : (['migrate'] as const))]
+      : []
+    const timings = await sessionBootstrap({
+      sandbox,
+      dbUri: uri,
+      dev: devEnvFor(scope.cfg, session),
+      skip,
+    })
+    if (hash) await updateSession(scope, { migrationsHash: hash })
+    return { ...timings, migrated: migrate, seeded: !prepared }
+  })
 }
 
 /**
