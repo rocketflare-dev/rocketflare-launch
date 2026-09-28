@@ -368,6 +368,11 @@ export const grantPushTargetSchema = z.object({
   attempts: z.number().int().nonnegative(),
   error: z.string().nullable(),
   names: z.array(z.string()),
+  /**
+   * The app's plain vars this put replaced with secrets (the first push onto a Worker still
+   * binding them as `plain_text` — Cloudflare's 10053 clash, plan §1.5). Names only.
+   */
+  shadowedVars: z.array(z.string()).default([]),
   finishedAt: z.coerce.date().nullable(),
 })
 export type GrantPushTarget = z.infer<typeof grantPushTargetSchema>
@@ -556,13 +561,17 @@ export const APP_CONFIG_REALTIME_ENTITY = 'app_config'
  * - `grant_expiring` → the app's owners, 7 days out: `{ appId, appSlug, grantId }` → the app's
  *   config page;
  * - `grant_rotation_due` → the resource's owners: `{ resourceId, environment, keys }` → the
- *   resource page.
+ *   resource page;
+ * - `grant_rotated` → the resource's owners, when a rotation reached every holder and the old
+ *   version is retired ("revoke the old credential at the vendor"): `{ resourceId, pushId }` →
+ *   the resource page.
  */
 export const GRANT_NOTIFICATION_TYPES = {
   needed: 'grant_needed',
   pushFailed: 'grant_push_failed',
   expiring: 'grant_expiring',
   rotationDue: 'grant_rotation_due',
+  rotated: 'grant_rotated',
 } as const
 export type GrantNotificationType =
   (typeof GRANT_NOTIFICATION_TYPES)[keyof typeof GRANT_NOTIFICATION_TYPES]
@@ -573,6 +582,8 @@ export const GRANT_ERROR_CODES = {
   notConfigured: 'grants_not_configured',
   /** 409: a push is already running for this resource × environment. */
   pushInProgress: 'push_in_progress',
+  /** 409: retrying a push that is running or already reached every holder. */
+  pushNotRetryable: 'push_not_retryable',
   /** 409: archiving a resource some app still holds. */
   resourceHasHolders: 'resource_has_holders',
   /** 409: the slug is taken in this organisation. */
@@ -591,6 +602,8 @@ export const GRANT_ERROR_CODES = {
   alreadyHeld: 'grant_already_held',
   /** 409: the grant is not in a state that allows this (revoke a revoked one, re-push a request). */
   grantNotActive: 'grant_not_active',
+  /** 400: a grant's `expiresAt` is not in the future. */
+  expiryPast: 'grant_expiry_past',
   /** A push target's error: the app environment has no `worker_name` recorded. */
   appHasNoWorker: 'app_has_no_worker',
 } as const

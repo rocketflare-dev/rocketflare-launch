@@ -18,7 +18,8 @@ import { type AppGrantRow, appGrants, apps } from '../../../db/schema'
 import { ConflictError, ForbiddenError, NotFoundError } from '../../utils/core/errors'
 import { type AuditActor, recordAudit } from '../launch/audit'
 import { isAppOwner } from '../oidc/policy'
-import { canSeePushes, startPush } from './push'
+import { canSeeHolders } from './access'
+import { startPush } from './push'
 import { loadResource } from './resources'
 import { type GrantDeps, type GrantViewer, requireGrantPushWorkflow } from './types'
 
@@ -54,7 +55,7 @@ export async function revokeGrant(
     .where(and(eq(apps.tenantId, tenantId), eq(apps.id, grant.appId)))
   if (!app) throw new NotFoundError('Grant not found')
   const allowed =
-    canSeePushes(viewer, resource) ||
+    canSeeHolders(viewer, resource) ||
     (await isAppOwner(db, tenantId, app, viewer.userId, viewer.groupIds))
   if (!allowed) {
     throw new ForbiddenError(

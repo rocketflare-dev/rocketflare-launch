@@ -59,7 +59,7 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { scrub } from '../launch/setup'
 import { notifyMany } from '../notifications'
 import { nudge, realtimeEvent } from '../realtime'
-import { grantBackingFor, hasPutDetailed } from './backing'
+import { grantBackingFor } from './backing'
 import { nudgePush } from './push'
 import { openValues } from './sealed'
 import type { GrantBacking, GrantDeps } from './types'
@@ -68,9 +68,6 @@ import type { GrantBacking, GrantDeps } from './types'
 export interface PushStepDeps extends GrantDeps {
   backing?: GrantBacking
 }
-
-/** Notification for a rotation that reached everyone: revoke the old credential at the vendor. */
-export const GRANT_ROTATED_NOTIFICATION = 'grant_rotated'
 
 const PUT_REASONS: readonly GrantPushReason[] = ['grant', 'rotate', 'repair']
 
@@ -352,13 +349,9 @@ export async function pushBatch(
     let shadowedVars: string[] = []
     try {
       if (isPut(p.reason)) {
-        if (hasPutDetailed(ctx.backing)) {
-          const done = await ctx.backing.putDetailed(script, ctx.entries)
-          names = done.names
-          shadowedVars = done.shadowedVars
-        } else {
-          names = await ctx.backing.put(script, ctx.entries)
-        }
+        const done = await ctx.backing.putDetailed(script, ctx.entries)
+        names = done.names
+        shadowedVars = done.shadowedVars
       } else {
         names = await ctx.backing.remove(script, await namesToRemove(d, ctx.resource, grant))
       }
@@ -373,6 +366,7 @@ export async function pushBatch(
         attempts: target.attempts + 1,
         error: null,
         names,
+        shadowedVars,
         finishedAt: at,
       })
       .where(and(eq(grantPushTargets.tenantId, p.tenantId), eq(grantPushTargets.id, target.id)))
@@ -588,7 +582,7 @@ export async function finishPush(
       owners,
       {
         tenantId: push.tenantId,
-        type: GRANT_ROTATED_NOTIFICATION,
+        type: GRANT_NOTIFICATION_TYPES.rotated,
         title: `${resource.displayName}: every app has the new ${push.environment} values`,
         body: `Version ${retiredVersions.join(', ')} is retired. Revoke the old credential at the vendor now; Launch cannot do that for you.`,
         data: { resourceId: push.resourceId, pushId: push.id },

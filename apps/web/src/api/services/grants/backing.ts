@@ -34,25 +34,7 @@ import {
   type WorkerMetadata,
 } from '../launch/cloudflare'
 import { loadPipelineVendors, requireVendor } from '../launch/pipeline/context'
-import type { GrantBacking, GrantDeps } from './types'
-
-/** What a put did: the names set, and the plain vars of the live version they replaced. */
-export interface GrantPutOutcome {
-  names: string[]
-  shadowedVars: string[]
-}
-
-/**
- * A backing that can say which plain vars a put replaced. `GrantBacking.put` returns names only
- * (5a's contract); the push step prefers `putDetailed` when the backing has it.
- */
-export interface DetailedGrantBacking extends GrantBacking {
-  putDetailed(script: string, entries: Readonly<Record<string, string>>): Promise<GrantPutOutcome>
-}
-
-export function hasPutDetailed(backing: GrantBacking): backing is DetailedGrantBacking {
-  return typeof (backing as Partial<DetailedGrantBacking>).putDetailed === 'function'
-}
+import type { GrantBacking, GrantDeps, GrantPutOutcome } from './types'
 
 /** Cloudflare's "Binding name already in use" — a secret named like a live var. */
 export function isBindingNameClash(err: unknown): boolean {
@@ -68,7 +50,7 @@ export interface WorkerSecretsBackingOptions {
   redact?: (...values: string[]) => void
 }
 
-export class WorkerSecretsBacking implements DetailedGrantBacking {
+export class WorkerSecretsBacking implements GrantBacking {
   readonly kind = 'cloudflare' as const
 
   constructor(private readonly opts: WorkerSecretsBackingOptions) {}
@@ -182,7 +164,7 @@ export class WorkerSecretsBacking implements DetailedGrantBacking {
  * Development only: records what a push WOULD have written — names, never values — and calls no
  * vendor, so the whole grant flow runs under `pnpm dev` with no Cloudflare account.
  */
-export class LocalGrantBacking implements DetailedGrantBacking {
+export class LocalGrantBacking implements GrantBacking {
   readonly kind = 'local' as const
   /** Every write, in order: `{ op, script, names }`. */
   readonly writes: { op: 'put' | 'remove'; script: string; names: string[] }[] = []
@@ -217,7 +199,7 @@ export class LocalGrantBacking implements DetailedGrantBacking {
 export async function grantBackingFor(
   deps: GrantDeps,
   redact?: (...values: string[]) => void
-): Promise<DetailedGrantBacking> {
+): Promise<GrantBacking> {
   if (deps.cfg.GRANT_BACKEND === 'local') return new LocalGrantBacking(deps.logger)
   const vendors = await loadPipelineVendors(deps.db, deps.cfg)
   const cf = requireVendor(vendors, 'cloudflare')

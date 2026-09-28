@@ -1,0 +1,1 @@
+ALTER TABLE "grant_push_targets" ADD COLUMN "shadowed_vars" jsonb DEFAULT '[]'::jsonb NOT NULL;

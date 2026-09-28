@@ -45,6 +45,7 @@ import {
 import { ConflictError, isUniqueViolation, NotFoundError } from '../../utils/core/errors'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
+import { canSeeHolders } from './access'
 import { loadResource } from './resources'
 import {
   type GrantDeps,
@@ -55,23 +56,8 @@ import {
   type StartPushResult,
 } from './types'
 
-/** 409: a retry of a push that is running or already succeeded. */
-export const PUSH_NOT_RETRYABLE = 'push_not_retryable'
-
 /** How many `-rN` suffixes a push may use before a retry is refused. */
 const MAX_RETRY_SUFFIX = 50
-
-/**
- * The resource's owners (its owner group's members) and admins. The same rule as 5b's
- * `access.canSeeHolders`, stated here so the push surface does not wait on that slice.
- */
-export function canSeePushes(
-  viewer: GrantViewer,
-  resource: Pick<SharedResourceRow, 'tenantId' | 'ownerGroupId'>
-): boolean {
-  if (viewer.tenantId !== resource.tenantId) return false
-  return viewer.isAdmin || viewer.groupIds.includes(resource.ownerGroupId)
-}
 
 /** The resource, when the viewer may see its pushes; the same 404 otherwise. */
 async function resourceForPushes(
@@ -80,7 +66,7 @@ async function resourceForPushes(
   resourceId: string
 ): Promise<SharedResourceRow> {
   const resource = await loadResource(db, viewer.tenantId, resourceId)
-  if (!canSeePushes(viewer, resource)) throw new NotFoundError('Shared resource not found')
+  if (!canSeeHolders(viewer, resource)) throw new NotFoundError('Shared resource not found')
   return resource
 }
 
@@ -234,7 +220,9 @@ export async function retryPush(
       push.status === 'succeeded'
         ? 'This push reached every holder; there is nothing to retry'
         : 'This push is still running',
-      push.status === 'succeeded' ? PUSH_NOT_RETRYABLE : GRANT_ERROR_CODES.pushInProgress
+      push.status === 'succeeded'
+        ? GRANT_ERROR_CODES.pushNotRetryable
+        : GRANT_ERROR_CODES.pushInProgress
     )
   }
   let claimed: GrantPushRow | undefined
@@ -408,6 +396,7 @@ export async function getPush(
     attempts: target.attempts,
     error: target.error,
     names: target.names,
+    shadowedVars: target.shadowedVars,
     finishedAt: target.finishedAt,
   }))
   return {

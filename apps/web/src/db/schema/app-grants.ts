@@ -185,6 +185,11 @@ export const grantPushTargets = pgTable(
     error: text('error'),
     /** The keys put or removed — names only. */
     names: jsonb('names').$type<string[]>().notNull().default([]),
+    /**
+     * The plain vars of the live version the put replaced with secrets (the backing's 10053
+     * remedy, plan §1.5) — names only; empty when nothing clashed.
+     */
+    shadowedVars: jsonb('shadowed_vars').$type<string[]>().notNull().default([]),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
   },
   table => [

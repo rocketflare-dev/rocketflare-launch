@@ -109,14 +109,26 @@ export function requireGrantPushWorkflow(
 
 // ---- the backing seam (plan §1.11, spec/12 #11) ------------------------------------------------
 
+/** What a put did: the names set, and the plain vars of the live version it replaced. */
+export interface GrantPutOutcome {
+  names: string[]
+  /**
+   * The `plain_text` / `json` bindings of the serving version the put replaced with secrets
+   * (Cloudflare's 10053 remedy, `backing.ts`) — empty when nothing clashed.
+   */
+  shadowedVars: string[]
+}
+
 /**
  * Where a push writes. `put` sets each entry as a Worker secret on `script` and returns the names
- * put; `remove` deletes each name (a 404 counts as done) and returns the names removed. A value
- * never leaves through a return, an error message or a log line — the implementation registers
- * every value for redaction first (the `putWorkerSecrets` pattern).
+ * put; `putDetailed` is the same write that also says which plain vars it replaced (what the push
+ * step calls); `remove` deletes each name (a 404 counts as done) and returns the names removed. A
+ * value never leaves through a return, an error message or a log line — the implementation
+ * registers every value for redaction first (the `putWorkerSecrets` pattern).
  */
 export interface GrantBacking {
   readonly kind: GrantBackend
   put(script: string, entries: Readonly<Record<string, string>>): Promise<string[]>
+  putDetailed(script: string, entries: Readonly<Record<string, string>>): Promise<GrantPutOutcome>
   remove(script: string, names: readonly string[]): Promise<string[]>
 }

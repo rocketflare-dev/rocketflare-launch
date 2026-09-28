@@ -21,7 +21,6 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { open } from '@/api/services/approvals/engine'
 import { LocalGrantBacking, WorkerSecretsBacking } from '@/api/services/grants/backing'
 import { getPush, listPushes, retryPush, startPush } from '@/api/services/grants/push'
-import { GRANT_ROTATED_NOTIFICATION } from '@/api/services/grants/push-steps'
 import { revokeGrant } from '@/api/services/grants/revoke'
 import { rotationDueKeys, sweepGrants } from '@/api/services/grants/sweep'
 import type { GrantBacking, GrantViewer } from '@/api/services/grants/types'
@@ -293,7 +292,7 @@ describe('a rotation', () => {
     expect(await auditOf(world.tenant.id, 'shared_resource.values.retired')).toHaveLength(1)
     const [finished] = await auditOf(world.tenant.id, 'grant.push.finished')
     expect(finished?.summary.after).toMatchObject({ status: 'succeeded', total: 3, succeeded: 3 })
-    const told = await notificationsOf(world.tenant.id, GRANT_ROTATED_NOTIFICATION)
+    const told = await notificationsOf(world.tenant.id, GRANT_NOTIFICATION_TYPES.rotated)
     expect(told.map(n => n.userId)).toEqual([world.carol.id])
     expect(told[0]?.body).toMatch(/Revoke the old credential at the vendor/)
 
@@ -552,6 +551,12 @@ describe('the first push onto a Worker that still binds the var as plain_text', 
     expect(pushed?.summary.after).toMatchObject({
       shadowedVars: ['M365_TENANT_ID', 'M365_CLIENT_ID'],
     })
+    // …and the target row keeps the names too (0026), which the push view returns.
+    const [target] = await db
+      .select()
+      .from(grantPushTargets)
+      .where(eq(grantPushTargets.pushId, pushId))
+    expect(target?.shadowedVars).toEqual(['M365_TENANT_ID', 'M365_CLIENT_ID'])
     // Read back, the copy names its secrets and never shows them.
     const readBack = await client().getVersion(cloud.opts.accountId, script, live?.id as string)
     expect(JSON.stringify(readBack)).toContain('M365_CLIENT_SECRET')

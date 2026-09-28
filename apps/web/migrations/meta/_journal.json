@@ -183,6 +183,13 @@
       "when": 1790565423523,
       "tag": "0025_launch-p5-grants",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790568128462,
+      "tag": "0026_launch-p5-shadowed-vars",
+      "breakpoints": true
     }
   ]
 }

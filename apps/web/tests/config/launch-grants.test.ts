@@ -330,6 +330,7 @@ describe('paths, entities, notifications and codes', () => {
       'grant_push_failed',
       'grant_expiring',
       'grant_rotation_due',
+      'grant_rotated',
     ])
   })
 
@@ -339,5 +340,7 @@ describe('paths, entities, notifications and codes', () => {
     for (const code of codes) expect(code).toMatch(/^[a-z][a-z_]*$/)
     expect(GRANT_ERROR_CODES.notConfigured).toBe('grants_not_configured')
     expect(GRANT_ERROR_CODES.pushInProgress).toBe('push_in_progress')
+    expect(GRANT_ERROR_CODES.pushNotRetryable).toBe('push_not_retryable')
+    expect(GRANT_ERROR_CODES.expiryPast).toBe('grant_expiry_past')
   })
 })

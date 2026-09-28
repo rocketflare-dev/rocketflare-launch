@@ -52,10 +52,12 @@ export function notificationLink(notification: Pick<Notification, 'type' | 'data
       const appSlug = slug(notification.data.appSlug)
       return appSlug ? appConfigPath(appSlug) : null
     }
-    // Launch P5: a push failed for some holders, or a secret is due for rotation — the resource's
-    // page is where the owners retry or set new values.
+    // Launch P5: a push failed for some holders, a secret is due for rotation, or a rotation
+    // reached everyone (revoke the old credential at the vendor) — the resource's page is where
+    // the owners retry, set new values or read the push.
     case GRANT_NOTIFICATION_TYPES.pushFailed:
-    case GRANT_NOTIFICATION_TYPES.rotationDue: {
+    case GRANT_NOTIFICATION_TYPES.rotationDue:
+    case GRANT_NOTIFICATION_TYPES.rotated: {
       const resourceId = id(notification.data.resourceId)
       return resourceId ? sharedResourcePath(resourceId) : null
     }

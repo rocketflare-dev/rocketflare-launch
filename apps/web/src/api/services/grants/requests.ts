@@ -297,7 +297,10 @@ export async function requestGrant(
     )
   }
   if (input.expiresAt && input.expiresAt <= now) {
-    throw new BadRequestError('A grant’s expiry must be in the future', 'grant_expiry_past')
+    throw new BadRequestError(
+      'A grant’s expiry must be in the future',
+      GRANT_ERROR_CODES.expiryPast
+    )
   }
 
   // Every refusal before the first row: a request for two environments is all or nothing.
