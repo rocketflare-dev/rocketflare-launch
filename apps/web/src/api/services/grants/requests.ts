@@ -348,24 +348,6 @@ export async function requestGrant(
       .returning()
     // Another request won the live index between the check and the insert.
     if (!grant) throw alreadyHeld(resource, environment)
-    await recordAudit(db, {
-      tenantId,
-      ...actor,
-      action: 'grant.requested',
-      targetType: 'grant',
-      targetId: grant.id,
-      appId: app.id,
-      summary: {
-        after: {
-          resourceId: resource.id,
-          resource: resource.slug,
-          environment,
-          keys: items.map(i => i.key),
-          expiresAt: grant.expiresAt?.toISOString() ?? null,
-        },
-      },
-    })
-
     const own = resource.policies[environment]
     const policy = own
       ? approvalPolicySchema.parse(own)
@@ -400,6 +382,26 @@ export async function requestGrant(
         .where(and(eq(appGrants.tenantId, tenantId), eq(appGrants.id, grant.id)))
       throw err
     }
+    // Audited once the approval exists, so the row carries its id like every later grant row.
+    await recordAudit(db, {
+      tenantId,
+      ...actor,
+      action: 'grant.requested',
+      targetType: 'grant',
+      targetId: grant.id,
+      appId: app.id,
+      approvalId,
+      summary: {
+        after: {
+          resourceId: resource.id,
+          resource: resource.slug,
+          environment,
+          keys: items.map(i => i.key),
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
+        },
+      },
+    })
+
     // An auto-approve already set it (in `applyInTx`); the ordinary path links it here.
     const [linked] = await db
       .update(appGrants)
