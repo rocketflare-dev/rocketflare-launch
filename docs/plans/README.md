@@ -79,6 +79,17 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
    - Open the old failed session `a07e371e…` once. Its reconcile deletes the leftover Neon branch (`ep-wild-silence-…`).
    - Start a new session. The `dev` database is already prepared.
    - **Unproven:** Neon over WebSocket through the egress interception, `workerd` inside the container trusting the interception CA, and a real Claude turn (the Anthropic key must be set in Setup).
+   - **Local preview routing.** Preview hosts (`<port>-<shortId>-<token>.clewro.com`) need `*.clewro.com` pointed at the cfld tunnel, with an ingress rule to `localhost:3001` (the Worker, where the preview gateway runs; Vite on :3000 would rewrite the `Host` header). cfld must quote a wildcard hostname in its YAML. Until then the preview returns a 522.
+   - **Investigate: faster session boot through a persistent dependency cache.** Run `pnpm install` once per lockfile into an R2-backed store, then mount it into every sandbox, keyed by a hash of `pnpm-lock.yaml` ([Sandbox persistent storage](https://developers.cloudflare.com/sandbox/tutorials/persistent-storage/)).
+     - **Why:** the image's warm store (`containers/session/Dockerfile`) is fetched for `KIT_TAG=0.15.0`. Apps are on 0.15.5 and drift further with every dependency change, so `--prefer-offline` falls back to the registry more over time. S7 measured about 5 s warm against about 17 s cold.
+     - **Questions:**
+       - Mount the pnpm store (content-addressed, so it is shared across lockfiles) or a tarred `node_modules` per lockfile hash (no link step, but one copy per hash)?
+       - What is FUSE/s3fs read speed against local disk for pnpm's hard links? Copy-on-first-use may be needed.
+       - Who writes the cache (the `prepare` run, or the first session on a new hash) without two writers racing?
+       - Does the cache need its own egress allow-list entry for R2?
+       - How is the cache evicted?
+       - Does it work locally under `wrangler dev`, or only on real containers?
+     - **Where:** `services/sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, step 1 of `sessionBootstrap`).
 2. **Show deploys in progress on the app overview and the catalogue.** A production deploy never showed as in progress: only the audit log recorded it. The overview should show, from the deploy ticket, dispatched → approved → uploaded → migrating → activating → done or failed, with the run link, polled on page read like `pipeline/wait-poll.ts`.
 3. **Small fixes found along the way:**
    - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the next kit change, through a commit pin.
