@@ -10,8 +10,46 @@
  *   before any deploy that touches the session image or `[[containers]]`.
  * - `POST /undrain` → `drainResponseSchema`: clears it; people resume their sessions.
  *
- * Audited `sessions.drained` / `sessions.undrained`. From 3a it registers nothing.
+ * Audited `sessions.drained` / `sessions.undrained` (in each organisation that had a live session,
+ * and in the operator's own).
  */
+import { sessionListQuerySchema } from '@launch/shared/launch-sessions'
+import { auditActor } from '../services/launch/audit'
+import {
+  drainSessions,
+  listAllSessions,
+  sessionsPaused,
+  undrainSessions,
+} from '../services/sessions/lifecycle'
+import { toAdminSession } from '../services/sessions/views'
+import { withAuth } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
+import { validate } from '../utils/routes/validate'
 
 export const adminSessionsRouter = createRouter()
+
+adminSessionsRouter.get('/', validate('query', sessionListQuerySchema), async c => {
+  const { db } = withAuth(c)
+  const rows = await listAllSessions(db, c.req.valid('query').scope)
+  return c.json({
+    items: rows.map(r => toAdminSession(r.session, r.appSlug)),
+    paused: await sessionsPaused(db),
+  })
+})
+
+adminSessionsRouter.post('/drain', async c => {
+  const { db, user, tenantId, logger } = withAuth(c)
+  return c.json(
+    await drainSessions(db, c.env, {
+      actor: auditActor(c),
+      actorTenantId: tenantId,
+      userId: user.id,
+      logger,
+    })
+  )
+})
+
+adminSessionsRouter.post('/undrain', async c => {
+  const { db, tenantId } = withAuth(c)
+  return c.json(await undrainSessions(db, { actor: auditActor(c), actorTenantId: tenantId }))
+})

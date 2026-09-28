@@ -10,8 +10,10 @@
  *
  * Egress (plan §1.4, §1.5, S7):
  *
- * - `enableInternet = false` and an allow-list (`SESSION_BASE_ALLOWED_HOSTS`, plus
- *   `host.docker.internal` when local — `setAllowedHosts` at start).
+ * - `enableInternet = false` and an allow-list: `SESSION_BASE_ALLOWED_HOSTS`, plus
+ *   `host.docker.internal` under `SESSION_BACKEND=local` (the laptop's Neon proxy and git server).
+ *   The session adapter re-applies the same list with `setAllowedHosts` at start
+ *   (`sessionAllowedHosts`), so the field and the runtime list cannot disagree.
  * - **`interceptHttps = true`, set explicitly.** It defaults to `false` on the stable packages
  *   (containers 0.3.7 / sandbox 0.12.10) despite the docs, and without it no HTTPS leaves a locked
  *   sandbox, allow-listed or not (S7 finding 1).
@@ -20,24 +22,78 @@
  *   allow-list for its handler to run at all (S7: otherwise the proxy answers 520). The handlers
  *   identify the session by `ctx.containerId` — this object's id — never by anything the sandbox
  *   sends.
+ * - **`wrangler dev` honours all of it** (checked in slice 3b against 0.12.10 / wrangler 4.127: a
+ *   handler runs for HTTP and HTTPS, `ctx.containerId` is `idFromName(name).toString()`, a host off
+ *   the list answers 520, `setAllowedHosts` applies at runtime). One local difference:
+ *   `host.docker.internal` is reachable from a local container even when it is NOT on the list —
+ *   it is on the list anyway, so the deployed behaviour is what the code states.
  *
- * **Slice 3b owns this file** (the allow-list at start, `onStart` / `onStop` adding to
- * `sessions.container_seconds`). From 3a it carries the egress settings and the two handlers, so
- * 3c and 3d only ever edit their own egress module.
+ * Container time (`sessions.container_seconds`): `onStart` stamps the start in this object's
+ * storage, `onStop` adds the elapsed seconds to the session (`recordContainerStop`) — and, when the
+ * container went away under a session that still thinks it is live (the SDK's idle sleep, a
+ * rollout), marks it `suspended` so the next wake boots again.
  */
 import { ContainerProxy, Sandbox } from '@cloudflare/sandbox'
+import { type AppConfig, loadConfig } from '../../config'
+import { openDatabase } from '../../db/client'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
 import { handleGitHub } from '../services/sessions/egress/github'
+import { recordContainerStop } from '../services/sessions/lifecycle'
 import { SESSION_BASE_ALLOWED_HOSTS } from '../services/sessions/ports'
+import { sessionAllowedHosts } from '../services/sessions/sandbox/cloudflare-sandbox'
 import type { AppBindings } from '../types'
+import { loggerFor } from '../utils/core/logger'
 
 export { ContainerProxy }
+
+/** Where `onStart` stamps the container's start (ms since the epoch). */
+const STARTED_AT_KEY = 'launch:container-started-at'
+
+/** The allow-list for this deployment: the base, plus the laptop under `SESSION_BACKEND=local`. */
+export function sandboxAllowedHosts(env: AppBindings): string[] {
+  try {
+    return sessionAllowedHosts(loadConfig(env))
+  } catch {
+    // A config that does not load is the Worker's problem to report; never widen the list for it.
+    return [...SESSION_BASE_ALLOWED_HOSTS]
+  }
+}
 
 export class SessionSandbox extends Sandbox<AppBindings> {
   /** Off by default on the stable packages despite the docs — see the header (S7 finding 1). */
   interceptHttps = true
   enableInternet = false
-  allowedHosts = [...SESSION_BASE_ALLOWED_HOSTS]
+  allowedHosts = sandboxAllowedHosts(this.env)
+
+  override async onStart(): Promise<void> {
+    await super.onStart()
+    await this.ctx.storage.put(STARTED_AT_KEY, Date.now())
+  }
+
+  override async onStop(params: Parameters<Sandbox<AppBindings>['onStop']>[0]): Promise<void> {
+    await super.onStop(params)
+    const startedAt = await this.ctx.storage.get<number>(STARTED_AT_KEY)
+    await this.ctx.storage.delete(STARTED_AT_KEY)
+    if (!startedAt) return
+    let cfg: AppConfig
+    try {
+      cfg = loadConfig(this.env)
+    } catch {
+      return
+    }
+    const handle = openDatabase({ ...cfg, HYPERDRIVE: this.env.HYPERDRIVE })
+    try {
+      await recordContainerStop(handle.db, this.ctx.id.toString(), (Date.now() - startedAt) / 1000)
+    } catch (err) {
+      // Metering is best-effort: a lost stop costs a few seconds of accounting, never the session.
+      loggerFor(cfg, { durableObject: 'session-sandbox' }).warn(
+        { err, exitCode: params?.exitCode, reason: params?.reason },
+        'session-sandbox: could not record container time'
+      )
+    } finally {
+      await handle.close()
+    }
+  }
 }
 
 SessionSandbox.outboundByHost = {

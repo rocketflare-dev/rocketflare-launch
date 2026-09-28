@@ -16,7 +16,6 @@ import { handleAnthropic } from '@/api/services/sessions/egress/anthropic'
 import { handleGitHub } from '@/api/services/sessions/egress/github'
 import {
   defaultSessionPorts,
-  NotWiredError,
   SandboxInterruptedError,
   SESSION_BASE_ALLOWED_HOSTS,
 } from '@/api/services/sessions/ports'
@@ -217,7 +216,7 @@ describe('the mounts', () => {
 })
 
 describe('defaultSessionPorts', () => {
-  it('binds by SESSION_BACKEND and fails by name where a slice has not wired an adapter', async () => {
+  it('binds by SESSION_BACKEND, and each adapter fails by name when it cannot act', async () => {
     const env = createTestEnv()
     const cloudPorts = defaultSessionPorts(env, loadConfig(env))
     const sandbox = cloudPorts.sandbox('0b0e4c1e-5d7b-4c5a-9d52-1f0f3c4b2a10')
@@ -225,10 +224,18 @@ describe('defaultSessionPorts', () => {
     expect(sandbox.id).toBe(
       env.SESSION_SANDBOX.idFromName('0b0e4c1e-5d7b-4c5a-9d52-1f0f3c4b2a10').toString()
     )
-    expect(() => sandbox.exec('true')).toThrow(NotWiredError)
-    expect(() =>
-      cloudPorts.sessionDb(db).createBranch({} as never, { id: 'x', shortId: 'y' })
-    ).toThrow(/NeonSessionDb/)
+    // 3b: the SDK adapter drives the Durable Object stub — every command in its own `bash -c`.
+    await sandbox.setAllowedHosts(['registry.npmjs.org'])
+    expect(stubs(env).sandboxes?.calls.at(-1)).toMatchObject({
+      method: 'setAllowedHosts',
+      args: [['registry.npmjs.org']],
+    })
+    await expect(
+      cloudPorts.sessionDb(db).createBranch({ slug: 'x', neonProjectId: null } as never, {
+        id: 'x',
+        shortId: 'y',
+      })
+    ).rejects.toThrow(/no Neon project/)
     expect(cloudPorts.repoHost(db).gitUpstream({ owner: 'o', repo: 'r' })).toBe(
       'https://github.com'
     )
@@ -240,7 +247,10 @@ describe('defaultSessionPorts', () => {
     const local = defaultSessionPorts(localEnv, loadConfig(localEnv))
     expect(local.repoHost(db).gitUpstream({ owner: 'o', repo: 'r' })).toBe('http://localhost:9420')
     expect(await local.repoHost(db).gitAuth({ owner: 'o', repo: 'r' })).toBeNull()
-    expect(() => local.sessionDb(db).devUriFor({} as never)).toThrow(/LocalSessionDb/)
+    // No SESSION_LOCAL_DB_URL: the local database port refuses by name.
+    await expect(local.sessionDb(db).devUriFor({ slug: 'demo' } as never)).rejects.toThrow(
+      /SESSION_LOCAL_DB_URL/
+    )
     expect(stubs(env).sessionWorkflow?.created).toEqual([])
   })
 })
@@ -355,7 +365,7 @@ describe('the fakes', () => {
   })
 })
 
-describe('the placeholder image', () => {
+describe('the session image', () => {
   it('stays on the Worker’s stable Sandbox line', () => {
     const dockerfile = readFileSync(
       path.resolve(__dirname, '../../containers/session/Dockerfile'),

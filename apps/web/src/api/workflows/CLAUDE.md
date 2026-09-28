@@ -86,14 +86,28 @@ Worker in that same step and returns ids only.
 
 `SessionWorkflow` (`SESSION_WORKFLOW`, `launch-session[-staging]`) drives one coding session;
 params `SessionWorkflowParams` (`{ sessionId, tenantId }`, `@launch/shared/launch-sessions`), the
-instance id is the session id (`<id>-rN` after a restart). **A stub from slice 3a** (`run` throws
-`NotWiredError`); slice 3b builds it: `claim → db → sandbox.start → repo → bootstrap → dev`, then a
-loop of `wait#N` (`waitForEvent(SESSION_WAKE_EVENT, idle timeout)` — the golden-tested event type)
-dispatching to `turn#N` (3c) · `checkpoint#N` · `suspend#N` · `resume#N` · `ship` (3d) · `end`, and
-`cleanup` ALWAYS (destroy the sandbox, delete the branch). Same rules as above: `withStepDatabase`,
-distinct names per round, the row is the truth (a wake carries nothing), no secret in a step result.
-Its dependencies are the four ports of `services/sessions/ports.ts`, bound once by
-`defaultSessionPorts(env, cfg)`; tests set `workflow.overrides = { ports }` with
-`createFakeSessionPorts()` (`tests/helpers/sessions.ts`) and drive `run` with
-`createFakeWorkflowStep({ onWait })`.
+instance id is the session id (`<id>-rN` after a restart — `wakeOrRestart`,
+`services/sessions/lifecycle.ts`). The class wires names and configs only; the bodies are plain
+functions in `../services/sessions/steps.ts` over a `StepScope` (one DB client, the ports, the
+hooks, a step realtime).
 
+Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (each
+wrapped in `withProgress`, which writes the boot checklist's `step` events) → a loop of
+`inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · wait) and one of
+`wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = the idle policy, or the suspended expiry),
+`turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `checkpoint#N` | `rollout#N`,
+`ship#N` (3d's `ship`), `suspend#N`, `resume#N` → `sandbox.start#K … transcript#K`, `end#N` →
+`fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless
+`shipped`/`failed`, audit `session.ended`). A pending message after boot or resume runs at once
+(`inspect` before any wait).
+
+The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
+bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`
+claims `ready → working`, `ship` claims `shipping`), and the Workflow reads the row afterwards. A
+`claim` that finds a live row (its instance was lost) destroys the container and resumes from the
+branch.
+
+Tests (`tests/api/session-workflow.test.ts`) set `workflow.overrides = { ports, hooks }` —
+`createFakeSessionPorts()` with the real `NeonSessionDb` over the FakeCloud, 3c's real `runTurn`
+with fast timers, recording checkpoint/ship fakes — and drive `run` with
+`createFakeWorkflowStep({ onWait })`, asserting the exact step names.

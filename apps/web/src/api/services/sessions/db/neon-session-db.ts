@@ -2,41 +2,222 @@
  * `NeonSessionDb` — the `SessionDbPort` on Neon (`SESSION_BACKEND=cloud`, plan §1.7): the app's
  * `dev` branch (`init_source: 'schema-only'` from `main`, role `session_owner`, empty database
  * `session_app`), and per session a branch of `dev` with `session_owner`'s password reset. Built on
- * `NeonClient` (`services/launch/neon.ts`: `createBranch({ initSource, endpoints })`,
- * `deleteBranch`, `listBranchEndpoints`, `resetRolePassword`, `connectionUri`) and the sealed
- * `neon_org_api_key` credential, read through `getCredential(db, cfg, 'neon_org_api_key')`.
+ * `NeonClient` (`services/launch/neon.ts`) and the sealed `neon_org_api_key` credential.
  *
- * **Slice 3b owns this file.** From 3a it is a stub whose every method throws `NotWiredError`.
+ * - **`dev` never holds production data.** It is cut `schema-only` from `main` and filled by a
+ *   PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
+ *   same seeded workspace in ~1 s (S7: a prepared parent saves ~45 s of migrate + seed).
+ * - **One role per branch, one password per session.** A branch inherits its parent's roles WITH
+ *   their passwords, so `createBranch` resets `session_owner` on the new branch: the credential a
+ *   session's container holds opens that branch and nothing else. `devUriFor` resets it on `dev`
+ *   for the same reason (a prepare run's container never learns a password a session also uses).
+ * - **Every write is retry-safe**, because a Workflow step may run twice: an existing `dev`, role,
+ *   database or `session-<short>` branch is found and reused, and a branch already deleted is
+ *   success.
+ * - The URIs returned are SECRETS: the caller seals them (`db_uri_sealed`) and never returns them
+ *   from a step. Direct (unpooled) endpoints — the kit's migrations open a WebSocket pool.
  */
 import type { AppSessionDb, SessionDb } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
-import { NotWiredError, type SessionAppRef, type SessionBranch, type SessionDbPort } from '../ports'
+import { ServiceUnavailableError } from '../../../utils/core/errors'
+import { getCredential } from '../../launch/credentials'
+import {
+  isNeonNotFound,
+  NeonApiError,
+  type NeonBranch,
+  NeonClient,
+  type NeonOperation,
+} from '../../launch/neon'
+import type { SessionAppRef, SessionBranch, SessionDbPort } from '../ports'
+
+/** The prepared parent every session branches from. */
+export const DEV_BRANCH_NAME = 'dev'
+/** The role a session's app connects as, on `dev` and every branch of it. */
+export const SESSION_DB_ROLE = 'session_owner'
+/** The database the kit migrates and seeds (`dev`) and a session runs on (its branch). */
+export const SESSION_DB_NAME = 'session_app'
+
+export const sessionBranchNameFor = (shortId: string): string => `session-${shortId}`
+
+const isConflict = (err: unknown) =>
+  err instanceof NeonApiError && (err.status === 409 || /already exists/i.test(err.message))
+
+export interface NeonSessionDbOptions {
+  fetch?: typeof fetch
+  sleep?: (ms: number) => Promise<void>
+  /** Tests: the Neon org key, instead of reading the sealed credential. */
+  apiKey?: string
+}
 
 export class NeonSessionDb implements SessionDbPort {
+  private client: NeonClient | null = null
+
   constructor(
     readonly db: Database,
     readonly cfg: AppConfig,
     /** Injected `fetch` / `sleep` for tests (the `NeonOptions` of `NeonClient`). */
-    readonly opts: { fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {}
+    readonly opts: NeonSessionDbOptions = {}
   ) {}
 
-  ensureDev(_app: SessionAppRef): Promise<AppSessionDb> {
-    throw new NotWiredError('NeonSessionDb.ensureDev', '3b')
+  private async neon(): Promise<NeonClient> {
+    if (this.client) return this.client
+    let apiKey = this.opts.apiKey
+    if (!apiKey) {
+      const stored = await getCredential(this.db, this.cfg, 'neon_org_api_key')
+      if (!stored) {
+        throw new ServiceUnavailableError(
+          'Coding sessions need the Neon credential: connect Neon in Setup',
+          'neon_not_configured'
+        )
+      }
+      apiKey = stored.secret.apiKey
+    }
+    this.client = new NeonClient(apiKey, { fetch: this.opts.fetch, sleep: this.opts.sleep })
+    return this.client
   }
 
-  createBranch(
-    _app: SessionAppRef,
-    _session: { id: string; shortId: string }
+  private projectOf(app: SessionAppRef): string {
+    if (!app.neonProjectId) {
+      throw new ServiceUnavailableError(
+        `App ${app.slug} has no Neon project, so it has no database to branch`,
+        'app_has_no_database'
+      )
+    }
+    return app.neonProjectId
+  }
+
+  private async branches(projectId: string): Promise<NeonBranch[]> {
+    const neon = await this.neon()
+    const body = await neon.get<{ branches?: NeonBranch[] }>(
+      `/projects/${encodeURIComponent(projectId)}/branches`
+    )
+    return body.branches ?? []
+  }
+
+  private async settle(projectId: string, operations: readonly NeonOperation[] | undefined) {
+    if (operations?.length) await (await this.neon()).waitForOperations(projectId, operations)
+  }
+
+  async ensureDev(app: SessionAppRef): Promise<AppSessionDb> {
+    const projectId = this.projectOf(app)
+    const neon = await this.neon()
+    const all = await this.branches(projectId)
+    let dev =
+      (app.sessionDb?.devBranchId && all.find(b => b.id === app.sessionDb?.devBranchId)) ||
+      all.find(b => b.name === DEV_BRANCH_NAME)
+    if (!dev) {
+      const main = all.find(b => b.default) ?? all.find(b => b.name === 'main') ?? all[0]
+      if (!main) throw new ServiceUnavailableError('The app’s Neon project has no branches')
+      const created = await neon.createBranch(projectId, {
+        name: DEV_BRANCH_NAME,
+        parentId: main.id,
+        initSource: 'schema-only',
+        endpoints: [{ type: 'read_write' }],
+      })
+      await this.settle(projectId, created.operations)
+      dev = created.branch
+    }
+    try {
+      const role = await neon.createRole(projectId, dev.id, SESSION_DB_ROLE)
+      await this.settle(projectId, role.operations)
+    } catch (err) {
+      if (!isConflict(err)) throw err
+    }
+    try {
+      const database = await neon.createDatabase(projectId, dev.id, {
+        name: SESSION_DB_NAME,
+        ownerName: SESSION_DB_ROLE,
+      })
+      await this.settle(projectId, database.operations)
+    } catch (err) {
+      if (!isConflict(err)) throw err
+    }
+    const kept = app.sessionDb?.devBranchId === dev.id ? app.sessionDb : null
+    return {
+      devBranchId: dev.id,
+      database: SESSION_DB_NAME,
+      preparedCommit: kept?.preparedCommit ?? null,
+      preparedAt: kept?.preparedAt ?? null,
+      status: kept?.status ?? 'none',
+    }
+  }
+
+  async createBranch(
+    app: SessionAppRef,
+    session: { id: string; shortId: string }
   ): Promise<SessionBranch> {
-    throw new NotWiredError('NeonSessionDb.createBranch', '3b')
+    const projectId = this.projectOf(app)
+    const devBranchId = app.sessionDb?.devBranchId
+    if (!devBranchId) throw new Error('createBranch before ensureDev: the app has no dev branch')
+    const neon = await this.neon()
+    const name = sessionBranchNameFor(session.shortId)
+    let branch = (await this.branches(projectId)).find(b => b.name === name)
+    let host = ''
+    if (!branch) {
+      const created = await neon.createBranch(projectId, {
+        name,
+        parentId: devBranchId,
+        endpoints: [{ type: 'read_write' }],
+      })
+      await this.settle(projectId, created.operations)
+      branch = created.branch
+      host = created.endpoints[0]?.host ?? ''
+    }
+    if (!host) host = (await neon.listBranchEndpoints(projectId, branch.id))[0]?.host ?? ''
+    const reset = await neon.resetRolePassword(projectId, branch.id, SESSION_DB_ROLE)
+    await this.settle(projectId, reset.operations)
+    const uri = await neon.connectionUri(projectId, {
+      branchId: branch.id,
+      databaseName: SESSION_DB_NAME,
+      roleName: SESSION_DB_ROLE,
+      pooled: false,
+    })
+    return {
+      db: {
+        provider: 'neon',
+        projectId,
+        branchId: branch.id,
+        host: host || new URL(uri).hostname,
+        database: SESSION_DB_NAME,
+        role: SESSION_DB_ROLE,
+      },
+      uri: withSslMode(uri),
+    }
   }
 
-  deleteBranch(_app: SessionAppRef, _db: SessionDb): Promise<void> {
-    throw new NotWiredError('NeonSessionDb.deleteBranch', '3b')
+  async deleteBranch(_app: SessionAppRef, db: SessionDb): Promise<void> {
+    if (db.provider !== 'neon' || !db.projectId) return
+    try {
+      const neon = await this.neon()
+      const deleted = await neon.deleteBranch(db.projectId, db.branchId)
+      await this.settle(db.projectId, deleted.operations)
+    } catch (err) {
+      if (!isNeonNotFound(err)) throw err
+    }
   }
 
-  devUriFor(_app: SessionAppRef): Promise<string> {
-    throw new NotWiredError('NeonSessionDb.devUriFor', '3b')
+  async devUriFor(app: SessionAppRef): Promise<string> {
+    const projectId = this.projectOf(app)
+    const devBranchId = app.sessionDb?.devBranchId
+    if (!devBranchId) throw new Error('devUriFor before ensureDev: the app has no dev branch')
+    const neon = await this.neon()
+    const reset = await neon.resetRolePassword(projectId, devBranchId, SESSION_DB_ROLE)
+    await this.settle(projectId, reset.operations)
+    return withSslMode(
+      await neon.connectionUri(projectId, {
+        branchId: devBranchId,
+        databaseName: SESSION_DB_NAME,
+        roleName: SESSION_DB_ROLE,
+        pooled: false,
+      })
+    )
   }
+}
+
+/** Neon wants TLS; its connection URIs usually say so, and the kit's driver needs it said. */
+function withSslMode(uri: string): string {
+  const url = new URL(uri)
+  if (!url.searchParams.has('sslmode')) url.searchParams.set('sslmode', 'require')
+  return url.toString()
 }
