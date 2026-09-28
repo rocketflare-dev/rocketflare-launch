@@ -13,7 +13,7 @@
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { runHealthPoll, verdictOf } from '@/api/services/launch/health'
+import { healthPoll, runHealthPoll, verdictOf } from '@/api/services/launch/health'
 import { appEnvironments, appHealthChecks, auditEvents } from '@/db/schema'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
@@ -87,7 +87,11 @@ async function newTenant() {
 
 async function runCron() {
   const ctx = createExecutionContext()
-  const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx)
+  // Only the health poll: the session tasks on the same cron scan every tenant's sessions, which
+  // belong to other suites in the shared test database.
+  const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
+    '*/5 * * * *': [healthPoll],
+  })
   await waitOnExecutionContext(ctx)
   expect(reports).toEqual([expect.objectContaining({ task: 'healthPoll', status: 'ok' })])
 }

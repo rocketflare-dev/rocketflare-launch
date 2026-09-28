@@ -48,6 +48,7 @@
     "db:studio": "dotenv -e .dev.vars -- drizzle-kit studio",
     "db:check": "dotenv -e .dev.vars -- tsx scripts/test-db-connection.ts",
     "seed": "dotenv -e .dev.vars -- tsx scripts/seed.ts",
+    "sessions:local-app": "dotenv -e .dev.vars -- tsx scripts/sessions-local-app.ts",
     "deploy": "pnpm build:ui && wrangler deploy",
     "deploy:staging": "pnpm build:ui && wrangler deploy -c wrangler.staging.toml",
     "provision": "tsx scripts/provision.ts",

@@ -16,6 +16,8 @@ import { serverPlugins } from '../plugins/server'
 import { pruneMagicLinkTokens } from './auth/magic-link'
 import { pruneInvitations } from './services/invitations'
 import { healthPoll } from './services/launch/health'
+import { sessionsChecks } from './services/sessions/checks-cron'
+import { expireSessions } from './services/sessions/expire'
 import type { AppBindings } from './types'
 import { type Logger, loggerFor } from './utils/core/logger'
 
@@ -109,8 +111,9 @@ export const pruneAiSpans: ScheduledTask = {
 /** Cron expression → tasks. Keep in sync with `[triggers] crons` in both wrangler tomls. */
 const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   '0 4 * * *': [pruneExpired, pruneAiSpans],
-  // Launch (spec/06): every registered app environment's `/api/health` + `/api/ready`.
-  '*/5 * * * *': [healthPoll],
+  // Launch (spec/06): every registered app environment's `/api/health` + `/api/ready`; P3: end
+  // suspended coding sessions past their expiry, and refresh shipped sessions' pending PR checks.
+  '*/5 * * * *': [healthPoll, expireSessions, sessionsChecks],
 }
 
 /**

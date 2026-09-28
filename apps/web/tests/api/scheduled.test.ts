@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { dispatchScheduled, SCHEDULED_TASKS, type ScheduledTask, scheduled } from '@/api/scheduled'
 import { healthPoll, healthPollTask } from '@/api/services/launch/health'
+import { sessionsChecks } from '@/api/services/sessions/checks-cron'
+import { expireSessions } from '@/api/services/sessions/expire'
 import { appEnvironments } from '@/db/schema'
 import { createTestTenantWithUser } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
@@ -15,8 +17,13 @@ describe('scheduled dispatcher', () => {
     expect(SCHEDULED_TASKS['0 4 * * *']?.map(t => t.name)).toEqual(['pruneExpired', 'pruneAiSpans'])
   })
 
-  it("registers Launch's app health poll on the five-minute cron (both tomls declare it)", () => {
-    expect(SCHEDULED_TASKS['*/5 * * * *']).toEqual([healthPoll])
+  it("registers Launch's health poll and the P3 session tasks on the five-minute cron", () => {
+    expect(SCHEDULED_TASKS['*/5 * * * *']).toEqual([healthPoll, expireSessions, sessionsChecks])
+    expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual([
+      'healthPoll',
+      'sessions.expire',
+      'sessions.checks',
+    ])
   })
 
   it('dispatches the health poll: an injected fetch, one tenant — no network, no other suite', async () => {
