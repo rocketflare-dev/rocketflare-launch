@@ -44,7 +44,7 @@ import {
   sharedResourceValues,
   tenants,
 } from '@/db/schema'
-import { accessOpen, actorOf, approvalDeps, approvalsFixture } from '../helpers/approvals'
+import { accessOpen, approvalDeps, approvalsFixture } from '../helpers/approvals'
 import { createTestSession, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
 import {
@@ -353,7 +353,7 @@ describe('the P5 mounts', () => {
   })
 
   it('the routes 5b–5e fill are mounted but register nothing yet (a JSON 404)', async () => {
-    const { tenant, admin, app, resource } = await seedWorld()
+    const { tenant, admin, resource } = await seedWorld()
     const headers = sessionCookieHeader(await createTestSession(db, admin.id, tenant.id))
     for (const [method, url] of [['GET', `/api/shared-resources/${resource.id}/pushes`]] as const) {
       const res = await request(url, { method, headers })
@@ -482,7 +482,6 @@ describe('the stubs before their slices', () => {
     const env = createTestEnv()
     const deps = approvalDeps(db, env)
     const viewer = {} as never
-    const actor = actorOf({ id: crypto.randomUUID(), email: 'a@example.com' })
     const cases: [() => unknown, RegExp][] = [
       [() => startPush(deps, {} as never), /push\.startPush .*5c/],
       [() => revokeGrant(deps, viewer, {} as never), /revokeGrant .*5c/],
