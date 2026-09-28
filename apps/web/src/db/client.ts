@@ -21,6 +21,15 @@ import * as schema from './schema'
 
 export type Database = PgDatabase<PgQueryResultHKT, typeof schema>
 
+/**
+ * The platform `fetch`, captured when this module loads. neon-http otherwise calls whatever
+ * `globalThis.fetch` is AT QUERY TIME, so anything that later replaces or wraps the global — a
+ * test's `vi.stubGlobal('fetch')`, a vendor fake, an instrumentation shim — would carry the
+ * database's own traffic too (and a fake answering "unknown host" turns every query into a 500).
+ * The database transport is not the app's outbound HTTP.
+ */
+const platformFetch: typeof fetch = globalThis.fetch.bind(globalThis)
+
 export type DatabaseDriver = 'neon' | 'postgres'
 export const DATABASE_DRIVERS = ['neon', 'postgres'] as const
 
@@ -138,6 +147,7 @@ export function createNeonDatabase(
   options: CreateNeonDatabaseOptions = {}
 ): DatabaseHandle {
   if (options.localProxy) routeNeonThroughProxy(options.localProxy)
+  neonConfig.fetchFunction = platformFetch
   let pool: NeonPool | undefined
   let poolDb: Database | undefined
   const transactional = (): Database => {

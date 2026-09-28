@@ -93,6 +93,12 @@ vi.mock('@/api/services/launch/credentials', async importOriginal =>
 const SCRIPT = path.resolve(__dirname, '../../../../scripts/deployer.mjs')
 const KIT = path.resolve(__dirname, '../fixtures/rocketflare-0.15')
 const REQUEST_TOKEN = 'actions-request-token'
+/**
+ * Per-test budget for these whole-flow tests: each drives the real Workflow and spawns
+ * `deployer.mjs` as child processes, a few seconds locally and past vitest's 5 s default on a
+ * 2-vCPU CI runner. One flat value for both drivers (it covers the neon run's 20 s default too).
+ */
+const E2E_TIMEOUT_MS = 30_000
 const TOML_PATHS: Record<AppEnvironmentName, string> = {
   production: 'apps/web/wrangler.toml',
   staging: 'apps/web/wrangler.staging.toml',
@@ -106,8 +112,12 @@ let server: Server
 let base = ''
 let env: TestEnv
 let admin: { tenantId: string; userId: string; email: string; cookie: Record<string, string> }
-/** The claims the bridge's token endpoint signs — the job currently "running". */
-let claims: Partial<GitHubOidcClaims> = {}
+/**
+ * The claims the bridge's token endpoint signs, per job (`?job=` on the token URL). Per job, not
+ * "the job currently running": a test that times out keeps running in the background, and a shared
+ * value let its deploy re-sign the NEXT test's job as another app (`activate` → 404).
+ */
+const jobClaims = new Map<string, Partial<GitHubOidcClaims>>()
 const tenantIds: string[] = []
 let runCounter = 7_000_000
 
@@ -129,6 +139,8 @@ async function bridge(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === '/actions-token') {
     if (req.headers.authorization !== `bearer ${REQUEST_TOKEN}`) return reply(res, 401, {})
     const audience = url.searchParams.get('audience') ?? ''
+    const claims = jobClaims.get(url.searchParams.get('job') ?? '')
+    if (!claims) return reply(res, 404, {})
     return reply(res, 200, { value: await mintActionsToken(claims, { audience }) })
   }
   const raw = await readBody(req)
@@ -328,6 +340,8 @@ async function scaffoldJob(launched: Launched) {
 }
 
 interface Job {
+  /** Keys {@link jobClaims}: the identity this job's OIDC token names. */
+  id: string
   dir: string
   githubEnv: string
   toml: string
@@ -366,14 +380,18 @@ async function deployWorkspace(
   // What `github_env` set: Launch's `/ci` surface, with Launch's origin as the audience.
   expect(vars).toMatchObject({ DEPLOYER_URL: `${base}/ci`, DEPLOYER_AUDIENCE: base })
   const row = await appRow(launched.appId)
-  claims = actionsClaims({
-    repository: `${org}/${launched.slug}`,
-    repositoryId: row.githubRepoId ?? '',
-    environment,
-    workflowFile: 'deploy.yml',
-    runId: String(runCounter++),
-  })
-  return { dir, githubEnv, toml, vars }
+  const runId = String(runCounter++)
+  jobClaims.set(
+    runId,
+    actionsClaims({
+      repository: `${org}/${launched.slug}`,
+      repositoryId: row.githubRepoId ?? '',
+      environment,
+      workflowFile: 'deploy.yml',
+      runId,
+    })
+  )
+  return { id: runId, dir, githubEnv, toml, vars }
 }
 
 function exported(job: Job): Record<string, string> {
@@ -391,7 +409,7 @@ function deployer(job: Job, command: string, version = '0.1.0') {
     PATH: process.env.PATH ?? '',
     DEPLOYER_URL: job.vars.DEPLOYER_URL ?? '',
     DEPLOYER_AUDIENCE: job.vars.DEPLOYER_AUDIENCE ?? '',
-    ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0`,
+    ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0&job=${job.id}`,
     ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
     GITHUB_ENV: job.githubEnv,
     TOML: job.toml,
@@ -521,7 +539,7 @@ async function liveApp(): Promise<Launched & { driven: Driven }> {
 
 // ---- the tests -----------------------------------------------------------------------------------
 
-describe('create an app, end to end against the FakeCloud', () => {
+describe('create an app, end to end against the FakeCloud', { timeout: E2E_TIMEOUT_MS }, () => {
   it('goes live: every step, the recorded ids, secrets by name, the deployed version, the audit chain', async () => {
     const launched = await liveApp()
     const { slug, appId, runId, driven } = launched

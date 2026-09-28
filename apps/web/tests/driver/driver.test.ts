@@ -8,7 +8,7 @@
  * WebSocket pool for transactions), NOT the pool-only handle scripts and fixtures get.
  */
 import { and, eq, sql } from 'drizzle-orm'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { resolveSession } from '@/api/auth/sessions'
 import {
   affected,
@@ -175,6 +175,20 @@ describe(`database driver: ${driver}`, () => {
     expect(resolved?.user.createdAt).toBeInstanceOf(Date)
     expect(resolved?.session.expiresAt).toBeInstanceOf(Date)
     expect(resolved?.membership?.tenantId).toBe(tenant.id)
+  })
+
+  it('queries never go through a replaced global fetch (a vendor fake, a test stub)', async () => {
+    // neon-http is HTTP: left to itself it calls whatever `globalThis.fetch` is at query time, so
+    // a fake answering vendor hosts turned every query into a 500 (setup, health poll, OIDC).
+    const { db } = open()
+    const fake = vi.fn(async () => new Response('unknown host', { status: 503 }))
+    vi.stubGlobal('fetch', fake)
+    try {
+      expect(rows<{ n: number }>(await db.execute(sql`select 1::int as n`))[0]?.n).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(fake).not.toHaveBeenCalled()
   })
 
   it('a handle that never queried closes cleanly, twice', async () => {

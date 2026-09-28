@@ -24,7 +24,7 @@ import {
   type ScaffoldPlan,
 } from '@launch/shared/launch-pipeline'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { FINISHED_BEFORE_ACTIVATE } from '@/api/services/launch/deploy/tickets'
@@ -391,6 +391,11 @@ export class LaunchHarness {
     return { outcome, fake, results }
   }
 
+  /**
+   * The app's LATEST scaffold ticket — the one the current job holds. After a retry there are two
+   * (the superseded one is `failed`); an unordered select returns either, in heap order, and the
+   * job finishing the old one leaves the new run waiting on a ticket nobody finishes.
+   */
   async scaffoldTicket(launch: Launch) {
     const [ticket] = await this.db
       .select()
@@ -402,6 +407,8 @@ export class LaunchHarness {
           eq(deployTickets.purpose, 'scaffold')
         )
       )
+      .orderBy(desc(deployTickets.createdAt), desc(deployTickets.id))
+      .limit(1)
     return ticket
   }
 

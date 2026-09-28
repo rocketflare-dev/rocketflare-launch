@@ -95,6 +95,12 @@ import {
 
 const SCRIPT = path.resolve(__dirname, '../../../../scripts/deployer.mjs')
 const REQUEST_TOKEN = 'actions-request-token'
+/**
+ * Per-test budget for these whole-flow tests: each drives the real Workflow and spawns
+ * `deployer.mjs` as child processes, a few seconds locally and past vitest's 5 s default on a
+ * 2-vCPU CI runner. One flat value for both drivers (it covers the neon run's 20 s default too).
+ */
+const E2E_TIMEOUT_MS = 30_000
 
 const store = vi.hoisted(() => ({
   credentials: new Map<string, unknown>(),
@@ -110,8 +116,12 @@ let restoreFetch: () => void
 let server: Server
 let base = ''
 let env: TestEnv
-/** The claims the bridge's token endpoint signs — the job currently "running". */
-let claims: Partial<GitHubOidcClaims> = {}
+/**
+ * The claims the bridge's token endpoint signs, per job (`?job=` on the token URL). Per job, not
+ * "the job currently running": a test that times out keeps running in the background, and a shared
+ * value would let its job re-sign the NEXT test's job as another app.
+ */
+const jobClaims = new Map<string, Partial<GitHubOidcClaims>>()
 const tenantIds: string[] = []
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -130,6 +140,8 @@ async function bridge(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === '/actions-token') {
     if (req.headers.authorization !== `bearer ${REQUEST_TOKEN}`) return reply(res, 401, {})
     const audience = url.searchParams.get('audience') ?? ''
+    const claims = jobClaims.get(url.searchParams.get('job') ?? '')
+    if (!claims) return reply(res, 404, {})
     return reply(res, 200, { value: await mintActionsToken(claims, { audience }) })
   }
   const raw = await readBody(req)
@@ -223,7 +235,8 @@ function deployJob(seeded: ReleasableApp, environment: 'staging' | 'production',
     environment === 'staging' ? 'web/wrangler.staging.toml' : 'web/wrangler.toml'
   )
   writeFileSync(tomlFile, appToml(seeded, environment))
-  const jobClaims = deployClaims(seeded, environment, { ref })
+  const jobId = crypto.randomUUID()
+  jobClaims.set(jobId, deployClaims(seeded, environment, { ref }))
   const exported = (): Record<string, string> => {
     const out: Record<string, string> = {}
     for (const line of readFileSync(githubEnv, 'utf8').split('\n').filter(Boolean)) {
@@ -233,12 +246,11 @@ function deployJob(seeded: ReleasableApp, environment: 'staging' | 'production',
     return out
   }
   const run = (command: string) => {
-    claims = jobClaims
     const childEnv: Record<string, string> = {
       PATH: process.env.PATH ?? '',
       DEPLOYER_URL: `${base}/ci`,
       DEPLOYER_AUDIENCE: base,
-      ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0`,
+      ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0&job=${jobId}`,
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
       GITHUB_ENV: githubEnv,
       TOML: tomlFile,
@@ -323,7 +335,9 @@ function inOrder(hay: string[], needles: string[]): boolean {
   return at === needles.length
 }
 
-describe('P4 exit: a production deploy waits in the inbox and the approval releases it', () => {
+describe('P4 exit: a production deploy waits in the inbox and the approval releases it', {
+  timeout: E2E_TIMEOUT_MS,
+}, () => {
   it('PR → merge → tag → staging → approval → production, sealed and verified', async () => {
     const f = await fixture()
     const { tenantId, admin, alice, bob, seeded } = f
@@ -467,7 +481,7 @@ describe('P4 exit: a production deploy waits in the inbox and the approval relea
   })
 })
 
-describe('variants', () => {
+describe('variants', { timeout: E2E_TIMEOUT_MS }, () => {
   it('N=2: one approval is not enough, the second releases it', async () => {
     const f = await fixture()
     const { tenantId, admin, alice, bob, seeded } = f

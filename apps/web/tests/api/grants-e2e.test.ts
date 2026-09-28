@@ -160,8 +160,12 @@ let server: Server
 let base = ''
 let env: TestEnv
 let dir = ''
-/** The claims the bridge's token endpoint signs — the job currently "running". */
-let claims: Partial<GitHubOidcClaims> = {}
+/**
+ * The claims the bridge's token endpoint signs, per job (`?job=` on the token URL). Per job, not
+ * "the job currently running": a test that times out keeps running in the background, and a shared
+ * value would let its job re-sign the NEXT test's job as another app.
+ */
+const jobClaims = new Map<string, Partial<GitHubOidcClaims>>()
 const tenantIds: string[] = []
 /** Every response body and every step result — searched for the sentinels at the end. */
 const bodies: string[] = []
@@ -184,6 +188,8 @@ async function bridge(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === '/actions-token') {
     if (req.headers.authorization !== `bearer ${REQUEST_TOKEN}`) return reply(res, 401, {})
     const audience = url.searchParams.get('audience') ?? ''
+    const claims = jobClaims.get(url.searchParams.get('job') ?? '')
+    if (!claims) return reply(res, 404, {})
     return reply(res, 200, { value: await mintActionsToken(claims, { audience }) })
   }
   const raw = await readBody(req)
@@ -330,7 +336,8 @@ function deployJob(
     environment === 'staging' ? 'web/wrangler.staging.toml' : 'web/wrangler.toml'
   )
   writeFileSync(tomlFile, toml)
-  const jobClaims = deployClaims(seeded, environment, { ref })
+  const jobId = crypto.randomUUID()
+  jobClaims.set(jobId, deployClaims(seeded, environment, { ref }))
   const exported = (): Record<string, string> => {
     const out: Record<string, string> = {}
     for (const line of readFileSync(githubEnv, 'utf8').split('\n').filter(Boolean)) {
@@ -340,12 +347,11 @@ function deployJob(
     return out
   }
   const run = (command: string) => {
-    claims = jobClaims
     const childEnv: Record<string, string> = {
       PATH: process.env.PATH ?? '',
       DEPLOYER_URL: `${base}/ci`,
       DEPLOYER_AUDIENCE: base,
-      ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0`,
+      ACTIONS_ID_TOKEN_REQUEST_URL: `${base}/actions-token?api-version=2.0&job=${jobId}`,
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
       GITHUB_ENV: githubEnv,
       TOML: tomlFile,

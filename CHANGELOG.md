@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Under `DATABASE_DRIVER=neon` the database's HTTP queries use the platform `fetch` captured when
+  `db/client.ts` loads, never whatever `globalThis.fetch` is at query time: anything that replaces
+  or wraps the global (a vendor fake, a test stub, an instrumentation shim) no longer carries — or
+  breaks — the database's own traffic. It turned Setup, the health poll, `POST /api/apps` and the
+  OIDC loopback into 500s in the `test-neon` job.
 - A coding session no longer commits and pushes after every message. A turn that changed nothing is
   not checkpointed at all; one that changed files is saved 30 s after the latest turn (a message
   inside those 30 s runs first and the wait starts again), and never more than 5 minutes after the
