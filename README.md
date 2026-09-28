@@ -10,7 +10,8 @@ control of credentials, sign-in, approvals and audit.
 > setup and audit. P2 (create an app) built and tested locally against a simulated cloud; not yet
 > deployed. P3 (coding sessions) built and tested locally (fakes + a real local container); not
 > yet deployed. P4 (approvals, releases and the production gate, the hash-chained audit log)
-> built and tested locally; not yet deployed** (September 2026).
+> built and tested locally; not yet deployed. P5 (shared config, grants and rotation) built and
+> tested locally; not yet deployed** (September 2026).
 > Results: [spikes/SUMMARY.md](spikes/SUMMARY.md).
 
 ## Why

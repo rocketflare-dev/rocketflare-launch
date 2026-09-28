@@ -2,22 +2,32 @@
 
 ## Unreleased
 
-- Shared config pages and commands (P5): the Shared config list and a page per resource — what is
-  set in each environment (never a value), a write-only values form ("Set — hidden", Replace, a
-  blank keeps what is set), rotation with live push progress and Retry, holders with Revoke, and
-  the approval policy per environment; an app's Config page and card with each shared resource's
-  state per environment and a Request button; grant requests in the approvals inbox name what the
-  app would receive and the team that decides; a session's ship panel says when the PR needs
-  shared config. `launch shared ls|show|set|rotate|pushes` and `launch grants
-  needs|ls|request|revoke`; `set` reads values from a hidden prompt or stdin, never the command line.
-- Shared config and grants, foundations (P5): the tables for shared resources (a named bundle of
-  vars and secrets owned by a team, with sealed values per environment), app grants, the pushes
-  that deliver them and each app's declared config (one migration, 0025); the `grant.request`
-  approval kind, approved by the resource's owner team; the `GRANT_PUSH_WORKFLOW` binding and the
-  `GRANT_BACKEND` var (`cloudflare`, or `local` in development only); a Shared config page in the
-  navigation, an app Config page, and `launch shared` / `launch grants` command groups — all
-  stubs until the rest of P5 lands. A team that owns shared config can no longer be deleted
-  (409 `group_owns_shared_config`).
+- Shared config (P5): admins create a shared resource — a named bundle of vars and secrets, such
+  as the company's M365 app registration, owned by a team — and that team sets its values per
+  environment. Values are write-only: no page, command or API answer ever shows a secret, a blank
+  field keeps what is set, and every change is a new version. The Shared config list and a page
+  per resource show what is set (never a value), who holds it (to the owner team and admins), the
+  approval policy per environment and the push history. A team that owns shared config can no
+  longer be deleted (409 `group_owns_shared_config`); one migration adds the tables (0025) and a
+  second the record of vars a push replaced (0026).
+- Grants (P5): an app asks for a shared resource per environment from its Config page (or `launch
+  grants request`); the resource's owner team approves it in the approvals inbox — not the admins
+  unless a policy says so, and never the requester — with production able to need two approvals.
+  Approval pushes the values onto the app's Worker as secrets, replacing the plain vars a plugin
+  install left in the live version; the next deploy drops those vars from the upload and keeps the
+  secrets, and a deploy that activates after a newer push re-pushes it. Revoking removes the
+  secrets from that app's Worker only; a grant may expire, with a reminder a week before.
+- Rotation (P5): setting new values where apps hold them pushes them to every holder in one push,
+  with live progress; the old version is retired only when every app has the new one, and the
+  owner team is then told to revoke the old credential at the vendor. A push that misses some apps
+  lists them and offers Retry, which writes only those. Secrets past their rotation age remind the
+  owner team.
+- Detecting needs (P5): on import, on each Release and on "Re-scan", Launch reads the plugins an
+  app's repo installs, matches their declared config to shared resources by name and tells the
+  app's owners once what to request; a session's ship panel says when its PR needs shared config.
+  CLI: `launch shared ls|show|set|rotate|pushes` (values from a hidden prompt or stdin, never the
+  command line) and `launch grants needs|ls|request|revoke`. `GRANT_BACKEND=local` (development
+  only) records pushes without calling Cloudflare.
 - Setup against real accounts: the Neon step no longer fails with "not allowed for organization
   API keys" — the region is checked against Launch's list of Neon regions (and chosen from a
   select in the wizard), or pinned from where the org's projects already are, else

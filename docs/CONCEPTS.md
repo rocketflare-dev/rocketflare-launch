@@ -1259,7 +1259,7 @@ ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list to
 naming them; the releases card shows only what the audit log recorded (a release cut outside
 Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.
 
-### 18.20 Shared config and grants (P5 — foundations)
+### 18.20 Shared config and grants (P5)
 
 Spec/09's catalogue is called **shared config** (`/shared-config`, `/api/shared-resources`),
 because "catalogue" already means the apps list. A **shared resource** is a named bundle of items
@@ -1271,36 +1271,141 @@ owner group — and `GRANT_PUSH_WORKFLOW` (`GrantPushWorkflow`, `launch-grant-pu
 the values on the app's Worker as secrets, vars included (a `plain_text` would be overwritten by
 the app's own toml on its next deploy). One live grant per app × resource × environment, one active
 version per resource × environment, and one running push per resource × environment are partial
-unique indexes rendered from the shared closed sets. The engine takes an optional `policy` at open
-(`OpenApprovalInput.policy`), so a resource's own per-environment policy is snapshotted in place of
-`resolvePolicy`. `GRANT_BACKEND` is `cloudflare` (Worker secrets) or `local` (records the names,
-development only — `loadConfig` refuses it elsewhere). A group that owns a resource cannot be
-deleted (409 `group_owns_shared_config`); a resource is archived, never deleted, while a grant
-points at it. The `grants.sweep` task runs on `*/5` (reminders, expiry, rotation due).
+unique indexes rendered from the shared closed sets. `GRANT_BACKEND` is `cloudflare` (Worker
+secrets) or `local` (records the names, development only — `loadConfig` refuses it elsewhere). A
+group that owns a resource cannot be deleted (409 `group_owns_shared_config`); a resource is
+archived, never deleted, while a grant points at it. Every service file under `services/grants/`
+is listed with its exports in `types.ts`; the exit test is `tests/api/grants-e2e.test.ts` (below).
 
-Slice 5a built the schema (migration 0025), the contracts, the `SharedResource` subject (members
-read, admins manage; the owner group's rights are a service check), the stub routes (`GET
-/api/shared-resources` answers `{ items: [] }`), pages, CLI hooks and service stubs that fail by
-name (`NotWiredError`, `services/grants/types.ts` maps each file to its slice); 5b–5f fill them.
+**Resources and values (5b — `resources.ts`, `values.ts`, `access.ts`).** Members read the list,
+the item names and the policies (they need them to ask); the owner group's members and admins set
+values and edit the description and items; admins create, archive and edit the owner group and the
+per-environment `policies` (full `ApprovalPolicy` values — the P4 rule). **Values are write-only**:
+no route answers a secret; a var's value is in the detail's `vars` for owners and admins only, and
+only they see the holders (`access.canSeeHolders` — the one rule the push and revoke paths use
+too). `PUT /:id/values/:env` writes version N+1 in one transaction with the resource row locked: a
+blank or missing key keeps the previous value (opened and merged on the server), an unknown key is
+400 `unknown_item_key`. With no holders it answers 200 `pushId: null` and the old version is
+`retired` at once; with holders the old one goes `retiring` and a `rotate` push starts (202
+`{versionId, version, pushId}`; 409 `push_in_progress` before any write while one runs). Archive
+(`DELETE`) is 409 `resource_has_holders` while any grant is live. Audited
+`shared_resource.created|updated|archived|values.set` — a summary names keys, never values.
+
+**Pushes, rotation and revocation (5c — `push.ts`, `push-steps.ts`, `backing.ts`, `revoke.ts`,
+`sweep.ts`).** `startPush` checks the binding (503 `grants_not_configured`), inserts the
+`grant_pushes` row (idempotent by `approval_id`, so a retried `applyAfter` finds its push) and
+creates the instance with the push id. Steps: `plan` materialises one `grant_push_targets` row per
+grant in scope (`grant`/`repair`: the one grant; `rotate`: every active grant of the environment;
+`revoke`/`expire`: the one `revoking` grant); `push#N` handles ten targets each, skipping a
+succeeded target and a grant that already holds a newer version, and writes through the
+`GrantBacking` seam (`put`, `putDetailed` → `{names, shadowedVars}`, `remove`); `finish` settles
+`succeeded | partial | failed`. Values are opened inside `push#N`, registered for redaction and
+scrubbed from every error; a step returns counts only. **A rotation retires the old version only
+when every holder succeeded** — then the owners get `grant_rotated` ("revoke the old credential at
+the vendor"; Launch cannot); a partial one leaves it `retiring`, notifies `grant_push_failed` and
+offers Retry, which restarts the SAME push as instance `<pushId>-rN` and writes only the failed
+targets (409 `push_not_retryable` for a push that succeeded). **The 10053 remedy**: a plugin
+install puts its vars in the app's tomls, so the first push onto a Worker whose live version binds
+`M365_TENANT_ID` as `plain_text` meets Cloudflare's 10053 "binding name already in use". The
+backing then copies the serving version the way `wrangler versions secret put` does (metadata,
+bindings, modules), drops those vars, adds the entries as `secret_text`, keeps every other secret
+and the assets, and deploys it at 100% — one version, so the app is never without both — records
+the names on the target (`grant_push_targets.shadowed_vars`, migration 0026) and audits
+`grant.var_shadowed`. Revocation (`DELETE /api/apps/:id/grants/:gid` — the app's owners, the
+resource's owners, admins) moves the grant `revoking` and a `revoke` push deletes the names (a 404
+is done), ending it `revoked`; the app answers 503 by the kit's missing-config convention. The
+`grants.sweep` task (`*/5`) reminds the app's owners 7 days before an expiry (`grant_expiring`),
+expires due grants with an `expire` push, and reminds the resource's owners when a secret is older
+than its `rotationDays` (`grant_rotation_due`, once per version).
+
+**Requests, the app's grants and the gateway (5d — `approvals/kinds/grant-request.ts`,
+`requests.ts`, `holders.ts`, `deploy/gateway.ts`).** `POST /api/apps/:id/grants` (the app's owners
+and admins) refuses everything before its first row (`shared_resource_archived`,
+`grant_expiry_past`, `values_not_set`, `grant_already_held`), then per environment writes a
+`requested` grant and opens a `grant.request` with `policy: resource.policies[env] ??
+resolvePolicy(…)` (the engine's optional `OpenApprovalInput.policy`, so a resource's own policy
+wins) → 202 `{grants: [{id, environment, approvalId, status}]}`; `grant.requested` is audited with
+the approval id, like every later grant row. The kind's `eligibleExtra` is the owner group's
+members, so the default policy names nobody and the admins are refused (`not_an_approver`) unless
+a policy adds them; the requester is excluded as on every kind. `applyInTx` activates the grant,
+`applyAfter` starts its `grant` push, `onClosed` ends it `rejected` / `expired`. `GET
+/api/apps/:id/config` (`appConfigView`) is what the app declares, what matched, what is needed and
+every grant; `POST …/:gid/repush` starts a `repair` push. **The gateway's half**: `uploadDeploy`
+drops the toml's `plain_text` / `json` bindings named by a LIVE grant of the app and environment
+(`holders.grantedKeys` — `requested` included, so the first deploy after a request already stops
+shipping the var) and records them as `shadowedVars` on the ticket and in `deploy.uploaded`;
+`keep_bindings` carries the secrets. `activateDeploy` starts a `repair` push for a grant pushed
+after the upload began, because the version holds the secrets as of its upload and activating it
+would undo a newer rotation.
+
+**Detecting declared needs (5e — `rocketflare/declared-config.ts`, `detect.ts`).** Spec/02's
+`declaredConfig`: `launch.plugins.json` `surfaces[]` → each `anchor` (`plugin.json`) → `vars[]`
+(parsed as `plugin-lib.mjs` validates them), plus the kit's optional secrets under plugin `kit`.
+Keys match resource items by exact name; archived resources match nothing; a matched resource is
+NEEDED when no environment holds a live grant of it. `scanAppConfig` runs after commit on import
+(the route hands it `realtime`, so the bell nudges live), on a Release (at the new tag) and on
+`POST /:id/config/scan` (answers `appConfigSchema`); it records `app_config_scans` (a failure is
+`error` on the row, never a failed import or Release) and notifies the app's owners once per newly
+needed resource (`grant_needed`, linked to the config page). `scanShipConfig` answers the same at a
+session's PR head as the `ship.config_needs` event, never stored. Sessions never receive grant
+values (spec/03).
 
 **The UI and the CLI (5f).** `/shared-config` lists every resource with its value STATUS per
-environment ("v3 · 2 apps"); admins create one (`CreateResourceModal`). `/shared-config/:id` says
-what is set ("Set — version 3, rotated 2 days ago by Carol"), shows var values and the holders to the
-owner team and admins only (the detail's `holders` is the signal), and its values modal is
-write-only: a set key reads "Set — hidden" with Replace, inputs are never pre-filled (secrets are
-password inputs), a blank keeps the current value, and saving where apps hold it is a rotation whose
-push shows N/M with the failed apps and Retry (`PushProgress`, polled only while queued/running).
-Revoke per holder is confirmed; admins edit the per-environment policy (`ResourcePolicyForm`). An
-app's `/apps/:slug/config` and the Config card on its page show the matched resources with a state
-per environment (held / pushing / requested with the request's link / missing with Request), the
+environment ("v3 · 2 apps"; "Show archived" lists archived ones WITH the live ones — `?archived=
+true`); admins create one (`CreateResourceModal`). `/shared-config/:id` says what is set ("Set —
+version 3, rotated 2 days ago by Carol"), shows var values and the holders to the owner team and
+admins only (the detail's `holders` is the signal), and its values modal is write-only: a set key
+reads "Set — hidden" with Replace, inputs are never pre-filled (secrets are password inputs), a
+blank keeps the current value, and saving where apps hold it is a rotation whose push shows N/M
+with the failed apps and Retry (`PushProgress`, polled only while queued/running). Revoke per
+holder is confirmed; admins edit the per-environment policy (`ResourcePolicyForm`). An app's
+`/apps/:slug/config` and the Config card on its page show the matched resources with a state per
+environment (held / pushing / requested with the request's link / missing with Request), the
 declared keys by plugin and the keys nothing matches. A `grant.request` approval names what the app
-would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team, because
-the policy's own lists are empty. Ship's `ship.config_needs` row is one line in the session's ship
-panel. CLI: `launch shared ls|show|set|rotate|pushes` (values from a hidden TTY prompt or stdin,
-never argv) and `launch grants needs|ls|request|revoke`.
+would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team,
+because the policy's own lists are empty; Settings → Approvals accepts a shared-config policy that
+names nobody for the same reason (`hasImplicitApprovers`). Ship's `ship.config_needs` row is one
+line in the session's ship panel. CLI: `launch shared ls|show|set|rotate|pushes` (values from a
+hidden TTY prompt or stdin, never argv) and `launch grants needs|ls|request|revoke`.
 
-**Known gaps:** nothing is wired end to end yet (slices 5b–5f); every secret write on Cloudflare is
-a new deployed version, so a three-item push is three versions (a mixed state lasting seconds);
-Secrets Store is not a backing yet; an app whose LIVE version still carries one of the keys as a
-toml var cannot take the secret until a deploy through the gateway drops that var (Cloudflare's
-10053 "binding name already in use", modelled by the FakeCloud).
+**The exit test** (`tests/api/grants-e2e.test.ts`, spec/11 P5) runs it end to end with nothing P5
+mocked: a Release of an app whose repo carries the M365 connector notifies its owner; the owner
+requests both environments; the owner team approves (production N=2, the admin refused); the push
+goes through the real Cloudflare backing into the FakeCloud (10053 on, so the live plain vars are
+replaced by the remedy); a redeploy through `scripts/deployer.mjs` drops the shadowed toml vars and
+keeps the secrets; one rotation reaches three holders (partial → Retry → old version retired →
+vendor-revoke notice); a revoke empties one Worker only; the audit chain seals and verifies; and no
+secret sentinel appears in any response, row, step result, notification, log line or deployer
+output. Variants: a rejection, and a rotation between upload and activate restored by the repair
+push.
+
+**Known gaps:**
+
+- *Cloudflare, unverified against the real API*: every secret write is a new deployed version, so a
+  three-item push is three versions (a mixed state lasting seconds); the version and `content/v2`
+  shapes the 10053 remedy copies; behaviour during a gradual deployment; per-script version counts
+  and rate limits across a fleet-wide rotation; whether `keep_bindings` copies secrets as of the
+  upload (§1.6 assumes so). Secrets Store is not a backing yet.
+- *Pushes*: one push per resource × environment, so approving grants for several apps at once
+  serialises them — a second approval's `applyAfter` meets 409 `push_in_progress`, is recorded on
+  the grant's `push_error` and retried by the approvals sweep (up to five minutes later); a repair
+  push colliding with a running rotation is recorded on the grant and NOT retried; a `startPush`
+  that fails after the values commit leaves the previous version `retiring` with no push (a manual
+  re-push or the next rotation clears it).
+- *Resources*: `rotationDue` is measured from the active version's `set_at`, so changing a var
+  restarts the secret's clock; removing an item in a `PATCH` does not remove the secret from
+  holders' Workers; a resource can be archived while a version is still `retiring`; no UI to
+  archive a resource or edit its items (the API and CLI only).
+- *Requests*: an auto-approved request (`autoApproveRole`) audits `grant.approved` before
+  `grant.requested`; a member with no part in a request gets 404 rather than 403 when deciding; a
+  deploy while a grant is only `requested` already drops the toml var, so the app runs without it
+  until the approval lands (or is rejected and the next deploy restores it); `ApprovalPanel`'s
+  labels are generic for grants.
+- *Detection*: the `grant_needed` link opens the config page with no resource preselected; local
+  (`SESSION_BACKEND=local`) sessions emit no `ship.config_needs`; import and Release scan inline
+  (a slow GitHub read lengthens the request).
+- *Imported apps* must have their Workers in Launch's account with a recorded `worker_name`; one
+  still deploying with its own `wrangler deploy` must drop the shadowed vars from its toml itself.
+- The exit test drives `GrantPushWorkflow` step by step under Node, not in workerd; the real exit
+  run (a connector installed through a session, real Entra credentials, a rotation in Entra) is a
+  staging task.

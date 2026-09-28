@@ -232,7 +232,13 @@ a fake `WebSocket` factory left set) is on you.
   of the upload); a secret named like a live var, or an upload whose var shadows a kept secret, is
   10053 (`secretNameClash = false` turns it off). `tests/helpers/grants.ts` seeds resources, sealed
   values and grants directly (`seedSharedResource`, `seedResourceValues`, `seedGrant`, `M365_ITEMS`,
-  `M365_VALUES` — the secret is a sentinel a "never echoed" test searches for)
+  `M365_VALUES` — the secret is a sentinel a "never echoed" test searches for) and the end-to-end
+  pieces: `m365Files(slug)` (a repo with the connector installed), `withM365Vars(toml)`,
+  `FakeAzure` (the Entra token endpoint: only a secret in `valid` works) and `m365Host(cloud,
+  {host, script})` (the connector on an app host — 503 until `envOf(script)` has all three keys).
+  `tests/api/grants-e2e.test.ts` is the P5 exit test: real routes, `GrantPushWorkflow` driven with
+  `createFakeWorkflowStep`, the real Cloudflare backing and `deployer.mjs`, and a sentinel search
+  over every response, row, step result, log line and deployer output
 - **Launch P3's coding sessions: fakes behind four ports** (`services/sessions/ports.ts` —
   `SandboxPort`, `SessionDbPort`, `RepoHostPort`, `ModelUpstream`; `defaultSessionPorts(env, cfg)` is
   never reached by a test: the Workflow takes `overrides.ports`, route suites mock the module).
