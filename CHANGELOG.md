@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A coding session's turn no longer fails at once with "Launch lost the connection to Claude Code":
+  reading the process's logs passed an `AbortSignal` into the Sandbox SDK's RPC stub, which
+  workerd cannot serialise. The signal now cancels the log reader on Launch's side.
 - When a coding session's container is destroyed after its warm window (or by a drain), its
   workspace — checkout, `node_modules` and `.dev.vars` — is backed up with the Sandbox SDK's
   `createBackup`, and a later cold resume restores it instead of cloning and installing when the

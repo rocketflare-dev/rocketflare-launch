@@ -39,3 +39,30 @@ describe('CloudflareSandbox.fetch', () => {
     ])
   })
 })
+
+/** A log stream that sends `frames`, then stays open until cancelled. */
+function openStream(frames: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  return new ReadableStream({
+    start(controller) {
+      for (const f of frames) controller.enqueue(encoder.encode(f))
+    },
+  })
+}
+
+describe('CloudflareSandbox.streamLogs', () => {
+  // A turn's log read failed on its first real run: the signal went into the RPC call.
+  it('never hands its AbortSignal to the SDK, and stops reading when it is aborted', async () => {
+    const ns = new FakeSandboxNamespace()
+    ns.handlers.streamProcessLogs = () =>
+      openStream([`data: ${JSON.stringify({ type: 'stdout', data: 'hello' })}\n\n`])
+    const abort = new AbortController()
+    const seen: unknown[] = []
+    for await (const event of sandboxOver(ns).streamLogs('p1', { signal: abort.signal })) {
+      seen.push(event)
+      abort.abort()
+    }
+    expect(seen).toEqual([{ type: 'stdout', data: 'hello' }])
+    expect(ns.calls.map(c => [c.method, ...c.args])).toEqual([['streamProcessLogs', 'p1']])
+  })
+})

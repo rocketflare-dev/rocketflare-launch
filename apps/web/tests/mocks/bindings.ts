@@ -316,6 +316,15 @@ export class FakeSandboxNamespace {
     const record =
       (method: string) =>
       async (...args: unknown[]) => {
+        // As workerd does: an RPC argument cannot carry an AbortSignal (DataCloneError).
+        const carriesSignal = (v: unknown) =>
+          v instanceof AbortSignal ||
+          (typeof v === 'object' &&
+            v !== null &&
+            Object.values(v).some(inner => inner instanceof AbortSignal))
+        if (args.some(carriesSignal)) {
+          throw new DOMException('AbortSignal serialization is not enabled.', 'DataCloneError')
+        }
         this.calls.push({ name, method, args })
         return this.handlers[method]?.(name, ...args)
       }

@@ -166,11 +166,20 @@ interface RawLogEvent {
  * The SDK's process-log SSE stream (`data: <LogEvent JSON>` frames, blank-line separated) as
  * `SandboxLogEvent`s: `stdout` / `stderr` chunks in order, then ONE `exit`. An `error` frame is
  * the process failing to run — reported as exit 1 with its message on stderr.
+ *
+ * `signal` stops the read HERE, by cancelling the reader: it never crosses into the SDK, whose stub
+ * is an RPC proxy that cannot serialise an `AbortSignal` (workerd's DataCloneError).
  */
 export async function* parseLogStream(
-  stream: ReadableStream<Uint8Array>
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal
 ): AsyncIterable<SandboxLogEvent> {
   const reader = stream.getReader()
+  const onAbort = () => {
+    reader.cancel().catch(() => {})
+  }
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
   const decoder = new TextDecoder()
   let buffer = ''
   let exited = false
@@ -202,6 +211,7 @@ export async function* parseLogStream(
   try {
     for (;;) {
       const { done, value } = await reader.read()
+      if (signal?.aborted) return
       if (value) buffer += decoder.decode(value, { stream: true })
       let at = buffer.indexOf('\n\n')
       while (at >= 0) {
@@ -221,6 +231,7 @@ export async function* parseLogStream(
       yield event
     }
   } finally {
+    signal?.removeEventListener('abort', onAbort)
     reader.releaseLock()
   }
 }
@@ -296,12 +307,13 @@ export class CloudflareSandbox implements SandboxPort {
   ): AsyncIterable<SandboxLogEvent> {
     let stream: ReadableStream<Uint8Array>
     try {
-      stream = await this.sandbox.streamProcessLogs(processId, { signal: opts.signal })
+      // No `signal` here: the stub is RPC and cannot carry one. `parseLogStream` honours it.
+      stream = await this.sandbox.streamProcessLogs(processId)
     } catch (err) {
       throw mapSandboxError(err)
     }
     try {
-      yield* parseLogStream(stream)
+      yield* parseLogStream(stream, opts.signal)
     } catch (err) {
       if (opts.signal?.aborted) return
       throw mapSandboxError(err)
