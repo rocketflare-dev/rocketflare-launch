@@ -11,16 +11,29 @@
  *    `--disallowedTools "Bash(git push:*)"` can only ever move `session/<short>`;
  * 4. injects `Authorization: Basic base64(x-access-token:<token>)` with the session's sealed
  *    installation token (`github_token_sealed`), re-minted through `RepoHostPort.gitAuth` when
- *    under `TOKEN_REMINT_BEFORE_MS` (10 minutes) remain, and sealed back onto the row;
+ *    under `TOKEN_REMINT_BEFORE_MS` (10 minutes) remain — an expired one included, which is the
+ *    usual case after a session sat idle past the token's hour — and sealed back onto the row in a
+ *    compare-and-set: when two requests re-mint at once (a fetch's `info/refs` and its POST, two
+ *    git processes), the one whose write lands wins and the other adopts the stored token, so
+ *    every request converges on ONE token and a fresh one is never overwritten by an older one;
  * 5. forwards to `RepoHostPort.gitUpstream(repo)` — `https://github.com`, or the local git server
- *    (`SESSION_LOCAL_GIT_URL`), which is how `LocalRepoHost` rewrites the clone URL.
+ *    (`SESSION_LOCAL_GIT_URL`), which is how `LocalRepoHost` rewrites the clone URL;
+ * 6. **retries a fresh token's 401/404**: an installation token GitHub has only just issued is not
+ *    always accepted for a second or so (eventual consistency — observed: a push one second after
+ *    a re-mint failed "Repository not found", the same proxy served both services minutes later),
+ *    and GitHub answers an unauthenticated request for a private repo with a 404. So when the
+ *    token is fresh (minted by this request, or sealed within the last `FRESH_TOKEN_WINDOW_MS`)
+ *    and the answer is 401 or 404, the SAME request is sent again after each of
+ *    `FRESH_TOKEN_RETRY_DELAYS_MS` (0.5 s, 1 s, 2 s). Replaying is safe: the body is already
+ *    buffered, and a 401/404 means GitHub did nothing with it. A token that has been valid for a
+ *    while gets no retry — its 404 is real.
  *
  * **Pre-tenant by design**, like the model proxy: the container id is all the request carries, so
  * the lookup names no tenant and the tenant comes from the row (`unscoped-allowlist.test.ts`).
  * Refusals are plain text, which is what git prints to the person.
  */
 import { ACTIVE_SESSION_STATUSES, sessionBranchName } from '@launch/shared/launch-sessions'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { type AppConfig, loadConfig } from '../../../../config'
 import { type Database, type DatabaseHandle, openDatabase } from '../../../../db/client'
 import { apps, type SessionRow, sessions } from '../../../../db/schema'
@@ -33,6 +46,12 @@ import type { EgressContext } from './anthropic'
 export const TOKEN_REMINT_BEFORE_MS = 10 * 60 * 1000
 /** The largest push the proxy buffers (it must read the ref commands before forwarding). */
 export const MAX_PUSH_BYTES = 100 * 1024 * 1024
+/** A GitHub installation token's lifetime (fixed by GitHub). */
+export const INSTALLATION_TOKEN_TTL_MS = 60 * 60 * 1000
+/** A sealed token minted this recently may still be settling at GitHub (another request minted it). */
+export const FRESH_TOKEN_WINDOW_MS = 60 * 1000
+/** The backoff before each retry of a fresh token's 401/404. */
+export const FRESH_TOKEN_RETRY_DELAYS_MS: readonly number[] = [500, 1000, 2000]
 
 export interface GitHubEgressDeps {
   openDb: (env: AppBindings, cfg: AppConfig) => DatabaseHandle
@@ -41,6 +60,8 @@ export interface GitHubEgressDeps {
   /** Where the rewritten request goes; the global `fetch` by default. */
   fetch: typeof fetch
   now: () => Date
+  /** The backoff between a fresh token's retries (tests pass a recorder). */
+  sleep: (ms: number) => Promise<void>
 }
 
 const defaultDeps = (env: AppBindings): GitHubEgressDeps => ({
@@ -48,6 +69,7 @@ const defaultDeps = (env: AppBindings): GitHubEgressDeps => ({
   repoHost: (db, cfg) => defaultSessionPorts(env, cfg).repoHost(db),
   fetch: (input, init) => fetch(input, init),
   now: () => new Date(),
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 })
 
 /** A plain-text refusal, which is what git prints to the person. */
@@ -132,7 +154,33 @@ export function receivePackCommands(
 
 const ZERO_SHA = /^0+$/
 
-/** The token to inject: the sealed one while it has 10 minutes left, else a fresh one (sealed back). */
+/** The token to inject, and whether GitHub may not accept it yet. */
+interface GitToken {
+  token: string
+  /** Minted by this request, or sealed by another within {@link FRESH_TOKEN_WINDOW_MS}. */
+  fresh: boolean
+}
+
+/** A sealed token worth using: it has more than {@link TOKEN_REMINT_BEFORE_MS} left. */
+async function usableSealed(
+  cfg: AppConfig,
+  row: Pick<SessionRow, 'githubTokenSealed' | 'githubTokenExpiresAt'>,
+  now: Date
+): Promise<GitToken | null> {
+  const expiresAt = row.githubTokenExpiresAt?.getTime() ?? 0
+  if (!row.githubTokenSealed || expiresAt - now.getTime() <= TOKEN_REMINT_BEFORE_MS) return null
+  const token = await decryptToken(cfg, row.githubTokenSealed)
+  if (!token) return null
+  // GitHub's tokens live exactly an hour, so the expiry says when it was minted.
+  const fresh = expiresAt - now.getTime() > INSTALLATION_TOKEN_TTL_MS - FRESH_TOKEN_WINDOW_MS
+  return { token, fresh }
+}
+
+/**
+ * The token to inject: the sealed one while it has 10 minutes left, else a fresh one, sealed back
+ * in a compare-and-set on the expiry this request read — a request that loses the race adopts the
+ * token the winner stored (see the header). Null when the host takes no credential.
+ */
 async function gitToken(
   db: Database,
   cfg: AppConfig,
@@ -140,21 +188,42 @@ async function gitToken(
   session: SessionRow,
   repo: RepoRef,
   now: Date
-): Promise<string | null> {
-  const expiresAt = session.githubTokenExpiresAt?.getTime() ?? 0
-  if (session.githubTokenSealed && expiresAt - now.getTime() > TOKEN_REMINT_BEFORE_MS) {
-    return decryptToken(cfg, session.githubTokenSealed)
-  }
+): Promise<GitToken | null> {
+  const sealed = await usableSealed(cfg, session, now)
+  if (sealed) return sealed
   const auth = await host.gitAuth(repo)
   if (!auth) return null
-  await db
+  const readExpiry = session.githubTokenExpiresAt
+  const landed = await db
     .update(sessions)
     .set({
       githubTokenSealed: await encryptToken(cfg, auth.token),
       githubTokenExpiresAt: auth.expiresAt,
     })
-    .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
-  return auth.token
+    .where(
+      and(
+        eq(sessions.tenantId, session.tenantId),
+        eq(sessions.id, session.id),
+        readExpiry === null
+          ? isNull(sessions.githubTokenExpiresAt)
+          : eq(sessions.githubTokenExpiresAt, readExpiry)
+      )
+    )
+    .returning({ id: sessions.id })
+  if (landed.length === 0) {
+    // Another request re-minted first: use the token it stored, if it is a good one.
+    const [current] = await db
+      .select({
+        githubTokenSealed: sessions.githubTokenSealed,
+        githubTokenExpiresAt: sessions.githubTokenExpiresAt,
+      })
+      .from(sessions)
+      .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
+      .limit(1)
+    const winner = current ? await usableSealed(cfg, current, now) : null
+    if (winner) return winner
+  }
+  return { token: auth.token, fresh: true }
 }
 
 export async function handleGitHub(
@@ -208,7 +277,7 @@ export async function handleGitHub(
     }
 
     const host = deps.repoHost(handle.db, cfg)
-    let token: string | null
+    let token: GitToken | null
     try {
       token = await gitToken(handle.db, cfg, host, session, repo, deps.now())
     } catch {
@@ -229,14 +298,25 @@ export async function handleGitHub(
       const value = req.headers.get(name)
       if (value) headers.set(name, value)
     }
-    if (token) headers.set('Authorization', `Basic ${btoa(`x-access-token:${token}`)}`)
+    if (token) headers.set('Authorization', `Basic ${btoa(`x-access-token:${token.token}`)}`)
 
-    const res = await deps.fetch(upstream.toString(), {
-      method: req.method,
-      headers,
-      body: body ?? undefined,
-      redirect: 'manual',
-    })
+    const send = () =>
+      deps.fetch(upstream.toString(), {
+        method: req.method,
+        headers,
+        body: body ?? undefined,
+        redirect: 'manual',
+      })
+    let res = await send()
+    // A fresh token GitHub has not settled yet: the same request again, after a backoff (header §6).
+    if (token?.fresh) {
+      for (const delay of FRESH_TOKEN_RETRY_DELAYS_MS) {
+        if (res.status !== 401 && res.status !== 404) break
+        await res.body?.cancel()
+        await deps.sleep(delay)
+        res = await send()
+      }
+    }
     const out = new Headers(res.headers)
     out.delete('Set-Cookie')
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out })

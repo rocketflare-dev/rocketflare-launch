@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { decrypt } from '@/api/auth/oauth-encryption'
 import {
+  FRESH_TOKEN_RETRY_DELAYS_MS,
   handleGitHub,
   parseGitRequest,
   receivePackCommands,
@@ -42,6 +43,29 @@ function githubHost(cloud: FakeCloud) {
       org: cloud.opts.org,
     },
   })
+}
+
+/** An upstream answering `statuses` in turn (then 200s), recording what reached it. */
+function flakyUpstream(statuses: number[]) {
+  const seen: { authorization: string | null; body: string }[] = []
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(input, init)
+    seen.push({
+      authorization: req.headers.get('Authorization'),
+      body: req.method === 'POST' ? await req.text() : '',
+    })
+    const status = statuses.shift() ?? 200
+    return status === 200
+      ? new Response('001e# service=git-upload-pack\n0000', { status })
+      : new Response('Repository not found.', { status })
+  }) as typeof globalThis.fetch
+  return { seen, fetch }
+}
+
+/** A sleep that records its backoffs and returns at once. */
+function recordingSleep() {
+  const delays: number[] = []
+  return { delays, sleep: async (ms: number) => void delays.push(ms) }
 }
 
 /** An upstream that records what reached it and answers like git would. */
@@ -195,6 +219,124 @@ describe('handleGitHub', () => {
     expect(up.seen[1]?.authorization).not.toBe(first)
     const [stored] = await db.select().from(sessions).where(eq(sessions.id, row.id))
     expect(stored?.githubTokenExpiresAt?.getTime()).toBeGreaterThan(Date.now() + 50 * 60_000)
+  })
+
+  it('re-mints a token that has already expired (a session idle past the hour)', async () => {
+    const { cloud, f, row, sandboxId } = await live()
+    const up = upstream()
+    const deps = { repoHost: () => githubHost(cloud), fetch: up.fetch }
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-receive-pack`
+    await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
+    await db
+      .update(sessions)
+      .set({ githubTokenExpiresAt: new Date(Date.now() - 5 * 60_000) })
+      .where(eq(sessions.id, row.id))
+    const res = await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
+    expect(res.status).toBe(200)
+    expect(cloud.github.tokens.size).toBe(2)
+    expect(up.seen[1]?.authorization).not.toBe(up.seen[0]?.authorization)
+  })
+
+  it('a freshly minted token GitHub has not settled: a 404 then a 200 succeeds after a backoff', async () => {
+    const { cloud, f, sandboxId } = await live()
+    const up = flakyUpstream([404])
+    const clock = recordingSleep()
+    const deps = { repoHost: () => githubHost(cloud), fetch: up.fetch, sleep: clock.sleep }
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-receive-pack`
+    const res = await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
+    expect(res.status).toBe(200)
+    expect(up.seen).toHaveLength(2)
+    expect(up.seen[1]?.authorization).toBe(up.seen[0]?.authorization)
+    expect(clock.delays).toEqual([FRESH_TOKEN_RETRY_DELAYS_MS[0]])
+    expect(cloud.github.tokens.size).toBe(1)
+  })
+
+  it('a fresh token’s push is replayed whole on a 401, and a 404 that persists is returned after three retries', async () => {
+    const { cloud, f, row, sandboxId } = await live()
+    const own = `refs/heads/${sessionBranchName(row.shortId)}`
+    const body = pushBody([[OLD, NEW, own]])
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/git-receive-pack`
+    const push = (deps: object) =>
+      handleGitHub(
+        new Request(url, {
+          method: 'POST',
+          body,
+          headers: { 'Content-Type': 'application/x-git-receive-pack-request' },
+        }),
+        env,
+        { containerId: sandboxId },
+        deps
+      )
+
+    const flaky = flakyUpstream([401])
+    const first = recordingSleep()
+    const ok = await push({ repoHost: () => githubHost(cloud), fetch: flaky.fetch, ...first })
+    expect(ok.status).toBe(200)
+    expect(flaky.seen.map(s => s.body)).toEqual([body, body])
+
+    // Make the sealed token fresh again (re-mint), and have GitHub never accept it.
+    await db
+      .update(sessions)
+      .set({ githubTokenExpiresAt: new Date(Date.now() - 1000) })
+      .where(eq(sessions.id, row.id))
+    const gone = flakyUpstream([404, 404, 404, 404, 404])
+    const second = recordingSleep()
+    const res = await push({ repoHost: () => githubHost(cloud), fetch: gone.fetch, ...second })
+    expect(res.status).toBe(404)
+    expect(await res.text()).toContain('Repository not found')
+    expect(gone.seen).toHaveLength(1 + FRESH_TOKEN_RETRY_DELAYS_MS.length)
+    expect(second.delays).toEqual([...FRESH_TOKEN_RETRY_DELAYS_MS])
+  })
+
+  it('a token that has been valid for a while: its 404 is passed through without a retry', async () => {
+    const { cloud, f, row, sandboxId } = await live()
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-upload-pack`
+    await handleGitHub(
+      new Request(url),
+      env,
+      { containerId: sandboxId },
+      {
+        repoHost: () => githubHost(cloud),
+        fetch: upstream().fetch,
+      }
+    )
+    // Minted half an hour ago: 30 minutes left.
+    await db
+      .update(sessions)
+      .set({ githubTokenExpiresAt: new Date(Date.now() + 30 * 60_000) })
+      .where(eq(sessions.id, row.id))
+    const up = flakyUpstream([404])
+    const clock = recordingSleep()
+    const res = await handleGitHub(
+      new Request(url),
+      env,
+      { containerId: sandboxId },
+      {
+        repoHost: () => githubHost(cloud),
+        fetch: up.fetch,
+        sleep: clock.sleep,
+      }
+    )
+    expect(res.status).toBe(404)
+    expect(up.seen).toHaveLength(1)
+    expect(clock.delays).toEqual([])
+    expect(cloud.github.tokens.size).toBe(1)
+  })
+
+  it('two requests re-minting at once converge on the one token the row keeps', async () => {
+    const { cloud, f, row, sandboxId } = await live()
+    const up = upstream()
+    const deps = { repoHost: () => githubHost(cloud), fetch: up.fetch }
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-upload-pack`
+    await Promise.all([
+      handleGitHub(new Request(url), env, { containerId: sandboxId }, deps),
+      handleGitHub(new Request(url), env, { containerId: sandboxId }, deps),
+    ])
+    expect(up.seen).toHaveLength(2)
+    expect(up.seen[1]?.authorization).toBe(up.seen[0]?.authorization)
+    const [stored] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    const token = await decrypt(stored?.githubTokenSealed ?? '', cfg.OAUTH_ENCRYPTION_KEY as string)
+    expect(up.seen[0]?.authorization).toBe(`Basic ${btoa(`x-access-token:${token}`)}`)
   })
 
   it('a push may move only the session’s own branch, and never delete it', async () => {

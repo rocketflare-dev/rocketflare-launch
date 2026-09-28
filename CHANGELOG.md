@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A coding session's checkpoint push no longer fails with "Repository not found" right after its
+  GitHub token is re-minted (a session idle past the token's hour). GitHub does not always accept
+  a just-issued installation token for a second or so and answers a private repo's anonymous-looking
+  request with a 404; the git proxy now retries a fresh token's 401/404 after 0.5 s, 1 s and 2 s
+  (a token that has been valid for a while is never retried). Two requests re-minting at once now
+  converge on one token instead of overwriting each other, and the checkpoint retries a push that
+  failed transiently once, after 3 s.
+- Using a coding session's live preview now counts as activity: the session is no longer suspended
+  as idle while the person is clicking around the preview with no chat turn. A preview request moves
+  the session's `last_activity_at` (at most one write a minute), and the idle timeout re-checks it
+  before suspending, waiting out the rest of the window instead. An open session page alone still
+  does not keep the container up.
 - A coding session whose turn's Workflow died (a `wrangler dev` reload, a lost or errored instance)
   no longer stays "working" for ever. A running turn now writes a heartbeat every 30 seconds; the
   session page's read, End and the five-minute cron settle a turn quiet for 3 minutes whose

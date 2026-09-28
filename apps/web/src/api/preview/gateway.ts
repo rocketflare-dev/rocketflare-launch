@@ -33,6 +33,16 @@
  * per isolate, because a Vite page is a hundred module requests. An ended session is therefore
  * served for up to 15 s more — by the sandbox that is being destroyed anyway.
  *
+ * **The person's use counts as activity**: an idle session is suspended by its Workflow once
+ * `last_activity_at` is `idleSuspendMinutes` old (`suspendStep` in `steps.ts`), and when no chat
+ * turn runs nothing but a preview request says the person is still there — so an authenticated
+ * request to a `ready` / `blocked` session's preview moves `last_activity_at` to now, off the hot
+ * path (`ctx.waitUntil`), at most once per `PREVIEW_ACTIVITY_THROTTLE_MS` (60 s) per session per
+ * isolate — and in the database too (the update only lands on a stamp older than that), so many
+ * isolates cost about one write a minute. Never while `working`: there `last_activity_at` is the
+ * turn's heartbeat, which `reconcile.ts` reads to find a dead turn, and a preview must not mask
+ * one. The status cache may be 15 s stale; the update re-checks the status itself.
+ *
  * **Pre-tenant by design**: the host names the session by `short_id` and nothing else, so the
  * lookup names no tenant and the tenant is then taken from the row (the entry for this file in
  * `tests/config/unscoped-allowlist.test.ts`). Who may VIEW was decided when the grant was minted.
@@ -43,7 +53,7 @@ import {
   type SessionStatus,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lt, or } from 'drizzle-orm'
 import { type AppConfig, loadConfig } from '../../config'
 import { type Database, type DatabaseHandle, openDatabase } from '../../db/client'
 import { type SessionRow, sessions } from '../../db/schema'
@@ -66,9 +76,13 @@ export const DEV_PREVIEW_COOKIE = 'launch-preview'
 export const PREVIEW_PORTS: readonly number[] = [PREVIEW_UI_PORT, 8787]
 /** How long a session's status is trusted in one isolate. */
 export const PREVIEW_STATUS_CACHE_MS = 15_000
+/** At most one `last_activity_at` write per session per this long (per isolate, and in the DB). */
+export const PREVIEW_ACTIVITY_THROTTLE_MS = 60_000
 
 /** The statuses whose sandbox is up and serving. */
 const SERVING_STATUSES: readonly SessionStatus[] = ['ready', 'working', 'blocked', 'shipping']
+/** The statuses whose idle clock a preview request moves: the live ones the Workflow waits in. */
+const ACTIVITY_STATUSES: readonly SessionStatus[] = ['ready', 'blocked']
 
 /** Everything the gateway reaches, injectable so a test drives it with fakes. */
 export interface PreviewGatewayDeps {
@@ -124,15 +138,20 @@ export async function sessionForPreview(
 /** What the gateway needs of a session row — nothing secret beyond the token it already matched. */
 interface PreviewView {
   id: string
+  tenantId: string
   status: SessionStatus
   previewToken: string
 }
 
 const statusCache = new Map<string, { view: PreviewView; at: number }>()
 
-/** Forget every cached status (tests; a deploy starts with an empty isolate anyway). */
+/** When this isolate last wrote each session's activity (session id → ms). */
+const activityBumps = new Map<string, number>()
+
+/** Forget every cached status and activity stamp (tests; a deploy starts with an empty isolate). */
 export function clearPreviewStatusCache(): void {
   statusCache.clear()
+  activityBumps.clear()
 }
 
 async function lookup(
@@ -153,7 +172,12 @@ async function lookup(
       statusCache.delete(host.shortId)
       return null
     }
-    const view = { id: row.id, status: row.status, previewToken: row.previewToken }
+    const view = {
+      id: row.id,
+      tenantId: row.tenantId,
+      status: row.status,
+      previewToken: row.previewToken,
+    }
     statusCache.set(host.shortId, { view, at: now })
     // Keep the map bounded: a busy isolate sees many previews, each is re-read after 15 s anyway.
     if (statusCache.size > 1000) {
@@ -165,6 +189,63 @@ async function lookup(
   } finally {
     await handle.close()
   }
+}
+
+// ---- the person's activity ---------------------------------------------------------------------
+
+/**
+ * Move a live session's `last_activity_at` to `now` — only while it is `ready` / `blocked` and only
+ * when the stamp is older than {@link PREVIEW_ACTIVITY_THROTTLE_MS}. Tenant-first (the tenant is
+ * the row's, found by the lookup above). True when the write landed.
+ */
+export async function bumpPreviewActivity(
+  db: Database,
+  view: Pick<PreviewView, 'id' | 'tenantId'>,
+  now: Date
+): Promise<boolean> {
+  const cutoff = new Date(now.getTime() - PREVIEW_ACTIVITY_THROTTLE_MS)
+  const landed = await db
+    .update(sessions)
+    .set({ lastActivityAt: now })
+    .where(
+      and(
+        eq(sessions.tenantId, view.tenantId),
+        eq(sessions.id, view.id),
+        inArray(sessions.status, [...ACTIVITY_STATUSES]),
+        or(isNull(sessions.lastActivityAt), lt(sessions.lastActivityAt, cutoff))
+      )
+    )
+    .returning({ id: sessions.id })
+  return landed.length > 0
+}
+
+/** The throttled bump, handed to `waitUntil`; never throws (a missed stamp costs nothing). */
+function noteActivity(
+  env: AppBindings,
+  cfg: AppConfig,
+  deps: PreviewGatewayDeps,
+  ctx: ExecutionContext,
+  view: PreviewView,
+  now: Date
+): void {
+  if (!ACTIVITY_STATUSES.includes(view.status)) return
+  const last = activityBumps.get(view.id)
+  if (last !== undefined && now.getTime() - last < PREVIEW_ACTIVITY_THROTTLE_MS) return
+  activityBumps.set(view.id, now.getTime())
+  if (activityBumps.size > 1000) {
+    for (const [key, at] of activityBumps) {
+      if (now.getTime() - at >= PREVIEW_ACTIVITY_THROTTLE_MS) activityBumps.delete(key)
+    }
+  }
+  const write = (async () => {
+    const handle = deps.openDb(env, cfg)
+    try {
+      await bumpPreviewActivity(handle.db, view, now)
+    } finally {
+      await handle.close()
+    }
+  })().catch(() => {})
+  ctx.waitUntil(write)
 }
 
 // ---- cookies and headers -----------------------------------------------------------------------
@@ -291,7 +372,7 @@ async function proxy(
 export async function handlePreview(
   request: Request,
   env: AppBindings,
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
   host: PreviewHost,
   overrides: Partial<PreviewGatewayDeps> = {}
 ): Promise<Response> {
@@ -332,5 +413,6 @@ export async function handlePreview(
       'preview_unavailable'
     )
   }
+  noteActivity(env, cfg, deps, ctx, view, now)
   return proxy(request, env, cfg, deps, view, host.port)
 }
