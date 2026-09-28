@@ -93,6 +93,18 @@ export const deployTickets = pgTable(
      * whatever its status or version say.
      */
     activatedAt: timestamp('activated_at', { withTimezone: true }),
+    /**
+     * When `activate` began its vendor calls (Workflows, schedules, the deployment) on an `uploaded`
+     * ticket — the progress read's "activating". Informational only: never "deployed"
+     * (`activated_at` is), and a failed activation keeps it, which is what says where it stopped.
+     */
+    activationStartedAt: timestamp('activation_started_at', { withTimezone: true }),
+    /**
+     * The deploy progress read's claim on this ticket's GitHub run (`deploy/progress.ts`): one read
+     * per window polls the run, however many tabs read the page. Never `updated_at`, which says
+     * when the ticket last MOVED.
+     */
+    runPolledAt: timestamp('run_polled_at', { withTimezone: true }),
     /** The bindings the build declared, as checked (`binding-check.ts`). Ids and names only. */
     bindings: jsonb('bindings').$type<Record<string, unknown>>(),
     /** `"<kind> <binding>=<value>"` per refused binding. */

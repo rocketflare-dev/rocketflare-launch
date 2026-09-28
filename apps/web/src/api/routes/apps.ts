@@ -14,6 +14,7 @@
  * with a five-second cap, and the person who pressed the button is waiting for the answer.
  */
 import {
+  type AppListResponse,
   appHealthQuerySchema,
   importAppRequestSchema,
   updateAppRedirectUrisRequestSchema,
@@ -32,6 +33,7 @@ import {
 } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
 import { getSetting } from '../services/launch/credentials'
+import { withLatestDeploys } from '../services/launch/deploy/progress'
 import { checkAppHealth } from '../services/launch/health'
 import { importApp } from '../services/launch/import'
 import {
@@ -69,12 +71,18 @@ appsRouter.route('/', appConfigScanRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')
-  const { db, tenantId } = withAuthAndDb(c)
-  const [items, appsDomain] = await Promise.all([
+  const { db, cfg, tenantId, logger } = withAuthAndDb(c)
+  const [summaries, appsDomain] = await Promise.all([
     listApps(db, tenantId),
     getSetting<string>(db, 'apps_domain'),
   ])
-  return c.json({ items, appsDomain: typeof appsDomain === 'string' ? appsDomain : null })
+  // Each row's latest deploy (in progress first), after polling the run of any in progress.
+  const items = await withLatestDeploys(db, cfg, tenantId, summaries, { logger })
+  const body: AppListResponse = {
+    items,
+    appsDomain: typeof appsDomain === 'string' ? appsDomain : null,
+  }
+  return c.json(body)
 })
 
 appsRouter.post('/import', validate('json', importAppRequestSchema), async c => {

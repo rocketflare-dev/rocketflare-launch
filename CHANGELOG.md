@@ -14,6 +14,14 @@
   and under the `neon` driver the per-tenant loop cost a round trip per ten tenants. The web tests'
   timeout is 20 s under `DATABASE_DRIVER=neon` (every query an HTTP request through the local
   proxy) and stays 5 s for the `postgres` gate.
+- Deploys show while they run. The app overview has a "Deploying" panel with each environment's
+  latest deploy and its steps — dispatched → approved → uploaded → migrating → activating → live, or
+  failed with the reason — plus who started it and a link to the GitHub run; the catalogue's cards
+  and table show an app's deploy in progress (or its last one). Both poll every 5 s while a deploy
+  runs (`GET /api/apps/:id/deploys/latest`, and `latestDeploy` on `GET /api/apps`). A deploy whose
+  GitHub run died (cancelled, runner lost mid-migration) is now marked failed when the page reads
+  it, its migration credential revoked, instead of staying "deploying" for ever. Migration 0028
+  adds `deploy_tickets.activation_started_at` and `run_polled_at`: run `pnpm db:migrate`.
 - Coding sessions no longer stall silently. Every sandbox call a boot step makes has a deadline
   and a readable error ("Installing and seeding: the sandbox (setAllowedHosts) did not answer within
   90 s"), and so does every Neon call; a failed install, bootstrap or dev server shows its last 40

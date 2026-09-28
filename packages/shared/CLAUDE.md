@@ -22,7 +22,7 @@ response with the same schema. `pnpm test:config` covers the pure parts.
 `activity.ts` · `errors.ts` envelope + codes · `pagination.ts` ·
 Launch (P1): `launch-apps.ts` (registry enums + environment jsonb shapes, spec/04 slug rules
 `appSlugProblem`/`appSlugSchema`, `importAppRequestSchema`, the lenient `rocketflareManifestSchema`,
-catalogue/detail/health/operations responses, the OIDC client and its once-only
+catalogue/detail/health/operations responses (the catalogue row is `appCatalogueItemSchema` — the summary plus `latestDeploy`), deploy progress (`DEPLOY_STEPS`, `DEPLOY_PHASES`, `deployProgressSchema`, `appDeployProgressResponseSchema` — derived from a deploy ticket server-side, here because `launch-pipeline.ts` imports this file), the OIDC client and its once-only
 `appOidcClientSecretResponseSchema`, `appOidcConfigSnippet` — the one config text the API and UI
 both show), `launch-oidc.ts` (access policy, signing-key and access-request statuses, redirect URIs,
 public JWK, the key-admin responses and the `/api/app-access` request/policy/grant contracts), `launch-setup.ts`

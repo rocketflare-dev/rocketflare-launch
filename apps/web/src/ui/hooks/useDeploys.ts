@@ -8,7 +8,19 @@
  * ticket waits on a PERSON, not the server, so it is not polled: the approver's own click refreshes
  * it, and the deployer's own wait (`WAIT_SECONDS`) is the clock. `active` is not polled either — it
  * is deployed, and the `finish` that settles it changes nothing a reader acts on.
+ *
+ * `useDeployProgress` is the overview's stepper (`GET /api/apps/:id/deploys/latest`, each
+ * environment's newest deploy with its phase — dispatched → approved → uploaded → migrating →
+ * activating → done, or failed). It polls every `DEPLOY_PROGRESS_POLL_MS` while a deploy is in
+ * progress and not waiting on a person (`deployProgressPollInterval`, which the catalogue's
+ * `useApps` shares), and the moment none is, it refreshes the rest of the `apps` family once — the
+ * environments' versions, the deploys list and the catalogue moved with it.
  */
+import {
+  type AppDeployProgressResponse,
+  appDeployProgressResponseSchema,
+  type DeployProgress,
+} from '@launch/shared/launch-apps'
 import {
   type DeployDecision,
   type DeployTicket,
@@ -17,6 +29,7 @@ import {
   productionDeployResponseSchema,
 } from '@launch/shared/launch-pipeline'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 
@@ -48,6 +61,51 @@ export function useDeploys(appId: string | undefined, enabled = true) {
     enabled: Boolean(appId) && enabled,
     refetchInterval: q => deploysPollInterval(q.state.data?.items),
   })
+}
+
+/** How often a reader re-reads while a deploy is in progress. */
+export const DEPLOY_PROGRESS_POLL_MS = 5000
+
+/**
+ * `refetchInterval` for anything carrying deploy progress (the overview, the catalogue): poll
+ * while one is IN PROGRESS and does not wait on a person — `awaiting_approval` changes when
+ * somebody decides, and the decider's own click refreshes it. Pure.
+ */
+export function deployProgressPollInterval(
+  items: readonly (Pick<DeployProgress, 'inProgress' | 'phase'> | null | undefined)[] | undefined
+): number | false {
+  return items?.some(d => d?.inProgress && d.phase !== 'awaiting_approval')
+    ? DEPLOY_PROGRESS_POLL_MS
+    : false
+}
+
+/** Whether any deploy in `data` still runs (the transition the effect below watches). Pure. */
+function anyRunning(data: AppDeployProgressResponse | undefined): boolean {
+  return deployProgressPollInterval(data?.items) !== false
+}
+
+export function useDeployProgress(appId: string | undefined, enabled = true) {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    queryKey: queryKeys.apps.deployProgress(appId ?? ''),
+    queryFn: () =>
+      api.get(`/api/apps/${appId}/deploys/latest`, { schema: appDeployProgressResponseSchema }),
+    enabled: Boolean(appId) && enabled,
+    refetchInterval: q => deployProgressPollInterval(q.state.data?.items),
+  })
+  // A deploy just settled (live or failed): the rest of the app moved with it — once.
+  const running = anyRunning(query.data)
+  const wasRunning = useRef(running)
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.apps.all,
+        predicate: q => q.queryKey[1] !== 'deploy-progress',
+      })
+    }
+    wasRunning.current = running
+  }, [running, queryClient])
+  return query
 }
 
 export function useDecideDeploy(appId: string) {

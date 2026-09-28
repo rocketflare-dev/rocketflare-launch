@@ -4,6 +4,11 @@
  *
  * - `GET /:id/deploys` — the deploy tickets, newest first (`deployTicketListResponseSchema`).
  *   Every member may read (`read App`).
+ * - `GET /:id/deploys/latest` — each environment's newest deploy as the overview's stepper reads
+ *   it (`appDeployProgressResponseSchema`, `read App`): dispatched → approved → uploaded →
+ *   migrating → activating → done, or failed. The read first polls the GitHub run of an
+ *   in-progress deploy (`deploy/progress.ts`, once per 20 s per ticket, never throwing into the
+ *   request), so a job that died on GitHub reads failed instead of "migrating" for ever.
  * - `POST /:id/deploys/:ticketId/decide` — approve or reject a production run waiting in GitHub
  *   (`deployDecisionSchema`). From P4 a thin redirect to the ticket's `deploy.production` approval
  *   (`engine.decide`): whoever that approval's policy names decides — by default the app's owners
@@ -20,6 +25,7 @@
  * `/:slug` routes, behind the `/api/apps` mount's `authMiddleware`. Every lookup is tenant-first,
  * so another organisation's app or ticket is a 404.
  */
+import type { AppDeployProgressResponse } from '@launch/shared/launch-apps'
 import { deployDecisionSchema, type ProductionDeployResponse } from '@launch/shared/launch-pipeline'
 import { can, guardPermission } from '../middleware/permissions'
 import { approvalViewerOf } from '../services/approvals/types'
@@ -30,6 +36,7 @@ import {
   listDeploys,
   requestProductionDeploy,
 } from '../services/launch/deploy/decisions'
+import { readAppDeploys } from '../services/launch/deploy/progress'
 import { requirePublicUrl } from '../services/launch/public-url'
 import type { AppContext } from '../types'
 import { ForbiddenError } from '../utils/core/errors'
@@ -62,6 +69,17 @@ appDeploysRouter.get('/:id/deploys', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
   return c.json({ items: await listDeploys(db, tenantId, app.id) })
+})
+
+// Registered before `/:id/deploys/:ticketId/…`: `latest` is a word, not a ticket id.
+appDeploysRouter.get('/:id/deploys/latest', async c => {
+  guardPermission(c, 'read', 'App')
+  const { db, cfg, tenantId, logger } = withAuthAndDb(c)
+  const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
+  const body: AppDeployProgressResponse = {
+    items: await readAppDeploys(db, cfg, tenantId, app, { logger }),
+  }
+  return c.json(body)
 })
 
 appDeploysRouter.post(

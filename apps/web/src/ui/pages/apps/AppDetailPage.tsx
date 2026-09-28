@@ -11,6 +11,10 @@
  * the server's own rule; retry, re-scaffold (a failed launch that never deployed, from the current
  * kit pin) and archive stay `manage App`.
  *
+ * Any app that has deployed shows each environment's latest deploy near the top
+ * (`DeployProgressPanel`): while one runs, its stepper — dispatched → approved → uploaded →
+ * migrating → activating → live — polled until it settles, with its GitHub run.
+ *
  * P4: an app with a repository carries its releases (`ReleasesCard`) — cut one, watch it reach
  * staging, promote it to production through an approval — and a pending production deploy links
  * to its approval instead of being decided in place.
@@ -58,6 +62,7 @@ import {
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDate, formatDateTime } from '@/ui/lib/format'
 import { ConfigCard } from './components/ConfigCard'
+import { DeployProgressPanel } from './components/DeployProgressPanel'
 import { DeploysCard } from './components/DeploysCard'
 import { EditAppModal } from './components/EditAppModal'
 import { EnvironmentCard } from './components/EnvironmentCard'
@@ -392,6 +397,9 @@ export default function AppDetailPage() {
           subject={stagingHost && <span className="font-mono text-xs">{stagingHost}</span>}
         />
       )}
+
+      {/* Each environment's latest deploy, as it runs: dispatched → … → live, or failed. */}
+      {app.status !== 'requested' && <DeployProgressPanel appId={app.id} />}
 
       {app.environments.length === 0 ? (
         <EmptyStateCard icon={Squares2X2Icon} message="No environments recorded" />

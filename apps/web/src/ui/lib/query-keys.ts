@@ -185,6 +185,8 @@ const CORE_QUERY_KEYS = {
     pipeline: (appId: string) => ['apps', 'pipeline', appId] as const,
     /** P2: the app's deploy tickets. */
     deploys: (appId: string) => ['apps', 'deploys', appId] as const,
+    /** Each environment's latest deploy and its phase (polled while one is in progress). */
+    deployProgress: (appId: string) => ['apps', 'deploy-progress', appId] as const,
   },
   /**
    * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is

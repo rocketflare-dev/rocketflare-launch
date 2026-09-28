@@ -4,6 +4,10 @@
  * with a fleet summary above and, for admins, "Create app" (P2 — the page's one flame button) and
  * "Import app" for an existing repo. Every member may read it (`read App`).
  *
+ * Each app also carries its latest deploy (`latestDeploy`: an in-progress one first) — a card's
+ * line and the table's column show it running (dispatched → … → activating), failed or live, and
+ * the list polls while one is in progress (`useApps`).
+ *
  * Search filters the list client-side: the catalogue is one company's apps and arrives whole.
  */
 import {
@@ -14,7 +18,7 @@ import {
   RocketLaunchIcon,
   Squares2X2Icon,
 } from '@heroicons/react/24/outline'
-import type { AppSummary, HealthStatus } from '@launch/shared/launch-apps'
+import type { AppCatalogueItem, HealthStatus } from '@launch/shared/launch-apps'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -27,7 +31,13 @@ import {
 import { useApps } from '@/ui/hooks/useApps'
 import { useLocalStoragePreference } from '@/ui/hooks/useLocalStoragePreference'
 import { usePermissions } from '@/ui/hooks/usePermissions'
+import { timeAgo } from '@/ui/lib/format'
 import { CreateAppModal } from './components/CreateAppModal'
+import {
+  DEPLOY_PHASE_LABELS,
+  DEPLOY_PHASE_TONES,
+  deployTitle,
+} from './components/deployProgressModel'
 import { EnvironmentHealth } from './components/HealthDot'
 import { ImportAppModal } from './components/ImportAppModal'
 
@@ -51,7 +61,7 @@ function monogram(name: string): string {
 /** The worst status across an app's environments — what "needs attention" means. */
 const SEVERITY: Record<HealthStatus, number> = { unknown: 0, up: 1, degraded: 2, down: 3 }
 
-export function worstHealth(app: Pick<AppSummary, 'environments'>): HealthStatus {
+export function worstHealth(app: Pick<AppCatalogueItem, 'environments'>): HealthStatus {
   return app.environments.reduce<HealthStatus>(
     (worst, env) => (SEVERITY[env.healthStatus] > SEVERITY[worst] ? env.healthStatus : worst),
     'unknown'
@@ -59,7 +69,7 @@ export function worstHealth(app: Pick<AppSummary, 'environments'>): HealthStatus
 }
 
 /** Case-insensitive match on name, slug, team and repo. Pure. */
-export function matchesSearch(app: AppSummary, query: string): boolean {
+export function matchesSearch(app: AppCatalogueItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   return [app.displayName, app.slug, app.ownerGroup?.name, app.repoOwner, app.repoName]
@@ -67,7 +77,7 @@ export function matchesSearch(app: AppSummary, query: string): boolean {
     .some(v => v.toLowerCase().includes(q))
 }
 
-function Monogram({ app }: { app: AppSummary }) {
+function Monogram({ app }: { app: AppCatalogueItem }) {
   return (
     <span
       aria-hidden="true"
@@ -78,9 +88,9 @@ function Monogram({ app }: { app: AppSummary }) {
   )
 }
 
-function StatusTag({ app }: { app: AppSummary }) {
+function StatusTag({ app }: { app: AppCatalogueItem }) {
   if (app.status === 'live') return null
-  const tone: Record<AppSummary['status'], string> = {
+  const tone: Record<AppCatalogueItem['status'], string> = {
     live: 'active',
     requested: 'pending',
     provisioning: 'running',
@@ -94,7 +104,7 @@ function StatusTag({ app }: { app: AppSummary }) {
   )
 }
 
-function Meta({ app }: { app: AppSummary }) {
+function Meta({ app }: { app: AppCatalogueItem }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary">
       <span className={app.ownerGroup ? '' : 'text-muted italic'}>
@@ -110,17 +120,44 @@ function Meta({ app }: { app: AppSummary }) {
   )
 }
 
-function environmentOf(app: AppSummary, name: 'staging' | 'production') {
+/**
+ * The app's latest deploy in one line: in progress (its phase, pulsing), failed, or live and when.
+ * Nothing for an app that never deployed.
+ */
+export function DeployLine({ app }: { app: Pick<AppCatalogueItem, 'latestDeploy'> }) {
+  const d = app.latestDeploy
+  if (!d) return null
+  const when = d.phase === 'done' ? (d.activatedAt ?? d.updatedAt) : d.startedAt
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs min-w-0"
+      data-testid="catalogue-deploy"
+    >
+      <span
+        className={`status-badge ${d.inProgress ? 'animate-pulse' : ''}`}
+        data-status={DEPLOY_PHASE_TONES[d.phase]}
+      >
+        {d.inProgress
+          ? `deploying · ${DEPLOY_PHASE_LABELS[d.phase]}`
+          : DEPLOY_PHASE_LABELS[d.phase]}
+      </span>
+      <span className="text-secondary truncate">{deployTitle(d)}</span>
+      <span className="text-muted">{timeAgo(when)}</span>
+    </div>
+  )
+}
+
+function environmentOf(app: AppCatalogueItem, name: 'staging' | 'production') {
   return app.environments.find(e => e.name === name)
 }
 
-function EnvCell({ app, name }: { app: AppSummary; name: 'staging' | 'production' }) {
+function EnvCell({ app, name }: { app: AppCatalogueItem; name: 'staging' | 'production' }) {
   const env = environmentOf(app, name)
   if (!env) return <span className="text-xs text-muted">—</span>
   return <EnvironmentHealth env={env} showName={false} />
 }
 
-function AppCard({ app }: { app: AppSummary }) {
+function AppCard({ app }: { app: AppCatalogueItem }) {
   const attention = ['down', 'degraded'].includes(worstHealth(app))
   return (
     <Link
@@ -143,6 +180,7 @@ function AppCard({ app }: { app: AppSummary }) {
       </div>
       {app.description && <p className="text-sm text-secondary line-clamp-2">{app.description}</p>}
       <Meta app={app} />
+      <DeployLine app={app} />
       <div className="grid grid-cols-2 gap-3 pt-3 mt-auto border-t border-base-300">
         {(['staging', 'production'] as const).map(name => {
           const env = environmentOf(app, name)
@@ -160,7 +198,7 @@ function AppCard({ app }: { app: AppSummary }) {
   )
 }
 
-function AppTable({ apps }: { apps: AppSummary[] }) {
+function AppTable({ apps }: { apps: AppCatalogueItem[] }) {
   return (
     <SectionPanel flush>
       <div className="overflow-x-auto">
@@ -172,6 +210,7 @@ function AppTable({ apps }: { apps: AppSummary[] }) {
               <th>Kit</th>
               <th>Staging</th>
               <th>Production</th>
+              <th>Latest deploy</th>
             </tr>
           </thead>
           <tbody>
@@ -206,6 +245,13 @@ function AppTable({ apps }: { apps: AppSummary[] }) {
                 <td>
                   <EnvCell app={app} name="production" />
                 </td>
+                <td>
+                  {app.latestDeploy ? (
+                    <DeployLine app={app} />
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -216,7 +262,7 @@ function AppTable({ apps }: { apps: AppSummary[] }) {
 }
 
 /** The fleet at a glance: how many apps, and how many production environments answer. */
-function FleetSummary({ apps }: { apps: AppSummary[] }) {
+function FleetSummary({ apps }: { apps: AppCatalogueItem[] }) {
   const production = apps.flatMap(a => a.environments.filter(e => e.name === 'production'))
   const up = production.filter(e => e.healthStatus === 'up').length
   const attention = apps.filter(a => ['down', 'degraded'].includes(worstHealth(a))).length

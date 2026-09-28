@@ -64,7 +64,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `useAppsDomain`, which reads the catalogue's `appsDomain` and otherwise infers the domain from
   a created app's staging URL, else null) and `useDeploys` (`useDeploys` polling while a ticket is
   in flight — `approved`/`uploaded`, never `pending`, which waits on a person — `useDecideDeploy`,
-  `useDeployProduction`).
+  `useDeployProduction`; and `useDeployProgress(appId)` — the overview's `DeployProgressPanel`, each environment's latest deploy and phase, polled every `DEPLOY_PROGRESS_POLL_MS` while `deployProgressPollInterval` says one runs and does not wait on a person (the catalogue's `useApps` polls on the same decision over `latestDeploy`), refreshing the rest of the `apps` family once when it settles; what the stepper and the catalogue line SAY is `pages/apps/components/deployProgressModel.ts`).
   Launch P3 (coding sessions): `useSessions` (`useSession(id)` / `useAppSessions(appId, scope)` /
   `useAdminSessions(scope)` polling `SESSION_POLL_MS` only while `sessionOwesAnswer` — `ready`,
   `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession`, `useSendTurn`,
