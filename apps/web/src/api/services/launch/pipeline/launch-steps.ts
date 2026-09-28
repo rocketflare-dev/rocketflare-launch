@@ -26,6 +26,7 @@ import type {
   AppOperationExternalIds,
 } from '@launch/shared/launch-apps'
 import type { AppLaunchParams, ScaffoldPlan } from '@launch/shared/launch-pipeline'
+import { templatePinRef } from '@launch/shared/launch-setup'
 import { and, desc, eq, gte } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
@@ -61,6 +62,7 @@ import {
 } from '../oidc-clients'
 import { publicUrlProblem } from '../public-url'
 import { KIT_BINDINGS } from '../rocketflare/names'
+import { SCAFFOLD_JOB_COMMIT_MESSAGES } from '../rocketflare/scaffold-job'
 import {
   MANIFEST_PATHS,
   parseManifest,
@@ -289,7 +291,7 @@ export function repoStep(d: PipelineDeps, params: AppLaunchParams) {
         repo.name,
         repo.default_branch,
         d.ports.scaffoldFiles(),
-        'Add the Launch scaffold job'
+        SCAFFOLD_JOB_COMMIT_MESSAGES.add
       )
       await ctx.record({ scaffoldFilesCommit: commit.sha })
     }
@@ -377,7 +379,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
         repo.name,
         repo.branch,
         d.ports.scaffoldFiles(),
-        'Update the Launch scaffold job'
+        SCAFFOLD_JOB_COMMIT_MESSAGES.update
       )
       if (refreshed.changed) await ctx.record({ scaffoldFilesCommit: refreshed.sha })
     }
@@ -388,7 +390,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
       domain: requireAppsDomain(vendors.settings),
       repo: `${repo.owner}/${repo.name}`,
       kitRepo: pin.repo,
-      tag: pin.tag,
+      tag: pin.tag ?? null,
       commit: pin.commit,
     }
     const runner = d.ports.scaffoldRunner
@@ -515,16 +517,29 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
     ])
     const problems: string[] = []
     const manifestText = files[manifestPath]
+    // A release pin: the kit version IS the tag. A commit pin has no tag to compare, so the
+    // version is whatever the kit's manifest reports (recorded as such) and the COMMIT is the
+    // proof — the job stamps it, and a commit pin requires it.
+    let kitVersion: string | null = null
     if (!manifestText) {
       problems.push(`${manifestPath} is missing`)
     } else {
       const identity = parseManifest(manifestText, manifestPath)
+      kitVersion = identity.kitVersion
       if (identity.slug !== app.slug) {
         problems.push(`${manifestPath} names the app ${identity.slug ?? 'nothing'}`)
       }
-      if (identity.kitVersion !== pin.tag) {
+      if (pin.tag && identity.kitVersion !== pin.tag) {
         problems.push(
           `${manifestPath} says kit ${identity.kitVersion ?? 'unknown'}, not ${pin.tag}`
+        )
+      }
+      if (!pin.tag && !identity.kitVersion) {
+        problems.push(`${manifestPath} records no kit version`)
+      }
+      if ((!pin.tag || identity.kitCommit) && identity.kitCommit !== pin.commit) {
+        problems.push(
+          `${manifestPath} says kit commit ${identity.kitCommit ?? 'unknown'}, not ${pin.commit}`
         )
       }
     }
@@ -542,9 +557,10 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
     }
     const head = await getRef(token, owner, repo.name, `heads/${repo.branch}`)
     await updateApp(d.db, app, {
-      templateRef: pin.tag,
+      // A commit pin: the ref is the SHA and the version the kit's manifest reported.
+      templateRef: templatePinRef(pin),
       templateCommit: pin.commit,
-      templateVersion: pin.tag,
+      templateVersion: pin.tag ?? kitVersion,
       templateContractVersion: ROCKETFLARE_CONTRACT_VERSION,
     })
     return { scaffoldCommit: head.object.sha }

@@ -22,8 +22,12 @@ import {
 import {
   DEFAULT_APP_CREATE_ROLE,
   DEFAULT_TEMPLATE_PIN,
+  isCommitPin,
   LAUNCH_SETTING_KEYS,
   SETUP_SETTING_KEYS,
+  templatePinLabel,
+  templatePinRef,
+  templatePinRequestSchema,
   templatePinSchema,
 } from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
@@ -270,5 +274,38 @@ describe('P2 settings', () => {
       commit: '6ee75e8c7119a573d4debb9dee646677fce205c1',
     })
     expect(DEFAULT_APP_CREATE_ROLE).toBe('admin')
+  })
+
+  it('a pin is a release (tag) or an unreleased commit (no tag); a stored release row still parses', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567'
+    const stored = { repo: 'rocketflare-dev/rocketflare', tag: '0.15.0', commit }
+    expect(templatePinSchema.parse(stored)).toEqual(stored)
+    const commitPin = templatePinSchema.parse({ repo: 'rocketflare-dev/rocketflare', commit })
+    expect(commitPin).toEqual({ repo: 'rocketflare-dev/rocketflare', commit })
+    expect(isCommitPin(commitPin)).toBe(true)
+    expect(isCommitPin(stored)).toBe(false)
+    expect(templatePinLabel(stored)).toBe('0.15.0')
+    expect(templatePinLabel(commitPin)).toBe('@0123456')
+    expect(templatePinRef(stored)).toBe('0.15.0')
+    expect(templatePinRef(commitPin)).toBe(commit)
+    // A short SHA is never a pin: the server resolves one to the full SHA first.
+    expect(templatePinSchema.safeParse({ repo: 'a/b', commit: '0123456' }).success).toBe(false)
+    expect(templatePinSchema.safeParse({ repo: 'a/b', tag: '', commit }).success).toBe(false)
+  })
+
+  it('the Kit version card asks for a tag or a commit (SHA or branch), never a full pin', () => {
+    expect(templatePinRequestSchema.parse({ kind: 'tag', tag: '0.15.5' })).toEqual({
+      kind: 'tag',
+      tag: '0.15.5',
+    })
+    expect(templatePinRequestSchema.parse({ kind: 'commit', ref: 'main' }).kind).toBe('commit')
+    for (const bad of [
+      { kind: 'commit', ref: 'two words' },
+      { kind: 'tag', tag: '' },
+      { kind: 'tag', tag: '0.15.5', repo: 'not-a-repo' },
+      { kind: 'commit' },
+    ]) {
+      expect(templatePinRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
   })
 })

@@ -41,7 +41,7 @@ import { claimScaffoldTicket, failScaffoldTicket, finishScaffoldTicket } from '.
 /** The permissions the scaffold job's token carries — and nothing else. */
 export const SCAFFOLD_TOKEN_PERMISSIONS = { contents: 'write', workflows: 'write' } as const
 
-/** The kit a new app is cut from: `launch_settings.template_pin`, else kit 0.15.0. */
+/** The kit a new app is cut from: `launch_settings.template_pin`, else `DEFAULT_TEMPLATE_PIN`. */
 export async function resolveTemplatePin(db: Database): Promise<TemplatePin> {
   const parsed = templatePinSchema.safeParse(await getSetting(db, 'template_pin'))
   return parsed.success ? parsed.data : DEFAULT_TEMPLATE_PIN
@@ -61,7 +61,7 @@ export async function scaffoldPlanFor(db: Database, caller: ResolvedCaller): Pro
     domain: domain.trim().toLowerCase(),
     repo: `${app.repoOwner}/${app.repoName}`,
     kitRepo: pin.repo,
-    tag: pin.tag,
+    tag: pin.tag ?? null,
     commit: pin.commit,
   }
 }

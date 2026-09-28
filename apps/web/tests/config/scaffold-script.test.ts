@@ -122,6 +122,7 @@ let server: Server
 let baseUrl: string
 let kitSha: string
 let newerKitSha: string
+let unreleasedKitSha: string
 const calls: Recorded[] = []
 let tokenPlan: Record<string, unknown>
 let tokenStatus = 200
@@ -198,6 +199,13 @@ beforeAll(async () => {
   git(kit, 'commit', '--quiet', '-m', `Release ${NEWER_KIT_TAG}`)
   git(kit, 'tag', '-a', NEWER_KIT_TAG, '-m', NEWER_KIT_TAG)
   newerKitSha = git(kit, 'rev-parse', 'HEAD')
+  // An unreleased kit fix: a commit on a branch, with no tag anywhere on it (a commit pin).
+  git(kit, 'checkout', '--quiet', '-b', 'kit-fix')
+  write(kit, 'docs/UNRELEASED-FIX.md', 'A fix nobody has released yet.\n')
+  git(kit, 'add', '-A')
+  git(kit, 'commit', '--quiet', '-m', 'An unreleased kit fix')
+  unreleasedKitSha = git(kit, 'rev-parse', 'HEAD')
+  git(kit, 'checkout', '--quiet', 'main')
   mkdirSync(path.join(root, 'server/rocketflare-dev'), { recursive: true })
   git(root, 'clone', '--quiet', '--bare', kit, 'server/rocketflare-dev/rocketflare.git')
 
@@ -487,6 +495,53 @@ describe('a re-scaffold: the app repo already holds a scaffold and Launch’s co
       'ghcr.io/rocketflare-dev/local-neon-proxy@sha256:abc'
     )
     expect(repo.read('docs/PLUGINS.md')).not.toContain('shop-dev/')
+  })
+})
+
+describe('a commit pin: an unreleased kit commit on a branch, no tag', () => {
+  it('fetches exactly that commit, scaffolds from it and records it', async () => {
+    const run = await runScript(
+      ['--token-from-env', '--skip-install', '--skip-gate'],
+      envMode({ tag: null, commit: unreleasedKitSha })
+    )
+    expect(run.code, run.stderr).toBe(0)
+    expect(run.stdout).toContain(
+      `Kit rocketflare-dev/rocketflare @ ${unreleasedKitSha} (unreleased commit)`
+    )
+    const repo = pushed()
+    expect(git(repo.dir, 'log', '-1', '--format=%s')).toBe(
+      `Start from Rocketflare @${unreleasedKitSha.slice(0, 7)}`
+    )
+    expect(git(repo.dir, 'log', '-1', '--format=%b')).toContain(
+      `@ ${unreleasedKitSha} (unreleased commit)`
+    )
+    expect(repo.files).toContain('docs/UNRELEASED-FIX.md')
+    // The kit's own version as its manifest reports it, and the pinned commit.
+    expect(JSON.parse(repo.read('.rocketflare.json')).kit).toMatchObject({
+      version: NEWER_KIT_TAG,
+      commit: unreleasedKitSha,
+    })
+    expect(repo.read('apps/web/wrangler.staging.toml')).toContain('name = "shop-staging"')
+  })
+
+  it('accepts a plan that omits the tag altogether', async () => {
+    const { tag: _tag, ...noTag } = plan({ commit: unreleasedKitSha })
+    const run = await runScript(['--token-from-env', '--skip-install', '--skip-gate'], {
+      LAUNCH_SCAFFOLD_TOKEN: PUSH_TOKEN,
+      LAUNCH_SCAFFOLD_PLAN: JSON.stringify(noTag),
+    })
+    expect(run.code, run.stderr).toBe(0)
+    expect(JSON.parse(pushed().read('.rocketflare.json')).kit.commit).toBe(unreleasedKitSha)
+  })
+
+  it('refuses a commit the kit repo does not have, pushing nothing', async () => {
+    const run = await runScript(
+      ['--token-from-env', '--skip-install', '--skip-gate'],
+      envMode({ tag: null, commit: 'e'.repeat(40) })
+    )
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('git fetch failed')
+    expect(pushed().head).toBe(initialSha)
   })
 })
 

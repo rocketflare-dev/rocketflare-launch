@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Setup has a Kit version card: pin new apps to a kit release tag or, for testing a kit fix before
+  it is released, a commit on any branch (a pasted SHA or "latest main"). Launch resolves either
+  through the GitHub App and refuses one the kit repo lacks; "Reset to default" returns to Launch's
+  pin; changes are audited `setting.changed`. The scaffold job fetches a commit pin by its SHA,
+  `scaffold.verify` checks the commit, and the app records the SHA as its template ref.
+- Launch's commits of the scaffold job's own files carry `[skip ci]`, so they no longer start a
+  red CI run on a new app's `main` (the app's Biome linted `.launch/scaffold.mjs`).
 - New apps are scaffolded from Rocketflare kit 0.15.4, whose deploy job checks wrangler parity with
   the parity test alone (the whole config project failed on the job's shallow checkout).
 - New apps are scaffolded from Rocketflare kit 0.15.3: an app's deploy no longer fails on the

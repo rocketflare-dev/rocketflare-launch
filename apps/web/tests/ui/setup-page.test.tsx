@@ -4,7 +4,11 @@
  * opens an EMPTY field and PUTs only what was typed, and a bad settings value is refused with the
  * server's own schema message before any request.
  */
-import type { SetupCredential, SetupOverview } from '@launch/shared/launch-setup'
+import {
+  DEFAULT_TEMPLATE_PIN,
+  type SetupCredential,
+  type SetupOverview,
+} from '@launch/shared/launch-setup'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Setup from '@/ui/pages/platform/Setup'
@@ -104,6 +108,7 @@ const overview: SetupOverview = {
     ],
     checkedAt: null,
   },
+  templatePin: { pin: DEFAULT_TEMPLATE_PIN, isDefault: true, default: DEFAULT_TEMPLATE_PIN },
 }
 
 const checkResponse = {
@@ -112,9 +117,18 @@ const checkResponse = {
   checks: overview.credentials[0]?.lastCheck ?? [],
 }
 
-function render() {
+function render(current: SetupOverview = overview) {
   const fetchMock = stubFetch({
-    '/api/platform/setup': overview,
+    '/api/platform/setup': current,
+    'PUT /api/platform/setup/template-pin': current,
+    'DELETE /api/platform/setup/template-pin': current,
+    '/api/platform/setup/template-pin/tags': {
+      repo: 'rocketflare-dev/rocketflare',
+      tags: [
+        { name: '0.15.5', commit: 'c'.repeat(40) },
+        { name: '0.15.4', commit: DEFAULT_TEMPLATE_PIN.commit },
+      ],
+    },
     'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
     'PUT /api/platform/setup/settings': overview,
     'POST /api/platform/setup/public-url/check': {
@@ -233,5 +247,91 @@ describe('Admin → Setup', () => {
     fireEvent.click(within(github).getByRole('button', { name: 'Save and check' }))
     expect(await within(github).findByText('A GitHub organization login')).toBeInTheDocument()
     expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
+  })
+})
+
+describe('Admin → Setup: the Kit version card', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const commitPinned: SetupOverview = {
+    ...overview,
+    templatePin: {
+      pin: { repo: 'rocketflare-dev/rocketflare', commit: 'abcdef1'.padEnd(40, '0') },
+      isDefault: false,
+      default: DEFAULT_TEMPLATE_PIN,
+    },
+  }
+
+  it('shows the default release pin: repo, tag and short SHA, and no reset or warning', async () => {
+    render()
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    expect(within(card).getByText('Default')).toBeInTheDocument()
+    expect(within(card).getByText('rocketflare-dev/rocketflare')).toBeInTheDocument()
+    expect(within(card).getByText(`Release ${DEFAULT_TEMPLATE_PIN.tag}`)).toBeInTheDocument()
+    expect(within(card).getByText(DEFAULT_TEMPLATE_PIN.commit.slice(0, 7))).toBeInTheDocument()
+    expect(within(card).queryByText(/Unreleased commit — for development/)).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Reset to default' })).toBeNull()
+  })
+
+  it('pins a release tag the server resolves', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    fireEvent.change(within(card).getByLabelText('Release tag'), { target: { value: '0.15.5' } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Pin tag' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toEqual({
+        kind: 'tag',
+        tag: '0.15.5',
+      })
+    )
+  })
+
+  it('lists the repo’s tags on demand', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('/template-pin/tags'))
+    ).toBe(false)
+    fireEvent.click(within(card).getByRole('button', { name: 'List tags' }))
+    expect(await within(card).findByText(/0\.15\.5, 0\.15\.4/)).toBeInTheDocument()
+  })
+
+  it('pins a commit — pasted, or the latest main — and refuses a malformed one before any request', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    fireEvent.click(within(card).getByLabelText('A commit (unreleased)'))
+
+    fireEvent.change(within(card).getByLabelText('Commit SHA'), {
+      target: { value: 'not a sha!' },
+    })
+    fireEvent.click(within(card).getByRole('button', { name: 'Pin commit' }))
+    expect(await within(card).findByText('A commit SHA or a branch name')).toBeInTheDocument()
+    expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toBeUndefined()
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Pin latest main' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toEqual({
+        kind: 'commit',
+        ref: 'main',
+      })
+    )
+  })
+
+  it('warns that a commit pin is for development, and resets to the default', async () => {
+    const fetchMock = render(commitPinned)
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    expect(within(card).getByText('Overridden')).toBeInTheDocument()
+    expect(within(card).getByText('Unreleased commit')).toBeInTheDocument()
+    expect(within(card).getByText('abcdef1')).toBeInTheDocument()
+    expect(within(card).getByText(/Unreleased commit — for development/)).toBeInTheDocument()
+    fireEvent.click(within(card).getByRole('button', { name: 'Reset to default' }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith('/api/platform/setup/template-pin') && init?.method === 'DELETE'
+        )
+      ).toBe(true)
+    )
   })
 })

@@ -536,6 +536,49 @@ describe('POST /api/apps/:id/pipeline/rescaffold', () => {
     expect(await busy.json()).toMatchObject({ code: 'run_not_failed' })
   })
 
+  it('labels a commit pin @<short sha>, in the view, the answer and the audit', async () => {
+    const releasePin = state.settings.templatePin
+    const commit = 'abc1234'.padEnd(40, '9')
+    state.settings.templatePin = { repo: 'rocketflare-dev/rocketflare', commit }
+    try {
+      const { headers, tenant, env, app, runId } = await failedAfterScaffold()
+      // The app was itself cut from an unreleased commit: its ref is the SHA.
+      const previous = 'def5678'.padEnd(40, '0')
+      await db
+        .update(apps)
+        .set({ templateVersion: '0.15.4', templateRef: previous })
+        .where(eq(apps.id, app.id))
+      const view = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+      expect(pipelineViewSchema.parse(await view.json())).toMatchObject({
+        canRescaffold: true,
+        templateTag: '@abc1234',
+      })
+      const res = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
+      expect(res.status).toBe(202)
+      expect(rescaffoldPipelineResponseSchema.parse(await res.json())).toMatchObject({
+        runId,
+        templateTag: '@abc1234',
+        previousTemplateTag: '@def5678',
+      })
+      const [audit] = await db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.tenantId, tenant.id),
+            eq(auditEvents.appId, app.id),
+            eq(auditEvents.action, 'app.pipeline.rescaffolded')
+          )
+        )
+      expect(audit?.summary).toMatchObject({
+        before: { templateTag: '@def5678' },
+        after: { templateTag: '@abc1234', templateCommit: commit },
+      })
+    } finally {
+      state.settings.templatePin = releasePin
+    }
+  })
+
   it('is 409 app_already_deployed once a deploy went out — not for a job that died at its gate', async () => {
     const { headers, tenant, env, app } = await failedAfterScaffold()
     const environmentId = await stagingId(app.id)

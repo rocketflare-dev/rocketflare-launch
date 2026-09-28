@@ -8,7 +8,10 @@
  * the app, its environments and the tickets are real rows.
  */
 import { generateKeyPairSync } from 'node:crypto'
-import { SCAFFOLD_FINISHED_EVENT } from '@launch/shared/launch-pipeline'
+import {
+  SCAFFOLD_FINISHED_EVENT,
+  scaffoldTokenResponseSchema,
+} from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { commitFiles, createOrgRepo } from '@/api/services/launch/github-app'
@@ -219,6 +222,38 @@ describe('POST /ci/scaffold/token', () => {
         statusCode: 409,
         code: 'scaffold_token_unavailable',
       })
+    }
+  })
+
+  it('hands a commit pin through as a plan with no tag, audited as repo@<sha>', async () => {
+    const commit = 'f00d'.padEnd(40, '2')
+    store.settings.set('template_pin', { repo: 'rocketflare-dev/rocketflare', commit })
+    try {
+      const created = await createdApp()
+      const res = await call('token', await jobToken(created))
+      expect(res.status).toBe(200)
+      // Through the shared contract the job's side parses too.
+      const body = scaffoldTokenResponseSchema.parse(await json(res))
+      expect(body.plan).toMatchObject({
+        kitRepo: 'rocketflare-dev/rocketflare',
+        tag: null,
+        commit,
+      })
+      const [audit] = await db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.appId, created.app.id),
+            eq(auditEvents.action, 'app.scaffold.token_issued')
+          )
+        )
+      expect(audit?.summary.after).toMatchObject({
+        kit: `rocketflare-dev/rocketflare@${commit}`,
+        kitCommit: commit,
+      })
+    } finally {
+      store.settings.delete('template_pin')
     }
   })
 

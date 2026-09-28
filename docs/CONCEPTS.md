@@ -1010,13 +1010,22 @@ step that mints one puts it on the Worker itself.
   starts `<runId>-rN`. `scaffold.start` finds its old ticket `finished`, opens a fresh one,
   re-commits the job files the last job deleted and dispatches the job with the pin as it is now;
   the job replaces the tree and fast-forwards `main` on the app's history; `scaffold.verify` checks
-  the NEW kit version; `write_config` re-applies the config onto the fresh tomls; `placeholders`
+  the NEW kit version (or, for a commit pin, the NEW commit); `write_config` re-applies the config onto the fresh tomls; `placeholders`
   re-PUTs the Workers with the migrations after the recorded tag only, keeping the route and the
   secrets (`keep_bindings: ['secret_text']` — a script upload replaces the bindings otherwise).
   `reserve`, `repo`, `neon`, `cloudflare`, `oidc_client`, `github_env`, `worker_secrets` and `email`
   are kept: none reads the repository's content. `GET …/pipeline` answers `canRescaffold` (the
-  run allows it; the viewer still needs `manage App`) and `templateTag` (the pin, when it does).
-  Audited `app.pipeline.rescaffolded` (old and new kit tag) beside the retry's own row.
+  run allows it; the viewer still needs `manage App`) and `templateTag` (the pin's label, when it
+  does: the tag, or `@<short sha>` for a commit pin — `templatePinLabel`, so the button reads "Re-scaffold
+  from kit @6ee75e8"). Audited `app.pipeline.rescaffolded` (old and new kit label, and the new
+  commit) beside the retry's own row.
+- **The job's own files go in `[skip ci]`.** `repo`'s "Add the Launch scaffold job" and a
+  re-dispatch's "Update the Launch scaffold job" (`SCAFFOLD_JOB_COMMIT_MESSAGES`) end in
+  `[skip ci]`: pushed to `main`, they would run the app's own `ci.yml`, whose Biome lints
+  `.launch/scaffold.mjs` and fails — a red run on `main` for a commit that is not app code. It
+  suppresses push/pull_request-triggered workflows only; the dispatched `launch-scaffold.yml`
+  runs. `write_config`'s "Configure the app for Launch" does NOT carry it: that is app code, and
+  its green CI is what lets the deploy skip re-gating (kit 0.15.3's gate-once).
 - **Stop** (`POST /api/apps/:id/pipeline/cancel`, `manage App`, only a `running` create run —
   409 `run_not_running`; `pipeline/cancel.ts`): the way out of a run stuck in a wait. Its running
   step (or, between steps, the next one) is marked failed "Stopped by <email>", an unclaimed
@@ -1089,7 +1098,8 @@ and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
 (`GitHubActionsScaffoldRunner`, behind the `ScaffoldRunner` seam a P3 sandbox will also fill). The
 job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
 scoped to that repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files)
-and the plan, once per ticket; clones the pinned kit at its tag and checks the commit; patches
+and the plan, once per ticket; clones the pinned kit at its tag and checks the commit (a commit
+pin: fetches the SHA itself, below); patches
 around rocketflare#37 (kits before 0.15.2 only — from 0.15.2 `KIT.preservedPattern` keeps the org and the
 patch is skipped); runs `rename.mjs --skip-install` and then `pnpm install
 --no-frozen-lockfile` itself (on a runner `CI=true` makes the rename's own install frozen, and it
@@ -1116,14 +1126,46 @@ copy can pass (0.15.3: the default-plugins gate — which failed every Launch-ma
 installed" — runs only in the kit, a commit already green in CI skips the deploy's gate, and the
 neon run's cron tests no longer time out), then a deploy job that runs only the parity test (0.15.4:
 the whole config project needed git history its depth-1 checkout lacks). A
-`launch_settings.template_pin` row overrides it.
+`launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
+
+**Kit version (Setup).** A platform admin sets the pin on the Setup page's Kit version card
+(`/settings/platform/setup`, `KitVersionCard`): it shows the pin new apps get (repo, tag or
+"Unreleased commit", short SHA; Default or Overridden) and takes either a **release tag** (typed, or
+picked after "List tags" — `GET /api/platform/setup/template-pin/tags`) or a **commit** (a SHA on
+any branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
+(`templatePinRequestSchema`) resolves it SERVER-side through GitHub as the connected GitHub App (a
+`contents: read` installation token, revoked after; the kit repo is public, so it need not be
+installed there; no App → 409 `github_app_not_configured`): a tag through `GET …/git/ref/tags/{tag}`,
+an annotated tag dereferenced through `GET …/git/tags/{sha}`; a commit through
+`GET …/commits/{ref}`, which also proves it is in that repo. A ref the repo lacks is 422
+`kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). "Reset to default" is
+`DELETE …/template-pin` (the row deleted, so the default moves with Launch again). Both audit
+`setting.changed` with the pin before and after. A commit pin shows "Unreleased commit — for
+development".
+
+**A commit pin** (`templatePinSchema` with no `tag`): a kit commit that has no release, for
+testing a kit fix without cutting a release each time. The plan's `tag` is then `null`
+(`scaffoldPlanSchema`); the job `git init`s the kit, `fetch --depth 1 origin <sha>` (GitHub serves
+any reachable commit) and `checkout FETCH_HEAD`, refuses unless HEAD is the pinned SHA, and logs
+"Kit <repo> @ <sha> (unreleased commit)"; its commit is "Start from Rocketflare @<short sha>". The
+#37 patch is unchanged (it keys off the kit's own rename-lib). `scaffold.verify` then demands no
+version equal to a tag — only that `.rocketflare.json` records one — and requires `kit.commit` to
+be the pinned SHA (a release pin checks the commit too when the manifest records one). The app
+records `template_ref` = the SHA, `template_commit` = the SHA and `template_version` = the kit
+version the manifest reported (e.g. 0.15.4). `app.scaffold.token_issued` audits `kit:
+<repo>@<tag>` for a release and `<repo>@<sha>` for a commit pin, plus `kitCommit`.
 
 **Known gaps:** a real scaffold on a GitHub runner has run green (kit 0.15.1: token trade, clone,
 rename, install, plugins, gate, push), but that app's own CI then failed on the API-key prefix,
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image still carries kit 0.15.0's pnpm store
-(`SESSION_KIT_TAG`); 0.15.1–0.15.4 change no dependency.
+(`SESSION_KIT_TAG`); 0.15.1–0.15.4 change no dependency. The Kit version card's GitHub lookups
+and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
+installation token reads a public repo outside the installation, and a real runner's `fetch` of a
+SHA that is not a branch tip, are unconfirmed; the catalogue still shows a commit-pinned app by
+its `template_version` alone (the SHA is on `template_ref`); `.launch/scaffold.mjs` is not itself
+Biome-clean — `[skip ci]` is what keeps it off the app's CI.
 
 ### 18.7 The deploy gateway
 

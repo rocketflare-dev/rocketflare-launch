@@ -357,4 +357,12 @@ describe('scaffoldProblems', () => {
       "apps/web/wrangler.staging.toml: someone-elses-bucket is not one of shop-staging's names",
     ])
   })
+
+  it('a commit pin (no tag): any kit version is fine, the commit is what must match', () => {
+    const commitPin = { slug: SLUG, tag: null, commit: expected.commit }
+    expect(scaffoldProblems(files, commitPin)).toEqual([])
+    expect(scaffoldProblems(files, { ...commitPin, commit: 'f'.repeat(40) })).toEqual([
+      `.rocketflare.json says kit commit ${expected.commit}, not ${'f'.repeat(40)}`,
+    ])
+  })
 })

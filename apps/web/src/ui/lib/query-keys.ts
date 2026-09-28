@@ -303,6 +303,7 @@ const CORE_QUERY_KEYS = {
   setup: {
     all: ['platform', 'setup'] as const,
     status: ['platform', 'setup', 'status'] as const,
+    kitTags: (repo: string) => ['platform', 'setup', 'kit-tags', repo] as const,
   },
   /** Launch: `/api/platform/oidc` — the issuer's signing keys (spec/05); under `platform` too */
   oidcAdmin: {

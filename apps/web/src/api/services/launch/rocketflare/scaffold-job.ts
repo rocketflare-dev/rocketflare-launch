@@ -17,7 +17,9 @@
  *     The token is masked (`::add-mask::`), never an argv, never printed; git receives it as an
  *     `http.<server>/.extraheader` through `GIT_CONFIG_*` env on the app-repo commands only.
  *  2. Clone the app repo (its `main`) and the kit at the plan's tag, and **refuse unless the tag
- *     resolves to the pinned commit** — a moved tag is a different kit.
+ *     resolves to the pinned commit** — a moved tag is a different kit. A plan with no tag is a
+ *     COMMIT pin (an unreleased kit commit): `git init` + `fetch --depth 1 origin <sha>` +
+ *     `checkout FETCH_HEAD` (GitHub serves any reachable commit), and HEAD must be that SHA.
  *  3. Replace the app's tree with the kit's (history stays the app's), and record the kit commit
  *     in `.rocketflare.json` (what the kit's `install.sh` does).
  *  4. **Patch the rename's `KIT.preserved`** (rocketflare#37): without it the rename rewrites every
@@ -38,7 +40,8 @@
  *     that reads it), `.launch/` and the scaffold workflow itself, and apply the exact edits to
  *     kit 0.15 tests a renamed, provisioned copy fails through no fault of its own
  *     (`kitTestPatches` — an edit whose anchor is gone is skipped with a warning).
- *  8. Commit "Start from Rocketflare <tag>" as Launch (before the gate: kit tests read HEAD~1).
+ *  8. Commit "Start from Rocketflare <tag>" (a commit pin: "… @<short sha>") as Launch (before
+ *     the gate: kit tests read HEAD~1).
  *  9. The gate: `pnpm lint && pnpm typecheck && pnpm web test:config`; whatever it regenerated
  *     (`worker-configuration.d.ts`) is amended in. Push `main` (never forced).
  * 10. Revoke the token (`DELETE /installation/token`, always — on failure too) and, in a GitHub
@@ -60,6 +63,19 @@ import type { CommitFile } from '../github-app'
 export const SCAFFOLD_WORKFLOW_FILE = 'launch-scaffold.yml'
 export const SCAFFOLD_WORKFLOW_PATH = `.github/workflows/${SCAFFOLD_WORKFLOW_FILE}`
 export const SCAFFOLD_SCRIPT_PATH = '.launch/scaffold.mjs'
+
+/**
+ * The messages of the commits that put the job's two files on the app's `main`. `[skip ci]`
+ * because that push would otherwise run the app's own `ci.yml`, whose Biome lints
+ * `.launch/scaffold.mjs` and fails — a red run on `main` for a commit that is not app code. It
+ * suppresses only push/pull_request-triggered workflows: the dispatched `launch-scaffold.yml` still
+ * runs. "Configure the app for Launch" (`write_config`) must NOT carry it — that commit is app
+ * code, and its green CI is what lets the deploy skip re-gating (kit 0.15.3's gate-once).
+ */
+export const SCAFFOLD_JOB_COMMIT_MESSAGES = {
+  add: 'Add the Launch scaffold job [skip ci]',
+  update: 'Update the Launch scaffold job [skip ci]',
+} as const
 
 /** The kit's own workflows that make no sense in an app (they notify and test plugin repos). */
 export const KIT_ONLY_WORKFLOWS = ['notify-plugins.yml', 'plugin-ci.yml'] as const
@@ -270,10 +286,46 @@ function checkPlan(plan) {
   need('domain', /^[a-z0-9.-]+\.[a-z]{2,}$/i, 'a domain like example.com')
   need('repo', /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name')
   need('kitRepo', /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name')
-  need('tag', /^[A-Za-z0-9._][A-Za-z0-9._\/-]*$/, 'a tag name')
+  // No tag is a commit pin: an unreleased kit commit, fetched by its SHA.
+  if (plan && plan.tag !== undefined && plan.tag !== null && plan.tag !== '') {
+    need('tag', /^[A-Za-z0-9._][A-Za-z0-9._\/-]*$/, 'a tag name')
+  }
   need('commit', /^[0-9a-f]{40}$/, 'a full commit SHA')
   if (problems.length) fail('The scaffold plan is not usable: ' + problems.join('; '), 1)
-  return plan
+  return { ...plan, tag: plan.tag || null }
+}
+
+/** How the plan's kit reads: its tag, or @<short sha> for an unreleased commit. */
+function kitLabel(plan) {
+  return plan.tag ? plan.tag : '@' + plan.commit.slice(0, 7)
+}
+
+/**
+ * The kit at the pinned commit in kitDir. A release: a depth-1 clone of the tag, refused unless
+ * the tag still resolves to the pinned commit (a moved tag is a different kit). A commit pin: a
+ * depth-1 fetch of exactly that SHA (GitHub serves any reachable commit), checked out detached.
+ */
+function fetchKit(work, kitDir, serverUrl, plan) {
+  const url = serverUrl + '/' + plan.kitRepo + '.git'
+  if (plan.tag) {
+    git(work, ['-c', 'advice.detachedHead=false', 'clone', '--quiet', '--depth', '1', '--branch', plan.tag, url, kitDir])
+  } else {
+    fs.mkdirSync(kitDir, { recursive: true })
+    git(kitDir, ['-c', 'init.defaultBranch=kit', 'init', '--quiet'])
+    git(kitDir, ['remote', 'add', 'origin', url])
+    git(kitDir, ['fetch', '--quiet', '--depth', '1', 'origin', plan.commit])
+    git(kitDir, ['-c', 'advice.detachedHead=false', 'checkout', '--quiet', 'FETCH_HEAD'])
+  }
+  const kitCommit = git(kitDir, ['rev-parse', 'HEAD'], { capture: true, quiet: true }).trim()
+  if (kitCommit !== plan.commit) {
+    if (plan.tag) {
+      fail('The kit tag ' + plan.tag + ' is ' + kitCommit + ', not the pinned ' + plan.commit + ': refusing a moved tag', 1)
+    }
+    fail('The kit checkout is ' + kitCommit + ', not the pinned ' + plan.commit, 1)
+  }
+  if (plan.tag) log('Kit ' + plan.kitRepo + ' ' + plan.tag + ' is ' + kitCommit + ' (as pinned).')
+  else log('Kit ' + plan.kitRepo + ' @ ' + kitCommit + ' (unreleased commit).')
+  return kitCommit
 }
 
 async function request(method, url, init) {
@@ -717,7 +769,7 @@ async function main(argv) {
   step('Get the push token and the plan')
   const grant = await obtainGrant(opts, launchUrl)
   const plan = grant.plan
-  log('Scaffolding ' + plan.repo + ' as ' + plan.slug + ' (' + plan.displayName + ') from ' + plan.kitRepo + ' ' + plan.tag)
+  log('Scaffolding ' + plan.repo + ' as ' + plan.slug + ' (' + plan.displayName + ') from ' + plan.kitRepo + ' ' + kitLabel(plan) + (plan.tag ? '' : ' (unreleased commit)'))
 
   let commit = null
   try {
@@ -733,12 +785,7 @@ async function main(argv) {
     if (git(appDir, ['rev-parse', '--verify', '-q', 'HEAD'], { allowFail: true, capture: true, quiet: true }).status !== 0) {
       git(appDir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
     }
-    git(work, ['-c', 'advice.detachedHead=false', 'clone', '--quiet', '--depth', '1', '--branch', plan.tag, serverUrl + '/' + plan.kitRepo + '.git', kitDir])
-    const kitCommit = git(kitDir, ['rev-parse', 'HEAD'], { capture: true, quiet: true }).trim()
-    if (kitCommit !== plan.commit) {
-      fail('The kit tag ' + plan.tag + ' is ' + kitCommit + ', not the pinned ' + plan.commit + ': refusing a moved tag', 1)
-    }
-    log('Kit ' + plan.kitRepo + ' ' + plan.tag + ' is ' + kitCommit + ' (as pinned).')
+    const kitCommit = fetchKit(work, kitDir, serverUrl, plan)
 
     step('Copy the kit into the app')
     replaceTree(appDir, kitDir)
@@ -792,12 +839,12 @@ async function main(argv) {
       ? serverUrl + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID
       : null
     const body = [
-      'Kit: ' + plan.kitRepo + ' ' + plan.tag + ' (' + kitCommit + ')',
+      'Kit: ' + plan.kitRepo + ' ' + (plan.tag ? plan.tag + ' (' + kitCommit + ')' : '@ ' + kitCommit + ' (unreleased commit)'),
       'Renamed to ' + plan.slug + ' ("' + plan.displayName + '") and scaffolded by Launch.',
     ]
     if (runUrl) body.push('Run: ' + runUrl)
     git(appDir, ['add', '-A'])
-    git(appDir, ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '--no-verify', '-m', 'Start from Rocketflare ' + plan.tag, '-m', body.join('\n')], {
+    git(appDir, ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '--no-verify', '-m', 'Start from Rocketflare ' + kitLabel(plan), '-m', body.join('\n')], {
       env: identity,
     })
 

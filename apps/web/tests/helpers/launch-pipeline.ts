@@ -20,6 +20,7 @@ import {
   type AppLaunchParams,
   DEPLOY_FINISHED_EVENT,
   SCAFFOLD_FINISHED_EVENT,
+  type ScaffoldPlan,
 } from '@launch/shared/launch-pipeline'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
@@ -76,7 +77,8 @@ function setVar(text: string, key: string, value: string): string {
 export interface FakePorts extends PipelinePorts {
   /** What the next `scaffoldRunner.poll` answers. */
   pollStatus: 'running' | 'succeeded' | 'failed'
-  started: { owner: string; repo: string; ticketId: string }[]
+  /** Every job start, with the plan it was handed. */
+  started: { owner: string; repo: string; ticketId: string; plan: ScaffoldPlan }[]
 }
 
 export function fakePorts(): FakePorts {
@@ -148,8 +150,8 @@ export function fakePorts(): FakePorts {
     },
     scaffoldRunner: {
       id: 'github-actions',
-      async start(ctx) {
-        ports.started.push({ owner: ctx.owner, repo: ctx.repo, ticketId: ctx.ticketId })
+      async start(ctx, plan) {
+        ports.started.push({ owner: ctx.owner, repo: ctx.repo, ticketId: ctx.ticketId, plan })
         await dispatchWorkflow(ctx.token, ctx.owner, ctx.repo, 'launch-scaffold.yml', {
           ref: 'main',
         })
@@ -200,7 +202,7 @@ export function fakeVendors(cloud: FakeCloud, overrides: Partial<PipelineVendors
 export function pushScaffold(
   cloud: FakeCloud,
   slug: string,
-  opts: { kitVersion?: string; manifestSlug?: string } = {}
+  opts: { kitVersion?: string; kitCommit?: string; manifestSlug?: string } = {}
 ): string {
   const tomls = scaffoldedTomls(slug)
   return cloud.github.pushCommit(
@@ -208,7 +210,12 @@ export function pushScaffold(
     slug,
     {
       '.rocketflare.json': JSON.stringify({
-        kit: { name: 'rocketflare', version: opts.kitVersion ?? DEFAULT_TEMPLATE_PIN.tag },
+        kit: {
+          name: 'rocketflare',
+          version: opts.kitVersion ?? DEFAULT_TEMPLATE_PIN.tag,
+          // As the job stamps it (`stampKitCommit`); left out, like a manifest from before.
+          ...(opts.kitCommit ? { commit: opts.kitCommit } : {}),
+        },
         app: { slug: opts.manifestSlug ?? slug, display: slug, domain: cloud.opts.domain },
       }),
       [TOML_PATHS.production]: tomls.production,
