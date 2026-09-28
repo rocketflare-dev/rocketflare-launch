@@ -29,6 +29,7 @@ import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
+import { scanShipConfig } from '../grants/detect'
 import type { Realtime } from '../realtime'
 import type { StorageService } from '../storage'
 import { checkpoint } from './checkpoint'
@@ -95,6 +96,7 @@ export const defaultSessionStepHooks: SessionStepHooks = {
         }),
         emit: events => ctx.emit(events),
         now: ctx.now,
+        scanConfig: input => scanShipConfig(ctx, input),
       },
       ctx.ref
     ),

@@ -1,0 +1,24 @@
+{
+  "$purpose": "A FAKE plugin for the Launch P5 suites and end-to-end (docs/plans/p5-grants.md §4): a Microsoft 365 connector that declares the company tenant's Entra app registration as config. Only what detection reads is meaningful; it ships no code.",
+  "id": "m365-connector",
+  "label": "Microsoft 365 connector",
+  "version": "1.0.0",
+  "repo": "https://github.com/rocketflare-dev/rocketflare-plugins.git",
+  "minKit": "0.15.0",
+  "anchor": "apps/web/src/plugins/m365-connector/plugin.json",
+  "paths": [
+    "apps/web/src/plugins/m365-connector/**",
+    "packages/shared/src/plugins/m365-connector/**"
+  ],
+  "requires": {
+    "surfaces": [],
+    "plugins": []
+  },
+  "vars": [
+    { "key": "M365_TENANT_ID", "example": "00000000-0000-0000-0000-000000000000" },
+    { "key": "M365_CLIENT_ID", "example": "00000000-0000-0000-0000-000000000000" },
+    { "key": "M365_CLIENT_SECRET", "secret": true }
+  ],
+  "workerExports": [],
+  "subdir": "plugins/m365-connector"
+}

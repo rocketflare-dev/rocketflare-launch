@@ -31,12 +31,18 @@
  *    `pr_number` / `pr_url`, status `shipped`, a `ship.pr` event, audit `session.shipped`, and a
  *    first `refreshChecks`.
  *
+ * 5. **The config the PR declares** (Launch P5): `deps.scanConfig` (`grants/detect.scanShipConfig`,
+ *    bound in `hooks.ts`) reads the PR head's plugins and matches them to shared config; any the app
+ *    does not hold yet become a `ship.config_needs` event — the ship panel's "this PR needs M365"
+ *    line with its Request link. Never stored, never fatal: a failed scan ships without the event.
+ *
  * `refreshChecks` is also what `GET /api/sessions/:id/pr` (at most every 30 s) and the `*\/5`
  * cron (`sessionsChecksTask`, while `pending`) call.
  */
 import {
   type PrChecks,
   type SessionEventInput,
+  type SessionShipConfigNeedsData,
   type SessionStatus,
   sessionBranchName,
 } from '@launch/shared/launch-sessions'
@@ -45,6 +51,7 @@ import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { apps, type SessionRow, sessionEvents, sessions, tenants, users } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
+import type { ScanShipConfigInput } from '../grants/detect'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
 import type { StorageService } from '../storage'
@@ -78,6 +85,8 @@ export interface ShipDeps {
   now?: () => Date
   gateCommand?: string
   maxAttempts?: number
+  /** The PR head's declared config needs (`scanShipConfig`); absent = no `ship.config_needs`. */
+  scanConfig?: (input: ScanShipConfigInput) => Promise<SessionShipConfigNeedsData>
   repoDir?: string
 }
 
@@ -378,6 +387,22 @@ export async function ship(
       after: { prNumber: pr.number, prUrl: pr.url, branch, headSha: shipped.headSha, title },
     },
   })
+
+  // The shared config the PR's plugins need and the app does not hold (never fails the ship).
+  if (deps.scanConfig) {
+    try {
+      const needs = await deps.scanConfig({
+        tenantId: session.tenantId,
+        appId: session.appId,
+        sha: shipped.headSha ?? branch,
+      })
+      if (needs.needs.length > 0) {
+        await emit([{ type: 'ship.config_needs', turn: turn.turn, data: needs }])
+      }
+    } catch {
+      // The PR is open; the config page's own scan (at the Release) will say it.
+    }
+  }
 
   // 5. The PR's first CI reading (a failure here is not a failed ship: the cron reads it again).
   let checks: PrChecks | null = null

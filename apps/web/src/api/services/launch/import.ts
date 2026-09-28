@@ -15,6 +15,10 @@
  *    `app.imported` audit row — **in one transaction**, so a failed import leaves nothing behind.
  *    The slug's global uniqueness is the `apps_slug_key` constraint, mapped to 409 `slug_taken`.
  *
+ * 5. **After commit, scan the declared config** (Launch P5, `grants/detect.scanAppConfig`): the
+ *    plugins' keys matched to shared resources, the app's owners told what to request. A scan
+ *    failure is recorded on the scan row and never fails the import.
+ *
  * There is no Cloudflare verification in P1: the ids are recorded as the tomls declare them.
  * Every GitHub call goes through `opts.fetch`, so tests never reach GitHub.
  */
@@ -25,6 +29,9 @@ import type { Database } from '../../../db/client'
 import { type AppRow, appEnvironments, appOperations, apps } from '../../../db/schema'
 import { ApiError, ConflictError, isUniqueViolation } from '../../utils/core/errors'
 import { newId } from '../../utils/core/ids'
+import { type Logger, loggerFor } from '../../utils/core/logger'
+import { scanAppConfig } from '../grants/detect'
+import type { Realtime } from '../realtime'
 import { assertGroupInTenant } from './apps'
 import { type AuditActor, recordAudit } from './audit'
 import { getCredential, getSetting } from './credentials'
@@ -65,6 +72,9 @@ export interface ImportOptions extends Pick<GitHubOptions, 'fetch' | 'apiBase'> 
   /** Skip the credential store (tests). */
   github?: ImportGitHub
   clock?: () => Date
+  /** For the post-import config scan: its log lines, and the bell's nudge for `grant_needed`. */
+  logger?: Logger
+  realtime?: Realtime
 }
 
 /** 422 with a stable code — the repo was reachable, but it is not an importable app. */
@@ -349,6 +359,18 @@ export async function importApp(
       })
       return app
     })
+    await scanAppConfig(
+      {
+        db,
+        cfg,
+        github,
+        fetch: opts.fetch,
+        now,
+        logger: opts.logger ?? loggerFor(cfg, { component: 'grants' }),
+        realtime: opts.realtime,
+      },
+      { tenantId, appId: app.id, ref: snapshot.ref, trigger: 'import' }
+    ).catch(() => {})
     return { app, runId }
   } catch (err) {
     if (isUniqueViolation(err)) {
