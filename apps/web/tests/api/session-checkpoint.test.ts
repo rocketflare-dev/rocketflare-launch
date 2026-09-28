@@ -7,13 +7,17 @@ import { sessionBranchName } from '@launch/shared/launch-sessions'
 import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import {
+  CHECKPOINT_ADD_COMMAND,
+  CHECKPOINT_MAX_FILE_BYTES,
   CheckpointError,
   checkpoint,
+  checkpointScanScript,
   claudeProjectDir,
   commitMessage,
   PUSH_RETRY_DELAY_MS,
   SESSION_REPO_DIR,
 } from '@/api/services/sessions/checkpoint'
+import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { createR2Storage } from '@/api/services/storage'
 import { loadConfig } from '@/config'
 import { sessions } from '@/db/schema'
@@ -57,18 +61,20 @@ describe('checkpoint', () => {
       pushed: true,
       headSha: HEAD,
       transcriptKey: `sessions/${row.id}/claude.jsonl`,
+      skipped: [],
     })
 
     const commands = sandbox.execs.map(e => e.command)
     expect(commands).toEqual([
-      'git add -A',
+      checkpointScanScript(),
+      CHECKPOINT_ADD_COMMAND,
       'git diff --cached --quiet',
       'git commit --no-verify --quiet -F /tmp/launch-commit-message.txt',
       'git rev-parse HEAD',
       `git push --quiet origin HEAD:refs/heads/${sessionBranchName(row.shortId)}`,
     ])
     for (const e of sandbox.execs) expect(e.opts?.cwd).toBe(SESSION_REPO_DIR)
-    const commit = sandbox.execs[2]
+    const commit = sandbox.execs[3]
     expect(commit?.opts?.env).toMatchObject({
       GIT_AUTHOR_NAME: 'Launch',
       GIT_AUTHOR_EMAIL: 'launch@localhost',
@@ -158,6 +164,50 @@ describe('checkpoint', () => {
     expect(err2).toBeInstanceOf(CheckpointError)
     expect(err2.step).toBe('push')
     expect(down.sandbox.execs.filter(e => e.command.startsWith('git push'))).toHaveLength(2)
+  })
+
+  it('a file over the size limit is not staged: the save goes on and an error event names it', async () => {
+    const { row, sandbox, deps, ref } = await setup()
+    sandbox.onExec('git ls-files', {
+      stdout: 'large\t6227020800\tcore\nlarge\t6120000000\tqemu_claude_20260928-101500_77.core\n',
+    })
+    const result = await checkpoint(db, deps, ref)
+    expect(result).toMatchObject({ committed: true, pushed: true })
+    expect(result.skipped).toEqual([
+      { path: 'core', bytes: 6227020800 },
+      { path: 'qemu_claude_20260928-101500_77.core', bytes: 6120000000 },
+    ])
+    // The scan ran first, and what was staged is the scan's pathspec (its exclusions).
+    const commands = sandbox.execs.map(e => e.command)
+    expect(commands.indexOf(CHECKPOINT_ADD_COMMAND)).toBe(1)
+    const events = await listSessionEvents(db, row.tenantId, row.id)
+    const error = events.find(e => e.type === 'error')
+    const data = error?.data as { message: string; details: { maxFileBytes: number } }
+    expect(data.message).toContain('Saved, but left out 2 files over 50 MB')
+    expect(data.message).toContain('core (5.8 GB)')
+    expect(data.message).toContain('qemu_claude_20260928-101500_77.core (5.7 GB)')
+    expect(data.details.maxFileBytes).toBe(CHECKPOINT_MAX_FILE_BYTES)
+  })
+
+  it('no large file → no event', async () => {
+    const { row, deps, ref } = await setup()
+    await checkpoint(db, deps, ref)
+    expect(await listSessionEvents(db, row.tenantId, row.id)).toEqual([])
+  })
+
+  it('a git command that times out throws a CheckpointError naming the step and the limit', async () => {
+    const { row, sandbox, deps, ref } = await setup()
+    sandbox.onExec(CHECKPOINT_ADD_COMMAND, () => {
+      throw new Error('Command timed out after 120000ms')
+    })
+    const err = await checkpoint(db, deps, ref).catch(e => e)
+    expect(err).toBeInstanceOf(CheckpointError)
+    expect(err.step).toBe('add')
+    expect(err.message).toBe(
+      `Checkpoint failed at add: \`${CHECKPOINT_ADD_COMMAND}\` did not finish within 120 s (Command timed out after 120000ms)`
+    )
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(after?.headSha).toBeNull()
   })
 
   it('another tenant’s session is not found', async () => {

@@ -79,7 +79,13 @@ export const defaultSessionStepHooks: SessionStepHooks = {
   checkpoint: (ctx, reason) =>
     checkpoint(
       ctx.db,
-      { cfg: ctx.cfg, sandbox: ctx.sandbox, storage: ctx.storage, now: ctx.now },
+      {
+        cfg: ctx.cfg,
+        sandbox: ctx.sandbox,
+        storage: ctx.storage,
+        now: ctx.now,
+        emit: events => ctx.emit(events),
+      },
       ctx.ref,
       reason === 'turn' ? {} : { message: CHECKPOINT_MESSAGES[reason](ctx.session.shortId) }
     ),

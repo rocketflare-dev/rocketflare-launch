@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A coding session's turn whose log stream Launch loses (or that is cancelled or times out) no
+  longer leaves its `claude -p` process running in the sandbox: Launch kills it, SIGTERM then
+  SIGKILL after 5 s, by the pid the turn records (`/workspace/.launch/turn.pid`).
+- Session containers run every command with core dumps off (`ulimit -c 0`), and a checkpoint never
+  stages a core dump (`core`, `core.<pid>`, `*.core`, `qemu_*.core`, written to the checkout's
+  `.git/info/exclude`) or any single file over 50 MB: it leaves the file out, says so in an `error`
+  event naming it, and saves the rest. A git command that times out now says which step and after
+  how long, and a stale `.git/index.lock` left by one is removed.
 - A coding session's turn no longer fails at once with "Launch lost the connection to Claude Code":
   reading the process's logs passed an `AbortSignal` into the Sandbox SDK's RPC stub, which
   workerd cannot serialise. The signal now cancels the log reader on Launch's side.

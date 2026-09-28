@@ -18,13 +18,16 @@ import {
   createShipTurnRunner,
   type RunTurnOptions,
   runTurn,
+  TURN_PID_FILE,
+  terminateTurnProcess,
+  turnKillScript,
   turnStepConfig,
 } from '@/api/services/sessions/turn'
 import { auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson, createFakeAnthropic } from '../helpers/fake-anthropic'
 import { createFakeCloud } from '../helpers/fake-cloud'
-import type { FakeSandbox } from '../helpers/fake-sandbox'
+import { FakeSandbox } from '../helpers/fake-sandbox'
 import { createFakeSessionPorts, insertSession, seedSessionApp } from '../helpers/sessions'
 import { createTestEnv } from '../mocks/bindings'
 
@@ -238,6 +241,8 @@ describe('runTurn: a turn that does not finish', () => {
     expect(outcome).toMatchObject({ status: 'interrupted', reason: 'cancelled', turn: 1 })
     const sandbox = ports.sandboxes.get(row.id)
     expect(sandbox?.killed).toEqual([sandbox?.processes[0]?.id])
+    // The fake reports the killed process's exit, so there is nothing to escalate.
+    expect(sandbox?.execs).toEqual([])
     const events = await eventsOf(row)
     expect(events.at(-1)).toMatchObject({
       type: 'turn.interrupted',
@@ -245,6 +250,29 @@ describe('runTurn: a turn that does not finish', () => {
     })
     expect(events.map(e => e.type)).not.toContain('turn.end')
     expect(await reload(row)).toMatchObject({ status: 'ready', cancelRequestedAt: null })
+  })
+
+  it('a cancel whose exit Launch never sees is escalated by pid (SIGTERM → grace → SIGKILL)', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ text: 'Working on it', hang: true }))
+    )
+    const sb = ports.sandbox(row.id) as FakeSandbox
+    // The SDK's kill "succeeds" but the process keeps running (the aborted reader sees no exit).
+    sb.kill = async id => void sb.killed.push(id)
+    const start = sb.startProcess.bind(sb)
+    sb.startProcess = async (command, opts) => {
+      const proc = await start(command, opts)
+      await db
+        .update(sessions)
+        .set({ cancelRequestedAt: new Date() })
+        .where(and(eq(sessions.id, row.id), eq(sessions.status, 'working')))
+      return proc
+    }
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'cancelled' })
+    expect(sb.killed).toEqual([sb.processes[0]?.id]) // the SDK kill once, not twice
+    expect(sb.execs.map(e => e.command)).toEqual([turnKillScript()])
   })
 
   it('the turn timeout kills the process: turn.interrupted { timeout }', async () => {
@@ -297,6 +325,61 @@ describe('runTurn: a turn that does not finish', () => {
     // The claim's own write is 0; the watcher moves it every 4 s while the process runs.
     expect(beats.some(ms => ms >= 4_000 && ms < 10_000)).toBe(true)
     expect((await reload(row)).status).toBe('ready')
+  })
+
+  it('a lost log stream kills the process it can no longer read: turn.failed, back to ready', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/claude -p/, claudeStreamJson({ text: 'Working on it', hang: true }))
+        .failNext('streamLogs', new Error('Network connection lost'))
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome.status).toBe('failed')
+    const sandbox = ports.sandboxes.get(row.id)
+    const proc = sandbox?.processes[0]
+    expect(
+      proc?.command.startsWith(`mkdir -p /workspace/.launch && echo $$ > ${TURN_PID_FILE}`)
+    ).toBe(true)
+    expect(proc?.command).toContain('&& exec claude -p ')
+    // SIGTERM through the SDK, then the pid escalation (SIGTERM → grace → SIGKILL) in the box.
+    expect(sandbox?.killed).toEqual([proc?.id])
+    expect(sandbox?.execs.map(e => e.command)).toEqual([turnKillScript()])
+    const last = (await eventsOf(row)).at(-1)
+    expect(last).toMatchObject({
+      type: 'turn.failed',
+      data: { message: 'Launch lost the connection to Claude Code in the sandbox' },
+    })
+    expect((await reload(row)).status).toBe('ready')
+  })
+
+  it('stopping the process is bounded: a kill that never answers does not hold the turn', async () => {
+    const sandbox = new FakeSandbox().hangNext('kill').hangNext('exec')
+    const started = Date.now()
+    await terminateTurnProcess(sandbox, 'proc-1', {
+      sessionId: 's',
+      reason: 'read-failed',
+      callMs: 20,
+    })
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
+  it('a finished or rolled-out turn stops nothing', async () => {
+    const done = await readySession()
+    const ok = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ text: 'Done.' }))
+    )
+    await runTurn(db, ok, done.row, FAST)
+    expect(ok.sandboxes.get(done.row.id)?.killed).toEqual([])
+    expect(ok.sandboxes.get(done.row.id)?.execs).toEqual([])
+
+    const rolled = await readySession()
+    const gone = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ text: 'x' })).interruptNext()
+    )
+    await runTurn(db, gone, rolled.row, FAST)
+    expect(gone.sandboxes.get(rolled.row.id)?.killed).toEqual([])
+    expect(gone.sandboxes.get(rolled.row.id)?.execs).toEqual([])
   })
 
   it('a rollout mid-turn: turn.interrupted { rollout } and the session is suspended', async () => {

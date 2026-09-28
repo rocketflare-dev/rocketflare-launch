@@ -25,7 +25,8 @@
  *   after, so a runtime `setAllowedHosts` is never the first thing sent to a container that may
  *   still be going away.
  * - **Every command runs in its own `bash -c`** (S7 finding 7): `exec` shares ONE persistent shell
- *   per sandbox, and a bare `exit` in a command would end it for every later command.
+ *   per sandbox, and a bare `exit` in a command would end it for every later command. It starts
+ *   with `ulimit -c 0`: no crash leaves a multi-gigabyte core file in the checkout.
  * - **A rollout surfaces as `SandboxInterruptedError`.** The SDK raises
  *   `OperationInterruptedError` / `SessionTerminatedError` (or a platform message about the runtime
  *   being replaced) when the container goes away under a command; the error is matched by NAME and
@@ -105,9 +106,22 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** `command` wrapped so an `exit` in it ends a subshell, never the sandbox's session shell. */
+/**
+ * Every command and process starts with core dumps OFF (`RLIMIT_CORE` 0, inherited by everything
+ * it runs). A process that crashed under amd64 emulation on an ARM Mac left a 5.8 GB `core` and a
+ * 5.7 GB `qemu_<prog>_<date>_<pid>.core` in the checkout (QEMU user mode writes the guest's core
+ * itself, and only when `RLIMIT_CORE` allows it; `setrlimit(RLIMIT_CORE)` passes through to the
+ * host process). The image cannot set a limit — Docker's `--ulimit` is a run option the platform
+ * owns — so it is set here, where every command enters.
+ */
+export const NO_CORE_DUMPS = 'ulimit -c 0 2>/dev/null'
+
+/**
+ * `command` wrapped so an `exit` in it ends a subshell, never the sandbox's session shell — and
+ * with core dumps off ({@link NO_CORE_DUMPS}).
+ */
 export function inSubshell(command: string): string {
-  return `bash -c ${shellQuote(command)}`
+  return `bash -c ${shellQuote(`${NO_CORE_DUMPS}\n${command}`)}`
 }
 
 /** `waitForPort`'s script exits with this when the `pidFile` process is gone. */

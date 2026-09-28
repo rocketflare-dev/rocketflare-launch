@@ -48,6 +48,11 @@
  *    exited without a result, or would not start) or `turn.interrupted` (`rollout` — the
  *    container was replaced, `SandboxInterruptedError` — `cancelled` or `timeout`), and the status
  *    back to `ready` (`suspended` after a rollout).
+ * 7. **Never leave it running**: whenever Launch stops reading a process that has not exited — the
+ *    log stream failed or closed early, or a cancel/timeout aborted the reader — it SIGTERMs the
+ *    turn's pid (`TURN_PID_FILE`) and its children, and SIGKILLs them after
+ *    `TURN_KILL_GRACE_SECONDS` (`terminateTurnProcess`: bounded, logged, never throws). Not after a
+ *    rollout: that container is gone.
  *
  * ## The ship turn (slice 3d)
  *
@@ -85,6 +90,7 @@ import {
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
 import { redactModelKeyText } from './model-key'
 import { SandboxInterruptedError, type SandboxPort, type SessionPorts } from './ports'
+import { SESSION_LAUNCH_DIR } from './rocketflare-dev'
 
 /** Write buffered events at least this often while a turn streams (plan §3c). */
 export const TURN_FLUSH_MS = 250
@@ -99,6 +105,102 @@ export const TURN_CANCEL_POLL_MS = 2_000
 export const TURN_HEARTBEAT_MS = 30_000
 /** The step timeout's margin over the turn's own, so the turn's timeout always fires first. */
 export const TURN_STEP_TIMEOUT_MARGIN_MINUTES = 2
+
+/**
+ * The turn's `claude` pid: the command writes `$$` and `exec`s into Claude Code, so it IS that pid
+ * (the dev server's `DEV_PID_FILE` pattern). What {@link terminateTurnProcess} signals directly.
+ */
+export const TURN_PID_FILE = `${SESSION_LAUNCH_DIR}/turn.pid`
+/** Between SIGTERM and SIGKILL, when Launch stops a turn's process it no longer reads. */
+export const TURN_KILL_GRACE_SECONDS = 5
+/** The bound on each call {@link terminateTurnProcess} makes: it never holds the turn up longer. */
+export const TURN_KILL_CALL_MS = 30_000
+
+/** The process a turn starts: its pid recorded, then `exec` into Claude Code. */
+export function turnProcessCommand(claudeCommand: string): string {
+  return `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${TURN_PID_FILE} && exec ${claudeCommand}`
+}
+
+/**
+ * SIGTERM the recorded pid (and its children), wait up to `graceSeconds`, then SIGKILL whatever is
+ * left. Signals by pid rather than through the SDK because the SDK's `killProcess` drops its
+ * signal argument (0.12.10 sends a bare `DELETE /api/process/:id`), so it can neither escalate nor
+ * be told apart from a polite stop.
+ */
+export function turnKillScript(
+  graceSeconds = TURN_KILL_GRACE_SECONDS,
+  pidFile = TURN_PID_FILE
+): string {
+  const ticks = Math.max(1, graceSeconds * 2)
+  return [
+    `pid=$(cat ${pidFile} 2>/dev/null)`,
+    '[ -n "$pid" ] || exit 0',
+    'kill -0 "$pid" 2>/dev/null || exit 0',
+    'pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null',
+    `for i in $(seq 1 ${ticks}); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.5; done`,
+    'pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null',
+    'echo killed',
+  ].join('; ')
+}
+
+/** `work`, or a rejection after `ms` (the work itself cannot be cancelled — it is an RPC). */
+async function bounded<T>(ms: number, work: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const promise = work()
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    promise.catch(() => {})
+  }
+}
+
+/**
+ * Stop a turn's Claude Code process that Launch has stopped READING — a lost log stream, or a
+ * cancel/timeout whose reader was aborted — so it cannot run on for minutes spending tokens and
+ * editing the workspace. Best effort, bounded, logged; never throws. `signalled`: the SDK kill was
+ * already sent (a cancel), so only the pid escalation runs.
+ */
+export async function terminateTurnProcess(
+  sandbox: SandboxPort,
+  processId: string,
+  opts: {
+    logger?: Logger
+    sessionId: string
+    reason: string
+    signalled?: boolean
+    callMs?: number
+  }
+): Promise<void> {
+  const callMs = opts.callMs ?? TURN_KILL_CALL_MS
+  const log = { sessionId: opts.sessionId, processId, reason: opts.reason }
+  if (!opts.signalled) {
+    try {
+      await bounded(callMs, () => sandbox.kill(processId, 'SIGTERM'))
+    } catch (err) {
+      if (err instanceof SandboxInterruptedError) return
+      opts.logger?.warn({ err, ...log }, 'session turn: kill failed')
+    }
+  }
+  try {
+    const result = await bounded(callMs, () =>
+      sandbox.exec(turnKillScript(), { timeoutMs: (TURN_KILL_GRACE_SECONDS + 15) * 1000 })
+    )
+    if (result.stdout.includes('killed')) {
+      opts.logger?.warn(log, 'session turn: Claude Code ignored SIGTERM and was SIGKILLed')
+    } else {
+      opts.logger?.info(log, 'session turn: stopped the Claude Code process')
+    }
+  } catch (err) {
+    if (err instanceof SandboxInterruptedError) return
+    opts.logger?.warn({ err, ...log }, 'session turn: could not stop the Claude Code process')
+  }
+}
 
 /** The `step.do` config for `turn#N`: no retries (a turn is not idempotent), the policy's timeout. */
 export function turnStepConfig(policy: Pick<SessionPolicy, 'maxTurnMinutes'>) {
@@ -541,11 +643,13 @@ async function streamTurn(
   let processId: string
   try {
     const proc = await sandbox.startProcess(
-      buildClaudeCommand({
-        message: p.message,
-        model: p.policy.model,
-        resumeSessionId: row.claudeSessionId,
-      }),
+      turnProcessCommand(
+        buildClaudeCommand({
+          message: p.message,
+          model: p.policy.model,
+          resumeSessionId: row.claudeSessionId,
+        })
+      ),
       { cwd: p.cwd, env: claudeTurnEnv(p.policy.model) }
     )
     processId = proc.id
@@ -640,16 +744,22 @@ async function streamTurn(
   }
 
   const parser = createClaudeStreamParser(p.turn)
+  let readFailed = false
+  let exited = false
   try {
     for await (const event of sandbox.streamLogs(processId, { signal: reader.signal })) {
       if (event.type === 'stdout') await apply(parser.push(event.data))
       else if (event.type === 'stderr') stderrTail = (stderrTail + event.data).slice(-2_000)
-      else if (event.type === 'exit') exitCode = event.exitCode
+      else if (event.type === 'exit') {
+        exited = true
+        exitCode = event.exitCode
+      }
     }
     await apply(parser.end())
   } catch (err) {
     if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
     else if (!out.stop) {
+      readFailed = true
       p.logger?.warn({ err, sessionId: row.id }, 'session turn: reading the process failed')
       out.failure = 'Launch lost the connection to Claude Code in the sandbox'
     }
@@ -660,6 +770,19 @@ async function streamTurn(
   const [watched, flushed] = await Promise.allSettled([watcher, flusher])
   if (watched.status === 'rejected') {
     p.logger?.warn({ err: watched.reason, sessionId: row.id }, 'session turn: watch failed')
+  }
+
+  // Launch has stopped reading a process that may still be running: stop it too, or it spends
+  // tokens and edits the workspace unseen. Not after a rollout (the container is gone) and not
+  // after an `exit` (it is over); a cancel/timeout already sent the SDK kill, so only escalate.
+  const cutOff = out.stop === 'cancelled' || out.stop === 'timeout'
+  if (out.stop !== 'rollout' && !exited && (readFailed || cutOff || !out.result)) {
+    await terminateTurnProcess(sandbox, processId, {
+      logger: p.logger,
+      sessionId: row.id,
+      reason: readFailed ? 'read-failed' : cutOff ? (out.stop as string) : 'stream-ended',
+      signalled: cutOff,
+    })
   }
   if (flushed.status === 'rejected') throw flushed.reason
 

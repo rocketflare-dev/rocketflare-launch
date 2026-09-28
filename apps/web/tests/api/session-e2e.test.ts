@@ -180,11 +180,11 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
       )
       // The ship turn (its message is the `session-ship` prompt, which names the gate).
       .onProcess(
-        /^claude -p [\s\S]*pnpm lint/,
+        /exec claude -p [\s\S]*pnpm lint/,
         claudeStreamJson({ sessionId: CLAUDE_SESSION, text: SHIP_REPLY })
       )
       .onProcess(
-        /^claude -p /,
+        /exec claude -p /,
         claudeStreamJson({
           sessionId: CLAUDE_SESSION,
           text: 'Changed the heading.',
@@ -197,7 +197,7 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
     const startProcess = sandbox.startProcess.bind(sandbox)
     sandbox.startProcess = async (command, procOpts) => {
       const proc = await startProcess(command, procOpts)
-      if (command.startsWith('claude ')) {
+      if (command.includes('exec claude ')) {
         const procEnv = (procOpts?.env ?? {}) as Record<string, string>
         h.claudeEnvs.push(procEnv)
         const call = await handleAnthropic(
@@ -594,7 +594,7 @@ describe('a coding session, end to end', () => {
     expect(run.names).not.toContain('bootstrap#1')
     expect(transcriptAfterResume).toContain('"type":"user"')
     expect(h.sandbox().startCount).toBe(2)
-    const claudeCommands = h.sandbox().processes.filter(p => p.command.startsWith('claude '))
+    const claudeCommands = h.sandbox().processes.filter(p => p.command.includes('exec claude '))
     expect(claudeCommands).toHaveLength(2)
     expect(claudeCommands[1]?.command).toContain(`--resume ${CLAUDE_SESSION}`)
     expect(await usageOf(h)).toHaveLength(2)

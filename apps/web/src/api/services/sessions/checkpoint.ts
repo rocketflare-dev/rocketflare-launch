@@ -31,17 +31,32 @@
  * - Writes `head_sha`, `transcript_key` and `last_activity_at`, tenant-first. No status change: the
  *   caller owns the transition. Idempotent — safe as a retried Workflow step.
  *
+ * - **Nothing huge is staged.** Before `git add`, the checkout's exclude file is made to carry the
+ *   core-dump names ({@link CORE_DUMP_EXCLUDES}; the repo step writes them too, this covers a
+ *   restored workspace), and every untracked or modified file over {@link CHECKPOINT_MAX_FILE_BYTES}
+ *   is left out of the commit by a pathspec exclusion — never deleted — and named in an `error`
+ *   event ("saved, but left out …") and in `skipped`. A crash under emulation once left 11 GB of
+ *   core files in the checkout, and `git add -A` timed out hashing them (it would otherwise have
+ *   committed and pushed them).
+ *
  * A failing git command throws `CheckpointError` with the command's output tail (the sandbox holds
- * no secret, so there is none in it).
+ * no secret, so there is none in it); a command that did not answer in time (`GIT_TIMEOUT_MS`)
+ * throws one that says so, naming the step. Either way the caller (`checkpointStep`) records an
+ * `error` event and the session carries on from the previous checkpoint.
  */
-import { SESSION_SHORT_ID_RE, sessionBranchName } from '@launch/shared/launch-sessions'
+import {
+  SESSION_SHORT_ID_RE,
+  type SessionEventInput,
+  sessionBranchName,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { type SessionRow, sessions, users } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
 import type { StorageService } from '../storage'
-import type { SandboxExecResult, SandboxPort } from './ports'
+import { appendSessionEvents } from './event-log'
+import { type SandboxExecResult, SandboxInterruptedError, type SandboxPort } from './ports'
 import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
 
 /** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
@@ -50,6 +65,92 @@ export const SESSION_REPO_DIR = SESSION_WORKSPACE
 export const SESSION_CLAUDE_HOME = SESSION_HOME
 /** Where the commit message is written (a file, so no message is ever parsed by a shell). */
 const COMMIT_MESSAGE_PATH = '/tmp/launch-commit-message.txt'
+/** Where the scan writes `git add`'s pathspec (NUL-separated: `.` then one exclusion per big file). */
+const ADD_PATHSPEC_PATH = '/tmp/launch-checkpoint-pathspec'
+/** Each git command's timeout. */
+export const GIT_TIMEOUT_MS = 120_000
+/** No single file over this is ever staged by a checkpoint (it is named in an event instead). */
+export const CHECKPOINT_MAX_FILE_BYTES = 50 * 1024 * 1024
+/**
+ * Core dumps, in the checkout's `.git/info/exclude` (never the app's `.gitignore`): `core` as a
+ * FILE only (`!core/` keeps a directory of that name — `src/core/` is ordinary code), a pid-suffixed
+ * `core.<pid>` (not `core.ts`), and QEMU's `qemu_<prog>_<date>_<pid>.core`. Order matters.
+ */
+export const CORE_DUMP_EXCLUDES = [
+  'core',
+  '!core/',
+  'core.[0-9]*',
+  '*.core',
+  'qemu_*.core',
+] as const
+
+const q = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
+
+/**
+ * The scan before `git add`: drop a stale `index.lock`, make sure the exclude file carries
+ * {@link CORE_DUMP_EXCLUDES} (in order, each once), then list every untracked or modified file over `maxBytes` as
+ * `large\t<bytes>\t<path>` and write `git add`'s pathspec — `.` minus each of them, literally.
+ */
+export function checkpointScanScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): string {
+  return [
+    'set -e',
+    'mkdir -p .git/info',
+    // A git that an earlier, timed-out checkpoint left behind dies without removing its lock, and
+    // every later `git add` would fail on it. Only when no git is running at all.
+    'if [ -f .git/index.lock ] && ! pgrep -x git >/dev/null 2>&1; then rm -f .git/index.lock; fi',
+    `for p in ${CORE_DUMP_EXCLUDES.map(q).join(' ')}; do grep -qxF -- "$p" .git/info/exclude 2>/dev/null || printf '%s\\n' "$p" >> .git/info/exclude; done`,
+    `printf '.\\0' > ${ADD_PATHSPEC_PATH}`,
+    "git ls-files -z --others --modified --exclude-standard | while IFS= read -r -d '' f; do",
+    '  if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi',
+    '  s=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f")',
+    `  if [ "$s" -gt ${maxBytes} ]; then`,
+    `    printf ':(exclude,literal)%s\\0' "$f" >> ${ADD_PATHSPEC_PATH}`,
+    `    printf 'large\\t%s\\t%s\\n' "$s" "$f"`,
+    '  fi',
+    'done',
+  ].join('\n')
+}
+
+/** `git add -A` over the scan's pathspec: everything but the files it left out. */
+export const CHECKPOINT_ADD_COMMAND = `git add -A --pathspec-from-file=${ADD_PATHSPEC_PATH} --pathspec-file-nul`
+
+/** A file the checkpoint did not stage, and why. */
+export interface SkippedFile {
+  path: string
+  bytes: number
+}
+
+/** The scan's `large` lines. */
+export function parseLargeFiles(stdout: string): SkippedFile[] {
+  const out: SkippedFile[] = []
+  for (const match of stdout.matchAll(/^large\t(\d+)\t(.*)$/gm)) {
+    out.push({ bytes: Number(match[1]), path: match[2] ?? '' })
+  }
+  return out
+}
+
+/** `5.8 GB`, `73 MB`. */
+export function formatBytes(bytes: number): string {
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return unit === 0 ? `${bytes} bytes` : `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`
+}
+
+/** The `error` event's sentence for the files a checkpoint left out. */
+export function skippedFilesMessage(files: readonly SkippedFile[], maxBytes: number): string {
+  const names = files
+    .slice(0, 10)
+    .map(f => `${f.path} (${formatBytes(f.bytes)})`)
+    .join(', ')
+  const more = files.length > 10 ? ` and ${files.length - 10} more` : ''
+  return `Saved, but left out ${files.length === 1 ? 'a file' : `${files.length} files`} over ${formatBytes(maxBytes)} that git should not hold: ${names}${more}. They are still in the workspace; delete them, or ask Claude to.`
+}
+
 /** How long a transiently failed push waits before its one retry. */
 export const PUSH_RETRY_DELAY_MS = 3000
 /** git's output for a failure worth one more try — never a rejection of the ref itself. */
@@ -74,6 +175,10 @@ export interface CheckpointDeps {
   now?: () => Date
   /** The wait before a transiently failed push's retry (tests pass a recorder). */
   sleep?: (ms: number) => Promise<void>
+  /** Appends the "left out" `error` event; default: straight to the session's log. */
+  emit?: (events: SessionEventInput[]) => Promise<void>
+  /** Overrides {@link CHECKPOINT_MAX_FILE_BYTES}. */
+  maxFileBytes?: number
 }
 
 export interface CheckpointOptions {
@@ -92,6 +197,8 @@ export interface CheckpointResult {
   headSha: string | null
   /** The transcript's R2 key, when one was copied. */
   transcriptKey: string | null
+  /** Files over the size limit that were NOT staged (named in an `error` event). */
+  skipped: SkippedFile[]
 }
 
 /** Claude Code's per-project directory name for `cwd`. */
@@ -163,13 +270,46 @@ export async function checkpoint(
     GIT_COMMITTER_EMAIL: identity.email,
     GIT_TERMINAL_PROMPT: '0',
   }
+  const run = async (step: string, command: string) => {
+    try {
+      return await deps.sandbox.exec(command, { cwd, env: gitEnv, timeoutMs: GIT_TIMEOUT_MS })
+    } catch (err) {
+      if (err instanceof SandboxInterruptedError) throw err
+      // The SDK's own words for a timeout vary; say which step, and that it did not answer.
+      const detail = err instanceof Error ? err.message : String(err)
+      const timedOut = /timed? ?out/i.test(detail)
+      throw new CheckpointError(
+        step,
+        timedOut
+          ? `\`${command.split('\n')[0]?.slice(0, 120)}\` did not finish within ${GIT_TIMEOUT_MS / 1000} s (${detail.slice(0, 200)})`
+          : detail.slice(0, 600)
+      )
+    }
+  }
   const git = async (step: string, command: string, allowExit: number[] = [0]) => {
-    const result = await deps.sandbox.exec(command, { cwd, env: gitEnv, timeoutMs: 120_000 })
+    const result = await run(step, command)
     if (!allowExit.includes(result.exitCode)) throw new CheckpointError(step, outputTail(result))
     return result
   }
 
-  await git('add', 'git add -A')
+  const maxBytes = deps.maxFileBytes ?? CHECKPOINT_MAX_FILE_BYTES
+  const skipped = parseLargeFiles((await git('scan', checkpointScanScript(maxBytes))).stdout)
+  await git('add', CHECKPOINT_ADD_COMMAND)
+  if (skipped.length > 0) {
+    const emit =
+      deps.emit ??
+      (events => appendSessionEvents(db, { id: session.id, tenantId: session.tenantId }, events))
+    await emit([
+      {
+        type: 'error',
+        turn: session.turnCount,
+        data: {
+          message: skippedFilesMessage(skipped, maxBytes),
+          details: { skipped: skipped.slice(0, 50), maxFileBytes: maxBytes },
+        },
+      },
+    ])
+  }
   const staged = await git('diff', 'git diff --cached --quiet', [0, 1])
   let committed = false
   if (staged.exitCode === 1) {
@@ -193,7 +333,7 @@ export async function checkpoint(
   let pushed = false
   if (committed || (head && head !== session.headSha)) {
     const push = `git push --quiet origin HEAD:refs/heads/${branch}`
-    const first = await deps.sandbox.exec(push, { cwd, env: gitEnv, timeoutMs: 120_000 })
+    const first = await run('push', push)
     if (first.exitCode !== 0) {
       if (!TRANSIENT_PUSH_RE.test(outputTail(first))) {
         throw new CheckpointError('push', outputTail(first))
@@ -229,5 +369,5 @@ export async function checkpoint(
     })
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
 
-  return { committed, pushed, headSha: head, transcriptKey }
+  return { committed, pushed, headSha: head, transcriptKey, skipped }
 }

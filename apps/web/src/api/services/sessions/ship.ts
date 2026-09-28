@@ -349,7 +349,7 @@ export async function ship(
   const title = reply?.title ?? session.title ?? `Changes from Launch session ${session.shortId}`
   await checkpoint(
     db,
-    { cfg: deps.cfg, sandbox, storage: deps.storage, now },
+    { cfg: deps.cfg, sandbox, storage: deps.storage, now, emit },
     { tenantId: session.tenantId, sessionId: session.id },
     { message: title, repoDir: deps.repoDir }
   )

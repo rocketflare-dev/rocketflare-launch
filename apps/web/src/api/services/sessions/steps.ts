@@ -41,6 +41,7 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
+import { CORE_DUMP_EXCLUDES } from './checkpoint'
 import { sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
@@ -381,8 +382,9 @@ export function checkoutScript(input: {
     lines.push('git checkout -q --detach "$base"')
   }
   lines.push(
-    // Launch's own files never land in a commit.
+    // Launch's own files never land in a commit, and neither does a core dump (checkpoint.ts).
     'mkdir -p .claude && printf "%s\\n" .claude/settings.local.json >> .git/info/exclude',
+    `printf "%s\\n" ${CORE_DUMP_EXCLUDES.map(p => q(p)).join(' ')} >> .git/info/exclude`,
     'echo "base=$base"',
     'echo "head=$(git rev-parse HEAD)"'
   )
