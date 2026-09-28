@@ -14,9 +14,12 @@
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
  * - `GET /:id/events[?afterSeq=]` → `sessionEventsResponseSchema`.
- * - `POST /:id/budget` `extendBudgetSchema` → `sessionDetailResponseSchema`: the app's OWNERS and
- *   admins only (plan §1.11 — the creator may see the session but not raise its cap), audited
- *   `session.budget.extended`; a `blocked` session under both caps again goes `ready` and is woken.
+ * - `POST /:id/budget` `extendBudgetSchema` (`{extraUsd, reason?}`) → `sessionDetailResponseSchema`
+ *   plus `approvalId`: from P4 a `session.budget` approval (plan §4c, `budget-request.ts`), opened
+ *   (or joined) in the creator's name. When the caller is an eligible approver other than the
+ *   creator their approval is recorded in the same call — 200, the cap already raised
+ *   (`session.budget.extended`) and a `blocked` session under both caps `ready` and woken;
+ *   otherwise 202 and the request waits in the approvals inbox (the creator's own ask always does).
  *
  * Routes write request columns and wake the Workflow; they never run a turn.
  */
@@ -28,14 +31,12 @@ import {
   sessionEventsQuerySchema,
   sessionTurnRequestSchema,
 } from '@launch/shared/launch-sessions'
-import { and, eq } from 'drizzle-orm'
-import { apps } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
-import { mayDeployApp } from '../services/launch/apps'
+import { approvalViewerOf } from '../services/approvals/types'
 import { auditActor } from '../services/launch/audit'
 import { nudge, realtimeEvent } from '../services/realtime'
 import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
-import { extendBudget } from '../services/sessions/budget'
+import { requestBudgetExtension } from '../services/sessions/budget-request'
 import {
   requestCancel,
   requestTurn,
@@ -46,10 +47,11 @@ import { listSessionEvents, toSessionEvent } from '../services/sessions/event-lo
 import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { streamSessionAgui } from '../services/sessions/session-stream'
 import type { AppContext } from '../types'
-import { ForbiddenError, ValidationError } from '../utils/core/errors'
+import { ValidationError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
+import { approvalDepsOf } from './approvals'
 
 export const sessionChatRouter = createRouter()
 
@@ -143,29 +145,20 @@ function resolveStreamCursor(c: AppContext): number {
 
 sessionChatRouter.post('/:id/budget', validate('json', extendBudgetSchema), async c => {
   guardPermission(c, 'update', 'Session')
-  const { db, tenantId, logger, viewer, row } = await visibleSession(c)
-  const [app] = await db
-    .select({ id: apps.id, ownerGroupId: apps.ownerGroupId })
-    .from(apps)
-    .where(and(eq(apps.tenantId, tenantId), eq(apps.id, row.appId)))
-    .limit(1)
-  if (!app || !(await mayDeployApp(db, tenantId, app, viewer))) {
-    throw new ForbiddenError(
-      "Only the app's owners and admins can extend a session's budget",
-      'session_budget_forbidden'
-    )
-  }
-  const { extraUsd } = c.req.valid('json')
-  const result = await extendBudget(db, {
-    tenantId,
-    sessionId: row.id,
+  const { tenantId, auth, row } = await visibleSession(c)
+  const { extraUsd, reason } = c.req.valid('json')
+  const result = await requestBudgetExtension(approvalDepsOf(c), {
+    session: row,
+    caller: approvalViewerOf({ ...auth, tenantId }),
     extraUsd,
+    reason,
     actor: auditActor(c),
   })
-  if (result.unblocked && result.session.pendingMessage) {
-    const workflow = (c.env as { SESSION_WORKFLOW?: Workflow }).SESSION_WORKFLOW
-    if (workflow) await wakeOrRestart(db, workflow, result.session, logger)
-  }
   changed(c, tenantId, row.id)
-  return c.json<SessionDetailResponse>({ session: toSessionDetail(result.session, true) })
+  const approved = result.request.status === 'approved'
+  // `approvalId` rides beside the P3 body; `sessionDetailResponseSchema` has no field for it yet.
+  return c.json(
+    { session: toSessionDetail(result.session, true), approvalId: result.request.id },
+    approved ? 200 : 202
+  )
 })

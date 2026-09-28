@@ -13,6 +13,11 @@
  * 3. `APP_LAUNCH_WORKFLOW.create({ id: runId, params })`. If that fails the app is marked `failed`
  *    (audited `app.launch_failed`) and the error goes back to the caller.
  *
+ * From P4 the route runs steps 1–2 (`requestApp`) and then opens an `app.create` approval; step 3
+ * is `launchRequestedApp`, which the approval's `applyAfter` calls (at once when the creator's role
+ * auto-approves, else when someone approves) — idempotent, so the sweep may retry it. `createApp`
+ * is still all three in one call, for the Workflow tests' harness.
+ *
  * `startTeardown` checks the typed confirmation slug, refuses while a launch or a teardown is
  * still running, audits `app.teardown.requested` and starts `APP_TEARDOWN_WORKFLOW`.
  */
@@ -43,7 +48,7 @@ import {
   requireAppsDomain,
 } from './context'
 import type { PipelinePorts } from './ports'
-import { deriveRunStatus, latestRunId, runRows } from './runs'
+import { deriveRunStatus, latestRunId, requestedOptions, runRows } from './runs'
 
 /** The slice of a Workflow binding the pipeline uses — `RecordingWorkflow` satisfies it. */
 export interface WorkflowStarter<P> {
@@ -79,7 +84,35 @@ export interface CreateAppResult {
   runId: string
 }
 
+/** Steps 1–3 in one call: the P2 path, kept for the Workflow tests' harness (`LaunchHarness`). */
 export async function createApp(
+  db: Database,
+  workflow: WorkflowStarter<AppLaunchParams> | undefined,
+  ports: PipelinePorts,
+  tenantId: string,
+  input: CreateAppRequest,
+  actor: AuditActor,
+  opts: CreateAppOptions = {}
+): Promise<CreateAppResult> {
+  const launcher = requireWorkflow(workflow, 'APP_LAUNCH_WORKFLOW')
+  const result = await requestApp(db, launcher, ports, tenantId, input, actor, opts)
+  await startLaunch(db, launcher, {
+    tenantId,
+    appId: result.app.id,
+    runId: result.runId,
+    userId: actor.actorUserId,
+    options: { deployStaging: input.options.deployStaging },
+  })
+  return result
+}
+
+/**
+ * Steps 1–2: every refusal, then the `requested` app, its environments, the creator as owner and
+ * `app.create.requested` in one transaction. The run id is RESERVED (`launch_run_id`) but nothing
+ * is started — `startLaunch` / `launchRequestedApp` does that. `workflow` is only checked: a
+ * Worker that cannot launch must refuse before the row, even when the launch waits on an approval.
+ */
+export async function requestApp(
   db: Database,
   workflow: WorkflowStarter<AppLaunchParams> | undefined,
   ports: PipelinePorts,
@@ -90,7 +123,7 @@ export async function createApp(
 ): Promise<CreateAppResult> {
   const problem = newAppSlugProblem(input.slug)
   if (problem) throw new BadRequestError(problem, 'invalid_slug', { slug: input.slug })
-  const launcher = requireWorkflow(workflow, 'APP_LAUNCH_WORKFLOW')
+  requireWorkflow(workflow, 'APP_LAUNCH_WORKFLOW')
   const settings = opts.settings ?? (await loadPipelineSettings(db))
   const missing = await (opts.missingSetup ?? missingSetup)(db, settings)
   if (missing.length) {
@@ -171,21 +204,56 @@ export async function createApp(
     }
     throw err
   }
+  return { app, runId }
+}
 
-  const params: AppLaunchParams = {
-    tenantId,
-    appId: app.id,
-    runId,
-    userId: actor.actorUserId,
-    options,
-  }
+/**
+ * Step 3: start the launch run under its reserved id. A second start of the same id is the
+ * platform's `instance.already_exists` — the run is already going, which is success (a retried
+ * `applyAfter`). Any other failure marks the app `failed` (`app.launch_failed`, so the pipeline
+ * page offers Retry) and is rethrown.
+ */
+export async function startLaunch(
+  db: Database,
+  launcher: WorkflowStarter<AppLaunchParams>,
+  params: AppLaunchParams
+): Promise<void> {
   try {
-    await launcher.create({ id: runId, params })
+    await launcher.create({ id: params.runId, params })
   } catch (err) {
-    await markLaunchFailed(db, tenantId, app.id, runId, err)
+    if (err instanceof Error && /already.?exists/i.test(err.message)) return
+    await markLaunchFailed(db, params.tenantId, params.appId, params.runId, err)
     throw err
   }
-  return { app, runId }
+}
+
+/**
+ * Start a `requested` app's launch — the `app.create` approval's effect. Anything but `requested`
+ * (the run already moved it on, it failed, it was archived) is a no-op, which with `startLaunch`'s
+ * `already_exists` makes this safe to run twice. The options and the creator come back from the
+ * row and its `app.create.requested` audit, the one place they were written (as a retry does).
+ */
+export async function launchRequestedApp(
+  db: Database,
+  workflow: WorkflowStarter<AppLaunchParams> | undefined,
+  tenantId: string,
+  appId: string
+): Promise<'started' | 'skipped'> {
+  const [app] = await db
+    .select()
+    .from(apps)
+    .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId)))
+  if (!app || app.status !== 'requested' || !app.launchRunId) return 'skipped'
+  const launcher = requireWorkflow(workflow, 'APP_LAUNCH_WORKFLOW')
+  const options = await requestedOptions(db, tenantId, app.id, 'create', app.launchRunId)
+  await startLaunch(db, launcher, {
+    tenantId,
+    appId: app.id,
+    runId: app.launchRunId,
+    userId: app.createdByUserId,
+    options: { deployStaging: options.deployStaging !== false },
+  })
+  return 'started'
 }
 
 /** Status `failed` and `app.launch_failed` — the one terminal write both the route and the run make. */

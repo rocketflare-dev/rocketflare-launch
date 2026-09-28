@@ -778,11 +778,13 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
 - **Access policy** (`services/oidc/policy.ts`): the person must be a member of the client's
   tenant; app owners (named or the owner group) always pass; `company` admits every member,
   `restricted` needs a user or group grant. A member refused is sent to `/request-access`
-  (`app.access.requested`); the app's owners and admins decide on `/apps/:slug/access`
-  (approve = a user grant). Every sign-in and refusal is audited (`oidc.signin`, `oidc.denied`).
-  From P4 a request is an `app.access` row in `approval_requests` (the P4 migration moved P1's
-  pending ones across with their ids and dropped `app_access_requests`); until P4 slice 4c puts
-  them on the engine, `services/oidc/policy.ts` reads and writes those rows with P1's rules.
+  (`app.access.requested`). Every sign-in and refusal is audited (`oidc.signin`, `oidc.denied`).
+  From P4 a request is an `app.access` approval (the P4 migration moved P1's pending ones across
+  with their ids and dropped `app_access_requests`): asking opens (or joins) it through the engine
+  (`services/oidc/access-requests.ts`), the app's owners decide it in the approvals inbox, and the
+  kind's `applyInTx` adds the user grant (`app.access.policy_changed` with the approval id).
+  `/apps/:slug/access` still lists the requests; P1's decide route answers 410
+  `access_request_moved`.
 - **Re-authentication**: `prompt=login`, or a session older than `max_age`, ends the Launch
   session and sends the person to `/login` (the return URL carries a `launch_reauth` marker so it
   cannot loop); under `prompt=none` it is `login_required`.
@@ -828,11 +830,14 @@ polled, not pushed, and the cron does not run under `pnpm dev` (use "Check now" 
 
 ### 18.5 Creating an app (the launch pipeline)
 
-`POST /api/apps` (`manage App` and `launch_settings.app_create_role`; `routes/app-pipeline.ts`)
-checks the slug (spec/04 plus no `launch-` prefix), writes `apps` (`source='created'`,
-`status='requested'`), both `app_environments` rows, the creator as owner and
-`app.create.requested` in one transaction, then starts `APP_LAUNCH_WORKFLOW` with the run id as the
-instance id → 202. `AppLaunchWorkflow` (`api/workflows/app-launch.ts`) only wires steps; their
+`POST /api/apps` (any member; `routes/app-pipeline.ts`) checks the slug (spec/04 plus no
+`launch-` prefix), writes `apps` (`source='created'`, `status='requested'`, a reserved run id),
+both `app_environments` rows, the creator as owner and `app.create.requested` in one transaction
+(`requestApp`), then opens an `app.create` approval (P4). A creator at or above
+`launch_settings.app_create_role` (default admin) is auto-approved and the kind's `applyAfter`
+starts `APP_LAUNCH_WORKFLOW` with the run id as the instance id at once → 202 `approvalId: null`;
+anyone else gets 202 with `approvalId` and the launch waits for an admin's approval (a rejection
+or expiry archives the app, `app.create.rejected`). `AppLaunchWorkflow` (`api/workflows/app-launch.ts`) only wires steps; their
 bodies are `services/launch/pipeline/launch-steps.ts`, each inside `runStep` (`operations.ts`):
 one `app_operations` row per `(run_id, step)`, every vendor id recorded the moment it exists, a
 succeeded row skipped with its stored ids, failures scrubbed. No step result carries a secret; the
@@ -1012,7 +1017,10 @@ Anthropic-shaped 403 and NO upstream call when over), swaps in the real key (the
 **Budgets**: `maxSessionUsd` (plus any extension) per session and `appMonthlyUsd` (or
 `apps.session_monthly_budget_microcents`) per app, checked at create, before each turn (→
 `blocked`, `budget.reached`, audit `session.budget.reached`) and per call; `POST /:id/budget
-{extraUsd}` (owners and admins, audited `session.budget.extended`) unblocks.
+{extraUsd, reason?}` opens a `session.budget` approval in the creator's name (P4): an owner or
+admin who is not the creator approves it in the same call (200), anyone else — the creator
+included — waits for one (202, `approvalId`). The approval extends the cap (audited
+`session.budget.extended` with the approval id) and wakes a blocked session.
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); a model with no price (`estimateCostMicrocents` → null) costs nothing to the

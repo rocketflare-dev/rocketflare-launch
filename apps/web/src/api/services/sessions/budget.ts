@@ -17,9 +17,11 @@
  *
  * `spent >= cap` is over: a session at exactly its cap may not start another call.
  *
- * `extendBudget` is the way out of `blocked`: owners and admins add `extraUsd`
- * (`POST /api/sessions/:id/budget`), audited `session.budget.extended`; a blocked session that is
- * now under both caps goes back to `ready` (a compare-and-set, so a racing turn cannot be undone).
+ * `extendBudget` is the way out of `blocked`: it adds `extraUsd`, audited `session.budget.extended`;
+ * a blocked session that is now under both caps goes back to `ready` (a compare-and-set, so a
+ * racing turn cannot be undone). From P4 it runs only as the effect of an approved
+ * `session.budget` request (`services/approvals/kinds/session-budget.ts`, inside the decide
+ * transaction); `POST /api/sessions/:id/budget` opens that request (`budget-request.ts`).
  */
 import {
   resolveSessionPolicy,
@@ -131,6 +133,8 @@ export interface ExtendBudgetInput {
   sessionId: string
   extraUsd: number
   actor: AuditActor
+  /** The `session.budget` approval this extension is the effect of (on the audit row). */
+  approvalId?: string | null
   now?: Date
 }
 
@@ -143,7 +147,7 @@ export interface ExtendBudgetResult {
 /**
  * Raise the session's cap by `extraUsd` (atomically — two extensions at once both count), audit
  * `session.budget.extended`, and move a `blocked` session back to `ready` when it is now under both
- * caps. Authorisation is the route's.
+ * caps. Authorisation is the approval's: call it only from an approved `session.budget` request.
  */
 export async function extendBudget(
   db: Database,
@@ -167,6 +171,7 @@ export async function extendBudget(
     targetType: 'session',
     targetId: raised.id,
     appId: raised.appId,
+    approvalId: input.approvalId ?? null,
     summary: {
       before: { budgetExtraMicrocents: Number(raised.budgetExtraMicrocents) - extra },
       after: {

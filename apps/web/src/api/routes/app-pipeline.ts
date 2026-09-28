@@ -3,8 +3,12 @@
  * `services/launch/pipeline/*` and the two Workflow bindings. Routes START runs; the Workflows do
  * the work.
  *
- * - `POST /` → 202 `{ app, runId }` (`createAppResponseSchema`): `manage App` AND at least
- *   `launch_settings.app_create_role` (default admin; 403 below it). Refusals before any write: an
+ * - `POST /` → 202 `{ app, runId, approvalId }` (`createAppResponseSchema`): any member (`read
+ *   App`) — from P4 creating an app is an `app.create` approval (plan §4c). The route writes the
+ *   `requested` app (`requestApp`) and opens the approval: a creator at or above
+ *   `launch_settings.app_create_role` (default admin) is auto-approved and the launch starts at
+ *   once (`approvalId: null`); anyone else gets `approvalId` and the run id stays reserved until an
+ *   admin approves (a rejection or expiry archives the app). Refusals before any write: an
  *   invalid, reserved or `launch-` slug (400), a taken one (409 `slug_taken`), Setup unfinished
  *   (503 `launch_not_set_up`) or no `APP_LAUNCH_WORKFLOW` binding (503
  *   `app_pipeline_not_configured`).
@@ -15,50 +19,83 @@
  *   `confirm_slug_mismatch`.
  *
  * Audited: `app.create.requested`, `app.pipeline.retried`, `app.teardown.requested` (and the
- * Workflows add `app.launched`, `app.launch_failed`, `app.archived`, `app.teardown_failed`).
+ * Workflows add `app.launched`, `app.launch_failed`, `app.archived`, `app.teardown_failed`; the
+ * engine adds `approval.*`, and a rejected or expired `app.create` adds `app.create.rejected`).
  *
  * Mounted by `routes/apps.ts` with `appsRouter.route('/', appPipelineRouter)` BEFORE its own
  * `/:slug` routes, behind the `/api/apps` mount's `authMiddleware`.
  */
 import {
+  type CreateAppResponse,
   createAppRequestSchema,
   pipelineQuerySchema,
   retryPipelineRequestSchema,
   teardownRequestSchema,
 } from '@launch/shared/launch-pipeline'
-import { meetsAppCreateRole } from '@launch/shared/launch-setup'
 import { guardPermission, isGlobalAdmin } from '../middleware/permissions'
+import { open as openApproval } from '../services/approvals/engine'
+import type { OpenApprovalResult } from '../services/approvals/types'
 import { getAppDetail, getAppRow } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
-import { loadPipelineSettings } from '../services/launch/pipeline/context'
-import { createApp, startTeardown } from '../services/launch/pipeline/create'
+import { markLaunchFailed, requestApp, startTeardown } from '../services/launch/pipeline/create'
 import { defaultPorts } from '../services/launch/pipeline/ports'
 import { retryPipeline } from '../services/launch/pipeline/retry'
 import { pipelineView } from '../services/launch/pipeline/runs'
-import { ForbiddenError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 import { appViewer } from './app-deploys'
+import { approvalDepsOf } from './approvals'
 
 export const appPipelineRouter = createRouter()
 
 appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c => {
-  const auth = guardPermission(c, 'manage', 'App')
-  const { db, tenantId } = withAuthAndDb(c)
-  const { appCreateRole } = await loadPipelineSettings(db)
-  if (!isGlobalAdmin(auth) && !meetsAppCreateRole(auth.tenantUser?.role ?? '', appCreateRole)) {
-    throw new ForbiddenError(`Creating apps is limited to the ${appCreateRole} role and above`)
-  }
-  const { app, runId } = await createApp(
+  // Every member may ASK; whether the ask is granted at once is the `app.create` policy's.
+  const auth = guardPermission(c, 'read', 'App')
+  const { db, tenantId, user } = withAuthAndDb(c)
+  const input = c.req.valid('json')
+  const actor = auditActor(c)
+  const { app, runId } = await requestApp(
     db,
     c.env.APP_LAUNCH_WORKFLOW,
     defaultPorts(),
     tenantId,
-    c.req.valid('json'),
-    auditActor(c)
+    input,
+    actor
   )
-  return c.json({ app: await getAppDetail(db, tenantId, app.slug, appViewer(c)), runId }, 202)
+  let opened: OpenApprovalResult
+  try {
+    opened = await openApproval(approvalDepsOf(c), {
+      tenantId,
+      kind: 'app.create',
+      subject: { type: 'app', id: app.id },
+      appId: app.id,
+      // A global admin acting from outside the organisation ranks as its owner, as in P2.
+      requester: {
+        userId: user.id,
+        email: user.email,
+        role: isGlobalAdmin(auth) ? 'owner' : (auth.tenantUser?.role ?? null),
+      },
+      context: {
+        kind: 'app.create',
+        slug: app.slug,
+        displayName: app.displayName,
+        description: app.description,
+        ownerGroupId: app.ownerGroupId,
+      },
+      actor,
+    })
+  } catch (err) {
+    // No approval, no way forward: the reserved app must not sit `requested` for ever.
+    await markLaunchFailed(db, tenantId, app.id, runId, err)
+    throw err
+  }
+  const body: CreateAppResponse = {
+    app: await getAppDetail(db, tenantId, app.slug, appViewer(c)),
+    runId,
+    approvalId: opened.autoApproved ? null : opened.request.id,
+  }
+  return c.json(body, 202)
 })
 
 appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), async c => {
