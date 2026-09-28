@@ -48,17 +48,22 @@ settings ·
 Launch (P4, `docs/plans/p4-approvals.md`): `launch-approvals.ts` (the approvals engine —
 `APPROVAL_KINDS` (+ `BUILT_APPROVAL_KINDS`, the four with handlers), `APPROVAL_STATUSES`,
 `APPROVAL_SUBJECT_TYPES`, `APPROVAL_POLICY_SCOPES`, `AUTO_APPROVE_ROLES` + `meetsAutoApproveRole`,
-`approvalPolicySchema` + `DEFAULT_APPROVAL_POLICIES` (the plan's §1.7 table; the P4 migration's
-policy literal is tested equal to `app.access`'s), `approvalContextSchema` (discriminated by
-`kind`), the request/detail/decision/list/count bodies of `/api/approvals`, the policy bodies of
+`approvalPolicySchema` + `DEFAULT_APPROVAL_POLICIES` (the plan's §1.7 table, with `app.access`
+owners AND admins; the 0023 migration's policy literal plus 0024's widening is tested equal to
+`app.access`'s), `approvalContextSchema` (discriminated by `kind`), the
+request/detail/decision/list/count bodies of `/api/approvals` (the detail's optional `eligible`
+names who a pending request waits on, capped at `APPROVAL_ELIGIBLE_MAX`), the policy bodies of
 `/api/approval-policies`, `APPROVAL_WHY_NOT` / `APPROVAL_ERROR_CODES`, `APPROVAL_REALTIME_ENTITY`,
 `APPROVAL_NOTIFICATION_TYPES` and `approvalPath`), `launch-releases.ts` (`RELEASE_STATUSES` — the
 `release_status` pg enum — `bumpVersion` / `parseReleaseVersion` / `releaseTagRef`,
-`releasePrSchema` (the `app_releases.prs` jsonb), the release, promote and chain bodies,
-`RELEASE_REALTIME_ENTITY`); `launch-audit.ts` gained `auditVerifySchema` and
-`auditExportQuerySchema` / `auditExportRowSchema`; `launch-pipeline.ts` the `approval` decision
-source, `releaseId` / `approvalId` on a ticket and `approvalId` on the create and production-deploy
-answers; `launch-sessions.ts` an optional `reason` on `extendBudgetSchema` ·
+`releasePrSchema` (the `app_releases.prs` jsonb), `PROMOTABLE_RELEASE_STATUSES` /
+`isPromotableRelease` (what the route and the Promote button both accept), the release, promote and
+chain bodies, `RELEASE_REALTIME_ENTITY`); `launch-audit.ts` gained `auditVerifySchema` and
+`auditExportQuerySchema` / `auditExportRowSchema` (`seq`, `prevHash`, `hash`); `launch-pipeline.ts`
+the `approval` decision source, `releaseId` / `approvalId` on a ticket and `approvalId` on the
+create and production-deploy answers; `launch-sessions.ts` an optional `reason` on
+`extendBudgetSchema` and `extendBudgetResponseSchema` (the session plus the `session.budget`
+`approvalId`) ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

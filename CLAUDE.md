@@ -121,7 +121,8 @@ written justification, and `apps/web/tests/config/shared-imports.test.ts` enforc
 **`apps/cli`.** `login` opens `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; the server
 mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored `0600` in
 `~/.launch/config.json` (`LAUNCH_API_KEY`/`LAUNCH_URL` for CI). Also `logout|whoami|status|config`,
-`groups|features|traces|feedback|evals` (`--json` for raw output; `.claude/rules/cli.md`)
+`groups|features|traces|feedback|evals`, and Launch's `sessions` (P3) and `approvals|releases|audit`
+(P4) (`--json` for raw output; `.claude/rules/cli.md`)
 
 ## Config model
 

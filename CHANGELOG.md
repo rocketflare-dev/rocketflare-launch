@@ -2,33 +2,41 @@
 
 ## Unreleased
 
-- Approvals for the stand-ins (P4, slice 4c): members who could not create an app now ASK — the
-  app waits as `requested` until an admin approves (admins and above, or whoever
-  `app_create_role` names, are approved at once, as before); an access request is decided in the
-  approvals inbox rather than on the app's Access page; and "extend budget" on a session opens a
-  request in its creator's name that an owner or admin approves in one click — the creator
-  extending their own session now waits for someone else.
-- Approvals inbox (P4, slice 4f): `/approvals` lists what is waiting on you, what you asked for
-  and (for admins) everything, with a badge in the navigation; each request has its own page with
-  what is being approved in plain words, who asked and why, who may decide, N-of-M progress, the
-  expiry, and Approve / Reject with a comment. Settings → Approvals edits who approves each kind,
-  for the organisation or one team or app. The app page gains Releases (cut a release, promote it
-  to production through an approval, see its whole history); a session's creator can ask for more
-  budget; the audit page can verify the hash chain and export the log. CLI: `launch approvals
-  ls|show|approve|reject` and `launch releases ls|create|promote [--wait]`.
-- Approvals foundations (P4, slice 4a): the approvals engine's tables (`approval_requests`,
-  append-only `approval_decisions`, `approval_policies`), releases (`app_releases`) and the audit
-  hash chain (`audit_chain`, append-only) in one migration, which also moves every pending
-  app-access request onto the new `approval_requests` table (same ids; the request-access page and
-  the app's access page work as before) and retires `app_access_requests`. An "Approvals" entry in
-  the navigation and Settings → Approvals are in place and empty until the engine lands.
-- Releases and the production gate (P4, slice 4d): "Release" on an app bumps its version, tags it
-  (starting staging) and lists the merged pull requests since the last release; "Promote" asks for
-  a production deploy once staging runs the release, and a second person — never its author —
+- Approvals (P4): one engine decides everything a second person must approve — who may decide
+  each kind (the app's owners, the organisation's admins, named teams or people), how many
+  approvals it needs (one rejection is final), whether it expires, and whether a senior enough
+  requester is approved at once. The author of a request can never approve it. Approvers are told
+  in the app and by email, and the requester when it is decided; what an approval does after it
+  is granted (publish a release, start a launch, wake a session) is retried every five minutes if
+  it fails. Admins edit the policies under Settings → Approvals, for the organisation or one team
+  or app. One migration adds the tables and moves every pending app-access request across with
+  its id.
+- The stand-ins on the engine (P4): members who could not create an app now ASK — the app waits
+  as `requested` until an admin approves (admins and above, or whoever `app_create_role` names,
+  are approved at once, as before); an access request is decided in the approvals inbox, by the
+  app's owners or the organisation's admins, rather than on the app's Access page; and "extend
+  budget" on a session opens a request in its creator's name that an owner or admin approves in
+  one click — the creator extending their own session now waits for someone else.
+- Releases and the production gate (P4): "Release" on an app bumps its version, tags it (starting
+  staging) and lists the merged pull requests since the last release; "Promote" asks for a
+  production deploy once staging runs the release, and a second person — never its author —
   approves it, which publishes the GitHub Release and lets exactly that tag's production run
   through. A production run started by hand in GitHub waits for an approval too, and "Deploy to
   production" now asks a second person. Merged session PRs are recorded, and each release shows
   its whole chain from pull request to production.
+- A hash-chained audit log (P4): every five minutes the audit log is sealed into a per-organisation
+  SHA-256 chain. Admins can verify it (`GET /api/audit/verify`, the audit page, `launch audit
+  verify`) and export it as CSV or JSON Lines (`launch audit export`, streamed to a `0600` file);
+  every exported row carries its `seq`, `prevHash` and `hash`, and `scripts/verify-audit-export.mjs`
+  checks an export offline — the whole chain, or a filtered export row by row with `--filtered`.
+- Approvals inbox (P4): `/approvals` lists what is waiting on you, what you asked for and (for
+  admins) everything, with a badge in the navigation; each request has its own page with what is
+  being approved in plain words, who asked and why, who it is waiting on by name, N-of-M progress,
+  the expiry, and Approve / Reject with a comment. The app page gains Releases (cut a release,
+  promote it to production through an approval, see its whole history); a session's creator can
+  ask for more budget; the audit page can verify the chain and export the log. CLI: `launch
+  approvals ls|show|approve|reject`, `launch releases ls|create|promote [--wait]` and `launch
+  audit verify|export`.
 - Coding sessions (P3): "Start session" on an app boots a sandbox container with the app's repo on
   a `session/<short>` branch and its own database (a Neon branch of the app's `dev`, prepared by
   the first session), runs the kit's bootstrap and dev server, and then runs each message as a

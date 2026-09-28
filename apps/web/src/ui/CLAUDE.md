@@ -423,8 +423,9 @@ A `CUSTOM kit.notice` renders
 - **`/approvals` and `/approvals/:id` are pages** (`pages/approvals/`, lazy). The inbox's boxes are
   `URLTabs` with `param="box"` (All only for `isAdminLevel`), filters are `?kind=` / `?status=`.
   **Everything the surfaces SAY is `approvalModel.ts`** — `approvalSummary` (an exhaustive switch
-  over the context union), `requesterName`, `whyNotSentence`, `approversSentence`, `progressLabel`
-  — pure and tested in `tests/config/approval-model.test.ts`, so a row, a heading and a panel can
+  over the context union), `requesterName`, `whyNotSentence` / `waitingOn` (who a pending request
+  waits on, by name, from the server's `eligible`), `approversSentence`, `progressLabel` — pure and
+  tested in `tests/config/approval-model.test.ts`, so a row, a heading and a panel can
   never describe one request three ways.
 - **`ApprovalPanel` follows `ActionRequiredPanel`'s rules**: heading focus, one sentence for
   somebody who may not decide (a 403 `self_approval` / `not_an_approver` at decide time becomes the

@@ -63,7 +63,8 @@ when asked for.
 
 Approvals and releases (Launch P4): `approvals ls [--box mine|requested|all] [--status] [--kind]
 [--app <slug>]`, `show <id>` (a plain-words summary per kind, the policy, N-of-M, the decisions and
-either the approve/reject commands or the `whyNot` sentence), `approve|reject <id> [--comment]`
+either the approve/reject commands or the `whyNot` sentence, and — while pending — who it waits
+on, from `eligible`), `approve|reject <id> [--comment]`
 (a 409 `not_pending` / `already_decided` becomes a sentence and exits 1; 403 exits 3). An id may be
 an 8-character prefix, looked up in the caller's boxes. `releases ls <app>`, `create <app>
 [--bump patch|minor|major]`, `promote <app> <id|X.Y.Z> [--reason] [--wait]` — promote prints the
@@ -71,6 +72,16 @@ approval's URL; `--wait` polls the approval to a terminal status, then the relea
 `production_active` (exit 1 on reject, expiry or failure; with `--json` ONE `{ release, approval }`
 document), with `sleep` / `pollMs` injectable. The CLI never approves its own promote — the
 promoter is excluded from deciding.
+
+The audit log (Launch P4, admin+): `audit verify` (exit 1 at the first broken link, printed) and
+`audit export --out <file> [--format json|csv] [--app] [--action] [--from] [--to] [--force]`. The
+export is the one place the CLI does not read a whole body: `ApiClient.download` hands it back as a
+stream (the timeout covers the headers only) and it goes straight into a `0600` file (`wx` unless
+`--force`); a download cut off mid-body removes the file rather than leave a shorter chain behind.
+It prints the offline check — `node scripts/verify-audit-export.mjs [--filtered] <file>`, with
+`--filtered` when a filter was given. A schema passed to `api.ts` is typed
+`z.ZodType<T, z.ZodTypeDef, unknown>`, so `T` is the contract's OUTPUT (its `.default()`s and
+coercions applied) and no call site casts.
 
 ## Output
 

@@ -454,7 +454,8 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
 case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
 drives Launch P3 coding sessions (§18.14); `approvals ls|show|approve|reject` and `releases
-ls|create|promote [--wait]` are the P4 inbox and shipping (§18.15). Exit codes: 0 ok · 1 error · 2 not logged in ·
+ls|create|promote [--wait]` are the P4 inbox and shipping (§18.19); `audit verify|export` the
+hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
 Detail: `.claude/rules/cli.md`.
@@ -713,9 +714,11 @@ What makes this copy Launch rather than the kit: a registry of the company's Roc
 OIDC issuer they sign in through, the sealed platform credentials Launch acts with, and an
 append-only audit log (spec/03–06, 08; the build plans are `docs/plans/p1-foundation.md` and
 `docs/plans/p2-create-app.md`). From P2 it also creates apps (§18.5–18.8), and from P3 it runs
-coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESSIONS-LOCAL.md`).
+coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESSIONS-LOCAL.md`);
+from P4 a second person approves what needs one, releases ship through a production gate, and the
+audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
-`packages/shared/src/launch-{apps,oidc,setup,audit}.ts`.
+`packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases}.ts`.
 
 **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
 `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `audit_events`, and from P4 `approval_requests`,
@@ -735,8 +738,11 @@ user never rewrites history. A summary is `{before?, after?}` and never carries 
 credential or client secret is recorded as `'set'`. `GET /api/audit` (admin+, filter by app and
 action, cursor-paged) backs the `/audit` page.
 
-**Known gaps:** no hash chain, export or SIEM stream (spec/08); no retention policy; the page
-filters only by app and action.
+From P4 the log is sealed into a hash chain, verifiable and exportable (§18.18), and every
+approval's audit rows carry `approval_id`.
+
+**Known gaps:** no SIEM stream (spec/08, P6); no retention policy; the page filters only by app and
+action.
 
 ### 18.2 Admin credentials and setup checks
 
@@ -782,8 +788,8 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
   (`app.access.requested`). Every sign-in and refusal is audited (`oidc.signin`, `oidc.denied`).
   From P4 a request is an `app.access` approval (the P4 migration moved P1's pending ones across
   with their ids and dropped `app_access_requests`): asking opens (or joins) it through the engine
-  (`services/oidc/access-requests.ts`), the app's owners decide it in the approvals inbox, and the
-  kind's `applyInTx` adds the user grant (`app.access.policy_changed` with the approval id).
+  (`services/oidc/access-requests.ts`), the app's owners or the organisation's admins decide it in
+  the approvals inbox (§18.15), and the kind's `applyInTx` adds the user grant (`app.access.policy_changed` with the approval id).
   `/apps/:slug/access` still lists the requests; P1's decide route answers 410
   `access_request_moved`.
 - **Re-authentication**: `prompt=login`, or a session older than `max_age`, ends the Launch
@@ -906,7 +912,7 @@ An app's `deploy.yml` runs the kit's `scripts/deployer.mjs` against `/ci/deploy`
 holding no credential. Tickets live in `deploy_tickets`, every transition a compare-and-set
 (`deploy/tickets.ts`, `pending → approved|rejected → uploaded → active → finished`, or `failed`).
 Staging is auto-approved; production claims a live pre-approval bound to the run's ref (a granted
-Promote, or "Deploy to production" — §18.15), or opens `pending` plus a `deploy.production`
+Promote, or "Deploy to production" — §18.17), or opens `pending` plus a `deploy.production`
 approval that an owner or admin decides (inbox or app page) within the job's `WAIT_SECONDS`. Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
 recorded KV ids, queues, bucket and workflows, in-script Durable Objects, `ai`, `assets` and vars,
 refusing every other binding kind, any route and a newer DO migration tag, each as `"<kind>
@@ -1080,34 +1086,82 @@ cost against the cap and Ship / End / Resume / Extend budget, boot checklist, sh
 image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
 drain → deploy → resume rehearsal has not been run.
 
-### 18.15 Approvals and releases: the UI and the CLI (P4f)
+### 18.15 The approvals engine (P4)
 
-**Inbox** `/approvals` (every member; nav badge = `GET /api/approvals/count`, refreshed by the
-`approval` nudge, never polled): `?box=mine|requested|all` tabs (All for admins), `?kind=` /
-`?status=` filters, each row a link saying in words what is being approved. **A request's page**
-`/approvals/:id` (where every approval notification links): the decision panel pinned above the
-context — focus on its heading, one sentence instead of buttons for someone who may not decide
-(`whyNot`), a 409 shown as information, N-of-M progress, an expiry that ticks at the rate
-`expiryState` chooses, an optional comment, Withdraw for the requester — then the requester's
-reason, the per-kind context (a production deploy: version, commit, staging health, the PRs with
-their CI) and, for a release, its chain (`GET …/releases/:rid/chain`), beside the policy snapshot
-and the decisions. It polls only while an approval is being carried out (`appliedAt` pending).
-**Settings → Approvals** (`manage ApprovalPolicy`): per kind, the organisation's policy or the
-server-reported default, plus team/app overrides. **The app page** gains a Releases card (New
-release with a version preview, Promote → the approval it opened, each release's chain on demand);
-a pending production ticket links to its approval; "Deploy to production" opens a
-`deploy.production` request; the access page's requests link to their approvals; a member's new
-app waiting in `requested` on an `app.create` approval shows that request instead of the launch
-panel, and nothing polls while it waits. **The session
-page**: an owner/admin's "Extend" still approves in one click; the creator gets "Ask for more
-budget" (amount + reason → a `session.budget` request) and then a link to it. **The audit page**:
-Verify (on demand) and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject`
-and `launch releases ls|create|promote [--wait]` (§11).
+One generic engine decides everything a second person must approve (spec/08,
+`docs/plans/p4-approvals.md`; `api/services/approvals/*`, contracts in
+`packages/shared/src/launch-approvals.ts`). It knows nothing about apps or deploys: each KIND is a
+`KindHandler` (`kinds/<kind>.ts` — `defaultPolicy`, `describe`, `eligibleExtra`, `applyInTx`,
+`applyAfter`, `onClosed`). Four are built — `app.create`, `app.access`, `deploy.production`,
+`session.budget` (§18.16–18.17); `grant.request`, `config.change` and `app.teardown` are named in
+the contract but have no handler and nothing opens them (P5/P6).
 
-**Known gaps:** the request detail carries the policy, not a resolved list of eligible people, so
-"who decides" is a sentence (teams a member cannot list are counted, not named); a budget request
-is found again after a reload through the creator's own `requested` box only.
-### 18.16 Releases, Promote and the production gate
+- **Open** (`engine.open`): resolve the policy (below) and SNAPSHOT it onto the request with the
+  excluded set (the requester, plus whoever the kind names — the promoter, a release's cutter and
+  its sessions' creators) and the expiry; the pending-subject unique index makes asking twice find
+  the open request. A requester at or above `autoApproveRole` is auto-approved — still a row,
+  decided by `system`, audited, its `applyInTx` in the same transaction. Otherwise audit
+  `approval.requested` and notify the eligible approvers.
+- **Decide** (`POST /api/approvals/:id/decide`) is ONE transaction: `SELECT … FOR UPDATE`,
+  eligibility evaluated NOW (app ownership and group membership at decide time, never from the
+  snapshot), the decision row (unique per person → 409 `already_decided`), one reject vetoes and N
+  approvals approve, `applyInTx`, audit `approval.decided` (+ `approval.approved|rejected`). Two
+  approvers racing serialise on the row lock: one 200, one 409 `not_pending`. The requester and
+  the excluded are 403 `self_approval`, anyone else the policy does not name 403
+  `not_an_approver`, and a request the caller may not see is the same 404 as a missing one.
+- **After commit** `applyAfter` runs the vendor effect (publish a GitHub Release, start a Workflow,
+  wake a session), claimed by incrementing `apply_attempts` as a compare-and-set while
+  `applied_at` is null. A failure records `apply_error`; the `approvals.sweep` task (`*/5`)
+  retries it after a four-minute quiet period and gives up loudly after
+  `APPROVAL_MAX_APPLY_ATTEMPTS` (5): `approval.apply_failed` and a notification. Every
+  `applyAfter` is idempotent for that reason. The sweep also expires due requests (the kind's
+  `onClosed` runs: a release goes `rejected`, a requested app `archived`).
+- **Cancel** (`POST …/:id/cancel`): the requester or an admin, while pending (`approval.cancelled`).
+- **Policies** (`approval_policies`, `GET|PUT|DELETE /api/approval-policies` — under `/api`, not
+  `/api/admin`, because an organisation admin manages them: `manage ApprovalPolicy`; audited
+  `approval.policy.set|removed`): per kind at scope app → the app's owner group → tenant → the
+  code default (`DEFAULT_APPROVAL_POLICIES`). Fields: approvers `{appOwners, admins, groupIds,
+  userIds}`, `minApprovals` (N), `allowSelfApproval`, `expiresAfterMinutes`, `autoApproveRole`.
+  Only admins edit, at every scope — an owner loosening their own gate defeats it. Defaults:
+  `app.create` admins, auto-approved at `launch_settings.app_create_role` (default admin), 7 days;
+  `app.access` the app's owners AND the organisation's admins (P1 parity; migration 0024 widened
+  the requests 0023 moved), 14 days; `deploy.production` owners + admins, N=1, 24 h or the
+  ticket's own deadline; `session.budget` owners + admins, the session's `suspendedExpiryHours`.
+- **Reads**: `GET /api/approvals?box=mine|requested|all&status&kind&appId` (`all` is admins';
+  anyone else asking for it gets `mine`), `GET /count` (the nav badge), `GET /:id` —
+  `approvalDetailSchema` with the decisions, `canDecide` / `whyNot` / `canCancel` for the caller,
+  and `eligible`: the people a pending request still waits on (eligible, not excluded, not yet
+  decided; capped at 25), so the UI and the CLI NAME them. Anyone the policy names, the requester,
+  the excluded and whoever decided may read a request; admins read all.
+- **Notifications** (`notify.ts`, best-effort after commit): `approval_requested` to each eligible
+  approver, `approval_decided` / `approval_expired` to the requester (`notificationLink` →
+  `/approvals/:id`), `entity.changed {entity: 'approval'}` to everyone it concerns, and an
+  `email.send` job per recipient (`email.ts`).
+
+**Known gaps:** the `mine` box and the badge scan up to 500 pending rows and filter eligibility in
+code; a global admin who is not a member of the organisation is never notified (they are not in
+`tenant_users`); a cancelled request tells nobody but through the realtime nudge (no
+`approval_cancelled` notification or email); approving by email reply or Slack is out of scope
+(spec/08); session permission prompts (`canUseTool`) are not approvals (plan §1.14).
+
+### 18.16 The stand-ins on the engine (P4)
+
+Four P1–P3 stand-ins became kinds (plan §4c), each described with its surface: **`app.access`**
+(§18.3 — asking opens it, the P1 decide route answers 410 `access_request_moved`, the approval's
+`applyInTx` adds the grant), **`app.create`** (§18.5 — `POST /api/apps` writes the app
+`requested` and opens it; `applyAfter` starts `APP_LAUNCH_WORKFLOW`; a rejection or expiry
+archives the app), **`session.budget`** (§18.11 — `POST /api/sessions/:id/budget` answers
+`extendBudgetResponseSchema`, the session plus `approvalId`: 200 when the caller's own approval
+raised the cap, 202 while it waits; `applyAfter` wakes the session) and **`deploy.production`**
+(§18.7 and §18.17). The P1 table `app_access_requests` is gone: migration 0023 copied its pending
+rows into `approval_requests` with their ids, so `/apps/:slug/access` still lists them.
+
+**Known gaps:** a budget request is found again after a reload only through the creator's own
+`requested` box (an owner viewing someone else's blocked session sees Extend, which approves in
+one click, not the pending request); `meetsAppCreateRole` survives only as the `app.create`
+default.
+
+### 18.17 Releases, Promote and the production gate
 
 Launch does the kit's release dance itself (`services/launch/releases/*`, plan §1.8), under an
 installation token narrowed to the one repo and revoked after each call (`releases/github.ts`).
@@ -1134,3 +1188,56 @@ SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to produc
 with no earlier tag lists only its session PRs; branch protection must let the App push the bump
 to the default branch; rate limits on the compare for a large release are untested; a failed
 production run marks the release `failed` but nothing re-dispatches.
+
+### 18.18 The audit hash chain, verify and export (P4)
+
+`audit_chain(tenant_id, seq, audit_event_id, prev_hash, hash)` (append-only) seals the audit log
+(spec/08 "Integrity options", plan §1.12; `services/launch/audit-chain.ts`). The `audit.seal` task
+(`*/5`) takes a per-tenant `pg_advisory_xact_lock` and appends the next ≤ 1 000 unsealed events in
+`(at, id)` order, `hash = sha256(prev_hash ‖ canonical JSON of the event)`, `prev_hash` "" at seq
+1 — a sealer rather than a trigger, so audit inserts never queue behind one lock. The canonical
+form (version 1: fifteen fixed keys, nulls kept, `at` to the millisecond, `summary` keys sorted) is
+documented in the file's header. `GET /api/audit/verify` (admin+, `auditVerifySchema`) recomputes
+the chain: `ok`, rows checked, `sealedThrough`, `unsealed`, and the first broken `seq`.
+`GET /api/audit/export?format=json|csv&appId&action&from&to` (admin+, audited `audit.exported`)
+streams the sealed rows in `seq` order, then the unsealed ones with `seq`/`prevHash`/`hash` null;
+every row carries `seq`, `prevHash` and `hash`. JSON Lines is the verifiable format:
+`scripts/verify-audit-export.mjs` (no dependencies) re-derives each hash offline — a whole chain
+by default, or a FILTERED export row by row with `--filtered`, each from its own `prevHash`. CSV
+(RFC 4180, formula cells defused with `'`) is for reading. `launch audit verify|export` (§11)
+streams the export straight to a `0600` file.
+
+**Known gaps:** tampering is evident only after the next seal (up to five minutes); a chain cannot
+show the loss of its NEWEST rows, or a log rewritten and re-sealed from some point on — keep each
+export's last `seq`/`hash` and compare; a filtered export cannot show that nothing between two of
+its rows is missing; no SIEM stream (P6); `audit.seal`'s advisory lock over Neon's WebSocket pool
+is untested.
+
+### 18.19 Approvals and releases: the UI and the CLI (P4)
+
+**Inbox** `/approvals` (every member; nav badge = `GET /api/approvals/count`, refreshed by the
+`approval` nudge, never polled): `?box=mine|requested|all` tabs (All for admins), `?kind=` /
+`?status=` filters, each row a link saying in words what is being approved. **A request's page**
+`/approvals/:id` (where every approval notification links): the decision panel pinned above the
+context — focus on its heading, one sentence instead of buttons for someone who may not decide
+(`whyNot`, naming who it waits on from the server's `eligible` — or saying nobody can approve it
+under the policy), a 409 shown as information, N-of-M progress, an expiry that ticks at the rate
+`expiryState` chooses, an optional comment, Withdraw for the requester or an admin — then the
+requester's reason, the per-kind context (a production deploy: version, commit, staging health, the
+PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`), beside the policy
+snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
+approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
+ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
+overrides. **The app page** gains a Releases card (New release with a version preview, Promote → the
+approval it opened, each release's chain on demand); a pending production ticket links to its
+approval; "Deploy to production" opens a `deploy.production` request; the access page's requests
+link to their approvals; a member's new app waiting in `requested` on an `app.create` approval shows
+that request instead of the launch panel, and nothing polls while it waits. **The session page**: an
+owner/admin's "Extend" still approves in one click; the creator gets "Ask for more budget" (amount +
+reason → a `session.budget` request) and then a link to it. **The audit page**: Verify (on demand)
+and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` and `launch releases
+ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list too.
+
+**Known gaps:** the policy's own words still count the teams a member cannot list rather than
+naming them; the releases card shows only what the audit log recorded (a release cut outside
+Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.
