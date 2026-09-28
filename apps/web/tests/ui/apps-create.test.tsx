@@ -8,8 +8,10 @@ import { APP_LAUNCH_STEPS } from '@launch/shared/launch-pipeline'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useToastStore } from '@/ui/components/shared'
 import AppDetailPage from '@/ui/pages/apps/AppDetailPage'
 import CataloguePage from '@/ui/pages/apps/CataloguePage'
+import { approvalRow } from './helpers/approvals'
 import {
   errorResponse,
   IDS,
@@ -253,6 +255,28 @@ describe('CreateAppModal', () => {
     })
   })
 
+  it('tells someone whose app needs approval that it is waiting, then opens it (P4)', async () => {
+    renderCatalogue({
+      'POST /api/apps': () =>
+        jsonResponse(
+          {
+            app: summary({ status: 'requested', slug: 'payroll', displayName: 'Payroll' }),
+            runId: RUN_ID,
+            approvalId: '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a',
+          },
+          202
+        ),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /Create app/ }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Payroll' } })
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    expect(await screen.findByText('App page for payroll')).toBeInTheDocument()
+    expect(useToastStore.getState().toasts.map(t => t.message)).toContain(
+      'Asked to create Payroll — an administrator has to approve it'
+    )
+  })
+
   it('renders a taken slug inside the modal, with what to do', async () => {
     renderCatalogue({
       'POST /api/apps': errorResponse(409, 'An app called atlas already exists', 'conflict'),
@@ -315,6 +339,43 @@ describe('AppDetailPage — the launch', () => {
   ) => ({
     [`/api/apps/${APP_ID}/pipeline`]: (_init: RequestInit | undefined, url: URL) =>
       url.searchParams.get('kind') === 'teardown' ? teardown : create,
+  })
+
+  it('says a member’s new app is waiting for approval, links to it, and does not poll (P4)', async () => {
+    const approvalId = '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a'
+    const fetchMock = renderDetail(
+      member(),
+      { status: 'requested', viewerCanDeploy: false },
+      {
+        ...pipelineRoute({ appId: APP_ID, runId: null, kind: 'create', status: 'none', steps: [] }),
+        '/api/approvals': (_init: RequestInit | undefined, url: URL) => {
+          expect(url.searchParams.get('box')).toBe('requested')
+          expect(url.searchParams.get('kind')).toBe('app.create')
+          return {
+            items: [
+              approvalRow({
+                id: approvalId,
+                kind: 'app.create',
+                appId: APP_ID,
+                subjectType: 'app',
+                subjectId: APP_ID,
+                context: {
+                  kind: 'app.create',
+                  slug: 'expenses',
+                  displayName: 'Expenses',
+                  ownerGroupId: null,
+                },
+              }),
+            ],
+          }
+        },
+      }
+    )
+    const link = await screen.findByRole('link', { name: 'See the request' })
+    expect(link).toHaveAttribute('href', `/approvals/${approvalId}`)
+    expect(screen.getByText('This app is waiting for approval')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Launch progress' })).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalled()
   })
 
   it('shows every step with its state while the launch runs', async () => {

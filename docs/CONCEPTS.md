@@ -1096,7 +1096,9 @@ and the decisions. It polls only while an approval is being carried out (`applie
 server-reported default, plus team/app overrides. **The app page** gains a Releases card (New
 release with a version preview, Promote → the approval it opened, each release's chain on demand);
 a pending production ticket links to its approval; "Deploy to production" opens a
-`deploy.production` request; the access page's requests link to their approvals. **The session
+`deploy.production` request; the access page's requests link to their approvals; a member's new
+app waiting in `requested` on an `app.create` approval shows that request instead of the launch
+panel, and nothing polls while it waits. **The session
 page**: an owner/admin's "Extend" still approves in one click; the creator gets "Ask for more
 budget" (amount + reason → a `session.budget` request) and then a link to it. **The audit page**:
 Verify (on demand) and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject`

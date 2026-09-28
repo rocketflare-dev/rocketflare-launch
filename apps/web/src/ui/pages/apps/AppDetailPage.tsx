@@ -25,9 +25,11 @@ import {
   CodeBracketIcon,
   ExclamationTriangleIcon,
   PencilSquareIcon,
+  ShieldExclamationIcon,
   Squares2X2Icon,
   TrashIcon,
 } from '@heroicons/react/24/outline'
+import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppDetail } from '@launch/shared/launch-apps'
 import type { PipelineKind, PipelineView } from '@launch/shared/launch-pipeline'
 import { useEffect, useState } from 'react'
@@ -38,6 +40,7 @@ import {
   SectionPanel,
   SectionPanelSkeleton,
 } from '@/ui/components/shared'
+import { usePendingApproval } from '@/ui/hooks/useApprovals'
 import { useApp, useCheckAppHealth } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import {
@@ -160,6 +163,27 @@ function DangerZone({
   )
 }
 
+/** A new app waiting on an admin's approval (P4 `app.create`): say so, and link to the request. */
+function AwaitingCreateApproval({ approvalId }: { approvalId: string }) {
+  return (
+    <section
+      className="surface-panel border-l-4 border-l-warning flex flex-wrap items-center gap-3"
+      aria-label="Waiting for approval"
+    >
+      <ShieldExclamationIcon className="w-5 h-5 shrink-0 text-warning" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold">This app is waiting for approval</p>
+        <p className="text-sm text-secondary">
+          Nothing is created until an administrator approves it; the launch then starts on its own.
+        </p>
+      </div>
+      <Link to={approvalPath(approvalId)} className="btn btn-sm">
+        See the request
+      </Link>
+    </section>
+  )
+}
+
 /** App status → the `.status-badge` vocabulary in `index.css`. */
 const STATUS_TONE: Record<AppDetail['status'], string> = {
   live: 'active',
@@ -184,16 +208,23 @@ interface Kick {
 export default function AppDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
   const { data: app, isLoading, error } = useApp(slug)
-  const { can } = usePermissions()
+  const { can, isAdminLevel } = usePermissions()
   const canManage = can('manage', 'App')
   const [editOpen, setEditOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [kick, setKick] = useState<Kick | null>(null)
 
   const created = app?.source === 'created'
-  const appBusy = appAwaitsPipeline(app?.status)
+  // P4: a member's new app waits in `requested` on an `app.create` approval. That waits on a
+  // PERSON — so no launch panel and no pipeline poll, just the request and a link to it.
+  const pendingCreate = usePendingApproval(
+    { kind: 'app.create', appId: app?.id, box: isAdminLevel() ? 'all' : 'requested' },
+    app?.status === 'requested'
+  )
+  const waitingForApproval = pendingCreate.approval !== null
+  const appBusy = appAwaitsPipeline(app?.status) && !waitingForApproval
   const create = usePipeline(app?.id, 'create', {
-    enabled: created && app?.status !== 'live' && app?.status !== 'archived',
+    enabled: created && app?.status !== 'live' && app?.status !== 'archived' && !waitingForApproval,
     appBusy,
     expectUntil: kick?.kind === 'create' ? kick.until : null,
   })
@@ -252,11 +283,14 @@ export default function AppDetailPage() {
     created &&
     app.status !== 'live' &&
     app.status !== 'archived' &&
+    !waitingForApproval &&
     (appBusy || (createView !== undefined && createView.status !== 'succeeded'))
   const stagingHost = app.environments
     .find(env => env.name === 'staging')
     ?.url?.replace(/^https?:\/\//, '')
   const hasRepo = Boolean(app.repoOwner && app.repoName)
+  // Launching, or not yet approved to launch: either way the running-app panels wait.
+  const holding = launching || waitingForApproval
   const archivedAt = teardownView?.status === 'succeeded' ? lastFinished(teardownView) : null
 
   return (
@@ -321,6 +355,8 @@ export default function AppDetailPage() {
         </div>
       )}
 
+      {pendingCreate.approval && <AwaitingCreateApproval approvalId={pendingCreate.approval.id} />}
+
       {launching && (
         <PipelineProgress
           view={
@@ -353,22 +389,22 @@ export default function AppDetailPage() {
 
       {/* Launch P4: releases — tag, staging, then production through an approval. For an app with
           a repository Launch can tag; cutting and promoting is for its owners and admins. */}
-      {hasRepo && !launching && app.status !== 'requested' && app.status !== 'archived' && (
+      {hasRepo && !holding && app.status !== 'requested' && app.status !== 'archived' && (
         <ReleasesCard appId={app.id} canRelease={app.viewerCanDeploy} />
       )}
 
       {/* Launch P3: the way into a coding session — for an app with a repository to work on. */}
-      {hasRepo && !launching && app.status !== 'archived' && (
+      {hasRepo && !holding && app.status !== 'archived' && (
         <SessionsCard appId={app.id} appSlug={app.slug} canStart={can('create', 'Session')} />
       )}
 
-      {app.environments.length > 0 && !launching && (
+      {app.environments.length > 0 && !holding && (
         <HealthHistory appId={app.id} environments={app.environments} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         <div className="lg:col-span-2">
-          {launching ? (
+          {holding ? (
             <SectionPanel title="Sign-in through Launch">
               <p className="text-sm text-secondary">
                 The launch registers this app’s sign-in client itself; it appears here once the app

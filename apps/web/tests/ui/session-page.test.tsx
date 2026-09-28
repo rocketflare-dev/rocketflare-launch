@@ -20,6 +20,7 @@ import { APPROVAL_ID, approvalRow } from './helpers/approvals'
 import {
   errorResponse,
   IDS,
+  jsonResponse,
   makeSession,
   notFoundResponse,
   type RouteTable,
@@ -267,6 +268,20 @@ describe('SessionPage', () => {
     await waitFor(() =>
       expect(requestBody(fetchMock, `POST ${BASE}/budget`)).toEqual({ extraUsd: 25 })
     )
+  })
+
+  it('takes an owner whose own session must wait (202) to the request it opened', async () => {
+    renderPage({
+      [BASE]: detailOf({ status: 'blocked' }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      '/api/approvals': { items: [] },
+      [`POST ${BASE}/budget`]: () =>
+        jsonResponse({ ...detailOf({ status: 'blocked' }), approvalId: APPROVAL_ID }, 202),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Extend budget' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Extend' }))
+    expect(await screen.findByText(`approval page ${APPROVAL_ID}`)).toBeInTheDocument()
   })
 
   it('tells a reader over budget who can extend it, with no button', async () => {
