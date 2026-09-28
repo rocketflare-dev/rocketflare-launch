@@ -1,11 +1,12 @@
 /**
  * The `sessions.checks` cron task (Launch P3, plan §1.10): on the `*\/5` schedule, every shipped
- * session whose PR's CI is still pending (or was never read) gets its checks refreshed
+ * session whose PR's CI is still pending (or was never read, or read `none` within an hour of the
+ * ship — GitHub had not queued the workflows yet) gets its checks refreshed
  * (`runSessionChecks` in `ship.ts`), so the session page and the app's sessions card show green
  * or red without anyone having to open the PR. Reads also refresh on demand (`GET
  * /api/sessions/:id/pr`, at most every 30 s); this is what settles a PR nobody is looking at.
  *
- * Registered in `api/scheduled.ts` under `'*\/5 * * * *'`, beside `healthPoll`.
+ * Registered in `api/scheduled.ts` under `'*\/5 * * * *'`, beside `healthPoll` and `sessions.expire`.
  */
 import type { Database } from '../../../db/client'
 import type { ScheduledTask } from '../../scheduled'

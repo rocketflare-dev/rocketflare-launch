@@ -398,10 +398,16 @@ function shellQuote(value: string): string {
 
 /** Shipped sessions whose checks are still worth reading: pending (or never read), started < 7 days ago. */
 const CHECKS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+/**
+ * How long after the ship a `none` verdict is read again. The first reading is taken the moment
+ * the PR opens, before GitHub has queued the repo's workflows — so `none` then usually means "not
+ * yet", not "this repo has no CI". After this, `none` is believed and the cron stops asking.
+ */
+export const CHECKS_NONE_GRACE_MS = 60 * 60 * 1000
 
 /**
- * The `sessions.checks` cron body: every shipped session's PR whose CI is pending (or unread),
- * refreshed. One tenant at a time, tenant-first, like `runPruneAiSpans`.
+ * The `sessions.checks` cron body: every shipped session's PR whose CI is pending (or unread, or
+ * `none` within `CHECKS_NONE_GRACE_MS` of the ship — CI not registered yet), refreshed. One tenant at a time, tenant-first, like `runPruneAiSpans`.
  */
 export async function runSessionChecks(
   db: Database,
@@ -410,6 +416,7 @@ export async function runSessionChecks(
 ): Promise<{ refreshed: number; failed: number }> {
   const now = opts.now ?? new Date()
   const since = new Date(now.getTime() - CHECKS_WINDOW_MS)
+  const noneSince = new Date(now.getTime() - CHECKS_NONE_GRACE_MS)
   const tenantIds = await db.select({ tenantId: tenants.id }).from(tenants)
   let refreshed = 0
   let failed = 0
@@ -423,7 +430,7 @@ export async function runSessionChecks(
           eq(sessions.tenantId, tenantId),
           eq(sessions.status, 'shipped'),
           isNotNull(sessions.prNumber),
-          sql`(${sessions.prChecks} IS NULL OR ${sessions.prChecks}->>'state' = 'pending')`,
+          sql`(${sessions.prChecks} IS NULL OR ${sessions.prChecks}->>'state' = 'pending' OR (${sessions.prChecks}->>'state' = 'none' AND coalesce(${sessions.endedAt}, ${now.toISOString()}::timestamptz) > ${noneSince.toISOString()}::timestamptz))`,
           gt(sessions.createdAt, since)
         )
       )
