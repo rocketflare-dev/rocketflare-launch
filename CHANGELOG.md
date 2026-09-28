@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reading a launch's pipeline polls the job its open wait is on (at most once per 20 s per wait):
+  the GitHub run link appears as soon as GitHub lists the run, and a scaffold or staging deploy
+  job that died on GitHub (a red gate never reaches `/ci/deploy`) fails its step with the run URL
+  and a readable error at the next page read, fails the app and offers Retry — instead of "Deploy
+  staging" showing running until the Workflow's next round, which under local wrangler never came.
+  The Workflow is nudged with the wait's event; `app.launch_failed` is now audited once per failure.
 - A launch whose Resend key or notifications domain is not ready records "email" as SKIPPED with
   the reason ("notifications.example.com is not a verified Resend domain yet…") and carries on,
   instead of throwing: a precondition cannot be fixed by the Workflow's retries.

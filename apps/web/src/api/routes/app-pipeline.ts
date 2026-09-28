@@ -13,9 +13,11 @@
  *   (503 `launch_not_set_up`), no `APP_LAUNCH_WORKFLOW` binding (503
  *   `app_pipeline_not_configured`), or Launch not reachable from the internet at `APP_URL` (409
  *   `launch_not_reachable` — the scaffold and deploy jobs call it back; `public-url.ts`).
- * - `GET /:id/pipeline[?kind=create|teardown]` → `pipelineViewSchema` (`read App`). It first
- *   reconciles a stale running run against its Workflow instance (`pipeline/reconcile.ts`): one
- *   that died mid-step is failed there, so Retry is offered.
+ * - `GET /:id/pipeline[?kind=create|teardown]` → `pipelineViewSchema` (`read App`), through
+ *   `pipeline/read.ts`. It first polls a create run's open wait (`pipeline/wait-poll.ts`, once per
+ *   20 s per wait): a job that died on GitHub fails its wait with the run URL, and the Workflow is
+ *   nudged. Then it reconciles a stale running run against its Workflow instance
+ *   (`pipeline/reconcile.ts`): one that died mid-step is failed there. Either way Retry is offered.
  * - `POST /:id/pipeline/retry` `{ kind }` → 202 `{ runId, instanceId }` — after the same
  *   reconcile, only when the latest run of that kind is `failed` (409 `run_not_failed`); a create
  *   retry re-dispatches CI, so it is refused like a create while Launch is not reachable (409
@@ -48,10 +50,11 @@ import { getAppDetail, getAppRow } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
 import { cancelLaunch } from '../services/launch/pipeline/cancel'
 import { markLaunchFailed, requestApp, startTeardown } from '../services/launch/pipeline/create'
+import { pipelineDeps } from '../services/launch/pipeline/launch-steps'
 import { defaultPorts } from '../services/launch/pipeline/ports'
+import { readPipeline } from '../services/launch/pipeline/read'
 import { reconcilePipelineSafely } from '../services/launch/pipeline/reconcile'
 import { retryPipeline } from '../services/launch/pipeline/retry'
-import { pipelineView } from '../services/launch/pipeline/runs'
 import { requirePublicUrl } from '../services/launch/public-url'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
@@ -114,14 +117,12 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
 
 appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), async c => {
   guardPermission(c, 'read', 'App')
-  const { db, tenantId, logger } = withAuthAndDb(c)
+  const { db, tenantId, cfg, logger } = withAuthAndDb(c)
   const kind = c.req.valid('query').kind
   const id = uuidParam(c, 'id')
-  const app = await getAppRow(db, tenantId, id)
-  // A run whose Workflow died mid-step is failed here, so Retry is offered (never throws).
-  const reconciled = await reconcilePipelineSafely(db, c.env, tenantId, app, kind, logger)
-  const current = reconciled.outcome === 'failed' ? await getAppRow(db, tenantId, id) : app
-  return c.json(await pipelineView(db, tenantId, current, kind))
+  // An open wait's job is polled and a dead instance reconciled first (neither throws).
+  const deps = pipelineDeps(db, cfg, {}, { ports: defaultPorts })
+  return c.json(await readPipeline(db, c.env, deps, tenantId, id, kind, { logger }))
 })
 
 appPipelineRouter.post(
