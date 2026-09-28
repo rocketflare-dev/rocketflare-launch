@@ -79,8 +79,11 @@ appsRouter.get('/', async c => {
 
 appsRouter.post('/import', validate('json', importAppRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
-  const { db, cfg, tenantId } = withAuthAndDb(c)
-  const { app } = await importApp(db, cfg, tenantId, c.req.valid('json'), auditActor(c))
+  const { db, cfg, tenantId, realtime } = withAuthAndDb(c)
+  // The post-import config scan's `grant_needed` notification nudges the bell live (P5).
+  const { app } = await importApp(db, cfg, tenantId, c.req.valid('json'), auditActor(c), {
+    realtime,
+  })
   return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)), 201)
 })
 
