@@ -31,6 +31,7 @@ import {
 import { and, asc, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearPreviewStatusCache, handlePreview, previewHostOf } from '@/api/preview/gateway'
+import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
@@ -168,6 +169,9 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
         )
         return { exitCode: 0 }
       })
+      // The dirty check after a turn (before `git rev-parse HEAD`, which its script contains): a
+      // turn here always edits the Home page.
+      .onExec(WORKSPACE_CHANGED_SCRIPT, () => ({ stdout: `${headOf()}\ndirty\n` }))
       .onExec('git rev-parse HEAD', () => ({ stdout: `${headOf()}\n` }))
       .onExec(/^bash -c 'pnpm lint/, { exitCode: 0, stdout: 'All checks passed' })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
@@ -355,7 +359,7 @@ describe('a coding session, end to end', () => {
         preview = { grant, page }
         return say(h, "Change the Home page heading to 'Hello from Launch'")
       },
-      // wait#1 — the turn is done: ship it.
+      // wait#2 — the turn is done (the checkpoint debounce is running): ship it.
       async () => {
         const row = await reload(h)
         expect(row.status).toBe('ready')
@@ -372,7 +376,8 @@ describe('a coding session, end to end', () => {
     expect(preview?.page.headers.get('X-Frame-Options')).toBeNull()
     expect(h.sandbox().fetches.map(f => f.port)).toEqual([5173])
 
-    // ---- the Workflow's path: boot, one turn with its checkpoint, the ship, cleanup.
+    // ---- the Workflow's path: boot, one turn, the ship (which checkpoints — the debounce never
+    // fired), cleanup.
     expect(run.status).toBe('shipped')
     expect(run.names).toEqual([
       'claim',
@@ -385,7 +390,6 @@ describe('a coding session, end to end', () => {
       'wait#0',
       'inspect#1',
       'turn#1',
-      'checkpoint#1',
       'inspect#2',
       'wait#2',
       'inspect#3',
@@ -513,14 +517,18 @@ describe('a coding session, end to end', () => {
     })
     const run = await drive(h, [
       () => say(h, 'A long change'),
+      // wait#2 — the checkpoint debounce runs out: the cancelled turn's work is saved.
       async () => {
         expect((await reload(h)).status).toBe('ready')
+        return undefined
+      },
+      async () => {
         expect((await act.post(h, '/end')).status).toBe(202)
         return WAKE
       },
     ])
     expect(run.status).toBe('ended')
-    expect(run.names).toContain('checkpoint#1')
+    expect(run.names).toContain('checkpoint#2')
     expect(h.sandbox().killed).toHaveLength(1)
     const interrupted = (await eventsOf(h)).find(e => e.type === 'turn.interrupted')
     expect(interrupted?.data).toMatchObject({ reason: 'cancelled' })
@@ -555,7 +563,9 @@ describe('a coding session, end to end', () => {
     let transcriptAfterResume: string | undefined
     const run = await drive(h, [
       () => say(h, 'First change'),
-      // wait#2: nobody comes back — the idle timeout, the idle window gone by.
+      // wait#2: the checkpoint debounce runs out — saved, and the session waits on.
+      () => undefined,
+      // wait#3: nobody comes back — the idle timeout, the idle window gone by.
       async () => {
         await db
           .update(sessions)
@@ -563,7 +573,7 @@ describe('a coding session, end to end', () => {
           .where(and(eq(sessions.tenantId, h.f.tenant.id), eq(sessions.id, h.session.id)))
         return undefined
       },
-      // wait#3 (suspended): the person resumes.
+      // wait#4 (suspended): the person resumes.
       async () => {
         const row = await reload(h)
         expect(row.status).toBe('suspended')
@@ -587,7 +597,7 @@ describe('a coding session, end to end', () => {
     ])
     expect(run.status).toBe('ended')
     expect(run.names).toEqual(
-      expect.arrayContaining(['suspend#2', 'resume#4', 'sandbox.start#1', 'dev#1'])
+      expect.arrayContaining(['checkpoint#2', 'suspend#3', 'resume#5', 'sandbox.start#1', 'dev#1'])
     )
     // No clone, install or bootstrap the second time.
     expect(run.names).not.toContain('repo#1')

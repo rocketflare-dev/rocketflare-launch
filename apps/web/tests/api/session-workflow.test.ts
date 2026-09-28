@@ -12,18 +12,33 @@ import { SESSION_WAKE_EVENT, type SessionEventType } from '@launch/shared/launch
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptToken } from '@/api/auth/oauth-encryption'
-import { CheckpointError } from '@/api/services/sessions/checkpoint'
+import {
+  CheckpointError,
+  SESSION_CHECKPOINT_DEBOUNCE_MS,
+  SESSION_CHECKPOINT_MAX_DEFER_MS,
+  WORKSPACE_CHANGED_SCRIPT,
+  WORKSPACE_CHANGED_TIMEOUT_MS,
+  workspaceChanged,
+} from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
-import type { SessionCallLimits } from '@/api/services/sessions/deadline'
+import { SESSION_CALL_LIMITS, type SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import {
   claudeTranscriptPath,
   DEV_START_COMMAND,
   DEV_STOP_COMMAND,
+  SESSION_HOME,
   SESSION_IMAGE_VERSION,
+  SESSION_WORKSPACE,
 } from '@/api/services/sessions/rocketflare-dev'
-import { BOOT_STEP_LABELS } from '@/api/services/sessions/steps'
+import {
+  BOOT_STEP_LABELS,
+  checkpointDueInMs,
+  dirtyAfterTurn,
+  type TurnStepResult,
+  waitDuration,
+} from '@/api/services/sessions/steps'
 import { runTurn } from '@/api/services/sessions/turn'
 import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
@@ -32,7 +47,7 @@ import { auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson } from '../helpers/fake-anthropic'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
-import type { FakeSandbox } from '../helpers/fake-sandbox'
+import { FakeSandbox } from '../helpers/fake-sandbox'
 import {
   createFakeSessionPorts,
   type FakeSessionPorts,
@@ -76,6 +91,12 @@ interface Harness {
   ports: FakeSessionPorts
   hooks: SessionStepHooks
   checkpoints: string[]
+  /**
+   * The checkout as the dirty check (`workspaceChanged`) sees it: a turn leaves it `changed`
+   * (unless the harness says the turns change nothing), a checkpoint makes it clean again, and
+   * `broken` makes the check itself fail.
+   */
+  workspace: { changed: boolean; turnsChange: boolean; broken: boolean }
   sandbox: () => FakeSandbox
 }
 
@@ -85,8 +106,11 @@ async function harness(
     prepared?: boolean
     hooks?: Partial<SessionStepHooks>
     env?: Parameters<typeof createTestEnv>[0]
+    /** Whether a turn leaves the workspace changed (default: it does). */
+    turnsChange?: boolean
   } = {}
 ): Promise<Harness> {
+  const workspace = { changed: false, turnsChange: opts.turnsChange ?? true, broken: false }
   const env = createTestEnv(opts.env)
   const cfg = loadConfig(env)
   const cloud = createFakeCloud()
@@ -99,21 +123,30 @@ async function harness(
     sandbox
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
       .onExec(/sha256sum/, () => ({ stdout: `migrations=${migrations.hash}\n` }))
+      .onExec(WORKSPACE_CHANGED_SCRIPT, () =>
+        workspace.broken
+          ? { exitCode: 128, stderr: 'fatal: not a git repository' }
+          : { stdout: `${BASE_SHA}\n${workspace.changed ? 'dirty' : 'clean'}\n` }
+      )
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
       .onProcess(/claude -p/, claudeStreamJson({ text: 'Changed the heading.' }))
   )
   const checkpoints: string[] = []
   const hooks: SessionStepHooks = {
-    runTurn: ctx =>
-      runTurn(ctx.db, ctx.ports, ctx.session, {
+    runTurn: async ctx => {
+      const outcome = await runTurn(ctx.db, ctx.ports, ctx.session, {
         realtime: ctx.realtime,
         logger: ctx.logger,
         sleep: tick,
         cancelPollMs: 5,
         flushMs: 5,
-      }),
+      })
+      if (workspace.turnsChange) workspace.changed = true
+      return outcome
+    },
     checkpoint: async (_ctx, reason) => {
       checkpoints.push(reason)
+      workspace.changed = false
     },
     ship: async () => {
       throw new Error('ship was not expected in this test')
@@ -128,6 +161,7 @@ async function harness(
     ports,
     hooks,
     checkpoints,
+    workspace,
     sandbox: () => ports.sandbox(row.id) as FakeSandbox,
   }
 }
@@ -152,7 +186,8 @@ async function patch(row: SessionRow, set: Partial<SessionRow>) {
 async function drive(
   h: Harness,
   onWait: (wait: RecordedWait, n: number) => unknown,
-  limits?: Partial<SessionCallLimits>
+  limits?: Partial<SessionCallLimits>,
+  now?: () => Date
 ) {
   let waits = 0
   const fake = createFakeWorkflowStep({ onWait: wait => onWait(wait, waits++) })
@@ -164,7 +199,7 @@ async function drive(
     return result
   }
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
-  workflow.overrides = { ports: h.ports, hooks: h.hooks, limits }
+  workflow.overrides = { ports: h.ports, hooks: h.hooks, limits, now }
   const outcome = await workflow.run(
     {
       payload: { sessionId: h.row.id, tenantId: h.row.tenantId },
@@ -359,7 +394,7 @@ describe('SessionWorkflow: boot', () => {
 })
 
 describe('SessionWorkflow: the loop', () => {
-  it('runs a pending message at once after boot (3c’s runTurn), then checkpoints', async () => {
+  it('runs a pending message at once after boot (3c’s runTurn); an end inside the debounce still saves', async () => {
     const h = await harness()
     await patch(h.row, { pendingMessage: 'Change the Home heading' })
     const run = await drive(h, async () => {
@@ -369,14 +404,15 @@ describe('SessionWorkflow: the loop', () => {
     expect(run.names.slice(6)).toEqual([
       'inspect#0',
       'turn#0',
-      'checkpoint#0',
       'inspect#1',
       'wait#1',
       'inspect#2',
       'end#2',
       'cleanup',
     ])
-    expect(h.checkpoints).toEqual(['turn', 'end'])
+    // No checkpoint straight after the turn: the wait is the debounce; the end saves.
+    expect(run.waits[0]?.timeout).toBe('30 seconds')
+    expect(h.checkpoints).toEqual(['end'])
     const types = await typesOf(h.row)
     expect(types).toEqual(expect.arrayContaining(['user.message', 'turn.start', 'turn.end']))
     expect((await reload(h.row)).turnCount).toBe(1)
@@ -395,7 +431,9 @@ describe('SessionWorkflow: the loop', () => {
     })
     await patch(h.row, { pendingMessage: 'Change the Home heading' })
     await drive(h, async (_wait, n) => {
-      if (n === 0) {
+      // The debounce times out: the checkpoint runs, and fails.
+      if (n === 0) return undefined
+      if (n === 1) {
         expect((await reload(h.row)).status).toBe('ready')
         await patch(h.row, { pendingMessage: 'And make it blue' })
         return WAKE
@@ -451,7 +489,6 @@ describe('SessionWorkflow: the loop', () => {
       'dev#1',
       'inspect#3',
       'turn#3',
-      'checkpoint#3',
       'inspect#4',
       'wait#4',
       'inspect#5',
@@ -459,7 +496,7 @@ describe('SessionWorkflow: the loop', () => {
       'cleanup',
     ])
     expect(new Set(run.names).size).toBe(run.names.length)
-    expect(h.checkpoints).toEqual(['suspend', 'turn', 'end'])
+    expect(h.checkpoints).toEqual(['suspend', 'end'])
     const sandbox = h.sandbox()
     // No second clone, install or bootstrap, and the running dev server was reused.
     expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
@@ -602,7 +639,6 @@ describe('SessionWorkflow: the loop', () => {
       'transcript#1',
       'inspect#4',
       'turn#4',
-      'checkpoint#4',
       'inspect#5',
       'wait#5',
       'inspect#6',
@@ -610,7 +646,7 @@ describe('SessionWorkflow: the loop', () => {
       'cleanup',
     ])
     expect(new Set(run.names).size).toBe(run.names.length)
-    expect(h.checkpoints).toEqual(['suspend', 'turn', 'end'])
+    expect(h.checkpoints).toEqual(['suspend', 'end'])
     const sandbox = h.sandbox()
     expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(2)
     expect(sandbox.startCount).toBe(2)
@@ -620,7 +656,8 @@ describe('SessionWorkflow: the loop', () => {
       '30 minutes',
       `${SESSION_WARM_KEEP_MINUTES} minutes`,
       `${24 * 60} minutes`,
-      '30 minutes',
+      // The turn changed the workspace: the checkpoint debounce.
+      '30 seconds',
     ])
     expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 1 })
     // The cold resume's bootstrap is against a prepared database: no seed, no check, and no
@@ -850,6 +887,280 @@ describe('SessionWorkflow: the loop', () => {
     // The old container was destroyed before starting over.
     expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
     expect((await reload(h.row)).status).toBe('ended')
+  })
+})
+
+describe('SessionWorkflow: debounced checkpoints', () => {
+  /** The turn steps' results, in order. */
+  const turnResults = (run: { results: unknown[] }) =>
+    run.results.filter(
+      (r): r is TurnStepResult =>
+        typeof r === 'object' && r !== null && 'status' in r && 'changed' in r
+    )
+
+  it('a turn that changed nothing is not checkpointed, and the wait is the idle one', async () => {
+    const h = await harness({ turnsChange: false })
+    await patch(h.row, { pendingMessage: 'What does the Home page do?' })
+    const run = await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'end#2',
+      'cleanup',
+    ])
+    expect(turnResults(run)).toEqual([
+      expect.objectContaining({ status: 'completed', changed: false, checkpointNow: false }),
+    ])
+    expect(run.waits[0]?.timeout).toBe('30 minutes')
+    expect(h.checkpoints).toEqual(['end'])
+  })
+
+  it('a changed turn waits out the debounce, then checkpoints and waits on — it does not suspend', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) return undefined // quiet for 30 s
+      expect((await reload(h.row)).status).toBe('ready')
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'inspect#1',
+      'wait#1',
+      'checkpoint#1',
+      'inspect#2',
+      'wait#2',
+      'inspect#3',
+      'end#3',
+      'cleanup',
+    ])
+    expect(new Set(run.names).size).toBe(run.names.length)
+    const [turn] = turnResults(run)
+    expect(turn).toMatchObject({ status: 'completed', changed: true, checkpointNow: false })
+    expect(Number.isNaN(Date.parse(turn?.endedAt ?? ''))).toBe(false)
+    // The debounce, then (saved) the idle window again.
+    expect(run.waits.map(w => w.timeout)).toEqual(['30 seconds', '30 minutes'])
+    expect(h.checkpoints).toEqual(['turn', 'end'])
+    const statuses = (await listSessionEvents(db, h.row.tenantId, h.row.id))
+      .filter(e => e.type === 'status')
+      .map(e => (e.data as { status?: string }).status)
+    expect(statuses).not.toContain('suspended')
+  })
+
+  it('a message inside the debounce runs first; one checkpoint follows the burst', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { pendingMessage: 'And make it blue' })
+        return WAKE
+      }
+      if (n === 1) return undefined // quiet for 30 s after the SECOND turn
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'turn#2',
+      'inspect#3',
+      'wait#3',
+      'checkpoint#3',
+      'inspect#4',
+      'wait#4',
+      'inspect#5',
+      'end#5',
+      'cleanup',
+    ])
+    expect(run.waits.map(w => w.timeout)).toEqual(['30 seconds', '30 seconds', '30 minutes'])
+    expect(h.checkpoints).toEqual(['turn', 'end'])
+    expect((await reload(h.row)).turnCount).toBe(2)
+  })
+
+  it('a session dirty for the cap checkpoints straight after its next turn, however busy', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Message 0' })
+    const clock = { ms: Date.now() }
+    let messages = 0
+    const run = await drive(
+      h,
+      async () => {
+        if (h.checkpoints.includes('turn')) {
+          await patch(h.row, { requestedAction: 'end' })
+          return WAKE
+        }
+        // A message 25 s after the last turn — always inside the debounce.
+        clock.ms += 25_000
+        await patch(h.row, { pendingMessage: `Message ${++messages}` })
+        return WAKE
+      },
+      undefined,
+      () => new Date(clock.ms)
+    )
+    // Turns end at 0 s, 25 s … 300 s: the thirteenth (turn#24, 5 min after the first) saves.
+    const turns = run.names.filter(name => name.startsWith('turn#'))
+    expect(turns).toHaveLength(13)
+    const checkpointAt = run.names.indexOf('checkpoint#24')
+    expect(checkpointAt).toBeGreaterThan(0)
+    expect(run.names[checkpointAt - 1]).toBe('turn#24')
+    expect(run.names.filter(name => name.startsWith('checkpoint#'))).toEqual(['checkpoint#24'])
+    expect(turnResults(run).map(r => r.checkpointNow)).toEqual([...Array(12).fill(false), true])
+    // Each debounce wait is 30 s — except the last, cut to what is left of the cap.
+    expect(run.waits.map(w => w.timeout)).toEqual([
+      ...Array(11).fill('30 seconds'),
+      '25 seconds',
+      // Saved: the idle wait (counted on the fake clock, which ran ahead of the turns' stamps).
+      expect.stringMatching(/^\d+ minutes$/),
+    ])
+    expect(h.checkpoints).toEqual(['turn', 'end'])
+  })
+
+  it('an idle suspend while dirty still saves first (the suspend checkpoints)', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    const run = await drive(
+      h,
+      async (_wait, n) => {
+        if (n === 0) {
+          await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+          return undefined
+        }
+        expect((await reload(h.row)).status).toBe('suspended')
+        await patch(h.row, { requestedAction: 'end' })
+        return WAKE
+      },
+      // A debounce (and cap) longer than the idle window: the wait is the idle one, dirty or not.
+      { checkpointDebounceMs: 60 * 60_000, checkpointMaxDeferMs: 2 * 60 * 60_000 }
+    )
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'inspect#1',
+      'wait#1',
+      'suspend#1',
+      'inspect#2',
+      'wait#2',
+      'inspect#3',
+      'end#3',
+      'cleanup',
+    ])
+    expect(run.waits[0]?.timeout).toBe('30 minutes')
+    expect(h.checkpoints).toEqual(['suspend'])
+  })
+
+  it('a dirty check that fails counts as changed', async () => {
+    const h = await harness({ turnsChange: false })
+    h.workspace.broken = true
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    const run = await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(turnResults(run)).toEqual([expect.objectContaining({ changed: true })])
+    expect(run.waits[0]?.timeout).toBe('30 seconds')
+  })
+})
+
+describe('checkpoint debounce arithmetic', () => {
+  const t0 = Date.parse('2026-09-28T10:00:00.000Z')
+  const iso = (ms: number) => new Date(t0 + ms).toISOString()
+
+  it('is due the debounce after the latest turn, or the cap after the first change', () => {
+    const dirty = { dirtySince: iso(0), lastTurnAt: iso(0) }
+    expect(checkpointDueInMs(dirty, new Date(t0))).toBe(SESSION_CHECKPOINT_DEBOUNCE_MS)
+    expect(checkpointDueInMs(dirty, new Date(t0 + 10_000))).toBe(20_000)
+    expect(checkpointDueInMs(dirty, new Date(t0 + 45_000))).toBe(-15_000)
+    // A late turn: the debounce would run past the cap, so the cap wins.
+    const busy = { dirtySince: iso(0), lastTurnAt: iso(SESSION_CHECKPOINT_MAX_DEFER_MS - 10_000) }
+    expect(checkpointDueInMs(busy, new Date(t0 + SESSION_CHECKPOINT_MAX_DEFER_MS - 10_000))).toBe(
+      10_000
+    )
+    // Limits shrink both.
+    expect(
+      checkpointDueInMs(dirty, new Date(t0), {
+        ...SESSION_CALL_LIMITS,
+        checkpointDebounceMs: 5_000,
+      })
+    ).toBe(5_000)
+    expect(
+      checkpointDueInMs(dirty, new Date(t0), {
+        ...SESSION_CALL_LIMITS,
+        checkpointMaxDeferMs: 1_000,
+      })
+    ).toBe(1_000)
+  })
+
+  it('renders a wait as minutes when whole, else seconds (at least one)', () => {
+    expect(waitDuration(30 * 60)).toBe('30 minutes')
+    expect(waitDuration(30)).toBe('30 seconds')
+    expect(waitDuration(0.2)).toBe('1 seconds')
+    expect(waitDuration(0)).toBe('1 seconds')
+    expect(waitDuration(90)).toBe('90 seconds')
+  })
+
+  it('keeps the first change, moves the debounce, and forgets a clean workspace', () => {
+    const first: TurnStepResult = { status: 'completed', changed: true, endedAt: iso(0) }
+    const dirty = dirtyAfterTurn(null, first)
+    expect(dirty).toEqual({ dirtySince: iso(0), lastTurnAt: iso(0) })
+    expect(
+      dirtyAfterTurn(dirty, { status: 'completed', changed: true, endedAt: iso(20_000) })
+    ).toEqual({ dirtySince: iso(0), lastTurnAt: iso(20_000) })
+    expect(
+      dirtyAfterTurn(dirty, { status: 'completed', changed: false, endedAt: iso(20_000) })
+    ).toBeNull()
+    // A turn that never ran (skipped, blocked) leaves it as it was.
+    expect(dirtyAfterTurn(dirty, { status: 'skipped' })).toBe(dirty)
+  })
+})
+
+describe('workspaceChanged', () => {
+  const sandboxAnswering = (script: Parameters<FakeSandbox['onExec']>[1]) =>
+    new FakeSandbox().onExec(WORKSPACE_CHANGED_SCRIPT, script)
+
+  it('is clean only when nothing is uncommitted and HEAD is the row’s head_sha', async () => {
+    expect(
+      await workspaceChanged(sandboxAnswering({ stdout: `${BASE_SHA}\nclean\n` }), BASE_SHA)
+    ).toBe(false)
+    expect(
+      await workspaceChanged(sandboxAnswering({ stdout: `${BASE_SHA}\ndirty\n` }), BASE_SHA)
+    ).toBe(true)
+    // The turn committed on its own: HEAD moved.
+    expect(
+      await workspaceChanged(sandboxAnswering({ stdout: `${'f'.repeat(40)}\nclean\n` }), BASE_SHA)
+    ).toBe(true)
+  })
+
+  it('runs in the checkout with the checkpoint’s git conventions and a bounded timeout', async () => {
+    const sandbox = sandboxAnswering({ stdout: `${BASE_SHA}\nclean\n` })
+    await workspaceChanged(sandbox, BASE_SHA)
+    expect(sandbox.execs[0]?.opts).toMatchObject({
+      cwd: SESSION_WORKSPACE,
+      timeoutMs: WORKSPACE_CHANGED_TIMEOUT_MS,
+      env: { HOME: SESSION_HOME, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
+    })
+  })
+
+  it('fails safe: an error, a throw or an odd answer is a change', async () => {
+    expect(await workspaceChanged(sandboxAnswering({ exitCode: 128 }), BASE_SHA)).toBe(true)
+    expect(await workspaceChanged(sandboxAnswering({ stdout: '' }), BASE_SHA)).toBe(true)
+    expect(await workspaceChanged(sandboxAnswering({ stdout: `${BASE_SHA}\n` }), BASE_SHA)).toBe(
+      true
+    )
+    const throwing = sandboxAnswering(() => {
+      throw new Error('exec timed out')
+    })
+    expect(await workspaceChanged(throwing, BASE_SHA)).toBe(true)
   })
 })
 

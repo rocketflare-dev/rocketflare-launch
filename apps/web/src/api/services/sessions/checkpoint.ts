@@ -1,6 +1,8 @@
 /**
- * Checkpoint a session (Launch P3, plan §1.8): the branch is the durable state, so after every turn
- * (and before a suspend, and inside a ship) Launch commits what Claude Code changed, pushes
+ * Checkpoint a session (Launch P3, plan §1.8): the branch is the durable state, so once a turn has
+ * changed the workspace — debounced: {@link SESSION_CHECKPOINT_DEBOUNCE_MS} after the latest turn,
+ * at most {@link SESSION_CHECKPOINT_MAX_DEFER_MS} after the first unsaved change — and always
+ * before a suspend or an end, and inside a ship, Launch commits what Claude Code changed, pushes
  * `session/<short>`, and copies Claude's transcript to R2 — so a destroyed sandbox loses nothing.
  *
  * **Stable signature — the Workflow (slice 3b) calls this from its `checkpoint#N` / `suspend#N`
@@ -207,6 +209,66 @@ export interface CheckpointResult {
   transcriptKey: string | null
   /** Files over the size limit that were NOT staged (named in an `error` event). */
   skipped: SkippedFile[]
+}
+
+// ---- debounced checkpoints (the Workflow's loop) -----------------------------------------------
+
+/**
+ * A turn that changed the workspace does not checkpoint at once: the Workflow waits until the
+ * session has been quiet this long after the latest turn (a message inside the window runs, and
+ * the window starts again from ITS end) — so a burst of messages is one commit and one push, not
+ * one per message. `suspend#N`, `end#N` and a ship still checkpoint first, whatever the debounce.
+ */
+export const SESSION_CHECKPOINT_DEBOUNCE_MS = 30_000
+/**
+ * The debounce's cap: a session that has held unsaved changes this long checkpoints straight after
+ * its next turn, however busy the conversation — a steady stream of messages never defers a save
+ * past it.
+ */
+export const SESSION_CHECKPOINT_MAX_DEFER_MS = 5 * 60_000
+/** The dirty check's own budget: it is `git status`, so anything slower is treated as changed. */
+export const WORKSPACE_CHANGED_TIMEOUT_MS = 30_000
+
+/**
+ * What the turn step runs after a turn: the checkout's HEAD, then `dirty` or `clean` from
+ * `git status --porcelain` (untracked files included — a new file is a change; ignored ones are
+ * not). `set -e` makes either git failing a non-zero exit; `GIT_OPTIONAL_LOCKS=0` keeps the status
+ * from taking `index.lock` under a git the model left running.
+ */
+export const WORKSPACE_CHANGED_SCRIPT = [
+  'set -e',
+  'git rev-parse HEAD',
+  's=$(git status --porcelain --untracked-files=normal)',
+  'if [ -n "$s" ]; then echo dirty; else echo clean; fi',
+].join('\n')
+
+/**
+ * Did the workspace move away from the last checkpoint? True when anything is uncommitted (a
+ * modified, added, deleted or untracked file) or when HEAD is not the row's `head_sha` (the turn
+ * committed itself, or an earlier checkpoint was cut off before its push). FAIL SAFE: a command
+ * that fails, times out or answers something unexpected is `true` — a checkpoint that finds
+ * nothing to do costs a `git add`, a missed one costs the person's work.
+ */
+export async function workspaceChanged(
+  sandbox: SandboxPort,
+  headSha: string | null,
+  opts: { repoDir?: string; timeoutMs?: number } = {}
+): Promise<boolean> {
+  try {
+    const result = await sandbox.exec(WORKSPACE_CHANGED_SCRIPT, {
+      cwd: opts.repoDir ?? SESSION_REPO_DIR,
+      // The checkpoint's own conventions (`gitEnv` below): no prompt, the turn's HOME.
+      env: { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', HOME: SESSION_HOME },
+      timeoutMs: opts.timeoutMs ?? WORKSPACE_CHANGED_TIMEOUT_MS,
+    })
+    if (result.exitCode !== 0) return true
+    const [head, state] = result.stdout.trim().split('\n')
+    if (!head || !/^[0-9a-f]{40}$/.test(head.trim())) return true
+    if (state?.trim() === 'clean') return head.trim() !== headSha
+    return true
+  } catch {
+    return true
+  }
 }
 
 /** Claude Code's per-project directory name for `cwd`. */

@@ -44,6 +44,13 @@ export interface SessionCallLimits {
   endPollMs: number
   /** How often a boot step says it is alive (`sessions.last_activity_at`, the reconcile's clock). */
   heartbeatMs: number
+  /**
+   * Not a call's budget but the loop's own clocks, here so tests shrink them the same way: the
+   * checkpoint debounce and its cap (`SESSION_CHECKPOINT_DEBOUNCE_MS` / `_MAX_DEFER_MS`,
+   * `checkpoint.ts`, the defaults when absent).
+   */
+  checkpointDebounceMs?: number
+  checkpointMaxDeferMs?: number
 }
 
 export const SESSION_CALL_LIMITS: SessionCallLimits = {

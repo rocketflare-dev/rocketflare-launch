@@ -41,7 +41,12 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
-import { CORE_DUMP_EXCLUDES } from './checkpoint'
+import {
+  CORE_DUMP_EXCLUDES,
+  SESSION_CHECKPOINT_DEBOUNCE_MS,
+  SESSION_CHECKPOINT_MAX_DEFER_MS,
+  workspaceChanged,
+} from './checkpoint'
 import { sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
@@ -935,21 +940,75 @@ export type NextAction =
   | { action: 'resume' }
   | { action: 'suspend'; reason: 'drain' }
   | { action: 'cool'; reason: 'idle' | 'drain' }
+  /** The workspace holds unsaved changes and the debounce is already over: save it now. */
+  | { action: 'checkpoint' }
   | {
       action: 'wait'
       waitingIn: SessionStatus
-      timeoutMinutes: number
+      /** Whole seconds (`waitDuration` renders it); at least one. */
+      timeoutSeconds: number
       /** A timeout means the kept container's warm window is over: cool it, do not end. */
       cool?: boolean
+      /**
+       * The timeout is the checkpoint debounce's, not the idle policy's: on a timeout the loop
+       * checkpoints and carries on waiting — it never suspends for it.
+       */
+      debounce?: boolean
     }
   | { action: 'done'; status: SessionStatus }
 
 /**
- * Step `inspect#N`: what to do next, from the row alone. Order matters: an end beats everything,
- * a drain suspends a live session, a ship beats a turn, and nothing to do is a wait — whose
- * timeout is the idle policy (live) or the expiry (suspended).
+ * The loop's memory of unsaved work (Launch P3, debounced checkpoints): ISO timestamps, both taken
+ * INSIDE a step (`turn#N`'s `endedAt`) — the Workflow replays everything outside a step, so the
+ * loop never reads a clock itself; it only carries these from one step's result into the next
+ * step's argument.
  */
-export async function inspectStep(scope: StepScope): Promise<NextAction> {
+export interface DirtyState {
+  /** When the first turn that left the workspace changed (and not yet checkpointed) ended. */
+  dirtySince: string
+  /** When the latest turn ended — the debounce counts from here. */
+  lastTurnAt: string
+}
+
+/** `limits` may shrink the debounce and its cap (`overrides.limits`); these are the defaults. */
+export function checkpointClocks(limits: SessionCallLimits = SESSION_CALL_LIMITS): {
+  debounceMs: number
+  maxDeferMs: number
+} {
+  return {
+    debounceMs: limits.checkpointDebounceMs ?? SESSION_CHECKPOINT_DEBOUNCE_MS,
+    maxDeferMs: limits.checkpointMaxDeferMs ?? SESSION_CHECKPOINT_MAX_DEFER_MS,
+  }
+}
+
+/**
+ * Milliseconds until a dirty workspace should be checkpointed: the debounce after the latest turn,
+ * or the cap after the first unsaved change, whichever comes first. Zero or less = now.
+ */
+export function checkpointDueInMs(
+  dirty: DirtyState,
+  now: Date,
+  limits: SessionCallLimits = SESSION_CALL_LIMITS
+): number {
+  const { debounceMs, maxDeferMs } = checkpointClocks(limits)
+  const due = Math.min(
+    Date.parse(dirty.lastTurnAt) + debounceMs,
+    Date.parse(dirty.dirtySince) + maxDeferMs
+  )
+  return due - now.getTime()
+}
+
+/**
+ * Step `inspect#N`: what to do next, from the row alone — plus the loop's {@link DirtyState}. Order
+ * matters: an end beats everything, a drain suspends a live session, a ship beats a turn, a turn
+ * beats a due checkpoint, and nothing to do is a wait — whose timeout is the idle policy (live),
+ * the expiry (suspended), or, while the workspace holds unsaved changes, what is left of the
+ * checkpoint debounce when that is sooner (`debounce: true`).
+ */
+export async function inspectStep(
+  scope: StepScope,
+  dirty: DirtyState | null = null
+): Promise<NextAction> {
   const session = await loadSession(scope)
   const policy = resolveSessionPolicy(session.policy)
   const status = session.status
@@ -973,20 +1032,34 @@ export async function inspectStep(scope: StepScope): Promise<NextAction> {
       if (paused) return { action: 'cool', reason: 'drain' }
       if (warmLeft === 0) return { action: 'cool', reason: 'idle' }
       if (warmLeft < expiryMinutes) {
-        return { action: 'wait', waitingIn: status, timeoutMinutes: warmLeft, cool: true }
+        return { action: 'wait', waitingIn: status, timeoutSeconds: warmLeft * 60, cool: true }
       }
     }
-    return { action: 'wait', waitingIn: status, timeoutMinutes: expiryMinutes }
+    return { action: 'wait', waitingIn: status, timeoutSeconds: expiryMinutes * 60 }
   }
   if (status === 'ready' && session.requestedAction === 'ship') return { action: 'ship' }
   if (status === 'ready' && session.pendingMessage !== null) {
     return { action: 'turn', maxTurnMinutes: policy.maxTurnMinutes }
   }
-  return {
-    action: 'wait',
-    waitingIn: status,
-    timeoutMinutes: idleMinutesLeft(session, policy.idleSuspendMinutes, scope.now()),
+  const idleSeconds = idleMinutesLeft(session, policy.idleSuspendMinutes, scope.now()) * 60
+  if (live && dirty) {
+    const dueMs = checkpointDueInMs(dirty, scope.now(), limitsOf(scope))
+    if (dueMs <= 0) return { action: 'checkpoint' }
+    const debounceSeconds = Math.max(1, Math.ceil(dueMs / 1000))
+    if (debounceSeconds <= idleSeconds) {
+      return { action: 'wait', waitingIn: status, timeoutSeconds: debounceSeconds, debounce: true }
+    }
   }
+  return { action: 'wait', waitingIn: status, timeoutSeconds: idleSeconds }
+}
+
+/**
+ * A `waitForEvent` timeout: whole minutes when it is (`30 minutes`), else seconds (`30 seconds`,
+ * the checkpoint debounce).
+ */
+export function waitDuration(seconds: number): `${number} minutes` | `${number} seconds` {
+  const s = Math.max(1, Math.ceil(seconds))
+  return s % 60 === 0 ? `${s / 60} minutes` : `${s} seconds`
 }
 
 /**
@@ -1033,6 +1106,15 @@ export interface TurnStepResult {
   status: TurnOutcome['status']
   /** For `interrupted`: `rollout` (the container is gone) · `cancelled` · `timeout`. */
   reason?: string
+  /**
+   * For a turn that ran with the container still up ({@link turnNeedsCheckpoint}): the workspace
+   * differs from the last checkpoint (`workspaceChanged` — true when the check itself failed).
+   */
+  changed?: boolean
+  /** When the step saw the turn end (ISO) — the loop's debounce clock ({@link DirtyState}). */
+  endedAt?: string
+  /** The workspace has held unsaved changes for the cap: checkpoint now, do not debounce. */
+  checkpointNow?: boolean
 }
 
 /**
@@ -1040,12 +1122,21 @@ export interface TurnStepResult {
  * settles the status itself. A `SandboxInterruptedError` escaping it is a rollout: the Workflow
  * writes `turn.interrupted { reason: 'rollout' }` and suspends. Anything else escaping it (the
  * database) leaves a `working` row that `turn-settle#N` repairs.
+ *
+ * After a turn that ran with the container still up, it asks the checkout whether anything is
+ * unsaved (`workspaceChanged`: `git status`, HEAD against `head_sha`) and whether the session has
+ * now held unsaved changes for the cap (`dirty` is the loop's state before this turn) — the loop
+ * decides from that whether to checkpoint now, debounce, or do nothing.
  */
-export async function turnStep(scope: StepScope): Promise<TurnStepResult> {
+export async function turnStep(
+  scope: StepScope,
+  dirty: DirtyState | null = null
+): Promise<TurnStepResult> {
   const session = await loadSession(scope)
+  let result: TurnStepResult
   try {
     const outcome = await scope.hooks.runTurn(hookContext(scope, session, session.turnCount))
-    return {
+    result = {
       status: outcome.status,
       ...(outcome.status === 'interrupted' ? { reason: outcome.reason } : {}),
     }
@@ -1060,12 +1151,36 @@ export async function turnStep(scope: StepScope): Promise<TurnStepResult> {
     })
     return { status: 'interrupted', reason: 'rollout' }
   }
+  if (!turnNeedsCheckpoint(result)) return result
+  const after = await loadSession(scope)
+  const changed = await workspaceChanged(sandboxFor(scope, after), after.headSha)
+  const endedAt = scope.now()
+  const since = dirty?.dirtySince ?? (changed ? endedAt.toISOString() : null)
+  const { maxDeferMs } = checkpointClocks(limitsOf(scope))
+  const checkpointNow =
+    changed && since !== null && endedAt.getTime() - Date.parse(since) >= maxDeferMs
+  return { ...result, changed, endedAt: endedAt.toISOString(), checkpointNow }
 }
 
-/** A turn after which the branch should be checkpointed: it ran, and the container is still up. */
+/** A turn that ran with the container still up: its workspace is worth checking (and saving). */
 export function turnNeedsCheckpoint(result: TurnStepResult): boolean {
   if (result.status === 'completed' || result.status === 'failed') return true
   return result.status === 'interrupted' && result.reason !== 'rollout'
+}
+
+/**
+ * The loop's {@link DirtyState} after a turn that did not checkpoint: a changed workspace keeps
+ * the FIRST change's time and moves the debounce to this turn's end; an unchanged one is clean
+ * (the check is of the whole workspace against the last checkpoint, not of this turn's own
+ * edits — so nothing is left unsaved); a turn that never ran leaves the state as it was.
+ */
+export function dirtyAfterTurn(
+  dirty: DirtyState | null,
+  result: TurnStepResult
+): DirtyState | null {
+  if (result.endedAt === undefined || result.changed === undefined) return dirty
+  if (!result.changed) return null
+  return { dirtySince: dirty?.dirtySince ?? result.endedAt, lastTurnAt: result.endedAt }
 }
 
 /**
