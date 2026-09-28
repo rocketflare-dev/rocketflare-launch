@@ -3,7 +3,8 @@
  * the pinned kit, a database, storage, sign-in, both Workers, and (unless unticked) a first staging
  * deploy. The slug is checked as it is typed with `newAppSlugProblem`, the rule the server applies,
  * and the host it will answer on is previewed when the apps domain is known. On success the app's
- * page opens and shows the launch as it happens.
+ * page opens and shows the launch as it happens — or, from P4, for someone below the organisation's
+ * `app.create` auto-approve role, the `app.create` request it is waiting on (202 `approvalId`).
  */
 import { RocketLaunchIcon } from '@heroicons/react/24/outline'
 import { APP_SLUG_MAX_LENGTH } from '@launch/shared/launch-apps'
@@ -104,9 +105,15 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
     if (!parsed.success) return setIssues(parsed.error.issues)
     setIssues(undefined)
     create.mutate(parsed.data, {
-      onSuccess: ({ app }) => {
-        showToast(`Launching ${app.displayName}`, 'success')
+      onSuccess: ({ app, approvalId }) => {
+        showToast(
+          approvalId
+            ? `Asked to create ${app.displayName} — an administrator has to approve it`
+            : `Launching ${app.displayName}`,
+          'success'
+        )
         close()
+        // Either way the app's page: it shows the launch, or the request it is waiting on.
         navigate(`/apps/${encodeURIComponent(app.slug)}`)
       },
     })

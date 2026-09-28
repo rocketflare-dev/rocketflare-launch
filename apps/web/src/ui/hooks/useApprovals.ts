@@ -63,6 +63,23 @@ export function useApprovals(filters: ApprovalFilters = {}, enabled = true) {
 }
 
 /**
+ * The pending request of one kind on one app, as far as THIS reader can see it — the organisation's
+ * box for an admin, their own requests otherwise. What an app page asks while the app is
+ * `requested`: "is it waiting on a person?" (plan §4c: a member's `POST /api/apps` answers 202
+ * with an `approvalId` and the app waits in `requested` until an admin approves).
+ */
+export function usePendingApproval(
+  { kind, appId, box }: { kind: ApprovalKind; appId: string | undefined; box: ApprovalBox },
+  enabled: boolean
+) {
+  const { data, isLoading } = useApprovals(
+    { box, kind, appId, status: 'pending' },
+    enabled && Boolean(appId)
+  )
+  return { approval: data?.items[0] ?? null, isLoading: enabled && Boolean(appId) && isLoading }
+}
+
+/**
  * Whether the server still owes an answer on this request: approved, and its vendor effect has
  * neither landed nor failed. Pure — the page's `refetchInterval` is exactly this.
  */

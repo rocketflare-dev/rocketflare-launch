@@ -121,7 +121,7 @@ export function SessionHeader({
               aria-label="Budget used"
             />
           </div>
-          {!settled && budget.pendingApprovalId && budget.mode !== 'extend' ? (
+          {!settled && budget.pendingApprovalId ? (
             <Link
               to={approvalPath(budget.pendingApprovalId)}
               className="btn btn-ghost btn-xs text-warning"

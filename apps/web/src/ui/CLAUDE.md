@@ -441,7 +441,10 @@ A `CUSTOM kit.notice` renders
 - **The app page**: `ReleasesCard` (+ `PromoteButton`, which goes to the approval it opened; a 409
   is shown in its dialog) and `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).
   A pending production ticket with an `approvalId` links to the request instead of deciding in
-  place; the access page's requests link to their `app.access` approvals.
+  place; the access page's requests link to their `app.access` approvals. A `requested` app asks
+  `usePendingApproval({ kind: 'app.create', appId, box })` (`all` for admins, else `requested`):
+  while one is pending the page shows it instead of the launch panel and the pipeline is not
+  polled — it waits on a person. `CreateAppModal` words the toast by the 202's `approvalId`.
 - **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
   extends (owners/admins — their click also approves), asks (the creator), or reads; header and
   banner take the same object.

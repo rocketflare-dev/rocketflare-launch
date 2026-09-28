@@ -127,7 +127,7 @@ function BudgetBanner({
   budget: BudgetAccess
   onExtend: () => void
 }) {
-  const waiting = budget.pendingApprovalId && budget.mode !== 'extend'
+  const waiting = Boolean(budget.pendingApprovalId)
   return (
     <div className="alert alert-warning alert-soft mx-3 mb-2 text-sm" role="status">
       <div className="min-w-0 flex-1">

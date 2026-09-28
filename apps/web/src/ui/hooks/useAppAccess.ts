@@ -9,10 +9,8 @@ import {
   appAccessPolicySchema,
   appAccessRequestContextSchema,
   appAccessRequestListSchema,
-  appAccessRequestSchema,
   type CreateAppAccessGrant,
   createAppAccessRequestResponseSchema,
-  type DecideAppAccessRequest,
   type OidcAccessPolicy,
 } from '@launch/shared/launch-oidc'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -122,19 +120,5 @@ export function useAppAccessRequests(
   })
 }
 
-export function useDecideAppAccessRequest(app: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, decision }: { id: string; decision: DecideAppAccessRequest['decision'] }) =>
-      api.post(
-        `${base(app)}/requests/${id}/decide`,
-        { decision },
-        {
-          schema: appAccessRequestSchema,
-          showSuccessToast: true,
-          successMessage: decision === 'approve' ? 'Access approved' : 'Request rejected',
-        }
-      ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.appAccess.all }),
-  })
-}
+// P4: a request is decided on its approval's page (`/approvals/:id` — the request id IS the
+// approval id); `POST …/requests/:id/decide` answers 410 `access_request_moved`.

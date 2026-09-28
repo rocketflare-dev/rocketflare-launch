@@ -62,8 +62,9 @@ export function ExtendBudgetModal({
           return
         }
         showToast(`Asked for $${parsed.data.extraUsd} more — waiting for approval`, 'success')
-        // The creator is the one who waits: take them to the request they can share.
-        if (asking) navigate(approvalPath(approvalId))
+        // 202: it waits for someone else (the caller is the session's creator, and so its
+        // requester). Take them to the request, which they can share.
+        navigate(approvalPath(approvalId))
       },
     })
   }
