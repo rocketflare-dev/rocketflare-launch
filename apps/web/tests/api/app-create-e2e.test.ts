@@ -298,6 +298,7 @@ async function scaffoldJob(launched: Launched) {
   const renamed = (file: string) =>
     applyReplacements(readFileSync(path.join(KIT, file), 'utf8'), names).text
   const manifest = JSON.parse(readFileSync(path.join(KIT, '.rocketflare.json'), 'utf8'))
+  manifest.kit.version = plan.tag
   manifest.kit.commit = plan.commit
   manifest.app = { slug: launched.slug, display: 'Shop', domain }
   const commit = await commitFiles(

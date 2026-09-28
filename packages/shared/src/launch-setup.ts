@@ -159,11 +159,14 @@ export const templatePinSchema = z.object({
 })
 export type TemplatePin = z.infer<typeof templatePinSchema>
 
-/** Rocketflare kit 0.15.0 — the release P2 was built and checked against. */
+/**
+ * Rocketflare kit 0.15.1 — 0.15.0 (the release P2 was built against) plus the rename fix a
+ * hyphenated slug needs (`report.<slug>` in the evals script did not parse).
+ */
 export const DEFAULT_TEMPLATE_PIN: TemplatePin = {
   repo: 'rocketflare-dev/rocketflare',
-  tag: '0.15.0',
-  commit: 'c7fd5dfbf9cfbc197c60f1993f18d524ec28bd66',
+  tag: '0.15.1',
+  commit: 'dcd47c298b08ab20d778ca81ad0b0dc64fda8ed7',
 }
 
 /**

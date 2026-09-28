@@ -18,6 +18,7 @@ import {
   DEPLOY_FINISHED_EVENT,
   SCAFFOLD_FINISHED_EVENT,
 } from '@launch/shared/launch-pipeline'
+import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
@@ -171,8 +172,8 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
       repoOwner: cloud.opts.org,
       repoName: launch.slug,
       defaultBranch: 'main',
-      templateRef: '0.15.0',
-      templateVersion: '0.15.0',
+      templateRef: DEFAULT_TEMPLATE_PIN.tag,
+      templateVersion: DEFAULT_TEMPLATE_PIN.tag,
       templateContractVersion: '1',
     })
     const repo = cloud.github.repo(cloud.opts.org, launch.slug)

@@ -982,9 +982,16 @@ a new job on a new ticket. Under `pnpm dev` the job reaches Launch only through 
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-**Known gaps:** only exercised by `tests/config/scaffold-script.test.ts` (a fixture kit, install and
-gate skipped) and the e2e test (the push simulated); the real run of kit 0.15.0 on a runner —
-rename, #37 patch, analytics plugin, a green gate — is unproven (plan §5.4).
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.1**: 0.15.0 plus the rename fix a
+hyphenated slug needs (0.15.0 turned `report.rocketflare` in `apps/evals/scripts/eval.mjs` into
+`report.<slug>`, which does not parse). A `launch_settings.template_pin` row overrides it.
+
+**Known gaps:** a real run on a GitHub runner has now got through the token trade, clone, rename,
+install and plugin install with kit 0.15.0 and failed only at `lint` on that parse error — a green
+gate and push on 0.15.1 are still unproven; otherwise only exercised by
+`tests/config/scaffold-script.test.ts` (a fixture kit, install and gate skipped) and the e2e test
+(the push simulated). The session image still carries kit 0.15.0's pnpm store
+(`SESSION_KIT_TAG`); 0.15.1 changes no dependency.
 
 ### 18.7 The deploy gateway
 

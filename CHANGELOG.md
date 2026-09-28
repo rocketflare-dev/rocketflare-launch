@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New apps are scaffolded from Rocketflare kit 0.15.1 (the default template pin), whose rename
+  leaves a hyphenated slug's evals script parseable — 0.15.0 failed the scaffold's lint gate on it.
 - The scaffold job installs with `pnpm install --no-frozen-lockfile` after the kit's rename
   (`--skip-install`): on GitHub's runners the rename's own install was frozen and failed on the
   workspace names it had just changed. A retried scaffold first updates the job files in the app's
