@@ -21,7 +21,12 @@ export interface ApiClientOptions {
 export type QueryValue = string | number | boolean | undefined | null
 
 export interface RequestOptions<T> {
-  schema?: z.ZodType<T>
+  /**
+   * The contract to validate a success body with. `T` is its OUTPUT type: the input is `unknown`,
+   * so a schema with `.default()`s or `z.coerce` (whose input is looser than its output) needs no
+   * cast at the call site.
+   */
+  schema?: z.ZodType<T, z.ZodTypeDef, unknown>
   query?: Record<string, QueryValue>
   body?: unknown
 }

@@ -18,7 +18,11 @@
  * `cli.ts` (the plugin `register` shape, `plugins/types.ts`).
  */
 
-import { type ApprovalDetail, TERMINAL_APPROVAL_STATUSES } from '@launch/shared/launch-approvals'
+import {
+  type ApprovalDetail,
+  approvalDetailSchema,
+  TERMINAL_APPROVAL_STATUSES,
+} from '@launch/shared/launch-approvals'
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import {
   parseReleaseVersion,
@@ -37,7 +41,7 @@ import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
 import { formatDate, renderTable } from '../utils/output'
-import { approvalUrl, detailSchema } from './approvals'
+import { approvalUrl } from './approvals'
 
 const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -169,7 +173,7 @@ export async function runReleasesPromote(
   let approval: ApprovalDetail | null = null
   while (now() < deadline) {
     approval = await client.get(`/api/approvals/${encodeURIComponent(data.approvalId)}`, {
-      schema: detailSchema,
+      schema: approvalDetailSchema,
     })
     if ((TERMINAL_APPROVAL_STATUSES as readonly string[]).includes(approval.status)) break
     await sleep(pollMs)
