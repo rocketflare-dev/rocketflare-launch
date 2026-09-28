@@ -2,15 +2,17 @@
  * Session gate for the app shell (D9, D20). Unauthenticated → `/login?returnUrl=`; signed in but
  * in no organisation → the `noTenantRoute` rule (pending / select-tenant / no-access). Pages that
  * must render WITHOUT a tenant (those three) pass `requireTenant={false}`. One exemption: a global
- * admin may open `/admin/*` with no membership at all (`isAdminPath`) — otherwise the bootstrap
- * admin of an invite-only deployment could never approve anyone (SETUP.md 2.4). Cosmetic — the
- * server enforces on every request (`/api/admin/*` is tenant-free by design).
+ * admin may open `/admin/*` and `/settings/platform/*` with no membership at all (`isAdminPath`) —
+ * otherwise the bootstrap admin of an invite-only deployment could never approve anyone or finish
+ * Setup (SETUP.md 2.4). Cosmetic — the server enforces on every request (`/api/admin/*` and
+ * `/api/platform/*` resolve a global admin without a tenant by design).
  */
 import { ArrowPathIcon } from '@heroicons/react/24/outline'
 import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { noTenantRoute, useAuth } from '@/ui/hooks/useAuth'
 import { loginUrl } from '@/ui/lib/navigation'
+import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 import { LoadingIndicator } from './LoadingIndicator'
 
 interface ProtectedRouteProps {
@@ -19,9 +21,11 @@ interface ProtectedRouteProps {
   requireTenant?: boolean
 }
 
-/** `/admin` and everything beneath it — the cross-tenant area that needs no membership. */
+/** Under `/admin` or `/settings/platform` — the global admin's areas, which need no membership. */
 export function isAdminPath(pathname: string): boolean {
-  return pathname === '/admin' || pathname.startsWith('/admin/')
+  return ['/admin', PLATFORM_SETTINGS_PATH].some(
+    root => pathname === root || pathname.startsWith(`${root}/`)
+  )
 }
 
 export function ProtectedRoute({ children, requireTenant = true }: ProtectedRouteProps) {

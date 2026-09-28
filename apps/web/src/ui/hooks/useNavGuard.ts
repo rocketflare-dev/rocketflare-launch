@@ -3,7 +3,7 @@
  * `RequireGuard` share the type and the hook, so a link never points at a page its reader may
  * not open. Cosmetic — the server enforces on every request.
  */
-import type { Actions, Subjects } from '@launch/shared/permissions'
+import { type Actions, canAdministerPlatform, type Subjects } from '@launch/shared/permissions'
 import { useCallback } from 'react'
 import { useAbility } from '@/ui/components/permissions/AbilityContext'
 import { useAuth } from './useAuth'
@@ -17,6 +17,12 @@ import { useAuth } from './useAuth'
 export type NavGuard =
   | 'admin'
   | 'globalAdmin'
+  /**
+   * Administering the deployment (`/settings/platform/*`): `canAdministerPlatform` from
+   * `@launch/shared/permissions`, the SAME function the server's `platformAdminMiddleware` calls —
+   * a global admin (membership or not), or in single mode the organisation's owner/admin.
+   */
+  | 'platformAdmin'
   | { action: string; subject: string }
   /**
    * A feature flag (D30): satisfied by `session.features`, NEVER by the ability. A global admin
@@ -39,7 +45,7 @@ const ADMIN_ROLES = new Set(['owner', 'admin', 'support'])
 export const isGuardList = (guard: NavGuard): guard is readonly NavGuard[] => Array.isArray(guard)
 
 export function useNavGuard(): (guard: NavGuard | undefined) => boolean {
-  const { tenant, isGlobalAdmin, session } = useAuth()
+  const { tenant, isGlobalAdmin, session, tenancyMode } = useAuth()
   const ability = useAbility()
   const role = tenant?.role ?? null
 
@@ -53,13 +59,15 @@ export function useNavGuard(): (guard: NavGuard | undefined) => boolean {
       // Before the tenant check: a feature that is off is off for everyone, membership or not.
       if (typeof guard === 'object' && 'feature' in guard) return features.includes(guard.feature)
       if (guard === 'globalAdmin') return isGlobalAdmin
-      // Without an organisation only the cross-tenant admin area is openable — a global admin's
+      if (guard === 'platformAdmin')
+        return canAdministerPlatform({ isGlobalAdmin, role, tenancyMode })
+      // Without an organisation only the global admin's areas are openable — a global admin's
       // `manage all` would otherwise light up every tenant page, each bouncing to `noTenantRoute`
       if (!hasTenant) return false
       // `support` is a global admin visiting this org; global admins hold `manage all` server-side
       if (guard === 'admin') return isGlobalAdmin || (role !== null && ADMIN_ROLES.has(role))
       return ability.can(guard.action as Actions, guard.subject as Subjects)
     },
-    [ability, features, hasTenant, isGlobalAdmin, role]
+    [ability, features, hasTenant, isGlobalAdmin, role, tenancyMode]
   )
 }

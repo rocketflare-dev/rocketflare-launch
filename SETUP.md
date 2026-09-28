@@ -162,7 +162,8 @@ pnpm seed --demo      # the same, plus each installed plugin's demo data (what t
 `pnpm seed` creates the tenant, `owner@` / `admin@` / `member@example.test`, a pending invitation
 for `invited@example.test`, the global admin `admin@clewro.com` and one API key. Launch runs
 `TENANCY_MODE=single` (`.dev.vars`), so the one tenant is named after `APP_NAME` with slug
-`default`; under `multi` it is `Acme` (`acme`). `--demo` additionally runs every installed plugin's
+`default`, and `admin@clewro.com` is also its owner; under `multi` it is `Acme` (`acme`). In single
+mode `owner@` and `admin@example.test` reach Setup (Settings → Platform) on their role alone. `--demo` additionally runs every installed plugin's
 `seedDemo` hook — the analytics plugin seeds its dashboards and rebuilds its fact table. Every demo
 row has a fixed id and is inserted `onConflictDoNothing`, so re-running adds nothing. Local
 database only — it is a `tsx` script over `DATABASE_URL`.
@@ -294,7 +295,8 @@ override the check. Restart `pnpm dev` after starting or stopping the tunnel.
 
 **Creating apps needs it.** The scaffold and deploy jobs run on GitHub and call Launch back at
 `APP_URL`, so `POST /api/apps` refuses with 409 `launch_not_reachable` while Launch is at
-`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Admin → Setup → 7.
+`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Setup (sidebar →
+Platform → Setup, `/settings/platform/setup`) → 7.
 Public URL and click "Check now": Launch fetches its own `/ci/ping` through the tunnel and the step
 turns green.
 Verify: the printed `https://…` host opens the app; `/auth/methods` there reports the same providers
@@ -389,9 +391,19 @@ refused (`?error=email_unverified`); an existing kit user is linked by verified 
 
 ### 2.4 First admin
 `BOOTSTRAP_ADMIN_EMAILS=you@example.com` (comma-separated). Promoted to global admin on the first
-**verified** login, logged loudly. Absent: promote by hand once —
-`UPDATE users SET is_global_admin = true WHERE email = '…'` — or every sign-up parks on `/pending`
-with nobody to approve it (`SIGNUP_MODE=invite_only` default). Verify: `/admin` is reachable.
+**verified** login, logged loudly. Under `TENANCY_MODE=single` (Launch) that login also makes you
+the organisation's **owner** — it creates the organisation with you as owner if there is none yet,
+otherwise you join as, or are promoted to, owner. Absent: promote by hand once —
+`UPDATE users SET is_global_admin = true WHERE email = '…'` (single mode: also
+`UPDATE tenant_users SET role = 'owner' WHERE user_id = …`) — or every sign-up parks on `/pending`
+with nobody to approve it (`SIGNUP_MODE=invite_only` default).
+
+**Where Setup lives.** The setup wizard (Launch's credentials, apps domain, GitHub App, Neon, Resend,
+public URL, template pin), the OIDC issuer's keys and the access-request queue are
+**Settings → Platform** (`/settings/platform/setup`, `/identity`, `/access-requests`; sidebar
+"Setup"). In single mode every organisation owner and admin can open it; in multi mode only global
+admins. `/admin` (organisations, users, feature flags, live sessions) stays global-admin only;
+the old `/admin/setup` links redirect. Verify: `/settings/platform/setup` opens as the first admin.
 
 ### 2.5 AI — chat, agents, embeddings
 Resolution (`docs/CONCEPTS.md` §9): a per-agent assignment → the tenant's default provider in
@@ -645,7 +657,8 @@ pnpm provision all [--deploy staging|both] [--skip-email] [--rotate]   # 10–20
 | `all` | every phase in order (`--deploy staging` by default), then a close-out checklist | `all ok — n phases passed; deployed …` |
 
 Close-out: sign in with the admin's magic link — with `SIGNUP_MODE=invite_only` the first login lands
-on `/pending`; as the global admin create the first organisation at `/admin` — add OAuth redirect
+on `/pending` (multi mode: create the first organisation at `/admin`; single mode: the bootstrap
+login already made it, with you as owner — finish Settings → Platform → Setup) — add OAuth redirect
 URIs, commit the two tomls (ids and URLs are not secrets), push, `pnpm cli login --server <APP_URL>`.
 Known limits: `.claude/skills/launch-provision/reference.md`. The manual sequence below is the reference for
 what each phase does.
@@ -732,7 +745,8 @@ Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the 
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns
 ok (it runs a query — a 503 there means the Worker cannot reach Neon: under `neon` a missing or
 wrong `DATABASE_URL` secret, under `postgres` Hyperdrive pointing at the wrong host or SSL), and `/auth/methods` lists your providers. With `SIGNUP_MODE=invite_only` (the default) the
-admin's first login lands on `/pending`; the first organisation is created at `/admin`.
+admin's first login lands on `/pending` under `multi` (the first organisation is created at `/admin`);
+under `single` it creates the organisation with the admin as owner (Part 2.4).
 Point the CLI at it: `pnpm cli login --server https://<staging-host>`.
 
 ### 3.6 Custom domains

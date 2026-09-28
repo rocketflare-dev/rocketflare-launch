@@ -10,6 +10,17 @@
   repo, so a fixed job is the one that runs, and every retry starts a new Workflow instance — under
   `pnpm dev` a second retry used to reuse the first's id and silently do nothing. The app page now
   uses the full width, and a step's "View run" link and attempt count sit under its name.
+- One admin in single mode: under `TENANCY_MODE=single` the organisation's owners and admins now
+  run the platform — the setup wizard (credentials, apps domain, GitHub App, Neon, Resend, public
+  URL, template pin), Launch's OIDC signing keys and the access-request queue — without the global
+  flag. They moved from `/admin` to **Settings → Platform** (`/settings/platform/setup`,
+  `/identity`, `/access-requests`; sidebar "Setup"), and their API from `/api/admin/{setup,oidc,
+  access-requests}` to `/api/platform/*`; old `/admin/setup` links redirect with their step anchor.
+  One predicate decides both sides (`canAdministerPlatform`). Multi mode is unchanged (global admins
+  only), `/admin` (organisations, users, feature flags, sessions) stays global-admin only, and a
+  single-mode reviewer approves only into their own organisation (and `owner` only as an owner). A
+  `BOOTSTRAP_ADMIN_EMAILS` address is now the organisation's owner in single mode (created, joined
+  or promoted on its verified login), and the seed makes its platform admin an owner too.
 - Creating an app no longer hides a scaffold job that died on GitHub: the step list shows the job
   RUNNING (not a tick on "Start the scaffold job") with a "View run" link to its GitHub Actions run,
   and a run that fails, is cancelled or never starts fails the step within a minute with a readable

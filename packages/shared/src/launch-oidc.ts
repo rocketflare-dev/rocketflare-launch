@@ -42,7 +42,7 @@ export const oidcPublicJwkSchema = z
   .passthrough()
 export type OidcPublicJwk = z.infer<typeof oidcPublicJwkSchema>
 
-// ---- Issuer administration (`/api/admin/oidc`, global admin) ---------------------------------
+// ---- Issuer administration (`/api/platform/oidc`, `canAdministerPlatform`) ------------------
 
 /** One signing key as the Identity page lists it — the public facts only, never key material. */
 export const oidcSigningKeySchema = z.object({
@@ -58,7 +58,7 @@ export const oidcSigningKeySchema = z.object({
 })
 export type OidcSigningKey = z.infer<typeof oidcSigningKeySchema>
 
-/** `GET /api/admin/oidc/keys` — the issuer and its key set, newest first. */
+/** `GET /api/platform/oidc/keys` — the issuer and its key set, newest first. */
 export const oidcKeysResponseSchema = z.object({
   issuer: z.string(),
   discoveryUrl: z.string(),
@@ -67,7 +67,7 @@ export const oidcKeysResponseSchema = z.object({
 })
 export type OidcKeysResponse = z.infer<typeof oidcKeysResponseSchema>
 
-/** `POST /api/admin/oidc/keys/rotate` — the key that now signs, the one it replaced, the next. */
+/** `POST /api/platform/oidc/keys/rotate` — the key that now signs, the one it replaced, the next. */
 export const oidcRotateResponseSchema = z.object({
   active: oidcSigningKeySchema,
   retiring: oidcSigningKeySchema.nullable(),

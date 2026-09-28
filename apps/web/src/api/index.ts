@@ -7,7 +7,7 @@
 
 import type { Hono, MiddlewareHandler } from 'hono'
 import { serverPlugins } from '../plugins/server'
-import { authMiddleware, globalAdminMiddleware } from './middleware/auth'
+import { authMiddleware, globalAdminMiddleware, platformAdminMiddleware } from './middleware/auth'
 import { ciBodyLimit, isUploadPath, jsonBodyLimit } from './middleware/body-limit'
 import { configMiddleware } from './middleware/config'
 import { corsMiddleware } from './middleware/cors'
@@ -51,6 +51,7 @@ import { membersRouter } from './routes/members'
 import { notificationsRouter } from './routes/notifications'
 import { oidcRouter, wellKnownRouter } from './routes/oidc'
 import { oidcAdminRouter } from './routes/oidc-admin'
+import { platformAccessRequestsRouter } from './routes/platform-access-requests'
 import { sessionsRouter } from './routes/sessions'
 import { setupRouter } from './routes/setup'
 import { sharedResourcesRouter } from './routes/shared-resources'
@@ -108,7 +109,8 @@ app.use('/api/*', tracerMiddleware)
 
 // 10. Mounts — auth is applied PER MOUNT so the public surface is enumerable: health, /auth/*,
 //    /api/invite/:token (details; accept resolves the cookie itself). `/api/admin/*` is the only
-//    tenant-free cross-tenant path (globalAdminMiddleware); everything else is `authMiddleware`.
+//    tenant-free cross-tenant path (globalAdminMiddleware); `/api/platform/*` is the deployment's
+//    own administration (platformAdminMiddleware); everything else is `authMiddleware`.
 app.route('/api', healthRouter)
 app.route('/auth', authRouter)
 // Launch as the company's OIDC issuer (spec/05). PUBLIC by design: discovery and the JWKS are
@@ -124,12 +126,16 @@ app.route('/oidc', oidcRouter)
 app.route('/ci', ciRouter)
 app.use('/api/invite/:token/accept', authRateLimit)
 app.route('/api/invite', inviteRouter)
+// Launch's platform administration (spec/03, spec/05, D9): the setup credentials, the issuer's
+// signing keys and the access-request queue belong to the DEPLOYMENT, not to an organisation.
+// `platformAdminMiddleware` = `canAdministerPlatform`: a global admin, or — in single mode, where
+// the one organisation runs Launch — its owner or admin. Multi mode: global admins only, as before.
+app.use('/api/platform/*', platformAdminMiddleware)
+app.route('/api/platform/setup', setupRouter)
+app.route('/api/platform/oidc', oidcAdminRouter)
+app.route('/api/platform/access-requests', platformAccessRequestsRouter)
+// The operator's cross-tenant surface: organisations, users, feature flags, live sessions.
 app.use('/api/admin/*', globalAdminMiddleware)
-// Launch's platform administration (spec/03, spec/05) — mounted BEFORE the kit's admin router so
-// its prefixes are matched first. Both sit behind the `globalAdminMiddleware` above: the setup
-// credentials and the issuer's signing keys belong to the deployment, not to an organisation.
-app.route('/api/admin/setup', setupRouter)
-app.route('/api/admin/oidc', oidcAdminRouter)
 // Launch P3: live coding sessions and the drain before a deploy that touches the session image.
 app.route('/api/admin/sessions', adminSessionsRouter)
 app.route('/api/admin', adminRouter)

@@ -2,6 +2,7 @@ import { HomeIcon } from '@heroicons/react/24/outline'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import SideNav, {
+  activeNavPath,
   badgeValueFor,
   composeNav,
   DEFAULT_NAV_ANCHOR,
@@ -116,6 +117,17 @@ describe('isPathActive', () => {
     expect(isPathActive('/settings', '/')).toBe(false)
     expect(isPathActive('/settings/people', '/settings')).toBe(true)
     expect(isPathActive('/settingsx', '/settings')).toBe(false)
+  })
+})
+
+describe('activeNavPath', () => {
+  it('lights the most specific entry alone — Setup under Settings, not both', () => {
+    const tos = ['/', '/settings', '/settings/platform', '/admin']
+    expect(activeNavPath('/settings/platform/setup', tos)).toBe('/settings/platform')
+    expect(activeNavPath('/settings', tos)).toBe('/settings')
+    expect(activeNavPath('/settings/people', tos)).toBe('/settings')
+    expect(activeNavPath('/', tos)).toBe('/')
+    expect(activeNavPath('/elsewhere', tos)).toBeUndefined()
   })
 })
 

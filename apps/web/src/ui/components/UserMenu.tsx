@@ -8,12 +8,14 @@ import {
   Cog6ToothIcon,
   ShieldCheckIcon,
   UserCircleIcon,
+  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline'
 import { useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { useNavGuard } from '@/ui/hooks/useNavGuard'
 import { initials } from '@/ui/lib/format'
+import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 
 export function UserMenu() {
   const { user, tenant, logout } = useAuth()
@@ -81,6 +83,17 @@ export function UserMenu() {
               className="nav-item flex items-center gap-2 px-2.5 py-1.5 text-sm"
             >
               <Cog6ToothIcon className="w-4 h-4" /> Settings
+            </Link>
+          </li>
+        )}
+        {canAccess('platformAdmin') && (
+          <li>
+            <Link
+              to={PLATFORM_SETTINGS_PATH}
+              onClick={close}
+              className="nav-item flex items-center gap-2 px-2.5 py-1.5 text-sm"
+            >
+              <WrenchScrewdriverIcon className="w-4 h-4" /> Setup
             </Link>
           </li>
         )}

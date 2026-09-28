@@ -1,6 +1,6 @@
 /**
- * The setup wizard (spec/03, spec/04): `/api/admin/setup`, global admin. Every mutation answers
- * with fresh state, so each one invalidates the one `setup` family and the page re-renders from
+ * The setup wizard (spec/03, spec/04): `/api/platform/setup` (`canAdministerPlatform`). Every
+ * mutation answers with fresh state, so each one invalidates the one `setup` family and the page re-renders from
  * the overview — there is no second source of truth for a dot. A credential value is sent once, in
  * a PUT body, and never comes back.
  */
@@ -17,7 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 
-const BASE = '/api/admin/setup'
+const BASE = '/api/platform/setup'
 
 export function useSetupOverview(enabled = true) {
   return useQuery({

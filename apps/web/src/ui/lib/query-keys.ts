@@ -288,25 +288,30 @@ const CORE_QUERY_KEYS = {
     verify: ['audit', 'verify'] as const,
   },
   /**
-   * Launch: `/api/admin/setup` (spec/03) — under the `admin` root on purpose, so the one
-   * `admin.all` invalidation after an admin mutation covers it like every other admin screen.
+   * `/api/platform/*` — administering the deployment (`canAdministerPlatform`: a global admin, or in
+   * single mode the organisation's owner/admin). One root, so `platform.all` covers every screen
+   * under `/settings/platform`.
    */
-  setup: {
-    all: ['admin', 'setup'] as const,
-    status: ['admin', 'setup', 'status'] as const,
+  platform: {
+    all: ['platform'] as const,
+    accessRequests: {
+      all: ['platform', 'access-requests'] as const,
+      list: (filters: object = {}) => ['platform', 'access-requests', 'list', filters] as const,
+    },
   },
-  /** Launch: `/api/admin/oidc` — the issuer's signing keys (spec/05); under `admin` like `setup` */
+  /** Launch: `/api/platform/setup` (spec/03) — under the `platform` root. */
+  setup: {
+    all: ['platform', 'setup'] as const,
+    status: ['platform', 'setup', 'status'] as const,
+  },
+  /** Launch: `/api/platform/oidc` — the issuer's signing keys (spec/05); under `platform` too */
   oidcAdmin: {
-    all: ['admin', 'oidc'] as const,
-    keys: ['admin', 'oidc', 'keys'] as const,
+    all: ['platform', 'oidc'] as const,
+    keys: ['platform', 'oidc', 'keys'] as const,
   },
   /** `/api/admin/*` — cross-tenant; one `admin.all` invalidation after any admin mutation */
   admin: {
     all: ['admin'] as const,
-    accessRequests: {
-      all: ['admin', 'access-requests'] as const,
-      list: (filters: object = {}) => ['admin', 'access-requests', 'list', filters] as const,
-    },
     tenants: {
       all: ['admin', 'tenants'] as const,
       list: (filters: object = {}) => ['admin', 'tenants', 'list', filters] as const,

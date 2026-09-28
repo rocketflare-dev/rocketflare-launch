@@ -15,7 +15,7 @@ import { ApiError } from '@/ui/lib/api-client'
 
 /** What to do next, for the refusals an admin can act on. */
 const HINTS: Record<string, string> = {
-  github_app_not_configured: 'An owner connects the GitHub App under Admin → Setup.',
+  github_app_not_configured: 'An administrator connects the GitHub App in Setup.',
   github_app_not_installed: 'Install the GitHub App on that organisation, then try again.',
   repo_not_accessible:
     'Give the GitHub App access to this repository in its installation settings.',

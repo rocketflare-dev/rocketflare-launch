@@ -5,8 +5,8 @@
 // the shared `api` project to completion before this isolated one, which keeps it clear of
 // `launch-credentials.test.ts` (resend, shared project), and the tests below run in order.
 /**
- * `/api/admin/setup` (spec/03, spec/04): global admin only; settings are validated and audited
- * with before/after; a credential PUT seals the value, runs the probes and audits `credential.set`
+ * `/api/platform/setup` (spec/03, spec/04): global admin only in multi mode (the single-mode
+ * owner/admin path is `platform-admin.test.ts`); settings are validated and audited with before/after; a credential PUT seals the value, runs the probes and audits `credential.set`
  * then `credential.rotated`; a check audits `credential.checked`; a delete audits
  * `credential.removed`. A zone with no wildcard record gets one from the save or the check,
  * audited `dns.wildcard.created` — never from the overview, which does not probe. No response — and no audit row — ever carries a secret, and the stored
@@ -22,6 +22,7 @@ import {
   createTestSession,
   createTestTenant,
   createTestTenantWithUser,
+  createTestUser,
   linkUserToTenant,
   sessionCookieHeader,
   uniqueId,
@@ -37,6 +38,7 @@ import {
   OTHER_ACCOUNT_ID,
   ZONE_ID,
 } from '../helpers/vendor-fetch'
+import { createTestEnv } from '../mocks/bindings'
 
 const db = setupTestDatabase()
 
@@ -100,18 +102,18 @@ afterAll(() => {
 
 describe('guard', () => {
   it('401 without a session and 403 for an organisation owner who is not a global admin', async () => {
-    const anon = await request('/api/admin/setup')
+    const anon = await request('/api/platform/setup')
     expect(anon.status).toBe(401)
     expect(await json(anon)).toMatchObject({ statusCode: 401, error: expect.any(String) })
 
     const { user, tenant } = await createTestTenantWithUser(db, 'owner')
     const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
     for (const [path, method] of [
-      ['/api/admin/setup', 'GET'],
-      ['/api/admin/setup/settings', 'PUT'],
-      ['/api/admin/setup/credentials/cloudflare_api_token', 'PUT'],
-      ['/api/admin/setup/credentials/neon_org_api_key/check', 'POST'],
-      ['/api/admin/setup/credentials/github_app', 'DELETE'],
+      ['/api/platform/setup', 'GET'],
+      ['/api/platform/setup/settings', 'PUT'],
+      ['/api/platform/setup/credentials/cloudflare_api_token', 'PUT'],
+      ['/api/platform/setup/credentials/neon_org_api_key/check', 'POST'],
+      ['/api/platform/setup/credentials/github_app', 'DELETE'],
     ] as const) {
       const res = await request(
         path,
@@ -127,7 +129,7 @@ describe('guard', () => {
 describe('settings', () => {
   it('validates, stores, audits before/after and lists them in the overview', async () => {
     const bad = await call(
-      '/api/admin/setup/settings',
+      '/api/platform/setup/settings',
       { method: 'PUT' },
       { apps_domain: 'not a domain' }
     )
@@ -135,14 +137,14 @@ describe('settings', () => {
     expect(bad.body).toMatchObject({ statusCode: 400, code: 'validation_failed' })
 
     const unknown = await call(
-      '/api/admin/setup/settings',
+      '/api/platform/setup/settings',
       { method: 'PUT' },
       { secret_thing: 'x' }
     )
     expect(unknown.status).toBe(400)
 
     const res = await call(
-      '/api/admin/setup/settings',
+      '/api/platform/setup/settings',
       { method: 'PUT' },
       {
         apps_domain: DOMAIN.toUpperCase(),
@@ -171,7 +173,7 @@ describe('settings', () => {
 
     // Re-sending the same values changes nothing and records nothing.
     const before = (await auditRows('setting.changed')).length
-    await call('/api/admin/setup/settings', { method: 'PUT' }, { apps_domain: DOMAIN })
+    await call('/api/platform/setup/settings', { method: 'PUT' }, { apps_domain: DOMAIN })
     expect((await auditRows('setting.changed')).length).toBe(before)
   })
 
@@ -179,7 +181,7 @@ describe('settings', () => {
     const user = await createTestGlobalAdmin(db)
     const cookie = sessionCookieHeader(await createTestSession(db, user.id))
     const res = await request(
-      '/api/admin/setup/settings',
+      '/api/platform/setup/settings',
       { method: 'PUT', headers: cookie },
       { json: { github_org: 'Other-Org' } }
     )
@@ -190,20 +192,63 @@ describe('settings', () => {
       .where(and(eq(auditEvents.actorUserId, user.id), eq(auditEvents.action, 'setting.changed')))
     expect(rows).toHaveLength(1)
     // Put it back for the GitHub tests below.
-    await call('/api/admin/setup/settings', { method: 'PUT' }, { github_org: ORG })
+    await call('/api/platform/setup/settings', { method: 'PUT' }, { github_org: ORG })
+  })
+})
+
+describe('single mode: the organisation owner/admin is the platform admin', () => {
+  it('an owner and an admin change settings, audited in their organisation as the actor', async () => {
+    const env = createTestEnv({ TENANCY_MODE: 'single' })
+    const { user: owner, tenant } = await createTestTenantWithUser(db, 'owner')
+    const orgAdmin = await createTestUser(db)
+    await linkUserToTenant(db, orgAdmin.id, tenant.id, 'admin')
+    const member = await createTestUser(db)
+    await linkUserToTenant(db, member.id, tenant.id, 'member')
+    const cookieOf = async (userId: string) =>
+      sessionCookieHeader(await createTestSession(db, userId, tenant.id))
+
+    const put = async (userId: string, githubOrg: string) =>
+      request(
+        '/api/platform/setup/settings',
+        { method: 'PUT', headers: await cookieOf(userId) },
+        { env, json: { github_org: githubOrg } }
+      )
+
+    expect((await put(owner.id, 'Single-Org')).status).toBe(200)
+    // Put it back — as the org admin — for the GitHub tests below.
+    expect((await put(orgAdmin.id, ORG)).status).toBe(200)
+    const denied = await put(member.id, 'Member-Org')
+    expect(denied.status).toBe(403)
+
+    const rows = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, tenant.id), eq(auditEvents.action, 'setting.changed')))
+    expect(rows.map(r => [r.actorType, r.actorUserId, r.actorEmail])).toEqual(
+      expect.arrayContaining([
+        ['user', owner.id, owner.email],
+        ['user', orgAdmin.id, orgAdmin.email],
+      ])
+    )
+    expect(rows.every(r => r.actorUserId !== member.id)).toBe(true)
+    const [setting] = await db
+      .select()
+      .from(launchSettings)
+      .where(eq(launchSettings.key, 'github_org'))
+    expect(setting?.value).toBe(ORG)
   })
 })
 
 describe('credentials', () => {
   it('refuses a payload that does not fit its kind, and an unknown kind', async () => {
     const res = await call(
-      '/api/admin/setup/credentials/resend_api_key',
+      '/api/platform/setup/credentials/resend_api_key',
       { method: 'PUT' },
       { apiKey: 'not-a-resend-key' }
     )
     expect(res.status).toBe(400)
     expect(res.body).toMatchObject({ statusCode: 400, code: 'validation_failed' })
-    const bogus = await call('/api/admin/setup/credentials/aws_root', { method: 'PUT' }, {})
+    const bogus = await call('/api/platform/setup/credentials/aws_root', { method: 'PUT' }, {})
     expect(bogus.status).toBe(400)
     const [row] = await db
       .select()
@@ -214,7 +259,7 @@ describe('credentials', () => {
 
   it('Cloudflare: sets, seals, checks, rotates, re-checks and removes — with audit rows', async () => {
     const put = await call(
-      '/api/admin/setup/credentials/cloudflare_api_token',
+      '/api/platform/setup/credentials/cloudflare_api_token',
       { method: 'PUT' },
       { apiToken: CF_TOKEN }
     )
@@ -256,7 +301,7 @@ describe('credentials', () => {
       ]),
     })
     const rotated = await call(
-      '/api/admin/setup/credentials/cloudflare_api_token',
+      '/api/platform/setup/credentials/cloudflare_api_token',
       { method: 'PUT' },
       { apiToken: `${CF_TOKEN}2` }
     )
@@ -264,13 +309,13 @@ describe('credentials', () => {
     expect((await auditRows('credential.rotated')).map(r => r.targetId)).toContain(
       'cloudflare_api_token'
     )
-    const overview = (await call('/api/admin/setup')).body as SetupOverview
+    const overview = (await call('/api/platform/setup')).body as SetupOverview
     expect(overview.steps.find(s => s.id === 'domain')?.status).toBe('failed')
     expect(overview.steps.find(s => s.id === 'cloudflare')?.status).toBe('failed')
 
     // Fixed upstream → re-check goes back to a warning, and is audited.
     vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
-    const check = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+    const check = await call('/api/platform/setup/credentials/cloudflare_api_token/check', {
       method: 'POST',
     })
     expect(check.body).toMatchObject({ status: 'warning' })
@@ -279,19 +324,19 @@ describe('credentials', () => {
     // The fetch saw the ROTATED token, as a Bearer header, only on Cloudflare's API.
     expect(vendors.calls.every(c => c.authorization === `Bearer ${CF_TOKEN}2`)).toBe(true)
 
-    const del = await call('/api/admin/setup/credentials/cloudflare_api_token', {
+    const del = await call('/api/platform/setup/credentials/cloudflare_api_token', {
       method: 'DELETE',
     })
     expect(del).toMatchObject({ status: 200, body: { removed: true } })
     expect((await auditRows('credential.removed')).map(r => r.targetId)).toContain(
       'cloudflare_api_token'
     )
-    const again = await call('/api/admin/setup/credentials/cloudflare_api_token', {
+    const again = await call('/api/platform/setup/credentials/cloudflare_api_token', {
       method: 'DELETE',
     })
     expect(again.status).toBe(404)
     expect(again.body).toMatchObject({ statusCode: 404, code: 'credential_not_set' })
-    const unsetCheck = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+    const unsetCheck = await call('/api/platform/setup/credentials/cloudflare_api_token/check', {
       method: 'POST',
     })
     expect(unsetCheck.status).toBe(404)
@@ -318,7 +363,7 @@ describe('credentials', () => {
       (body as SetupCheckResponse).checks.find(c => c.id === 'zone.wildcard')
 
     const put = await call(
-      '/api/admin/setup/credentials/cloudflare_api_token',
+      '/api/platform/setup/credentials/cloudflare_api_token',
       { method: 'PUT' },
       { apiToken: CF_TOKEN }
     )
@@ -338,11 +383,11 @@ describe('credentials', () => {
 
     // The overview reads stored results: no vendor call at all, so nothing can be created.
     const seen = vendors.calls.length
-    expect((await call('/api/admin/setup')).status).toBe(200)
+    expect((await call('/api/platform/setup')).status).toBe(200)
     expect(vendors.calls.length).toBe(seen)
 
     // Re-check finds the record it made: nothing new created or audited.
-    const check = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+    const check = await call('/api/platform/setup/credentials/cloudflare_api_token/check', {
       method: 'POST',
     })
     expect(wildcardOf(check.body)).toMatchObject({ status: 'ok', detail: `AAAA *.${DOMAIN}` })
@@ -351,7 +396,7 @@ describe('credentials', () => {
 
     // Deleted upstream → the next re-check creates it again.
     records.length = 0
-    const recheck = await call('/api/admin/setup/credentials/cloudflare_api_token/check', {
+    const recheck = await call('/api/platform/setup/credentials/cloudflare_api_token/check', {
       method: 'POST',
     })
     expect(wildcardOf(recheck.body)).toMatchObject({ status: 'ok' })
@@ -359,12 +404,12 @@ describe('credentials', () => {
     expect(await auditRows('dns.wildcard.created')).toHaveLength(2)
 
     vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
-    await call('/api/admin/setup/credentials/cloudflare_api_token', { method: 'DELETE' })
+    await call('/api/platform/setup/credentials/cloudflare_api_token', { method: 'DELETE' })
   })
 
   it('Neon: discovers the org and pins the region into the settings', async () => {
     const put = await call(
-      '/api/admin/setup/credentials/neon_org_api_key',
+      '/api/platform/setup/credentials/neon_org_api_key',
       { method: 'PUT' },
       { apiKey: NEON_KEY }
     )
@@ -379,7 +424,7 @@ describe('credentials', () => {
     // An org key is refused `GET /regions` (404), so the check never asks.
     expect(vendors.calls.some(c => c.url.includes('/regions'))).toBe(false)
     // Pinned now, so the next check is clean.
-    const check = await call('/api/admin/setup/credentials/neon_org_api_key/check', {
+    const check = await call('/api/platform/setup/credentials/neon_org_api_key/check', {
       method: 'POST',
     })
     expect(check.body).toMatchObject({ status: 'ok' })
@@ -387,7 +432,7 @@ describe('credentials', () => {
 
   it('Resend: a verified notifications domain passes; an unverified one does not', async () => {
     const put = await call(
-      '/api/admin/setup/credentials/resend_api_key',
+      '/api/platform/setup/credentials/resend_api_key',
       { method: 'PUT' },
       { apiKey: RESEND_KEY }
     )
@@ -399,17 +444,17 @@ describe('credentials', () => {
         data: [{ id: 'd1', name: `notifications.${DOMAIN}`, status: 'failed' }],
       },
     })
-    const check = await call('/api/admin/setup/credentials/resend_api_key/check', {
+    const check = await call('/api/platform/setup/credentials/resend_api_key/check', {
       method: 'POST',
     })
     expect(check.body).toMatchObject({ status: 'failed' })
     vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
-    await call('/api/admin/setup/credentials/resend_api_key', { method: 'DELETE' })
+    await call('/api/platform/setup/credentials/resend_api_key', { method: 'DELETE' })
   })
 
   it('GitHub App: stores the installation id, and fails a missing permission', async () => {
     const put = await call(
-      '/api/admin/setup/credentials/github_app',
+      '/api/platform/setup/credentials/github_app',
       { method: 'PUT' },
       { appId: 123456, privateKey: GITHUB_PEM }
     )
@@ -432,7 +477,7 @@ describe('credentials', () => {
       deployments: 'write',
     }
     vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG, permissions: rest }))
-    const check = await call('/api/admin/setup/credentials/github_app/check', { method: 'POST' })
+    const check = await call('/api/platform/setup/credentials/github_app/check', { method: 'POST' })
     const body = check.body as SetupCheckResponse
     expect(body.status).toBe('failed')
     expect(body.checks.find(c => c.id === 'permissions')?.detail).toContain('actions_variables')
@@ -440,7 +485,7 @@ describe('credentials', () => {
   })
 
   it('never returns a secret, in any response or audit row', async () => {
-    const overview = await call('/api/admin/setup')
+    const overview = await call('/api/platform/setup')
     expect(overview.status).toBe(200)
     const o = overview.body as SetupOverview
     expect(o.credentials.map(c => c.kind).sort()).toEqual(

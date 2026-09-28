@@ -1,6 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import { Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Moved } from '@/ui/components/Moved'
 import { ProtectedRoute } from '@/ui/components/ProtectedRoute'
 import { RequireGuard } from '@/ui/components/RequireGuard'
 import {
@@ -15,7 +16,7 @@ function Where({ label }: { label: string }) {
   return (
     <div>
       <span data-testid="page">{label}</span>
-      <span data-testid="path">{location.pathname + location.search}</span>
+      <span data-testid="path">{location.pathname + location.search + location.hash}</span>
     </div>
   )
 }
@@ -54,6 +55,15 @@ function App() {
           <ProtectedRoute>
             <Routes>
               <Route path="/" element={<Where label="home" />} />
+              <Route
+                path="/settings/platform/*"
+                element={
+                  <RequireGuard guard="platformAdmin">
+                    <Where label="platform" />
+                  </RequireGuard>
+                }
+              />
+              <Route path="/admin/setup" element={<Moved to="/settings/platform/setup" />} />
               <Route
                 path="/settings/*"
                 element={
@@ -179,6 +189,41 @@ describe('ProtectedRoute', () => {
       route: '/admin/users',
     })
     expect(page()).toBe('no-access')
+  })
+
+  it('/settings/platform: the single-mode owner/admin; never a member or a multi-mode owner', () => {
+    const landsOn = (session: ReturnType<typeof makeSession>) => {
+      const { unmount } = renderWithProviders(<App />, {
+        session,
+        route: '/settings/platform/setup',
+      })
+      const label = page()
+      unmount()
+      return label
+    }
+    const single = (role: 'owner' | 'admin' | 'member') =>
+      makeSession({ tenancyMode: 'single', tenant: makeTenant({ role }) })
+    expect(landsOn(single('owner'))).toBe('platform')
+    expect(landsOn(single('admin'))).toBe('platform')
+    expect(landsOn(single('member'))).toBe('home')
+    expect(landsOn(makeSession({ tenant: makeTenant({ role: 'owner' }) }))).toBe('home')
+  })
+
+  it('a global admin with NO membership reaches /settings/platform too', () => {
+    renderWithProviders(<App />, {
+      session: makeSession({ user: makeUser({ isGlobalAdmin: true }), tenant: null, tenants: [] }),
+      route: '/settings/platform/access-requests',
+    })
+    expect(page()).toBe('platform')
+  })
+
+  it('the old /admin/setup link lands on the platform page with its step anchor', () => {
+    renderWithProviders(<App />, {
+      session: makeSession({ tenancyMode: 'single', tenant: makeTenant({ role: 'admin' }) }),
+      route: '/admin/setup#setup-public_url',
+    })
+    expect(page()).toBe('platform')
+    expect(path()).toBe('/settings/platform/setup#setup-public_url')
   })
 
   it('RequireGuard: global admin opens /admin', () => {

@@ -12,6 +12,7 @@ const GUARDS: Record<string, NavGuard | undefined> = {
   none: undefined,
   admin: 'admin',
   globalAdmin: 'globalAdmin',
+  platformAdmin: 'platformAdmin',
   manageTenant: { action: 'manage', subject: 'Tenant' },
   manageMembers: { action: 'manage', subject: 'TenantMember' },
   readKeys: { action: 'read', subject: 'ApiKey' },
@@ -107,6 +108,42 @@ describe('useNavGuard with a real ability unpacked from the session rules', () =
 
   it('logged out: only unguarded items', async () => {
     renderWithProviders(<Probe />, { session: null })
-    await expectGuards({ admin: false, globalAdmin: false, manageTenant: false, readKeys: false })
+    await expectGuards({ admin: false, globalAdmin: false, platformAdmin: false, readKeys: false })
+  })
+})
+
+describe("'platformAdmin' — canAdministerPlatform, the server's rule", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const probe = async (
+    tenancyMode: 'single' | 'multi',
+    role: 'owner' | 'admin' | 'member' | null,
+    isGlobalAdmin = false
+  ) => {
+    const { unmount } = renderWithProviders(<Probe />, {
+      session: makeSession({
+        tenancyMode,
+        user: makeUser({ isGlobalAdmin }),
+        tenant: role ? makeTenant({ role }) : null,
+        ...(role ? {} : { tenants: [] }),
+      }),
+    })
+    await waitFor(() => expect(screen.getByTestId('none')).toHaveTextContent('true'))
+    const value = screen.getByTestId('platformAdmin').textContent
+    unmount()
+    return value
+  }
+
+  it('single mode: the organisation owner and admin administer the platform; a member does not', async () => {
+    expect(await probe('single', 'owner')).toBe('true')
+    expect(await probe('single', 'admin')).toBe('true')
+    expect(await probe('single', 'member')).toBe('false')
+  })
+
+  it('multi mode: a tenant owner or admin does not; a global admin does, membership or not', async () => {
+    expect(await probe('multi', 'owner')).toBe('false')
+    expect(await probe('multi', 'admin')).toBe('false')
+    expect(await probe('multi', null, true)).toBe('true')
+    expect(await probe('single', null, true)).toBe('true')
   })
 })

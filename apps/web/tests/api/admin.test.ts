@@ -1,6 +1,7 @@
 /**
- * `/api/admin/*` (D9, D10, D25): tenant-free global admin; access-request decisions; tenant
- * list/detail/suspend; support enter/leave; users; the last global admin guard; block kills sessions.
+ * `/api/admin/*` (D10, D25) and `/api/platform/access-requests` (D9), multi mode: tenant-free
+ * global admin; access-request decisions; tenant list/detail/suspend; support enter/leave; users;
+ * the last global admin guard; block kills sessions.
  */
 import type { SessionResponse } from '@launch/shared/auth'
 import { and, eq, ne } from 'drizzle-orm'
@@ -63,11 +64,13 @@ describe('access requests', () => {
     })
     const tenant = await createTestTenant(db)
     const list = await json<{ items: Array<{ id: string; status: string }> }>(
-      await request('/api/admin/access-requests?status=pending&pageSize=200', { headers: a.cookie })
+      await request('/api/platform/access-requests?status=pending&pageSize=200', {
+        headers: a.cookie,
+      })
     )
     expect(list.items.map(i => i.id)).toContain(req.id)
     const res = await request(
-      `/api/admin/access-requests/${req.id}/decide`,
+      `/api/platform/access-requests/${req.id}/decide`,
       { method: 'POST', headers: a.cookie },
       {
         json: {
@@ -93,7 +96,7 @@ describe('access requests', () => {
       .where(and(eq(notifications.tenantId, tenant.id), eq(notifications.userId, requester.id)))
     expect(notes.map(n => n.type)).toContain('access_request_decided')
     const again = await request(
-      `/api/admin/access-requests/${req.id}/decide`,
+      `/api/platform/access-requests/${req.id}/decide`,
       { method: 'POST', headers: a.cookie },
       { json: { decision: 'reject' } }
     )
@@ -105,7 +108,7 @@ describe('access requests', () => {
     const email = `lodged_${uniqueId().toLowerCase()}@example.test`
     const req = await ensureAccessRequest(db, { email, userId: null })
     const single = await request(
-      `/api/admin/access-requests/${req.id}/decide`,
+      `/api/platform/access-requests/${req.id}/decide`,
       { method: 'POST', headers: a.cookie },
       {
         json: { decision: 'approve', approve: { mode: 'new_org', name: 'Lodged Org' } },
@@ -115,7 +118,7 @@ describe('access requests', () => {
     expect(single.status).toBe(404)
     expect(await json(single)).toMatchObject({ code: 'tenancy_mode_single' })
     const res = await request(
-      `/api/admin/access-requests/${req.id}/decide`,
+      `/api/platform/access-requests/${req.id}/decide`,
       { method: 'POST', headers: a.cookie },
       {
         json: { decision: 'approve', approve: { mode: 'new_org', name: 'Lodged Org' } },
@@ -136,7 +139,7 @@ describe('access requests', () => {
     const requester = await createTestUser(db)
     const req = await ensureAccessRequest(db, { email: requester.email, userId: requester.id })
     const res = await request(
-      `/api/admin/access-requests/${req.id}/decide`,
+      `/api/platform/access-requests/${req.id}/decide`,
       { method: 'POST', headers: a.cookie },
       { json: { decision: 'reject', reason: 'no' } }
     )

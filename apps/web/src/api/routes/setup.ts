@@ -1,7 +1,8 @@
 /**
- * `/api/admin/setup` (spec/03, spec/04) — the setup wizard's API. Mounted under `/api/admin`, so
- * `globalAdminMiddleware` already applies (401 without a session, 403 for anyone not a global
- * admin, and never a Bearer key).
+ * `/api/platform/setup` (spec/03, spec/04) — the setup wizard's API. Mounted under
+ * `/api/platform`, so `platformAdminMiddleware` already applies: 401 without a session, 403 unless
+ * `canAdministerPlatform` (a global admin, or in single mode the organisation's owner/admin), and
+ * never a Bearer key.
  *
  *   GET    /                          every step, settings, credential status, identity — no value
  *   PUT    /settings                  apps domain, account id, Neon org/region, notifications domain, org
@@ -19,7 +20,8 @@
  * `'set'`, never the value.
  *
  * **Audit tenant.** `audit_events` is tenant-scoped and these tables are not, so a row goes to the
- * admin's session tenant or, for a global admin with none, the deployment's one tenant
+ * admin's session tenant (always the case for a single-mode owner/admin, recorded with them as the
+ * actor) or, for a global admin with none, the deployment's one tenant
  * (`getSingleTenant`). With neither there is nowhere to record the action, and an action Launch
  * cannot record is refused (409) BEFORE anything is written.
  */

@@ -1,7 +1,7 @@
 /**
- * `/admin/identity` (spec/05): Launch as the company's OIDC issuer — the issuer URL every app is
- * configured with, its discovery and JWKS links, the signing keys (next, active, retiring, retired)
- * and key rotation. Global admin (the `/admin` layout's guard).
+ * `/settings/platform/identity` (spec/05): Launch as the company's OIDC issuer — the issuer URL
+ * every app is configured with, its discovery and JWKS links, the signing keys (next, active,
+ * retiring, retired) and key rotation. `canAdministerPlatform` (the platform layout's guard).
  *
  * Rotation is safe to run at any time: the key that starts signing was already published as
  * `next`, and the one it replaces stays in the JWKS until every token it signed has expired.

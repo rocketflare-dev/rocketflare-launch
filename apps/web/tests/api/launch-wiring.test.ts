@@ -84,16 +84,16 @@ describe('Launch mounts', () => {
     }
   })
 
-  it('/api/admin/setup and /api/admin/oidc are global-admin only', async () => {
+  it('multi mode: /api/platform/setup and /api/platform/oidc are global-admin only', async () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'owner')
     const owner = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
     const admin = await createTestGlobalAdmin(db)
     const staff = sessionCookieHeader(await createTestSession(db, admin.id))
-    for (const path of ['/api/admin/setup', '/api/admin/oidc/keys']) {
+    for (const path of ['/api/platform/setup', '/api/platform/oidc/keys']) {
       await expectEnvelope(await request(path), 401, path)
       await expectEnvelope(await request(path, { headers: owner }), 403, path)
     }
-    for (const path of ['/api/admin/setup', '/api/admin/oidc/keys']) {
+    for (const path of ['/api/platform/setup', '/api/platform/oidc/keys']) {
       expect((await request(path, { headers: staff })).status, path).toBe(200)
     }
   })

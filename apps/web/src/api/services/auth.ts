@@ -3,7 +3,8 @@
  * (magic link, OAuth, invite accept, dev-login bypasses it) runs to turn a verified email into a
  * user row — or a refusal. `onNoTenant` is the one hook that decides what a member-less user
  * gets: the single tenant, a personal workspace, or nothing (→ /pending or /select-tenant).
- * `buildSessionResponse` is `/auth/session`'s body, also returned by select-tenant and accept.
+ * `admitBootstrapAdmin` is the bootstrap address's membership (single mode: the organisation's
+ * owner). `buildSessionResponse` is `/auth/session`'s body, also returned by select-tenant and accept.
  */
 import type { SessionResponse, TenantSummary } from '@launch/shared/auth'
 import { and, desc, eq, isNull, sql } from 'drizzle-orm'
@@ -131,9 +132,7 @@ export async function admitUser(
         .returning()
       user = updated ?? existing
     }
-    if (bootstrap && (await membershipCount(db, user.id)) === 0) {
-      await onNoTenant(db, cfg, user, logger)
-    }
+    if (bootstrap) await admitBootstrapAdmin(db, cfg, user, logger)
     return { ok: true, user, created: false }
   }
 
@@ -143,7 +142,7 @@ export async function admitUser(
       { email },
       'BOOTSTRAP_ADMIN_EMAILS: created the first GLOBAL ADMIN on verified login'
     )
-    await onNoTenant(db, cfg, user, logger)
+    await admitBootstrapAdmin(db, cfg, user, logger)
     return { ok: true, user, created: true }
   }
 
@@ -167,6 +166,77 @@ export async function admitUser(
       return { ok: true, user, created: true }
     }
   }
+}
+
+/**
+ * A bootstrap admin's membership (`BOOTSTRAP_ADMIN_EMAILS`, on a verified login).
+ *
+ *   multi   → what any member-less user gets (`onNoTenant`), and only when they have none
+ *   single  → the one organisation's OWNER: it is created with them as owner when there is none
+ *             yet, and otherwise they join as — or are promoted to — `owner`
+ *
+ * Single mode collapses the two admin layers (`canAdministerPlatform`): the organisation's
+ * owner/admin IS the platform admin, so the first admin must hold the tenant role too, not only
+ * the global flag — or a tenant created before their first login (the seed, a second bootstrap
+ * address) would leave them a `member` of their own deployment. Promotion is no wider than the
+ * global flag this same login grants. Idempotent: an owner is left alone.
+ */
+export async function admitBootstrapAdmin(
+  db: Database,
+  cfg: AppConfig,
+  user: User,
+  logger: AdmitLogger
+): Promise<void> {
+  if (cfg.TENANCY_MODE !== 'single') {
+    if ((await membershipCount(db, user.id)) === 0) await onNoTenant(db, cfg, user, logger)
+    return
+  }
+  const single = await getSingleTenant(db)
+  // No organisation yet: `onNoTenant` creates it with this (global-admin) user as its owner.
+  if (!single) {
+    await onNoTenant(db, cfg, user, logger)
+    return
+  }
+  const [current] = await db
+    .select({ role: tenantUsers.role })
+    .from(tenantUsers)
+    .where(and(eq(tenantUsers.tenantId, single.id), eq(tenantUsers.userId, user.id)))
+    .limit(1)
+  if (current?.role === 'owner') return
+  if (!current) {
+    await db
+      .insert(tenantUsers)
+      .values({ tenantId: single.id, userId: user.id, role: 'owner' })
+      .onConflictDoUpdate({
+        target: [tenantUsers.tenantId, tenantUsers.userId],
+        set: { role: 'owner' },
+      })
+    await recordActivity(db, {
+      tenantId: single.id,
+      userId: user.id,
+      type: 'member.joined',
+      subjectType: 'TenantMember',
+      subjectId: user.id,
+      metadata: { via: 'bootstrap_admin', role: 'owner' },
+    })
+  } else {
+    await db
+      .update(tenantUsers)
+      .set({ role: 'owner' })
+      .where(and(eq(tenantUsers.tenantId, single.id), eq(tenantUsers.userId, user.id)))
+    await recordActivity(db, {
+      tenantId: single.id,
+      userId: user.id,
+      type: 'member.role_changed',
+      subjectType: 'TenantMember',
+      subjectId: user.id,
+      metadata: { from: current.role, to: 'owner', via: 'bootstrap_admin' },
+    })
+  }
+  logger.warn(
+    { email: user.email, tenantId: single.id, from: current?.role ?? null },
+    'BOOTSTRAP_ADMIN_EMAILS: TENANCY_MODE=single — the bootstrap admin is the organisation OWNER'
+  )
 }
 
 /** One pending request per email; re-login updates `userId` on the open row instead of duplicating. */

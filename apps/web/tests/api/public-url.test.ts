@@ -350,11 +350,11 @@ describe('the routes that dispatch CI refuse while Launch is unreachable', () =>
 
 describe('Setup › Public URL', () => {
   it('is 401 without a session and 403 for a tenant admin', async () => {
-    expect((await request('/api/admin/setup/public-url/check', { method: 'POST' })).status).toBe(
+    expect((await request('/api/platform/setup/public-url/check', { method: 'POST' })).status).toBe(
       401
     )
     const { headers } = await signedIn('admin')
-    const res = await request('/api/admin/setup/public-url/check', { method: 'POST', headers })
+    const res = await request('/api/platform/setup/public-url/check', { method: 'POST', headers })
     expect(res.status).toBe(403)
   })
 
@@ -363,7 +363,7 @@ describe('Setup › Public URL', () => {
     const probe = vi.fn()
     vi.stubGlobal('fetch', probe)
     const overview = setupOverviewSchema.parse(
-      await (await request('/api/admin/setup', { headers })).json()
+      await (await request('/api/platform/setup', { headers })).json()
     )
     expect(overview.publicUrl).toMatchObject({
       url: 'http://localhost:3001',
@@ -376,7 +376,7 @@ describe('Setup › Public URL', () => {
     const env = publicEnv()
     vi.stubGlobal('fetch', viaApp(env).fetch)
     const res = await request(
-      '/api/admin/setup/public-url/check',
+      '/api/platform/setup/public-url/check',
       { method: 'POST', headers },
       { env }
     )
@@ -391,7 +391,7 @@ describe('Setup › Public URL', () => {
     expect(audit?.summary.after).toMatchObject({ url: PUBLIC, checkStatus: 'ok', failed: [] })
 
     const after = setupOverviewSchema.parse(
-      await (await request('/api/admin/setup', { headers }, { env })).json()
+      await (await request('/api/platform/setup', { headers }, { env })).json()
     )
     expect(after.publicUrl).toMatchObject({ url: PUBLIC, status: 'ok' })
     expect(after.publicUrl.checkedAt).not.toBeNull()

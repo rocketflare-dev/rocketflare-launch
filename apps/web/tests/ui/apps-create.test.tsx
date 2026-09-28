@@ -324,7 +324,7 @@ describe('CreateAppModal', () => {
     expect(alert).not.toHaveTextContent(/Pick another slug/)
     expect(within(alert).getByRole('link', { name: 'Setup › Public URL' })).toHaveAttribute(
       'href',
-      '/admin/setup#setup-public_url'
+      '/settings/platform/setup#setup-public_url'
     )
   })
 
@@ -340,9 +340,9 @@ describe('CreateAppModal', () => {
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Atlas' } })
     expect(within(dialog).queryByTestId('host-preview')).not.toBeInTheDocument()
     expect(within(dialog).getByText(/cannot be changed later/)).toBeInTheDocument()
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/admin/setup'))).toBe(
-      false
-    )
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('/api/platform/setup'))
+    ).toBe(false)
   })
 })
 

@@ -31,7 +31,9 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `SharedResource` (Launch P5, spec/09) | manage | manage | manage | manage | read (in `ADMIN_MANAGED`: members see the bundles, item names and policy — what they need to ask; the owner GROUP's rights — values, items, holders — are `services/grants/access.ts`, never a grant; no subject reads a value) |
 
 - Actions: `manage` (wildcard) · `create` · `read` · `update` · `delete` · `access` (features only)
-- Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`
+- Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`.
+  In single mode a `BOOTSTRAP_ADMIN_EMAILS` address is also made the organisation's `owner`
+  (`admitBootstrapAdmin` in `services/auth.ts`), so it holds the platform on the role too
 - **Owner-only checks are explicit `role === 'owner'`, not CASL** (`isOwnerLevel` in
   `src/api/middleware/permissions.ts`): delete tenant, transfer/assign `owner`. `manage Tenant` alone
   is NOT proof of ownership — `support` and global admins hold it too
@@ -43,6 +45,32 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
   this kit shipped that and had five routes open in production to staff. A flag is CONFIGURATION:
   read `auth.features` / `session.features`. `applyFeatureFlags` stays for an app that wants
   permission-style entitlements, and nothing hiding a dark surface may use it
+
+## Administering the deployment — `canAdministerPlatform` (NOT a CASL subject)
+
+`canAdministerPlatform(auth, config)` (`platform.ts`, over the pure `canAdministerPlatform` +
+`PLATFORM_ADMIN_ROLES` in `@launch/shared/permissions`) is the ONE rule for the deployment's own
+administration — the setup wizard and every `launch_settings` / `admin_credentials` write, the OIDC
+issuer's keys, the access-request queue:
+
+| | global admin | owner | admin | support | member |
+|---|---|---|---|---|---|
+| `TENANCY_MODE=single` | yes | **yes** | **yes** | – | – |
+| `TENANCY_MODE=multi` | yes | – | – | – | – |
+
+Single mode collapses the two admin layers: the one organisation IS the company running Launch, so
+its owner/admin IS the platform admin. Multi mode is `isGlobalAdmin` exactly, as before. `support`
+is absent on purpose — it is a global admin visiting, who passes on the flag.
+
+It is a predicate, not a subject in the matrix above, because the answer varies on DEPLOYMENT
+CONFIGURATION rather than on the role alone, and the matrix is role × subject; packing
+tenancy-mode-dependent rules into the ability would make every cell above conditional. Callers:
+`platformAdminMiddleware` (`/api/platform/*`, cookie only) on the server and the UI's
+`'platformAdmin'` nav guard, which calls the shared function directly — so a link and the API cannot
+disagree. The operator's cross-tenant surface (`/api/admin/*`: organisations, users, feature flags,
+live sessions) stays `isGlobalAdmin` in every mode. `tests/api/platform-admin.test.ts` asserts both
+modes. The `AccessRequest` / `User` CASL subjects (global-admin only through `manage all`) gate
+nothing today — the routes are gated by their mounts.
 
 ## Usage
 

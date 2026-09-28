@@ -4,7 +4,7 @@
  * returns, and the non-secret settings in `launch_settings`. A credential VALUE never appears in a
  * response schema here — `credentialStatusSchema` is deliberately value-free.
  *
- * Below the storage contracts are the setup API's own (`/api/admin/setup`): the settings body, the
+ * Below the storage contracts are the setup API's own (`/api/platform/setup`): the settings body, the
  * overview every step renders from, and the result of a put or a check.
  */
 import { z } from 'zod'
@@ -261,7 +261,7 @@ export function neonRegionLabel(id: string): string | null {
   return NEON_REGIONS.find(r => r.id === id)?.label ?? null
 }
 
-/** `PUT /api/admin/setup/settings` — any subset of the keys; `null` clears one. */
+/** `PUT /api/platform/setup/settings` — any subset of the keys; `null` clears one. */
 export const setupSettingsUpdateSchema = z
   .object(
     Object.fromEntries(
@@ -367,10 +367,10 @@ export const launchNotReachableDetailsSchema = z.object({
 })
 export type LaunchNotReachableDetails = z.infer<typeof launchNotReachableDetailsSchema>
 
-/** `POST /api/admin/setup/public-url/check` — probe now; the stored result. */
+/** `POST /api/platform/setup/public-url/check` — probe now; the stored result. */
 export const publicUrlCheckResponseSchema = publicUrlCheckSchema
 
-/** `GET /api/admin/setup` — everything the page renders. Never a credential value. */
+/** `GET /api/platform/setup` — everything the page renders. Never a credential value. */
 export const setupOverviewSchema = z.object({
   steps: z.array(setupStepSchema),
   settings: setupSettingsSchema,

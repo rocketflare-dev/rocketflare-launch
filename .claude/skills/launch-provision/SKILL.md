@@ -143,9 +143,10 @@ re-running `all` afterwards is safe.
 
 ## Close-out
 
-`all` ends with a checklist — walk the user through it: sign in with the admin's magic link (with
-`SIGNUP_MODE=invite_only` the first login lands on `/pending`; create the first organisation at
-`/admin`), add OAuth redirect URIs per environment if they use Google/Microsoft, commit the two
+`all` ends with a checklist — walk the user through it: sign in with the admin's magic link (under
+Launch's `TENANCY_MODE=single` that first login creates the organisation with them as its owner —
+then finish Setup at `/settings/platform/setup`; under `multi` with `SIGNUP_MODE=invite_only` it
+lands on `/pending` and the first organisation is created at `/admin`), add OAuth redirect URIs per environment if they use Google/Microsoft, commit the two
 tomls (`git add apps/web/wrangler*.toml && git commit`), push, optionally
 `gh workflow run deploy.yml -f environment=staging`, and `pnpm cli login --server <APP_URL>`.
 Production, when not deployed by `--deploy both`, ships through the release dance in

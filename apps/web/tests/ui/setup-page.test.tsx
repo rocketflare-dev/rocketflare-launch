@@ -1,5 +1,5 @@
 /**
- * Admin → Setup (spec/03): the stepper renders every step with the server's status, a set
+ * Settings → Platform → Setup (spec/03): the stepper renders every step with the server's status, a set
  * credential is write-only ("Set — hidden" + Replace, never an input holding a value), Replace
  * opens an EMPTY field and PUTs only what was typed, and a bad settings value is refused with the
  * server's own schema message before any request.
@@ -7,7 +7,7 @@
 import type { SetupCredential, SetupOverview } from '@launch/shared/launch-setup'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import Setup from '@/ui/pages/admin/Setup'
+import Setup from '@/ui/pages/platform/Setup'
 import {
   makeSession,
   makeUser,
@@ -114,10 +114,10 @@ const checkResponse = {
 
 function render() {
   const fetchMock = stubFetch({
-    '/api/admin/setup': overview,
-    'PUT /api/admin/setup/credentials/cloudflare_api_token': checkResponse,
-    'PUT /api/admin/setup/settings': overview,
-    'POST /api/admin/setup/public-url/check': {
+    '/api/platform/setup': overview,
+    'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
+    'PUT /api/platform/setup/settings': overview,
+    'POST /api/platform/setup/public-url/check': {
       url: 'http://localhost:3000',
       status: 'failed',
       checks: overview.publicUrl.checks,
@@ -159,7 +159,8 @@ describe('Admin → Setup', () => {
       expect(
         fetchMock.mock.calls.some(
           ([input, init]) =>
-            String(input).endsWith('/api/admin/setup/public-url/check') && init?.method === 'POST'
+            String(input).endsWith('/api/platform/setup/public-url/check') &&
+            init?.method === 'POST'
         )
       ).toBe(true)
     )
@@ -180,11 +181,11 @@ describe('Admin → Setup', () => {
 
     await waitFor(() =>
       expect(
-        requestBody(fetchMock, 'PUT /api/admin/setup/credentials/cloudflare_api_token')
+        requestBody(fetchMock, 'PUT /api/platform/setup/credentials/cloudflare_api_token')
       ).toEqual({ apiToken: 'new-cloudflare-token-0123456789' })
     )
     // Settings did not change, so they were not sent.
-    expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toBeUndefined()
+    expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
   })
 
   it('offers the Neon regions as a select, with a free-text fallback for any other id', async () => {
@@ -200,7 +201,7 @@ describe('Admin → Setup', () => {
     fireEvent.change(select, { target: { value: 'aws-eu-central-1' } })
     fireEvent.click(within(neon).getByRole('button', { name: 'Save and check' }))
     await waitFor(() =>
-      expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toEqual({
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toEqual({
         neon_region_id: 'aws-eu-central-1',
       })
     )
@@ -217,7 +218,7 @@ describe('Admin → Setup', () => {
     expect(select).toHaveValue('__other__')
     fireEvent.click(within(neon).getByRole('button', { name: 'Save and check' }))
     await waitFor(() =>
-      expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toEqual({
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toEqual({
         neon_region_id: 'aws-ap-northeast-1',
       })
     )
@@ -231,6 +232,6 @@ describe('Admin → Setup', () => {
     })
     fireEvent.click(within(github).getByRole('button', { name: 'Save and check' }))
     expect(await within(github).findByText('A GitHub organization login')).toBeInTheDocument()
-    expect(requestBody(fetchMock, 'PUT /api/admin/setup/settings')).toBeUndefined()
+    expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
   })
 })

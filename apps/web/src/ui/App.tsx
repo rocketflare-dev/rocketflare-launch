@@ -18,6 +18,7 @@ import { ConnectionBanner } from '@/ui/components/ConnectionBanner'
 import { ErrorBoundary } from '@/ui/components/ErrorBoundary'
 import Layout from '@/ui/components/Layout'
 import { LoadingIndicator } from '@/ui/components/LoadingIndicator'
+import { Moved } from '@/ui/components/Moved'
 import { NotificationsBell } from '@/ui/components/NotificationsBell'
 import { OrgSwitcher } from '@/ui/components/OrgSwitcher'
 import { PendingInvitationsBanner } from '@/ui/components/PendingInvitationsBanner'
@@ -32,6 +33,12 @@ import { WebSocketProvider } from '@/ui/components/WebSocketProvider'
 import { WebSocketStatus } from '@/ui/components/WebSocketStatus'
 import { AuthProvider, useAuth } from '@/ui/hooks/useAuth'
 import { NavigationBridge } from '@/ui/lib/navigation'
+import {
+  PLATFORM_ACCESS_REQUESTS_PATH,
+  PLATFORM_IDENTITY_PATH,
+  PLATFORM_SETTINGS_PATH,
+  PLATFORM_SETUP_PATH,
+} from '@/ui/lib/platform-paths'
 import { queryClient } from '@/ui/lib/queryClient'
 import Home from '@/ui/pages/Home'
 import Login from '@/ui/pages/Login'
@@ -74,15 +81,17 @@ const AppConfigPage = lazy(() => import('@/ui/pages/apps/AppConfigPage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
 const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
-const AccessRequests = lazy(() => import('@/ui/pages/admin/AccessRequests'))
 const TenantList = lazy(() => import('@/ui/pages/admin/TenantList'))
 const TenantDetail = lazy(() => import('@/ui/pages/admin/TenantDetail'))
 const UserList = lazy(() => import('@/ui/pages/admin/UserList'))
 const UserDetail = lazy(() => import('@/ui/pages/admin/UserDetail'))
 const FeatureFlags = lazy(() => import('@/ui/pages/admin/FeatureFlags'))
-const Setup = lazy(() => import('@/ui/pages/admin/Setup'))
-const Identity = lazy(() => import('@/ui/pages/admin/Identity'))
 const SessionsAdmin = lazy(() => import('@/ui/pages/admin/SessionsAdmin'))
+// The deployment's own administration (`canAdministerPlatform`) — under Settings, not /admin.
+const PlatformLayout = lazy(() => import('@/ui/pages/platform/PlatformLayout'))
+const AccessRequests = lazy(() => import('@/ui/pages/platform/AccessRequests'))
+const Setup = lazy(() => import('@/ui/pages/platform/Setup'))
+const Identity = lazy(() => import('@/ui/pages/platform/Identity'))
 
 // Dev-only TanStack Query devtools. `import.meta.env.DEV` is replaced at build time, so the
 // dynamic import (and its chunk) is dropped from production bundles. Set
@@ -325,6 +334,29 @@ function ShellRoutes() {
               </RequireGuard>
             }
           />
+          {/* The deployment's own administration: a global admin, or in single mode the
+              organisation's owner/admin (`canAdministerPlatform`; server `/api/platform/*`). */}
+          <Route
+            path={PLATFORM_SETTINGS_PATH}
+            element={
+              <RequireGuard guard="platformAdmin">
+                <PlatformLayout />
+              </RequireGuard>
+            }
+          >
+            <Route index element={<Navigate to={PLATFORM_SETUP_PATH} replace />} />
+            <Route path="setup" element={<Setup />} />
+            <Route path="identity" element={<Identity />} />
+            <Route path="access-requests" element={<AccessRequests />} />
+          </Route>
+          {/* The three screens that moved out of /admin — old links and bookmarks keep working. */}
+          <Route path="/admin/setup" element={<Moved to={PLATFORM_SETUP_PATH} />} />
+          <Route path="/admin/identity" element={<Moved to={PLATFORM_IDENTITY_PATH} />} />
+          <Route
+            path="/admin/access-requests"
+            element={<Moved to={PLATFORM_ACCESS_REQUESTS_PATH} />}
+          />
+          {/* The operator's cross-tenant area: global admins only, in every mode. */}
           <Route
             path="/admin"
             element={
@@ -333,15 +365,12 @@ function ShellRoutes() {
               </RequireGuard>
             }
           >
-            <Route index element={<Navigate to="/admin/access-requests" replace />} />
-            <Route path="access-requests" element={<AccessRequests />} />
+            <Route index element={<Navigate to="/admin/tenants" replace />} />
             <Route path="tenants" element={<TenantList />} />
             <Route path="tenants/:id" element={<TenantDetail />} />
             <Route path="users" element={<UserList />} />
             <Route path="users/:id" element={<UserDetail />} />
             <Route path="feature-flags" element={<FeatureFlags />} />
-            <Route path="setup" element={<Setup />} />
-            <Route path="identity" element={<Identity />} />
             <Route path="sessions" element={<SessionsAdmin />} />
           </Route>
           {pluginRoutes('shell')}

@@ -1,8 +1,9 @@
 /**
- * `/api/admin/oidc` (spec/05) — the issuer's signing keys: `GET /keys` lists them with the issuer
- * and its discovery URL, `POST /keys/rotate` rotates (the published `next` key starts signing, the
- * old one stays in the JWKS until every token it signed has expired). Mounted under `/api/admin`,
- * so `globalAdminMiddleware` already applies: the key set is issuer-wide, not an organisation's.
+ * `/api/platform/oidc` (spec/05) — the issuer's signing keys: `GET /keys` lists them with the
+ * issuer and its discovery URL, `POST /keys/rotate` rotates (the published `next` key starts
+ * signing, the old one stays in the JWKS until every token it signed has expired). Mounted under
+ * `/api/platform`, so `platformAdminMiddleware` already applies: the key set is issuer-wide, not
+ * an organisation's — a global admin's, or in single mode the one organisation's owner/admin.
  *
  * Never returns key material — only kids, statuses and dates.
  *
