@@ -11,7 +11,9 @@
  *   test double, so `instance.already_exists` moves on to the next.
  * - A create retry puts the app back to `provisioning` (the `reserve` step, which would, is
  *   skipped), and a failed WAIT re-opens the step that started its job (`RESTARTS`), so the
- *   scaffold job or the staging deploy is dispatched again. Audited `app.pipeline.retried`.
+ *   scaffold job or the staging deploy is dispatched again. A restarted scaffold also withdraws
+ *   its old ticket — even one no job ever claimed (a job that could not reach Launch) — so the
+ *   new dispatch gets a fresh ticket. Audited `app.pipeline.retried`.
  * - The new instance id is recorded on `apps.launch_instance_id`, so the job events reach it.
  */
 import type {
@@ -22,7 +24,7 @@ import type {
 } from '@launch/shared/launch-pipeline'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
-import { type AppOperationRow, appOperations, apps } from '../../../../db/schema'
+import { type AppOperationRow, appOperations, apps, deployTickets } from '../../../../db/schema'
 import { ConflictError } from '../../../utils/core/errors'
 import { getAppRow } from '../apps'
 import { type AuditActor, recordAudit } from '../audit'
@@ -45,13 +47,26 @@ async function restartJobs(
   db: Database,
   tenantId: string,
   runId: string,
-  rows: readonly Pick<AppOperationRow, 'step' | 'status'>[]
+  rows: readonly Pick<AppOperationRow, 'step' | 'status' | 'externalIds'>[]
 ): Promise<void> {
   const starts = rows.flatMap(r => {
     const start = r.status === 'failed' ? RESTARTS[r.step] : undefined
     return start ? [start] : []
   })
   if (starts.length === 0) return
+  const ticketId = rows.find(r => r.step === 'scaffold.start')?.externalIds.scaffoldTicketId
+  if (starts.includes('scaffold.start') && ticketId) {
+    await db
+      .update(deployTickets)
+      .set({ status: 'failed', error: 'Superseded by a retry', updatedAt: new Date() })
+      .where(
+        and(
+          eq(deployTickets.tenantId, tenantId),
+          eq(deployTickets.id, ticketId),
+          eq(deployTickets.status, 'approved')
+        )
+      )
+  }
   await db
     .update(appOperations)
     .set({ status: 'failed', error: 'Started again by a retry', updatedAt: new Date() })

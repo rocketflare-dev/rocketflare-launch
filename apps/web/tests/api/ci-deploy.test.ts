@@ -55,6 +55,13 @@ const store = vi.hoisted(() => ({
   credentials: new Map<string, unknown>(),
   settings: new Map<string, unknown>(),
 }))
+// The test Launch is at http://localhost:3001, which the public-URL gate refuses by design; the
+// gate has its own suite (`public-url.test.ts`), so here it is waved through.
+vi.mock('@/api/services/launch/public-url', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/api/services/launch/public-url')>()),
+  requirePublicUrl: async () => undefined,
+}))
+
 vi.mock('@/api/services/launch/credentials', async importOriginal =>
   (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
 )

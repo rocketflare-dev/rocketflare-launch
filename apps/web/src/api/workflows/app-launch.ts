@@ -65,6 +65,7 @@ import {
   scaffoldVerifyStep,
   scaffoldWaitStep,
   skipDeploy,
+  type WaitState,
   workerSecretsStep,
   writeConfigStep,
 } from '../services/launch/pipeline/launch-steps'
@@ -178,7 +179,8 @@ export class AppLaunchWorkflow extends WorkflowEntrypoint<AppBindings, AppLaunch
   /**
    * Wait for a ticket in ROUNDS (`launch-steps.ts` header): poll the row (and the job), then park
    * on the event for one round. Returns when the poll says done or the rounds run out — the
-   * `<prefix>.wait` step after it decides which. A poll that finds a failure throws.
+   * `<prefix>.wait` step after it decides which. A poll that finds a failure answers `error`, and
+   * this throws it.
    */
   private async awaitTicket(
     step: WorkflowStep,
@@ -190,11 +192,16 @@ export class AppLaunchWorkflow extends WorkflowEntrypoint<AppBindings, AppLaunch
     prefix: 'scaffold' | 'deploy_staging',
     type: string,
     plan: { rounds: number; roundTimeout: string },
-    poll: (d: PipelineDeps) => Promise<{ done: boolean }>
+    poll: (d: PipelineDeps) => Promise<WaitState>
   ): Promise<void> {
+    const check = (state: WaitState): boolean => {
+      // The poll recorded the failure on the wait's row; throwing here (not inside its step.do,
+      // whose retries would only fail it again) ends the run in `launch_failed`.
+      if (state.error) throw new Error(state.error)
+      return state.done
+    }
     for (let round = 0; round < plan.rounds; round++) {
-      const state = await run(`${prefix}.poll#${round}`, poll, POLL_STEP_CONFIG)
-      if (state.done) return
+      if (check(await run(`${prefix}.poll#${round}`, poll, POLL_STEP_CONFIG))) return
       try {
         // The payload is ignored on purpose: the ticket row is the truth, re-read next round.
         await step.waitForEvent(`${prefix}.wait#${round}`, {
@@ -205,6 +212,6 @@ export class AppLaunchWorkflow extends WorkflowEntrypoint<AppBindings, AppLaunch
         // No event this round — poll again.
       }
     }
-    await run(`${prefix}.poll#${plan.rounds}`, poll, POLL_STEP_CONFIG)
+    check(await run(`${prefix}.poll#${plan.rounds}`, poll, POLL_STEP_CONFIG))
   }
 }

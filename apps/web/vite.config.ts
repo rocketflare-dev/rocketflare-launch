@@ -79,6 +79,9 @@ export default defineConfig({
       // Launch's OIDC issuer (spec/05) — discovery, JWKS, authorize, token, userinfo, logout.
       '/oidc': proxyTo(),
       '/.well-known': proxyTo(),
+      // Launch P2: the CI jobs' callbacks (`/ci/scaffold/*`, `/ci/deploy/*`) and the public-URL
+      // probe (`/ci/ping`) — through the tunnel they arrive HERE, on the UI port.
+      '/ci': proxyTo(),
       '/cubejs-api': proxyTo(),
       '/mcp': proxyTo(),
     },

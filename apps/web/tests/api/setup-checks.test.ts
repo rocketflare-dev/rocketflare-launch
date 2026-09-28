@@ -598,7 +598,23 @@ describe('identity and steps', () => {
       resend: 'unchecked',
       github: 'todo',
       identity: 'ok',
+      public_url: 'unchecked',
     })
+    // The public URL's step is its stored check's status.
+    const withUrl = stepStatuses(
+      {
+        apps_domain: null,
+        cloudflare_account_id: null,
+        neon_org_id: null,
+        neon_region_id: null,
+        notifications_domain: null,
+        github_org: null,
+      },
+      [],
+      identity,
+      { status: 'failed' }
+    )
+    expect(withUrl.find(s => s.id === 'public_url')?.status).toBe('failed')
   })
 
   it('scrub removes a secret wherever it appears', () => {

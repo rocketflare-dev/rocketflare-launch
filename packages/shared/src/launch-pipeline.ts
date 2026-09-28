@@ -82,6 +82,21 @@ export const retryPipelineResponseSchema = z.object({
 })
 export type RetryPipelineResponse = z.infer<typeof retryPipelineResponseSchema>
 
+/**
+ * `POST /api/apps/:id/pipeline/cancel` (`manage App`) — stop a create run that is still `running`
+ * (stuck in a wait, say): its running step is marked failed "Stopped by …", an unclaimed scaffold
+ * ticket is withdrawn, the Workflow instance is terminated (best effort) and the app is `failed`,
+ * so "Retry from failed step" is offered. 409 `run_not_running` otherwise.
+ */
+export const cancelPipelineResponseSchema = z.object({
+  runId: z.string().uuid(),
+  /** The step now recorded as failed. */
+  step: z.string(),
+  /** Whether the Workflow instance was terminated (false: it was already gone, or refused). */
+  terminated: z.boolean(),
+})
+export type CancelPipelineResponse = z.infer<typeof cancelPipelineResponseSchema>
+
 /** `POST /api/apps/:id/teardown`. `confirmSlug` must equal the app's slug (else 400). */
 export const teardownRequestSchema = z.object({
   confirmSlug: z.string().trim().min(1),
@@ -180,6 +195,11 @@ export const pipelineStepSchema = z.object({
   status: appOperationStatusSchema,
   attempt: z.number().int(),
   error: z.string().nullable(),
+  /**
+   * Where a person follows the step's job, once known — a wait's GitHub Actions run
+   * (`html_url`). Absent for a step with no job.
+   */
+  url: z.string().url().nullable().optional(),
   startedAt: z.coerce.date().nullable(),
   finishedAt: z.coerce.date().nullable(),
 })

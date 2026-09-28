@@ -773,12 +773,38 @@ create), and an unset one is pinned to where most of the org's projects already 
 `DEFAULT_NEON_REGION` (`aws-us-east-2`, Neon's default for a new project), with a warning either
 way. The wizard offers the list as a select with an "Other…" free-text fallback.
 
+**The public URL (step 7).** The scaffold job and every app's deploy job run on GitHub's runners
+and call Launch BACK (`/ci/scaffold/*`, `/ci/deploy/*`) at the URL they were dispatched with —
+Launch's `APP_URL` (`issuerOf(cfg)`, the same value that is the jobs' OIDC audience, every app's
+`DEPLOYER_URL` and `OIDC_ISSUER`; under `pnpm dev` it is `.dev.vars`' `http://localhost:3000`,
+or the tunnel's `https://…` host while `pnpm dev:tunnel` is up — SETUP §1.10). It is not a
+setting: it is the Worker's config. `services/launch/public-url.ts` checks it in two probes:
+`url` (static — `https`, and not `localhost`/`*.localhost`, `.local`/`.internal`/`.home.arpa`, a
+dotless name, or a loopback, private, CGNAT, link-local or unspecified IP literal) and, when that
+passes, `probe` — Launch fetches `<APP_URL>/ci/ping?nonce=<random>` through the internet and
+expects the nonce back with an HMAC of it under its own `OAUTH_ENCRYPTION_KEY`, which proves the
+hostname routes to THIS Launch (through the tunnel locally), not merely to something. A wrong
+proof or a non-ping answer fails; unreachable fails under `APP_ENV=development` and is a
+`warning` in a deployment (see the gap). The result is stored as `launch_settings.public_url_check`
+for the URL it ran against. The wizard's card shows it (the static half alone until someone clicks
+"Check now", `POST /api/admin/setup/public-url/check`, audited `public_url.checked`; the overview
+still never probes). **The gate**: `POST /api/apps`, a create run's retry and "Deploy to
+production" call `requirePublicUrl` first and refuse with 409 `launch_not_reachable` (`details`:
+the URL and the probes) — before any write. It reuses a passing result for 10 minutes and a
+failing one for 30 seconds (so starting the tunnel shows up quickly), and probes again otherwise;
+a static failure never probes. The Create modal shows the reason and links to the step.
+
 **Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
 creating a Worker; `NEON_REGIONS` is a hand-kept list (a region Neon adds later is only a
 warning until it is added); saving the apps domain through the API alone (not the wizard)
 does not re-check, so the wildcard is created on the next save or check; checks run only when a credential is saved or re-checked, not on a schedule;
 one row per kind for the whole deployment, so a suite that needs credentials mocks the module
 over an in-memory store (`tests/helpers/credential-store.ts`) rather than racing the setup suite.
+The public-URL probe is unproven on a deployed Worker: whether a Worker can fetch its own hostname
+depends on how it is routed (a same-zone Route does not loop back; a Custom Domain should), so an
+UNREACHABLE probe in a deployment is only a `warning` and does not block creates — the static check
+still does; the gate does not cover an app's own tag-triggered deploys (GitHub starts those, not
+Launch); an import dispatches nothing and is not gated.
 
 ### 18.3 The OIDC issuer
 
@@ -882,19 +908,41 @@ step that mints one puts it on the Worker itself.
   placeholder-worker,scaffold-job}.ts` and `scaffold/github-actions-runner.ts`. The Workflow
   depends on the ports only.
 - **Waits are rounds**: `…poll#N` reads the ticket row (the truth) and asks whether the job
-  itself died, then `…wait#N` parks on the event for one round (15 × 2 min for the scaffold, 15 ×
-  3 min for the deploy). The event is a nudge.
+  itself died, then `…wait#N` parks on the event for one round (30 × 1 min for the scaffold, 15 ×
+  3 min for the deploy). The event is a nudge — it only ever says SUCCESS, so a round is how long a
+  job's failure can go unseen. The `…wait` row is opened `running` by the step that dispatched the
+  job (`openWait`), so the step list shows the job running rather than a tick on "Start …"; each
+  poll records the job's GitHub run on it (`runId`, `runUrl` = `html_url`) the moment the run is
+  listed, and the view returns it as the step's `url`. A run that ends `failure`/`cancelled`, or a
+  dispatch GitHub lists no run for within 10 minutes (`SCAFFOLD_START_WINDOW_MS`), fails the wait
+  at that poll with a scrubbed sentence — and, when `APP_URL` is not public, says that the job
+  could not call Launch back. A poll that finds a failure answers `{ done, error }` and the
+  Workflow throws outside the poll's `step.do`, so its retries do not fail it again.
 - **Retry** (`POST /api/apps/:id/pipeline/retry`, `manage App`, only a `failed` run): a new
   instance `<runId>-rN` with the same run id, so succeeded steps are skipped and the failed one
-  resumes with `ctx.prior`; a failed wait restarts the job it waited on; a retried `placeholders`
-  sends only the DO migrations the script does not have. The live instance id is kept on
+  resumes with `ctx.prior`; a failed wait restarts the job it waited on — for the scaffold on a
+  FRESH ticket (the old one is withdrawn even if no job ever claimed it); a retried `placeholders`
+  sends only the DO migrations the script does not have. Refused 409 `launch_not_reachable` for a
+  create run while the public URL fails its check (§18.2). The live instance id is kept on
   `apps.launch_instance_id`, and `/ci/scaffold/done` and `/ci/deploy/:id/finish` send their events
   there (`pipeline/instance.ts`).
+- **Stop** (`POST /api/apps/:id/pipeline/cancel`, `manage App`, only a `running` create run —
+  409 `run_not_running`; `pipeline/cancel.ts`): the way out of a run stuck in a wait. Its running
+  step (or, between steps, the next one) is marked failed "Stopped by <email>", an unclaimed
+  scaffold ticket is withdrawn, the live instance is terminated (best effort — one that refuses
+  finds its wait row failed at its next poll and fails the run itself), the app is `failed` and
+  `app.pipeline.cancelled` is audited. Retry then restarts that step.
 - **UI**: "Create app" (a live slug check and a preview of `<slug>-staging.<apps domain>`, the
-  domain from `GET /api/apps`' `appsDomain`), the step list polled while a run is owed, "Retry from
-  failed step", the deploys card and Archive (`pages/apps/components/`).
+  domain from `GET /api/apps`' `appsDomain`; a 409 `launch_not_reachable` says why and links to
+  Setup › Public URL), the step list polled while a run is owed — running, done and failed each
+  with its own glyph, a wait's "View run" link to its GitHub Actions run, the failed step's error
+  — "Retry from failed step", "Stop" (with a confirm) while a launch runs, the deploys card and
+  Archive (`pages/apps/components/`).
 
-**Known gaps:** waits are rounds, so a lost event costs up to one round (2–3 minutes); the
+**Known gaps:** waits are rounds, so a lost event — or a job's failure — costs up to one round (1
+minute for the scaffold, 3 for the deploy); a run that GitHub lists but leaves `queued` (no runner
+free) is waited on for the full 30 minutes; a GitHub API error while polling is retried by the poll
+step and then fails the run as that error (no run link); the
 `production` step is always skipped (the first production release is a separate, approved
 deploy); a new DO migration tag in a later build is refused by the gateway (the Versions API cannot
 apply it); `write_config` answers only the kit's one KV binding (`RATE_LIMIT_KV`) — a toml declaring
@@ -918,6 +966,15 @@ and the plan, once per ticket; clones the pinned kit at its tag and checks the c
 around rocketflare#37; runs `rename.mjs`; installs the default plugins; deletes the kit-only
 workflows and `.launch/`; runs `lint`, `typecheck` and `test:config`; pushes `main`; revokes its
 token; and calls `POST /ci/scaffold/done {commit}`.
+
+The job needs Launch reachable at `APP_URL` from GitHub's runners — `POST /api/apps` refuses
+while it is not (§18.2). If it dies anyway (a red gate, a moved tag, Launch unreachable after all),
+the next scaffold poll sees the run's conclusion through `GitHubActionsScaffoldRunner.poll` — which
+finds the run by listing the workflow's `workflow_dispatch` runs created since the dispatch, since
+the dispatch returns no run id — and fails `scaffold.wait` with the run's link; a retry dispatches
+a new job on a new ticket. Under `pnpm dev` the job reaches Launch only through the tunnel, and the
+Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
+`index.html`).
 
 **Known gaps:** only exercised by `tests/config/scaffold-script.test.ts` (a fixture kit, install and
 gate skipped) and the e2e test (the push simulated); the real run of kit 0.15.0 on a runner —

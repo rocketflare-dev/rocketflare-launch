@@ -125,6 +125,11 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *   through `resolveSessionPolicy` and snapshotted on each session at create.
  * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
  *   answer 409 until it is cleared.
+ *
+ * And one Launch writes itself:
+ *
+ * - `public_url_check` — the last "is `APP_URL` reachable from the internet" result
+ *   (`publicUrlCheckSchema`), the cache `POST /api/apps` reads rather than probing every time.
  */
 export const LAUNCH_SETTING_KEYS = [
   ...SETUP_SETTING_KEYS,
@@ -132,6 +137,7 @@ export const LAUNCH_SETTING_KEYS = [
   'app_create_role',
   'session_policy',
   'sessions_paused',
+  'public_url_check',
 ] as const
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
@@ -287,6 +293,7 @@ export const SETUP_STEP_IDS = [
   'resend',
   'github',
   'identity',
+  'public_url',
 ] as const
 export const setupStepIdSchema = z.enum(SETUP_STEP_IDS)
 export type SetupStepId = z.infer<typeof setupStepIdSchema>
@@ -321,6 +328,45 @@ export const setupIdentitySchema = z.object({
 })
 export type SetupIdentity = z.infer<typeof setupIdentitySchema>
 
+// ---- the public URL -----------------------------------------------------------------------------
+
+/**
+ * "Is Launch reachable from the internet at its `APP_URL`?" — the scaffold and deploy jobs run on
+ * GitHub's runners and call Launch back at `/ci/*`, so a launch from a Launch they cannot reach
+ * dies on GitHub. `checks`: `url` (https, not localhost, a loopback/private/link-local address or
+ * `.local`) then `probe` (Launch fetched its own `/ci/ping` through that URL and got its own proof
+ * back). Stored as `launch_settings.public_url_check`; a result for another URL does not count.
+ */
+export const publicUrlCheckSchema = z.object({
+  url: z.string(),
+  status: credentialCheckStatusSchema,
+  checks: credentialLastCheckSchema,
+  checkedAt: z.coerce.date(),
+})
+export type PublicUrlCheck = z.infer<typeof publicUrlCheckSchema>
+
+/** `GET /ci/ping?nonce=` — the nonce back, and an HMAC of it only this deployment can make. */
+export const publicUrlPingQuerySchema = z.object({
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/, '16–128 URL-safe characters'),
+})
+export const publicUrlPingResponseSchema = z.object({ nonce: z.string(), proof: z.string() })
+export type PublicUrlPingResponse = z.infer<typeof publicUrlPingResponseSchema>
+
+/**
+ * 409 from every route that would dispatch a CI job that calls Launch back (`POST /api/apps`, a
+ * create run's retry, "Deploy to production") while the public-URL check is not passing.
+ * `details` is `launchNotReachableDetailsSchema`: the URL and the probes that failed.
+ */
+export const LAUNCH_NOT_REACHABLE = 'launch_not_reachable'
+export const launchNotReachableDetailsSchema = z.object({
+  url: z.string(),
+  checks: credentialLastCheckSchema,
+})
+export type LaunchNotReachableDetails = z.infer<typeof launchNotReachableDetailsSchema>
+
+/** `POST /api/admin/setup/public-url/check` — probe now; the stored result. */
+export const publicUrlCheckResponseSchema = publicUrlCheckSchema
+
 /** `GET /api/admin/setup` — everything the page renders. Never a credential value. */
 export const setupOverviewSchema = z.object({
   steps: z.array(setupStepSchema),
@@ -329,6 +375,16 @@ export const setupOverviewSchema = z.object({
   effectiveNotificationsDomain: z.string().nullable(),
   credentials: z.array(setupCredentialSchema),
   identity: setupIdentitySchema,
+  /**
+   * Launch's `APP_URL` and its reachability: the stored check when it is for this URL, else the
+   * static half alone (`checkedAt` null — never probed from this page load).
+   */
+  publicUrl: z.object({
+    url: z.string(),
+    status: credentialCheckStatusSchema.nullable(),
+    checks: credentialLastCheckSchema,
+    checkedAt: z.coerce.date().nullable(),
+  }),
 })
 export type SetupOverview = z.infer<typeof setupOverviewSchema>
 

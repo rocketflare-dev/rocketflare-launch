@@ -397,13 +397,39 @@ describe('GitHubActionsScaffoldRunner', () => {
       workflow: 'launch-scaffold.yml',
       runId: String(run?.id),
     })
-    expect(await runner.poll(ctx, ids)).toEqual({ status: 'running' })
+    // Every answer carries the run and its page, for the wait's row.
+    const seen = {
+      runId: String(run?.id),
+      url: `https://github.com/${cloud.opts.org}/${created.slug}/actions/runs/${run?.id}`,
+    }
+    expect(await runner.poll(ctx, ids)).toEqual({ status: 'running', ...seen })
     if (run) Object.assign(run, { status: 'completed', conclusion: 'success' })
-    expect(await runner.poll(ctx, ids)).toEqual({ status: 'succeeded' })
+    expect(await runner.poll(ctx, ids)).toEqual({ status: 'succeeded', ...seen })
     if (run) run.conclusion = 'failure'
     expect(await runner.poll(ctx, ids)).toMatchObject({
       status: 'failed',
-      detail: expect.stringContaining('failure'),
+      detail: 'the GitHub Actions run ended “failure”',
+      ...seen,
+    })
+  })
+
+  it('a dispatch GitHub never lists a run for is running, then failed once the window passes', async () => {
+    const created = await createdApp()
+    const runner = new GitHubActionsScaffoldRunner({ launchUrl: 'https://launch.clewro.com' })
+    const dispatchedAt = new Date('2026-09-28T10:00:00Z')
+    const ctx = {
+      token: cloud.github.issueToken().token,
+      owner: cloud.opts.org,
+      repo: created.slug,
+      fetch: cloud.fetch,
+    }
+    const ids = { workflow: 'launch-scaffold.yml', dispatchedAt: dispatchedAt.toISOString() }
+    const at = (minutes: number) => () => new Date(dispatchedAt.getTime() + minutes * 60_000)
+    expect(await runner.poll({ ...ctx, now: at(9) }, ids)).toEqual({ status: 'running' })
+    expect(await runner.poll({ ...ctx, now: at(11) }, ids)).toEqual({
+      status: 'failed',
+      detail:
+        'GitHub has not started a run of launch-scaffold.yml 11 minutes after it was dispatched',
     })
   })
 

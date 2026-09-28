@@ -10,15 +10,20 @@
  *   once (`approvalId: null`); anyone else gets `approvalId` and the run id stays reserved until an
  *   admin approves (a rejection or expiry archives the app). Refusals before any write: an
  *   invalid, reserved or `launch-` slug (400), a taken one (409 `slug_taken`), Setup unfinished
- *   (503 `launch_not_set_up`) or no `APP_LAUNCH_WORKFLOW` binding (503
- *   `app_pipeline_not_configured`).
+ *   (503 `launch_not_set_up`), no `APP_LAUNCH_WORKFLOW` binding (503
+ *   `app_pipeline_not_configured`), or Launch not reachable from the internet at `APP_URL` (409
+ *   `launch_not_reachable` — the scaffold and deploy jobs call it back; `public-url.ts`).
  * - `GET /:id/pipeline[?kind=create|teardown]` → `pipelineViewSchema` (`read App`).
  * - `POST /:id/pipeline/retry` `{ kind }` → 202 `{ runId, instanceId }` — only when the latest run
- *   of that kind is `failed` (409 `run_not_failed`).
+ *   of that kind is `failed` (409 `run_not_failed`); a create retry re-dispatches CI, so it is
+ *   refused like a create while Launch is not reachable (409 `launch_not_reachable`).
+ * - `POST /:id/pipeline/cancel` → 200 `cancelPipelineResponseSchema` (`manage App`) — stop a create
+ *   run that is still running (a stuck wait), so it can be retried; 409 `run_not_running`.
  * - `POST /:id/teardown` `{ confirmSlug, deleteRepo }` → 202 `{ runId }` — a wrong slug is 400
  *   `confirm_slug_mismatch`.
  *
- * Audited: `app.create.requested`, `app.pipeline.retried`, `app.teardown.requested` (and the
+ * Audited: `app.create.requested`, `app.pipeline.retried`, `app.pipeline.cancelled`,
+ * `app.teardown.requested` (and the
  * Workflows add `app.launched`, `app.launch_failed`, `app.archived`, `app.teardown_failed`; the
  * engine adds `approval.*`, and a rejected or expired `app.create` adds `app.create.rejected`).
  *
@@ -26,6 +31,7 @@
  * `/:slug` routes, behind the `/api/apps` mount's `authMiddleware`.
  */
 import {
+  type CancelPipelineResponse,
   type CreateAppResponse,
   createAppRequestSchema,
   pipelineQuerySchema,
@@ -37,10 +43,12 @@ import { open as openApproval } from '../services/approvals/engine'
 import type { OpenApprovalResult } from '../services/approvals/types'
 import { getAppDetail, getAppRow } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
+import { cancelLaunch } from '../services/launch/pipeline/cancel'
 import { markLaunchFailed, requestApp, startTeardown } from '../services/launch/pipeline/create'
 import { defaultPorts } from '../services/launch/pipeline/ports'
 import { retryPipeline } from '../services/launch/pipeline/retry'
 import { pipelineView } from '../services/launch/pipeline/runs'
+import { requirePublicUrl } from '../services/launch/public-url'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
@@ -55,6 +63,8 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
   const { db, tenantId, user } = withAuthAndDb(c)
   const input = c.req.valid('json')
   const actor = auditActor(c)
+  // Before any write: the jobs this launch dispatches must be able to call Launch back.
+  await requirePublicUrl(db, c.get('config'))
   const { app, runId } = await requestApp(
     db,
     c.env.APP_LAUNCH_WORKFLOW,
@@ -111,6 +121,7 @@ appPipelineRouter.post(
   async c => {
     guardPermission(c, 'manage', 'App')
     const { db, tenantId } = withAuthAndDb(c)
+    if (c.req.valid('json').kind === 'create') await requirePublicUrl(db, c.get('config'))
     const result = await retryPipeline(
       db,
       c.env,
@@ -122,6 +133,19 @@ appPipelineRouter.post(
     return c.json(result, 202)
   }
 )
+
+appPipelineRouter.post('/:id/pipeline/cancel', async c => {
+  guardPermission(c, 'manage', 'App')
+  const { db, tenantId } = withAuthAndDb(c)
+  const result: CancelPipelineResponse = await cancelLaunch(
+    db,
+    c.env.APP_LAUNCH_WORKFLOW,
+    tenantId,
+    uuidParam(c, 'id'),
+    auditActor(c)
+  )
+  return c.json(result)
+})
 
 appPipelineRouter.post('/:id/teardown', validate('json', teardownRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')

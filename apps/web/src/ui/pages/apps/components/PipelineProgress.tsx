@@ -1,8 +1,10 @@
 /**
  * A launch or a teardown as it happens (Launch P2): every step of `APP_LAUNCH_STEPS` /
  * `APP_TEARDOWN_STEPS` in order, grouped into a few phases a person can follow, each with its
- * status, attempt count and duration; the failed step's error, verbatim; and "Retry from failed
- * step" for whoever may retry.
+ * status, attempt count and duration; a link to the step's GitHub Actions run once it is known (the
+ * scaffold and staging-deploy waits); the failed step's error, verbatim; "Retry from failed step"
+ * for whoever may retry; and, while a launch runs, "Stop" for whoever may retry — the way out of a
+ * wait that will never end.
  *
  * Presentational: the page owns the query (`usePipeline`, which decides when to poll) and the retry
  * mutation, and passes the view in — so the Archive modal can show the same component for the
@@ -10,9 +12,11 @@
  */
 import {
   ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   MinusCircleIcon,
   RocketLaunchIcon,
+  StopCircleIcon,
   TrashIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline'
@@ -24,6 +28,7 @@ import {
   type PipelineStep,
   type PipelineView,
 } from '@launch/shared/launch-pipeline'
+import { useState } from 'react'
 import { formatDateTime, formatDuration, timeAgo } from '@/ui/lib/format'
 
 // ---- Pure helpers ------------------------------------------------------------------------------------
@@ -50,6 +55,7 @@ export function pipelineRows(view: Pick<PipelineView, 'kind' | 'steps'>): Pipeli
         error: null,
         startedAt: null,
         finishedAt: null,
+        url: null,
       }
   )
   const known = new Set(rows.map(row => row.step))
@@ -208,6 +214,21 @@ function StepIcon({
   )
 }
 
+/** "View run" — the step's GitHub Actions run, in a new tab. */
+function RunLink({ url, className = '' }: { url: string; className?: string }) {
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className={`link link-hover inline-flex items-center gap-0.5 ${className}`}
+    >
+      View run
+      <ArrowTopRightOnSquareIcon className="w-3 h-3" aria-hidden="true" />
+    </a>
+  )
+}
+
 function StepRow({ step }: { step: PipelineStep }) {
   const duration = stepDuration(step)
   const active = step.status === 'running' || step.status === 'failed'
@@ -227,6 +248,7 @@ function StepRow({ step }: { step: PipelineStep }) {
       >
         {step.label}
       </span>
+      {step.url && <RunLink url={step.url} className="text-xs leading-5 shrink-0" />}
       {step.attempt > 1 && (
         <span className="status-badge no-dot tone-warning" title={`attempt ${step.attempt}`}>
           ×{step.attempt}
@@ -311,6 +333,9 @@ export interface PipelineProgressProps {
   subject?: React.ReactNode
   /** Inside a modal: no outer panel, no big header icon. */
   compact?: boolean
+  /** "Stop" a running launch (shown with `canRetry`): its step fails, and retry is offered. */
+  onCancel?: () => void
+  cancelling?: boolean
 }
 
 export function PipelineProgress({
@@ -320,7 +345,11 @@ export function PipelineProgress({
   retrying = false,
   subject,
   compact = false,
+  onCancel,
+  cancelling = false,
 }: PipelineProgressProps) {
+  const [confirmStop, setConfirmStop] = useState(false)
+  const canStop = canRetry && !!onCancel && view.kind === 'create' && view.status === 'running'
   const rows = pipelineRows(view)
   const summary = summarisePipeline(rows)
   const phases = groupPhases(view.kind, rows)
@@ -406,6 +435,7 @@ export function PipelineProgress({
                 {failed.error}
               </pre>
             )}
+            {failed.url && <RunLink url={failed.url} className="text-xs" />}
             {!canRetry && (
               <p className="text-xs opacity-80">An administrator can retry from this step.</p>
             )}
@@ -423,6 +453,51 @@ export function PipelineProgress({
                 <ArrowPathIcon className="w-4 h-4" />
               )}
               Retry from failed step
+            </button>
+          )}
+        </div>
+      )}
+
+      {canStop && (
+        <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+          {confirmStop ? (
+            <>
+              <span className="text-secondary">
+                Stop this launch? The current step is marked failed, and you can retry from it.
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setConfirmStop(false)}
+                disabled={cancelling}
+              >
+                Keep going
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-error gap-1.5"
+                onClick={() => {
+                  setConfirmStop(false)
+                  onCancel?.()
+                }}
+                disabled={cancelling}
+              >
+                Stop the launch
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost gap-1.5"
+              onClick={() => setConfirmStop(true)}
+              disabled={cancelling}
+            >
+              {cancelling ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                <StopCircleIcon className="w-4 h-4" />
+              )}
+              Stop
             </button>
           )}
         </div>

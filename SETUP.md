@@ -291,6 +291,12 @@ While the tunnel is up, `pnpm dev` lets Vite answer for the tunnel host (HMR ove
 passes the URL to wrangler as `APP_URL`, so OAuth redirects, magic links and CSRF use it; localhost
 still works. With no tunnel running it serves localhost only. `pnpm dev --public` / `--no-public`
 override the check. Restart `pnpm dev` after starting or stopping the tunnel.
+
+**Creating apps needs it.** The scaffold and deploy jobs run on GitHub and call Launch back at
+`APP_URL`, so `POST /api/apps` refuses with 409 `launch_not_reachable` while Launch is at
+`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Admin → Setup → 7.
+Public URL and click "Check now": Launch fetches its own `/ci/ping` through the tunnel and the step
+turns green.
 Verify: the printed `https://…` host opens the app; `/auth/methods` there reports the same providers
 as localhost. `.dev.vars` and the tomls are untouched.
 

@@ -75,13 +75,24 @@ async function readStep(db: Database, key: StepKey): Promise<AppOperationRow | n
   return row ?? null
 }
 
+export interface RunStepOptions {
+  /**
+   * The row may already be `running` because `openWait` opened it when the job started: carry on
+   * with that attempt and its `startedAt` (the wait's whole duration) rather than counting a new
+   * attempt. A `failed` row still counts one.
+   */
+  continuesWait?: boolean
+}
+
 /** Run one step at most once to success. See the header for the contract. */
 export async function runStep(
   db: Database,
   key: StepKey,
-  fn: (ctx: StepContext) => Promise<AppOperationExternalIds | undefined | void>
+  fn: (ctx: StepContext) => Promise<AppOperationExternalIds | undefined | void>,
+  options: RunStepOptions = {}
 ): Promise<StepResult> {
   const now = new Date()
+  const open = sql`${appOperations.status} = 'running'`
   const [claimed] = await db
     .insert(appOperations)
     .values({
@@ -96,14 +107,23 @@ export async function runStep(
     })
     .onConflictDoUpdate({
       target: [appOperations.runId, appOperations.step],
-      set: {
-        status: 'running',
-        attempt: sql`${appOperations.attempt} + 1`,
-        error: null,
-        startedAt: now,
-        finishedAt: null,
-        updatedAt: now,
-      },
+      set: options.continuesWait
+        ? {
+            status: 'running',
+            attempt: sql`CASE WHEN ${open} THEN ${appOperations.attempt} ELSE ${appOperations.attempt} + 1 END`,
+            error: null,
+            startedAt: sql`CASE WHEN ${open} THEN ${appOperations.startedAt} ELSE ${now.toISOString()}::timestamptz END`,
+            finishedAt: null,
+            updatedAt: now,
+          }
+        : {
+            status: 'running',
+            attempt: sql`${appOperations.attempt} + 1`,
+            error: null,
+            startedAt: now,
+            finishedAt: null,
+            updatedAt: now,
+          },
       setWhere: and(
         eq(appOperations.tenantId, key.tenantId),
         notInArray(appOperations.status, [...SETTLED])
@@ -181,6 +201,106 @@ export async function skipStep(db: Database, key: StepKey, reason?: string): Pro
     .onConflictDoUpdate({
       target: [appOperations.runId, appOperations.step],
       set: { status: 'skipped', error: reason ?? null, finishedAt: now, updatedAt: now },
+      setWhere: and(
+        eq(appOperations.tenantId, key.tenantId),
+        notInArray(appOperations.status, [...SETTLED])
+      ),
+    })
+}
+
+// ---- waits ---------------------------------------------------------------------------------------
+
+/**
+ * Open a WAIT's row (`scaffold.wait`, `deploy_staging.wait`) as `running` the moment the step that
+ * started its job has dispatched it — so the step list shows the job running rather than a tick on
+ * "Start …" and a hollow circle — with no ids yet. A row left by an earlier job (failed, or open
+ * from a job a retry replaced) is restarted: attempt + 1, error and ids cleared. A settled row is
+ * left alone.
+ */
+export async function openWait(db: Database, key: StepKey): Promise<void> {
+  const now = new Date()
+  await db
+    .insert(appOperations)
+    .values({
+      tenantId: key.tenantId,
+      appId: key.appId,
+      runId: key.runId,
+      kind: key.kind,
+      step: key.step,
+      status: 'running',
+      attempt: 1,
+      startedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [appOperations.runId, appOperations.step],
+      set: {
+        status: 'running',
+        attempt: sql`${appOperations.attempt} + 1`,
+        error: null,
+        externalIds: {},
+        startedAt: now,
+        finishedAt: null,
+        updatedAt: now,
+      },
+      setWhere: and(
+        eq(appOperations.tenantId, key.tenantId),
+        notInArray(appOperations.status, [...SETTLED])
+      ),
+    })
+}
+
+/** Merge ids into a row that is still `running` (a wait learning its job's run id and URL). */
+export async function recordRunningIds(
+  db: Database,
+  key: StepKey,
+  partial: AppOperationExternalIds
+): Promise<void> {
+  await db
+    .update(appOperations)
+    .set({
+      externalIds: sql`${appOperations.externalIds} || ${JSON.stringify(partial)}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(appOperations.tenantId, key.tenantId),
+        eq(appOperations.runId, key.runId),
+        eq(appOperations.step, key.step),
+        eq(appOperations.status, 'running')
+      )
+    )
+}
+
+/**
+ * Mark a step `failed` with `message` (scrubbed), keeping the ids it recorded — for a failure found
+ * OUTSIDE the step's body (a wait's poll, a cancel). Inserts the row when there is none; a settled
+ * row is left alone. Does not throw.
+ */
+export async function failOpenStep(
+  db: Database,
+  key: StepKey,
+  message: string,
+  secrets: readonly string[] = []
+): Promise<void> {
+  const now = new Date()
+  const error = scrub(message, secrets)
+  await db
+    .insert(appOperations)
+    .values({
+      tenantId: key.tenantId,
+      appId: key.appId,
+      runId: key.runId,
+      kind: key.kind,
+      step: key.step,
+      status: 'failed',
+      attempt: 1,
+      error,
+      startedAt: now,
+      finishedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [appOperations.runId, appOperations.step],
+      set: { status: 'failed', error, finishedAt: now, updatedAt: now },
       setWhere: and(
         eq(appOperations.tenantId, key.tenantId),
         notInArray(appOperations.status, [...SETTLED])

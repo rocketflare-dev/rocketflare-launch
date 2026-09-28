@@ -8,7 +8,10 @@
  *   created since the dispatch; if it is not listed yet, `poll` finds it later. A 404 means GitHub
  *   has not registered the freshly pushed workflow file yet → `ScaffoldNotReadyError` (retry).
  * - `poll` → the run's `status` / `conclusion`: `completed` + `success` is `succeeded`, any other
- *   completed run is `failed`, anything else (or no run yet) is `running`.
+ *   completed run is `failed`, anything else is `running`; with the run's id and `html_url` as
+ *   soon as it is listed, for the wait's row. A dispatch GitHub has not listed a run for within
+ *   `SCAFFOLD_START_WINDOW_MS` is `failed` too — a job that never started must not hold the launch
+ *   for the whole 30-minute wait.
  */
 import type { ScaffoldPlan } from '@launch/shared/launch-pipeline'
 import {
@@ -31,6 +34,8 @@ import {
 const SCAFFOLD_REF = 'main'
 /** A run created this long before `dispatchedAt` still counts (clock skew between us and GitHub). */
 const CLOCK_SKEW_MS = 60_000
+/** How long after the dispatch GitHub may take to list the run before the job counts as not started. */
+export const SCAFFOLD_START_WINDOW_MS = 10 * 60_000
 
 function githubOpts(ctx: ScaffoldRunContext): GitHubOptions {
   return { fetch: ctx.fetch, apiBase: ctx.apiBase }
@@ -98,11 +103,24 @@ export class GitHubActionsScaffoldRunner implements ScaffoldRunner {
   async poll(ctx: ScaffoldRunContext, ids: ScaffoldExternalIds): Promise<ScaffoldPollResult> {
     const since = ids.dispatchedAt ? new Date(ids.dispatchedAt) : new Date(0)
     const run = await findRun(ctx, since, ids.runId)
-    if (run?.status !== 'completed') return { status: 'running' }
-    if (run.conclusion === 'success') return { status: 'succeeded' }
+    if (!run) {
+      const now = (ctx.now ?? (() => new Date()))().getTime()
+      if (ids.dispatchedAt && now - since.getTime() > SCAFFOLD_START_WINDOW_MS) {
+        const minutes = Math.round((now - since.getTime()) / 60_000)
+        return {
+          status: 'failed',
+          detail: `GitHub has not started a run of ${SCAFFOLD_WORKFLOW_FILE} ${minutes} minutes after it was dispatched`,
+        }
+      }
+      return { status: 'running' }
+    }
+    const seen = { runId: String(run.id), ...(run.html_url ? { url: run.html_url } : {}) }
+    if (run.status !== 'completed') return { status: 'running', ...seen }
+    if (run.conclusion === 'success') return { status: 'succeeded', ...seen }
     return {
       status: 'failed',
-      detail: `run ${run.id} ended ${run.conclusion ?? 'without a conclusion'}${run.html_url ? ` (${run.html_url})` : ''}`,
+      detail: `the GitHub Actions run ended “${run.conclusion ?? 'without a conclusion'}”`,
+      ...seen,
     }
   }
 }

@@ -76,6 +76,7 @@ import {
 } from './credentials'
 import { GitHubApiError, type GitHubPermissions, getApp, listInstallations } from './github-app'
 import { NeonApiError, NeonClient, type NeonProject } from './neon'
+import { publicUrlOverview } from './public-url'
 import { ResendApiError, ResendClient } from './resend'
 
 /** What every vendor call takes, so tests hand in a fake and nothing reaches the network. */
@@ -841,7 +842,8 @@ function worst(statuses: readonly CredentialCheckStatus[]): CredentialCheckStatu
 export function stepStatuses(
   settings: SetupSettings,
   credentials: readonly SetupCredential[],
-  identity: SetupIdentity
+  identity: SetupIdentity,
+  publicUrl: { status: CredentialCheckStatus | null } = { status: null }
 ): SetupStep[] {
   const byKind = new Map(credentials.map(c => [c.kind, c]))
   const credentialStep = (kind: CredentialKind): SetupStepStatus => {
@@ -856,8 +858,18 @@ export function stepStatuses(
     )
     return zoneChecks.length > 0 ? worst(zoneChecks.map(c => c.status)) : 'unchecked'
   }
-  return (['domain', 'cloudflare', 'neon', 'resend', 'github', 'identity'] as const).map(id => {
+  const steps = [
+    'domain',
+    'cloudflare',
+    'neon',
+    'resend',
+    'github',
+    'identity',
+    'public_url',
+  ] as const
+  return steps.map(id => {
     if (id === 'domain') return { id, status: domainStep() }
+    if (id === 'public_url') return { id, status: publicUrl.status ?? 'unchecked' }
     if (id === 'identity') return { id, status: worst(identity.checks.map(c => c.status)) }
     const kind = STEP_KINDS[id]
     return { id, status: kind ? credentialStep(kind) : 'todo' }
@@ -865,10 +877,15 @@ export function stepStatuses(
 }
 
 export async function setupOverview(db: Database, cfg: AppConfig): Promise<SetupOverview> {
-  const [settings, credentials] = await Promise.all([readSettings(db), setupCredentials(db)])
+  const [settings, credentials, publicUrl] = await Promise.all([
+    readSettings(db),
+    setupCredentials(db),
+    publicUrlOverview(db, cfg),
+  ])
   const identity = identityStatus(cfg)
   return {
-    steps: stepStatuses(settings, credentials, identity),
+    steps: stepStatuses(settings, credentials, identity, publicUrl),
+    publicUrl,
     settings,
     effectiveNotificationsDomain: notificationsDomainOf(settings),
     credentials: CREDENTIAL_KINDS.map(kind => {

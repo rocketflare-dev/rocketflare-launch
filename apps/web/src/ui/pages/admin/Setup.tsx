@@ -1,7 +1,8 @@
 /**
- * `/admin/setup` (spec/03, spec/04): the setup wizard — a stepper over six cards, in the order a
+ * `/admin/setup` (spec/03, spec/04): the setup wizard — a stepper over seven cards, in the order a
  * company sets Launch up: the apps domain and zone, then the Cloudflare, Neon, Resend and GitHub
- * App credentials Launch acts with, then the upstream IdP (read-only). Global admin (the `/admin`
+ * App credentials Launch acts with, then the upstream IdP (read-only), then whether Launch's own
+ * public URL is reachable from the internet (the CI jobs call it back). Global admin (the `/admin`
  * layout's guard; the server's `globalAdminMiddleware`).
  *
  * Secrets are WRITE-ONLY: the API never returns one, so a set credential shows "Set — hidden" and
@@ -21,6 +22,7 @@ import { useSetupOverview } from '@/ui/hooks/useSetup'
 import { CredentialCard } from './setup/CredentialCard'
 import { DomainCard } from './setup/DomainCard'
 import { IdentityCard } from './setup/IdentityCard'
+import { PublicUrlCard } from './setup/PublicUrlCard'
 import { StatusDot, statusLabel } from './setup/StatusDot'
 import { stepAnchor } from './setup/StepCard'
 
@@ -31,6 +33,7 @@ const STEP_TITLES: Record<SetupStepId, string> = {
   resend: 'Resend',
   github: 'GitHub App',
   identity: 'Identity provider',
+  public_url: 'Public URL',
 }
 
 const STEP_CLASS: Record<SetupStepStatus, string> = {
@@ -232,6 +235,8 @@ export default function Setup() {
       />
 
       <IdentityCard status={status('identity')} identity={data.identity} />
+
+      <PublicUrlCard status={status('public_url')} publicUrl={data.publicUrl} />
     </div>
   )
 }

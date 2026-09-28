@@ -41,6 +41,13 @@ const state: { settings: PipelineSettings } = {
   },
 }
 
+// The test Launch is at http://localhost:3001, which the public-URL gate refuses by design; the
+// gate has its own suite (`public-url.test.ts`), so here it is waved through.
+vi.mock('@/api/services/launch/public-url', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/api/services/launch/public-url')>()),
+  requirePublicUrl: async () => undefined,
+}))
+
 vi.mock('@/api/services/launch/pipeline/context', async importOriginal => {
   const actual = await importOriginal<typeof import('@/api/services/launch/pipeline/context')>()
   return {

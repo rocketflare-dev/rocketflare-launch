@@ -9,8 +9,13 @@
 import { RocketLaunchIcon } from '@heroicons/react/24/outline'
 import { APP_SLUG_MAX_LENGTH } from '@launch/shared/launch-apps'
 import { createAppRequestSchema, newAppSlugProblem } from '@launch/shared/launch-pipeline'
+import {
+  LAUNCH_NOT_REACHABLE,
+  type LaunchNotReachableDetails,
+  launchNotReachableDetailsSchema,
+} from '@launch/shared/launch-setup'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { FieldError, fieldErrorFor, Modal, showToast } from '@/ui/components/shared'
 import { useGroups } from '@/ui/hooks/useGroups'
 import { usePermissions } from '@/ui/hooks/usePermissions'
@@ -27,6 +32,19 @@ const HINTS: Record<number, string> = {
   403: 'Creating apps is limited to a higher role (Admin → Setup).',
   503: 'An owner finishes Admin → Setup first: the credentials and the apps domain.',
 }
+
+/**
+ * A 409 `launch_not_reachable`: Launch's public URL fails its check, so the jobs a launch dispatches
+ * could not call it back. The URL and the failed probes, or null for any other error. Pure.
+ */
+export function notReachable(error: unknown): LaunchNotReachableDetails | null {
+  if (!(error instanceof ApiError) || error.code !== LAUNCH_NOT_REACHABLE) return null
+  const parsed = launchNotReachableDetailsSchema.safeParse(error.details)
+  return parsed.success ? parsed.data : { url: '', checks: [] }
+}
+
+/** Where Setup's public-URL step lives (its card's anchor). */
+export const PUBLIC_URL_SETUP_PATH = '/admin/setup#setup-public_url'
 
 /**
  * A slug suggested from the display name — lower-case, hyphenated, starting with a letter, at most
@@ -120,7 +138,8 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
   }
 
   const error = create.error
-  const hint = error instanceof ApiError ? HINTS[error.status] : undefined
+  const unreachable = notReachable(error)
+  const hint = error instanceof ApiError && !unreachable ? HINTS[error.status] : undefined
 
   return (
     <Modal
@@ -161,8 +180,37 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
       {error && (
         <div className="alert alert-error alert-soft text-sm mb-4 items-start" role="alert">
           <div>
-            <p className="font-medium">{error.message}</p>
+            <p className="font-medium">
+              {unreachable ? 'Launch is not reachable from the internet' : error.message}
+            </p>
             {hint && <p className="mt-0.5 opacity-80">{hint}</p>}
+            {unreachable && (
+              <div className="mt-1 space-y-1 opacity-90">
+                <p>
+                  The jobs that build an app run on GitHub and call Launch back
+                  {unreachable.url ? (
+                    <>
+                      {' '}
+                      at <code>{unreachable.url}</code>
+                    </>
+                  ) : null}
+                  , so nothing was created.
+                </p>
+                <ul className="list-disc pl-5">
+                  {unreachable.checks
+                    .filter(check => check.status === 'failed')
+                    .map(check => (
+                      <li key={check.id}>{check.detail ?? check.label}</li>
+                    ))}
+                </ul>
+                <p>
+                  <Link to={PUBLIC_URL_SETUP_PATH} className="link" onClick={close}>
+                    Setup › Public URL
+                  </Link>{' '}
+                  (an administrator re-checks it there once it is fixed).
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Creating an app no longer hides a scaffold job that died on GitHub: the step list shows the job
+  RUNNING (not a tick on "Start the scaffold job") with a "View run" link to its GitHub Actions run,
+  and a run that fails, is cancelled or never starts fails the step within a minute with a readable
+  reason — including "Launch is not reachable at http://localhost:3000" when that is why — so
+  "Retry from failed step" appears; a retry dispatches a fresh job on a new ticket. A launch stuck
+  in a wait can be stopped ("Stop", `POST /api/apps/:id/pipeline/cancel`, `manage App`), which
+  makes it retryable.
+- Setup gains step 7, Public URL: Launch checks that its `APP_URL` is public HTTPS and fetches its
+  own `/ci/ping` through it to prove it routes back. Creating an app, retrying a create and "Deploy
+  to production" are refused with 409 `launch_not_reachable` while that check fails, and the Create
+  modal says why and links to the step. Under `pnpm dev` the Vite server now proxies `/ci`, so the
+  CI jobs can reach Launch through the tunnel.
 - Shared config (P5): admins create a shared resource — a named bundle of vars and secrets, such
   as the company's M365 app registration, owned by a team — and that team sets its values per
   environment. Values are write-only: no page, command or API answer ever shows a secret, a blank

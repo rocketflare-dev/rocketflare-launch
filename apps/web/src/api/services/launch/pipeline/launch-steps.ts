@@ -12,8 +12,13 @@
  * The two long waits (the scaffold job, the staging deploy) are ROUNDS rather than one
  * `waitForEvent`: `…poll#N` reads the ticket row (the truth — the event is a nudge) and asks
  * whether the job itself died, then `…wait#N` parks on the event for one round. A lost event (the
- * instance was restarted, or the send failed) therefore costs one round, not the whole timeout, and a job that crashed ends the wait at once. The `<prefix>.wait` row is written when
- * the wait ends — succeeded, or failed with the reason.
+ * instance was restarted, or the send failed) therefore costs one round, not the whole timeout, and
+ * a job that crashed ends the wait at the next poll. The `<prefix>.wait` row is OPENED `running`
+ * by the step that dispatched the job (`openWait`), so the step list shows the job running; a poll
+ * records the job's GitHub run (`runId`, `runUrl`) on it the moment the run is listed, and the
+ * wait ends it — succeeded, or failed with a readable, scrubbed reason. A poll that finds a failure
+ * does not throw inside its `step.do` (whose retries would only fail it again): it answers
+ * `{ done, error }` and the Workflow throws outside.
  */
 import type {
   AppEnvironmentName,
@@ -53,6 +58,7 @@ import {
   issuerOf,
   rotateAppOidcSecret,
 } from '../oidc-clients'
+import { publicUrlProblem } from '../public-url'
 import { KIT_BINDINGS } from '../rocketflare/names'
 import {
   MANIFEST_PATHS,
@@ -70,7 +76,15 @@ import {
   resendClient,
 } from './context'
 import { markLaunchFailed } from './create'
-import { runStep, type StepContext, type StepKey, skipStep } from './operations'
+import {
+  failOpenStep,
+  openWait,
+  recordRunningIds,
+  runStep,
+  type StepContext,
+  type StepKey,
+  skipStep,
+} from './operations'
 import {
   DEPLOY_WORKFLOW_FILE,
   type PipelinePorts,
@@ -97,8 +111,12 @@ export interface PipelineDeps {
 
 export const ENVIRONMENTS: readonly AppEnvironmentName[] = ['staging', 'production']
 
-/** The scaffold wait: 15 rounds of 2 minutes = the plan's 30. */
-export const SCAFFOLD_WAIT = { rounds: 15, roundTimeout: '2 minutes' } as const
+/**
+ * The scaffold wait: 30 rounds of 1 minute = the plan's 30. Short rounds because the event only
+ * says the job SUCCEEDED — a job that dies is noticed by the next poll, so a round is how long a
+ * failure can go unseen.
+ */
+export const SCAFFOLD_WAIT = { rounds: 30, roundTimeout: '1 minute' } as const
 /** The staging deploy wait: 15 rounds of 3 minutes = the plan's 45. */
 export const DEPLOY_WAIT = { rounds: 15, roundTimeout: '3 minutes' } as const
 /** Health: up to 20 probes, 30 seconds apart. */
@@ -186,12 +204,41 @@ async function stepSucceeded(db: Database, key: StepKey): Promise<boolean> {
   return (await stepRow(db, key))?.status === 'succeeded'
 }
 
-/** Record `step` as failed with `message`, and throw it — for a failure found outside the body. */
-async function failStep(db: Database, key: StepKey, message: string): Promise<never> {
-  await runStep(db, key, async () => {
-    throw new Error(message)
-  })
-  throw new Error(message)
+/** A wait round's answer: `done`, and `error` when the wait ended because the job failed. */
+export interface WaitState {
+  done: boolean
+  error?: string
+}
+
+/** Record the wait `key` as failed with `message` (scrubbed, its ids kept) and end the wait. */
+async function failWait(db: Database, key: StepKey, message: string): Promise<WaitState> {
+  await failOpenStep(db, key, message)
+  const row = await stepRow(db, key)
+  return { done: true, error: row?.error ?? message }
+}
+
+/**
+ * What a wait's row says before a poll looks further: settled (succeeded → done), already failed
+ * (a person stopped the run, or an earlier poll failed it → done with that error), or open —
+ * opened here when it has no row (a run started before waits were opened by their start step).
+ */
+async function waitRowState(db: Database, key: StepKey): Promise<WaitState | null> {
+  const row = await stepRow(db, key)
+  if (row?.status === 'succeeded') return { done: true }
+  if (row?.status === 'failed') return { done: true, error: row.error ?? 'The wait failed' }
+  if (!row) await openWait(db, key)
+  return null
+}
+
+/** A sentence for a job that died on GitHub, with why when Launch itself is the likely cause. */
+function jobFailure(what: string, detail: string | undefined, launchUrl: string): string {
+  const unreachable = publicUrlProblem(launchUrl)
+  return [
+    `${what} failed${detail ? `: ${detail}` : ''}.`,
+    unreachable
+      ? `It calls Launch back at ${launchUrl}, which GitHub's runners cannot reach — see Setup › Public URL.`
+      : 'Open the run on GitHub for its log.',
+  ].join(' ')
 }
 
 function repoOf(app: AppRow): { owner: string; name: string; branch: string } {
@@ -326,6 +373,8 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
     }
     const runner = d.ports.scaffoldRunner
     const ids = await runner.start(await scaffoldContext(d, app, ticketId, ctx), plan)
+    // The job is on its way: its wait shows running from now, with no ids of an earlier job.
+    await openWait(d.db, launchKey(params, 'scaffold.wait'))
     return { scaffoldTicketId: ticketId, runner: runner.id, ...ids }
   })
 }
@@ -342,29 +391,39 @@ async function ticketById(
   return row ?? null
 }
 
-/** One round's look at the scaffold job: `{ done }`, or the `scaffold.wait` row failed and a throw. */
-export async function scaffoldPoll(
-  d: PipelineDeps,
-  params: AppLaunchParams
-): Promise<{ done: boolean }> {
+/**
+ * One round's look at the scaffold job: the ticket (the truth for success), then the runner, whose
+ * run id and URL go on the `scaffold.wait` row as soon as it reports them. `{ done, error }`.
+ */
+export async function scaffoldPoll(d: PipelineDeps, params: AppLaunchParams): Promise<WaitState> {
   const waitKey = launchKey(params, 'scaffold.wait')
-  if (await stepSucceeded(d.db, waitKey)) return { done: true }
+  const settled = await waitRowState(d.db, waitKey)
+  if (settled) return settled
   const started = await stepIds(d.db, launchKey(params, 'scaffold.start'))
   const ticketId = started.scaffoldTicketId
-  if (!ticketId) return failStep(d.db, waitKey, 'The scaffold job was never started')
+  if (!ticketId) return failWait(d.db, waitKey, 'The scaffold job was never started')
   const ticket = await ticketById(d.db, params.tenantId, ticketId)
   if (ticket?.status === 'finished') return { done: true }
   if (!ticket || ticket.status === 'failed' || ticket.status === 'rejected') {
-    return failStep(d.db, waitKey, `The scaffold job failed: ${ticket?.error ?? 'ticket missing'}`)
+    return failWait(d.db, waitKey, `The scaffold job failed: ${ticket?.error ?? 'ticket missing'}`)
   }
   const app = await loadApp(d.db, params)
   const { scaffoldTicketId: _t, runner: _r, ...runIds } = started
-  const state = await d.ports.scaffoldRunner.poll(await scaffoldContext(d, app, ticketId), runIds)
+  const waitIds = await stepIds(d.db, waitKey)
+  if (waitIds.runId) runIds.runId = waitIds.runId
+  const context = await scaffoldContext(d, app, ticketId)
+  const state = await d.ports.scaffoldRunner.poll(context, runIds)
+  if (state.runId && (state.runId !== waitIds.runId || (state.url && !waitIds.runUrl))) {
+    await recordRunningIds(d.db, waitKey, {
+      runId: state.runId,
+      ...(state.url ? { runUrl: state.url } : {}),
+    })
+  }
   if (state.status === 'failed') {
-    return failStep(
+    return failWait(
       d.db,
       waitKey,
-      `The scaffold job failed${state.detail ? `: ${state.detail}` : ''}`
+      jobFailure('The scaffold job', state.detail, context.launchUrl ?? issuerOf(d.cfg))
     )
   }
   return { done: false }
@@ -372,16 +431,21 @@ export async function scaffoldPoll(
 
 /** The end of the scaffold wait: the ticket finished, or the wait ran out. */
 export function scaffoldWaitStep(d: PipelineDeps, params: AppLaunchParams) {
-  return runStep(d.db, launchKey(params, 'scaffold.wait'), async () => {
-    const started = await stepIds(d.db, launchKey(params, 'scaffold.start'))
-    const ticket = started.scaffoldTicketId
-      ? await ticketById(d.db, params.tenantId, started.scaffoldTicketId)
-      : null
-    if (ticket?.status !== 'finished') {
-      throw new Error('The scaffold job did not finish within 30 minutes')
-    }
-    return { scaffoldTicketId: ticket.id, ...(ticket.sha ? { scaffoldCommit: ticket.sha } : {}) }
-  })
+  return runStep(
+    d.db,
+    launchKey(params, 'scaffold.wait'),
+    async () => {
+      const started = await stepIds(d.db, launchKey(params, 'scaffold.start'))
+      const ticket = started.scaffoldTicketId
+        ? await ticketById(d.db, params.tenantId, started.scaffoldTicketId)
+        : null
+      if (ticket?.status !== 'finished') {
+        throw new Error('The scaffold job did not finish within 30 minutes')
+      }
+      return { scaffoldTicketId: ticket.id, ...(ticket.sha ? { scaffoldCommit: ticket.sha } : {}) }
+    },
+    { continuesWait: true }
+  )
 }
 
 /** Every name the scaffolded toml must carry, against the adapter's naming (plan §1). */
@@ -788,6 +852,7 @@ export function deployStartStep(d: PipelineDeps, params: AppLaunchParams) {
       ref: repo.branch,
       inputs: { environment: 'staging' },
     })
+    await openWait(d.db, launchKey(params, 'deploy_staging.wait'))
     return { dispatchedAt, deployWorkflowFile: DEPLOY_WORKFLOW_FILE }
   })
 }
@@ -827,17 +892,15 @@ function deployed(ticket: DeployTicketRow | null): boolean {
 }
 
 /** One round's look at the staging deploy: the ticket first, then the GitHub run behind it. */
-export async function deployPoll(
-  d: PipelineDeps,
-  params: AppLaunchParams
-): Promise<{ done: boolean }> {
+export async function deployPoll(d: PipelineDeps, params: AppLaunchParams): Promise<WaitState> {
   const waitKey = launchKey(params, 'deploy_staging.wait')
-  if (await stepSucceeded(d.db, waitKey)) return { done: true }
+  const settled = await waitRowState(d.db, waitKey)
+  if (settled) return settled
   const ticket = await latestStagingTicket(d, params)
   if (deployed(ticket)) return { done: true }
   if (ticket && (ticket.status === 'failed' || ticket.status === 'rejected')) {
     const refused = ticket.refused?.length ? ` (refused: ${ticket.refused.join(', ')})` : ''
-    return failStep(
+    return failWait(
       d.db,
       waitKey,
       `The staging deploy ${ticket.status === 'rejected' ? 'was rejected' : 'failed'}: ${
@@ -857,13 +920,21 @@ export async function deployPoll(
         event: 'workflow_dispatch',
       })
     ).find(r => !r.created_at || Date.parse(r.created_at) >= since)
+    if (run && (await stepIds(d.db, waitKey)).runId !== String(run.id)) {
+      await recordRunningIds(d.db, waitKey, {
+        runId: String(run.id),
+        ...(run.html_url ? { runUrl: run.html_url } : {}),
+      })
+    }
     if (run?.status === 'completed' && run.conclusion !== 'success') {
-      return failStep(
+      return failWait(
         d.db,
         waitKey,
-        `The staging deploy job ended ${run.conclusion ?? 'without a result'}${
-          run.html_url ? ` (${run.html_url})` : ''
-        }`
+        jobFailure(
+          'The staging deploy job',
+          `the GitHub Actions run ended “${run.conclusion ?? 'without a result'}”`,
+          issuerOf(d.cfg)
+        )
       )
     }
   }
@@ -871,13 +942,18 @@ export async function deployPoll(
 }
 
 export function deployWaitStep(d: PipelineDeps, params: AppLaunchParams) {
-  return runStep(d.db, launchKey(params, 'deploy_staging.wait'), async () => {
-    const ticket = await latestStagingTicket(d, params)
-    if (!ticket || !deployed(ticket)) {
-      throw new Error('The staging deploy did not finish within 45 minutes')
-    }
-    return { deployTicketId: ticket.id }
-  })
+  return runStep(
+    d.db,
+    launchKey(params, 'deploy_staging.wait'),
+    async () => {
+      const ticket = await latestStagingTicket(d, params)
+      if (!ticket || !deployed(ticket)) {
+        throw new Error('The staging deploy did not finish within 45 minutes')
+      }
+      return { deployTicketId: ticket.id }
+    },
+    { continuesWait: true }
+  )
 }
 
 /** The staging ticket is `active`/`finished` with a version — safe even when the event was lost. */

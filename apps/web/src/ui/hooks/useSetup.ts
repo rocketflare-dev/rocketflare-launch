@@ -7,6 +7,7 @@
 import {
   type CredentialKind,
   type CredentialPayload,
+  publicUrlCheckResponseSchema,
   type SetupSettingsUpdate,
   setupCheckResponseSchema,
   setupOverviewSchema,
@@ -65,6 +66,16 @@ export function useRemoveCredential(kind: CredentialKind) {
   return useMutation({
     mutationFn: () =>
       api.delete(`${BASE}/credentials/${kind}`, undefined, { schema: setupRemoveResponseSchema }),
+    onSuccess: () => invalidate(),
+  })
+}
+
+/** Probe `APP_URL` from the internet now (step 7); the result is what `POST /api/apps` gates on. */
+export function useCheckPublicUrl() {
+  const invalidate = useInvalidateSetup()
+  return useMutation({
+    mutationFn: () =>
+      api.post(`${BASE}/public-url/check`, undefined, { schema: publicUrlCheckResponseSchema }),
     onSuccess: () => invalidate(),
   })
 }
