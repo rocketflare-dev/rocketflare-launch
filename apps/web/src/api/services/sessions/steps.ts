@@ -199,8 +199,8 @@ export function devEnvFor(cfg: AppConfig, session: Pick<SessionRow, 'shortId' | 
       ? previewUrl(template, previewLabel(SESSION_UI_PORT, session.shortId, session.previewToken))
       : null,
     previewHostSuffix: previewHostSuffix(template),
-    localNeonProxy: cfg.SESSION_BACKEND === 'local' ? (cfg.SESSION_LOCAL_NEON_PROXY ?? null) : null,
-    local: cfg.SESSION_BACKEND === 'local',
+    // `wrangler dev` runs every container on the laptop's Docker, whatever SESSION_BACKEND says.
+    emulated: cfg.APP_ENV === 'development',
   }
   return dev
 }

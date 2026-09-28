@@ -8,7 +8,7 @@
  * | Port             | What it is                                             | Adapters (`SESSION_BACKEND`)             |
  * |------------------|--------------------------------------------------------|------------------------------------------|
  * | `SandboxPort`    | one session's container: commands, processes, files, ports | `sandbox/cloudflare-sandbox.ts` (both) |
- * | `SessionDbPort`  | the app's prepared `dev` database and a branch of it per session | `db/neon-session-db.ts` (cloud) · `db/local-session-db.ts` (local) |
+ * | `SessionDbPort`  | the app's prepared `dev` database and a branch of it per session | `db/neon-session-db.ts` (both: always a real Neon branch) |
  * | `RepoHostPort`   | where the repo lives: git auth for the egress handler, PRs, CI checks | `repo/github-repo-host.ts` (cloud) · `repo/local-repo-host.ts` (local) |
  * | `ModelUpstream`  | where the model proxy sends a keyed request            | the global `fetch` (Anthropic)           |
  *
@@ -36,7 +36,6 @@ import type {
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import type { AppBindings } from '../../types'
-import { LocalSessionDb } from './db/local-session-db'
 import { NeonSessionDb } from './db/neon-session-db'
 import { GitHubRepoHost } from './repo/github-repo-host'
 import { LocalRepoHost } from './repo/local-repo-host'
@@ -100,7 +99,7 @@ export type SandboxLogEvent =
 export interface SandboxStartOptions {
   /**
    * Hosts the container may reach, on top of the Durable Object's base allow-list
-   * (`SESSION_BASE_ALLOWED_HOSTS`) — `host.docker.internal` when local.
+   * (`SESSION_BASE_ALLOWED_HOSTS`).
    */
   extraAllowedHosts?: string[]
 }
@@ -153,6 +152,16 @@ export const SESSION_BASE_ALLOWED_HOSTS = [
   'api.anthropic.com',
 ] as const
 
+/**
+ * The allow-list a session's container runs with: the base, plus `extra` — the exact hosts of the
+ * Neon endpoint the container's database lives on (`sessionDbEgressHosts`) once it has one. Never
+ * a wildcard, and the same on a laptop: nothing in the container talks to the laptop (the git and
+ * model handlers run in Launch's Worker).
+ */
+export function sessionAllowedHosts(extra: readonly string[] = []): string[] {
+  return [...new Set([...SESSION_BASE_ALLOWED_HOSTS, ...extra])]
+}
+
 // ---- SessionDbPort -----------------------------------------------------------------------------
 
 /** The app as the database and repo ports need it — resolved by the caller, tenant-first. */
@@ -163,7 +172,7 @@ export interface SessionAppRef {
   repoOwner: string
   repoName: string
   defaultBranch: string
-  /** The app's Neon project (`app_environments.neon.projectId`); null for a local app. */
+  /** The app's Neon project (`app_environments.neon.projectId`); null when it has none. */
   neonProjectId: string | null
   /** `apps.session_db` as it stands. */
   sessionDb: AppSessionDb | null
@@ -179,8 +188,8 @@ export interface SessionBranch {
 export interface SessionDbPort {
   /**
    * Make sure the app has a `dev` database to branch from — Neon: a `dev` branch created
-   * `init_source: 'schema-only'` from `main` with role `session_owner` and an empty `session_app`;
-   * local: `launch_sessdev_<slug>`. Returns what `apps.session_db` should now say (status `none`
+   * `init_source: 'schema-only'` from `main` with role `session_owner` (made in SQL) and an empty
+   * `session_app`. Returns what `apps.session_db` should now say (status `none`
    * until a prepare run has migrated and seeded it). Idempotent.
    */
   ensureDev(app: SessionAppRef): Promise<AppSessionDb>
@@ -262,14 +271,16 @@ export interface SessionRuntimeContext {
 
 /**
  * The real adapters for this Worker, per `SESSION_BACKEND` (`local` only under
- * `APP_ENV=development` — `loadConfig` refuses it elsewhere). The sandbox adapter is the same in
- * both: locally it is `wrangler dev`'s own containers.
+ * `APP_ENV=development` — `loadConfig` refuses it elsewhere). The sandbox and the database are the
+ * same in both: locally the container is `wrangler dev`'s own, and a session's database is ALWAYS
+ * a real Neon branch of the app's project, reached directly from the container. `local` swaps
+ * only the repo host (the local git server).
  */
 export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPorts {
   const local = cfg.SESSION_BACKEND === 'local'
   return {
     sandbox: name => new CloudflareSandbox(env.SESSION_SANDBOX, name, { cfg }),
-    sessionDb: db => (local ? new LocalSessionDb(cfg) : new NeonSessionDb(db, cfg)),
+    sessionDb: db => new NeonSessionDb(db, cfg),
     repoHost: db => (local ? new LocalRepoHost(cfg) : new GitHubRepoHost(db, cfg)),
     model: { fetch: req => fetch(req) },
   }

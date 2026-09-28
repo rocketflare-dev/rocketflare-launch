@@ -1,8 +1,20 @@
 /**
- * `NeonSessionDb` — the `SessionDbPort` on Neon (`SESSION_BACKEND=cloud`, plan §1.7): the app's
- * `dev` branch (`init_source: 'schema-only'` from `main`, role `session_owner`, empty database
- * `session_app`), and per session a branch of `dev` with `session_owner`'s password reset. Built on
- * `NeonClient` (`services/launch/neon.ts`) and the sealed `neon_org_api_key` credential.
+ * `NeonSessionDb` — THE `SessionDbPort` (plan §1.7), under either `SESSION_BACKEND`: a session's
+ * database is always a real Neon branch of the app's project, which the container reaches
+ * directly over the neon driver (HTTPS + WebSocket) with exactly that endpoint allow-listed
+ * (`sessionDbEgressHosts`). The app's `dev` branch (`init_source: 'schema-only'` from `main`, role
+ * `session_owner`, empty database `session_app`), and per session a branch of `dev` with
+ * `session_owner`'s password reset. Built on `NeonClient` (`services/launch/neon.ts`) and the
+ * sealed `neon_org_api_key` credential.
+ *
+ * - **`session_owner` is made IN SQL, as `neondb_owner`** (`LOGIN CREATEROLE`, a throwaway password
+ *   the API resets before anyone uses it) — exactly as `provision-neon.ts` makes `migrator`. A role
+ *   Neon's role API creates is a `neon_superuser` member, far more than the one credential a
+ *   session's container holds should carry. `vector` is created in `session_app` as `neondb_owner`
+ *   for the same reason (the kit's own `CREATE EXTENSION IF NOT EXISTS` is then a no-op). A `dev`
+ *   an earlier Launch made through the API is REPAIRED: its `session_app` and `session_owner` are
+ *   deleted through the API (only the API can drop an API role) and made again, and `dev` goes
+ *   back to `none` so the next session prepares it afresh — `dev` is scratch, never data.
  *
  * - **`dev` never holds production data.** It is cut `schema-only` from `main` and filled by a
  *   PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
@@ -28,7 +40,17 @@ import {
   type NeonBranch,
   NeonClient,
   type NeonOperation,
+  neonSqlEndpoint,
 } from '../../launch/neon'
+import {
+  isTrue,
+  NEON_SUPERUSER,
+  OWNER_DATABASE,
+  ownerSession,
+  quoteIdent,
+  quoteLiteral,
+  throwawayPassword,
+} from '../../launch/pipeline/provision-neon'
 import type { SessionAppRef, SessionBranch, SessionDbPort } from '../ports'
 
 /** The prepared parent every session branches from. */
@@ -38,7 +60,36 @@ export const SESSION_DB_ROLE = 'session_owner'
 /** The database the kit migrates and seeds (`dev`) and a session runs on (its branch). */
 export const SESSION_DB_NAME = 'session_app'
 
+/** `session_owner` runs the kit's migrations, which create the app's RLS role: it needs CREATEROLE. */
+const SESSION_ROLE_ATTRIBUTES = 'LOGIN CREATEROLE'
+/** The only extension the kit's migrations create. */
+const SESSION_EXTENSIONS = ['vector'] as const
+
 export const sessionBranchNameFor = (shortId: string): string => `session-${shortId}`
+
+/** A Neon compute endpoint's host: `ep-<name>-<id>[-pooler].<region…>.neon.tech`. */
+const NEON_ENDPOINT_HOST = /^ep-[a-z0-9]+(?:-[a-z0-9]+)*\.(?:[a-z0-9-]+\.)+neon\.tech$/
+
+/**
+ * The hosts a container needs to reach the database in `uri` over the neon driver, and nothing
+ * else: the ENDPOINT itself (the `Pool`'s `wss://<host>/v2` — the kit's migrate, seed and
+ * `db:check`) and its region's HTTP SQL host (`api.<region>.neon.tech/sql` — the app's Worker
+ * under `pnpm dev`, exactly as `@neondatabase/serverless` derives it; `neonSqlEndpoint`). Throws
+ * for anything that is not a Neon endpoint, so no other host can be allow-listed through a
+ * session's database URI. The URI is a secret; the hosts are not.
+ */
+export function sessionDbEgressHosts(uri: string): string[] {
+  let host: string
+  try {
+    host = new URL(uri).hostname.toLowerCase()
+  } catch {
+    throw new Error('The session database URI does not parse')
+  }
+  if (!NEON_ENDPOINT_HOST.test(host)) {
+    throw new Error(`The session database host ${host} is not a Neon endpoint`)
+  }
+  return [host, new URL(neonSqlEndpoint(uri)).hostname]
+}
 
 const isConflict = (err: unknown) =>
   err instanceof NeonApiError && (err.status === 409 || /already exists/i.test(err.message))
@@ -118,22 +169,8 @@ export class NeonSessionDb implements SessionDbPort {
       await this.settle(projectId, created.operations)
       dev = created.branch
     }
-    try {
-      const role = await neon.createRole(projectId, dev.id, SESSION_DB_ROLE)
-      await this.settle(projectId, role.operations)
-    } catch (err) {
-      if (!isConflict(err)) throw err
-    }
-    try {
-      const database = await neon.createDatabase(projectId, dev.id, {
-        name: SESSION_DB_NAME,
-        ownerName: SESSION_DB_ROLE,
-      })
-      await this.settle(projectId, database.operations)
-    } catch (err) {
-      if (!isConflict(err)) throw err
-    }
-    const kept = app.sessionDb?.devBranchId === dev.id ? app.sessionDb : null
+    const repaired = await this.ensureSessionRole(projectId, dev.id)
+    const kept = app.sessionDb?.devBranchId === dev.id && !repaired ? app.sessionDb : null
     return {
       devBranchId: dev.id,
       database: SESSION_DB_NAME,
@@ -141,6 +178,62 @@ export class NeonSessionDb implements SessionDbPort {
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',
     }
+  }
+
+  /**
+   * `session_owner` (in SQL, as `neondb_owner`), `session_app` owned by it, and `vector` in it —
+   * see the header. True when an API-made `session_owner` was replaced, so `dev` must be prepared
+   * again. Every write is checked first or takes a 409 as done: a retried step repeats nothing.
+   */
+  private async ensureSessionRole(projectId: string, devBranchId: string): Promise<boolean> {
+    const neon = await this.neon()
+    // Launch never keeps `neondb_owner`'s password: one is minted for these statements and dropped.
+    const owner = await ownerSession(neon, { redact: () => {} }, projectId, devBranchId)
+    const readRole = async () =>
+      (
+        await owner.sql(
+          OWNER_DATABASE,
+          `SELECT r.rolname AS name, EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid WHERE m.member = r.oid AND g.rolname = '${NEON_SUPERUSER}') AS superuser FROM pg_roles r WHERE r.rolname IN ($1)`,
+          [SESSION_DB_ROLE]
+        )
+      ).rows[0]
+    let role: Record<string, unknown> | undefined = await readRole()
+    let repaired = false
+    if (role && isTrue(role.superuser)) {
+      // Made by an earlier Launch through Neon's role API: only the API can drop it, and only
+      // once it owns nothing.
+      for (const drop of [
+        () => neon.deleteDatabase(projectId, devBranchId, SESSION_DB_NAME),
+        () => neon.deleteRole(projectId, devBranchId, SESSION_DB_ROLE),
+      ]) {
+        try {
+          await this.settle(projectId, (await drop()).operations)
+        } catch (err) {
+          if (!isNeonNotFound(err)) throw err
+        }
+      }
+      repaired = true
+      role = undefined
+    }
+    if (!role) {
+      await owner.sql(
+        OWNER_DATABASE,
+        `CREATE ROLE ${quoteIdent(SESSION_DB_ROLE)} ${SESSION_ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(throwawayPassword())}`
+      )
+    }
+    try {
+      const database = await neon.createDatabase(projectId, devBranchId, {
+        name: SESSION_DB_NAME,
+        ownerName: SESSION_DB_ROLE,
+      })
+      await this.settle(projectId, database.operations)
+    } catch (err) {
+      if (!isConflict(err)) throw err
+    }
+    for (const extension of SESSION_EXTENSIONS) {
+      await owner.sql(SESSION_DB_NAME, `CREATE EXTENSION IF NOT EXISTS ${quoteIdent(extension)}`)
+    }
+    return repaired
   }
 
   async createBranch(

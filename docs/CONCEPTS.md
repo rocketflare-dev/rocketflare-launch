@@ -1257,8 +1257,9 @@ reload) is restarted as `<id>-rN` from the row.
   before any write with 503 `sessions_not_configured`, 409 `app_has_no_repo`, `sessions_paused`,
   `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
   then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
-- **Boot**: `claim` → `db` (the app's `dev` branch ensured; the first session PREPARES it —
-  migrate + seed — then branches) → `sandbox.start` → `repo` (clone, `session/<short>`,
+- **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` made in SQL by
+  `neondb_owner`; the first session PREPARES it — migrate + seed — then branches) →
+  `sandbox.start` → `repo` (clone, `session/<short>`,
   `.claude/settings.local.json`) → `bootstrap` (the kit's bootstrap on the session's own database)
   → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
   step writes a `step` event (the page's checklist).
@@ -1283,26 +1284,45 @@ restarts it from the row, but a boot in progress is lost until then.
 
 `SessionSandbox extends Sandbox` (`@cloudflare/sandbox` 0.12.10 stable, `durable-objects/
 session-sandbox.ts`) with internet off and an allow-list (npm, github.com, codeload,
-api.anthropic.com; `host.docker.internal` when local), `interceptHttps = true` set explicitly, and
+api.anthropic.com — the same on a laptop), `interceptHttps = true` set explicitly, and
 `outboundByHost` handing `api.anthropic.com` and `github.com` to handlers IN LAUNCH'S WORKER. The
 SDK is imported in two files only; everything else talks to `SandboxPort` (`ports.ts`), with
-`SessionDbPort` (Neon branches, or `LocalSessionDb`'s `CREATE DATABASE … TEMPLATE`), `RepoHostPort`
-(GitHub, or the local git server) and `ModelUpstream`, all bound once in `defaultSessionPorts`.
+`SessionDbPort` (`NeonSessionDb`, always), `RepoHostPort` (GitHub, or the local git server) and
+`ModelUpstream`, all bound once in `defaultSessionPorts`.
+**The database.** A session's database is ALWAYS a real Neon branch of the app's project, under
+either `SESSION_BACKEND`, reached DIRECTLY from the container: there is no TCP out, so the app runs
+`DATABASE_DRIVER=neon` (the `Pool`'s `wss://<endpoint>/v2` for the kit's migrate, seed and
+`db:check`; HTTP `api.<region>.neon.tech/sql` for the app's Worker under `pnpm dev`), with no
+`NEON_LOCAL_PROXY`. `sessionBootstrap` sets the allow-list to the base plus EXACTLY those two hosts,
+derived from the URI it is handed (`sessionDbEgressHosts`, which refuses anything but an
+`ep-….neon.tech` endpoint) — before the prepare run on `dev`, and again, replacing it, before the
+bootstrap on the session's own branch. `session_owner` (`LOGIN CREATEROLE`) is made IN SQL by
+`neondb_owner`, as `provision-neon.ts` makes `migrator`, and `vector` in `session_app` as the owner;
+a role an earlier Launch made through Neon's role API (a `neon_superuser` member) is dropped
+through the API with `session_app` and made again, and that `dev` is prepared afresh. The branch
+URI is still the only credential in the container.
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
 Claude Code and a warm pnpm store for kit 0.15.0. The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition).
 The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
 `session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
-10 minutes). `SESSION_BACKEND=local` (development only) swaps where the database, repo and model
-live, not the Workflow or the handlers — procedure and timings in `docs/SESSIONS-LOCAL.md`.
+10 minutes). `SESSION_BACKEND=local` (development only) swaps only where the repo lives (the local
+git server, still through the git handler) — procedure and timings in `docs/SESSIONS-LOCAL.md`.
+Under `APP_ENV=development` (every `wrangler dev` container, whatever the backend) each command
+runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`).
 
-**Known gaps:** the kit's bootstrap refuses root and `--driver neon` URLs off `*.neon.tech`, so the
-session works around both (`NOT_ROOT_PRELOAD`, `launch-local.neon.tech`;
-`docs/plans/upstream-kit-issues.md` 10–11). On an ARM Mac the amd64 image runs under QEMU, where
-Go binaries (esbuild inside tsx, Vite and wrangler) crash in their GC: local sessions run every
-command with `GOGC=off GOMEMLIMIT=1536MiB`, so each wants ~4 GB and two at once in an 8 GB VM are
-OOM-killed. First-start latency, `max_instances`, git through `interceptHttps`, `wss://` to a Neon
-branch and whether a deploy stops running sandboxes are unproven on Cloudflare (plan §5).
+**Known gaps:** the kit's bootstrap refuses root, so the session works around it
+(`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). On an ARM Mac the amd64 image runs
+under QEMU, where Go binaries (esbuild inside tsx, Vite and wrangler) crash in their GC ("The
+service was stopped" — what failed the first real session, whose Launch ran `wrangler dev` on the
+`cloud` backend): every `wrangler dev` session runs with `GOGC=off`, so each wants ~4 GB and two
+at once in an 8 GB VM are OOM-killed. The allow-list includes the region's shared `api.` SQL host
+(the neon-http driver's), which answers any endpoint in that region for whoever holds its
+credentials — the container holds only its branch's. An outbound `wss://` through the interception
+is proven locally against a public echo host, not yet against a Neon branch; workerd (the app's
+`wrangler dev` inside the container) trusting the interception CA is unproven. First-start latency,
+`max_instances`, git through `interceptHttps` and whether a deploy stops running sandboxes are
+unproven on Cloudflare (plan §5).
 
 ### 18.11 Chat, the model proxy and budgets
 

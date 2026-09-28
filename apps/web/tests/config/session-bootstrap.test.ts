@@ -9,7 +9,12 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SandboxInterruptedError, SESSION_BASE_ALLOWED_HOSTS } from '@/api/services/sessions/ports'
+import { sessionDbEgressHosts } from '@/api/services/sessions/db/neon-session-db'
+import {
+  SandboxInterruptedError,
+  SESSION_BASE_ALLOWED_HOSTS,
+  sessionAllowedHosts,
+} from '@/api/services/sessions/ports'
 import {
   BOOTSTRAP_COMMAND,
   claudeSettingsLocal,
@@ -20,32 +25,35 @@ import {
   SESSION_IMAGE_VERSION,
   SESSION_KIT_TAG,
   SESSION_UI_PORT,
+  sessionBootstrap,
   sessionDevVars,
   sessionProcessEnv,
 } from '@/api/services/sessions/rocketflare-dev'
 import {
   inSubshell,
-  LOCAL_SANDBOX_HOST,
   mapSandboxError,
   parseLogStream,
-  sessionAllowedHosts,
   shellQuote,
 } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
 import { checkoutScript, devEnvFor } from '@/api/services/sessions/steps'
 import type { AppConfig } from '@/config'
+import { FakeSandbox } from '../helpers/fake-sandbox'
 
 const WEB = path.resolve(__dirname, '../..')
 const dockerfile = readFileSync(path.join(WEB, 'containers/session/Dockerfile'), 'utf8')
 
 const cloud = {
+  APP_ENV: 'production',
   SESSION_BACKEND: 'cloud',
   SESSION_PREVIEW_URL: 'https://{label}.clewro.com',
 } as AppConfig
 const local = {
+  APP_ENV: 'development',
   SESSION_BACKEND: 'local',
   SESSION_PREVIEW_URL: 'http://{label}.localhost:3001',
-  SESSION_LOCAL_NEON_PROXY: 'http://host.docker.internal:4491',
 } as AppConfig
+/** Launch under `wrangler dev` on the CLOUD backend — the user's first real session (hola-world). */
+const devCloud = { ...cloud, APP_ENV: 'development' } as AppConfig
 const session = { shortId: 'abcdefghijkl', previewToken: '0123456789' }
 
 describe('never port 3000', () => {
@@ -104,24 +112,39 @@ describe('the bootstrap command', () => {
     expect(INSTALL_COMMAND).toMatch(/--frozen-lockfile --prefer-offline/)
   })
 
-  it('keeps esbuild alive under a laptop’s amd64 emulation (local only)', () => {
+  it('keeps esbuild alive whenever the container runs on a laptop — whatever SESSION_BACKEND says', () => {
+    // The hola-world failure: Launch under `wrangler dev` with SESSION_BACKEND unset (cloud) ran
+    // the amd64 image under QEMU without GOGC=off, and tsx's esbuild died in its GC every attempt.
+    expect(sessionProcessEnv(devEnvFor(devCloud, session))).toMatchObject({ GOGC: 'off' })
     expect(sessionProcessEnv(devEnvFor(local, session))).toMatchObject({ GOGC: 'off' })
     expect(sessionProcessEnv(devEnvFor(cloud, session))).not.toHaveProperty('GOGC')
   })
 
-  it('serves the preview origin, and routes the database through the laptop’s proxy when local', () => {
+  it('uses the neon driver straight to the branch, on a laptop too — never a proxy', () => {
+    for (const cfg of [cloud, local, devCloud]) {
+      const dev = devEnvFor(cfg, session)
+      expect(sessionProcessEnv(dev)).toMatchObject({ DATABASE_DRIVER: 'neon' })
+      expect(sessionProcessEnv(dev)).not.toHaveProperty('NEON_LOCAL_PROXY')
+      expect(sessionDevVars(dev)).toMatchObject({ DATABASE_DRIVER: 'neon', NEON_LOCAL_PROXY: '' })
+    }
+  })
+
+  it('serves the preview origin', () => {
     expect(sessionDevVars(devEnvFor(cloud, session))).toEqual({
+      DATABASE_DRIVER: 'neon',
+      NEON_LOCAL_PROXY: '',
       DEV_UI_PORT: '5173',
       DEV_API_PORT: '8787',
       APP_URL: 'https://5173-abcdefghijkl-0123456789.clewro.com',
       DEV_ALLOWED_HOSTS: '.clewro.com',
     })
     expect(sessionDevVars(devEnvFor(local, session))).toEqual({
+      DATABASE_DRIVER: 'neon',
+      NEON_LOCAL_PROXY: '',
       DEV_UI_PORT: '5173',
       DEV_API_PORT: '8787',
       APP_URL: 'http://5173-abcdefghijkl-0123456789.localhost:3001',
       DEV_ALLOWED_HOSTS: '.localhost',
-      NEON_LOCAL_PROXY: 'http://host.docker.internal:4491',
     })
     expect(previewHostSuffix(undefined)).toBeNull()
     expect(
@@ -159,9 +182,88 @@ describe('the checkout', () => {
 })
 
 describe('the egress allow-list', () => {
-  it('is the base list, plus the laptop only when local', () => {
-    expect(sessionAllowedHosts(cloud)).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
-    expect(sessionAllowedHosts(local)).toEqual([...SESSION_BASE_ALLOWED_HOSTS, LOCAL_SANDBOX_HOST])
+  it('is the base list — with no laptop host, local or not', () => {
+    expect(sessionAllowedHosts()).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
+    expect(sessionAllowedHosts()).not.toContain('host.docker.internal')
+    expect(sessionAllowedHosts(['a.example'])).toEqual([...SESSION_BASE_ALLOWED_HOSTS, 'a.example'])
+  })
+
+  it('widens by exactly the database’s Neon endpoint and its region’s HTTP SQL host', () => {
+    const uri =
+      'postgresql://session_owner:pw@ep-empty-mountain-b1o0rozj.c-5.eu-central-1.aws.neon.tech/session_app?sslmode=require'
+    expect(sessionDbEgressHosts(uri)).toEqual([
+      'ep-empty-mountain-b1o0rozj.c-5.eu-central-1.aws.neon.tech',
+      'api.c-5.eu-central-1.aws.neon.tech',
+    ])
+    const pooled = 'postgresql://u:p@ep-x-123-pooler.us-east-2.aws.neon.tech/db'
+    expect(sessionDbEgressHosts(pooled)).toEqual([
+      'ep-x-123-pooler.us-east-2.aws.neon.tech',
+      'api.us-east-2.aws.neon.tech',
+    ])
+    for (const host of sessionDbEgressHosts(uri)) expect(host).not.toContain('*')
+  })
+
+  it('sessionBootstrap applies it before the bootstrap runs, replacing an earlier database’s', async () => {
+    const sandbox = new FakeSandbox({ name: 's1' })
+    let listAtBootstrap: string[] = []
+    sandbox.onExec(/scripts\/bootstrap\.mjs/, () => {
+      listAtBootstrap = [...sandbox.allowedHosts]
+      return {}
+    })
+    await sandbox.start()
+    const dev = devEnvFor(devCloud, session)
+    // A prepare run on `dev`, then the session's own branch in the same container.
+    const devUri = 'postgresql://session_owner:pw@ep-dev-000001.us-east-2.aws.neon.tech/session_app'
+    const branchUri =
+      'postgresql://session_owner:pw2@ep-sess-000002.us-east-2.aws.neon.tech/session_app'
+    await sessionBootstrap({ sandbox, dbUri: devUri, dev })
+    expect(listAtBootstrap).toEqual([
+      ...SESSION_BASE_ALLOWED_HOSTS,
+      'ep-dev-000001.us-east-2.aws.neon.tech',
+      'api.us-east-2.aws.neon.tech',
+    ])
+    await sessionBootstrap({ sandbox, dbUri: branchUri, dev })
+    expect(sandbox.allowedHosts).toEqual([
+      ...SESSION_BASE_ALLOWED_HOSTS,
+      'ep-sess-000002.us-east-2.aws.neon.tech',
+      'api.us-east-2.aws.neon.tech',
+    ])
+    // The URI travels only in the bootstrap's environment, never on a command line.
+    const boot = sandbox.execs.filter(e => /bootstrap\.mjs/.test(e.command))
+    expect(boot.at(-1)?.opts?.env).toMatchObject({
+      LAUNCH_DB_URL: branchUri,
+      DATABASE_DRIVER: 'neon',
+      GOGC: 'off',
+    })
+    for (const e of sandbox.execs) expect(e.command).not.toContain('pw2@')
+  })
+
+  it('sessionBootstrap refuses a non-Neon database before running anything', async () => {
+    const sandbox = new FakeSandbox({ name: 's2' })
+    await expect(
+      sessionBootstrap({
+        sandbox,
+        dbUri: 'postgresql://u:p@host.docker.internal:5432/app',
+        dev: devEnvFor(local, session),
+      })
+    ).rejects.toThrow(/not a Neon endpoint/)
+    expect(sandbox.execs).toHaveLength(0)
+    expect(sandbox.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
+  })
+
+  it('refuses a URI that is not a Neon endpoint — no other host can ride in on it', () => {
+    for (const uri of [
+      'postgresql://u:p@localhost:5432/db',
+      'postgresql://u:p@host.docker.internal:5432/db',
+      'postgresql://u:p@launch-local.neon.tech/db',
+      'postgresql://u:p@api.us-east-2.aws.neon.tech/db',
+      'postgresql://u:p@ep-x.neon.tech.evil.example/db',
+      'postgresql://u:p@ep-x.evil-neon.tech/db',
+      'postgresql://u:p@example.com/db',
+      'not a uri',
+    ]) {
+      expect(() => sessionDbEgressHosts(uri)).toThrow()
+    }
   })
 })
 

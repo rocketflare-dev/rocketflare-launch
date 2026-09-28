@@ -5,6 +5,9 @@
  *
  * `sessionBootstrap(ctx)` — the `bootstrap` step (and a `prepare` run's migrate + seed):
  *
+ * 0. The allow-list gains EXACTLY the database's Neon endpoint (`sessionDbEgressHosts`): the
+ *    container has no TCP out, so the app reaches its branch over the neon driver — the `Pool`'s
+ *    WebSocket to the endpoint, the Worker's HTTP queries to the region's `api.` host.
  * 1. `pnpm install --frozen-lockfile --prefer-offline` — from the image's warm store (S7: ~5 s,
  *    against ~17 s cold).
  * 2. `node scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev
@@ -15,12 +18,12 @@
  *    `--db-url`). **`--no-plugins`**: a session never changes the app's plugin set — the repo's
  *    committed plugins are what it runs. The ports go in the ENVIRONMENT (`DEV_UI_PORT=5173`,
  *    `DEV_API_PORT=8787`, `DEV_ALLOWED_HOSTS=.<preview suffix>`), which `scripts/lib/dev-ports.mjs`
- *    reads before `.dev.vars`; locally `NEON_LOCAL_PROXY` too (the scripts read the driver from
- *    the environment).
+ *    reads before `.dev.vars`, with `DATABASE_DRIVER=neon` (the scripts read the driver from the
+ *    environment) — and on a laptop `GOGC=off` (see `SessionDevEnv.emulated`).
  * 3. The dev-server keys go INTO `apps/web/.dev.vars` afterwards — `APP_URL=<preview origin>` (the
  *    Worker builds its CORS / CSRF allow-list and redirects from it and cannot read the process
- *    environment), the ports, and `NEON_LOCAL_PROXY` when local (the bootstrap clears it under
- *    `--db-url`, which is right for Neon and wrong for the laptop's proxy).
+ *    environment), the ports, `DATABASE_DRIVER=neon` and an empty `NEON_LOCAL_PROXY` (never a
+ *    proxy: the branch's endpoint is reached directly, on a laptop too).
  *
  * `startDevServer(sandbox, dev)` — the `dev` step: `pnpm dev` in the background, then
  * `:5173` answering and `:8787/api/health` 2xx.
@@ -33,7 +36,8 @@
  * bootstrap command and in the checkout's git-ignored `.dev.vars`; never in an argument, a step
  * result or an event.
  */
-import type { SandboxPort } from './ports'
+import { sessionDbEgressHosts } from './db/neon-session-db'
+import { type SandboxPort, sessionAllowedHosts } from './ports'
 
 /** Bump with `LABEL dev.rocketflare.launch.session-image` in `containers/session/Dockerfile`. */
 export const SESSION_IMAGE_VERSION = 'session-1'
@@ -78,40 +82,47 @@ export interface SessionDevEnv {
   previewOrigin: string | null
   /** `.clewro.com` — the suffix every preview host shares (Vite's `allowedHosts`), or null. */
   previewHostSuffix: string | null
-  /** `SESSION_LOCAL_NEON_PROXY` when local (`http://host.docker.internal:<port>`), else null. */
-  localNeonProxy: string | null
   /**
-   * `SESSION_BACKEND=local`: the laptop runs the amd64-only sandbox image under emulation (QEMU on
-   * an ARM Mac), where Go binaries — esbuild, under `tsx`, Vite and wrangler — crash in their
-   * garbage collector ("The service was stopped", a nil-pointer panic mid-transform). Measured in
-   * slice 3b: `GOGC=off` keeps them alive; `GOMAXPROCS=1` and `GODEBUG=asyncpreemptoff=1` do
-   * not. `GOMEMLIMIT` bounds the cost — the collector only runs near it. Deployed containers are
-   * native amd64 and get neither.
+   * The container runs on a laptop (`APP_ENV=development`: `wrangler dev`'s Docker, whichever
+   * `SESSION_BACKEND`), where the amd64-only sandbox image runs under emulation (QEMU on an ARM
+   * Mac) and Go binaries — esbuild, under `tsx`, Vite and wrangler — crash in their garbage
+   * collector ("The service was stopped", "found pointer to free object", a garbled
+   * `Invalid version` mid-transform). Measured: `GOGC=off` keeps them alive; `GOMAXPROCS=1` and
+   * `GODEBUG=asyncpreemptoff=1` do not. `GOMEMLIMIT` bounds the cost — the collector only runs
+   * near it. Deployed containers are native amd64 and get neither.
    */
-  local?: boolean
+  emulated?: boolean
 }
 
-/** Command-level variables every step shares: no credential, no telemetry, the ports. */
+/**
+ * Command-level variables every step shares: no credential, no telemetry, the ports, and the neon
+ * driver — the container has no TCP out, so the kit's scripts (which read `DATABASE_DRIVER` from
+ * the environment before `.dev.vars`) must speak HTTPS/WebSocket to the branch.
+ */
 export function sessionProcessEnv(dev: SessionDevEnv): Record<string, string> {
   return {
     CI: '1',
     WRANGLER_SEND_METRICS: 'false',
+    DATABASE_DRIVER: 'neon',
     DEV_UI_PORT: String(SESSION_UI_PORT),
     DEV_API_PORT: String(SESSION_API_PORT),
     ...(dev.previewHostSuffix ? { DEV_ALLOWED_HOSTS: dev.previewHostSuffix } : {}),
-    ...(dev.localNeonProxy ? { NEON_LOCAL_PROXY: dev.localNeonProxy } : {}),
-    ...(dev.local ? { GOGC: 'off', GOMEMLIMIT: '1536MiB' } : {}),
+    ...(dev.emulated ? { GOGC: 'off', GOMEMLIMIT: '1536MiB' } : {}),
   }
 }
 
-/** The keys `apps/web/.dev.vars` must carry for `pnpm dev` to serve the preview. */
+/**
+ * The keys `apps/web/.dev.vars` must carry for `pnpm dev` to serve the preview — and the neon
+ * driver, straight to the branch: `NEON_LOCAL_PROXY` is emptied, so nothing routes it anywhere else.
+ */
 export function sessionDevVars(dev: SessionDevEnv): Record<string, string> {
   return {
+    DATABASE_DRIVER: 'neon',
+    NEON_LOCAL_PROXY: '',
     DEV_UI_PORT: String(SESSION_UI_PORT),
     DEV_API_PORT: String(SESSION_API_PORT),
     APP_URL: dev.previewOrigin ?? `http://localhost:${SESSION_UI_PORT}`,
     ...(dev.previewHostSuffix ? { DEV_ALLOWED_HOSTS: dev.previewHostSuffix } : {}),
-    ...(dev.localNeonProxy ? { NEON_LOCAL_PROXY: dev.localNeonProxy } : {}),
   }
 }
 
@@ -229,6 +240,11 @@ function tailOf(text: string, lines = 12): string {
 export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<BootstrapTimings> {
   const { sandbox, dev } = ctx
   const env = sessionProcessEnv(dev)
+
+  // The container reaches its database directly — so exactly that endpoint joins the allow-list,
+  // REPLACING any earlier one (the `dev` a prepare run used is dropped when the session's own
+  // branch takes over). A URI that is not a Neon endpoint throws here, before anything runs.
+  await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(ctx.dbUri)))
 
   const t0 = Date.now()
   const install = await sandbox.exec(INSTALL_COMMAND, {

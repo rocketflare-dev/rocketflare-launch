@@ -116,11 +116,17 @@ export async function seedSessionApp(
       initSource: 'schema-only',
     })
     devBranchId = dev.branch.id
-    await neon.createRole(neonProjectId, devBranchId, 'session_owner')
+    // As the adapter makes it: the role IN SQL by `neondb_owner` (no `neon_superuser`), the
+    // database through the API, `vector` in it.
+    cloud.neon.sqlRole(neonProjectId, devBranchId, 'session_owner', { canCreateRole: true })
     await neon.createDatabase(neonProjectId, devBranchId, {
       name: 'session_app',
       ownerName: 'session_owner',
     })
+    cloud.neon.projects
+      .get(neonProjectId)
+      ?.branches.get(devBranchId)
+      ?.extensions.set('session_app', new Set(['vector']))
     sessionDb = {
       devBranchId,
       database: 'session_app',

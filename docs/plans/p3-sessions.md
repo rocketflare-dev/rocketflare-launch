@@ -62,7 +62,7 @@ It follows the P1/P2 process:
    - `dev` is created `init_source: 'schema-only'` from `main`, with role `session_owner` and an empty database `session_app`.
    - A one-time **prepare** run (the same Workflow with `kind: 'prepare'`, no chat, no dev server) runs the kit bootstrap migrate + seed into `session_app`.
    - Sessions then branch from `dev`, and `session_owner`'s password is reset per branch.
-   - **Locally:** `LocalSessionDb` runs `CREATE DATABASE launch_sess_<short> TEMPLATE launch_sessdev_<slug>`. The sandbox reaches it through the kit's local Neon proxy.
+   - **Locally:** `LocalSessionDb` runs `CREATE DATABASE launch_sess_<short> TEMPLATE launch_sessdev_<slug>`. The sandbox reaches it through the kit's local Neon proxy. **Superseded (2026-09-28):** a session's database is always a real Neon branch, reached directly from the sandbox with exactly its endpoint allow-listed; `LocalSessionDb` and the proxy route are gone (`docs/CONCEPTS.md` §18.10).
    - Both sit behind a `SessionDbPort`.
 8. **Checkpoint, drain and rollouts:**
    - **After every turn:** Launch commits (a Launch author, with the user as `Co-Authored-By`), pushes `session/<short>`, and copies Claude's transcript `~/.claude/projects/<cwd>/<id>.jsonl` to R2 at `sessions/<id>/claude.jsonl`.

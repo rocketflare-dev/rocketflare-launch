@@ -329,8 +329,9 @@ export const microcentsToUsd = (microcents: number): number => microcents / MICR
 
 /**
  * `sessions.db` — where the session's database lives. NON-secret: the connection string is sealed
- * separately in `db_uri_sealed`. `neon`: a branch of the app's `dev` branch; `local`: a database
- * cloned from `launch_sessdev_<slug>` (`SESSION_BACKEND=local`).
+ * separately in `db_uri_sealed`. `neon`: a branch of the app's `dev` branch — every session's,
+ * under either `SESSION_BACKEND`. `local` is only read back: rows written by the laptop-Postgres
+ * session database Launch no longer has.
  */
 export const sessionDbSchema = z.object({
   provider: z.enum(['neon', 'local']),
