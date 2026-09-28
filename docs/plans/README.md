@@ -1,85 +1,116 @@
 # Build status
 
-Paused on 2026-09-28, after P5.
+Paused on 2026-09-28, at the end of the first day of testing on real infrastructure. P0–P5 are built, and the P6 plan is written.
 
-**Where the code is.** Everything is on the local branch `phase-5-grants`. Each phase branch is stacked on the one before it:
+## Where things are
+
+**Launch.** All work is on the local branch `phase-5-grants`. The phase branches are stacked:
 
 ```
 main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 ```
 
-Nothing has been pushed, merged into `main` or deployed.
+- Nothing is pushed or merged into `main`.
+- Launch itself is not deployed. It runs locally with `pnpm dev`, reachable at `https://local.clewro.com` through `pnpm dev:tunnel`.
+- The gate is green (in a throwaway worktree): lint, typecheck, tests (web about 3,100, CLI 104, evals 22) and build.
 
-**Status.** Every phase below is built and tested locally against fakes: FakeCloud, FakeSandbox and a fake Anthropic. The gate is green:
-- lint;
-- typecheck;
-- tests: web about 2,900, CLI 104, evals 22;
-- `build:ui` and `build:api`.
+**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.5**, with all the fixes this testing found. Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) is 0.15.5.
+
+**The real app.** `hola-world` (`guidemode/hola-world`, Neon project `mute-star-58262276`) is **live** on staging (`https://hola-world-staging.clewro.com`) and was promoted to production through the approval gate.
 
 ## Phases
 
 | Phase | Plan | State |
 |---|---|---|
 | P0 | seed, cut the cord, brand | Done. Seeded from Rocketflare 0.15.0 with the Afterburner theme; analytics kept. |
-| P1 | [p1-foundation](p1-foundation.md) | Built. Covers the audit log, setup wizard, OIDC issuer, registry/import and health. The local end-to-end test passed with a real kit app signing in through Launch. |
-| P2 | [p2-create-app](p2-create-app.md) | Built. Covers the adapter, scaffold job, the APP_LAUNCH/APP_TEARDOWN workflows and the deploy gateway. End-to-end test against FakeCloud with the real `deployer.mjs`. |
-| P3 | [p3-sessions](p3-sessions.md) | Built. Covers sandbox sessions, model proxy and budgets, preview gateway, and ship → PR. End-to-end test with fakes. A real local container booted before the merge, but no real model turn has run (no Anthropic key yet). |
-| P4 | [p4-approvals](p4-approvals.md) | Built. Covers the approvals engine and inbox, releases → promote → production gate, and the audit hash chain. The exit test passes. |
-| P5 | [p5-grants](p5-grants.md) | Built. Covers shared config, grant requests, push/rotate/revoke (with the 10053 var-shadow remedy) and needs detection. The exit test passes. |
-| P6 | — | Not started: fleet upgrades, teardown at scale, cost view, per-PR previews ([spec/10](../../spec/10-fleet-operations.md)). |
+| P1 | [p1-foundation](p1-foundation.md) | Built. Covers the audit log, setup (now Settings → Platform, for the owner/admin in single mode), OIDC issuer, registry/import and health. |
+| P2 | [p2-create-app](p2-create-app.md) | Built, and **proven on real accounts**: scaffold → Neon → Cloudflare → config → placeholders → GitHub env → secrets → staging deploy through the gateway → health → live. Adds Re-scaffold and commit pins. |
+| P3 | [p3-sessions](p3-sessions.md) | Built. The first real sessions failed; the fixes are merged but **not re-tested** (see "Next" below). No real Claude turn has run yet. |
+| P4 | [p4-approvals](p4-approvals.md) | Built. Production promote through an approval is **proven** on hola-world. |
+| P5 | [p5-grants](p5-grants.md) | Built. The exit test passes against fakes; not yet run on real accounts. |
+| P6 | [p6-fleet](p6-fleet.md) | Planned. The open questions are decided (see its §7). The admin collapse it depends on is done. Not started. |
 
-Known gaps for each phase are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Kit issues are in [upstream-kit-issues.md](upstream-kit-issues.md). Three are filed:
-- rocketflare #37 and #38;
-- rocketflare-plugins #8.
+Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Kit issues are in [upstream-kit-issues.md](upstream-kit-issues.md).
 
-The rest are unfiled.
+## What real testing proved and fixed (2026-09-28)
 
-## What remains
+**Proven on real accounts:**
+- The GitHub scaffold job, including Re-scaffold and `[skip ci]` on Launch's own commits.
+- Neon: roles created in SQL (`migrator`/`app`, with the `GRANT`), and the migration-evidence check before Re-scaffold.
+- Cloudflare: storage, queue and KV; the placeholder Workers (with a `queue` handler and `keep_bindings`); Worker secrets.
+- GitHub environments, created with an `administration` token.
+- The deploy gateway: ticket → upload with the binding check → `db:migrate:ci` as `migrator` → activate → finish.
+- Health, go-live, and the production approval and promote.
 
-1. **Deploy Launch (P1 step 1e).** This needs the user's go-ahead.
-   - Launch goes to `launch.clewro.com`, in the single `clewro.com` account.
-   - The database is a `launch` database and role in an existing Neon project, with `DATABASE_DRIVER=neon`.
-   - Set secrets before routing traffic to it.
-   - Then finish the setup wizard against the real accounts. The Neon region check and the auto-created wildcard DNS record are already fixed.
-2. **Prove each phase on real infrastructure.** Each plan's "What is left for real infrastructure" section lists the checks. The main ones:
-   - Neon: `GRANT migrator TO app`.
-   - Cloudflare:
-     - the Versions API and `keep_bindings`;
-     - DO migrations on a placeholder Worker;
-     - the 10053 name-clash behaviour;
-     - git through `interceptHttps`;
-     - Vite HMR through the preview.
-   - GitHub:
-     - the App's permissions;
-     - pushing workflow files with an installation token;
-     - the OIDC claim shapes.
-   - A real Claude turn in a session, with an Anthropic key.
-3. **Local session check on the merged tree.** Set the `SESSION_*` values in `apps/web/.dev.vars`, following [SESSIONS-LOCAL.md](../SESSIONS-LOCAL.md). Also set `GRANT_BACKEND=local` there, so local grant pushes don't call the real Cloudflare API.
-4. **P6: fleet operations.** Plan it the same way:
-   - write the plan doc;
-   - build a foundations slice first;
-   - build the rest as parallel slices in worktrees;
-   - finish with an integration pass and an exit test.
-5. **Housekeeping.**
-   - Decide how the stacked phase branches reach `main`: one PR per phase, or squash.
-   - File the remaining kit issues.
-   - Replace the kit's example agents (`summarize-text`, `research-topic`) once Launch has a real agent.
+**Launch fixes merged during testing:**
+- **Pipeline visibility:** scaffold and deploy waits fail fast, and the page polls the CI job on read. Retry and Stop were added, and a dead-instance check fails a launch or teardown whose Workflow died.
+- **Public URL:** a setup check refuses to start CI while Launch can't be reached from outside.
+- **Neon:** roles are created in SQL, not through the role API.
+- **Email:** the step is skipped, with its reason, while Resend isn't ready.
+- **"Deployed" means activated** (a new `deploy_tickets.activated_at`, migration 0027).
+- **Re-scaffold:** replaces the scaffold of an app that has never gone live, after checking its database for applied migrations.
+- **Kit version card** in Setup: pin a release tag, or a `main` commit for development.
+- **Admin collapse:** in single mode, the organisation's owner/admin is the platform admin.
+- **UI:** a simpler step list (15 rows), the page at full width, and no attempt counter.
+- **Sessions:**
+  - a session's database is always a real Neon branch, reached through an allow-list of exactly its own hosts;
+  - session roles are created in SQL;
+  - `GOGC=off` under emulation;
+  - every sandbox and Neon call has a time limit;
+  - failures carry the output tail;
+  - a recreated container is detected;
+  - End works mid-step;
+  - a stalled-session check.
 
-## Found on real infrastructure (2026-09-28)
+**Kit releases, each a PR, CI and a release:**
 
-**First end-to-end launch on real accounts: `hola-world` went LIVE at 11:50 UTC** (kit 0.15.5; Launch running locally through the `local.clewro.com` tunnel). Proven for real: the scaffold job on GitHub Actions, Re-scaffold, Neon SQL-created roles + `GRANT`, Cloudflare storage / placeholder Workers / secrets, GitHub environments, the deploy gateway (start → upload with the binding check → `db:migrate:ci` as `migrator` → activate → finish), health and live. Fixed on the way — Launch: fail-fast CI waits, public-URL gate, page-read polling of CI jobs, dead-instance reconcile, Neon roles by SQL, placeholder `queue` handler + `keep_bindings`, `administration` token for environments, email skipped when Resend is not ready, "deployed" = activated, Re-scaffold (DB-evidence check), commit pins from Setup. Kit: 0.15.1–0.15.5 (hyphenated-slug rename, default-plugins gate kit-only, gate once per commit, neon prune, parity-only deploy check, db-roles without CREATEDB). Still unproven: production promote, email (Resend domain not verified), teardown of a real app, commit-pin fetch on a real runner.
+| Release | Fix |
+|---|---|
+| 0.15.1 | The evals script: a hyphenated slug is no longer used as an identifier. |
+| 0.15.2 | Hyphenated slugs: the API-key prefix, the `rocketflare-dev/` references (#37), the test Compose project (#38), a stale `plugin-api.md`, and a CI job that gates a renamed copy. |
+| 0.15.3 | The default-plugins gate is kit-only (it failed every app with "already installed"); each commit is gated once; a single-statement `ai_spans` prune for the neon test timeouts. |
+| 0.15.4 | The deploy job runs only the parity test (its checkout is shallow). |
+| 0.15.5 | `db-roles` works as a role without CREATEDB. |
 
-- A real scaffold ran green on GitHub Actions with kit 0.15.1 (after the frozen-install and hyphenated-slug rename fixes).
-- Neon: roles made through the API are `neon_superuser` members that `neondb_owner` cannot grant, so the launch now creates `migrator` and `app` in SQL. P3's `session_owner` now gets the same treatment (`neon-session-db.ts`, made in SQL by `neondb_owner`; an API-made one on an app's `dev` is repaired).
-- The first real coding session (hola-world, under `wrangler dev`) failed its prepare at the kit's `4/10 database`: `tsx`'s esbuild crashed under amd64 emulation because `GOGC=off` followed `SESSION_BACKEND=local` and the backend was `cloud` (fixed: it follows `APP_ENV=development`), and the sandbox's allow-list had no Neon host (fixed: exactly the database's endpoint and its region's `api.` host; a session's database is now always a real Neon branch, local included). Still unproven: a real session boot against Neon through the egress interception (checked locally only with a public `wss://` echo host), and workerd inside the container trusting the interception CA.
+## Next, in order
 
-## Next fixes from real testing
+1. **Re-test a coding session on hola-world.** The fixes are merged but haven't run against a real session yet.
+   - Give Docker Desktop **at least 12 GB** of memory. The last session was killed by the Docker VM's out-of-memory killer at dev-server start.
+   - Open the old failed session `a07e371e…` once. Its reconcile deletes the leftover Neon branch (`ep-wild-silence-…`).
+   - Start a new session. The `dev` database is already prepared.
+   - **Unproven:** Neon over WebSocket through the egress interception, `workerd` inside the container trusting the interception CA, and a real Claude turn (the Anthropic key must be set in Setup).
+2. **Show deploys in progress on the app overview and the catalogue.** A production deploy never showed as in progress: only the audit log recorded it. The overview should show, from the deploy ticket, dispatched → approved → uploaded → migrating → activating → done or failed, with the run link, polled on page read like `pipeline/wait-poll.ts`.
+3. **Small fixes found along the way:**
+   - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the next kit change, through a commit pin.
+   - **Email:** have Setup verify `notifications.clewro.com` in Resend (create the domain and write its DNS records to the zone). Email is skipped until then.
+   - **Launch's `ai_spans` prune:** port the kit 0.15.3 single-statement prune; Launch still deletes per tenant.
+   - **The site's `check:releases`** accepts a `TODO` summary. Make it refuse one.
+   - **Sessions:** a `working` turn whose Workflow died isn't covered by the stalled-session check.
+4. **Prove the rest on real infrastructure.** Not yet run for real:
+   - archiving and tearing down a real app;
+   - P5 grants (push, rotate, revoke onto a live Worker);
+   - a commit pin fetched on a real runner ("Pin latest main");
+   - the GitHub App reading the kit's tags.
+5. **Deploy Launch (P1 step 1e).** This needs your go-ahead.
+   - Launch goes to `launch.clewro.com`, with a `launch` database in an existing Neon project and `DATABASE_DRIVER=neon`.
+   - Set the secrets before routing traffic to it.
+   - The live public-URL probe is only a warning when deployed (unproven whether a Worker can fetch its own hostname).
+6. **P6: fleet operations.** Build from [p6-fleet](p6-fleet.md): a foundations slice (6a), then parallel slices in worktrees, an integration pass, and the exit test. Per-PR previews (6f) come last and are off by default.
+7. **Housekeeping.**
+   - Decide how the stacked phase branches reach `main`: one PR per phase, or a squash.
+   - File the remaining unfiled kit issues (`upstream-kit-issues.md`).
+   - Replace the kit's example agents once Launch has a real one.
 
-- **Deploys in progress are invisible outside the pipeline.** A production deploy (approved, dispatched, uploaded, activated at 12:20–12:22 on 2026-09-28) never showed as in progress on the app's overview page. Only the audit log recorded it. The overview should show a live deploy state for staging and production, from the deploy ticket: dispatched, approved, uploaded, migrating, activating, done or failed, with the GitHub run link. Poll it on page read the way the launch's CI waits are (`pipeline/wait-poll.ts`), and put the same state on the catalogue row.
-- [x] **Coding sessions stall silently.** On hola-world's second session, the container went idle after the clone (while preparing the `dev` database), and the page kept saying "Preparing the app's database". Root cause: a `pnpm build` in the same checkout rewrote `apps/web/dist/ui`, the `[assets]` directory `wrangler dev` watches, so the Worker reloaded mid-step (12:22:02–04); the local Workflow engine kept the instance `running` and re-ran the step only ~6 minutes later. Not `setAllowedHosts` at runtime (measured: it returns at once on a running container). The session then died at "Starting dev server" to the Docker VM's OOM killer (`dmesg`: `Killed process … (sandbox)` in its cgroup), and the retry curled an EMPTY recreated container for minutes. Fixed (`session-stall` branch): every sandbox and Neon call is bounded with a readable error; a failed command carries its last 40 lines; a boot marker detects a recreated container; the dev wait checks the dev server's pid; End stops a running boot step within 10 s; a reconcile on read / on End / on the cron settles a boot whose Workflow died (`services/sessions/reconcile.ts`) and cleans up settled sessions whose cleanup never ran; a stale `apps.session_db` `preparing` is claimed again. The laptop's memory is documented, not fixed (`docs/SESSIONS-LOCAL.md` § Memory).
-- **Kit deploy step names.** Rename "Deploy (apps/web/wrangler.staging.toml)" (the no-deployer path, skipped under Launch) to "Deploy with wrangler (no deployer)", and "Activate the uploaded version" to "Deploy: activate the uploaded version". Ship it with the next kit change, through a commit pin.
+## Working rules learned
+
+- **Never run `pnpm build` or the gate in the checkout that runs `pnpm dev`.** `build:ui` rewrites `apps/web/dist/ui`, which `wrangler dev` watches. The reload kills in-flight Workflow steps, and locally they don't resume until something pokes the engine. Gate in a throwaway worktree: `git worktree add /tmp/launch-gate <sha>`, `pnpm install --frozen-lockfile --prefer-offline`, then the gate.
+- **Parallel agents share the :5433 test database.** Concurrent suites cause "tuple concurrently updated", 401s from vanished sessions and deadlocks. Rerun alone before believing a failure.
+- **A new migration must be applied to the dev database at once** (`pnpm db:migrate`) if `pnpm dev` loads the schema change. Once applied, it is history.
+- **Test a kit fix without a release:** merge it to kit `main`, then Setup → Kit version → **Pin latest main**, then Re-scaffold.
+- **A stuck local Workflow instance:** `pnpm --filter @launch/web exec wrangler workflows instances terminate <workflow-name> <instance-id> --local --port 3001`.
 
 ## Local dev notes
 
-- `pnpm dev:tunnel` runs only the tunnel (cfld). `pnpm dev` switches to the tunnel URL while that tunnel is up.
+- `pnpm dev:tunnel` runs only the tunnel (cfld). `pnpm dev` switches to the tunnel URL while that tunnel is up. CI jobs need it: Launch refuses to start CI while its public URL isn't reachable.
 - **cfld cert zone.** cfld routed `local.clewro.com` with the `guidemode.dev` cert, which created `local.clewro.com.guidemode.dev`. Fix it with `pnpm web exec cfld login --reauth` for `clewro.com`, then restart the tunnel. Delete the stray record in the `guidemode.dev` zone.
+- The kit source is at `~/work/rocketflare`. Run its gate against a throwaway Postgres on another port, not :5433.
