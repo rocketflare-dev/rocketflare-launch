@@ -12,7 +12,6 @@
  * 3. `company`: every member.
  * 4. `restricted`: a user grant naming them, or a group grant for a group they are in.
  */
-import { DEFAULT_APPROVAL_POLICIES } from '@launch/shared/launch-approvals'
 import type {
   AppAccessGrant,
   AppAccessRequest,
@@ -272,12 +271,15 @@ async function resolveGrantee(
   return { groupId: null, userId: member.id, label: member.email }
 }
 
-/** Add a grant (idempotent: granting twice is one row). Returns what was granted, for the audit. */
+/**
+ * Add a grant (idempotent: granting twice is one row). Returns what was granted, for the audit.
+ * `createdByUserId` is null for a grant the system made (an auto-approved `app.access` request).
+ */
 export async function addGrant(
   db: Database,
   client: Pick<OidcClientRow, 'id' | 'tenantId'>,
   input: CreateAppAccessGrant,
-  createdByUserId: string
+  createdByUserId: string | null
 ) {
   const grantee = await resolveGrantee(db, client.tenantId, input)
   await db
@@ -316,10 +318,14 @@ export async function removeGrant(
 // ---- Access requests -----------------------------------------------------------------------
 //
 // From P4 an access request IS an `app.access` approval request (`approval_requests`, subject the
-// person), and the P4 migration moved P1's pending rows across with their ids. Until slice 4c puts
-// these three functions on the approvals engine (`services/approvals/engine.ts`), they read and
-// write those rows directly with P1's semantics — the app's owners and admins decide, one decision
-// settles it — so the request-access page and the app's access page keep working unchanged.
+// person), and the P4 migration moved P1's pending rows across with their ids. Asking goes through
+// the approvals engine (`requestAccess` in `access-requests.ts` → `engine.open`); DECIDING is the
+// engine's too, in the approvals inbox (`POST /api/approvals/:id/decide`), whose `app.access`
+// handler adds the grant (`services/approvals/kinds/app-access.ts`). What stays here is the
+// P1-shaped view of those rows that the request-access page and the app's Access page read.
+// This file must NOT import the engine: the engine's kinds import it (`addGrant`, and
+// `isAppOwner` through `launch/apps.ts`), and `KIND_HANDLERS` is built at module scope — a cycle
+// through here would leave a handler `undefined` at import time.
 
 /** P1's three statuses from the engine's five: an expired or cancelled request reads as rejected. */
 function toAccessStatus(status: ApprovalRequestRow['status']): AppAccessRequestStatus {
@@ -343,7 +349,7 @@ function accessRequestsOf(tenantId: string, appId: string) {
   )
 }
 
-async function toRequests(
+export async function toRequests(
   db: Database,
   tenantId: string,
   rows: ApprovalRequestRow[]
@@ -418,46 +424,10 @@ export async function standingOf(
 }
 
 /**
- * Ask for access. Idempotent while a request is open (the pending-subject unique index), and a
- * no-op for someone the policy already admits. `created` is true only when a new row was written.
+ * An app's `app.access` requests for its Access page, newest first — read straight from
+ * `approval_requests` rather than through `engine.list` (the caller's inbox): the page belongs to
+ * the app's owners and admins, which the route checks, and shows every request, decided or not.
  */
-export async function requestAccess(
-  db: Database,
-  input: { client: OidcClientRow; userId: string; message?: string }
-): Promise<{ standing: AppAccessStanding; request: AppAccessRequest | null; created: boolean }> {
-  const { client, userId } = input
-  const tenantId = client.tenantId
-  if ((await evaluateAccess(db, { client, userId })).allowed) {
-    return { standing: 'allowed', request: null, created: false }
-  }
-  const policy = DEFAULT_APPROVAL_POLICIES['app.access']
-  const message = input.message || null
-  const [inserted] = await db
-    .insert(approvalRequests)
-    .values({
-      tenantId,
-      kind: 'app.access',
-      appId: client.appId,
-      subjectType: 'user',
-      subjectId: userId,
-      requestedByUserId: userId,
-      reason: message,
-      context: { kind: 'app.access', userId, message },
-      policy,
-      requiredApprovals: policy.minApprovals,
-      excludedUserIds: [userId],
-      expiresAt:
-        policy.expiresAfterMinutes === null
-          ? null
-          : new Date(Date.now() + policy.expiresAfterMinutes * 60_000),
-    })
-    .onConflictDoNothing()
-    .returning()
-  const row = inserted ?? (await latestRequest(db, tenantId, client.appId, userId))
-  const [request] = row ? await toRequests(db, tenantId, [row]) : []
-  return { standing: 'pending', request: request ?? null, created: Boolean(inserted) }
-}
-
 export async function listRequests(
   db: Database,
   tenantId: string,
@@ -476,78 +446,4 @@ export async function listRequests(
     .orderBy(desc(approvalRequests.createdAt))
     .limit(200)
   return toRequests(db, tenantId, rows)
-}
-
-/**
- * Approve or reject a PENDING request — a compare-and-set, so two owners deciding at once is one
- * decision and one 409. The decision row, and on approval the user grant, are written in the same
- * transaction; `applied_at` is set with them, because an access grant has no after-commit effect.
- */
-export async function decideRequest(
-  db: Database,
-  input: {
-    client: OidcClientRow
-    requestId: string
-    decision: 'approve' | 'reject'
-    decidedByUserId: string
-  }
-): Promise<AppAccessRequest> {
-  const { client } = input
-  const tenantId = client.tenantId
-  const row = await db.transaction(async tx => {
-    const now = new Date()
-    const [decided] = await tx
-      .update(approvalRequests)
-      .set({
-        status: input.decision === 'approve' ? 'approved' : 'rejected',
-        decidedAt: now,
-        appliedAt: input.decision === 'approve' ? now : null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          accessRequestsOf(tenantId, client.appId),
-          eq(approvalRequests.id, input.requestId),
-          eq(approvalRequests.status, 'pending')
-        )
-      )
-      .returning()
-    if (!decided) return null
-    const [decider] = await tx
-      .select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, input.decidedByUserId))
-    await tx.insert(approvalDecisions).values({
-      tenantId,
-      requestId: decided.id,
-      userId: input.decidedByUserId,
-      userEmail: decider?.email ?? '',
-      decision: input.decision,
-    })
-    if (input.decision === 'approve') {
-      await tx
-        .insert(oidcClientGrants)
-        .values({
-          tenantId,
-          clientId: client.id,
-          userId: decided.subjectId,
-          createdByUserId: input.decidedByUserId,
-        })
-        .onConflictDoNothing()
-    }
-    return decided
-  })
-  if (!row) {
-    const [exists] = await db
-      .select({ id: approvalRequests.id })
-      .from(approvalRequests)
-      .where(
-        and(accessRequestsOf(tenantId, client.appId), eq(approvalRequests.id, input.requestId))
-      )
-    if (!exists) throw new NotFoundError('Access request not found')
-    throw new ConflictError('This request has already been decided', 'request_not_pending')
-  }
-  const [request] = await toRequests(db, tenantId, [row])
-  if (!request) throw new Error('decided request vanished')
-  return request
 }

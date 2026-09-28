@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Approvals for the stand-ins (P4, slice 4c): members who could not create an app now ASK — the
+  app waits as `requested` until an admin approves (admins and above, or whoever
+  `app_create_role` names, are approved at once, as before); an access request is decided in the
+  approvals inbox rather than on the app's Access page; and "extend budget" on a session opens a
+  request in its creator's name that an owner or admin approves in one click — the creator
+  extending their own session now waits for someone else.
 - Approvals foundations (P4, slice 4a): the approvals engine's tables (`approval_requests`,
   append-only `approval_decisions`, `approval_policies`), releases (`app_releases`) and the audit
   hash chain (`audit_chain`, append-only) in one migration, which also moves every pending

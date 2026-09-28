@@ -2,8 +2,9 @@
  * The chat routes of `/api/sessions` (`routes/session-chat.ts`, Launch P3 slice 3c) through the
  * real Hono app: a turn is a row write plus a wake (202; 409 while one is pending or running, when
  * blocked, when the session is over; 503 without the Workflow binding, before any write), cancel,
- * the event log, and the budget extension (owners and admins, audited; a blocked session comes back
- * to `ready`). Another tenant's session — or one the caller may not see — is the same 404.
+ * the event log, and the budget extension (from P4 a `session.budget` approval: one click for an
+ * owner or admin who is not the creator, audited; a blocked session comes back to `ready`).
+ * Another tenant's session — or one the caller may not see — is the same 404.
  */
 import {
   SESSION_WAKE_EVENT,
@@ -13,7 +14,14 @@ import {
 } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
-import { auditEvents, type SessionRow, sessionEvents, sessions } from '@/db/schema'
+import {
+  approvalRequests,
+  auditEvents,
+  type SessionRow,
+  sessionEvents,
+  sessions,
+} from '@/db/schema'
+import { decideAs, testApprovalDeps } from '../helpers/approvals-kinds'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -203,18 +211,48 @@ describe('GET /api/sessions/:id/events', () => {
   })
 })
 
+// P4 (plan §4c): the budget is raised only by an approved `session.budget` request. The requester
+// is always the session's creator; an eligible approver other than the creator approves in the same
+// call (P3's one click), and anyone else — the creator included — waits for one.
 describe('POST /api/sessions/:id/budget', () => {
-  it('an owner extends the cap, audited; a blocked session under it again goes ready and is woken', async () => {
-    const f = await seedSessionApp(db, createFakeCloud())
+  /** A member of `f`'s organisation who created a blocked session there, and their cookie. */
+  async function memberSession(f: Awaited<ReturnType<typeof seedSessionApp>>) {
+    const creator = await createTestUser(db)
+    await linkUserToTenant(db, creator.id, f.tenant.id, 'member')
     const row = await insertSession(db, f, {
+      createdByUserId: creator.id,
       status: 'blocked',
       pendingMessage: 'the message that hit the cap',
       costMicrocents: usdToMicrocents(10),
     })
+    const cookie = sessionCookieHeader(await createTestSession(db, creator.id, f.tenant.id))
+    return { creator, row, cookie }
+  }
+
+  async function budgetAudits(tenantId: string, sessionId: string) {
+    return db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.tenantId, tenantId),
+          eq(auditEvents.targetId, sessionId),
+          eq(auditEvents.action, 'session.budget.extended')
+        )
+      )
+  }
+
+  it("an owner extends a member's session in one click: 200, audited, ready again and woken", async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const { creator, row } = await memberSession(f)
     const env = await envWithInstance(row)
-    const res = await post(`/api/sessions/${row.id}/budget`, f.cookie, env, { extraUsd: 5 })
+    const res = await post(`/api/sessions/${row.id}/budget`, f.cookie, env, {
+      extraUsd: 5,
+      reason: 'Nearly there',
+    })
     expect(res.status).toBe(200)
-    const { session } = sessionDetailResponseSchema.parse(await json(res))
+    const body = await json<{ approvalId: string }>(res.clone())
+    const { session } = sessionDetailResponseSchema.parse(body)
     expect(session.status).toBe('ready')
     expect(session.budget).toEqual({
       spentMicrocents: usdToMicrocents(10),
@@ -222,25 +260,83 @@ describe('POST /api/sessions/:id/budget', () => {
       extraMicrocents: usdToMicrocents(5),
     })
     expect(workflowOf(env).events.map(e => e.type)).toEqual([SESSION_WAKE_EVENT])
-    const audits = await db
+
+    // The request is the creator's; the owner approved it.
+    const [approval] = await db
       .select()
-      .from(auditEvents)
-      .where(and(eq(auditEvents.tenantId, f.tenant.id), eq(auditEvents.targetId, row.id)))
+      .from(approvalRequests)
+      .where(eq(approvalRequests.id, body.approvalId))
+    expect(approval).toMatchObject({
+      kind: 'session.budget',
+      status: 'approved',
+      subjectType: 'session',
+      subjectId: row.id,
+      requestedByUserId: creator.id,
+      reason: 'Nearly there',
+      context: { kind: 'session.budget', sessionId: row.id, extraUsd: 5, spentUsd: 10 },
+    })
+    expect(approval?.appliedAt).not.toBeNull()
+    const audits = await budgetAudits(f.tenant.id, row.id)
     expect(audits).toHaveLength(1)
     expect(audits[0]).toMatchObject({
-      action: 'session.budget.extended',
       actorUserId: f.user.id,
       appId: f.app.id,
+      approvalId: body.approvalId,
     })
   })
 
-  it('a creator who is only a member may not extend it: 403', async () => {
-    const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
-    const row = await insertSession(db, f, { status: 'blocked' })
-    const res = await post(`/api/sessions/${row.id}/budget`, f.cookie, createTestEnv(), {
+  it('the creator asks and waits (202); asking again joins the same request', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const { row, cookie } = await memberSession(f)
+    const env = await envWithInstance(row)
+    const res = await post(`/api/sessions/${row.id}/budget`, cookie, env, { extraUsd: 5 })
+    expect(res.status).toBe(202)
+    const first = await json<{ approvalId: string; session: { status: string } }>(res)
+    expect(first.session.status).toBe('blocked')
+    const again = await json<{ approvalId: string }>(
+      await post(`/api/sessions/${row.id}/budget`, cookie, env, { extraUsd: 5 })
+    )
+    expect(again.approvalId).toBe(first.approvalId)
+    expect((await reload(row)).budgetExtraMicrocents).toBe(0)
+    expect(await budgetAudits(f.tenant.id, row.id)).toEqual([])
+    expect(workflowOf(env).events).toEqual([])
+  })
+
+  it('an owner extending their OWN session waits for another owner or admin', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, {
+      status: 'blocked',
+      pendingMessage: 'mine',
+      costMicrocents: usdToMicrocents(10),
+    })
+    const env = await envWithInstance(row)
+    const res = await post(`/api/sessions/${row.id}/budget`, f.cookie, env, { extraUsd: 5 })
+    expect(res.status).toBe(202)
+    const { approvalId } = await json<{ approvalId: string }>(res)
+    expect((await reload(row)).status).toBe('blocked')
+
+    // Another admin of the organisation approves it in the inbox.
+    const admin = await createTestUser(db)
+    await linkUserToTenant(db, admin.id, f.tenant.id, 'admin')
+    await decideAs(testApprovalDeps(db, env), f.tenant.id, admin.id, approvalId, 'approve')
+    const after = await reload(row)
+    expect(after.status).toBe('ready')
+    expect(after.budgetExtraMicrocents).toBe(usdToMicrocents(5))
+    expect(workflowOf(env).events.map(e => e.type)).toEqual([SESSION_WAKE_EVENT])
+  })
+
+  it('a 400 for a bad amount; another tenant cannot reach the session', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const { row } = await memberSession(f)
+    const bad = await post(`/api/sessions/${row.id}/budget`, f.cookie, createTestEnv(), {
+      extraUsd: -1,
+    })
+    expect(bad.status).toBe(400)
+    const other = await seedSessionApp(db, createFakeCloud())
+    const foreign = await post(`/api/sessions/${row.id}/budget`, other.cookie, createTestEnv(), {
       extraUsd: 5,
     })
-    expect(res.status).toBe(403)
+    expect(foreign.status).toBe(404)
     expect((await reload(row)).budgetExtraMicrocents).toBe(0)
   })
 })

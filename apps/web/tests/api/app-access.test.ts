@@ -1,11 +1,14 @@
 /**
  * `/api/app-access` (spec/05): asking for access to an app, and its owners deciding — the policy
- * (`company` | `restricted`), group and person grants, and the request queue. The authorize
- * endpoint is exercised at the end to prove an approval really opens the door.
+ * (`company` | `restricted`), group and person grants, and the request queue. From P4 a request is
+ * an `app.access` approval (plan §4c): asking opens one through the engine and the owners decide
+ * it like any other approval (`decideAs`, the inbox's call); P1's decide route answers 410. The
+ * authorize endpoint is exercised at the end to prove an approval really opens the door.
  */
 import { and, eq } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { auditEvents, oidcClientGrants } from '@/db/schema'
+import { approvalRequests, auditEvents, oidcClientGrants } from '@/db/schema'
+import { decideAs, testApprovalDeps } from '../helpers/approvals-kinds'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -27,8 +30,10 @@ import { json, request } from '../helpers/request'
 
 const db = setupTestDatabase()
 const env = issuerEnv()
+const deps = testApprovalDeps(db)
 
 let tenantId: string
+let ownerId: string
 let adminCookie: string
 let ownerCookie: string
 let memberCookie: string
@@ -74,6 +79,7 @@ beforeAll(async () => {
   tenantId = seeded.tenant.id
   adminCookie = await createTestSession(db, seeded.user.id, tenantId)
   const owner = await newMember()
+  ownerId = owner.user.id
   ownerCookie = owner.cookie
   const plain = await newMember()
   member = plain.user
@@ -118,7 +124,24 @@ describe('requesting access', () => {
     expect(after.standing).toBe('pending')
     const rows = await audits('app.access.requested')
     expect(rows.filter(r => r.targetId === created.request.id)).toHaveLength(1)
-    expect(rows[0]?.appId).toBe(app.id)
+    expect(rows[0]).toMatchObject({ appId: app.id, approvalId: created.request.id })
+
+    // The request IS an `app.access` approval: subject the person, the app's owners decide.
+    const [approval] = await db
+      .select()
+      .from(approvalRequests)
+      .where(eq(approvalRequests.id, created.request.id))
+    expect(approval).toMatchObject({
+      kind: 'app.access',
+      status: 'pending',
+      appId: app.id,
+      subjectType: 'user',
+      subjectId: member.id,
+      requestedByUserId: member.id,
+      reason: 'For the quarterly close',
+      context: { kind: 'app.access', userId: member.id, message: 'For the quarterly close' },
+    })
+    expect(approval?.policy.approvers).toMatchObject({ appOwners: true })
   })
 
   it('someone the policy already admits is told so and nothing is queued', async () => {
@@ -271,26 +294,44 @@ describe('the owner side', () => {
     )
     const pending = queue.items.find(r => r.userId === member.id)
     expect(pending?.userEmail).toBe(member.email)
+    const id = pending?.id ?? ''
 
-    const decided = await call(`/${app.id}/requests/${pending?.id}/decide`, ownerCookie, {
-      method: 'POST',
-      json: { decision: 'approve' },
+    // The asker cannot decide their own request; a member with no part in it cannot even see it.
+    await expect(decideAs(deps, tenantId, member.id, id, 'approve')).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'self_approval',
     })
-    expect(decided.status).toBe(200)
-    expect(await json(decided)).toMatchObject({ status: 'approved', decidedAt: expect.any(String) })
+    const stranger = await newMember()
+    await expect(decideAs(deps, tenantId, stranger.user.id, id, 'approve')).rejects.toMatchObject({
+      statusCode: 404,
+    })
+
+    await decideAs(deps, tenantId, ownerId, id, 'approve')
     const grants = await db
       .select()
       .from(oidcClientGrants)
       .where(and(eq(oidcClientGrants.tenantId, tenantId), eq(oidcClientGrants.userId, member.id)))
     expect(grants).toHaveLength(1)
-
-    const twice = await call(`/${app.id}/requests/${pending?.id}/decide`, adminCookie, {
-      method: 'POST',
-      json: { decision: 'reject' },
+    expect(grants[0]?.createdByUserId).toBe(ownerId)
+    // The grant is audited in the approver's name, linked to the approval.
+    const granted = (await audits('app.access.policy_changed')).find(r => r.approvalId === id)
+    expect(granted).toMatchObject({
+      actorUserId: ownerId,
+      appId: app.id,
+      summary: { after: { grantAdded: 'user', userId: member.id, email: member.email } },
     })
-    expect(twice.status).toBe(409)
-    expect(await json(twice)).toMatchObject({ code: 'request_not_pending' })
-    expect((await audits('app.access.decided')).some(r => r.targetId === pending?.id)).toBe(true)
+
+    await expect(decideAs(deps, tenantId, ownerId, id, 'reject')).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'not_pending',
+    })
+    const decided = await json<{
+      items: { id: string; status: string; decidedByUserId: string }[]
+    }>(await call(`/${app.id}/requests`, ownerCookie))
+    expect(decided.items.find(r => r.id === id)).toMatchObject({
+      status: 'approved',
+      decidedByUserId: ownerId,
+    })
 
     // After: the same browser gets a code.
     const after = await request(
@@ -305,6 +346,33 @@ describe('the owner side', () => {
     expect(standing.standing).toBe('allowed')
   })
 
+  it('applying the grant twice is one grant (idempotent apply)', async () => {
+    const asker = await newMember()
+    await call('/requests', asker.cookie, { method: 'POST', json: { clientId: client.clientId } })
+    const [row] = await db
+      .select()
+      .from(approvalRequests)
+      .where(
+        and(eq(approvalRequests.tenantId, tenantId), eq(approvalRequests.subjectId, asker.user.id))
+      )
+    if (!row) throw new Error('no request')
+    const { appAccessHandler } = await import('@/api/services/approvals/kinds/app-access')
+    await db.transaction(tx => appAccessHandler.applyInTx(tx, row, deps))
+    await db.transaction(tx => appAccessHandler.applyInTx(tx, row, deps))
+    await appAccessHandler.applyAfter(row, deps)
+    const grants = await db
+      .select()
+      .from(oidcClientGrants)
+      .where(
+        and(
+          eq(oidcClientGrants.clientId, client.row.id),
+          eq(oidcClientGrants.userId, asker.user.id)
+        )
+      )
+    expect(grants).toHaveLength(1)
+    expect(appAccessHandler.describe(row)).toBe('Access to sign in')
+  })
+
   it('a rejected person sees it, and may ask again', async () => {
     const asker = await newMember()
     await call('/requests', asker.cookie, { method: 'POST', json: { clientId: client.clientId } })
@@ -312,14 +380,21 @@ describe('the owner side', () => {
       await call(`/${app.id}/requests`, ownerCookie)
     )
     const mine = queue.items.find(r => r.userId === asker.user.id)
-    await call(`/${app.id}/requests/${mine?.id}/decide`, ownerCookie, {
-      method: 'POST',
-      json: { decision: 'reject' },
-    })
+    await decideAs(deps, tenantId, ownerId, mine?.id ?? '', 'reject')
     const ctx = await json<{ standing: string }>(
       await call(`/request-context?clientId=${client.clientId}`, asker.cookie)
     )
     expect(ctx.standing).toBe('rejected')
+    const grants = await db
+      .select()
+      .from(oidcClientGrants)
+      .where(
+        and(
+          eq(oidcClientGrants.clientId, client.row.id),
+          eq(oidcClientGrants.userId, asker.user.id)
+        )
+      )
+    expect(grants).toHaveLength(0)
     const again = await call('/requests', asker.cookie, {
       method: 'POST',
       json: { clientId: client.clientId },
@@ -327,12 +402,23 @@ describe('the owner side', () => {
     expect(again.status).toBe(201)
   })
 
-  it("an unknown or another app's request id is a 404", async () => {
-    const res = await call(`/${app.id}/requests/${crypto.randomUUID()}/decide`, ownerCookie, {
+  it("P1's decide route is gone: 410 with the approval's path for owners, 404 for anyone else", async () => {
+    const id = crypto.randomUUID()
+    const res = await call(`/${app.id}/requests/${id}/decide`, ownerCookie, {
       method: 'POST',
       json: { decision: 'approve' },
     })
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(410)
+    expect(await json(res)).toMatchObject({
+      statusCode: 410,
+      code: 'access_request_moved',
+      details: { approvalId: id, path: `/approvals/${id}` },
+    })
+    const denied = await call(`/${app.id}/requests/${id}/decide`, memberCookie, {
+      method: 'POST',
+      json: { decision: 'approve' },
+    })
+    expect(denied.status).toBe(404)
   })
 
   it("another organisation's owner cannot reach this app at all", async () => {
