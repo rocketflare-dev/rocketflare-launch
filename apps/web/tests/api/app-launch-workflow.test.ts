@@ -23,6 +23,7 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
+import { NeonClient } from '@/api/services/launch/neon'
 import { rescaffoldPipeline } from '@/api/services/launch/pipeline/rescaffold'
 import { retryPipeline } from '@/api/services/launch/pipeline/retry'
 import { pipelineView } from '@/api/services/launch/pipeline/runs'
@@ -402,9 +403,9 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect((await appRow(launch))?.status).toBe('failed')
     const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
     expect(view.status).toBe('failed')
-    // The job was handed the migrator credential, so re-scaffold stays refused (its migrations
-    // may have run) even though nothing was activated.
-    expect(view.canRescaffold).toBe(false)
+    // The job was handed the migrator credential and nothing was activated: the view offers
+    // re-scaffold, noting that the POST checks the database first (the GET never asks Neon).
+    expect(view).toMatchObject({ canRescaffold: true, rescaffoldChecksDatabase: true })
 
     // Retry is offered: it re-dispatches the deploy, and one that activates goes live.
     const env = createTestEnv()
@@ -502,7 +503,8 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
   it('a re-scaffold after a failed deploy scaffolds the new pin again, keeps every resource and goes live', async () => {
     const launch = await h.request()
     const envs = await envRows(launch)
-    // The first launch: scaffolded from the default pin, then the staging deploy's gate went red.
+    // The first launch: scaffolded from the default pin, then the staging deploy was handed the
+    // migrator credential and `db:migrate:ci` failed in its role phase — before any migration.
     const first = await h.run(launch, {
       onWait: async wait => {
         if (wait.type === SCAFFOLD_FINISHED_EVENT) return h.scaffoldJob(launch)
@@ -516,6 +518,8 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
             status: 'failed',
             runId: '777',
             runAttempt: 1,
+            credentialsIssuedAt: new Date(),
+            credentialsRevokedAt: new Date(),
             error: 'The gate failed: a kit test',
           })
           .returning({ id: deployTickets.id })
@@ -554,14 +558,30 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     // A newer kit is pinned; the re-scaffold re-opens the repository's steps.
     const pin = { ...DEFAULT_TEMPLATE_PIN, tag: '0.15.9', commit: 'b'.repeat(40) }
     const env = createTestEnv()
+    // The view offers it with the note; only the POST asks the database, which is empty.
+    const offered = await pipelineView(
+      db,
+      launch.tenantId,
+      (await appRow(launch)) as AppRow,
+      'create'
+    )
+    expect(offered).toMatchObject({ canRescaffold: true, rescaffoldChecksDatabase: true })
+    expect(cloud.neon.sql.some(q => /__drizzle_migrations/.test(q.query))).toBe(false)
     const started = await rescaffoldPipeline(
       db,
       { APP_LAUNCH_WORKFLOW: stubs(env).launchWorkflow },
       launch.tenantId,
       launch.params.appId,
-      SYSTEM_ACTOR
+      SYSTEM_ACTOR,
+      async () => new NeonClient('neon-test-key-0123456789', { sleep: async () => {} })
     )
     expect(started.instanceId).toBe(`${launch.params.runId}-r1`)
+    const stagingBranch = (await envRows(launch)).staging.neon?.branchId
+    const asked = cloud.neon.sql.filter(q => /__drizzle_migrations|pg_tables/.test(q.query))
+    expect(asked.map(q => [q.branchId, q.role, q.database])).toEqual(
+      asked.map(() => [stagingBranch, 'neondb_owner', 'app'])
+    )
+    expect(asked.length).toBeGreaterThan(0)
     const reopened = await pipelineView(
       db,
       launch.tenantId,

@@ -19,7 +19,9 @@
  * The HTTP SQL endpoint takes ONE statement and understands the few Launch sends (see
  * `execute`); anything else answers an empty SELECT. `DELETE …/roles/{r}` and
  * `DELETE …/databases/{d}` exist; a role that owns a database is refused. `addTable` seeds a
- * table (a database with data), `sqlRole` a role as if created in SQL.
+ * table (a database with data), `addMigrations` drizzle's `__drizzle_migrations` rows (read back
+ * through `to_regclass(…)` and `count(*)`, as the re-scaffold check asks), `sqlRole` a role as if
+ * created in SQL.
  */
 import {
   belongsTo,
@@ -60,6 +62,8 @@ export interface FakeNeonBranch {
   /** Per database: the tables in `public`, and the extensions created. */
   tables: Map<string, Set<string>>
   extensions: Map<string, Set<string>>
+  /** Per database: rows in `drizzle.__drizzle_migrations` (absent = the table does not exist). */
+  migrations: Map<string, number>
 }
 
 export interface FakeNeonProject {
@@ -229,6 +233,7 @@ export class FakeNeon implements VendorHandler {
       for (const m of parent.members) branch.members.add(m)
       for (const [db, t] of parent.tables) branch.tables.set(db, new Set(t))
       for (const [db, e] of parent.extensions) branch.extensions.set(db, new Set(e))
+      for (const [db, n] of parent.migrations) branch.migrations.set(db, n)
       return json(
         {
           branch: this.branchJson(branch),
@@ -365,6 +370,7 @@ export class FakeNeon implements VendorHandler {
       members: new Set(),
       tables: new Map(),
       extensions: new Map(),
+      migrations: new Map(),
     }
     project.branches.set(branch.id, branch)
     return branch
@@ -568,6 +574,16 @@ export class FakeNeon implements VendorHandler {
     if (/FROM\s+pg_database\s+WHERE\s+datname/i.test(query)) {
       return ok('SELECT', branch.databases.has(String(params[0])) ? [{ '?column?': '1' }] : [])
     }
+    if (/to_regclass\('drizzle\.__drizzle_migrations'\)/i.test(query)) {
+      return ok('SELECT', [{ tracked: branch.migrations.has(database) ? 't' : 'f' }])
+    }
+    if (/FROM\s+drizzle\.__drizzle_migrations/i.test(query)) {
+      const n = branch.migrations.get(database)
+      if (n === undefined) {
+        return neonError(400, 'relation "drizzle.__drizzle_migrations" does not exist')
+      }
+      return ok('SELECT', [{ n: String(n) }])
+    }
     if (/FROM\s+pg_tables\s+WHERE\s+schemaname\s*=\s*'public'/i.test(query)) {
       return ok('SELECT', [{ n: String(branch.tables.get(database)?.size ?? 0) }])
     }
@@ -581,6 +597,16 @@ export class FakeNeon implements VendorHandler {
     const tables = branch.tables.get(database) ?? new Set<string>()
     tables.add(table)
     branch.tables.set(database, tables)
+  }
+
+  /**
+   * Seed drizzle's migrations table in a branch's database with `count` applied migrations (0: the
+   * table exists and is empty — the migrator created it, then applied nothing).
+   */
+  addMigrations(projectId: string, branchId: string, database: string, count: number): void {
+    const branch = this.projects.get(projectId)?.branches.get(branchId)
+    if (!branch?.databases.has(database)) throw new Error(`no database ${database} to seed`)
+    branch.migrations.set(database, count)
   }
 
   /** Seed a role as if `createdBy` had run `CREATE ROLE` (not a `neon_superuser` member). */

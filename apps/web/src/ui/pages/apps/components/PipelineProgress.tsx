@@ -5,7 +5,7 @@
  * scaffold and staging-deploy jobs); the failed step's error, verbatim; "Retry from failed step"
  * for whoever may retry — beside it, when the view says `canRescaffold` (a failed launch that never
  * deployed), "Re-scaffold from kit <tag>" behind a confirmation that says what is replaced and what
- * is kept; and, while a launch runs, "Stop" for whoever may retry — the way out of a
+ * is kept (and, with `rescaffoldChecksDatabase`, that Launch checks the database first); and, while a launch runs, "Stop" for whoever may retry — the way out of a
  * wait that will never end.
  *
  * Presentational: the page owns the query (`usePipeline`, which decides when to poll) and the retry
@@ -507,6 +507,13 @@ export function PipelineProgress({
                 The database, storage, Workers, sign-in client and secrets are kept, and the launch
                 carries on from the scaffold to the staging deploy.
               </p>
+              {view.rescaffoldChecksDatabase && (
+                <p>
+                  A deploy of this app was given its database migration credentials, so Launch will
+                  check the database first: if any migration was applied, the re-scaffold is refused
+                  and the app takes a kit upgrade instead.
+                </p>
+              )}
             </div>
           }
         />

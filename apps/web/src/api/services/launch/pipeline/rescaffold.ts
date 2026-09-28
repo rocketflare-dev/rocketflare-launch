@@ -5,7 +5,9 @@
  * which skips the succeeded scaffold. Before the first deploy the repository holds nothing but the
  * scaffold and Launch's config commit, so it is safe to scaffold it again from the CURRENT pin,
  * keeping the name, the repository, the Neon project, the Cloudflare resources, the sign-in
- * client and the secrets. Allowed only as `rescaffold-check.ts` says (409 with its code).
+ * client and the secrets. Allowed only as `rescaffold-check.ts` says (409 with its code) — which,
+ * when a deploy was handed the migrator credential but never activated, asks that environment's
+ * database whether a migration ran BEFORE any row here is touched.
  *
  * **Mechanics — a retry with the repository's steps re-opened.** The rows whose work depends on
  * the repository's CONTENT (`RESCAFFOLD_STEPS`) are re-opened, keeping their `externalIds` — which
@@ -39,6 +41,7 @@ import { appOperations } from '../../../../db/schema'
 import { ConflictError } from '../../../utils/core/errors'
 import { getAppRow } from '../apps'
 import { type AuditActor, recordAudit } from '../audit'
+import type { NeonClient } from '../neon'
 import { loadPipelineSettings } from './context'
 import { requireWorkflow } from './create'
 import { rescaffoldBlock } from './rescaffold-check'
@@ -67,7 +70,9 @@ export async function rescaffoldPipeline(
   workflows: RetryWorkflows,
   tenantId: string,
   appId: string,
-  actor: AuditActor
+  actor: AuditActor,
+  /** Launch's Neon client (null: not connected) — called only when a database must be checked. */
+  loadNeon: () => Promise<NeonClient | null>
 ): Promise<RescaffoldPipelineResponse> {
   const app = await getAppRow(db, tenantId, appId)
   const runId = await latestRunId(db, tenantId, app, 'create')
@@ -76,7 +81,7 @@ export async function rescaffoldPipeline(
     runId && rows.length === 0 && app.status === 'failed'
       ? 'failed'
       : deriveRunStatus('create', rows)
-  const block = await rescaffoldBlock(db, tenantId, app, { runId, status })
+  const block = await rescaffoldBlock(db, tenantId, app, { runId, status }, loadNeon)
   if (block || !runId) {
     throw new ConflictError(block?.message ?? 'This app has no launch to re-scaffold', block?.code)
   }

@@ -31,7 +31,7 @@ import {
   auditEvents,
 } from '../../../../db/schema'
 import { loadPipelineSettings } from './context'
-import { rescaffoldBlock } from './rescaffold-check'
+import { rescaffoldVerdict } from './rescaffold-check'
 
 export const PIPELINE_STEPS: Record<PipelineKind, readonly PipelineStepDefinition[]> = {
   create: APP_LAUNCH_STEPS,
@@ -153,9 +153,12 @@ export async function pipelineView(
         ? 'failed'
         : 'running'
       : deriveRunStatus(kind, rows)
-  // A re-scaffold is a create run's; the pin is read only when it is on offer.
-  const allowed =
-    kind === 'create' && !(await rescaffoldBlock(db, tenantId, app, { runId, status }))
+  // A re-scaffold is a create run's; the pin is read only when it is on offer. The GET never asks
+  // Neon: when a deploy got the migrator credential, the POST checks the database before acting.
+  const verdict =
+    kind === 'create' ? await rescaffoldVerdict(db, tenantId, app, { runId, status }) : null
+  const allowed = verdict !== null && verdict.block === null
+  const checksDatabase = verdict?.block === null && verdict.checkDatabases.length > 0
   const templateTag = allowed
     ? templatePinLabel((await loadPipelineSettings(db)).templatePin)
     : null
@@ -179,6 +182,7 @@ export async function pipelineView(
     kind,
     status,
     canRescaffold: allowed,
+    rescaffoldChecksDatabase: checksDatabase,
     templateTag,
     steps: PIPELINE_VIEW_STEPS[kind].map(def => {
       const [only] = def.parts

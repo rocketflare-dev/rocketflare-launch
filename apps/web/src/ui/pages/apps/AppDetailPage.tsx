@@ -376,6 +376,7 @@ export default function AppDetailPage() {
               status: 'none',
               steps: [],
               canRescaffold: false,
+              rescaffoldChecksDatabase: false,
               templateTag: null,
             }
           }

@@ -83,9 +83,14 @@ const at = (seconds: number) => new Date(t0 + seconds * 1000).toISOString()
 function launchView(
   failedAt: string | null,
   status: 'running' | 'failed' | 'succeeded',
-  rescaffold: { canRescaffold: boolean; templateTag: string | null } = {
+  rescaffold: {
+    canRescaffold: boolean
+    templateTag: string | null
+    rescaffoldChecksDatabase?: boolean
+  } = {
     canRescaffold: false,
     templateTag: null,
+    rescaffoldChecksDatabase: false,
   }
 ) {
   const failedIndex = APP_LAUNCH_VIEW_STEPS.findIndex(s => s.step === failedAt)
@@ -94,6 +99,7 @@ function launchView(
     runId: RUN_ID,
     kind: 'create',
     status,
+    rescaffoldChecksDatabase: false,
     ...rescaffold,
     steps: APP_LAUNCH_VIEW_STEPS.map((def, i) => {
       const state =
@@ -388,6 +394,7 @@ describe('AppDetailPage — the launch', () => {
       steps: [],
       canRescaffold: false,
       templateTag: null,
+      rescaffoldChecksDatabase: false,
     }
   ) => ({
     [`/api/apps/${APP_ID}/pipeline`]: (_init: RequestInit | undefined, url: URL) =>
@@ -408,6 +415,7 @@ describe('AppDetailPage — the launch', () => {
           steps: [],
           canRescaffold: false,
           templateTag: null,
+          rescaffoldChecksDatabase: false,
         }),
         '/api/approvals': (_init: RequestInit | undefined, url: URL) => {
           expect(url.searchParams.get('box')).toBe('requested')
@@ -595,6 +603,7 @@ describe('AppDetailPage — the launch', () => {
     expect(dialog).toHaveTextContent(
       /database, storage, Workers, sign-in client and secrets are kept/
     )
+    expect(dialog).not.toHaveTextContent(/check the database first/)
     expect(rescaffolded).toBe(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(rescaffolded).toBe(0)
@@ -603,6 +612,24 @@ describe('AppDetailPage — the launch', () => {
     const again = await screen.findByRole('dialog')
     fireEvent.click(within(again).getByRole('button', { name: 'Re-scaffold' }))
     await waitFor(() => expect(rescaffolded).toBe(1))
+  })
+
+  it('says Launch checks the database first when a deploy was given the migrator credential', async () => {
+    renderDetail(
+      makeSession(),
+      { status: 'failed' },
+      pipelineRoute(
+        launchView('deploy_staging', 'failed', {
+          canRescaffold: true,
+          templateTag: '0.15.2',
+          rescaffoldChecksDatabase: true,
+        })
+      )
+    )
+    const panel = await screen.findByRole('region', { name: 'Launch progress' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Re-scaffold from kit 0.15.2' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/Launch will check the database first/)
   })
 
   it('hides the re-scaffold once the app has deployed (the view says it cannot)', async () => {
@@ -643,6 +670,7 @@ describe('AppDetailPage — archive and deploys', () => {
         steps: [],
         canRescaffold: false,
         templateTag: null,
+        rescaffoldChecksDatabase: false,
       },
       ...routes,
     })

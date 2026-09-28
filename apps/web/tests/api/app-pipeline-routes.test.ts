@@ -611,7 +611,9 @@ describe('POST /api/apps/:id/pipeline/rescaffold', () => {
     const unactivated = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
     expect(pipelineViewSchema.parse(await unactivated.json()).canRescaffold).toBe(true)
 
-    // A job handed the migrator credential blocks it, activated or not: its migrations may have run.
+    // A job handed the migrator credential (never activated): the view offers it with the note,
+    // and the POST must ask the database — this app's never got a Neon branch recorded, so Launch
+    // cannot ask and refuses, conservatively (the database cases: `rescaffold-database.test.ts`).
     await db.insert(deployTickets).values({
       tenantId: tenant.id,
       appId: app.id,
@@ -624,11 +626,18 @@ describe('POST /api/apps/:id/pipeline/rescaffold', () => {
       credentialsIssuedAt: new Date(),
       credentialsRevokedAt: new Date(),
     })
+    const noted = await request(`/api/apps/${app.id}/pipeline`, { headers }, { env })
+    expect(pipelineViewSchema.parse(await noted.json())).toMatchObject({
+      canRescaffold: true,
+      rescaffoldChecksDatabase: true,
+    })
     const migrated = await post(`/api/apps/${app.id}/pipeline/rescaffold`, headers, undefined, env)
     expect(migrated.status).toBe(409)
     const migratedBody = (await migrated.json()) as { code?: string; error?: string }
     expect(migratedBody).toMatchObject({ code: 'app_already_deployed' })
-    expect(migratedBody.error).toMatch(/migrations may have run/)
+    expect(migratedBody.error).toMatch(
+      /no Neon branch is recorded for staging.*migrations may have run/
+    )
 
     await db.insert(deployTickets).values({
       tenantId: tenant.id,
