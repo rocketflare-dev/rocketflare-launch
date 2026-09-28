@@ -84,6 +84,13 @@ import {
   startDevServer,
   writeDevVars,
 } from './rocketflare-dev'
+import {
+  CONVERSATION_LOST_MESSAGE,
+  TURN_HEARTBEAT_MS,
+  TURN_KILL_GRACE_SECONDS,
+  transcriptCheckCommand,
+  turnKillScript,
+} from './turn'
 import { warmMinutesLeft } from './warm'
 import { BACKUP_TTL_MARGIN_SECONDS, workspaceBackupMode } from './workspace-backup'
 
@@ -422,21 +429,29 @@ export function checkoutScript(input: {
 
 // ---- claim -------------------------------------------------------------------------------------
 
-/** `turn.failed` for a turn whose instance was lost under it (`claim`). */
-export const LOST_TURN_MESSAGE =
-  'This turn stopped: its Workflow was lost. Launch is restarting the session from its last checkpoint; send your message again.'
-
 export type ClaimResult =
   | { start: 'boot'; kind: 'session' | 'prepare' }
   | { start: 'loop' }
+  /** A live session whose instance was lost: `salvage` first, then the loop. */
+  | { start: 'salvage' }
   | { start: 'cleanup' }
   | { start: 'skip'; status: SessionStatus }
 
+/** The live statuses whose container may hold work nobody saved when their instance was lost. */
+export const SALVAGE_STATUSES = [
+  'ready',
+  'working',
+  'blocked',
+  'shipping',
+] as const satisfies readonly SessionStatus[]
+
 /**
  * Step `claim`. `requested → booting` for a fresh session; a session this instance finds already
- * live (its previous instance was lost) is put back to `suspended` with a `resume` request, so the
- * loop boots it again from its branch — a turn it finds `working` is closed with `turn.failed`
- * ({@link LOST_TURN_MESSAGE}); `ending` goes straight to cleanup; a settled one is left.
+ * live (its previous instance was lost — a `wrangler dev` reload, a deploy, the reconcile's
+ * restart) goes to `salvage` first ({@link salvageStep}), which saves what its container holds
+ * before the loop resumes it; a `booting` one has nothing worth saving and is put straight back to
+ * `suspended` with a `resume` request, so the loop boots it again from its branch. `ending` goes
+ * straight to cleanup; a settled one is left.
  */
 export async function claimStep(scope: StepScope): Promise<ClaimResult> {
   const session = await loadSession(scope)
@@ -457,29 +472,215 @@ export async function claimStep(scope: StepScope): Promise<ClaimResult> {
       : { start: 'skip', status: session.status }
   }
   if (session.status === 'ending') return { start: 'cleanup' }
+  if ((SALVAGE_STATUSES as readonly SessionStatus[]).includes(session.status)) {
+    // "Alive again": the reconcile must not take this instance for the one it replaced.
+    await scope.db
+      .update(sessions)
+      .set({ lastActivityAt: scope.now() })
+      .where(
+        and(eq(sessions.tenantId, scope.params.tenantId), eq(sessions.id, scope.params.sessionId))
+      )
+    return { start: 'salvage' }
+  }
   if (session.status !== 'suspended') {
-    // A lost instance under a live session: its container state is unknown — start over from the
-    // branch (the last checkpoint), as a resume would.
+    // A lost instance under a boot: its container holds no work yet — start over from the branch
+    // (the last checkpoint), as a resume would.
     await sandboxFor(scope, session)
       .destroy()
       .catch(() => {})
-    const moved = await transition(
-      scope,
-      ['booting', 'ready', 'working', 'blocked', 'shipping'],
-      'suspended',
-      { suspendedAt: scope.now(), requestedAction: 'resume', cancelRequestedAt: null }
-    )
-    if (moved && session.status === 'working') {
-      // The turn it was running died with the instance: close it, so it does not spin for ever.
-      const turn = Math.max(1, session.turnCount)
-      await emitterFor(scope)({
-        type: 'turn.failed',
-        turn,
-        data: { turn, message: LOST_TURN_MESSAGE },
-      })
-    }
+    await transition(scope, ['booting'], 'suspended', {
+      suspendedAt: scope.now(),
+      requestedAction: session.requestedAction === 'end' ? 'end' : 'resume',
+      cancelRequestedAt: null,
+    })
   }
   return { start: 'loop' }
+}
+
+// ---- salvage -----------------------------------------------------------------------------------
+
+/**
+ * What `salvage` managed, which is also what it tells the person:
+ * - `saved` — the orphaned turn process is stopped and the checkpoint (commit, push, transcript)
+ *   ran; the container is KEPT, so the resume is warm;
+ * - `kept` — the process is stopped but the checkpoint failed (`detail` says why): the work is
+ *   still in the container's workspace, and the container is kept for exactly that reason;
+ * - `lost` — the container could not be reached, came back empty (no boot marker) or would not
+ *   stop the process: it is destroyed, and the resume boots cold from the branch's last checkpoint.
+ */
+export type SalvageOutcome = 'saved' | 'kept' | 'lost'
+
+/** `turn.failed` for a turn whose Workflow was lost under it, by what `salvage` managed. */
+export function lostTurnMessage(outcome: SalvageOutcome, detail?: string): string {
+  const head = 'This turn stopped: Launch lost track of it (its Workflow stopped).'
+  switch (outcome) {
+    case 'saved':
+      return `${head} Launch stopped Claude Code and saved your work — the code on the session’s branch and the conversation. Send your message again to carry on.`
+    case 'kept':
+      return `${head} Launch stopped Claude Code but could not save your work to the branch${detail ? ` (${detail})` : ''}; it is still in the session’s workspace, which Launch kept. Send your message again to carry on.`
+    case 'lost':
+      return `${head} Launch could not save its work: the sandbox could not be reached. The session restarts from its last checkpoint; send your message again.`
+  }
+}
+
+/** The `turn.interrupted { reason: 'cancelled' }` sentence for a Stop that `salvage` carried out. */
+export function salvagedCancelMessage(outcome: SalvageOutcome, detail?: string): string {
+  switch (outcome) {
+    case 'saved':
+      return 'Stopped. Launch saved the turn’s work — the code on the session’s branch and the conversation.'
+    case 'kept':
+      return `Stopped, but Launch could not save the turn’s work to the branch${detail ? ` (${detail})` : ''}; it is still in the session’s workspace, which Launch kept.`
+    case 'lost':
+      return 'Stopped, but Launch could not reach the sandbox to save the turn’s work; the session restarts from its last checkpoint.'
+  }
+}
+
+/** The label a salvage's bounded sandbox calls carry in a timeout's sentence. */
+const SALVAGE_PHASE = 'Saving the interrupted work'
+
+/**
+ * Write the heartbeat of a live session while `salvage` runs, so neither the reconcile (3 min) nor
+ * a Stop's fast path (`SESSION_CANCEL_STALL_MS`, 30 s) mistakes the salvage itself for another
+ * lost turn and terminates the instance doing it. Returns the stop function.
+ */
+function keepAlive(scope: StepScope): () => void {
+  const every = Math.min(limitsOf(scope).heartbeatMs, TURN_HEARTBEAT_MS)
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const beat = async () => {
+    if (stopped) return
+    await scope.db
+      .update(sessions)
+      .set({ lastActivityAt: scope.now() })
+      .where(
+        and(
+          eq(sessions.tenantId, scope.params.tenantId),
+          eq(sessions.id, scope.params.sessionId),
+          inArray(sessions.status, [...SALVAGE_STATUSES])
+        )
+      )
+      .catch(() => {})
+    if (!stopped) timer = setTimeout(beat, every)
+  }
+  timer = setTimeout(beat, every)
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Stop the orphaned turn's process (`TURN_PID_FILE`: SIGTERM, the grace, SIGKILL — the turn's own
+ * `turnKillScript`). True when the container ran the script, which ends with nothing of it left
+ * (or found nothing to stop); false when it could not be asked.
+ */
+async function stopOrphanedTurn(scope: StepScope, sandbox: SandboxPort): Promise<boolean> {
+  try {
+    const result = await sandbox.exec(turnKillScript(), {
+      timeoutMs: (TURN_KILL_GRACE_SECONDS + 15) * 1000,
+    })
+    if (result.stdout.includes('killed')) {
+      scope.logger.warn({}, 'session salvage: the orphaned turn ignored SIGTERM and was SIGKILLed')
+    }
+    return result.exitCode === 0
+  } catch (err) {
+    scope.logger.warn({ err }, 'session salvage: could not stop the orphaned turn')
+    return false
+  }
+}
+
+/**
+ * Step `salvage` — a live session (`ready` · `working` · `blocked` · `shipping`) whose Workflow
+ * instance was lost, found by the fresh instance's `claim`. The container usually OUTLIVES the
+ * instance (a `wrangler dev` reload or a deploy kills the step, not the sandbox), and in it may be
+ * a Claude Code process nobody reads and edits nobody committed. Before anything is destroyed:
+ *
+ * 1. **Reach it**: its boot marker must still be there (a container that came back empty holds
+ *    nothing; one that does not answer cannot be saved).
+ * 2. **Stop the orphaned turn** by its pid file, SIGTERM then SIGKILL — so nothing edits the
+ *    workspace while it is saved, and nothing spends with nobody reading.
+ * 3. **Checkpoint** (`hooks.checkpoint(…, 'salvage')`): commit, push, and the transcript to R2 —
+ *    so even a later cold resume keeps the work and `--resume` has the conversation.
+ * 4. **Keep or destroy**: a container whose turn is confirmed stopped is KEPT (`container_kept_at`)
+ *    — whether or not the checkpoint worked, because when it did not, the workspace is the only
+ *    copy of the work — and the loop's resume finds its boot marker and goes WARM (`dev#K` only,
+ *    the dev server reused when it answers; `warm.ts`). Anything else is destroyed, as before.
+ * 5. **Settle** `→ suspended` with a `resume` (an `end` the person asked for stays asked), and
+ *    close a `working` turn with what happened: `turn.interrupted { cancelled }` when a Stop was
+ *    pending, else `turn.failed` ({@link lostTurnMessage}) — either way saying whether the work
+ *    was saved.
+ *
+ * Every sandbox call is bounded (`deadline.ts`) and caught: a salvage never fails the session, and
+ * only a database error makes the step throw. It is idempotent: a retry finds nothing to stop, an
+ * unchanged checkout to commit, and (once settled) a status it does not salvage.
+ */
+export async function salvageStep(
+  outer: StepScope
+): Promise<{ outcome: SalvageOutcome | 'skipped'; kept: boolean }> {
+  const scope: StepScope = { ...outer, phase: SALVAGE_PHASE }
+  const session = await loadSession(scope)
+  if (!(SALVAGE_STATUSES as readonly SessionStatus[]).includes(session.status)) {
+    return { outcome: 'skipped', kept: false }
+  }
+  const sandbox = sandboxFor(scope, session)
+  const stopBeating = keepAlive(scope)
+  let outcome: SalvageOutcome = 'lost'
+  let detail: string | undefined
+  try {
+    const marker = await sandbox.readFile(SESSION_BOOT_MARKER).catch(() => null)
+    if (marker?.trim() && (await stopOrphanedTurn(scope, sandbox))) {
+      try {
+        const current = await loadSession(scope)
+        await scope.hooks.checkpoint(hookContext(scope, current, current.turnCount), 'salvage')
+        outcome = 'saved'
+      } catch (err) {
+        scope.logger.warn({ err }, 'session salvage: the checkpoint failed; keeping the container')
+        outcome = 'kept'
+        detail = safeErrorMessage(err, 'the checkpoint failed', 600)
+      }
+    }
+    if (outcome === 'lost') {
+      await sandbox.destroy().catch(err => {
+        scope.logger.warn({ err }, 'session salvage: could not destroy the container')
+      })
+    }
+  } finally {
+    stopBeating()
+  }
+
+  const keep = outcome !== 'lost'
+  const now = scope.now()
+  const moved = await transition(scope, [session.status], 'suspended', {
+    suspendedAt: now,
+    requestedAction: session.requestedAction === 'end' ? 'end' : 'resume',
+    cancelRequestedAt: null,
+    containerKeptAt: keep ? now : null,
+  })
+  if (!moved) return { outcome, kept: false }
+  const emit = emitterFor(scope)
+  const turn = Math.max(1, session.turnCount)
+  if (session.status === 'working' && session.cancelRequestedAt) {
+    // The Stop the person pressed, carried out without the turn step that should have done it.
+    const message = salvagedCancelMessage(outcome, detail)
+    await emit([
+      { type: 'turn.interrupted', turn, data: { turn, reason: 'cancelled', message } },
+      ...(outcome === 'saved' ? [] : [{ type: 'error' as const, turn, data: { message } }]),
+    ])
+  } else if (session.status === 'working') {
+    const message = lostTurnMessage(outcome, detail)
+    await emit({ type: 'turn.failed', turn, data: { turn, message } })
+  } else if (outcome === 'kept') {
+    await emit({
+      type: 'error',
+      turn: session.turnCount,
+      data: { message: `Could not save the session's work: ${detail ?? 'the checkpoint failed'}` },
+    })
+  }
+  scope.logger.warn(
+    { sessionId: session.id, status: session.status, outcome, kept: keep },
+    'session: salvaged a live session whose Workflow instance was lost'
+  )
+  return { outcome, kept: keep }
 }
 
 // ---- boot --------------------------------------------------------------------------------------
@@ -763,25 +964,58 @@ export async function devStep(
 
 /**
  * Step `transcript#K`: put Claude Code's transcript back where `--resume` finds it, from the R2
- * copy the last checkpoint made (`transcript_key`). Nothing to restore is not an error.
+ * copy the last checkpoint made (`transcript_key`). No conversation yet is not an error.
+ *
+ * **A conversation that cannot come back is forgotten, never left to break the session**: a
+ * `claude_session_id` with no transcript to restore (the turn that started it was never
+ * checkpointed — its instance died first — or the copy is gone, or there is no bucket), or a file
+ * the container does not hold after the write, clears `claude_session_id` — so the next turn starts
+ * a new conversation instead of a `claude --resume <id>` that fails every time — and an `error`
+ * event says so ({@link CONVERSATION_LOST_MESSAGE}). The code is on the branch either way.
  */
 export async function restoreTranscriptStep(
   scope: StepScope,
   bootId?: string
-): Promise<{ restored: boolean }> {
+): Promise<{ restored: boolean; stepDetail?: string }> {
   const session = await loadSession(scope)
   const claudeSessionId = session.claudeSessionId
-  if (!session.transcriptKey || !claudeSessionId || !scope.env.FILES) {
-    return { restored: false }
+  if (!claudeSessionId) return { restored: false }
+  const object =
+    session.transcriptKey && scope.env.FILES
+      ? await scope.env.FILES.get(session.transcriptKey)
+      : null
+  if (object && /^[A-Za-z0-9-]+$/.test(claudeSessionId)) {
+    const text = await object.text()
+    const sandbox = sandboxFor(scope, session)
+    const there = await inOurContainer(scope, sandbox, bootId, async () => {
+      await sandbox.writeFile(claudeTranscriptPath(claudeSessionId), text)
+      const check = await sandbox.exec(transcriptCheckCommand(claudeSessionId), {
+        timeoutMs: 15_000,
+      })
+      return check.exitCode === 0
+    })
+    if (there) return { restored: true }
   }
-  const object = await scope.env.FILES.get(session.transcriptKey)
-  if (!object) return { restored: false }
-  const text = await object.text()
-  const sandbox = sandboxFor(scope, session)
-  await inOurContainer(scope, sandbox, bootId, () =>
-    sandbox.writeFile(claudeTranscriptPath(claudeSessionId), text)
-  )
-  return { restored: true }
+  // Only the id this step read: a turn that started a new conversation meanwhile keeps its own.
+  const [forgot] = await scope.db
+    .update(sessions)
+    .set({ claudeSessionId: null })
+    .where(
+      and(
+        eq(sessions.tenantId, scope.params.tenantId),
+        eq(sessions.id, scope.params.sessionId),
+        eq(sessions.claudeSessionId, claudeSessionId)
+      )
+    )
+    .returning({ id: sessions.id })
+  if (forgot) {
+    await emitterFor(scope)({
+      type: 'error',
+      turn: session.turnCount,
+      data: { message: CONVERSATION_LOST_MESSAGE },
+    })
+  }
+  return { restored: false, stepDetail: CONVERSATION_LOST_MESSAGE }
 }
 
 /**

@@ -15,11 +15,13 @@ import { describe, expect, it } from 'vitest'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
+  CONVERSATION_LOST_MESSAGE,
   createShipTurnRunner,
   type RunTurnOptions,
   runTurn,
   TURN_PID_FILE,
   terminateTurnProcess,
+  transcriptCheckCommand,
   turnKillScript,
   turnStepConfig,
 } from '@/api/services/sessions/turn'
@@ -566,5 +568,85 @@ describe('the ship turn (createShipTurnRunner, for slice 3d’s ship())', () => 
     ).toEqual({ outcome: 'failed', turn: 0 })
     expect(brokePorts.sandboxes.get(broke.row.id)?.processes ?? []).toHaveLength(0)
     expect((await eventsOf(broke.row)).map(e => e.type)).toEqual(['budget.reached'])
+  })
+})
+
+describe('runTurn: a conversation that cannot be resumed never breaks the session', () => {
+  /** What Claude Code prints for `--resume <id>` when that session is not there. */
+  const REFUSED_RESUME = [
+    JSON.stringify({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      duration_ms: 0,
+      session_id: 'claude-fresh-by-the-cli',
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    }),
+  ]
+
+  it('a --resume that ends at once (error_during_execution, no tokens, nothing said) is retried ONCE as a new conversation', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-lost-1' })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/--resume claude-lost-1/, { lines: REFUSED_RESUME, exitCode: 1 })
+        .onProcess(/claude -p/, claudeStreamJson({ sessionId: 'claude-new-1', text: 'Done.' }))
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome).toMatchObject({ status: 'completed', turn: 1 })
+
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    expect(sandbox.processes.map(p => p.command.includes('--resume'))).toEqual([true, false])
+    const events = await eventsOf(row)
+    expect(events.map(e => e.type)).toEqual([
+      'user.message',
+      'turn.start',
+      'error',
+      'text',
+      'turn.end',
+    ])
+    expect(events[2]?.data).toEqual({ message: CONVERSATION_LOST_MESSAGE })
+    expect(events.at(-1)?.data).toMatchObject({ result: 'success' })
+    expect(await reload(row)).toMatchObject({ status: 'ready', claudeSessionId: 'claude-new-1' })
+  })
+
+  it('a turn that did work before failing is NOT re-run', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-kept-1' })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(
+        /claude -p/,
+        claudeStreamJson({
+          sessionId: 'claude-kept-1',
+          text: 'Halfway.',
+          subtype: 'error_during_execution',
+        })
+      )
+    )
+    await runTurn(db, ports, row, FAST)
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    expect(sandbox.processes).toHaveLength(1)
+    expect((await eventsOf(row)).map(e => e.type)).not.toContain('error')
+    expect((await reload(row)).claudeSessionId).toBe('claude-kept-1')
+  })
+
+  it('a transcript the container does not hold: no --resume at all, the id forgotten, and the person told', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-lost-2' })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onExec(transcriptCheckCommand('claude-lost-2'), { exitCode: 1 })
+        .onProcess(/claude -p/, claudeStreamJson({ sessionId: 'claude-new-2', text: 'Done.' }))
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome).toMatchObject({ status: 'completed' })
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    expect(sandbox.processes).toHaveLength(1)
+    expect(sandbox.processes[0]?.command).not.toContain('--resume')
+    const errors = (await eventsOf(row)).filter(e => e.type === 'error')
+    expect(errors.map(e => e.data)).toEqual([{ message: CONVERSATION_LOST_MESSAGE }])
+    expect((await reload(row)).claudeSessionId).toBe('claude-new-2')
   })
 })

@@ -9,9 +9,12 @@
  *
  * 1. **Only a quiet session.** `requested` / `booting` / `working` / `ending` with no heartbeat
  *    for {@link SESSION_STALL_MS} (a boot step writes `last_activity_at` every 30 s while it runs —
- *    `withProgress` in `steps.ts` — and so does a running turn, `turn.ts`; `ending` gets
- *    {@link SESSION_ENDING_STALL_MS}, because cleanup retries patiently). Anything fresher costs
- *    nothing.
+ *    `withProgress` in `steps.ts` — and a running turn every 10 s, `turn.ts`; `ending` gets
+ *    {@link SESSION_ENDING_STALL_MS}, because cleanup retries patiently). **A Stop shortens it**: a
+ *    `working` session with `cancel_requested_at` set is judged after
+ *    {@link SESSION_CANCEL_STALL_MS} (three missed turn beats) — only the turn step polls for the
+ *    cancel, so when that step is gone nothing else would act on it for 3 minutes. The cancel route
+ *    calls this at once for that reason (`routes/session-chat.ts`). Anything fresher costs nothing.
  * 2. **Throttled in the database**: `last_activity_at` is moved to now in a compare-and-set, and
  *    only the request whose update landed goes on — so a session is reconciled at most once per
  *    window however many tabs poll it.
@@ -20,24 +23,24 @@
  *    boot step or turn is that quiet — and the instance is terminated (best effort). A `requested`
  *    session whose instance is live is only queued: left alone.
  * 4. **Dead** → an end the person asked for (`requested_action = 'end'`, or `ending`) becomes
- *    `ending`. A dead TURN (`working`) is not a dead session: the turn ends `turn.failed` with a
- *    sentence ("This turn stopped (its Workflow ended errored). Launch is restarting the session
- *    from its last checkpoint; send your message again.") and the row goes back to `ready`. Anything
+ *    `ending`. A dead TURN (`working`) is not a dead session, and its container usually outlives
+ *    the instance: the row is LEFT `working` and the fresh instance's `claim` → `salvage` step
+ *    (`steps.ts`) stops the orphaned Claude Code process, checkpoints the work (commit, push,
+ *    transcript), keeps the container for a warm resume when the process is confirmed stopped,
+ *    and only then closes the turn — `turn.failed` saying whether the work was saved, or
+ *    `turn.interrupted { cancelled }` for a pending Stop. (Only when no fresh instance can be
+ *    started is the turn closed here, `turn.failed` and `ready`, so it does not spin.) Anything
  *    else becomes `failed`, with the step that was running named ("The session stopped while
  *    Starting dev server was running (its Workflow was running, but its step had not moved for 3
  *    minutes). Start a new session."), the checklist's line marked failed, and an `error` event.
  *    Then a FRESH instance (`restartSessionInstance`) runs the one thing still owed — `claim` sends
  *    an `ending` or unsettled session straight to `cleanup` (destroy the container, delete the
- *    branch, give back a prepare claim), and a `ready` one through its lost-instance path: destroy
- *    the container, `suspended` with a `resume`, boot again from the branch — so no route ever runs
- *    the vendor work itself.
+ *    branch, give back a prepare claim), and a live one through `salvage` — so no route ever runs
+ *    the vendor or sandbox work itself.
  *
- * **Why a dead turn's container is not kept**, even when it is still up: the turn's Claude Code
- * process may still be running in it (the step that would have killed it on a cancel or a timeout
- * is gone), spending and editing with nobody reading its output, and a new instance cannot adopt a
- * process it did not start. Destroying it is what `claim` already does for a lost instance under
- * a live session; what is lost is the dead turn's unsaved edits, since the branch holds the state
- * of the last checkpoint (the end of the previous turn).
+ * **Why the salvage is a step and not done here**: stopping a process, committing and pushing take
+ * seconds to minutes in the container, and this runs on a request path (a read, End, Stop) or the
+ * cron. Routes enqueue, never run: the fresh instance is the queue.
  *
  * **Leftovers**: a `failed` / `ended` / `shipped` session with no `ended_at` (settled, but its
  * cleanup never ran — or settled by hand) older than {@link SESSION_CLEANUP_GRACE_MS} gets the same
@@ -48,7 +51,7 @@
 
 import { agentStepEventDataSchema } from '@launch/shared/ai/agents'
 import { type SessionStatus, TERMINAL_SESSION_STATUSES } from '@launch/shared/launch-sessions'
-import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type SessionRow, sessionEvents, sessions } from '../../../db/schema'
 import type { AppBindings } from '../../types'
@@ -66,6 +69,11 @@ export const SESSION_ENDING_STALL_MS = 15 * 60_000
 export const SESSION_CLEANUP_GRACE_MS = 2 * 60_000
 /** On an end request the window is shorter: two missed heartbeats say the boot step is gone. */
 export const SESSION_END_STALL_MS = 75_000
+/**
+ * A `working` session with a Stop pending (`cancel_requested_at`): three missed turn heartbeats
+ * (`TURN_HEARTBEAT_MS`, 10 s) say the turn step that should act on it is gone.
+ */
+export const SESSION_CANCEL_STALL_MS = 30_000
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'waitingForPause', 'paused'])
 const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'working', 'ending']
@@ -178,6 +186,13 @@ async function restart(
   }
 }
 
+/** `3 minutes`, `30 seconds`: how long a quiet session had not moved, for a sentence. */
+function quietFor(ms: number): string {
+  return ms >= 60_000 && ms % 60_000 === 0
+    ? `${ms / 60_000} minute${ms === 60_000 ? '' : 's'}`
+    : `${Math.round(ms / 1000)} seconds`
+}
+
 /** Reconcile one session (see the header). Throws only on a database error. */
 export async function reconcileSession(
   db: Database,
@@ -206,8 +221,13 @@ export async function reconcileSession(
 
   // ---- a quiet boot, turn or end
   if (!QUIET_STATUSES.includes(session.status)) return SKIPPED
+  const stopPending = session.status === 'working' && session.cancelRequestedAt !== null
   const stallMs =
-    session.status === 'ending' ? SESSION_ENDING_STALL_MS : (options.stallMs ?? SESSION_STALL_MS)
+    session.status === 'ending'
+      ? SESSION_ENDING_STALL_MS
+      : stopPending
+        ? Math.min(options.stallMs ?? SESSION_STALL_MS, SESSION_CANCEL_STALL_MS)
+        : (options.stallMs ?? SESSION_STALL_MS)
   const cutoff = new Date(now.getTime() - stallMs)
   if (quietSince > cutoff) return SKIPPED
   if (!(await claimTurn(db, session, cutoff, now))) return SKIPPED
@@ -219,8 +239,13 @@ export async function reconcileSession(
   if (LIVE_STATUSES.has(status)) {
     // A live `requested` instance is queued behind others; a boot or an end that quiet is dead.
     if (session.status === 'requested') return { outcome: 'alive', instanceStatus: status }
+    // A `queued` instance under a dead turn is the fresh one a reconcile started: its `salvage`
+    // has not begun yet (a Stop's 30 s window is shorter than a busy queue).
+    if (session.status === 'working' && status === 'queued') {
+      return { outcome: 'alive', instanceStatus: status }
+    }
     const what = session.status === 'working' ? 'its turn' : 'its step'
-    label = `its Workflow was ${status}, but ${what} had not moved for ${Math.round(stallMs / 60_000)} minutes`
+    label = `its Workflow was ${status}, but ${what} had not moved for ${quietFor(stallMs)}`
     try {
       await (await workflow.get(instanceId)).terminate()
     } catch {
@@ -246,24 +271,8 @@ export async function reconcileSession(
         )
       )
   } else if (session.status === 'working') {
-    // A dead turn: fail the TURN, not the session (see the header).
-    settledStatus = 'ready'
-    const message = `This turn stopped (${label}). Launch is restarting the session from its last checkpoint; send your message again.`
-    const [settled] = await db
-      .update(sessions)
-      .set({ status: 'ready', cancelRequestedAt: null })
-      .where(
-        and(
-          eq(sessions.tenantId, session.tenantId),
-          eq(sessions.id, session.id),
-          eq(sessions.status, 'working')
-        )
-      )
-      .returning({ turnCount: sessions.turnCount })
-    if (settled) {
-      const turn = Math.max(1, settled.turnCount)
-      await emit([{ type: 'turn.failed' as const, turn, data: { turn, message } }])
-    }
+    // A dead turn: left `working` for the fresh instance's `salvage` to close (see the header).
+    settledStatus = 'working'
   } else {
     settledStatus = 'failed'
     const step = await runningStep(db, session)
@@ -300,6 +309,27 @@ export async function reconcileSession(
     .from(sessions)
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
   const restartedAs = current ? await restart(db, workflow, current, options.logger) : null
+  if (settledStatus === 'working' && !restartedAs) {
+    // Nothing will salvage it now: close the turn here so it does not spin. The next wake starts
+    // an instance whose `claim` finds `ready` and salvages the container then.
+    settledStatus = 'ready'
+    const message = `This turn stopped (${label}). Launch could not restart the session to save its work just now; send your message again and it will save what the turn left before carrying on.`
+    const [settled] = await db
+      .update(sessions)
+      .set({ status: 'ready', cancelRequestedAt: null })
+      .where(
+        and(
+          eq(sessions.tenantId, session.tenantId),
+          eq(sessions.id, session.id),
+          eq(sessions.status, 'working')
+        )
+      )
+      .returning({ turnCount: sessions.turnCount })
+    if (settled) {
+      const turn = Math.max(1, settled.turnCount)
+      await emit([{ type: 'turn.failed' as const, turn, data: { turn, message } }])
+    }
+  }
   await recordAudit(db, {
     ...SYSTEM_ACTOR,
     tenantId: session.tenantId,
@@ -343,16 +373,31 @@ export async function reconcileStaleSessions(
 ): Promise<number> {
   const now = options.now ?? new Date()
   const cutoff = new Date(now.getTime() - Math.min(SESSION_STALL_MS, SESSION_CLEANUP_GRACE_MS))
+  const stopCutoff = new Date(now.getTime() - SESSION_CANCEL_STALL_MS)
+  const quietSince = sql`coalesce(${sessions.lastActivityAt}, ${sessions.updatedAt})`
   const candidates = await db
     .select()
     .from(sessions)
     .where(
       and(
         or(
-          inArray(sessions.status, [...QUIET_STATUSES]),
-          and(inArray(sessions.status, [...TERMINAL_SESSION_STATUSES]), isNull(sessions.endedAt))
+          and(
+            or(
+              inArray(sessions.status, [...QUIET_STATUSES]),
+              and(
+                inArray(sessions.status, [...TERMINAL_SESSION_STATUSES]),
+                isNull(sessions.endedAt)
+              )
+            ),
+            sql`${quietSince} < ${cutoff.toISOString()}::timestamptz`
+          ),
+          // A Stop nobody acted on (its turn step is gone) is judged sooner (see the header).
+          and(
+            eq(sessions.status, 'working'),
+            isNotNull(sessions.cancelRequestedAt),
+            sql`${quietSince} < ${stopCutoff.toISOString()}::timestamptz`
+          )
         ),
-        sql`coalesce(${sessions.lastActivityAt}, ${sessions.updatedAt}) < ${cutoff.toISOString()}::timestamptz`,
         options.tenantIds ? inArray(sessions.tenantId, [...options.tenantIds]) : undefined
       )
     )

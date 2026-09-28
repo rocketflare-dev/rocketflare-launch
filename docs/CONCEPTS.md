@@ -1318,7 +1318,8 @@ reload) is restarted as `<id>-rN` from the row.
   the container and the next resume boots cold; a drain cools at once, and the SDK's `sleepAfter`
   (90 min, longer than the window — a config test pins it) or a recreated container (no marker)
   makes the resume cold too (`onStop` clears `container_kept_at`). A drain, a rollout, an end and a
-  lost instance still destroy at once. A warm container is billed as container time while it waits.
+  lost instance whose container could not be salvaged still destroy at once (a salvaged one is kept
+  — Reconcile, below). A warm container is billed as container time while it waits.
 - **Workspace backups** (`workspace-backup.ts`, `SESSION_WORKSPACE_BACKUP`: `binding` under
   `APP_ENV=development`, `off` deployed unless `presigned` is set up — `docs/DEPLOY.md`): before a
   destroying suspend (a drain, after its checkpoint) or a `cool#N` destroys the container, the
@@ -1356,16 +1357,35 @@ reload) is restarted as `<id>-rN` from the row.
   naming the step that was running; then a FRESH instance (`restartSessionInstance`) does the
   cleanup, because `claim` sends an `ending` session, and a settled one with no `ended_at`, straight
   to `cleanup`. **A `working` turn** is covered the same way — a running turn writes the heartbeat
-  every 30 s from its cancel watch (`turn.ts`) — but a dead turn is not a dead session: the turn
-  ends `turn.failed` ("This turn stopped (its Workflow ended errored). Launch is restarting the
-  session from its last checkpoint; send your message again."), the row goes back to `ready`, and
-  the fresh instance's `claim` takes its lost-instance path: destroy the container, `suspended`
-  with a `resume`, boot again from the branch. The container is never kept, even when it is still
-  up — the dead turn's Claude Code process may still be running in it with nobody reading its
-  output, and a new instance cannot adopt it — so the dead turn's unsaved edits are lost; the
-  branch holds the previous turn's checkpoint. A `claim` that finds a turn `working` by any other
-  road (a wake that had to restart a lost instance) closes it with `turn.failed` too. The same path cleans up a session settled `failed` by hand whose branch was never
-  deleted. **The app's `dev` prepare claim** (`apps.session_db.status = preparing`) records its
+  every 10 s from its cancel watch (`turn.ts`) — but a dead turn is not a dead session, and its
+  container usually outlives the instance (a reload or a deploy kills the step, not the sandbox):
+  the row is LEFT `working`, the dead instance terminated and a fresh one started, whose `claim`
+  sends every live session (`ready`/`working`/`blocked`/`shipping`) to **`salvage`**
+  (`steps.ts`) before anything is destroyed: if the container still carries its boot marker, the
+  orphaned Claude Code process is stopped by its pid file (SIGTERM, 5 s, SIGKILL — the turn's own
+  kill script), then a checkpoint runs (`reason: 'salvage'` — commit, push and the transcript to R2,
+  so `--resume` keeps the conversation). A container whose turn is confirmed stopped is KEPT
+  (`container_kept_at`) whether or not the checkpoint worked — when it did not, the workspace is the
+  only copy of the work — and the loop's resume goes WARM (`dev#K` only); an unreachable or empty
+  container is destroyed and the resume is cold, as before. The turn is closed by the salvage with
+  what happened: `turn.failed` "…Launch stopped Claude Code and saved your work…" / "…could not
+  save your work to the branch (…); it is still in the session's workspace…" / "…could not save
+  its work: the sandbox could not be reached…" — or `turn.interrupted { cancelled }` when a Stop was
+  pending. (Only when no fresh instance can be started is the turn closed by the reconcile itself,
+  `ready`, so it does not spin.) The salvage writes the heartbeat while it runs, so it is never
+  mistaken for another dead turn. **Stop without a turn step**: only the turn step polls
+  `cancel_requested_at`, so a `working` session with a Stop pending is judged after 30 s of quiet
+  (`SESSION_CANCEL_STALL_MS`, three missed beats) instead of 3 minutes, and `POST /:id/cancel`
+  reconciles at once — a fresh heartbeat costs nothing (the live step reads the cancel within 2 s),
+  a stale one terminates the dead instance and starts the salvaging one; the route runs nothing in
+  the sandbox. The same path cleans up a session settled `failed` by hand whose branch was never
+  deleted. **A conversation that cannot come back is forgotten**: a cold resume whose
+  `claude_session_id` has no transcript to restore (or one the container does not hold after the
+  write) clears it with an `error` event ("The earlier conversation could not be restored; Claude
+  starts fresh with the code as it is."), and a turn clears it too when the container says the
+  transcript is missing (`test -s`) or when a `--resume` ends at once as `error_during_execution`
+  with no tokens and nothing said — then runs once more as a new conversation — so one lost
+  transcript can never fail every later turn. **The app's `dev` prepare claim** (`apps.session_db.status = preparing`) records its
   session and time; a claim whose session is no longer active, or older than 30 minutes, is taken
   over, and `fail` / `cleanup` give back a claim their session still holds (`failed`).
 
@@ -1374,9 +1394,14 @@ per-slice suites) and booted locally in slice 3b; never deployed. No real model 
 anywhere — only the fake Claude Code output (`claudeStreamJson`, reconstructed from the S7
 transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in
 the same checkout) kills the running step; the reconcile settles such a boot as failed after 3
-quiet minutes rather than resuming it — a new session is the recovery; a turn it kills is failed
-after 3 quiet minutes and the session re-boots, losing that turn's unsaved edits. A `shipping`
-session whose instance died is not reconciled (no heartbeat is read for it). A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+quiet minutes rather than resuming it — a new session is the recovery; a turn it kills is found
+after 3 quiet minutes (30 s with a Stop pending) and salvaged — its process stopped, its work
+checkpointed, the container kept for a warm resume — which is proven with the `FakeSandbox` only:
+that a real kept container's dev server survives the reload, and that `claude` flushes its
+transcript on SIGTERM, need a real container. The salvaged turn itself is not continued: the person
+sends the message again. A container that answers but whose kill script fails is destroyed, so its
+unsaved edits are still lost then. A `shipping` session whose instance died is not reconciled (no
+heartbeat is read for it) — a later wake's `claim` salvages it. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
 reading the session page, or the diff, without touching the preview is idle after
 `idleSuspendMinutes` (a visible-tab heartbeat from the page is not built). The warm resume is
@@ -1520,8 +1545,11 @@ A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `ma
 checks the budget, claims `ready → working`, writes `user.message` + `turn.start`, and runs
 `claude -p … --resume <id> --output-format stream-json` in the sandbox; `claude-stream.ts` maps
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
-events. `cancel_requested_at` is polled every 2 s and kills the process; a rollout is
-`turn.interrupted` and `suspended`. Pushing is disallowed to Claude — Launch commits and pushes.
+events. `cancel_requested_at` is polled every 2 s and kills the process (a Stop whose turn step is
+gone is carried out by the reconcile's `salvage`, §18.9); a rollout is `turn.interrupted` and
+`suspended`. A `--resume` whose transcript is missing, or that Claude Code refuses at once
+(`error_during_execution`, no tokens, nothing said), clears `claude_session_id`, says so in an
+`error` event and runs the turn (once more) as a new conversation. Pushing is disallowed to Claude — Launch commits and pushes.
 **Launch never leaves a turn's process running unread**: the command records its pid
 (`/workspace/.launch/turn.pid`, then `exec claude …`), and whenever the turn stops reading a
 process that has not reported its exit — the log stream failed (`turn.failed`, "Launch lost the
