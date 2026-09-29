@@ -33,9 +33,54 @@ export function withoutDuplicateUpgradeHeaders(response: Response): Response {
   return new Response(null, { status: 101, webSocket: response.webSocket, headers })
 }
 
-/** The session's database traffic: sent on unchanged, a WebSocket upgrade's answer re-wrapped. */
-export async function forwardDatabase(request: Request): Promise<Response> {
-  return withoutDuplicateUpgradeHeaders(await fetch(request))
+/**
+ * How long a WebSocket upgrade may wait for Neon's answer. An upgrade that never answered hung the
+ * kit's `db-roles` for the bootstrap's whole 15 minutes (2026-09-29, remote): the neon driver has
+ * no connect timeout, and nothing reached Postgres. A 504 instead fails the connection at once, so
+ * the kit's own retry, or the step's, gets another try.
+ */
+export const DATABASE_UPGRADE_TIMEOUT_MS = 20_000
+
+/** Is this the neon driver's `wss://…/v2` pool connection (an HTTP upgrade), not a `/sql` query? */
+export function isUpgradeRequest(request: Request): boolean {
+  return request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+}
+
+export interface ForwardDatabaseOptions {
+  upgradeTimeoutMs?: number
+  fetch?: typeof fetch
+  /** Told when an upgrade gives up — the one line the host's logs need to show it happened. */
+  onUpgradeTimeout?: (host: string, ms: number) => void
+}
+
+/**
+ * The session's database traffic: sent on unchanged, a WebSocket upgrade's answer re-wrapped —
+ * and an upgrade Neon does not answer within {@link DATABASE_UPGRADE_TIMEOUT_MS} answered 504.
+ * A `/sql` query is never timed here: a long statement is the app's business.
+ */
+export async function forwardDatabase(
+  request: Request,
+  options: ForwardDatabaseOptions = {}
+): Promise<Response> {
+  const send = options.fetch ?? fetch
+  if (!isUpgradeRequest(request)) return send(request)
+  const ms = options.upgradeTimeoutMs ?? DATABASE_UPGRADE_TIMEOUT_MS
+  try {
+    return withoutDuplicateUpgradeHeaders(await send(request, { signal: AbortSignal.timeout(ms) }))
+  } catch (err) {
+    if (!(err instanceof Error) || (err.name !== 'TimeoutError' && err.name !== 'AbortError')) {
+      throw err
+    }
+    const host = new URL(request.url).host
+    ;(options.onUpgradeTimeout ?? warnUpgradeTimeout)(host, ms)
+    return new Response(`The database did not answer the WebSocket upgrade within ${ms} ms`, {
+      status: 504,
+    })
+  }
+}
+
+function warnUpgradeTimeout(host: string, ms: number): void {
+  console.warn(`database egress: ${host} did not answer a WebSocket upgrade within ${ms} ms`)
 }
 
 /** The `outboundByHost` pattern both sandbox classes map to {@link forwardDatabase}. */
