@@ -33,6 +33,16 @@ image = "./containers/session/Dockerfile"
 instance_type = "standard-3"
 max_instances = 3
 
+# `wrangler containers ssh <instance>` (`wrangler containers instances` lists them) for debugging a
+# live session's container: the platform runs the SSH server, the image needs none. Public keys
+# only (ed25519); a developer adds their own. Launch's deployed `SessionSandbox` has no SSH.
+[containers.ssh]
+enabled = true
+
+[[containers.authorized_keys]]
+name = "launch-dev"
+public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEW+2HDFcrMKhlJdd3q7nOBKakNAi1+p9rAcIHO9+Jwj"
+
 [[durable_objects.bindings]]
 name = "SESSION_SANDBOX"
 class_name = "HostedSessionSandbox"
