@@ -782,6 +782,56 @@ describe('SessionWorkflow: the loop', () => {
     expect((await reload(h.row)).migrationsHash).toBe('b'.repeat(64))
   })
 
+  it('a cold resume heals the offline [ai] toggle an earlier Launch committed; every dev start runs the session config first', async () => {
+    const h = await harness()
+    const healed = 'healed\tapps/web/wrangler.toml\nhealed\tapps/web/worker-configuration.d.ts\n'
+    let boots = 0
+    h.ports.script(sandbox =>
+      // The first boot is a fresh branch (nothing to heal); the resume's checkout is an old branch.
+      sandbox.onExec(/heal-dev-setup\.mjs/, () => ({ stdout: boots++ === 0 ? '' : healed }))
+    )
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        paused.value = true
+        return WAKE
+      }
+      if (n === 1) {
+        paused.value = false
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names).toContain('bootstrap#1')
+    const sandbox = h.sandbox()
+    const heals = sandbox.execs.filter(e => e.command.includes('heal-dev-setup.mjs'))
+    expect(heals.map(e => e.command)).toEqual([
+      `node /workspace/.launch/heal-dev-setup.mjs ${BASE_SHA}`,
+      `node /workspace/.launch/heal-dev-setup.mjs ${BASE_SHA}`,
+    ])
+    expect(heals.every(e => e.opts?.cwd === '/workspace/app')).toBe(true)
+    expect(run.results).toContainEqual(expect.objectContaining({ seeded: false, healed: [] }))
+    expect(run.results).toContainEqual(
+      expect.objectContaining({
+        healed: ['apps/web/wrangler.toml', 'apps/web/worker-configuration.d.ts'],
+      })
+    )
+    // Each dev start writes the session's own wrangler config first — never a tracked file.
+    const order = sandbox.commands.filter(
+      c => c.includes('session-wrangler.mjs') || c.includes('exec pnpm dev')
+    )
+    expect(order).toEqual([
+      'node /workspace/.launch/session-wrangler.mjs',
+      expect.stringContaining('exec pnpm dev'),
+      'node /workspace/.launch/session-wrangler.mjs',
+      expect.stringContaining('exec pnpm dev'),
+    ])
+    for (const path of sandbox.files.keys()) {
+      expect(path).not.toMatch(/wrangler(\.staging)?\.toml$|worker-configuration\.d\.ts$/)
+    }
+  })
+
   it('a drain cools a warm-suspended session at once', async () => {
     const h = await harness()
     const run = await drive(h, async (_wait, n) => {

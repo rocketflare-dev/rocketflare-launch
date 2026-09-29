@@ -1308,6 +1308,29 @@ reload) is restarted as `<id>-rN` from the row.
   a later one of those hung. A prepare opens two (migrate, seed); a session on a `ready` `dev`
   none, or one when its migrations are newer; a session branched while `dev` is being prepared
   elsewhere two (it seeds its own branch).
+- **A session never changes a tracked file for its dev setup** (`rocketflare-dev.ts`). The kit's
+  `bootstrap --offline` (a sandbox has no Cloudflare login, so `[ai]` must be off) comments the
+  `[ai]` block out of BOTH wrangler tomls in place, and the checkpoint commits the whole tree — so
+  the first real ship (hola-world PR #2) carried the toggle and a `worker-configuration.d.ts`
+  without `AI`, which merged would have taken Workers AI out of the app's production. Now: the
+  bootstrap preload drops the kit's writes to the two tomls and the types (`LAUNCH_BOOTSTRAP_KEEP`);
+  every dev start (`startDevServer`) first writes `apps/web/wrangler.session.toml` — the CURRENT
+  `wrangler.toml` with `[ai]` off, the kit's own toggle — and wrangler's own redirect file
+  `apps/web/.wrangler/deploy/config.json` (`{ "configPath": "../../wrangler.session.toml" }`), which
+  `wrangler dev` follows ("Using redirected Wrangler configuration.") and `wrangler types` does not,
+  so the gate's `pnpm typecheck` still generates the types from the tracked toml, `AI` included.
+  Both files are git-ignored (`.git/info/exclude`, written by the checkout and the checkpoint's
+  scan; `.wrangler/` is also in the kit's `.gitignore`). No kit change: `pnpm dev` runs as the kit
+  wrote it. **Branches an earlier Launch checkpointed** are healed on their next boot (every
+  `bootstrap#K`, the restored-workspace path too, `healDevSetup` against `sessions.base_sha`): a
+  toml whose `[ai]` is off where the base's is on gets the block back (the agent's other edits
+  kept), and the types are the base's again when they differ from it ONLY by `AI: Ai;` and the
+  generated header (otherwise the ship gate's typecheck regenerates them and `ship.commit` commits
+  that); the next checkpoint commits the repair. **The checkpoint's guard** (`checkpoint.ts`
+  `DEV_SETUP_GUARD_SCRIPT`, after `git add`) refuses to commit the offline toggle — a staged toml
+  whose live `[ai]` became `# [ai]`, or types losing `AI` while the staged toml keeps `[ai]` — with a
+  `CheckpointError('guard')`: nothing committed or pushed, the `error` event names the files, and a
+  ship stops at `ship.save`.
 - **Idle** is judged by `last_activity_at`, not by the wait alone: a live session's `wait#N`
   times out after what is left of the policy's `idleSuspendMinutes` counted from
   `last_activity_at` (`idleMinutesLeft`), and `suspend#N` with reason `idle` re-reads the row and
@@ -1563,7 +1586,18 @@ fakes, not yet timed against real Neon; the session branch still waits for its p
 operations, which Neon may hold until the compute has started; and the branch step still runs
 before the sandbox starts rather than alongside it (`docs/plans/sandbox-session-issues.md`,
 "Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
-(`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). On an ARM Mac the amd64 image runs
+(`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). The dev setup's untracked config
+leans on two things the kit and wrangler do not promise: the kit's bootstrap toggling `[ai]`
+through `writeFileSync` (the preload's hook — a kit that writes another way would toggle the tomls
+again, and the resume heal and the checkpoint guard are then what stand between it and a PR), and
+wrangler's `.wrangler/deploy/config.json` redirect (measured on wrangler 4.127: `dev` follows it,
+`types` does not). An agent's edit to `wrangler.toml` reaches the RUNNING dev server only at its
+next start (the session config is copied, not watched). A session that was live across the
+deploy of this fix keeps its toggled working tree until it is suspended and resumed (the heal runs
+at boot); its next checkpoint does not trip the guard (HEAD already carries the toggle), so a ship
+from it still carries the toggle — resume it first, or put the three files back on the branch by
+hand. The heal's types rule is exact-match only; the redirect is proven with a stand-alone
+`wrangler dev` and the scripts under real Node and git, not yet in a session container. On an ARM Mac the amd64 image runs
 under emulation (QEMU, or Rosetta under Docker Desktop), where Go binaries (esbuild inside tsx,
 Vite and wrangler) crash in their GC ("The service was stopped" — what failed the first real
 session, whose Launch ran `wrangler dev` on the `cloud` backend): every `wrangler dev` session runs

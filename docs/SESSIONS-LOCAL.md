@@ -221,7 +221,11 @@ The Workflow's steps, as the session page's checklist shows them (`step` events)
    prepared: `sessions.migrations_hash` is set) the kit's seed and `db:check` are skipped, and its
    migrate too unless `apps/web/migrations` hashes differently from the last bootstrap — the
    preload answers those `pnpm` children (`LAUNCH_BOOTSTRAP_SKIP`).
-6. **Starting dev server** — `pnpm dev` with Vite on **:5173** and `wrangler dev` on **:8787**
+6. **Starting dev server** — first `apps/web/wrangler.session.toml` (the checkout's `wrangler.toml`
+   with `[ai]` off) and wrangler's redirect to it (`apps/web/.wrangler/deploy/config.json`), both
+   git-ignored: the session never edits the app's tracked tomls or `worker-configuration.d.ts` for
+   its dev setup (the kit's `--offline` toggle is kept out of them). Then
+   `pnpm dev` with Vite on **:5173** and `wrangler dev` on **:8787**
    (never :3000, the Sandbox SDK's own port), until `:8787/api/health` answers. Its pid and output
    go to `/workspace/.launch/dev.{pid,log}`; the wait gives up at once when the process is gone,
    with the log's tail as the reason.

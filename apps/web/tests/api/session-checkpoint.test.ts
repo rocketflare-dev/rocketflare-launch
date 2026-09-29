@@ -14,6 +14,7 @@ import {
   checkpointScanScript,
   claudeProjectDir,
   commitMessage,
+  DEV_SETUP_GUARD_SCRIPT,
   PUSH_RETRY_DELAY_MS,
   SESSION_REPO_DIR,
 } from '@/api/services/sessions/checkpoint'
@@ -69,13 +70,14 @@ describe('checkpoint', () => {
     expect(commands).toEqual([
       checkpointScanScript(),
       CHECKPOINT_ADD_COMMAND,
+      DEV_SETUP_GUARD_SCRIPT,
       'git diff --cached --quiet',
       'git commit --no-verify --quiet -F /tmp/launch-commit-message.txt',
       'git rev-parse HEAD',
       `git push --quiet origin HEAD:refs/heads/${sessionBranchName(row.shortId)}`,
     ])
     for (const e of sandbox.execs) expect(e.opts?.cwd).toBe(SESSION_REPO_DIR)
-    const commit = sandbox.execs[3]
+    const commit = sandbox.execs[4]
     expect(commit?.opts?.env).toMatchObject({
       GIT_AUTHOR_NAME: 'Launch',
       GIT_AUTHOR_EMAIL: 'launch@localhost',
@@ -166,6 +168,23 @@ describe('checkpoint', () => {
     expect(err2).toBeInstanceOf(CheckpointError)
     expect(err2.step).toBe('push')
     expect(down.sandbox.execs.filter(e => e.command.startsWith('git push'))).toHaveLength(2)
+  })
+
+  it('the offline [ai] toggle in the staged tomls fails the checkpoint loudly: no commit, no push', async () => {
+    const { row, sandbox, deps, ref } = await setup()
+    sandbox.onExec(DEV_SETUP_GUARD_SCRIPT, {
+      stdout: 'ai-off\tapps/web/wrangler.toml\nai-off\tapps/web/wrangler.staging.toml\n',
+    })
+    const err = await checkpoint(db, deps, ref).catch(e => e)
+    expect(err).toBeInstanceOf(CheckpointError)
+    expect(err.step).toBe('guard')
+    expect(err.output).toContain('apps/web/wrangler.toml, apps/web/wrangler.staging.toml')
+    expect(err.output).toContain('Workers AI')
+    const commands = sandbox.execs.map(e => e.command)
+    expect(commands.some(c => c.startsWith('git commit'))).toBe(false)
+    expect(commands.some(c => c.startsWith('git push'))).toBe(false)
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(after?.headSha).toBeNull()
   })
 
   it('a file over the size limit is not staged: the save goes on and an error event names it', async () => {
