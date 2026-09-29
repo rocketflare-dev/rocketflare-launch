@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A session container's database WebSocket upgrade that Neon does not answer within 20 s is
+  answered 504 (and logged) instead of hanging: the kit's `db-roles` once waited out the whole
+  15-minute bootstrap on one such upgrade, with nothing reaching Postgres.
 - A coding session's install and kit bootstrap run as polled BACKGROUND commands
   (`services/sessions/background-command.ts`), not one blocking `exec` each: the Sandbox SDK queued
   every other call behind a running exec and the remote binding dropped a long one after ~7 min.
