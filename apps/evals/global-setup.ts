@@ -1,5 +1,5 @@
 /**
- * Once per `pnpm eval`: bring the TEST database (:5433, `apps/web/.env.test`) to the current schema —
+ * Once per `pnpm eval`: bring the TEST database (:5499, `apps/web/.env.test`) to the current schema —
  * roles → migrations → grants, the web suite's own sequence — without truncating it, so an eval run
  * and a test run can share the database. `safetyCheck()` inside `testDatabaseUrl()` refuses anything
  * but localhost under `NODE_ENV=test`.

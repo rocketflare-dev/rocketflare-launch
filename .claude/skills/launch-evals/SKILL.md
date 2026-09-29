@@ -9,7 +9,7 @@ argument-hint: "[explain | author <what> | run [suite] | compare <a> <b> | harve
 The kit ships a developer-run eval harness (D33, `docs/CONCEPTS.md` §9, how-to in `docs/EVALS.md`).
 It lives in `apps/evals` (vitest-evals on vitest 4), runs locally with `pnpm eval`, and is **never
 part of the gate**. Its targets run the product's real code in-process against the TEST database
-(:5433): the chat target calls the real chat route and the agent target runs the real agent runtime.
+(:5499): the chat target calls the real chat route and the agent target runs the real agent runtime.
 Each case gets a tenant of its own with its documents ingested. `reference.md` beside this file has
 the judge catalogue, the `EvalCase` schema and the command table. Read it before you author anything.
 

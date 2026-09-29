@@ -33,6 +33,7 @@ export interface WhoamiResult {
 export function parseWhoami(stdout: string | undefined): WhoamiResult
 
 export const TEST_DB_PORT: number
+export const KIT_TEST_DB_PORT: number
 export interface ChooseDevDbPortOptions {
   /** The port already in use by this checkout (from `.dev.vars`), kept when still available. */
   preferred?: number | null

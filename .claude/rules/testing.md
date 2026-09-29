@@ -11,7 +11,7 @@ paths:
 # Testing Patterns
 
 Vitest in `apps/web` (all commands below are root scripts that delegate there, or run inside
-`apps/web`), five projects (`apps/web/vitest.config.ts`): `api` + `api-isolated` (Node, **real Postgres** on 5433),
+`apps/web`), five projects (`apps/web/vitest.config.ts`): `api` + `api-isolated` (Node, **real Postgres** on 5499),
 `driver` (D35: `tests/driver/**` — the code that differs between the two database drivers, through
 `openDatabase`, against the real database), `ui` (jsdom + Testing Library), `config` (Node, no
 database: wrangler parity, env schema, pure helpers, the raw-result guard

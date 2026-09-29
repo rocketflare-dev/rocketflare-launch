@@ -190,7 +190,7 @@ DDL never hits a pooled backend.
 Never hand-edit an applied migration or `apps/web/migrations/meta/`. Custom SQL (an extension, a fact table)
 is a generated file edited before it is applied, journal intact.
 
-Tests migrate a throwaway database on 5433 from `apps/web/tests/setup.ts` — never Neon (under
+Tests migrate a throwaway database on 5499 from `apps/web/tests/setup.ts` — never Neon (under
 `pnpm test:neon` through the local proxy on :4433, still that database).
 
 ## Plugins (D31) — a plugin's tables

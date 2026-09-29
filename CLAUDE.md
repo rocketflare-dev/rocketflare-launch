@@ -49,7 +49,7 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
   `launch.plugins.json`): drizzle-cube at `/cubejs-api`+`/mcp`, fact tables on the `:15` cron, dashboards
 - **UI**: React 18 + Vite, DaisyUI 5 / Tailwind v4, React Router 6, TanStack Query 5; served as `ASSETS`
 - **CLI**: commander + chalk + open; `tsx` in dev, `tsc` → `dist/cli.js` (bin `launch`)
-- **Tests**: vitest projects `api` · `api-isolated` · `driver` · `ui` · `config` (Postgres :5433; `postgres`
+- **Tests**: vitest projects `api` · `api-isolated` · `driver` · `ui` · `config` (Postgres :5499 — not the kit's :5433; `postgres`
   in the gate, `pnpm test:neon` / CI `test-neon` through the local Neon proxy); cli; the
   eval kit's unit tests (`apps/evals/tests`). Evals themselves are `pnpm eval`, outside the gate
 - **Lint**: Biome 2 at the root (single quotes, `asNeeded` semicolons, 100 cols)

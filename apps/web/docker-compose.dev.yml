@@ -1,5 +1,5 @@
 # Local development Postgres. pgvector image because the AI layer stores embeddings in
-# Postgres (`vector` extension); otherwise a plain postgres:17. Tests use 5433.
+# Postgres (`vector` extension); otherwise a plain postgres:17. Tests use 5499.
 #
 # The port and the container name are variables so that a SECOND checkout on this machine gets
 # its own database instead of colliding on 5432: `pnpm dev:db:up` runs scripts/dev-db.mjs, which

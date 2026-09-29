@@ -607,7 +607,7 @@ function hyperdriveStub(connectionString: string): Hyperdrive {
  */
 export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
   const databaseUrl =
-    process.env.DATABASE_URL ?? 'postgresql://test:test@localhost:5433/launch_test'
+    process.env.DATABASE_URL ?? 'postgresql://test:test@localhost:5499/launch_test'
   const driver = process.env.DATABASE_DRIVER || 'postgres'
   const env: Record<string, unknown> = {
     RATE_LIMIT_KV: new MemoryKV() as unknown as KVNamespace,

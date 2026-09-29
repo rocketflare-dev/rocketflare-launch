@@ -23,6 +23,10 @@ import {
   type SandboxStopParams,
   SessionSandboxBase,
 } from '../api/durable-objects/session-sandbox-base'
+import {
+  DATABASE_EGRESS_PATTERN,
+  forwardDatabase,
+} from '../api/services/sessions/egress/forward-database'
 import type { EgressGrant } from '../api/services/sessions/sandbox-host/protocol'
 import { type GrantLookup, hostedAnthropic, hostedGitHub } from './egress'
 import type { SandboxHostEnv } from './env'
@@ -81,4 +85,5 @@ const lookupIn = (env: unknown): GrantLookup => grantLookup(env as SandboxHostEn
 HostedSessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => hostedAnthropic(req, lookupIn(env), ctx),
   'github.com': (req, env, ctx) => hostedGitHub(req, lookupIn(env), ctx),
+  [DATABASE_EGRESS_PATTERN]: req => forwardDatabase(req),
 }

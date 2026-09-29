@@ -23,7 +23,7 @@ jobs:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: launch_test
         ports:
-          - 5433:5432
+          - 5499:5432
         options: >-
           --health-cmd "pg_isready -U test -d launch_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -88,7 +88,7 @@ jobs:
           node scripts/plugin-api-doc.mjs
           git diff --exit-code -- docs/plugin-api.md
 
-      # `pnpm -r test`. Web: apps/web/.env.test points at localhost:5433 with dummy secrets
+      # `pnpm -r test`. Web: apps/web/.env.test points at localhost:5499 with dummy secrets
       # (committed); apps/web/tests/setup.ts runs db-roles --phase=role → migrate → --phase=grants,
       # truncates, seeds. TENANT_SCOPE_MODE=off: predicates-only; policies exist and
       # rls-coverage.test.ts checks every tenant table has one. CLI: plain vitest, no database.
