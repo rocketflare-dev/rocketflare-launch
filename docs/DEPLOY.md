@@ -217,10 +217,18 @@ needs, beyond the bindings above:
 - **Secrets.** No new Worker secret: the Anthropic key is the Setup page's `anthropic_api_key`
   credential, falling back to `ANTHROPIC_API_KEY`. The GitHub App needs `checks: read` and
   `statuses: read` on top of P2's permissions (the Setup check fails without them).
-- **Egress.** A session runs with internet OFF and an allow-list (`registry.npmjs.org`, `github.com`,
-  `codeload.github.com`, `api.anthropic.com`); `interceptHttps = true` is set explicitly because the
-  stable packages default it to `false`. The model key and the GitHub token are injected by the
-  outbound handlers IN THIS WORKER — the sandbox never holds either.
+- **Egress.** `SESSION_EGRESS` in `[vars]` (both tomls, and the sandbox host's) picks the mode.
+  `allowlist` (missing = this): internet OFF and an allow-list (`registry.npmjs.org`, `github.com`,
+  `codeload.github.com`, `api.anthropic.com`, plus the session's Neon endpoint). `open` (what the
+  tomls say for now): internet on, no allow-list, only `api.anthropic.com` and `github.com`
+  intercepted. `open` is there because on real containers the interception never ends a
+  container's stream after a WebSocket closes, so the kit's database scripts never exit and a
+  session can't boot (`docs/plans/sandbox-websocket-close.md`); it gives up the limit on where a
+  session can send data. Either way `interceptHttps = true` is set explicitly (the stable packages
+  default it to `false`), and the model key and the GitHub token are injected by the outbound
+  handlers IN THIS WORKER — the sandbox never holds either. A change to the var is a redeploy; a
+  container already running keeps its interception until it restarts, so check with a NEW
+  session.
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409

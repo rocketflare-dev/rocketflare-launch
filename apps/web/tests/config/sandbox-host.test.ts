@@ -75,9 +75,12 @@ describe('wrangler.sandbox-host.toml', () => {
     expect(rows(host, 'migrations')).toEqual([
       { tag: 'v1', new_sqlite_classes: ['HostedSessionSandbox'] },
     ])
-    for (const key of ['services', 'vars', 'kv_namespaces', 'r2_buckets', 'workflows']) {
+    for (const key of ['services', 'kv_namespaces', 'r2_buckets', 'workflows']) {
       expect(host[key], key).toBeUndefined()
     }
+    // One var, the egress switch — the same value as Launch's own tomls.
+    expect(host.vars).toEqual({ SESSION_EGRESS: 'open' })
+    expect((launch.vars as Record<string, unknown>).SESSION_EGRESS).toBe('open')
   })
 
   it('the deployed tomls never carry the dev binding', () => {
@@ -254,9 +257,8 @@ describe('the host mode puts no credential in the container', () => {
   // The first design wrote the token to a file for git's `store` helper, which erases the file on
   // a fresh token's 401 — the clone then failed "could not read Username". The token and the key
   // now live only in the host Durable Object's grant, injected by its outbound handlers.
-  it('the host class declares its own handlers for the model, git and database hosts', () => {
+  it('the host class declares its own handlers for the model and git hosts, and none for the database', () => {
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
-      '*.neon.tech',
       'api.anthropic.com',
       'github.com',
     ])

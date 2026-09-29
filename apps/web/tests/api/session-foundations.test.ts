@@ -121,11 +121,22 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
     expect(probe.interceptHttps).toBe(true)
     expect(probe.enableInternet).toBe(false)
     expect(probe.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
+    // The two credential hosts only: a database key would intercept Neon even with internet on.
     expect(Object.keys(SessionSandbox.outboundByHost ?? {}).sort()).toEqual([
-      '*.neon.tech',
       'api.anthropic.com',
       'github.com',
     ])
+    // SESSION_EGRESS=open (the tomls): internet on, no allow-list, HTTPS still intercepted.
+    const deleted: string[] = []
+    const ctx = { storage: { kv: { delete: (key: string) => void deleted.push(key) } } }
+    const open = new SessionSandbox(
+      ctx as never,
+      createTestEnv({ SESSION_EGRESS: 'open' }) as never
+    )
+    expect(open.interceptHttps).toBe(true)
+    expect(open.enableInternet).toBe(true)
+    expect(open.allowedHosts).toBeUndefined()
+    expect(deleted).toEqual(['OUTBOUND_CONFIGURATION'])
   })
 })
 

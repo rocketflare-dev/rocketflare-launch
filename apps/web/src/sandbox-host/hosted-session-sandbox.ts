@@ -2,8 +2,8 @@
  * `HostedSessionSandbox` — a coding session's container in the SANDBOX HOST Worker
  * (`wrangler.sandbox-host.toml`), the Durable Object a laptop's Launch drives over a remote service
  * binding when `SESSION_SANDBOX_HOST=remote` (development only). Same egress settings as Launch's
- * own `SessionSandbox` (`SessionSandboxBase`: internet off, the base allow-list, HTTPS intercepted),
- * and the same rule that the container holds NO credential — with two differences:
+ * own `SessionSandbox` (`SessionSandboxBase`: the `SESSION_EGRESS` mode from this Worker's own toml,
+ * HTTPS intercepted), and the same rule that the container holds NO credential — with two differences:
  *
  * - **Its outbound handlers work from a GRANT, not the database.** The host cannot reach Launch's
  *   database, so local Launch pushes what the handlers inject — the session's repo, branch and
@@ -23,10 +23,6 @@ import {
   type SandboxStopParams,
   SessionSandboxBase,
 } from '../api/durable-objects/session-sandbox-base'
-import {
-  DATABASE_EGRESS_PATTERN,
-  forwardDatabase,
-} from '../api/services/sessions/egress/forward-database'
 import type { EgressGrant } from '../api/services/sessions/sandbox-host/protocol'
 import { type GrantLookup, hostedAnthropic, hostedGitHub } from './egress'
 import type { SandboxHostEnv } from './env'
@@ -85,5 +81,4 @@ const lookupIn = (env: unknown): GrantLookup => grantLookup(env as SandboxHostEn
 HostedSessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => hostedAnthropic(req, lookupIn(env), ctx),
   'github.com': (req, env, ctx) => hostedGitHub(req, lookupIn(env), ctx),
-  [DATABASE_EGRESS_PATTERN]: req => forwardDatabase(req),
 }

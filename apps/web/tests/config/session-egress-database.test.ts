@@ -2,9 +2,11 @@
  * The database relay (`egress/forward-database.ts`). On real Cloudflare containers the passed-through
  * WebSocket first came back with `Upgrade` and `Connection` twice (Node's clients refused it), then
  * never completed a close: the container's socket sat in CLOSING and Node could not exit, so the
- * kit's migrate, db-roles and seed "hung" after doing their work. The handler now terminates the
- * socket itself — a pair towards the container, Neon's socket accepted — and answers every close
- * on both sides. `WebSocketPair` and a 101 `Response` do not exist under Node: fakes stand in.
+ * kit's migrate, db-roles and seed "hung" after doing their work (the relay does not fix that: the
+ * interception never ends the stream). The handler terminates the socket itself — a pair towards
+ * the container, Neon's socket accepted, both half-open — and passes a close on to the OTHER side
+ * only, so each side's handshake is completed once, by the far side's answer.
+ * `WebSocketPair` and a 101 `Response` do not exist under Node: fakes stand in.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -25,10 +27,12 @@ class FakeSocket implements RelaySocket {
   sent: unknown[] = []
   closes: [number | undefined, string | undefined][] = []
   accepted = false
+  acceptOptions: unknown
   closed = false
   private listeners = new Map<string, Listener[]>()
-  accept() {
+  accept(options?: unknown) {
     this.accepted = true
+    this.acceptOptions = options
   }
   send(data: unknown) {
     if (this.closed) throw new TypeError('WebSocket is closed')
@@ -64,15 +68,17 @@ describe('the database relay', () => {
     expect(container.sent).toEqual(['R'])
   })
 
-  it('answers the container’s close on its own side and closes Neon’s — the half the passthrough never did', () => {
+  it('passes the container’s close to Neon only, and answers the container with Neon’s answer — once', () => {
     const container = new FakeSocket()
     const neon = new FakeSocket()
     relaySockets(container, neon)
     container.fire('close', { code: 1000, reason: '' })
+    // Half-open: the container's side waits in CLOSING for Neon's answer; no second close frame.
+    expect(container.closes).toEqual([])
+    expect(neon.closes).toEqual([[1000, undefined]])
+    neon.fire('close', { code: 1000, reason: '' })
     expect(container.closes).toEqual([[1000, undefined]])
     expect(neon.closes).toEqual([[1000, undefined]])
-    // Neon's answering close then finds both already closed: nothing throws.
-    expect(() => neon.fire('close', { code: 1000, reason: '' })).not.toThrow()
   })
 
   it('passes Neon’s close to the container, and a code a frame may not carry as 1000', () => {
@@ -81,10 +87,20 @@ describe('the database relay', () => {
     relaySockets(container, neon)
     neon.fire('close', { code: 1006, reason: '' })
     expect(container.closes).toEqual([[1000, undefined]])
+    expect(neon.closes).toEqual([])
     expect(sendableCloseCode(1005)).toBe(1000)
     expect(sendableCloseCode(1011)).toBe(1011)
     expect(sendableCloseCode(4001)).toBe(4001)
     expect(sendableCloseCode(2000)).toBe(1000)
+  })
+
+  it('answers a close at once when the other side is already closed — nothing left to wait for', () => {
+    const container = new FakeSocket()
+    const neon = new FakeSocket()
+    relaySockets(container, neon)
+    neon.closed = true
+    expect(() => container.fire('close', { code: 1000, reason: 'bye' })).not.toThrow()
+    expect(container.closes).toEqual([[1000, 'bye']])
   })
 
   it('closes both sides on an error, or when a send fails', () => {
@@ -124,6 +140,9 @@ describe('the database relay', () => {
     expect(answered).toEqual([container, null])
     expect(neon.accepted).toBe(true)
     expect(server.accepted).toBe(true)
+    // The runtime must not answer a close itself (compatibility date 2026-04-07): the relay does.
+    expect(neon.acceptOptions).toEqual({ allowHalfOpen: true })
+    expect(server.acceptOptions).toEqual({ allowHalfOpen: true })
     server.fire('message', { data: 'Q' })
     expect(neon.sent).toEqual(['Q'])
   })

@@ -1,28 +1,28 @@
 /**
- * The database RELAY — how a session container reaches its own Neon endpoint (`*.neon.tech`)
- * through the egress interception, with nothing of Launch's database or config, so the sandbox
- * host Worker (`src/sandbox-host/`) bundles it too. Both sandbox classes map `*.neon.tech` to
- * {@link forwardDatabase}; the allow-list still decides WHICH endpoint (`sessionDbEgressHosts` —
- * exactly the session's own), since `ContainerProxy` checks it before any handler runs.
+ * The database RELAY — a WebSocket-terminating forwarder for a session container's database
+ * traffic, with nothing of Launch's database or config, so the sandbox host Worker
+ * (`src/sandbox-host/`) can bundle it too. **No sandbox class maps a host to it today**: the Neon
+ * endpoint is in neither `outboundByHost` (a static key makes the SDK intercept that host even
+ * with no allow-list), so under `SESSION_EGRESS=open` the database goes direct, and under
+ * `allowlist` an allow-listed endpoint is passed through as `fetch(request)`. It is kept as the
+ * core of the next probe: plain `ws://` through the HTTP interception to a made-up host, upgraded
+ * to `wss://` here (docs/plans/sandbox-websocket-close.md, Part 2).
  *
- * **Why a handler at all.** An allow-listed host with no handler is passed through as
+ * **Why a handler at all.** An intercepted host with no handler is passed through as
  * `fetch(request)`, and that is fine for HTTP (the neon driver's `/sql`). For the WebSocket pool
  * (`wss://…/v2`) it is not, on real Cloudflare containers (`wrangler dev`'s local containers show
  * neither problem):
  *
  * 1. **The 101 came back with `Upgrade` and `Connection` TWICE** — the origin's copies and the
  *    runtime's own — which Node's clients reject ("Invalid Upgrade header", close 1006).
- * 2. **A close never completed** (2026-09-29): with the origin's socket passed straight through,
- *    the container's `close()` went on to Neon, but no close frame ever came back and the
- *    container's TCP connection was never shut, so the socket sat in CLOSING for ever. Node does
- *    not exit while a socket is open: the kit's `migrate.ts`, `db-roles.ts` and `seed.ts` (which
- *    end their pool and let Node exit, unlike `db:check`, which calls `process.exit`) finished
- *    their work and then never exited — the "hang" in the bootstrap's step 5.
+ * 2. **A close never completes** (2026-09-29): the interception never ends the container's
+ *    TCP/TLS stream after a WebSocket closes, so its socket sits in CLOSING and Node cannot exit.
+ *    The relay does NOT fix this one; the interception itself never ends the stream.
  *
  * So the handler TERMINATES the WebSocket here instead of passing the origin's through: a
- * `WebSocketPair` towards the container, the origin's socket accepted towards Neon, messages
- * relayed both ways, and a close on either side answered on BOTH ({@link relaySockets}). The
- * runtime writes the container's 101 itself, so there is one `Upgrade` and one `Connection`.
+ * `WebSocketPair` towards the container, the origin's socket accepted towards Neon, messages and
+ * closes relayed both ways ({@link relaySockets}). The runtime writes the container's 101 itself,
+ * so there is one `Upgrade` and one `Connection`.
  */
 
 /** The WebSocket surface the relay needs — the Workers `WebSocket`, or a test's fake. */
@@ -45,19 +45,27 @@ export function sendableCloseCode(code: number | undefined): number {
     : 1000
 }
 
-function closeQuietly(socket: RelaySocket, code?: number, reason?: string): void {
+/** Close `socket`; false when it was already closed (so nothing was sent). */
+function closeQuietly(socket: RelaySocket, code?: number, reason?: string): boolean {
   try {
     // A close reason is at most 123 bytes; Neon's are short, a long one is dropped.
     socket.close(sendableCloseCode(code), reason && reason.length <= 123 ? reason : undefined)
+    return true
   } catch {
-    // Already closed (or closing): nothing left to say.
+    // Already closed: nothing left to say.
+    return false
   }
 }
 
 /**
- * Relay two ACCEPTED sockets both ways: each message on to the other side; a close on either
- * side answered on that side (completing its handshake — the part the passthrough never did)
- * and passed on to the other; an error closes both.
+ * Relay two ACCEPTED sockets both ways: each message on to the other side; an error closes both.
+ *
+ * A close is passed on to the OTHER side only. Both sockets are accepted with
+ * `allowHalfOpen: true` ({@link forwardDatabase}), so the runtime does not answer a close frame
+ * itself (from compatibility date 2026-04-07 it does, unless told not to): the side that closed
+ * waits in CLOSING until the other side's answer comes back through here, and that answer
+ * completes its handshake — once, in order. If the other side is already closed there is no
+ * answer to wait for, so the side that closed is answered at once.
  */
 export function relaySockets(a: RelaySocket, b: RelaySocket): void {
   const wire = (from: RelaySocket, to: RelaySocket) => {
@@ -69,8 +77,7 @@ export function relaySockets(a: RelaySocket, b: RelaySocket): void {
       }
     })
     from.addEventListener('close', event => {
-      closeQuietly(from, event.code, event.reason)
-      closeQuietly(to, event.code, event.reason)
+      if (!closeQuietly(to, event.code, event.reason)) closeQuietly(from, event.code, event.reason)
     })
     from.addEventListener('error', () => {
       closeQuietly(from, 1011)
@@ -156,8 +163,9 @@ export async function forwardDatabase(
   const theirs = upstream.webSocket
   if (upstream.status !== 101 || !theirs) return upstream
   const { client, server } = (options.pair ?? workersPair)()
-  theirs.accept()
-  server.accept()
+  // Half-open on both: a close is answered by the far side's answer, not by the runtime (above).
+  theirs.accept({ allowHalfOpen: true })
+  server.accept({ allowHalfOpen: true })
   relaySockets(server, theirs)
   return (options.answer ?? workersAnswer)(client, upstream.headers.get('sec-websocket-protocol'))
 }
@@ -165,6 +173,3 @@ export async function forwardDatabase(
 function warnUpgradeTimeout(host: string, ms: number): void {
   console.warn(`database egress: ${host} did not answer a WebSocket upgrade within ${ms} ms`)
 }
-
-/** The `outboundByHost` pattern both sandbox classes map to {@link forwardDatabase}. */
-export const DATABASE_EGRESS_PATTERN = '*.neon.tech'

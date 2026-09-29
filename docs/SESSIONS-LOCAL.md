@@ -143,6 +143,14 @@ container.
 - One difference: **`host.docker.internal` is reachable even when it is not on the list.** Nothing
   in a session uses it, and it is not on the list.
 
+The allow-list is `SESSION_EGRESS=allowlist`, which `.dev.vars.example` keeps locally (blank =
+`allowlist`): under `wrangler dev` a database WebSocket closes cleanly through the interception.
+The deployed tomls and the sandbox host say `open` (internet on, only the model and git hosts
+intercepted), because on real containers the interception never ends the container's stream after
+a WebSocket closes (`docs/plans/sandbox-websocket-close.md`). A `.dev.vars` without the line gets
+the toml's `open`. A remote session (`SESSION_SANDBOX_HOST=remote`) follows the host's toml, not
+`.dev.vars`.
+
 So there is no local-only fallback: the git clone goes to `https://github.com/<o>/<r>.git` and the
 GitHub egress handler (in the Worker) forwards it to `SESSION_LOCAL_GIT_URL`, exactly as it
 forwards to GitHub deployed; the database is the Neon branch's endpoint, allow-listed exactly

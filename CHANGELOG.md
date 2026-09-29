@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `SESSION_EGRESS = open | allowlist` (missing = `allowlist`) picks how a session container reaches
+  the internet, and the three tomls say `open` for now: internet on, no allow-list, and only
+  `api.anthropic.com` and `github.com` intercepted, so the container still holds no model key or
+  GitHub token. On real Cloudflare containers the egress interception never ends the container's
+  stream after a WebSocket closes, so the kit's `migrate` / `db-roles` / `seed` never exited and a
+  remote session could not boot (`docs/plans/sandbox-websocket-close.md`). Under `open` the session
+  Durable Object turns `setAllowedHosts` into a no-op and deletes the SDK's persisted outbound
+  configuration, so a reused object does not bring the allow-list back. The egress allow-list of
+  spec/03 is off until the switch goes back. `*.neon.tech` is no longer an outbound handler host
+  in either mode, and the database relay (kept for the next probe) accepts both sockets half-open
+  and passes a close on to the other side only, instead of answering it twice.
 - A session container's database WebSocket is now relayed through a `WebSocketPair` of the egress
   handler's own, which answers every close on both sides. Passed straight through, a close never
   completed on real Cloudflare containers: the container's socket stayed open, so the kit's

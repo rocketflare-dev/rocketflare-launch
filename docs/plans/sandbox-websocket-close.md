@@ -1,7 +1,9 @@
 # A database WebSocket never finishes closing in a remote session container
 
-Written 2026-09-29. Status: **root cause found; no fix chosen yet.** Remote sessions still can't
-boot. This doc covers what was found, the options, and how to report it to Cloudflare. Background
+Written 2026-09-29. Status: **root cause found; option B chosen for now, behind a switch**
+(`SESSION_EGRESS=open`, see "Decision"). It is unproven on a real container until the rollout
+check below passes. This doc covers what was found, the research, the options, the decision and
+how to report it to Cloudflare. Background
 and earlier findings are in `sandbox-session-issues.md` (the "Open" section).
 
 ## The short version
@@ -82,7 +84,84 @@ In `@cloudflare/containers` 0.3.7 (`applyOutboundInterception`), setting `allowe
 `interceptOutboundHttps('*')` with `interceptHttps`. With only static `outboundByHost`, it
 intercepts just those hosts. Everything else is then blocked (`enableInternet = false`) or goes
 direct (`enableInternet = true`). **There is no "block everything, let this one host through
-un-intercepted" mode.**
+un-intercepted" mode** on the stable packages (but see `interceptOutboundTcp` under "Research").
+
+## Research (2026-09-29)
+
+The question was whether we were holding it wrong. Cloudflare's source, docs and issues say no.
+
+- **We are on the latest stable packages.** `@cloudflare/containers` 0.3.7 and
+  `@cloudflare/sandbox` 0.12.10. `ContainerProxy.fetch` is a plain fetch handler with no WebSocket
+  or upgrade logic of its own.
+- **The production interceptor is closed source.** workerd's `container-client.c++` is the local
+  `wrangler dev` path only. Its pumps call `shutdownWrite()` on EOF, which is why local runs work
+  and deployed ones don't.
+- **The docs never mention WebSocket egress**, and none of Cloudflare's examples makes an outbound
+  WebSocket from a container.
+- **Outbound handlers only see HTTP/HTTPS on ports 80 and 443**, so plain Postgres TCP (:5432)
+  can't leave a locked container at all.
+- **The real long-term answer exists but can't be used yet.** `ctx.container.interceptOutboundTcp`
+  → `connect()` (Postgres TCP, or Hyperdrive) is in workerd behind the `experimental`
+  compatibility flag, and its docs PR (cloudflare-docs#32441) isn't merged. So the claim above
+  that there is no alternative holds only for stable, documented APIs.
+- **No matching issue has been filed.** The same family: containers#220 (no `close_notify`),
+  #195, and sandbox-sdk#844.
+- **The duplicate close in our relay has a documented cause.** From compatibility date 2026-04-07
+  (`web_socket_auto_reply_to_close`) the runtime answers a received Close frame itself before
+  firing `close`. A proxy should `accept({ allowHalfOpen: true })` and close only the other side.
+  The relay now does (see "Loose ends").
+- **One cheap, untested way to keep the allow-list:** plain `ws://` through the HTTP (not HTTPS)
+  interceptor to a made-up host (`neon.internal`), using the kit's existing `NEON_LOCAL_PROXY`
+  support (`src/db/client.ts`). A handler then upgrades the connection to `wss://` on to Neon
+  (`egress/forward-database.ts` is the core). This is the first probe of Part 2 below.
+
+**What the SDK does, checked in source** (`@cloudflare/containers` 0.3.7,
+`dist/lib/container.js`):
+- The egress fields (`enableInternet`, `allowedHosts`, `interceptHttps`) are read inside the
+  constructor's `blockConcurrencyWhile`, after its first `await`, and again at start. A subclass
+  constructor can set them from `env` after `super()`. `Sandbox` 0.12.10 reads only
+  `interceptHttps` in its constructor, also after an `await`, and does not override
+  `setAllowedHosts`.
+- Any allowed or denied hosts, a persisted `hasInterceptAllRegistration`, or a runtime override
+  turns on intercept-all. Without those, only the static `outboundByHost` keys are intercepted.
+- The configuration is persisted under the storage key `OUTBOUND_CONFIGURATION` and restored in
+  the constructor, so a reused object keeps intercept-all. The per-app `prepare-<appId>` sandbox is
+  the one that is reused. The runtime cannot remove an interception from a running container.
+
+## Decision
+
+Made by the owner, 2026-09-29:
+
+1. **Now: take only the database out of interception (option B), behind a switch.**
+   `SESSION_EGRESS = open | allowlist` (`apps/web/src/config.ts`; missing = `allowlist`, the
+   fail-closed default for anyone else's deployment). The three tomls say `open`.
+   - Under `open`, `SessionSandboxBase` sets `enableInternet = true` and no allow-list, makes
+     `setAllowedHosts` a no-op (so no caller can turn intercept-all back on), and deletes the
+     persisted `OUTBOUND_CONFIGURATION` before `super()`.
+   - `interceptHttps` stays on, and the `api.anthropic.com` and `github.com` handlers stay, so the
+     container still holds no model key or GitHub token. What is given up is the egress
+     allow-list (spec/03).
+   - `*.neon.tech` is no longer an `outboundByHost` key in either mode: a static key makes the SDK
+     intercept that host even with internet on.
+2. **Then:** the probes and the Cloudflare issue (Part 2 below). If the `neon.internal` probe
+   works, `allowlist` can use it and the tomls go back.
+
+**Rollout (user-run).**
+- Deploy `launch-sandbox-dev`. The image doesn't change, but a `[vars]` change still redeploys.
+- Wait for `wrangler containers list` to say `ready`.
+- Start a fresh remote session (a container already running keeps its interception) and check it
+  reaches `ready`.
+- Inside it (SSH), `timeout 20 node exitprobe.mjs` should exit 0.
+
+**Part 2, after the rollout is green** (on the dev host, with the `/tmp/sbx-probe` harness):
+1. Plain `ws://` through the HTTP interceptor: a temporary `neon.internal` handler on
+   `HostedSessionSandbox` that rewrites `/v2` to `wss://<endpoint>/v2` through `forwardDatabase`,
+   with `neon.internal` on the allow-list, under `SESSION_EGRESS=allowlist`. Run `rawclose.js`
+   with `net.connect(80, 'neon.internal')`, then `exitprobe.mjs` with
+   `NEON_LOCAL_PROXY=http://neon.internal`. A FIN means `allowlist` can use it.
+2. Why the interceptor refuses the `ws` client: hex-dump the bytes after the 101, log `ws`'s
+   `error` / `close` / `unexpected-response` events.
+3. The Neon-free minimal repro ("Before filing", below), then the issue, which the owner files.
 
 ## Where the bug bites (not just the bootstrap)
 
@@ -103,15 +182,18 @@ un-intercepted" mode.**
 | Option | Fixes | Cost |
 |---|---|---|
 | A. Cloudflare fixes the interceptor (end the stream after a WebSocket closes) | everything | their timeline; report below |
-| B. Neon bypasses the interceptor: `enableInternet = true`, no allow-list, keep the two credential handlers | everything, incl. the app's transactions; plain Postgres TCP would work too | loses the egress allow-list: code, the branch URI and anything the agent reads could be sent anywhere. A spec/03 change, the owner's call |
+| B. Neon bypasses the interceptor: `enableInternet = true`, no allow-list, keep the two credential handlers | everything, incl. the app's transactions; plain Postgres TCP would work too | loses the egress allow-list: code, the branch URI and anything the agent reads could be sent anywhere. A spec/03 change, the owner's call. **Chosen for now, as `SESSION_EGRESS=open`** ("Decision") |
+| H. Plain `ws://` to a made-up host (`neon.internal`) through the HTTP interceptor, upgraded to `wss://` by our handler (`NEON_LOCAL_PROXY`) | everything, if the HTTP interceptor ends the stream | untested (Part 2, probe 1); keeps the allow-list |
+| I. `interceptOutboundTcp` → `connect()` (Postgres TCP or Hyperdrive) | everything, and plain TCP | behind workerd's `experimental` flag, undocumented; not usable yet |
 | C. Kit scripts over HTTP only: `openScriptSql` on neon-http; `migrate.ts` applies each migration file as one `sql.transaction([...])` batch (drizzle's `neon-http` migrator runs statements one by one, with no transaction); `db-roles`' fixed statement list as a batch | 1 and 2 | a kit change and release; apps pick it up only when they update the kit |
 | D. Kit scripts call `process.exit(0)` when done, as `db:check` already does | 1 and 2 | a kit change and release; smallest possible |
 | E. Launch rewrites the bootstrap's `db:migrate` to a wrapper: import the kit's exported `runMigrations()`, await it, `process.exit(0)` | 1, migrate only | Launch-only, works for existing apps today; `seed` has no exported function (needs D); does nothing for 2 or 3 |
 | F. App transactions as batches (`db.batch` / `sql.transaction([...])`): drop INTERACTIVE transactions, keep atomicity | 3 | kit-wide change plus a lasting rule for app authors and the agent ("no interactive `db.transaction` under neon"). The kit has 11 `db.transaction(` sites in `src`; most batch cleanly (`members.ts` is two deletes; `retrieval.ts` is `SET LOCAL` plus one query, fine in a batch). `tenant-scope.ts` (`TENANT_SCOPE_MODE=enforce`) wraps arbitrary route code and cannot be batched |
 | G. A Node preload in the container that exits once every WebSocket is closing and only their sockets remain | 1 and 2 | guesses when a process is idle; does nothing for workerd (3). Not recommended |
 
-**Recommended, in order:**
-1. **Report the bug to Cloudflare now** (A), since a fix there retires the rest.
+**Recommended, in order** (B is now in place behind the switch, see "Decision"):
+1. **Report the bug to Cloudflare** (A), since a fix there retires the rest. Ask for
+   `interceptOutboundTcp` (I) to leave experimental too.
 2. **Kit scripts over HTTP, or at least `process.exit(0)`** (C, or D), in `~/work/rocketflare` on a
    branch, then a kit release.
 3. **Measure (3) before touching app code** (F). Get a session to `ready`: E applied temporarily,
@@ -121,8 +203,8 @@ un-intercepted" mode.**
    - watch for slowdowns or errors over an hour.
 
    If the leak is harmless for a session's lifetime, leave app transactions alone.
-4. **Decide B separately.** It is a trust-model decision, not a bug fix. A middle ground is to
-   relax egress only on the dev-only remote host.
+4. **B was decided** (the owner, 2026-09-29): on for the deployed tomls and the dev host, as a
+   switch that goes back to `allowlist` when A, H or I lands.
 
 ## Filing it with Cloudflare
 
@@ -238,12 +320,12 @@ process.on('exit', () => console.log('process exiting naturally'))
 
 ## Loose ends
 
-- **The relay answers a close twice.** Our `close()` on the side that sent it, plus the runtime's
-  auto-reply (compatibility date 2026-06-01). `relaySockets` should close only the OTHER side and
-  let the runtime answer. It's harmless so far, but a protocol violation.
-- **Keep the relay?** It makes the Worker side end cleanly (`ok`), but it didn't fix the container
-  side. Revisit once Cloudflare answers. The plain passthrough plus the duplicate-header re-wrap
-  (`8de9d75`) was simpler.
+- **The relay answered a close twice** (fixed): our `close()` on the side that sent it, plus the
+  runtime's auto-reply. `forwardDatabase` now accepts both sockets with `allowHalfOpen: true`, and
+  `relaySockets` passes a close on to the OTHER side only; the far side's answer completes the
+  first side's handshake.
+- **Keep the relay?** No sandbox class maps a host to it now (`*.neon.tech` is gone from both
+  `outboundByHost` maps). It is kept as the core of probe H (`neon.internal`).
 - **Why `ws` is refused** by the interceptor straight after the 101 (above).
 - **The `configure` RPC every ~2.5 s** in the host's tail is Launch's own polling. Each host call
   goes through `getSandbox()`, which sends the SDK's `configure(options)`: a no-op when nothing

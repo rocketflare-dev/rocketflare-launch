@@ -39,6 +39,8 @@ OBSERVABILITY_SPAN_RETENTION_DAYS = "14"   # Tracing (D32): days of ai_spans the
 SESSION_BACKEND = "cloud"              # Coding sessions (P3): cloud | local (local = wrangler dev only; loadConfig refuses it elsewhere)
 SESSION_PREVIEW_URL = "https://{label}.clewro.com"  # P3: preview origins, {label} = <port>-<shortId>-<token> (docs/DEPLOY.md § Coding sessions)
 GRANT_BACKEND = "cloudflare"            # Shared config (P5): cloudflare | local (local = wrangler dev only; loadConfig refuses it elsewhere)
+SESSION_EGRESS = "open"                # P3: open | allowlist (missing = allowlist). open until the egress interception ends
+                                       # a container's stream after a WebSocket closes (docs/plans/sandbox-websocket-close.md)
 # Coding sessions' workspace backups (P3) — add to BOTH files, with the R2 secrets, to turn them on
 # deployed (docs/DEPLOY.md § Coding sessions):  SESSION_WORKSPACE_BACKUP = "presigned"
 # Tracing backend (D32) — add these to BOTH files when you pick one (docs/DEPLOY.md § Tracing):

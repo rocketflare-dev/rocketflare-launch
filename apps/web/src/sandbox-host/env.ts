@@ -8,4 +8,6 @@ import type { HostedSessionSandbox } from './hosted-session-sandbox'
 
 export interface SandboxHostEnv {
   SESSION_SANDBOX: DurableObjectNamespace<HostedSessionSandbox>
+  /** `open | allowlist`, missing = `allowlist` — read by `sessionEgressMode` (`SESSION_EGRESS`). */
+  SESSION_EGRESS?: string
 }
