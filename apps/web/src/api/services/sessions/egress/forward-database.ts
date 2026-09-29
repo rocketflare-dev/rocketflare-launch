@@ -1,5 +1,5 @@
 /**
- * The database PASSTHROUGH — how a session container reaches its own Neon endpoint (`*.neon.tech`)
+ * The database RELAY — how a session container reaches its own Neon endpoint (`*.neon.tech`)
  * through the egress interception, with nothing of Launch's database or config, so the sandbox
  * host Worker (`src/sandbox-host/`) bundles it too. Both sandbox classes map `*.neon.tech` to
  * {@link forwardDatabase}; the allow-list still decides WHICH endpoint (`sessionDbEgressHosts` —
@@ -7,37 +7,84 @@
  *
  * **Why a handler at all.** An allow-listed host with no handler is passed through as
  * `fetch(request)`, and that is fine for HTTP (the neon driver's `/sql`). For the WebSocket pool
- * (`wss://…/v2`) it is not, on real Cloudflare containers: the 101 comes back with `Upgrade` and
- * `Connection` TWICE — the origin's copies from the response's headers, and the runtime's own —
- * Node's parser joins them to `websocket, websocket`, and both `ws` and Node's built-in WebSocket
- * reject the upgrade ("Invalid Upgrade header", close 1006). So the kit's `db:check`, its
- * migrations and every transaction failed in a remote sandbox (`wrangler dev`'s local containers
- * do not duplicate them). Re-wrapping the 101 without the origin's hop-by-hop headers — the usual
- * Workers WebSocket proxy — leaves one of each.
+ * (`wss://…/v2`) it is not, on real Cloudflare containers (`wrangler dev`'s local containers show
+ * neither problem):
+ *
+ * 1. **The 101 came back with `Upgrade` and `Connection` TWICE** — the origin's copies and the
+ *    runtime's own — which Node's clients reject ("Invalid Upgrade header", close 1006).
+ * 2. **A close never completed** (2026-09-29): with the origin's socket passed straight through,
+ *    the container's `close()` went on to Neon, but no close frame ever came back and the
+ *    container's TCP connection was never shut, so the socket sat in CLOSING for ever. Node does
+ *    not exit while a socket is open: the kit's `migrate.ts`, `db-roles.ts` and `seed.ts` (which
+ *    end their pool and let Node exit, unlike `db:check`, which calls `process.exit`) finished
+ *    their work and then never exited — the "hang" in the bootstrap's step 5.
+ *
+ * So the handler TERMINATES the WebSocket here instead of passing the origin's through: a
+ * `WebSocketPair` towards the container, the origin's socket accepted towards Neon, messages
+ * relayed both ways, and a close on either side answered on BOTH ({@link relaySockets}). The
+ * runtime writes the container's 101 itself, so there is one `Upgrade` and one `Connection`.
  */
 
-/** Hop-by-hop headers the runtime writes itself on a 101; the origin's copies would duplicate them. */
-const UPGRADE_HOP_HEADERS = ['upgrade', 'connection'] as const
-
-/** A 101's headers without the origin's `Upgrade` / `Connection` (the runtime writes its own). */
-export function upgradeAnswerHeaders(upstream: Headers): Headers {
-  const headers = new Headers(upstream)
-  for (const name of UPGRADE_HOP_HEADERS) headers.delete(name)
-  return headers
+/** The WebSocket surface the relay needs — the Workers `WebSocket`, or a test's fake. */
+export interface RelaySocket {
+  send(data: string | ArrayBuffer | ArrayBufferView): void
+  close(code?: number, reason?: string): void
+  addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void
+  addEventListener(type: 'close', listener: (event: { code: number; reason: string }) => void): void
+  addEventListener(type: 'error', listener: (event: unknown) => void): void
 }
 
-/** An upstream 101 re-wrapped with {@link upgradeAnswerHeaders}; anything else as is. */
-export function withoutDuplicateUpgradeHeaders(response: Response): Response {
-  if (response.status !== 101 || !response.webSocket) return response
-  const headers = upgradeAnswerHeaders(response.headers)
-  return new Response(null, { status: 101, webSocket: response.webSocket, headers })
+/** Codes a close frame may not carry (RFC 6455 §7.4.1): "no status", "abnormal", TLS failure. */
+const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
+
+/** A code `close()` accepts: the peer's own, or 1000 for one that may not be sent. */
+export function sendableCloseCode(code: number | undefined): number {
+  if (code === undefined || RESERVED_CLOSE_CODES.has(code)) return 1000
+  return code === 1000 || (code >= 3000 && code <= 4999) || (code >= 1001 && code <= 1014)
+    ? code
+    : 1000
+}
+
+function closeQuietly(socket: RelaySocket, code?: number, reason?: string): void {
+  try {
+    // A close reason is at most 123 bytes; Neon's are short, a long one is dropped.
+    socket.close(sendableCloseCode(code), reason && reason.length <= 123 ? reason : undefined)
+  } catch {
+    // Already closed (or closing): nothing left to say.
+  }
 }
 
 /**
- * How long a WebSocket upgrade may wait for Neon's answer. An upgrade that never answered hung the
- * kit's `db-roles` for the bootstrap's whole 15 minutes (2026-09-29, remote): the neon driver has
- * no connect timeout, and nothing reached Postgres. A 504 instead fails the connection at once, so
- * the kit's own retry, or the step's, gets another try.
+ * Relay two ACCEPTED sockets both ways: each message on to the other side; a close on either
+ * side answered on that side (completing its handshake — the part the passthrough never did)
+ * and passed on to the other; an error closes both.
+ */
+export function relaySockets(a: RelaySocket, b: RelaySocket): void {
+  const wire = (from: RelaySocket, to: RelaySocket) => {
+    from.addEventListener('message', event => {
+      try {
+        to.send(event.data as string | ArrayBuffer)
+      } catch {
+        closeQuietly(from, 1011, 'relay failed')
+      }
+    })
+    from.addEventListener('close', event => {
+      closeQuietly(from, event.code, event.reason)
+      closeQuietly(to, event.code, event.reason)
+    })
+    from.addEventListener('error', () => {
+      closeQuietly(from, 1011)
+      closeQuietly(to, 1011)
+    })
+  }
+  wire(a, b)
+  wire(b, a)
+}
+
+/**
+ * How long a WebSocket upgrade may wait for Neon's answer. An upgrade that never answered would
+ * hang the kit's scripts for the bootstrap's whole 15 minutes (the neon driver has no connect
+ * timeout); a 504 instead fails the connection at once, so a retry gets another try.
  */
 export const DATABASE_UPGRADE_TIMEOUT_MS = 20_000
 
@@ -46,17 +93,36 @@ export function isUpgradeRequest(request: Request): boolean {
   return request.headers.get('upgrade')?.toLowerCase() === 'websocket'
 }
 
+/** The container's end and ours, from a `WebSocketPair`. */
+export type SocketPair = { client: WebSocket; server: WebSocket }
+
 export interface ForwardDatabaseOptions {
   upgradeTimeoutMs?: number
   fetch?: typeof fetch
   /** Told when an upgrade gives up — the one line the host's logs need to show it happened. */
   onUpgradeTimeout?: (host: string, ms: number) => void
+  /** Tests: the pair, and the 101 that hands the container its end (neither exists under Node). */
+  pair?: () => SocketPair
+  answer?: (client: WebSocket, protocol: string | null) => Response
 }
 
+const workersPair = (): SocketPair => {
+  const pair = new WebSocketPair()
+  return { client: pair[0], server: pair[1] }
+}
+
+const workersAnswer = (client: WebSocket, protocol: string | null): Response =>
+  new Response(null, {
+    status: 101,
+    webSocket: client,
+    ...(protocol ? { headers: { 'Sec-WebSocket-Protocol': protocol } } : {}),
+  })
+
 /**
- * The session's database traffic: sent on unchanged, a WebSocket upgrade's answer re-wrapped —
- * and an upgrade Neon does not answer within {@link DATABASE_UPGRADE_TIMEOUT_MS} answered 504.
- * A `/sql` query is never timed here: a long statement is the app's business.
+ * The session's database traffic: a `/sql` query sent on unchanged (never timed — a long
+ * statement is the app's business); a WebSocket upgrade relayed through a pair of our own
+ * ({@link relaySockets}), or answered 504 when Neon does not answer it within
+ * {@link DATABASE_UPGRADE_TIMEOUT_MS}. Anything but a 101 from Neon goes back as it came.
  */
 export async function forwardDatabase(
   request: Request,
@@ -65,8 +131,16 @@ export async function forwardDatabase(
   const send = options.fetch ?? fetch
   if (!isUpgradeRequest(request)) return send(request)
   const ms = options.upgradeTimeoutMs ?? DATABASE_UPGRADE_TIMEOUT_MS
+  // A timer of our own, cleared once Neon answers: a signal on the fetch itself could still
+  // fire on the upgraded socket after it.
+  const abort = new AbortController()
+  const timer = setTimeout(
+    () => abort.abort(new DOMException('upgrade timed out', 'TimeoutError')),
+    ms
+  )
+  let upstream: Response
   try {
-    return withoutDuplicateUpgradeHeaders(await send(request, { signal: AbortSignal.timeout(ms) }))
+    upstream = await send(request, { signal: abort.signal })
   } catch (err) {
     if (!(err instanceof Error) || (err.name !== 'TimeoutError' && err.name !== 'AbortError')) {
       throw err
@@ -76,7 +150,16 @@ export async function forwardDatabase(
     return new Response(`The database did not answer the WebSocket upgrade within ${ms} ms`, {
       status: 504,
     })
+  } finally {
+    clearTimeout(timer)
   }
+  const theirs = upstream.webSocket
+  if (upstream.status !== 101 || !theirs) return upstream
+  const { client, server } = (options.pair ?? workersPair)()
+  theirs.accept()
+  server.accept()
+  relaySockets(server, theirs)
+  return (options.answer ?? workersAnswer)(client, upstream.headers.get('sec-websocket-protocol'))
 }
 
 function warnUpgradeTimeout(host: string, ms: number): void {
