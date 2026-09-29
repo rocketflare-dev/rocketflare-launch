@@ -243,19 +243,20 @@ export const kitTagsResponseSchema = z.object({
 export type KitTagsResponse = z.infer<typeof kitTagsResponseSchema>
 
 /**
- * Rocketflare kit 0.15.7: 0.15.0 (the release P2 was built against) plus the rename fixes a
+ * Rocketflare kit 0.15.8: 0.15.0 (the release P2 was built against) plus the rename fixes a
  * hyphenated slug needs: the evals script's identifiers (0.15.1), the API-key prefix, the
  * `rocketflare-dev/` references and the test Compose project (0.15.2); and CI a copy can pass —
  * the default-plugins gate kit-only, one gate per commit, the neon run fixed (0.15.3); the
  * deploy's parity step on a shallow checkout (0.15.4); migrations as a role without CREATEDB
  * (0.15.5); a magic link that opening does not spend (0.15.6); and `pnpm test:ephemeral` — the
  * suite on a throwaway Neon gate branch, no Docker — which Launch's ship gate runs (0.15.7,
- * issue #1).
+ * issue #1); and the kit's own tests moved to `apps/web/tests/kit-only/`, which the rename deletes,
+ * so a copy's gate no longer fails on the kit's version chain once the app releases (0.15.8).
  */
 export const DEFAULT_TEMPLATE_PIN: TemplatePin = {
   repo: 'rocketflare-dev/rocketflare',
-  tag: '0.15.7',
-  commit: 'ab09a3f2f97a5973ff23c0b841cb919cd24d737a',
+  tag: '0.15.8',
+  commit: 'd5accd301afd2a0a20d1a77ae31489f4860a8a3e',
 }
 
 /**
