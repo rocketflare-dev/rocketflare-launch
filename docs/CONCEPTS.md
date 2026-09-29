@@ -1280,7 +1280,8 @@ reload) is restarted as `<id>-rN` from the row.
   before any write with 503 `sessions_not_configured`, 409 `app_has_no_repo`, `sessions_paused`,
   `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
   then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
-- **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` made in SQL by
+- **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` and the kit's RLS
+  role `rocketflare_app` — NOLOGIN, held by `session_owner` WITH ADMIN — made in SQL by
   `neondb_owner`; the first session PREPARES it — migrate + seed — then branches) →
   `sandbox.start` → `repo` (clone, `session/<short>`,
   `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
@@ -1290,9 +1291,17 @@ reload) is restarted as `<id>-rN` from the row.
   step writes a `step` event (the page's checklist). The first successful `bootstrap` records the
   checkout's `apps/web/migrations` hash (`sessions.migrations_hash`); a later one (a cold resume) is
   against a prepared database, so it never re-seeds or re-checks it and migrates only when the hash
-  changed — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
+  changed. The prepare records its checkout's hash on `apps.session_db.migrationsHash`, and a
+  session branched from a `ready` `dev` STARTS from it (`branchStep`; `unknown` for a `dev`
+  prepared before it was recorded — then it migrates once), so its first boot is a resume's too — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
   `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): the kit has no flag for
-  it. The first boot is unchanged.
+  it. On EVERY boot the preload skips `db:check` and runs `db:migrate` as the kit's migrator alone
+  (`tsx scripts/migrate.ts`, no `db-roles` before or after — its role is on `dev` already, its
+  grants matter only under `TENANT_SCOPE_MODE=enforce`): each of the kit's database scripts opens
+  its own WebSocket through the container's egress interception, and on real Cloudflare containers
+  a later one of those hung. A prepare opens two (migrate, seed); a session on a `ready` `dev`
+  none, or one when its migrations are newer; a session branched while `dev` is being prepared
+  elsewhere two (it seeds its own branch).
 - **Idle** is judged by `last_activity_at`, not by the wait alone: a live session's `wait#N`
   times out after what is left of the policy's `idleSuspendMinutes` counted from
   `last_activity_at` (`idleMinutesLeft`), and `suspend#N` with reason `idle` re-reads the row and
@@ -1414,7 +1423,9 @@ attempt (100 s) and retries once after a reset, and `onStop`'s database write is
 the cause is not reproduced, so whether that is enough is unproven. The lighter cold-resume
 bootstrap swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
 `pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
-in full again (slower, still correct); the preload is proven under real Node with a stand-in
+in full again (slower, and on real containers back to the connection count that hung); the RLS
+role's name is the kit's `APP_ROLE` copied as a constant (`SESSION_APP_ROLE`), so an app that
+renamed it runs a migrator whose policies name a missing role; the preload is proven under real Node with a stand-in
 bootstrap, not yet in a container. Workspace backups are proven against the `FakeSandbox` and the
 SDK's call shapes only: whether `binding` mode's restore (the whole archive through the Durable
 Object, base64, on the SDK's default HTTP transport) beats a clone and an install under `wrangler

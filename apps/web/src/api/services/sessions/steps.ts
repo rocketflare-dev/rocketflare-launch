@@ -719,16 +719,33 @@ export async function dbStep(scope: StepScope): Promise<DbStepResult> {
   return { branched: true, prepare: false }
 }
 
-/** Step `branch` (or the tail of `db`): the session's own copy of `dev`, sealed onto the row. */
+/**
+ * What a session branched from a `ready` `dev` whose migrations hash was not recorded (prepared
+ * before it was) starts from: prepared — never re-seeded, never re-checked — but its migrations
+ * unknown, so its first bootstrap always migrates (a no-op when nothing is new).
+ */
+export const UNKNOWN_MIGRATIONS_HASH = 'unknown'
+
+/**
+ * Step `branch` (or the tail of `db`): the session's own copy of `dev`, sealed onto the row. A
+ * branch of a `ready` `dev` holds the prepared database already, so the session starts from
+ * `dev`'s migrations hash: its bootstrap is then a resume's — no seed, no database check, and a
+ * migrate only when the checkout's migrations differ. Each of those is a database WebSocket from
+ * the container, and on real containers a later one hung (docs/plans/sandbox-session-issues.md).
+ */
 export async function branchStep(scope: StepScope): Promise<{ branched: true }> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
   const branch = await vendorCall(scope, "Neon (the session's branch)", () =>
     scope.ports.sessionDb(scope.db).createBranch(app, session)
   )
+  const parent = app.sessionDb
+  const inherited =
+    parent?.status === 'ready' ? (parent.migrationsHash ?? UNKNOWN_MIGRATIONS_HASH) : null
   await updateSession(scope, {
     db: branch.db,
     dbUriSealed: await encryptToken(scope.cfg, branch.uri),
+    ...(session.migrationsHash === null && inherited ? { migrationsHash: inherited } : {}),
   })
   return { branched: true }
 }
@@ -838,7 +855,8 @@ async function checkOut(
 
 /**
  * Step `prepare`: the kit's migrate + seed into the app's `dev` (`devUriFor` resets the role's
- * password, so the URI is this run's alone), then `apps.session_db` → ready at the base commit.
+ * password, so the URI is this run's alone), then `apps.session_db` → ready at the base commit,
+ * with the checkout's migrations hash (a session branched from it starts from it: `branchStep`).
  */
 export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ prepared: true }> {
   const session = await loadSession(scope)
@@ -849,28 +867,32 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
     (await vendorCall(scope, "Neon (the app's dev branch)", () => port.ensureDev(app)))
   // The claim fields go when the prepare settles, either way.
   const { preparingSessionId: _holder, preparingSince: _since, ...settled } = dev
+  let hash: string | null = null
   try {
     const uri = await vendorCall(scope, "Neon (the dev branch's password)", () =>
       port.devUriFor({ ...app, sessionDb: dev })
     )
     const sandbox = sandboxFor(scope, session)
-    await inOurContainer(scope, sandbox, bootId, () =>
-      sessionBootstrap({
+    hash = await inOurContainer(scope, sandbox, bootId, async () => {
+      await sessionBootstrap({
         sandbox,
         dbUri: uri,
         dev: devEnvFor(scope.cfg, session),
         ...bootstrapPolling(scope),
       })
-    )
+      return migrationsHash(sandbox)
+    })
   } catch (err) {
     await saveAppSessionDb(scope, app.id, { ...settled, status: 'failed' })
     throw err
   }
+  const { migrationsHash: _stale, ...rest } = settled
   await saveAppSessionDb(scope, app.id, {
-    ...settled,
+    ...rest,
     status: 'ready',
     preparedCommit: session.baseSha,
     preparedAt: scope.now(),
+    ...(hash ? { migrationsHash: hash } : {}),
   })
   return { prepared: true }
 }
@@ -902,9 +924,10 @@ export interface BootstrapStepResult {
 /**
  * Step `bootstrap[#K]`: the kit bootstrap against the session's own branch. The FIRST successful
  * one records the checkout's migrations hash (`sessions.migrations_hash`); a later one (a cold
- * resume) is against a database that is already prepared, so it never re-seeds (nor re-checks
- * the database), and migrates only when `apps/web/migrations` hashes differently now — the
- * session's own turns may have added a migration.
+ * resume) — or the first on a branch of a `ready` `dev`, which starts from `dev`'s hash
+ * (`branchStep`) — is against a database that is already prepared, so it never re-seeds (nor
+ * re-checks the database), and migrates only when `apps/web/migrations` hashes differently now —
+ * the session's own turns, or commits since the prepare, may have added a migration.
  */
 export async function bootstrapStep(
   scope: StepScope,

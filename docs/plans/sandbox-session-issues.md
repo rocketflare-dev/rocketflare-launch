@@ -108,6 +108,56 @@ hangs the same way.
 - Already on the latest stable packages (`@cloudflare/containers` 0.3.7, `@cloudflare/sandbox`
   0.12.10).
 
+**Research (2026-09-29, Cloudflare docs, the SDK source, GitHub issues, similar projects):**
+
+- **Our credential injection is the intended pattern.** `outboundByHost` for `api.anthropic.com`
+  and `github.com` is Cloudflare's own `sandbox-sdk/examples/authentication`.
+- **The database path is the part nobody else does.** Interception is documented only as
+  HTTP/HTTPS request/response on ports 80/443 (developers.cloudflare.com/containers/platform-details/outbound-traffic,
+  /sandbox/guides/outbound-traffic, blog.cloudflare.com/sandbox-auth). WebSockets and databases
+  are never mentioned. There is no official example of a container reaching a database, and no
+  project was found that runs pooled DB WebSockets through `interceptHttps`. Hyperdrive from a
+  container is "on the roadmap" (cloudflare/containers#97).
+- **The interceptor has open bugs that fit.**
+  - Accepted but never dispatched: sandbox-sdk#844 (0.12.9 and @next, handler never called,
+    `wrangler tail` silent) and #930.
+  - It rewrites HTTP framing: containers#220, #195, sandbox-sdk#814; our duplicated `Upgrade`
+    headers are one of these.
+  - Its fixes ship only when the container APPLICATION is rolled out again, not with an npm bump
+    (sandbox-sdk#747).
+- **Ruled out.**
+  - `placement` (sandbox-sdk#661, containers#226): we have none.
+  - Class-field `outboundByHost` (containers#247): ours is assigned after the class.
+  - A mid-flight `setAllowedHosts` re-registration: it is called once, before the install.
+  - A pooler/direct host mismatch: the session URI is unpooled.
+  - `ContainerProxy` (containers 0.3.7) has no queueing or limits in JS, so the stall is below it.
+
+**What changed (not yet run remotely):** fewer database connections from the sandbox.
+
+- Launch makes the kit's RLS role `rocketflare_app` on `dev` itself (NOLOGIN, held by
+  `session_owner` WITH ADMIN OPTION, so a turn's `pnpm db:migrate` can still alter it).
+- The bootstrap preload always skips `db:check`, and runs `db:migrate` as the migrator alone,
+  without `db-roles`.
+- A new session used to re-run the WHOLE bootstrap, seed included, on a branch of an
+  already-seeded `dev`: its own `migrations_hash` was null, and that is what counted as
+  "prepared". That was the five-connection path every hung run took. Now the prepare records its
+  migrations hash on `apps.session_db`, and a session branched from a `ready` `dev` starts from
+  it.
+
+| Case | Connections before | Connections now |
+|---|---|---|
+| A prepare | 5 | 2 (migrate, seed) |
+| A new session on a ready `dev`, same migrations | 5 | 0 |
+| The same, newer migrations, or a `dev` prepared before the hash was recorded | 5 | 1 |
+| A new session branched while `dev` is being prepared elsewhere | 5 | 2 |
+| A resume with changed migrations | 3 | 1 |
+| A plain resume | 0 | 0 |
+
+If the prepare's seed still hangs, the interceptor fails on its own, not on our connection count.
+The next steps are then: the diagnostic below (HTTPS, Neon's HTTP `/sql`, and a new WebSocket from
+the stuck container); moving the kit's scripts onto neon-http (a kit change); or rolling out a new
+container version (a redeploy). Ask before either of the last two.
+
 **Next research (a fresh session):**
 
 1. Reproduce with REAL authenticated traffic in a scratch sandbox: a loop of separate processes,

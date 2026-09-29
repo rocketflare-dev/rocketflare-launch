@@ -1,12 +1,13 @@
 /**
  * The bootstrap preload (`NOT_ROOT_PRELOAD_SCRIPT`, Launch P3 + fast resume) run under REAL Node,
  * the way the sandbox runs it (`node --import <preload> scripts/bootstrap.mjs`): the kit's
- * bootstrap sees a non-root uid, and a resume's `LAUNCH_BOOTSTRAP_SKIP` answers the kit's
- * `pnpm seed` / `pnpm db:migrate` / `pnpm web db:check` children with what its steps check for —
- * through a NAMED `spawn` import, which is how the kit's bootstrap imports it.
+ * bootstrap sees a non-root uid, `LAUNCH_BOOTSTRAP_SKIP` answers the kit's `pnpm seed` /
+ * `pnpm db:migrate` / `pnpm web db:check` children with what its steps check for, and a
+ * `db:migrate` that runs is the kit's migrator alone — through a NAMED `spawn` import, which is
+ * how the kit's bootstrap imports it.
  */
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -46,9 +47,14 @@ console.log(JSON.stringify(results))
 `
 )
 
+/** A stand-in `pnpm` that prints how it was called and fails: a child the preload let through. */
+const bin = path.join(dir, 'bin')
+mkdirSync(bin)
+writeFileSync(path.join(bin, 'pnpm'), '#!/bin/sh\necho "pnpm $*"\nexit 3\n')
+chmodSync(path.join(bin, 'pnpm'), 0o755)
+
 function bootstrap(skip: string | undefined) {
-  // PATH without pnpm: a child the preload does NOT answer fails fast (127) instead of running.
-  const env = { PATH: path.dirname(process.execPath) } as unknown as NodeJS.ProcessEnv
+  const env = { PATH: `${bin}:${path.dirname(process.execPath)}` } as unknown as NodeJS.ProcessEnv
   if (skip !== undefined) env[BOOTSTRAP_SKIP_ENV] = skip
   const res = spawnSync(process.execPath, ['--import', preload, script], { env, encoding: 'utf8' })
   expect(res.status, res.stderr).toBe(0)
@@ -56,12 +62,20 @@ function bootstrap(skip: string | undefined) {
 }
 
 describe('the bootstrap preload', () => {
-  it('reports a non-root uid, and leaves every child alone without a skip list', () => {
+  it('reports a non-root uid, and runs the seed and the check as the kit wrote them', () => {
     const r = bootstrap(undefined)
     expect(r.uid).toBe(1000)
-    expect(r.seed.code).not.toBe(0)
-    expect(r.migrate.code).not.toBe(0)
+    expect(r.seed).toMatchObject({ code: 3, output: 'pnpm seed --demo\n' })
+    expect(r.check).toMatchObject({ code: 3, output: 'pnpm web db:check\n' })
     expect(r.other).toMatchObject({ code: 0, output: 'real child\n' })
+  })
+
+  it('runs the kit’s migrator alone for db:migrate — never its db-roles', () => {
+    const r = bootstrap(undefined)
+    expect(r.migrate).toMatchObject({
+      code: 3,
+      output: 'pnpm web exec dotenv -e .dev.vars -- tsx scripts/migrate.ts\n',
+    })
   })
 
   it('answers the seed, the migrate and the database check a resume skips', () => {
@@ -78,7 +92,7 @@ describe('the bootstrap preload', () => {
     const r = bootstrap('seed,db-check')
     expect(r.seed.code).toBe(0)
     expect(r.check.code).toBe(0)
-    expect(r.migrate.code).not.toBe(0)
+    expect(r.migrate.output).toContain('tsx scripts/migrate.ts')
   })
 })
 

@@ -15,6 +15,12 @@
  *   an earlier Launch made through the API is REPAIRED: its `session_app` and `session_owner` are
  *   deleted through the API (only the API can drop an API role) and made again, and `dev` goes
  *   back to `none` so the next session prepares it afresh — `dev` is scratch, never data.
+ * - **The kit's RLS role `rocketflare_app` is made here too**, NOLOGIN, with `session_owner` given
+ *   it WITH ADMIN OPTION (so the kit's `db-roles`, if a turn runs it, may still alter it). Its
+ *   migrations name it in `CREATE POLICY`, so it must exist before they run — and making it here
+ *   means a sandbox never runs `db-roles` at all: each of the kit's scripts opens its own database
+ *   WebSocket through the container's egress interception, and on real Cloudflare containers the
+ *   third or so of those hangs (docs/plans/sandbox-session-issues.md). A branch inherits it.
  *
  * - **`dev` never holds production data.** It is cut `schema-only` from `main` and filled by a
  *   PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
@@ -46,6 +52,7 @@ import {
   isTrue,
   NEON_SUPERUSER,
   OWNER_DATABASE,
+  type OwnerSession,
   ownerSession,
   quoteIdent,
   quoteLiteral,
@@ -60,8 +67,16 @@ export const SESSION_DB_ROLE = 'session_owner'
 /** The database the kit migrates and seeds (`dev`) and a session runs on (its branch). */
 export const SESSION_DB_NAME = 'session_app'
 
-/** `session_owner` runs the kit's migrations, which create the app's RLS role: it needs CREATEROLE. */
+/**
+ * `session_owner` runs the kit's migrations, and a turn may run the kit's `db-roles`, which alters
+ * the app's RLS role: it needs CREATEROLE.
+ */
 const SESSION_ROLE_ATTRIBUTES = 'LOGIN CREATEROLE'
+/**
+ * The kit's RLS role (`APP_ROLE` in the kit's `src/db/schema/rls.ts`): its migrations'
+ * `CREATE POLICY … TO rocketflare_app` need it to exist. See the header.
+ */
+export const SESSION_APP_ROLE = 'rocketflare_app'
 /** The only extension the kit's migrations create. */
 const SESSION_EXTENSIONS = ['vector'] as const
 
@@ -177,6 +192,7 @@ export class NeonSessionDb implements SessionDbPort {
       preparedCommit: kept?.preparedCommit ?? null,
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',
+      ...(kept?.migrationsHash ? { migrationsHash: kept.migrationsHash } : {}),
       // A prepare claim in flight stays with its holder (`claimDevPrepare`).
       ...(kept?.status === 'preparing' && kept.preparingSessionId
         ? { preparingSessionId: kept.preparingSessionId, preparingSince: kept.preparingSince }
@@ -225,6 +241,7 @@ export class NeonSessionDb implements SessionDbPort {
         `CREATE ROLE ${quoteIdent(SESSION_DB_ROLE)} ${SESSION_ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(throwawayPassword())}`
       )
     }
+    await ensureAppRole(owner)
     try {
       const database = await neon.createDatabase(projectId, devBranchId, {
         name: SESSION_DB_NAME,
@@ -310,6 +327,35 @@ export class NeonSessionDb implements SessionDbPort {
       })
     )
   }
+}
+
+/**
+ * `rocketflare_app` on `dev`, NOLOGIN, held by `session_owner` WITH ADMIN OPTION — see the header.
+ * On Postgres 16+ a CREATEROLE role may alter only a role it holds with ADMIN, and the kit's
+ * `db-roles` sets the role's timeouts: without the grant, a turn's `pnpm db:migrate` would fail.
+ * A role the kit's `db-roles` made (a `dev` prepared before Launch did this) is `session_owner`'s
+ * already, and one this made but did not yet grant (a retried step) gets its grant now.
+ */
+async function ensureAppRole(owner: OwnerSession): Promise<void> {
+  const exists = await owner.sql(
+    OWNER_DATABASE,
+    'SELECT r.rolname AS name FROM pg_roles r WHERE r.rolname IN ($1)',
+    [SESSION_APP_ROLE]
+  )
+  if (exists.rows.length === 0) {
+    await owner.sql(OWNER_DATABASE, `CREATE ROLE ${quoteIdent(SESSION_APP_ROLE)} NOLOGIN`)
+  } else {
+    const held = await owner.sql(
+      OWNER_DATABASE,
+      'SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE g.rolname = $1 AND u.rolname = $2 AND m.admin_option',
+      [SESSION_APP_ROLE, SESSION_DB_ROLE]
+    )
+    if (held.rows.length > 0) return
+  }
+  await owner.sql(
+    OWNER_DATABASE,
+    `GRANT ${quoteIdent(SESSION_APP_ROLE)} TO ${quoteIdent(SESSION_DB_ROLE)} WITH ADMIN OPTION`
+  )
 }
 
 /** Neon wants TLS; its connection URIs usually say so, and the kit's driver needs it said. */
