@@ -115,6 +115,12 @@ SESSION_WORKSPACE_BACKUP=
 # grants it, as Launch's own do (docs/SESSIONS-LOCAL.md § Real containers from a laptop).
 # Development only.
 SESSION_SANDBOX_HOST=
+# How a session's container reaches the internet: allowlist (internet off, the egress allow-list)
+# | open (internet on; only the model and git hosts intercepted, for their credentials). Blank =
+# allowlist, which works under wrangler dev. The deployed tomls say open until Cloudflare's egress
+# interception ends a container's stream after a WebSocket closes
+# (docs/plans/sandbox-websocket-close.md). A remote host reads its own toml, not this.
+SESSION_EGRESS=
 # The Sandbox SDK's own Durable Object logs (every exec, every destroy, at info). `warn` keeps only
 # what went wrong; `pretty` prints it on one line instead of a multi-line object.
 SANDBOX_LOG_LEVEL=warn

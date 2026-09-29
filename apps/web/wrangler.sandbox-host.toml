@@ -19,6 +19,12 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
+# How the containers reach the internet — the same switch, and the same value, as Launch's tomls
+# (SESSION_EGRESS in src/config.ts): open | allowlist, missing = allowlist. `open` until the egress
+# interception ends a container's stream after a WebSocket closes (docs/plans/sandbox-websocket-close.md).
+[vars]
+SESSION_EGRESS = "open"
+
 [observability.logs]
 enabled = true
 head_sampling_rate = 1

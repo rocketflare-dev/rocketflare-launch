@@ -2,8 +2,8 @@
  * Stub for `@cloudflare/sandbox` (Launch P3). `vitest.config.ts` aliases the package here, because
  * the real one extends `@cloudflare/containers`' `Container`, which imports `cloudflare:workers`
  * and speaks to a container runtime Node does not have. Only what the two SDK-importing files use
- * is here: the `Sandbox` base class (with the egress fields and the static `outboundByHost` the
- * `SessionSandbox` class sets), `ContainerProxy` (re-exported from `src/worker.ts`), and
+ * is here: the `Sandbox` base class (with the egress fields, the static `outboundByHost` the
+ * `SessionSandbox` class sets, and a recording `setAllowedHosts`), `ContainerProxy` (re-exported from `src/worker.ts`), and
  * `getSandbox(ns, name)` — which, like the real one, is `ns.get(ns.idFromName(name))`, so under
  * `createTestEnv()` it answers the `FakeSandboxNamespace`'s recording stub.
  *
@@ -29,6 +29,11 @@ export class Sandbox<Env = unknown> extends DurableObject<Env> {
   async onStart(): Promise<void> {}
   async onStop(_params?: unknown): Promise<void> {}
   async destroy(): Promise<void> {}
+  /** Like the SDK's, a runtime allow-list: recorded here, so a test sees what reached the SDK. */
+  allowedHostsSet: string[][] = []
+  async setAllowedHosts(hosts: string[]): Promise<void> {
+    this.allowedHostsSet.push([...hosts])
+  }
 }
 
 export class ContainerProxy {

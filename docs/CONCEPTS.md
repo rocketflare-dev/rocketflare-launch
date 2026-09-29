@@ -1438,9 +1438,16 @@ is untried. A tenant's deletion leaves its sessions' backups to the bucket's lif
 ### 18.10 The sandbox and the local backend
 
 `SessionSandbox extends Sandbox` (`@cloudflare/sandbox` 0.12.10 stable, `durable-objects/
-session-sandbox.ts`) with internet off and an allow-list (npm, github.com, codeload,
-api.anthropic.com — the same on a laptop), `interceptHttps = true` set explicitly, and
-`outboundByHost` handing `api.anthropic.com` and `github.com` to handlers IN LAUNCH'S WORKER. The
+session-sandbox.ts`) with `interceptHttps = true` set explicitly, `outboundByHost` handing
+`api.anthropic.com` and `github.com` to handlers IN LAUNCH'S WORKER, and one of two egress modes
+(`SESSION_EGRESS`, in `session-sandbox-base.ts`): `allowlist` (missing = this) — internet off and
+an allow-list (npm, github.com, codeload, api.anthropic.com, the same on a laptop), which makes
+the SDK intercept every connection; `open` (the three tomls, for now) — internet on, no
+allow-list, `setAllowedHosts` a no-op, so only the two handler hosts are intercepted and the
+database goes direct. Under `open` the constructor deletes the SDK's persisted
+`OUTBOUND_CONFIGURATION` before `super()`, or a reused object (`prepare-<appId>`) restores its
+allow-list and intercept-all; a container already running keeps its interception until it
+restarts. Why `open`: `docs/plans/sandbox-websocket-close.md`. The
 SDK is imported in two files only (the Durable Object base `session-sandbox-base.ts`, shared with
 the sandbox host's class, and the `CloudflareSandbox` adapter); everything else talks to
 `SandboxPort` (`sandbox-port.ts`, re-exported by `ports.ts`), with `SessionDbPort` (`NeonSessionDb`,
@@ -1477,7 +1484,7 @@ turn runner and the checkpoint are the same code in both — they ask the port a
 either `SESSION_BACKEND`, reached DIRECTLY from the container: there is no TCP out, so the app runs
 `DATABASE_DRIVER=neon` (the `Pool`'s `wss://<endpoint>/v2` for the kit's migrate, seed and
 `db:check`; HTTP `api.<region>.neon.tech/sql` for the app's Worker under `pnpm dev`), with no
-`NEON_LOCAL_PROXY`. `sessionBootstrap` sets the allow-list to the base plus EXACTLY those two hosts,
+`NEON_LOCAL_PROXY`. Under `allowlist`, `sessionBootstrap` sets the allow-list to the base plus EXACTLY those two hosts,
 derived from the URI it is handed (`sessionDbEgressHosts`, which refuses anything but an
 `ep-….neon.tech` endpoint) — before the prepare run on `dev`, and again, replacing it, before the
 bootstrap on the session's own branch. `session_owner` (`LOGIN CREATEROLE`) is made IN SQL by
@@ -1552,15 +1559,18 @@ option); the checkpoint's exclusions and size limit (§18.13) are the second lin
 runs under emulation. An arm64 local image is blocked upstream: the
 Sandbox base image is amd64-only and `wrangler dev` builds containers for `linux/amd64` only. The allow-list includes the region's shared `api.` SQL host
 (the neon-http driver's), which answers any endpoint in that region for whoever holds its
-credentials — the container holds only its branch's. Both sandbox classes map `*.neon.tech` to
-`egress/forward-database.ts`, which TERMINATES the database WebSocket (a `WebSocketPair` towards the
-container, Neon's socket accepted, messages relayed, every close answered on both sides). On real
-Cloudflare containers a passed-through socket first carried `Upgrade`/`Connection` twice (Node's
-clients reject it), then never completed a close: the container's socket sat in CLOSING for ever,
-so a Node script that ends its pool and lets Node exit (the kit's `migrate`, `db-roles`, `seed`)
-finished its work and never exited (2026-09-29, reproduced in a session container; HTTP `/sql` is
-unchanged). That the relay completes the close on a real container is unproven until the next
-remote run. workerd (the app's
+credentials — the container holds only its branch's. **The egress allow-list is off**
+(`SESSION_EGRESS=open` in the tomls): on real Cloudflare containers the interception never ends
+the container's TCP/TLS stream after a WebSocket closes, so a Node script that ends its pool and
+lets Node exit (the kit's `migrate`, `db-roles`, `seed`) finished its work and never exited
+(2026-09-29; a relay of our own did not help). Under `open` nothing guards where the container
+sends data; the credentials stay outside it. That `open` boots a remote session is unproven until
+the next remote run. Neither sandbox class maps the database any more (a static `outboundByHost`
+key intercepts its host even with internet on); `egress/forward-database.ts`, the WebSocket
+relay (`allowHalfOpen`, a close passed on to the other side only), is kept for the next probe
+(`docs/plans/sandbox-websocket-close.md`, Part 2). Under `allowlist` on a real container an
+allow-listed Neon endpoint is passed through with no handler, so the database's WebSocket breaks
+there as before. workerd (the app's
 `wrangler dev` inside the container) trusting the interception CA is unproven. First-start latency,
 `max_instances`, git through `interceptHttps` and whether a deploy stops running sandboxes are
 unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitHub's eventual

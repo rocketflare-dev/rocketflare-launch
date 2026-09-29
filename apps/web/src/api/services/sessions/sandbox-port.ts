@@ -188,3 +188,24 @@ export const SESSION_BASE_ALLOWED_HOSTS = [
 export function sessionAllowedHosts(extra: readonly string[] = []): string[] {
   return [...new Set([...SESSION_BASE_ALLOWED_HOSTS, ...extra])]
 }
+
+/**
+ * How a session container reaches the internet (`SESSION_EGRESS`, `config.ts`):
+ *
+ * - `allowlist` — internet off and the allow-list above; every outbound connection goes through
+ *   the egress interception. The spec's model (spec/03), and the default: a missing or unknown
+ *   value is `allowlist`.
+ * - `open` — internet on, no allow-list; only the model and git hosts are intercepted, for their
+ *   credentials. The deployed tomls say `open` for now, because the interception never ends a
+ *   container's stream after a WebSocket closes, so the database's scripts never exit
+ *   (docs/plans/sandbox-websocket-close.md).
+ *
+ * Reads `env` structurally, not through `loadConfig`: the sandbox host Worker bundles the Durable
+ * Object that calls this without Launch's config.
+ */
+export type SessionEgressMode = 'allowlist' | 'open'
+
+export function sessionEgressMode(env: unknown): SessionEgressMode {
+  const value = (env as { SESSION_EGRESS?: unknown } | null | undefined)?.SESSION_EGRESS
+  return typeof value === 'string' && value.trim() === 'open' ? 'open' : 'allowlist'
+}

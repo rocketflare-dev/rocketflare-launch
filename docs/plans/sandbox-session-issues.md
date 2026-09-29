@@ -7,7 +7,9 @@ Updated 2026-09-29.
 - **Local Docker works.** Checks 1–5 pass (see Results); ship (6) waits on issue #1.
 - **Remote is blocked by an open platform-level hang.** A remote session's kit bootstrap stalls
   every time at step 5 (`db:migrate`): a database WebSocket that never reaches the Worker. See
-  "Open: the remote bootstrap hangs" below. Everything before it now works remotely: the Neon
+  "Open: the remote bootstrap hangs" below. **Workaround pending a check (2026-09-29):**
+  `SESSION_EGRESS=open` takes the database out of the egress interception; the next step is a
+  fresh remote session (`sandbox-websocket-close.md`, "Research" and "Rollout"). Everything before it now works remotely: the Neon
   branch, the sandbox start, the clone (the host's grant handlers), install, and bootstrap steps 1–4.
 - **Deployed Launch uses the same real containers**, so the open hang would stop sessions in
   production too. It must be solved before Launch is deployed (README "Next" item 7).
@@ -84,8 +86,8 @@ or helper.
 
 > **Root cause found (2026-09-29): see `sandbox-websocket-close.md`.** The interceptor never ends
 > the container's stream after a WebSocket closes, so the kit's scripts finish their work and then
-> can't exit. That doc has the evidence, the options and the Cloudflare issue draft. The notes
-> below are the investigation that led there.
+> can't exit. That doc has the evidence, the options, the decision (`SESSION_EGRESS=open` for
+> now) and the Cloudflare issue draft. The notes below are the investigation that led there.
 
 **What happens.** Every remote session (`b2b1cd0c`, `c028c2a0`, `9e467448`) hangs in the kit
 bootstrap's step 5, `pnpm db:migrate`, until the 15-minute deadline kills it. The step retry then

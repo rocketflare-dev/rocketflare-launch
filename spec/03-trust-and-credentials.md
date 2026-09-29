@@ -57,11 +57,21 @@ A coding session sandbox ([07](07-coding-sessions.md)) receives:
 - **no** Cloudflare, Resend or grant credentials. Local development in the sandbox runs on the
   template's zero-credential mode.
 
-Egress is allowlisted (`enableInternet = false`, `allowedHosts`, and **`interceptHttps = true`**,
-which is off by default on the stable packages): Anthropic, GitHub, the npm registry and the
-template's documented dependencies. A host with an outbound handler must be allowlisted too. The
-allowlist covers HTTP(S) only, so **Postgres over TCP can't leave a session**: the database is
-reached over Neon's HTTPS/WebSocket driver (spec/02 gap 2). The scaffold sandbox ([06](06-registry-and-pipeline.md)) is stricter: no model
+Egress is allowlisted when `SESSION_EGRESS=allowlist` (`enableInternet = false`, `allowedHosts`,
+and **`interceptHttps = true`**, which is off by default on the stable packages): Anthropic,
+GitHub, the npm registry and the template's documented dependencies. A host with an outbound
+handler must be allowlisted too. The allowlist covers HTTP(S) only, so **Postgres over TCP can't
+leave a session**: the database is reached over Neon's HTTPS/WebSocket driver (spec/02 gap 2).
+
+**The allowlist is off for now** (`SESSION_EGRESS=open` in the tomls). On real Cloudflare
+containers the egress interception never ends the container's stream after a WebSocket closes, so
+a script that uses the database's WebSocket never exits and a session can't boot
+([the plan](../docs/plans/sandbox-websocket-close.md)). Under `open` the container has internet
+access and only `api.anthropic.com` and `github.com` are intercepted. **Credential isolation is
+unchanged**: those two handlers still inject the model key and the installation token, and the
+container holds neither. What is given up is the limit on where a prompt-injected agent can send
+the code, the branch URI and anything it reads. The switch goes back to `allowlist` once
+Cloudflare fixes the interception, or a probe finds a way round it. The scaffold sandbox ([06](06-registry-and-pipeline.md)) is stricter: no model
 credential at all.
 
 ## What the UI shows

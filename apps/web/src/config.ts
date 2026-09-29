@@ -231,6 +231,19 @@ const coreConfigSchema = z.object({
     z.enum(['local', 'remote']).default('local')
   ),
   /**
+   * Launch P3: how a session's CONTAINER reaches the internet. `allowlist` — internet off, the
+   * egress allow-list, everything through the egress interception (spec/03). `open` — internet
+   * on, no allow-list; only the model and git hosts are intercepted, for their credentials, so the
+   * container still holds neither. Missing = `allowlist`. The tomls (and the sandbox host's) say
+   * `open` until Cloudflare's interception ends a container's stream after a WebSocket closes
+   * (docs/plans/sandbox-websocket-close.md). The Durable Object reads it through
+   * `sessionEgressMode(env)`, which follows this default.
+   */
+  SESSION_EGRESS: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(['allowlist', 'open']).default('allowlist')
+  ),
+  /**
    * The preview origin template: `{label}` becomes `<port>-<shortId>-<token>`
    * (`https://{label}.clewro.com`; `http://{label}.localhost:3001` locally). Unset, previews are
    * off and `worker.ts` sends nothing to the preview gateway.

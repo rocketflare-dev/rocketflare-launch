@@ -119,7 +119,9 @@ cannot reach Launch's database, so its class (`HostedSessionSandbox`) has its OW
 handlers (`src/sandbox-host/egress.ts`, over the shared `egress/forward-git.ts` /
 `forward-model.ts` cores) fed by the `EgressGrant` Launch sends over the binding
 (`setEgressGrant`, the `host` egress mode) and keeps in the object's storage — it holds no secret
-of its own, and they import nothing of Launch's database or config.
+of its own, and they import nothing of Launch's database or config. Its one `[vars]` entry is
+`SESSION_EGRESS` (declared in `env.ts` too), set as in the two deployed tomls; the egress mode is
+read structurally (`sessionEgressMode(env)`) in the shared base class, never through `loadConfig`.
 
 ## Account-scoped names
 

@@ -88,7 +88,10 @@ all of this: 401 without a session, and the app with one ([S7](../spikes/s7-sand
 
 - Sandbox credentials are limited to [03](03-trust-and-credentials.md): a single-repo GitHub
   token and a metered model path. It has nothing else.
-- Egress is allowlisted: Anthropic, GitHub, the npm registry and template-declared hosts.
+- Egress is allowlisted when `SESSION_EGRESS=allowlist`: Anthropic, GitHub, the npm registry and
+  template-declared hosts. **Off for now** (`open`, [03](03-trust-and-credentials.md)): the egress
+  interception breaks the database's WebSocket on real containers. The credentials stay outside
+  the sandbox either way.
 - The agent cannot push to `main`: branch protection applies, and the token can only reach
   `session/*` branches if rulesets allow that level of restriction.
 - The full transcript is stored and is auditable.

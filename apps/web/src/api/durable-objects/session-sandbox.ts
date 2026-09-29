@@ -12,19 +12,22 @@
  * (`session-sandbox-base.ts`), shared with the sandbox host Worker's `HostedSessionSandbox`; this
  * class adds what only Launch's own Worker can do — the handlers and the database write.
  *
- * Egress (plan §1.4, §1.5, S7):
+ * Egress (plan §1.4, §1.5, S7) — the mode (`SESSION_EGRESS`: `allowlist`, or `open` for now) and
+ * everything it switches live in `SessionSandboxBase`; see its header. Under `allowlist`:
  *
  * - `enableInternet = false` and an allow-list: `SESSION_BASE_ALLOWED_HOSTS` — the same on a
  *   laptop. The session adapter re-applies it with `setAllowedHosts` at start
  *   (`sessionAllowedHosts`), and the prepare and bootstrap steps widen it by EXACTLY the hosts of
  *   the Neon endpoint the container's database lives on (`sessionDbEgressHosts`: the endpoint for
  *   the driver's WebSocket, its region's `api.` host for its HTTP queries) — never a wildcard.
+ *   Under `open` the internet is on and the database goes direct.
  * - **`interceptHttps = true`, set explicitly.** It defaults to `false` on the stable packages
  *   (containers 0.3.7 / sandbox 0.12.10) despite the docs, and without it no HTTPS leaves a locked
  *   sandbox, allow-listed or not (S7 finding 1).
  * - `outboundByHost` hands `api.anthropic.com` to the model proxy (`egress/anthropic.ts`, slice 3c)
- *   and `github.com` to the git proxy (`egress/github.ts`, slice 3d). A host must ALSO be on the
- *   allow-list for its handler to run at all (S7: otherwise the proxy answers 520). The handlers
+ *   and `github.com` to the git proxy (`egress/github.ts`, slice 3d) — in both modes. Under
+ *   `allowlist` a host must ALSO be on the allow-list for its handler to run at all (S7: otherwise
+ *   the proxy answers 520). The database has no handler: see `egress/forward-database.ts`. The handlers
  *   identify the session by `ctx.containerId` — this object's id — never by anything the sandbox
  *   sends.
  * - **`wrangler dev` honours all of it** (checked in slice 3b against 0.12.10 / wrangler 4.127: a
@@ -43,10 +46,6 @@ import { type AppConfig, loadConfig } from '../../config'
 import { openDatabase } from '../../db/client'
 import { withDeadline } from '../services/sessions/deadline'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
-import {
-  DATABASE_EGRESS_PATTERN,
-  forwardDatabase,
-} from '../services/sessions/egress/forward-database'
 import { handleGitHub } from '../services/sessions/egress/github'
 import { recordContainerStop } from '../services/sessions/lifecycle'
 import type { AppBindings } from '../types'
@@ -85,6 +84,4 @@ export class SessionSandbox extends SessionSandboxBase<AppBindings> {
 SessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => handleAnthropic(req, env as AppBindings, ctx),
   'github.com': (req, env, ctx) => handleGitHub(req, env as AppBindings, ctx),
-  // The session's own Neon endpoint (the allow-list picks which): see `egress/forward-database.ts`.
-  [DATABASE_EGRESS_PATTERN]: req => forwardDatabase(req),
 }
