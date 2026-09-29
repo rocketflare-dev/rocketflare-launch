@@ -281,15 +281,23 @@ Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend c
 
 ## Slow, not broken
 
-**`Creating database branch` takes 13–16 s** (`neon-session-db.ts` `createBranch`). It waits for
+**`Creating database branch` took 13–16 s** (`neon-session-db.ts` `createBranch`). It waited for
 **every** Neon operation in sequence, with a flat 1 s sleep before each poll
-(`NeonClient.waitForOperations`, `NEON_LOCKED_DELAY_MS = 1000`). That includes `start_compute` (a
+(`NeonClient.waitForOperations`, `NEON_LOCKED_DELAY_MS = 1000`). That included `start_compute` (a
 cold start the first connection would trigger anyway) and a per-session role password reset.
-Proposed:
-- wait only for `create_branch`;
-- poll from 200–250 ms with backoff;
-- **run the step in parallel with the sandbox start and clone.** The container only needs the
-  database host added to its allow-list, which `setAllowedHosts` can do at runtime.
+
+- **Done (slice 2a of rocketflare-launch#1):** a new branch waits for `create_branch` only
+  (`waitForBranch`; also `dev` and the pipeline's `staging`); polls and 423 retries back off from
+  200 ms ×1.5 to a 1 s cap, pending operations read in parallel; the deadlines are unchanged (120 s
+  slept per wait, ~30 s of 423s). Neon's docs: a create-branch answers `create_branch` +
+  `start_compute`, connecting to an idle compute starts it, and a conflicting request is refused
+  with 423 rather than misapplied (neon.com/docs/manage/operations). The password reset's own
+  operations are still awaited — the password must be live before the container connects.
+  Expected: roughly halved (13–16 s → about 6–9 s); **not yet timed against real Neon**.
+- **Still open:** run the step in parallel with the sandbox start and clone. The container only
+  needs the database host added to its allow-list, which `setAllowedHosts` can do at runtime.
+- **Maybe:** skip the per-session password reset (the branch inherits `dev`'s password, but Launch
+  does not keep it), which would take the compute start off the critical path entirely.
 
 ## Log noise
 

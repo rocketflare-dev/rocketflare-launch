@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Faster Neon branches (slice 2a of rocketflare-launch#1): `NeonClient.waitForOperations` polls
+  from 200 ms with a ×1.5 backoff capped at 1 s (it slept a flat 1 s before every poll), reads all
+  pending operations at once, and takes `actions` to wait only for the ones a caller needs. A new
+  branch — a session's, `dev`, the pipeline's `staging` — now waits for `create_branch` alone
+  (`waitForBranch`), not the compute's `start_compute`. 423 Locked retries back off the same way
+  (33 retries, ~30 s, as before). Deadlines are unchanged: 120 s slept per wait.
 - The TanStack Query devtools are opt-in in development: set `VITE_QUERY_DEVTOOLS=on` in
   `apps/web/.env.local` to show the toggle (it was on unless `off`). Kit issue
   rocketflare-dev/rocketflare#46.

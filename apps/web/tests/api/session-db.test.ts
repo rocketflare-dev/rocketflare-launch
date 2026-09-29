@@ -160,8 +160,19 @@ describe('NeonSessionDb', () => {
     const dev = await port.ensureDev(app)
     const ref = { ...app, sessionDb: dev }
     const session = { id: crypto.randomUUID(), shortId: 'abcdefghijkl' }
+    const before = cloud.callsTo('neon').length
     const branch = await port.createBranch(ref, session)
     const fake = cloud.neon.branchNamed(f.neonProjectId, 'session-abcdefghijkl')
+    // It waits for create_branch (and the password reset's apply_config) — never start_compute:
+    // the compute starts on its own, or on the first connection.
+    const ops = cloud.neon.projects.get(f.neonProjectId)?.operations
+    const polled = cloud
+      .callsTo('neon')
+      .slice(before)
+      .map(c => c.path.match(/\/operations\/([^/]+)$/)?.[1])
+      .filter((id): id is string => Boolean(id))
+      .map(id => ops?.get(id)?.action)
+    expect(polled).toEqual(['create_branch', 'apply_config'])
     expect(fake?.parent_id).toBe(dev.devBranchId)
     expect(branch.db).toEqual({
       provider: 'neon',

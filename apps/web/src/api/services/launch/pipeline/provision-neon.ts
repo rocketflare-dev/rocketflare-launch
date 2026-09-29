@@ -258,7 +258,8 @@ export async function provisionNeon(
     if (branch) {
       stagingBranchId = branch.branch.id
       await ctx.record({ neonStagingBranchId: stagingBranchId })
-      await client.waitForOperations(projectId, branch.operations)
+      // Only `create_branch`: the password resets below are held off (423) while it is busy.
+      await client.waitForBranch(projectId, branch.operations)
     } else {
       stagingBranchId = await findBranch(client, projectId, STAGING_BRANCH)
       await ctx.record({ neonStagingBranchId: stagingBranchId })

@@ -1492,6 +1492,14 @@ bootstrap on the session's own branch. `session_owner` (`LOGIN CREATEROLE`) is m
 a role an earlier Launch made through Neon's role API (a `neon_superuser` member) is dropped
 through the API with `session_app` and made again, and that `dev` is prepared afresh. The branch
 URI is still the only credential in the container.
+**Waiting on Neon** (`NeonClient.waitForOperations`, `services/launch/neon.ts`): a new branch is
+waited on for its `create_branch` operation ONLY (`waitForBranch`) — the session branch, `dev` and
+the launch pipeline's `staging` — not the `start_compute` Neon returns with it: the compute starts
+on its own or on the first connection, and a write that conflicts with it is refused 423 and
+retried. Every other write (password resets, databases, roles, deletes, a new project) still waits
+for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a 1 s cap, all
+pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
+after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
 Claude Code and a warm pnpm store for the default pin's kit (0.15.5, `SESSION_KIT_TAG`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
@@ -1541,7 +1549,11 @@ step `scope.progress(detail)`, a `step` row still `running` with a `detail` — 
 and the AG-UI projection sends a running row for an already-open step as `kit.agent.step` alone,
 never a second `STEP_STARTED`.
 
-**Known gaps:** the kit's bootstrap refuses root, so the session works around it
+**Known gaps:** the Neon wait's speed-up (only `create_branch`, 200 ms backoff) is proven with
+fakes, not yet timed against real Neon; the session branch still waits for its password reset's
+operations, which Neon may hold until the compute has started; and the branch step still runs
+before the sandbox starts rather than alongside it (`docs/plans/sandbox-session-issues.md`,
+"Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
 (`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). On an ARM Mac the amd64 image runs
 under emulation (QEMU, or Rosetta under Docker Desktop), where Go binaries (esbuild inside tsx,
 Vite and wrangler) crash in their GC ("The service was stopped" — what failed the first real

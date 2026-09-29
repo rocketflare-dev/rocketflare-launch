@@ -35,8 +35,10 @@ import {
 } from '@/api/services/launch/github-app'
 import {
   isNeonNotFound,
+  NEON_LOCKED_RETRIES,
   NeonApiError,
   NeonClient,
+  neonBackoffDelay,
   neonSqlEndpoint,
   runSql,
 } from '@/api/services/launch/neon'
@@ -348,12 +350,12 @@ describe('Neon client', () => {
     expect(isNeonNotFound(gone)).toBe(true)
   })
 
-  it('rides out a 423 burst through the injected sleep', async () => {
+  it('rides out a 423 burst through the injected sleep, backing off', async () => {
     const sleeps: number[] = []
     cloud.lockNeon(4)
     const created = await neon(sleeps).createProject({ name: 'locked', regionId: 'aws-us-east-2' })
     expect(created.project.name).toBe('locked')
-    expect(sleeps).toEqual([1000, 1000, 1000, 1000])
+    expect(sleeps).toEqual([200, 300, 450, 675])
     expect(cloud.callsTo('neon').filter(c => c.status === 423)).toHaveLength(4)
   })
 
@@ -367,6 +369,13 @@ describe('Neon client', () => {
     const err = await client.createProject({ name: 'x', regionId: 'aws-us-east-2' }).catch(e => e)
     expect(err).toBeInstanceOf(NeonApiError)
     expect(err.status).toBe(423)
+  })
+
+  it('the 423 retries keep the old ~30 s budget on the backoff', () => {
+    let total = 0
+    for (let i = 0; i < NEON_LOCKED_RETRIES; i++) total += neonBackoffDelay(i)
+    expect(total).toBeGreaterThanOrEqual(30_000)
+    expect(total).toBeLessThan(32_000)
   })
 
   it('waitForOperations throws on a failed operation', async () => {
