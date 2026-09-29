@@ -361,6 +361,12 @@ export const appSessionDbSchema = z.object({
    */
   preparingSessionId: z.string().optional(),
   preparingSince: z.string().optional(),
+  /**
+   * The prepared checkout's `apps/web/migrations` hash: a session branched from a `ready` `dev`
+   * starts from it, so its bootstrap never re-seeds and migrates only when its migrations differ.
+   * Missing on a `dev` prepared before it was recorded.
+   */
+  migrationsHash: z.string().optional(),
 })
 export type AppSessionDb = z.infer<typeof appSessionDbSchema>
 

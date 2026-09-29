@@ -8,7 +8,11 @@
  * `createFakeWorkflowStep({ onWait })` plays the person: each `wait#N` is where a route would have
  * written the row and woken the instance.
  */
-import { SESSION_WAKE_EVENT, type SessionEventType } from '@launch/shared/launch-sessions'
+import {
+  type AppSessionDb,
+  SESSION_WAKE_EVENT,
+  type SessionEventType,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptToken } from '@/api/auth/oauth-encryption'
@@ -46,7 +50,7 @@ import { runTurn, turnKillScript } from '@/api/services/sessions/turn'
 import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
-import { auditEvents, type SessionRow, sessions } from '@/db/schema'
+import { apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson } from '../helpers/fake-anthropic'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
@@ -419,11 +423,54 @@ describe('SessionWorkflow: boot', () => {
       devBranchId: dev?.id,
       status: 'ready',
       preparedCommit: BASE_SHA,
+      migrationsHash: 'a'.repeat(64),
     })
-    // The bootstrap ran twice: once into dev, once into the session's own branch.
-    expect(
-      h.sandbox().backgroundRuns.filter(r => r.command.includes('scripts/bootstrap.mjs'))
-    ).toHaveLength(2)
+    // The bootstrap ran twice: once into dev (migrate + seed; never the database check), once into
+    // the session's own branch — which starts from dev's migrations, so it touches no database.
+    expect(bootstrapSkips(h.sandbox())).toEqual(['db-check', 'seed,db-check,migrate'])
+    expect((await reload(h.row)).migrationsHash).toBe('a'.repeat(64))
+  })
+
+  it('a first boot on a ready dev with the same migrations touches no database; newer ones migrate', async () => {
+    for (const [devHash, skips] of [
+      ['a'.repeat(64), 'seed,db-check,migrate'],
+      ['b'.repeat(64), 'seed,db-check'],
+    ] as const) {
+      const h = await harness()
+      const prepared = h.f.app.sessionDb
+      await db
+        .update(apps)
+        .set({ sessionDb: { ...(prepared as AppSessionDb), migrationsHash: devHash } })
+        .where(eq(apps.id, h.f.app.id))
+      await drive(h, async () => {
+        await patch(h.row, { requestedAction: 'end' })
+        return WAKE
+      })
+      expect(bootstrapSkips(h.sandbox())).toEqual([skips])
+    }
+  })
+
+  it('a session branched while dev is still being prepared elsewhere seeds its own branch', async () => {
+    const h = await harness()
+    const prepared = h.f.app.sessionDb as AppSessionDb
+    // Another live session holds the prepare claim.
+    const holder = await insertSession(db, h.f, { status: 'booting' })
+    await db
+      .update(apps)
+      .set({
+        sessionDb: {
+          ...prepared,
+          status: 'preparing',
+          preparingSessionId: holder.id,
+          preparingSince: new Date().toISOString(),
+        },
+      })
+      .where(eq(apps.id, h.f.app.id))
+    await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(bootstrapSkips(h.sandbox())).toEqual(['db-check'])
   })
 })
 
@@ -696,9 +743,9 @@ describe('SessionWorkflow: the loop', () => {
       '30 seconds',
     ])
     expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 1 })
-    // The cold resume's bootstrap is against a prepared database: no seed, no check, and no
-    // migrate — the migrations did not change.
-    expect(bootstrapSkips(sandbox)).toEqual(['', 'seed,db-check,migrate'])
+    // The first boot is on a branch of a ready dev whose migrations hash was never recorded: no
+    // seed, no check, a migrate. The cold resume's: no migrate either — nothing changed.
+    expect(bootstrapSkips(sandbox)).toEqual(['seed,db-check', 'seed,db-check,migrate'])
   })
 
   it('a cold resume migrates when the checkout’s migrations changed, and still never re-seeds', async () => {
@@ -720,7 +767,7 @@ describe('SessionWorkflow: the loop', () => {
       return WAKE
     })
     expect(run.names).toContain('bootstrap#1')
-    expect(bootstrapSkips(h.sandbox())).toEqual(['', 'seed,db-check'])
+    expect(bootstrapSkips(h.sandbox())).toEqual(['seed,db-check', 'seed,db-check'])
     expect(run.results).toContainEqual(expect.objectContaining({ migrated: true, seeded: false }))
     expect((await reload(h.row)).migrationsHash).toBe('b'.repeat(64))
   })
@@ -1295,7 +1342,7 @@ describe('SessionWorkflow: workspace backups', () => {
     // One clone, one install, one kit bootstrap: the restored workspace needed none of them again.
     expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
     expect(sandbox.backgroundRuns.filter(r => r.command.includes('pnpm install'))).toHaveLength(1)
-    expect(bootstrapSkips(sandbox)).toEqual([''])
+    expect(bootstrapSkips(sandbox)).toEqual(['seed,db-check'])
     expect(run.results).toContainEqual(expect.objectContaining({ reused: true, migrated: false }))
     // The restored checkout's settings came back with it; the dev-server keys were re-written.
     expect(settings).toContain('git push')

@@ -161,13 +161,24 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  * preload tells the bootstrap's ONE check otherwise; everything it runs (pnpm, migrate, seed)
  * still runs as root. A kit gap to report upstream: an explicit opt-out for sandboxes.
  *
- * **It also makes a resume's bootstrap lighter** (`BOOTSTRAP_SKIP_ENV`): the kit's bootstrap has
- * no flag to skip its migrate, seed or database check, and reaches each ONLY as a `pnpm <script>`
- * child (`spawn('pnpm', ['db:migrate'])`, `['seed', …]`, `['web', 'db:check']`). For each part
- * named in `LAUNCH_BOOTSTRAP_SKIP` the preload answers that child with a one-line `node -e` that
- * prints what the kit's step checks for ("Migrations applied") and exits 0 — the `spawn` binding
- * the bootstrap imported is swapped through `syncBuiltinESMExports`, before the bootstrap loads.
- * Everything else (`.dev.vars`, the `[ai]` toggle, the install) runs as on a first boot.
+ * **It also makes the bootstrap's database work lighter.** The kit's bootstrap has no flag to skip
+ * its migrate, seed or database check, and reaches each ONLY as a `pnpm <script>` child
+ * (`spawn('pnpm', ['db:migrate'])`, `['seed', …]`, `['web', 'db:check']`), which the preload
+ * rewrites — the `spawn` binding the bootstrap imported is swapped through
+ * `syncBuiltinESMExports`, before the bootstrap loads:
+ * - For each part named in `LAUNCH_BOOTSTRAP_SKIP` (`BOOTSTRAP_SKIP_ENV`) it answers that child
+ *   with a one-line `node -e` that prints what the kit's step checks for ("Migrations applied")
+ *   and exits 0. `sessionBootstrap` always skips `db-check`: the branch was just made through
+ *   Neon's API, and the migrator fails loudly if it cannot connect.
+ * - `pnpm db:migrate` that is NOT skipped runs the kit's migrator ALONE
+ *   (`pnpm web exec dotenv -e .dev.vars -- tsx scripts/migrate.ts`), without the kit's `db-roles`
+ *   before and after it: the RLS role those make is on `dev` already (`NeonSessionDb`'s
+ *   `ensureAppRole`), and its grants matter only under `TENANT_SCOPE_MODE=enforce`, which a
+ *   session never runs. Each of those scripts opens its OWN database WebSocket through the
+ *   container's egress interception, and on real Cloudflare containers one of the later ones
+ *   hung (docs/plans/sandbox-session-issues.md): a prepare now opens two (migrate, seed), a
+ *   session whose migrations changed one, and a resume none.
+ * Everything else (`.dev.vars`, the `[ai]` toggle, the install) runs as the kit wrote it.
  */
 export const NOT_ROOT_PRELOAD = `${SESSION_LAUNCH_DIR}/bootstrap-in-sandbox.mjs`
 export const NOT_ROOT_PRELOAD_SCRIPT = `import cp from 'node:child_process'
@@ -179,21 +190,25 @@ const skip = new Set((process.env.LAUNCH_BOOTSTRAP_SKIP || '').split(',').filter
 const stand = {
   seed: ['seed', 'seed skipped by Launch: a resume never re-seeds'],
   'db:migrate': ['migrate', 'Migrations applied (skipped by Launch: unchanged since the last bootstrap)'],
-  'db:check': ['db-check', 'db:check skipped by Launch: the database was checked at the first boot'],
+  'db:check': ['db-check', 'db:check skipped by Launch: the branch was made through the Neon API'],
 }
-if (skip.size > 0) {
-  const spawn = cp.spawn
-  cp.spawn = function (cmd, args, opts) {
-    const list = Array.isArray(args) ? args : []
-    const script = cmd === 'pnpm' ? (list[0] === 'web' ? list[1] : list[0]) : undefined
-    const hit = script && Object.hasOwn(stand, script) ? stand[script] : undefined
-    if (hit && skip.has(hit[0])) {
-      return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[1]) + ')'], opts)
-    }
-    return spawn.apply(this, arguments)
+const instead = {
+  'db:migrate': ['web', 'exec', 'dotenv', '-e', '.dev.vars', '--', 'tsx', 'scripts/migrate.ts'],
+}
+const spawn = cp.spawn
+cp.spawn = function (cmd, args, opts) {
+  const list = Array.isArray(args) ? args : []
+  const script = cmd === 'pnpm' ? (list[0] === 'web' ? list[1] : list[0]) : undefined
+  const hit = script && Object.hasOwn(stand, script) ? stand[script] : undefined
+  if (hit && skip.has(hit[0])) {
+    return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[1]) + ')'], opts)
   }
-  syncBuiltinESMExports()
+  if (script && list[0] === script && Object.hasOwn(instead, script)) {
+    return spawn.call(this, cmd, [...instead[script], ...list.slice(1)], opts)
+  }
+  return spawn.apply(this, arguments)
 }
+syncBuiltinESMExports()
 `
 
 /** What a resume's bootstrap may leave out (`BOOTSTRAP_SKIP_ENV`, see {@link NOT_ROOT_PRELOAD}). */
@@ -435,9 +450,9 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
-  const skip: Record<string, string> = ctx.skip?.length
-    ? { [BOOTSTRAP_SKIP_ENV]: ctx.skip.join(',') }
-    : {}
+  // The database check never runs in a sandbox: see NOT_ROOT_PRELOAD.
+  const skipped = new Set<BootstrapSkip>([...(ctx.skip ?? []), 'db-check'])
+  const skip = { [BOOTSTRAP_SKIP_ENV]: [...skipped].join(',') }
   await show(BOOTSTRAP_PROGRESS)
   // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
   await runPhase(progressCtx, 'bootstrap', {

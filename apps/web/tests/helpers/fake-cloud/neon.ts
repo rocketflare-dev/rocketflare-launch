@@ -59,6 +59,8 @@ export interface FakeNeonBranch {
   databases: Map<string, { name: string; owner_name: string }>
   /** Role memberships on this branch, as `"role->member"`. */
   members: Set<string>
+  /** The memberships among {@link members} granted WITH ADMIN OPTION. */
+  admins: Set<string>
   /** Per database: the tables in `public`, and the extensions created. */
   tables: Map<string, Set<string>>
   extensions: Map<string, Set<string>>
@@ -231,6 +233,7 @@ export class FakeNeon implements VendorHandler {
       }
       for (const db of parent.databases.values()) branch.databases.set(db.name, { ...db })
       for (const m of parent.members) branch.members.add(m)
+      for (const m of parent.admins) branch.admins.add(m)
       for (const [db, t] of parent.tables) branch.tables.set(db, new Set(t))
       for (const [db, e] of parent.extensions) branch.extensions.set(db, new Set(e))
       for (const [db, n] of parent.migrations) branch.migrations.set(db, n)
@@ -301,7 +304,10 @@ export class FakeNeon implements VendorHandler {
       branch.roles.delete(name)
       for (const key of [...branch.members]) {
         const [r, member] = key.split('->')
-        if (r === name || member === name) branch.members.delete(key)
+        if (r === name || member === name) {
+          branch.members.delete(key)
+          branch.admins.delete(key)
+        }
       }
       return json({
         role: this.roleJson(branch, role, false),
@@ -368,6 +374,7 @@ export class FakeNeon implements VendorHandler {
       roles: new Map(),
       databases: new Map(),
       members: new Set(),
+      admins: new Set(),
       tables: new Map(),
       extensions: new Map(),
       migrations: new Map(),
@@ -529,7 +536,7 @@ export class FakeNeon implements VendorHandler {
       branch.roles.delete(name)
       return ok('DROP')
     }
-    match = /^GRANT\s+("?\w+"?)\s+TO\s+("?\w+"?)$/i.exec(query)
+    match = /^GRANT\s+("?\w+"?)\s+TO\s+("?\w+"?)(\s+WITH\s+ADMIN\s+OPTION)?$/i.exec(query)
     if (match) {
       const [name, member] = [bare(match[1]), bare(match[2])]
       const target = branch.roles.get(name)
@@ -539,6 +546,7 @@ export class FakeNeon implements VendorHandler {
         return neonError(400, `permission denied to grant role "${name}"`)
       }
       branch.members.add(`${name}->${member}`)
+      if (match[3]) branch.admins.add(`${name}->${member}`)
       this.grants.push({ projectId: project.id, role: name, member })
       return ok('GRANT')
     }
@@ -568,7 +576,11 @@ export class FakeNeon implements VendorHandler {
       return ok('SELECT', rows)
     }
     if (/^SELECT\s+1\s+FROM\s+pg_auth_members/i.test(query)) {
-      const member = branch.members.has(`${params[0]}->${params[1]}`)
+      const key = `${params[0]}->${params[1]}`
+      // Postgres 16+: a role's creator holds it WITH ADMIN OPTION without a GRANT.
+      const admin =
+        branch.admins.has(key) || branch.roles.get(String(params[0]))?.createdBy === params[1]
+      const member = /admin_option/i.test(query) ? admin : branch.members.has(key)
       return ok('SELECT', member ? [{ '?column?': '1' }] : [])
     }
     if (/FROM\s+pg_database\s+WHERE\s+datname/i.test(query)) {

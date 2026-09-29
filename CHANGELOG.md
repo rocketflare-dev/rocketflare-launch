@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A coding session's bootstrap opens at most two database connections (was five), and usually
+  none: Launch makes the kit's RLS role `rocketflare_app` on the app's `dev` branch itself
+  (NOLOGIN, held by `session_owner` WITH ADMIN, inherited by every session branch); the sandbox
+  skips the kit's `db:check` and runs `db:migrate` as its migrator alone, without `db-roles`; and
+  a session branched from a prepared `dev` starts from the prepare's migrations hash
+  (`apps.session_db.migrationsHash`), so it no longer re-seeds a seeded copy and migrates only
+  when its migrations are newer. Each of those
+  scripts opened its own database WebSocket through the container's egress interception, and on
+  real Cloudflare containers a later one hung until the bootstrap's 15-minute deadline.
 - A session container's database WebSocket upgrade that Neon does not answer within 20 s is
   answered 504 (and logged) instead of hanging: the kit's `db-roles` once waited out the whole
   15-minute bootstrap on one such upgrade, with nothing reaching Postgres.

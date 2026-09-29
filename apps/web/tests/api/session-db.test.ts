@@ -60,7 +60,7 @@ describe('NeonSessionDb', () => {
     expect(role).toMatchObject({ superuser: false, createdBy: 'neondb_owner', canCreateRole: true })
     expect(dev?.extensions.get('session_app')?.has('vector')).toBe(true)
     // No role went through Neon's role API.
-    const created = cloud.neon.sql.filter(s => /^CREATE ROLE/i.test(s.query))
+    const created = cloud.neon.sql.filter(s => /^CREATE ROLE "?session_owner/i.test(s.query))
     expect(created).toHaveLength(1)
     expect(created[0]).toMatchObject({ branchId: dev?.id, role: 'neondb_owner' })
     // The throwaway password never reaches the URI a container gets: the API resets it first.
@@ -68,7 +68,53 @@ describe('NeonSessionDb', () => {
     expect(created[0]?.query).not.toContain(decodeURIComponent(new URL(uri).password))
     // Again: nothing is made twice.
     await port.ensureDev(app)
-    expect(cloud.neon.sql.filter(s => /^CREATE ROLE/i.test(s.query))).toHaveLength(1)
+    expect(cloud.neon.sql.filter(s => /^CREATE ROLE/i.test(s.query))).toHaveLength(2)
+  })
+
+  it('makes the kit’s RLS role on dev, held by session_owner WITH ADMIN — so no sandbox runs db-roles', async () => {
+    const { cloud, f, port, app } = await setup()
+    await port.ensureDev(app)
+    const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+    expect(dev?.roles.get('rocketflare_app')).toMatchObject({
+      superuser: false,
+      createdBy: 'neondb_owner',
+      canCreateRole: false,
+    })
+    // The kit's db-roles (a turn's `pnpm db:migrate`) alters it as session_owner: Postgres 16+
+    // allows that only WITH ADMIN OPTION.
+    expect(dev?.admins.has('rocketflare_app->session_owner')).toBe(true)
+    // A retried step makes and grants nothing twice.
+    await port.ensureDev(app)
+    const made = (re: RegExp) => cloud.neon.sql.filter(s => re.test(s.query)).length
+    expect(made(/^CREATE ROLE "?rocketflare_app/i)).toBe(1)
+    expect(made(/^GRANT "?rocketflare_app/i)).toBe(1)
+    // A session's branch inherits it.
+    await port.createBranch(
+      { ...app, sessionDb: await port.ensureDev(app) },
+      {
+        id: 'sess-1',
+        shortId: 'abc123',
+      }
+    )
+    expect(
+      cloud.neon.branchNamed(f.neonProjectId, 'session-abc123')?.roles.has('rocketflare_app')
+    ).toBe(true)
+  })
+
+  it('leaves the RLS role alone when the kit’s db-roles already made it as session_owner', async () => {
+    const { cloud, f, port, app } = await setup()
+    await port.ensureDev(app)
+    const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+    // A dev prepared before Launch made the role: the kit's db-roles made it, as session_owner.
+    dev?.roles.delete('rocketflare_app')
+    dev?.admins.clear()
+    cloud.neon.sqlRole(f.neonProjectId, dev?.id ?? '', 'rocketflare_app', {
+      createdBy: 'session_owner',
+    })
+    const before = cloud.neon.sql.length
+    await port.ensureDev(app)
+    const statements = cloud.neon.sql.slice(before).map(s => s.query)
+    expect(statements.some(q => /^(CREATE ROLE|GRANT) "?rocketflare_app/i.test(q))).toBe(false)
   })
 
   it('repairs a dev whose session_owner an earlier Launch made through the API, and re-prepares it', async () => {
