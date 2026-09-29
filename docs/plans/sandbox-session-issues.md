@@ -82,6 +82,11 @@ or helper.
 
 ## Open: the remote bootstrap hangs
 
+> **Root cause found (2026-09-29): see `sandbox-websocket-close.md`.** The interceptor never ends
+> the container's stream after a WebSocket closes, so the kit's scripts finish their work and then
+> can't exit. That doc has the evidence, the options and the Cloudflare issue draft. The notes
+> below are the investigation that led there.
+
 **What happens.** Every remote session (`b2b1cd0c`, `c028c2a0`, `9e467448`) hangs in the kit
 bootstrap's step 5, `pnpm db:migrate`, until the 15-minute deadline kills it. The step retry then
 hangs the same way.
