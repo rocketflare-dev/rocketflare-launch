@@ -89,9 +89,13 @@ The kit is at **0.15.6** (magic link: opening the link no longer spends the toke
 
 ## Next, in order (agreed 2026-09-29)
 
-1. **Validate sessions, checks 1–5** of [sandbox-session-issues](sandbox-session-issues.md): boot timings, a turn with shell commands, `HOME`, `--resume`, checkpoint.
-   - Local Docker first. **Needs the Anthropic key in Settings → Platform** (the user).
-   - Then remote, after redeploying `launch-sandbox-dev` (needs the go-ahead).
+1. **Validate sessions, checks 1–5** of [sandbox-session-issues](sandbox-session-issues.md).
+   - **Local Docker: done 2026-09-29, all five pass.**
+   - **Remote: blocked by an open hang** (the kit bootstrap's step 5; a database WebSocket stalls
+     inside the container's egress before it reaches the Worker). Fixed on the way: the duplicated
+     `Upgrade` headers, the observable background bootstrap, an upgrade timeout. The research
+     plan is in "Open: the remote bootstrap hangs". **Deployed Launch uses the same containers, so
+     this must be solved before item 7.**
    - Ship (check 6) can't pass until item 2 is done.
 2. **Issue #1: Launch runs the ship gate itself, on a throwaway Neon branch** ([rocketflare-launch#1](https://github.com/rocketflare-dev/rocketflare-launch/issues/1)). Today the gate runs inside a Claude turn, and the kit's `pnpm test` needs Postgres on :5433 plus Docker, which the sandbox lacks. So no kit app can ship from a session. Slices:
    - **2a. Faster Neon branches.** Wait only for `create_branch`, and poll from about 200 ms with backoff instead of a flat 1 s (`NeonClient.waitForOperations`). Today a branch takes 13–16 s.

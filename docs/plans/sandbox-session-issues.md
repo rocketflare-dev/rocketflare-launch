@@ -2,9 +2,16 @@
 
 ## Status
 
-The fixes for everything that stopped a real session on 2026-09-28 are **merged on
-`phase-5-grants` at `e76c3b6`**, with the docs. **Not yet validated end to end**: no coding session
-has completed a real Claude turn in either mode. The checklist below is what "validated" means.
+Updated 2026-09-29.
+
+- **Local Docker works.** Checks 1–5 pass (see Results); ship (6) waits on issue #1.
+- **Remote is blocked by an open platform-level hang.** A remote session's kit bootstrap stalls
+  every time at step 5 (`db:migrate`): a database WebSocket that never reaches the Worker. See
+  "Open: the remote bootstrap hangs" below. Everything before it now works remotely: the Neon
+  branch, the sandbox start, the clone (the host's grant handlers), install, and bootstrap steps 1–4.
+- **Deployed Launch uses the same real containers**, so the open hang would stop sessions in
+  production too. It must be solved before Launch is deployed (README "Next" item 7).
+- `apps/web/.dev.vars` is left on `SESSION_SANDBOX_HOST=remote`. Unset it for local Docker.
 
 | Mode | Set in `apps/web/.dev.vars` | Where the container runs | How it reaches GitHub and Anthropic |
 |---|---|---|---|
@@ -61,19 +68,76 @@ or helper.
    `<name>.log|.pid|.exit` under `/workspace/.launch`, a step retry attaches to the live run, the
    deadline kills the process group, and the running boot step shows the kit's latest `✔ n/10`
    line — which is how the next remote run will show WHERE the bootstrap stalls. Still one
-   blocking exec: the ship gate.
+   blocking exec: the ship gate. Merged (`83a6d00`); the progress detail works remotely.
+5. **An upgrade Neon does not answer in 20 s is now a 504**, logged by the handler
+   (`12ecb66`), not a hang. It did NOT fire for the open hang below: that request never reaches
+   the handler.
+6. **The kit's bootstrap puts the database URL (with its password) on its command line**
+   (`--db-url "$LAUNCH_DB_URL"` expands before `node` runs), so `ps` inside the container shows it.
+   It is the session's own throwaway branch, but the rule is "env var only". Fix: the kit reads
+   the URL from an env var (a kit change), or Launch writes `.dev.vars` before the bootstrap.
+7. **Tools missing from the image:** `pgrep` resolves but lists nothing useful (Node processes show
+   as `MainThread` in `ps -o comm`); `ss`, `strace` and SSH are absent (SSH needs `[containers]`
+   config and a redeploy). `lsof` works.
+
+## Open: the remote bootstrap hangs
+
+**What happens.** Every remote session (`b2b1cd0c`, `c028c2a0`, `9e467448`) hangs in the kit
+bootstrap's step 5, `pnpm db:migrate`, until the 15-minute deadline kills it. The step retry then
+hangs the same way.
+
+**What is known:**
+
+- Each kit script opens its OWN Neon WebSocket pool and exits. In the bootstrap, `db:check`
+  connects, then `db-roles --phase=role` hangs. Run by hand in the same container, `db:check` and
+  `db-roles` succeed and `migrate.ts` hangs next. So it is not one script; after one or two
+  connections, the NEXT one stalls.
+- The stuck process holds ONE established TCP connection to the Neon endpoint's intercept address
+  (`[fd00::119:1]:443`), idle (`lsof`; `/proc/net/tcp6` queues 0). `pg_stat_activity` shows NO
+  backend from it: nothing reached Postgres.
+- The host Worker never sees it. During a reproduction, `wrangler tail launch-sandbox-dev` logged
+  exactly one `ContainerProxy` fetch for the Neon host (the connection that worked, ending
+  `responseStreamDisconnected` when its script exited). The 20 s upgrade timeout never fired. So
+  the stall is **inside the container's egress interception, before the outbound handler**.
+- **Not reproduced in a fresh scratch sandbox** with handshake-only traffic (a raw Postgres
+  startup message, answered by `R`/3): 10 WebSockets held open at once, 12 opened and closed in
+  turn, and 8 separate processes each exiting without a close all worked (~100–200 ms each).
+  The difference left: real authenticated traffic (password, queries, `pool.end()`), and a
+  container that already holds stuck connections.
+- The local Docker path (`wrangler dev`) runs the same bootstrap in about 40 s.
+- Already on the latest stable packages (`@cloudflare/containers` 0.3.7, `@cloudflare/sandbox`
+  0.12.10).
+
+**Next research (a fresh session):**
+
+1. Reproduce with REAL authenticated traffic in a scratch sandbox: a loop of separate processes,
+   each `openScriptSql` → a query → `end()`, against a test branch. This needs a database
+   credential inside the probe. **The user allows it (2026-09-29): session branches are
+   throwaway**, so a session's sealed URI (`sessions.db_uri_sealed`, `decryptToken` with
+   `OAUTH_ENCRYPTION_KEY`) may be decrypted for the probe — kept in a 0600 file, never printed.
+2. If it reproduces: find the trigger (the count, the `pool.end()`, the time between connections,
+   the TLS session), then report it to Cloudflare with the repro.
+3. Workarounds to weigh: keep one connection alive across the kit's scripts (a kit change);
+   route the database through the handler differently (a Worker-side WebSocket pair instead of a
+   passthrough); `enableInternet` for the Neon host only, if the platform allows it.
+
+**The probe harness** (`/tmp/sbx-probe`, not committed): a `wrangler.toml` with ONLY the remote
+service binding (`SANDBOX_HOST` → `launch-sandbox-dev`, `remote = true`), and Node scripts that
+call it through `getPlatformProxy()`: `start` → `setAllowedHosts` (the base list plus the endpoint
+and `api.<region>.neon.tech`) → `writeFile` + `exec` → `destroy`, on a scratch name
+`probe-*`. The same binding can `exec` in a live session's sandbox (by its session id): that is
+how the process list and `lsof` above were read. Remember the SDK serialises calls behind a
+running `exec`.
 
 ## Before retesting
 
-1. **Add the Anthropic key in Settings → Platform** (`anthropic_api_key`). Neither Setup nor
-   `.dev.vars` has one; every turn fails "Launch has no Anthropic key configured" without it.
-2. **Redeploy `launch-sandbox-dev`, with the user's go-ahead** — the deployed version predates the
-   grant handlers: `pnpm --filter @launch/web deploy:sandbox-host`, then
-   `pnpm --filter @launch/web exec wrangler containers list` (the application `ready`, on the new
-   version).
-3. End session `bddea1c7…` if it is still `ready` (its local-Docker workspace is gone).
-4. Done: local Docker is Rosetta, 6 CPU / 12 GB; the stale local `SessionSandbox` Durable Object
-   state was moved to `/tmp`.
+1. The Anthropic key: set as `ANTHROPIC_API_KEY` in `apps/web/.dev.vars` (the env fallback of
+   `resolveModelKey`); turns run in local Docker.
+2. `launch-sandbox-dev` is redeployed (see Deployed resources).
+3. **Local crons do not fire under `wrangler dev`**: a session stuck in `ending` or a dead
+   Workflow is settled only by the `*/5` reconcile. Fire it by hand until `dev-server.mjs` does:
+   `curl "http://localhost:3001/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`.
+4. Launch's own test Postgres is on :5499 (the kit's is :5433).
 
 ## Validation checklist
 
@@ -101,20 +165,20 @@ Remote only:
 
 ## Results
 
-Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend cut to 1 minute on that row for the warm test; the cold path forced with `docker kill`).
+Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend cut to 1 minute on that row for the warm test; the cold path forced with `docker kill`). Remote runs the same day: `b2b1cd0c`, `c028c2a0`, `9e467448`, all stopped in the bootstrap (see "Open: the remote bootstrap hangs").
 
 
 | Check | Local Docker | Remote |
 |---|---|---|
-| 1. Boot timings | ✔ 63 s to ready (db 13 s, sandbox 1 s, clone 2 s, install+seed 40 s, dev 7 s) | |
-| 2. Turn with shell commands | ✔ Bash `tool.start`/`tool.end` | |
-| 3. `id; echo $HOME` | ✔ `uid=0(root)`, `HOME=/root` | |
-| 4. `--resume` on turn 2 | ✔ same container; warm resume (<1 s to ready); recreated container (clone + bootstrap + transcript restore, but "Starting sandbox" 1 m 44 s) | |
-| 5. Checkpoint push | ✔ debounced, ~30 s after the edit turn | |
-| 6. Ship → PR | blocked on issue #1 | |
-| 7. No credential file | — | |
-| 8. Placeholder key only | — | |
-| 9. Other-branch push refused | — | |
+| 1. Boot timings | ✔ 63 s to ready (db 13 s, sandbox 1 s, clone 2 s, install+seed 40 s, dev 7 s) | ✖ db 14 s, sandbox 2–4 s, clone 3 s, install 7–13 s, then the bootstrap hangs at step 5 |
+| 2. Turn with shell commands | ✔ Bash `tool.start`/`tool.end` | blocked (never ready) |
+| 3. `id; echo $HOME` | ✔ `uid=0(root)`, `HOME=/root` | blocked (never ready) |
+| 4. `--resume` on turn 2 | ✔ same container; warm resume (<1 s to ready); recreated container (clone + bootstrap + transcript restore, but "Starting sandbox" 1 m 44 s) | blocked (never ready) |
+| 5. Checkpoint push | ✔ debounced, ~30 s after the edit turn | blocked (never ready) |
+| 6. Ship → PR | blocked on issue #1 | blocked |
+| 7. No credential file | — | blocked (never ready) |
+| 8. Placeholder key only | — | blocked (never ready) |
+| 9. Other-branch push refused | — | blocked (never ready) |
 
 ### Found in the 2026-09-29 run
 
@@ -125,8 +189,8 @@ Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend c
 
 ## Deployed resources (created 2026-09-28, with the user's go-ahead)
 
-- **Worker:** `launch-sandbox-dev`, version `cf067059` — **predates the grant handlers; needs the
-  redeploy above.** No routes, no public URL.
+- **Worker:** `launch-sandbox-dev`, version `c98a0a88` (2026-09-29: the grant handlers, the
+  `*.neon.tech` passthrough and its upgrade timeout). No routes, no public URL.
 - **Container application:** `launch-sandbox-dev-hostedsessionsandbox` (id
   `a0318e29-600f-4151-a8dd-7490f86e0445`), `standard-3`, `max_instances = 3`.
 - **Cost:** about $0.08 an hour per awake container.
