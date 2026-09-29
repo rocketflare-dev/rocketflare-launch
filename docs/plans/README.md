@@ -106,13 +106,14 @@ The kit is at **0.15.7** (0.15.6: opening a magic link no longer spends the toke
      - The driver test accepts real Neon when no proxy is set.
      - `db-roles.test` is skipped without TCP.
      - A `test:ephemeral` script: no compose, the neon driver, longer timeouts, fewer forks.
+   - **Status (2026-09-29):** 2a done; 2b released as kit 0.15.7; **2c–2f built on `ship-gate-launch`, against fakes only** (the FakeSandbox and the FakeCloud's Neon) — the pin and the image's `KIT_TAG` are 0.15.7. What must still be proven is item 3.
    - **2c. Workflow steps.** `ship.claim`, then for each attempt: `ship.db` (a child branch of the session's branch, `gate-<short>-<attempt>`), `ship.gate` (each kit command exec'd by Launch, a `ship.gate {step, passed, attempt, output}` event per step), and on red `ship.fix` (a focused turn with the failing command and its tail). Up to N attempts, then `ship.db-clean`, then `ship.pr`.
      - A green gate makes no model call to decide pass or fail.
      - The PR title and body come from one cheap summary call (a small model with no tools) over the diff stat and the user's messages. The ship turn goes.
    - **2d. The gate steps are the kit's commands, fixed in Launch.** There is no per-app config; a config test keeps them in step with the pinned kit.
    - **2e. No orphan gate branches.** Cleanup and `end` delete them before the session branch, and a cron sweeps by name prefix.
    - **2f. Docs and pins.** CONCEPTS §18.13, CHANGELOG. Bump `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG`.
-3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn.
+3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn. hola-world must first be on kit 0.15.7 (Re-scaffold, or a kit upgrade), or its gate is a red "no `test:ephemeral`" row. Prove on real Neon: the kit's test setup as `session_owner` on a branch of a branch, the connection count on a small compute, the 60 s / 120 s limits, gate-branch creation time; and in a real sandbox: the suite's memory beside the dev server, and whether vitest exits under `allowlist`.
 4. **Deploys in progress:** watch the steps live on the next real production promote. Known gaps are in CONCEPTS §18.7.
 5. **Small fixes found along the way:**
    - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the kit change in 2b.
