@@ -77,9 +77,11 @@ import {
   type BootstrapSkip,
   claudeSettingsLocal,
   claudeTranscriptPath,
+  healDevSetup,
   migrationsHash,
   previewHostSuffix,
   resumeDevServer,
+  SESSION_DEV_EXCLUDES,
   SESSION_IMAGE_VERSION,
   SESSION_LAUNCH_DIR,
   SESSION_UI_PORT,
@@ -418,6 +420,8 @@ export function checkoutScript(input: {
     // Launch's own files never land in a commit, and neither does a core dump (checkpoint.ts).
     'mkdir -p .claude && printf "%s\\n" .claude/settings.local.json >> .git/info/exclude',
     `printf "%s\\n" ${CORE_DUMP_EXCLUDES.map(p => q(p)).join(' ')} >> .git/info/exclude`,
+    // Nor the dev server's own config (`writeSessionWranglerConfig`): the setup is never committed.
+    `printf "%s\\n" ${SESSION_DEV_EXCLUDES.map(p => q(p)).join(' ')} >> .git/info/exclude`,
     'echo "base=$base"',
     'echo "head=$(git rev-parse HEAD)"'
   )
@@ -911,6 +915,11 @@ export interface BootstrapStepResult {
    * bootstrap at all — `node_modules` and `.dev.vars` came back with it.
    */
   reused?: boolean
+  /**
+   * The tracked files put back from an earlier Launch's offline `[ai]` toggle (`healDevSetup`):
+   * a resume of a branch checkpointed before the dev config left the tracked files.
+   */
+  healed?: string[]
 }
 
 /**
@@ -935,12 +944,16 @@ export async function bootstrapStep(
     const prepared = session.migrationsHash !== null
     const migrate = !prepared || hash === null || hash !== session.migrationsHash
     const dev = devEnvFor(scope.cfg, session)
+    // A branch an earlier Launch checkpointed may carry the kit's offline `[ai]` toggle: put the
+    // tracked files back (against the session's base) — the next checkpoint commits the repair.
+    const heal = () => healDevSetup(sandbox, session.baseSha)
     if (opts.restored && prepared && !migrate) {
       // The restored workspace IS the last bootstrap's result: only the allow-list (this
       // container's) and the dev-server keys (non-secret, re-derived) are put back.
       await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(uri)))
       await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
-      return { installMs: 0, bootstrapMs: 0, migrated: false, seeded: false, reused: true }
+      const healed = await heal()
+      return { installMs: 0, bootstrapMs: 0, migrated: false, seeded: false, reused: true, healed }
     }
     const skip: BootstrapSkip[] = prepared
       ? ['seed', 'db-check', ...(migrate ? [] : (['migrate'] as const))]
@@ -953,7 +966,8 @@ export async function bootstrapStep(
       ...bootstrapPolling(scope),
     })
     if (hash) await updateSession(scope, { migrationsHash: hash })
-    return { ...timings, migrated: migrate, seeded: !prepared }
+    const healed = await heal()
+    return { ...timings, migrated: migrate, seeded: !prepared, healed }
   })
 }
 

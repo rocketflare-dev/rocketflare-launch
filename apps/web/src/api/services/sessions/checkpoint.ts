@@ -40,6 +40,12 @@
  *   event ("saved, but left out …") and in `skipped`. A crash under emulation once left 11 GB of
  *   core files in the checkout, and `git add -A` timed out hashing them (it would otherwise have
  *   committed and pushed them).
+ * - **Never the dev setup.** After `git add`, {@link DEV_SETUP_GUARD_SCRIPT} checks the staged
+ *   wrangler tomls and `worker-configuration.d.ts` for the kit's offline `[ai]` toggle; a hit
+ *   throws `CheckpointError('guard', …)` before the commit — nothing is committed or pushed, and a
+ *   ship stops at its save. The session's dev setup lives in git-ignored files
+ *   (`rocketflare-dev.ts`), so this only fires on a regression; the exclude file also carries
+ *   {@link SESSION_DEV_EXCLUDES}.
  *
  * A failing git command throws `CheckpointError` with the command's output tail (the sandbox holds
  * no secret, so there is none in it); a command that did not answer in time (`GIT_TIMEOUT_MS`)
@@ -64,7 +70,14 @@ import {
   type SandboxPort,
   type SessionEgressPort,
 } from './ports'
-import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
+import {
+  SESSION_DEV_EXCLUDES,
+  SESSION_HOME,
+  SESSION_WORKSPACE,
+  WORKER_TYPES,
+  WRANGLER_STAGING_TOML,
+  WRANGLER_TOML,
+} from './rocketflare-dev'
 
 /** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
 export const SESSION_REPO_DIR = SESSION_WORKSPACE
@@ -106,7 +119,7 @@ export function checkpointScanScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): stri
     // every later `git add` would fail on it. Stale = no git running at all, or older than any
     // checkpoint command may run (5 min) — a git the model started keeps a young lock alive.
     'if [ -f .git/index.lock ] && { ! pgrep -x git >/dev/null 2>&1 || [ -n "$(find .git/index.lock -mmin +5 2>/dev/null)" ]; }; then rm -f .git/index.lock; fi',
-    `for p in ${CORE_DUMP_EXCLUDES.map(q).join(' ')}; do grep -qxF -- "$p" .git/info/exclude 2>/dev/null || printf '%s\\n' "$p" >> .git/info/exclude; done`,
+    `for p in ${[...CORE_DUMP_EXCLUDES, ...SESSION_DEV_EXCLUDES].map(q).join(' ')}; do grep -qxF -- "$p" .git/info/exclude 2>/dev/null || printf '%s\\n' "$p" >> .git/info/exclude; done`,
     `printf '.\\0' > ${ADD_PATHSPEC_PATH}`,
     "git ls-files -z --others --modified --exclude-standard | while IFS= read -r -d '' f; do",
     '  if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi',
@@ -117,6 +130,34 @@ export function checkpointScanScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): stri
     '  fi',
     'done',
   ].join('\n')
+}
+
+/**
+ * The dev-setup guard, run on what `git add` staged: prints `ai-off\t<path>` for each tracked file
+ * whose staged content carries the kit's OFFLINE `[ai]` toggle where HEAD's does not — a wrangler
+ * toml whose live `[ai]` became the kit's commented `# [ai]`, and `worker-configuration.d.ts`
+ * losing its `AI: Ai;` while the staged `wrangler.toml` still declares `[ai]` (types generated
+ * from a toggled toml). A session's dev setup never writes those files (`rocketflare-dev.ts`), so
+ * a hit is a regression, and the checkpoint refuses it rather than let it reach a PR — merging the
+ * toggle would take Workers AI out of the app's production.
+ */
+export const DEV_SETUP_GUARD_SCRIPT = [
+  `for f in ${[WRANGLER_TOML, WRANGLER_STAGING_TOML].map(q).join(' ')}; do`,
+  `  if git show "HEAD:$f" 2>/dev/null | grep -qE '^\\[ai\\][[:space:]]*$' && git show ":$f" 2>/dev/null | grep -qE '^# \\[ai\\][[:space:]]*$'; then printf 'ai-off\\t%s\\n' "$f"; fi`,
+  'done',
+  `t=${q(WORKER_TYPES)}`,
+  `if git show "HEAD:$t" 2>/dev/null | grep -qE '^[[:space:]]*AI: Ai;' && ! git show ":$t" 2>/dev/null | grep -qE '^[[:space:]]*AI: Ai;' && git show ${q(`:${WRANGLER_TOML}`)} 2>/dev/null | grep -qE '^\\[ai\\][[:space:]]*$'; then printf 'ai-off\\t%s\\n' "$t"; fi`,
+  'exit 0',
+].join('\n')
+
+/** The guard's `ai-off` lines. */
+export function parseDevSetupDrift(stdout: string): string[] {
+  return [...stdout.matchAll(/^ai-off\t(.+)$/gm)].map(m => m[1] ?? '')
+}
+
+/** The checkpoint's refusal when the guard fires. */
+export function devSetupDriftMessage(files: readonly string[]): string {
+  return `refused to commit the session's offline [ai] toggle in ${files.join(', ')} — local dev setup, not the agent's change (merged, it would take Workers AI out of the app's production). Nothing was committed or pushed. Put the files back with \`git checkout HEAD -- ${files.join(' ')}\` (or ask Claude to), then save again; this is a Launch bug worth reporting.`
 }
 
 /** `git add -A` over the scan's pathspec: everything but the files it left out. */
@@ -382,6 +423,8 @@ export async function checkpoint(
       },
     ])
   }
+  const drift = parseDevSetupDrift((await git('guard', DEV_SETUP_GUARD_SCRIPT)).stdout)
+  if (drift.length > 0) throw new CheckpointError('guard', devSetupDriftMessage(drift))
   const staged = await git('diff', 'git diff --cached --quiet', [0, 1])
   let committed = false
   if (staged.exitCode === 1) {

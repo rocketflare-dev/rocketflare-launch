@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A coding session's dev setup no longer leaks into its PR.** The kit's `bootstrap --offline`
+  commented `[ai]` out of both wrangler tomls in place and the checkpoint committed it (with a
+  `worker-configuration.d.ts` without `AI`) — hola-world PR #2 would have removed Workers AI from
+  the app's production. The bootstrap preload now keeps the kit off the two tomls and the types;
+  the dev server runs from a git-ignored `apps/web/wrangler.session.toml` (`[ai]` off) that
+  wrangler's own `.wrangler/deploy/config.json` redirect points `wrangler dev` at (`wrangler types`
+  ignores it, so the typecheck keeps `AI`). A resume heals a branch an earlier Launch checkpointed
+  (against the session's base), and a checkpoint refuses to commit the toggle (`CheckpointError`
+  `guard`). No kit change. `docs/CONCEPTS.md` §18.9.
 - A session's pull request opens: the token that opens it now carries `contents: read` beside
   `pull_requests: write`. Without it GitHub refuses with 422 "not all refs are readable". A failed
   GitHub call also keeps GitHub's `errors[]` in its message, so a 422 says why.

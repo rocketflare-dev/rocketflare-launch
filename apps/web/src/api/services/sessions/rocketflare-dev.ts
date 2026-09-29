@@ -13,9 +13,8 @@
  * 2. `node scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev
  *    --no-open --no-plugins --yes` (with `NOT_ROOT_PRELOAD`: the kit refuses root, and a sandbox
  *    runs as root) — the kit's own first run against a database it does not own:
- *    `.dev.vars` from the example with the URL and a fresh encryption key, `[ai]` off (no
- *    Cloudflare login in a sandbox), migrate, seed (idempotent; `SEED_ALLOW_REMOTE=1` under
- *    `--db-url`). **`--no-plugins`**: a session never changes the app's plugin set — the repo's
+ *    `.dev.vars` from the example with the URL and a fresh encryption key, migrate, seed
+ *    (idempotent; `SEED_ALLOW_REMOTE=1` under `--db-url`). **`--no-plugins`**: a session never changes the app's plugin set — the repo's
  *    committed plugins are what it runs. The ports go in the ENVIRONMENT (`DEV_UI_PORT=5173`,
  *    `DEV_API_PORT=8787`, `DEV_ALLOWED_HOSTS=.<preview suffix>`), which `scripts/lib/dev-ports.mjs`
  *    reads before `.dev.vars`, with `DATABASE_DRIVER=neon` (the scripts read the driver from the
@@ -25,8 +24,17 @@
  *    environment), the ports, `DATABASE_DRIVER=neon` and an empty `NEON_LOCAL_PROXY` (never a
  *    proxy: the branch's endpoint is reached directly, on a laptop too).
  *
- * `startDevServer(sandbox, dev)` — the `dev` step: `pnpm dev` in the background (its pid and output
- * in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
+ * **A session never changes a tracked file for its dev setup.** `--offline` (no Cloudflare login in
+ * a sandbox) makes the kit comment `[ai]` out of both wrangler tomls IN PLACE; the preload keeps
+ * those writes from happening (`BOOTSTRAP_KEEP_ENV`), and the dev server runs from a git-ignored
+ * `apps/web/wrangler.session.toml` (`[ai]` off) that wrangler's own redirect file points
+ * `wrangler dev` at (`writeSessionWranglerConfig`). `worker-configuration.d.ts` is never generated
+ * by the setup; `wrangler types` ignores the redirect, so the gate's typecheck keeps `AI`. What an
+ * earlier Launch committed is put back on a resume (`healDevSetup`), and a checkpoint refuses to
+ * commit the toggle (`checkpoint.ts`, the dev-setup guard).
+ *
+ * `startDevServer(sandbox, dev)` — the `dev` step: the session config, then `pnpm dev` in the
+ * background (its pid and output in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
  * for in short chunks, failing at once if the dev server exits.
  *
  * The install and the kit bootstrap each run as a BACKGROUND command, polled
@@ -178,12 +186,23 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  *   container's egress interception, and on real Cloudflare containers one of the later ones
  *   hung (docs/plans/sandbox-session-issues.md): a prepare now opens two (migrate, seed), a
  *   session whose migrations changed one, and a resume none.
- * Everything else (`.dev.vars`, the `[ai]` toggle, the install) runs as the kit wrote it.
+ *
+ * **It keeps the bootstrap off the app's tracked files.** `--offline` makes the kit comment the
+ * `[ai]` block out of BOTH wrangler tomls in place (`setAiBlocks` → `writeFileSync`), and a
+ * checkpoint commits the whole tree — so the toggle once rode a session's PR, which would have
+ * removed Workers AI from the app's production. Every path in `LAUNCH_BOOTSTRAP_KEEP`
+ * (`BOOTSTRAP_KEEP_ENV`, absolute, comma-separated — `SESSION_DEV_TRACKED_FILES`) is written by no
+ * `writeFileSync` of the bootstrap's: the call returns without writing. The session's dev server
+ * runs from its own git-ignored copy instead (`writeSessionWranglerConfig`).
+ *
+ * Everything else (`.dev.vars`, the install) runs as the kit wrote it.
  */
 export const NOT_ROOT_PRELOAD = `${SESSION_LAUNCH_DIR}/bootstrap-in-sandbox.mjs`
 export const NOT_ROOT_PRELOAD_SCRIPT = `import cp from 'node:child_process'
+import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
+import path from 'node:path'
 const userInfo = os.userInfo
 os.userInfo = options => ({ ...userInfo(options), uid: 1000 })
 const skip = new Set((process.env.LAUNCH_BOOTSTRAP_SKIP || '').split(',').filter(Boolean))
@@ -194,6 +213,12 @@ const stand = {
 }
 const instead = {
   'db:migrate': ['web', 'exec', 'dotenv', '-e', '.dev.vars', '--', 'tsx', 'scripts/migrate.ts'],
+}
+const keep = new Set((process.env.LAUNCH_BOOTSTRAP_KEEP || '').split(',').filter(Boolean).map(f => path.resolve(f)))
+const writeFileSync = fs.writeFileSync
+fs.writeFileSync = function (file, ...rest) {
+  if (typeof file === 'string' && keep.has(path.resolve(file))) return
+  return writeFileSync.call(this, file, ...rest)
 }
 const spawn = cp.spawn
 cp.spawn = function (cmd, args, opts) {
@@ -215,6 +240,189 @@ syncBuiltinESMExports()
 export type BootstrapSkip = 'seed' | 'migrate' | 'db-check'
 /** The environment variable the preload reads: comma-separated {@link BootstrapSkip}s. */
 export const BOOTSTRAP_SKIP_ENV = 'LAUNCH_BOOTSTRAP_SKIP'
+/** The environment variable the preload reads: absolute paths the bootstrap must never write. */
+export const BOOTSTRAP_KEEP_ENV = 'LAUNCH_BOOTSTRAP_KEEP'
+
+// ---- the dev setup never touches a tracked file ------------------------------------------------
+
+/** The app's wrangler config — tracked; its `[ai]` block is what the kit's `--offline` toggles. */
+export const WRANGLER_TOML = 'apps/web/wrangler.toml'
+/** The staging twin, toggled with it by the kit (`setAiBlocks`). */
+export const WRANGLER_STAGING_TOML = 'apps/web/wrangler.staging.toml'
+/** Generated from the toml by `wrangler types` (the kit's `pnpm typecheck`) — tracked. */
+export const WORKER_TYPES = 'apps/web/worker-configuration.d.ts'
+/**
+ * The tracked files a session's dev setup once changed (the `[ai]` toggle and the types generated
+ * from it). A session never writes them for its setup: only the agent does, as part of its work.
+ */
+export const SESSION_DEV_TRACKED_FILES = [
+  WRANGLER_TOML,
+  WRANGLER_STAGING_TOML,
+  WORKER_TYPES,
+] as const
+
+/**
+ * The session's own wrangler config: `wrangler.toml` with the `[ai]` block commented out (Workers
+ * AI needs a Cloudflare login, which a sandbox never has). Beside the toml, so every relative path
+ * in it (`main`, `[assets]`) resolves the same; git-ignored through `.git/info/exclude`.
+ */
+export const SESSION_WRANGLER_CONFIG = 'apps/web/wrangler.session.toml'
+/**
+ * Wrangler's own redirect (`.wrangler/deploy/config.json`, `{ "configPath": … }`): `wrangler dev`
+ * reads the config it names instead of `wrangler.toml` — so the kit's `pnpm dev` runs on
+ * {@link SESSION_WRANGLER_CONFIG} with no flag and no kit change. `wrangler types` does NOT follow
+ * it, so the kit's `pnpm typecheck` still generates `worker-configuration.d.ts` from the tracked
+ * toml (measured on wrangler 4.127: dev prints "Using redirected Wrangler configuration.").
+ * `.wrangler/` is git-ignored by the kit, and by the exclude file too.
+ */
+export const WRANGLER_REDIRECT = 'apps/web/.wrangler/deploy/config.json'
+/** What `.git/info/exclude` carries for the dev setup (anchored at the checkout's root). */
+export const SESSION_DEV_EXCLUDES = [`/${SESSION_WRANGLER_CONFIG}`, '/apps/web/.wrangler/'] as const
+
+/**
+ * The kit's `[ai]` block toggle (kit 0.15 `scripts/lib/bootstrap-lib.mjs` `aiBlockState` /
+ * `toggleAiBlock`), as JavaScript for the scripts below: `[ai]` live is `on`, the kit's commented
+ * form (`# [ai]` then `# `-prefixed lines) is `off`.
+ */
+const AI_TOGGLE_JS = `const AI_ON = /^\\[ai\\]\\s*$/
+const AI_OFF = /^# \\[ai\\]\\s*$/
+const SECTION = /^\\s*\\[/
+const aiState = text => {
+  for (const line of text.split('\\n')) {
+    if (AI_ON.test(line)) return 'on'
+    if (AI_OFF.test(line)) return 'off'
+  }
+  return 'absent'
+}
+const toggleAi = (text, mode) => {
+  const state = aiState(text)
+  if (state === 'absent' || state === mode) return text
+  const lines = text.split('\\n')
+  const start = lines.findIndex(line => (mode === 'off' ? AI_ON : AI_OFF).test(line))
+  let end = start + 1
+  if (mode === 'off') while (end < lines.length && lines[end].trim() !== '' && !SECTION.test(lines[end])) end += 1
+  else while (end < lines.length && lines[end].startsWith('# ')) end += 1
+  const block = lines.slice(start, end).map(line => (mode === 'off' ? '# ' + line : line.slice(2)))
+  return [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\\n')
+}`
+
+/**
+ * Writes {@link SESSION_WRANGLER_CONFIG} from the checkout's CURRENT `wrangler.toml` (the agent's
+ * own edits included) with `[ai]` off, points wrangler's redirect at it, and makes sure the exclude
+ * file names both. Run from the checkout's root. Prints `session-config ai=<on|off|absent>` — the
+ * tracked toml's state, which it never writes.
+ */
+export const SESSION_WRANGLER_SCRIPT = `import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+${AI_TOGGLE_JS}
+const toml = ${JSON.stringify(WRANGLER_TOML)}
+if (!existsSync(toml)) {
+  console.error('no ' + toml + ' in the checkout')
+  process.exit(1)
+}
+const text = readFileSync(toml, 'utf8')
+const header = '# Generated by Launch for this coding session from wrangler.toml, with [ai] off (no Cloudflare\\n# login in a sandbox). Git-ignored (.git/info/exclude); \`wrangler dev\` reads it through\\n# .wrangler/deploy/config.json. Never commit it: edit wrangler.toml instead.\\n'
+writeFileSync(${JSON.stringify(SESSION_WRANGLER_CONFIG)}, header + toggleAi(text, 'off'))
+const redirect = ${JSON.stringify(WRANGLER_REDIRECT)}
+mkdirSync(path.dirname(redirect), { recursive: true })
+const target = path.relative(path.dirname(redirect), ${JSON.stringify(SESSION_WRANGLER_CONFIG)})
+writeFileSync(redirect, JSON.stringify({ configPath: target }) + '\\n')
+const exclude = '.git/info/exclude'
+mkdirSync(path.dirname(exclude), { recursive: true })
+let ex = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+for (const line of ${JSON.stringify(SESSION_DEV_EXCLUDES)}) {
+  if (!ex.split('\\n').includes(line)) ex += (ex === '' || ex.endsWith('\\n') ? '' : '\\n') + line + '\\n'
+}
+writeFileSync(exclude, ex)
+console.log('session-config ai=' + aiState(text))
+`
+
+/**
+ * Puts back what an EARLIER Launch's dev setup left in a session's branch (before the dev config
+ * moved out of the tracked files, every checkpoint committed the kit's offline toggle): given the
+ * session's base commit (argv[2]), run from the checkout's root —
+ *
+ * - a wrangler toml whose `[ai]` is `off` where the base's is `on` gets the block back (the rest of
+ *   the file — the agent's own edits — is left as it is);
+ * - `worker-configuration.d.ts` is the base's again when it differs from it ONLY by the `AI: Ai;`
+ *   line and wrangler's generated header (any other difference is the agent's: the ship gate's
+ *   `pnpm typecheck` regenerates it from the healed toml, and the ship commits that).
+ *
+ * The working tree only; the next checkpoint commits it. Prints `healed\t<path>` per file.
+ */
+export const DEV_SETUP_HEAL_SCRIPT = `import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+${AI_TOGGLE_JS}
+const base = process.argv[2]
+if (!base) process.exit(0)
+const atBase = file => {
+  try {
+    return execFileSync('git', ['show', base + ':' + file], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+}
+for (const toml of ${JSON.stringify([WRANGLER_TOML, WRANGLER_STAGING_TOML])}) {
+  const was = atBase(toml)
+  if (was === null || !existsSync(toml)) continue
+  const now = readFileSync(toml, 'utf8')
+  if (aiState(was) === 'on' && aiState(now) === 'off') {
+    writeFileSync(toml, toggleAi(now, 'on'))
+    console.log('healed\\t' + toml)
+  }
+}
+const types = ${JSON.stringify(WORKER_TYPES)}
+const AI_LINE = /^\\s*AI: Ai;\\s*$/m
+const was = atBase(types)
+if (was !== null && existsSync(types)) {
+  const now = readFileSync(types, 'utf8')
+  const norm = text => text.split('\\n').filter(line => !/^\\/\\/ Generated by Wrangler/.test(line) && !/^\\s*AI: Ai;\\s*$/.test(line)).join('\\n')
+  if (AI_LINE.test(was) && !AI_LINE.test(now) && norm(was) === norm(now)) {
+    writeFileSync(types, was)
+    console.log('healed\\t' + types)
+  }
+}
+`
+
+const HEAL_SCRIPT_PATH = `${SESSION_LAUNCH_DIR}/heal-dev-setup.mjs`
+const SESSION_WRANGLER_SCRIPT_PATH = `${SESSION_LAUNCH_DIR}/session-wrangler.mjs`
+
+/**
+ * {@link DEV_SETUP_HEAL_SCRIPT} in the checkout against `baseSha`: the files it put back. A failure
+ * is not fatal (the checkpoint's guard still stands between a toggle and a commit): it answers [].
+ */
+export async function healDevSetup(
+  sandbox: SandboxPort,
+  baseSha: string | null
+): Promise<string[]> {
+  if (!baseSha || !/^[0-9a-f]{7,64}$/.test(baseSha)) return []
+  await sandbox.writeFile(HEAL_SCRIPT_PATH, DEV_SETUP_HEAL_SCRIPT)
+  const result = await sandbox.exec(`node ${HEAL_SCRIPT_PATH} ${baseSha}`, {
+    cwd: SESSION_WORKSPACE,
+    timeoutMs: 60_000,
+  })
+  if (result.exitCode !== 0) return []
+  return [...result.stdout.matchAll(/^healed\t(.+)$/gm)].map(m => m[1] ?? '')
+}
+
+/**
+ * {@link SESSION_WRANGLER_SCRIPT} in the checkout: the dev server's own config, from the current
+ * `wrangler.toml`. Run before every dev-server start, so an agent's edit to the toml reaches the
+ * next start.
+ */
+export async function writeSessionWranglerConfig(sandbox: SandboxPort): Promise<void> {
+  await sandbox.writeFile(SESSION_WRANGLER_SCRIPT_PATH, SESSION_WRANGLER_SCRIPT)
+  const result = await sandbox.exec(`node ${SESSION_WRANGLER_SCRIPT_PATH}`, {
+    cwd: SESSION_WORKSPACE,
+    timeoutMs: 60_000,
+  })
+  if (result.exitCode !== 0) {
+    throw new SessionBootstrapError(
+      'dev',
+      `Could not write the session's wrangler config (${SESSION_WRANGLER_CONFIG}): ${tailOf(`${result.stdout}\n${result.stderr}`)}`
+    )
+  }
+}
 
 /** Where the kit keeps its SQL migrations — what a resume's migrate decision hashes. */
 export const MIGRATIONS_DIR = 'apps/web/migrations'
@@ -422,6 +630,13 @@ async function runPhase(
   }
 }
 
+/** The preload's {@link BOOTSTRAP_KEEP_ENV}: the tracked files the bootstrap never writes. */
+export function bootstrapKeepEnv(): Record<string, string> {
+  return {
+    [BOOTSTRAP_KEEP_ENV]: SESSION_DEV_TRACKED_FILES.map(f => `${SESSION_WORKSPACE}/${f}`).join(','),
+  }
+}
+
 /** The kit bootstrap against `ctx.dbUri`, then the dev-server keys. See the header. */
 export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<BootstrapTimings> {
   const { sandbox, dev } = ctx
@@ -458,7 +673,7 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   await runPhase(progressCtx, 'bootstrap', {
     command: BOOTSTRAP_COMMAND,
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
-    env: { ...env, ...skip, LAUNCH_DB_URL: ctx.dbUri },
+    env: { ...env, ...skip, ...bootstrapKeepEnv(), LAUNCH_DB_URL: ctx.dbUri },
     what: "The app's bootstrap",
     progressOf: bootstrapProgressOf,
   })
@@ -505,6 +720,8 @@ export async function startDevServer(
   dev: SessionDevEnv,
   opts: StartDevServerOptions = {}
 ): Promise<{ processId: string }> {
+  // The dev server runs on the session's own, git-ignored config — never on an edited tracked toml.
+  await writeSessionWranglerConfig(sandbox)
   const proc = await sandbox.startProcess(DEV_START_COMMAND, {
     cwd: SESSION_WORKSPACE,
     env: sessionProcessEnv(dev),
