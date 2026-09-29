@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New apps are cut from Rocketflare 0.15.7 (`DEFAULT_TEMPLATE_PIN`, commit `ab09a3f`), which adds
+  `pnpm test:ephemeral` — the test suite on a throwaway Neon gate branch, no Docker — for a
+  session's ship gate (rocketflare-launch#1). The session image's warm pnpm store follows it
+  (`ARG KIT_TAG` / `SESSION_KIT_TAG` 0.15.7, image `session-3`, so no workspace backup from the
+  old image is restored into the new one).
 - Faster Neon branches (slice 2a of rocketflare-launch#1): `NeonClient.waitForOperations` polls
   from 200 ms with a ×1.5 backoff capped at 1 s (it slept a flat 1 s before every poll), reads all
   pending operations at once, and takes `actions` to wait only for the ones a caller needs. A new

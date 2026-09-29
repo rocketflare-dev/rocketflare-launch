@@ -14,7 +14,7 @@ main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 - Launch itself is not deployed. It runs locally with `pnpm dev`, reachable at `https://local.clewro.com` through `pnpm dev:tunnel`.
 - The gate is green (in a throwaway worktree): lint, typecheck, tests (web about 3,100, CLI 104, evals 22) and build.
 
-**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.6**. Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) is still 0.15.5.
+**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.7** (`pnpm test:ephemeral`, slice 2b of issue #1). Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) and the session image's `KIT_TAG` are 0.15.7 (image `session-3`).
 
 **The real app.** `hola-world` (`guidemode/hola-world`, Neon project `mute-star-58262276`) is **live** on staging (`https://hola-world-staging.clewro.com`) and was promoted to production through the approval gate.
 
@@ -71,6 +71,8 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
 | 0.15.3 | The default-plugins gate is kit-only (it failed every app with "already installed"); each commit is gated once; a single-statement `ai_spans` prune for the neon test timeouts. |
 | 0.15.4 | The deploy job runs only the parity test (its checkout is shallow). |
 | 0.15.5 | `db-roles` works as a role without CREATEDB. |
+| 0.15.6 | Opening a magic link no longer spends the token. |
+| 0.15.7 | `pnpm test:ephemeral`: the suite on a throwaway Neon gate branch, no Docker (issue #1, slice 2b); `migrate` / `db-roles` / `seed` exit when done. |
 
 ## Landed since the first real day (2026-09-28, evening)
 
@@ -85,7 +87,7 @@ Built and tested against fakes; **none of it yet seen in a real session**:
 - **Debounced checkpoints** (30 s after the latest changed turn, 5-minute cap), and a lost turn's container is salvaged before recovery.
 - **The neon driver** never queries through a replaced global `fetch`.
 
-The kit is at **0.15.6** (magic link: opening the link no longer spends the token). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are still 0.15.5.
+The kit is at **0.15.7** (0.15.6: opening a magic link no longer spends the token; 0.15.7: `pnpm test:ephemeral`). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are 0.15.7.
 
 ## Next, in order (agreed 2026-09-29)
 
