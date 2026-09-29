@@ -410,8 +410,9 @@ describe('HostedSessionSandbox', () => {
     return { obj, mem }
   }
 
-  it('declares its OWN handlers for both hosts (the registry is keyed by class name)', () => {
+  it('declares its OWN handlers for the model, git and database hosts (the registry is keyed by class name)', () => {
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
+      '*.neon.tech',
       'api.anthropic.com',
       'github.com',
     ])

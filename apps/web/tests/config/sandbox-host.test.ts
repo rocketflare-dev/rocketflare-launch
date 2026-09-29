@@ -254,8 +254,9 @@ describe('the host mode puts no credential in the container', () => {
   // The first design wrote the token to a file for git's `store` helper, which erases the file on
   // a fresh token's 401 — the clone then failed "could not read Username". The token and the key
   // now live only in the host Durable Object's grant, injected by its outbound handlers.
-  it('the host class declares its own handlers for both hosts', () => {
+  it('the host class declares its own handlers for the model, git and database hosts', () => {
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
+      '*.neon.tech',
       'api.anthropic.com',
       'github.com',
     ])

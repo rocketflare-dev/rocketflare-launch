@@ -122,6 +122,7 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
     expect(probe.enableInternet).toBe(false)
     expect(probe.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
     expect(Object.keys(SessionSandbox.outboundByHost ?? {}).sort()).toEqual([
+      '*.neon.tech',
       'api.anthropic.com',
       'github.com',
     ])

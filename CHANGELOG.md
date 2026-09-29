@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A session container on real Cloudflare can open its database's WebSocket pool: the egress
+  proxy answered the `wss://` upgrade with `Upgrade` and `Connection` twice, which Node's clients
+  reject ("Invalid Upgrade header"), so every remote session failed at the kit's `db:check`. Both
+  sandbox classes now pass `*.neon.tech` through a handler that drops the origin's copies.
 - Under `DATABASE_DRIVER=neon` the database's HTTP queries use the platform `fetch` captured when
   `db/client.ts` loads, never whatever `globalThis.fetch` is at query time: anything that replaces
   or wraps the global (a vendor fake, a test stub, an instrumentation shim) no longer carries — or

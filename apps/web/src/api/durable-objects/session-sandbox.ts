@@ -43,6 +43,10 @@ import { type AppConfig, loadConfig } from '../../config'
 import { openDatabase } from '../../db/client'
 import { withDeadline } from '../services/sessions/deadline'
 import { handleAnthropic } from '../services/sessions/egress/anthropic'
+import {
+  DATABASE_EGRESS_PATTERN,
+  forwardDatabase,
+} from '../services/sessions/egress/forward-database'
 import { handleGitHub } from '../services/sessions/egress/github'
 import { recordContainerStop } from '../services/sessions/lifecycle'
 import type { AppBindings } from '../types'
@@ -81,4 +85,6 @@ export class SessionSandbox extends SessionSandboxBase<AppBindings> {
 SessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => handleAnthropic(req, env as AppBindings, ctx),
   'github.com': (req, env, ctx) => handleGitHub(req, env as AppBindings, ctx),
+  // The session's own Neon endpoint (the allow-list picks which): see `egress/forward-database.ts`.
+  [DATABASE_EGRESS_PATTERN]: req => forwardDatabase(req),
 }

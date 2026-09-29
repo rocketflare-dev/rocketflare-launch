@@ -1517,8 +1517,11 @@ option); the checkpoint's exclusions and size limit (§18.13) are the second lin
 runs under emulation. An arm64 local image is blocked upstream: the
 Sandbox base image is amd64-only and `wrangler dev` builds containers for `linux/amd64` only. The allow-list includes the region's shared `api.` SQL host
 (the neon-http driver's), which answers any endpoint in that region for whoever holds its
-credentials — the container holds only its branch's. An outbound `wss://` through the interception
-is proven locally against a public echo host, not yet against a Neon branch; workerd (the app's
+credentials — the container holds only its branch's. Both sandbox classes map `*.neon.tech` to
+`egress/forward-database.ts`: on real Cloudflare containers a passed-through WebSocket 101 carried
+`Upgrade`/`Connection` twice (the origin's and the runtime's), which Node's clients reject, so the
+`Pool` never connected; the handler re-wraps the 101 without the origin's copies (proven on
+`launch-sandbox-dev`, 2026-09-29 — HTTP `/sql` is unchanged). workerd (the app's
 `wrangler dev` inside the container) trusting the interception CA is unproven. First-start latency,
 `max_instances`, git through `interceptHttps` and whether a deploy stops running sandboxes are
 unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitHub's eventual
