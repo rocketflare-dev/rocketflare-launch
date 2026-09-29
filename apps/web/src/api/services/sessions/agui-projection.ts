@@ -16,7 +16,7 @@
  * | `tool.start`         | `TOOL_CALL_START → ARGS → END`                                  |
  * | `tool.end`           | `TOOL_CALL_RESULT` (paired on the model's `toolCallId`)        |
  * | `turn.end` / `turn.failed` / `turn.interrupted` | `STEP_FINISHED turn#N` + the row as `launch.session.event` |
- * | `step`               | `STEP_STARTED`/`STEP_FINISHED` + `kit.agent.step` (as a run's)  |
+ * | `step`               | `STEP_STARTED`/`STEP_FINISHED` + `kit.agent.step` (as a run's); a `running` row for an open step is progress: `kit.agent.step` only |
  * | everything else      | the row as `launch.session.event`                               |
  *
  * `launch.session.event` is LAUNCH's CUSTOM event (an app's own prefix, never `kit.`): its value is
@@ -97,6 +97,8 @@ function customRow(event: SessionEvent): KitAguiEvent {
 export function createSessionProjector(session: SessionProjectionState): SessionProjector {
   /** Open `tool.start`s by the model's call id (or the tool name), → the start row's id. */
   const openToolCalls = new Map<string, string>()
+  /** Boot steps with a `STEP_STARTED` and no `STEP_FINISHED` yet, by key. */
+  const openSteps = new Set<string>()
   let lastMessageId = session.id
 
   const textGroup = (
@@ -177,11 +179,18 @@ export function createSessionProjector(session: SessionProjectionState): Session
         case 'step': {
           const name = asString(data.key) ?? 'step'
           const status = asString(data.status) ?? 'running'
-          out.push(
-            {
+          // A `running` row for a step already open is PROGRESS (its detail changed): no second
+          // STEP_STARTED, only the `kit.agent.step` that carries the new detail.
+          const progress = status === 'running' && openSteps.has(name)
+          if (status === 'running') openSteps.add(name)
+          else openSteps.delete(name)
+          if (!progress) {
+            out.push({
               type: status === 'running' ? AguiEventType.STEP_STARTED : AguiEventType.STEP_FINISHED,
               stepName: name,
-            },
+            })
+          }
+          out.push(
             kitCustom(KIT_CUSTOM_EVENTS.agentStep, {
               key: name,
               label: asString(data.label) ?? name,

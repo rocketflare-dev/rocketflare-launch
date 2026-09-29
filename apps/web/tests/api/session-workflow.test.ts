@@ -25,9 +25,11 @@ import { SESSION_CALL_LIMITS, type SessionCallLimits } from '@/api/services/sess
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import {
+  BOOTSTRAP_PROGRESS,
   claudeTranscriptPath,
   DEV_START_COMMAND,
   DEV_STOP_COMMAND,
+  INSTALL_PROGRESS,
   SESSION_HOME,
   SESSION_IMAGE_VERSION,
   SESSION_WORKSPACE,
@@ -80,9 +82,9 @@ beforeEach(() => {
 
 /** The parts of the kit bootstrap each `scripts/bootstrap.mjs` run left out, in order. */
 const bootstrapSkips = (sandbox: FakeSandbox) =>
-  sandbox.execs
-    .filter(e => e.command.includes('scripts/bootstrap.mjs'))
-    .map(e => e.opts?.env?.LAUNCH_BOOTSTRAP_SKIP ?? '')
+  sandbox.backgroundRuns
+    .filter(r => r.command.includes('scripts/bootstrap.mjs'))
+    .map(r => r.opts?.env?.LAUNCH_BOOTSTRAP_SKIP ?? '')
 
 interface Harness {
   env: TestEnv
@@ -246,7 +248,7 @@ describe('SessionWorkflow: boot', () => {
 
     const sandbox = h.sandbox()
     // The clone, the kit bootstrap and the dev server, in that order; never port 3000.
-    const commands = sandbox.execs.map(e => e.command)
+    const commands = sandbox.commands
     const clone = commands.findIndex(c => c.includes('git init'))
     const install = commands.findIndex(c => c.includes('pnpm install'))
     const bootstrap = commands.findIndex(c => c.includes('scripts/bootstrap.mjs'))
@@ -307,7 +309,9 @@ describe('SessionWorkflow: boot', () => {
       return WAKE
     })
     // The database URI the bootstrap got is the one secret the container holds.
-    const bootstrap = h.sandbox().execs.find(e => e.command.includes('scripts/bootstrap.mjs'))
+    const bootstrap = h
+      .sandbox()
+      .backgroundRuns.find(r => r.command.includes('scripts/bootstrap.mjs'))
     const uri = bootstrap?.opts?.env?.LAUNCH_DB_URL ?? ''
     expect(uri).toMatch(/^postgresql:\/\/session_owner:.+@/)
     const password = decodeURIComponent(new URL(uri).password)
@@ -324,12 +328,41 @@ describe('SessionWorkflow: boot', () => {
     expect(everything).not.toMatch(/sk-ant-|x-access-token/)
   })
 
+  it('the running bootstrap step shows the kit’s latest ✔ n/10 line — one event per change', async () => {
+    const h = await harness()
+    h.ports.script(sandbox =>
+      sandbox.onBackground(/scripts\/bootstrap\.mjs/, {
+        log: ['✔ 1/10 toolchain  ok\n', '  a note\n', '✔ 4/10 database   ok\n', 'child output\n'],
+      })
+    )
+    await drive(
+      h,
+      async () => {
+        await patch(h.row, { requestedAction: 'end' })
+        return WAKE
+      },
+      { commandPollMs: 1 }
+    )
+    const bootstrap = (await listSessionEvents(db, h.row.tenantId, h.row.id))
+      .filter(e => e.type === 'step')
+      .map(e => e.data as { key: string; status: string; detail?: string })
+      .filter(d => d.key === 'bootstrap')
+    expect(bootstrap.map(d => [d.status, d.detail])).toEqual([
+      ['running', undefined],
+      ['running', INSTALL_PROGRESS],
+      ['running', BOOTSTRAP_PROGRESS],
+      ['running', '✔ 1/10 toolchain'],
+      ['running', '✔ 4/10 database'],
+      ['done', undefined],
+    ])
+  })
+
   it('a failure at bootstrap marks the session failed, destroys the sandbox and deletes the branch', async () => {
     const h = await harness()
     h.ports.script(sandbox =>
-      sandbox.onExec(/scripts\/bootstrap\.mjs/, {
+      sandbox.onBackground(/scripts\/bootstrap\.mjs/, {
         exitCode: 1,
-        stdout: '✖ 5/10 migrate   relation "users" already exists',
+        log: '✖ 5/10 migrate   relation "users" already exists',
       })
     )
     const sandbox = h.sandbox()
@@ -388,9 +421,9 @@ describe('SessionWorkflow: boot', () => {
       preparedCommit: BASE_SHA,
     })
     // The bootstrap ran twice: once into dev, once into the session's own branch.
-    expect(h.sandbox().execs.filter(e => e.command.includes('scripts/bootstrap.mjs'))).toHaveLength(
-      2
-    )
+    expect(
+      h.sandbox().backgroundRuns.filter(r => r.command.includes('scripts/bootstrap.mjs'))
+    ).toHaveLength(2)
   })
 })
 
@@ -501,8 +534,10 @@ describe('SessionWorkflow: the loop', () => {
     const sandbox = h.sandbox()
     // No second clone, install or bootstrap, and the running dev server was reused.
     expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
-    expect(sandbox.execs.filter(e => e.command.includes('pnpm install'))).toHaveLength(1)
-    expect(sandbox.execs.filter(e => e.command.includes('scripts/bootstrap.mjs'))).toHaveLength(1)
+    expect(sandbox.backgroundRuns.filter(r => r.command.includes('pnpm install'))).toHaveLength(1)
+    expect(
+      sandbox.backgroundRuns.filter(r => r.command.includes('scripts/bootstrap.mjs'))
+    ).toHaveLength(1)
     expect(sandbox.processes.filter(p => p.command === DEV_START_COMMAND)).toHaveLength(1)
     expect(sandbox.startCount).toBe(2)
     expect(sandbox.destroyCount).toBe(1) // cleanup's
@@ -1259,7 +1294,7 @@ describe('SessionWorkflow: workspace backups', () => {
     expect(sandbox.restores).toEqual([backup?.id])
     // One clone, one install, one kit bootstrap: the restored workspace needed none of them again.
     expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
-    expect(sandbox.execs.filter(e => e.command.includes('pnpm install'))).toHaveLength(1)
+    expect(sandbox.backgroundRuns.filter(r => r.command.includes('pnpm install'))).toHaveLength(1)
     expect(bootstrapSkips(sandbox)).toEqual([''])
     expect(run.results).toContainEqual(expect.objectContaining({ reused: true, migrated: false }))
     // The restored checkout's settings came back with it; the dev-server keys were re-written.

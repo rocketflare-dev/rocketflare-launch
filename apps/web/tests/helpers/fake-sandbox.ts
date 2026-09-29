@@ -21,6 +21,17 @@
  *   — a dev server, or a turn a test cancels. `ports` open when the process starts.
  * - `onPort(port, handler)` / `openPort(port)` — a port `waitForPort` finds and `fetch(port, req)`
  *   answers (a closed port: `waitForPort` rejects, `fetch` is a 502).
+ * - `onBackground(match, script | fn)` — a long command run through `runInBackground`
+ *   (`services/sessions/background-command.ts`: the install, the kit bootstrap). The fake speaks its
+ *   file protocol: the run's `<name>.pid` / `.log` / `.exit` live in `files`, `kill -0 <pid>` answers
+ *   from the run, and the group kill ends it (exit 143). A script object is `{ log?, exitCode?, hang? }`:
+ *   `log` as an ARRAY reveals one more chunk at each read of the log file, and the exit file is
+ *   written once the last chunk has been read (deterministic progress, no timers); `hang` never
+ *   ends on its own — `finishBackground(name, …)` or the kill ends it. A function
+ *   `(command, opts) => { log?, stdout?, stderr?, exitCode? }` (sync or async) ends the run when it
+ *   returns; throwing synchronously makes `startProcess` throw, rejecting later is a runner that
+ *   died without an exit code. An unscripted background command succeeds with an empty log. Runs
+ *   are recorded in `backgroundRuns`, NOT in `processes`.
  * - `interruptNext()` — a ROLLOUT: the next `exec` throws `SandboxInterruptedError`, or the next
  *   `streamLogs` yields its first chunk and then throws it. The container is gone afterwards, so
  *   files, ports and processes are wiped (`interruptions` counts them) — resume must clone again.
@@ -36,10 +47,15 @@
  *   `deleteBackup` forgets one (`deletedBackups`); `backupHosts` is settable (`presigned` mode).
  *   `backupsOff()` makes `backup` throw `SandboxBackupUnavailableError`.
  *
- * Inspect: `execs` (`{ command, opts, result }`), `processes` (`{ id, command, opts, killed,
+ * Inspect: `commands` (every `exec` and `startProcess` command, in order), `execs` (`{ command,
+ * opts, result }`), `backgroundRuns` (`{ name, command, opts, pid, runId, exitCode, killed }`), `processes` (`{ id, command, opts, killed,
  * exitCode }`), `killed` (process ids, in order), `files` (path → text), `ports`, `allowedHosts`,
  * `started` / `startCount`, `destroyed` / `destroyCount`, `fetches` (`{ port, url, method }`).
  */
+import {
+  BACKGROUND_MARKER,
+  parseBackgroundRunner,
+} from '@/api/services/sessions/background-command'
 import {
   type SandboxBackup,
   type SandboxBackupOptions,
@@ -83,6 +99,42 @@ export interface FakeProcessRecord {
   exitCode: number | null
 }
 
+export interface BackgroundScript {
+  /** What it prints: one string, or chunks revealed one per read of the log (see the header). */
+  log?: string | readonly string[]
+  exitCode?: number
+  /** Never ends on its own: `finishBackground` or a kill ends it. */
+  hang?: boolean
+}
+
+export type BackgroundScriptFn = (
+  command: string,
+  opts?: SandboxExecOptions
+) =>
+  | (Omit<BackgroundScript, 'hang'> & { stdout?: string; stderr?: string })
+  | Promise<Omit<BackgroundScript, 'hang'> & { stdout?: string; stderr?: string }>
+
+export interface FakeBackgroundRun {
+  /** `install`, `bootstrap` — the file name under the run's directory. */
+  name: string
+  /** `<dir>/<name>`. */
+  base: string
+  /** The whole runner script (it contains the real command). */
+  command: string
+  opts?: SandboxExecOptions
+  pid: number
+  runId: string
+  exitCode: number | null
+  killed: boolean
+}
+
+interface LiveRun {
+  record: FakeBackgroundRun
+  chunks: readonly string[]
+  shown: number
+  finalExit: number | null
+}
+
 type PortHandler = (req: Request) => Response | Promise<Response>
 
 type Method =
@@ -108,6 +160,9 @@ export class FakeSandbox implements SandboxPort {
   readonly id: string
   readonly execs: { command: string; opts?: SandboxExecOptions; result: SandboxExecResult }[] = []
   readonly processes: FakeProcessRecord[] = []
+  readonly backgroundRuns: FakeBackgroundRun[] = []
+  /** Every `exec` and `startProcess` command, in the order they were called. */
+  readonly commands: string[] = []
   readonly killed: string[] = []
   readonly files = new Map<string, string>()
   readonly ports = new Map<number, PortHandler | null>()
@@ -129,6 +184,12 @@ export class FakeSandbox implements SandboxPort {
 
   private readonly execScripts: { match: Match; script: ExecScript }[] = []
   private readonly processScripts: { match: Match; script: ProcessScript }[] = []
+  private readonly backgroundScripts: {
+    match: Match
+    script: BackgroundScript | BackgroundScriptFn
+  }[] = []
+  private readonly liveRuns = new Map<string, LiveRun>()
+  private nextBackgroundPid = 4000
   private readonly failures = new Map<Method, Error>()
   private readonly hangs = new Set<Method>()
   recreations = 0
@@ -155,6 +216,20 @@ export class FakeSandbox implements SandboxPort {
         ? { lines: script as readonly string[] }
         : (script as ProcessScript),
     })
+    return this
+  }
+
+  onBackground(match: Match, script: BackgroundScript | BackgroundScriptFn): this {
+    this.backgroundScripts.push({ match, script })
+    return this
+  }
+
+  /** End a live background run by name (the latest with that name), as if it exited. */
+  finishBackground(name: string, result: { exitCode?: number; log?: string } = {}): this {
+    const run = [...this.liveRuns.values()].reverse().find(r => r.record.name === name)
+    if (!run) throw new Error(`FakeSandbox: no live background run ${name}`)
+    if (result.log !== undefined) this.files.set(`${run.record.base}.log`, result.log)
+    this.endRun(run, result.exitCode ?? 0)
     return this
   }
 
@@ -191,6 +266,7 @@ export class FakeSandbox implements SandboxPort {
   /** The container died and came back empty — see the header. */
   recreate(): this {
     this.recreations++
+    this.liveRuns.clear()
     this.files.clear()
     this.ports.clear()
     for (const p of this.processes) {
@@ -220,6 +296,7 @@ export class FakeSandbox implements SandboxPort {
   private interrupt(): never {
     this.interruptArmed = false
     this.interruptions++
+    this.liveRuns.clear()
     this.files.clear()
     this.ports.clear()
     for (const p of this.processes) if (p.exitCode === null) p.exitCode = -1
@@ -240,6 +317,13 @@ export class FakeSandbox implements SandboxPort {
   async exec(command: string, opts?: SandboxExecOptions): Promise<SandboxExecResult> {
     await this.guard('exec')
     if (this.interruptArmed) this.interrupt()
+    this.commands.push(command)
+    const own = this.backgroundControl(command)
+    if (own) {
+      const result: SandboxExecResult = { exitCode: own.exitCode, stdout: '', stderr: '' }
+      this.execs.push({ command, opts, result })
+      return result
+    }
     const script = this.execScripts.find(s => matches(s.match, command))?.script
     const partial = typeof script === 'function' ? await script(command, opts) : (script ?? {})
     const result: SandboxExecResult = { exitCode: 0, stdout: '', stderr: '', ...partial }
@@ -249,6 +333,8 @@ export class FakeSandbox implements SandboxPort {
 
   async startProcess(command: string, opts?: SandboxExecOptions): Promise<SandboxProcess> {
     await this.guard('startProcess')
+    this.commands.push(command)
+    if (command.startsWith(BACKGROUND_MARKER)) return this.startBackground(command, opts)
     const script = this.processScripts.find(s => matches(s.match, command))?.script ?? { lines: [] }
     const id = `proc-${this.nextPid++}`
     this.processes.push({ id, command, opts, script, killed: false, exitCode: null })
@@ -318,7 +404,121 @@ export class FakeSandbox implements SandboxPort {
 
   async readFile(path: string): Promise<string | null> {
     await this.guard('readFile')
+    this.revealChunk(path)
     return this.files.get(path) ?? null
+  }
+
+  // ---- background runs (`runInBackground`'s file protocol) ---------------------------------------
+
+  private startBackground(command: string, opts?: SandboxExecOptions): SandboxProcess {
+    const parsed = parseBackgroundRunner(command)
+    if (!parsed) throw new Error('FakeSandbox: an unreadable background runner')
+    const { base, runId } = parsed
+    const name = base.slice(base.lastIndexOf('/') + 1)
+    const found = this.backgroundScripts.find(s => matches(s.match, command))?.script ?? {}
+    // A function that throws synchronously: the SDK's `startProcess` failed.
+    const outcome = typeof found === 'function' ? found(command, opts) : null
+    for (const suffix of ['.exit', '.log', '.pid']) this.files.delete(`${base}${suffix}`)
+    const record: FakeBackgroundRun = {
+      name,
+      base,
+      command,
+      opts,
+      pid: this.nextBackgroundPid++,
+      runId,
+      exitCode: null,
+      killed: false,
+    }
+    this.backgroundRuns.push(record)
+    this.files.set(`${base}.pid`, `${record.pid} ${runId}\n`)
+    this.files.set(`${base}.log`, '')
+    const run: LiveRun = { record, chunks: [], shown: 0, finalExit: null }
+    this.liveRuns.set(runId, run)
+    const settle = (
+      result: Omit<BackgroundScript, 'hang'> & { stdout?: string; stderr?: string }
+    ) => {
+      // Killed, or the container was wiped under it: nothing left to write into.
+      if (record.exitCode !== null || !this.liveRuns.has(runId)) return
+      const log =
+        result.log ??
+        [result.stdout, result.stderr].filter((part): part is string => Boolean(part)).join('\n')
+      this.startChunks(run, typeof log === 'string' ? [log] : log, result.exitCode ?? 0)
+    }
+    if (outcome instanceof Promise) {
+      outcome.then(settle, () => {
+        // The runner died: no exit file, and `kill -0` says it is gone.
+        this.liveRuns.delete(runId)
+      })
+    } else if (outcome) {
+      settle(outcome)
+    } else {
+      const script = found as BackgroundScript
+      if (!script.hang) {
+        const log = script.log ?? ''
+        this.startChunks(run, typeof log === 'string' ? [log] : log, script.exitCode ?? 0)
+      } else if (script.log !== undefined) {
+        this.files.set(
+          `${base}.log`,
+          typeof script.log === 'string' ? script.log : script.log.join('')
+        )
+      }
+    }
+    return { id: `bg-${record.pid}` }
+  }
+
+  /** `chunks` appear one per read of the log; the exit follows the last. One chunk ends it now. */
+  private startChunks(run: LiveRun, chunks: readonly string[], exitCode: number): void {
+    run.finalExit = exitCode
+    if (chunks.length <= 1) {
+      this.files.set(`${run.record.base}.log`, chunks[0] ?? '')
+      this.endRun(run, exitCode)
+      return
+    }
+    run.chunks = chunks
+    run.shown = 0
+  }
+
+  private revealChunk(path: string): void {
+    for (const run of this.liveRuns.values()) {
+      if (path !== `${run.record.base}.log` || run.chunks.length === 0) continue
+      if (!this.files.has(path)) return
+      run.shown = Math.min(run.shown + 1, run.chunks.length)
+      this.files.set(path, run.chunks.slice(0, run.shown).join(''))
+      if (run.shown === run.chunks.length && run.finalExit !== null) {
+        this.endRun(run, run.finalExit)
+      }
+      return
+    }
+  }
+
+  private endRun(run: LiveRun, exitCode: number): void {
+    run.record.exitCode = exitCode
+    this.liveRuns.delete(run.record.runId)
+    // A container that was wiped under the run keeps no files to write into.
+    if (this.files.has(`${run.record.base}.pid`)) {
+      this.files.set(`${run.record.base}.exit`, `${run.record.runId} ${exitCode}\n`)
+    }
+  }
+
+  /** `kill -0 <pid>` and the group kill, answered for a background run's pid. */
+  private backgroundControl(command: string): { exitCode: number } | null {
+    const alive = /^kill -0 (\d+) /.exec(command)
+    if (alive) {
+      const pid = Number(alive[1])
+      const live = [...this.liveRuns.values()].some(r => r.record.pid === pid)
+      return { exitCode: live ? 0 : 1 }
+    }
+    const kill = /^kill -TERM -- -(\d+)/.exec(command)
+    if (kill) {
+      const pid = Number(kill[1])
+      const run = [...this.liveRuns.values()].find(r => r.record.pid === pid)
+      if (run) {
+        run.record.killed = true
+        this.endRun(run, 143)
+      }
+      return { exitCode: 0 }
+    }
+    return null
   }
 
   async setAllowedHosts(hosts: readonly string[]): Promise<void> {
@@ -370,6 +570,7 @@ export class FakeSandbox implements SandboxPort {
     this.destroyed = true
     this.started = false
     this.destroyCount++
+    this.liveRuns.clear()
     this.files.clear()
     this.ports.clear()
     for (const p of this.processes) {

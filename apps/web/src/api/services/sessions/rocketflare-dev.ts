@@ -29,9 +29,15 @@
  * in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
  * for in short chunks, failing at once if the dev server exits.
  *
- * A failed command's error carries the last `ERROR_TAIL_LINES` of its stdout and stderr, the
- * database URI scrubbed (`tailOf`), and the install and bootstrap run under one `flock`
- * (`serialised`), so a re-run step attempt never races an earlier one's `pnpm install`.
+ * The install and the kit bootstrap each run as a BACKGROUND command, polled
+ * (`background-command.ts`) — never one blocking `exec`: the Sandbox SDK queues every other call
+ * behind a running exec and the sandbox host's binding drops a long one. A step retry attaches to
+ * the run an earlier attempt left going; the running step's detail follows the kit's `✔ n/10`
+ * lines (`onProgress`); past `BOOTSTRAP_TIMEOUTS` the process group is killed.
+ *
+ * A failed command's error carries the last `ERROR_TAIL_LINES` of its output, the database URI
+ * scrubbed (`tailOf`), and the install and bootstrap run under one `flock` (`serialised`), so a
+ * re-run step attempt never races an earlier one's `pnpm install`.
  *
  * **Never port 3000**: it is the Sandbox SDK's own control server inside every sandbox (S7
  * finding 3); `tests/config/session-bootstrap.test.ts` pins that nothing here names it.
@@ -41,6 +47,11 @@
  * bootstrap command and in the checkout's git-ignored `.dev.vars`; never in an argument, a step
  * result or an event.
  */
+import {
+  BackgroundCommandTimeoutError,
+  formatDuration,
+  runInBackground,
+} from './background-command'
 import { sessionDbEgressHosts } from './db/neon-session-db'
 import { type SandboxPort, SandboxProcessExitedError, sessionAllowedHosts } from './ports'
 
@@ -73,7 +84,10 @@ export const CLAUDE_PROJECT_DIR = `${SESSION_HOME}/.claude/projects/${SESSION_WO
 export const claudeTranscriptPath = (claudeSessionId: string): string =>
   `${CLAUDE_PROJECT_DIR}/${claudeSessionId}.jsonl`
 
-/** How long each phase may take before the step fails (then cleanup runs). */
+/**
+ * How long each phase may take before the step fails (then cleanup runs). The install and the
+ * bootstrap are killed at theirs (`runInBackground`).
+ */
 export const BOOTSTRAP_TIMEOUTS = {
   installMs: 10 * 60_000,
   bootstrapMs: 15 * 60_000,
@@ -272,6 +286,17 @@ export interface SessionBootstrapContext {
   dev: SessionDevEnv
   /** A resume against an already-prepared database: the parts of the kit bootstrap to leave out. */
   skip?: readonly BootstrapSkip[]
+  /**
+   * The running step's detail, called only when it changes: `pnpm install`, then the kit
+   * bootstrap's latest `✔ n/10 name` ({@link bootstrapProgressOf}). Never carries a secret.
+   */
+  onProgress?: (detail: string) => void | Promise<void>
+  /** How often the long commands are polled (`SESSION_CALL_LIMITS.commandPollMs`). */
+  pollMs?: number
+  /** Caps each command's own deadline (`BOOTSTRAP_TIMEOUTS`) — the steps pass `execMaxMs`. */
+  maxCommandMs?: number
+  /** Test hook: the poll's sleep. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export interface BootstrapTimings {
@@ -314,10 +339,85 @@ export function tailOf(text: string, secrets: readonly string[] = [], lines = ER
   return [...headline.slice(0, 4), ...tail].join('\n')
 }
 
+/**
+ * The detail a running boot step shows for the kit bootstrap's progress: its latest `✔ n/10 name`
+ * (or `✖ n/10 name`) line, as `✔ 4/10 database` — the mark, the count and the step's own name,
+ * nothing else of the line (its `verify` text could name the database host). Null when the log has
+ * no such line yet.
+ */
+export function bootstrapProgressOf(log: string): string | null {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes from the kit's output
+  const clean = log.replace(/\u001b\[[0-9;]*m/g, '')
+  let found: string | null = null
+  for (const m of clean.matchAll(/^\s*([✔✖])\s+(\d+\/\d+)\s+([a-z][a-z-]*)/gm)) {
+    found = `${m[1]} ${m[2]} ${m[3]}`
+  }
+  return found
+}
+
+/** What a running boot step shows while the install runs (pnpm is silent: `--reporter=silent`). */
+export const INSTALL_PROGRESS = 'pnpm install'
+/** ...and when the kit bootstrap starts, before its first `✔ n/10` line. */
+export const BOOTSTRAP_PROGRESS = "starting the app's bootstrap"
+
+/**
+ * One long phase as a polled background command (`background-command.ts`), under the bootstrap
+ * lock (`serialised`): a non-zero exit and a deadline both become a {@link SessionBootstrapError}
+ * with the redacted tail of what it printed.
+ */
+async function runPhase(
+  ctx: SessionBootstrapContext,
+  phase: 'install' | 'bootstrap',
+  opts: {
+    command: string
+    timeoutMs: number
+    env: Record<string, string>
+    what: string
+    progressOf?: (log: string) => string | null
+  }
+): Promise<void> {
+  const timeoutMs = Math.min(opts.timeoutMs, ctx.maxCommandMs ?? opts.timeoutMs)
+  const report = ctx.onProgress
+  let result: { exitCode: number; stdout: string }
+  try {
+    result = await runInBackground(ctx.sandbox, {
+      name: phase,
+      dir: SESSION_LAUNCH_DIR,
+      command: serialised(opts.command, timeoutMs),
+      cwd: SESSION_WORKSPACE,
+      env: opts.env,
+      timeoutMs,
+      ...(ctx.pollMs !== undefined ? { pollMs: ctx.pollMs } : {}),
+      ...(ctx.sleep ? { sleep: ctx.sleep } : {}),
+      ...(report && opts.progressOf ? { onProgress: report, progressOf: opts.progressOf } : {}),
+    })
+  } catch (err) {
+    if (!(err instanceof BackgroundCommandTimeoutError)) throw err
+    const tail = tailOf(err.log, [ctx.dbUri])
+    throw new SessionBootstrapError(
+      phase,
+      `${opts.what} did not finish within ${formatDuration(err.timeoutMs)}; Launch stopped it${tail ? `:\n${tail}` : ''}`
+    )
+  }
+  if (result.exitCode !== 0) {
+    throw new SessionBootstrapError(
+      phase,
+      `${opts.what} failed (exit ${result.exitCode}):\n${tailOf(result.stdout, [ctx.dbUri])}`
+    )
+  }
+}
+
 /** The kit bootstrap against `ctx.dbUri`, then the dev-server keys. See the header. */
 export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<BootstrapTimings> {
   const { sandbox, dev } = ctx
   const env = sessionProcessEnv(dev)
+  let shown: string | null = null
+  const show = async (detail: string) => {
+    if (!ctx.onProgress || detail === shown) return
+    shown = detail
+    await Promise.resolve(ctx.onProgress(detail)).catch(() => {})
+  }
+  const progressCtx: SessionBootstrapContext = { ...ctx, onProgress: show }
 
   // The container reaches its database directly — so exactly that endpoint joins the allow-list,
   // REPLACING any earlier one (the `dev` a prepare run used is dropped when the session's own
@@ -325,35 +425,28 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(ctx.dbUri)))
 
   const t0 = Date.now()
-  const install = await sandbox.exec(serialised(INSTALL_COMMAND, BOOTSTRAP_TIMEOUTS.installMs), {
-    cwd: SESSION_WORKSPACE,
-    env,
+  await show(INSTALL_PROGRESS)
+  await runPhase(progressCtx, 'install', {
+    command: INSTALL_COMMAND,
     timeoutMs: BOOTSTRAP_TIMEOUTS.installMs,
+    env,
+    what: 'pnpm install',
   })
-  if (install.exitCode !== 0) {
-    throw new SessionBootstrapError(
-      'install',
-      `pnpm install failed (exit ${install.exitCode}):\n${tailOf(`${install.stdout}\n${install.stderr}`, [ctx.dbUri])}`
-    )
-  }
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
   const skip: Record<string, string> = ctx.skip?.length
     ? { [BOOTSTRAP_SKIP_ENV]: ctx.skip.join(',') }
     : {}
-  const boot = await sandbox.exec(serialised(BOOTSTRAP_COMMAND, BOOTSTRAP_TIMEOUTS.bootstrapMs), {
-    cwd: SESSION_WORKSPACE,
-    env: { ...env, ...skip, LAUNCH_DB_URL: ctx.dbUri },
+  await show(BOOTSTRAP_PROGRESS)
+  // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
+  await runPhase(progressCtx, 'bootstrap', {
+    command: BOOTSTRAP_COMMAND,
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
+    env: { ...env, ...skip, LAUNCH_DB_URL: ctx.dbUri },
+    what: "The app's bootstrap",
+    progressOf: bootstrapProgressOf,
   })
-  if (boot.exitCode !== 0) {
-    // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
-    throw new SessionBootstrapError(
-      'bootstrap',
-      `The app's bootstrap failed (exit ${boot.exitCode}):\n${tailOf(`${boot.stdout}\n${boot.stderr}`, [ctx.dbUri])}`
-    )
-  }
   const t2 = Date.now()
 
   await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))

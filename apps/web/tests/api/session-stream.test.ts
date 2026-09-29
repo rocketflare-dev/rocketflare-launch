@@ -134,6 +134,37 @@ describe('the session projection', () => {
     ).toBe(JSON.stringify(events))
   })
 
+  it('a running step row for an OPEN step is progress: its detail, and no second STEP_STARTED', () => {
+    const p = createSessionProjector({ id: 'x', status: 'booting' })
+    let seq = 0
+    const step = (status: string, detail?: string) =>
+      p.push({
+        id: crypto.randomUUID(),
+        sessionId: 'x',
+        seq: ++seq,
+        turn: 0,
+        type: 'step',
+        data: { key: 'bootstrap', label: 'Installing and seeding', status, detail },
+        at: new Date(),
+      } as never)
+    const frames = [
+      ...step('running'),
+      ...step('running', '✔ 4/10 database'),
+      ...step('done'),
+      ...step('running'),
+    ]
+    expect(frames.map(f => f.type)).toEqual([
+      'STEP_STARTED',
+      'CUSTOM',
+      'CUSTOM',
+      'STEP_FINISHED',
+      'CUSTOM',
+      'STEP_STARTED',
+      'CUSTOM',
+    ])
+    expect(frames[2]).toMatchObject({ value: { status: 'running', detail: '✔ 4/10 database' } })
+  })
+
   it('ends only with the SESSION: RUN_FINISHED when shipped or ended, RUN_ERROR when failed', () => {
     const p = createSessionProjector({ id: 'x', status: 'ready' })
     expect(p.finish({ id: 'x', status: 'ready' })).toEqual([])
