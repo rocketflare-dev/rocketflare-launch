@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A session's pull request opens: the token that opens it now carries `contents: read` beside
+  `pull_requests: write`. Without it GitHub refuses with 422 "not all refs are readable". A failed
+  GitHub call also keeps GitHub's `errors[]` in its message, so a 422 says why.
 - **Launch runs the ship gate itself** (slices 2c–2f of rocketflare-launch#1; `docs/CONCEPTS.md`
   §18.13). A ship is Workflow steps, not a Claude turn: `ship.claim` → `ship.save` → per attempt
   `ship.gate` lint → typecheck → `ship.db` → `ship.gate` test → `ship.db-clean`, then on red ONE
