@@ -270,7 +270,7 @@ describe('the egress allow-list', () => {
   it('sessionBootstrap applies it before the bootstrap runs, replacing an earlier database’s', async () => {
     const sandbox = new FakeSandbox({ name: 's1' })
     let listAtBootstrap: string[] = []
-    sandbox.onExec(/scripts\/bootstrap\.mjs/, () => {
+    sandbox.onBackground(/scripts\/bootstrap\.mjs/, () => {
       listAtBootstrap = [...sandbox.allowedHosts]
       return {}
     })
@@ -293,13 +293,13 @@ describe('the egress allow-list', () => {
       'api.us-east-2.aws.neon.tech',
     ])
     // The URI travels only in the bootstrap's environment, never on a command line.
-    const boot = sandbox.execs.filter(e => /bootstrap\.mjs/.test(e.command))
+    const boot = sandbox.backgroundRuns.filter(r => /bootstrap\.mjs/.test(r.command))
     expect(boot.at(-1)?.opts?.env).toMatchObject({
       LAUNCH_DB_URL: branchUri,
       DATABASE_DRIVER: 'neon',
       GOGC: 'off',
     })
-    for (const e of sandbox.execs) expect(e.command).not.toContain('pw2@')
+    for (const command of sandbox.commands) expect(command).not.toContain('pw2@')
   })
 
   it('sessionBootstrap refuses a non-Neon database before running anything', async () => {

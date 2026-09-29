@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A coding session's install and kit bootstrap run as polled BACKGROUND commands
+  (`services/sessions/background-command.ts`), not one blocking `exec` each: the Sandbox SDK queued
+  every other call behind a running exec and the remote binding dropped a long one after ~7 min.
+  A step retry attaches to the run still going instead of starting a second, the deadline kills
+  the process group with the log's tail in the error, and the running boot step now shows where it
+  is ("Installing and seeding — ✔ 4/10 database"), one event per change.
 - Launch's test Postgres moves from host port 5433 to 5499 (`docker-compose.test.yml`, `.env.test`,
   CI, evals), so it no longer collides with the Rocketflare kit's and kit-scaffolded apps' test
   database on 5433; recreate it with `pnpm test:db:up`. The dev-database scan skips both ports.

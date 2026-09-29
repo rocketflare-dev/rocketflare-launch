@@ -73,6 +73,7 @@ const FAST: Partial<SessionCallLimits> = {
   execMaxMs: 60,
   endPollMs: 5,
   heartbeatMs: 5,
+  commandPollMs: 5,
 }
 
 interface Harness {
@@ -199,13 +200,19 @@ describe('bounded sandbox calls', () => {
     expect(branchOf(h)).toBeUndefined()
   })
 
-  it('an install that never answers is bounded too', async () => {
+  it('an install that never finishes is killed at its deadline, with what it printed', async () => {
     const h = await harness()
-    h.sandbox().onExec(/pnpm install/, () => new Promise(() => {}))
+    h.sandbox().onBackground(/pnpm install/, { hang: true, log: 'Progress: resolved 812\n' })
     const run = await drive(h, noWait)
     expect(run.names.slice(-3)).toEqual(['bootstrap', 'fail', 'cleanup'])
     expect((await reload(h.row)).error).toBe(
-      `${BOOT_STEP_LABELS.bootstrap}: the sandbox (exec pnpm install) did not answer within 0.06 s`
+      'pnpm install did not finish within 0.06 s; Launch stopped it:\nProgress: resolved 812'
+    )
+    const [install] = h.sandbox().backgroundRuns
+    expect(install).toMatchObject({ name: 'install', killed: true, exitCode: 143 })
+    // The whole process group, by the pid the run recorded.
+    expect(h.sandbox().commands).toContainEqual(
+      expect.stringMatching(new RegExp(`^kill -TERM -- -${install?.pid} `))
     )
   })
 })
@@ -213,7 +220,7 @@ describe('bounded sandbox calls', () => {
 describe('a container that died', () => {
   it('under a command: said so, as a restart — not a bare HTTP 500', async () => {
     const h = await harness()
-    h.sandbox().onExec(/pnpm install/, () => {
+    h.sandbox().onBackground(/pnpm install/, () => {
       // Docker's OOM killer took the sandbox's control server; the SDK answers a bare 500.
       h.sandbox().recreate()
       throw new Error('SandboxError: HTTP error! status: 500')
@@ -245,7 +252,7 @@ describe('a container that died', () => {
 describe('the dev server', () => {
   it('exits: the boot fails at once, with what it printed', async () => {
     const h = await harness({ devServer: 'exits' })
-    h.sandbox().onExec(/pnpm install/, () => {
+    h.sandbox().onBackground(/pnpm install/, () => {
       h.sandbox().files.set(DEV_LOG_FILE, 'wrangler 4.127\nError: The service was stopped\n')
       return {}
     })
@@ -263,7 +270,7 @@ describe('End during a boot step', () => {
   it('stops it within a poll and ENDS the session (not failed)', async () => {
     const h = await harness()
     let release: () => void = () => {}
-    h.sandbox().onExec(/pnpm install/, async () => {
+    h.sandbox().onBackground(/pnpm install/, async () => {
       await patch(h.row, { requestedAction: 'end' })
       await new Promise<void>(resolve => {
         release = resolve
@@ -287,7 +294,7 @@ describe('End during a boot step', () => {
     const before = new Date(Date.now() - 60 * 60_000)
     await patch(h.row, { lastActivityAt: before })
     let seen: Date | null = null
-    h.sandbox().onExec(/pnpm install/, async () => {
+    h.sandbox().onBackground(/pnpm install/, async () => {
       await new Promise(resolve => setTimeout(resolve, 40))
       seen = (await reload(h.row)).lastActivityAt
       return {}

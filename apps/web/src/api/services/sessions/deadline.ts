@@ -45,6 +45,11 @@ export interface SessionCallLimits {
   /** How often a boot step says it is alive (`sessions.last_activity_at`, the reconcile's clock). */
   heartbeatMs: number
   /**
+   * How often a long BACKGROUND command (the install, the kit bootstrap — `background-command.ts`)
+   * has its files read. Its deadline is its own (`BOOTSTRAP_TIMEOUTS`), capped by `execMaxMs`.
+   */
+  commandPollMs: number
+  /**
    * Not a call's budget but the loop's own clocks, here so tests shrink them the same way: the
    * checkpoint debounce and its cap (`SESSION_CHECKPOINT_DEBOUNCE_MS` / `_MAX_DEFER_MS`,
    * `checkpoint.ts`, the defaults when absent).
@@ -64,6 +69,7 @@ export const SESSION_CALL_LIMITS: SessionCallLimits = {
   vendorMs: 5 * 60_000,
   endPollMs: 10_000,
   heartbeatMs: 30_000,
+  commandPollMs: 2_500,
 }
 
 /** A bounded call that did not come back in time. */

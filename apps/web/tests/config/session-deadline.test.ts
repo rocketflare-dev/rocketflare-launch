@@ -162,16 +162,20 @@ describe('a failed command says what it printed', () => {
   })
 
   it('sessionBootstrap puts the install’s output in its error, and serialises the two commands', async () => {
-    const fake = new FakeSandbox({ name: 's-boot' }).onExec(/pnpm install/, {
+    const fake = new FakeSandbox({ name: 's-boot' }).onBackground(/pnpm install/, {
       exitCode: 1,
-      stdout: 'Progress: resolved 1\n',
-      stderr: ` ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/x: Not Found\nwhile using ${DB_URI}\n`,
+      log: `Progress: resolved 1\n ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/x: Not Found\nwhile using ${DB_URI}\n`,
     })
     const err = await sessionBootstrap({ sandbox: fake, dbUri: DB_URI, dev }).catch(e => e)
     expect(err).toBeInstanceOf(SessionBootstrapError)
+    expect(err.phase).toBe('install')
+    expect(err.message).toMatch(/^pnpm install failed \(exit 1\):\n/)
     expect(err.message).toContain('ERR_PNPM_FETCH_404')
     expect(err.message).not.toContain('s3cret-pw')
-    expect(fake.execs[0]?.command).toBe(serialised(INSTALL_COMMAND, 10 * 60_000))
-    expect(fake.execs[0]?.command).toContain(`flock -w 600 ${BOOTSTRAP_LOCK} pnpm install`)
+    expect(err.message).toContain('while using <database url>')
+    // In the background, under the lock — never a blocking exec.
+    expect(fake.execs.filter(e => /pnpm install/.test(e.command))).toEqual([])
+    expect(fake.backgroundRuns[0]?.command).toContain(serialised(INSTALL_COMMAND, 10 * 60_000))
+    expect(fake.backgroundRuns[0]?.command).toContain(`flock -w 600 ${BOOTSTRAP_LOCK} pnpm install`)
   })
 })

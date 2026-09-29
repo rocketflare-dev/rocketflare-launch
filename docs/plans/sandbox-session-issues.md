@@ -45,6 +45,24 @@ or helper.
 4. **Local Docker on Rosetta.** colima restarted with `--vm-type vz --vz-rosetta --cpu 6 --memory 12`
    (`docs/SESSIONS-LOCAL.md`).
 
+## Found 2026-09-29 (remote)
+
+1. **The database WebSocket never opened** from a real container: a passed-through 101 carried
+   `Upgrade`/`Connection` twice, which Node's clients reject. Fixed in `8de9d75` (the neon handler
+   re-wraps the 101 without the origin's copies).
+2. **The remote binding drops a long blocking exec RPC** after ~7 min ("Peer closed WebSocket:
+   1006"): the result is lost while the command keeps running in the container.
+3. **The Sandbox SDK serialises every call behind a running `exec`**: during a 25 s exec,
+   `readFile`, `startProcess` and another `exec` all waited. A step retry's short exec ("did not
+   answer within 2 min") queued behind the orphaned first run. A BACKGROUND process blocks nothing
+   (`startProcess` answers in 0.3 s; its log file reads live).
+4. **So the install and the kit bootstrap now run in the background and are polled**
+   (`services/sessions/background-command.ts`, branch `observable-bootstrap`): files
+   `<name>.log|.pid|.exit` under `/workspace/.launch`, a step retry attaches to the live run, the
+   deadline kills the process group, and the running boot step shows the kit's latest `✔ n/10`
+   line — which is how the next remote run will show WHERE the bootstrap stalls. Still one
+   blocking exec: the ship gate.
+
 ## Before retesting
 
 1. **Add the Anthropic key in Settings → Platform** (`anthropic_api_key`). Neither Setup nor

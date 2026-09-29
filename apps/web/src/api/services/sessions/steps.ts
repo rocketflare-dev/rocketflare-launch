@@ -109,6 +109,11 @@ export interface StepScope {
   limits?: SessionCallLimits
   /** The boot step running (its checklist label) — what a timeout names. Set by `withProgress`. */
   phase?: string
+  /**
+   * Set by `withProgress`: say what the running boot step is doing now — a `step` event, still
+   * `running`, with this `detail`. Callers only call it when the detail CHANGES.
+   */
+  progress?: (detail: string) => Promise<void>
 }
 
 export const limitsOf = (scope: Pick<StepScope, 'limits'>): SessionCallLimits =>
@@ -850,7 +855,12 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
     )
     const sandbox = sandboxFor(scope, session)
     await inOurContainer(scope, sandbox, bootId, () =>
-      sessionBootstrap({ sandbox, dbUri: uri, dev: devEnvFor(scope.cfg, session) })
+      sessionBootstrap({
+        sandbox,
+        dbUri: uri,
+        dev: devEnvFor(scope.cfg, session),
+        ...bootstrapPolling(scope),
+      })
     )
   } catch (err) {
     await saveAppSessionDb(scope, app.id, { ...settled, status: 'failed' })
@@ -863,6 +873,16 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
     preparedAt: scope.now(),
   })
   return { prepared: true }
+}
+
+/** How a step's kit bootstrap polls its commands and reports progress (`sessionBootstrap`). */
+function bootstrapPolling(scope: StepScope) {
+  const limits = limitsOf(scope)
+  return {
+    pollMs: limits.commandPollMs,
+    maxCommandMs: limits.execMaxMs,
+    ...(scope.progress ? { onProgress: scope.progress } : {}),
+  }
 }
 
 export interface BootstrapStepResult {
@@ -915,6 +935,7 @@ export async function bootstrapStep(
       dbUri: uri,
       dev,
       skip,
+      ...bootstrapPolling(scope),
     })
     if (hash) await updateSession(scope, { migrationsHash: hash })
     return { ...timings, migrated: migrate, seeded: !prepared }
@@ -1127,6 +1148,10 @@ export function withProgress<T>(
     const label = BOOT_STEP_LABELS[phase]
     const scope: StepScope = { ...outer, phase: label }
     const emit = emitterFor(scope)
+    // Progress on the running step: the same `step` row, still `running`, with a detail.
+    scope.progress = async detail => {
+      await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'running', detail } })
+    }
     // An end asked before (or between) steps: stop before starting anything.
     await throwIfEndRequested(scope)
     await heartbeat(scope)

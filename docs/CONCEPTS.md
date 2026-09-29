@@ -1499,6 +1499,29 @@ RUNTIME by `sessionBootstrap` (`setAllowedHosts`, bounded at 90 s): measured und
 sandbox 0.12.10, a runtime `setAllowedHosts` on a running container returns at once and the next
 command runs, immediately and after 40 s idle — it re-registers the interception on the proxy
 sidecar and does not restart anything.
+**Long commands run in the background and are polled, never one blocking `exec`**
+(`background-command.ts` `runInBackground`: the install and the kit bootstrap, for a prepare run
+and a session's own bootstrap alike). Measured on real Cloudflare containers (2026-09-29): **the
+Sandbox SDK serialises every call to a sandbox behind a running `exec`** — during a 25 s exec,
+`readFile`, `startProcess` and another `exec` all waited for it — so a long exec cannot be watched
+and a step retry's short exec queued behind the first attempt's orphaned run ("did not answer
+within 2 min"); and over the sandbox host's remote binding a blocking exec RPC was dropped after
+~7 min ("Peer closed WebSocket: 1006"), its result lost while the command kept running. While a
+BACKGROUND process runs every call answers at once. So the command starts with `startProcess`
+(a runner script: `setsid -w` gives it its own process group, whose leader writes
+`<name>.pid` = `<pid> <runId>`; output in `<name>.log`; `<runId> <code>` in `<name>.exit`, via tmp +
+`mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s) with short
+`readFile`s — every 8th poll also `kill -0`s the pid, so a runner that died without an exit code
+is noticed; three failed polls in a row give up. A step RETRY attaches to a live run of the same
+name instead of starting another; a finished one is never reused (the same name runs again for
+another database). Past `BOOTSTRAP_TIMEOUTS` (capped by `execMaxMs`) the whole process group is
+killed and the step fails with the redacted log tail, as a non-zero exit does
+(`SessionBootstrapError`). **The running step says where it is**: `withProgress` gives each boot
+step `scope.progress(detail)`, a `step` row still `running` with a `detail` — `pnpm install`,
+`starting the app's bootstrap`, then the kit's latest `✔ n/10 name` (mark, count and name only,
+`bootstrapProgressOf`) — written only when it changes; the boot checklist shows it under the label,
+and the AG-UI projection sends a running row for an already-open step as `kit.agent.step` alone,
+never a second `STEP_STARTED`.
 
 **Known gaps:** the kit's bootstrap refuses root, so the session works around it
 (`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). On an ARM Mac the amd64 image runs
@@ -1540,8 +1563,13 @@ remote binding and the host's handlers injecting on a real container are covered
 metered (`container_seconds` stays 0; the host's `onStop` has nowhere to write), a container the
 platform put to sleep is not marked `suspended` by it, and the host keeps no workspace backups. JS
 RPC, a `ReadableStream` result and the HMR upgrade through a REMOTE binding are read from wrangler
-4.127's remote-proxy source (capnweb over a WebSocket; `Upgrade` passed through), not yet run; nor
-is a single `exec` call held open for minutes across it.
+4.127's remote-proxy source (capnweb over a WebSocket; `Upgrade` passed through), not yet run.
+The remaining blocking execs are short (the clone ≤ 5 min, the port waits in 20 s chunks, the
+migrations hash); the ship gate (`ship.ts`, lint + typecheck + test + build) is still ONE blocking
+exec and has the same exposure. The background runner needs `setsid` and `flock` (util-linux, in
+the Sandbox base image); an attached run gets its whole deadline again from the attach, and a
+FakeSandbox, not a real container, proves the attach and the kill paths (the runner script itself
+runs under bash in `background-command.test.ts` where `setsid` exists).
 
 ### 18.11 Chat, the model proxy and budgets
 
