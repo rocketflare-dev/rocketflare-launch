@@ -165,6 +165,11 @@ export class NeonSessionDb implements SessionDbPort {
     if (operations?.length) await (await this.neon()).waitForOperations(projectId, operations)
   }
 
+  /** A new branch is usable once `create_branch` finishes — its compute starts on its own. */
+  private async settleBranch(projectId: string, operations: readonly NeonOperation[]) {
+    if (operations.length) await (await this.neon()).waitForBranch(projectId, operations)
+  }
+
   async ensureDev(app: SessionAppRef): Promise<AppSessionDb> {
     const projectId = this.projectOf(app)
     const neon = await this.neon()
@@ -181,7 +186,7 @@ export class NeonSessionDb implements SessionDbPort {
         initSource: 'schema-only',
         endpoints: [{ type: 'read_write' }],
       })
-      await this.settle(projectId, created.operations)
+      await this.settleBranch(projectId, created.operations)
       dev = created.branch
     }
     const repaired = await this.ensureSessionRole(projectId, dev.id)
@@ -274,7 +279,7 @@ export class NeonSessionDb implements SessionDbPort {
         parentId: devBranchId,
         endpoints: [{ type: 'read_write' }],
       })
-      await this.settle(projectId, created.operations)
+      await this.settleBranch(projectId, created.operations)
       branch = created.branch
       host = created.endpoints[0]?.host ?? ''
     }

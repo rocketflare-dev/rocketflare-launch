@@ -15,10 +15,25 @@
  *   an unset one from the org's existing projects' `region_id`.
  * - Launch holds an org key, never a personal one, and an org key **cannot mint project-scoped
  *   keys** (S3), so apps only ever get connection strings.
- * - Neon answers **423 Locked** while a project operation runs. Every call here retries it —
- *   `NEON_LOCKED_RETRIES` times, `NEON_LOCKED_DELAY_MS` apart, through an injectable `sleep` so a
- *   test is never timer-bound — and a write that returns `operations[]` can be awaited with
- *   `waitForOperations` before the next one.
+ * - Neon answers **423 Locked** while a conflicting project operation runs. Every call here
+ *   retries it — `NEON_LOCKED_RETRIES` times, on the capped exponential backoff below, through an
+ *   injectable `sleep` so a test is never timer-bound — and a write that returns `operations[]`
+ *   can be awaited with `waitForOperations` before the next one.
+ * - **Operations** (neon.com/docs/manage/operations, checked 2026-09-29): each has an `action`
+ *   (`create_branch`, `create_timeline`, `start_compute`, `apply_config`, `suspend_compute`,
+ *   `delete_timeline`, …) and a `status`; a create-branch-with-endpoint answers `create_branch`
+ *   (`running`) plus `start_compute` (`scheduling`). Connecting to an idle compute starts it
+ *   ("Connecting to a suspended compute initiates this operation"), and a request that conflicts
+ *   with a running operation is refused with a 423 — which `request` rides out — never silently
+ *   misapplied. So a caller that only needs the BRANCH (its roles, databases, connection URI and
+ *   endpoint host all exist once `create_branch` finishes) waits for `create_branch` alone
+ *   (`waitForBranch`); `start_compute` finishes on its own, and anything that needs the compute
+ *   either wakes it or is held off by the 423. Every other write still waits for all of its
+ *   operations.
+ * - Polls and 423 retries back off: `NEON_BACKOFF_INITIAL_MS` (200 ms), ×`NEON_BACKOFF_FACTOR`
+ *   (1.5), capped at `lockedDelayMs` (`NEON_LOCKED_DELAY_MS`, 1 s) — 200, 300, 450, 675, 1000,
+ *   1000… A wait gives up (504) once it has slept `NEON_OPERATION_TIMEOUT_MS` (120 s, the old
+ *   120 polls × 1 s) — slept time, not wall time, so a test with an instant `sleep` still ends.
  * - The default region is NOT stable across creates (S3), so Launch pins `region_id` once, in the
  *   setup wizard, and passes it on every create.
  *
@@ -59,9 +74,32 @@
 
 export const NEON_API_BASE = 'https://console.neon.tech/api/v2'
 const TIMEOUT_MS = 10_000
-/** How many 423 Locked answers a call rides out, and how far apart. */
-export const NEON_LOCKED_RETRIES = 30
+/**
+ * How many 423 Locked answers a call rides out. 33 on the backoff below sleeps ~30.6 s in all —
+ * the budget the old 30 × 1 s gave.
+ */
+export const NEON_LOCKED_RETRIES = 33
+/** The backoff's cap: the longest a 423 retry or an operation poll waits. */
 export const NEON_LOCKED_DELAY_MS = 1000
+/** The backoff's first wait, and its growth per attempt. */
+export const NEON_BACKOFF_INITIAL_MS = 200
+export const NEON_BACKOFF_FACTOR = 1.5
+/** How long (slept) `waitForOperations` waits in all before it gives up. */
+export const NEON_OPERATION_TIMEOUT_MS = 120_000
+/** The operations a new branch is usable after — see the header. */
+export const BRANCH_READY_ACTIONS: readonly string[] = ['create_branch']
+
+/**
+ * The capped exponential backoff: `initial`, ×`factor` each attempt, never above `max`
+ * (`attempt` 0-based). Exported for the tests that pin the schedule.
+ */
+export function neonBackoffDelay(
+  attempt: number,
+  max: number = NEON_LOCKED_DELAY_MS,
+  initial: number = NEON_BACKOFF_INITIAL_MS
+): number {
+  return Math.min(max, Math.round(initial * NEON_BACKOFF_FACTOR ** attempt))
+}
 
 export interface NeonOptions {
   fetch?: typeof fetch
@@ -69,7 +107,10 @@ export interface NeonOptions {
   /** Waits between 423 retries and operation polls; tests pass one that resolves at once. */
   sleep?: (ms: number) => Promise<void>
   lockedRetries?: number
+  /** The backoff's cap (default `NEON_LOCKED_DELAY_MS`). */
   lockedDelayMs?: number
+  /** The backoff's first wait (default `NEON_BACKOFF_INITIAL_MS`). */
+  initialDelayMs?: number
 }
 
 const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -172,6 +213,14 @@ export class NeonClient {
     return (this.opts.sleep ?? defaultSleep)(ms)
   }
 
+  private backoff(attempt: number): number {
+    return neonBackoffDelay(
+      attempt,
+      this.opts.lockedDelayMs ?? NEON_LOCKED_DELAY_MS,
+      this.opts.initialDelayMs ?? NEON_BACKOFF_INITIAL_MS
+    )
+  }
+
   /** One call, riding out 423 Locked (a project operation is still running). */
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const doFetch = this.opts.fetch ?? fetch
@@ -190,7 +239,7 @@ export class NeonClient {
       })
       if (res.status === 423 && attempt < retries) {
         await res.body?.cancel().catch(() => {})
-        await this.sleep(this.opts.lockedDelayMs ?? NEON_LOCKED_DELAY_MS)
+        await this.sleep(this.backoff(attempt))
         continue
       }
       const parsed = (await res.json().catch(() => ({}))) as { message?: unknown }
@@ -218,41 +267,59 @@ export class NeonClient {
   // ---- P2 writes -------------------------------------------------------------------------------
 
   /**
-   * Poll each operation until it is done. A `failed`/`error` one throws; so does running out of
-   * `maxPolls` (the step's retry takes it from there).
+   * Poll operations until each is done, on the capped backoff (see the header); all still
+   * pending are read in parallel each round. A `failed`/`error` one throws (500); so does
+   * sleeping `timeoutMs` in all (504 — the step's retry takes it from there).
+   *
+   * `actions` narrows the wait to the operations the caller needs (`BRANCH_READY_ACTIONS` for a
+   * new branch — `waitForBranch`); an operation whose `action` is missing is waited for anyway.
    */
   async waitForOperations(
     projectId: string,
-    operations: readonly Pick<NeonOperation, 'id' | 'status'>[],
-    maxPolls = 120
+    operations: readonly Pick<NeonOperation, 'id' | 'status' | 'action'>[],
+    opts: { actions?: readonly string[]; timeoutMs?: number } = {}
   ): Promise<void> {
-    for (const op of operations) {
-      let status = op.status
-      for (let poll = 0; !DONE_OPERATION.has(status); poll++) {
-        if (FAILED_OPERATION.has(status)) {
-          throw new NeonApiError(500, `Neon operation ${op.id} ${status}`, `/projects/${projectId}`)
-        }
-        if (poll >= maxPolls) {
-          throw new NeonApiError(
-            504,
-            `Neon operation ${op.id} still ${status}`,
-            `/projects/${projectId}`
-          )
-        }
-        await this.sleep(this.opts.lockedDelayMs ?? NEON_LOCKED_DELAY_MS)
-        const body = await this.get<{ operation: NeonOperation }>(
-          `/projects/${enc(projectId)}/operations/${enc(op.id)}`
-        )
-        status = body.operation.status
-        if (FAILED_OPERATION.has(status)) {
-          throw new NeonApiError(
-            500,
-            `Neon operation ${op.id} ${status}${body.operation.error ? `: ${body.operation.error}` : ''}`,
-            `/projects/${projectId}`
-          )
-        }
+    const timeoutMs = opts.timeoutMs ?? NEON_OPERATION_TIMEOUT_MS
+    const where = `/projects/${projectId}`
+    const failed = (op: Pick<NeonOperation, 'id' | 'status' | 'error'>) =>
+      new NeonApiError(
+        500,
+        `Neon operation ${op.id} ${op.status}${op.error ? `: ${op.error}` : ''}`,
+        where
+      )
+    let pending = operations.filter(
+      op => !opts.actions || !op.action || opts.actions.includes(op.action)
+    )
+    let slept = 0
+    for (let attempt = 0; ; attempt++) {
+      const bad = pending.find(op => FAILED_OPERATION.has(op.status))
+      if (bad) throw failed(bad)
+      pending = pending.filter(op => !DONE_OPERATION.has(op.status))
+      if (pending.length === 0) return
+      if (slept >= timeoutMs) {
+        const op = pending[0]
+        throw new NeonApiError(504, `Neon operation ${op.id} still ${op.status}`, where)
       }
+      const delay = Math.min(this.backoff(attempt), timeoutMs - slept)
+      await this.sleep(delay)
+      slept += delay
+      pending = await Promise.all(
+        pending.map(async op => {
+          const body = await this.get<{ operation: NeonOperation }>(
+            `/projects/${enc(projectId)}/operations/${enc(op.id)}`
+          )
+          return { ...body.operation, id: op.id }
+        })
+      )
     }
+  }
+
+  /** Wait until a new branch is usable: its `create_branch`, not its compute's start. */
+  waitForBranch(
+    projectId: string,
+    operations: readonly Pick<NeonOperation, 'id' | 'status' | 'action'>[]
+  ): Promise<void> {
+    return this.waitForOperations(projectId, operations, { actions: BRANCH_READY_ACTIONS })
   }
 
   createProject(input: {
