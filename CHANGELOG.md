@@ -25,6 +25,12 @@
   expiry's inline cleanup delete a session's gate branches before its own branch, and a new
   `sessions.gate-sweep` task on the existing `*/5` cron deletes `gate-*` branches older than three
   hours.
+- New apps are cut from Rocketflare 0.15.8 (`DEFAULT_TEMPLATE_PIN`, commit `d5accd3`), whose own
+  tests live in `apps/web/tests/kit-only/`, which the rename deletes, so an app's gate no longer
+  fails on the kit's version chain once the app releases a version of its own. The session image's
+  warm pnpm store follows it (`ARG KIT_TAG` / `SESSION_KIT_TAG` 0.15.8, image `session-4`, so no
+  workspace backup from the old image is restored into the new one). The ship gate's contract is
+  unchanged (`SHIP_GATE_KIT_VERSION` stays 0.15.7; the pin must be at least that).
 - New apps are cut from Rocketflare 0.15.7 (`DEFAULT_TEMPLATE_PIN`, commit `ab09a3f`), which adds
   `pnpm test:ephemeral` — the test suite on a throwaway Neon gate branch, no Docker — for a
   session's ship gate (rocketflare-launch#1). The session image's warm pnpm store follows it

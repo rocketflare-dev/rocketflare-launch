@@ -1144,7 +1144,7 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.7**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.8**: 0.15.0 plus the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
 `docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
@@ -1155,7 +1155,11 @@ the whole config project needed git history its depth-1 checkout lacks), then a 
 works as `migrator` (0.15.5: the kit's db-roles no longer alters CREATEDB/CREATEROLE when they are
 already off, which Postgres 16+ refuses to a role without CREATEDB), then a magic link that
 opening does not spend (0.15.6), then `pnpm test:ephemeral` — the suite on a throwaway Neon gate
-branch, no Docker — which a session's ship gate runs (0.15.7, §18.13). A
+branch, no Docker — which a session's ship gate runs (0.15.7, §18.13; the gate's contract is still
+0.15.7's, `SHIP_GATE_KIT_VERSION`), then the kit's own tests moved to `apps/web/tests/kit-only/`,
+which the rename deletes, so an app's gate no longer fails on the kit's version chain once the app
+releases a version of its own (0.15.8; Launch's scaffold still deletes `plugin-ci.yml` and, if
+present, its old `tests/config` test). A
 `launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
 
 **Kit version (Setup).** A platform admin sets the pin on the Setup page's Kit version card
@@ -1190,7 +1194,7 @@ rename, install, plugins, gate, push), but that app's own CI then failed on the 
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
-kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.7; a config test fails when they drift);
+kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.8; a config test fails when they drift);
 an app pinned to another kit still falls back to the registry for what differs. The Kit version card's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
@@ -1505,8 +1509,8 @@ for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a
 pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code and a warm pnpm store for the default pin's kit (0.15.7, `SESSION_KIT_TAG`; image
-`session-3`). The checkout is `/workspace/app` and `$HOME` is
+Claude Code and a warm pnpm store for the default pin's kit (0.15.8, `SESSION_KIT_TAG`; image
+`session-4`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
