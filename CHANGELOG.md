@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A session container's database WebSocket is now relayed through a `WebSocketPair` of the egress
+  handler's own, which answers every close on both sides. Passed straight through, a close never
+  completed on real Cloudflare containers: the container's socket stayed open, so the kit's
+  `migrate`, `db-roles` and `seed` did their work and then never exited — the remote bootstrap
+  "hang" at step 5.
 - A coding session's bootstrap opens at most two database connections (was five), and usually
   none: Launch makes the kit's RLS role `rocketflare_app` on the app's `dev` branch itself
   (NOLOGIN, held by `session_owner` WITH ADMIN, inherited by every session branch); the sandbox

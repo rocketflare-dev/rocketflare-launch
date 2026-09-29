@@ -158,6 +158,27 @@ The next steps are then: the diagnostic below (HTTPS, Neon's HTTP `/sql`, and a 
 the stuck container); moving the kit's scripts onto neon-http (a kit change); or rolling out a new
 container version (a redeploy). Ask before either of the last two.
 
+**Found (2026-09-29, session `d0d0cbc5`, after the change above): it is not a hang, it is an exit
+that never happens.** With a single `migrate.ts` process stuck, the host's tail showed all three
+of its `/v2` upgrades reach the handler and end (`responseStreamDisconnected`) within 3 s, while
+the process still held three ESTABLISHED sockets to the intercept address and Postgres had no
+backend left. The session's branch already had all 18 migrations. In the same container:
+- a `Pool` query plus `pool.end()` finished in 190 ms, and the process could still not exit 20 s
+  later (`timeout` killed it);
+- a bare WebSocket's `close(1000)` never got its close frame back: `onclose` never fired and the
+  socket sat in CLOSING (readyState 2).
+
+So a passed-through socket's close is forwarded to Neon but never completed back to the
+container, and Node does not exit while a socket is open. `db:check` calls `process.exit(0)`, and
+so did every earlier probe, which is why neither ever "hung"; `migrate.ts`, `db-roles.ts` and
+`seed.ts` end their pools and wait for Node to exit. **The fix**: `forwardDatabase` terminates the
+WebSocket in the Worker (a `WebSocketPair` towards the container, Neon's socket accepted, messages
+relayed, every close answered on both sides). Belt and braces for the kit: its three scripts
+should `process.exit(0)` once done (an upstream kit change).
+
+The `configure` RPC the tail shows every ~2.5 s is Launch's own polling: each host call goes
+through `getSandbox()`, which sends the SDK's `configure(options)` — a no-op when unchanged.
+
 **Next research (a fresh session):**
 
 1. Reproduce with REAL authenticated traffic in a scratch sandbox: a loop of separate processes,
