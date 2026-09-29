@@ -180,11 +180,17 @@ export const sessionTurnEndDataSchema = z
 export const sessionTurnFailedDataSchema = z
   .object({ turn: z.number().int().positive(), message: z.string() })
   .passthrough()
-/** A turn cut off by a rollout, a cancel or the turn timeout. The session goes `suspended` (rollout) or back to `ready`. */
+/**
+ * A turn cut off by a rollout, a container that died under it (`container_lost` — its boot marker
+ * is gone), a cancel or the turn timeout. The session goes `suspended` (rollout, container_lost)
+ * or back to `ready`.
+ */
 export const sessionTurnInterruptedDataSchema = z
   .object({
     turn: z.number().int().positive(),
-    reason: z.enum(['rollout', 'cancelled', 'timeout']),
+    reason: z.enum(['rollout', 'container_lost', 'cancelled', 'timeout']),
+    /** A sentence for the person (`container_lost`: the container stopped, most likely out of memory). */
+    message: z.string().optional(),
   })
   .passthrough()
 export const sessionPreviewReadyDataSchema = z.object({ port: z.number().int().positive() })

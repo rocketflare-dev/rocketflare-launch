@@ -11,8 +11,9 @@
  *   withStepDatabase(env, cfg, db => runTurn(db, ports, session, { realtime, logger }))
  * )
  * // outcome.status: 'completed' | 'failed' | 'interrupted' | 'blocked' | 'rejected' | 'skipped'
- * // outcome.reason (interrupted): 'rollout' → the session is already `suspended`; run suspend#N's
- * //   bookkeeping, do NOT checkpoint (the container is gone). 'cancelled' | 'timeout' → `ready`.
+ * // outcome.reason (interrupted): 'rollout' | 'container_lost' → the session is already
+ * //   `suspended`; destroy what is left of the container (`rollout#N`), do NOT checkpoint (it is
+ * //   gone) — `containerGone(outcome)`. 'cancelled' | 'timeout' → `ready`.
  * ```
  *
  * `runTurn(db, ports, session, opts?) → Promise<TurnOutcome>`:
@@ -21,7 +22,9 @@
  *   `ports.sandbox(session.id)` is used); `session` — the row (only `id` and `tenantId` are read
  *   from it: the turn RE-READS the row, because the row is the truth and a wake carries nothing).
  * - `opts` — {@link RunTurnOptions}: `realtime` for the `entity.changed` nudges (a step's
- *   `createStepRealtime()`; settle it after), `logger`, and the clock/timer seams tests use.
+ *   `createStepRealtime()`; settle it after), `logger`, `bootId` (the id `sandbox.start` wrote into
+ *   the container, `boot-marker.ts` — the Workflow always passes it; without it nothing is probed),
+ *   and the clock/timer seams tests use.
  * - It never throws for anything the TURN did (a failed process, a rollout, a cancel, a timeout are
  *   outcomes, each with its own event); it throws only when the database does.
  * - Step config: `retries: 0` — a turn is not idempotent (it would re-run the person's message) —
@@ -31,6 +34,12 @@
  * ## What it does
  *
  * 1. **Claim**: the row must be `ready` (or `blocked`) with a `pending_message`; otherwise `skipped`.
+ *    **Never on an empty container**: with a `bootId`, the container must still carry it. One that
+ *    answers without it was recreated under the session (it died — out of memory, most often):
+ *    nothing runs, the message STAYS pending, the session goes `suspended` with a `resume`
+ *    requested (an `error` event says so), and the outcome is `interrupted { container_lost }` —
+ *    the Workflow destroys the empty container, resumes from the last checkpoint and runs the
+ *    message on the new one.
  * 2. **Budget** (`budget.ts`): over → `blocked`, `budget.reached`, audit `session.budget.reached`;
  *    the message STAYS pending, so extending the budget (which un-blocks) runs it. `maxTurns`
  *    reached → `rejected`, an `error` event, and the message is dropped.
@@ -46,17 +55,23 @@
  * 5. **Watch**, concurrently: every 2 s re-read `cancel_requested_at` (→ `kill`, `cancelled`) and
  *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`); every 10 s write the
  *    heartbeat (`last_activity_at` of a `working` row) that `reconcile.ts` reads to tell a live
- *    turn from one whose Workflow died under it.
+ *    turn from one whose Workflow died under it. And every {@link TURN_LIVENESS_PROBE_MS} (with a
+ *    `bootId`) read the boot marker: a container that died does not end its log stream — it just
+ *    goes quiet — so without this a dead container holds the turn until its timeout. A marker that
+ *    is gone (the read booted a fresh, empty container) ends the turn at once; a read that does
+ *    not answer within {@link TURN_LIVENESS_CALL_MS} {@link TURN_LIVENESS_MAX_FAILURES} times in a
+ *    row does too — `interrupted { container_lost }`. A lost or ended stream is checked once more.
  * 6. **End** with exactly one of `turn.end` (the `result` line, with the turn's METERED cost — the
  *    model proxy's `ai_usage` rows, as the row's running total moved), `turn.failed` (the process
  *    exited without a result, or would not start) or `turn.interrupted` (`rollout` — the
- *    container was replaced, `SandboxInterruptedError` — `cancelled` or `timeout`), and the status
- *    back to `ready` (`suspended` after a rollout).
+ *    container was replaced, `SandboxInterruptedError` — `container_lost` — it died and came back
+ *    empty, {@link CONTAINER_LOST_MESSAGE} — `cancelled` or `timeout`), and the status back to
+ *    `ready` (`suspended` after a rollout or a lost container).
  * 7. **Never leave it running**: whenever Launch stops reading a process that has not exited — the
  *    log stream failed or closed early, or a cancel/timeout aborted the reader — it SIGTERMs the
  *    turn's pid (`TURN_PID_FILE`) and its children, and SIGKILLs them after
  *    `TURN_KILL_GRACE_SECONDS` (`terminateTurnProcess`: bounded, logged, never throws). Not after a
- *    rollout: that container is gone.
+ *    rollout or a lost container: that container is gone.
  *
  * ## The ship turn (slice 3d)
  *
@@ -81,6 +96,11 @@ import { type SessionRow, sessions } from '../../../db/schema'
 import type { Logger } from '../../utils/core/logger'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
+import {
+  CONTAINER_LOST_BEFORE_TURN_MESSAGE,
+  CONTAINER_LOST_MESSAGE,
+  checkContainer,
+} from './boot-marker'
 import { type BudgetHeadroom, budgetHeadroom, checkBudget } from './budget'
 import {
   buildClaudeCommand,
@@ -117,6 +137,19 @@ export const TURN_CANCEL_POLL_MS = 2_000
  * quiet. One small UPDATE every 10 s of a turn.
  */
 export const TURN_HEARTBEAT_MS = 10_000
+/**
+ * How often a running turn reads the container's boot marker (`boot-marker.ts`). A container that
+ * died does not close the turn's log stream; this is how a turn notices within a minute instead of
+ * at its timeout. One small file read per probe.
+ */
+export const TURN_LIVENESS_PROBE_MS = 45_000
+/** The bound on one probe: a container busy with a build may be slow, but not this slow. */
+export const TURN_LIVENESS_CALL_MS = 20_000
+/**
+ * Probes in a row that got no answer before the container is judged lost — about four minutes of
+ * silence. A missing marker needs no second opinion: that container answered, empty.
+ */
+export const TURN_LIVENESS_MAX_FAILURES = 4
 /** The step timeout's margin over the turn's own, so the turn's timeout always fires first. */
 export const TURN_STEP_TIMEOUT_MARGIN_MINUTES = 2
 
@@ -251,9 +284,34 @@ export interface RunTurnOptions {
   flushEvery?: number
   cancelPollMs?: number
   heartbeatMs?: number
+  /**
+   * The id `sandbox.start` wrote into the container (`SESSION_BOOT_MARKER`). With it the turn
+   * refuses an empty container and probes the marker while it runs; without it (a caller outside
+   * the Workflow) neither happens.
+   */
+  bootId?: string
+  /** Overrides {@link TURN_LIVENESS_PROBE_MS}. */
+  probeMs?: number
+  /** Overrides {@link TURN_LIVENESS_CALL_MS}. */
+  probeCallMs?: number
+  /** Overrides {@link TURN_LIVENESS_MAX_FAILURES}. */
+  probeFailures?: number
 }
 
-export type TurnInterruptReason = 'rollout' | 'cancelled' | 'timeout'
+/**
+ * `rollout` — the platform replaced the container under a call (`SandboxInterruptedError`);
+ * `container_lost` — it died and came back empty (its boot marker is gone, or it stopped
+ * answering); `cancelled` — a Stop; `timeout` — `maxTurnMinutes`.
+ */
+export type TurnInterruptReason = 'rollout' | 'container_lost' | 'cancelled' | 'timeout'
+
+/** The container a turn ran in is gone: the session is `suspended` and nothing is left to save. */
+export function containerGone(outcome: { status: string; reason?: string }): boolean {
+  return (
+    outcome.status === 'interrupted' &&
+    (outcome.reason === 'rollout' || outcome.reason === 'container_lost')
+  )
+}
 
 /** What the Workflow learns. Ids, counts and flags only — it is a step result. */
 export type TurnOutcome =
@@ -310,6 +368,56 @@ export async function runTurn(
   const message = current.pendingMessage
   const policy = resolveSessionPolicy(current.policy)
   const writer = await createSessionEventWriter(db, current)
+
+  // ---- never on an empty container -----------------------------------------------------------
+  if (opts.bootId) {
+    const verdict = await checkContainer(
+      ports.sandbox(sessionId),
+      opts.bootId,
+      opts.probeCallMs ?? TURN_LIVENESS_CALL_MS
+    )
+    if (verdict === 'replaced' || verdict === 'interrupted') {
+      opts.logger?.warn(
+        { sessionId, verdict },
+        'session turn: the container is not the one the boot prepared; suspending to resume'
+      )
+      const [suspended] = await db
+        .update(sessions)
+        .set({
+          status: 'suspended',
+          suspendedAt: new Date(now()),
+          // The message stays pending: the resume runs it on the new container.
+          requestedAction: current.requestedAction ?? 'resume',
+          containerKeptAt: null,
+          cancelRequestedAt: null,
+          updatedAt: new Date(now()),
+        })
+        .where(
+          and(
+            eq(sessions.tenantId, session.tenantId),
+            eq(sessions.id, sessionId),
+            inArray(sessions.status, ['ready', 'blocked']),
+            eq(sessions.turnCount, current.turnCount)
+          )
+        )
+        .returning({ id: sessions.id })
+      if (!suspended) return { status: 'skipped', sessionId }
+      writer.append({
+        type: 'error',
+        turn: current.turnCount,
+        data: { message: CONTAINER_LOST_BEFORE_TURN_MESSAGE },
+      })
+      await writer.flush()
+      changed()
+      return {
+        status: 'interrupted',
+        sessionId,
+        turn: current.turnCount,
+        reason: 'container_lost',
+        costMicrocents: 0,
+      }
+    }
+  }
 
   // ---- 2. budget and turn limit --------------------------------------------------------------
   const verdict = await checkBudget(db, current, new Date(now()))
@@ -424,12 +532,12 @@ export async function runTurn(
         }
       : { status: run.status, sessionId, turn, costMicrocents: run.costMicrocents }
 
-  const rollout = run.status === 'interrupted' && run.reason === 'rollout'
+  const gone = containerGone(run)
   await db
     .update(sessions)
     .set({
-      status: rollout ? 'suspended' : 'ready',
-      ...(rollout ? { suspendedAt: new Date(now()) } : {}),
+      status: gone ? 'suspended' : 'ready',
+      ...(gone ? { suspendedAt: new Date(now()), containerKeptAt: null } : {}),
       cancelRequestedAt: null,
       lastActivityAt: new Date(now()),
       updatedAt: new Date(now()),
@@ -489,6 +597,10 @@ async function executeTurn(
     flushEvery: opts.flushEvery ?? TURN_FLUSH_EVERY,
     cancelPollMs: opts.cancelPollMs ?? TURN_CANCEL_POLL_MS,
     heartbeatMs: opts.heartbeatMs ?? TURN_HEARTBEAT_MS,
+    bootId: opts.bootId ?? null,
+    probeMs: opts.probeMs ?? TURN_LIVENESS_PROBE_MS,
+    probeCallMs: opts.probeCallMs ?? TURN_LIVENESS_CALL_MS,
+    probeFailures: opts.probeFailures ?? TURN_LIVENESS_MAX_FAILURES,
     logger: opts.logger,
     egress: egressFor(ports, db),
   }
@@ -519,7 +631,15 @@ async function executeTurn(
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
   let executed: ExecutedTurn
   if (run.stop) {
-    writer.append({ type: 'turn.interrupted', turn, data: { turn, reason: run.stop } })
+    writer.append({
+      type: 'turn.interrupted',
+      turn,
+      data: {
+        turn,
+        reason: run.stop,
+        ...(run.stop === 'container_lost' ? { message: CONTAINER_LOST_MESSAGE } : {}),
+      },
+    })
     executed = { status: 'interrupted', reason: run.stop, costMicrocents, result: run.result }
   } else if (run.result && !run.failure) {
     writer.append({
@@ -709,6 +829,11 @@ interface StreamTurnParams {
   flushEvery: number
   cancelPollMs: number
   heartbeatMs: number
+  /** The boot's id — the marker the liveness probe expects; null = no probe. */
+  bootId: string | null
+  probeMs: number
+  probeCallMs: number
+  probeFailures: number
   logger?: Logger
   /** How the container reaches Anthropic and GitHub (`proxied` unless the sandbox is remote). */
   egress: SessionEgressPort
@@ -853,6 +978,37 @@ async function streamTurn(
     }
   })()
 
+  /** The container is gone (`boot-marker.ts`): stop reading — there is nothing left to kill. */
+  const lose = (verdict: 'replaced' | 'interrupted' | 'silent') => {
+    if (out.stop || overBudget || finished) return
+    p.logger?.warn({ sessionId: row.id, verdict }, 'session turn: the container is gone')
+    out.stop = verdict === 'interrupted' ? 'rollout' : 'container_lost'
+    reader.abort()
+  }
+
+  // Liveness: a dead container's log stream does not end, it goes quiet. Its own loop, so a slow
+  // probe never delays the cancel poll or the heartbeat.
+  const bootId = p.bootId
+  const prober = (async () => {
+    if (!bootId) return
+    let silent = 0
+    while (!finished) {
+      await pause(p.probeMs)
+      if (finished) return
+      const verdict = await checkContainer(sandbox, bootId, p.probeCallMs)
+      if (finished) return
+      if (verdict === 'ours') silent = 0
+      else if (verdict === 'unknown') {
+        silent += 1
+        p.logger?.warn(
+          { sessionId: row.id, silent },
+          'session turn: the container did not answer the liveness probe'
+        )
+        if (silent >= p.probeFailures) return lose('silent')
+      } else return lose(verdict)
+    }
+  })()
+
   /**
    * `host` only: the turn's running cost reached the headroom — stop reading and say why; the
    * process itself is stopped below by `terminateTurnProcess` (SIGTERM, then SIGKILL by pid).
@@ -926,17 +1082,32 @@ async function streamTurn(
     finished = true
     markDone()
   }
-  const [watched, flushed] = await Promise.allSettled([watcher, flusher])
+  const [watched, flushed, probed] = await Promise.allSettled([watcher, flusher, prober])
   if (watched.status === 'rejected') {
     p.logger?.warn({ err: watched.reason, sessionId: row.id }, 'session turn: watch failed')
   }
+  if (probed.status === 'rejected') {
+    p.logger?.warn({ err: probed.reason, sessionId: row.id }, 'session turn: probe failed')
+  }
+
+  // A stream that failed, or ended with no exit and no result: was it the container that went?
+  // Then say so (and suspend) rather than "lost the connection" on a session with nothing in it.
+  if (bootId && !out.stop && !overBudget && !exited && (readFailed || !out.result)) {
+    const verdict = await checkContainer(sandbox, bootId, p.probeCallMs)
+    if (verdict === 'replaced' || verdict === 'interrupted') {
+      out.stop = verdict === 'interrupted' ? 'rollout' : 'container_lost'
+      out.failure = null
+      readFailed = false
+    }
+  }
 
   // Launch has stopped reading a process that may still be running: stop it too, or it spends
-  // tokens and edits the workspace unseen. Not after a rollout (the container is gone) and not
-  // after an `exit` (it is over); a cancel/timeout already sent the SDK kill, so only escalate.
-  // A `host` turn that reached its budget stops here too (the SDK kill, then the pid).
+  // tokens and edits the workspace unseen. Not after a rollout or a lost container (it is gone)
+  // and not after an `exit` (it is over); a cancel/timeout already sent the SDK kill, so only
+  // escalate. A `host` turn that reached its budget stops here too (the SDK kill, then the pid).
   const cutOff = out.stop === 'cancelled' || out.stop === 'timeout'
-  if (out.stop !== 'rollout' && !exited && (readFailed || cutOff || overBudget || !out.result)) {
+  const gone = out.stop === 'rollout' || out.stop === 'container_lost'
+  if (!gone && !exited && (readFailed || cutOff || overBudget || !out.result)) {
     await terminateTurnProcess(sandbox, processId, {
       logger: p.logger,
       sessionId: row.id,

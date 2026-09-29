@@ -99,7 +99,8 @@ one of
 `wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = what is left of the idle policy counted
 from `last_activity_at`, or the suspended expiry; on an idle timeout `suspend#N` re-reads the stamp
 and does nothing when the preview moved it meanwhile — the next round waits out the rest),
-`turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `rollout#N` | `checkpoint#N` (only
+`turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `rollout#N` (`containerGone`: a
+rollout or `container_lost` — the session is already `suspended`) | `checkpoint#N` (only
 when the session has held unsaved changes for `SESSION_CHECKPOINT_MAX_DEFER_MS`, or the turn step
 itself died) | nothing — the checkpoint is DEBOUNCED: the turn step reports `changed` (a
 `git status` + HEAD-vs-`head_sha` check, fail-safe true) and `endedAt`, the loop keeps a
@@ -119,9 +120,16 @@ differs, and does nothing after a restore with unchanged migrations — → `dev
 `end#N` →
 `fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless
 `shipped`/`failed`, audit `session.ended`). A pending message after boot or resume runs at once
-(`inspect` before any wait). `sandbox.start` returns a `bootId` (written into the container); the
-boot steps after it take that id as a closure argument and refuse a container that no longer
-carries it (`SandboxRestartedError`). Every boot step runs under `withProgress`, which also polls
+(`inspect` before any wait). `sandbox.start` returns a `bootId` (written into the container,
+`services/sessions/boot-marker.ts`); the boot steps after it take that id as a closure argument and
+refuse a container that no longer carries it (`SandboxRestartedError`). The loop carries the latest
+`bootId` too (the boot's, then each `sandbox.start#K`'s — a step result, so replay-safe) into
+`turn#N`, `checkpoint#N`, `suspend#N`, `end#N` and `ship#N`: a turn refuses an empty container
+before it starts (the message kept, `suspended` + a resume requested) and probes the marker while it
+runs (`TURN_LIVENESS_PROBE_MS`; a dead container's stream goes quiet rather than ending) →
+`interrupted { container_lost }`; a checkpoint on an empty container reports it lost instead of
+failing at `cd`, and a `turn` checkpoint then suspends the session. A step that has no `bootId`
+(the salvage path's `end#N`) checks nothing, as before. Every boot step runs under `withProgress`, which also polls
 the row (an End stops the step — `fail` then settles `ending`, not `failed`) and writes the
 heartbeat `services/sessions/reconcile.ts` reads (a running turn writes the same heartbeat,
 `turn.ts`, every 10 s); `claim` sends an `ending` session, and a settled one with no `ended_at`,

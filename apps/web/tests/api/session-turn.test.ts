@@ -12,6 +12,11 @@
 import { SESSION_EVENT_DATA, usdToMicrocents } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import {
+  CONTAINER_LOST_BEFORE_TURN_MESSAGE,
+  CONTAINER_LOST_MESSAGE,
+  SESSION_BOOT_MARKER,
+} from '@/api/services/sessions/boot-marker'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
@@ -424,6 +429,177 @@ describe('runTurn: a turn that does not finish', () => {
       'turn.start',
       'turn.failed',
     ])
+  })
+})
+
+describe('runTurn: a container that died under the session (its boot marker)', () => {
+  const BOOT = 'boot-1'
+  const withMarker = (sb: FakeSandbox) => sb.files.set(SESSION_BOOT_MARKER, BOOT)
+  /** A fake clock the loops' sleeps move; `at(ms, fn)` runs `fn` once the clock passes `ms`. */
+  function fakeTime() {
+    let clock = 0
+    const due: { ms: number; fn: () => void }[] = []
+    return {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        clock += ms
+        for (const d of due.splice(0)) {
+          if (clock >= d.ms) d.fn()
+          else due.push(d)
+        }
+        await tick()
+      },
+      at: (ms: number, fn: () => void) => due.push({ ms, fn }),
+      get clock() {
+        return clock
+      },
+    }
+  }
+  const LONG = { cancelPollMs: 2_000, flushMs: 250, timeoutMs: 90 * 60_000, probeMs: 30_000 }
+
+  it('a container that dies mid-turn (the stream goes quiet, the marker is gone) ends the turn at the next probe: container_lost → suspended', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      withMarker(sb.onProcess(/claude -p/, claudeStreamJson({ text: 'Building…', hang: true })))
+    )
+    const time = fakeTime()
+    // The container dies at 2 minutes: the stream goes quiet (no error, no end), and whatever
+    // calls in next finds a fresh, empty container.
+    time.at(120_000, () => ports.sandboxes.get(row.id)?.die())
+    const outcome = await runTurn(db, ports, row, { ...FAST, ...LONG, ...time, bootId: BOOT })
+
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'container_lost', turn: 1 })
+    // Promptly — within a probe of the death, not at the 90-minute timeout.
+    expect(time.clock).toBeLessThan(120_000 + 2 * LONG.probeMs)
+    const last = (await eventsOf(row)).at(-1)
+    expect(last).toMatchObject({
+      type: 'turn.interrupted',
+      data: { turn: 1, reason: 'container_lost', message: CONTAINER_LOST_MESSAGE },
+    })
+    expect(SESSION_EVENT_DATA['turn.interrupted'].safeParse(last?.data).success).toBe(true)
+    const after = await reload(row)
+    expect(after.status).toBe('suspended')
+    expect(after.suspendedAt).not.toBeNull()
+    // Nothing to kill in a container that is gone.
+    const sandbox = ports.sandboxes.get(row.id)
+    expect(sandbox?.killed).toEqual([])
+    expect(sandbox?.execs).toEqual([])
+  })
+
+  it('a container that stops answering is judged lost after TURN_LIVENESS_MAX_FAILURES silent probes', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      withMarker(sb.onProcess(/claude -p/, claudeStreamJson({ hang: true })))
+    )
+    const time = fakeTime()
+    let reads = 0
+    time.at(60_000, () => {
+      const sandbox = ports.sandboxes.get(row.id)
+      if (!sandbox) return
+      sandbox.readFile = async () => {
+        reads += 1
+        throw new Error('HTTP error! status: 500')
+      }
+    })
+    const outcome = await runTurn(db, ports, row, {
+      ...FAST,
+      ...LONG,
+      ...time,
+      bootId: BOOT,
+      probeFailures: 3,
+    })
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'container_lost' })
+    expect(reads).toBe(3)
+    expect((await reload(row)).status).toBe('suspended')
+  })
+
+  it('a live container is probed and left alone: the turn runs to its end', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      withMarker(sb.onProcess(/claude -p/, claudeStreamJson({ hang: true })))
+    )
+    const time = fakeTime()
+    const outcome = await runTurn(db, ports, row, {
+      ...FAST,
+      ...LONG,
+      ...time,
+      timeoutMs: 10 * 60_000,
+      bootId: BOOT,
+    })
+    // Ten minutes of probes found the marker every time: only the timeout ended it.
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'timeout' })
+    expect((await reload(row)).status).toBe('ready')
+  })
+
+  it('a lost log stream on a container that came back empty is container_lost, not "lost the connection"', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      withMarker(
+        sb
+          .onProcess(/claude -p/, claudeStreamJson({ text: 'x', hang: true }))
+          .failNext('streamLogs', new Error('Network connection lost'))
+      )
+    )
+    ports.script(sb => {
+      const original = sb.streamLogs.bind(sb)
+      sb.streamLogs = (id, opts) => {
+        sb.files.delete(SESSION_BOOT_MARKER)
+        return original(id, opts)
+      }
+    })
+    const outcome = await runTurn(db, ports, row, { ...FAST, bootId: BOOT })
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'container_lost' })
+    expect(ports.sandboxes.get(row.id)?.killed).toEqual([])
+    expect((await reload(row)).status).toBe('suspended')
+  })
+
+  it('a turn on a container without its boot marker never starts: the message kept, suspended with a resume requested', async () => {
+    const { row } = await readySession({ turnCount: 3 })
+    const ports = createFakeSessionPorts()
+    const outcome = await runTurn(db, ports, row, { ...FAST, bootId: BOOT })
+
+    expect(outcome).toEqual({
+      status: 'interrupted',
+      sessionId: row.id,
+      turn: 3,
+      reason: 'container_lost',
+      costMicrocents: 0,
+    })
+    expect(ports.sandboxes.get(row.id)?.processes).toHaveLength(0)
+    expect(ports.sandboxes.get(row.id)?.commands).toEqual([])
+    const after = await reload(row)
+    expect(after).toMatchObject({
+      status: 'suspended',
+      requestedAction: 'resume',
+      pendingMessage: 'Change the Home heading',
+      turnCount: 3,
+      containerKeptAt: null,
+    })
+    expect((await eventsOf(row)).map(e => [e.type, e.data])).toEqual([
+      ['error', { message: CONTAINER_LOST_BEFORE_TURN_MESSAGE }],
+    ])
+  })
+
+  it('a turn on its own container runs as before; an unanswered check is not evidence', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      withMarker(sb.onProcess(/claude -p/, claudeStreamJson({ text: 'Done.' })))
+    )
+    expect(await runTurn(db, ports, row, { ...FAST, bootId: BOOT })).toMatchObject({
+      status: 'completed',
+    })
+
+    const { row: busy } = await readySession()
+    const slow = createFakeSessionPorts().script(sb =>
+      withMarker(
+        sb
+          .onProcess(/claude -p/, claudeStreamJson({ text: 'Done.' }))
+          .failNext('readFile', new Error('HTTP error! status: 503'))
+      )
+    )
+    expect(await runTurn(db, slow, busy, { ...FAST, bootId: BOOT })).toMatchObject({
+      status: 'completed',
+    })
   })
 })
 
