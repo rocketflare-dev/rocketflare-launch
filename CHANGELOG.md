@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Launch's test Postgres moves from host port 5433 to 5499 (`docker-compose.test.yml`, `.env.test`,
+  CI, evals), so it no longer collides with the Rocketflare kit's and kit-scaffolded apps' test
+  database on 5433; recreate it with `pnpm test:db:up`. The dev-database scan skips both ports.
 - A session container on real Cloudflare can open its database's WebSocket pool: the egress
   proxy answered the `wss://` upgrade with `Upgrade` and `Connection` twice, which Node's clients
   reject ("Invalid Upgrade header"), so every remote session failed at the kit's `db:check`. Both

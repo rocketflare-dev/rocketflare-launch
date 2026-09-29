@@ -131,7 +131,7 @@ The kit is at **0.15.6** (magic link: opening the link no longer spends the toke
 ## Working rules learned
 
 - **Never run `pnpm build` or the gate in the checkout that runs `pnpm dev`.** `build:ui` rewrites `apps/web/dist/ui`, which `wrangler dev` watches. The reload kills in-flight Workflow steps, and locally they don't resume until something pokes the engine. Gate in a throwaway worktree: `git worktree add /tmp/launch-gate <sha>`, `pnpm install --frozen-lockfile --prefer-offline`, then the gate.
-- **Parallel agents share the :5433 test database.** Concurrent suites cause "tuple concurrently updated", 401s from vanished sessions and deadlocks. Rerun alone before believing a failure.
+- **Parallel agents share the :5499 test database.** Concurrent suites cause "tuple concurrently updated", 401s from vanished sessions and deadlocks. Rerun alone before believing a failure.
 - **A new migration must be applied to the dev database at once** (`pnpm db:migrate`) if `pnpm dev` loads the schema change. Once applied, it is history.
 - **Test a kit fix without a release:** merge it to kit `main`, then Setup → Kit version → **Pin latest main**, then Re-scaffold.
 - **A stuck local Workflow instance:** `pnpm --filter @launch/web exec wrangler workflows instances terminate <workflow-name> <instance-id> --local --port 3001`.

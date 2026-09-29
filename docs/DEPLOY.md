@@ -407,7 +407,7 @@ All steps run at the repository root; the root scripts fan out with `pnpm -r` / 
  push to main ─► ci.yml (root) ─► check      → gate.yml: pnpm install --frozen-lockfile → gitleaks
                         │                       → pnpm lint → pnpm typecheck
                         │                       → git diff --exit-code apps/web/worker-configuration.d.ts
-                        │                       → pnpm test (pg 5433; web + cli)
+                        │                       → pnpm test (pg 5499; web + cli)
                         │                       → pnpm build (web: vite + dry-run wrangler deploy; cli: tsc)
                         ├─► test-neon       → pnpm web test:neon: test Postgres + the Neon proxy (compose
                         │                     `--profile neon`), api + api-isolated + driver projects under

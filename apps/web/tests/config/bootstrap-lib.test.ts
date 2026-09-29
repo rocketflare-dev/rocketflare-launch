@@ -28,6 +28,7 @@ import {
   parseNvmrc,
   parseWhoami,
   readDevVars,
+  TEST_DB_PORT,
   toggleAiBlock,
   upsertDevVar,
   versionAtLeast,
@@ -309,6 +310,14 @@ describe('chooseDevDbPort', () => {
   })
 
   it('never hands out the test port, even when it is free and preferred', () => {
+    expect(TEST_DB_PORT).toBe(5499)
+    expect(chooseDevDbPort({ preferred: 5499, isAvailable: all })).toBe(5432)
+    expect(
+      chooseDevDbPort({ preferred: null, isAvailable: p => p === 5499, count: 100 })
+    ).toBeNull()
+  })
+
+  it("never hands out the kit's test port (5433) either — a kit checkout's tests need it", () => {
     expect(chooseDevDbPort({ preferred: 5433, isAvailable: all })).toBe(5432)
     expect(chooseDevDbPort({ preferred: null, isAvailable: p => p === 5433 })).toBeNull()
   })

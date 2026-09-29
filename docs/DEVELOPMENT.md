@@ -46,7 +46,7 @@ bash scripts/bootstrap.sh          # checks Node 24 / pnpm 10 / Docker, generate
 Nothing external is required: no `RESEND_API_KEY` → magic-link URLs are logged by `wrangler dev`; no AI
 key → chat, agents and embeddings run on Workers AI through the `[ai]` binding (billed to your
 Cloudflare account, 10k free neurons/day); no Cloudflare login, or zero-spend wanted → `--offline`.
-Then `pnpm test:db:up && pnpm test` (the full suite against a throwaway Postgres on :5433;
+Then `pnpm test:db:up && pnpm test` (the full suite against a throwaway Postgres on :5499;
 `pnpm test:neon` runs it again on the Neon driver, as CI does).
 
 ## Stack

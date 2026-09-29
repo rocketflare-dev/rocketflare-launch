@@ -1,6 +1,6 @@
 /**
  * What an eval run is configured with (D33). `scripts/eval.mjs` loads `apps/web/.env.test` (the
- * test database on :5433) and the AI keys from `apps/web/.dev.vars` into `process.env`, plus the
+ * test database on :5499) and the AI keys from `apps/web/.dev.vars` into `process.env`, plus the
  * flags as `EVAL_*`; this module reads them once.
  *
  * Models resolve through the kit's own resolver, so a suite exercises the same chain production

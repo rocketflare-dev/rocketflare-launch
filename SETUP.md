@@ -89,7 +89,8 @@ with the applied migration count and no `role "launch_app" does not exist` error
 **The port is chosen, not fixed.** `dev:db:up` runs `apps/web/scripts/dev-db.mjs`, which gives this
 checkout its own compose project, container and port: it keeps the port already in `DATABASE_URL`
 whenever that is still free or still this checkout's, and otherwise takes the next free one from
-5432 (skipping 5433, the test database) and writes it back to `apps/web/.dev.vars`. So a SECOND
+5432 (skipping 5433, the Rocketflare kit's test database — Launch's own is on 5499, outside the
+scan) and writes it back to `apps/web/.dev.vars`. So a SECOND
 checkout on the same machine starts its own database instead of failing on a taken port or quietly
 attaching to the first one's container — and a re-run never moves a database that is working.
 Everything downstream reads that one value: `db:migrate`, `seed` and `drizzle-kit` through dotenv,
@@ -263,7 +264,7 @@ scripts, `LAUNCH_API_KEY` + `LAUNCH_URL` in the environment replace the config f
 
 ### 1.8 Tests
 ```bash
-pnpm test:db:up       # ephemeral Postgres on :5433 (max_connections=300; apps/web/docker-compose.test.yml, compose project launch-test)
+pnpm test:db:up       # ephemeral Postgres on :5499 (max_connections=300; apps/web/docker-compose.test.yml, compose project launch-test)
 pnpm test             # every package: web api + api-isolated + driver (real DB), ui (jsdom), config (no DB); cli
 pnpm test:neon        # optional: the Neon proxy on :4433 + api, api-isolated and driver on the neon driver (CI's test-neon)
 ```

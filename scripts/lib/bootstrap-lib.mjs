@@ -203,8 +203,13 @@ export function parseWhoami(stdout) {
  * port and container name from it. A second checkout on the same machine therefore
  * gets its own port and its own container instead of colliding on 5432. */
 
-/** Test Postgres (`docker-compose.test.yml`, `.env.test`, CI) — never hand it to a dev database. */
-export const TEST_DB_PORT = 5433
+/** Launch's test Postgres (`docker-compose.test.yml`, `.env.test`, CI) — never hand it to a dev
+ * database. Outside the 5432-and-up scan on purpose, so it never contends with a dev database. */
+export const TEST_DB_PORT = 5499
+
+/** The Rocketflare kit's (and every kit-scaffolded app's) test Postgres — skipped too, so a Launch
+ * dev database never takes the port a kit checkout's `pnpm test:db:up` needs. */
+export const KIT_TEST_DB_PORT = 5433
 
 /**
  * The port to publish Postgres on: `preferred` when it is still available (a re-run must not
@@ -217,7 +222,7 @@ export function chooseDevDbPort({
   isAvailable,
   start = 5432,
   count = 20,
-  skip = [TEST_DB_PORT],
+  skip = [TEST_DB_PORT, KIT_TEST_DB_PORT],
 }) {
   const blocked = new Set(skip)
   if (preferred && !blocked.has(preferred) && isAvailable(preferred)) return preferred

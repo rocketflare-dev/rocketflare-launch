@@ -49,7 +49,7 @@ Node 24 (`.nvmrc`), pnpm 10 (`corepack enable` reads `packageManager`), Docker; 
 ```bash
 git clone <this repository> launch && cd launch
 bash scripts/bootstrap.sh        # toolchain → install → .dev.vars → Postgres → migrate → seed --demo → pnpm dev, signed in
-pnpm test:db:up && pnpm test     # the full suite against a throwaway Postgres on :5433
+pnpm test:db:up && pnpm test     # the full suite against a throwaway Postgres on :5499
 ```
 
 The bootstrap is [`SETUP.md`](SETUP.md) Part 1 as one re-runnable command — every step prints a
@@ -100,7 +100,7 @@ The repo's **non-negotiables** are listed in `CLAUDE.md`; the ones contributors 
 
 ### <a name="running-tests"></a> Running tests
 
-Tests run under Node against the real Hono app and a **real Postgres** on port 5433
+Tests run under Node against the real Hono app and a **real Postgres** on port 5499
 (`pnpm test:db:up`), never a mock database. `apps/web/vitest.config.ts` defines four projects:
 
 | Project | Needs a database | Covers |
