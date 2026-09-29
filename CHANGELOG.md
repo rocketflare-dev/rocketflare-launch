@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The TanStack Query devtools are opt-in in development: set `VITE_QUERY_DEVTOOLS=on` in
+  `apps/web/.env.local` to show the toggle (it was on unless `off`). Kit issue
+  rocketflare-dev/rocketflare#46.
 - `SESSION_EGRESS = open | allowlist` (missing = `allowlist`) picks how a session container reaches
   the internet, and the three tomls say `open` for now: internet on, no allow-list, and only
   `api.anthropic.com` and `github.com` intercepted, so the container still holds no model key or

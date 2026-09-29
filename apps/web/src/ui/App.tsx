@@ -93,12 +93,13 @@ const AccessRequests = lazy(() => import('@/ui/pages/platform/AccessRequests'))
 const Setup = lazy(() => import('@/ui/pages/platform/Setup'))
 const Identity = lazy(() => import('@/ui/pages/platform/Identity'))
 
-// Dev-only TanStack Query devtools. `import.meta.env.DEV` is replaced at build time, so the
-// dynamic import (and its chunk) is dropped from production bundles. Set
-// `VITE_QUERY_DEVTOOLS=off` in `apps/web/.env.local` to drop the toggle from dev too — it sits
-// over the bottom of the page, which is where drawers and modals put their content.
+// TanStack Query devtools: dev-only and OPT-IN — set `VITE_QUERY_DEVTOOLS=on` in
+// `apps/web/.env.local` to show the toggle (off by default: it sits over the bottom of the page,
+// which is where drawers and modals put their content, and in every session preview).
+// `import.meta.env.DEV` is replaced at build time, so the dynamic import (and its chunk) is
+// dropped from production bundles.
 const ReactQueryDevtools =
-  import.meta.env.DEV && import.meta.env.VITE_QUERY_DEVTOOLS !== 'off'
+  import.meta.env.DEV && import.meta.env.VITE_QUERY_DEVTOOLS === 'on'
     ? lazy(() =>
         import('@tanstack/react-query-devtools').then(m => ({ default: m.ReactQueryDevtools }))
       )
