@@ -83,17 +83,27 @@ Remote only:
 
 ## Results
 
+Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend cut to 1 minute on that row for the warm test; the cold path forced with `docker kill`).
+
+
 | Check | Local Docker | Remote |
 |---|---|---|
-| 1. Boot timings | | |
-| 2. Turn with shell commands | | |
-| 3. `id; echo $HOME` | | |
-| 4. `--resume` on turn 2 | | |
-| 5. Checkpoint push | | |
-| 6. Ship → PR | | |
+| 1. Boot timings | ✔ 63 s to ready (db 13 s, sandbox 1 s, clone 2 s, install+seed 40 s, dev 7 s) | |
+| 2. Turn with shell commands | ✔ Bash `tool.start`/`tool.end` | |
+| 3. `id; echo $HOME` | ✔ `uid=0(root)`, `HOME=/root` | |
+| 4. `--resume` on turn 2 | ✔ same container; warm resume (<1 s to ready); recreated container (clone + bootstrap + transcript restore, but "Starting sandbox" 1 m 44 s) | |
+| 5. Checkpoint push | ✔ debounced, ~30 s after the edit turn | |
+| 6. Ship → PR | blocked on issue #1 | |
 | 7. No credential file | — | |
 | 8. Placeholder key only | — | |
 | 9. Other-branch push refused | — | |
+
+### Found in the 2026-09-29 run
+
+- **Local crons never fire.** `wrangler dev` does not run `[triggers] crons`, so the `*/5` reconcile never ran: a session sat in `ending` for 9 hours until the cron was fired by hand (`curl "http://localhost:3001/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`). Fix: `dev-server.mjs` fires each cron on its schedule.
+- **`grep` is broken in Claude's Bash after a recreated container**: every `grep` answered `error: unknown option '-G'`, and Claude fell back to `command grep`. It is likely Claude Code's shell snapshot aliasing `grep` to a tool that is missing or different in the image.
+- **"Starting sandbox" took 1 m 44 s** once the killed container had been recreated by workerd (compare 1 s normally). This is the same symptom as the resume hang noted in `README.md`.
+- **The preview reloads after every turn.** HMR already shows edits live; the reload is only needed when the dev server restarts (`preview.ready`).
 
 ## Deployed resources (created 2026-09-28, with the user's go-ahead)
 
