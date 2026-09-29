@@ -1,6 +1,6 @@
 # Build status
 
-Paused on 2026-09-28, at the end of the first day of testing on real infrastructure. P0–P5 are built, and the P6 plan is written.
+Updated 2026-09-29. P0–P5 are built and the P6 plan is written. The next piece of work is making sessions ship (issue #1); see "Next, in order".
 
 ## Where things are
 
@@ -14,7 +14,7 @@ main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 - Launch itself is not deployed. It runs locally with `pnpm dev`, reachable at `https://local.clewro.com` through `pnpm dev:tunnel`.
 - The gate is green (in a throwaway worktree): lint, typecheck, tests (web about 3,100, CLI 104, evals 22) and build.
 
-**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.5**, with all the fixes this testing found. Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) is 0.15.5.
+**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.6**. Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) is still 0.15.5.
 
 **The real app.** `hola-world` (`guidemode/hola-world`, Neon project `mute-star-58262276`) is **live** on staging (`https://hola-world-staging.clewro.com`) and was promoted to production through the approval gate.
 
@@ -72,51 +72,61 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
 | 0.15.4 | The deploy job runs only the parity test (its checkout is shallow). |
 | 0.15.5 | `db-roles` works as a role without CREATEDB. |
 
-## Next, in order
+## Landed since the first real day (2026-09-28, evening)
 
-1. **Re-test a coding session on hola-world.** **Current state and the open failures are in [sandbox-session-issues](sandbox-session-issues.md)** (remote-mode clone gets no GitHub credential; no Anthropic key configured). The fixes are merged but haven't run against a real session yet.
-   - Give Docker Desktop **at least 12 GB** of memory. The last session was killed by the Docker VM's out-of-memory killer at dev-server start.
-   - Open the old failed session `a07e371e…` once. Its reconcile deletes the leftover Neon branch (`ep-wild-silence-…`).
-   - Start a new session. The `dev` database is already prepared.
-   - **Unproven:** Neon over WebSocket through the egress interception, `workerd` inside the container trusting the interception CA, and a real Claude turn (the Anthropic key must be set in Setup).
-   - **Local preview routing works.** `*.clewro.com` is a CNAME to the cfld tunnel, which sends it to `localhost:3001`: the Worker, where the preview gateway runs. Vite on :3000 would rewrite the `Host` header. cfld quotes wildcard hostnames in its YAML, a local patch in `~/work/cfld`. The HMR WebSocket goes through `wsConnect`.
-   - **Investigate: faster session boot through a persistent dependency cache.** Run `pnpm install` once per lockfile into an R2-backed store, then mount it into every sandbox, keyed by a hash of `pnpm-lock.yaml` ([Sandbox persistent storage](https://developers.cloudflare.com/sandbox/tutorials/persistent-storage/)).
-     - **Why:** the image's warm store (`containers/session/Dockerfile`) is fetched for the default pin (`KIT_TAG=0.15.5` since the fast-resume work). Apps drift from it with every dependency change, so `--prefer-offline` falls back to the registry more over time. S7 measured about 5 s warm against about 17 s cold.
-     - **Questions:**
-       - Mount the pnpm store (content-addressed, so it is shared across lockfiles) or a tarred `node_modules` per lockfile hash (no link step, but one copy per hash)?
-       - What is FUSE/s3fs read speed against local disk for pnpm's hard links? Copy-on-first-use may be needed.
-       - Who writes the cache (the `prepare` run, or the first session on a new hash) without two writers racing?
-       - Does the cache need its own egress allow-list entry for R2?
-       - How is the cache evicted?
-       - Does it work locally under `wrangler dev`, or only on real containers?
-     - **Where:** `services/sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, step 1 of `sessionBootstrap`).
-   - **Found on 2026-09-28:** a checkpoint push failed with "Repository not found" 1 s after a fresh token mint, and a session was suspended as idle while its preview was in use. Fixed, not yet re-tested: the git proxy retries a fresh token's 401/404 (0.5/1/2 s), the checkpoint retries a transient push failure once, and preview traffic counts as activity (the idle wait now runs from `last_activity_at`). A resume's "Starting sandbox" also hung until its 4-minute deadline once, then retried; the likely cause is a destroy followed straight away by a start on the same Durable Object under `wrangler dev`.
-   - **Fast resume (decided: do all four).** Today a suspend destroys the container, so a resume is a cold boot. Locally that took about 3 minutes: the clone 3 s, install and seed 2 min 11 s, the dev server 33 s, all under amd64 emulation.
-     1. **Keep the container across a short idle:** stop the dev server, or suspend only after a long idle, instead of destroying the container.
-     2. **Snapshot the workspace:** SDK `createBackup`/`restoreBackup` of `/workspace/app` (`node_modules` and `.dev.vars` included) to R2 on suspend, restored on resume. This skips the clone, install and bootstrap, and supersedes the dependency-cache idea for resumes.
-     3. **A lighter resume:** migrate only when the migrations changed, and no re-seed of a database that is already prepared.
-     4. **Refresh the image's warm store** (`KIT_TAG` in `containers/session/Dockerfile`) to the pinned kit, and keep it in step with `DEFAULT_TEMPLATE_PIN`.
-   - **Real containers for local dev: deployed 2026-09-28, redeploy pending.** `SESSION_SANDBOX_HOST=remote`: a small `launch-sandbox-dev` Worker (`apps/web/wrangler.sandbox-host.toml`) holds the session container on Cloudflare, and local Launch reaches it through a remote **service binding** with a `RemoteSandbox` adapter behind `SandboxPort`. The `direct` egress mode is gone: in the `host` mode Launch sends each sandbox an egress grant and the host's own outbound handlers inject the token and the key under the proxies' rules, so the container holds no credential; turns still meter themselves and are stopped at the budget (`docs/SESSIONS-LOCAL.md` § Real containers from a laptop). **The host needs redeploying for the grant handlers (your go-ahead)**; status and the retest checklist are in `sandbox-session-issues.md`.
-2. **Deploys in progress on the app overview and the catalogue.** Built (migration 0028), not yet seen on a real deploy. The next production promote should show its steps live. Known gaps are in CONCEPTS §18.7: a run that dies before `start` stays "dispatched" until its pre-approval expires (15 minutes), and nothing sweeps a ticket that nobody opens.
-3. **Small fixes found along the way:**
-   - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the next kit change, through a commit pin.
-   - **Email:** have Setup verify `notifications.clewro.com` in Resend (create the domain and write its DNS records to the zone). Email is skipped until then.
-   - **The site's `check:releases`** accepts a `TODO` summary. Make it refuse one.
-   - **Sessions:** a `shipping` session whose Workflow died isn't reconciled yet. (Done: a `working` turn whose Workflow died is now reconciled, and the `ai_spans` prune is a single statement.)
-4. **Prove the rest on real infrastructure.** Not yet run for real:
+Built and tested against fakes; **none of it yet seen in a real session**:
+
+- **Fast resume** (migrations 0029–0031): a short idle keeps the container, a destroyed container's workspace is backed up to R2 and restored on a cold resume, a cold resume never re-seeds and migrates only when the migrations changed, and the image's warm store is kit 0.15.5.
+- **Deploys in progress** on the app overview and the catalogue (migration 0028).
+- **Push and idle:** git retries a fresh token's 401/404 for about 7.5 s, a checkpoint retries a transient push once, and preview traffic counts as activity.
+- **Preview HMR** WebSocket through `wsConnect`.
+- **Remote sandbox (`SESSION_SANDBOX_HOST=remote`)** with `host` egress: the host injects the token and key, and the container holds no credential ([sandbox-session-issues](sandbox-session-issues.md)).
+- **Turns** run with `bypassPermissions`, `IS_SANDBOX=1` and `HOME=/root`; local Docker runs under Rosetta.
+- **Debounced checkpoints** (30 s after the latest changed turn, 5-minute cap), and a lost turn's container is salvaged before recovery.
+- **The neon driver** never queries through a replaced global `fetch`.
+
+The kit is at **0.15.6** (magic link: opening the link no longer spends the token). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are still 0.15.5.
+
+## Next, in order (agreed 2026-09-29)
+
+1. **Validate sessions, checks 1–5** of [sandbox-session-issues](sandbox-session-issues.md): boot timings, a turn with shell commands, `HOME`, `--resume`, checkpoint.
+   - Local Docker first. **Needs the Anthropic key in Settings → Platform** (the user).
+   - Then remote, after redeploying `launch-sandbox-dev` (needs the go-ahead).
+   - Ship (check 6) can't pass until item 2 is done.
+2. **Issue #1: Launch runs the ship gate itself, on a throwaway Neon branch** ([rocketflare-launch#1](https://github.com/rocketflare-dev/rocketflare-launch/issues/1)). Today the gate runs inside a Claude turn, and the kit's `pnpm test` needs Postgres on :5433 plus Docker, which the sandbox lacks. So no kit app can ship from a session. Slices:
+   - **2a. Faster Neon branches.** Wait only for `create_branch`, and poll from about 200 ms with backoff instead of a flat 1 s (`NeonClient.waitForOperations`). Today a branch takes 13–16 s.
+   - **2b. Kit: an opt-in for an ephemeral test database** (a kit PR, tested through "Pin latest main", then release 0.15.7):
+     - `safetyCheck()` accepts a non-local `DATABASE_URL` only with `TEST_DATABASE_EPHEMERAL=1` and a gate-branch pattern.
+     - The driver test accepts real Neon when no proxy is set.
+     - `db-roles.test` is skipped without TCP.
+     - A `test:ephemeral` script: no compose, the neon driver, longer timeouts, fewer forks.
+   - **2c. Workflow steps.** `ship.claim`, then for each attempt: `ship.db` (a child branch of the session's branch, `gate-<short>-<attempt>`), `ship.gate` (each kit command exec'd by Launch, a `ship.gate {step, passed, attempt, output}` event per step), and on red `ship.fix` (a focused turn with the failing command and its tail). Up to N attempts, then `ship.db-clean`, then `ship.pr`.
+     - A green gate makes no model call to decide pass or fail.
+     - The PR title and body come from one cheap summary call (a small model with no tools) over the diff stat and the user's messages. The ship turn goes.
+   - **2d. The gate steps are the kit's commands, fixed in Launch.** There is no per-app config; a config test keeps them in step with the pinned kit.
+   - **2e. No orphan gate branches.** Cleanup and `end` delete them before the session branch, and a cron sweeps by name prefix.
+   - **2f. Docs and pins.** CONCEPTS §18.13, CHANGELOG. Bump `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG`.
+3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn.
+4. **Deploys in progress:** watch the steps live on the next real production promote. Known gaps are in CONCEPTS §18.7.
+5. **Small fixes found along the way:**
+   - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the kit change in 2b.
+   - **Email:** have Setup verify `notifications.clewro.com` in Resend.
+   - **The site's `check:releases`:** refuse a `TODO` summary.
+   - **Sessions:** a `shipping` session whose Workflow died isn't reconciled yet.
+   - **Faster boot:** a persistent dependency cache. Largely superseded by the workspace backup for resumes; revisit only if first boots stay slow.
+6. **Prove the rest on real infrastructure:**
    - archiving and tearing down a real app;
    - P5 grants (push, rotate, revoke onto a live Worker);
-   - a commit pin fetched on a real runner ("Pin latest main");
+   - a commit pin fetched on a real runner;
    - the GitHub App reading the kit's tags.
-5. **Deploy Launch (P1 step 1e).** This needs your go-ahead.
-   - Launch goes to `launch.clewro.com`, with a `launch` database in an existing Neon project and `DATABASE_DRIVER=neon`.
-   - Set the secrets before routing traffic to it.
-   - The live public-URL probe is only a warning when deployed (unproven whether a Worker can fetch its own hostname).
-6. **P6: fleet operations.** Build from [p6-fleet](p6-fleet.md): a foundations slice (6a), then parallel slices in worktrees, an integration pass, and the exit test. Per-PR previews (6f) come last and are off by default.
-7. **Housekeeping.**
-   - Decide how the stacked phase branches reach `main`: one PR per phase, or a squash.
-   - File the remaining unfiled kit issues (`upstream-kit-issues.md`).
-   - Replace the kit's example agents once Launch has a real one.
+7. **Deploy Launch (P1 step 1e).** Needs the go-ahead.
+   - `launch.clewro.com`, with a `launch` database in an existing Neon project and `DATABASE_DRIVER=neon`.
+   - Set the secrets before routing traffic.
+8. **P6: fleet operations** ([p6-fleet](p6-fleet.md)).
+9. **Housekeeping:**
+   - how the stacked phase branches reach `main`;
+   - file the remaining kit issues ([upstream-kit-issues](upstream-kit-issues.md));
+   - replace the kit's example agents.
 
 ## Working rules learned
 
