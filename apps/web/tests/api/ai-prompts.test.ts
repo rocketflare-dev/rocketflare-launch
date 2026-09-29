@@ -40,7 +40,8 @@ describe('/api/ai/prompts', () => {
       'research-topic',
       'evals-judge',
       'session-system-note',
-      'session-ship',
+      'session-ship-fix',
+      'session-ship-summary',
     ])
     expect(list.items[0]).toMatchObject({
       isOverridden: false,

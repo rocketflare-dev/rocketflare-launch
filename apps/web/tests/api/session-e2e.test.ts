@@ -5,7 +5,8 @@
  * routes (`POST /api/apps/:id/sessions`, `/turns`, `/cancel`, `/preview-grant`, `/ship`, `/end`,
  * `/resume`, `/pr`), the real `SessionWorkflow` and step bodies driven by
  * `createFakeWorkflowStep({ onWait })`, the REAL hooks (`defaultSessionStepHooks`: 3c's `runTurn`,
- * 3d's `checkpoint` and `ship` with 3c's ship-turn runner), the real model proxy
+ * 3d's `checkpoint`, the ship's fix turn and its summary), the real ship steps (Launch runs the
+ * gate itself, the tests on a throwaway Neon gate branch — issue #1), the real model proxy
  * (`handleAnthropic`), the real preview gateway, the real Neon session-db adapter and GitHub repo
  * host over the FakeCloud — with a `FakeSandbox` in place of the container and a fake Anthropic
  * upstream.
@@ -56,6 +57,32 @@ import { createExecutionContext, createTestEnv, stubs, type TestEnv } from '../m
 import { createFakeWorkflowStep, type RecordedWait } from '../mocks/cloudflare-workers'
 
 const store = vi.hoisted(() => ({ credentials: new Map(), settings: new Map() }))
+// The ship's ONE summary call (issue #1): the real `summarizeShip` over a fake chat client — the
+// resolver is the seam `services/ai` tests mock; nothing here reaches a model.
+const summaryModel = vi.hoisted(() => ({
+  calls: [] as unknown[],
+  reply: '{"title": "Say hello on the home page", "body": "Changes the heading."}',
+}))
+vi.mock('@/api/services/ai/resolve', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/api/services/ai/resolve')>()
+  const { FakeChatClient } = await import('../helpers/ai')
+  return {
+    ...actual,
+    resolveChat: vi.fn(async () => {
+      const client = new FakeChatClient(params => {
+        summaryModel.calls.push(params)
+        return { text: summaryModel.reply, usage: { inputTokens: 1200, outputTokens: 340 } }
+      })
+      return {
+        client,
+        provider: 'anthropic' as const,
+        model: 'claude-sonnet-4-5',
+        source: 'tenant' as const,
+        maxOutputTokens: 1024,
+      }
+    }),
+  }
+})
 vi.mock('@/api/services/launch/credentials', async importOriginal =>
   (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
 )
@@ -75,7 +102,6 @@ const NEON_KEY = 'neon-test-key-abcdefghijklmnop'
 const PREVIEW_TEMPLATE = 'http://{label}.localhost:3001'
 const BASE_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const CLAUDE_SESSION = '7c1f3a52-0d7e-4c1b-9d2e-5b8a6f4c3e21'
-const SHIP_REPLY = `All green.\n{"title": "Say hello on the home page", "body": "Changes the heading.", "gatePassed": true}`
 const { privateKey: APP_PEM } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -173,7 +199,6 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
       // turn here always edits the Home page.
       .onExec(WORKSPACE_CHANGED_SCRIPT, () => ({ stdout: `${headOf()}\ndirty\n` }))
       .onExec('git rev-parse HEAD', () => ({ stdout: `${headOf()}\n` }))
-      .onExec(/^bash -c 'pnpm lint/, { exitCode: 0, stdout: 'All checks passed' })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
       .onPort(
         5173,
@@ -181,11 +206,6 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
           new Response('<h1>Hello from the session</h1>', {
             headers: { 'content-type': 'text/html', 'X-Frame-Options': 'DENY' },
           })
-      )
-      // The ship turn (its message is the `session-ship` prompt, which names the gate).
-      .onProcess(
-        /exec claude -p [\s\S]*pnpm lint/,
-        claudeStreamJson({ sessionId: CLAUDE_SESSION, text: SHIP_REPLY })
       )
       .onProcess(
         /exec claude -p /,
@@ -393,16 +413,27 @@ describe('a coding session, end to end', () => {
       'inspect#2',
       'wait#2',
       'inspect#3',
-      'ship#3',
+      'ship.claim#3',
+      'ship.save#3',
+      'ship.gate#3.1.lint',
+      'ship.gate#3.1.typecheck',
+      'ship.db#3.1',
+      'ship.gate#3.1.test',
+      'ship.db-clean#3.1',
+      'ship.commit#3',
+      'ship.summary#3',
+      'ship.pr#3',
       'cleanup',
     ])
 
-    // ---- the turn: Claude Code ran with the placeholder; the proxy swapped in the real key.
-    expect(h.claudeEnvs).toHaveLength(2) // the chat turn and the ship turn
+    // ---- the turn: Claude Code ran with the placeholder; the proxy swapped in the real key. The
+    // green gate ran NO Claude turn: Launch ran it; the PR's one model call is the summary.
+    expect(h.claudeEnvs).toHaveLength(1)
     for (const procEnv of h.claudeEnvs)
       expect(procEnv.ANTHROPIC_API_KEY).toBe(MODEL_KEY_PLACEHOLDER)
-    expect(h.modelCalls).toEqual([200, 200])
-    expect(h.anthropic.requests).toHaveLength(2)
+    expect(h.modelCalls).toEqual([200])
+    expect(h.anthropic.requests).toHaveLength(1)
+    expect(summaryModel.calls).toHaveLength(1)
     for (const req of h.anthropic.requests) {
       expect(req.apiKey).toBe(REAL_KEY)
       expect(JSON.stringify(req)).not.toContain(MODEL_KEY_PLACEHOLDER)

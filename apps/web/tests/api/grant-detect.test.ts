@@ -23,12 +23,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { type ScanDeps, scanAppConfig, scanShipConfig } from '@/api/services/grants/detect'
 import { importApp } from '@/api/services/launch/import'
 import { createRelease } from '@/api/services/launch/releases/release'
+import { appendSessionEvents } from '@/api/services/sessions/event-log'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
-import { ship } from '@/api/services/sessions/ship'
-import type { ShipTurnRunner } from '@/api/services/sessions/turn'
-import { createR2Storage } from '@/api/services/storage'
+import { openShipPullRequest } from '@/api/services/sessions/ship'
 import { loadConfig } from '@/config'
-import { appConfigScans, apps, notifications, sessionEvents } from '@/db/schema'
+import { appConfigScans, apps, notifications, sessionEvents, sessions } from '@/db/schema'
 import { actorOf, approvalDeps } from '../helpers/approvals'
 import {
   createTestSession,
@@ -43,12 +42,7 @@ import { seedGrant, seedSharedResource } from '../helpers/grants'
 import { forgetApps, uniqueSlug } from '../helpers/launch-apps'
 import { addTestAppOwner, createTestGroup } from '../helpers/oidc'
 import { request } from '../helpers/request'
-import {
-  createFakeSessionPorts,
-  insertSession,
-  type SessionAppFixture,
-  seedSessionApp,
-} from '../helpers/sessions'
+import { insertSession, type SessionAppFixture, seedSessionApp } from '../helpers/sessions'
 import { createTestEnv } from '../mocks/bindings'
 
 const store = vi.hoisted(() => ({
@@ -365,55 +359,27 @@ describe('scanShipConfig', () => {
 describe('the call sites', () => {
   it('ship: a PR whose plugins need M365 gets a ship.config_needs event', async () => {
     const { f, m365 } = await fixture({ install: false })
-    const row = await insertSession(db, f, {
-      status: 'ready',
-      requestedAction: 'ship',
-      turnCount: 2,
-    })
+    const row = await insertSession(db, f, { status: 'shipping', turnCount: 2 })
     const branch = sessionBranchName(row.shortId)
-    const repoHost = new GitHubRepoHost(db, cfg, { fetch: cloud.fetch, github })
-    const ports = createFakeSessionPorts({ repoHost }).script(sandbox =>
-      sandbox
-        .onExec(/^bash -c 'pnpm lint/, { exitCode: 0, stdout: 'ok' })
-        .onExec('git diff --cached --quiet', { exitCode: 1 })
-        .onExec('git commit', () => {
-          cloud.github.pushCommit(
-            f.repo.owner,
-            f.repo.repo,
-            m365Files(f.app.slug),
-            'Install M365',
-            branch
-          )
-          return { exitCode: 0 }
-        })
-        .onExec('git rev-parse HEAD', () => ({
-          stdout:
-            cloud.github.repo(f.repo.owner, f.repo.repo)?.refs.get(`heads/${branch}`) ??
-            'f'.repeat(40),
-        }))
+    // The ship's final checkpoint, as its push lands on GitHub.
+    const headSha = cloud.github.pushCommit(
+      f.repo.owner,
+      f.repo.repo,
+      m365Files(f.app.slug),
+      'Install M365',
+      branch
     )
-    const runTurn: ShipTurnRunner = async ({ session }) => {
-      const turn = session.turnCount + 1
-      await db.insert(sessionEvents).values({
-        sessionId: session.id,
-        tenantId: session.tenantId,
-        seq: 1000 + turn,
-        turn,
-        type: 'text',
-        data: { text: '{"title": "Install M365", "body": "b", "gatePassed": true}' },
-      })
-      return { outcome: 'completed', turn }
-    }
-    const outcome = await ship(
+    await db.update(sessions).set({ headSha }).where(eq(sessions.id, row.id))
+    const ref = { tenantId: f.tenant.id, sessionId: row.id }
+    const outcome = await openShipPullRequest(
       db,
       {
-        cfg,
-        ports,
-        storage: createR2Storage(env.FILES),
-        runTurn,
+        repoHost: new GitHubRepoHost(db, cfg, { fetch: cloud.fetch, github }),
+        emit: events => appendSessionEvents(db, { id: row.id, tenantId: f.tenant.id }, events),
         scanConfig: input => scanShipConfig(deps(), input),
       },
-      { tenantId: f.tenant.id, sessionId: row.id }
+      ref,
+      { title: 'Install M365', body: 'b', fixTurns: 0 }
     )
     expect(outcome).toMatchObject({ status: 'shipped' })
     const events = await db
@@ -425,6 +391,7 @@ describe('the call sites', () => {
     expect(needs).toHaveLength(1)
     expect(needs[0]?.data).toMatchObject({
       needs: [{ resourceId: m365.id, keys: M365_KEYS }],
+      sha: headSha,
     })
     // After the PR, never instead of it.
     const types = events.map(e => e.type)
@@ -434,41 +401,20 @@ describe('the call sites', () => {
 
   it('ship: a failing scan ships anyway, with no event', async () => {
     const { f } = await fixture({ install: false })
-    const row = await insertSession(db, f, { status: 'ready', requestedAction: 'ship' })
+    const row = await insertSession(db, f, { status: 'shipping' })
     const branch = sessionBranchName(row.shortId)
-    const ports = createFakeSessionPorts({
-      repoHost: new GitHubRepoHost(db, cfg, { fetch: cloud.fetch, github }),
-    }).script(sandbox =>
-      sandbox
-        .onExec(/^bash -c 'pnpm lint/, { exitCode: 0 })
-        .onExec('git diff --cached --quiet', { exitCode: 1 })
-        .onExec('git commit', () => {
-          cloud.github.pushCommit(f.repo.owner, f.repo.repo, { 'a.txt': 'a' }, 'A', branch)
-          return { exitCode: 0 }
-        })
-        .onExec('git rev-parse HEAD', () => ({
-          stdout:
-            cloud.github.repo(f.repo.owner, f.repo.repo)?.refs.get(`heads/${branch}`) ??
-            'f'.repeat(40),
-        }))
-    )
-    const runTurn: ShipTurnRunner = async ({ session }) => ({
-      outcome: 'completed',
-      turn: session.turnCount + 1,
-      text: '{"title": "T", "body": "b", "gatePassed": true}',
-    })
-    const outcome = await ship(
+    cloud.github.pushCommit(f.repo.owner, f.repo.repo, { 'a.txt': 'a' }, 'A', branch)
+    const outcome = await openShipPullRequest(
       db,
       {
-        cfg,
-        ports,
-        storage: null,
-        runTurn,
+        repoHost: new GitHubRepoHost(db, cfg, { fetch: cloud.fetch, github }),
+        emit: events => appendSessionEvents(db, { id: row.id, tenantId: f.tenant.id }, events),
         scanConfig: async () => {
           throw new Error('GitHub is down')
         },
       },
-      { tenantId: f.tenant.id, sessionId: row.id }
+      { tenantId: f.tenant.id, sessionId: row.id },
+      { title: 'T', body: 'b', fixTurns: 0 }
     )
     expect(outcome).toMatchObject({ status: 'shipped' })
     const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, row.id))

@@ -162,6 +162,8 @@ export interface NeonBranch {
   default?: boolean
   /** Echoed back on create; `schema-only` branches have no data. */
   init_source?: NeonBranchInitSource
+  /** ISO timestamp — how the ship gate's sweep tells an orphaned gate branch (`gate-sweep.ts`). */
+  created_at?: string
 }
 
 /** How a new branch is filled from its parent. */

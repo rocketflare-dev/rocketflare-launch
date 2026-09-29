@@ -17,7 +17,9 @@ import {
   bootSteps,
   buildSessionChat,
   latestPreviewChangeSeq,
+  shipGateAttempts,
   shipGates,
+  shipGateText,
   shortPath,
   toolSummary,
 } from '@/ui/pages/sessions/sessionChatModel'
@@ -123,6 +125,40 @@ describe('selectors', () => {
       ])
     ).toBe(3)
     expect(latestPreviewChangeSeq([])).toBe(0)
+  })
+
+  it('shipGateText names the step; a step-less (older) row is the whole gate', () => {
+    expect(shipGateText({ passed: true, attempt: 1, step: 'lint' })).toBe(
+      'Lint passed (attempt 1).'
+    )
+    expect(shipGateText({ passed: false, attempt: 2, step: 'test' })).toBe(
+      'Tests failed on attempt 2.'
+    )
+    expect(shipGateText({ passed: false, attempt: 1 })).toBe(
+      'Lint, typecheck or tests failed on attempt 1.'
+    )
+  })
+
+  it('shipGateAttempts groups the steps by attempt; an attempt is green only once its tests are', () => {
+    const gates = shipGates([
+      ev(1, 'ship.gate', { step: 'lint', passed: true, attempt: 1 }),
+      ev(2, 'ship.gate', { step: 'typecheck', passed: false, attempt: 1, output: 'TS2322' }),
+      ev(3, 'ship.gate', { step: 'lint', passed: true, attempt: 2 }),
+      ev(4, 'ship.gate', { step: 'typecheck', passed: true, attempt: 2 }),
+      ev(5, 'ship.gate', { step: 'test', passed: true, attempt: 2, durationMs: 1000 }),
+      ev(6, 'ship.gate', { step: 'lint', passed: true, attempt: 3 }),
+      ev(7, 'ship.gate', { passed: true, attempt: 4 }),
+    ])
+    expect(gates[1]).toMatchObject({ step: 'typecheck', output: 'TS2322' })
+    expect(gates[4]).toMatchObject({ step: 'test', durationMs: 1000 })
+    expect(shipGateAttempts(gates).map(a => [a.attempt, a.steps.length, a.passed])).toEqual([
+      [1, 2, false],
+      [2, 3, true],
+      // Still running: lint alone is not a green attempt.
+      [3, 1, false],
+      // A row from before the gate had steps was the whole gate.
+      [4, 1, true],
+    ])
   })
 
   it('shipGates lists every attempt in order', () => {

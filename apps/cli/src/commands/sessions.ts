@@ -25,6 +25,7 @@ import {
   type Session,
   type SessionEvent,
   type SessionStatus,
+  SHIP_GATE_STEP_LABELS,
   sessionDetailResponseSchema,
   sessionEventsResponseSchema,
   sessionListResponseSchema,
@@ -223,9 +224,11 @@ export function formatSessionEvent(event: SessionEvent): string | null {
     case 'ship.gate': {
       const parsed = sessionShipGateDataSchema.safeParse(event.data)
       if (!parsed.success) return null
+      // One row per step Launch ran (issue #1); a row without `step` is the whole gate (older).
+      const what = parsed.data.step ? SHIP_GATE_STEP_LABELS[parsed.data.step].toLowerCase() : 'gate'
       return parsed.data.passed
-        ? chalk.green(`✓ gate passed (attempt ${parsed.data.attempt})`)
-        : chalk.yellow(`! gate failed (attempt ${parsed.data.attempt}) — fixing`)
+        ? chalk.green(`✓ ${what} passed (attempt ${parsed.data.attempt})`)
+        : chalk.yellow(`! ${what} failed (attempt ${parsed.data.attempt})`)
     }
     case 'ship.pr': {
       const parsed = sessionShipPrDataSchema.safeParse(event.data)

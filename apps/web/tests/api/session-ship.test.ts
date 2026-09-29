@@ -1,27 +1,39 @@
+// @vitest-isolate
+// Stubs the global fetch in one test (the summary with no model must never reach the network), so
+// this file needs its own module registry.
 /**
- * Shipping a session (Launch P3 slice 3d, plan §1.10): `ship()` with a scripted turn runner and a
- * `FakeSandbox` (the gate's exit code) over a `GitHubRepoHost` against the FakeCloud's GitHub —
- * red gate → a `ship.gate` event and no PR; green → a PR from `session/<short>`, `shipped`, the
- * audit row, and CI read until it settles (`refreshChecks`, the `sessions.checks` cron) — plus the
- * routes that request it: `POST /:id/ship`, `POST /:id/end`, `GET /:id/pr`.
+ * Shipping a session, the parts that are not the gate (Launch P3 slice 3d, plan §1.10; issue #1):
+ * the PR's title and body from ONE summary call (`summarizeShip`: the resolve order, the small
+ * model, the usage billed to the session, the fallback), the PR itself (`openShipPullRequest` over
+ * a `GitHubRepoHost` against the FakeCloud's GitHub — `shipped`, the audit row, CI read until it
+ * settles: `refreshChecks`, the `sessions.checks` cron) — plus the routes that request it:
+ * `POST /:id/ship`, `POST /:id/end` (a ship in flight included), `GET /:id/pr`. The gate and the
+ * Workflow steps are `session-ship-gate.test.ts`.
  */
 import { generateKeyPairSync } from 'node:crypto'
 import { sessionBranchName } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { sessionsChecksTask } from '@/api/services/sessions/checks-cron'
+import { appendSessionEvents } from '@/api/services/sessions/event-log'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
 import { LocalRepoHost } from '@/api/services/sessions/repo/local-repo-host'
 import {
-  parseShipReply,
+  fallbackShipSummary,
+  openShipPullRequest,
+  parseShipSummary,
   refreshChecks,
   runSessionChecks,
-  type ShipTurnRunner,
-  ship,
+  SHIP_SUMMARY_ANTHROPIC_MODEL,
+  SHIP_SUMMARY_FEATURE,
+  type ShipSummaryInput,
+  shipPrBody,
+  shipRequests,
+  summarizeShip,
 } from '@/api/services/sessions/ship'
-import { createR2Storage } from '@/api/services/storage'
 import { loadConfig } from '@/config'
-import { auditEvents, type SessionRow, sessionEvents, sessions } from '@/db/schema'
+import { aiUsage, auditEvents, type SessionRow, sessionEvents, sessions } from '@/db/schema'
+import { FakeChatClient } from '../helpers/ai'
 import {
   createTestSession,
   createTestUser,
@@ -31,7 +43,7 @@ import {
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 import { json, request } from '../helpers/request'
-import { createFakeSessionPorts, insertSession, seedSessionApp } from '../helpers/sessions'
+import { insertSession, seedSessionApp } from '../helpers/sessions'
 import { createTestEnv, stubs } from '../mocks/bindings'
 
 const db = setupTestDatabase()
@@ -42,7 +54,6 @@ const { privateKey: APP_PEM } = generateKeyPairSync('rsa', {
 })
 const env = createTestEnv()
 const cfg = loadConfig(env)
-const REPLY = `All green.\n{"title": "Add a greeting to the home page", "body": "Adds **Hello**.", "gatePassed": true}`
 
 function githubHost(cloud: FakeCloud) {
   return new GitHubRepoHost(db, cfg, {
@@ -55,63 +66,9 @@ function githubHost(cloud: FakeCloud) {
   })
 }
 
-/** A turn runner that records its message and writes the reply as the turn's `text` event. */
-function turnRunner(reply: string | null, outcome: 'completed' | 'failed' = 'completed') {
-  const messages: string[] = []
-  const runTurn: ShipTurnRunner = async ({ message, session }) => {
-    messages.push(message)
-    const turn = session.turnCount + 1
-    if (reply !== null) {
-      await db.insert(sessionEvents).values({
-        sessionId: session.id,
-        tenantId: session.tenantId,
-        seq: 1000 + turn,
-        turn,
-        type: 'text',
-        data: { text: reply },
-      })
-    }
-    return { outcome, turn }
-  }
-  return { runTurn, messages }
-}
-
-async function setup(opts: { gateExit?: number } = {}) {
-  const cloud = createFakeCloud()
-  const f = await seedSessionApp(db, cloud)
-  const row = await insertSession(db, f, { status: 'ready', requestedAction: 'ship', turnCount: 2 })
-  const branch = sessionBranchName(row.shortId)
-  const ports = createFakeSessionPorts({ repoHost: githubHost(cloud) }).script(sandbox =>
-    sandbox
-      .onExec(/^bash -c 'pnpm lint/, {
-        exitCode: opts.gateExit ?? 0,
-        stdout: opts.gateExit ? 'src/ui/Home.tsx:3 error: unused variable' : 'All checks passed',
-      })
-      .onExec('git diff --cached --quiet', { exitCode: 1 })
-      // The commit, as the push through the egress handler will land it on GitHub.
-      .onExec('git commit', () => {
-        cloud.github.pushCommit(
-          f.repo.owner,
-          f.repo.repo,
-          { 'src/home.txt': 'Hello' },
-          'Add a greeting',
-          branch
-        )
-        return { exitCode: 0 }
-      })
-      .onExec('git rev-parse HEAD', () => ({
-        stdout:
-          cloud.github.repo(f.repo.owner, f.repo.repo)?.refs.get(`heads/${branch}`) ??
-          'f'.repeat(40),
-      }))
-  )
-  const deps = (runTurn: ShipTurnRunner) => ({
-    cfg,
-    ports,
-    storage: createR2Storage(env.FILES),
-    runTurn,
-  })
-  return { cloud, f, row, branch, ports, deps, ref: { tenantId: f.tenant.id, sessionId: row.id } }
+async function reload(row: SessionRow) {
+  const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+  return after as SessionRow
 }
 
 async function eventsOf(row: SessionRow) {
@@ -122,77 +79,192 @@ async function eventsOf(row: SessionRow) {
     .orderBy(sessionEvents.seq)
 }
 
-async function reload(row: SessionRow) {
-  const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
-  return after as SessionRow
+const INPUT: ShipSummaryInput = {
+  appName: 'Orders',
+  userName: 'Ada',
+  requests: ['Add a greeting to the home page', 'Make it bold'],
+  diffStat: ' src/ui/pages/Home.tsx | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)',
+  sessionTitle: null,
+  shortId: 'abcdefgh2345',
 }
 
-describe('the ship reply', () => {
-  it('takes the last JSON object with a title, fenced or on its own line', () => {
-    expect(parseShipReply(REPLY)).toEqual({
-      title: 'Add a greeting to the home page',
+describe('the summary', () => {
+  it('parseShipSummary takes the last JSON object with a title, fenced or on its own line', () => {
+    expect(parseShipSummary('{"title": "Add a greeting", "body": "Adds **Hello**."}')).toEqual({
+      title: 'Add a greeting',
       body: 'Adds **Hello**.',
-      gatePassed: true,
     })
-    expect(parseShipReply('Done:\n```json\n{"title":"Fix","body":"b"}\n```')).toMatchObject({
+    expect(parseShipSummary('Here:\n```json\n{"title":"Fix","body":"b"}\n```')).toEqual({
       title: 'Fix',
-      gatePassed: null,
+      body: 'b',
     })
-    expect(
-      parseShipReply('{"title": "Old"}\nthen\n{"title": "New", "gatePassed": false}')
-    ).toMatchObject({
+    expect(parseShipSummary('{"title": "Old"}\nthen\n{"title": "New"}')).toMatchObject({
       title: 'New',
-      gatePassed: false,
+      body: '',
     })
-    expect(parseShipReply('no json here')).toBeNull()
-    expect(parseShipReply(null)).toBeNull()
+    expect(parseShipSummary('no json here')).toBeNull()
+    expect(parseShipSummary('{"title": "   "}')).toBeNull()
+    expect(parseShipSummary(null)).toBeNull()
+  })
+
+  it('the fallback is the session title, else the first request — never invented', () => {
+    expect(fallbackShipSummary(INPUT).title).toBe('Add a greeting to the home page')
+    expect(fallbackShipSummary({ ...INPUT, sessionTitle: 'Say hello' }).title).toBe('Say hello')
+    expect(fallbackShipSummary({ ...INPUT, requests: [] }).title).toBe(
+      'Changes from Launch session abcdefgh2345'
+    )
+    const body = fallbackShipSummary(INPUT).body
+    expect(body).toContain('- Make it bold')
+    expect(body).toContain('1 file changed')
+  })
+
+  it('shipRequests: the person’s messages, oldest first, keys redacted', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'shipping', turnCount: 2 })
+    await appendSessionEvents(db, row, [
+      { type: 'user.message', turn: 1, data: { text: 'Add orders', userId: null } },
+      { type: 'text', turn: 1, data: { text: 'Done.' } },
+      {
+        type: 'user.message',
+        turn: 2,
+        data: { text: 'Use sk-ant-api03-abcdefghijklmnopqrstuvwxyz for it', userId: null },
+      },
+    ])
+    expect(await shipRequests(db, row)).toEqual(['Add orders', 'Use [redacted] for it'])
+  })
+
+  it('ONE call, no tools, on the small model; the usage is billed to the session', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'shipping' })
+    const client = new FakeChatClient([
+      {
+        text: '{"title": "Greet people on the home page", "body": "Adds a bold greeting."}',
+        usage: { inputTokens: 900, outputTokens: 60 },
+      },
+    ])
+    const result = await summarizeShip(db, cfg, env, row, INPUT, {
+      client: { client, provider: 'anthropic', model: SHIP_SUMMARY_ANTHROPIC_MODEL },
+    })
+    expect(result).toEqual({
+      title: 'Greet people on the home page',
+      body: 'Adds a bold greeting.',
+      source: 'model',
+    })
+    expect(client.calls).toHaveLength(1)
+    const [call] = client.calls
+    expect(call?.model).toBe('claude-haiku-4-5')
+    expect(call?.tools).toBeUndefined()
+    expect(JSON.stringify(call?.messages)).toContain('Make it bold')
+    expect(JSON.stringify(call?.messages)).toContain('1 file changed')
+    expect(String(call?.system)).toContain('ONE JSON object')
+
+    const usage = await db
+      .select()
+      .from(aiUsage)
+      .where(and(eq(aiUsage.tenantId, row.tenantId), eq(aiUsage.sessionId, row.id)))
+    expect(usage).toHaveLength(1)
+    expect(usage[0]).toMatchObject({
+      feature: SHIP_SUMMARY_FEATURE,
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5',
+      inputTokens: 900,
+      outputTokens: 60,
+    })
+    const after = await reload(row)
+    expect(Number(after.costMicrocents)).toBe(Number(usage[0]?.costMicrocents))
+    expect(Number(after.costMicrocents)).toBeGreaterThan(0)
+  })
+
+  it('a reply that does not parse, or a failed call, falls back — the PR never waits', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'shipping', title: 'Say hello' })
+    const prose = new FakeChatClient([{ text: 'Sure! Here is a PR.' }])
+    expect(
+      await summarizeShip(
+        db,
+        cfg,
+        env,
+        row,
+        { ...INPUT, sessionTitle: 'Say hello' },
+        {
+          client: { client: prose, provider: 'anthropic', model: 'm' },
+        }
+      )
+    ).toMatchObject({ title: 'Say hello', source: 'fallback' })
+    const broken = new FakeChatClient([{ error: new Error('overloaded') }])
+    expect(
+      await summarizeShip(db, cfg, env, row, INPUT, {
+        client: { client: broken, provider: 'anthropic', model: 'm' },
+      })
+    ).toMatchObject({ title: 'Add a greeting to the home page', source: 'fallback' })
+  })
+
+  it('with no chat configured and no Anthropic key: the fallback, and no model call', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'shipping' })
+    const bare = createTestEnv({ ANTHROPIC_API_KEY: undefined, AI: undefined })
+    // Never the network, whatever the shared database's credentials say.
+    const calls: string[] = []
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      calls.push(String(input))
+      throw new Error('no network in this test')
+    })
+    try {
+      const result = await summarizeShip(db, loadConfig(bare), bare, row, INPUT)
+      expect(result.source).toBe('fallback')
+      expect(result.title).toBe('Add a greeting to the home page')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 
-describe('ship()', () => {
-  it('a red gate → a ship.gate event with the output, back to ready, and no PR', async () => {
-    const { cloud, row, ports, deps, ref } = await setup({ gateExit: 1 })
-    const turn = turnRunner(REPLY)
-    const outcome = await ship(db, deps(turn.runTurn), ref)
-    expect(outcome).toMatchObject({ status: 'gate_failed' })
-    expect(cloud.github.pulls).toHaveLength(0)
-    // The ship prompt was the turn's message.
-    expect(turn.messages[0]).toContain('pnpm lint && pnpm typecheck && pnpm test')
-    // Launch ran the gate itself, in the checkout.
-    const gate = ports.sandboxes.get(row.id)?.execs.find(e => e.command.startsWith('bash -c'))
-    expect(gate?.opts?.cwd).toBe('/workspace/app')
-
-    const gates = (await eventsOf(row)).filter(e => e.type === 'ship.gate')
-    expect(gates).toHaveLength(1)
-    expect(gates[0]?.data).toMatchObject({ passed: false, attempt: 1 })
-    expect((gates[0]?.data as { output?: string } | undefined)?.output).toContain('unused variable')
-    const after = await reload(row)
-    expect(after.status).toBe('ready')
-    expect(after.requestedAction).toBeNull()
-    expect(after.prNumber).toBeNull()
-  })
-
-  it('the model saying the gate still fails is enough to stop — Launch does not run it', async () => {
-    const { cloud, row, ports, deps, ref } = await setup()
-    const turn = turnRunner('{"title": "WIP", "body": "", "gatePassed": false}')
-    expect(await ship(db, deps(turn.runTurn), ref)).toMatchObject({ status: 'gate_failed' })
-    expect(ports.sandboxes.get(row.id)?.execs.some(e => e.command.startsWith('bash -c'))).toBe(
-      false
+describe('the pull request', () => {
+  async function setup() {
+    const cloud = createFakeCloud()
+    const f = await seedSessionApp(db, cloud)
+    const row = await insertSession(db, f, { status: 'shipping', turnCount: 2 })
+    const branch = sessionBranchName(row.shortId)
+    // The final checkpoint, as its push lands the branch on GitHub.
+    const headSha = cloud.github.pushCommit(
+      f.repo.owner,
+      f.repo.repo,
+      { 'src/home.txt': 'Hello' },
+      'Launch session',
+      branch
     )
-    expect(cloud.github.pulls).toHaveLength(0)
+    await db.update(sessions).set({ headSha }).where(eq(sessions.id, row.id))
+    const deps = {
+      repoHost: githubHost(cloud),
+      emit: (events: Parameters<typeof appendSessionEvents>[2]) =>
+        appendSessionEvents(db, row, events),
+    }
+    return { cloud, f, row, branch, deps, ref: { tenantId: f.tenant.id, sessionId: row.id } }
+  }
+
+  it('the body is the summary, then Launch’s line naming the gate it ran', () => {
+    const body = shipPrBody(
+      'Adds a greeting.',
+      { shortId: 'abcdefgh2345' },
+      {
+        creatorName: 'Ada',
+        fixTurns: 1,
+      }
+    )
+    expect(body).toContain('Adds a greeting.')
+    expect(body).toContain('coding session `abcdefgh2345` for Ada')
+    expect(body).toContain('`pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`')
+    expect(body).toContain('after 1 fix turn')
+    expect(shipPrBody('', { shortId: 'x' }, { fixTurns: 0 })).not.toContain('fix turn')
   })
 
-  it('a failed turn → turn_failed, back to ready, no gate', async () => {
-    const { row, deps, ref } = await setup()
-    const outcome = await ship(db, deps(turnRunner(null, 'failed').runTurn), ref)
-    expect(outcome).toEqual({ status: 'turn_failed', reason: 'failed' })
-    expect((await reload(row)).status).toBe('ready')
-    expect((await eventsOf(row)).some(e => e.type === 'ship.gate')).toBe(false)
-  })
-
-  it('a green gate → checkpoint, a PR from session/<short>, shipped, audited; pending checks then success', async () => {
+  it('opens the PR from session/<short>, shipped, audited; pending checks then success', async () => {
     const { cloud, f, row, branch, deps, ref } = await setup()
-    const outcome = await ship(db, deps(turnRunner(REPLY).runTurn), ref)
+    const outcome = await openShipPullRequest(db, deps, ref, {
+      title: 'Add a greeting to the home page',
+      body: 'Adds **Hello**.',
+      fixTurns: 0,
+    })
     expect(outcome).toMatchObject({ status: 'shipped', prNumber: 1 })
 
     expect(cloud.github.pulls).toHaveLength(1)
@@ -213,8 +285,7 @@ describe('ship()', () => {
     // No CI reported yet: GitHub's empty combined status is `pending` with no contexts → `none`.
     expect(after.prChecks?.state).toBe('none')
 
-    const types = (await eventsOf(row)).map(e => e.type)
-    expect(types).toEqual(expect.arrayContaining(['ship.gate', 'ship.pr']))
+    expect((await eventsOf(row)).map(e => e.type)).toContain('ship.pr')
     const [audit] = await db
       .select()
       .from(auditEvents)
@@ -247,23 +318,29 @@ describe('ship()', () => {
     expect(result.refreshed).toBeGreaterThanOrEqual(1)
     expect((await reload(row)).prChecks).toMatchObject({ state: 'success', total: 2, passed: 2 })
 
-    // A retried ship step answers the PR it already opened.
-    expect(await ship(db, deps(turnRunner(REPLY).runTurn), ref)).toMatchObject({
-      status: 'shipped',
-      prNumber: 1,
-    })
+    // A retried step answers the PR it already opened.
+    expect(
+      await openShipPullRequest(db, deps, ref, { title: 'x', body: 'y', fixTurns: 0 })
+    ).toMatchObject({ status: 'shipped', prNumber: 1 })
     expect(cloud.github.pulls).toHaveLength(1)
   })
 
-  it('a session that is not ready is skipped', async () => {
-    const { deps, f } = await setup()
-    const working = await insertSession(db, f, { status: 'working' })
+  it('a session that is not shipping opens nothing', async () => {
+    const { cloud, f, deps } = await setup()
+    const ready = await insertSession(db, f, { status: 'ready' })
     expect(
-      await ship(db, deps(turnRunner(REPLY).runTurn), {
-        tenantId: f.tenant.id,
-        sessionId: working.id,
-      })
+      await openShipPullRequest(
+        db,
+        deps,
+        { tenantId: f.tenant.id, sessionId: ready.id },
+        {
+          title: 't',
+          body: 'b',
+          fixTurns: 0,
+        }
+      )
     ).toMatchObject({ status: 'skipped' })
+    expect(cloud.github.pulls).toHaveLength(0)
   })
 
   it('the sessions.checks task runs over the injected repo host', async () => {
@@ -333,7 +410,7 @@ describe('the routes', () => {
     ])
   })
 
-  it('POST /:id/end → 202 and a running turn is asked to stop; an ended session → 409', async () => {
+  it('POST /:id/end → 202 and a running turn is asked to stop — mid-ship too; an ended session → 409', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const row = await insertSession(db, f, { status: 'working' })
     const e = createTestEnv()
@@ -349,6 +426,16 @@ describe('the routes', () => {
     const again = await post(`/api/sessions/${ended.id}/end`, f.cookie)
     expect(again.status).toBe(409)
     expect(await json(again)).toMatchObject({ code: 'session_not_endable' })
+
+    // A ship in flight can be ended too (issue #1): its gate stops, and a fix turn is cancelled.
+    const shipping = await insertSession(db, f, { status: 'shipping' })
+    const mid = await post(`/api/sessions/${shipping.id}/end`, f.cookie)
+    expect(mid.status).toBe(202)
+    const stopping = await reload(shipping)
+    expect(stopping.requestedAction).toBe('end')
+    expect(stopping.cancelRequestedAt).not.toBeNull()
+    const ending = await insertSession(db, f, { status: 'ending' })
+    expect((await post(`/api/sessions/${ending.id}/end`, f.cookie)).status).toBe(409)
   })
 
   it('503 without SESSION_WORKFLOW, before any row is written', async () => {

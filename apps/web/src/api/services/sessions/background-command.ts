@@ -32,13 +32,15 @@
  *
  * Every `pollMs` it reads the exit file and the log; `onProgress` gets `progressOf(log)` (default:
  * the last non-empty line) only when that CHANGES. Past `timeoutMs` it kills the process group and
- * throws {@link BackgroundCommandTimeoutError} with the log. A run whose files vanish (the container
+ * throws {@link BackgroundCommandTimeoutError} with the log; an aborted `signal` does the same at
+ * the next poll and throws {@link BackgroundCommandAbortedError}. A run whose files vanish (the container
  * was replaced) or whose process is gone without an exit code throws
  * {@link BackgroundCommandLostError}. A poll that fails is retried up to {@link MAX_POLL_FAILURES}
  * times in a row, because one dropped RPC must not fail a 10-minute install.
  *
- * Credentials stay in `env` (the database URI as `LAUNCH_DB_URL`): nothing here puts one in a
- * command line, and the log is the caller's to redact (`tailOf`).
+ * Credentials stay in `env` (the database URI as `LAUNCH_DB_URL`; the ship gate's `DATABASE_URL`,
+ * minted lazily — see `env`): nothing here puts one in a command line, and the log is the caller's
+ * to redact (`tailOf`).
  */
 import { type SandboxExecOptions, SandboxInterruptedError, type SandboxPort } from './sandbox-port'
 
@@ -64,8 +66,18 @@ export interface BackgroundCommandOptions {
   /** What runs — as a shell command line, under `bash -c` in its own process group. */
   command: string
   cwd?: string
-  /** The command's environment — where a credential goes, never into `command`. */
-  env?: Record<string, string>
+  /**
+   * The command's environment — where a credential goes, never into `command`. A FUNCTION is
+   * called only when a run is STARTED, never when the call attaches to one an earlier attempt left
+   * going: a credential minted for the run (the ship gate's database password, `gate.ts`) is then
+   * minted once per run, and a retried step never resets it under the process still using it.
+   */
+  env?: Record<string, string> | (() => Promise<Record<string, string>>)
+  /**
+   * Abort the run: the next poll kills its process group and throws
+   * {@link BackgroundCommandAbortedError} (the ship gate, when the session is ended mid-step).
+   */
+  signal?: AbortSignal
   /** The overall deadline; past it the process group is killed. */
   timeoutMs: number
   /** Poll interval ({@link BACKGROUND_POLL_MS}). */
@@ -95,6 +107,17 @@ export class BackgroundCommandTimeoutError extends Error {
   ) {
     super(`${command} did not finish within ${formatDuration(timeoutMs)}`)
     this.name = 'BackgroundCommandTimeoutError'
+  }
+}
+
+/** The caller aborted the run (`signal`); its process group was killed. `log` is unredacted. */
+export class BackgroundCommandAbortedError extends Error {
+  constructor(
+    readonly command: string,
+    readonly log: string
+  ) {
+    super(`${command} was stopped`)
+    this.name = 'BackgroundCommandAbortedError'
   }
 }
 
@@ -234,9 +257,10 @@ export async function runInBackground(
     runId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
     // An earlier run's log must not be read as this one's progress before the runner truncates it.
     await sandbox.writeFile(files.log, '').catch(() => {})
+    const env = typeof opts.env === 'function' ? await opts.env() : opts.env
     const execOpts: SandboxExecOptions = {
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      ...(opts.env ? { env: opts.env } : {}),
+      ...(env ? { env } : {}),
     }
     const proc = await sandbox.startProcess(
       backgroundRunnerScript({ dir: opts.dir, name: opts.name, runId, command: opts.command }),
@@ -306,7 +330,7 @@ export async function runInBackground(
       if (++failures >= MAX_POLL_FAILURES) throw err
     }
     const left = deadline - Date.now()
-    if (left <= 0) {
+    if (left <= 0 || opts.signal?.aborted) {
       pid ??= parsePid(await sandbox.readFile(files.pid).catch(() => null))?.pid ?? null
       if (pid !== null) {
         await sandbox
@@ -316,8 +340,27 @@ export async function runInBackground(
         await sandbox.kill(processId).catch(() => {})
       }
       const log = (await sandbox.readFile(files.log).catch(() => null)) ?? lastLog
+      if (left > 0) throw new BackgroundCommandAbortedError(opts.name, log)
       throw new BackgroundCommandTimeoutError(opts.name, opts.timeoutMs, log)
     }
-    await sleep(Math.min(pollMs, left))
+    await abortableSleep(sleep, Math.min(pollMs, left), opts.signal)
   }
+}
+
+/** `sleep(ms)`, cut short when `signal` aborts (the next poll then kills the run). */
+function abortableSleep(
+  sleep: (ms: number) => Promise<void>,
+  ms: number,
+  signal: AbortSignal | undefined
+): Promise<void> {
+  if (!signal) return sleep(ms)
+  if (signal.aborted) return Promise.resolve()
+  return new Promise<void>(resolve => {
+    const done = () => {
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    signal.addEventListener('abort', done, { once: true })
+    sleep(ms).then(done, done)
+  })
 }

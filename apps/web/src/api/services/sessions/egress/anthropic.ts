@@ -35,6 +35,7 @@
  * row's running cost is then short by that one call.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
+import type { AiProvider } from '@launch/shared/ai/config'
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
 import { ACTIVE_SESSION_STATUSES, resolveSessionPolicy } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -280,16 +281,22 @@ export async function recordSessionUsage(
   db: Database,
   session: Pick<SessionRow, 'id' | 'tenantId' | 'createdByUserId'>,
   model: string,
-  usage: TokenUsage
+  usage: TokenUsage,
+  /**
+   * A call Launch made itself for the session (the ship's PR summary, `ship.ts`): its provider
+   * and `ai_usage.feature`. Default: the session's own Anthropic call, feature `session`.
+   */
+  opts: { provider?: AiProvider; feature?: string } = {}
 ): Promise<void> {
-  const cost = estimateCostMicrocents('anthropic', model, usage)
+  const provider = opts.provider ?? 'anthropic'
+  const cost = estimateCostMicrocents(provider, model, usage)
   await db.transaction(async tx => {
     await recordUsage(tx, {
       tenantId: session.tenantId,
       userId: session.createdByUserId,
       sessionId: session.id,
-      feature: SESSION_USAGE_FEATURE,
-      provider: 'anthropic',
+      feature: opts.feature ?? SESSION_USAGE_FEATURE,
+      provider,
       model,
       usage,
       costMicrocents: cost,

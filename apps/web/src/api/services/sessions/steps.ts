@@ -127,7 +127,7 @@ export const limitsOf = (scope: Pick<StepScope, 'limits'>): SessionCallLimits =>
   scope.limits ?? SESSION_CALL_LIMITS
 
 /** A vendor call (Neon) from a step, bounded: `<phase>: <what> did not answer within N min`. */
-function vendorCall<T>(scope: StepScope, what: string, work: () => Promise<T>): Promise<T> {
+export function vendorCall<T>(scope: StepScope, what: string, work: () => Promise<T>): Promise<T> {
   return withDeadline(
     scope.phase ? `${scope.phase}: ${what}` : what,
     limitsOf(scope).vendorMs,
@@ -758,7 +758,7 @@ export interface StartSandboxResult {
  * before the session has a database, or when the URI is not a Neon endpoint's (the bootstrap then
  * fails with the reason).
  */
-async function dbEgressHostsOf(scope: StepScope, session: SessionRow): Promise<string[]> {
+export async function dbEgressHostsOf(scope: StepScope, session: SessionRow): Promise<string[]> {
   const uri = session.dbUriSealed ? await decryptToken(scope.cfg, session.dbUriSealed) : null
   if (!uri) return []
   try {
@@ -1084,7 +1084,8 @@ export class SessionEndRequestedError extends Error {
   }
 }
 
-const endRequested = (row: Pick<SessionRow, 'status' | 'requestedAction'>) =>
+/** The row says the session is being ended (asked, `ending`, or already settled). */
+export const endRequested = (row: Pick<SessionRow, 'status' | 'requestedAction'>) =>
   row.requestedAction === 'end' ||
   row.status === 'ending' ||
   (TERMINAL_SESSION_STATUSES as readonly string[]).includes(row.status)
@@ -1760,37 +1761,6 @@ export async function resumeStep(scope: StepScope): Promise<{ resumed: boolean }
   return { resumed: row !== null }
 }
 
-/**
- * Step `ship#N`: `hooks.ship` (slice 3d) claims `ready → shipping`, runs the ship turn and the
- * gate, and ends `shipped` (the PR open) or back at `ready` (a red gate). The ROW then decides:
- * `shipped` → the Workflow cleans up; a session left `shipping` by a throw goes back to `ready`.
- */
-export async function shipStep(
-  scope: StepScope,
-  bootId?: string
-): Promise<{ status: 'shipped' | 'not_shipped' | 'skipped' }> {
-  const before = await loadSession(scope)
-  if (before.status !== 'ready') return { status: 'skipped' }
-  try {
-    await scope.hooks.ship(hookContext(scope, before, before.turnCount, bootId))
-  } catch (err) {
-    scope.logger.error({ err }, 'session: ship failed')
-    await emitterFor(scope)({
-      type: 'error',
-      turn: before.turnCount,
-      data: { message: `Shipping failed: ${safeErrorMessage(err)}` },
-    })
-  }
-  const after = await loadSession(scope)
-  if (after.status === 'shipped') return { status: 'shipped' }
-  await transition(scope, ['shipping'], 'ready', { lastActivityAt: scope.now() })
-  if (after.requestedAction === 'ship') {
-    // Never loop on a ship the hook did not take up: the person asks again.
-    await updateSession(scope, { requestedAction: null })
-  }
-  return { status: 'not_shipped' }
-}
-
 /** Step `end#N`: `→ ending` (a last checkpoint when the container is up); cleanup follows. */
 export async function endStep(
   scope: StepScope,
@@ -1849,8 +1819,9 @@ export async function failStep(scope: StepScope, message: string): Promise<void>
 }
 
 /**
- * Step `cleanup` — ALWAYS: destroy the container, delete the branch, settle `ended` (a `shipped`
- * or `failed` session keeps its status), forget the sealed credentials, audit `session.ended`.
+ * Step `cleanup` — ALWAYS: destroy the container, delete the ship gate's branches and then the
+ * session's branch, settle `ended` (a `shipped` or `failed` session keeps its status), forget the
+ * sealed credentials, audit `session.ended`.
  * Throws (so the platform retries) if the container or the branch could not be removed.
  */
 export async function cleanupStep(scope: StepScope): Promise<{ status: SessionStatus }> {
@@ -1865,8 +1836,14 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
   if (session.db && session.kind === 'session') {
     const app = await loadAppRef(scope, session.appId)
     const db = session.db
+    const port = scope.ports.sessionDb(scope.db)
+    // The ship gate's branches are CHILDREN of the session's: Neon refuses to delete a parent,
+    // so they go first — a ship the session ended (or lost) mid-gate leaves none behind.
+    await vendorCall(scope, "Deleting the ship gate's database branches", () =>
+      port.deleteGateBranches(app, session.shortId)
+    )
     await vendorCall(scope, "Deleting the session's database branch", () =>
-      scope.ports.sessionDb(scope.db).deleteBranch(app, db)
+      port.deleteBranch(app, db)
     )
   }
   await releaseDevPrepare(scope.db, {

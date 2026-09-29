@@ -194,7 +194,7 @@ describe('SessionPage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Ship' }))
 
     expect(await screen.findByRole('heading', { name: /Shipping/ })).toBeInTheDocument()
-    expect(screen.getByText(/Running lint, typecheck and the tests/)).toBeInTheDocument()
+    expect(screen.getByText(/running lint, typecheck and the tests/)).toBeInTheDocument()
     expect(
       fetchMock.mock.calls.some(([u, i]) => String(u).endsWith('/ship') && i?.method === 'POST')
     ).toBe(true)
@@ -207,9 +207,26 @@ describe('SessionPage', () => {
       [BASE]: detailOf({ status: 'shipped', prNumber: 12, prUrl }),
       [`${BASE}/events`]: eventsRoute([
         ...DONE_TURN,
-        sessionEvent(7, 'ship.gate', { passed: false, attempt: 1, output: '1 test failed' }, 2),
-        sessionEvent(8, 'ship.gate', { passed: true, attempt: 2 }, 2),
-        sessionEvent(9, 'ship.pr', { number: 12, url: prUrl }, 2),
+        // One row per step Launch ran (issue #1): attempt 1's tests failed, attempt 2 was green.
+        sessionEvent(7, 'ship.gate', { step: 'lint', passed: true, attempt: 1 }, 2),
+        sessionEvent(8, 'ship.gate', { step: 'typecheck', passed: true, attempt: 1 }, 2),
+        sessionEvent(
+          9,
+          'ship.gate',
+          {
+            step: 'test',
+            passed: false,
+            attempt: 1,
+            command: 'pnpm test:ephemeral',
+            durationMs: 83_000,
+            output: '1 test failed',
+          },
+          2
+        ),
+        sessionEvent(10, 'ship.gate', { step: 'lint', passed: true, attempt: 2 }, 3),
+        sessionEvent(11, 'ship.gate', { step: 'typecheck', passed: true, attempt: 2 }, 3),
+        sessionEvent(12, 'ship.gate', { step: 'test', passed: true, attempt: 2 }, 3),
+        sessionEvent(13, 'ship.pr', { number: 12, url: prUrl }, 3),
       ]),
       [`${BASE}/pr`]: {
         prNumber: 12,
@@ -235,9 +252,17 @@ describe('SessionPage', () => {
     expect(await screen.findByTestId('checks-summary')).toHaveTextContent(
       '1 of 2 checks passed · 1 running'
     )
-    expect(screen.getByText('Attempt 1: something failed')).toBeInTheDocument()
-    expect(screen.getByText('Attempt 2: lint, typecheck and tests passed')).toBeInTheDocument()
-    expect(screen.getByText('1 test failed')).toBeInTheDocument()
+    const gates = within(screen.getByRole('list', { name: 'Checks before shipping' }))
+    expect(gates.getByText('Attempt 1')).toBeInTheDocument()
+    expect(gates.getByText('Attempt 2')).toBeInTheDocument()
+    expect(gates.getAllByText('Lint passed')).toHaveLength(2)
+    expect(gates.getByText('Tests failed')).toBeInTheDocument()
+    expect(gates.getByText('pnpm test:ephemeral')).toBeInTheDocument()
+    expect(gates.getByText('1 min 23 s')).toBeInTheDocument()
+    expect(gates.getByText('1 test failed')).toBeInTheDocument()
+    // …and the chat says each step as it happened.
+    expect(screen.getByText('Tests failed on attempt 1.')).toBeInTheDocument()
+    expect(screen.getByText('Tests passed (attempt 2).')).toBeInTheDocument()
     expect(screen.getByText('Opened pull request #12.')).toBeInTheDocument()
     // No sandbox any more: the preview pane says so and points at the PR.
     expect(

@@ -22,7 +22,12 @@
  *                the cap · rollout#N (the container is gone: a rollout, or it died and came back
  *                empty — `containerGone`) · turn-settle#N → checkpoint#N if the step itself died
  *              checkpoint#N (the debounce already due)
- *              ship#N (3d's `ship`) → shipped: leave the loop
+ *              the ship (issue #1, `services/sessions/ship-steps.ts`): ship.claim#N → ship.save#N →
+ *                per attempt A: ship.gate#N.A.lint → ship.gate#N.A.typecheck → ship.db#N.A →
+ *                ship.gate#N.A.test → ship.db-clean#N.A (always, after ship.db) → on red
+ *                ship.fix#N.A → … → green: ship.commit#N → ship.summary#N → ship.pr#N → shipped:
+ *                leave the loop · otherwise ship.settle#N (back to ready) · a lost container:
+ *                suspended, the next inspect resumes
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
  *                `services/sessions/warm.ts`): dev#K only · cold: restore.check#K →
@@ -30,7 +35,8 @@
  *                (unless restored) → bootstrap#K → dev#K → transcript#K
  *              end#N → leave the loop
  *   fail     (a step gave up: `failed`, with a secret-free sentence)
- *   cleanup  ALWAYS: destroy the sandbox, delete the branch, settle `ended` (or keep `shipped` /
+ *   cleanup  ALWAYS: destroy the sandbox, delete the gate branches then the session's branch,
+ *            settle `ended` (or keep `shipped` /
  *            `failed`), audit `session.ended`
  *
  * - One DB client per step (`withStepDatabase`, as `agent-run.ts`) and nudges through
@@ -71,8 +77,23 @@ import { loadConfig } from '../../config'
 import { createStepRealtime } from '../services/agents/runtime'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
+import { shipGateCommands } from '../services/sessions/gate'
 import { defaultSessionStepHooks, type SessionStepHooks } from '../services/sessions/hooks'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
+import {
+  type GateStepResult,
+  type ShipSettleReason,
+  type ShipSettleResult,
+  shipCheckpointStep,
+  shipClaimStep,
+  shipDbCleanStep,
+  shipDbStep,
+  shipFixStep,
+  shipGateStep,
+  shipPrStep,
+  shipSettleStep,
+  shipSummaryStep,
+} from '../services/sessions/ship-steps'
 import {
   BOOT_ERROR_MAX_CHARS,
   bootstrapStep,
@@ -97,7 +118,6 @@ import {
   rolloutStep,
   type StepScope,
   salvageStep,
-  shipStep,
   startSandboxStep,
   suspendStep,
   type TurnStepResult,
@@ -155,6 +175,31 @@ const CLEANUP_STEP: WorkflowStepConfig = {
   retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' },
   timeout: '5 minutes',
 }
+/** The ship's short steps (claim, save, commit, summary, the PR, settle): idempotent, retried. */
+const SHIP_STEP: WorkflowStepConfig = {
+  retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
+  timeout: '10 minutes',
+}
+/**
+ * A gate command: ONE retry, which re-attaches to the command still running
+ * (`runInBackground`), and the command's own deadline plus a margin — the command is killed at
+ * its deadline first, so the step answers red rather than being cut off.
+ */
+function gateStepConfig(timeoutMs: number): WorkflowStepConfig {
+  return {
+    retries: { limit: 1, delay: '5 seconds', backoff: 'constant' },
+    timeout: `${Math.ceil(timeoutMs / 60_000) + 5} minutes`,
+  }
+}
+
+/** How one ship round ended, for the loop's dirty state. */
+type ShipRound =
+  | { status: 'shipped' }
+  | { status: 'skipped' }
+  /** The container is gone and the session `suspended`: nothing is left to save. */
+  | { status: 'lost' }
+  /** Back at `ready`: `saved` = `ship.save` checkpointed; `settle` = what the fix turns left. */
+  | { status: 'settled'; saved: boolean; settle: ShipSettleResult }
 
 export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWorkflowParams> {
   /** Tests only — see the header. */
@@ -356,9 +401,16 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           break
         }
         case 'ship': {
-          // A green ship checkpoints inside `ship()`; a red one leaves the dirty state as it was.
-          const shipped = await run(`ship#${n}`, scope => shipStep(scope, bootId))
-          if (shipped.status === 'shipped') return
+          const round = await this.ship(run, n, bootId)
+          if (round.status === 'shipped') return
+          if (round.status === 'lost') dirty = null
+          if (round.status === 'settled') {
+            // `ship.save` checkpointed what was dirty; the fix turns' changes (if any) debounce.
+            dirty = dirtyAfterTurn(round.saved ? null : dirty, {
+              status: 'completed',
+              ...round.settle,
+            })
+          }
           break
         }
         case 'resume': {
@@ -421,5 +473,129 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     }
     // A runaway loop: end it rather than grow the instance for ever.
     await run('end#max', scope => endStep(scope, 'max_rounds', bootId))
+  }
+
+  /**
+   * One ship round (issue #1) — see the header and `services/sessions/ship-steps.ts`. Every name
+   * carries the round and the attempt; a thrown step settles the round (`error`) instead of
+   * failing the session.
+   */
+  private async ship(run: StepRunner, n: number, bootId: string | undefined): Promise<ShipRound> {
+    const claim = await run(`ship.claim#${n}`, shipClaimStep, SHIP_STEP)
+    if (claim.status === 'shipped') return { status: 'shipped' }
+    if (claim.status === 'skipped') return { status: 'skipped' }
+    let saved = false
+    let reason: ShipSettleReason = 'exhausted'
+    let detail: string | undefined
+    try {
+      const save = await run(
+        `ship.save#${n}`,
+        s => shipCheckpointStep(s, bootId, 'before the gate'),
+        SHIP_STEP
+      )
+      if (save.lost) return { status: 'lost' }
+      saved = save.ok
+      const first = claim.firstAttempt
+      const last = first + claim.maxAttempts - 1
+      let green: number | null = null
+      for (let attempt = first; attempt <= last; attempt++) {
+        const gate = await this.gate(run, `${n}.${attempt}`, attempt, bootId)
+        if (gate.passed) {
+          green = attempt
+          break
+        }
+        if (gate.stop === 'container_lost') return { status: 'lost' }
+        if (gate.stop) {
+          reason = gate.stop === 'ended' ? 'ended' : 'unfixable'
+          break
+        }
+        if (attempt === last) {
+          reason = 'exhausted'
+          break
+        }
+        const fix = await run(
+          `ship.fix#${n}.${attempt}`,
+          s =>
+            shipFixStep(
+              s,
+              { attempt: attempt - first + 1, maxAttempts: claim.maxAttempts, failed: gate },
+              bootId
+            ),
+          turnStepConfig(claim)
+        )
+        if (fix.lost) return { status: 'lost' }
+        if (!fix.ok) {
+          reason = 'fix_failed'
+          break
+        }
+      }
+      if (green !== null) {
+        const fixTurns = green - first
+        const commit = await run(
+          `ship.commit#${n}`,
+          s => shipCheckpointStep(s, bootId, 'to open the pull request'),
+          SHIP_STEP
+        )
+        if (commit.lost) return { status: 'lost' }
+        if (!commit.ok) {
+          reason = 'not_committed'
+        } else {
+          const summary = await run(`ship.summary#${n}`, shipSummaryStep, SHIP_STEP)
+          const pr = await run(`ship.pr#${n}`, s => shipPrStep(s, summary, fixTurns), SHIP_STEP)
+          if (pr.shipped) return { status: 'shipped' }
+          reason = 'not_opened'
+        }
+      }
+    } catch (err) {
+      reason = 'error'
+      detail = safeErrorMessage(err, 'a ship step failed')
+    }
+    const settle = await run(
+      `ship.settle#${n}`,
+      s =>
+        shipSettleStep(s, { reason, attempts: claim.maxAttempts, ...(detail ? { detail } : {}) }),
+      SHIP_STEP
+    )
+    return { status: 'settled', saved, settle }
+  }
+
+  /**
+   * One gate attempt: each of the kit's commands in order, stopping at the first red. The test
+   * step's database lives from `ship.db` to `ship.db-clean` — the clean in a `finally`, so a red,
+   * a thrown step, an end or a lost container never leaves the branch behind.
+   */
+  private async gate(
+    run: StepRunner,
+    tag: string,
+    attempt: number,
+    bootId: string | undefined
+  ): Promise<GateStepResult> {
+    for (const command of shipGateCommands()) {
+      const name = `ship.gate#${tag}.${command.step}`
+      const config = gateStepConfig(command.timeoutMs)
+      let result: GateStepResult
+      if (command.database) {
+        try {
+          const db = await run(`ship.db#${tag}`, s => shipDbStep(s, attempt, bootId), BOOT_STEP)
+          if (!db.ok) return { passed: false, step: command.step, stop: db.stop }
+          const branch = db.branch
+          result = await run(
+            name,
+            s => shipGateStep(s, { step: command.step, attempt, branch }, bootId),
+            config
+          )
+        } finally {
+          await run(`ship.db-clean#${tag}`, shipDbCleanStep, CLEANUP_STEP)
+        }
+      } else {
+        result = await run(
+          name,
+          s => shipGateStep(s, { step: command.step, attempt }, bootId),
+          config
+        )
+      }
+      if (!result.passed) return result
+    }
+    return { passed: true, step: 'test' }
   }
 }

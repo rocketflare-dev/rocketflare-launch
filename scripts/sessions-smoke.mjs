@@ -169,10 +169,15 @@ try {
     say('ship requested')
     const s = await waitFor(
       sessionId,
-      x => x.status === 'shipped' || (x.status === 'ready' && !x.requestedAction),
+      // Shipped; back at ready (no PR — the ship panel says why); or suspended (the container was
+      // lost mid-ship). Launch's gate runs up to three attempts, a fix turn between each.
+      x =>
+        x.status === 'shipped' ||
+        x.status === 'suspended' ||
+        (x.status === 'ready' && !x.requestedAction),
       {
         label: 'ship',
-        timeoutMs: 1_800_000,
+        timeoutMs: 3_600_000,
       }
     )
     say(`ship: ${s.status} ${s.prUrl ?? ''}`)

@@ -6,12 +6,14 @@
  *
  * - `POST /:id/ship` → 202 `sessionDetailResponseSchema`: `requested_action = 'ship'` (a
  *   compare-and-set on `status = 'ready'` with nothing pending — 409 `session_not_ready`
- *   otherwise) + a wake; the Workflow's `ship` step runs `ship()` (`services/sessions/ship.ts`):
- *   the `session-ship` turn, Launch's own gate, the checkpoint and the PR. Audited
+ *   otherwise) + a wake; the Workflow's ship steps (`services/sessions/ship-steps.ts`, issue #1)
+ *   run the gate themselves, a fix turn on red, and open the PR. Audited
  *   `session.ship_requested` (the Workflow records `session.shipped`).
  * - `POST /:id/end` → 202 `sessionDetailResponseSchema`: `requested_action = 'end'` from any live
- *   status but `shipping` / `ending` (409 `session_not_endable`), and a running turn is asked to
- *   stop (`cancel_requested_at`) + a wake. Ending an already-ended session is a 409 too.
+ *   status but `ending` (409 `session_not_endable`) — `shipping` included: a gate command stops
+ *   within seconds and its database branch is deleted — and a running turn (a chat turn, or a
+ *   ship's fix turn) is asked to stop (`cancel_requested_at`) + a wake. Ending an already-ended
+ *   session is a 409 too.
  * - `POST /:id/preview-grant` → `previewGrantResponseSchema`: a 60 s HMAC grant for the iframe
  *   (`services/sessions/preview.ts`, exchanged at the preview host by `api/preview/gateway.ts`).
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
@@ -121,8 +123,19 @@ sessionShipRouter.post('/:id/ship', async c => {
   return c.json({ session: toSessionDetail(woken, true) } satisfies SessionDetailResponse, 202)
 })
 
-/** The statuses a person may end from: anything live but a ship in flight or an end already asked. */
-const ENDABLE = ['requested', 'booting', 'ready', 'working', 'blocked', 'suspended'] as const
+/**
+ * The statuses a person may end from: anything live but an end already asked — a ship in flight
+ * included (its gate stops at the next poll, `ship-steps.ts`).
+ */
+const ENDABLE = [
+  'requested',
+  'booting',
+  'ready',
+  'working',
+  'blocked',
+  'suspended',
+  'shipping',
+] as const
 
 sessionShipRouter.post('/:id/end', async c => {
   const { db, logger, realtime, row } = await visible(c, 'update')
@@ -134,8 +147,10 @@ sessionShipRouter.post('/:id/end', async c => {
     ENDABLE,
     {
       requestedAction: 'end',
-      // A running turn is asked to stop; the Workflow ends the session once it has.
-      cancelRequestedAt: row.status === 'working' ? now : row.cancelRequestedAt,
+      // A running turn (or a ship's fix turn) is asked to stop; the Workflow ends the session
+      // once it has.
+      cancelRequestedAt:
+        row.status === 'working' || row.status === 'shipping' ? now : row.cancelRequestedAt,
       updatedAt: now,
     },
     false

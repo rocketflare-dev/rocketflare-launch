@@ -25,6 +25,8 @@ import {
 } from '@launch/shared/ai/agents'
 import {
   type SessionEvent,
+  SHIP_GATE_STEP_LABELS,
+  type ShipGateStep,
   sessionBudgetReachedDataSchema,
   sessionShipGateDataSchema,
   sessionShipPrDataSchema,
@@ -133,9 +135,7 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
         kind: 'notice',
         ...base,
         tone: parsed.data.passed ? 'success' : 'warning',
-        text: parsed.data.passed
-          ? `Lint, typecheck and tests passed (attempt ${parsed.data.attempt}).`
-          : `Lint, typecheck or tests failed on attempt ${parsed.data.attempt}.`,
+        text: shipGateText(parsed.data),
       }
     }
     case 'ship.pr': {
@@ -335,8 +335,48 @@ export interface ShipGate {
   id: string
   passed: boolean
   attempt: number
+  /** One step of the attempt (issue #1); absent on a row from before, which was the whole gate. */
+  step?: ShipGateStep
+  command?: string
+  durationMs?: number
   output?: string
   at: Date
+}
+
+/**
+ * The chat notice for one `ship.gate` row: `Lint passed (attempt 1).` / `Tests failed on attempt
+ * 2.` — or, for a row from before the gate had steps, the whole gate. Pure.
+ */
+export function shipGateText(gate: { passed: boolean; attempt: number; step?: ShipGateStep }) {
+  if (!gate.step) {
+    return gate.passed
+      ? `Lint, typecheck and tests passed (attempt ${gate.attempt}).`
+      : `Lint, typecheck or tests failed on attempt ${gate.attempt}.`
+  }
+  const label = SHIP_GATE_STEP_LABELS[gate.step]
+  return gate.passed
+    ? `${label} passed (attempt ${gate.attempt}).`
+    : `${label} failed on attempt ${gate.attempt}.`
+}
+
+/** The gate rows grouped by attempt, oldest first — the ship panel's list. Pure. */
+export function shipGateAttempts(
+  gates: readonly ShipGate[]
+): { attempt: number; passed: boolean; steps: ShipGate[] }[] {
+  const byAttempt = new Map<number, ShipGate[]>()
+  for (const gate of gates) {
+    const list = byAttempt.get(gate.attempt) ?? []
+    list.push(gate)
+    byAttempt.set(gate.attempt, list)
+  }
+  return [...byAttempt.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([attempt, steps]) => ({
+      attempt,
+      steps,
+      // Green only when its last row is (a step-less row is the whole gate).
+      passed: steps.every(s => s.passed) && (steps.at(-1)?.step ?? 'test') === 'test',
+    }))
 }
 
 /** Every ship-gate attempt, oldest first. Pure. */
@@ -352,6 +392,9 @@ export function shipGates(events: readonly SessionEvent[]): ShipGate[] {
           id: event.id,
           passed: parsed.data.passed,
           attempt: parsed.data.attempt,
+          ...(parsed.data.step ? { step: parsed.data.step } : {}),
+          ...(parsed.data.command ? { command: parsed.data.command } : {}),
+          ...(parsed.data.durationMs !== undefined ? { durationMs: parsed.data.durationMs } : {}),
           ...(parsed.data.output ? { output: parsed.data.output } : {}),
           at: event.at,
         },
