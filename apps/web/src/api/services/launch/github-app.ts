@@ -208,12 +208,34 @@ export function isGitHubNotFound(err: unknown): boolean {
 async function failure(res: Response, path: string): Promise<GitHubApiError> {
   let message = `GitHub ${res.status}`
   try {
-    const body = (await res.json()) as { message?: unknown }
+    const body = (await res.json()) as { message?: unknown; errors?: unknown }
     if (typeof body.message === 'string') message = body.message
+    // A 422's `message` is only "Validation Failed"; the WHY is in `errors[]`.
+    const details = validationDetails(body.errors)
+    if (details) message = `${message} (${details})`
   } catch {
     // Not JSON — the status is all there is.
   }
   return new GitHubApiError(res.status, message, path)
+}
+
+/**
+ * GitHub's `errors[]` as one line: each entry's own `message`, or `resource.field: code`. Bounded,
+ * because it ends up in an event a person reads.
+ */
+export function validationDetails(errors: unknown): string | null {
+  if (!Array.isArray(errors)) return null
+  const parts = errors
+    .map(e => {
+      if (typeof e === 'string') return e
+      if (!e || typeof e !== 'object') return null
+      const { message, resource, field, code } = e as Record<string, unknown>
+      if (typeof message === 'string' && message) return message
+      const where = [resource, field].filter(x => typeof x === 'string' && x).join('.')
+      return [where, typeof code === 'string' ? code : null].filter(Boolean).join(': ') || null
+    })
+    .filter((x): x is string => Boolean(x))
+  return parts.length ? parts.join('; ').slice(0, 300) : null
 }
 
 /** One call whose 2xx body is JSON; anything else throws `GitHubApiError`. */
