@@ -156,7 +156,7 @@ export class GitHubRepoHost implements RepoHostPort {
     repo: RepoRef,
     input: OpenPullRequestInput
   ): Promise<{ number: number; url: string }> {
-    return this.withToken(repo, { pull_requests: 'write' }, async token => {
+    return this.withToken(repo, { contents: 'read', pull_requests: 'write' }, async token => {
       try {
         const pr = await createPullRequest(token, repo.owner, repo.repo, input, this.opts)
         return { number: pr.number, url: pr.html_url }

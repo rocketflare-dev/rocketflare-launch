@@ -896,6 +896,14 @@ export class FakeGitHub implements VendorHandler {
     if (rest === '/pulls' && m === 'POST') {
       const refused = writable('pull_requests')
       if (refused) return refused
+      // GitHub reads both refs to open a PR: a token without `contents: read` is refused this way
+      // (seen live on the first real ship, 2026-09-29).
+      if (!this.can(token, 'contents', 'read')) {
+        return json(
+          { message: 'Validation Failed', errors: [{ message: 'not all refs are readable' }] },
+          422
+        )
+      }
       const head = String(body.head ?? '')
       const base = String(body.base ?? repo.default_branch)
       const headSha = repo.refs.get(`heads/${head}`)
