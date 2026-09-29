@@ -42,6 +42,12 @@ import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
 import {
+  checkContainer,
+  containerIsOurs,
+  containerLostCheckpointMessage,
+  SESSION_BOOT_MARKER,
+} from './boot-marker'
+import {
   CORE_DUMP_EXCLUDES,
   SESSION_CHECKPOINT_DEBOUNCE_MS,
   SESSION_CHECKPOINT_MAX_DEFER_MS,
@@ -86,6 +92,7 @@ import {
 } from './rocketflare-dev'
 import {
   CONVERSATION_LOST_MESSAGE,
+  containerGone,
   TURN_HEARTBEAT_MS,
   TURN_KILL_GRACE_SECONDS,
   transcriptCheckCommand,
@@ -301,28 +308,13 @@ export async function releaseDevPrepare(
   return updated.length > 0
 }
 
+export { SESSION_BOOT_MARKER }
+
 // ---- the sandbox side --------------------------------------------------------------------------
 
 /** The session's sandbox, every call bounded (`deadline.ts`) and named after the running step. */
 export function sandboxFor(scope: StepScope, session: Pick<SessionRow, 'id'>): SandboxPort {
   return boundedSandbox(scope.ports.sandbox(session.id), scope.phase, limitsOf(scope))
-}
-
-/**
- * Where `sandbox.start` writes this boot's id. Every later boot step compares it with the id the
- * start returned: a container that died and came back EMPTY (Docker's OOM killer on a laptop, the
- * platform replacing it) has no marker, and the step says so (`SandboxRestartedError`) rather than
- * cloning into nothing or curling a dev server that is not there.
- */
-export const SESSION_BOOT_MARKER = `${SESSION_LAUNCH_DIR}/boot-id`
-
-/** True / false when the marker could be read; null when the sandbox could not even be asked. */
-async function containerIsOurs(sandbox: SandboxPort, bootId: string): Promise<boolean | null> {
-  try {
-    return (await sandbox.readFile(SESSION_BOOT_MARKER))?.trim() === bootId
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -1364,9 +1356,11 @@ export function idleMinutesLeft(
 export function hookContext(
   scope: StepScope,
   session: SessionRow,
-  turn: number
+  turn: number,
+  bootId?: string
 ): SessionStepContext {
   return {
+    ...(bootId ? { bootId } : {}),
     db: scope.db,
     env: scope.env,
     cfg: scope.cfg,
@@ -1386,7 +1380,10 @@ export function hookContext(
 /** What `turn#N` reports to the loop: 3c's outcome, reduced to what decides the next step. */
 export interface TurnStepResult {
   status: TurnOutcome['status']
-  /** For `interrupted`: `rollout` (the container is gone) · `cancelled` · `timeout`. */
+  /**
+   * For `interrupted`: `rollout` · `container_lost` (either way the container is gone and the
+   * session `suspended` — `containerGone`) · `cancelled` · `timeout`.
+   */
   reason?: string
   /**
    * For a turn that ran with the container still up ({@link turnNeedsCheckpoint}): the workspace
@@ -1412,12 +1409,15 @@ export interface TurnStepResult {
  */
 export async function turnStep(
   scope: StepScope,
-  dirty: DirtyState | null = null
+  dirty: DirtyState | null = null,
+  bootId?: string
 ): Promise<TurnStepResult> {
   const session = await loadSession(scope)
   let result: TurnStepResult
   try {
-    const outcome = await scope.hooks.runTurn(hookContext(scope, session, session.turnCount))
+    const outcome = await scope.hooks.runTurn(
+      hookContext(scope, session, session.turnCount, bootId)
+    )
     result = {
       status: outcome.status,
       ...(outcome.status === 'interrupted' ? { reason: outcome.reason } : {}),
@@ -1447,7 +1447,7 @@ export async function turnStep(
 /** A turn that ran with the container still up: its workspace is worth checking (and saving). */
 export function turnNeedsCheckpoint(result: TurnStepResult): boolean {
   if (result.status === 'completed' || result.status === 'failed') return true
-  return result.status === 'interrupted' && result.reason !== 'rollout'
+  return result.status === 'interrupted' && !containerGone(result)
 }
 
 /**
@@ -1481,8 +1481,10 @@ export async function turnSettleStep(scope: StepScope, message: string): Promise
 }
 
 /**
- * Step `rollout#N`: after a turn cut off by a rollout (the session is already `suspended`), make
- * sure nothing of the old container lingers. No checkpoint: it is gone.
+ * Step `rollout#N`: after a turn whose container is gone — a rollout, or one that died and came
+ * back empty (`container_lost`); the session is already `suspended` — make sure nothing of it
+ * lingers. No checkpoint: there is nothing in it to save. The next message resumes cold, from the
+ * workspace backup or the branch.
  */
 export async function rolloutStep(scope: StepScope): Promise<{ destroyed: true }> {
   const session = await loadSession(scope)
@@ -1493,12 +1495,44 @@ export async function rolloutStep(scope: StepScope): Promise<{ destroyed: true }
 /**
  * Step `checkpoint#N` (and the head of `suspend#N` / `end#N`): `hooks.checkpoint` (slice 3d). A
  * failed checkpoint is an `error` event, never a failed session — the previous one still stands.
+ *
+ * With the boot's id, it first checks the container is still the one the boot prepared: one that
+ * died and came back EMPTY has nothing to save, and a checkpoint of it would fail at its first
+ * `cd` ("Failed to change directory"). That is `lost`, said as such — and a `turn` checkpoint of
+ * a live session suspends it (the empty container destroyed), so the next message resumes from
+ * the last save instead of running on nothing. `suspend#N` and `end#N` settle the status
+ * themselves.
  */
 export async function checkpointStep(
   scope: StepScope,
-  reason: CheckpointReason
-): Promise<{ ok: boolean }> {
+  reason: CheckpointReason,
+  bootId?: string
+): Promise<{ ok: boolean; lost?: boolean }> {
   const session = await loadSession(scope)
+  if (bootId) {
+    const sandbox = sandboxFor(scope, session)
+    const verdict = await checkContainer(sandbox, bootId)
+    if (verdict === 'replaced' || verdict === 'interrupted') {
+      scope.logger.warn({ reason, verdict }, 'session: checkpoint found the container lost')
+      const suspends = reason === 'turn'
+      await emitterFor(scope)({
+        type: 'error',
+        turn: session.turnCount,
+        data: { message: containerLostCheckpointMessage(suspends) },
+      })
+      if (suspends) {
+        await transition(scope, ['ready', 'blocked'], 'suspended', {
+          suspendedAt: scope.now(),
+          containerKeptAt: null,
+          cancelRequestedAt: null,
+        })
+        await sandbox.destroy().catch(err => {
+          scope.logger.warn({ err }, 'session: could not destroy the lost container')
+        })
+      }
+      return { ok: false, lost: true }
+    }
+  }
   try {
     await scope.hooks.checkpoint(hookContext(scope, session, session.turnCount), reason)
     return { ok: true }
@@ -1521,7 +1555,8 @@ export async function checkpointStep(
  */
 export async function suspendStep(
   scope: StepScope,
-  reason: 'idle' | 'drain'
+  reason: 'idle' | 'drain',
+  bootId?: string
 ): Promise<{ suspended: boolean }> {
   const session = await loadSession(scope)
   if (session.status !== 'ready' && session.status !== 'blocked') return { suspended: false }
@@ -1532,9 +1567,14 @@ export async function suspendStep(
     const lastActivity = session.lastActivityAt?.getTime() ?? 0
     if (scope.now().getTime() - lastActivity < idleMinutes * 60_000) return { suspended: false }
   }
-  await checkpointStep(scope, 'suspend')
-  const keep = reason === 'idle'
-  if (!keep) {
+  const { lost } = await checkpointStep(scope, 'suspend', bootId)
+  // A container that came back empty is not worth keeping, nor backing up: destroy it.
+  const keep = reason === 'idle' && !lost
+  if (lost) {
+    await sandboxFor(scope, session)
+      .destroy()
+      .catch(err => scope.logger.warn({ err }, 'session: could not destroy the lost container'))
+  } else if (!keep) {
     const sandbox = sandboxFor(scope, session)
     await backupWorkspace(scope, await loadSession(scope), sandbox)
     await sandbox.destroy()
@@ -1726,12 +1766,13 @@ export async function resumeStep(scope: StepScope): Promise<{ resumed: boolean }
  * `shipped` → the Workflow cleans up; a session left `shipping` by a throw goes back to `ready`.
  */
 export async function shipStep(
-  scope: StepScope
+  scope: StepScope,
+  bootId?: string
 ): Promise<{ status: 'shipped' | 'not_shipped' | 'skipped' }> {
   const before = await loadSession(scope)
   if (before.status !== 'ready') return { status: 'skipped' }
   try {
-    await scope.hooks.ship(hookContext(scope, before, before.turnCount))
+    await scope.hooks.ship(hookContext(scope, before, before.turnCount, bootId))
   } catch (err) {
     scope.logger.error({ err }, 'session: ship failed')
     await emitterFor(scope)({
@@ -1751,10 +1792,14 @@ export async function shipStep(
 }
 
 /** Step `end#N`: `→ ending` (a last checkpoint when the container is up); cleanup follows. */
-export async function endStep(scope: StepScope, reason: string): Promise<{ ending: boolean }> {
+export async function endStep(
+  scope: StepScope,
+  reason: string,
+  bootId?: string
+): Promise<{ ending: boolean }> {
   const session = await loadSession(scope)
   if (session.status === 'ready' || session.status === 'blocked') {
-    await checkpointStep(scope, 'end')
+    await checkpointStep(scope, 'end', bootId)
   }
   const row = await transition(
     scope,

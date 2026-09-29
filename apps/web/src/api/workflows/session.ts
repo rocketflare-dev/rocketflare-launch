@@ -19,7 +19,8 @@
  *                past expiry) or, for a debounce wait, checkpoint#N — and the loop waits on
  *              turn#N (3c's `runTurn`; reports `changed` + `endedAt`) → nothing (the debounce
  *                runs from the next inspect) · checkpoint#N when the session has been dirty for
- *                the cap · rollout#N · turn-settle#N → checkpoint#N if the step itself died
+ *                the cap · rollout#N (the container is gone: a rollout, or it died and came back
+ *                empty — `containerGone`) · turn-settle#N → checkpoint#N if the step itself died
  *              checkpoint#N (the debounce already due)
  *              ship#N (3d's `ship`) → shipped: leave the loop
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
@@ -46,6 +47,11 @@
  *   read and every sum over it happens inside a step (`inspectStep`, `turnStep`), because the
  *   code out here is replayed and a clock read here would differ on each replay. `suspend#N`,
  *   `end#N` and a green ship checkpoint first, so nothing unsaved outlives the container.
+ * - **The boot's id is carried through the loop** (`bootId`, from `sandbox.start[#K]`'s result —
+ *   replay-safe) into every turn, checkpoint, suspend, end and ship: a container that died and
+ *   came back EMPTY (out of memory, most often) is never worked on. A turn refuses it before it
+ *   starts (the message kept, the session `suspended` with a resume requested) and probes it while
+ *   it runs; a checkpoint reports it lost instead of failing at `cd` (`boot-marker.ts`).
  * - The turn step runs with `retries: 0` (a turn is not idempotent — it spends money and edits
  *   files) and the policy's `maxTurnMinutes` as its timeout; the boot steps keep the platform's
  *   default retries, which is why each of them is idempotent.
@@ -100,7 +106,7 @@ import {
   waitDuration,
   withProgress,
 } from '../services/sessions/steps'
-import { turnStepConfig } from '../services/sessions/turn'
+import { containerGone, turnStepConfig } from '../services/sessions/turn'
 import type { AppBindings } from '../types'
 import { loggerFor } from '../utils/core/logger'
 import { withStepDatabase } from './agent-run'
@@ -188,23 +194,28 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     if (claim.start === 'skip') return { sessionId: params.sessionId, status: claim.status }
 
     try {
+      // The id `sandbox.start` wrote into the container: every turn and checkpoint checks the
+      // container still carries it (`boot-marker.ts`). A step result, so replay-safe.
+      let bootId: string | undefined
       if (claim.start === 'salvage') await run('salvage', salvageStep, SALVAGE_STEP)
       if (claim.start === 'boot') {
         const db = await run('db', withProgress('db', dbStep), BOOT_STEP)
-        const { bootId } = await run(
+        const started = await run(
           'sandbox.start',
           withProgress('sandbox', startSandboxStep),
           BOOT_STEP
         )
+        const booted = started.bootId
+        bootId = booted
         await run(
           'repo',
-          withProgress('repo', s => repoStep(s, bootId)),
+          withProgress('repo', s => repoStep(s, booted)),
           BOOT_STEP
         )
         if (db.prepare) {
           await run(
             'prepare',
-            withProgress('prepare', s => prepareStep(s, bootId)),
+            withProgress('prepare', s => prepareStep(s, booted)),
             BOOT_STEP
           )
           if (claim.kind === 'prepare') {
@@ -214,16 +225,16 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         await run(
           'bootstrap',
-          withProgress('bootstrap', s => bootstrapStep(s, bootId)),
+          withProgress('bootstrap', s => bootstrapStep(s, booted)),
           BOOT_STEP
         )
         await run(
           'dev',
-          withProgress('dev', s => devStep(s, bootId)),
+          withProgress('dev', s => devStep(s, booted)),
           BOOT_STEP
         )
       }
-      if (claim.start !== 'cleanup') await this.loop(run, step)
+      if (claim.start !== 'cleanup') await this.loop(run, step, bootId)
     } catch (err) {
       logger.error({ err }, 'session: giving up')
       const message = safeErrorMessage(
@@ -244,13 +255,19 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
   }
 
   /** The turn loop — see the header. Returns when the session should be cleaned up. */
-  private async loop(run: StepRunner, step: WorkflowStep): Promise<void> {
+  private async loop(
+    run: StepRunner,
+    step: WorkflowStep,
+    initialBootId: string | undefined
+  ): Promise<void> {
     let resumes = 0
+    // The container the loop's steps must find (`boot-marker.ts`): the boot's, then each resume's.
+    let bootId = initialBootId
     // Unsaved work (debounced checkpoints): derived ONLY from step results, never from a clock
     // read here — this code is replayed, a step's result is not. Null = nothing to save.
     let dirty: DirtyState | null = null
     const saveNow = async (n: number) => {
-      await run(`checkpoint#${n}`, scope => checkpointStep(scope, 'turn'))
+      await run(`checkpoint#${n}`, scope => checkpointStep(scope, 'turn', bootId))
       dirty = null
     }
     for (let n = 0; n < MAX_SESSION_ROUNDS; n++) {
@@ -261,11 +278,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           return
         case 'end':
           // `endStep` checkpoints a live session first.
-          await run(`end#${n}`, scope => endStep(scope, next.reason))
+          await run(`end#${n}`, scope => endStep(scope, next.reason, bootId))
           return
         case 'suspend': {
           // `suspendStep` checkpoints before it suspends.
-          const { suspended } = await run(`suspend#${n}`, scope => suspendStep(scope, next.reason))
+          const { suspended } = await run(`suspend#${n}`, scope =>
+            suspendStep(scope, next.reason, bootId)
+          )
           if (suspended) dirty = null
           break
         }
@@ -294,11 +313,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
               break
             }
             if (next.waitingIn === 'suspended') {
-              await run(`end#${n}`, scope => endStep(scope, 'expired'))
+              await run(`end#${n}`, scope => endStep(scope, 'expired', bootId))
               return
             }
             // `suspendStep` checkpoints first; it does nothing when the preview kept it busy.
-            const { suspended } = await run(`suspend#${n}`, scope => suspendStep(scope, 'idle'))
+            const { suspended } = await run(`suspend#${n}`, scope =>
+              suspendStep(scope, 'idle', bootId)
+            )
             if (suspended) dirty = null
           }
           break
@@ -306,7 +327,11 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         case 'turn': {
           let outcome: TurnStepResult
           try {
-            outcome = await run(`turn#${n}`, scope => turnStep(scope, before), turnStepConfig(next))
+            outcome = await run(
+              `turn#${n}`,
+              scope => turnStep(scope, before, bootId),
+              turnStepConfig(next)
+            )
           } catch (err) {
             // The step itself died (its timeout, the database): repair a row left `working`, and
             // save at once — nothing measured the workspace, so assume it changed.
@@ -316,8 +341,9 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             await saveNow(n)
             break
           }
-          if (outcome.status === 'interrupted' && outcome.reason === 'rollout') {
-            // The container, and whatever it had not saved, is gone.
+          if (containerGone(outcome)) {
+            // The container, and whatever it had not saved, is gone (a rollout, or it died and came
+            // back empty): the session is `suspended`, and the next message resumes it.
             await run(`rollout#${n}`, rolloutStep)
             dirty = null
           } else if (outcome.checkpointNow) {
@@ -331,7 +357,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         case 'ship': {
           // A green ship checkpoints inside `ship()`; a red one leaves the dirty state as it was.
-          const shipped = await run(`ship#${n}`, shipStep)
+          const shipped = await run(`ship#${n}`, scope => shipStep(scope, bootId))
           if (shipped.status === 'shipped') return
           break
         }
@@ -340,16 +366,18 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           if (!resumed.resumed) break
           resumes += 1
           const k = resumes
-          const { bootId, warm } = await run(
+          const started = await run(
             `sandbox.start#${k}`,
             withProgress('sandbox', startSandboxStep),
             BOOT_STEP
           )
-          if (warm) {
+          const booted = started.bootId
+          bootId = booted
+          if (started.warm) {
             // The kept container: workspace, dependencies, database and transcript are all there.
             await run(
               `dev#${k}`,
-              withProgress('dev', s => devStep(s, bootId, { warm: true })),
+              withProgress('dev', s => devStep(s, booted, { warm: true })),
               BOOT_STEP
             )
             break
@@ -361,30 +389,30 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           if (usable) {
             ;({ restored } = await run(
               `restore#${k}`,
-              withProgress('restore', s => restoreStep(s, bootId)),
+              withProgress('restore', s => restoreStep(s, booted)),
               BOOT_STEP
             ))
           }
           if (!restored) {
             await run(
               `repo#${k}`,
-              withProgress('repo', s => repoStep(s, bootId)),
+              withProgress('repo', s => repoStep(s, booted)),
               BOOT_STEP
             )
           }
           await run(
             `bootstrap#${k}`,
-            withProgress('bootstrap', s => bootstrapStep(s, bootId, { restored })),
+            withProgress('bootstrap', s => bootstrapStep(s, booted, { restored })),
             BOOT_STEP
           )
           await run(
             `dev#${k}`,
-            withProgress('dev', s => devStep(s, bootId)),
+            withProgress('dev', s => devStep(s, booted)),
             BOOT_STEP
           )
           await run(
             `transcript#${k}`,
-            withProgress('transcript', s => restoreTranscriptStep(s, bootId)),
+            withProgress('transcript', s => restoreTranscriptStep(s, booted)),
             BOOT_STEP
           )
           break
@@ -392,6 +420,6 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       }
     }
     // A runaway loop: end it rather than grow the instance for ever.
-    await run('end#max', scope => endStep(scope, 'max_rounds'))
+    await run('end#max', scope => endStep(scope, 'max_rounds', bootId))
   }
 }

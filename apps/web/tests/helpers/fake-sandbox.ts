@@ -40,6 +40,10 @@
  *   the steps' deadlines (`services/sessions/deadline.ts`) are for.
  * - `recreate()` — the container died and came back EMPTY (Docker's OOM killer on a laptop): files,
  *   ports and processes are gone, no error is thrown. The boot marker check is what notices.
+ * - `die()` — the container died under a running process the way it does DEPLOYED (session
+ *   d9124cbb, out of memory in a `pnpm build`): the process's log stream neither errors nor ends —
+ *   it goes QUIET until the reader aborts — and whatever calls in next finds a fresh, EMPTY
+ *   container (files, ports and background runs gone, no boot marker). `deaths` counts them.
  * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
  *   and no hanging process is alive (a dev server that exited).
  * - `backup({ dir })` snapshots the files under `dir` (kept in `backups` by id — they survive
@@ -97,6 +101,8 @@ export interface FakeProcessRecord {
   script: ProcessScript
   killed: boolean
   exitCode: number | null
+  /** Its container died under it (`die()`): its stream goes quiet, a kill reaches nothing. */
+  silenced?: boolean
 }
 
 export interface BackgroundScript {
@@ -193,6 +199,7 @@ export class FakeSandbox implements SandboxPort {
   private readonly failures = new Map<Method, Error>()
   private readonly hangs = new Set<Method>()
   recreations = 0
+  deaths = 0
   private readonly killWaiters = new Map<string, () => void>()
   private interruptArmed = false
   private nextPid = 1
@@ -278,6 +285,30 @@ export class FakeSandbox implements SandboxPort {
     return this
   }
 
+  /** The container died under its running processes — see the header. */
+  die(): this {
+    this.deaths++
+    this.liveRuns.clear()
+    this.files.clear()
+    this.ports.clear()
+    for (const p of this.processes) {
+      if (p.exitCode === null) {
+        p.silenced = true
+        this.killWaiters.get(p.id)?.()
+      }
+    }
+    return this
+  }
+
+  /** A dead container's stream: nothing more, ever — until the reader stops reading. */
+  private quiet(signal?: AbortSignal): Promise<void> {
+    return new Promise<void>(resolve => {
+      if (!signal) return
+      if (signal.aborted) resolve()
+      else signal.addEventListener('abort', () => resolve(), { once: true })
+    })
+  }
+
   // ---- SandboxPort -----------------------------------------------------------------------------
 
   private async guard(method: Method): Promise<void> {
@@ -352,6 +383,7 @@ export class FakeSandbox implements SandboxPort {
     const interrupting = this.interruptArmed
     let first = true
     for (const line of proc.script.lines) {
+      if (proc.silenced) return void (await this.quiet(opts.signal))
       if (opts.signal?.aborted || proc.killed) break
       yield { type: 'stdout', data: `${line}\n` }
       if (interrupting && first) this.interrupt()
@@ -368,6 +400,7 @@ export class FakeSandbox implements SandboxPort {
       this.killWaiters.delete(processId)
       if (opts.signal?.aborted && !proc.killed) return
     }
+    if (proc.silenced) return void (await this.quiet(opts.signal))
     if (proc.exitCode === -1) throw new SandboxInterruptedError()
     proc.exitCode ??= proc.killed ? 137 : (proc.script.exitCode ?? 0)
     yield { type: 'exit', exitCode: proc.exitCode }
@@ -376,7 +409,7 @@ export class FakeSandbox implements SandboxPort {
   async kill(processId: string): Promise<void> {
     await this.guard('kill')
     const proc = this.processes.find(p => p.id === processId)
-    if (!proc) return
+    if (!proc || proc.silenced) return
     proc.killed = true
     this.killed.push(processId)
     this.killWaiters.get(processId)?.()

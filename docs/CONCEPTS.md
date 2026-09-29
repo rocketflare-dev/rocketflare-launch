@@ -1604,7 +1604,18 @@ checks the budget, claims `ready → working`, writes `user.message` + `turn.sta
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
 events. `cancel_requested_at` is polled every 2 s and kills the process (a Stop whose turn step is
 gone is carried out by the reconcile's `salvage`, §18.9); a rollout is `turn.interrupted` and
-`suspended`. A `--resume` whose transcript is missing, or that Claude Code refuses at once
+`suspended`. **A container that died under the session is noticed** (`boot-marker.ts`): the
+Workflow carries the `bootId` `sandbox.start` wrote into the container into every turn and
+checkpoint. A dead container (out of memory in a `pnpm build`, most often) does not end the turn's
+log stream — it goes quiet — so every 45 s (`TURN_LIVENESS_PROBE_MS`) the turn reads the marker,
+bounded at 20 s: the read reaches a fresh, EMPTY container with no marker → `turn.interrupted {
+container_lost }` at once; 4 reads in a row with no answer (`TURN_LIVENESS_MAX_FAILURES`, about four
+minutes) → the same. A log stream that fails or ends early is checked once more before it is called
+"lost the connection". The session goes `suspended` (like a rollout: `rollout#N` destroys what is
+left, nothing is checkpointed), and the next message resumes from the last save (§18.9's cold
+resume: the workspace backup, else the branch; the transcript from R2). A turn whose container is
+already empty never starts: the message stays pending, the session goes `suspended` with a resume
+requested and an `error` event says why, so the resume runs it on the new container. A `--resume` whose transcript is missing, or that Claude Code refuses at once
 (`error_during_execution`, no tokens, nothing said), clears `claude_session_id`, says so in an
 `error` event and runs the turn (once more) as a new conversation. Pushing is disallowed to Claude — Launch commits and pushes.
 **Launch never leaves a turn's process running unread**: the command records its pid
@@ -1644,7 +1655,12 @@ running sum saw, so a killed turn is still paid for) is written through the prox
 `recordSessionUsage`: the same pricing, one transaction per row.
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
-the body's end); the turn's kill reaches Claude Code and its DIRECT children (`pkill -P`), not a
+the body's end); the liveness probe is proven with the `FakeSandbox` only (`die()`: a stream that
+goes quiet, then an empty container) — that a probe into a dead container deployed boots an empty
+one (or times out) rather than hanging past its 20 s bound is from session d9124cbb's checkpoint,
+not a test; a container that stays unresponsive for four probes but is in fact alive is destroyed
+with its unsaved edits (the threshold is a guess); the ship turn is probed too, but a ship whose
+container died goes back to `ready` — the next turn's marker check is what suspends it; the turn's kill reaches Claude Code and its DIRECT children (`pkill -P`), not a
 grandchild that detached into a process group of its own; the pid file is read at kill time, so a
 pid the kernel reused meanwhile would be signalled (not seen); the kill escalation is proven
 against real processes locally, not yet inside the session image; a model with no price (`estimateCostMicrocents` → null) costs nothing to the
@@ -1687,6 +1703,12 @@ latest turn: a message inside it runs and the 30 s start again from ITS end; 30 
 for `SESSION_CHECKPOINT_MAX_DEFER_MS` (5 min) checkpoints straight after its next turn however
 busy the conversation, and a debounce wait is cut to that cap. A suspend, an end and a ship still
 checkpoint first; a turn step that died checkpoints at once; a rollout has nothing left to save.
+**A checkpoint first checks the boot marker** (`checkpointStep`, with the loop's `bootId`): a
+container that came back empty has nothing to save, so instead of failing at its first `cd`
+("Failed to change directory to '/workspace/app'") the `error` event says the container stopped
+and the changes since the last save are lost — and a debounced (`turn`) checkpoint suspends the
+session and destroys the empty container, so the next message resumes from the last save; a
+suspend neither keeps nor backs up such a container, and an end just ends.
 **Checkpoint** (`checkpoint.ts`): `git add -A`, a
 commit by Launch with the person as `Co-Authored-By`, `git push origin HEAD:refs/heads/session/
 <short>` through the git handler, and Claude's transcript to R2 (`sessions/<id>/claude.jsonl`) so
@@ -1717,7 +1739,8 @@ ship (GitHub has not queued the workflows yet when the PR opens).
 
 **Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
 conversation) the work and the transcript live only in the container — a crash or a lost instance
-then loses them (a rollout always did); a turn that changed no file does not copy the transcript to
+then loses them (a rollout always did; a container that runs out of memory mid-turn loses the
+turn's edits too — there is no memory limit or warning before it happens); a turn that changed no file does not copy the transcript to
 R2 until the next checkpoint (a suspend always makes one); an oversized untracked file keeps the
 workspace dirty, so every turn is followed by a checkpoint that re-reports it; a file over the size
 limit that is already TRACKED keeps its last committed

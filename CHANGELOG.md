@@ -5,6 +5,16 @@
 - The TanStack Query devtools are opt-in in development: set `VITE_QUERY_DEVTOOLS=on` in
   `apps/web/.env.local` to show the toggle (it was on unless `off`). Kit issue
   rocketflare-dev/rocketflare#46.
+- A coding session notices a container that died under it (out of memory in a `pnpm build`, most
+  often) instead of waiting out the 90-minute turn timeout and then working on an empty container.
+  A running turn reads the container's boot marker every 45 s (bounded at 20 s; four unanswered
+  reads in a row count as lost): a dead container's log stream goes quiet rather than ending, and
+  the read reaches a fresh, empty container with no marker. The turn ends `turn.interrupted {
+  container_lost }` (a new reason in the shared contract, with a `message`), the session goes
+  `suspended`, and the next message resumes it from the last save. A turn whose container is
+  already empty never runs: its message stays pending and the session resumes and runs it there. A
+  checkpoint on an empty container says the container was lost (and a debounced one suspends the
+  session) instead of "Checkpoint failed at scan: Failed to change directory".
 - `SESSION_EGRESS = open | allowlist` (missing = `allowlist`) picks how a session container reaches
   the internet, and the three tomls say `open` for now: internet on, no allow-list, and only
   `api.anthropic.com` and `github.com` intercepted, so the container still holds no model key or

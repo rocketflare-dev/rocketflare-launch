@@ -33,6 +33,7 @@ import {
   sessionTurnInterruptedDataSchema,
   sessionUserMessageDataSchema,
 } from '@launch/shared/launch-sessions'
+import type { z } from 'zod'
 import {
   buildTimeline,
   humaniseToolName,
@@ -57,11 +58,14 @@ export type ChatItem =
 
 const CHAT_TIMELINE_TYPES = new Set(['text', 'tool.start', 'tool.end'])
 
-const INTERRUPTED_TEXT: Record<'rollout' | 'cancelled' | 'timeout', string> = {
-  cancelled: 'Stopped. Nothing after this point was applied.',
-  rollout: 'Cut off by a Launch update. Resume the session to carry on from here.',
-  timeout: 'Stopped: the turn ran past its time limit.',
-}
+const INTERRUPTED_TEXT: Record<z.infer<typeof sessionTurnInterruptedDataSchema>['reason'], string> =
+  {
+    cancelled: 'Stopped. Nothing after this point was applied.',
+    rollout: 'Cut off by a Launch update. Resume the session to carry on from here.',
+    container_lost:
+      'The sandbox stopped (most likely it ran out of memory). Send a message to carry on from the last save.',
+    timeout: 'Stopped: the turn ran past its time limit.',
+  }
 
 const usd = (microcents: number) => {
   const dollars = microcents / 100_000_000

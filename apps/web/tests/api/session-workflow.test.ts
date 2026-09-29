@@ -17,6 +17,11 @@ import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptToken } from '@/api/auth/oauth-encryption'
 import {
+  CONTAINER_LOST_BEFORE_TURN_MESSAGE,
+  CONTAINER_LOST_MESSAGE,
+  containerLostCheckpointMessage,
+} from '@/api/services/sessions/boot-marker'
+import {
   CheckpointError,
   SESSION_CHECKPOINT_DEBOUNCE_MS,
   SESSION_CHECKPOINT_MAX_DEFER_MS,
@@ -147,6 +152,8 @@ async function harness(
         sleep: tick,
         cancelPollMs: 5,
         flushMs: 5,
+        // The id the Workflow carries from `sandbox.start` (what the real hook passes).
+        ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
       })
       if (workspace.turnsChange) workspace.changed = true
       return outcome
@@ -877,6 +884,195 @@ describe('SessionWorkflow: the loop', () => {
       return WAKE
     })
     expect(await typesOf(h.row)).toContain('turn.interrupted')
+  })
+
+  /** The steps a cold resume runs after `resume#N` — from the last save (the branch). */
+  const COLD_RESUME = [
+    'sandbox.start#1',
+    'restore.check#1',
+    'repo#1',
+    'bootstrap#1',
+    'dev#1',
+    'transcript#1',
+  ]
+  const claudeRuns = (h: Harness) =>
+    h.sandbox().processes.filter(p => p.command.includes('claude -p'))
+
+  it('a container that dies under a turn (its stream goes quiet): container_lost at the next probe, suspended, no checkpoint — the next message resumes from the last save', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Run pnpm build' })
+    const inner = h.hooks.runTurn
+    let first = true
+    h.hooks.runTurn = async ctx => {
+      if (!first) return inner(ctx)
+      first = false
+      expect(ctx.bootId).toBe((await h.sandbox().readFile(SESSION_BOOT_MARKER))?.trim())
+      let died = false
+      return runTurn(ctx.db, ctx.ports, ctx.session, {
+        // Out of memory as soon as the turn is under way.
+        sleep: async () => {
+          if (!died) {
+            died = true
+            h.sandbox().die()
+          }
+          await tick()
+        },
+        cancelPollMs: 5,
+        flushMs: 5,
+        probeMs: 5,
+        ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
+      })
+    }
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        expect(await reload(h.row)).toMatchObject({ status: 'suspended', containerKeptAt: null })
+        expect(h.sandbox().destroyed).toBe(true)
+        // The person writes again (what the message route does for a suspended session).
+        await patch(h.row, { requestedAction: 'resume', pendingMessage: 'Try again' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'rollout#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'resume#2',
+      ...COLD_RESUME,
+      'inspect#3',
+      'turn#3',
+      'inspect#4',
+      'wait#4',
+      'inspect#5',
+      'end#5',
+      'cleanup',
+    ])
+    expect(new Set(run.names).size).toBe(run.names.length)
+    // Nothing was saved from the dead container; the turn on the new one is saved at the end.
+    expect(h.checkpoints).toEqual(['end'])
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    expect(events.find(e => e.type === 'turn.interrupted')?.data).toEqual({
+      turn: 1,
+      reason: 'container_lost',
+      message: CONTAINER_LOST_MESSAGE,
+    })
+    expect(events.filter(e => e.type === 'turn.end')).toHaveLength(1)
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 2 })
+  })
+
+  it('a zombie — ready, but its container came back empty: the message never runs on it; it suspends, resumes from the last save and runs there', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        // Session d9124cbb: the container died while the session sat `ready`.
+        h.sandbox().die()
+        await patch(h.row, { pendingMessage: 'are you alive' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'wait#0',
+      'inspect#1',
+      'turn#1',
+      'rollout#1',
+      'inspect#2',
+      'resume#2',
+      ...COLD_RESUME,
+      'inspect#3',
+      'turn#3',
+      'inspect#4',
+      'wait#4',
+      'inspect#5',
+      'end#5',
+      'cleanup',
+    ])
+    // Claude Code ran once — on the new container — with the person's message.
+    expect(claudeRuns(h)).toHaveLength(1)
+    expect(claudeRuns(h)[0]?.command).toContain('are you alive')
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    const lost = events.findIndex(e => e.type === 'error')
+    expect(events[lost]?.data).toEqual({ message: CONTAINER_LOST_BEFORE_TURN_MESSAGE })
+    expect(events.slice(lost + 1).map(e => e.type)).toEqual(
+      expect.arrayContaining(['user.message', 'turn.start', 'turn.end'])
+    )
+    expect(events.some(e => e.type === 'turn.failed')).toBe(false)
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 1 })
+  })
+
+  it('a checkpoint on a container that came back empty reports it lost (not a failed scan), suspends, and the next message resumes from the last save', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        // Inside the debounce, before the save: the container dies.
+        h.sandbox().die()
+        return undefined
+      }
+      if (n === 1) {
+        expect(await reload(h.row)).toMatchObject({ status: 'suspended', requestedAction: null })
+        await patch(h.row, { requestedAction: 'resume', pendingMessage: 'And make it blue' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'turn#0',
+      'inspect#1',
+      'wait#1',
+      'checkpoint#1',
+      'inspect#2',
+      'wait#2',
+      'inspect#3',
+      'resume#3',
+      ...COLD_RESUME,
+      'inspect#4',
+      'turn#4',
+      'inspect#5',
+      'wait#5',
+      'inspect#6',
+      'end#6',
+      'cleanup',
+    ])
+    // The checkpoint hook never ran against the empty container.
+    expect(h.checkpoints).toEqual(['end'])
+    const errors = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'error'
+    )
+    expect(errors[0]?.data).toEqual({ message: containerLostCheckpointMessage(true) })
+    expect(JSON.stringify(errors)).not.toContain('Checkpoint failed')
+    // (The fake checkpoint saved no transcript, so the new container's turn starts a new
+    // conversation and says so — the resume never fails over it.)
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 2 })
+  })
+
+  it('an idle suspend of a container that came back empty keeps nothing: no checkpoint, no warm container', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        h.sandbox().die()
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      expect(await reload(h.row)).toMatchObject({ status: 'suspended', containerKeptAt: null })
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6, 10)).toEqual(['inspect#0', 'wait#0', 'suspend#0', 'inspect#1'])
+    expect(h.checkpoints).toEqual([])
+    expect(h.sandbox().destroyed).toBe(true)
+    const errors = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'error'
+    )
+    expect(errors.map(e => e.data)).toEqual([{ message: containerLostCheckpointMessage(false) }])
   })
 
   it('a drain suspends a live session; a suspended one past its expiry ends', async () => {

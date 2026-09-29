@@ -56,6 +56,11 @@ export interface SessionStepContext {
   session: SessionRow
   /** The turn this step belongs to (`turn_count` after the claim). */
   turn: number
+  /**
+   * The id `sandbox.start` wrote into the container (`boot-marker.ts`), when the Workflow knows it:
+   * the turn refuses a container without it and probes it while it runs.
+   */
+  bootId?: string
   emit: SessionEmitter
   realtime: Realtime
   logger: Logger
@@ -75,7 +80,11 @@ export interface SessionStepHooks {
 /** The real functions (slices 3c and 3d). */
 export const defaultSessionStepHooks: SessionStepHooks = {
   runTurn: ctx =>
-    runTurn(ctx.db, ctx.ports, ctx.session, { realtime: ctx.realtime, logger: ctx.logger }),
+    runTurn(ctx.db, ctx.ports, ctx.session, {
+      realtime: ctx.realtime,
+      logger: ctx.logger,
+      ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
+    }),
   checkpoint: (ctx, reason) =>
     checkpoint(
       ctx.db,
@@ -100,6 +109,7 @@ export const defaultSessionStepHooks: SessionStepHooks = {
         runTurn: createShipTurnRunner(ctx.db, ctx.ports, {
           realtime: ctx.realtime,
           logger: ctx.logger,
+          ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
         }),
         emit: events => ctx.emit(events),
         now: ctx.now,
