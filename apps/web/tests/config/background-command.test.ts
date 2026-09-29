@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  BackgroundCommandAbortedError,
   BackgroundCommandLostError,
   BackgroundCommandTimeoutError,
   backgroundRunnerScript,
@@ -107,6 +108,56 @@ describe('runInBackground', () => {
     })
     expect(second).toEqual({ exitCode: 0, stdout: 'installed\n', attached: true })
     expect(fake.backgroundRuns).toHaveLength(1)
+  })
+
+  it('a LAZY env is minted only when a run starts — never when a retry attaches', async () => {
+    const fake = new FakeSandbox().onBackground(/pnpm test/, { hang: true })
+    let minted = 0
+    const env = async () => {
+      minted++
+      return { DATABASE_URL: `postgresql://u:pw${minted}@h/db` }
+    }
+    const dropped = new Error('Peer closed WebSocket: 1006')
+    await runInBackground(fake, {
+      ...base,
+      name: 'gate-test',
+      command: 'pnpm test',
+      env,
+      sleep: async () => {
+        throw dropped
+      },
+    }).catch(() => {})
+    const second = await runInBackground(fake, {
+      ...base,
+      name: 'gate-test',
+      command: 'pnpm test',
+      env,
+      sleep: async () => {
+        fake.finishBackground('gate-test', { exitCode: 0 })
+      },
+    })
+    expect(second.attached).toBe(true)
+    // One password for one run: the attached retry never reset it under the running suite.
+    expect(minted).toBe(1)
+    expect(fake.backgroundRuns[0]?.opts?.env).toEqual({ DATABASE_URL: 'postgresql://u:pw1@h/db' })
+  })
+
+  it('an aborted signal kills the process group at the next poll and says so', async () => {
+    const fake = new FakeSandbox().onBackground(/pnpm test/, { hang: true, log: 'running…\n' })
+    const controller = new AbortController()
+    let polls = 0
+    const err = await runInBackground(fake, {
+      ...base,
+      name: 'gate-test',
+      command: 'pnpm test',
+      signal: controller.signal,
+      sleep: async () => {
+        if (++polls === 2) controller.abort()
+      },
+    }).catch(e => e)
+    expect(err).toBeInstanceOf(BackgroundCommandAbortedError)
+    expect((err as BackgroundCommandAbortedError).log).toContain('running…')
+    expect(fake.backgroundRuns[0]?.killed).toBe(true)
   })
 
   it('a FINISHED earlier run is never reused: the same name runs again (another database)', async () => {

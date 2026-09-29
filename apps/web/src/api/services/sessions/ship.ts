@@ -1,116 +1,111 @@
 /**
- * Ship a session (Launch P3, plan §1.10): the ship turn, Launch's own gate, the final checkpoint,
- * the pull request, and its CI.
+ * Ship a session (Launch P3, plan §1.10; issue #1, docs/CONCEPTS.md §18.13) — the parts of the ship
+ * that are not the gate: the pull request's title and body, the PR itself, and its CI.
  *
- * **Stable signature — the Workflow (slice 3b) calls this from its `ship` step when the row's
- * `requested_action` is `ship`:**
+ * The ship is a sequence of Workflow steps (`workflows/session.ts`, bodies in `ship-steps.ts`):
+ * `ship.claim` → `ship.save` → per attempt `ship.gate` (lint, typecheck) → `ship.db` → `ship.gate`
+ * (tests, on a throwaway Neon branch) → `ship.db-clean` → on red `ship.fix` → … → green: `ship.commit`
+ * → `ship.summary` → `ship.pr`. LAUNCH runs the gate (`gate.ts`) and its exit codes alone decide;
+ * a green gate makes no model call to decide anything. What this file adds:
  *
- * ```ts
- * ship(db, { cfg, ports, storage, runTurn, emit?, now? }, { tenantId, sessionId }) → Promise<ShipOutcome>
- * ```
- *
- * `runTurn` is the turn runner (slice 3c's `runTurn`, adapted by the Workflow): it runs ONE Claude
- * Code turn with `message` as the user's message — writing `user.message` … `turn.end` as any turn
- * does — and answers `{ outcome, turn, text? }` (`createShipTurnRunner` in `turn.ts`, bound in
- * `hooks.ts`). `emit` appends events (the Workflow's emitter, which also nudges; default
- * `appendSessionEvents` from `event-log.ts` — the Workflow is the one writer, so there is no race
- * to lose).
- *
- * The steps:
- *
- * 1. **Claim**: compare-and-set `ready | shipping → shipping`, clearing `requested_action`. A
- *    session already `shipped` answers its PR (a retried step); any other status is `skipped`.
- * 2. **The ship turn**, with the `session-ship` prompt (gate command, attempts, app and person):
- *    Claude runs the gate, fixes what fails, and ends with `{ title, body, gatePassed }` as JSON.
- * 3. **Launch's own gate**: the model's word is not enough — unless it already said `gatePassed:
- *    false`, Launch runs the gate command itself (`bash -c`) and only its exit code counts.
- *    Red → a `ship.gate { passed: false }` event with the output's tail, status back to `ready`,
- *    no PR — the person reads why and carries on chatting.
- * 4. **Green** → `ship.gate { passed: true }`, `checkpoint()` with the PR title as the commit
- *    subject, `openPullRequest` (head `session/<short>`, base the app's default branch), the row's
- *    `pr_number` / `pr_url`, status `shipped`, a `ship.pr` event, audit `session.shipped`, and a
- *    first `refreshChecks`.
- *
- * 5. **The config the PR declares** (Launch P5): `deps.scanConfig` (`grants/detect.scanShipConfig`,
- *    bound in `hooks.ts`) reads the PR head's plugins and matches them to shared config; any the app
- *    does not hold yet become a `ship.config_needs` event — the ship panel's "this PR needs M365"
- *    line with its Request link. Never stored, never fatal: a failed scan ships without the event.
+ * - **The summary** (`summarizeShip`, the `shipSummary` hook): ONE cheap model call, no tools,
+ *   over the person's own messages and the branch's diff stat, answering `{ title, body }` as JSON
+ *   (`parseShipSummary`). Through the AI conventions (`services/ai/CLAUDE.md`): `resolveChat` with
+ *   the `session-ship-summary` prompt key (an `agent_models` assignment picks the model; without
+ *   one an Anthropic provider uses {@link SHIP_SUMMARY_ANTHROPIC_MODEL}), else — no tenant or
+ *   platform chat configured — the key sessions already spend (`resolveModelKey`) on the same small
+ *   model. Its usage is an `ai_usage` row billed to the session (feature
+ *   {@link SHIP_SUMMARY_FEATURE}) and added to its totals, like every other call it makes. Any
+ *   failure — no model at all, a provider error, a reply that does not parse — falls back to
+ *   `fallbackShipSummary` (the session's title or the first request, and the diff stat): a PR
+ *   never waits on the summary.
+ * - **The PR** (`openShipPullRequest`): head `session/<short>`, base the app's default branch, the
+ *   row's `pr_number` / `pr_url`, `shipping → shipped`, a `ship.pr` event, audit `session.shipped`,
+ *   the config the PR declares (`deps.scanConfig` → `ship.config_needs`, never fatal), and a first
+ *   `refreshChecks`. Idempotent: a session already `shipped` answers its PR.
  *
  * `refreshChecks` is also what `GET /api/sessions/:id/pr` (at most every 30 s) and the `*\/5`
  * cron (`sessionsChecksTask`, while `pending`) call.
  */
+import type { TokenUsage } from '@launch/shared/ai/chat'
+import type { AiProvider } from '@launch/shared/ai/config'
 import {
   type PrChecks,
   type SessionEventInput,
   type SessionShipConfigNeedsData,
   type SessionStatus,
+  SHIP_GATE_ATTEMPTS,
   sessionBranchName,
+  sessionUserMessageDataSchema,
 } from '@launch/shared/launch-sessions'
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { apps, type SessionRow, sessionEvents, sessions, tenants, users } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
+import type { Logger } from '../../utils/core/logger'
+import { createChatClient } from '../ai/client'
+import { AiNotConfiguredError } from '../ai/errors'
+import { resolveChat } from '../ai/resolve'
+import type { AiEnv, ChatClient } from '../ai/types'
 import type { ScanShipConfigInput } from '../grants/detect'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
-import type { StorageService } from '../storage'
-import { checkpoint, outputTail, SESSION_REPO_DIR } from './checkpoint'
-import { appendSessionEvents } from './event-log'
-import { egressFor, type RepoHostPort, type RepoRef, type SessionPorts } from './ports'
-import type { ShipTurnResult, ShipTurnRunner } from './turn'
+import { recordSessionUsage } from './egress/anthropic'
+import { shipGateCommands } from './gate'
+import { redactModelKeyText, resolveModelKey } from './model-key'
+import type { RepoHostPort, RepoRef } from './ports'
 
-/** The Rocketflare gate (plan §1.10). */
-export const DEFAULT_SHIP_GATE = 'pnpm lint && pnpm typecheck && pnpm test'
-/** How many gate runs the ship turn may make while fixing. */
-export const DEFAULT_SHIP_ATTEMPTS = 3
-/** How long Launch's own gate run may take. */
-export const SHIP_GATE_TIMEOUT_MS = 20 * 60 * 1000
+/** How many times the gate runs before the ship gives up (a fix turn between each red run). */
+export const DEFAULT_SHIP_ATTEMPTS = SHIP_GATE_ATTEMPTS
 /** `GET /:id/pr` refreshes checks older than this. */
 export const PR_CHECKS_MAX_AGE_MS = 30_000
-
-/** The ship turn's runner (`createShipTurnRunner`, `turn.ts`) — the one definition is 3c's. */
-export type { ShipTurnResult, ShipTurnRunner }
+/** The summary's model when the provider is Anthropic and no agent model is assigned. */
+export const SHIP_SUMMARY_ANTHROPIC_MODEL = 'claude-haiku-4-5'
+/** The summary is a title and a short body: this is plenty, and caps what a bad reply costs. */
+export const SHIP_SUMMARY_MAX_TOKENS = 1_000
+/** `ai_usage.feature` of the summary call. */
+export const SHIP_SUMMARY_FEATURE = 'session:ship-summary'
+/** At most this many of the person's messages, each clipped, go into the summary call. */
+export const SHIP_SUMMARY_MAX_REQUESTS = 20
+const REQUEST_MAX_CHARS = 1_000
+const DIFF_STAT_MAX_CHARS = 6_000
 
 /** Appends events to the session's log — the Workflow's emitter (`events.ts`) in production. */
 export type ShipEventEmitter = (events: SessionEventInput[]) => Promise<void>
 
-export interface ShipDeps {
-  cfg: AppConfig
-  ports: Pick<SessionPorts, 'sandbox' | 'repoHost' | 'egress'>
-  /** `createR2Storage(env.FILES)` for the final checkpoint's transcript; null skips it. */
-  storage: StorageService | null
-  runTurn: ShipTurnRunner
-  emit?: ShipEventEmitter
-  now?: () => Date
-  gateCommand?: string
-  maxAttempts?: number
-  /** The PR head's declared config needs (`scanShipConfig`); absent = no `ship.config_needs`. */
-  scanConfig?: (input: ScanShipConfigInput) => Promise<SessionShipConfigNeedsData>
-  repoDir?: string
-}
+// ---- the summary -------------------------------------------------------------------------------
 
-export type ShipOutcome =
-  | { status: 'shipped'; prNumber: number; prUrl: string; checks: PrChecks | null }
-  | { status: 'gate_failed'; output: string }
-  | { status: 'turn_failed'; reason: ShipTurnResult['outcome'] }
-  | { status: 'skipped'; reason: string }
-
-// ---- the reply ---------------------------------------------------------------------------------
-
-export interface ShipReply {
+/** What the PR says. */
+export interface ShipSummary {
   title: string
   body: string
-  /** What the model says of the gate; null when it did not say. */
-  gatePassed: boolean | null
+}
+
+/** What the summary call is given. No secret: the person's words and file names. */
+export interface ShipSummaryInput {
+  appName: string
+  userName: string
+  /** The person's messages, oldest first (redacted, clipped). */
+  requests: string[]
+  /** `git diff --stat` of the branch against its base; '' when it could not be read. */
+  diffStat: string
+  /** The session's own title, if it has one — the fallback's first choice. */
+  sessionTitle?: string | null
+  shortId: string
+}
+
+export interface ShipSummaryResult extends ShipSummary {
+  /** `model` — the call answered; `fallback` — it did not, or there was no model. */
+  source: 'model' | 'fallback'
 }
 
 /**
- * The `{ title, body, gatePassed }` object the ship prompt asks for: the LAST parseable JSON object
- * in the reply that has a string `title` (a fenced block, the last line, or the whole reply).
- * Null when there is none — the caller falls back to a title of its own.
+ * The `{ title, body }` object the summary prompt asks for: the LAST parseable JSON object in the
+ * reply that has a string `title` (a fenced block, the last line, or the whole reply). Null when
+ * there is none.
  */
-export function parseShipReply(text: string | null | undefined): ShipReply | null {
+export function parseShipSummary(text: string | null | undefined): ShipSummary | null {
   if (!text) return null
   const candidates: string[] = []
   for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
@@ -124,7 +119,7 @@ export function parseShipReply(text: string | null | undefined): ShipReply | nul
   const last = text.lastIndexOf('}')
   if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1))
 
-  let found: ShipReply | null = null
+  let found: ShipSummary | null = null
   for (const candidate of candidates) {
     try {
       const value = JSON.parse(candidate.trim()) as Record<string, unknown>
@@ -133,8 +128,7 @@ export function parseShipReply(text: string | null | undefined): ShipReply | nul
       if (!title) continue
       found = {
         title: title.slice(0, 200),
-        body: typeof value.body === 'string' ? value.body : '',
-        gatePassed: typeof value.gatePassed === 'boolean' ? value.gatePassed : null,
+        body: typeof value.body === 'string' ? value.body.slice(0, 20_000) : '',
       }
     } catch {
       // Not JSON; try the next candidate.
@@ -143,8 +137,42 @@ export function parseShipReply(text: string | null | undefined): ShipReply | nul
   return found
 }
 
-/** The turn's assistant text, joined, from its `text` events. */
-async function turnText(db: Database, session: SessionRow, turn: number): Promise<string> {
+/** One line, at most `max` characters. */
+const oneLine = (text: string, max: number) => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat
+}
+
+/** The PR's title and body when there is no model answer: never empty, never invented. */
+export function fallbackShipSummary(input: ShipSummaryInput): ShipSummary {
+  const title =
+    (input.sessionTitle && oneLine(input.sessionTitle, 70)) ||
+    (input.requests[0] && oneLine(input.requests[0], 70)) ||
+    `Changes from Launch session ${input.shortId}`
+  const lines = ['Changes made in a Launch coding session.']
+  if (input.requests.length > 0) {
+    lines.push('', 'What was asked for:', ...input.requests.map(r => `- ${oneLine(r, 200)}`))
+  }
+  if (input.diffStat.trim()) lines.push('', '```', input.diffStat.trim(), '```')
+  return { title, body: lines.join('\n') }
+}
+
+/** The summary call's user message: the requests, then the diff stat. */
+export function shipSummaryMessage(input: ShipSummaryInput): string {
+  const requests = input.requests.length
+    ? input.requests.map((r, i) => `${i + 1}. ${r}`).join('\n\n')
+    : '(no messages)'
+  return [
+    `What ${input.userName} asked for, oldest first:\n\n${requests}`,
+    `The branch's diff stat:\n\n${input.diffStat.trim() || '(not available)'}`,
+  ].join('\n\n---\n\n')
+}
+
+/** The person's messages in the session, oldest first — redacted and clipped for the summary. */
+export async function shipRequests(
+  db: Database,
+  session: Pick<SessionRow, 'id' | 'tenantId'>
+): Promise<string[]> {
   const rows = await db
     .select({ data: sessionEvents.data })
     .from(sessionEvents)
@@ -152,15 +180,118 @@ async function turnText(db: Database, session: SessionRow, turn: number): Promis
       and(
         eq(sessionEvents.tenantId, session.tenantId),
         eq(sessionEvents.sessionId, session.id),
-        eq(sessionEvents.turn, turn),
-        eq(sessionEvents.type, 'text')
+        eq(sessionEvents.type, 'user.message')
       )
     )
     .orderBy(sessionEvents.seq)
-  return rows
-    .map(r => (r.data as { text?: unknown }).text)
-    .filter((t): t is string => typeof t === 'string')
-    .join('')
+  const texts = rows.flatMap(row => {
+    const parsed = sessionUserMessageDataSchema.safeParse(row.data)
+    const text = parsed.success ? parsed.data.text.trim() : ''
+    return text ? [oneLine(redactModelKeyText(text), REQUEST_MAX_CHARS)] : []
+  })
+  // The first request says what the session is for; the latest ones what it became.
+  if (texts.length <= SHIP_SUMMARY_MAX_REQUESTS) return texts
+  return [texts[0] as string, ...texts.slice(-(SHIP_SUMMARY_MAX_REQUESTS - 1))]
+}
+
+/** A diff stat for the prompt: colour-free, clipped from the front (the totals line is last). */
+export function clipDiffStat(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes in git's output
+  const clean = text.replace(/\u001b\[[0-9;]*m/g, '').trim()
+  return clean.length > DIFF_STAT_MAX_CHARS ? `…${clean.slice(-DIFF_STAT_MAX_CHARS)}` : clean
+}
+
+export interface SummarizeShipOptions {
+  logger?: Pick<Logger, 'warn'>
+  /** Tests: the chat client instead of resolving one. */
+  client?: { client: ChatClient; provider: AiProvider; model: string }
+}
+
+/** The client and model for the summary — see the header. Null when there is no model at all. */
+async function summaryClient(
+  db: Database,
+  cfg: AppConfig,
+  env: AiEnv,
+  tenantId: string
+): Promise<{ client: ChatClient; provider: AiProvider; model: string } | null> {
+  try {
+    const resolved = await resolveChat(db, cfg, env, tenantId, {
+      promptKey: 'session-ship-summary',
+    })
+    const model =
+      resolved.source !== 'agent' && resolved.provider === 'anthropic'
+        ? SHIP_SUMMARY_ANTHROPIC_MODEL
+        : resolved.model
+    return { client: resolved.client, provider: resolved.provider, model }
+  } catch (err) {
+    if (!(err instanceof AiNotConfiguredError)) throw err
+  }
+  const key = await resolveModelKey(db, cfg)
+  if (!key) return null
+  return {
+    client: createChatClient({ provider: 'anthropic', apiKey: key.apiKey }),
+    provider: 'anthropic',
+    model: SHIP_SUMMARY_ANTHROPIC_MODEL,
+  }
+}
+
+/**
+ * The PR's title and body from ONE model call (see the header), or the fallback. Never throws for
+ * the model; its usage is billed to the session.
+ */
+export async function summarizeShip(
+  db: Database,
+  cfg: AppConfig,
+  env: AiEnv,
+  session: Pick<SessionRow, 'id' | 'tenantId' | 'createdByUserId'>,
+  input: ShipSummaryInput,
+  opts: SummarizeShipOptions = {}
+): Promise<ShipSummaryResult> {
+  const fallback = (): ShipSummaryResult => ({ ...fallbackShipSummary(input), source: 'fallback' })
+  try {
+    const target = opts.client ?? (await summaryClient(db, cfg, env, session.tenantId))
+    if (!target) return fallback()
+    const system = await resolvePrompt(db, session.tenantId, 'session-ship-summary', {
+      appName: input.appName,
+      userName: input.userName,
+    })
+    const result = await target.client.complete({
+      model: target.model,
+      system,
+      messages: [{ role: 'user', content: shipSummaryMessage(input) }],
+      maxTokens: SHIP_SUMMARY_MAX_TOKENS,
+    })
+    await billSummary(db, session, target, result.model || target.model, result.usage).catch(err =>
+      opts.logger?.warn({ err }, 'ship summary: usage write failed')
+    )
+    const text = result.content.map(block => (block.type === 'text' ? block.text : '')).join('')
+    const parsed = parseShipSummary(text)
+    if (!parsed) {
+      opts.logger?.warn({ sessionId: session.id }, 'ship summary: the reply did not parse')
+      return fallback()
+    }
+    return {
+      title: oneLine(redactModelKeyText(parsed.title), 200),
+      body: redactModelKeyText(parsed.body).trim() || fallbackShipSummary(input).body,
+      source: 'model',
+    }
+  } catch (err) {
+    opts.logger?.warn({ err }, 'ship summary: the model call failed; using the fallback')
+    return fallback()
+  }
+}
+
+async function billSummary(
+  db: Database,
+  session: Pick<SessionRow, 'id' | 'tenantId' | 'createdByUserId'>,
+  target: { provider: AiProvider },
+  model: string,
+  usage: TokenUsage
+): Promise<void> {
+  await recordSessionUsage(db, session, model, usage, {
+    provider: target.provider,
+    feature: SHIP_SUMMARY_FEATURE,
+  })
 }
 
 // ---- helpers -----------------------------------------------------------------------------------
@@ -256,40 +387,64 @@ export async function refreshChecks(
   return checks
 }
 
-// ---- ship --------------------------------------------------------------------------------------
+// ---- the pull request --------------------------------------------------------------------------
 
-export async function ship(
+export interface OpenShipPullRequestDeps {
+  repoHost: RepoHostPort
+  emit: ShipEventEmitter
+  now?: () => Date
+  /** The PR head's declared config needs (`scanShipConfig`); absent = no `ship.config_needs`. */
+  scanConfig?: (input: ScanShipConfigInput) => Promise<SessionShipConfigNeedsData>
+}
+
+export type ShipPrOutcome =
+  | { status: 'shipped'; prNumber: number; prUrl: string; checks: PrChecks | null }
+  | { status: 'skipped'; reason: string }
+
+/** `` / ` after one fix turn` / ` after 2 fix turns`. */
+const fixed = (n: number) => (n > 0 ? ` after ${n} fix turn${n === 1 ? '' : 's'}` : '')
+
+/** The PR body: the summary, then Launch's own line about the session and the gate. */
+export function shipPrBody(
+  summaryBody: string,
+  session: Pick<SessionRow, 'shortId'>,
+  opts: { creatorName?: string | null; fixTurns: number }
+): string {
+  const gate = shipGateCommands()
+    .map(g => `\`${g.command}\``)
+    .join(', ')
+  return [
+    summaryBody.trim() || 'Changes made in a Launch coding session.',
+    '',
+    '---',
+    `Opened by Launch from coding session \`${session.shortId}\`${opts.creatorName ? ` for ${opts.creatorName}` : ''}. Launch ran the gate itself — ${gate}, the tests on a throwaway database branch — and it passed${fixed(opts.fixTurns)}.`,
+  ].join('\n')
+}
+
+/**
+ * The green half of a ship, after the gate and the final checkpoint: open (or find) the PR, and
+ * `shipping → shipped`. See the header.
+ */
+export async function openShipPullRequest(
   db: Database,
-  deps: ShipDeps,
-  ref: { tenantId: string; sessionId: string }
-): Promise<ShipOutcome> {
+  deps: OpenShipPullRequestDeps,
+  ref: { tenantId: string; sessionId: string },
+  input: ShipSummary & { fixTurns: number }
+): Promise<ShipPrOutcome> {
   const now = deps.now ?? (() => new Date())
-  const emit: ShipEventEmitter =
-    deps.emit ??
-    (events => appendSessionEvents(db, { id: ref.sessionId, tenantId: ref.tenantId }, events))
-  const current = await loadSession(db, ref.tenantId, ref.sessionId)
-
-  // A retried step after the PR was opened: nothing left to do.
-  if (current.status === 'shipped' && current.prNumber && current.prUrl) {
+  const session = await loadSession(db, ref.tenantId, ref.sessionId)
+  if (session.status === 'shipped' && session.prNumber && session.prUrl) {
     return {
       status: 'shipped',
-      prNumber: current.prNumber,
-      prUrl: current.prUrl,
-      checks: current.prChecks ?? null,
+      prNumber: session.prNumber,
+      prUrl: session.prUrl,
+      checks: session.prChecks ?? null,
     }
   }
-
-  // 1. Claim.
-  const session = await transition(db, current, ['ready', 'shipping'], {
-    status: 'shipping',
-    requestedAction: null,
-    lastActivityAt: now(),
-  })
-  if (!session) return { status: 'skipped', reason: `session is ${current.status}` }
-
+  if (session.status !== 'shipping') {
+    return { status: 'skipped', reason: `session is ${session.status}` }
+  }
   const repo = await sessionRepo(db, session)
-  const sandbox = deps.ports.sandbox(session.id)
-  const gateCommand = deps.gateCommand ?? DEFAULT_SHIP_GATE
   const [creator] = session.createdByUserId
     ? await db
         .select({ name: users.name })
@@ -297,82 +452,15 @@ export async function ship(
         .where(eq(users.id, session.createdByUserId))
         .limit(1)
     : []
-  const priorGates = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(sessionEvents)
-    .where(
-      and(
-        eq(sessionEvents.tenantId, session.tenantId),
-        eq(sessionEvents.sessionId, session.id),
-        eq(sessionEvents.type, 'ship.gate')
-      )
-    )
-  const attempt = (priorGates[0]?.n ?? 0) + 1
-
-  // 2. The ship turn.
-  const message = await resolvePrompt(db, session.tenantId, 'session-ship', {
-    appName: repo.displayName,
-    userName: creator?.name ?? 'The person in this session',
-    gateCommand,
-    maxAttempts: String(deps.maxAttempts ?? DEFAULT_SHIP_ATTEMPTS),
-  })
-  const turn = await deps.runTurn({ message, session })
-  if (turn.outcome !== 'completed') {
-    // An interrupted turn has already moved the session (rollout → suspended); only undo our claim.
-    await transition(db, session, ['shipping'], { status: 'ready' })
-    return { status: 'turn_failed', reason: turn.outcome }
-  }
-  const text = turn.text ?? (await turnText(db, session, turn.turn))
-  const reply = parseShipReply(text)
-
-  // 3. Launch's own gate.
-  let passed = false
-  let output = ''
-  if (reply?.gatePassed === false) {
-    output = 'The ship turn reported that the gate still fails.'
-  } else {
-    const result = await sandbox.exec(`bash -c ${shellQuote(gateCommand)}`, {
-      cwd: deps.repoDir ?? SESSION_REPO_DIR,
-      timeoutMs: SHIP_GATE_TIMEOUT_MS,
-    })
-    passed = result.exitCode === 0
-    output = outputTail(result, 2000)
-  }
-  if (!passed) {
-    await emit([{ type: 'ship.gate', turn: turn.turn, data: { passed: false, attempt, output } }])
-    await transition(db, session, ['shipping'], { status: 'ready', lastActivityAt: now() })
-    return { status: 'gate_failed', output }
-  }
-  await emit([{ type: 'ship.gate', turn: turn.turn, data: { passed: true, attempt, output } }])
-
-  // 4. Checkpoint, PR, shipped.
-  const title = reply?.title ?? session.title ?? `Changes from Launch session ${session.shortId}`
-  await checkpoint(
-    db,
-    {
-      cfg: deps.cfg,
-      sandbox,
-      storage: deps.storage,
-      now,
-      emit,
-      egress: egressFor(deps.ports, db),
-    },
-    { tenantId: session.tenantId, sessionId: session.id },
-    { message: title, repoDir: deps.repoDir }
-  )
   const branch = session.branch ?? sessionBranchName(session.shortId)
-  const body = [
-    reply?.body?.trim() || 'Changes made in a Launch coding session.',
-    '',
-    '---',
-    `Opened by Launch from coding session \`${session.shortId}\`${creator ? ` for ${creator.name}` : ''}. The gate (\`${gateCommand}\`) passed before this PR was opened.`,
-  ].join('\n')
-  const repoHost = deps.ports.repoHost(db)
-  const pr = await repoHost.openPullRequest(repo, {
+  const pr = await deps.repoHost.openPullRequest(repo, {
     head: branch,
     base: repo.defaultBranch,
-    title,
-    body,
+    title: input.title,
+    body: shipPrBody(input.body, session, {
+      creatorName: creator?.name ?? null,
+      fixTurns: input.fixTurns,
+    }),
   })
   const shipped = await transition(db, session, ['shipping'], {
     status: 'shipped',
@@ -380,9 +468,11 @@ export async function ship(
     prUrl: pr.url,
     lastActivityAt: now(),
   })
-  if (!shipped)
+  if (!shipped) {
     return { status: 'skipped', reason: 'the session left shipping while its PR opened' }
-  await emit([{ type: 'ship.pr', turn: turn.turn, data: { number: pr.number, url: pr.url } }])
+  }
+  const turn = shipped.turnCount
+  await deps.emit([{ type: 'ship.pr', turn, data: { number: pr.number, url: pr.url } }])
   await recordAudit(db, {
     ...SYSTEM_ACTOR,
     tenantId: session.tenantId,
@@ -391,7 +481,14 @@ export async function ship(
     targetId: session.id,
     appId: session.appId,
     summary: {
-      after: { prNumber: pr.number, prUrl: pr.url, branch, headSha: shipped.headSha, title },
+      after: {
+        prNumber: pr.number,
+        prUrl: pr.url,
+        branch,
+        headSha: shipped.headSha,
+        title: input.title,
+        fixTurns: input.fixTurns,
+      },
     },
   })
 
@@ -404,26 +501,21 @@ export async function ship(
         sha: shipped.headSha ?? branch,
       })
       if (needs.needs.length > 0) {
-        await emit([{ type: 'ship.config_needs', turn: turn.turn, data: needs }])
+        await deps.emit([{ type: 'ship.config_needs', turn, data: needs }])
       }
     } catch {
       // The PR is open; the config page's own scan (at the Release) will say it.
     }
   }
 
-  // 5. The PR's first CI reading (a failure here is not a failed ship: the cron reads it again).
+  // The PR's first CI reading (a failure here is not a failed ship: the cron reads it again).
   let checks: PrChecks | null = null
   try {
-    checks = await refreshChecks(db, repoHost, shipped, { now: now() })
+    checks = await refreshChecks(db, deps.repoHost, shipped, { now: now() })
   } catch {
     checks = null
   }
   return { status: 'shipped', prNumber: pr.number, prUrl: pr.url, checks }
-}
-
-/** `'…'` for bash, with embedded single quotes escaped. */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 // ---- the cron ----------------------------------------------------------------------------------

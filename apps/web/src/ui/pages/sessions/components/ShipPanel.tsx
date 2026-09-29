@@ -1,6 +1,7 @@
 /**
- * Shipping, as it happens and after (Launch P3, plan §1.10): the gate's attempts (`ship.gate`
- * rows — lint, typecheck and tests, with Claude fixing failures between tries), the pull request
+ * Shipping, as it happens and after (Launch P3, plan §1.10; issue #1): the gate's attempts —
+ * `ship.gate` rows, one per step Launch ran (lint, typecheck, the tests on a throwaway database),
+ * grouped by attempt, with a Claude fix turn between a red attempt and the next — the pull request
  * once it is open, and its CI — `GET /:id/pr`, check runs plus commit statuses folded into one
  * verdict, polled while anything is still running.
  *
@@ -26,11 +27,12 @@ import {
   type Session,
   type SessionEvent,
   type SessionShipConfigNeedsData,
+  SHIP_GATE_STEP_LABELS,
   sessionShipConfigNeedsDataSchema,
 } from '@launch/shared/launch-sessions'
 import { Link } from 'react-router-dom'
 import { useSessionPr } from '@/ui/hooks/useSessions'
-import type { ShipGate } from '../sessionChatModel'
+import { type ShipGate, shipGateAttempts } from '../sessionChatModel'
 
 /** The latest `ship.config_needs` row's data, or null (none, or nothing needed). Pure. */
 export function shipConfigNeeds(
@@ -64,6 +66,21 @@ const CHECK_ICON: Record<
   failure: { icon: ExclamationCircleIcon, className: 'text-error', label: 'failed' },
   pending: { icon: ClockIcon, className: 'text-info', label: 'running' },
   none: { icon: MinusCircleIcon, className: 'text-muted', label: 'no checks' },
+}
+
+/** "12 s", "3 min 4 s". Pure. */
+export function gateDuration(ms: number | undefined): string | null {
+  if (ms === undefined) return null
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  return s % 60 ? `${m} min ${s % 60} s` : `${m} min`
+}
+
+/** One step row's text: "Lint passed" / "Tests failed"; a step-less (old) row is the whole gate. */
+export function gateStepText(gate: Pick<ShipGate, 'passed' | 'step'>): string {
+  if (!gate.step) return gate.passed ? 'Lint, typecheck and tests passed' : 'Something failed'
+  return `${SHIP_GATE_STEP_LABELS[gate.step]} ${gate.passed ? 'passed' : 'failed'}`
 }
 
 /** "3 of 4 checks passed · 1 running". Pure. */
@@ -125,42 +142,67 @@ export function ShipPanel({
 
       {shipping && gates.length === 0 && (
         <p className="text-sm text-secondary">
-          Running lint, typecheck and the tests. Claude fixes anything that fails, then opens a pull
-          request.
+          Launch is running lint, typecheck and the tests (on a throwaway copy of the database). If
+          a step fails, Claude gets one turn to fix it and Launch runs the checks again; when they
+          pass, Launch opens a pull request.
         </p>
       )}
 
       {gates.length > 0 && (
-        <ol className="space-y-1.5" aria-label="Checks before shipping">
-          {gates.map(gate => (
-            <li key={gate.id} className="text-sm" data-gate={gate.passed ? 'passed' : 'failed'}>
-              <div className="flex items-center gap-2">
-                {gate.passed ? (
-                  <CheckCircleIcon className="h-4 w-4 shrink-0 text-success" />
-                ) : (
-                  <ExclamationCircleIcon className="h-4 w-4 shrink-0 text-warning" />
-                )}
-                <span>
-                  Attempt {gate.attempt}:{' '}
-                  {gate.passed ? 'lint, typecheck and tests passed' : 'something failed'}
-                </span>
-              </div>
-              {gate.output && (
-                <details className="ml-6 mt-1">
-                  <summary className="cursor-pointer select-none text-xs text-muted">
-                    Output
-                  </summary>
-                  <pre className="surface-inset mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-xs">
-                    {gate.output}
-                  </pre>
-                </details>
-              )}
+        <ol className="space-y-2" aria-label="Checks before shipping">
+          {shipGateAttempts(gates).map(attempt => (
+            <li
+              key={attempt.attempt}
+              className="text-sm"
+              data-gate={attempt.passed ? 'passed' : 'failed'}
+            >
+              <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                Attempt {attempt.attempt}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {attempt.steps.map(gate => (
+                  <li key={gate.id} data-gate-step={gate.step ?? 'gate'}>
+                    <div className="flex items-center gap-2">
+                      {gate.passed ? (
+                        <CheckCircleIcon className="h-4 w-4 shrink-0 text-success" />
+                      ) : (
+                        <ExclamationCircleIcon className="h-4 w-4 shrink-0 text-warning" />
+                      )}
+                      <span>{gateStepText(gate)}</span>
+                      {gate.command && (
+                        <span className="font-mono text-xs text-muted">{gate.command}</span>
+                      )}
+                      {gateDuration(gate.durationMs) && (
+                        <span className="ml-auto shrink-0 text-xs text-muted">
+                          {gateDuration(gate.durationMs)}
+                        </span>
+                      )}
+                    </div>
+                    {gate.output && (
+                      <details className="ml-6 mt-1">
+                        <summary className="cursor-pointer select-none text-xs text-muted">
+                          Output
+                        </summary>
+                        <pre className="surface-inset mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-xs">
+                          {gate.output}
+                        </pre>
+                      </details>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
           {shipping && gates.at(-1)?.passed === false && (
             <li className="flex items-center gap-2 text-sm text-muted">
               <span className="loading loading-dots loading-xs" />
               Claude is fixing it…
+            </li>
+          )}
+          {shipping && gates.at(-1)?.passed === true && gates.at(-1)?.step !== 'test' && (
+            <li className="flex items-center gap-2 text-sm text-muted">
+              <span className="loading loading-dots loading-xs" />
+              Running the next check…
             </li>
           )}
         </ol>

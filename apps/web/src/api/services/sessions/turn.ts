@@ -73,13 +73,15 @@
  *    `TURN_KILL_GRACE_SECONDS` (`terminateTurnProcess`: bounded, logged, never throws). Not after a
  *    rollout or a lost container: that container is gone.
  *
- * ## The ship turn (slice 3d)
+ * ## The ship's fix turn (issue #1)
  *
  * `createShipTurnRunner(db, ports, opts?)` → `ShipTurnRunner` —
  * `({ message, session }) => Promise<{ outcome: 'completed' | 'failed' | 'interrupted' |
- * 'cancelled'; turn; text }>`, what `ship()` takes. It is `runPromptTurn`: the same steps 4–6 for a
- * Launch-authored prompt while the session is `shipping` — no `pending_message`, no
- * `user.message`, no status change — returning Claude's final answer (`text`, the `result` line).
+ * 'cancelled'; turn; text; reason? }>`, what the ship's `ship.fix#N.A` step runs (through the
+ * `shipFix` hook). It is `runPromptTurn`: the same steps 4–6 for a Launch-authored prompt while
+ * the session is `shipping` — no `pending_message`, no `user.message`, no status change —
+ * returning Claude's final answer (`text`, the `result` line). Launch runs the gate itself; this
+ * turn only fixes what a step reported.
  *
  * No secret is in any event or in the outcome: the process env is the placeholder
  * (`claudeTurnEnv`), every string is redacted and clipped (`mapClaudeLine`), and the outcome is
@@ -716,9 +718,9 @@ async function forgetConversation(
 
 // ---- the ship turn -------------------------------------------------------------------------------
 
-/** What slice 3d's `ship()` hands a message to (its `ShipTurnRunner`). */
+/** What a ship's FIX turn hands a message to (`ship.fix#N.A`, `ship-steps.ts`). */
 export interface ShipTurnInput {
-  /** Launch's own prompt (`session-ship`), not a person's message. */
+  /** Launch's own prompt (`session-ship-fix`), not a person's message. */
   message: string
   /** The row as the ship claimed it (`shipping`); the runner re-reads it by id. */
   session: SessionRow
@@ -728,20 +730,26 @@ export interface ShipTurnResult {
   outcome: 'completed' | 'failed' | 'interrupted' | 'cancelled'
   /** The turn number it ran as (0 when it never started). */
   turn: number
-  /** Claude's final answer (the `result` line) — where the ship prompt's `{ title, body }` is. */
+  /** Claude's final answer (the `result` line). */
   text?: string | null
+  /**
+   * For `interrupted`: why — `rollout` and `container_lost` mean the container is gone
+   * (`containerGone`), and the ship suspends the session rather than going back to `ready`.
+   */
+  reason?: TurnInterruptReason
 }
 
 export type ShipTurnRunner = (input: ShipTurnInput) => Promise<ShipTurnResult>
 
 /**
- * Run a LAUNCH-authored prompt as a turn — the ship gate's "fix it and print `{ title, body }`" —
- * while the session is `shipping`. Unlike {@link runTurn} it claims no `pending_message`, writes
+ * Run a LAUNCH-authored prompt as a turn — the ship gate's "this step failed, here is its output:
+ * fix it" (`session-ship-fix`) — while the session is `shipping`. Unlike {@link runTurn} it claims no `pending_message`, writes
  * no `user.message` (the prompt is Launch's, not the person's) and leaves the STATUS to its caller
- * (`ship.ts`); it does count as a turn (`turn_count`, `turn.start` … `turn.end`), is metered and
+ * (`ship-steps.ts`); it does count as a turn (`turn_count`, `turn.start` … `turn.end`), is metered and
  * cancellable like one, and refuses to start when the session is over budget (`budget.reached`,
  * `failed`). A `result` line that reports an error (`error_max_turns`…) is `failed` here: the
- * gate did not finish.
+ * fix did not finish. With a `bootId` it probes the container like a chat turn, and an
+ * `interrupted` outcome carries its `reason`.
  */
 export async function runPromptTurn(
   db: Database,
@@ -801,14 +809,19 @@ export async function runPromptTurn(
   )
   const text = run.result?.text ?? null
   if (run.status === 'interrupted') {
-    return { outcome: run.reason === 'cancelled' ? 'cancelled' : 'interrupted', turn, text }
+    return {
+      outcome: run.reason === 'cancelled' ? 'cancelled' : 'interrupted',
+      turn,
+      text,
+      reason: run.reason,
+    }
   }
   if (run.status === 'completed' && !run.result?.isError)
     return { outcome: 'completed', turn, text }
   return { outcome: 'failed', turn, text }
 }
 
-/** A {@link ShipTurnRunner} over one database client and the session's ports, for `ship()`. */
+/** A {@link ShipTurnRunner} over one database client and the session's ports — the fix turn's. */
 export function createShipTurnRunner(
   db: Database,
   ports: SessionPorts,

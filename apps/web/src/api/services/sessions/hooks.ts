@@ -1,13 +1,14 @@
 /**
- * The three things the `SessionWorkflow` (slice 3b) asks OTHER slices' modules to do, behind one
- * small seam so the Workflow is tested with fakes (`overrides.hooks`) and bound to the real
- * functions here, once:
+ * The things the `SessionWorkflow` (slice 3b) asks OTHER slices' modules to do — everything that
+ * runs Claude Code, calls a model or pushes — behind one small seam so the Workflow is tested with
+ * fakes (`overrides.hooks`) and bound to the real functions here, once:
  *
- * | Hook         | Slice | Function                                   | Called from step             |
- * |--------------|-------|--------------------------------------------|------------------------------|
- * | `runTurn`    | 3c    | `runTurn(db, ports, session, opts)`         | `turn#N`                     |
- * | `checkpoint` | 3d    | `checkpoint(db, deps, ref, opts)`           | `checkpoint#N`, `suspend#N`, `end#N`, `salvage` |
- * | `ship`       | 3d    | `ship(db, deps, ref)` with 3c's ship turn   | `ship#N`                     |
+ * | Hook          | Function                                     | Called from step             |
+ * |---------------|----------------------------------------------|------------------------------|
+ * | `runTurn`     | `runTurn(db, ports, session, opts)` (3c)      | `turn#N`                     |
+ * | `checkpoint`  | `checkpoint(db, deps, ref, opts)` (3d)        | `checkpoint#N`, `suspend#N`, `end#N`, `salvage`, `ship.save#N`, `ship.commit#N` |
+ * | `shipFix`     | 3c's `createShipTurnRunner` (a fix turn)      | `ship.fix#N.A` (issue #1)    |
+ * | `shipSummary` | `summarizeShip` (`ship.ts`, one model call)   | `ship.summary#N` (issue #1)  |
  *
  * Every hook gets ONE argument, a `SessionStepContext` carrying what those functions take (`db`,
  * `cfg`, `ports`, `sandbox`, `storage`, `emit`, `realtime`, `logger`, the ids), so each binding
@@ -19,8 +20,9 @@
  * Claude Code's transcripts are under `CLAUDE_PROJECT_DIR` (`/root/.claude/projects/-workspace-app/`).
  *
  * **Who writes the status.** The hooks own the transitions INSIDE their work — `runTurn` claims
- * `ready → working` and settles back to `ready` / `blocked` / `suspended` (a rollout); `ship`
- * claims `ready → shipping` and ends `shipped` or back at `ready`; `checkpoint` changes no status.
+ * `ready → working` and settles back to `ready` / `blocked` / `suspended` (a rollout); the ship's
+ * own steps (`ship-steps.ts`) own `shipping`; `checkpoint`, `shipFix` and `shipSummary` change no
+ * status.
  * The Workflow reads the ROW afterwards, and only repairs a session a hook left mid-flight (a
  * `working` row after the turn step itself died is settled `ready` with `turn.failed`).
  */
@@ -29,14 +31,19 @@ import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
-import { scanShipConfig } from '../grants/detect'
 import type { Realtime } from '../realtime'
 import type { StorageService } from '../storage'
 import { checkpoint } from './checkpoint'
 import type { SessionEmitter } from './events'
 import { egressFor, type SandboxPort, type SessionPorts } from './ports'
-import { ship } from './ship'
-import { createShipTurnRunner, runTurn, type TurnOutcome } from './turn'
+import { type ShipSummaryInput, type ShipSummaryResult, summarizeShip } from './ship'
+import {
+  createShipTurnRunner,
+  runTurn,
+  type ShipTurnInput,
+  type ShipTurnResult,
+  type TurnOutcome,
+} from './turn'
 
 export type { TurnOutcome }
 
@@ -67,14 +74,19 @@ export interface SessionStepContext {
   now: () => Date
 }
 
-export type CheckpointReason = 'turn' | 'suspend' | 'end' | 'salvage'
+export type CheckpointReason = 'turn' | 'suspend' | 'end' | 'salvage' | 'ship'
 
 export interface SessionStepHooks {
   runTurn(ctx: SessionStepContext): Promise<TurnOutcome>
   /** Result ignored: the row (`head_sha`, `transcript_key`) is what counts. Throws on failure. */
   checkpoint(ctx: SessionStepContext, reason: CheckpointReason): Promise<unknown>
-  /** Result ignored: the row's status afterwards (`shipped` or not) is what counts. */
-  ship(ctx: SessionStepContext): Promise<unknown>
+  /**
+   * A ship's FIX turn: Launch's `session-ship-fix` message as a turn while `shipping` — never a
+   * status change. Its outcome decides whether the gate runs again.
+   */
+  shipFix(ctx: SessionStepContext, input: Pick<ShipTurnInput, 'message'>): Promise<ShipTurnResult>
+  /** The PR's `{ title, body }` — one cheap model call, or the fallback. Never throws for the model. */
+  shipSummary(ctx: SessionStepContext, input: ShipSummaryInput): Promise<ShipSummaryResult>
 }
 
 /** The real functions (slices 3c and 3d). */
@@ -99,24 +111,14 @@ export const defaultSessionStepHooks: SessionStepHooks = {
       ctx.ref,
       reason === 'turn' ? {} : { message: CHECKPOINT_MESSAGES[reason](ctx.session.shortId) }
     ),
-  ship: ctx =>
-    ship(
-      ctx.db,
-      {
-        cfg: ctx.cfg,
-        ports: ctx.ports,
-        storage: ctx.storage,
-        runTurn: createShipTurnRunner(ctx.db, ctx.ports, {
-          realtime: ctx.realtime,
-          logger: ctx.logger,
-          ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
-        }),
-        emit: events => ctx.emit(events),
-        now: ctx.now,
-        scanConfig: input => scanShipConfig(ctx, input),
-      },
-      ctx.ref
-    ),
+  shipFix: (ctx, input) =>
+    createShipTurnRunner(ctx.db, ctx.ports, {
+      realtime: ctx.realtime,
+      logger: ctx.logger,
+      ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
+    })({ message: input.message, session: ctx.session }),
+  shipSummary: (ctx, input) =>
+    summarizeShip(ctx.db, ctx.cfg, ctx.env, ctx.session, input, { logger: ctx.logger }),
 }
 
 /** The commit subject of a checkpoint that is not a turn's own. */
@@ -127,4 +129,5 @@ const CHECKPOINT_MESSAGES: Record<
   suspend: shortId => `Launch session ${shortId}: saved before suspending`,
   end: shortId => `Launch session ${shortId}: saved at the end of the session`,
   salvage: shortId => `Launch session ${shortId}: saved after its turn was interrupted`,
+  ship: shortId => `Launch session ${shortId}: saved to ship`,
 }

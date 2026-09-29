@@ -56,6 +56,11 @@ export interface SessionCallLimits {
    */
   checkpointDebounceMs?: number
   checkpointMaxDeferMs?: number
+  /**
+   * Caps each ship-gate command's own deadline (`gate.ts` `SHIP_GATE_COMMANDS`); absent = the
+   * command's. Tests shrink it to drive a gate step past its deadline.
+   */
+  gateMaxMs?: number
 }
 
 export const SESSION_CALL_LIMITS: SessionCallLimits = {

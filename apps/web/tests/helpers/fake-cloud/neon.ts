@@ -51,6 +51,8 @@ export interface FakeNeonBranch {
   parent_id: string | null
   /** P3: how it was filled — `schema-only` copies roles and databases (the schema) but no rows. */
   init_source: 'parent-data' | 'schema-only'
+  /** ISO, set on create; a test ages a branch by rewriting it (the gate-branch sweep). */
+  created_at: string
   /** '' when the branch was created with `endpoints: []` (no compute). */
   endpointId: string
   /** `ep-…​.<region>.aws.neon.tech` (the direct host; pooled adds `-pooler`); '' with no endpoint. */
@@ -367,6 +369,7 @@ export class FakeNeon implements VendorHandler {
       name,
       parent_id: parentId,
       init_source: opts.initSource ?? 'parent-data',
+      created_at: new Date().toISOString(),
       endpointId,
       host: endpointId
         ? `${endpointId}.${project.region_id.replace(/^aws-/, '')}.aws.neon.tech`
@@ -430,6 +433,7 @@ export class FakeNeon implements VendorHandler {
       parent_id: b.parent_id ?? undefined,
       default: b.parent_id === null,
       init_source: b.init_source,
+      created_at: b.created_at,
     }
   }
 

@@ -3,8 +3,9 @@
  * session is in, what it has cost against its cap, and the lifecycle actions.
  *
  * - **Ship is the page's one hero action** (`.btn-flame`): it appears once there is something to
- *   ship (a turn has run) and the session is idle, and confirms first — shipping runs the gate,
- *   lets Claude fix what fails, opens the pull request and ENDS the session.
+ *   ship (a turn has run) and the session is idle, and confirms first — shipping runs the gate
+ *   (Launch runs it; Claude only fixes what fails), opens the pull request and ENDS the session.
+ *   End stays available while it ships: the gate stops and its database branch is deleted.
  * - **End** confirms too, and says what is kept (the branch) and what is not (the sandbox and its
  *   database). **Resume** is offered while the session is asleep.
  * - **The cost meter** is spent / cap with a bar that turns amber past 80 % and red at the cap;
@@ -20,7 +21,7 @@ import {
   StopCircleIcon,
 } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
-import type { Session } from '@launch/shared/launch-sessions'
+import { type Session, SHIP_GATE_ATTEMPTS } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { formatCost } from '@/ui/components/ai/StatRows'
@@ -195,8 +196,9 @@ export function SessionHeader({
         message={
           <div className="space-y-2 text-sm">
             <p>
-              Claude runs lint, typecheck and the tests, fixes anything that fails, and opens a pull
-              request from{' '}
+              Launch runs lint, typecheck and the tests. If one fails, Claude fixes it and Launch
+              runs them again (up to {SHIP_GATE_ATTEMPTS} tries); when they pass, Launch opens a
+              pull request from{' '}
               <span className="font-mono text-xs">{session.branch ?? 'its branch'}</span> for
               review.
             </p>

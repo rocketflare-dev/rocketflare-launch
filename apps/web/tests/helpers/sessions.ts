@@ -218,6 +218,10 @@ const missingDb: SessionDbPort = {
   createBranch: () => missing('sessionDb'),
   deleteBranch: () => missing('sessionDb'),
   devUriFor: () => missing('sessionDb'),
+  createGateBranch: () => missing('sessionDb'),
+  gateBranchUri: () => missing('sessionDb'),
+  deleteGateBranches: () => missing('sessionDb'),
+  sweepGateBranches: () => missing('sessionDb'),
 }
 
 const missingRepo: RepoHostPort = {

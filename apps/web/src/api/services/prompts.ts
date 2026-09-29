@@ -117,15 +117,34 @@ this app is built.
   variables or secrets.
 - When a request is ambiguous, ask one short question instead of guessing.`
 
-const SESSION_SHIP_DEFAULT = `{{userName}} wants to ship this work as a pull request on {{appName}}.
+const SESSION_SHIP_FIX_DEFAULT = `{{userName}} is shipping this work as a pull request on {{appName}}, and Launch's gate failed at
+{{stepLabel}} (attempt {{attempt}} of {{maxAttempts}}). Launch ran \`{{command}}\` from the repository root; the
+end of its output:
 
-1. Run the app's gate from the repository root: \`{{gateCommand}}\`.
-2. If it fails, fix what it reports and run it again — up to {{maxAttempts}} attempts in all. Fix the
-   cause; never skip, delete or weaken a test, a lint rule or a type to make the gate pass.
-3. Do not commit or push: Launch does both.
-4. Finish with ONE JSON object on the last line of your reply, and nothing after it:
-   {"title": "<a pull request title, under 70 characters, imperative mood>", "body": "<markdown: what changed and why, how to check it in the app, and the gate's result>", "gatePassed": true|false}
-   Set "gatePassed" to false if the gate still fails after the last attempt, and say what is left.`
+\`\`\`
+{{output}}
+\`\`\`
+
+Fix the cause in the code, and keep the fix focused on this failure.
+
+- Never skip, delete or weaken a test, a lint rule or a type to make the gate pass.
+- You may run \`pnpm lint\` and \`pnpm typecheck\` to check your fix. Do not run \`pnpm test\` or try to
+  start a database: there is no Docker here, and as soon as you finish Launch runs the whole gate again,
+  the tests included, on a throwaway database of their own.
+- Do not commit or push: Launch does both.
+
+End with one or two sentences saying what you changed.`
+
+const SESSION_SHIP_SUMMARY_DEFAULT = `You write the pull request for a change made in a Launch coding session on {{appName}}, for {{userName}}.
+
+You are given what {{userName}} asked for, in their own words, and the branch's diff stat. The change
+has already passed the app's lint, typecheck and tests.
+
+Reply with ONE JSON object and nothing else:
+{"title": "<the pull request's title: under 70 characters, imperative mood>", "body": "<markdown: what changed and why, and how to check it in the app>"}
+
+Describe only what the requests and the diff stat support; never invent behaviour, files or tests.
+Keep the body short: a sentence or two on the change, then a short list of what to look at.`
 
 export const CORE_PROMPT_REGISTRY = {
   chat: {
@@ -175,13 +194,21 @@ export const CORE_PROMPT_REGISTRY = {
     variables: ['appName', 'appSlug', 'userName', 'branch'],
     defaultText: SESSION_SYSTEM_NOTE_DEFAULT,
   },
-  'session-ship': {
-    key: 'session-ship',
-    title: 'Coding session: ship',
+  'session-ship-fix': {
+    key: 'session-ship-fix',
+    title: 'Coding session: fix the ship gate',
     description:
-      "The message of a session's ship turn: run the gate, fix failures up to N attempts, and end with the pull request's `{ title, body, gatePassed }` as JSON, which Launch parses to open the PR.",
-    variables: ['appName', 'userName', 'gateCommand', 'maxAttempts'],
-    defaultText: SESSION_SHIP_DEFAULT,
+      "The message of a ship's FIX turn (issue #1): Launch ran the gate itself and one step failed — this hands Claude Code that step's command and the tail of its output, to fix and nothing else. Launch re-runs the gate after it; the model never decides whether the gate passed.",
+    variables: ['appName', 'userName', 'stepLabel', 'command', 'output', 'attempt', 'maxAttempts'],
+    defaultText: SESSION_SHIP_FIX_DEFAULT,
+  },
+  'session-ship-summary': {
+    key: 'session-ship-summary',
+    title: 'Coding session: pull request summary',
+    description:
+      "The system prompt of the ONE model call a green ship makes: the pull request's `{ title, body }` as JSON, from the person's messages and the diff stat. No tools. Point it at a cheap model in Settings → agent models (without one: Anthropic's Haiku when the provider is Anthropic, else the default model).",
+    variables: ['appName', 'userName'],
+    defaultText: SESSION_SHIP_SUMMARY_DEFAULT,
   },
 } as const satisfies PromptRegistry
 

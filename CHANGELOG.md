@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Launch runs the ship gate itself** (slices 2c–2f of rocketflare-launch#1; `docs/CONCEPTS.md`
+  §18.13). A ship is Workflow steps, not a Claude turn: `ship.claim` → `ship.save` → per attempt
+  `ship.gate` lint → typecheck → `ship.db` → `ship.gate` test → `ship.db-clean`, then on red ONE
+  focused fix turn (`session-ship-fix`: the failing command and its redacted output tail) and the
+  gate again, up to 3 attempts; green → `ship.commit` → `ship.summary` → `ship.pr`. Only the
+  commands' exit codes decide; a green gate makes ONE model call — the PR's title and body from the
+  person's messages and the diff stat (`session-ship-summary`, no tools, a small model, billed to
+  the session) — and falls back to the session's title when there is no model. The test step runs
+  the kit's `pnpm test:ephemeral` (0.15.7) on a throwaway Neon branch per attempt,
+  `gate-<short>-<attempt>`, a child of the session's branch, with exactly `DATABASE_URL`,
+  `TEST_DATABASE_BRANCH` and `TEST_DATABASE_ENDPOINT` (never logged; outputs are tailed and
+  redacted) and the allow-list widened to exactly that endpoint for the step. Not `pnpm build`
+  (memory; the PR's CI runs it). One `ship.gate` event per step (`step`, `command`, `durationMs`
+  in the shared contract); the ship panel, the chat and `launch sessions ship --wait` show each
+  step. The `session-ship` prompt is replaced by `session-ship-fix` and `session-ship-summary`.
+- A ship whose container is lost (at its save, mid-gate or mid-fix) suspends the session and
+  resumes it from the last save instead of going back to `ready`; the checkpoints inside a ship
+  check the boot marker. `POST /api/sessions/:id/end` now works while `shipping`: the gate command
+  is killed within seconds and a fix turn is cancelled.
+- No orphan gate branches: `ship.db-clean` runs after every `ship.db`, session cleanup and the
+  expiry's inline cleanup delete a session's gate branches before its own branch, and a new
+  `sessions.gate-sweep` task on the existing `*/5` cron deletes `gate-*` branches older than three
+  hours.
+- New apps are cut from Rocketflare 0.15.7 (`DEFAULT_TEMPLATE_PIN`, commit `ab09a3f`), which adds
+  `pnpm test:ephemeral` — the test suite on a throwaway Neon gate branch, no Docker — for a
+  session's ship gate (rocketflare-launch#1). The session image's warm pnpm store follows it
+  (`ARG KIT_TAG` / `SESSION_KIT_TAG` 0.15.7, image `session-3`, so no workspace backup from the
+  old image is restored into the new one).
 - Faster Neon branches (slice 2a of rocketflare-launch#1): `NeonClient.waitForOperations` polls
   from 200 ms with a ×1.5 backoff capped at 1 s (it slept a flat 1 s before every poll), reads all
   pending operations at once, and takes `actions` to wait only for the ones a caller needs. A new

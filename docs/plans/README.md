@@ -14,7 +14,7 @@ main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 - Launch itself is not deployed. It runs locally with `pnpm dev`, reachable at `https://local.clewro.com` through `pnpm dev:tunnel`.
 - The gate is green (in a throwaway worktree): lint, typecheck, tests (web about 3,100, CLI 104, evals 22) and build.
 
-**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.6**. Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) is still 0.15.5.
+**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.7** (`pnpm test:ephemeral`, slice 2b of issue #1). Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) and the session image's `KIT_TAG` are 0.15.7 (image `session-3`).
 
 **The real app.** `hola-world` (`guidemode/hola-world`, Neon project `mute-star-58262276`) is **live** on staging (`https://hola-world-staging.clewro.com`) and was promoted to production through the approval gate.
 
@@ -71,6 +71,8 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
 | 0.15.3 | The default-plugins gate is kit-only (it failed every app with "already installed"); each commit is gated once; a single-statement `ai_spans` prune for the neon test timeouts. |
 | 0.15.4 | The deploy job runs only the parity test (its checkout is shallow). |
 | 0.15.5 | `db-roles` works as a role without CREATEDB. |
+| 0.15.6 | Opening a magic link no longer spends the token. |
+| 0.15.7 | `pnpm test:ephemeral`: the suite on a throwaway Neon gate branch, no Docker (issue #1, slice 2b); `migrate` / `db-roles` / `seed` exit when done. |
 
 ## Landed since the first real day (2026-09-28, evening)
 
@@ -85,7 +87,7 @@ Built and tested against fakes; **none of it yet seen in a real session**:
 - **Debounced checkpoints** (30 s after the latest changed turn, 5-minute cap), and a lost turn's container is salvaged before recovery.
 - **The neon driver** never queries through a replaced global `fetch`.
 
-The kit is at **0.15.6** (magic link: opening the link no longer spends the token). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are still 0.15.5.
+The kit is at **0.15.7** (0.15.6: opening a magic link no longer spends the token; 0.15.7: `pnpm test:ephemeral`). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are 0.15.7.
 
 ## Next, in order (agreed 2026-09-29)
 
@@ -104,13 +106,14 @@ The kit is at **0.15.6** (magic link: opening the link no longer spends the toke
      - The driver test accepts real Neon when no proxy is set.
      - `db-roles.test` is skipped without TCP.
      - A `test:ephemeral` script: no compose, the neon driver, longer timeouts, fewer forks.
+   - **Status (2026-09-29):** 2a done; 2b released as kit 0.15.7; **2c–2f built on `ship-gate-launch`, against fakes only** (the FakeSandbox and the FakeCloud's Neon) — the pin and the image's `KIT_TAG` are 0.15.7. What must still be proven is item 3.
    - **2c. Workflow steps.** `ship.claim`, then for each attempt: `ship.db` (a child branch of the session's branch, `gate-<short>-<attempt>`), `ship.gate` (each kit command exec'd by Launch, a `ship.gate {step, passed, attempt, output}` event per step), and on red `ship.fix` (a focused turn with the failing command and its tail). Up to N attempts, then `ship.db-clean`, then `ship.pr`.
      - A green gate makes no model call to decide pass or fail.
      - The PR title and body come from one cheap summary call (a small model with no tools) over the diff stat and the user's messages. The ship turn goes.
    - **2d. The gate steps are the kit's commands, fixed in Launch.** There is no per-app config; a config test keeps them in step with the pinned kit.
    - **2e. No orphan gate branches.** Cleanup and `end` delete them before the session branch, and a cron sweeps by name prefix.
    - **2f. Docs and pins.** CONCEPTS §18.13, CHANGELOG. Bump `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG`.
-3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn.
+3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn. hola-world must first be on kit 0.15.7 (Re-scaffold, or a kit upgrade), or its gate is a red "no `test:ephemeral`" row. Prove on real Neon: the kit's test setup as `session_owner` on a branch of a branch, the connection count on a small compute, the 60 s / 120 s limits, gate-branch creation time; and in a real sandbox: the suite's memory beside the dev server, and whether vitest exits under `allowlist`.
 4. **Deploys in progress:** watch the steps live on the next real production promote. Known gaps are in CONCEPTS §18.7.
 5. **Small fixes found along the way:**
    - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the kit change in 2b.

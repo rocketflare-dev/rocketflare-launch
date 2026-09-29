@@ -100,6 +100,40 @@ export interface SessionDbPort {
   deleteBranch(app: SessionAppRef, db: SessionDb): Promise<void>
   /** The `dev` database's connection string, for the prepare run (a SECRET). */
   devUriFor(app: SessionAppRef): Promise<string>
+  /**
+   * The ship gate's throwaway database (issue #1): a CHILD branch of the session's own branch,
+   * named `name` (`gate-<shortId>-<attempt>`, `gate-branch.ts`), with its own compute. Waits for
+   * `create_branch` only. Idempotent: a branch of that name is found and reused. Non-secret.
+   */
+  createGateBranch(app: SessionAppRef, parent: SessionDb, name: string): Promise<GateBranch>
+  /**
+   * `session_owner`'s connection string on a gate branch (direct, `sslmode=require`), its password
+   * reset first so it opens that branch and nothing else. A SECRET: into the test command's
+   * environment and nowhere else.
+   */
+  gateBranchUri(app: SessionAppRef, branch: GateBranch): Promise<string>
+  /**
+   * Delete a session's gate branches (`gate-<shortId>-*`), all but `keep`. Idempotent (a branch
+   * already gone is success). Runs BEFORE the session's own branch is deleted: Neon refuses to
+   * delete a branch that has children. Returns the names deleted.
+   */
+  deleteGateBranches(
+    app: SessionAppRef,
+    shortId: string,
+    opts?: { keep?: string }
+  ): Promise<string[]>
+  /** The sweep: delete every gate branch of the app's project created before `olderThan`. */
+  sweepGateBranches(app: SessionAppRef, olderThan: Date): Promise<string[]>
+}
+
+/** A ship gate's branch — ids and hosts, nothing secret (`createGateBranch`). */
+export interface GateBranch {
+  name: string
+  branchId: string
+  /** The compute's id (`ep-…`): the kit's `TEST_DATABASE_ENDPOINT`. */
+  endpointId: string
+  /** The compute's DIRECT host (`ep-….<region>.aws.neon.tech`); the pooler adds `-pooler`. */
+  host: string
 }
 
 // ---- RepoHostPort ------------------------------------------------------------------------------

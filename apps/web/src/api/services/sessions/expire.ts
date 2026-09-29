@@ -67,19 +67,20 @@ async function cleanUpInline(
         )
       )
     if (app) {
-      await ports.sessionDb(db).deleteBranch(
-        {
-          id: app.id,
-          tenantId,
-          slug: app.slug,
-          repoOwner: app.repoOwner ?? '',
-          repoName: app.repoName ?? '',
-          defaultBranch: app.defaultBranch ?? 'main',
-          neonProjectId: production?.neon?.projectId ?? null,
-          sessionDb: app.sessionDb ?? null,
-        },
-        session.db
-      )
+      const ref = {
+        id: app.id,
+        tenantId,
+        slug: app.slug,
+        repoOwner: app.repoOwner ?? '',
+        repoName: app.repoName ?? '',
+        defaultBranch: app.defaultBranch ?? 'main',
+        neonProjectId: production?.neon?.projectId ?? null,
+        sessionDb: app.sessionDb ?? null,
+      }
+      const port = ports.sessionDb(db)
+      // A ship's gate branches are children of the session's: they go first (Neon refuses a parent).
+      await port.deleteGateBranches(ref, session.shortId)
+      await port.deleteBranch(ref, session.db)
     }
   }
   // A warm-suspended session still has its container, and a cooled one its workspace backup.

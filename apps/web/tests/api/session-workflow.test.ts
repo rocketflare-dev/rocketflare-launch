@@ -162,8 +162,11 @@ async function harness(
       checkpoints.push(reason)
       workspace.changed = false
     },
-    ship: async () => {
-      throw new Error('ship was not expected in this test')
+    shipFix: async () => {
+      throw new Error('a ship fix turn was not expected in this test')
+    },
+    shipSummary: async () => {
+      throw new Error('a ship summary was not expected in this test')
     },
     ...opts.hooks,
   }
@@ -1100,40 +1103,6 @@ describe('SessionWorkflow: the loop', () => {
       events.some(e => e.type === 'status' && (e.data as { reason?: string }).reason === 'drain')
     ).toBe(true)
     expect((await reload(h.row)).status).toBe('ended')
-  })
-
-  it('ship: shipped leaves the loop and cleans up; a red gate goes back to ready', async () => {
-    const h = await harness({
-      hooks: {
-        ship: async ctx => {
-          const shipping = ctx.session.turnCount === 0 ? 'ready' : 'shipped'
-          await ctx.db
-            .update(sessions)
-            .set({ status: shipping, turnCount: ctx.session.turnCount + 1, requestedAction: null })
-            .where(and(eq(sessions.tenantId, h.row.tenantId), eq(sessions.id, h.row.id)))
-        },
-      },
-    })
-    const run = await drive(h, async () => {
-      await patch(h.row, { requestedAction: 'ship' })
-      return WAKE
-    })
-    expect(run.names.slice(6)).toEqual([
-      'inspect#0',
-      'wait#0',
-      'inspect#1',
-      'ship#1',
-      'inspect#2',
-      'wait#2',
-      'inspect#3',
-      'ship#3',
-      'cleanup',
-    ])
-    const after = await reload(h.row)
-    expect(after.status).toBe('shipped')
-    expect(after.endedAt).toBeInstanceOf(Date)
-    expect(h.sandbox().destroyed).toBe(true)
-    expect(h.cloud.neon.branchNamed(h.f.neonProjectId, `session-${h.row.shortId}`)).toBeUndefined()
   })
 
   it('a lost instance under a live session whose container is gone: salvage saves nothing and it starts over from its branch', async () => {

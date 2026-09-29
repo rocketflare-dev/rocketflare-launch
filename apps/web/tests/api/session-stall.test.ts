@@ -90,7 +90,10 @@ const hooks: SessionStepHooks = {
     throw new Error('no turn in this suite')
   },
   checkpoint: async () => {},
-  ship: async () => {
+  shipFix: async () => {
+    throw new Error('no ship in this suite')
+  },
+  shipSummary: async () => {
     throw new Error('no ship in this suite')
   },
 }

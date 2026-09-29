@@ -199,11 +199,39 @@ export const sessionBudgetReachedDataSchema = z.object({
   capMicrocents: z.number().int().nonnegative(),
   scope: z.enum(['session', 'app_month']),
 })
+/**
+ * The ship gate's steps (issue #1): the kit's own commands, which Launch runs itself in the
+ * sandbox, in this order, stopping at the first that fails (`services/sessions/gate.ts` holds the
+ * commands and deadlines). `test` runs `pnpm test:ephemeral` on a throwaway Neon gate branch.
+ */
+export const SHIP_GATE_STEPS = ['lint', 'typecheck', 'test'] as const
+export const shipGateStepSchema = z.enum(SHIP_GATE_STEPS)
+export type ShipGateStep = z.infer<typeof shipGateStepSchema>
+/** How many times a ship runs the gate — a Claude fix turn between one red run and the next. */
+export const SHIP_GATE_ATTEMPTS = 3
+/** What the ship panel, the chat notices and the CLI call each step. */
+export const SHIP_GATE_STEP_LABELS: Record<ShipGateStep, string> = {
+  lint: 'Lint',
+  typecheck: 'Typecheck',
+  test: 'Tests',
+}
+
+/**
+ * One `ship.gate` row: ONE step of one attempt (`step`), written when that step ends. A row with
+ * no `step` is from before issue #1 — the whole gate as one run — and still renders.
+ */
 export const sessionShipGateDataSchema = z
   .object({
     passed: z.boolean(),
     attempt: z.number().int().positive(),
-    /** The tail of the gate's output, for the ship panel. Never a secret (the sandbox holds none). */
+    step: shipGateStepSchema.optional(),
+    /** The command Launch ran (`pnpm lint`) — never with its environment. */
+    command: z.string().optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+    /**
+     * The tail of the step's output, for the ship panel — redacted: the test step's database URL
+     * (and anything shaped like a connection string or a key) never survives into it.
+     */
     output: z.string().optional(),
   })
   .passthrough()

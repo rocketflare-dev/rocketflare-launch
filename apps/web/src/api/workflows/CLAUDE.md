@@ -110,7 +110,7 @@ timeout is what is left of `SESSION_CHECKPOINT_DEBOUNCE_MS` after the latest tur
 true`; a timeout there is `checkpoint#N` and the loop waits on, never a suspend) or, already due,
 the `checkpoint` action itself. Timeouts render through `waitDuration` (`N minutes` when whole, else
 `N seconds`). `suspend#N`, `end#N` and a green ship checkpoint first and clear the state;
-`ship#N` (3d's `ship`), `suspend#N` (an IDLE suspend keeps the container: `container_kept_at`,
+the ship round (below), `suspend#N` (an IDLE suspend keeps the container: `container_kept_at`,
 `services/sessions/warm.ts`), `cool#N` (a kept container's warm window is over — the suspended
 `wait#N` then times out after `SESSION_WARM_KEEP_MINUTES`, `cool: true` — or a drain), `resume#N`
 → `sandbox.start#K` → WARM (it found its own boot marker: `dev#K` only, reusing the dev server when
@@ -118,7 +118,8 @@ it answers) or COLD (`restore.check#K` → `restore#K` when the workspace backup
 head, else `repo#K` → `bootstrap#K` — never re-seeds, migrates only when `sessions.migrations_hash`
 differs, and does nothing after a restore with unchanged migrations — → `dev#K` → `transcript#K`),
 `end#N` →
-`fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the branch, `ended` unless
+`fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the ship gate's branches
+and then the session's branch, `ended` unless
 `shipped`/`failed`, audit `session.ended`). A pending message after boot or resume runs at once
 (`inspect` before any wait). `sandbox.start` returns a `bootId` (written into the container,
 `services/sessions/boot-marker.ts`); the boot steps after it take that id as a closure argument and
@@ -149,14 +150,32 @@ fails every later turn. `overrides.limits` shrinks the deadlines (`services/sess
 — and the checkpoint debounce and its cap (`checkpointDebounceMs`, `checkpointMaxDeferMs`) — for
 tests; `overrides.now` is the steps' clock.
 
-The three calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`,
-bound once in `defaultSessionStepHooks`); the hooks own the status INSIDE their work (`runTurn`
-claims `ready → working`, `ship` claims `shipping`), and the Workflow reads the row afterwards.
+**The ship round** (issue #1, bodies in `services/sessions/ship-steps.ts`, `docs/CONCEPTS.md`
+§18.13) is `SessionWorkflow.ship(run, n, bootId)`: `ship.claim#N` → `ship.save#N` → per attempt
+`A` (numbered across the session's ships, from `ship.claim`'s result): `ship.gate#N.A.lint` →
+`ship.gate#N.A.typecheck` → `ship.db#N.A` → `ship.gate#N.A.test` → `ship.db-clean#N.A` (in a
+`finally`, so the gate branch never outlives a red, a throw, an end or a lost container) → on red
+`ship.fix#N.A` (`turnStepConfig`: no retry) → … → green: `ship.commit#N` → `ship.summary#N` →
+`ship.pr#N`; no PR: `ship.settle#N`. Every name carries the round and the attempt; the loop only
+branches on step RESULTS (a gate step's `{ passed, stop }`), so a replay takes the same path. A gate
+step is `gateStepConfig` (one retry — `runInBackground` re-attaches — and the command's deadline
+plus 5 min). A thrown ship step is caught in the round and settles it (`error`); it never fails the
+session. A lost container (`stop: 'container_lost'`, `lost`) leaves the round with the session
+already `suspended` and the loop's dirty state cleared; a settled round's dirty state is
+`ship.save`'s (saved → clean) plus what the fix turns changed (`ship.settle`'s result).
+
+The calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`, bound
+once in `defaultSessionStepHooks`): `runTurn`, `checkpoint`, `shipFix` (a fix turn) and
+`shipSummary` (the PR's one model call). `runTurn` owns `ready → working` inside its work, the ship
+steps own `shipping`, and the Workflow reads the row afterwards.
 
 Tests (`tests/api/session-workflow.test.ts`) set `workflow.overrides = { ports, hooks }` —
 `createFakeSessionPorts()` with the real `NeonSessionDb` over the FakeCloud, 3c's real `runTurn`
-with fast timers, recording checkpoint/ship fakes — and drive `run` with
-`createFakeWorkflowStep({ onWait })`, asserting the exact step names.
+with fast timers, a recording checkpoint fake — and drive `run` with
+`createFakeWorkflowStep({ onWait })`, asserting the exact step names. The ship round is
+`tests/api/session-ship-gate.test.ts` (the same harness, the gate commands scripted as the
+FakeSandbox's background runs, the real GitHub repo host, a recording fix turn and the real
+`summarizeShip` over a fake chat client).
 
 ## Launch P5: `grant-push.ts`
 

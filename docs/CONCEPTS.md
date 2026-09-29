@@ -1144,7 +1144,7 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.5**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.7**: 0.15.0 plus the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
 `docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
@@ -1153,7 +1153,9 @@ installed" — runs only in the kit, a commit already green in CI skips the depl
 neon run's cron tests no longer time out), then a deploy job that runs only the parity test (0.15.4:
 the whole config project needed git history its depth-1 checkout lacks), then a role setup that
 works as `migrator` (0.15.5: the kit's db-roles no longer alters CREATEDB/CREATEROLE when they are
-already off, which Postgres 16+ refuses to a role without CREATEDB). A
+already off, which Postgres 16+ refuses to a role without CREATEDB), then a magic link that
+opening does not spend (0.15.6), then `pnpm test:ephemeral` — the suite on a throwaway Neon gate
+branch, no Docker — which a session's ship gate runs (0.15.7, §18.13). A
 `launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
 
 **Kit version (Setup).** A platform admin sets the pin on the Setup page's Kit version card
@@ -1188,7 +1190,7 @@ rename, install, plugins, gate, push), but that app's own CI then failed on the 
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
-kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.5; a config test fails when they drift);
+kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.7; a config test fails when they drift);
 an app pinned to another kit still falls back to the registry for what differs. The Kit version card's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
@@ -1313,11 +1315,12 @@ reload) is restarted as `<id>-rN` from the row.
   `maxSessionHours`.
 - **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a warm
   suspended session's window: cool; a suspended session's expiry: end; the checkpoint debounce:
-  `checkpoint#N` and wait on), `turn#N`, `checkpoint#N` (a debounce already due), `ship#N`, `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
+  `checkpoint#N` and wait on), `turn#N`, `checkpoint#N` (a debounce already due), the ship round (`ship.claim#N` … §18.13), `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
   over), `resume#N` (boot again with `#K` names — warm: `sandbox.start#K` → `dev#K` only; cold:
   the whole boot, then restore the transcript), `end#N`. A message that arrives while
   booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
-  the container, delete the database branch, forget the sealed credentials, settle `ended` (a
+  the container, delete the ship gate's branches and then the database branch, forget the sealed
+  credentials, settle `ended` (a
   `shipped` or `failed` session keeps its status), audit `session.ended`.
 - **Warm suspend** (`warm.ts`, two thresholds): an IDLE suspend (`idleSuspendMinutes`)
   checkpoints and KEEPS the container, dev server and all (`sessions.container_kept_at`); the
@@ -1411,7 +1414,8 @@ that a real kept container's dev server survives the reload, and that `claude` f
 transcript on SIGTERM, need a real container. The salvaged turn itself is not continued: the person
 sends the message again. A container that answers but whose kill script fails is destroyed, so its
 unsaved edits are still lost then. A `shipping` session whose instance died is not reconciled (no
-heartbeat is read for it) — a later wake's `claim` salvages it. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+heartbeat is read for it) — a later wake's `claim` salvages it, and its gate branch (issue #1) is
+deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
 reading the session page, or the diff, without touching the preview is idle after
 `idleSuspendMinutes` (a visible-tab heartbeat from the page is not built). The warm resume is
@@ -1501,7 +1505,8 @@ for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a
 pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code and a warm pnpm store for the default pin's kit (0.15.5, `SESSION_KIT_TAG`). The checkout is `/workspace/app` and `$HOME` is
+Claude Code and a warm pnpm store for the default pin's kit (0.15.7, `SESSION_KIT_TAG`; image
+`session-3`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
@@ -1739,15 +1744,62 @@ the previous one. A push
 that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped connection —
 `TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
 retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
-**Ship** (`ship.ts`, step `ship#N`): `ready → shipping`, the `session-ship` prompt as a turn (run
-the gate `pnpm lint && pnpm typecheck && pnpm test`, fix up to 3 times, print `{title, body,
-gatePassed}`), then **Launch runs the gate itself** — only its exit code counts. Red: a `ship.gate`
-event with the output's tail and back to `ready`. Green: a final checkpoint, `openPullRequest`
-(head `session/<short>`, base the default branch), `pr_number`/`pr_url`, `shipped`, `ship.pr`,
-audit `session.shipped` — and the Workflow then cleans up (shipping ends the session). CI
-(`pr_checks`, check runs + combined status) is read at once, on `GET /:id/pr` (at most every
-30 s) and by `sessions.checks` on `*/5` while pending, unread, or `none` within an hour of the
-ship (GitHub has not queued the workflows yet when the PR opens).
+**Ship** (issue #1; the steps in `ship-steps.ts`, the kit contract in `gate.ts`, the PR in
+`ship.ts`): **Launch runs the gate, never Claude, and only its exit codes decide.** `ship.claim#N`
+(`ready → shipping`) → `ship.save#N` (a checkpoint, so the half hour the gate may take risks
+nothing unsaved) → per attempt `A` (numbered across the session's ships, `SHIP_GATE_ATTEMPTS` = 3
+per ship): `ship.gate#N.A.lint` (`pnpm lint`) → `ship.gate#N.A.typecheck` (`pnpm typecheck`) →
+`ship.db#N.A` → `ship.gate#N.A.test` (`pnpm test:ephemeral`) → `ship.db-clean#N.A`, stopping at the
+first red step. Each command is a polled background command in the checkout
+(`runInBackground`, `gate-<step>` files) with a hard deadline (5 / 10 / 25 min; its process group
+killed past it — under `allowlist` a vitest run can hang on exit behind the egress interceptor's
+WebSocket bug), a Workflow step with one retry that RE-ATTACHES to the running command, and one
+`ship.gate { step, passed, attempt, command, durationMs, output }` event whose output is a
+redacted tail (`gateOutputTail`: the URL and its password, anything shaped like a connection
+string or a key removed). NOT `pnpm build`: the kit's `build` re-runs typecheck, then builds the UI
+and the Worker — the step most likely to run a container out of memory — and the PR's CI runs the
+kit's whole gate, build included, minutes later. **The test step's database** is a throwaway Neon
+branch per attempt, `gate-<short>-<A>`, a CHILD of the session's branch (its schema, its roles:
+`session_owner` owns `session_app`'s tables and holds ADMIN on `rocketflare_app`) with its own
+compute, made by `ship.db` (`createGateBranch`, waiting for `create_branch` only; it first deletes
+any gate branch an earlier attempt of the session left). The command gets the kit 0.15.7 contract
+exactly — `DATABASE_URL` (`session_owner` on the gate branch, direct host, password reset when the
+run STARTS — a lazy env, so a retried step that re-attaches never resets it under the suite),
+`TEST_DATABASE_BRANCH`, `TEST_DATABASE_ENDPOINT` (the `ep-…` id in that URL) — and no
+`NEON_LOCAL_PROXY`: a session's database is always a real Neon branch reached directly, on a laptop
+too, so the gate's is as well (there is no local-Docker variant to fall back to). The allow-list
+gains exactly the branch's direct and `-pooler` hosts and its region's SQL host for the step (a
+no-op under `SESSION_EGRESS=open`). A kit without `test:ephemeral` (before 0.15.7) is a red `test`
+row saying so, and no fix turn. **Red, with attempts left** → `ship.fix#N.A`: ONE turn, the
+`session-ship-fix` prompt with the failing command and its tail ("fix this; do not run the tests
+or start a database — Launch re-runs the gate"), through the `shipFix` hook (3c's
+`createShipTurnRunner`, metered and cancellable like any turn), and the gate runs again whatever
+the turn says. **Green** → `ship.commit#N` (the final checkpoint) → `ship.summary#N`: the PR's
+title and body from ONE model call, no tools, over the person's messages and the branch's diff
+stat (`summarizeShip`: `resolveChat` with the `session-ship-summary` prompt key — an agent-model
+assignment picks the model, else Anthropic's Haiku when the provider is Anthropic, else the
+default; no tenant or platform chat → the sessions' own Anthropic key on Haiku; its usage an
+`ai_usage` row billed to the session, `session:ship-summary`; any failure → the session's title or
+first request and the diff stat) → `ship.pr#N` (`openPullRequest`, head `session/<short>`, base
+the default branch; `pr_number`/`pr_url`, `shipped`, `ship.pr`, audit `session.shipped`, the
+config the PR declares) — and the Workflow cleans up (shipping ends the session). A green gate
+makes no model call but the summary. **No PR** → `ship.settle#N`: an `error` event saying why
+(still red after every attempt, the gate cannot run on the app, the fix turn did not run, the save
+or the PR failed, a step threw), `shipping → ready`, and the fix turns' changes debounced like a
+turn's. **A lost container suspends, never `ready`**: every ship step that touches the container
+reads the boot marker first, and one that came back empty — or died under a gate command or a fix
+turn — is `shipping → suspended` with a resume asked, an `error` event, the container destroyed,
+and the loop resumes from the last save (the person ships again). **End works mid-ship**
+(`POST /:id/end` accepts `shipping`): a gate command sees it within `endPollMs` and is killed, a
+fix turn is cancelled, and the round settles so the loop ends the session. **No orphan gate
+branch**: `ship.db-clean` runs in a `finally` after every `ship.db`, the settle of a round that
+threw deletes them, cleanup (and the expiry's inline cleanup) deletes a session's gate branches
+BEFORE its own branch (Neon refuses to delete a parent), and `sessions.gate-sweep` on `*/5` deletes
+any `gate-*` branch of a session-running app's project older than three hours
+(`GATE_BRANCH_MAX_AGE_MS`) — by name, so no row has to remember them. CI (`pr_checks`, check runs
++ combined status) is read at once, on `GET /:id/pr` (at most every 30 s) and by `sessions.checks`
+on `*/5` while pending, unread, or `none` within an hour of the ship (GitHub has not queued the
+workflows yet when the PR opens).
 
 **Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
 conversation) the work and the transcript live only in the container — a crash or a lost instance
@@ -1761,7 +1813,16 @@ git and bash locally (`tests/config/session-checkpoint-scan.test.ts`), not yet i
 image; no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes
 to `session/*` are not set up (only the git handler enforces it); a gate that needs more than the
 sandbox has (a service, a secret) cannot pass; after shipping there is no "keep working" in the UI
-— a new session starts from the default branch unless the API is given `baseRef`.
+— a new session starts from the default branch unless the API is given `baseRef`. The ship gate
+(issue #1) is proven against the FakeSandbox and the FakeCloud's Neon only: `pnpm test:ephemeral`
+on a REAL Neon gate branch — the kit's test setup as `session_owner` (its `ALTER ROLE` on
+`rocketflare_app`, the grants and the truncate, on a branch of a branch), the connection count against a
+small compute, the kit's 60 s / 120 s limits, how long branch creation takes — has not run; nor has
+a gate run inside a real sandbox (the memory the suite needs beside the dev server, a vitest that
+hangs on exit under `allowlist` — the deadline kills it, which then reads as red). An app on a kit
+before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so). A `shipping`
+session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
+The summary's model is not traced (D32).
 
 ### 18.14 Drain, the UI and the CLI
 

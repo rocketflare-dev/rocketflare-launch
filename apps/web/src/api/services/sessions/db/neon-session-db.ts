@@ -34,6 +34,12 @@
  *   success.
  * - The URIs returned are SECRETS: the caller seals them (`db_uri_sealed`) and never returns them
  *   from a step. Direct (unpooled) endpoints — the kit's migrations open a WebSocket pool.
+ * - **The ship gate's branches** (issue #1, `gate-branch.ts`): `gate-<short>-<attempt>`, a CHILD
+ *   of the session's branch, one per attempt's test step (`createGateBranch`), whose URI
+ *   (`gateBranchUri`, password reset) goes only into the test command's environment. They are
+ *   deleted by name — `deleteGateBranches` (the step after the tests, and cleanup BEFORE the
+ *   session's branch: Neon refuses to delete a parent) and `sweepGateBranches` (the cron, by the
+ *   `gate-` prefix and `created_at`) — so no row has to remember them.
  */
 import type { AppSessionDb, SessionDb } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
@@ -58,7 +64,8 @@ import {
   quoteLiteral,
   throwawayPassword,
 } from '../../launch/pipeline/provision-neon'
-import type { SessionAppRef, SessionBranch, SessionDbPort } from '../ports'
+import { GATE_BRANCH_PREFIX, isGateBranch, isGateBranchOf } from '../gate-branch'
+import type { GateBranch, SessionAppRef, SessionBranch, SessionDbPort } from '../ports'
 
 /** The prepared parent every session branches from. */
 export const DEV_BRANCH_NAME = 'dev'
@@ -311,6 +318,90 @@ export class NeonSessionDb implements SessionDbPort {
       const neon = await this.neon()
       const deleted = await neon.deleteBranch(db.projectId, db.branchId)
       await this.settle(db.projectId, deleted.operations)
+    } catch (err) {
+      if (!isNeonNotFound(err)) throw err
+    }
+  }
+
+  /**
+   * The ship gate's branch (issue #1): a child of the session's branch — so it starts from the
+   * session's schema and roles (`session_owner` holds ADMIN on `rocketflare_app` there too), and
+   * the kit's test setup migrates, truncates and seeds it — with its own read-write compute.
+   * `create_branch` is all that is waited for (`waitForBranch`); the first connection wakes the
+   * compute. A retried step finds the branch by name.
+   */
+  async createGateBranch(app: SessionAppRef, parent: SessionDb, name: string): Promise<GateBranch> {
+    if (!isGateBranch(name)) throw new Error(`Not a gate branch name: ${name}`)
+    if (parent.provider !== 'neon') throw new Error('The session has no Neon branch to test on')
+    const projectId = this.projectOf(app)
+    const neon = await this.neon()
+    let branch = (await this.branches(projectId)).find(b => b.name === name)
+    let endpoint: { id: string; host: string } | undefined
+    if (!branch) {
+      const created = await neon.createBranch(projectId, {
+        name,
+        parentId: parent.branchId,
+        endpoints: [{ type: 'read_write' }],
+      })
+      await this.settleBranch(projectId, created.operations)
+      branch = created.branch
+      endpoint = created.endpoints[0]
+    }
+    if (!endpoint?.host) endpoint = (await neon.listBranchEndpoints(projectId, branch.id))[0]
+    if (!endpoint?.host || !endpoint.id) {
+      throw new Error(`The gate branch ${name} has no compute endpoint`)
+    }
+    return { name, branchId: branch.id, endpointId: endpoint.id, host: endpoint.host }
+  }
+
+  async gateBranchUri(app: SessionAppRef, branch: GateBranch): Promise<string> {
+    const projectId = this.projectOf(app)
+    const neon = await this.neon()
+    const reset = await neon.resetRolePassword(projectId, branch.branchId, SESSION_DB_ROLE)
+    await this.settle(projectId, reset.operations)
+    return withSslMode(
+      await neon.connectionUri(projectId, {
+        branchId: branch.branchId,
+        databaseName: SESSION_DB_NAME,
+        roleName: SESSION_DB_ROLE,
+        pooled: false,
+      })
+    )
+  }
+
+  async deleteGateBranches(
+    app: SessionAppRef,
+    shortId: string,
+    opts: { keep?: string } = {}
+  ): Promise<string[]> {
+    if (!app.neonProjectId) return []
+    const projectId = app.neonProjectId
+    const doomed = (await this.branches(projectId)).filter(
+      b => isGateBranchOf(b.name, shortId) && b.name !== opts.keep
+    )
+    for (const branch of doomed) await this.deleteBranchById(projectId, branch.id)
+    return doomed.map(b => b.name)
+  }
+
+  async sweepGateBranches(app: SessionAppRef, olderThan: Date): Promise<string[]> {
+    if (!app.neonProjectId) return []
+    const projectId = app.neonProjectId
+    const doomed = (await this.branches(projectId)).filter(b => {
+      if (!b.name.startsWith(GATE_BRANCH_PREFIX) || !isGateBranch(b.name)) return false
+      const created = b.created_at ? Date.parse(b.created_at) : Number.NaN
+      // No creation time: not provably old — left for a later sweep that can tell.
+      return Number.isFinite(created) && created < olderThan.getTime()
+    })
+    for (const branch of doomed) await this.deleteBranchById(projectId, branch.id)
+    return doomed.map(b => b.name)
+  }
+
+  /** Delete one branch; already gone is success. */
+  private async deleteBranchById(projectId: string, branchId: string): Promise<void> {
+    try {
+      const neon = await this.neon()
+      const deleted = await neon.deleteBranch(projectId, branchId)
+      await this.settle(projectId, deleted.operations)
     } catch (err) {
       if (!isNeonNotFound(err)) throw err
     }

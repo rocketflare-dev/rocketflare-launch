@@ -270,8 +270,8 @@ describe('P2 settings', () => {
     ])
     expect(templatePinSchema.parse(DEFAULT_TEMPLATE_PIN)).toEqual({
       repo: 'rocketflare-dev/rocketflare',
-      tag: '0.15.5',
-      commit: '52191a4232444ab52bedb1376b4463aec2732cff',
+      tag: '0.15.7',
+      commit: 'ab09a3f2f97a5973ff23c0b841cb919cd24d737a',
     })
     expect(DEFAULT_APP_CREATE_ROLE).toBe('admin')
   })
