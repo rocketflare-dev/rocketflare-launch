@@ -14,6 +14,10 @@ regexes = [
   '''^neon-test-key-0123456789$''',
   '''^napi_orgkey_0123456789abcdefghij$''',
   '''^sentinel-rotated-m365-secret-never-echoed$''',
+  # The ship gate's redaction fixture (ship-gate-contract.test.ts) — a made-up Neon password.
+  '''^npg_S3cretPassw0rd$''',
+  # RFC 6455's sample Sec-WebSocket-Key ("the sample nonce", base64), quoted in a sessions plan.
+  '''^dGhlIHNhbXBsZSBub25jZQ==$''',
   # A doc comment in services/launch/github-app.ts that NAMES the PKCS#1 header — no key follows it.
   '''^-----BEGIN RSA PRIVATE KEY-----`\)\. WebCrypto and `jose` import''',
 ]
