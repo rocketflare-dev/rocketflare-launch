@@ -14,7 +14,7 @@ main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 - Launch itself is not deployed. It runs locally with `pnpm dev`, reachable at `https://local.clewro.com` through `pnpm dev:tunnel`.
 - The gate is green (in a throwaway worktree): lint, typecheck, tests (web about 3,100, CLI 104, evals 22) and build.
 
-**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.15.8** (the kit's own tests in `apps/web/tests/kit-only/`, deleted by the rename). Nothing is open: no PRs on the kit or the site (`rocketflare-www`). Launch's default pin (`DEFAULT_TEMPLATE_PIN`) and the session image's `KIT_TAG` are 0.15.8 (image `session-4`); the ship gate's contract (`SHIP_GATE_KIT_VERSION`) is still 0.15.7.
+**The kit (`rocketflare-dev/rocketflare`).** Released up to **0.16.0** (`pnpm gate`: one definition of an app's checks, a copy's one CI job; `test:ephemeral` removed). Launch's default pin (`DEFAULT_TEMPLATE_PIN`), the session image's `KIT_TAG` and the ship gate's contract (`SHIP_GATE_KIT_VERSION`) are 0.16.0 (image `session-5`, not yet built or deployed); apps on 0.15.7 up to 0.16.0 still ship through the legacy `test:ephemeral` path ([rocketflare-launch#2](https://github.com/rocketflare-dev/rocketflare-launch/issues/2), built on `ship-gate-pnpm-gate`, against fakes only).
 
 **The real app.** `hola-world` (`guidemode/hola-world`, Neon project `mute-star-58262276`) is **live** on staging (`https://hola-world-staging.clewro.com`) and was promoted to production through the approval gate.
 
@@ -74,6 +74,7 @@ Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Ki
 | 0.15.6 | Opening a magic link no longer spends the token. |
 | 0.15.7 | `pnpm test:ephemeral`: the suite on a throwaway Neon gate branch, no Docker (issue #1, slice 2b); `migrate` / `db-roles` / `seed` exit when done. |
 | 0.15.8 | The kit's own tests move to `apps/web/tests/kit-only/`, which the rename deletes, so a copy's gate no longer fails on the kit's version chain. |
+| 0.16.0 | `pnpm gate` (lint → typecheck → test → build, `--list --json` for Launch) is a copy's one CI job; `pnpm test` is the one full run (on a Neon gate branch when `TEST_DATABASE_BRANCH` is set, time limits scaled ×12); `test:ephemeral` / `test:neon` removed; `kit.yml`, `plugin-ci.yml`, `notify-plugins.yml` are `kitOnly` (rocketflare#49, rocketflare-launch#2). |
 
 ## Landed since the first real day (2026-09-28, evening)
 
@@ -88,7 +89,7 @@ Built and tested against fakes; **none of it yet seen in a real session**:
 - **Debounced checkpoints** (30 s after the latest changed turn, 5-minute cap), and a lost turn's container is salvaged before recovery.
 - **The neon driver** never queries through a replaced global `fetch`.
 
-The kit is at **0.15.8** (0.15.6: opening a magic link no longer spends the token; 0.15.7: `pnpm test:ephemeral`; 0.15.8: the kit's own tests in `tests/kit-only/`). Launch's `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG` are 0.15.8.
+The kit is at **0.16.0** (0.15.6: opening a magic link no longer spends the token; 0.15.7: `pnpm test:ephemeral`; 0.15.8: the kit's own tests in `tests/kit-only/`; 0.16.0: `pnpm gate`). Launch's `DEFAULT_TEMPLATE_PIN`, the image's `KIT_TAG` and `SHIP_GATE_KIT_VERSION` are 0.16.0, and the ship gate runs the kit's `pnpm gate` steps minus `build` (rocketflare-launch#2).
 
 ## Next, in order (agreed 2026-09-29)
 
@@ -114,7 +115,7 @@ The kit is at **0.15.8** (0.15.6: opening a magic link no longer spends the toke
    - **2d. The gate steps are the kit's commands, fixed in Launch.** There is no per-app config; a config test keeps them in step with the pinned kit.
    - **2e. No orphan gate branches.** Cleanup and `end` delete them before the session branch, and a cron sweeps by name prefix.
    - **2f. Docs and pins.** CONCEPTS §18.13, CHANGELOG. Bump `DEFAULT_TEMPLATE_PIN` and the image's `KIT_TAG`.
-3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn. hola-world must first be on kit 0.15.7 (Re-scaffold, or a kit upgrade), or its gate is a red "no `test:ephemeral`" row. Prove on real Neon: the kit's test setup as `session_owner` on a branch of a branch, the connection count on a small compute, the 60 s / 120 s limits, gate-branch creation time; and in a real sandbox: the suite's memory beside the dev server, and whether vitest exits under `allowlist`.
+3. **Validate ship end to end on hola-world** (check 6): a green gate opens a PR, the PR's `ci.yml` runs, and a forced test failure gets one fix turn. hola-world must first be on kit 0.15.7 or later (Re-scaffold, or a kit upgrade — ideally 0.16.0, so the ship gate runs `pnpm gate` and matches its one-job CI), or its gate is a red "upgrade the kit" row. Prove on real Neon: the kit's test setup as `session_owner` on a branch of a branch, the connection count on a small compute, the kit's scaled time limits (0.16.0), gate-branch creation time, `pnpm gate --list --json` read from a real checkout; and in a real sandbox: the suite's memory beside the dev server, and whether vitest exits under `allowlist`.
 4. **Deploys in progress:** watch the steps live on the next real production promote. Known gaps are in CONCEPTS §18.7.
 5. **Small fixes found along the way:**
    - **Kit deploy step names:** "Deploy (…wrangler.staging.toml)" becomes "Deploy with wrangler (no deployer)", and "Activate the uploaded version" becomes "Deploy: activate the uploaded version". Ship them with the kit change in 2b.

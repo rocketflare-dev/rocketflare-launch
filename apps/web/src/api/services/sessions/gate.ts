@@ -1,21 +1,41 @@
 /**
- * The ship gate (issue #1, docs/CONCEPTS.md §18.13): the kit's own checks, which LAUNCH runs in
- * the session's sandbox — never Claude — and whose exit codes alone decide whether a session
- * ships. This file is the gate's CONTRACT with the kit, fixed in Launch (there is no per-app gate
- * config): the commands, their order and deadlines, and the environment the test step hands the
- * kit's `pnpm test:ephemeral`. `tests/config/ship-gate-contract.test.ts` pins every value here to
- * the kit release that defines it ({@link SHIP_GATE_KIT_VERSION}), so a change is deliberate.
+ * The ship gate (issue #1, rocketflare-launch#2, docs/CONCEPTS.md §18.13): the kit's own checks,
+ * which LAUNCH runs in the session's sandbox — never Claude — and whose exit codes alone decide
+ * whether a session ships. This file is the gate's CONTRACT with the kit, fixed in Launch (there is
+ * no per-app gate config): the commands, their order and deadlines, how the checkout's kit is
+ * probed for them, and the environment the test step hands the kit's `pnpm test`.
+ * `tests/config/ship-gate-contract.test.ts` pins every value here to the kit release that defines
+ * it ({@link SHIP_GATE_KIT_VERSION}), so a change is deliberate.
  *
- * **The steps** ({@link SHIP_GATE_COMMANDS}, in `SHIP_GATE_STEPS` order, stopping at the first
- * red): `pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`. NOT `pnpm build`, though the kit's
- * own gate ends with it: its `build` re-runs `typecheck` and then builds the UI and the Worker —
- * the step most likely to run a container out of memory (it is what killed session d9124cbb) —
- * and it proves nothing lint + typecheck + the tests have not, beyond what the PR's own CI (which
- * runs the kit's full gate, build included) proves minutes later on a machine sized for it.
+ * **The steps** ({@link SHIP_GATE_COMMANDS}, stopping at the first red) are the kit's `pnpm gate`
+ * steps — the one definition of an app's checks, and the one job in the copy's own CI (kit 0.16.0)
+ * — run one at a time: `pnpm gate lint`, `pnpm gate typecheck`, `pnpm gate test`. So a green ship
+ * gate is the same checks the PR's CI runs, minus ONE declared exception ({@link SHIP_GATE_SKIPPED}):
+ * `build`, which re-bundles the UI and the Worker — the step most likely to run a container out of
+ * memory (it is what killed session d9124cbb) — and proves nothing lint + typecheck + the tests have
+ * not, beyond what the PR's CI (which runs it) proves minutes later on a machine sized for it.
+ *
+ * **Which kit** ({@link GATE_KIT_PROBE}, `ship.kit#N`, before the first step): a root `gate` script
+ * means the steps come from the kit's own list — `pnpm gate --list --json`, parsed with the kit's
+ * schema shape ({@link kitGateListSchema}) and planned by {@link planGateFromList}: Launch's steps
+ * in the LISTED order, refusing a list that lacks one of them or names a step Launch neither runs
+ * nor skips (a refusal, with a sentence, never a silent skip). Only `test:ephemeral` (kit 0.15.7 up
+ * to 0.16.0, which kept the script in the copy's own `package.json`) means the legacy commands
+ * ({@link SHIP_GATE_LEGACY_COMMANDS}). Neither means the kit is too old
+ * ({@link GATE_KIT_TOO_OLD_MESSAGE}).
+ *
+ * **The driver differs from the copy's CI by design.** The copy's CI runs the suite under
+ * `postgres` plus a `neon` conformance pass (the driver seam); Launch's `pnpm gate test` runs the
+ * whole suite under `neon` on a real Neon branch, because a sandbox has 443 and no Docker. Same
+ * steps, different driver: a failure on one and not the other is a seam bug for the kit, not
+ * something to patch in the app.
  *
  * **The test step's database** is a throwaway Neon branch per attempt (`gate-<short>-<attempt>`,
- * `gate-branch.ts`, a child of the session's branch), and the kit's contract for it (0.15.7,
- * `apps/web/tests/helpers/db-safety.ts`) is exactly three variables on top of the script's own:
+ * `gate-branch.ts`, a child of the session's branch), and the kit's contract for it (0.15.7 and
+ * unchanged in 0.16.0, `apps/web/tests/helpers/db-safety.ts`) is exactly three variables on top of
+ * the script's own — `TEST_DATABASE_BRANCH` is also what tells 0.16.0's `pnpm test` it is on a
+ * remote target (`scripts/lib/test-plan.mjs`), which it prints on its first line
+ * ({@link gateTestTarget}, shown on the ship panel):
  *
  * - `DATABASE_URL` — `session_owner` on the gate branch (it owns `session_app`'s tables and holds
  *   ADMIN OPTION on `rocketflare_app`, which the kit's test setup alters), direct host;
@@ -23,7 +43,7 @@
  * - `TEST_DATABASE_ENDPOINT` — the `ep-…` id IN that URL (the name is only a claim; the endpoint
  *   binds it to this URL).
  *
- * The script sets `TEST_DATABASE_EPHEMERAL=1`, `DATABASE_DRIVER=neon` and an empty
+ * The kit's script sets `TEST_DATABASE_EPHEMERAL=1`, `DATABASE_DRIVER=neon` and an empty
  * `APP_DATABASE_URL` itself. `NEON_LOCAL_PROXY` is NOT set, on a laptop too: a session's database
  * is always a real Neon branch reached directly (there is no local Neon proxy for sessions — see
  * `db/neon-session-db.ts`), so the gate's is as well, and the kit's driver test then insists the
@@ -44,6 +64,7 @@
  * and the kit's scripts `process.exit` for that reason, but vitest's own exit is not theirs.
  */
 import { SHIP_GATE_STEPS, type ShipGateStep } from '@launch/shared/launch-sessions'
+import { z } from 'zod'
 import { neonSqlEndpoint } from '../launch/neon'
 import {
   BackgroundCommandTimeoutError,
@@ -59,8 +80,10 @@ import {
   tailOf,
 } from './rocketflare-dev'
 
-/** The kit release whose `test:ephemeral` and `safetyCheck()` this contract is written against. */
-export const SHIP_GATE_KIT_VERSION = '0.15.7'
+/** The kit release whose `pnpm gate` (and `--list --json`) this contract is written against. */
+export const SHIP_GATE_KIT_VERSION = '0.16.0'
+/** The oldest kit a ship gate runs on at all: `test:ephemeral` (the legacy path). */
+export const SHIP_GATE_LEGACY_KIT_VERSION = '0.15.7'
 
 export interface ShipGateCommand {
   step: ShipGateStep
@@ -72,38 +95,152 @@ export interface ShipGateCommand {
   database: boolean
 }
 
-export const SHIP_GATE_COMMANDS: Record<ShipGateStep, ShipGateCommand> = {
-  lint: { step: 'lint', command: 'pnpm lint', timeoutMs: 5 * 60_000, database: false },
-  typecheck: {
-    step: 'typecheck',
-    command: 'pnpm typecheck',
-    timeoutMs: 10 * 60_000,
-    database: false,
-  },
-  test: {
-    step: 'test',
-    command: 'pnpm test:ephemeral',
-    timeoutMs: 25 * 60_000,
-    database: true,
-  },
+const DEADLINES: Record<ShipGateStep, number> = {
+  lint: 5 * 60_000,
+  typecheck: 10 * 60_000,
+  test: 25 * 60_000,
 }
 
-/** The gate, in order. */
-export const shipGateCommands = (): ShipGateCommand[] =>
-  SHIP_GATE_STEPS.map(step => SHIP_GATE_COMMANDS[step])
+const commandsOf = (command: (step: ShipGateStep) => string) =>
+  Object.fromEntries(
+    SHIP_GATE_STEPS.map(step => [
+      step,
+      { step, command: command(step), timeoutMs: DEADLINES[step], database: step === 'test' },
+    ])
+  ) as Record<ShipGateStep, ShipGateCommand>
 
-/** The root `package.json` script the test step runs — absent in a kit before 0.15.7. */
-export const GATE_TEST_SCRIPT = 'test:ephemeral'
+/** The root `package.json` script that means a kit's `pnpm gate` (0.16.0+). */
+export const GATE_SCRIPT = 'gate'
+/** The root `package.json` script the legacy test step runs (0.15.7 up to 0.16.0). */
+export const GATE_LEGACY_TEST_SCRIPT = 'test:ephemeral'
 
-/** Exit 0 when the checkout's root `package.json` has {@link GATE_TEST_SCRIPT}, else 3. */
-export const GATE_TEST_SCRIPT_CHECK = `node -e 'const p=require("./package.json");process.exit(p.scripts&&p.scripts[${JSON.stringify(GATE_TEST_SCRIPT)}]?0:3)'`
+/** The steps on a kit with `pnpm gate` (0.16.0+): each of the kit's own gate steps, by id. */
+export const SHIP_GATE_COMMANDS: Record<ShipGateStep, ShipGateCommand> = commandsOf(
+  step => `pnpm ${GATE_SCRIPT} ${step}`
+)
+
+/**
+ * The kit's gate steps Launch deliberately does NOT run: `build`, the one exception — the
+ * container's memory (see the header), and the PR's own CI runs it.
+ */
+export const SHIP_GATE_SKIPPED = ['build'] as const
+
+/** The steps on a kit from 0.15.7 up to 0.16.0: `test:ephemeral`, and no `pnpm gate`. */
+export const SHIP_GATE_LEGACY_COMMANDS: Record<ShipGateStep, ShipGateCommand> = commandsOf(step =>
+  step === 'test' ? `pnpm ${GATE_LEGACY_TEST_SCRIPT}` : `pnpm ${step}`
+)
+
+/** Which commands the checkout's kit takes: `gate` (0.16.0+) or `legacy` (0.15.7 up to 0.16.0). */
+export type ShipGateKit = 'gate' | 'legacy'
+
+/** A kit's gate in `SHIP_GATE_STEPS` order (a `gate` kit's own list decides: `planGateFromList`). */
+export const shipGateCommands = (kit: ShipGateKit = 'gate'): ShipGateCommand[] =>
+  SHIP_GATE_STEPS.map(
+    step => (kit === 'gate' ? SHIP_GATE_COMMANDS : SHIP_GATE_LEGACY_COMMANDS)[step]
+  )
+
+/**
+ * The capability probe, run in the checkout: prints `gate` when the root `package.json` has
+ * {@link GATE_SCRIPT}, else `legacy` when it has {@link GATE_LEGACY_TEST_SCRIPT}, else `none`.
+ */
+export const GATE_KIT_PROBE = `node -e 'const s=require("./package.json").scripts||{};process.stdout.write(s[${JSON.stringify(GATE_SCRIPT)}]?"gate":s[${JSON.stringify(GATE_LEGACY_TEST_SCRIPT)}]?"legacy":"none")'`
+
+/** What a `gate` kit is asked for its steps (the kit's `scripts/gate.mjs`, schema 1). */
+export const GATE_LIST_COMMAND = `pnpm --silent ${GATE_SCRIPT} --list --json`
+
+/**
+ * The kit's `gateListSchema` (0.16.0, `packages/shared/src/gate.ts`), mirrored — Launch cannot
+ * import the kit. `schema` rises only when an existing field changes meaning; a new step or a new
+ * field is not a schema change, so this tolerates both (not `.strict()`: extra fields are dropped).
+ */
+export const kitGateListSchema = z.object({
+  schema: z.literal(1),
+  steps: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-z][a-z-]*$/),
+        command: z.string().min(1),
+        database: z.boolean(),
+      })
+    )
+    .min(1),
+})
+export type KitGateList = z.infer<typeof kitGateListSchema>
+
+/**
+ * `pnpm gate --list --json`'s output → the list, or null when it is not one. A line of noise
+ * around the document (a package manager's banner) is tolerated: the JSON is the outermost `{…}`.
+ */
+export function parseGateList(stdout: string): KitGateList | null {
+  const from = stdout.indexOf('{')
+  const to = stdout.lastIndexOf('}')
+  if (from < 0 || to < from) return null
+  try {
+    const parsed = kitGateListSchema.safeParse(JSON.parse(stdout.slice(from, to + 1)))
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
+export type GatePlan = { ok: true; commands: ShipGateCommand[] } | { ok: false; message: string }
+
+const isShipGateStep = (id: string): id is ShipGateStep =>
+  (SHIP_GATE_STEPS as readonly string[]).includes(id)
+const isSkipped = (id: string) => (SHIP_GATE_SKIPPED as readonly string[]).includes(id)
+const quoted = (ids: readonly string[]) => ids.map(id => `\`${id}\``).join(', ')
+
+/**
+ * A `gate` kit's list → the commands Launch runs: the steps Launch knows, in the LISTED order, as
+ * {@link SHIP_GATE_COMMANDS}. Refused — a sentence for the ship panel, no fix turn — when the list
+ * lacks one of `SHIP_GATE_STEPS`, or names a step that is neither one of them nor in
+ * {@link SHIP_GATE_SKIPPED}: running less than the app's CI and calling it green is what this gate
+ * exists to stop, so an unknown step is Launch's to learn, never one to skip quietly.
+ */
+export function planGateFromList(list: KitGateList): GatePlan {
+  const ids = list.steps.map(s => s.id)
+  const unknown = ids.filter(id => !isShipGateStep(id) && !isSkipped(id))
+  if (unknown.length > 0) {
+    return {
+      ok: false,
+      message:
+        `This app's kit has gate step${unknown.length === 1 ? '' : 's'} Launch does not know ` +
+        `(${quoted(unknown)}), so Launch cannot run the same checks as the app's CI. Launch runs ` +
+        `${quoted(SHIP_GATE_STEPS)} and leaves ${quoted(SHIP_GATE_SKIPPED)} to the pull ` +
+        "request's CI; Launch needs updating for this kit before the app can ship.",
+    }
+  }
+  const missing = SHIP_GATE_STEPS.filter(step => !ids.includes(step))
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      message:
+        `This app's \`pnpm gate\` has no ${quoted(missing)} step, so Launch cannot run the ` +
+        "checks it ships on. Restore the kit's gate steps, then ship again.",
+    }
+  }
+  const commands: ShipGateCommand[] = []
+  for (const id of ids) {
+    if (isShipGateStep(id) && !commands.some(c => c.step === id)) {
+      commands.push(SHIP_GATE_COMMANDS[id])
+    }
+  }
+  return { ok: true, commands }
+}
+
+/** A `gate` kit whose `pnpm gate --list --json` did not print a step list. */
+export const GATE_LIST_UNREADABLE_MESSAGE =
+  "This app has a `pnpm gate`, but `pnpm gate --list --json` did not print the kit's step list, " +
+  "so Launch cannot tell which checks to run. Compare the app's `scripts/gate.mjs` with the " +
+  "kit's, then ship again."
 
 /** Why the gate cannot run on this app at all — no fix turn can help. */
 export const GATE_KIT_TOO_OLD_MESSAGE =
-  `This app's kit has no \`pnpm ${GATE_TEST_SCRIPT}\` (it needs Rocketflare ${SHIP_GATE_KIT_VERSION}` +
-  ' or later), so Launch cannot run its tests without Docker. Upgrade the kit, then ship again.'
+  `This app's kit has neither \`pnpm ${GATE_SCRIPT}\` nor \`pnpm ${GATE_LEGACY_TEST_SCRIPT}\` (it ` +
+  `needs Rocketflare ${SHIP_GATE_LEGACY_KIT_VERSION} or later), so Launch cannot run its tests ` +
+  'without Docker. Upgrade the kit, then ship again.'
 
-/** The kit's variable names for the test step's database (kit 0.15.7, `db-safety.ts`). */
+/** The kit's variable names for the test step's database (kit 0.15.7 on, `db-safety.ts`). */
 export const GATE_TEST_ENV_VARS = {
   url: 'DATABASE_URL',
   branch: 'TEST_DATABASE_BRANCH',
@@ -206,6 +343,22 @@ export const GATE_OUTPUT_MAX_CHARS = 6_000
 export function gateOutputTail(log: string, secrets: readonly string[] = []): string {
   const text = redactModelKeyText(tailOf(log, secrets, GATE_OUTPUT_TAIL_LINES))
   return text.length > GATE_OUTPUT_MAX_CHARS ? `…${text.slice(-GATE_OUTPUT_MAX_CHARS)}` : text
+}
+
+/** How long a target line the ship panel shows may be. */
+export const GATE_TARGET_MAX_CHARS = 200
+
+/**
+ * The target the kit's `pnpm test` announces on its first line (0.16.0, `scripts/test.mjs`):
+ * `test target: remote Neon branch gate-… (no Docker; the whole suite under neon)` — redacted like
+ * a tail and clipped, or null when the log has none (a legacy kit, or a run that died first).
+ */
+export function gateTestTarget(log: string, secrets: readonly string[] = []): string | null {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes from the kit's output
+  const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/^\s*(test target: .+)$/m)
+  if (!match?.[1]) return null
+  const line = redactModelKeyText(tailOf(match[1].trim(), secrets, 1))
+  return line.length > GATE_TARGET_MAX_CHARS ? `${line.slice(0, GATE_TARGET_MAX_CHARS)}…` : line
 }
 
 export interface GateCommandResult {

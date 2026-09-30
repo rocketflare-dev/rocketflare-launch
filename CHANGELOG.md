@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The ship gate runs the kit's `pnpm gate` steps — the same checks as the app's CI**
+  (rocketflare-launch#2, kit 0.16.0; `docs/CONCEPTS.md` §18.13). On a kit with `pnpm gate` the
+  gate is `pnpm gate lint` → `pnpm gate typecheck` → `pnpm gate test`, the copy's one CI job minus
+  `build`, the one declared exception (`SHIP_GATE_SKIPPED`; container memory, and the PR's CI runs
+  it). A new `ship.kit#N` step probes the checkout first: a root `gate` script → the kit's own
+  `pnpm gate --list --json` (schema 1, mirrored as `kitGateListSchema`), planned in its order and
+  REFUSED — a red Tests row, no fix turn — when it lacks one of Launch's steps or names one Launch
+  does not know; only `test:ephemeral` (kit 0.15.7 up to 0.16.0) → the legacy `pnpm lint`,
+  `pnpm typecheck`, `pnpm test:ephemeral`; neither → the "upgrade the kit" message. The test step's
+  three-variable Neon contract is unchanged; its `ship.gate` event gains `target`, the line the
+  kit's `pnpm test` prints first, shown on the ship panel. The PR body names the commands that ran.
+  A contract test proves the steps against a fixture of kit 0.16.0's own step list.
+- New apps are cut from Rocketflare 0.16.0 (`DEFAULT_TEMPLATE_PIN`, commit `bc89e0e`): `pnpm gate`,
+  `pnpm test` as the one full run (on a Neon gate branch when `TEST_DATABASE_BRANCH` is set, time
+  limits scaled for it), and `kit.yml`, `plugin-ci.yml` and `notify-plugins.yml` stripped by the
+  rename, so a new app's first PR has a single Gate job. The scaffold's own gate is
+  `pnpm gate lint typecheck` + `pnpm web test:config` on such a kit (its kit-only deletions are
+  no-ops there, kept for older pins). The session image's warm pnpm store follows it
+  (`ARG KIT_TAG` / `SESSION_KIT_TAG` 0.16.0, image `session-5`, so no workspace backup from the old
+  image is restored into the new one) — it builds on the next deploy; drain sessions first.
 - **A coding session's dev setup no longer leaks into its PR.** The kit's `bootstrap --offline`
   commented `[ai]` out of both wrangler tomls in place and the checkpoint committed it (with a
   `worker-configuration.d.ts` without `AI`) — hola-world PR #2 would have removed Workers AI from

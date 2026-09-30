@@ -217,8 +217,10 @@ describe('SessionPage', () => {
             step: 'test',
             passed: false,
             attempt: 1,
-            command: 'pnpm test:ephemeral',
+            command: 'pnpm gate test',
             durationMs: 83_000,
+            target:
+              'test target: remote Neon branch gate-abcdefgh2345-1 (no Docker; the whole suite under neon)',
             output: '1 test failed',
           },
           2
@@ -257,7 +259,13 @@ describe('SessionPage', () => {
     expect(gates.getByText('Attempt 2')).toBeInTheDocument()
     expect(gates.getAllByText('Lint passed')).toHaveLength(2)
     expect(gates.getByText('Tests failed')).toBeInTheDocument()
-    expect(gates.getByText('pnpm test:ephemeral')).toBeInTheDocument()
+    expect(gates.getByText('pnpm gate test')).toBeInTheDocument()
+    // Where the tests ran: the target line the kit's `pnpm test` printed.
+    expect(
+      gates.getByText(
+        'test target: remote Neon branch gate-abcdefgh2345-1 (no Docker; the whole suite under neon)'
+      )
+    ).toBeInTheDocument()
     expect(gates.getByText('1 min 23 s')).toBeInTheDocument()
     expect(gates.getByText('1 test failed')).toBeInTheDocument()
     // …and the chat says each step as it happened.

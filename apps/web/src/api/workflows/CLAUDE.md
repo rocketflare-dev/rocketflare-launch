@@ -151,7 +151,10 @@ fails every later turn. `overrides.limits` shrinks the deadlines (`services/sess
 tests; `overrides.now` is the steps' clock.
 
 **The ship round** (issue #1, bodies in `services/sessions/ship-steps.ts`, `docs/CONCEPTS.md`
-§18.13) is `SessionWorkflow.ship(run, n, bootId)`: `ship.claim#N` → `ship.save#N` → per attempt
+§18.13) is `SessionWorkflow.ship(run, n, bootId)`: `ship.claim#N` → `ship.save#N` → `ship.kit#N`
+(which commands the checkout's kit takes — its `pnpm gate` steps, the legacy `test:ephemeral`
+three, or a refusal that settles the round `unfixable`; the attempts run `ship.kit`'s commands in
+its order) → per attempt
 `A` (numbered across the session's ships, from `ship.claim`'s result): `ship.gate#N.A.lint` →
 `ship.gate#N.A.typecheck` → `ship.db#N.A` → `ship.gate#N.A.test` → `ship.db-clean#N.A` (in a
 `finally`, so the gate branch never outlives a red, a throw, an end or a lost container) → on red

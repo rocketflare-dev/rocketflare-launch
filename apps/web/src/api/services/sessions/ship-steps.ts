@@ -5,10 +5,13 @@
  *   ship.claim#N        `ready → shipping` (the request consumed); the attempt numbering, the policy
  *   ship.save#N         checkpoint what the person's turns left unsaved — the gate can take half an
  *                       hour, and a container that dies meanwhile must not take their work with it
+ *   ship.kit#N          which commands the checkout's kit takes (`GATE_KIT_PROBE`): its own
+ *                       `pnpm gate` steps (0.16.0+, from `pnpm gate --list --json`), the legacy
+ *                       `test:ephemeral` three (0.15.7+), or neither — a red row, no fix turn
  *   per attempt A (numbered across the session's ships, so a gate branch name is never reused):
  *     ship.gate#N.A.lint, ship.gate#N.A.typecheck      the kit's commands, run by Launch
  *     ship.db#N.A         the throwaway gate branch `gate-<short>-<A>` (a child of the session's)
- *     ship.gate#N.A.test  `pnpm test:ephemeral` on it, with the kit's three variables
+ *     ship.gate#N.A.test  `pnpm gate test` on it, with the kit's three variables
  *     ship.db-clean#N.A   ALWAYS after `ship.db` (a `finally`): the session's gate branches deleted
  *     ship.fix#N.A        red, and attempts left: ONE focused turn with the failing command and
  *                         the tail of its output (`session-ship-fix`)
@@ -19,9 +22,9 @@
  *
  * - **The exit codes decide.** No model call decides whether the gate passed; a green gate makes
  *   exactly one model call, the summary, and a failed summary falls back rather than blocks.
- * - **One `ship.gate` event per step** (`{ step, passed, attempt, command, durationMs, output }`),
- *   the output a redacted tail (`gateOutputTail`): the gate branch's URL never reaches an event,
- *   a step result, a log line or a prompt.
+ * - **One `ship.gate` event per step** (`{ step, passed, attempt, command, durationMs, output }`,
+ *   and the test step's `target` line), the output a redacted tail (`gateOutputTail`): the gate
+ *   branch's URL never reaches an event, a step result, a log line or a prompt.
  * - **A lost container suspends, never `ready`.** Every step that touches the container first
  *   reads the boot marker (`boot-marker.ts`); one that came back empty (or died under a gate
  *   command or a fix turn) is `shipping → suspended` with a resume requested, an `error` event,
@@ -48,14 +51,22 @@ import { checkContainer } from './boot-marker'
 import { workspaceChanged } from './checkpoint'
 import { safeErrorMessage } from './events'
 import {
+  GATE_KIT_PROBE,
   GATE_KIT_TOO_OLD_MESSAGE,
-  GATE_TEST_SCRIPT_CHECK,
+  GATE_LIST_COMMAND,
+  GATE_LIST_UNREADABLE_MESSAGE,
   gateBaseEnv,
   gateEgressHosts,
   gateOutputTail,
   gateTestEnv,
+  gateTestTarget,
+  parseGateList,
+  planGateFromList,
   runGateCommand,
   SHIP_GATE_COMMANDS,
+  type ShipGateCommand,
+  type ShipGateKit,
+  shipGateCommands,
   uriSecrets,
 } from './gate'
 import { gateBranchName } from './gate-branch'
@@ -233,6 +244,57 @@ export async function shipCheckpointStep(
   }
 }
 
+// ---- ship.kit ----------------------------------------------------------------------------------
+
+export type ShipKitResult =
+  | { ok: true; kit: ShipGateKit; commands: ShipGateCommand[] }
+  | { ok: false; stop: ShipStop }
+
+/**
+ * `ship.kit#N`: which gate the checkout's kit takes — once a round, before its first attempt
+ * (`GATE_KIT_PROBE`, see `gate.ts`). A `gate` kit is asked for its steps and they are planned from
+ * its own list (`planGateFromList`); a `legacy` kit gets the three 0.15.7 commands. Neither, a
+ * list that will not parse, or a list Launch refuses is `unfixable`: a red `test` row saying why
+ * (on the round's first attempt), and no fix turn. A probe that does not answer at all throws, so
+ * the step retries and then the round settles `error`.
+ */
+export async function shipKitStep(
+  scope: StepScope,
+  attempt: number,
+  bootId?: string
+): Promise<ShipKitResult> {
+  const session = await loadSession(scope)
+  if (session.status !== 'shipping' || endRequested(session)) return { ok: false, stop: 'ended' }
+  const sandbox = sandboxFor({ ...scope, phase: 'Ship gate (kit)' }, session)
+  if (await lostContainer(scope, sandbox, bootId)) return { ok: false, stop: 'container_lost' }
+
+  const probe = await sandbox.exec(GATE_KIT_PROBE, { cwd: SESSION_WORKSPACE, timeoutMs: 30_000 })
+  const answer = probe.exitCode === 0 ? probe.stdout.trim() : ''
+  if (answer === 'legacy') return { ok: true, kit: 'legacy', commands: shipGateCommands('legacy') }
+  if (answer === 'none') {
+    await unfixable(scope, session, attempt, GATE_KIT_TOO_OLD_MESSAGE)
+    return { ok: false, stop: 'unfixable' }
+  }
+  if (answer !== 'gate') {
+    throw new Error(`Could not read the checkout's package.json (exit ${probe.exitCode})`)
+  }
+  const listed = await sandbox.exec(GATE_LIST_COMMAND, {
+    cwd: SESSION_WORKSPACE,
+    timeoutMs: 60_000,
+  })
+  const list = listed.exitCode === 0 ? parseGateList(listed.stdout) : null
+  if (!list) {
+    await unfixable(scope, session, attempt, GATE_LIST_UNREADABLE_MESSAGE, GATE_LIST_COMMAND)
+    return { ok: false, stop: 'unfixable' }
+  }
+  const plan = planGateFromList(list)
+  if (!plan.ok) {
+    await unfixable(scope, session, attempt, plan.message, GATE_LIST_COMMAND)
+    return { ok: false, stop: 'unfixable' }
+  }
+  return { ok: true, kit: 'gate', commands: plan.commands }
+}
+
 // ---- ship.gate ---------------------------------------------------------------------------------
 
 export interface GateStepResult {
@@ -288,14 +350,15 @@ async function whileNotEnded<T>(
  * `ship.gate#N.A.<step>`: one of the kit's gate commands, run by Launch in the checkout (see the
  * header and `gate.ts`), its verdict an event. The test step takes `branch` (from `ship.db`): the
  * allow-list gains exactly its hosts for the step, and its URL — minted only when the command
- * STARTS — is the command's `DATABASE_URL` and nothing else's.
+ * STARTS — is the command's `DATABASE_URL` and nothing else's. `command` is what `ship.kit` chose
+ * for the checkout's kit (absent: the `pnpm gate` one).
  */
 export async function shipGateStep(
   scope: StepScope,
-  input: { step: ShipGateStep; attempt: number; branch?: GateBranch },
+  input: { step: ShipGateStep; attempt: number; branch?: GateBranch; command?: ShipGateCommand },
   bootId?: string
 ): Promise<GateStepResult> {
-  const gate = SHIP_GATE_COMMANDS[input.step]
+  const gate = input.command ?? SHIP_GATE_COMMANDS[input.step]
   const step = input.step
   const session = await loadSession(scope)
   if (session.status !== 'shipping' || endRequested(session)) {
@@ -361,6 +424,7 @@ export async function shipGateStep(
   }
 
   const output = [result.note, gateOutputTail(result.log, secrets)].filter(Boolean).join('\n')
+  const target = gate.database ? gateTestTarget(result.log, secrets) : null
   await emitterFor(scope)({
     type: 'ship.gate',
     turn: session.turnCount,
@@ -370,6 +434,7 @@ export async function shipGateStep(
       attempt: input.attempt,
       command: gate.command,
       durationMs: Math.max(0, Date.now() - started),
+      ...(target ? { target } : {}),
       ...(output ? { output } : {}),
     },
   })
@@ -382,32 +447,36 @@ export async function shipGateStep(
 
 export type ShipDbResult = { ok: true; branch: GateBranch } | { ok: false; stop: ShipStop }
 
-/** A red `test` row for a gate that cannot run on this app at all (no fix turn follows). */
-async function unfixable(scope: StepScope, session: SessionRow, attempt: number, output: string) {
+/**
+ * A red `test` row for a gate that cannot run on this app at all (no fix turn follows); `command`
+ * is what could not run or answer (default: the `pnpm gate test` step).
+ */
+async function unfixable(
+  scope: StepScope,
+  session: SessionRow,
+  attempt: number,
+  output: string,
+  command: string = SHIP_GATE_COMMANDS.test.command
+) {
   await emitterFor(scope)({
     type: 'ship.gate',
     turn: session.turnCount,
-    data: {
-      step: 'test',
-      passed: false,
-      attempt,
-      command: SHIP_GATE_COMMANDS.test.command,
-      output,
-    },
+    data: { step: 'test', passed: false, attempt, command, output },
   })
 }
 
 /**
  * `ship.db#N.A`: the test step's database — `gate-<short>-<A>`, a child of the session's branch
- * (`createGateBranch`, waiting for `create_branch` only). First: the checkout's kit must HAVE
- * `test:ephemeral` (0.15.7+; without it the gate cannot run and no fix turn can help — a red
- * `test` row says so, `unfixable`), and any gate branch an earlier attempt left is deleted, so
- * one session never holds more than one.
+ * (`createGateBranch`, waiting for `create_branch` only). A session with no Neon branch cannot
+ * have one (a red `test` row for `testCommand`, `unfixable`); otherwise any gate branch an earlier
+ * attempt left is deleted first, so one session never holds more than one. (Whether the kit can
+ * run its tests without Docker at all was `ship.kit`'s question.)
  */
 export async function shipDbStep(
   scope: StepScope,
   attempt: number,
-  bootId?: string
+  bootId?: string,
+  testCommand: string = SHIP_GATE_COMMANDS.test.command
 ): Promise<ShipDbResult> {
   const session = await loadSession(scope)
   if (session.status !== 'shipping' || endRequested(session)) return { ok: false, stop: 'ended' }
@@ -415,17 +484,10 @@ export async function shipDbStep(
   const sandbox = sandboxFor(phased, session)
   if (await lostContainer(scope, sandbox, bootId)) return { ok: false, stop: 'container_lost' }
 
-  const script = await sandbox.exec(GATE_TEST_SCRIPT_CHECK, {
-    cwd: SESSION_WORKSPACE,
-    timeoutMs: 30_000,
-  })
-  if (script.exitCode === 3) {
-    await unfixable(scope, session, attempt, GATE_KIT_TOO_OLD_MESSAGE)
-    return { ok: false, stop: 'unfixable' }
-  }
   const parent = session.db
   if (!parent || parent.provider !== 'neon') {
-    await unfixable(scope, session, attempt, 'The session has no database branch to test on.')
+    const message = 'The session has no database branch to test on.'
+    await unfixable(scope, session, attempt, message, testCommand)
     return { ok: false, stop: 'unfixable' }
   }
   const app = await loadAppRef(scope, session.appId)
@@ -552,11 +614,15 @@ export async function shipSummaryStep(scope: StepScope): Promise<ShipSummaryResu
   return { title: summary.title, body: summary.body, source: summary.source }
 }
 
-/** `ship.pr#N`: open the PR and settle `shipped` (`openShipPullRequest`). */
+/**
+ * `ship.pr#N`: open the PR and settle `shipped` (`openShipPullRequest`); `gate` is the commands
+ * the green attempt ran, which the PR body names.
+ */
 export async function shipPrStep(
   scope: StepScope,
   summary: Pick<ShipSummaryResult, 'title' | 'body'>,
-  fixTurns: number
+  fixTurns: number,
+  gate?: readonly string[]
 ): Promise<{ shipped: boolean }> {
   const session = await loadSession(scope)
   const outcome = await openShipPullRequest(
@@ -568,7 +634,7 @@ export async function shipPrStep(
       scanConfig: input => scanShipConfig(hookContext(scope, session, session.turnCount), input),
     },
     scope.params,
-    { title: summary.title, body: summary.body, fixTurns }
+    { title: summary.title, body: summary.body, fixTurns, ...(gate?.length ? { gate } : {}) }
   )
   return { shipped: outcome.status === 'shipped' }
 }

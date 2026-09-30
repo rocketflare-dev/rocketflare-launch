@@ -51,6 +51,7 @@ import {
   createFakeSessionPorts,
   type FakeSessionPorts,
   type SessionAppFixture,
+  scriptKitGate,
   seedSessionApp,
 } from '../helpers/sessions'
 import { createExecutionContext, createTestEnv, stubs, type TestEnv } from '../mocks/bindings'
@@ -181,7 +182,7 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
   }
   let commits = 0
   ports.script(sandbox => {
-    sandbox
+    scriptKitGate(sandbox)
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
       .onExec('git diff --cached --quiet', { exitCode: 1 })
       .onExec('git commit', () => {
@@ -415,6 +416,7 @@ describe('a coding session, end to end', () => {
       'inspect#3',
       'ship.claim#3',
       'ship.save#3',
+      'ship.kit#3',
       'ship.gate#3.1.lint',
       'ship.gate#3.1.typecheck',
       'ship.db#3.1',

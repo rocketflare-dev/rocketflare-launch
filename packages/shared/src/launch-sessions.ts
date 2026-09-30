@@ -202,7 +202,8 @@ export const sessionBudgetReachedDataSchema = z.object({
 /**
  * The ship gate's steps (issue #1): the kit's own commands, which Launch runs itself in the
  * sandbox, in this order, stopping at the first that fails (`services/sessions/gate.ts` holds the
- * commands and deadlines). `test` runs `pnpm test:ephemeral` on a throwaway Neon gate branch.
+ * commands and deadlines). They are the kit's `pnpm gate` steps (0.16.0) minus `build`, which the
+ * PR's CI runs; `test` runs on a throwaway Neon gate branch. No `generated` step: the kit has none.
  */
 export const SHIP_GATE_STEPS = ['lint', 'typecheck', 'test'] as const
 export const shipGateStepSchema = z.enum(SHIP_GATE_STEPS)
@@ -225,9 +226,14 @@ export const sessionShipGateDataSchema = z
     passed: z.boolean(),
     attempt: z.number().int().positive(),
     step: shipGateStepSchema.optional(),
-    /** The command Launch ran (`pnpm lint`) — never with its environment. */
+    /** The command Launch ran (`pnpm gate lint`) — never with its environment. */
     command: z.string().optional(),
     durationMs: z.number().int().nonnegative().optional(),
+    /**
+     * The `test` step only: the target line the kit's `pnpm test` prints first (0.16.0) —
+     * `test target: remote Neon branch gate-… (…)` — redacted like the output.
+     */
+    target: z.string().optional(),
     /**
      * The tail of the step's output, for the ship panel — redacted: the test step's database URL
      * (and anything shaped like a connection string or a key) never survives into it.

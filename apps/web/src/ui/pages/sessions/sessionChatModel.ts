@@ -339,6 +339,8 @@ export interface ShipGate {
   step?: ShipGateStep
   command?: string
   durationMs?: number
+  /** The test step: the target line the kit's `pnpm test` printed first (0.16.0). */
+  target?: string
   output?: string
   at: Date
 }
@@ -395,6 +397,7 @@ export function shipGates(events: readonly SessionEvent[]): ShipGate[] {
           ...(parsed.data.step ? { step: parsed.data.step } : {}),
           ...(parsed.data.command ? { command: parsed.data.command } : {}),
           ...(parsed.data.durationMs !== undefined ? { durationMs: parsed.data.durationMs } : {}),
+          ...(parsed.data.target ? { target: parsed.data.target } : {}),
           ...(parsed.data.output ? { output: parsed.data.output } : {}),
           at: event.at,
         },

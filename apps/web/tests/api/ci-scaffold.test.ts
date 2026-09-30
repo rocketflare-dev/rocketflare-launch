@@ -179,8 +179,8 @@ describe('POST /ci/scaffold/token', () => {
       domain: APPS_DOMAIN,
       repo: created.repository,
       kitRepo: 'rocketflare-dev/rocketflare',
-      tag: '0.15.8',
-      commit: 'd5accd301afd2a0a20d1a77ae31489f4860a8a3e',
+      tag: '0.16.0',
+      commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
     })
 
     // The token GitHub minted is narrowed to this repository and contents + workflows write.
@@ -475,8 +475,8 @@ describe('GitHubActionsScaffoldRunner', () => {
       domain: APPS_DOMAIN,
       repo: created.repository,
       kitRepo: 'rocketflare-dev/rocketflare',
-      tag: '0.15.8',
-      commit: 'd5accd301afd2a0a20d1a77ae31489f4860a8a3e',
+      tag: '0.16.0',
+      commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
     }
   }
 })

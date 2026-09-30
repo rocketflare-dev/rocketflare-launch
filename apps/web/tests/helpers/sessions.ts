@@ -18,6 +18,7 @@
  * provide fails by name. The real Neon / GitHub adapters over `cloud.fetch` are what the slices'
  * own suites hand in.
  */
+import { readFileSync } from 'node:fs'
 import {
   type AppSessionDb,
   DEFAULT_SESSION_POLICY,
@@ -29,6 +30,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { createOrgRepo } from '@/api/services/launch/github-app'
 import { NeonClient } from '@/api/services/launch/neon'
+import { GATE_KIT_PROBE, GATE_LIST_COMMAND } from '@/api/services/sessions/gate'
 import type {
   ModelUpstream,
   RepoHostPort,
@@ -284,4 +286,25 @@ export function createFakeSessionPorts(
       : {}),
   }
   return ports
+}
+
+/** The pinned kit's `pnpm gate --list --json` (`tests/fixtures/kit-gate/`), verbatim. */
+export const KIT_GATE_LIST_JSON = readFileSync(
+  new URL('../fixtures/kit-gate/0.16.0.json', import.meta.url),
+  'utf8'
+)
+
+/**
+ * Script a checkout's kit for the ship gate's `ship.kit` probe (`gate.ts`): `gate` (0.16.0+,
+ * answering `pnpm gate --list --json` with `list` — the pinned kit's by default), `legacy` (only
+ * `test:ephemeral`) or `none` (older than 0.15.7).
+ */
+export function scriptKitGate(
+  sandbox: FakeSandbox,
+  kit: 'gate' | 'legacy' | 'none' = 'gate',
+  list: string = KIT_GATE_LIST_JSON
+): FakeSandbox {
+  return sandbox
+    .onExec(GATE_KIT_PROBE, { stdout: kit })
+    .onExec(GATE_LIST_COMMAND, { stdout: `${list}\n` })
 }

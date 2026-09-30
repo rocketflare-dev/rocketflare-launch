@@ -16,7 +16,11 @@
  * sweep); and no database URL or password reaches an event or a step result.
  */
 import { generateKeyPairSync } from 'node:crypto'
-import { SESSION_WAKE_EVENT, sessionBranchName } from '@launch/shared/launch-sessions'
+import {
+  SESSION_WAKE_EVENT,
+  sessionBranchName,
+  sessionShipGateDataSchema,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
@@ -24,7 +28,8 @@ import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
   GATE_KIT_TOO_OLD_MESSAGE,
-  GATE_TEST_SCRIPT_CHECK,
+  GATE_LIST_COMMAND,
+  GATE_LIST_UNREADABLE_MESSAGE,
   gateBaseEnv,
   gateEgressHosts,
 } from '@/api/services/sessions/gate'
@@ -47,7 +52,9 @@ import {
   createFakeSessionPorts,
   type FakeSessionPorts,
   insertSession,
+  KIT_GATE_LIST_JSON,
   type SessionAppFixture,
+  scriptKitGate,
   seedSessionApp,
   sessionAppRef,
 } from '../helpers/sessions'
@@ -107,7 +114,10 @@ async function harness(
     gate?: Partial<Record<GateRun['step'], GateScript>>
     /** What a fix turn does besides being recorded. */
     onFix?: (h: Harness) => void
-    kitHasEphemeral?: boolean
+    /** What the checkout's kit answers the probe (default `gate`, the pinned kit). */
+    kit?: 'gate' | 'legacy' | 'none'
+    /** What `pnpm gate --list --json` prints (default: the pinned kit's list). */
+    gateList?: string
   } = {}
 ): Promise<Harness> {
   const env = createTestEnv()
@@ -146,22 +156,27 @@ async function harness(
       const n = ++counts[step]
       const outcome = opts.gate?.[step]?.(run, n) ?? {}
       if (outcome === 'hang') return new Promise<never>(() => {})
-      return { exitCode: outcome.exitCode ?? 0, log: outcome.log ?? `${step}: ok\n` }
+      // The kit's `pnpm test` (0.16.0) names its target first; a legacy kit's says nothing of it.
+      const banner =
+        step === 'test' && (opts.kit ?? 'gate') === 'gate'
+          ? `test target: remote Neon branch ${run.branch?.name} (no Docker; the whole suite under neon)\n`
+          : ''
+      return { exitCode: outcome.exitCode ?? 0, log: banner + (outcome.log ?? `${step}: ok\n`) }
     }
   ports.script(sandbox =>
-    sandbox
+    scriptKitGate(sandbox, opts.kit ?? 'gate', opts.gateList)
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
       .onExec(/sha256sum/, { stdout: `migrations=${'a'.repeat(64)}\n` })
       .onExec(WORKSPACE_CHANGED_SCRIPT, { stdout: `${BASE_SHA}\nclean\n` })
-      .onExec(GATE_TEST_SCRIPT_CHECK, { exitCode: opts.kitHasEphemeral === false ? 3 : 0 })
       .onExec(/git -C \/workspace\/app diff --stat/, {
         stdout:
           ' src/ui/pages/Home.tsx | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)\n',
       })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
-      .onBackground(/pnpm lint/, gateScript('lint'))
-      .onBackground(/pnpm typecheck/, gateScript('typecheck'))
-      .onBackground(/pnpm test:ephemeral/, gateScript('test'))
+      // The `pnpm gate <step>` commands, or a legacy kit's three.
+      .onBackground(/pnpm (gate )?lint/, gateScript('lint'))
+      .onBackground(/pnpm (gate )?typecheck/, gateScript('typecheck'))
+      .onBackground(/pnpm (gate test|test:ephemeral)/, gateScript('test'))
   )
   const fixes: string[] = []
   const checkpoints: string[] = []
@@ -269,7 +284,7 @@ const eventsOf = (h: Harness) => listSessionEvents(db, h.row.tenantId, h.row.id,
 const gateEvents = async (h: Harness) =>
   (await eventsOf(h))
     .filter(e => e.type === 'ship.gate')
-    .map(e => e.data as { step?: string; passed: boolean; attempt: number; output?: string })
+    .map(e => sessionShipGateDataSchema.parse(e.data))
 const errorsOf = async (h: Harness) =>
   (await eventsOf(h))
     .filter(e => e.type === 'error')
@@ -309,6 +324,7 @@ describe('the ship gate: green', () => {
       'inspect#1',
       'ship.claim#1',
       'ship.save#1',
+      'ship.kit#1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
@@ -320,14 +336,37 @@ describe('the ship gate: green', () => {
       'cleanup',
     ])
 
-    // The gate: three commands Launch ran itself, one event each, all green — and no model call
-    // to judge them: no fix turn, no `claude` process, and exactly one summary call.
+    // The kit: probed once, and asked for its own step list.
+    expect(h.sandbox().commands.filter(c => c === GATE_LIST_COMMAND)).toHaveLength(1)
+    // The gate: the kit's `pnpm gate` steps minus build, which Launch ran itself, one event each,
+    // all green — and no model call to judge them: no fix turn, no `claude` process, and exactly
+    // one summary call.
     expect(h.runs.map(r => r.step)).toEqual(['lint', 'typecheck', 'test'])
+    expect(
+      h
+        .sandbox()
+        .backgroundRuns.filter(r => r.name.startsWith('gate-'))
+        // The runner script wraps the real command.
+        .map(r => /pnpm gate [a-z]+/.exec(r.command)?.[0])
+    ).toEqual(['pnpm gate lint', 'pnpm gate typecheck', 'pnpm gate test'])
+    const name = gateBranchName(h.row.shortId, 1)
     expect(await gateEvents(h)).toEqual([
-      expect.objectContaining({ step: 'lint', passed: true, attempt: 1, command: 'pnpm lint' }),
-      expect.objectContaining({ step: 'typecheck', passed: true, attempt: 1 }),
-      expect.objectContaining({ step: 'test', passed: true, attempt: 1 }),
+      expect.objectContaining({
+        step: 'lint',
+        passed: true,
+        attempt: 1,
+        command: 'pnpm gate lint',
+      }),
+      expect.objectContaining({ step: 'typecheck', passed: true, command: 'pnpm gate typecheck' }),
+      // The test row carries the target line the kit's `pnpm test` printed first.
+      expect.objectContaining({
+        step: 'test',
+        passed: true,
+        command: 'pnpm gate test',
+        target: `test target: remote Neon branch ${name} (no Docker; the whole suite under neon)`,
+      }),
     ])
+    expect((await gateEvents(h))[0]).not.toHaveProperty('target')
     expect(h.fixes).toEqual([])
     expect(h.sandbox().processes.some(p => p.command.includes('claude'))).toBe(false)
     expect(h.summary.calls).toHaveLength(1)
@@ -351,7 +390,6 @@ describe('the ship gate: green', () => {
     const lint = h.runs.find(r => r.step === 'lint')
     const test = h.runs.find(r => r.step === 'test')
     expect(lint?.env).toEqual(base)
-    const name = gateBranchName(row.shortId, 1)
     expect(test?.branch?.name).toBe(name)
     expect(test?.branch?.parentId).toBe((row.db as { branchId?: string } | null)?.branchId)
     const endpoint = test?.branch?.host.split('.')[0]
@@ -386,7 +424,7 @@ describe('the ship gate: green', () => {
     const pr = h.cloud.github.pulls.find(p => p.head === sessionBranchName(row.shortId))
     expect(pr).toMatchObject({ title: 'Greet people on the home page', base: 'main' })
     expect(pr?.body).toContain('Adds a bold greeting.')
-    expect(pr?.body).toContain('`pnpm test:ephemeral`')
+    expect(pr?.body).toContain('`pnpm gate lint`, `pnpm gate typecheck`, `pnpm gate test`')
     expect(row.status).toBe('shipped')
     expect(row.prNumber).toBe(pr?.number)
     // Saved before the gate and before the PR; the summary billed to the session.
@@ -427,6 +465,7 @@ describe('the ship gate: red', () => {
     expect(run.names.slice(BOOT.length + 3)).toEqual([
       'ship.claim#1',
       'ship.save#1',
+      'ship.kit#1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
@@ -446,7 +485,7 @@ describe('the ship gate: red', () => {
     // One focused turn: the failing command, the tail — with the credential scrubbed out.
     expect(h.fixes).toHaveLength(1)
     const [message] = h.fixes
-    expect(message).toContain('`pnpm test:ephemeral`')
+    expect(message).toContain('`pnpm gate test`')
     expect(message).toContain('attempt 1 of 3')
     expect(message).toContain('expected 2 to be 3')
     expect(message).toContain('<database url>')
@@ -482,6 +521,7 @@ describe('the ship gate: red', () => {
     expect(run.names.slice(BOOT.length + 3)).toEqual([
       'ship.claim#1',
       'ship.save#1',
+      'ship.kit#1',
       'ship.gate#1.1.lint',
       'ship.fix#1.1',
       'ship.gate#1.2.lint',
@@ -518,28 +558,73 @@ describe('the ship gate: red', () => {
     expect(row.prNumber).toBeNull()
     expect(row.status).toBe('ended')
   })
+})
 
-  it('a kit without test:ephemeral: a red test row that says why, no fix turn, no branch', async () => {
-    const h = await harness({ kitHasEphemeral: false })
+describe('the ship gate: which kit', () => {
+  /** The round stops at `ship.kit`: nothing ran, no fix turn, no branch, and it says why. */
+  async function expectRefused(h: Harness, output: unknown, command: string) {
     const run = await drive(h)
-    expect(run.names.slice(BOOT.length + 3, BOOT.length + 11)).toEqual([
+    expect(run.names.slice(BOOT.length + 3, BOOT.length + 8)).toEqual([
       'ship.claim#1',
       'ship.save#1',
-      'ship.gate#1.1.lint',
-      'ship.gate#1.1.typecheck',
-      'ship.db#1.1',
-      'ship.db-clean#1.1',
+      'ship.kit#1',
       'ship.settle#1',
       'inspect#2',
     ])
+    expect(h.runs).toEqual([])
     expect(h.fixes).toEqual([])
-    expect((await gateEvents(h)).at(-1)).toMatchObject({
-      step: 'test',
-      passed: false,
-      output: GATE_KIT_TOO_OLD_MESSAGE,
-    })
+    expect(await gateEvents(h)).toEqual([
+      expect.objectContaining({ step: 'test', passed: false, attempt: 1, command, output }),
+    ])
     expect(await errorsOf(h)).toContainEqual(expect.stringContaining('cannot run on this app'))
+    expect(
+      h.cloud
+        .callsTo('neon')
+        .some(c => c.method === 'POST' && JSON.stringify(c.body).includes('"gate-'))
+    ).toBe(false)
+    expect(h.cloud.github.pulls).toHaveLength(0)
+  }
+
+  it('a legacy kit (test:ephemeral, 0.15.7 up to 0.16.0) ships through its three commands', async () => {
+    const h = await harness({ kit: 'legacy' })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    // Not asked for a list it does not have.
+    expect(h.sandbox().commands).not.toContain(GATE_LIST_COMMAND)
+    expect((await gateEvents(h)).map(g => g.command)).toEqual([
+      'pnpm lint',
+      'pnpm typecheck',
+      'pnpm test:ephemeral',
+    ])
+    // The same three-variable database contract, and no target line (the legacy script prints none).
+    const test = h.runs.find(r => r.step === 'test')
+    expect(test?.env).toHaveProperty('TEST_DATABASE_BRANCH', gateBranchName(h.row.shortId, 1))
+    expect((await gateEvents(h)).at(-1)).not.toHaveProperty('target')
     expect(gateBranchesLeft(h)).toEqual([])
+    expect(h.cloud.github.pulls.at(-1)?.body).toContain(
+      '`pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`'
+    )
+  })
+
+  it('a kit with neither (before 0.15.7): the upgrade message, and nothing runs', async () => {
+    const h = await harness({ kit: 'none' })
+    await expectRefused(h, GATE_KIT_TOO_OLD_MESSAGE, 'pnpm gate test')
+  })
+
+  it('a kit list with a step Launch does not know: refused by name, never skipped', async () => {
+    const list = JSON.parse(KIT_GATE_LIST_JSON) as { schema: number; steps: unknown[] }
+    list.steps.push({ id: 'smoke', command: 'playwright test', database: true })
+    const h = await harness({ gateList: JSON.stringify(list) })
+    await expectRefused(
+      h,
+      expect.stringMatching(/`smoke`.*same checks as the app/s),
+      GATE_LIST_COMMAND
+    )
+  })
+
+  it('a gate that prints no list (or a schema Launch cannot read) is refused', async () => {
+    const h = await harness({ gateList: JSON.stringify({ schema: 2, steps: [] }) })
+    await expectRefused(h, GATE_LIST_UNREADABLE_MESSAGE, GATE_LIST_COMMAND)
   })
 })
 
@@ -558,6 +643,7 @@ describe('the ship gate: stopped', () => {
     expect(run.names.slice(BOOT.length + 3)).toEqual([
       'ship.claim#1',
       'ship.save#1',
+      'ship.kit#1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
@@ -590,9 +676,10 @@ describe('the ship gate: stopped', () => {
     })
     const run = await drive(h)
     const after = run.names.slice(BOOT.length + 3)
-    expect(after.slice(0, 10)).toEqual([
+    expect(after.slice(0, 11)).toEqual([
       'ship.claim#1',
       'ship.save#1',
+      'ship.kit#1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',

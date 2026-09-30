@@ -28,7 +28,8 @@
  *  5. `node scripts/rename.mjs <slug> "<Display>" --domain <domain> --force --skip-install`, then
  *     `pnpm install --no-frozen-lockfile` and `pnpm lint:fix` here: the rename's own install is frozen
  *     on a runner (`CI=true`) and fails on the workspace names it just changed.
- *  6. Install the default plugins exactly as the kit's `gate.yml` does (`default-plugins.mjs
+ *  6. Install the default plugins exactly as the kit's own CI does (`gate.yml` before 0.16.0,
+ *     `kit.yml` since — both kit-only, never in a copy) (`default-plugins.mjs
  *     --tsv` → `pnpm plugin add … --apply --allow-dirty` → `pnpm db:generate --name
  *     plugin-<id>-<version>`), then write their declarations (crons, `run_worker_first` prefixes,
  *     bindings, vars) into BOTH tomls with the kit's own `patch-toml` / `plugin-resources` — what
@@ -37,12 +38,16 @@
  *     comment-aware append, because the kit's (0.15) counts a value quoted in a comment as present.
  *     Then `docs/plugin-api.md` regenerated and `pnpm install --no-frozen-lockfile` so the lockfile matches.
  *  7. Delete the kit-only workflows (`notify-plugins.yml`, `plugin-ci.yml` and the config test
- *     that reads it), `.launch/` and the scaffold workflow itself, and apply the exact edits to
+ *     that reads it — a no-op from kit 0.16.0, whose rename strips them and `kit.yml` as
+ *     `kitOnly`, and tolerant of a file an older pin never had), `.launch/` and the scaffold
+ *     workflow itself, and apply the exact edits to
  *     kit 0.15 tests a renamed, provisioned copy fails through no fault of its own
  *     (`kitTestPatches` — an edit whose anchor is gone is skipped with a warning).
  *  8. Commit "Start from Rocketflare <tag>" (a commit pin: "… @<short sha>") as Launch (before
  *     the gate: kit tests read HEAD~1).
- *  9. The gate: `pnpm lint && pnpm typecheck && pnpm web test:config`; whatever it regenerated
+ *  9. The gate: `pnpm gate lint typecheck` on a kit with `pnpm gate` (0.16.0+; else `pnpm lint &&
+ *     pnpm typecheck`), then `pnpm web test:config` — no tests needing a database, and no build:
+ *     the first PR's CI runs the full `pnpm gate`. Whatever it regenerated
  *     (`worker-configuration.d.ts`) is amended in. Push `main` (never forced).
  * 10. Revoke the token (`DELETE /installation/token`, always — on failure too) and, in a GitHub
  *     job, `POST $LAUNCH_URL/ci/scaffold/done { commit }` with a FRESH OIDC token (a job's token
@@ -162,13 +167,14 @@ const USAGE = [
   '  --token-from-env  read LAUNCH_SCAFFOLD_TOKEN (push token) and LAUNCH_SCAFFOLD_PLAN (JSON)',
   '                    instead of trading the GitHub Actions OIDC token at LAUNCH_URL',
   '  --skip-install    no pnpm: skip the install, the default plugins and the lockfile',
-  '  --skip-gate       skip pnpm lint / typecheck / web test:config',
+  '  --skip-gate       skip the gate (lint, typecheck, web test:config)',
   '  --workdir <dir>   work there (and keep it) instead of a temporary directory',
   '  --result <file>   write { commit, ticketId } there when the push succeeded',
 ].join('\n')
 
+// Kit 0.15 copies carry these; from 0.16.0 the rename strips them (and kit.yml) itself.
 const KIT_ONLY_WORKFLOWS = ['notify-plugins.yml', 'plugin-ci.yml']
-// The test that reads plugin-ci.yml goes with it.
+// The test that reads plugin-ci.yml goes with it (in tests/kit-only/ since 0.15.8).
 const KIT_ONLY_FILES = ['apps/web/tests/config/plugin-ci.test.ts']
 const SCAFFOLD_WORKFLOW = '.github/workflows/launch-scaffold.yml'
 const PRESERVE_ANCHOR = "'github.com/rocketflare-dev/rocketflare',"
@@ -664,7 +670,7 @@ function patchKitTests(appDir, slug) {
   }
 }
 
-/** The kit's gate.yml plugin loop, then the declarations and a lockfile that matches. */
+/** The kit's default-plugins loop (its CI's), then the declarations and a lockfile that matches. */
 function installDefaultPlugins(appDir, slug) {
   const devVars = path.join(appDir, 'apps/web/.dev.vars')
   const createdDevVars = !fs.existsSync(devVars)
@@ -715,6 +721,18 @@ function installDefaultPlugins(appDir, slug) {
   }
 }
 
+/** The copy's root package.json has a gate script: the kit's pnpm gate (0.16.0+). */
+function hasGateScript(appDir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8'))
+    return Boolean(pkg && pkg.scripts && pkg.scripts.gate)
+  } catch {
+    return false
+  }
+}
+
+// From kit 0.16.0 the rename already deletes these (they are kitOnly with kit.yml), so this is a
+// no-op there; force: true keeps it one for any file an older pin never had.
 function removeLaunchOnlyFiles(appDir) {
   for (const f of KIT_ONLY_WORKFLOWS) {
     fs.rmSync(path.join(appDir, '.github/workflows', f), { force: true })
@@ -851,8 +869,12 @@ async function main(argv) {
     if (opts.skipGate) log('--skip-gate: the gate did not run.')
     else {
       step('The gate: lint, typecheck, config tests')
-      run('pnpm', ['lint'], { cwd: appDir })
-      run('pnpm', ['typecheck'], { cwd: appDir })
+      // A kit with pnpm gate (0.16.0+) runs its own steps; an older one, the scripts by name.
+      if (hasGateScript(appDir)) run('pnpm', ['gate', 'lint', 'typecheck'], { cwd: appDir })
+      else {
+        run('pnpm', ['lint'], { cwd: appDir })
+        run('pnpm', ['typecheck'], { cwd: appDir })
+      }
       run('pnpm', ['web', 'test:config'], { cwd: appDir })
       // typecheck regenerates worker-configuration.d.ts: what the gate wrote joins the commit.
       git(appDir, ['add', '-A'])

@@ -64,9 +64,9 @@ import { sessionDbEgressHosts } from './db/neon-session-db'
 import { type SandboxPort, SandboxProcessExitedError, sessionAllowedHosts } from './ports'
 
 /** Bump with `LABEL dev.rocketflare.launch.session-image` in `containers/session/Dockerfile`. */
-export const SESSION_IMAGE_VERSION = 'session-4'
+export const SESSION_IMAGE_VERSION = 'session-5'
 /** The kit tag whose pnpm store the image carries (`ARG KIT_TAG`). */
-export const SESSION_KIT_TAG = '0.15.8'
+export const SESSION_KIT_TAG = '0.16.0'
 
 /** The app's Vite UI — the preview port. */
 export const SESSION_UI_PORT = 5173

@@ -1144,7 +1144,7 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.15.8**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.16.0**: 0.15.0 plus the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
 `docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
@@ -1155,11 +1155,16 @@ the whole config project needed git history its depth-1 checkout lacks), then a 
 works as `migrator` (0.15.5: the kit's db-roles no longer alters CREATEDB/CREATEROLE when they are
 already off, which Postgres 16+ refuses to a role without CREATEDB), then a magic link that
 opening does not spend (0.15.6), then `pnpm test:ephemeral` — the suite on a throwaway Neon gate
-branch, no Docker — which a session's ship gate runs (0.15.7, §18.13; the gate's contract is still
-0.15.7's, `SHIP_GATE_KIT_VERSION`), then the kit's own tests moved to `apps/web/tests/kit-only/`,
-which the rename deletes, so an app's gate no longer fails on the kit's version chain once the app
-releases a version of its own (0.15.8; Launch's scaffold still deletes `plugin-ci.yml` and, if
-present, its old `tests/config` test). A
+branch, no Docker — which a session's ship gate ran (0.15.7, §18.13), then the kit's own tests
+moved to `apps/web/tests/kit-only/`, which the rename deletes, so an app's gate no longer fails on
+the kit's version chain once the app releases a version of its own (0.15.8), then `pnpm gate` —
+lint, typecheck, test, build defined once and a copy's ONE CI job, `pnpm test` the one full run (on
+a Neon gate branch when `TEST_DATABASE_BRANCH` is set), `test:ephemeral` removed, and the kit's own
+workflows (`kit.yml`, `plugin-ci.yml`, `notify-plugins.yml`) `kitOnly`, so the rename strips them
+(0.16.0; the ship gate's contract, `SHIP_GATE_KIT_VERSION`, §18.13). Launch's scaffold still deletes
+`notify-plugins.yml`, `plugin-ci.yml` and the old `tests/config/plugin-ci.test.ts` — a no-op from
+0.16.0, kept for an older pin — and gates with `pnpm gate lint typecheck` + `pnpm web test:config`
+on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). A
 `launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
 
 **Kit version (Setup).** A platform admin sets the pin on the Setup page's Kit version card
@@ -1194,7 +1199,7 @@ rename, install, plugins, gate, push), but that app's own CI then failed on the 
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
-kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.15.8; a config test fails when they drift);
+kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.16.0; a config test fails when they drift);
 an app pinned to another kit still falls back to the registry for what differs. The Kit version card's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
@@ -1532,8 +1537,8 @@ for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a
 pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code and a warm pnpm store for the default pin's kit (0.15.8, `SESSION_KIT_TAG`; image
-`session-4`). The checkout is `/workspace/app` and `$HOME` is
+Claude Code and a warm pnpm store for the default pin's kit (0.16.0, `SESSION_KIT_TAG`; image
+`session-5`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
@@ -1785,30 +1790,53 @@ retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is no
 **Ship** (issue #1; the steps in `ship-steps.ts`, the kit contract in `gate.ts`, the PR in
 `ship.ts`): **Launch runs the gate, never Claude, and only its exit codes decide.** `ship.claim#N`
 (`ready → shipping`) → `ship.save#N` (a checkpoint, so the half hour the gate may take risks
-nothing unsaved) → per attempt `A` (numbered across the session's ships, `SHIP_GATE_ATTEMPTS` = 3
-per ship): `ship.gate#N.A.lint` (`pnpm lint`) → `ship.gate#N.A.typecheck` (`pnpm typecheck`) →
-`ship.db#N.A` → `ship.gate#N.A.test` (`pnpm test:ephemeral`) → `ship.db-clean#N.A`, stopping at the
-first red step. Each command is a polled background command in the checkout
+nothing unsaved) → `ship.kit#N` (which commands the checkout's kit takes, below) → per attempt `A`
+(numbered across the session's ships, `SHIP_GATE_ATTEMPTS` = 3 per ship): `ship.gate#N.A.lint`
+(`pnpm gate lint`) → `ship.gate#N.A.typecheck` (`pnpm gate typecheck`) → `ship.db#N.A` →
+`ship.gate#N.A.test` (`pnpm gate test`) → `ship.db-clean#N.A`, stopping at the first red step.
+**The steps are the kit's `pnpm gate`** (rocketflare-launch#2, kit 0.16.0): the one definition of an
+app's checks, which is also the copy's ONE CI job, run a step at a time — so a green ship gate is
+the same checks the PR's CI runs, minus ONE declared exception, `build` (`SHIP_GATE_SKIPPED`): it
+re-bundles the UI and the Worker — the step most likely to run a container out of memory — and the
+PR's CI runs it minutes later. There is no `generated` step because the kit has none.
+`tests/config/ship-gate-contract.test.ts` proves it from the kit's own list: against a fixture of
+the pinned kit's `pnpm gate --list --json`, Launch's steps plus `SHIP_GATE_SKIPPED` are exactly the
+kit's steps. **Which kit** (`ship.kit#N`, `GATE_KIT_PROBE`): a root `gate` script means the kit
+is asked for `pnpm gate --list --json` (schema 1, `{ schema, steps: [{ id, command, database }] }`,
+the kit's `packages/shared/src/gate.ts` mirrored as `kitGateListSchema` — Launch cannot import the
+kit; an added field or step is not a schema change, so extra fields are dropped) and the plan is
+Launch's steps in the LISTED order; a list that lacks `lint`, `typecheck` or `test`, or names a
+step Launch neither runs nor skips, is REFUSED with a sentence, never silently skipped — running
+less than the app's CI and calling it green is what the gate is for. Only `test:ephemeral` (kit
+0.15.7 up to 0.16.0, whose copies keep the script in their own `package.json`) means the legacy
+three: `pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`. Neither means the kit is too old. A
+refusal or a too-old kit is a red `test` row saying why (on the round's first attempt), no fix
+turn, and no gate branch. The PR body names the commands the green attempt actually ran. Each command is a polled background command in the checkout
 (`runInBackground`, `gate-<step>` files) with a hard deadline (5 / 10 / 25 min; its process group
 killed past it — under `allowlist` a vitest run can hang on exit behind the egress interceptor's
 WebSocket bug), a Workflow step with one retry that RE-ATTACHES to the running command, and one
-`ship.gate { step, passed, attempt, command, durationMs, output }` event whose output is a
-redacted tail (`gateOutputTail`: the URL and its password, anything shaped like a connection
-string or a key removed). NOT `pnpm build`: the kit's `build` re-runs typecheck, then builds the UI
-and the Worker — the step most likely to run a container out of memory — and the PR's CI runs the
-kit's whole gate, build included, minutes later. **The test step's database** is a throwaway Neon
+`ship.gate { step, passed, attempt, command, durationMs, output, target? }` event whose output is
+a redacted tail (`gateOutputTail`: the URL and its password, anything shaped like a connection
+string or a key removed), and — on the test step — `target`, the line the kit's `pnpm test` prints
+first (`test target: remote Neon branch gate-… (no Docker; the whole suite under neon)`, redacted
+the same way), which the ship panel shows under the Tests row. **The test step's database** is a throwaway Neon
 branch per attempt, `gate-<short>-<A>`, a CHILD of the session's branch (its schema, its roles:
 `session_owner` owns `session_app`'s tables and holds ADMIN on `rocketflare_app`) with its own
 compute, made by `ship.db` (`createGateBranch`, waiting for `create_branch` only; it first deletes
-any gate branch an earlier attempt of the session left). The command gets the kit 0.15.7 contract
-exactly — `DATABASE_URL` (`session_owner` on the gate branch, direct host, password reset when the
+any gate branch an earlier attempt of the session left). The command gets the kit's contract
+(0.15.7's, unchanged in 0.16.0, where `TEST_DATABASE_BRANCH` is also what tells `pnpm test` it is on
+a remote target) exactly — `DATABASE_URL` (`session_owner` on the gate branch, direct host, password reset when the
 run STARTS — a lazy env, so a retried step that re-attaches never resets it under the suite),
 `TEST_DATABASE_BRANCH`, `TEST_DATABASE_ENDPOINT` (the `ep-…` id in that URL) — and no
 `NEON_LOCAL_PROXY`: a session's database is always a real Neon branch reached directly, on a laptop
 too, so the gate's is as well (there is no local-Docker variant to fall back to). The allow-list
 gains exactly the branch's direct and `-pooler` hosts and its region's SQL host for the step (a
-no-op under `SESSION_EGRESS=open`). A kit without `test:ephemeral` (before 0.15.7) is a red `test`
-row saying so, and no fix turn. **Red, with attempts left** → `ship.fix#N.A`: ONE turn, the
+no-op under `SESSION_EGRESS=open`). **The driver differs from the copy's CI by design**: the copy's
+CI runs the suite under `postgres` plus a `neon` conformance pass (the driver seam); the ship gate's
+`pnpm gate test` runs the WHOLE suite under `neon` on a real Neon branch, because a sandbox has 443
+and no Docker. Same steps, different driver — a failure on one and not the other is a seam bug for
+the kit, not something to patch in the app (the kit's time limits scale with the target, ×12 on
+remote Neon, 0.16.0). **Red, with attempts left** → `ship.fix#N.A`: ONE turn, the
 `session-ship-fix` prompt with the failing command and its tail ("fix this; do not run the tests
 or start a database — Launch re-runs the gate"), through the `shipFix` hook (3c's
 `createShipTurnRunner`, metered and cancellable like any turn), and the gate runs again whatever
@@ -1852,13 +1880,17 @@ image; no real PR opened by the App has triggered `ci.yml` yet; rulesets limitin
 to `session/*` are not set up (only the git handler enforces it); a gate that needs more than the
 sandbox has (a service, a secret) cannot pass; after shipping there is no "keep working" in the UI
 — a new session starts from the default branch unless the API is given `baseRef`. The ship gate
-(issue #1) is proven against the FakeSandbox and the FakeCloud's Neon only: `pnpm test:ephemeral`
+(issue #1, #2) is proven against the FakeSandbox and the FakeCloud's Neon only: `pnpm gate test`
 on a REAL Neon gate branch — the kit's test setup as `session_owner` (its `ALTER ROLE` on
 `rocketflare_app`, the grants and the truncate, on a branch of a branch), the connection count against a
-small compute, the kit's 60 s / 120 s limits, how long branch creation takes — has not run; nor has
-a gate run inside a real sandbox (the memory the suite needs beside the dev server, a vitest that
+small compute, the kit's scaled time limits on a fresh 0.16.0 scaffold, how long branch creation
+takes — has not run; nor has `pnpm gate --list --json` been read from a real checkout, nor a gate
+run inside a real sandbox (the memory the suite needs beside the dev server, a vitest that
 hangs on exit under `allowlist` — the deadline kills it, which then reads as red). An app on a kit
-before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so). A `shipping`
+before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so), and a kit whose
+`pnpm gate` gains a step Launch does not know cannot ship until Launch learns it. The session
+image with the 0.16.0 store (`session-5`) is defined, not yet deployed (`wrangler deploy` builds
+it; drain sessions first). A `shipping`
 session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
 The summary's model is not traced (D32).
 

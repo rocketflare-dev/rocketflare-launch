@@ -408,10 +408,10 @@ const fixed = (n: number) => (n > 0 ? ` after ${n} fix turn${n === 1 ? '' : 's'}
 export function shipPrBody(
   summaryBody: string,
   session: Pick<SessionRow, 'shortId'>,
-  opts: { creatorName?: string | null; fixTurns: number }
+  opts: { creatorName?: string | null; fixTurns: number; gate?: readonly string[] }
 ): string {
-  const gate = shipGateCommands()
-    .map(g => `\`${g.command}\``)
+  const gate = (opts.gate ?? shipGateCommands().map(g => g.command))
+    .map(command => `\`${command}\``)
     .join(', ')
   return [
     summaryBody.trim() || 'Changes made in a Launch coding session.',
@@ -429,7 +429,8 @@ export async function openShipPullRequest(
   db: Database,
   deps: OpenShipPullRequestDeps,
   ref: { tenantId: string; sessionId: string },
-  input: ShipSummary & { fixTurns: number }
+  /** `gate`: the commands the green attempt ran (default: the `pnpm gate` steps). */
+  input: ShipSummary & { fixTurns: number; gate?: readonly string[] }
 ): Promise<ShipPrOutcome> {
   const now = deps.now ?? (() => new Date())
   const session = await loadSession(db, ref.tenantId, ref.sessionId)
@@ -460,6 +461,7 @@ export async function openShipPullRequest(
     body: shipPrBody(input.body, session, {
       creatorName: creator?.name ?? null,
       fixTurns: input.fixTurns,
+      ...(input.gate ? { gate: input.gate } : {}),
     }),
   })
   const shipped = await transition(db, session, ['shipping'], {

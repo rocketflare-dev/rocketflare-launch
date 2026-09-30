@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "steps": [
+    {
+      "id": "lint",
+      "command": "biome check . --diagnostic-level=error",
+      "database": false
+    },
+    {
+      "id": "typecheck",
+      "command": "pnpm -r typecheck",
+      "database": false
+    },
+    {
+      "id": "test",
+      "command": "pnpm test",
+      "database": true
+    },
+    {
+      "id": "build",
+      "command": "pnpm -r build",
+      "database": false
+    }
+  ]
+}

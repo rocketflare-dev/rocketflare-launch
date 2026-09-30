@@ -23,7 +23,7 @@
  *                empty — `containerGone`) · turn-settle#N → checkpoint#N if the step itself died
  *              checkpoint#N (the debounce already due)
  *              the ship (issue #1, `services/sessions/ship-steps.ts`): ship.claim#N → ship.save#N →
- *                per attempt A: ship.gate#N.A.lint → ship.gate#N.A.typecheck → ship.db#N.A →
+ *                ship.kit#N (which commands the checkout's kit takes) → per attempt A: ship.gate#N.A.lint → ship.gate#N.A.typecheck → ship.db#N.A →
  *                ship.gate#N.A.test → ship.db-clean#N.A (always, after ship.db) → on red
  *                ship.fix#N.A → … → green: ship.commit#N → ship.summary#N → ship.pr#N → shipped:
  *                leave the loop · otherwise ship.settle#N (back to ready) · a lost container:
@@ -77,7 +77,7 @@ import { loadConfig } from '../../config'
 import { createStepRealtime } from '../services/agents/runtime'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
-import { shipGateCommands } from '../services/sessions/gate'
+import type { ShipGateCommand } from '../services/sessions/gate'
 import { defaultSessionStepHooks, type SessionStepHooks } from '../services/sessions/hooks'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
 import {
@@ -90,6 +90,7 @@ import {
   shipDbStep,
   shipFixStep,
   shipGateStep,
+  shipKitStep,
   shipPrStep,
   shipSettleStep,
   shipSummaryStep,
@@ -497,9 +498,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       saved = save.ok
       const first = claim.firstAttempt
       const last = first + claim.maxAttempts - 1
+      const kit = await run(`ship.kit#${n}`, s => shipKitStep(s, first, bootId), SHIP_STEP)
+      if (!kit.ok && kit.stop === 'container_lost') return { status: 'lost' }
+      if (!kit.ok) reason = kit.stop === 'ended' ? 'ended' : 'unfixable'
+      const commands = kit.ok ? kit.commands : []
       let green: number | null = null
-      for (let attempt = first; attempt <= last; attempt++) {
-        const gate = await this.gate(run, `${n}.${attempt}`, attempt, bootId)
+      for (let attempt = first; kit.ok && attempt <= last; attempt++) {
+        const gate = await this.gate(run, `${n}.${attempt}`, attempt, bootId, commands)
         if (gate.passed) {
           green = attempt
           break
@@ -541,7 +546,12 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           reason = 'not_committed'
         } else {
           const summary = await run(`ship.summary#${n}`, shipSummaryStep, SHIP_STEP)
-          const pr = await run(`ship.pr#${n}`, s => shipPrStep(s, summary, fixTurns), SHIP_STEP)
+          const ran = commands.map(c => c.command)
+          const pr = await run(
+            `ship.pr#${n}`,
+            s => shipPrStep(s, summary, fixTurns, ran),
+            SHIP_STEP
+          )
           if (pr.shipped) return { status: 'shipped' }
           reason = 'not_opened'
         }
@@ -560,28 +570,33 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
   }
 
   /**
-   * One gate attempt: each of the kit's commands in order, stopping at the first red. The test
-   * step's database lives from `ship.db` to `ship.db-clean` — the clean in a `finally`, so a red,
-   * a thrown step, an end or a lost container never leaves the branch behind.
+   * One gate attempt: each of the kit's commands (`ship.kit#N`'s, in its order), stopping at the
+   * first red. The test step's database lives from `ship.db` to `ship.db-clean` — the clean in a
+   * `finally`, so a red, a thrown step, an end or a lost container never leaves the branch behind.
    */
   private async gate(
     run: StepRunner,
     tag: string,
     attempt: number,
-    bootId: string | undefined
+    bootId: string | undefined,
+    commands: readonly ShipGateCommand[]
   ): Promise<GateStepResult> {
-    for (const command of shipGateCommands()) {
+    for (const command of commands) {
       const name = `ship.gate#${tag}.${command.step}`
       const config = gateStepConfig(command.timeoutMs)
       let result: GateStepResult
       if (command.database) {
         try {
-          const db = await run(`ship.db#${tag}`, s => shipDbStep(s, attempt, bootId), BOOT_STEP)
+          const db = await run(
+            `ship.db#${tag}`,
+            s => shipDbStep(s, attempt, bootId, command.command),
+            BOOT_STEP
+          )
           if (!db.ok) return { passed: false, step: command.step, stop: db.stop }
           const branch = db.branch
           result = await run(
             name,
-            s => shipGateStep(s, { step: command.step, attempt, branch }, bootId),
+            s => shipGateStep(s, { step: command.step, attempt, branch, command }, bootId),
             config
           )
         } finally {
@@ -590,7 +605,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       } else {
         result = await run(
           name,
-          s => shipGateStep(s, { step: command.step, attempt }, bootId),
+          s => shipGateStep(s, { step: command.step, attempt, command }, bootId),
           config
         )
       }

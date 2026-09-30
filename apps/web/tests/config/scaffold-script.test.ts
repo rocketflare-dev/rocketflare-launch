@@ -6,8 +6,9 @@
  * and one local HTTP server stands in for Launch (`/ci/scaffold/token|done`), the Actions OIDC
  * token endpoint and GitHub's `DELETE /installation/token`.
  *
- * Every run is `--skip-install --skip-gate` (no pnpm); the real kit 0.15.0 end to end, gate and
- * all, is the real-infrastructure exit's (plan §5.4).
+ * Every run is `--skip-install --skip-gate` (no pnpm) but the gate's own two, which put a `pnpm`
+ * that only records its argv on PATH; the real kit end to end, gate and all, is the
+ * real-infrastructure exit's (plan §5.4).
  */
 import { spawn, spawnSync } from 'node:child_process'
 import {
@@ -123,6 +124,7 @@ let baseUrl: string
 let kitSha: string
 let newerKitSha: string
 let unreleasedKitSha: string
+let gateKitSha: string
 const calls: Recorded[] = []
 let tokenPlan: Record<string, unknown>
 let tokenStatus = 200
@@ -205,6 +207,12 @@ beforeAll(async () => {
   git(kit, 'add', '-A')
   git(kit, 'commit', '--quiet', '-m', 'An unreleased kit fix')
   unreleasedKitSha = git(kit, 'rev-parse', 'HEAD')
+  // A kit with `pnpm gate` (0.16.0's root script), for the gate's two shapes.
+  git(kit, 'checkout', '--quiet', '-b', 'kit-gate', 'main')
+  write(kit, 'package.json', '{ "scripts": { "gate": "node scripts/gate.mjs" } }\n')
+  git(kit, 'add', '-A')
+  git(kit, 'commit', '--quiet', '-m', 'pnpm gate')
+  gateKitSha = git(kit, 'rev-parse', 'HEAD')
   git(kit, 'checkout', '--quiet', 'main')
   mkdirSync(path.join(root, 'server/rocketflare-dev'), { recursive: true })
   git(root, 'clone', '--quiet', '--bare', kit, 'server/rocketflare-dev/rocketflare.git')
@@ -542,6 +550,34 @@ describe('a commit pin: an unreleased kit commit on a branch, no tag', () => {
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain('git fetch failed')
     expect(pushed().head).toBe(initialSha)
+  })
+})
+
+describe('the scaffold’s own gate (--skip-install, a recording pnpm on PATH)', () => {
+  /** Run the scaffold WITH its gate, `pnpm` a stub that records each argv; returns the argvs. */
+  async function gated(over: Record<string, unknown>): Promise<string[]> {
+    const bin = mkdtempSync(path.join(root, 'bin-'))
+    const log = path.join(bin, 'pnpm.log')
+    write(bin, 'pnpm', '#!/bin/sh\necho "$*" >> "$PNPM_LOG"\n')
+    chmodSync(path.join(bin, 'pnpm'), 0o755)
+    const run = await runScript(['--token-from-env', '--skip-install'], {
+      ...envMode(over),
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      PNPM_LOG: log,
+    })
+    expect(run.code, run.stderr).toBe(0)
+    return readFileSync(log, 'utf8').trim().split('\n')
+  }
+
+  it('on a kit with pnpm gate (0.16.0+): the kit’s lint and typecheck steps, then the config tests', async () => {
+    expect(await gated({ tag: null, commit: gateKitSha })).toEqual([
+      'gate lint typecheck',
+      'web test:config',
+    ])
+  })
+
+  it('on an older kit: pnpm lint and pnpm typecheck by name, then the config tests', async () => {
+    expect(await gated({})).toEqual(['lint', 'typecheck', 'web test:config'])
   })
 })
 

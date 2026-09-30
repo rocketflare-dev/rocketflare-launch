@@ -16,6 +16,7 @@ import { and, eq } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
 import { sessionsChecksTask } from '@/api/services/sessions/checks-cron'
 import { appendSessionEvents } from '@/api/services/sessions/event-log'
+import { shipGateCommands } from '@/api/services/sessions/gate'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
 import { LocalRepoHost } from '@/api/services/sessions/repo/local-repo-host'
 import {
@@ -253,9 +254,18 @@ describe('the pull request', () => {
     )
     expect(body).toContain('Adds a greeting.')
     expect(body).toContain('coding session `abcdefgh2345` for Ada')
-    expect(body).toContain('`pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`')
+    // The kit's `pnpm gate` steps (0.16.0+) unless told what ran…
+    expect(body).toContain('`pnpm gate lint`, `pnpm gate typecheck`, `pnpm gate test`')
     expect(body).toContain('after 1 fix turn')
     expect(shipPrBody('', { shortId: 'x' }, { fixTurns: 0 })).not.toContain('fix turn')
+    // …and a legacy kit's commands when those are what the green attempt ran.
+    const legacy = shipPrBody(
+      'x',
+      { shortId: 'x' },
+      { fixTurns: 0, gate: shipGateCommands('legacy').map(c => c.command) }
+    )
+    expect(legacy).toContain('`pnpm lint`, `pnpm typecheck`, `pnpm test:ephemeral`')
+    expect(legacy).not.toContain('pnpm gate')
   })
 
   it('opens the PR from session/<short>, shipped, audited; pending checks then success', async () => {

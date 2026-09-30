@@ -6,7 +6,8 @@
  * verdict, polled while anything is still running.
  *
  * Every fact here is a selector over rows the page already holds (`shipGates`) or the one PR read;
- * nothing is inferred. A gate's output tail sits behind a disclosure: it is the evidence, not the
+ * nothing is inferred. The tests row shows the target line the kit's `pnpm test` printed (kit
+ * 0.16.0: which Neon branch, under which driver), so a reader sees WHERE the tests ran. A gate's output tail sits behind a disclosure: it is the evidence, not the
  * headline.
  *
  * P5 (plan §1.14–§1.15): ship scans the PR head for declared config and reports the shared config
@@ -178,6 +179,11 @@ export function ShipPanel({
                         </span>
                       )}
                     </div>
+                    {gate.target && (
+                      <p className="ml-6 mt-0.5 font-mono text-xs text-muted" data-gate-target>
+                        {gate.target}
+                      </p>
+                    )}
                     {gate.output && (
                       <details className="ml-6 mt-1">
                         <summary className="cursor-pointer select-none text-xs text-muted">
