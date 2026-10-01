@@ -20,6 +20,12 @@
  * and resumes at step 3 rather than bumping twice; the row is `ON CONFLICT (app_id, tag) DO
  * NOTHING`, so a retry after the insert gets the same release back. A version whose tag already
  * exists (someone tagged by hand) is 409 `release_tag_exists`.
+ *
+ * **Who cuts it** (issue #5, plan §1.8 / §1.14): a person (`POST /api/apps/:id/releases`), or a
+ * session's landing after Launch merged its PR (`sessions/land-release.ts`) — then
+ * `created_by_user_id` is null, the actor is SYSTEM and `release.created` carries `{ trigger:
+ * 'session.merge', sessionId }`. Both callers hold the app's release claim (`claim.ts`) around
+ * the call; `createRelease` itself does not take it.
  */
 import {
   bumpVersion,
@@ -29,7 +35,7 @@ import {
   type ReleasePr,
   releaseTagRef,
 } from '@launch/shared/launch-releases'
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { type AppReleaseRow, type AppRow, appReleases, sessions } from '../../../../db/schema'
 import { ApiError, ConflictError, isApiError, NotFoundError } from '../../../utils/core/errors'
@@ -56,9 +62,18 @@ export interface CreateReleaseInput {
   tenantId: string
   app: AppRow
   bump: ReleaseBump
-  userId: string
+  /** Who pressed Release; null when a session's merge cut it (issue #5, plan §1.14). */
+  userId: string | null
   actor: AuditActor
+  /**
+   * Issue #5: what cut it when no person did — a session's landing after its merge. Recorded on
+   * `release.created` as `{ trigger: 'session.merge', sessionId }`.
+   */
+  trigger?: { sessionId: string }
 }
+
+/** `release.created`'s `trigger` for a release a session's merge cut (issue #5, plan §1.14). */
+export const RELEASE_TRIGGER_SESSION_MERGE = 'session.merge'
 
 /** The bump commit's message — also how a resumed Release recognises its own half-done bump. */
 export function bumpCommitMessage(version: string): string {
@@ -338,6 +353,9 @@ export async function createRelease(
         previousTag: inserted.previousTag,
         prs: prs.map(p => p.number),
         bump: input.bump,
+        ...(input.trigger
+          ? { trigger: RELEASE_TRIGGER_SESSION_MERGE, sessionId: input.trigger.sessionId }
+          : {}),
       },
     },
   })
@@ -374,6 +392,30 @@ export async function listReleases(
     .where(and(eq(appReleases.tenantId, input.tenantId), eq(appReleases.appId, input.appId)))
     .orderBy(desc(appReleases.createdAt))
     .limit(100)
+}
+
+/**
+ * The newest release of the app that already lists PR `number` (`app_releases.prs @>
+ * [{"number": n}]`), or null — how a session's landing shares a release another merge (or a person)
+ * cut after its own merge, instead of cutting a second one (issue #5, plan §1.8).
+ */
+export async function releaseListingPr(
+  db: Database,
+  input: { tenantId: string; appId: string; number: number }
+): Promise<AppReleaseRow | null> {
+  const [row] = await db
+    .select()
+    .from(appReleases)
+    .where(
+      and(
+        eq(appReleases.tenantId, input.tenantId),
+        eq(appReleases.appId, input.appId),
+        sql`${appReleases.prs} @> ${JSON.stringify([{ number: input.number }])}::jsonb`
+      )
+    )
+    .orderBy(desc(appReleases.createdAt))
+    .limit(1)
+  return row ?? null
 }
 
 /** One release of the app, by id (or by `tag` when given); 404 `release_not_found`. */

@@ -22,10 +22,8 @@ import {
   hasUnsealedEvents,
   tenantsWithUnsealedEvents,
 } from '@/api/services/launch/audit-chain'
-import { withReleaseClaim } from '@/api/services/launch/releases/claim'
 import { reviewPolicyFor } from '@/api/services/launch/ship-settings'
 import { toSessionDetail } from '@/api/services/sessions/chat'
-import { defaultSessionStepHooks } from '@/api/services/sessions/hooks'
 import {
   landCiStep,
   landLiveStep,
@@ -36,7 +34,6 @@ import {
   nudgeLandingSessions,
   releaseLandingContainer,
 } from '@/api/services/sessions/land'
-import type { landRelease } from '@/api/services/sessions/land-release'
 import {
   type ApprovalRequestRow,
   appReleases,
@@ -415,7 +412,6 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
 
   it('the other S1 stubs fail by name, naming the slice that fills them', async () => {
     const scope = {} as Parameters<typeof landCiStep>[0]
-    const ctx = {} as Parameters<typeof landRelease>[0]
     const cases: [Promise<unknown>, string][] = [
       [landCiStep(scope), 'S2'],
       [landReviewStep(scope), 'S2'],
@@ -425,10 +421,6 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
       [landLiveStep(scope, { url: null, version: '1.0.0' }), 'S2'],
       [landStalledStep(scope, { reason: 'unhealthy', error: 'x' }), 'S2'],
       [nudgeLandingSessions(db, {} as never, {} as never, new Date()), 'S2'],
-      [defaultSessionStepHooks.landRelease(ctx), 'S3'],
-      [defaultSessionStepHooks.landStaging(ctx), 'S3'],
-      [defaultSessionStepHooks.landHealth(ctx), 'S3'],
-      [withReleaseClaim(db, { tenantId: '', appId: '', holder: 'user:x' }, async () => 1), 'S3'],
       [reviewPolicyFor(db, '', { id: '', ownerGroupId: null, shipSettings: null }), 'S4'],
     ]
     for (const [promise, slice] of cases) {

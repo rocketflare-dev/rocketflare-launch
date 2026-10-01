@@ -2039,14 +2039,51 @@ SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to produc
 `last_deploy_version` / `last_deploy_at` / health / URL and the release carrying it, the PRs of
 every release after production's version up to the candidate (the code is cumulative, so an
 intermediate release that never reached production ships too; capped at 50), each with the title
-of the Launch session that wrote it, and the candidate's `deploy.production` request with the people
-it still waits on — named for every member, unlike the approval's own page. It decides nothing:
-Promote is the same route and the same approval.
+of the Launch session that wrote it and (issue #5) the session's stored ship summary
+(`sessions.ship_summary->>'body'`, tenant-first, clipped to `PROMOTION_SUMMARY_MAX` = 600; null for
+a PR no session wrote or a session shipped before summaries were kept), and the candidate's
+`deploy.production` request with the people it still waits on — named for every member, unlike the
+approval's own page. It decides nothing: Promote is the same route and the same approval.
+
+**Release on merge (issue #5, `docs/plans/i5-ship-to-staging.md` §1.8–§1.9, §1.14).** After Launch
+merges a session's PR, the session's Workflow (Phase B, status `shipped`) calls three hooks in
+`services/sessions/land-release.ts`, one idempotent read or action per step, every bound judged
+from timestamps on rows rather than counters in memory:
+- `land.release` cuts — or SHARES — the patch release that carries the merge. A release of the app
+  that already lists the PR (`app_releases.prs @> [{"number": n}]`) is shared; otherwise it takes
+  the app's **release claim** (`apps.release_claim_holder` = `session:<id>` | `user:<id>` +
+  `release_claimed_at`, `UPDATE … WHERE holder IS NULL OR claimed_at < now() - 10 min RETURNING`,
+  released in a `finally` only while still its own — `releases/claim.ts`), re-checks, and calls
+  `createRelease({ bump: 'patch', userId: null, actor: SYSTEM, trigger: { sessionId } })`:
+  `created_by_user_id` null, `release.created` carries `{ trigger: 'session.merge', sessionId }`,
+  `prs[].sessionId` names each PR's session. Claim held elsewhere → wait 20 s, up to 15 minutes
+  from the landing reaching `releasing`. PRs merged close together share one release and one tag;
+  double tags are impossible three ways (the claim, unique `(app_id, tag)`, GitHub's 422). On
+  success it records `releaseId`/`version`/`tag` on `sessions.landing` and moves `releasing →
+  deploying` in one compare-and-set, emitting `ship.released {shared}` only when the CAS won.
+  **`POST /api/apps/:id/releases` takes the same claim** and answers 409 `release_in_progress`
+  rather than waiting in a request.
+- `land.staging` reads the release: `staging_active` or later → health next (`ship.staging
+  {status:'active'}`); `failed` on its staging run → stalled `deploy_failed`; still `tagged` (or
+  a staging run that never went live) 45 minutes after it was cut → stalled `deploy_timeout`;
+  else another 2-minute round.
+- `land.health` probes through `checkAppHealth`: staging `up` on the release's version (or a newer
+  one, which carries the change) → `live` with staging's URL; otherwise a 30-second round, until 10
+  `app_health_checks` rows of staging since it went live on the release (or since the landing
+  reached `deploying`, whichever is later — the `*/5` cron's probes count) → stalled `unhealthy`.
+- Decision §0.1: after the merge nothing reopens. GitHub refusing the bump or the tag (a protected
+  default branch Launch cannot bypass, a hand-made tag) is stalled `release_failed` with nothing
+  recorded; the Workflow writes `live` / `stalled`. `GET …/:rid/chain` also carries the
+  `session.merge` approvals of the release's sessions (by `approval_id`), so the chain reads PR →
+  review → merge → release → staging → production.
 
 **Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
-with no earlier tag lists only its session PRs; branch protection must let the App push the bump
-to the default branch; rate limits on the compare for a large release are untested; a failed
-production run marks the release `failed` but nothing re-dispatches.
+with no earlier tag lists only its session PRs; the bump is a direct push to the default branch,
+so a branch protected by anything the App cannot bypass (classic protection, or a ruleset without
+the Launch App as a bypass actor) refuses it — the Launch ruleset (§18.5) closes that gap for apps
+that carry it, and a session's landing stalls `release_failed` for one that does not; a claim whose
+holder died is only taken over after 10 minutes; rate limits on the compare for a large release
+are untested; a failed production run marks the release `failed` but nothing re-dispatches.
 
 ### 18.18 The audit hash chain, verify and export (P4)
 

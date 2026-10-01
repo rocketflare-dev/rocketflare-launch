@@ -11,12 +11,16 @@
  * - once promoted, the pending `deploy.production` request and who it waits on — named for any
  *   member, never the promoter or the PR's author;
  * - after production runs a release, the next candidate's changes stop at production's version;
+ * - each change's summary (issue #5): the session's stored ship summary body, clipped to
+ *   `PROMOTION_SUMMARY_MAX`; null for a PR no session wrote, and never another organisation's;
  * - 401 without a session, 404 for another organisation's app (tenant isolation).
  */
-import { appPromotionSchema } from '@launch/shared/launch-promotion'
+import { appPromotionSchema, PROMOTION_SUMMARY_MAX } from '@launch/shared/launch-promotion'
 import { promoteReleaseResponseSchema } from '@launch/shared/launch-releases'
+import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { decide } from '@/api/services/approvals/engine'
+import { appReleases, sessions } from '@/db/schema'
 import { actorOf, approvalDeps, viewerOf } from '../helpers/approvals'
 import {
   createTestSession,
@@ -32,6 +36,7 @@ import { forgetApps } from '../helpers/launch-apps'
 import { addTestAppOwner } from '../helpers/oidc'
 import {
   deployJob,
+  openPullOnBranch,
   type ReleasableApp,
   seedReleasableApp,
   serveAppHosts,
@@ -134,6 +139,24 @@ async function ship(app: ReleasableApp, environment: 'staging' | 'production', r
   }
 }
 
+/** `sessions.ship_summary` as S2's `ship.pr` stores it. */
+async function storeSummary(tenantId: string, sessionId: string, body: string) {
+  await db
+    .update(sessions)
+    .set({
+      shipSummary: {
+        title: 'A change',
+        body,
+        source: 'model',
+        diffStat: ' 1 file changed',
+        prNumber: 1,
+        gateSha: null,
+        at: new Date().toISOString(),
+      },
+    })
+    .where(and(eq(sessions.tenantId, tenantId), eq(sessions.id, sessionId)))
+}
+
 async function promotion(app: ReleasableApp, who: Person | null) {
   return request(`/api/apps/${app.app.id}/promotion`, { headers: who?.cookie ?? {} }, { env })
 }
@@ -218,6 +241,62 @@ describe('GET /api/apps/:id/promotion', () => {
       expect.objectContaining({ number: next.number, sessionTitle: 'Export to CSV' }),
     ])
     expect(nextUp.approval).toBeNull()
+  })
+
+  it('carries each session’s ship summary, clipped; null without a session or across tenants', async () => {
+    const { tenantId, alice, carol, app, shipped } = await fixture()
+    const body = 'Adds the orders page. '.repeat(40).trim()
+    expect(body.length).toBeGreaterThan(PROMOTION_SUMMARY_MAX)
+    await storeSummary(tenantId, shipped.session.id, body)
+
+    const cut = await cutRelease(app, alice)
+    const first = await read(app, carol)
+    const ours = first.changes.find(c => c.number === shipped.number)
+    expect(ours?.summary?.length).toBeLessThanOrEqual(PROMOTION_SUMMARY_MAX)
+    expect(ours?.summary?.length).toBeGreaterThan(PROMOTION_SUMMARY_MAX - 5)
+    expect(ours?.summary?.endsWith('…')).toBe(true)
+    expect(body.startsWith((ours?.summary ?? '').slice(0, -1))).toBe(true)
+
+    // The next release: a PR a person merged in GitHub (no session, no summary) and a session's
+    // short summary, trimmed.
+    const byHand = openPullOnBranch(cloud, app, {
+      branch: 'typo',
+      title: 'Fix a typo',
+      author: 'dora',
+    })
+    cloud.github.merge(app.owner, app.repo, byHand.number)
+    const next = await shipSessionPr(db, cloud, app, { tenantId, userId: alice.id, title: 'CSV' })
+    cloud.github.merge(app.owner, app.repo, next.number)
+    await storeSummary(tenantId, next.session.id, '  Exports orders to CSV.  ')
+    await cutRelease(app, alice)
+    const second = await read(app, carol)
+    expect(second.changes.find(c => c.number === byHand.number)).toMatchObject({
+      sessionId: null,
+      summary: null,
+    })
+    expect(second.changes.find(c => c.number === next.number)?.summary).toBe(
+      'Exports orders to CSV.'
+    )
+
+    // A release row naming ANOTHER organisation's session never reads its title or summary.
+    const other = await fixture()
+    await storeSummary(other.tenantId, other.shipped.session.id, 'Another organisation’s secret')
+    const [release] = await db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.tenantId, tenantId), eq(appReleases.id, cut.id)))
+    await db
+      .update(appReleases)
+      .set({
+        prs: (release?.prs ?? []).map(p => ({ ...p, sessionId: other.shipped.session.id })),
+      })
+      .where(and(eq(appReleases.tenantId, tenantId), eq(appReleases.id, cut.id)))
+    const forged = await read(app, carol)
+    const foreign = forged.changes.filter(c => c.sessionId === other.shipped.session.id)
+    expect(foreign.length).toBeGreaterThan(0)
+    for (const change of foreign)
+      expect(change).toMatchObject({ sessionTitle: null, summary: null })
+    expect(JSON.stringify(forged)).not.toContain('secret')
   })
 
   it('is 401 without a session and 404 for another organisation’s app', async () => {

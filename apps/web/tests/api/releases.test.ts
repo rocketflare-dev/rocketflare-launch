@@ -10,14 +10,20 @@
  * session's PR matched to its session, a person's PR found by the compare, an open PR left out),
  * `pr.merged` recorded once whichever path saw it first, idempotency by the tag (a Release that
  * died before tagging resumes rather than bumping twice), 409 for a tag that already exists, and
- * the route's 401 / 403 / 404 / tenant isolation.
+ * the route's 401 / 403 / 404 / tenant isolation; and (issue #5) the chain reading the
+ * `session.merge` reviews of the release's sessions.
  */
-import { releaseListResponseSchema, releaseSchema } from '@launch/shared/launch-releases'
+import {
+  releaseChainSchema,
+  releaseListResponseSchema,
+  releaseSchema,
+} from '@launch/shared/launch-releases'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordAudit, SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { followMergedPullRequests, githubPullReader } from '@/api/services/sessions/checks-cron'
 import { loadConfig } from '@/config'
-import { auditEvents } from '@/db/schema'
+import { approvalRequests, auditEvents } from '@/db/schema'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -329,5 +335,74 @@ describe('sessions.checks follows shipped PRs to their merge', () => {
     await release(app, alice)
     const again = (await actions(tenantId, app.app.id)).filter(a => a.action === 'pr.merged')
     expect(again).toHaveLength(1)
+  })
+})
+
+describe('GET /api/apps/:id/releases/:rid/chain', () => {
+  /** A `session.merge` request on `sessionId` with its `approval.requested` row (as S2 opens it). */
+  async function mergeReview(tenantId: string, appId: string, sessionId: string) {
+    const [row] = await db
+      .insert(approvalRequests)
+      .values({
+        tenantId,
+        kind: 'session.merge',
+        appId,
+        subjectType: 'session',
+        subjectId: sessionId,
+        status: 'approved',
+        context: { kind: 'session.merge' } as never,
+        policy: {} as never,
+      })
+      .returning()
+    if (!row) throw new Error('no approval row')
+    await recordAudit(db, {
+      ...SYSTEM_ACTOR,
+      tenantId,
+      action: 'approval.requested',
+      targetType: 'approval_request',
+      targetId: row.id,
+      appId,
+      approvalId: row.id,
+      summary: { after: { kind: 'session.merge', subjectId: sessionId } },
+    })
+    return row.id
+  }
+
+  it('includes the session.merge reviews of the release’s sessions, and no other session’s', async () => {
+    const { tenantId, alice, app } = await fixture()
+    const shipped = await shipSessionPr(db, cloud, app, {
+      tenantId,
+      userId: alice.id,
+      title: 'Reviewed in Launch',
+    })
+    cloud.github.merge(app.owner, app.repo, shipped.number)
+    const reviewed = await mergeReview(tenantId, app.app.id, shipped.session.id)
+    // Another session of the app, not in this release (its PR is still open).
+    const pending = await shipSessionPr(db, cloud, app, {
+      tenantId,
+      userId: alice.id,
+      title: 'Not released yet',
+    })
+    const elsewhere = await mergeReview(tenantId, app.app.id, pending.session.id)
+
+    const created = releaseSchema.parse(await (await release(app, alice)).json())
+    const res = await request(
+      `/api/apps/${app.app.id}/releases/${created.id}/chain`,
+      { headers: alice.cookie },
+      { env }
+    )
+    expect(res.status, await res.clone().text()).toBe(200)
+    const chain = releaseChainSchema.parse(await res.json())
+    const approvals = chain.events.filter(e => e.action === 'approval.requested')
+    expect(approvals.map(e => e.approvalId)).toEqual([reviewed])
+    expect(chain.events.map(e => e.approvalId)).not.toContain(elsewhere)
+    expect(chain.events.map(e => e.action)).toEqual(
+      expect.arrayContaining([
+        'session.shipped',
+        'approval.requested',
+        'pr.merged',
+        'release.created',
+      ])
+    )
   })
 })

@@ -8,7 +8,9 @@
  * - both runs' `deploy.*` — every ticket whose `release_id` is this release, plus the two the
  *   release names (`staging_ticket_id`, `production_ticket_id`);
  * - every `deploy.production` approval of it (`approval.*`, by `audit_events.approval_id`, indexed
- *   `audit_events_tenant_approval_idx`) — the Promote requests and a job-originated ticket's.
+ *   `audit_events_tenant_approval_idx`) — the Promote requests and a job-originated ticket's;
+ * - every `session.merge` approval of the PRs' sessions (issue #5) — the review in Launch that let
+ *   each merge happen, by the same `approval_id` link.
  *
  * All linked by ids on the rows, never inferred from timestamps. Ordered by `(at, id)`.
  */
@@ -53,6 +55,23 @@ export async function releaseChain(
   for (const t of tickets) if (t.approvalId) approvalIds.add(t.approvalId)
 
   const sessionIds = release.prs.map(p => p.sessionId).filter((id): id is string => Boolean(id))
+  if (sessionIds.length > 0) {
+    // Issue #5 (plan §1.14): the reviews that let the PRs' sessions merge — every `session.merge`
+    // request on those sessions, whatever it came to (an earlier one rejected, a later approved).
+    const merges = await db
+      .select({ id: approvalRequests.id })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenantId),
+          eq(approvalRequests.appId, appId),
+          eq(approvalRequests.kind, 'session.merge'),
+          eq(approvalRequests.subjectType, 'session'),
+          inArray(approvalRequests.subjectId, sessionIds)
+        )
+      )
+    for (const m of merges) approvalIds.add(m.id)
+  }
   const prNumbers = release.prs.map(p => String(p.number))
 
   const links: SQL[] = [

@@ -9,6 +9,9 @@
  *   candidate (newest release first) — the code is cumulative, so an intermediate release that never
  *   reached production still ships with this one. When the candidate is already in production,
  *   they are what it brought over the production release before it.
+ * - Each change carries its session's title and, since issue #5, the session's stored ship summary
+ *   body (`sessions.ship_summary->>'body'`, plan §1.15) clipped to `PROMOTION_SUMMARY_MAX` — null
+ *   for a PR no Launch session wrote, or a session shipped before summaries were kept.
  * - The APPROVAL is the candidate's `deploy.production` request with the people it still waits on
  *   (eligible under its snapshotted policy, not excluded, not yet decided) — the same list the
  *   approval's own page names, but readable by every member here, because "who must approve" is
@@ -21,6 +24,7 @@ import type { AppPromotion, PromotionEnvironment } from '@launch/shared/launch-p
 import {
   compareReleaseVersions as compareVersions,
   PROMOTION_MAX_CHANGES,
+  PROMOTION_SUMMARY_MAX,
 } from '@launch/shared/launch-promotion'
 import { type Release, releaseSchema } from '@launch/shared/launch-releases'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
@@ -83,17 +87,38 @@ function releasesBetween(
     .sort((a, b) => compareVersions(b.version, a.version))
 }
 
-async function sessionTitles(
+/** Each session's title and stored ship summary body (issue #5, plan §1.15), tenant-first. */
+async function sessionsOf(
   db: Database,
   tenantId: string,
+  appId: string,
   ids: readonly string[]
-): Promise<Map<string, string | null>> {
+): Promise<Map<string, { title: string | null; summary: string | null }>> {
   if (ids.length === 0) return new Map()
   const rows = await db
-    .select({ id: sessions.id, title: sessions.title })
+    .select({
+      id: sessions.id,
+      title: sessions.title,
+      summary: sql<string | null>`${sessions.shipSummary}->>'body'`,
+    })
     .from(sessions)
-    .where(and(eq(sessions.tenantId, tenantId), inArray(sessions.id, [...ids])))
-  return new Map(rows.map(r => [r.id, r.title]))
+    .where(
+      and(
+        eq(sessions.tenantId, tenantId),
+        eq(sessions.appId, appId),
+        inArray(sessions.id, [...ids])
+      )
+    )
+  return new Map(rows.map(r => [r.id, { title: r.title, summary: clipSummary(r.summary) }]))
+}
+
+/** A stored summary as a change row carries it: trimmed, empty → null, at most the cap. */
+function clipSummary(body: string | null): string | null {
+  const text = body?.trim()
+  if (!text) return null
+  return text.length > PROMOTION_SUMMARY_MAX
+    ? `${text.slice(0, PROMOTION_SUMMARY_MAX - 1).trimEnd()}…`
+    : text
 }
 
 async function approvalOf(
@@ -168,9 +193,10 @@ export async function appPromotion(
   const shipped = releasesBetween(releases, candidateRow, production?.version ?? null)
   const prs = shipped.flatMap(r => r.prs.map(pr => ({ version: r.version, pr })))
   const kept = prs.slice(0, PROMOTION_MAX_CHANGES)
-  const titles = await sessionTitles(
+  const bySession = await sessionsOf(
     db,
     tenantId,
+    appId,
     kept.map(c => c.pr.sessionId).filter((id): id is string => Boolean(id))
   )
   const candidate: Release = releaseSchema.parse(candidateRow)
@@ -184,9 +210,8 @@ export async function appPromotion(
       title: pr.title,
       url: pr.url ?? null,
       sessionId: pr.sessionId ?? null,
-      sessionTitle: pr.sessionId ? (titles.get(pr.sessionId) ?? null) : null,
-      // Issue #5 S3 fills this from `sessions.ship_summary` (plan §1.15); null until then.
-      summary: null,
+      sessionTitle: pr.sessionId ? (bySession.get(pr.sessionId)?.title ?? null) : null,
+      summary: pr.sessionId ? (bySession.get(pr.sessionId)?.summary ?? null) : null,
     })),
     changesTruncated: prs.length > kept.length,
     approval: candidate.approvalId

@@ -5,8 +5,10 @@
  *
  * - `GET /:id/releases` → `releaseListResponseSchema`, newest first (members read, `read App`);
  * - `POST /:id/releases` `createReleaseSchema` → 201 `releaseSchema` (the app's owners and
- *   admins, `mayDeployApp`): the version bump, the tag, the PR list, the audits. 409
- *   `release_version_unreadable` / `release_tag_exists`, 502 `release_github_failed`;
+ *   admins, `mayDeployApp`): the version bump, the tag, the PR list, the audits, under the app's
+ *   release claim (`releases/claim.ts`, issue #5). 409 `release_in_progress` (a session's landing
+ *   or another person holds the claim) / `release_version_unreadable` / `release_tag_exists`, 502
+ *   `release_github_failed`;
  * - `GET /:id/releases/:rid` → `releaseSchema`;
  * - `POST /:id/releases/:rid/promote` `promoteReleaseSchema` → 202 `promoteReleaseResponseSchema`
  *   (owners and admins): opens the `deploy.production` approval. 409 `release_not_on_staging` /
@@ -25,6 +27,7 @@ import {
   createReleaseSchema,
   type PromoteReleaseResponse,
   promoteReleaseSchema,
+  RELEASE_ERROR_CODES,
   type Release,
   type ReleaseChain,
   type ReleaseListResponse,
@@ -35,9 +38,11 @@ import { guardPermission } from '../middleware/permissions'
 import { getAppRow } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
 import { releaseChain } from '../services/launch/releases/chain'
+import { withReleaseClaim } from '../services/launch/releases/claim'
 import { promoteRelease } from '../services/launch/releases/promote'
 import { appPromotion } from '../services/launch/releases/promotion'
 import { createRelease, getRelease, listReleases } from '../services/launch/releases/release'
+import { ConflictError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
@@ -68,14 +73,28 @@ appReleasesRouter.get('/:id/releases', async c => {
 
 appReleasesRouter.post('/:id/releases', validate('json', createReleaseSchema), async c => {
   const ctx = await deployableApp(c)
-  const row = await createRelease(approvalDepsOf(c), {
-    tenantId: ctx.tenantId,
-    app: ctx.app,
-    bump: c.req.valid('json').bump,
-    userId: ctx.user.id,
-    actor: auditActor(c),
-  })
-  return c.json(toRelease(row), 201)
+  const deps = approvalDepsOf(c)
+  // The app's release claim (issue #5, plan §1.8): a session's landing — or another person — may
+  // be cutting one right now. Never wait in a request: answer 409 and let the person retry.
+  const outcome = await withReleaseClaim(
+    deps.db,
+    { tenantId: ctx.tenantId, appId: ctx.app.id, holder: `user:${ctx.user.id}` },
+    () =>
+      createRelease(deps, {
+        tenantId: ctx.tenantId,
+        app: ctx.app,
+        bump: c.req.valid('json').bump,
+        userId: ctx.user.id,
+        actor: auditActor(c),
+      })
+  )
+  if (!outcome.claimed) {
+    throw new ConflictError(
+      'Another release of this app is being cut right now; try again in a minute',
+      RELEASE_ERROR_CODES.inProgress
+    )
+  }
+  return c.json(toRelease(outcome.value), 201)
 })
 
 appReleasesRouter.get('/:id/releases/:rid', async c => {
