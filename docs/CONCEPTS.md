@@ -1662,7 +1662,12 @@ A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `ma
 checks the budget, claims `ready → working`, writes `user.message` + `turn.start`, and runs
 `claude -p … --resume <id> --output-format stream-json` in the sandbox; `claude-stream.ts` maps
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
-events. `cancel_requested_at` is polled every 2 s and kills the process (a Stop whose turn step is
+events. Every turn, resumed ones included (the flag does not survive `--resume`), carries
+`--append-system-prompt` with the `session-system-note` prompt filled in (`sessionSystemNote`;
+editable in Settings like any registry prompt): where it is, what Launch does for it, and that it
+never runs the full gate — only targeted lint and tests for the files it changes, since Launch's
+ship gate and the PR's CI run the whole gate (the ship fix turn's `session-ship-fix` says the same).
+Before 2026-10 the prompt was registered but never sent. `cancel_requested_at` is polled every 2 s and kills the process (a Stop whose turn step is
 gone is carried out by the reconcile's `salvage`, §18.9); a rollout is `turn.interrupted` and
 `suspended`. **A container that died under the session is noticed** (`boot-marker.ts`): the
 Workflow carries the `bootId` `sandbox.start` wrote into the container into every turn and

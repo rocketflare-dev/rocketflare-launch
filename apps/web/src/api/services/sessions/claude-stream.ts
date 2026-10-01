@@ -8,6 +8,7 @@
  * ```
  * claude -p '<message>' [--resume <id>] --output-format stream-json --verbose
  *        --permission-mode bypassPermissions --model <policy model> --disallowedTools "Bash(git push:*)"
+ *        --append-system-prompt '<the session-system-note prompt>'
  * ```
  *
  * - `--model` is the session POLICY's model — the only one the model proxy lets through — and the
@@ -21,7 +22,8 @@
  * - Pushing is Launch's job (the checkpoint after each turn), so the agent may not `git push`:
  *   `--disallowedTools` here, and the `deny` rules in `.claude/settings.local.json` (written at
  *   boot) — deny rules still hold in bypass mode; allow rules have no effect there.
- * - The message is shell-quoted here, never interpolated raw: it is user text.
+ * - The message is shell-quoted here, never interpolated raw: it is user text. So is the system
+ *   note (`session-system-note`, an admin may edit it), on every turn, resumed ones included.
  *
  * The stream-json lines, and what each becomes (`mapClaudeLine`):
  *
@@ -57,6 +59,11 @@ export interface ClaudeCommandInput {
   model: string
   /** `sessions.claude_session_id` from the previous turn; absent on the first. */
   resumeSessionId?: string | null
+  /**
+   * The `session-system-note` prompt, filled in — appended to Claude Code's system prompt. Passed
+   * on EVERY turn: `--append-system-prompt` does not survive `--resume`.
+   */
+  systemNote?: string | null
 }
 
 /** A token that is safe unquoted in a shell word — ids and model names are nothing else. */
@@ -89,6 +96,7 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
     '--disallowedTools',
     `"${CLAUDE_DISALLOWED_TOOLS}"`
   )
+  if (input.systemNote) parts.push('--append-system-prompt', shellQuote(input.systemNote))
   return parts.join(' ')
 }
 

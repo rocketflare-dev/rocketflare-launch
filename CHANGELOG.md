@@ -27,6 +27,13 @@
   0.16.0 installs analytics 3.4.2, whose delete names the tenant (plugins#8) — and the kit's scan
   fails a stale entry, so the scaffold's own `test:config` failed. The patch now applies only while
   the plugin's test still holds the unscoped delete (`requiresText`).
+- **A coding session's agent gets its system note, and never runs the full gate.** The
+  `session-system-note` prompt was registered (and editable in Settings) but never sent; every
+  turn now appends it with `--append-system-prompt`, resumed turns included. It gains one rule:
+  never run `pnpm gate` or a workspace-wide lint, typecheck, test or build — slow and costly in the
+  sandbox, and Launch's ship gate and the PR's CI run it — only targeted checks on the files being
+  changed. The ship fix turn's `session-ship-fix` no longer invites a workspace-wide
+  `pnpm lint` / `pnpm typecheck`.
 - **A coding session's dev setup no longer leaks into its PR.** The kit's `bootstrap --offline`
   commented `[ai]` out of both wrangler tomls in place and the checkpoint committed it (with a
   `worker-configuration.d.ts` without `AI`) — hola-world PR #2 would have removed Workers AI from

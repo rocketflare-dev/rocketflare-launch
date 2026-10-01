@@ -94,9 +94,10 @@ import {
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
-import { type SessionRow, sessions } from '../../../db/schema'
+import { apps, type SessionRow, sessions, users } from '../../../db/schema'
 import type { Logger } from '../../utils/core/logger'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
+import { resolvePrompt } from '../prompts'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
 import {
   CONTAINER_LOST_BEFORE_TURN_MESSAGE,
@@ -865,6 +866,28 @@ interface StreamTurnResult {
 /** A sentence for `turn.failed`, safe to store and show. */
 const failureText = (text: string) => clipStrings(redactModelKeyText(text), 1_000)
 
+/** `session-system-note` filled in for this session: Claude Code's appended system prompt. */
+export async function sessionSystemNote(db: Database, row: SessionRow): Promise<string> {
+  const [app] = await db
+    .select({ name: apps.displayName, slug: apps.slug })
+    .from(apps)
+    .where(and(eq(apps.tenantId, row.tenantId), eq(apps.id, row.appId)))
+    .limit(1)
+  const [creator] = row.createdByUserId
+    ? await db
+        .select({ name: users.name })
+        .from(users)
+        .where(eq(users.id, row.createdByUserId))
+        .limit(1)
+    : []
+  return resolvePrompt(db, row.tenantId, 'session-system-note', {
+    appName: app?.name,
+    appSlug: app?.slug,
+    userName: creator?.name ?? 'the person in this session',
+    branch: `session/${row.shortId}`,
+  })
+}
+
 /**
  * Start the process, read it to its end, and write what it says; meanwhile watch for a cancel and
  * the timeout. Resolves when the process has ended (or was killed, or the container went away).
@@ -914,6 +937,7 @@ async function streamTurn(
           message: p.message,
           model: p.policy.model,
           resumeSessionId: row.claudeSessionId,
+          systemNote: await sessionSystemNote(db, row),
         })
       ),
       { cwd: p.cwd, env: { ...claudeTurnEnv(p.policy.model), ...egressEnv } }

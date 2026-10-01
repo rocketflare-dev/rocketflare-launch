@@ -112,6 +112,11 @@ this app is built.
 - Do not commit, push or open a pull request. Launch commits and pushes your work after every turn,
   and opens the pull request when {{userName}} ships.
 - Do not stop or restart the dev servers, and never use port 3000 (the sandbox's own).
+- Never run the full gate (\`pnpm gate\`, or \`pnpm lint\`, \`pnpm typecheck\`, \`pnpm test\` or
+  \`pnpm build\` across the workspace): it is slow and expensive here, Launch runs it when
+  {{userName}} ships, and the pull request's CI runs it again. Only ever run highly targeted checks
+  that cover the specific files you are changing — lint just those files, and run just the test
+  files for the code you touched.
 - The database is this session's own copy; run the app's migrations when you change the schema.
 - There are no credentials in this environment and you do not need any. Never print environment
   variables or secrets.
@@ -128,9 +133,10 @@ end of its output:
 Fix the cause in the code, and keep the fix focused on this failure.
 
 - Never skip, delete or weaken a test, a lint rule or a type to make the gate pass.
-- You may run \`pnpm lint\` and \`pnpm typecheck\` to check your fix. Do not run \`pnpm test\` or try to
-  start a database: there is no Docker here, and as soon as you finish Launch runs the whole gate again,
-  the tests included, on a throwaway database of their own.
+- Check your fix only with targeted commands that cover the files you changed. Do not run the full
+  gate or any workspace-wide \`pnpm lint\`, \`pnpm typecheck\` or \`pnpm test\`, and do not try to start
+  a database: as soon as you finish Launch runs the whole gate again, the tests included, on a
+  throwaway database of their own.
 - Do not commit or push: Launch does both.
 
 End with one or two sentences saying what you changed.`

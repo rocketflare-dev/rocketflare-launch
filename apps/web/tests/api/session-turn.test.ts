@@ -132,6 +132,12 @@ describe('runTurn: a turn that finishes', () => {
     expect(proc?.command).toContain("claude -p 'Change the Home heading'")
     expect(proc?.command).toContain('--model claude-sonnet-4-5')
     expect(proc?.command).not.toContain('--resume')
+    // The session-system-note, filled in: where it is, and only targeted checks — never the gate.
+    expect(proc?.command).toContain('--append-system-prompt')
+    expect(proc?.command).toContain('inside a Launch coding session on')
+    expect(proc?.command).toContain(`session/${row.shortId}`)
+    expect(proc?.command).toContain('Never run the full gate')
+    expect(proc?.command).not.toContain('{{')
     expect(proc?.opts?.cwd).toBe('/workspace/app')
     expect(proc?.opts?.env?.ANTHROPIC_API_KEY).toBe(MODEL_KEY_PLACEHOLDER)
   })
@@ -173,6 +179,8 @@ describe('runTurn: a turn that finishes', () => {
     expect(cost).toBeGreaterThan(0)
 
     expect(sandbox.processes[1]?.command).toContain('--resume claude-sess-9')
+    // --append-system-prompt does not survive --resume: the resumed turn carries the note again.
+    expect(sandbox.processes[1]?.command).toContain('--append-system-prompt')
     const events = await eventsOf(row)
     expect(events.map(e => e.seq)).toEqual(events.map((_, i) => i + 1))
     const ends = events.filter(e => e.type === 'turn.end')

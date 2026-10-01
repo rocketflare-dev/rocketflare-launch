@@ -177,6 +177,23 @@ describe('the turn command', () => {
     expect(buildClaudeCommand({ message: 'hi', model: 'm' })).not.toContain('--resume')
   })
 
+  it('appends the system note, quoted, on a first and on a resumed turn', () => {
+    // --append-system-prompt does not survive --resume, so a resumed turn carries it too.
+    const note = `Don't run the full gate; $(id) stays text`
+    for (const resumeSessionId of [null, S7_SESSION]) {
+      const cmd = buildClaudeCommand({
+        message: 'hi',
+        model: 'm',
+        resumeSessionId,
+        systemNote: note,
+      })
+      expect(cmd.endsWith(` --append-system-prompt ${shellQuote(note)}`)).toBe(true)
+    }
+    expect(buildClaudeCommand({ message: 'hi', model: 'm' })).not.toContain(
+      '--append-system-prompt'
+    )
+  })
+
   it('quotes the message so no shell sees it', () => {
     const evil = `'; rm -rf / #$(whoami)\`id\``
     expect(buildClaudeCommand({ message: evil, model: 'm' })).toContain(shellQuote(evil))
