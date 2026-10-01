@@ -353,6 +353,68 @@ describe('landingTimeline (#5)', () => {
     expect(landingTimeline([pr, reopened, gate(13)], null)).toBeNull()
   })
 
+  it('an adopted hand merge (sessions.checks): Merged on GitHub → released → live, no CI step', () => {
+    const merged = ev(20, 'ship.merged', {
+      number: 12,
+      sha: 'c'.repeat(40),
+      url: 'https://github.com/acme/x/pull/12',
+      approvalId: null,
+      by: 'github',
+    })
+    const adopted = landingRow({ stage: 'releasing', mergeSha: 'c'.repeat(40) })
+    const releasing = landingTimeline([gate(9), pr, merged], adopted, 'shipped')
+    expect(releasing?.outcome).toBe('moving')
+    expect(releasing?.steps.map(step => [step.key, step.status, step.label])).toEqual([
+      ['gate', 'done', 'Lint, typecheck and tests passed'],
+      ['pr', 'done', 'Pull request #12 opened'],
+      ['merged', 'done', 'Merged on GitHub'],
+      ['released', 'active', 'Cutting a release'],
+      ['staging', 'pending', 'Live on staging'],
+    ])
+    const live = landingTimeline(
+      [
+        gate(9),
+        pr,
+        merged,
+        ev(21, 'ship.released', {
+          releaseId: 'a9900000-0000-4000-8000-000000000003',
+          version: '0.1.1',
+          tag: '0.1.1',
+          shared: false,
+        }),
+        ev(22, 'ship.staging', { status: 'live', version: '0.1.1', url: 'https://x.test' }),
+      ],
+      landingRow({
+        stage: 'live',
+        mergeSha: 'c'.repeat(40),
+        version: '0.1.1',
+        stagingUrl: 'https://x.test',
+      }),
+      'shipped'
+    )
+    expect(live?.outcome).toBe('live')
+    expect(live?.steps.map(step => [step.key, step.status, step.label])).toEqual([
+      ['gate', 'done', 'Lint, typecheck and tests passed'],
+      ['pr', 'done', 'Pull request #12 opened'],
+      ['merged', 'done', 'Merged on GitHub'],
+      ['released', 'done', 'Released v0.1.1'],
+      ['staging', 'done', 'Live on staging'],
+    ])
+    // A hand merge while Launch was watching CI keeps the CI it saw; Launch's own reads "Merged".
+    const ci = ev(15, 'ship.ci', {
+      state: 'pending',
+      headSha: 'b'.repeat(40),
+      passed: 0,
+      failed: 0,
+      pending: 1,
+    })
+    expect(statuses(landingTimeline([pr, ci, merged], adopted))).toMatchObject({ ci: 'done' })
+    const byLaunch = ev(20, 'ship.merged', { ...(merged.data as object), by: 'launch' })
+    const view = landingTimeline([pr, byLaunch], adopted)
+    expect(view?.steps.find(step => step.key === 'merged')?.label).toBe('Merged')
+    expect(statuses(view)).toMatchObject({ ci: 'done' })
+  })
+
   it('in `pr` mode stops at the PR', () => {
     const view = landingTimeline([pr], landingRow({ mode: 'pr', stage: 'pr' }))
     expect(view?.outcome).toBe('pr')

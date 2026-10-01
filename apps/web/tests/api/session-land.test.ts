@@ -404,7 +404,13 @@ describe('landing: CI green', () => {
     const types = (await eventsOf(h)).map(e => e.type)
     expect(types).toEqual(expect.arrayContaining(['ship.pr', 'ship.ci', 'ship.merged']))
     expect(await eventData(h, 'ship.merged')).toEqual([
-      { number: 1, sha: merges[0]?.sha, url: expect.stringContaining('/pull/1'), approvalId: null },
+      {
+        number: 1,
+        sha: merges[0]?.sha,
+        url: expect.stringContaining('/pull/1'),
+        approvalId: null,
+        by: 'launch',
+      },
     ])
     expect(await eventData(h, 'ship.staging')).toEqual([
       { status: 'live', version: '1.4.1', url: 'https://shop-staging.example.com' },
@@ -453,6 +459,9 @@ describe('landing: CI green', () => {
     expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
     const [prMerged] = await auditOf(h, 'pr.merged')
     expect(prMerged?.summary).toMatchObject({ after: { via: 'sessions.checks', number: 1 } })
+    expect(await eventData(h, 'ship.merged')).toEqual([
+      expect.objectContaining({ number: 1, approvalId: null, by: 'github' }),
+    ])
     expect((await reload(h.row)).landing).toMatchObject({
       stage: 'live',
       mergeSha: expect.any(String),

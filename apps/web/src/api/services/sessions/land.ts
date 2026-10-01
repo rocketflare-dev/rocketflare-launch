@@ -337,7 +337,13 @@ async function recordMerge(
   await emitterFor(scope)({
     type: 'ship.merged',
     turn: row.turnCount,
-    data: { number, sha: merge.sha, url: merge.url, approvalId: approved },
+    data: {
+      number,
+      sha: merge.sha,
+      url: merge.url,
+      approvalId: approved,
+      by: via === 'session.merge' ? 'launch' : 'github',
+    },
   })
   return merge.sha
 }
@@ -1082,6 +1088,36 @@ export function landingQuiet(
 }
 
 /**
+ * Move a landing's Workflow on: wake its instance while it is alive, else start a fresh one
+ * (`<id>-rN`, `restartSessionInstance`) — a finished instance takes no more events, so a landing
+ * whose instance ended (a lost one, or a session shipped before issue #5 whose hand merge the cron
+ * adopted, `land-adopt.ts`) needs a new one, whose `claim` resumes it where `landing.stage` says.
+ * `woken` / `restarted`, or null when the instance's status could not be read (the next pass tries
+ * again). Throws when a restart fails.
+ */
+export async function wakeOrRestartLanding(
+  db: Database,
+  workflow: Workflow,
+  row: SessionRow,
+  logger: Logger
+): Promise<'woken' | 'restarted' | null> {
+  let status: string | null
+  try {
+    status = (await (await workflow.get(row.instanceId ?? row.id)).status()).status
+  } catch (err) {
+    status = isMissingInstanceError(err) ? 'not found' : null
+  }
+  if (status === null) return null
+  if (LIVE_INSTANCE.has(status) && (await wakeSession(workflow, row, logger))) return 'woken'
+  await restartSessionInstance(db, workflow, row)
+  logger.warn(
+    { sessionId: row.id, instanceStatus: status },
+    'sessions.checks: restarted a landing whose Workflow was gone'
+  )
+  return 'restarted'
+}
+
+/**
  * The `sessions.checks` cron's safety net (plan §1.4): wake every `shipping`/`shipped` session
  * whose landing is in a moving stage (`MOVING_LANDING_STAGES`) and quiet for three of its rounds —
  * or restart its instance when that is gone or finished (`<id>-rN`; `claim` resumes the landing).
@@ -1115,23 +1151,7 @@ export async function nudgeLandingSessions(
     for (const row of rows) {
       if (!landingQuiet(row, now)) continue
       try {
-        let status: string | null
-        try {
-          status = (await (await workflow.get(row.instanceId ?? row.id)).status()).status
-        } catch (err) {
-          status = isMissingInstanceError(err) ? 'not found' : null
-        }
-        if (status === null) continue
-        if (LIVE_INSTANCE.has(status) && (await wakeSession(workflow, row, logger))) {
-          nudged++
-          continue
-        }
-        await restartSessionInstance(db, workflow, row)
-        nudged++
-        logger.warn(
-          { sessionId: row.id, instanceStatus: status },
-          'sessions.checks: restarted a landing whose Workflow was gone'
-        )
+        if (await wakeOrRestartLanding(db, workflow, row, logger)) nudged++
       } catch (err) {
         logger.warn({ err, sessionId: row.id }, 'sessions.checks: could not nudge a landing')
       }

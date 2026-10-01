@@ -7,6 +7,7 @@
 import { DEFAULT_SESSION_POLICY, sessionEventSchema } from '@launch/shared/launch-sessions'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  formatSessionEvent,
   runSessionsEnd,
   runSessionsList,
   runSessionsPreviewUrl,
@@ -423,6 +424,24 @@ describe('sessions ship — through to live on staging (#5)', () => {
         },
       },
     ])
+
+  it('says when the PR was merged on GitHub rather than by Launch', () => {
+    const merged = (by?: string) =>
+      formatSessionEvent(
+        sessionEventSchema.parse(
+          event(2, 'ship.merged', {
+            number: 12,
+            sha: 'c'.repeat(40),
+            url: prUrl,
+            approvalId: null,
+            ...(by ? { by } : {}),
+          })
+        )
+      )
+    expect(merged('github')).toContain('merged PR #12 on GitHub (ccccccc)')
+    expect(merged('launch')).toContain('merged PR #12 (ccccccc)')
+    expect(merged()).toContain('merged PR #12 (ccccccc)')
+  })
 
   it('waits through to live by default, printing each stage', async () => {
     const { fetch, calls } = toLive()

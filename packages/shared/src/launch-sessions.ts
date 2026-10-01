@@ -454,6 +454,11 @@ export const sessionShipMergedDataSchema = z.object({
   sha: z.string(),
   url: z.string(),
   approvalId: z.string().uuid().nullable(),
+  /**
+   * Who merged it: Launch's squash, or a person on GitHub (during the landing, or a merge the
+   * `sessions.checks` cron adopted). Absent on rows written before it existed.
+   */
+  by: z.enum(['launch', 'github']).optional(),
 })
 export type SessionShipMergedData = z.infer<typeof sessionShipMergedDataSchema>
 
