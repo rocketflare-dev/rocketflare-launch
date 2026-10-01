@@ -123,6 +123,8 @@ export function useCheckAppHealth(app: Pick<AppDetail, 'id' | 'slug'>) {
             }
           : prev
       )
+      // The pipeline strip reads staging's health too: a fresh probe may enable Promote.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.releases.promotion(app.id) })
       return queryClient.invalidateQueries({ queryKey: queryKeys.apps.all })
     },
   })

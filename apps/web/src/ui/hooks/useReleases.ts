@@ -13,6 +13,7 @@
  * polls; the rest are settled.
  */
 import type { ApprovalDetail } from '@launch/shared/launch-approvals'
+import { type AppPromotion, appPromotionSchema } from '@launch/shared/launch-promotion'
 import {
   type CreateReleaseRequest,
   type PromoteReleaseRequest,
@@ -51,6 +52,27 @@ export function useReleases(appId: string | undefined, enabled = true) {
     queryFn: () => api.get(base(appId ?? ''), { schema: releaseListResponseSchema }),
     enabled: Boolean(appId) && enabled,
     refetchInterval: q => releasesPollInterval(q.state.data?.items),
+  })
+}
+
+/** `refetchInterval` for the pipeline strip: poll while its candidate release is in flight. Pure. */
+export function promotionPollInterval(view: Pick<AppPromotion, 'candidate'> | undefined) {
+  return view?.candidate && releaseInFlight(view.candidate) ? RELEASES_POLL_MS : false
+}
+
+/**
+ * The app page's pipeline strip (`GET /api/apps/:id/promotion`): the candidate release, what each
+ * environment runs, what promoting would ship and who a pending request waits on. Under the
+ * `release` root, so the release and promote nudges refresh it; it polls only while the candidate
+ * is deploying (`tagged` / `staging` / `promoting`) — waiting on a promoter or an approver is a
+ * person, not the server.
+ */
+export function useAppPromotion(appId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.releases.promotion(appId ?? ''),
+    queryFn: () => api.get(`/api/apps/${appId}/promotion`, { schema: appPromotionSchema }),
+    enabled: Boolean(appId) && enabled,
+    refetchInterval: q => promotionPollInterval(q.state.data),
   })
 }
 

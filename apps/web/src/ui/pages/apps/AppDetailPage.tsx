@@ -17,7 +17,9 @@
  *
  * P4: an app with a repository carries its releases (`ReleasesCard`) — cut one, watch it reach
  * staging, promote it to production through an approval — and a pending production deploy links
- * to its approval instead of being decided in place.
+ * to its approval instead of being decided in place. Above everything that follows, its pipeline
+ * strip (`PipelineStrip`, rocketflare-launch#5): staging → Promote to production → production, what
+ * the promotion ships, and who it waits on — the page's primary action.
  *
  * P5: an app with a repository carries its shared config (`ConfigCard`) — what it declares, the
  * shared resources that match, and per environment whether it holds each one, with Request.
@@ -70,6 +72,7 @@ import { HealthHistory } from './components/HealthHistory'
 import { OidcClientCard } from './components/OidcClientCard'
 import { OperationsLog } from './components/OperationsLog'
 import { PipelineProgress } from './components/PipelineProgress'
+import { PipelineStrip } from './components/PipelineStrip'
 import { ReleasesCard } from './components/ReleasesCard'
 import { SessionsCard } from './components/SessionsCard'
 import { TeardownModal } from './components/TeardownModal'
@@ -395,6 +398,16 @@ export default function AppDetailPage() {
           onCancel={() => cancel.mutate()}
           cancelling={cancel.isPending}
           subject={stagingHost && <span className="font-mono text-xs">{stagingHost}</span>}
+        />
+      )}
+
+      {/* rocketflare-launch#5: staging → [Promote to production] → production, and what it ships —
+          the page's primary action, for the app's owners and admins; read-only for everyone else. */}
+      {hasRepo && !holding && app.status !== 'requested' && app.status !== 'archived' && (
+        <PipelineStrip
+          appId={app.id}
+          canPromote={app.viewerCanDeploy}
+          ownerTeam={app.ownerGroup?.name ?? null}
         />
       )}
 

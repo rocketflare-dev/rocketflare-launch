@@ -61,7 +61,10 @@ names who a pending request waits on, capped at `APPROVAL_ELIGIBLE_MAX`), the po
 `release_status` pg enum — `bumpVersion` / `parseReleaseVersion` / `releaseTagRef`,
 `releasePrSchema` (the `app_releases.prs` jsonb), `PROMOTABLE_RELEASE_STATUSES` /
 `isPromotableRelease` (what the route and the Promote button both accept), the release, promote and
-chain bodies, `RELEASE_REALTIME_ENTITY`); `launch-audit.ts` gained `auditVerifySchema` and
+chain bodies, `RELEASE_REALTIME_ENTITY`) and `launch-promotion.ts` (`appPromotionSchema` — the app
+page's pipeline strip, `GET /api/apps/:id/promotion`: the candidate release, each environment's
+version and health, the PRs between with their sessions' titles, the pending `deploy.production`
+request and who it waits on); `launch-audit.ts` gained `auditVerifySchema` and
 `auditExportQuerySchema` / `auditExportRowSchema` (`seq`, `prevHash`, `hash`); `launch-pipeline.ts`
 the `approval` decision source, `releaseId` / `approvalId` on a ticket and `approvalId` on the
 create and production-deploy answers; `launch-sessions.ts` an optional `reason` on

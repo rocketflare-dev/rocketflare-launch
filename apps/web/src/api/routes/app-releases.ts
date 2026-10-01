@@ -12,11 +12,15 @@
  *   (owners and admins): opens the `deploy.production` approval. 409 `release_not_on_staging` /
  *   `release_staging_unhealthy` / `release_not_promotable`;
  * - `GET /:id/releases/:rid/chain` → `releaseChainSchema`: PR → merge → tag → staging → approval
- *   → production, from the audit log.
+ *   → production, from the audit log;
+ * - `GET /:id/promotion` → `appPromotionSchema` (members read): the app page's pipeline strip —
+ *   the newest release, what each environment runs, the PRs between with their sessions' titles,
+ *   and the pending `deploy.production` request with who it waits on (`releases/promotion.ts`).
  *
  * Every lookup is tenant-first (`getAppRow`, then the release by app), so another organisation's
  * app or release is a 404. Each answer is parsed through its shared schema on the way out.
  */
+import { type AppPromotion, appPromotionSchema } from '@launch/shared/launch-promotion'
 import {
   createReleaseSchema,
   type PromoteReleaseResponse,
@@ -32,6 +36,7 @@ import { getAppRow } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
 import { releaseChain } from '../services/launch/releases/chain'
 import { promoteRelease } from '../services/launch/releases/promote'
+import { appPromotion } from '../services/launch/releases/promotion'
 import { createRelease, getRelease, listReleases } from '../services/launch/releases/release'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
@@ -106,5 +111,13 @@ appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
   const release = await getRelease({ db }, { tenantId, appId: app.id, releaseId })
   const events = await releaseChain(db, { tenantId, appId: app.id, releaseId })
   const body: ReleaseChain = { release: toRelease(release), events }
+  return c.json(body)
+})
+
+appReleasesRouter.get('/:id/promotion', async c => {
+  const { db, tenantId, app } = await readableApp(c)
+  const body: AppPromotion = appPromotionSchema.parse(
+    await appPromotion(db, { tenantId, appId: app.id })
+  )
   return c.json(body)
 })

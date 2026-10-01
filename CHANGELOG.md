@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Promote to production is the app page's primary action** (rocketflare-launch#5, part 8;
+  `docs/CONCEPTS.md` §18.17, §18.19). A pipeline strip leads the page — `Staging: v1.4.2 (healthy,
+  deployed 10 minutes ago)` → **Promote to production** → `Production: v1.4.1` — with what the
+  promotion ships in plain words (each session's title, then its pull request's). The button is
+  disabled with the reason when there is nothing to promote ("Staging is still deploying",
+  "Staging is unhealthy", "Production already runs v1.4.2", "Nothing on staging yet"); after the
+  click the strip shows "Waiting for approval from <names>" with the request's link to share,
+  then "Deploying to production…", then "Live in production" with its link. Owners and admins
+  promote; everyone else reads the strip with who can. Same route and approval as before, plus a
+  read model, `GET /api/apps/:id/promotion` (`@launch/shared/launch-promotion`).
 - **A launching app's host shows browsers an animated "launching" page** (rocketflare-launch#4;
   `docs/CONCEPTS.md` §18.5). The placeholder Worker answers a `GET`/`HEAD` that accepts
   `text/html` outside `/api/` with a self-contained page (inline CSS/SVG/script, its own CSP, under

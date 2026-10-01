@@ -192,6 +192,22 @@ describe('AppDetailPage', () => {
     expect(await screen.findByText('No sessions running')).toBeInTheDocument()
   })
 
+  it('leads with the pipeline strip: staging → Promote to production → production (#5)', async () => {
+    renderDetail(makeSession(), {
+      [`/api/apps/${APP_ID}/promotion`]: {
+        candidate: null,
+        staging: null,
+        production: null,
+        changes: [],
+        changesTruncated: false,
+        approval: null,
+      },
+    })
+    expect(await screen.findByRole('button', { name: /Promote to production/ })).toBeDisabled()
+    const strip = screen.getByRole('region', { name: 'Staging to production' })
+    expect(within(strip).getByText('Nothing on staging yet.')).toBeInTheDocument()
+  })
+
   it('registers the OIDC client and shows the secret once, with the config snippet', async () => {
     const client = {
       id: '12121212-1212-4212-8212-121212121212',

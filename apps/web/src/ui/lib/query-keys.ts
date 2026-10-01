@@ -240,6 +240,9 @@ const CORE_QUERY_KEYS = {
     forApp: (appId: string) => ['release', 'app', appId] as const,
     detail: (releaseId: string) => ['release', 'detail', releaseId] as const,
     chain: (releaseId: string) => ['release', 'chain', releaseId] as const,
+    /** The app page's pipeline strip (`GET /api/apps/:id/promotion`) — under `release`, so a
+     *  release nudge refreshes it with the card. */
+    promotion: (appId: string) => ['release', 'promotion', appId] as const,
   },
   /**
    * Launch P5: shared config (`/api/shared-resources`, spec/09). Invalidated on save; the push

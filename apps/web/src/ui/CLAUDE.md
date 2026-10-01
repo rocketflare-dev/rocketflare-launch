@@ -442,8 +442,12 @@ A `CUSTOM kit.notice` renders
   organisation row or the SERVER-reported default per kind, then team/app overrides; the modal
   validates with `putApprovalPolicySchema` and refuses a policy with no approver and no
   auto-approve.
-- **The app page**: `ReleasesCard` (+ `PromoteButton`, which goes to the approval it opened; a 409
-  is shown in its dialog) and `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).
+- **The app page**: `PipelineStrip` first (rocketflare-launch#5 — staging → Promote to production →
+  production over `useAppPromotion`, `['release','promotion',appId]`, polled only while the
+  candidate deploys; every state and sentence is the pure `promotionModel.ts`; its Promote opens the
+  same `PromoteDialog` and STAYS on the page to show who the request waits on), then `ReleasesCard`
+  (+ `PromoteButton`, which goes to the approval it opened; a 409 is shown in its dialog) and
+  `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).
   A pending production ticket with an `approvalId` links to the request instead of deciding in
   place; the access page's requests link to their `app.access` approvals. A `requested` app asks
   `usePendingApproval({ kind: 'app.create', appId, box })` (`all` for admins, else `requested`):
@@ -452,7 +456,7 @@ A `CUSTOM kit.notice` renders
 - **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
   extends (owners/admins — their click also approves), asks (the creator), or reads; header and
   banner take the same object.
-- Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `audit-integrity`, the P4 cases
+- Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `pipeline-strip`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
 ## Shared config and grants (Launch P5)

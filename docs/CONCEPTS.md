@@ -2021,6 +2021,14 @@ release (`release_id`); activation (never a mere `finish` — §18.7) moves it `
 `production_active`. The
 `sessions.checks` cron follows shipped session PRs to their merge (`pr.merged` with the merge
 SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to production, linked by ids.
+**The pipeline strip** (rocketflare-launch#5) reads `GET /api/apps/:id/promotion`
+(`releases/promotion.ts`, any member): the newest release (the candidate), each environment's
+`last_deploy_version` / `last_deploy_at` / health / URL and the release carrying it, the PRs of
+every release after production's version up to the candidate (the code is cumulative, so an
+intermediate release that never reached production ships too; capped at 50), each with the title
+of the Launch session that wrote it, and the candidate's `deploy.production` request with the people
+it still waits on — named for every member, unlike the approval's own page. It decides nothing:
+Promote is the same route and the same approval.
 
 **Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
 with no earlier tag lists only its session PRs; branch protection must let the App push the bump
@@ -2066,7 +2074,17 @@ PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`)
 snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
 approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
-overrides. **The app page** gains a Releases card (New release with a version preview, Promote → the
+overrides. **The app page** leads with a pipeline strip — `Staging: v1.4.2 (healthy, deployed 10 minutes
+ago)` → **Promote to production** → `Production: v1.4.1` — and, in plain words, what the promotion
+ships (each session's title, then its PR's). Promote is on offer when staging runs the newest
+release, is `up`, and production runs something older; otherwise the button is disabled with the
+reason ("Staging is still deploying", "Staging is unhealthy", "Production already runs v1.4.2",
+"Nothing on staging yet"). After the click (the same confirmation as a release row, the same
+route) the strip stays: "Waiting for approval from <names>" with the request's link and Copy
+link, then "Deploying to production…", then "Live in production: v1.4.2" with the production
+link. Owners and admins (`viewerCanDeploy`) get the button; everyone else reads the strip with who
+can promote. Every state is one pure function (`pages/apps/components/promotionModel.ts`). Below
+it the Releases card (New release with a version preview, Promote → the
 approval it opened, each release's chain on demand); a pending production ticket links to its
 approval; "Deploy to production" opens a `deploy.production` request; the access page's requests
 link to their approvals; a member's new app waiting in `requested` on an `app.create` approval shows
@@ -2077,7 +2095,10 @@ and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` 
 ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list too.
 
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
-naming them; the releases card shows only what the audit log recorded (a release cut outside
+naming them; the strip says what ships from session and PR TITLES — a PR's body is not stored, so
+there is no summary beyond them; it polls only while the candidate deploys, so a staging health
+change reaches it on the next read, a "Check now" or a release nudge; the strip's Promote is plain
+`btn-primary`, not the page's flame (Start session already holds it); the releases card shows only what the audit log recorded (a release cut outside
 Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.
 
 ### 18.20 Shared config and grants (P5)
