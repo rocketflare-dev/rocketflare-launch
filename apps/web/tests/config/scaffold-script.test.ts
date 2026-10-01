@@ -125,7 +125,22 @@ let kitSha: string
 let newerKitSha: string
 let unreleasedKitSha: string
 let gateKitSha: string
+const analyticsKitSha: Record<string, string> = {}
 const calls: Recorded[] = []
+
+const ALLOWLIST_TEST = 'apps/web/tests/config/unscoped-allowlist.test.ts'
+const VISIBILITY_TEST = 'src/plugins/analytics/tests/api/dashboard-visibility.test.ts'
+/** The tail of the kit's CORE_UNSCOPED_ALLOWLIST, ending in the line the patch anchors on. */
+const ALLOWLIST_SOURCE =
+  'const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {\n' +
+  "  'src/api/observability/flush.ts':\n" +
+  "    'one flush may hold spans from more than one tenant — D32',\n}\n"
+const ANALYTICS_341_DELETE =
+  '    await db.delete(analyticsPageGroups).where(eq(analyticsPageGroups.pageId, orphaned))'
+const ANALYTICS_342_DELETE =
+  '    await db\n      .delete(analyticsPageGroups)\n      .where(\n' +
+  '        and(eq(analyticsPageGroups.tenantId, tenantId), eq(analyticsPageGroups.pageId, orphaned))\n' +
+  '      )'
 let tokenPlan: Record<string, unknown>
 let tokenStatus = 200
 
@@ -213,6 +228,19 @@ beforeAll(async () => {
   git(kit, 'add', '-A')
   git(kit, 'commit', '--quiet', '-m', 'pnpm gate')
   gateKitSha = git(kit, 'rev-parse', 'HEAD')
+  // The analytics plugin's dashboard-visibility test as 3.4.1 shipped it (an unscoped delete) and
+  // as 3.4.2 fixed it (plugins#8), beside the kit's allow-list the patch anchors on.
+  for (const [branch, del] of [
+    ['kit-analytics-341', ANALYTICS_341_DELETE],
+    ['kit-analytics-342', ANALYTICS_342_DELETE],
+  ] as const) {
+    git(kit, 'checkout', '--quiet', '-b', branch, 'main')
+    write(kit, ALLOWLIST_TEST, ALLOWLIST_SOURCE)
+    write(kit, `apps/web/${VISIBILITY_TEST}`, `it('narrows', async () => {\n${del}\n})\n`)
+    git(kit, 'add', '-A')
+    git(kit, 'commit', '--quiet', '-m', branch)
+    analyticsKitSha[branch] = git(kit, 'rev-parse', 'HEAD')
+  }
   git(kit, 'checkout', '--quiet', 'main')
   mkdirSync(path.join(root, 'server/rocketflare-dev'), { recursive: true })
   git(root, 'clone', '--quiet', '--bare', kit, 'server/rocketflare-dev/rocketflare.git')
@@ -578,6 +606,26 @@ describe('the scaffold’s own gate (--skip-install, a recording pnpm on PATH)',
 
   it('on an older kit: pnpm lint and pnpm typecheck by name, then the config tests', async () => {
     expect(await gated({})).toEqual(['lint', 'typecheck', 'web test:config'])
+  })
+})
+
+describe('the analytics allow-list patch follows the plugin, not the kit', () => {
+  async function allowlistAfter(branch: string): Promise<string> {
+    const run = await runScript(
+      ['--token-from-env', '--skip-install', '--skip-gate'],
+      envMode({ tag: null, commit: analyticsKitSha[branch] })
+    )
+    expect(run.code, run.stderr).toBe(0)
+    return pushed().read(ALLOWLIST_TEST)
+  }
+
+  it('allow-lists the test while it still deletes unscoped (analytics 3.4.1)', async () => {
+    expect(await allowlistAfter('kit-analytics-341')).toContain(`'${VISIBILITY_TEST}':`)
+  })
+
+  it('leaves the allow-list alone once the delete names the tenant (3.4.2, plugins#8)', async () => {
+    // The kit's scan fails a stale entry, so adding it here would fail the scaffold's own gate.
+    expect(await allowlistAfter('kit-analytics-342')).toBe(ALLOWLIST_SOURCE)
   })
 })
 

@@ -609,8 +609,11 @@ function kitTestPatches(slug) {
       // The analytics plugin (3.4.1) ships this test without declaring it in its own
       // unscopedAllowlist. The kit's CI never sees it (the plugin is not committed there); a
       // committed install is scanned, so the reason is recorded here, as Launch itself did.
+      // Only while the delete is unscoped: 3.4.2 names the tenant (plugins#8, kit 0.16.0's
+      // default), and the scan fails a stale entry.
       file: 'apps/web/tests/config/unscoped-allowlist.test.ts',
       requires: 'apps/web/src/plugins/analytics/tests/api/dashboard-visibility.test.ts',
+      requiresText: 'db.delete(analyticsPageGroups).where(eq(analyticsPageGroups.pageId, orphaned))',
       why: 'the analytics plugin test the allow-list scan finds once the plugin is committed',
       find: "one flush may hold spans from more than one tenant — D32',\n}",
       replace:
@@ -658,6 +661,10 @@ function patchKitTests(appDir, slug) {
     const abs = path.join(appDir, p.file)
     if (!fs.existsSync(abs)) continue
     if (p.requires && !fs.existsSync(path.join(appDir, p.requires))) continue
+    if (p.requiresText && !fs.readFileSync(path.join(appDir, p.requires), 'utf8').includes(p.requiresText)) {
+      log(p.file + ': no patch for "' + p.why + '" (fixed upstream)')
+      continue
+    }
     const text = fs.readFileSync(abs, 'utf8')
     if (text.includes(p.replace)) continue
     if (!text.includes(p.find)) {

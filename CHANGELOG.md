@@ -22,6 +22,11 @@
   no-ops there, kept for older pins). The session image's warm pnpm store follows it
   (`ARG KIT_TAG` / `SESSION_KIT_TAG` 0.16.0, image `session-5`, so no workspace backup from the old
   image is restored into the new one) — it builds on the next deploy; drain sessions first.
+- **A new app on kit 0.16.0 scaffolds.** The scaffold added the analytics plugin's
+  `dashboard-visibility.test.ts` to the kit's unscoped allow-list (a 3.4.1 workaround) even though
+  0.16.0 installs analytics 3.4.2, whose delete names the tenant (plugins#8) — and the kit's scan
+  fails a stale entry, so the scaffold's own `test:config` failed. The patch now applies only while
+  the plugin's test still holds the unscoped delete (`requiresText`).
 - **A coding session's dev setup no longer leaks into its PR.** The kit's `bootstrap --offline`
   commented `[ai]` out of both wrangler tomls in place and the checkpoint committed it (with a
   `worker-configuration.d.ts` without `AI`) — hola-world PR #2 would have removed Workers AI from
