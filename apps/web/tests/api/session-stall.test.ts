@@ -47,6 +47,7 @@ import {
   type SessionAppFixture,
   seedSessionApp,
   sessionAppRef,
+  UNEXPECTED_LAND_HOOKS,
 } from '../helpers/sessions'
 import {
   createExecutionContext,
@@ -96,6 +97,7 @@ const hooks: SessionStepHooks = {
   shipSummary: async () => {
     throw new Error('no ship in this suite')
   },
+  ...UNEXPECTED_LAND_HOOKS,
 }
 
 /** A prepared app and a `requested` session; the sandbox scripted like a kit app EXCEPT the dev server. */

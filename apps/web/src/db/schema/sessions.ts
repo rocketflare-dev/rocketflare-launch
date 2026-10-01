@@ -31,7 +31,9 @@ import {
   SESSION_STATUSES,
   type SessionDb,
   type SessionEventType,
+  type SessionLanding,
   type SessionPolicy,
+  type SessionShipSummary,
 } from '@launch/shared/launch-sessions'
 import { relations, sql } from 'drizzle-orm'
 import {
@@ -177,6 +179,19 @@ export const sessions = pgTable(
     prNumber: integer('pr_number'),
     prUrl: text('pr_url'),
     prChecks: jsonb('pr_checks').$type<PrChecks>(),
+    /**
+     * Issue #5 (`docs/plans/i5-ship-to-staging.md` §1.1): where the ship stands after its PR — the
+     * landing stage (`ci → approval → merging → releasing → deploying → live | stalled`, or `pr`)
+     * and what each stage recorded. Null before a ship reaches its PR, and again after a reopen.
+     * Written by `ship.pr`, then only by compare-and-set on `landing->>'stage'`.
+     */
+    landing: jsonb('landing').$type<SessionLanding>(),
+    /**
+     * Issue #5 (§1.15): the PR's title and body as Launch wrote them, the diff stat and the gate
+     * SHA — the squash message, the `session.merge` context and the pipeline strip read it.
+     * Overwritten on a re-ship; never reset by a reopen.
+     */
+    shipSummary: jsonb('ship_summary').$type<SessionShipSummary>(),
 
     // ---- timing
     /** Why the session failed, for the page. Never a vendor body with a secret in it. */

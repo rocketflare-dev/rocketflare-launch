@@ -99,7 +99,9 @@ describe('ApprovalPoliciesSettings', () => {
     expect(screen.getByRole('heading', { name: 'App access' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Session budget' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shared config' })).toBeInTheDocument()
-    expect(screen.getAllByText('default')).toHaveLength(5)
+    // Issue #5: `session.merge` is the sixth built kind.
+    expect(screen.getByRole('heading', { name: 'Session merge' })).toBeInTheDocument()
+    expect(screen.getAllByText('default')).toHaveLength(6)
     expect(screen.getByText(/App: Expenses/)).toBeInTheDocument()
     expect(
       screen.getByText('2 approvals from the app’s owners or the organisation’s admins')

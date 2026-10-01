@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Foundations for "Ship means live on staging"** (rocketflare-launch#5, slice S1;
+  `docs/plans/i5-ship-to-staging.md`, `docs/CONCEPTS.md` §18.15). Contracts only, no behaviour
+  yet: a session answer carries `landing` and `shipSummary` (null), an app's detail its
+  `shipSettings` (default: ship to staging, no review) and `shipReviewSetBy`, a promotion change a
+  `summary` (null), and the approvals engine knows a sixth kind, `session.merge` (app owners, one
+  approval, 48 hours) — it shows on the approval policies page, though nothing opens one yet.
+  Migration `0032_launch-i5-ship-to-staging` adds `sessions.landing`, `sessions.ship_summary`,
+  `apps.ship_settings` and the app's release claim columns.
+
 - **Promote to production is the app page's primary action** (rocketflare-launch#5, part 8;
   `docs/CONCEPTS.md` §18.17, §18.19). A pipeline strip leads the page — `Staging: v1.4.2 (healthy,
   deployed 10 minutes ago)` → **Promote to production** → `Production: v1.4.1` — with what the

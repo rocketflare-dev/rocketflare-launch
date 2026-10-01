@@ -66,6 +66,7 @@ import {
   insertSession,
   type SessionAppFixture,
   seedSessionApp,
+  UNEXPECTED_LAND_HOOKS,
 } from '../helpers/sessions'
 import { createExecutionContext, createTestEnv, type TestEnv } from '../mocks/bindings'
 import { createFakeWorkflowStep, type RecordedWait } from '../mocks/cloudflare-workers'
@@ -168,6 +169,7 @@ async function harness(
     shipSummary: async () => {
       throw new Error('a ship summary was not expected in this test')
     },
+    ...UNEXPECTED_LAND_HOOKS,
     ...opts.hooks,
   }
   return {

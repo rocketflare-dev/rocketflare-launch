@@ -12,7 +12,7 @@
  *   as `group_members`, so a person who leaves the organisation stops owning its apps in the
  *   DATABASE rather than in service code.
  */
-import { APP_SOURCES, APP_STATUSES } from '@launch/shared/launch-apps'
+import { APP_SOURCES, APP_STATUSES, type AppShipSettings } from '@launch/shared/launch-apps'
 import type { AppSessionDb } from '@launch/shared/launch-sessions'
 import { relations } from 'drizzle-orm'
 import {
@@ -89,6 +89,19 @@ export const apps = pgTable(
     sessionDb: jsonb('session_db').$type<AppSessionDb>(),
     /** P3: this app's monthly session budget, overriding `session_policy.appMonthlyUsd`. */
     sessionMonthlyBudgetMicrocents: bigint('session_monthly_budget_microcents', { mode: 'number' }),
+    /**
+     * Issue #5 (`docs/plans/i5-ship-to-staging.md` §1.10): where a session's Ship ends and who
+     * reviews the merge. Null = `DEFAULT_APP_SHIP_SETTINGS` (staging, no review) — read through
+     * `resolveAppShipSettings`. Owners and admins set it; audited `app.ship_settings.updated`.
+     */
+    shipSettings: jsonb('ship_settings').$type<AppShipSettings>(),
+    /**
+     * Issue #5 (§1.8): releases serialise per app on this claim — `session:<id>` or `user:<id>`,
+     * taken by `UPDATE … WHERE release_claim_holder IS NULL OR release_claimed_at < now() - 10
+     * min RETURNING` and released in a `finally` (`services/launch/releases/claim.ts`).
+     */
+    releaseClaimHolder: text('release_claim_holder'),
+    releaseClaimedAt: timestamp('release_claimed_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [

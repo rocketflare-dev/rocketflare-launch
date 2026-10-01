@@ -49,7 +49,7 @@ import { WEB_ROOT } from '../helpers/source-files'
 const UUID = '6f1c1a3e-2b1f-4d5e-9a3b-1c2d3e4f5a6b'
 
 describe('approval closed sets', () => {
-  it('names every spec/08 kind, builds five (P5 adds grant.request), and keeps the order (values are stored)', () => {
+  it('names every spec/08 kind, builds six (P5 adds grant.request, issue #5 session.merge), and keeps the order (values are stored)', () => {
     expect(APPROVAL_KINDS).toEqual([
       'app.create',
       'app.access',
@@ -58,6 +58,7 @@ describe('approval closed sets', () => {
       'grant.request',
       'config.change',
       'app.teardown',
+      'session.merge',
     ])
     expect(BUILT_APPROVAL_KINDS).toEqual([
       'app.create',
@@ -65,6 +66,7 @@ describe('approval closed sets', () => {
       'deploy.production',
       'session.budget',
       'grant.request',
+      'session.merge',
     ])
     expect(isBuiltApprovalKind('grant.request')).toBe(true)
     expect(APPROVAL_SUBJECT_TYPES).toContain('grant')

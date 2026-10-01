@@ -81,6 +81,27 @@ the realtime entities `shared_resource` / `grant_push` / `app_config`, `GRANT_NO
 `GRANT_ERROR_CODES`, `sharedResourcePath` / `appConfigPath`); `launch-approvals.ts` built
 `grant.request` (`BUILT_APPROVAL_KINDS` has five, `grant` subject, `grantRequestContextSchema`,
 `GRANT_ITEM_KINDS`, the owner-group default); `launch-sessions.ts` the `ship.config_needs` event ·
+Launch issue #5 (ship means live on staging, `docs/plans/i5-ship-to-staging.md` §2; slice S1 owns
+these lines, S2–S6 import and never edit them): `launch-apps.ts` the app's ship settings
+(`SESSION_SHIP_MODES` `staging | pr`, `SHIP_REVIEW_MODES` `none | app_owners | groups`,
+`appShipSettingsSchema` — the `apps.ship_settings` jsonb — `DEFAULT_APP_SHIP_SETTINGS` (staging, no
+review), `resolveAppShipSettings`, `putAppShipSettingsRequestSchema` (`groups` names ≥ 1 team)),
+`appDetailSchema.shipSettings` / `shipReviewSetBy` (`app | policy`, both defaulted so an older answer
+parses), `KIT_REQUIRED_CHECK` (`Gate`), `BRANCH_PROTECTION_STATES` and `appBranchProtectionSchema`;
+`launch-sessions.ts` (imports the modes from `launch-apps`, never the reverse) the landing —
+`SHIP_LANDING_STAGES` (+ `MOVING_LANDING_STAGES`), `SHIP_STALLED_REASONS`, `SHIP_REOPEN_REASONS`,
+`LANDING_REVIEW_MODES` (the app's modes plus `policy`), `SHIP_CI_MAX_MINUTES` /
+`SHIP_CI_NONE_GRACE_MINUTES`, `sessionLandingSchema` (the `sessions.landing` jsonb; timestamps are
+ISO strings so the row round-trips), `sessionShipSummarySchema` (`sessions.ship_summary`, capped by
+`SHIP_SUMMARY_{TITLE,BODY,DIFFSTAT}_MAX`), `sessionSchema.landing` / `shipSummary` (nullable,
+default null), the six events `ship.ci` · `ship.review` · `ship.merged` · `ship.released` ·
+`ship.staging` · `ship.reopened` (appended, each in `SESSION_EVENT_DATA`) and an optional `title` on
+`ship.pr`; `PR_CHECK_STATES` moved above the events (`ship.ci` carries one — a zod module reads
+its consts at evaluation, so order matters); `launch-approvals.ts` the built `session.merge`
+(appended to both kind lists, `sessionMergeContextSchema`, `SESSION_MERGE_EXPIRY_HOURS` 48 and its
+owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
+'release_in_progress'`); `launch-promotion.ts` a change's `summary` (nullable, default null — an
+older answer still parses) and `PROMOTION_SUMMARY_MAX` 600 ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

@@ -174,6 +174,63 @@ export interface RepoHostPort {
   ): Promise<{ number: number; url: string }>
   /** The PR head's CI, check runs plus the combined status, folded (`prChecksSchema`). */
   getChecks(repo: RepoRef, input: { prNumber: number; headSha: string }): Promise<PrChecks>
+  /**
+   * Issue #5: the pull request as it stands now, read fresh (`land.ci`, `land.merge`), or null when
+   * it does not exist. Token: `pull_requests: read`.
+   */
+  getPullRequest(repo: RepoRef, prNumber: number): Promise<RepoPullRequest | null>
+  /**
+   * Issue #5: squash-merge the PR ON `input.sha` (the landing's gate SHA). Never throws for the
+   * answers a landing acts on: GitHub's 409 (the head moved) → `head_moved`; 405/422 (a required
+   * check or review missing, a conflict) → `refused` with GitHub's message. Anything else throws.
+   * Token: `contents: write`, `pull_requests: write`.
+   */
+  mergePullRequest(repo: RepoRef, input: MergeShipPullRequestInput): Promise<MergePullRequestResult>
+  /**
+   * Issue #5: the first failing check on `headSha` — its name, URL and the last 80 lines of its
+   * log (`FAILED_CHECK_LOG_LINES`: an Actions job's log; else its annotations), or
+   * null when nothing failed. **`logTail` is NOT redacted**: the caller redacts it (the gate's
+   * redaction) before it reaches an event. Tokens: `checks`/`statuses: read`, `actions: read`.
+   */
+  failedCheckLog(repo: RepoRef, input: { headSha: string }): Promise<FailedCheckLog | null>
+}
+
+/** Issue #5: a pull request as the landing reads it (`RepoHostPort.getPullRequest`). */
+export interface RepoPullRequest {
+  number: number
+  url: string
+  title: string
+  state: 'open' | 'closed'
+  merged: boolean
+  /** The PR's head commit now — the landing refuses anything but its gate SHA. */
+  headSha: string
+  /** The merge commit on the base branch, once merged. */
+  mergeSha: string | null
+  /** ISO, once merged. */
+  mergedAt: string | null
+}
+
+/** Issue #5: what `RepoHostPort.mergePullRequest` sends (always a squash). */
+export interface MergeShipPullRequestInput {
+  prNumber: number
+  /** The landing's gate SHA: the merge happens on this head or not at all. */
+  sha: string
+  /** `"<PR title> (#n)"`. */
+  commitTitle: string
+  /** The ship summary's body plus "Merged by Launch from session <short>[, approved by <name>]". */
+  commitMessage: string
+}
+
+export type MergePullRequestResult =
+  | { merged: true; sha: string }
+  | { merged: false; code: 'head_moved' | 'refused'; message: string }
+
+/** Issue #5: a red CI's failing check (`RepoHostPort.failedCheckLog`). */
+export interface FailedCheckLog {
+  name: string
+  url: string | null
+  /** The log's last lines, UNREDACTED; null when GitHub has none (expired, or a bare status). */
+  logTail: string | null
 }
 
 // ---- ModelUpstream -----------------------------------------------------------------------------

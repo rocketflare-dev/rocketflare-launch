@@ -47,6 +47,9 @@ function mintingHost(now: () => Date = () => new Date()) {
     },
     openPullRequest: () => Promise.reject(new Error('not in this test')),
     getChecks: () => Promise.reject(new Error('not in this test')),
+    getPullRequest: () => Promise.reject(new Error('not in this test')),
+    mergePullRequest: () => Promise.reject(new Error('not in this test')),
+    failedCheckLog: () => Promise.reject(new Error('not in this test')),
   }
   return { host, minted }
 }

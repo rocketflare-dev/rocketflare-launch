@@ -41,6 +41,9 @@ export function compareReleaseVersions(a: string | null, b: string | null): numb
 /** At most this many pull requests are listed in one promotion. */
 export const PROMOTION_MAX_CHANGES = 50
 
+/** A change's `summary` (the session's stored ship summary body) is clipped to this many characters. */
+export const PROMOTION_SUMMARY_MAX = 600
+
 /** One environment as the strip shows it. */
 export const promotionEnvironmentSchema = z.object({
   /** The version it last went live with (`app_environments.last_deploy_version`). */
@@ -63,6 +66,12 @@ export const promotionChangeSchema = z.object({
   sessionId: z.string().uuid().nullable(),
   /** The Launch session that wrote it, in its own words. */
   sessionTitle: z.string().nullable(),
+  /**
+   * Issue #5: the session's ship summary body (`sessions.ship_summary`), clipped to
+   * `PROMOTION_SUMMARY_MAX`; null without a session or a stored summary. Defaulted so an older
+   * answer without it still parses.
+   */
+  summary: z.string().nullable().default(null),
 })
 export type PromotionChange = z.infer<typeof promotionChangeSchema>
 

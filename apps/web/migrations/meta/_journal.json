@@ -225,6 +225,13 @@
       "when": 1790613909685,
       "tag": "0031_launch-session-workspace-backup",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790852037072,
+      "tag": "0032_launch-i5-ship-to-staging",
+      "breakpoints": true
     }
   ]
 }

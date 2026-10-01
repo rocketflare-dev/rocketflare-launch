@@ -185,6 +185,8 @@ export async function appPromotion(
       url: pr.url ?? null,
       sessionId: pr.sessionId ?? null,
       sessionTitle: pr.sessionId ? (titles.get(pr.sessionId) ?? null) : null,
+      // Issue #5 S3 fills this from `sessions.ship_summary` (plan §1.15); null until then.
+      summary: null,
     })),
     changesTruncated: prs.length > kept.length,
     approval: candidate.approvalId

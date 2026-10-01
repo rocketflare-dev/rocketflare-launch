@@ -57,6 +57,7 @@ const KIND_LABELS: Record<ApprovalContext['kind'], string> = {
   'grant.request': 'Shared config for an app',
   'config.change': 'A configuration change',
   'app.teardown': 'Tear down an app',
+  'session.merge': 'Merge a session’s pull request',
 }
 
 /** Who asked: a person, or the GitHub actor for a request CI opened. */
@@ -89,6 +90,8 @@ export function describeApproval(request: ApprovalRequest): string {
       return `Add ${money(context.extraUsd)} to the session "${context.sessionTitle ?? context.sessionId}" on ${app} (spent ${money(context.spentUsd)} of ${money(context.capUsd)}).`
     case 'grant.request':
       return `Let ${app} hold ${context.resourceName} in ${context.environment}.`
+    case 'session.merge':
+      return `Merge "${context.prTitle}" (#${context.prNumber}) into ${app} and ship it to staging.`
     case 'config.change':
     case 'app.teardown':
       return context.description
@@ -137,6 +140,12 @@ function contextLines(context: ApprovalContext): string[] {
       lines.push(`Lapses:   ${context.expiresAt ? formatDate(context.expiresAt) : 'never'}`)
       return lines
     }
+    case 'session.merge':
+      return [
+        `Session:  ${context.title ?? context.shortId}`,
+        `PR:       ${context.prUrl}`,
+        `Head:     ${context.headSha.slice(0, 7)}`,
+      ]
     case 'session.budget':
     case 'config.change':
     case 'app.teardown':

@@ -8,7 +8,8 @@
  * - the event log (`SESSION_EVENT_TYPES`, one payload schema per type in `SESSION_EVENT_DATA`),
  *   shaped like `AgentRunEvent` so the agent timeline folds it;
  * - the policy (`sessionPolicySchema`, `DEFAULT_SESSION_POLICY`), snapshotted on the row at create;
- * - the jsonb shapes (`sessionDbSchema`, `appSessionDbSchema`, `prChecksSchema`);
+ * - the jsonb shapes (`sessionDbSchema`, `appSessionDbSchema`, `prChecksSchema`, and issue #5's
+ *   `sessionLandingSchema` / `sessionShipSummarySchema` — what follows the PR, up to staging);
  * - the request and response bodies of `/api/sessions`, `/api/apps/:id/sessions` and
  *   `/api/admin/sessions`;
  * - `SESSION_WAKE_EVENT`, golden-tested against Cloudflare's event-type rule;
@@ -28,6 +29,7 @@ import {
   agentToolEndEventDataSchema,
   agentToolStartEventDataSchema,
 } from './ai/agents'
+import { healthStatusSchema, sessionShipModeSchema } from './launch-apps'
 
 // ---- enums -------------------------------------------------------------------------------------
 
@@ -149,6 +151,13 @@ export const SESSION_EVENT_TYPES = [
   'error',
   // P5 (plan §1.14–§1.15): the shared config the PR's head declares and the app does not hold.
   'ship.config_needs',
+  // Issue #5 (`docs/plans/i5-ship-to-staging.md` §2): what follows the PR, up to live on staging.
+  'ship.ci',
+  'ship.review',
+  'ship.merged',
+  'ship.released',
+  'ship.staging',
+  'ship.reopened',
 ] as const
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
@@ -244,6 +253,8 @@ export const sessionShipGateDataSchema = z
 export const sessionShipPrDataSchema = z.object({
   number: z.number().int().positive(),
   url: z.string(),
+  /** Issue #5: the PR's title (the ship summary's), when the writer knows it. */
+  title: z.string().optional(),
 })
 
 /**
@@ -268,6 +279,218 @@ export const sessionShipConfigNeedsDataSchema = z.object({
 })
 export type SessionShipConfigNeedsData = z.infer<typeof sessionShipConfigNeedsDataSchema>
 
+/**
+ * GitHub check-run / commit-status states, folded to one verdict (`prChecksSchema`, `ship.ci`).
+ * Declared above the events because `ship.ci` carries one.
+ */
+export const PR_CHECK_STATES = ['pending', 'success', 'failure', 'none'] as const
+export const prCheckStateSchema = z.enum(PR_CHECK_STATES)
+export type PrCheckState = z.infer<typeof prCheckStateSchema>
+
+// ---- landing: what follows the PR (issue #5, `docs/plans/i5-ship-to-staging.md`) --------------
+
+/**
+ * `sessions.landing.stage` (plan §1.1). Phase A, status `shipping`: `ci → [approval] → merging`;
+ * Phase B, status `shipped`: `releasing → deploying → live | stalled`. `pr` is the `pr` ship mode's
+ * only stage: the PR is open and Launch follows it no further.
+ */
+export const SHIP_LANDING_STAGES = [
+  'ci',
+  'approval',
+  'merging',
+  'releasing',
+  'deploying',
+  'live',
+  'pr',
+  'stalled',
+] as const
+export const shipLandingStageSchema = z.enum(SHIP_LANDING_STAGES)
+export type ShipLandingStage = z.infer<typeof shipLandingStageSchema>
+
+/** The stages a landing is still moving through — what the safety-net cron wakes (plan §1.4). */
+export const MOVING_LANDING_STAGES = [
+  'ci',
+  'approval',
+  'merging',
+  'releasing',
+  'deploying',
+] as const satisfies readonly ShipLandingStage[]
+
+/** Why a landing stalled after the merge (decision §0.1: it never reopens). */
+export const SHIP_STALLED_REASONS = [
+  'release_failed',
+  'deploy_failed',
+  'deploy_timeout',
+  'unhealthy',
+] as const
+export const shipStalledReasonSchema = z.enum(SHIP_STALLED_REASONS)
+export type ShipStalledReason = z.infer<typeof shipStalledReasonSchema>
+
+/** Why a landing gave the session back before the merge (`ship.reopened`, `land.reopen#N`). */
+export const SHIP_REOPEN_REASONS = [
+  'ci_failed',
+  'ci_timeout',
+  'ci_none',
+  'head_moved',
+  'pr_closed',
+  'review_rejected',
+  'review_expired',
+  'merge_refused',
+] as const
+export const shipReopenReasonSchema = z.enum(SHIP_REOPEN_REASONS)
+export type ShipReopenReason = z.infer<typeof shipReopenReasonSchema>
+
+/**
+ * How the landing's review was decided when `ship.pr` snapshotted it: the app's own setting (the
+ * `SHIP_REVIEW_MODES` of `launch-apps`), or `policy` — an admin `approval_policies` row for
+ * `session.merge` made review mandatory (plan §1.11).
+ */
+export const LANDING_REVIEW_MODES = ['none', 'app_owners', 'groups', 'policy'] as const
+export const landingReviewModeSchema = z.enum(LANDING_REVIEW_MODES)
+export type LandingReviewMode = z.infer<typeof landingReviewModeSchema>
+
+/** CI watch (plan §1.4): give up after this long; "no check ever reported" after the grace refuses. */
+export const SHIP_CI_MAX_MINUTES = 120
+export const SHIP_CI_NONE_GRACE_MINUTES = 10
+
+/** An ISO timestamp inside a jsonb column (a string both ways, so the row round-trips unchanged). */
+const isoTimestampSchema = z.string().datetime({ offset: true })
+
+/**
+ * `sessions.landing` (jsonb; null before a ship reaches its PR, and again after a reopen). The
+ * stage is what the Workflow's `land` steps read; every other field is what a stage recorded.
+ * Written by `ship.pr`, then only by compare-and-set on `landing->>'stage'`.
+ */
+export const sessionLandingSchema = z.object({
+  /** The app's `sessionShip` at `ship.pr` (`SESSION_BACKEND=local` forces `pr`). */
+  mode: sessionShipModeSchema,
+  stage: shipLandingStageSchema,
+  prNumber: z.number().int().positive(),
+  /** `sessions.head_sha` after `ship.commit`: the only head Launch reads CI on and merges. */
+  gateSha: z.string(),
+  startedAt: isoTimestampSchema,
+  /** When `stage` last changed — the safety-net cron wakes a landing quiet for three rounds. */
+  stageAt: isoTimestampSchema,
+  reviewMode: landingReviewModeSchema,
+  /** The `session.merge` approval, once `land.review` opened it. */
+  approvalId: z.string().uuid().nullable().default(null),
+  mergeSha: z.string().nullable().default(null),
+  mergedAt: isoTimestampSchema.nullable().default(null),
+  releaseId: z.string().uuid().nullable().default(null),
+  version: z.string().nullable().default(null),
+  tag: z.string().nullable().default(null),
+  /** Staging's `app_environments.url`, once live. */
+  stagingUrl: z.string().nullable().default(null),
+  /** The container was backed up and destroyed while waiting (plan §1.7): a reopen suspends. */
+  containerReleased: z.boolean().default(false),
+  stalledReason: shipStalledReasonSchema.nullable().default(null),
+  /** A sentence for the person: why it stalled, or what the last round saw. */
+  error: z.string().nullable().default(null),
+})
+export type SessionLanding = z.infer<typeof sessionLandingSchema>
+
+/** The ship summary's caps (plan §1.15). */
+export const SHIP_SUMMARY_TITLE_MAX = 200
+export const SHIP_SUMMARY_BODY_MAX = 4000
+export const SHIP_SUMMARY_DIFFSTAT_MAX = 6000
+
+/**
+ * `sessions.ship_summary` (jsonb): the PR's title and body as Launch wrote them, kept on the
+ * session because the squash message, the `session.merge` context and the pipeline strip all read
+ * it after the PR. `body` is without Launch's "Opened by Launch…" footer. Written by
+ * `openShipPullRequest` in the CAS that records the PR number; overwritten on a re-ship.
+ */
+export const sessionShipSummarySchema = z.object({
+  title: z.string().max(SHIP_SUMMARY_TITLE_MAX),
+  body: z.string().max(SHIP_SUMMARY_BODY_MAX),
+  /** `model`: the summary call wrote it; `fallback`: Launch's own, from the commits. */
+  source: z.enum(['model', 'fallback']),
+  diffStat: z.string().max(SHIP_SUMMARY_DIFFSTAT_MAX),
+  prNumber: z.number().int().positive(),
+  gateSha: z.string().nullable(),
+  at: isoTimestampSchema,
+})
+export type SessionShipSummary = z.infer<typeof sessionShipSummarySchema>
+
+/** `ship.ci` — one CI round on the gate SHA, and the failing check when red. */
+export const sessionShipCiDataSchema = z.object({
+  state: prCheckStateSchema,
+  headSha: z.string(),
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  failedCheck: z
+    .object({
+      name: z.string(),
+      url: z.string().nullable(),
+      /** The last lines of its log (or its annotations), redacted like the gate's output. */
+      logTail: z.string().optional(),
+    })
+    .optional(),
+})
+export type SessionShipCiData = z.infer<typeof sessionShipCiDataSchema>
+
+export const SHIP_REVIEW_STATUSES = [
+  'requested',
+  'approved',
+  'rejected',
+  'expired',
+  'cancelled',
+] as const
+/** `ship.review` — the `session.merge` approval opened or settled. */
+export const sessionShipReviewDataSchema = z.object({
+  status: z.enum(SHIP_REVIEW_STATUSES),
+  approvalId: z.string().uuid(),
+  /** Who decided, by name. */
+  by: z.string().optional(),
+  /** The decision's comment. */
+  note: z.string().optional(),
+})
+export type SessionShipReviewData = z.infer<typeof sessionShipReviewDataSchema>
+
+/** `ship.merged` — the PR was squash-merged (by Launch, or by a person meanwhile). */
+export const sessionShipMergedDataSchema = z.object({
+  number: z.number().int().positive(),
+  sha: z.string(),
+  url: z.string(),
+  approvalId: z.string().uuid().nullable(),
+})
+export type SessionShipMergedData = z.infer<typeof sessionShipMergedDataSchema>
+
+/** `ship.released` — the release that carries the merge; `shared` when another merge cut it. */
+export const sessionShipReleasedDataSchema = z.object({
+  releaseId: z.string().uuid(),
+  version: z.string(),
+  tag: z.string(),
+  shared: z.boolean(),
+})
+export type SessionShipReleasedData = z.infer<typeof sessionShipReleasedDataSchema>
+
+export const SHIP_STAGING_STATUSES = [
+  'deploying',
+  'active',
+  'live',
+  'failed',
+  'unhealthy',
+  'timeout',
+] as const
+/** `ship.staging` — the release's staging deploy and health, up to live. */
+export const sessionShipStagingDataSchema = z.object({
+  status: z.enum(SHIP_STAGING_STATUSES),
+  version: z.string(),
+  url: z.string().nullable(),
+  health: healthStatusSchema.optional(),
+  error: z.string().optional(),
+})
+export type SessionShipStagingData = z.infer<typeof sessionShipStagingDataSchema>
+
+/** `ship.reopened` — the landing gave the session back (before the merge only). */
+export const sessionShipReopenedDataSchema = z.object({
+  reason: shipReopenReasonSchema,
+  message: z.string(),
+})
+export type SessionShipReopenedData = z.infer<typeof sessionShipReopenedDataSchema>
+
 /** Event type → the schema its `data` parses with; one lookup for the timeline and the projection. */
 export const SESSION_EVENT_DATA = {
   'user.message': sessionUserMessageDataSchema,
@@ -286,6 +509,12 @@ export const SESSION_EVENT_DATA = {
   'ship.pr': sessionShipPrDataSchema,
   error: agentErrorEventDataSchema,
   'ship.config_needs': sessionShipConfigNeedsDataSchema,
+  'ship.ci': sessionShipCiDataSchema,
+  'ship.review': sessionShipReviewDataSchema,
+  'ship.merged': sessionShipMergedDataSchema,
+  'ship.released': sessionShipReleasedDataSchema,
+  'ship.staging': sessionShipStagingDataSchema,
+  'ship.reopened': sessionShipReopenedDataSchema,
 } as const satisfies Record<SessionEventType, z.ZodTypeAny>
 
 /** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */
@@ -307,7 +536,7 @@ export type SessionEvent = z.infer<typeof sessionEventSchema>
  * `services/sessions/agui-projection.ts`): an app's prefix (`launch.`), never the kit's `kit.`.
  * Its `value` is one `session_events` row as `sessionEventSchema` draws it (`at` an ISO string on
  * the wire) — the facts with no AG-UI frame of their own: `turn.end` / `turn.failed` /
- * `turn.interrupted`, `status`, `preview.ready`, `budget.reached`, `ship.gate`, `ship.pr`, `error`.
+ * `turn.interrupted`, `status`, `preview.ready`, `budget.reached`, `ship.*`, `error`.
  */
 export const SESSION_CUSTOM_EVENTS = {
   event: 'launch.session.event',
@@ -409,11 +638,6 @@ export const appSessionDbSchema = z.object({
   migrationsHash: z.string().optional(),
 })
 export type AppSessionDb = z.infer<typeof appSessionDbSchema>
-
-/** GitHub check-run / commit-status states, folded to one verdict. */
-export const PR_CHECK_STATES = ['pending', 'success', 'failure', 'none'] as const
-export const prCheckStateSchema = z.enum(PR_CHECK_STATES)
-export type PrCheckState = z.infer<typeof prCheckStateSchema>
 
 /**
  * `sessions.pr_checks` — the PR head's CI, from check runs plus the combined status. Refreshed when
@@ -537,6 +761,10 @@ export const sessionSchema = sessionSummarySchema.extend({
   updatedAt: z.coerce.date(),
   /** Whether the caller may ship, end, extend (the creator, the app's owners, admins). */
   viewerCanManage: z.boolean(),
+  /** Issue #5: where the ship stands after its PR; null before one, and after a reopen. */
+  landing: sessionLandingSchema.nullable().default(null),
+  /** Issue #5: the PR's title and body as Launch wrote them; null before the first ship. */
+  shipSummary: sessionShipSummarySchema.nullable().default(null),
 })
 export type Session = z.infer<typeof sessionSchema>
 

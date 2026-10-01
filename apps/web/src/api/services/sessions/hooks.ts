@@ -9,6 +9,9 @@
  * | `checkpoint`  | `checkpoint(db, deps, ref, opts)` (3d)        | `checkpoint#N`, `suspend#N`, `end#N`, `salvage`, `ship.save#N`, `ship.commit#N` |
  * | `shipFix`     | 3c's `createShipTurnRunner` (a fix turn)      | `ship.fix#N.A` (issue #1)    |
  * | `shipSummary` | `summarizeShip` (`ship.ts`, one model call)   | `ship.summary#N` (issue #1)  |
+ * | `landRelease` | `landRelease` (`land-release.ts`, issue #5 S3) | `land.release#K.R`          |
+ * | `landStaging` | `landStaging` (`land-release.ts`, issue #5 S3) | `land.staging#K.R`          |
+ * | `landHealth`  | `landHealth` (`land-release.ts`, issue #5 S3)  | `land.health#K.R`           |
  *
  * Every hook gets ONE argument, a `SessionStepContext` carrying what those functions take (`db`,
  * `cfg`, `ports`, `sandbox`, `storage`, `emit`, `realtime`, `logger`, the ids), so each binding
@@ -35,6 +38,7 @@ import type { Realtime } from '../realtime'
 import type { StorageService } from '../storage'
 import { checkpoint } from './checkpoint'
 import type { SessionEmitter } from './events'
+import { landHealth, landRelease, landStaging } from './land-release'
 import { egressFor, type SandboxPort, type SessionPorts } from './ports'
 import { type ShipSummaryInput, type ShipSummaryResult, summarizeShip } from './ship'
 import {
@@ -87,7 +91,54 @@ export interface SessionStepHooks {
   shipFix(ctx: SessionStepContext, input: Pick<ShipTurnInput, 'message'>): Promise<ShipTurnResult>
   /** The PR's `{ title, body }` — one cheap model call, or the fallback. Never throws for the model. */
   shipSummary(ctx: SessionStepContext, input: ShipSummaryInput): Promise<ShipSummaryResult>
+  /**
+   * Issue #5 Phase B, `land.release#K.R` (plan §1.8): the release that carries the merge. Called
+   * with the landing at stage `releasing`; idempotent (`landing.releaseId` set → that release).
+   */
+  landRelease(ctx: SessionStepContext): Promise<LandReleaseResult>
+  /** Issue #5 Phase B, `land.staging#K.R` (plan §1.9): the release's staging deploy, read once. */
+  landStaging(ctx: SessionStepContext): Promise<LandStagingResult>
+  /** Issue #5 Phase B, `land.health#K.R` (plan §1.9): one health probe of staging. */
+  landHealth(ctx: SessionStepContext): Promise<LandHealthResult>
 }
+
+/**
+ * `landRelease`'s answer.
+ *
+ * - `released`: the release is cut (or an existing one already lists this PR — `shared`). The hook
+ *   has ALREADY recorded `releaseId` / `version` / `tag` on `sessions.landing` and moved its stage
+ *   `releasing → deploying` (one compare-and-set), and emitted `ship.released`.
+ * - `wait`: another holder has the app's release claim (`withReleaseClaim`); the Workflow sleeps
+ *   `waitSeconds` (`land.release-wait#K.R`, 20 s) and calls again. The hook itself answers
+ *   `stalled` once the landing has waited longer than its cap (15 min).
+ * - `stalled`: the release could not be cut (GitHub refused the bump or the tag). Nothing written:
+ *   the Workflow's `land.stalled#K` records `stalledReason` and `error`.
+ */
+export type LandReleaseResult =
+  | { status: 'released'; releaseId: string; version: string; tag: string; shared: boolean }
+  | { status: 'wait'; waitSeconds: number }
+  | { status: 'stalled'; reason: 'release_failed'; error: string }
+
+/**
+ * `landStaging`'s answer: `active` — the release reached `staging_active` (or later; `ship.staging
+ * {status:'active'}` emitted), health next; `wait` — still deploying, read again after
+ * `waitSeconds` (`land.staging-wait#K.R`, 2 min); `stalled` — the deploy failed, or the release is
+ * still `tagged` 45 minutes on. Nothing written for `stalled`: `land.stalled#K` does.
+ */
+export type LandStagingResult =
+  | { status: 'active' }
+  | { status: 'wait'; waitSeconds: number }
+  | { status: 'stalled'; reason: 'deploy_failed' | 'deploy_timeout'; error: string }
+
+/**
+ * `landHealth`'s answer: `live` — staging answered `up` on the release's version (`url` is
+ * staging's `app_environments.url`); the Workflow's `land.live#K` records it. `wait` — probe again
+ * after `waitSeconds` (`land.health-wait#K.R`, 30 s); `stalled` — not healthy after 10 probes.
+ */
+export type LandHealthResult =
+  | { status: 'live'; url: string | null; version: string }
+  | { status: 'wait'; waitSeconds: number }
+  | { status: 'stalled'; reason: 'unhealthy'; error: string }
 
 /** The real functions (slices 3c and 3d). */
 export const defaultSessionStepHooks: SessionStepHooks = {
@@ -119,6 +170,10 @@ export const defaultSessionStepHooks: SessionStepHooks = {
     })({ message: input.message, session: ctx.session }),
   shipSummary: (ctx, input) =>
     summarizeShip(ctx.db, ctx.cfg, ctx.env, ctx.session, input, { logger: ctx.logger }),
+  // Issue #5 Phase B (`land-release.ts`, slice S3).
+  landRelease: ctx => landRelease(ctx),
+  landStaging: ctx => landStaging(ctx),
+  landHealth: ctx => landHealth(ctx),
 }
 
 /** The commit subject of a checkpoint that is not a turn's own. */

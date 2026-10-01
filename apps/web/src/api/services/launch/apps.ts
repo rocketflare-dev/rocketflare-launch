@@ -18,6 +18,7 @@ import type {
   AppSummary,
   UpdateAppRequest,
 } from '@launch/shared/launch-apps'
+import { resolveAppShipSettings } from '@launch/shared/launch-apps'
 import { and, asc, desc, eq, gte, inArray } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import {
@@ -169,6 +170,9 @@ export async function getAppDetail(
     environments: sorted.map(toEnvironment),
     updatedAt: row.app.updatedAt,
     viewerCanDeploy: await mayDeployApp(db, tenantId, row.app, viewer),
+    // Issue #5: S4 resolves an admin `session.merge` policy row into `shipReviewSetBy: 'policy'`.
+    shipSettings: resolveAppShipSettings(row.app.shipSettings),
+    shipReviewSetBy: 'app',
   }
 }
 

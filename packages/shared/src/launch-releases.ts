@@ -67,6 +67,15 @@ export const RELEASE_MAX_PRS = 100
  */
 export const RELEASE_REALTIME_ENTITY = 'release'
 
+/** Error codes the release routes answer with (the `code` of the error envelope). */
+export const RELEASE_ERROR_CODES = {
+  /**
+   * Issue #5 (plan §1.8): another release of the app is being cut right now — a session's landing
+   * or a person — and holds the app's release claim (`apps.release_claim_holder`). A 409.
+   */
+  inProgress: 'release_in_progress',
+} as const
+
 // ---- versions ----------------------------------------------------------------------------------
 
 /**

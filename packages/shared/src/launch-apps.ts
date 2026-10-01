@@ -333,6 +333,93 @@ export const appListResponseSchema = z.object({
 })
 export type AppListResponse = z.infer<typeof appListResponseSchema>
 
+// ---- Ship settings and branch protection (issue #5, `docs/plans/i5-ship-to-staging.md`) ------
+
+/**
+ * Where a session's Ship ends (plan §1.10): `staging` — Launch waits for CI, merges the PR, cuts a
+ * patch release and follows it live on staging; `pr` — the PR is opened and left for a person
+ * (the flow before issue #5). `launch-sessions` imports these, never the reverse.
+ */
+export const SESSION_SHIP_MODES = ['staging', 'pr'] as const
+export const sessionShipModeSchema = z.enum(SESSION_SHIP_MODES)
+export type SessionShipMode = z.infer<typeof sessionShipModeSchema>
+
+/**
+ * Who must approve a session's merge (plan §1.11): nobody, the app's owners, or named groups. An
+ * admin `approval_policies` row for `session.merge` overrides this (`shipReviewSetBy: 'policy'`).
+ */
+export const SHIP_REVIEW_MODES = ['none', 'app_owners', 'groups'] as const
+export const shipReviewModeSchema = z.enum(SHIP_REVIEW_MODES)
+export type ShipReviewMode = z.infer<typeof shipReviewModeSchema>
+
+/** `apps.ship_settings` (jsonb; null = `DEFAULT_APP_SHIP_SETTINGS`). */
+export const appShipSettingsSchema = z.object({
+  sessionShip: sessionShipModeSchema,
+  review: z.object({
+    mode: shipReviewModeSchema,
+    groupIds: z.array(z.string().uuid()).max(50).default([]),
+  }),
+})
+export type AppShipSettings = z.infer<typeof appShipSettingsSchema>
+
+/** Every app, imported ones included, ships to staging with no review (decision §0.2). */
+export const DEFAULT_APP_SHIP_SETTINGS: AppShipSettings = {
+  sessionShip: 'staging',
+  review: { mode: 'none', groupIds: [] },
+}
+
+/** The stored column with the defaults filled in; null or unparseable is the defaults. */
+export function resolveAppShipSettings(stored: unknown): AppShipSettings {
+  const parsed = appShipSettingsSchema.safeParse(stored)
+  return parsed.success ? parsed.data : DEFAULT_APP_SHIP_SETTINGS
+}
+
+/** `PUT /api/apps/:id/ship-settings` — the app's owners and admins; `groups` names at least one. */
+export const putAppShipSettingsRequestSchema = appShipSettingsSchema.superRefine((value, ctx) => {
+  if (value.review.mode === 'groups' && value.review.groupIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['review', 'groupIds'],
+      message: 'Name at least one team to review',
+    })
+  }
+})
+export type PutAppShipSettingsRequest = z.infer<typeof putAppShipSettingsRequestSchema>
+
+/** Where the effective review rule comes from: the app's own setting, or an admin policy row. */
+export const SHIP_REVIEW_SET_BY = ['app', 'policy'] as const
+export const shipReviewSetBySchema = z.enum(SHIP_REVIEW_SET_BY)
+export type ShipReviewSetBy = z.infer<typeof shipReviewSetBySchema>
+
+/**
+ * `GET /api/apps/:id/branch-protection` (plan §1.13): `ok` — Launch's ruleset requires `Gate` and
+ * the App may bypass it; `none` — nothing protects the default branch; `blocks` — a rule (classic
+ * protection, or a ruleset the App cannot bypass) would stop Launch's release bump; `unavailable`
+ * — the owner's plan has no rulesets on this repo; `unknown` — GitHub could not be asked.
+ */
+/**
+ * The status check Launch's ruleset requires and the landing waits on: the kit's `ci.yml` job
+ * `gate` is named `Gate` (decision §0.5; `tests/config/kit-required-check.test.ts` pins it).
+ */
+export const KIT_REQUIRED_CHECK = 'Gate'
+
+export const BRANCH_PROTECTION_STATES = ['ok', 'none', 'blocks', 'unavailable', 'unknown'] as const
+export const branchProtectionStateSchema = z.enum(BRANCH_PROTECTION_STATES)
+export type BranchProtectionState = z.infer<typeof branchProtectionStateSchema>
+
+export const appBranchProtectionSchema = z.object({
+  state: branchProtectionStateSchema,
+  /** The status checks the default branch requires (rulesets and classic protection). */
+  requiredChecks: z.array(z.string()),
+  /** Whether Launch's GitHub App may bypass every rule that applies (its release bump lands). */
+  appCanBypass: z.boolean(),
+  /** Launch's own `launch` ruleset, when it exists. */
+  rulesetId: z.number().int().positive().nullable(),
+  /** A sentence for the admin: what blocks, or why it is unknown. */
+  detail: z.string().nullable(),
+})
+export type AppBranchProtection = z.infer<typeof appBranchProtectionSchema>
+
 /** `GET /api/apps/:slug`. */
 export const appDetailSchema = appSummarySchema.extend({
   templateContractVersion: z.string().nullable(),
@@ -345,6 +432,10 @@ export const appDetailSchema = appSummarySchema.extend({
    * rule `POST /:id/deploys/…` enforces. Retry and archive stay `manage App`.
    */
   viewerCanDeploy: z.boolean(),
+  /** Issue #5: `apps.ship_settings` resolved (defaults filled in). Defaulted so an older answer parses. */
+  shipSettings: appShipSettingsSchema.default(DEFAULT_APP_SHIP_SETTINGS),
+  /** `policy`: an admin `session.merge` policy row decides review, and the setting is read-only. */
+  shipReviewSetBy: shipReviewSetBySchema.default('app'),
 })
 export type AppDetail = z.infer<typeof appDetailSchema>
 

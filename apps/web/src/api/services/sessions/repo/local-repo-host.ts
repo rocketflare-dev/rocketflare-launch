@@ -10,10 +10,22 @@
  *   session row exactly as it writes GitHub's.
  * - `getChecks` reports the ship gate's own result: `ship()` only opens a PR after Launch ran the
  *   gate green on that head, so the one check a local PR has is that gate, passed.
+ * - Issue #5: `SESSION_BACKEND=local` always ships in `pr` mode, so nothing lands: there is no PR
+ *   to read (`getPullRequest` → null), none to merge (`mergePullRequest` → `refused`), and no
+ *   failing check (`failedCheckLog` → null).
  */
 import type { PrChecks } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
-import type { GitAuth, OpenPullRequestInput, RepoHostPort, RepoRef } from '../ports'
+import type {
+  FailedCheckLog,
+  GitAuth,
+  MergePullRequestResult,
+  MergeShipPullRequestInput,
+  OpenPullRequestInput,
+  RepoHostPort,
+  RepoPullRequest,
+  RepoRef,
+} from '../ports'
 
 /** The check a local PR reports: the gate `ship()` ran before opening it. */
 export const LOCAL_SHIP_GATE_CHECK = 'Launch ship gate'
@@ -61,5 +73,28 @@ export class LocalRepoHost implements RepoHostPort {
       pending: 0,
       checks: [{ name: LOCAL_SHIP_GATE_CHECK, source: 'check_run', state: 'success', url: null }],
     }
+  }
+
+  async getPullRequest(_repo: RepoRef, _prNumber: number): Promise<RepoPullRequest | null> {
+    return null
+  }
+
+  async mergePullRequest(
+    _repo: RepoRef,
+    _input: MergeShipPullRequestInput
+  ): Promise<MergePullRequestResult> {
+    return {
+      merged: false,
+      code: 'refused',
+      message:
+        'A local session has no pull request to merge: SESSION_BACKEND=local ships in pr mode',
+    }
+  }
+
+  async failedCheckLog(
+    _repo: RepoRef,
+    _input: { headSha: string }
+  ): Promise<FailedCheckLog | null> {
+    return null
   }
 }

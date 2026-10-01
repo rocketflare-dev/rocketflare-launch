@@ -4,32 +4,57 @@
  * what it said), the pending-subject index that makes `open` idempotent, the stub mounts answering
  * as the auth surface says (`/api/approvals` → `{ items: [] }`), the two cron tasks registered and
  * harmless, the cross-tenant scans the crons build on, and the engine's stubs failing BY NAME.
+ * Issue #5's S1 (`docs/plans/i5-ship-to-staging.md`): the new columns, `session.merge` registered
+ * with one open request per session, and every S1 stub failing by name with its slice.
  */
 import { DEFAULT_APPROVAL_POLICIES } from '@launch/shared/launch-approvals'
+import { sessionLandingSchema } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
+import { kindHandler } from '@/api/services/approvals/kinds'
 import { approvalsSweep, dueForApplyRetry, dueForExpiry } from '@/api/services/approvals/sweep'
+import type { ApprovalDeps } from '@/api/services/approvals/types'
+import { NotWiredError } from '@/api/services/i5-not-wired'
 import { recordAudit, SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import {
   auditSealTask,
   hasUnsealedEvents,
   tenantsWithUnsealedEvents,
 } from '@/api/services/launch/audit-chain'
+import { withReleaseClaim } from '@/api/services/launch/releases/claim'
+import { reviewPolicyFor } from '@/api/services/launch/ship-settings'
+import { toSessionDetail } from '@/api/services/sessions/chat'
+import { defaultSessionStepHooks } from '@/api/services/sessions/hooks'
 import {
+  landCiStep,
+  landLiveStep,
+  landMergeStep,
+  landReopenStep,
+  landReviewStep,
+  landStalledStep,
+  nudgeLandingSessions,
+  releaseLandingContainer,
+} from '@/api/services/sessions/land'
+import type { landRelease } from '@/api/services/sessions/land-release'
+import {
+  type ApprovalRequestRow,
   appReleases,
   approvalDecisions,
   approvalRequests,
+  apps,
   auditChain,
   auditEvents,
   deployTickets,
   type NewApprovalRequestRow,
+  sessions,
   tenants,
 } from '@/db/schema'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
 import { forgetApps, seedApp } from '../helpers/launch-apps'
 import { json, request } from '../helpers/request'
+import { insertSession } from '../helpers/sessions'
 import { createExecutionContext, createTestEnv, waitOnExecutionContext } from '../mocks/bindings'
 
 const db = setupTestDatabase()
@@ -277,6 +302,140 @@ describe('releases and tickets', () => {
       })
       .returning()
     expect(ticket).toMatchObject({ releaseId: row?.id, approvalId: approval?.id })
+  })
+})
+
+describe('issue #5 foundations (S1): session.merge and the new columns', () => {
+  it('the new columns default to null and round-trip their jsonb shapes', async () => {
+    const { tenant, user, app } = await seedTenant()
+    expect(app).toMatchObject({
+      shipSettings: null,
+      releaseClaimHolder: null,
+      releaseClaimedAt: null,
+    })
+    const row = await insertSession(db, { tenant, user, app })
+    expect(row).toMatchObject({ landing: null, shipSummary: null })
+
+    const landing = sessionLandingSchema.parse({
+      mode: 'staging',
+      stage: 'ci',
+      prNumber: 4,
+      gateSha: 'abc1234',
+      startedAt: '2026-10-01T10:00:00.000Z',
+      stageAt: '2026-10-01T10:00:00.000Z',
+      reviewMode: 'app_owners',
+    })
+    const shipSummary = {
+      title: 'Change the heading',
+      body: 'The heading says hello.',
+      source: 'fallback' as const,
+      diffStat: ' 1 file changed',
+      prNumber: 4,
+      gateSha: 'abc1234',
+      at: '2026-10-01T10:00:00.000Z',
+    }
+    await db.update(sessions).set({ landing, shipSummary }).where(eq(sessions.id, row.id))
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(after?.landing).toEqual(landing)
+    expect(after?.shipSummary).toEqual(shipSummary)
+    // The session's answer carries both; a fresh one carries nulls.
+    expect(toSessionDetail(after as typeof row, true)).toMatchObject({ landing, shipSummary })
+    expect(toSessionDetail(row, true)).toMatchObject({ landing: null, shipSummary: null })
+
+    const claimedAt = new Date()
+    await db
+      .update(apps)
+      .set({
+        shipSettings: { sessionShip: 'pr', review: { mode: 'none', groupIds: [] } },
+        releaseClaimHolder: `session:${row.id}`,
+        releaseClaimedAt: claimedAt,
+      })
+      .where(eq(apps.id, app.id))
+    const [appAfter] = await db.select().from(apps).where(eq(apps.id, app.id))
+    expect(appAfter).toMatchObject({
+      shipSettings: { sessionShip: 'pr' },
+      releaseClaimHolder: `session:${row.id}`,
+      releaseClaimedAt: claimedAt,
+    })
+  })
+
+  it('one open session.merge per session; the kind is registered and its effects fail BY NAME', async () => {
+    const { tenant, user, app } = await seedTenant()
+    const session = await insertSession(db, { tenant, user, app })
+    const values: NewApprovalRequestRow = {
+      tenantId: tenant.id,
+      kind: 'session.merge',
+      appId: app.id,
+      subjectType: 'session',
+      subjectId: session.id,
+      requestedByUserId: user.id,
+      context: {
+        kind: 'session.merge',
+        sessionId: session.id,
+        shortId: session.shortId,
+        title: null,
+        appSlug: app.slug,
+        prNumber: 4,
+        prUrl: 'https://github.com/acme/shop/pull/4',
+        prTitle: 'Change the heading',
+        summary: 'The heading says hello.',
+        diffStat: ' 1 file changed',
+        headSha: 'abc1234',
+        sessionPath: `/sessions/${session.id}`,
+      },
+      policy: DEFAULT_APPROVAL_POLICIES['session.merge'],
+      excludedUserIds: [user.id],
+    }
+    const [first] = await db.insert(approvalRequests).values(values).returning()
+    expect(first?.status).toBe('pending')
+    expect(
+      await db.insert(approvalRequests).values(values).onConflictDoNothing().returning()
+    ).toEqual([])
+
+    const handler = kindHandler('session.merge')
+    expect(await handler.defaultPolicy(db, tenant.id)).toEqual(
+      DEFAULT_APPROVAL_POLICIES['session.merge']
+    )
+    expect(handler.describe(first as ApprovalRequestRow)).toBe(
+      `Merge “Change the heading” (#4) from session ${session.shortId}`
+    )
+    const deps = {} as ApprovalDeps
+    const request = first as ApprovalRequestRow
+    for (const effect of [
+      handler.applyInTx(db, request, deps),
+      handler.applyAfter(request, deps),
+      handler.onClosed?.(request, 'rejected', deps),
+    ]) {
+      await expect(effect).rejects.toMatchObject({
+        name: 'NotWiredError',
+        message: expect.stringContaining('issue #5 slice S2'),
+      })
+    }
+  })
+
+  it('the other S1 stubs fail by name, naming the slice that fills them', async () => {
+    const scope = {} as Parameters<typeof landCiStep>[0]
+    const ctx = {} as Parameters<typeof landRelease>[0]
+    const cases: [Promise<unknown>, string][] = [
+      [landCiStep(scope), 'S2'],
+      [landReviewStep(scope), 'S2'],
+      [landMergeStep(scope), 'S2'],
+      [landReopenStep(scope, { reason: 'ci_failed', message: 'x', bootId: null }), 'S2'],
+      [releaseLandingContainer(scope, 'idle'), 'S2'],
+      [landLiveStep(scope, { url: null, version: '1.0.0' }), 'S2'],
+      [landStalledStep(scope, { reason: 'unhealthy', error: 'x' }), 'S2'],
+      [nudgeLandingSessions(db, {} as never, {} as never, new Date()), 'S2'],
+      [defaultSessionStepHooks.landRelease(ctx), 'S3'],
+      [defaultSessionStepHooks.landStaging(ctx), 'S3'],
+      [defaultSessionStepHooks.landHealth(ctx), 'S3'],
+      [withReleaseClaim(db, { tenantId: '', appId: '', holder: 'user:x' }, async () => 1), 'S3'],
+      [reviewPolicyFor(db, '', { id: '', ownerGroupId: null, shipSettings: null }), 'S4'],
+    ]
+    for (const [promise, slice] of cases) {
+      const error = (await promise.catch(e => e)) as Error
+      expect(error).toBeInstanceOf(NotWiredError)
+      expect(error.message).toContain(`issue #5 slice ${slice}`)
+    }
   })
 })
 

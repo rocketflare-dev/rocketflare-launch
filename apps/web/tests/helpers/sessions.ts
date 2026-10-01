@@ -31,6 +31,7 @@ import { and, eq } from 'drizzle-orm'
 import { createOrgRepo } from '@/api/services/launch/github-app'
 import { NeonClient } from '@/api/services/launch/neon'
 import { GATE_KIT_PROBE, GATE_LIST_COMMAND } from '@/api/services/sessions/gate'
+import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import type {
   ModelUpstream,
   RepoHostPort,
@@ -231,6 +232,28 @@ const missingRepo: RepoHostPort = {
   gitAuth: () => missing('repoHost'),
   openPullRequest: () => missing('repoHost'),
   getChecks: () => missing('repoHost'),
+  getPullRequest: () => missing('repoHost'),
+  mergePullRequest: () => missing('repoHost'),
+  failedCheckLog: () => missing('repoHost'),
+}
+
+/**
+ * Issue #5's Phase B hooks for a suite that never lands a ship: each throws by name if reached.
+ * Spread into a test's `SessionStepHooks` (`...UNEXPECTED_LAND_HOOKS`) and override the ones it drives.
+ */
+export const UNEXPECTED_LAND_HOOKS: Pick<
+  SessionStepHooks,
+  'landRelease' | 'landStaging' | 'landHealth'
+> = {
+  landRelease: async () => {
+    throw new Error('a landRelease hook call was not expected in this test')
+  },
+  landStaging: async () => {
+    throw new Error('a landStaging hook call was not expected in this test')
+  },
+  landHealth: async () => {
+    throw new Error('a landHealth hook call was not expected in this test')
+  },
 }
 
 export interface FakeSessionPorts extends SessionPorts {

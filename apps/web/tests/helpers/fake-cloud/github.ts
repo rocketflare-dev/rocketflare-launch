@@ -27,6 +27,21 @@
  * person's, which a release's compare must still find), `merge(owner, repo, number)` (a merge
  * commit on the base branch, the PR closed and merged), `closePull(owner, repo, number)`, and
  * `publish(owner, repo, tag)` (a Release published in GitHub by hand — the job-originated path).
+ *
+ * Issue #5 (`docs/plans/i5-ship-to-staging.md` §3 S1) adds what a landing and the branch-protection
+ * diagnosis call: an open PR's `head.sha` follows its branch (as GitHub's does), so a push after
+ * the gate is visible; `PUT …/pulls/{n}/merge` (`contents: write`; squash by default — one commit
+ * on the base with the head's files, the PR closed and merged, recorded in `merges` /
+ * `mergeCount`; 409 when `sha` is not the head, 405 when closed or a required check is not green
+ * on the head); check runs carry an `id` (= the Actions job's) and `app.slug` (default
+ * `github-actions`); `GET …/actions/jobs/{id}/logs` (`actions: read`; `setJobLog(owner, repo, id,
+ * log)`, 404 without one); `GET …/check-runs/{id}/annotations` (a run's `annotations`); rulesets —
+ * `GET|POST …/rulesets`, `GET|PUT …/rulesets/{id}` (`administration`; `current_user_can_bypass`
+ * from an `Integration` bypass actor naming the App's id; 403 after `disableRulesets(owner, repo)`,
+ * a plan without them) — and `GET …/branches/{b}/protection` (classic; 404 "Branch not protected").
+ * The hook `protect(owner, repo, { requiredChecks, bypassAppId?, classic?, name? })` protects the
+ * default branch; a direct ref update of it (`updateRef`, so `commitFiles`) by a token the rules
+ * do not let bypass is then a 422.
  */
 import {
   belongsTo,
@@ -125,6 +140,58 @@ export interface FakeCheckRun {
   status: 'queued' | 'in_progress' | 'completed'
   conclusion?: string | null
   html_url?: string
+  /** Issue #5: the check run's id (= the Actions job's id); `setCheckRuns` assigns one when absent. */
+  id?: number
+  /** Issue #5: the reporting App's slug, answered as `app.slug` (default `github-actions`). */
+  app?: string
+  /** Issue #5: what `GET …/check-runs/{id}/annotations` answers (default none). */
+  annotations?: FakeCheckAnnotation[]
+}
+
+/** Issue #5: one check-run annotation. */
+export interface FakeCheckAnnotation {
+  path: string
+  start_line: number
+  annotation_level: 'notice' | 'warning' | 'failure'
+  title?: string
+  message: string
+}
+
+/** Issue #5: a repository ruleset (`POST …/rulesets`, or `protect()`). */
+export interface FakeRuleset {
+  id: number
+  name: string
+  target: 'branch'
+  enforcement: 'active' | 'evaluate' | 'disabled'
+  bypass_actors: { actor_id: number | null; actor_type: string; bypass_mode: string }[]
+  conditions: { ref_name: { include: string[]; exclude: string[] } }
+  rules: { type: string; parameters?: Record<string, unknown> }[]
+}
+
+/** Issue #5: what `protect()` sets up on a repo's default branch. */
+export interface FakeProtectInput {
+  /** The status checks a merge (and a direct push) needs green. */
+  requiredChecks: string[]
+  /** An App id the ruleset lets bypass (`Integration`, `always`) — Launch's is `opts.appId`. */
+  bypassAppId?: number
+  /** Classic branch protection instead of a ruleset: nothing can bypass it. */
+  classic?: boolean
+  /** The ruleset's name (default `branch-protection`). */
+  name?: string
+}
+
+/** Issue #5: one merge through the API (`PUT …/pulls/{n}/merge`). */
+export interface FakeMerge {
+  owner: string
+  repo: string
+  number: number
+  /** The merge commit. */
+  sha: string
+  /** The PR head it merged. */
+  headSha: string
+  method: 'squash' | 'merge' | 'rebase'
+  title: string | null
+  message: string | null
 }
 
 export interface FakeCommitStatus {
@@ -176,6 +243,16 @@ export class FakeGitHub implements VendorHandler {
   readonly releases: FakeGitHubRelease[] = []
   /** P4: called after each release published through the API (awaited) — `release: published`. */
   onRelease: ((release: FakeGitHubRelease) => unknown | Promise<unknown>) | null = null
+  /** Issue #5: every merge through the API, in order (`mergeCount` counts them). */
+  readonly merges: FakeMerge[] = []
+  /** Issue #5: `owner/name` (lower-case) → the repo's rulesets. */
+  readonly rulesets = new Map<string, FakeRuleset[]>()
+  /** Issue #5: `owner/name` (lower-case) → classic protection on one branch. */
+  readonly classicProtection = new Map<string, { branch: string; requiredChecks: string[] }>()
+  /** Issue #5: repos whose plan has no rulesets or protection (a private repo, free plan). */
+  readonly rulesetsUnavailable = new Set<string>()
+  /** Issue #5: `owner/name#jobId` (lower-case repo) → the Actions job's log. */
+  readonly jobLogs = new Map<string, string>()
 
   constructor(
     private readonly ids: IdSource,
@@ -255,9 +332,81 @@ export class FakeGitHub implements VendorHandler {
     return `${owner}/${name}`.toLowerCase() + `@${sha}`
   }
 
-  /** P3: the check runs `ref` (resolved to its sha now) reports. */
-  setCheckRuns(owner: string, name: string, ref: string, runs: FakeCheckRun[]): void {
-    this.checkRuns.set(this.ciKey(owner, name, ref), runs)
+  /**
+   * P3: the check runs `ref` (resolved to its sha now) reports. Issue #5: each gets an `id` (the
+   * Actions job's) when it has none; the stored runs are returned so a test can read them.
+   */
+  setCheckRuns(owner: string, name: string, ref: string, runs: FakeCheckRun[]): FakeCheckRun[] {
+    const stored = runs.map(run => ({ ...run, id: run.id ?? this.ids.number() }))
+    this.checkRuns.set(this.ciKey(owner, name, ref), stored)
+    return stored
+  }
+
+  /** Issue #5: the log `GET …/actions/jobs/{jobId}/logs` answers (null: none — GitHub's 404). */
+  setJobLog(owner: string, name: string, jobId: number, log: string | null): void {
+    const key = `${`${owner}/${name}`.toLowerCase()}#${jobId}`
+    if (log === null) this.jobLogs.delete(key)
+    else this.jobLogs.set(key, log)
+  }
+
+  /**
+   * Issue #5: protect `owner/name`'s default branch — a ruleset (`pull_request` with 0 reviews,
+   * `required_status_checks`, `non_fast_forward`, `deletion`) that `bypassAppId` may bypass, or
+   * with `classic` classic branch protection nothing bypasses. Then a direct ref update of that
+   * branch by a token that may not bypass is a 422, and a merge whose head lacks a green required
+   * check is a 405. Returns the ruleset (null for classic).
+   */
+  protect(owner: string, name: string, input: FakeProtectInput): FakeRuleset | null {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const key = this.repoKey(repo)
+    if (input.classic) {
+      this.classicProtection.set(key, {
+        branch: repo.default_branch,
+        requiredChecks: [...input.requiredChecks],
+      })
+      return null
+    }
+    const ruleset: FakeRuleset = {
+      id: this.ids.number(),
+      name: input.name ?? 'branch-protection',
+      target: 'branch',
+      enforcement: 'active',
+      bypass_actors:
+        input.bypassAppId === undefined
+          ? []
+          : [{ actor_id: input.bypassAppId, actor_type: 'Integration', bypass_mode: 'always' }],
+      conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
+      rules: [
+        { type: 'pull_request', parameters: { required_approving_review_count: 0 } },
+        {
+          type: 'required_status_checks',
+          parameters: {
+            strict_required_status_checks_policy: false,
+            required_status_checks: input.requiredChecks.map(context => ({ context })),
+          },
+        },
+        { type: 'non_fast_forward' },
+        { type: 'deletion' },
+      ],
+    }
+    this.rulesets.set(key, [...(this.rulesets.get(key) ?? []), ruleset])
+    return ruleset
+  }
+
+  /** Issue #5: the repo's plan has no rulesets (GitHub's 403 on every rulesets/protection call). */
+  disableRulesets(owner: string, name: string): void {
+    this.rulesetsUnavailable.add(`${owner}/${name}`.toLowerCase())
+  }
+
+  /** Issue #5: how many API merges `owner/name` (or one PR of it) has had. */
+  mergeCount(owner: string, name: string, number?: number): number {
+    return this.merges.filter(
+      m =>
+        m.owner.toLowerCase() === owner.toLowerCase() &&
+        m.repo.toLowerCase() === name.toLowerCase() &&
+        (number === undefined || m.number === number)
+    ).length
   }
 
   /** P3: the commit statuses `ref` (resolved to its sha now) reports. */
@@ -395,6 +544,105 @@ export class FakeGitHub implements VendorHandler {
   }
 
   // ---- internals -------------------------------------------------------------------------------
+
+  private repoKey(repo: FakeRepo): string {
+    return `${repo.owner}/${repo.name}`.toLowerCase()
+  }
+
+  /** Issue #5: whether an ACTIVE ruleset governs `branch`. */
+  private rulesetApplies(ruleset: FakeRuleset, repo: FakeRepo, branch: string): boolean {
+    if (ruleset.enforcement !== 'active' || ruleset.target !== 'branch') return false
+    const matches = (pattern: string) =>
+      pattern === '~ALL' ||
+      (pattern === '~DEFAULT_BRANCH' && branch === repo.default_branch) ||
+      pattern === `refs/heads/${branch}`
+    const { include, exclude } = ruleset.conditions.ref_name
+    return include.some(matches) && !exclude.some(matches)
+  }
+
+  /** Issue #5: whether THE App (every installation token here is its) may bypass `ruleset`. */
+  private bypassOf(ruleset: FakeRuleset): 'always' | 'pull_requests_only' | 'never' {
+    const actor = ruleset.bypass_actors.find(
+      a => a.actor_type === 'Integration' && a.actor_id === this.opts.appId
+    )
+    if (!actor) return 'never'
+    return actor.bypass_mode === 'always' ? 'always' : 'pull_requests_only'
+  }
+
+  /** Issue #5: the status checks `branch` requires — every applying ruleset's, plus classic. */
+  private requiredChecksFor(repo: FakeRepo, branch: string): string[] {
+    const checks = new Set<string>()
+    for (const ruleset of this.rulesets.get(this.repoKey(repo)) ?? []) {
+      if (!this.rulesetApplies(ruleset, repo, branch)) continue
+      for (const rule of ruleset.rules) {
+        if (rule.type !== 'required_status_checks') continue
+        const list = (rule.parameters?.required_status_checks ?? []) as { context: string }[]
+        for (const c of list) checks.add(c.context)
+      }
+    }
+    const classic = this.classicProtection.get(this.repoKey(repo))
+    if (classic?.branch === branch) for (const c of classic.requiredChecks) checks.add(c)
+    return [...checks]
+  }
+
+  /**
+   * Issue #5: why a direct update of `heads/<branch>` is refused, or null. A ruleset with a
+   * `pull_request` or `required_status_checks` rule refuses every push the App may not bypass;
+   * classic protection with required checks refuses every push (an App never bypasses it).
+   */
+  private refUpdateRefusal(repo: FakeRepo, ref: string): string | null {
+    const branch = ref.startsWith('heads/') ? ref.slice('heads/'.length) : null
+    if (branch === null) return null
+    for (const ruleset of this.rulesets.get(this.repoKey(repo)) ?? []) {
+      if (!this.rulesetApplies(ruleset, repo, branch)) continue
+      const blocking = ruleset.rules.some(
+        r => r.type === 'pull_request' || r.type === 'required_status_checks'
+      )
+      if (blocking && this.bypassOf(ruleset) !== 'always') {
+        return 'Repository rule violations found\n\nChanges must be made through a pull request.'
+      }
+    }
+    const classic = this.classicProtection.get(this.repoKey(repo))
+    if (classic?.branch === branch && classic.requiredChecks.length > 0) {
+      return `Protected branch update failed for refs/heads/${branch}. Required status check "${classic.requiredChecks[0]}" is expected.`
+    }
+    return null
+  }
+
+  /** Issue #5: whether `context` is green on `sha` — a check run by that name, or a status. */
+  private checkGreen(repo: FakeRepo, sha: string, context: string): boolean {
+    const key = this.ciKey(repo.owner, repo.name, sha)
+    const run = (this.checkRuns.get(key) ?? []).find(r => r.name === context)
+    if (run) {
+      return (
+        run.status === 'completed' &&
+        ['success', 'neutral', 'skipped'].includes(run.conclusion ?? 'success')
+      )
+    }
+    const status = (this.statuses.get(key) ?? []).find(s => s.context === context)
+    return status?.state === 'success'
+  }
+
+  /** Issue #5: a PR's head as GitHub reports it — the branch's commit while the PR is open. */
+  private liveHeadSha(p: FakeGitHubPull): string {
+    if (p.state !== 'open') return p.headSha
+    return this.repo(p.owner, p.repo)?.refs.get(`heads/${p.head}`) ?? p.headSha
+  }
+
+  private rulesetJson(repo: FakeRepo, ruleset: FakeRuleset, full: boolean) {
+    return {
+      id: ruleset.id,
+      name: ruleset.name,
+      target: ruleset.target,
+      source_type: 'Repository',
+      source: `${repo.owner}/${repo.name}`,
+      enforcement: ruleset.enforcement,
+      bypass_actors: ruleset.bypass_actors,
+      conditions: ruleset.conditions,
+      current_user_can_bypass: this.bypassOf(ruleset),
+      ...(full ? { rules: ruleset.rules } : {}),
+    }
+  }
 
   private findPull(owner: string, name: string, number: number): FakeGitHubPull | undefined {
     return this.pulls.find(
@@ -811,6 +1059,9 @@ export class FakeGitHub implements VendorHandler {
       if (!body.force && !commit.parents.includes(current)) {
         return ghError(422, 'Update is not a fast forward')
       }
+      // Issue #5: a protected branch refuses a direct update the App may not bypass.
+      const refusal = this.refUpdateRefusal(repo, ref)
+      if (refusal) return ghError(422, refusal)
       if (this.touchesWorkflows(current, sha) && !this.can(token, 'workflows', 'write')) {
         return ghError(
           403,
@@ -952,6 +1203,145 @@ export class FakeGitHub implements VendorHandler {
       return pull ? json(this.pullJson(pull)) : ghError(404, 'Not Found')
     }
 
+    // ---- Issue #5: squash merge, job logs, annotations, rulesets, classic protection
+    match = rest.match(/^\/pulls\/(\d+)\/merge$/)
+    if (match && m === 'PUT') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const pull = this.findPull(repo.owner, repo.name, Number(match[1]))
+      if (!pull) return ghError(404, 'Not Found')
+      if (pull.state !== 'open') return ghError(405, 'Pull Request is not mergeable')
+      const headSha = this.liveHeadSha(pull)
+      if (body.sha !== undefined && body.sha !== headSha) {
+        return ghError(409, 'Head branch was modified. Review and try the merge again.')
+      }
+      const missing = this.requiredChecksFor(repo, pull.base).find(
+        context => !this.checkGreen(repo, headSha, context)
+      )
+      if (missing) return ghError(405, `Required status check "${missing}" is expected.`)
+      const baseSha = repo.refs.get(`heads/${pull.base}`)
+      if (!baseSha) return ghError(422, 'Base branch was deleted')
+      const method = (
+        ['merge', 'rebase'].includes(String(body.merge_method)) ? body.merge_method : 'squash'
+      ) as FakeMerge['method']
+      const title = typeof body.commit_title === 'string' ? body.commit_title : null
+      const message = typeof body.commit_message === 'string' ? body.commit_message : null
+      const baseFiles = this.trees.get(this.commits.get(baseSha)?.tree ?? '') ?? new Map()
+      const headFiles = this.trees.get(this.commits.get(headSha)?.tree ?? '') ?? new Map()
+      const tree = this.writeTree(baseFiles, [...headFiles.entries()])
+      const subject = title ?? `${pull.title} (#${pull.number})`
+      const sha = this.writeCommit(
+        tree,
+        method === 'merge' ? [baseSha, headSha] : [baseSha],
+        message ? `${subject}\n\n${message}` : subject
+      )
+      repo.refs.set(`heads/${pull.base}`, sha)
+      pull.headSha = headSha
+      pull.state = 'closed'
+      pull.merged = true
+      pull.mergedAt = new Date().toISOString()
+      pull.mergeSha = sha
+      this.merges.push({
+        owner: repo.owner,
+        repo: repo.name,
+        number: pull.number,
+        sha,
+        headSha,
+        method,
+        title,
+        message,
+      })
+      return json({ sha, merged: true, message: 'Pull Request successfully merged' })
+    }
+    match = rest.match(/^\/actions\/jobs\/(\d+)\/logs$/)
+    if (match && m === 'GET') {
+      const refused = readable('actions')
+      if (refused) return refused
+      const log = this.jobLogs.get(`${this.repoKey(repo)}#${match[1]}`)
+      if (log === undefined) return ghError(404, 'Not Found')
+      return new Response(log, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+    }
+    match = rest.match(/^\/check-runs\/(\d+)\/annotations$/)
+    if (match && m === 'GET') {
+      const refused = readable('checks')
+      if (refused) return refused
+      const id = Number(match[1])
+      const prefix = `${this.repoKey(repo)}@`
+      const run = [...this.checkRuns.entries()]
+        .filter(([key]) => key.startsWith(prefix))
+        .flatMap(([, runs]) => runs)
+        .find(r => r.id === id)
+      if (!run) return ghError(404, 'Not Found')
+      return json(
+        (run.annotations ?? []).map(a => ({
+          path: a.path,
+          start_line: a.start_line,
+          end_line: a.start_line,
+          annotation_level: a.annotation_level,
+          title: a.title ?? null,
+          message: a.message,
+          raw_details: null,
+        }))
+      )
+    }
+    const noRulesets = () =>
+      this.rulesetsUnavailable.has(this.repoKey(repo))
+        ? ghError(
+            403,
+            'Upgrade to GitHub Pro or make this repository public to enable this feature.'
+          )
+        : null
+    if (rest === '/rulesets' && m === 'GET') {
+      const refused = readable('administration') ?? noRulesets()
+      if (refused) return refused
+      const list = this.rulesets.get(this.repoKey(repo)) ?? []
+      return json(list.map(r => this.rulesetJson(repo, r, false)))
+    }
+    if (rest === '/rulesets' && m === 'POST') {
+      const refused = writable('administration') ?? noRulesets()
+      if (refused) return refused
+      const list = this.rulesets.get(this.repoKey(repo)) ?? []
+      const name = String(body.name ?? '')
+      if (!name || list.some(r => r.name === name)) {
+        return json({ message: 'Validation Failed', errors: ['Name must be unique'] }, 422)
+      }
+      const ruleset = { ...(body as unknown as Omit<FakeRuleset, 'id'>), id: this.ids.number() }
+      this.rulesets.set(this.repoKey(repo), [...list, ruleset])
+      return json(this.rulesetJson(repo, ruleset, true), 201)
+    }
+    match = rest.match(/^\/rulesets\/(\d+)$/)
+    if (match && (m === 'GET' || m === 'PUT')) {
+      const refused =
+        (m === 'GET' ? readable('administration') : writable('administration')) ?? noRulesets()
+      if (refused) return refused
+      const list = this.rulesets.get(this.repoKey(repo)) ?? []
+      const at = list.findIndex(r => r.id === Number(match?.[1]))
+      const current = list[at]
+      if (!current) return ghError(404, 'Not Found')
+      if (m === 'GET') return json(this.rulesetJson(repo, current, true))
+      const next = { ...current, ...(body as Partial<FakeRuleset>), id: current.id }
+      list[at] = next
+      return json(this.rulesetJson(repo, next, true))
+    }
+    match = rest.match(/^\/branches\/(.+)\/protection$/)
+    if (match && m === 'GET') {
+      const refused = readable('administration') ?? noRulesets()
+      if (refused) return refused
+      const branch = decodeURIComponent(match[1])
+      const classic = this.classicProtection.get(this.repoKey(repo))
+      if (!classic || classic.branch !== branch) return ghError(404, 'Branch not protected')
+      return json({
+        url: `https://api.github.com/repos/${repo.owner}/${repo.name}/branches/${branch}/protection`,
+        required_status_checks: {
+          strict: false,
+          contexts: classic.requiredChecks,
+          checks: classic.requiredChecks.map(context => ({ context, app_id: null })),
+        },
+        enforce_admins: { enabled: false },
+        required_pull_request_reviews: null,
+      })
+    }
+
     // ---- P3: CI on a commit
     match = rest.match(/^\/commits\/([^/]+)\/check-runs$/)
     if (match && m === 'GET') {
@@ -962,11 +1352,13 @@ export class FakeGitHub implements VendorHandler {
       return json({
         total_count: runs.length,
         check_runs: runs.map((r, i) => ({
-          id: i + 1,
+          id: r.id ?? i + 1,
           name: r.name,
           status: r.status,
           conclusion: r.status === 'completed' ? (r.conclusion ?? 'success') : null,
-          html_url: r.html_url ?? `https://github.com/${repo.owner}/${repo.name}/runs/${i + 1}`,
+          html_url:
+            r.html_url ?? `https://github.com/${repo.owner}/${repo.name}/runs/${r.id ?? i + 1}`,
+          app: { slug: r.app ?? 'github-actions' },
         })),
       })
     }
@@ -1127,7 +1519,7 @@ export class FakeGitHub implements VendorHandler {
       merged_at: p.mergedAt,
       merge_commit_sha: p.mergeSha,
       user: { login: p.author },
-      head: { ref: p.head, sha: p.headSha },
+      head: { ref: p.head, sha: this.liveHeadSha(p) },
       base: { ref: p.base },
     }
   }

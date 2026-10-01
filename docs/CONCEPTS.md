@@ -1929,9 +1929,10 @@ One generic engine decides everything a second person must approve (spec/08,
 `docs/plans/p4-approvals.md`; `api/services/approvals/*`, contracts in
 `packages/shared/src/launch-approvals.ts`). It knows nothing about apps or deploys: each KIND is a
 `KindHandler` (`kinds/<kind>.ts` — `defaultPolicy`, `describe`, `eligibleExtra`, `applyInTx`,
-`applyAfter`, `onClosed`). Four are built — `app.create`, `app.access`, `deploy.production`,
-`session.budget` (§18.16–18.17); `grant.request`, `config.change` and `app.teardown` are named in
-the contract but have no handler and nothing opens them (P5/P6).
+`applyAfter`, `onClosed`). Six are built — `app.create`, `app.access`, `deploy.production`,
+`session.budget` (§18.16–18.17), P5's `grant.request` (§18.20) and issue #5's `session.merge`
+(below); `config.change` and `app.teardown` are named in the contract but have no handler and
+nothing opens them (P6).
 
 - **Open** (`engine.open`): resolve the policy (below) and SNAPSHOT it onto the request with the
   excluded set (the requester, plus whoever the kind names — the promoter, a release's cutter and
@@ -1963,7 +1964,19 @@ the contract but have no handler and nothing opens them (P5/P6).
   `app.create` admins, auto-approved at `launch_settings.app_create_role` (default admin), 7 days;
   `app.access` the app's owners AND the organisation's admins (P1 parity; migration 0024 widened
   the requests 0023 moved), 14 days; `deploy.production` owners + admins, N=1, 24 h or the
-  ticket's own deadline; `session.budget` owners + admins, the session's `suspendedExpiryHours`.
+  ticket's own deadline; `session.budget` owners + admins, the session's `suspendedExpiryHours`;
+  `session.merge` the app's owners, N=1, no self-approval, 48 h (`SESSION_MERGE_EXPIRY_HOURS`).
+- **`session.merge`** (issue #5, `docs/plans/i5-ship-to-staging.md` §1.11–§1.12): a coding
+  session's PR passed CI and waits for a person in Launch before Launch squash-merges it. Subject
+  `session`, requester the session's creator, excluded everyone who wrote a `user.message` in it;
+  the context (`sessionMergeContextSchema`) carries the PR, the ship summary and diff stat from
+  `sessions.ship_summary` and the head SHA the approval is for. It is the one kind whose rule an
+  app's OWNERS set too: the app's ship settings (`apps.ship_settings.review`: none, the app's
+  owners, or named teams) are passed as the snapshotted policy, and an admin `approval_policies`
+  row for `session.merge` at app, group or tenant scope wins over them and makes review mandatory
+  (decision §0.3 relaxes "only admins edit" for this kind). **Today (slice S1) the kind is
+  registered with its default policy and description only**: nothing opens one yet, and its
+  `applyInTx` / `applyAfter` / `onClosed` throw `NotWiredError` until slice S2 wires the landing.
 - **Reads**: `GET /api/approvals?box=mine|requested|all&status&kind&appId` (`all` is admins';
   anyone else asking for it gets `mine`), `GET /count` (the nav badge), `GET /:id` —
   `approvalDetailSchema` with the decisions, `canDecide` / `whyNot` / `canCancel` for the caller,

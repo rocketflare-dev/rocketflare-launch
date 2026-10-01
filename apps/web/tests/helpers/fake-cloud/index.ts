@@ -98,6 +98,12 @@
  *   repo, tag, { ref?, annotated? })` (an annotated tag answers `type: 'tag'` and dereferences
  *   through `GET …/git/tags/{sha}`), `GET …/tags`, and `GET …/commits/{ref}` (branch, tag, full or
  *   short sha reachable in that repo → `{ sha }`, else 422 "No commit found").
+ *   Issue #5: `PUT …/pulls/{n}/merge` (squash; `merges`, `mergeCount(owner, repo, n?)`; 409 off
+ *   the head, 405 closed or a required check not green), check runs with `id` and `app.slug`,
+ *   `setJobLog(owner, repo, jobId, log)`, annotations (`annotations` on a check run), rulesets
+ *   (`current_user_can_bypass`; `disableRulesets(owner, repo)` → 403), classic protection, and
+ *   `protect(owner, repo, { requiredChecks, bypassAppId?, classic? })` — a non-bypassing direct
+ *   update of the default branch is then a 422. An open PR's `head.sha` follows its branch.
  *
  * ## App hosts
  *

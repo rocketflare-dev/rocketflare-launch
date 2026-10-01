@@ -763,6 +763,11 @@ export interface GitHubCheckRun {
   conclusion: string | null
   html_url?: string | null
   details_url?: string | null
+  /**
+   * Issue #5: the GitHub App that reported it. `github-actions` means the run IS an Actions job
+   * (its id is the job id), so `getJobLogs(id)` reads its log; anything else has only annotations.
+   */
+  app?: { slug: string } | null
 }
 
 /** The check runs on `ref` (a sha or branch) — the first 100, which is every CI a PR has. */
@@ -945,4 +950,255 @@ export function listPullRequestsForCommit(
     { token },
     opts
   )
+}
+
+// ---- Issue #5: merge, CI logs, rulesets (`docs/plans/i5-ship-to-staging.md`) --------------------
+
+/**
+ * The narrowed installation-token permissions each issue #5 call needs (plan §1.13). The GitHub
+ * App needs NO new permission for any of them (`REQUIRED_GITHUB_PERMISSIONS`, `setup.ts`): a token
+ * is always minted for one repo and only these.
+ */
+export const GITHUB_TOKEN_PERMISSIONS = {
+  /** The squash merge (and the re-read of the PR right before it). */
+  merge: { contents: 'write', pull_requests: 'write' },
+  /** Reading a pull request only. */
+  readPullRequest: { pull_requests: 'read' },
+  /** A failed check's job log (`getJobLogs`). */
+  jobLogs: { actions: 'read' },
+  /** The check runs, statuses and annotations on a head (`failedCheckLog`). */
+  checks: { checks: 'read', statuses: 'read' },
+  /** Creating or updating Launch's ruleset. */
+  rulesetsWrite: { administration: 'write' },
+  /** The branch-protection diagnosis: rulesets and classic protection, read only. */
+  rulesetsRead: { administration: 'read' },
+} as const satisfies Record<string, GitHubPermissions>
+
+export interface MergePullRequestInput {
+  /** The head the merge must be on: GitHub answers 409 when the PR's head is anything else. */
+  sha: string
+  mergeMethod?: 'squash' | 'merge' | 'rebase'
+  commitTitle?: string
+  commitMessage?: string
+}
+
+export interface GitHubMergeResult {
+  sha: string
+  merged: boolean
+  message: string
+}
+
+/**
+ * Merge a pull request (squash by default). 200 → merged, `sha` the merge commit. Throws
+ * `GitHubApiError` otherwise — 409 the head is not `sha`, 405 not mergeable (a required check or
+ * review missing, a conflict), 422 invalid — with GitHub's message; the caller maps them.
+ */
+export function mergePullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  number: number,
+  input: MergePullRequestInput,
+  opts: GitHubOptions = {}
+): Promise<GitHubMergeResult> {
+  return githubJson<GitHubMergeResult>(
+    `${repoPath(owner, repo)}/pulls/${number}/merge`,
+    {
+      method: 'PUT',
+      token,
+      body: {
+        merge_method: input.mergeMethod ?? 'squash',
+        sha: input.sha,
+        ...(input.commitTitle !== undefined ? { commit_title: input.commitTitle } : {}),
+        ...(input.commitMessage !== undefined ? { commit_message: input.commitMessage } : {}),
+      },
+    },
+    opts
+  )
+}
+
+/**
+ * An Actions job's plain-text log (GitHub redirects to a short-lived download URL, which `fetch`
+ * follows), or null when GitHub has none (404, or 410 once expired). Needs `actions: read`. The
+ * whole log: the caller keeps the tail and redacts it.
+ */
+export async function getJobLogs(
+  token: string,
+  owner: string,
+  repo: string,
+  jobId: number,
+  opts: GitHubOptions = {}
+): Promise<string | null> {
+  const path = `${repoPath(owner, repo)}/actions/jobs/${jobId}/logs`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404 || res.status === 410) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  return res.text()
+}
+
+export interface GitHubCheckAnnotation {
+  path: string
+  start_line: number
+  end_line?: number
+  annotation_level: 'notice' | 'warning' | 'failure' | string
+  title?: string | null
+  message: string
+  raw_details?: string | null
+}
+
+/** A check run's annotations (the first 50) — the only "log" a non-Actions check has. */
+export function listCheckRunAnnotations(
+  token: string,
+  owner: string,
+  repo: string,
+  checkRunId: number,
+  opts: GitHubOptions = {}
+): Promise<GitHubCheckAnnotation[]> {
+  return githubJson<GitHubCheckAnnotation[]>(
+    `${repoPath(owner, repo)}/check-runs/${checkRunId}/annotations?per_page=50`,
+    { token },
+    opts
+  )
+}
+
+/** One rule of a ruleset: `pull_request`, `required_status_checks`, `non_fast_forward`, … */
+export interface GitHubRulesetRule {
+  type: string
+  parameters?: Record<string, unknown>
+}
+
+export interface GitHubRulesetBypassActor {
+  /** The App id for `Integration`; null for `OrganizationAdmin`. */
+  actor_id: number | null
+  actor_type: 'Integration' | 'OrganizationAdmin' | 'RepositoryRole' | 'Team' | 'DeployKey' | string
+  bypass_mode: 'always' | 'pull_request' | string
+}
+
+export interface GitHubRuleset {
+  id: number
+  name: string
+  target?: 'branch' | 'tag' | 'push' | string
+  /** `Repository` for the repo's own; `Organization` for one inherited from the org. */
+  source_type?: 'Repository' | 'Organization' | string
+  source?: string
+  enforcement: 'active' | 'evaluate' | 'disabled' | string
+  bypass_actors?: GitHubRulesetBypassActor[]
+  conditions?: { ref_name?: { include: string[]; exclude: string[] } } | null
+  /** Present on `getRuleset`; the list answer omits it. */
+  rules?: GitHubRulesetRule[]
+  /** Whether the CALLER (the installation token's App) may bypass it. */
+  current_user_can_bypass?: 'always' | 'pull_requests_only' | 'never' | 'exempt' | string
+}
+
+/** What `createRuleset` / `updateRuleset` send. */
+export interface GitHubRulesetInput {
+  name: string
+  target: 'branch'
+  enforcement: 'active' | 'evaluate' | 'disabled'
+  bypass_actors: GitHubRulesetBypassActor[]
+  conditions: { ref_name: { include: string[]; exclude: string[] } }
+  rules: GitHubRulesetRule[]
+}
+
+/**
+ * The rulesets that apply to the repo, the org's included (`includes_parents`). A 404 or 403 — a
+ * plan with no rulesets on this repo (a private repo outside GitHub Team) — is thrown for the
+ * caller to read as `unavailable`. Needs `administration: read`.
+ */
+export function listRulesets(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRuleset[]> {
+  return githubJson<GitHubRuleset[]>(
+    `${repoPath(owner, repo)}/rulesets?includes_parents=true&per_page=100`,
+    { token },
+    opts
+  )
+}
+
+/** One ruleset with its `rules` and `current_user_can_bypass`; null when it does not exist. */
+export async function getRuleset(
+  token: string,
+  owner: string,
+  repo: string,
+  rulesetId: number,
+  opts: GitHubOptions = {}
+): Promise<GitHubRuleset | null> {
+  const path = `${repoPath(owner, repo)}/rulesets/${rulesetId}`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubRuleset
+}
+
+/** Create a repository ruleset. Needs `administration: write`; 403/404 when the plan has none. */
+export function createRuleset(
+  token: string,
+  owner: string,
+  repo: string,
+  input: GitHubRulesetInput,
+  opts: GitHubOptions = {}
+): Promise<GitHubRuleset> {
+  return githubJson<GitHubRuleset>(
+    `${repoPath(owner, repo)}/rulesets`,
+    { method: 'POST', token, body: input },
+    opts
+  )
+}
+
+/** Replace a repository ruleset's settings (`PUT`). Needs `administration: write`. */
+export function updateRuleset(
+  token: string,
+  owner: string,
+  repo: string,
+  rulesetId: number,
+  input: GitHubRulesetInput,
+  opts: GitHubOptions = {}
+): Promise<GitHubRuleset> {
+  return githubJson<GitHubRuleset>(
+    `${repoPath(owner, repo)}/rulesets/${rulesetId}`,
+    { method: 'PUT', token, body: input },
+    opts
+  )
+}
+
+/** Classic branch protection, as far as the diagnosis reads it. */
+export interface GitHubBranchProtection {
+  required_status_checks?: {
+    strict?: boolean
+    contexts?: string[]
+    checks?: { context: string; app_id: number | null }[]
+  } | null
+  required_pull_request_reviews?: { required_approving_review_count?: number } | null
+  enforce_admins?: { enabled: boolean } | null
+}
+
+/**
+ * The branch's CLASSIC protection, or null when it has none (GitHub's 404 "Branch not
+ * protected"). Launch never writes it: a classic required check cannot be bypassed by an App, so
+ * the diagnosis reports `blocks` and the admin removes it. Needs `administration: read`.
+ */
+export async function getBranchProtection(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubBranchProtection | null> {
+  const path = `${repoPath(owner, repo)}/branches/${encodeURIComponent(branch)}/protection`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  return (await res.json()) as GitHubBranchProtection
 }

@@ -192,5 +192,7 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     endedAt: row.endedAt,
     updatedAt: row.updatedAt,
     viewerCanManage,
+    landing: row.landing ?? null,
+    shipSummary: row.shipSummary ?? null,
   }
 }

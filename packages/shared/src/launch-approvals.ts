@@ -14,15 +14,21 @@
  * - the realtime entity, the notification types and the error codes every slice answers with.
  *
  * `config.change` and `app.teardown` are NAMED (spec/08's table) but not built: no handler, no
- * route opens one (P6). `BUILT_APPROVAL_KINDS` is the five that are — P5 (`docs/plans/p5-grants.md`
- * §1.7–§1.9) added `grant.request`, its `grant` subject and `grantRequestContextSchema`.
+ * route opens one (P6). `BUILT_APPROVAL_KINDS` is the six that are — P5 (`docs/plans/p5-grants.md`
+ * §1.7–§1.9) added `grant.request`, its `grant` subject and `grantRequestContextSchema`; issue #5
+ * (`docs/plans/i5-ship-to-staging.md` §1.12) added `session.merge` and `sessionMergeContextSchema`.
  *
  * Slice 4a owned this file, and 5a its P5 lines; every other slice imports from it and never edits it.
  */
 import { z } from 'zod'
 import { appEnvironmentNameSchema, healthStatusSchema } from './launch-apps'
 import { releasePrSchema } from './launch-releases'
-import { DEFAULT_SESSION_POLICY } from './launch-sessions'
+import {
+  DEFAULT_SESSION_POLICY,
+  SHIP_SUMMARY_BODY_MAX,
+  SHIP_SUMMARY_DIFFSTAT_MAX,
+  SHIP_SUMMARY_TITLE_MAX,
+} from './launch-sessions'
 
 // ---- closed sets -------------------------------------------------------------------------------
 
@@ -35,17 +41,23 @@ export const APPROVAL_KINDS = [
   'grant.request',
   'config.change',
   'app.teardown',
+  // Issue #5 (`docs/plans/i5-ship-to-staging.md` §1.12): a session's PR may merge.
+  'session.merge',
 ] as const
 export const approvalKindSchema = z.enum(APPROVAL_KINDS)
 export type ApprovalKind = z.infer<typeof approvalKindSchema>
 
-/** The kinds with a handler (P4's four, P5's `grant.request`). The kind registry is keyed by these. */
+/**
+ * The kinds with a handler (P4's four, P5's `grant.request`, issue #5's `session.merge`). The kind
+ * registry is keyed by these.
+ */
 export const BUILT_APPROVAL_KINDS = [
   'app.create',
   'app.access',
   'deploy.production',
   'session.budget',
   'grant.request',
+  'session.merge',
 ] as const satisfies readonly ApprovalKind[]
 export type BuiltApprovalKind = (typeof BUILT_APPROVAL_KINDS)[number]
 
@@ -138,6 +150,9 @@ export type ApprovalApprovers = z.infer<typeof approvalApproversSchema>
 
 const MINUTES_PER_DAY = 24 * 60
 
+/** Decision §0.4 of issue #5: a `session.merge` request lapses after two days. */
+export const SESSION_MERGE_EXPIRY_HOURS = 48
+
 export const approvalPolicySchema = z.object({
   approvers: approvalApproversSchema,
   /** N: this many distinct approvals approve; one reject vetoes. */
@@ -202,6 +217,15 @@ export const DEFAULT_APPROVAL_POLICIES: Record<ApprovalKind, ApprovalPolicy> = {
     minApprovals: 1,
     allowSelfApproval: false,
     expiresAfterMinutes: 7 * MINUTES_PER_DAY,
+    autoApproveRole: null,
+  },
+  // Issue #5 (plan §1.11): the app's owners, one approval, no self-approval, 48 h. The app's own
+  // review setting is passed as `OpenApprovalInput.policy`; an admin policy row replaces both.
+  'session.merge': {
+    approvers: { appOwners: true, admins: false, groupIds: [], userIds: [] },
+    minApprovals: 1,
+    allowSelfApproval: false,
+    expiresAfterMinutes: SESSION_MERGE_EXPIRY_HOURS * 60,
     autoApproveRole: null,
   },
   // Named, not built (P6): defaults exist so the record is total and a policy row can be set.
@@ -303,6 +327,28 @@ export const grantRequestContextSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).nullable(),
 })
 
+/**
+ * Issue #5 (plan §1.12): a session's PR asks to merge. The subject is the session; the approver
+ * reads the ship summary and the diff stat (both from `sessions.ship_summary`) and approves THIS
+ * head — `land.merge` refuses an approval whose `headSha` is not the landing's gate SHA.
+ */
+export const sessionMergeContextSchema = z.object({
+  kind: z.literal('session.merge'),
+  sessionId: z.string().uuid(),
+  shortId: z.string(),
+  /** The session's own title. */
+  title: z.string().nullable(),
+  appSlug: z.string(),
+  prNumber: z.number().int().positive(),
+  prUrl: z.string(),
+  prTitle: z.string().max(SHIP_SUMMARY_TITLE_MAX),
+  summary: z.string().max(SHIP_SUMMARY_BODY_MAX),
+  diffStat: z.string().max(SHIP_SUMMARY_DIFFSTAT_MAX),
+  headSha: z.string(),
+  /** The session's page in Launch (`/sessions/<id>`), where an approver may read it. */
+  sessionPath: z.string(),
+})
+
 /** The two named-but-unbuilt kinds carry a free description until P6 gives them a shape. */
 const unbuiltContext = <K extends 'config.change' | 'app.teardown'>(kind: K) =>
   z.object({ kind: z.literal(kind), description: z.string().max(2000) })
@@ -313,6 +359,7 @@ export const approvalContextSchema = z.discriminatedUnion('kind', [
   deployProductionContextSchema,
   sessionBudgetContextSchema,
   grantRequestContextSchema,
+  sessionMergeContextSchema,
   unbuiltContext('config.change'),
   unbuiltContext('app.teardown'),
 ])

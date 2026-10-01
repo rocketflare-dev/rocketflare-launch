@@ -57,6 +57,7 @@ import {
   scriptKitGate,
   seedSessionApp,
   sessionAppRef,
+  UNEXPECTED_LAND_HOOKS,
 } from '../helpers/sessions'
 import { createExecutionContext, createTestEnv, type TestEnv } from '../mocks/bindings'
 import { createFakeWorkflowStep } from '../mocks/cloudflare-workers'
@@ -207,6 +208,7 @@ async function harness(
       summarizeShip(ctx.db, ctx.cfg, ctx.env, ctx.session, input, {
         client: { client: summary, provider: 'anthropic', model: 'claude-haiku-4-5' },
       }),
+    ...UNEXPECTED_LAND_HOOKS,
   }
   Object.assign(h, {
     env,
