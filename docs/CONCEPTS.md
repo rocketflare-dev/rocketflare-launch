@@ -904,10 +904,56 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   one client per app (`lc_…`) with `{url}/auth/oidc/callback` and `{url}/login?signedOut=1` for
   every environment with a URL. The secret is shown ONCE (stored as a hash, last four kept as a
   hint) with a config snippet; `rotate-secret` and `PATCH …/redirect-uris` are audited.
+- **Ship settings** (issue #5, `services/launch/ship-settings.ts`; `apps.ship_settings`, null = the
+  defaults): where a session's Ship ends — `staging` (Launch waits for CI, merges, releases and
+  follows the release live on staging; every app's default, imported ones included) or `pr` (the
+  PR is opened and left for a person) — and who reviews the merge: `none` (the default), the
+  app's owners, or named teams. `PUT /api/apps/:id/ship-settings` (`putAppShipSettingsRequestSchema`;
+  `groups` names ≥ 1 of this organisation's teams, else 400 `unknown_group`) is the app's owners and
+  admins — `mayDeployApp`, the rule behind its deploys; anyone else 403, another organisation's
+  app 404 — answers the app detail and is audited `app.ship_settings.updated` (before/after). The
+  review is `reviewPolicyFor`: `app_owners` → `{approvers:{appOwners}}`, `groups` →
+  `{approvers:{groupIds}}` (falling back to the owners when every named team has since been
+  deleted), each one approval, never the author's own, 48 h (`SESSION_MERGE_EXPIRY_HOURS`), never
+  automatic, snapshotted onto the `session.merge` request (§18.15). **An admin
+  `approval_policies` row for `session.merge`** — app scope, the app's owner group, or tenant
+  (`findPolicyRow`, in the leaf `approvals/policy-row.ts` and re-exported by `policy.ts`, the same order `resolvePolicy` reads) — **wins**: review
+  becomes mandatory with that row's own policy, the detail answers `shipReviewSetBy: 'policy'`, the
+  card shows the review read-only, and a PUT that changes the review is 409
+  `ship_review_set_by_policy` (the ship mode may still change; send the review back as it is). This
+  is the one kind whose gate the app's owners may shape (decision §0.3 relaxes P4 §1.5 for it).
+- **Branch protection** (issue #5, `services/launch/branch-protection.ts`): Launch protects an app's
+  default branch with a repository RULESET named `launch`, never classic protection —
+  `pull_request` with 0 reviews (the review is Launch's approval), `required_status_checks`
+  `Gate` (`KIT_REQUIRED_CHECK`, the kit `ci.yml` job `gate`'s name; `tests/config/kit-required-check.test.ts`
+  pins it against the kit's file), `non_fast_forward`, `deletion`, and Launch's GitHub App as an
+  `Integration` bypass actor with `bypass_mode: always` (its id is the `github_app` credential's
+  `appId`). The bypass is why it is a ruleset: no App can bypass classic required checks, so the
+  release bump (a direct push to the default branch, §18.17) could never land under them. New apps
+  get it at `github_env` (§18.5). `GET /api/apps/:id/branch-protection` (members) diagnoses with a
+  token narrowed to `administration: read`: every ACTIVE ruleset that applies to the default branch
+  (read in full, with GitHub's `current_user_can_bypass` for the App's own token) plus classic
+  protection → `ok` (something the App may bypass requires `Gate`), `none` (nothing requires it),
+  `blocks` (a ruleset the App may not bypass that refuses a direct push, or classic protection with
+  required checks or reviews — the detail names it and says what to do), `unavailable` (403/404:
+  the plan has no rulesets for this repository) or `unknown` (no repository, no App, not installed,
+  or another GitHub error — the detail says which). `POST` (admins, `manage App`) creates the
+  ruleset or rewrites the one named `launch` as Launch writes it (`administration: write`), answers
+  the fresh diagnosis — still `blocks` while classic protection stays, which Launch never touches —
+  and is audited `app.branch_protection.applied`; 409 `rulesets_unavailable` on a plan without
+  them, 502 `branch_protection_github_failed` otherwise. No new App permission: `administration`
+  is already required (environments).
 
 **Known gaps:** no Cloudflare verification of the recorded resource ids; no re-sync from the repo after import; health is
 polled, not pushed, and the cron does not run under `pnpm dev` (use "Check now" or
-`/cdn-cgi/local/scheduled`); no alerting on a status change beyond the audit row.
+`/cdn-cgi/local/scheduled`); no alerting on a status change beyond the audit row. Ship settings:
+deleting a team a `groups` review names is not refused (`group_in_use` does not count it) — the
+review falls back to the app's owners. Branch protection: the diagnosis reads ref-name patterns
+(`~ALL`, `~DEFAULT_BRANCH`, `refs/heads/<glob>`) but not an org ruleset's repository conditions —
+GitHub's `includes_parents` list already returns only those that apply; it costs one GitHub call
+per active ruleset per read; a 403 from a token missing `administration` reads as `unavailable`
+(GitHub's message is in the detail); a `launch` ruleset an admin edits on GitHub is overwritten
+by the next Apply; existing apps are not protected until an admin presses Apply.
 
 ### 18.5 Creating an app (the launch pipeline)
 
@@ -940,7 +986,11 @@ step that mints one puts it on the Worker itself.
   launching page, `rocketflare/placeholder-page.ts`, with the app's escaped display name; the page
   polls `/api/health` every 12 s and reloads into the app on its first 200. Preview it with
   `pnpm web preview:placeholder`) → `github_env`
-  (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
+  (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`,
+  then issue #5's `launch` ruleset on the default branch (§18.4, `services/launch/branch-protection.ts`),
+  created or rewritten BY NAME so a retry never duplicates it, its id recorded as `rulesetId`; a
+  plan without rulesets — GitHub's 403/404, a private repository outside GitHub Team — is recorded
+  `branchProtection: unavailable` with GitHub's message and the launch goes on) →
   `worker_secrets` → `email` (non-blocking; skipped with its reason while Setup has no Resend key or
   no verified notifications domain) → `deploy_staging.start|wait|check` → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).

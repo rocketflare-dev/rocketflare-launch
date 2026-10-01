@@ -283,6 +283,33 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     // GitHub: the scaffold files, then the config commit with no placeholders left.
     expect(repo?.environments.has('staging')).toBe(true)
     expect(repo?.variables.get('DEPLOYER_URL')).toBe('http://localhost:3001/ci')
+    // Issue #5 (plan §1.13): `github_env` put Launch's ruleset on the default branch — `Gate`
+    // required, the App a bypass actor — and recorded its id on the step's row.
+    const rulesets = cloud.github.rulesets.get(`${cloud.opts.org}/${launch.slug}`.toLowerCase())
+    expect(rulesets).toHaveLength(1)
+    const [ruleset] = rulesets ?? []
+    expect(ruleset).toMatchObject({
+      name: 'launch',
+      enforcement: 'active',
+      bypass_actors: [
+        { actor_id: cloud.opts.appId, actor_type: 'Integration', bypass_mode: 'always' },
+      ],
+      conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
+    })
+    expect(ruleset?.rules.map(r => r.type)).toEqual([
+      'pull_request',
+      'required_status_checks',
+      'non_fast_forward',
+      'deletion',
+    ])
+    expect(ruleset?.rules[1]?.parameters).toMatchObject({
+      required_status_checks: [{ context: 'Gate' }],
+    })
+    expect(byStep.github_env?.externalIds).toMatchObject({
+      rulesetId: String(ruleset?.id),
+      branchProtection: 'ok',
+    })
+    expect(cloud.github.classicProtection.size).toBe(0)
     const toml = cloud.github.readFile(
       cloud.opts.org,
       launch.slug,
@@ -432,6 +459,21 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     expect(byStep.live?.status).toBe('succeeded')
     const view = await pipelineView(db, launch.tenantId, (await appRow(launch)) as AppRow, 'create')
     expect(view.status).toBe('succeeded')
+  })
+
+  it('records a plan without rulesets at github_env and goes on: the launch is not blocked', async () => {
+    const launch = await h.request()
+    cloud.github.disableRulesets(cloud.opts.org, launch.slug)
+    const { outcome } = await h.run(launch)
+    expect(outcome.status).toBe('live')
+    const byStep = await rows(launch)
+    expect(byStep.github_env?.status).toBe('succeeded')
+    expect(byStep.github_env?.externalIds).toMatchObject({ branchProtection: 'unavailable' })
+    expect(byStep.github_env?.externalIds.branchProtectionDetail).toMatch(/Upgrade to GitHub Pro/)
+    expect(byStep.github_env?.externalIds.rulesetId).toBeUndefined()
+    expect(cloud.github.rulesets.get(`${cloud.opts.org}/${launch.slug}`.toLowerCase())).toBe(
+      undefined
+    )
   })
 
   it('skips email, without calling Resend, while the notifications domain is not verified', async () => {

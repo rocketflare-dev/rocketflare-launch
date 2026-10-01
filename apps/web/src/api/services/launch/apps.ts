@@ -33,6 +33,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../utils/core/errors'
 import { isAppOwner } from '../oidc/policy'
 import { type AuditActor, recordAudit } from './audit'
+import { shipReviewSetByFor } from './ship-settings'
 
 /** Staging before production, everywhere an app's environments are listed. */
 const ENVIRONMENT_ORDER: Record<AppEnvironmentName, number> = { staging: 0, production: 1 }
@@ -170,9 +171,9 @@ export async function getAppDetail(
     environments: sorted.map(toEnvironment),
     updatedAt: row.app.updatedAt,
     viewerCanDeploy: await mayDeployApp(db, tenantId, row.app, viewer),
-    // Issue #5: S4 resolves an admin `session.merge` policy row into `shipReviewSetBy: 'policy'`.
+    // Issue #5: an admin `session.merge` policy row decides review → `policy` (shown read-only).
     shipSettings: resolveAppShipSettings(row.app.shipSettings),
-    shipReviewSetBy: 'app',
+    shipReviewSetBy: await shipReviewSetByFor(db, tenantId, row.app),
   }
 }
 

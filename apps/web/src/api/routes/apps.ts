@@ -10,6 +10,9 @@
  * (`app-sessions.ts`, an app's coding sessions), P4 a fourth (`app-releases.ts`) and P5 two more
  * (`app-config.ts`, `app-config-scan.ts` — shared config and grants); see below.
  *
+ * Issue #5 adds `PUT /:id/ship-settings` (the app's owners and admins) and
+ * `GET|POST /:id/branch-protection` (members read; admins apply Launch's ruleset).
+ *
  * `POST /:id/health-check` probes inline rather than enqueueing: it is two GETs per environment
  * with a five-second cap, and the person who pressed the button is waiting for the answer.
  */
@@ -17,6 +20,7 @@ import {
   type AppListResponse,
   appHealthQuerySchema,
   importAppRequestSchema,
+  putAppShipSettingsRequestSchema,
   updateAppRedirectUrisRequestSchema,
   updateAppRequestSchema,
 } from '@launch/shared/launch-apps'
@@ -32,6 +36,10 @@ import {
   updateApp,
 } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
+import {
+  applyAppBranchProtection,
+  getAppBranchProtection,
+} from '../services/launch/branch-protection'
 import { getSetting } from '../services/launch/credentials'
 import { withLatestDeploys } from '../services/launch/deploy/progress'
 import { checkAppHealth } from '../services/launch/health'
@@ -43,12 +51,13 @@ import {
   toAppOidcClient,
   updateAppRedirectUris,
 } from '../services/launch/oidc-clients'
+import { updateShipSettings } from '../services/launch/ship-settings'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 import { appConfigRouter } from './app-config'
 import { appConfigScanRouter } from './app-config-scan'
-import { appDeploysRouter, appViewer } from './app-deploys'
+import { appDeploysRouter, appViewer, deployableApp } from './app-deploys'
 import { appPipelineRouter } from './app-pipeline'
 import { appReleasesRouter } from './app-releases'
 import { appSessionsRouter } from './app-sessions'
@@ -106,6 +115,30 @@ appsRouter.patch('/:id', validate('json', updateAppRequestSchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   const app = await updateApp(db, tenantId, uuidParam(c, 'id'), c.req.valid('json'), auditActor(c))
   return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)))
+})
+
+// Issue #5 (plan §1.10): where a session's Ship ends and who reviews its merge — the app's owners
+// and admins (`mayDeployApp`, the same rule as its deploys). Answers the app detail.
+appsRouter.put('/:id/ship-settings', validate('json', putAppShipSettingsRequestSchema), async c => {
+  const { db, tenantId, app } = await deployableApp(c)
+  const updated = await updateShipSettings(db, tenantId, app, c.req.valid('json'), auditActor(c))
+  return c.json(await getAppDetail(db, tenantId, updated.slug, appViewer(c)))
+})
+
+// Issue #5 (plan §1.13): how GitHub protects the default branch (`appBranchProtectionSchema`),
+// read by any member; applying Launch's `launch` ruleset is the admins' (`manage App`).
+appsRouter.get('/:id/branch-protection', async c => {
+  guardPermission(c, 'read', 'App')
+  const { db, cfg, tenantId } = withAuthAndDb(c)
+  const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
+  return c.json(await getAppBranchProtection(db, cfg, app))
+})
+
+appsRouter.post('/:id/branch-protection', async c => {
+  guardPermission(c, 'manage', 'App')
+  const { db, cfg, tenantId } = withAuthAndDb(c)
+  const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
+  return c.json(await applyAppBranchProtection(db, cfg, tenantId, app, auditActor(c)))
 })
 
 appsRouter.get('/:id/health', validate('query', appHealthQuerySchema), async c => {

@@ -1,0 +1,61 @@
+name: CI
+
+# The quality gate, in ONE job: the secrets scan, then `pnpm gate` — lint, typecheck, test, build,
+# the same command a person runs before committing and Launch's ship gate runs in a sandbox
+# (docs/CONCEPTS.md §4). The workflow adds no check of its own beyond gitleaks, so what passes
+# here is exactly what passes on a laptop; `tests/config/ci-workflows.test.ts` holds it to that.
+#
+# `pnpm test` (the gate's `test` step) starts the test Postgres and the Neon proxy from
+# `apps/web/docker-compose.test.yml` itself, runs the suite under `postgres`, then the `driver`
+# project under `neon` — the conformance pass that proves the driver seam this app deploys on
+# (apps/web/src/db/CLAUDE.md). No `services:` block, no restart hack: the compose file is the one
+# definition of the test database.
+#
+# deploy.yml calls this same file (`workflow_call`) before deploying a tag whose commit has no
+# green CI run yet, so a commit is gated once and the gate never drifts between main and deploy.
+# The kit's OWN checks (a renamed copy, the default plugins, the porting note) are kit.yml, which a
+# copy never carries.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  # Cancel superseded runs on a PR branch, never when called from the deploy path.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for the gitleaks scan
+      # The two test images, pulled in the background while pnpm installs (~15-20 s a run). Whatever
+      # has not arrived by the time `pnpm test` runs `docker compose up`, that pulls itself.
+      - name: Pre-pull the test database images
+        run: |
+          nohup docker compose -f apps/web/docker-compose.test.yml --profile neon pull --quiet \
+            > "$RUNNER_TEMP/pull.log" 2>&1 &
+      # pnpm version comes from `packageManager` in the root package.json. Must precede setup-node
+      # so `cache: pnpm` can find the store.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Repository hygiene, not an app check, so it is not a gate step: the full history, so a
+      # secret committed and then removed is still caught. The binary directly (the marketplace
+      # action needs a licence for org repos).
+      - name: gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --exit-code 1 --verbose .
+
+      - run: pnpm gate

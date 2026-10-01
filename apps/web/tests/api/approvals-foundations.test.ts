@@ -23,7 +23,6 @@ import {
   tenantsWithUnsealedEvents,
 } from '@/api/services/launch/audit-chain'
 import { withReleaseClaim } from '@/api/services/launch/releases/claim'
-import { reviewPolicyFor } from '@/api/services/launch/ship-settings'
 import { toSessionDetail } from '@/api/services/sessions/chat'
 import { defaultSessionStepHooks } from '@/api/services/sessions/hooks'
 import {
@@ -429,7 +428,6 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
       [defaultSessionStepHooks.landStaging(ctx), 'S3'],
       [defaultSessionStepHooks.landHealth(ctx), 'S3'],
       [withReleaseClaim(db, { tenantId: '', appId: '', holder: 'user:x' }, async () => 1), 'S3'],
-      [reviewPolicyFor(db, '', { id: '', ownerGroupId: null, shipSettings: null }), 'S4'],
     ]
     for (const [promise, slice] of cases) {
       const error = (await promise.catch(e => e)) as Error

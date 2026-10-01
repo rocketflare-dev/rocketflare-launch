@@ -2,8 +2,8 @@
  * Approval policies (Launch P4, plan §1.5) — who may decide a request, and how many must.
  *
  * - `resolvePolicy`: the first `approval_policies` row of app scope, then the app's owner group,
- *   then tenant, else the kind's `defaultPolicy()` — snapshotted onto the request at open, so an
- *   edit never changes a request already in flight.
+ *   then tenant (`findPolicyRow`), else the kind's `defaultPolicy()` — snapshotted onto the
+ *   request at open, so an edit never changes a request already in flight.
  * - `eligibleApprovers`: the user ids who may decide `request` NOW — the app's owners
  *   (`app_owners` and the owner group's members, the same two sources `isAppOwner` reads), the
  *   organisation's admins (owner / admin / support), `groupIds` members, `userIds`, the kind's
@@ -14,7 +14,9 @@
  *   fresh), never from anything snapshotted at open (plan §1.3).
  * - `canSee`: who may read a request at all — anyone else gets the same 404 as a missing one.
  * - The admin surface (`listPolicies`, `putPolicy`, `removePolicy`) for `/api/approval-policies`.
- *   Only admins edit, at every scope: an app owner loosening their own gate defeats it.
+ *   Only admins edit, at every scope: an app owner loosening their own gate defeats it. Issue #5's
+ *   `session.merge` is the one kind an app's owners also shape — through the app's ship settings,
+ *   over which an admin row here still wins (`services/launch/ship-settings.ts`).
  *
  * Every query names the tenant.
  */
@@ -25,15 +27,13 @@ import {
   type ApprovalPolicyListQuery,
   type ApprovalPolicyRow,
   type ApprovalWhyNot,
-  approvalPolicySchema,
   DEFAULT_APPROVAL_POLICIES,
   isBuiltApprovalKind,
   type PutApprovalPolicyRequest,
 } from '@launch/shared/launch-approvals'
-import { and, eq, inArray, isNull, or } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import {
-  type ApprovalPolicyRecord,
   type ApprovalRequestRow,
   appOwners,
   approvalDecisions,
@@ -45,22 +45,18 @@ import {
 } from '../../../db/schema'
 import { NotFoundError } from '../../utils/core/errors'
 import { kindHandler } from './kinds'
+import { findPolicyRow, toPolicy, toPolicyRow } from './policy-row'
 import type { ApprovalViewer } from './types'
+
+// The row lookup lives in a leaf (`policy-row.ts`: it imports no kind, so issue #5's ship settings
+// can read it from the app detail without a cycle through the kind registry); re-exported here,
+// beside `resolvePolicy`, so callers keep one module to import.
+export { type FoundPolicyRow, findPolicyRow, toPolicyRow } from './policy-row'
 
 /** The tenant roles the policy's `admins` means (support ranks with admin, as everywhere). */
 const ADMIN_ROLES = ['owner', 'admin', 'support'] as const
 
 // ---- resolution --------------------------------------------------------------------------------
-
-function toPolicy(row: ApprovalPolicyRecord): ApprovalPolicy {
-  return approvalPolicySchema.parse({
-    approvers: row.approvers,
-    minApprovals: row.minApprovals,
-    allowSelfApproval: row.allowSelfApproval,
-    expiresAfterMinutes: row.expiresAfterMinutes,
-    autoApproveRole: row.autoApproveRole,
-  })
-}
 
 /** The code default for `kind` in this tenant: the handler's (with its setting overlays) or the table. */
 export async function defaultPolicyFor(
@@ -78,34 +74,8 @@ export async function resolvePolicy(
   kind: ApprovalKind,
   appId: string | null
 ): Promise<ApprovalPolicy> {
-  let ownerGroupId: string | null = null
-  if (appId) {
-    const [app] = await db
-      .select({ ownerGroupId: apps.ownerGroupId })
-      .from(apps)
-      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId)))
-    ownerGroupId = app?.ownerGroupId ?? null
-  }
-  const scopes = [and(eq(approvalPolicies.scopeType, 'tenant'), isNull(approvalPolicies.scopeId))]
-  if (appId) {
-    scopes.push(and(eq(approvalPolicies.scopeType, 'app'), eq(approvalPolicies.scopeId, appId)))
-  }
-  if (ownerGroupId) {
-    scopes.push(
-      and(eq(approvalPolicies.scopeType, 'group'), eq(approvalPolicies.scopeId, ownerGroupId))
-    )
-  }
-  const rows = await db
-    .select()
-    .from(approvalPolicies)
-    .where(
-      and(eq(approvalPolicies.tenantId, tenantId), eq(approvalPolicies.kind, kind), or(...scopes))
-    )
-  for (const scope of ['app', 'group', 'tenant'] as const) {
-    const row = rows.find(r => r.scopeType === scope)
-    if (row) return toPolicy(row)
-  }
-  return defaultPolicyFor(db, tenantId, kind)
+  const found = await findPolicyRow(db, tenantId, kind, appId)
+  return found ? found.policy : defaultPolicyFor(db, tenantId, kind)
 }
 
 // ---- eligibility -------------------------------------------------------------------------------
@@ -286,19 +256,6 @@ export async function canSee(
 }
 
 // ---- the admin surface -------------------------------------------------------------------------
-
-export function toPolicyRow(row: ApprovalPolicyRecord): ApprovalPolicyRow {
-  return {
-    ...toPolicy(row),
-    id: row.id,
-    kind: row.kind,
-    scopeType: row.scopeType,
-    scopeId: row.scopeId,
-    updatedByUserId: row.updatedByUserId,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }
-}
 
 export async function listPolicies(
   db: Database,
