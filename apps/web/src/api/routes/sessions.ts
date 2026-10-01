@@ -16,7 +16,7 @@
  * here must never shadow `/:id/turns` there.
  */
 import { guardPermission } from '../middleware/permissions'
-import { getSessionRow, getVisibleSession, sessionViewerOf } from '../services/sessions/access'
+import { getSessionFor, getSessionRow, sessionViewerOf } from '../services/sessions/access'
 import { toSessionDetail } from '../services/sessions/chat'
 import { requestAction } from '../services/sessions/lifecycle'
 import { reconcileSessionSafely } from '../services/sessions/reconcile'
@@ -35,17 +35,19 @@ sessionsRouter.route('/', sessionShipRouter)
 async function visibleSession(c: AppContext, action: 'read' | 'update') {
   const auth = guardPermission(c, action, 'Session')
   const ctx = withAuthAndDb(c)
-  const session = await getVisibleSession(
+  // Issue #5: a pending merge's reviewer may READ the session, never drive it (`access.ts`).
+  const { row: session, canManage } = await getSessionFor(
     ctx.db,
     ctx.tenantId,
     uuidParam(c, 'id'),
-    sessionViewerOf(auth)
+    sessionViewerOf(auth),
+    { readOnly: action === 'read' }
   )
-  return { ...ctx, session }
+  return { ...ctx, session, canManage }
 }
 
 sessionsRouter.get('/:id', async c => {
-  const { db, logger, realtime, session } = await visibleSession(c, 'read')
+  const { db, logger, realtime, session, canManage } = await visibleSession(c, 'read')
   // A boot or turn whose Workflow died under it is settled here, throttled (`reconcile.ts`): a
   // quiet session costs one compare-and-set per window, a fresh one nothing.
   const reconciled = await reconcileSessionSafely(db, c.env, session, { logger, realtime })
@@ -53,8 +55,8 @@ sessionsRouter.get('/:id', async c => {
     reconciled.outcome === 'settled'
       ? await getSessionRow(db, session.tenantId, session.id)
       : session
-  // Visible means drivable: the creator, the app's owners and admins (`access.ts`).
-  return c.json({ session: toSessionDetail(current, true) })
+  // The creator, the app's owners and admins drive it; a merge's reviewer only reads it.
+  return c.json({ session: toSessionDetail(current, canManage) })
 })
 
 /** Resume a suspended session: `requested_action = 'resume'` + a wake → 202. */

@@ -15,7 +15,9 @@
  *     ship.db-clean#N.A   ALWAYS after `ship.db` (a `finally`): the session's gate branches deleted
  *     ship.fix#N.A        red, and attempts left: ONE focused turn with the failing command and
  *                         the tail of its output (`session-ship-fix`)
- *   green: ship.commit#N → ship.summary#N (one cheap model call: the PR's title and body) → ship.pr#N
+ *   green: ship.commit#N → ship.summary#N (one cheap model call: the PR's title and body, and the
+ *     diff stat) → ship.pr#N (`shipped` in `pr` mode; issue #5's `staging` mode stays `shipping`
+ *     with its landing in `ci`, and the loop's `land` rounds — `land.ts` — take it from there)
  *   otherwise: ship.settle#N (`shipping → ready`, with a sentence saying why no PR)
  *
  * Rules on top of `steps.ts`'s:
@@ -37,14 +39,16 @@
  *   (`runInBackground`) and mints no new password for it; `ship.db` finds its branch by name;
  *   `ship.pr` answers the PR already opened.
  */
+import { resolveAppShipSettings } from '@launch/shared/launch-apps'
 import {
   resolveSessionPolicy,
   SHIP_GATE_STEP_LABELS,
   type ShipGateStep,
 } from '@launch/shared/launch-sessions'
 import { and, eq, sql } from 'drizzle-orm'
-import { type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
+import { apps, type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
 import { scanShipConfig } from '../grants/detect'
+import { reviewPolicyFor } from '../launch/ship-settings'
 import { resolvePrompt } from '../prompts'
 import { BackgroundCommandAbortedError, BackgroundCommandLostError } from './background-command'
 import { checkContainer } from './boot-marker'
@@ -81,7 +85,9 @@ import {
   clipDiffStat,
   DEFAULT_SHIP_ATTEMPTS,
   openShipPullRequest,
+  type ShipLandingInput,
   type ShipSummaryResult,
+  type ShipSummaryStepResult,
   sessionRepo,
   shipRequests,
 } from './ship'
@@ -596,7 +602,7 @@ async function diffStat(scope: StepScope, session: SessionRow): Promise<string> 
  * and the diff stat (one cheap model call, or the fallback). A step of its own so a retried
  * `ship.pr` never pays for it twice. The result is prose, no secret.
  */
-export async function shipSummaryStep(scope: StepScope): Promise<ShipSummaryResult> {
+export async function shipSummaryStep(scope: StepScope): Promise<ShipSummaryStepResult> {
   const session = await loadSession(scope)
   const repo = await sessionRepo(scope.db, session)
   const input = {
@@ -611,20 +617,47 @@ export async function shipSummaryStep(scope: StepScope): Promise<ShipSummaryResu
     hookContext(scope, session, session.turnCount),
     input
   )
-  return { title: summary.title, body: summary.body, source: summary.source }
+  return {
+    title: summary.title,
+    body: summary.body,
+    source: summary.source,
+    diffStat: input.diffStat,
+  }
 }
 
 /**
- * `ship.pr#N`: open the PR and settle `shipped` (`openShipPullRequest`); `gate` is the commands
- * the green attempt ran, which the PR body names.
+ * Issue #5: where this ship ends — the app's `sessionShip` (`apps.ship_settings`, defaults filled
+ * in), `pr` always under `SESSION_BACKEND=local` — and, for `staging`, the review rule
+ * (`reviewPolicyFor`: the app's mode, or `policy` when an admin row decides).
+ */
+async function shipLanding(scope: StepScope, session: SessionRow): Promise<ShipLandingInput> {
+  if (scope.cfg.SESSION_BACKEND === 'local') return { mode: 'pr', reviewMode: 'none' }
+  const [app] = await scope.db
+    .select()
+    .from(apps)
+    .where(and(eq(apps.tenantId, session.tenantId), eq(apps.id, session.appId)))
+  if (!app) throw new Error('The session’s app no longer exists')
+  const settings = resolveAppShipSettings(app.shipSettings)
+  if (settings.sessionShip === 'pr') return { mode: 'pr', reviewMode: 'none' }
+  const review = await reviewPolicyFor(scope.db, session.tenantId, app)
+  return { mode: 'staging', reviewMode: review.required ? review.mode : 'none' }
+}
+
+/**
+ * `ship.pr#N`: open the PR (`openShipPullRequest`) — `shipped` in `pr` mode, or still `shipping`
+ * with the landing in `ci` in `staging` mode (`landing: true`: the loop carries on into its `land`
+ * rounds); `gate` is the commands the green attempt ran, which the PR body names. The ship summary
+ * (with `ship.summary`'s source and diff stat) is stored in the same write.
  */
 export async function shipPrStep(
   scope: StepScope,
-  summary: Pick<ShipSummaryResult, 'title' | 'body'>,
+  summary: Pick<ShipSummaryResult, 'title' | 'body'> &
+    Partial<Pick<ShipSummaryStepResult, 'source' | 'diffStat'>>,
   fixTurns: number,
   gate?: readonly string[]
-): Promise<{ shipped: boolean }> {
+): Promise<{ shipped: boolean; landing?: boolean }> {
   const session = await loadSession(scope)
+  const landing = session.status === 'shipping' ? await shipLanding(scope, session) : undefined
   const outcome = await openShipPullRequest(
     scope.db,
     {
@@ -634,8 +667,17 @@ export async function shipPrStep(
       scanConfig: input => scanShipConfig(hookContext(scope, session, session.turnCount), input),
     },
     scope.params,
-    { title: summary.title, body: summary.body, fixTurns, ...(gate?.length ? { gate } : {}) }
+    {
+      title: summary.title,
+      body: summary.body,
+      fixTurns,
+      ...(gate?.length ? { gate } : {}),
+      ...(summary.source ? { source: summary.source } : {}),
+      ...(summary.diffStat !== undefined ? { diffStat: summary.diffStat } : {}),
+      ...(landing ? { landing } : {}),
+    }
   )
+  if (outcome.status === 'landing') return { shipped: false, landing: true }
   return { shipped: outcome.status === 'shipped' }
 }
 

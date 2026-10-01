@@ -8,14 +8,31 @@
  * policies, the inbox titles, and that each effect is idempotent where the sweep may retry it.
  * `app.access` is exercised end to end in `app-access.test.ts`.
  */
+
+import type { ApprovalPolicy } from '@launch/shared/launch-approvals'
 import { createAppResponseSchema } from '@launch/shared/launch-pipeline'
-import { DEFAULT_SESSION_POLICY, usdToMicrocents } from '@launch/shared/launch-sessions'
+import {
+  DEFAULT_SESSION_POLICY,
+  type SessionLanding,
+  usdToMicrocents,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { open } from '@/api/services/approvals/engine'
 import { appCreateHandler } from '@/api/services/approvals/kinds/app-create'
 import { sessionBudgetHandler } from '@/api/services/approvals/kinds/session-budget'
+import { sessionMergeHandler } from '@/api/services/approvals/kinds/session-merge'
 import type { PipelineSettings } from '@/api/services/launch/pipeline/context'
-import { approvalRequests, apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
+import { appendSessionEvents } from '@/api/services/sessions/event-log'
+import {
+  appOwners,
+  approvalRequests,
+  apps,
+  auditEvents,
+  type SessionRow,
+  sessionEvents,
+  sessions,
+} from '@/db/schema'
 import { decideAs, expireNow, testApprovalDeps } from '../helpers/approvals-kinds'
 import {
   createTestSession,
@@ -27,6 +44,7 @@ import {
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud } from '../helpers/fake-cloud'
 import { forgetApps, uniqueSlug } from '../helpers/launch-apps'
+import { createTestGroup } from '../helpers/oidc'
 import { json, request } from '../helpers/request'
 import { insertSession, seedSessionApp } from '../helpers/sessions'
 import { createTestEnv, stubs, type TestEnv } from '../mocks/bindings'
@@ -316,5 +334,199 @@ describe('session.budget', () => {
     const { approvalId } = await json<{ approvalId: string }>(res)
     await sessionBudgetHandler.applyAfter(await requestRow(approvalId), testApprovalDeps(db, env))
     expect(stubs(env).sessionWorkflow?.events).toEqual([])
+  })
+})
+
+describe('session.merge (issue #5)', () => {
+  const GATE_SHA = 'c'.repeat(40)
+  const policyOf = (approvers: Partial<ApprovalPolicy['approvers']>): ApprovalPolicy => ({
+    approvers: { appOwners: false, admins: false, groupIds: [], userIds: [], ...approvers },
+    minApprovals: 1,
+    allowSelfApproval: false,
+    expiresAfterMinutes: 48 * 60,
+    autoApproveRole: null,
+  })
+
+  /** A `shipping` session whose landing waits in `approval`, its request open (app owners). */
+  async function waitingMerge() {
+    const f = await seedSessionApp(db, createFakeCloud())
+    tenantIds.push(f.tenant.id)
+    const now = new Date().toISOString()
+    const landing: SessionLanding = {
+      mode: 'staging',
+      stage: 'approval',
+      prNumber: 3,
+      gateSha: GATE_SHA,
+      startedAt: now,
+      stageAt: now,
+      reviewMode: 'app_owners',
+      approvalId: null,
+      mergeSha: null,
+      mergedAt: null,
+      releaseId: null,
+      version: null,
+      tag: null,
+      stagingUrl: null,
+      containerReleased: false,
+      stalledReason: null,
+      error: null,
+    }
+    const row = await insertSession(db, f, {
+      status: 'shipping',
+      title: 'Greet people',
+      prNumber: 3,
+      prUrl: 'https://github.com/acme/shop/pull/3',
+      landing,
+    })
+    // An app owner who wrote in the session (and so may not approve its merge).
+    const writer = await createTestUser(db)
+    await linkUserToTenant(db, writer.id, f.tenant.id, 'member')
+    await db.insert(appOwners).values({ tenantId: f.tenant.id, appId: f.app.id, userId: writer.id })
+    await appendSessionEvents(db, row, [
+      { type: 'user.message', turn: 1, data: { text: 'Make it bold', userId: writer.id } },
+    ])
+    const env = createTestEnv()
+    const deps = testApprovalDeps(db, env)
+    const { request: opened } = await open(deps, {
+      tenantId: f.tenant.id,
+      kind: 'session.merge',
+      subject: { type: 'session', id: row.id },
+      appId: f.app.id,
+      requester: { userId: f.user.id, email: f.user.email, role: 'owner' },
+      context: {
+        kind: 'session.merge',
+        sessionId: row.id,
+        shortId: row.shortId,
+        title: row.title,
+        appSlug: f.app.slug,
+        prNumber: 3,
+        prUrl: 'https://github.com/acme/shop/pull/3',
+        prTitle: 'Greet people on the home page',
+        summary: 'Adds a bold greeting.',
+        diffStat: ' src/home.tsx | 2 +-',
+        headSha: GATE_SHA,
+        sessionPath: `/apps/${f.app.slug}/sessions/${row.id}`,
+      },
+      excludedUserIds: [f.user.id, writer.id],
+      policy: policyOf({ appOwners: true }),
+    })
+    await db
+      .update(sessions)
+      .set({ landing: { ...landing, approvalId: opened.id } })
+      .where(eq(sessions.id, row.id))
+    return { f, row, env, deps, writer, approvalId: opened.id }
+  }
+
+  async function reload(row: SessionRow) {
+    const [latest] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    if (!latest) throw new Error('gone')
+    return latest
+  }
+
+  /** Another member who owns the app: an eligible approver. */
+  async function owner(f: { tenant: { id: string }; app: { id: string } }) {
+    const user = await createTestUser(db)
+    await linkUserToTenant(db, user.id, f.tenant.id, 'member')
+    await db.insert(appOwners).values({ tenantId: f.tenant.id, appId: f.app.id, userId: user.id })
+    return user
+  }
+
+  it('approve → the landing moves approval → merging in the decision, ship.review says who, the session is woken', async () => {
+    const { f, row, env, deps, approvalId } = await waitingMerge()
+    expect(sessionMergeHandler.describe(await requestRow(approvalId))).toBe(
+      'Merge “Greet people on the home page” (#3) from session Greet people'
+    )
+    const bob = await owner(f)
+    await decideAs(deps, f.tenant.id, bob.id, approvalId, 'approve')
+    expect((await reload(row)).landing).toMatchObject({ stage: 'merging', approvalId })
+    const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, row.id))
+    expect(events.find(e => e.type === 'ship.review')?.data).toMatchObject({
+      status: 'approved',
+      approvalId,
+      by: expect.any(String),
+    })
+    // `applyAfter` woke the session (its instance is gone here, so a fresh one was started).
+    expect(stubs(env).sessionWorkflow?.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+    // A retried applyAfter (the sweep) only wakes it again; nothing moves twice.
+    await sessionMergeHandler.applyAfter(await requestRow(approvalId), deps)
+    expect((await reload(row)).landing?.stage).toBe('merging')
+  })
+
+  it('reject → the landing stays in approval for land.review to reopen; the session is woken', async () => {
+    const { f, row, env, deps, approvalId } = await waitingMerge()
+    const bob = await owner(f)
+    await decideAs(deps, f.tenant.id, bob.id, approvalId, 'reject')
+    expect((await requestRow(approvalId)).status).toBe('rejected')
+    expect((await reload(row)).landing).toMatchObject({ stage: 'approval', approvalId })
+    expect(stubs(env).sessionWorkflow?.created).toHaveLength(1)
+  })
+
+  it('expiry → the session is woken (land.review reads it and reopens review_expired)', async () => {
+    const { f, row, env, deps, approvalId } = await waitingMerge()
+    const expired = await expireNow(deps, f.tenant.id, approvalId)
+    expect(expired?.status).toBe('expired')
+    expect((await reload(row)).landing?.stage).toBe('approval')
+    expect(stubs(env).sessionWorkflow?.created).toHaveLength(1)
+  })
+
+  it('the creator and everyone who wrote in the session are refused: 403 self_approval', async () => {
+    const { f, env, deps, writer, approvalId } = await waitingMerge()
+    for (const userId of [f.user.id, writer.id]) {
+      await expect(
+        decideAs(deps, f.tenant.id, userId, approvalId, 'approve')
+      ).rejects.toMatchObject({ statusCode: 403, code: 'self_approval' })
+    }
+    // The creator (the requester) still READS the request — the ship panel names who it waits on.
+    const res = await request(`/api/approvals/${approvalId}`, { headers: f.cookie }, { env })
+    expect(res.status).toBe(200)
+    expect(await json(res)).toMatchObject({ id: approvalId, canDecide: false })
+  })
+
+  it('a group approver may read the session while the request is pending — never ship, end or send a turn', async () => {
+    const { f, row, env, deps, approvalId } = await waitingMerge()
+    // Carol is no owner, creator or admin of the app: only the request's group names her.
+    const carol = await createTestUser(db)
+    await linkUserToTenant(db, carol.id, f.tenant.id, 'member')
+    const group = await createTestGroup(db, f.tenant.id, 'Reviewers', [carol.id])
+    await db
+      .update(approvalRequests)
+      .set({ policy: policyOf({ groupIds: [group.id] }) })
+      .where(eq(approvalRequests.id, approvalId))
+    const headers = {
+      ...sessionCookieHeader(await createTestSession(db, carol.id, f.tenant.id)),
+      'X-Requested-With': 'fetch',
+    }
+    const detail = await request(`/api/sessions/${row.id}`, { headers }, { env })
+    expect(detail.status).toBe(200)
+    expect(await json(detail)).toMatchObject({ session: { id: row.id, viewerCanManage: false } })
+    expect((await request(`/api/sessions/${row.id}/events`, { headers }, { env })).status).toBe(200)
+    expect((await request(`/api/sessions/${row.id}/pr`, { headers }, { env })).status).toBe(200)
+    for (const [path, body] of [
+      ['ship', undefined],
+      ['end', undefined],
+      ['turns', { message: 'merge it' }],
+      ['resume', undefined],
+    ] as const) {
+      const res = await request(
+        `/api/sessions/${row.id}/${path}`,
+        { method: 'POST', headers },
+        { env, ...(body ? { json: body } : {}) }
+      )
+      expect(res.status, path).toBe(404)
+      expect(await json(res)).toMatchObject({ statusCode: 404, code: 'session_not_found' })
+    }
+    // She decides it; once it is not pending she cannot read the session any more.
+    await decideAs(deps, f.tenant.id, carol.id, approvalId, 'approve')
+    expect((await request(`/api/sessions/${row.id}`, { headers }, { env })).status).toBe(404)
+    // Another organisation's member never sees it; nobody signed out does.
+    const other = await createTestTenantWithUser(db, 'owner')
+    tenantIds.push(other.tenant.id)
+    const outsider = sessionCookieHeader(
+      await createTestSession(db, other.user.id, other.tenant.id)
+    )
+    expect((await request(`/api/sessions/${row.id}`, { headers: outsider }, { env })).status).toBe(
+      404
+    )
+    expect((await request(`/api/sessions/${row.id}`, {}, { env })).status).toBe(401)
   })
 })

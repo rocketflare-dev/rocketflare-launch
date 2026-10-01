@@ -14,7 +14,6 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
 import { kindHandler } from '@/api/services/approvals/kinds'
 import { approvalsSweep, dueForApplyRetry, dueForExpiry } from '@/api/services/approvals/sweep'
-import type { ApprovalDeps } from '@/api/services/approvals/types'
 import { NotWiredError } from '@/api/services/i5-not-wired'
 import { recordAudit, SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import {
@@ -26,16 +25,6 @@ import { withReleaseClaim } from '@/api/services/launch/releases/claim'
 import { reviewPolicyFor } from '@/api/services/launch/ship-settings'
 import { toSessionDetail } from '@/api/services/sessions/chat'
 import { defaultSessionStepHooks } from '@/api/services/sessions/hooks'
-import {
-  landCiStep,
-  landLiveStep,
-  landMergeStep,
-  landReopenStep,
-  landReviewStep,
-  landStalledStep,
-  nudgeLandingSessions,
-  releaseLandingContainer,
-} from '@/api/services/sessions/land'
 import type { landRelease } from '@/api/services/sessions/land-release'
 import {
   type ApprovalRequestRow,
@@ -359,7 +348,7 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
     })
   })
 
-  it('one open session.merge per session; the kind is registered and its effects fail BY NAME', async () => {
+  it('one open session.merge per session; the kind is registered', async () => {
     const { tenant, user, app } = await seedTenant()
     const session = await insertSession(db, { tenant, user, app })
     const values: NewApprovalRequestRow = {
@@ -399,32 +388,11 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
     expect(handler.describe(first as ApprovalRequestRow)).toBe(
       `Merge “Change the heading” (#4) from session ${session.shortId}`
     )
-    const deps = {} as ApprovalDeps
-    const request = first as ApprovalRequestRow
-    for (const effect of [
-      handler.applyInTx(db, request, deps),
-      handler.applyAfter(request, deps),
-      handler.onClosed?.(request, 'rejected', deps),
-    ]) {
-      await expect(effect).rejects.toMatchObject({
-        name: 'NotWiredError',
-        message: expect.stringContaining('issue #5 slice S2'),
-      })
-    }
   })
 
   it('the other S1 stubs fail by name, naming the slice that fills them', async () => {
-    const scope = {} as Parameters<typeof landCiStep>[0]
     const ctx = {} as Parameters<typeof landRelease>[0]
     const cases: [Promise<unknown>, string][] = [
-      [landCiStep(scope), 'S2'],
-      [landReviewStep(scope), 'S2'],
-      [landMergeStep(scope), 'S2'],
-      [landReopenStep(scope, { reason: 'ci_failed', message: 'x', bootId: null }), 'S2'],
-      [releaseLandingContainer(scope, 'idle'), 'S2'],
-      [landLiveStep(scope, { url: null, version: '1.0.0' }), 'S2'],
-      [landStalledStep(scope, { reason: 'unhealthy', error: 'x' }), 'S2'],
-      [nudgeLandingSessions(db, {} as never, {} as never, new Date()), 'S2'],
       [defaultSessionStepHooks.landRelease(ctx), 'S3'],
       [defaultSessionStepHooks.landStaging(ctx), 'S3'],
       [defaultSessionStepHooks.landHealth(ctx), 'S3'],

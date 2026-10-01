@@ -19,22 +19,34 @@
  *   failure — no model at all, a provider error, a reply that does not parse — falls back to
  *   `fallbackShipSummary` (the session's title or the first request, and the diff stat): a PR
  *   never waits on the summary.
- * - **The PR** (`openShipPullRequest`): head `session/<short>`, base the app's default branch, the
- *   row's `pr_number` / `pr_url`, `shipping → shipped`, a `ship.pr` event, audit `session.shipped`,
- *   the config the PR declares (`deps.scanConfig` → `ship.config_needs`, never fatal), and a first
- *   `refreshChecks`. Idempotent: a session already `shipped` answers its PR.
+ * - **The PR** (`openShipPullRequest`): head `session/<short>`, base the app's default branch, and
+ *   ONE compare-and-set recording the row's `pr_number` / `pr_url`, `sessions.landing` and
+ *   `sessions.ship_summary` (issue #5: the title and body as written, without Launch's footer, the
+ *   summary's source and the diff stat — overwritten on a re-ship) — `shipping → shipped` (stage
+ *   `pr`) in `pr` mode, still `shipping` with the landing in `ci` in `staging` mode (the
+ *   Workflow's `land` rounds, `land.ts`, take it from there) — a `ship.pr` event (with the title),
+ *   audit `session.shipped`, the config the PR declares (`deps.scanConfig` → `ship.config_needs`,
+ *   never fatal), and a first `refreshChecks`. Idempotent: a session already `shipped` answers its
+ *   PR, and a `staging` one already landing answers `landing`.
  *
  * `refreshChecks` is also what `GET /api/sessions/:id/pr` (at most every 30 s) and the `*\/5`
  * cron (`sessionsChecksTask`, while `pending`) call.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { AiProvider } from '@launch/shared/ai/config'
+import type { SessionShipMode } from '@launch/shared/launch-apps'
 import {
+  type LandingReviewMode,
   type PrChecks,
   type SessionEventInput,
+  type SessionLanding,
   type SessionShipConfigNeedsData,
+  type SessionShipSummary,
   type SessionStatus,
   SHIP_GATE_ATTEMPTS,
+  SHIP_SUMMARY_BODY_MAX,
+  SHIP_SUMMARY_DIFFSTAT_MAX,
+  SHIP_SUMMARY_TITLE_MAX,
   sessionBranchName,
   sessionUserMessageDataSchema,
 } from '@launch/shared/launch-sessions'
@@ -98,6 +110,14 @@ export interface ShipSummaryInput {
 export interface ShipSummaryResult extends ShipSummary {
   /** `model` — the call answered; `fallback` — it did not, or there was no model. */
   source: 'model' | 'fallback'
+}
+
+/**
+ * `ship.summary#N`'s result (issue #5): the summary and the diff stat it was written from — both
+ * stored on the session (`sessions.ship_summary`) by `ship.pr`.
+ */
+export interface ShipSummaryStepResult extends ShipSummaryResult {
+  diffStat: string
 }
 
 /**
@@ -399,7 +419,21 @@ export interface OpenShipPullRequestDeps {
 
 export type ShipPrOutcome =
   | { status: 'shipped'; prNumber: number; prUrl: string; checks: PrChecks | null }
+  /** Issue #5 `staging` mode: the PR is open and the session stays `shipping`, landing in `ci`. */
+  | { status: 'landing'; prNumber: number; prUrl: string; checks: PrChecks | null }
   | { status: 'skipped'; reason: string }
+
+/**
+ * Issue #5: where this ship ends (`ship.pr` snapshots it onto `sessions.landing`). Absent = `pr`
+ * mode, the flow before issue #5.
+ */
+export interface ShipLandingInput {
+  mode: SessionShipMode
+  reviewMode: LandingReviewMode
+}
+
+const clipText = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max - 1)}…` : text
 
 /** `` / ` after one fix turn` / ` after 2 fix turns`. */
 const fixed = (n: number) => (n > 0 ? ` after ${n} fix turn${n === 1 ? '' : 's'}` : '')
@@ -422,15 +456,27 @@ export function shipPrBody(
 }
 
 /**
- * The green half of a ship, after the gate and the final checkpoint: open (or find) the PR, and
- * `shipping → shipped`. See the header.
+ * The green half of a ship, after the gate and the final checkpoint: open (or find) the PR, and —
+ * in `pr` mode — `shipping → shipped`, stage `pr`; in `staging` mode (issue #5) the session stays
+ * `shipping` with its landing in `ci` (the Workflow's `land` rounds take it from there). Either
+ * way the same compare-and-set records the PR, the landing and the ship summary
+ * (`sessions.ship_summary`, overwritten on a re-ship). See the header.
  */
 export async function openShipPullRequest(
   db: Database,
   deps: OpenShipPullRequestDeps,
   ref: { tenantId: string; sessionId: string },
-  /** `gate`: the commands the green attempt ran (default: the `pnpm gate` steps). */
-  input: ShipSummary & { fixTurns: number; gate?: readonly string[] }
+  /**
+   * `gate`: the commands the green attempt ran (default: the `pnpm gate` steps); `source` and
+   * `diffStat`: what `ship.summary` wrote it from; `landing`: issue #5's mode (default `pr`).
+   */
+  input: ShipSummary & {
+    fixTurns: number
+    gate?: readonly string[]
+    source?: ShipSummaryResult['source']
+    diffStat?: string
+    landing?: ShipLandingInput
+  }
 ): Promise<ShipPrOutcome> {
   const now = deps.now ?? (() => new Date())
   const session = await loadSession(db, ref.tenantId, ref.sessionId)
@@ -444,6 +490,15 @@ export async function openShipPullRequest(
   }
   if (session.status !== 'shipping') {
     return { status: 'skipped', reason: `session is ${session.status}` }
+  }
+  // A retried `ship.pr` of a `staging` ship: the PR is open and the landing under way already.
+  if (session.landing && session.prNumber && session.prUrl) {
+    return {
+      status: 'landing',
+      prNumber: session.prNumber,
+      prUrl: session.prUrl,
+      checks: session.prChecks ?? null,
+    }
   }
   const repo = await sessionRepo(db, session)
   const [creator] = session.createdByUserId
@@ -464,17 +519,52 @@ export async function openShipPullRequest(
       ...(input.gate ? { gate: input.gate } : {}),
     }),
   })
+  const at = now()
+  const mode = input.landing?.mode ?? 'pr'
+  const gateSha = session.headSha ?? ''
+  const landing: SessionLanding = {
+    mode,
+    stage: mode === 'staging' ? 'ci' : 'pr',
+    prNumber: pr.number,
+    gateSha,
+    startedAt: at.toISOString(),
+    stageAt: at.toISOString(),
+    reviewMode: input.landing?.reviewMode ?? 'none',
+    approvalId: null,
+    mergeSha: null,
+    mergedAt: null,
+    releaseId: null,
+    version: null,
+    tag: null,
+    stagingUrl: null,
+    containerReleased: false,
+    stalledReason: null,
+    error: null,
+  }
+  const shipSummary: SessionShipSummary = {
+    title: clipText(input.title, SHIP_SUMMARY_TITLE_MAX),
+    body: clipText(input.body.trim(), SHIP_SUMMARY_BODY_MAX),
+    source: input.source ?? 'fallback',
+    diffStat: clipText(input.diffStat ?? '', SHIP_SUMMARY_DIFFSTAT_MAX),
+    prNumber: pr.number,
+    gateSha: session.headSha ?? null,
+    at: at.toISOString(),
+  }
   const shipped = await transition(db, session, ['shipping'], {
-    status: 'shipped',
+    status: mode === 'staging' ? 'shipping' : 'shipped',
     prNumber: pr.number,
     prUrl: pr.url,
-    lastActivityAt: now(),
+    landing,
+    shipSummary,
+    lastActivityAt: at,
   })
   if (!shipped) {
     return { status: 'skipped', reason: 'the session left shipping while its PR opened' }
   }
   const turn = shipped.turnCount
-  await deps.emit([{ type: 'ship.pr', turn, data: { number: pr.number, url: pr.url } }])
+  await deps.emit([
+    { type: 'ship.pr', turn, data: { number: pr.number, url: pr.url, title: shipSummary.title } },
+  ])
   await recordAudit(db, {
     ...SYSTEM_ACTOR,
     tenantId: session.tenantId,
@@ -490,6 +580,7 @@ export async function openShipPullRequest(
         headSha: shipped.headSha,
         title: input.title,
         fixTurns: input.fixTurns,
+        mode,
       },
     },
   })
@@ -517,7 +608,12 @@ export async function openShipPullRequest(
   } catch {
     checks = null
   }
-  return { status: 'shipped', prNumber: pr.number, prUrl: pr.url, checks }
+  return {
+    status: mode === 'staging' ? 'landing' : 'shipped',
+    prNumber: pr.number,
+    prUrl: pr.url,
+    checks,
+  }
 }
 
 // ---- the cron ----------------------------------------------------------------------------------

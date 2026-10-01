@@ -335,6 +335,86 @@ describe('the pull request', () => {
     expect(cloud.github.pulls).toHaveLength(1)
   })
 
+  it('issue #5: the ship summary is kept on the session in the same write, and a re-ship overwrites it', async () => {
+    const { cloud, f, row, branch, deps, ref } = await setup()
+    const first = await openShipPullRequest(db, deps, ref, {
+      title: 'Add a greeting',
+      body: 'Adds **Hello**.',
+      fixTurns: 0,
+      source: 'fallback',
+      diffStat: ' src/home.txt | 1 +',
+    })
+    // No `landing` input: `pr` mode, today's flow — `shipped`, stage `pr`.
+    expect(first).toMatchObject({ status: 'shipped', prNumber: 1 })
+    const shipped = await reload(row)
+    expect(shipped.status).toBe('shipped')
+    expect(shipped.landing).toMatchObject({
+      mode: 'pr',
+      stage: 'pr',
+      prNumber: 1,
+      gateSha: shipped.headSha,
+      reviewMode: 'none',
+    })
+    expect(shipped.shipSummary).toMatchObject({
+      title: 'Add a greeting',
+      body: 'Adds **Hello**.',
+      source: 'fallback',
+      diffStat: ' src/home.txt | 1 +',
+      prNumber: 1,
+      gateSha: shipped.headSha,
+    })
+    // Without Launch's footer, which only the PR body carries.
+    expect(shipped.shipSummary?.body).not.toContain('Opened by Launch')
+    expect(cloud.github.pulls[0]?.body).toContain('Opened by Launch')
+
+    // The person ships again (in `staging` mode now) on a new head: the same PR, a new summary,
+    // and the session stays `shipping` with its landing in `ci`.
+    const headSha = cloud.github.pushCommit(
+      f.repo.owner,
+      f.repo.repo,
+      { 'src/home.txt': 'Hello again' },
+      'Launch session',
+      branch
+    )
+    await db
+      .update(sessions)
+      .set({ status: 'shipping', headSha, landing: null })
+      .where(eq(sessions.id, row.id))
+    const second = await openShipPullRequest(db, deps, ref, {
+      title: 'Add a warmer greeting',
+      body: 'Says hello twice.',
+      fixTurns: 1,
+      source: 'model',
+      diffStat: ' src/home.txt | 2 +-',
+      landing: { mode: 'staging', reviewMode: 'app_owners' },
+    })
+    expect(second).toMatchObject({ status: 'landing', prNumber: 1 })
+    const landing = await reload(row)
+    expect(landing.status).toBe('shipping')
+    expect(landing.landing).toMatchObject({
+      mode: 'staging',
+      stage: 'ci',
+      prNumber: 1,
+      gateSha: headSha,
+      reviewMode: 'app_owners',
+      approvalId: null,
+      containerReleased: false,
+    })
+    expect(landing.shipSummary).toMatchObject({
+      title: 'Add a warmer greeting',
+      body: 'Says hello twice.',
+      source: 'model',
+      diffStat: ' src/home.txt | 2 +-',
+      gateSha: headSha,
+    })
+    expect(cloud.github.pulls).toHaveLength(1)
+    // A retried `ship.pr` answers the landing already under way, and writes nothing new.
+    expect(
+      await openShipPullRequest(db, deps, ref, { title: 'x', body: 'y', fixTurns: 0 })
+    ).toMatchObject({ status: 'landing', prNumber: 1 })
+    expect((await reload(row)).shipSummary?.title).toBe('Add a warmer greeting')
+  })
+
   it('a session that is not shipping opens nothing', async () => {
     const { cloud, f, deps } = await setup()
     const ready = await insertSession(db, f, { status: 'ready' })
@@ -361,13 +441,16 @@ describe('the pull request', () => {
       prUrl: 'local://x/y/pull/7',
       headSha: 'e'.repeat(40),
     })
-    const task = sessionsChecksTask(() => new LocalRepoHost(cfg))
+    // Its landing safety net (issue #5) is cross-tenant: scoped to this test's organisation here.
+    const task = sessionsChecksTask(() => new LocalRepoHost(cfg), undefined, {
+      tenantIds: [f.tenant.id],
+    })
     const logs: unknown[] = []
     await task.run({
       env,
       config: cfg,
       db,
-      logger: { info: (o: unknown) => logs.push(o) } as never,
+      logger: { info: (o: unknown) => logs.push(o), warn: (o: unknown) => logs.push(o) } as never,
       waitUntil: () => {},
     })
     expect((await reload(row)).prChecks).toMatchObject({
