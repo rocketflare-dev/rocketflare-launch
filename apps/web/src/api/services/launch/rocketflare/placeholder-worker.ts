@@ -12,12 +12,16 @@
  *   (a message sent before the first deploy is not lost), and a no-op `scheduled`.
  *
  * Its `fetch` answers 503 "being set up" with `Retry-After`, so the host is honest until the first
- * deploy replaces the code (the version keeps the Worker's secrets: `keep_bindings`).
+ * deploy replaces the code (the version keeps the Worker's secrets: `keep_bindings`). A browser
+ * (`GET`/`HEAD` accepting `text/html`, outside `/api/`) gets the same 503 as the animated launching
+ * page (`placeholder-page.ts`), which polls `/api/health` and reloads into the app once it is live;
+ * everything else — Launch's health probe, `curl`, API clients — gets the plain-text body.
  *
  * Adapted from the spikes' `echoWorker` / `uploadWorker` (`spikes/lib/worker.mjs`), which is
  * reference only and never imported.
  */
 import type { WorkerMetadata, WorkerModule } from '../cloudflare'
+import { LAUNCHING_PAGE_CSP, launchingPage } from './placeholder-page'
 import { type DeclaredMigration, resources } from './toml'
 
 /** Used when the toml names none; the kit pins its own. */
@@ -42,6 +46,15 @@ export interface PlaceholderOptions {
    * what wrangler does; sending `v1` again to a script at `v1` is refused.
    */
   appliedTag?: string | null
+  /** The app's display name, shown on the launching page (escaped there). */
+  appName?: string
+}
+
+/** A string as a JS literal: JSON, plus the two line separators older parsers reject. */
+function jsString(text: string): string {
+  return JSON.stringify(text)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
 }
 
 /** Cloudflare's migration step shape for one toml `[[migrations]]` entry. */
@@ -74,10 +87,16 @@ function checkIdentifier(name: string): string {
 }
 
 /** The module's source: stub classes, a 503 `fetch`, a retrying `queue` and a no-op `scheduled`. */
-function placeholderSource(doClasses: string[], workflowClasses: string[]): string {
+function placeholderSource(
+  doClasses: string[],
+  workflowClasses: string[],
+  appName: string
+): string {
   const lines = [
     '// Placeholder Worker, uploaded by Launch until the first deploy replaces it.',
     "import { DurableObject, WorkflowEntrypoint } from 'cloudflare:workers'",
+    '',
+    `const PAGE = ${jsString(launchingPage(appName))}`,
     '',
   ]
   for (const name of doClasses) {
@@ -98,7 +117,17 @@ function placeholderSource(doClasses: string[], workflowClasses: string[]): stri
   }
   lines.push(
     'export default {',
-    '  async fetch() {',
+    '  async fetch(request) {',
+    // A browser gets the launching page — still a 503, so probes and crawlers see "not ready".
+    "    const accept = request.headers.get('accept') || ''",
+    "    const browser = (request.method === 'GET' || request.method === 'HEAD') &&",
+    "      accept.includes('text/html') && !new URL(request.url).pathname.startsWith('/api/')",
+    '    if (browser) {',
+    '      return new Response(PAGE, {',
+    "        status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': '60',",
+    `          'cache-control': 'no-store', 'content-security-policy': ${jsString(LAUNCHING_PAGE_CSP)} },`,
+    '      })',
+    '    }',
     "    return new Response('This app is being set up by Launch. Try again in a few minutes.', {",
     "      status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '60' },",
     '    })',
@@ -172,7 +201,12 @@ export function placeholderScript(
   }
   return {
     metadata,
-    modules: [{ name: MAIN_MODULE, content: placeholderSource(doClasses, workflowClasses) }],
+    modules: [
+      {
+        name: MAIN_MODULE,
+        content: placeholderSource(doClasses, workflowClasses, opts.appName ?? ''),
+      },
+    ],
     migrationTag: newTag ?? applied,
     durableObjectClasses: doClasses,
     workflowClasses,

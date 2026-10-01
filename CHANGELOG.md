@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A launching app's host shows browsers an animated "launching" page** (rocketflare-launch#4;
+  `docs/CONCEPTS.md` §18.5). The placeholder Worker answers a `GET`/`HEAD` that accepts
+  `text/html` outside `/api/` with a self-contained page (inline CSS/SVG/script, its own CSP, under
+  30 KB): the app's display name on the tower (HTML-escaped), a rocket idling on the pad, a
+  mission-control checklist, light/dark from `prefers-color-scheme` and a still scene under
+  `prefers-reduced-motion`. It polls the same host's `/api/health` every 12 s and, on the first
+  200, plays the lift-off and reloads into the app. It is still a `503` with `Retry-After: 60` and
+  `Cache-Control: no-store`; every other request — Launch's health probe, `curl`, API clients —
+  gets today's plain-text body unchanged. `pnpm web preview:placeholder` serves the generated
+  module locally (`/__preview/live` simulates the first deploy).
+
 - **The ship gate runs the kit's `pnpm gate` steps — the same checks as the app's CI**
   (rocketflare-launch#2, kit 0.16.0; `docs/CONCEPTS.md` §18.13). On a kit with `pnpm gate` the
   gate is `pnpm gate lint` → `pnpm gate typecheck` → `pnpm gate test`, the copy's one CI job minus

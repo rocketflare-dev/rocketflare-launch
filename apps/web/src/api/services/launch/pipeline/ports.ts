@@ -10,7 +10,7 @@
  * |-----------------------------|---------------------------------------------------------|
  * | `names(slug, env, domain)`  | `rocketflare/names.ts` `appResourceNames` — plan §1's naming table |
  * | `writeConfig(toml, env, v)` | `rocketflare/toml.ts` `writeConfig(tomlText, env, ConfigValues)` |
- * | `placeholderScript(toml)`   | `rocketflare/placeholder-worker.ts` `placeholderScript(toml, { appliedTag })` |
+ * | `placeholderScript(toml)`   | `rocketflare/placeholder-worker.ts` `placeholderScript(toml, { appliedTag, appName })` |
  * | `scaffoldFiles()`           | `rocketflare/scaffold-job.ts` `scaffoldFiles()` (the workflow + `.launch/scaffold.mjs`) |
  * | `scaffoldRunner`            | `scaffold/github-actions-runner.ts` `GitHubActionsScaffoldRunner` (dispatches `launch-scaffold.yml` on `main` with `launch_url`; `poll` reads its run) |
  *
@@ -114,8 +114,12 @@ export interface PipelinePorts {
   /**
    * `appliedTag` is the DO migration tag the script ALREADY carries (a retried `placeholders`):
    * only the migrations after it are sent, since re-sending an applied tag is refused.
+   * `appName` is the display name the launching page shows a browser.
    */
-  placeholderScript(tomlText: string, opts?: { appliedTag?: string | null }): PlaceholderScript
+  placeholderScript(
+    tomlText: string,
+    opts?: { appliedTag?: string | null; appName?: string }
+  ): PlaceholderScript
   /** The files `repo` commits before dispatching the scaffold job. */
   scaffoldFiles(): CommitFile[]
   scaffoldRunner: ScaffoldRunnerPort

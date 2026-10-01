@@ -748,6 +748,7 @@ export function placeholdersStep(d: PipelineDeps, params: AppLaunchParams) {
         script: d.ports.placeholderScript(tomlText, {
           appliedTag:
             ctx.prior[idKey('migrationTag', env)] ?? envs[env].resources?.doMigrationTag ?? null,
+          appName: app.displayName,
         }),
         queueIds: queueName && queueId ? { [queueName]: queueId } : {},
       })

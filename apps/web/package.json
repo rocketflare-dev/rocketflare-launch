@@ -23,6 +23,7 @@
     "dev": "node scripts/dev-server.mjs --start",
     "dev:stop": "node scripts/dev-server.mjs --stop",
     "dev:status": "node scripts/dev-server.mjs --status",
+    "preview:placeholder": "tsx scripts/preview-placeholder.ts",
     "dev:api": "mkdir -p dist/ui && node scripts/dev-db.mjs env -- wrangler dev --port ${DEV_API_PORT:-3001}",
     "dev:ui": "vite",
     "dev:tunnel": "cfld",

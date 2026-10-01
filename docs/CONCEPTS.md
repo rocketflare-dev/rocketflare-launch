@@ -935,7 +935,11 @@ step that mints one puts it on the Worker itself.
   `AUTH_OIDC_ONLY`, `workers_dev=false`) → `placeholders` (a stub Worker per environment applying
   the toml's DO migrations, its workflows, queue consumers and `<host>/*` route; it exports a `queue`
   handler that retries every message and a no-op `scheduled`, since Cloudflare refuses a consumer on a
-  script without one — 11001) → `github_env`
+  script without one — 11001; its `fetch` is a 503 with `Retry-After: 60` — plain text, except
+  that a browser (`GET`/`HEAD` accepting `text/html`, outside `/api/`) gets the uncached animated
+  launching page, `rocketflare/placeholder-page.ts`, with the app's escaped display name; the page
+  polls `/api/health` every 12 s and reloads into the app on its first 200. Preview it with
+  `pnpm web preview:placeholder`) → `github_env`
   (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`) →
   `worker_secrets` → `email` (non-blocking; skipped with its reason while Setup has no Resend key or
   no verified notifications domain) → `deploy_staging.start|wait|check` → `health` (up to
