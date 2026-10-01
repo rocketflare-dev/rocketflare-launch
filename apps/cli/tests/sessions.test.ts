@@ -502,6 +502,27 @@ describe('sessions ship — through to live on staging (#5)', () => {
     expect(text).toContain('expected "Welcome" to be "Welcome back"')
   })
 
+  it('exits 1, naming the open PR, when the session is ended while the landing waits', async () => {
+    const { fetch } = scripted([
+      {
+        rows: [
+          ['ship.pr', { number: 12, url: prUrl }],
+          ['ship.ci', ci('pending', { passed: 0, pending: 1 })],
+        ],
+        session: { status: 'shipping', prNumber: 12, prUrl, landing: landing('ci') },
+      },
+      {
+        // `endStep` cleared the landing and wrote no `ship.reopened`.
+        rows: [['status', { status: 'ending', reason: 'requested' }]],
+        session: { status: 'ended', prNumber: 12, prUrl, landing: null },
+      },
+    ])
+    const { ctx } = await testContext({ store: await loggedInStore(), fetch })
+    const error = await captureError(runSessionsShip(ctx, ID, { sleep: noSleep }))
+    expect(exitCodeFor(error)).toBe(EXIT_ERROR)
+    expect(error.message).toBe('Not merged: the session is ended, so PR #12 was left open')
+  })
+
   it('exits 1 when it stalls after the merge', async () => {
     const { fetch } = scripted([
       {

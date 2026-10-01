@@ -187,7 +187,11 @@ caps each stage). `claim` answers `{ start: 'loop' }` for a Phase A landing (nev
 and `{ start: 'land', cleanup }` for a `shipped` one in `releasing` / `deploying` — `run()` then
 runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. The tests are
 `tests/api/session-land.test.ts` (the `session-ship-gate` harness with fake Phase B hooks; the fake
-step's `sleep` is wrapped there so its names are recorded too).
+step's `sleep` is wrapped there so its names are recorded too) and
+`tests/api/session-land-e2e.test.ts` (every slice's real code at once: the settings route, the
+real `reviewPolicyFor`, the approvals route, the REAL Phase B hooks over the FakeCloud as the
+global fetch, the staging deploy played inside the `land.staging-wait` sleep, then the release's
+`chain` and the app's `promotion`).
 
 The calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`, bound
 once in `defaultSessionStepHooks`): `runTurn`, `checkpoint`, `shipFix` (a fix turn),

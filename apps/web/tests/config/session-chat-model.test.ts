@@ -306,6 +306,49 @@ describe('landingTimeline (#5)', () => {
     expect(view?.steps.find(step => step.key === 'approval')?.label).toBe('Sent back by Bob')
   })
 
+  it('a cancelled review reopens as review_rejected, but nobody “sent it back”', () => {
+    const view = landingTimeline(
+      [
+        pr,
+        ev(11, 'ship.review', {
+          status: 'cancelled',
+          approvalId: 'a9900000-0000-4000-8000-000000000002',
+        }),
+        ev(12, 'ship.reopened', {
+          reason: 'review_rejected',
+          message: 'The review was cancelled, so nothing was merged. Ship again to ask again.',
+        }),
+      ],
+      null,
+      'ready'
+    )
+    expect(view?.reopen).toMatchObject({
+      reason: 'review_rejected',
+      text: 'The review was cancelled, so Launch didn’t merge it.',
+    })
+    expect(view?.steps.find(step => step.key === 'approval')).toMatchObject({
+      status: 'failed',
+      label: 'Review cancelled',
+    })
+  })
+
+  it('steps aside for a landing an End abandoned (no landing, no reopen, not shipping)', () => {
+    const ci = ev(11, 'ship.ci', {
+      state: 'pending',
+      headSha: 'b'.repeat(40),
+      passed: 0,
+      failed: 0,
+      pending: 1,
+    })
+    // `endStep` cleared the landing and wrote no `ship.reopened`: nothing is waiting on CI.
+    expect(landingTimeline([pr, ci], null, 'ended')).toBeNull()
+    expect(landingTimeline([pr, ci], null, 'ending')).toBeNull()
+    // A row read before the session caught up (still `shipping`) keeps the walk.
+    expect(landingTimeline([pr, ci], null, 'shipping')?.outcome).toBe('moving')
+    // A reopen still reads as one, whatever the status became since.
+    expect(landingTimeline([pr, reopened], null, 'ended')?.outcome).toBe('reopened')
+  })
+
   it('steps aside once a re-ship’s gate starts after a reopen', () => {
     expect(landingTimeline([pr, reopened, gate(13)], null)).toBeNull()
   })

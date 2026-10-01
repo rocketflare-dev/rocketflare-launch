@@ -60,7 +60,8 @@ rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pol
 `ship` WAITS by default (issue #5): one line per stage row — the gate, `ship.pr`, `ship.ci` (a red
 check with its URL and the last 20 lines of its redacted log), `ship.review`, `ship.merged`,
 `ship.released`, `ship.staging` — until `landing.stage` is `live` (exit 0); `ship.reopened` (given
-back before the merge) and `stalled` (after it) exit 1, and so does a ship that opened no PR. Past
+back before the merge) and `stalled` (after it) exit 1, and so do a ship that opened no PR and
+one whose session was ended while its landing waited ("PR #n was left open"). Past
 the PR it polls every ten `pollMs` (the Workflow works in 30 s – 2 min rounds). In the app's `pr`
 mode (or against a server with no `landing`) it ends as before: the PR, then its CI (failing CI
 exits 1). `--no-wait` returns once the ship has started; `--wait` is still accepted and changes

@@ -4,8 +4,8 @@
  * what it said), the pending-subject index that makes `open` idempotent, the stub mounts answering
  * as the auth surface says (`/api/approvals` → `{ items: [] }`), the two cron tasks registered and
  * harmless, the cross-tenant scans the crons build on, and the engine's stubs failing BY NAME.
- * Issue #5's S1 (`docs/plans/i5-ship-to-staging.md`): the new columns, `session.merge` registered
- * with one open request per session, and every S1 stub failing by name with its slice.
+ * Issue #5's S1 (`docs/plans/i5-ship-to-staging.md`): the new columns, and `session.merge`
+ * registered with one open request per session.
  */
 import { DEFAULT_APPROVAL_POLICIES } from '@launch/shared/launch-approvals'
 import { sessionLandingSchema } from '@launch/shared/launch-sessions'

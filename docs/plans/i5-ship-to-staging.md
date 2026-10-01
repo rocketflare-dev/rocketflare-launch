@@ -322,3 +322,52 @@ change there stops and reports.
 - A session waiting in `approval` holds its Neon branch and a `maxConcurrentPerApp` slot for up
   to 48 h.
 - Webhooks stay P6: the CI and deploy follow are bounded by their poll rounds.
+
+## 6. Status (2026-10-01)
+
+**Built**, S1–S6 and part 8, against fakes (the FakeSandbox, the FakeCloud's GitHub, Neon and
+Cloudflare). `tests/api/session-land-e2e.test.ts` runs every slice's real code at once: the
+settings route and `reviewPolicyFor`, the landing in the real `SessionWorkflow`, the
+`session.merge` review through the approvals route (the creator refused 403 `self_approval`, an
+owner approves), one squash merge, the patch release under the app's claim, the staging deploy
+through `/ci/deploy`, the health probe, then `GET …/:rid/chain` and `GET …/promotion`; plus CI
+red, a rejected review, `pr` mode, the default settings, an End while the review waits, and an
+admin policy forcing a review.
+
+**Where the code differs from this plan** (CONCEPTS §18.4, §18.5, §18.13, §18.14, §18.17 describe
+what was built):
+
+- **S2.** `ship.pr` snapshots the ship mode and the review MODE (`reviewMode`, incl. `policy`)
+  onto the landing; the approvers are resolved again by `reviewPolicyFor` when `land.review`
+  opens the request (a setting changed in between to "none" still gets the default owners'
+  policy). A thrown land step is one more round after `LAND_RETRY_SECONDS`, never a failed
+  session; a landing that cannot merge within `LAND_MERGE_MAX_MINUTES` (30) reopens
+  `merge_refused`; a round in `approval` is a 30-minute backstop (the decision wakes the
+  session). A stall is audited `session.land_stalled`, and a reopen also writes an `error` row.
+  The safety net reads `landing.stageAt` AND `last_activity_at`. A landing the cron restarts has
+  no boot id, so its reopen always suspends.
+- **S3.** The release claim is released only while still the holder's own. Health counts
+  `app_health_checks` rows of staging since it went live on the release (the `*/5` cron's probes
+  count), not a counter, and a newer version on staging counts as live.
+- **S4.** `findPolicyRow` lives in a leaf (`approvals/policy-row.ts`) to avoid a cycle through
+  the kind registry; a `groups` review whose teams were all deleted falls back to the app's
+  owners; a PUT that changes the review under an admin policy is 409
+  `ship_review_set_by_policy`; a plan without rulesets is recorded `unavailable` and the launch
+  goes on.
+- **S5.** The CLI's follow gives up after four hours (a review may wait two days) and says the
+  ship carries on; `--wait` stays as a no-op alias. The panel names who a review waits on only for
+  a reader who may read the request.
+- **S6.** `landingTimeline` takes the session's status: a landing an End abandoned (no landing,
+  no reopen, not shipping) reads as the plain PR view instead of "Waiting for CI" for ever, and
+  the CLI says the PR was left open instead of "did not open a pull request".
+
+**What remains** (needs the user and real GitHub):
+
+1. Apply Launch's ruleset to hola-world: remove any classic protection on `main`, then the app
+   page's **Apply Launch's protection** (or `POST /api/apps/:id/branch-protection`), and check the
+   diagnosis reads `ok` (the repo is private in `guidemode`, on GitHub Team).
+2. One real ship on hola-world with the default settings: CI on the gate SHA, Launch's squash
+   merge, the patch release's bump pushed past the ruleset, `deploy.yml` to staging, and the
+   session ending on "Live on staging". Then once with `app_owners` review.
+3. Read GitHub's real answers where the fakes follow the docs: the job-log redirect and
+   annotations of a red `Gate`, the squash merge's 405/409/422, and the rulesets API.

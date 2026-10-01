@@ -33,6 +33,7 @@ import {
   type SessionShipReopenedData,
   type SessionShipReviewData,
   type SessionShipStagingData,
+  type SessionStatus,
   SHIP_CI_MAX_MINUTES,
   SHIP_GATE_STEP_LABELS,
   type ShipGateStep,
@@ -452,6 +453,12 @@ export const REOPEN_TEXT: Record<ShipReopenReason, string> = {
   merge_refused: 'GitHub refused to merge the pull request.',
 }
 
+/**
+ * A `review_rejected` reopen whose review was CANCELLED (withdrawn, or Launch cancelled it — the
+ * server reopens a cancelled review under that reason): nobody sent the change back.
+ */
+const REVIEW_CANCELLED_TEXT = 'The review was cancelled, so Launch didn’t merge it.'
+
 /** Why a landing stalled after the merge, in one sentence (the change is merged either way). */
 export const STALLED_TEXT: Record<ShipStalledReason, string> = {
   release_failed: 'The change is merged, but Launch couldn’t cut a release for it.',
@@ -726,7 +733,11 @@ function stepLabel(
       const by = facts.review?.by ? ` by ${facts.review.by}` : ''
       if (status === 'done') return `Approved${by}`
       if (status === 'failed')
-        return facts.reopen === 'review_expired' ? 'Review lapsed' : `Sent back${by}`
+        return facts.reopen === 'review_expired'
+          ? 'Review lapsed'
+          : facts.review?.status === 'cancelled'
+            ? 'Review cancelled'
+            : `Sent back${by}`
       return status === 'active' ? 'Waiting for a review' : 'Review'
     }
     case 'merged':
@@ -755,10 +766,17 @@ function stepLabel(
  * (null before the PR, and again after a reopen, when the rows carry the story). Null when there
  * is no landing to draw: before the PR, a re-ship's gate after a reopen, or a session shipped
  * before issue #5 (no landing, no landing rows: the panel's PR and CI view). Pure.
+ *
+ * `status` (the session's, when the caller has it): an End while the landing waited in `ci` or
+ * `approval` clears the landing and writes no `ship.reopened` (`endStep`), so landing rows with no
+ * landing, no reopen and a session that is neither `shipping` nor `shipped` are an ABANDONED
+ * landing — nothing is moving, the PR stays open — and the panel's PR view says that, not
+ * "Waiting for CI" for ever.
  */
 export function landingTimeline(
   events: readonly SessionEvent[],
-  landing: SessionLanding | null
+  landing: SessionLanding | null,
+  status?: SessionStatus
 ): LandingView | null {
   const ordered = [...events].sort((a, b) => a.seq - b.seq)
   let prIndex = -1
@@ -771,6 +789,9 @@ export function landingTimeline(
     rows.ci || rows.review || rows.merged || rows.released || rows.staging || rows.reopened
   )
   if (!landing && (rows.reshipped || !hasRows)) return null
+  if (!landing && !rows.reopened && status && status !== 'shipping' && status !== 'shipped') {
+    return null
+  }
 
   const reopened = !landing && rows.reopened ? rows.reopened : null
   const stage: ShipLandingStage | null = landing?.stage ?? (reopened ? null : stageFromRows(rows))
@@ -829,10 +850,16 @@ export function landingTimeline(
   })
 
   let reopenNote: string | null = null
+  const cancelled = reopened?.reason === 'review_rejected' && rows.review?.status === 'cancelled'
+  const reopenText = reopened
+    ? cancelled
+      ? REVIEW_CANCELLED_TEXT
+      : REOPEN_TEXT[reopened.reason]
+    : null
   if (reopened) {
     const message = reopened.message.trim()
     if (reopened.reason === 'review_rejected' && rows.review?.note) reopenNote = rows.review.note
-    else if (message && message !== REOPEN_TEXT[reopened.reason]) reopenNote = message
+    else if (message && message !== reopenText) reopenNote = message
   }
 
   return {
@@ -846,9 +873,7 @@ export function landingTimeline(
     stagingUrl,
     approvalId,
     reviewed,
-    reopen: reopened
-      ? { reason: reopened.reason, text: REOPEN_TEXT[reopened.reason], note: reopenNote }
-      : null,
+    reopen: reopened ? { reason: reopened.reason, text: reopenText ?? '', note: reopenNote } : null,
     failedCheck: reopened?.reason === 'ci_failed' ? rows.failedCheck : null,
     stalled:
       outcome === 'stalled'

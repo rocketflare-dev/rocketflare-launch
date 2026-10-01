@@ -91,6 +91,14 @@ Built and tested against fakes; **none of it yet seen in a real session**:
 
 The kit is at **0.16.0** (0.15.6: opening a magic link no longer spends the token; 0.15.7: `pnpm test:ephemeral`; 0.15.8: the kit's own tests in `tests/kit-only/`; 0.16.0: `pnpm gate`). Launch's `DEFAULT_TEMPLATE_PIN`, the image's `KIT_TAG` and `SHIP_GATE_KIT_VERSION` are 0.16.0, and the ship gate runs the kit's `pnpm gate` steps minus `build` (rocketflare-launch#2).
 
+## Issue #5: Ship means live on staging (2026-10-01)
+
+[i5-ship-to-staging](i5-ship-to-staging.md) ([rocketflare-launch#5](https://github.com/rocketflare-dev/rocketflare-launch/issues/5)) is **built against fakes** on the `i5-ship-to-staging` branch (migration 0032): after Launch's gate opens the PR, the session waits for its CI (`Gate`), an optional review in Launch (`session.merge`), then Launch squash-merges, cuts a patch release and follows it to "Live on staging"; an app can keep `pr` mode. The app page leads with the Promote strip (part 8). `tests/api/session-land-e2e.test.ts` is the whole path in one file. Its plan's §6 lists where the code differs from the plan.
+
+**Still to do, on real GitHub:**
+- apply Launch's `launch` ruleset to hola-world (remove any classic protection on `main` first, then **Apply Launch's protection** on the app page) and check it reads `ok`;
+- one real ship on hola-world with the default settings, through to "Live on staging", then one with `app_owners` review.
+
 ## Next, in order (agreed 2026-09-29)
 
 1. **Validate sessions, checks 1–5** of [sandbox-session-issues](sandbox-session-issues.md).

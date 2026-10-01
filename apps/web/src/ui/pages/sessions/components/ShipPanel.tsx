@@ -17,7 +17,7 @@
  *
  * Issue #5 (`docs/plans/i5-ship-to-staging.md`): after the PR the panel walks the landing —
  * gate → PR → CI → [review, naming who it waits on] → merged → released vX.Y.Z → live on staging —
- * from the pure `landingTimeline(events, session.landing)`, and ends on one of four sentences:
+ * from the pure `landingTimeline(events, session.landing, session.status)`, and ends on one of four sentences:
  * "Live on staging: <link>"; a reopen's reason (for red CI: the check, its link, the redacted log
  * tail and "Ask Claude to fix it", which sends the fix as an ordinary turn through `POST /turns` —
  * the composer's own route); a stall's reason and a link to the app page, where release, retry and
@@ -314,7 +314,10 @@ export function ShipPanel({
   configNeeds?: SessionShipConfigNeedsData | null
   appSlug?: string
 }) {
-  const view = useMemo(() => landingTimeline(events, session.landing), [events, session.landing])
+  const view = useMemo(
+    () => landingTimeline(events, session.landing, session.status),
+    [events, session.landing, session.status]
+  )
   const hasPr = session.prNumber !== null
   // The gate is running (before the PR, or a re-ship's after a reopen).
   const shipping = session.status === 'shipping' && !view

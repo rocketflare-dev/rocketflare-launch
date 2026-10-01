@@ -5,9 +5,10 @@ Status: spec, not built.
 ## Principle
 
 **Launch is the system of record for approvals and audit, and GitHub carries out the decision.**
-People approve things in the Launch console, and the audit trail lives in Launch. GitHub stays
-the place where code is reviewed and deploys run. It is gated by Launch through GitHub's own
-extension points, not worked around.
+People approve things in the Launch console, and the audit trail lives in Launch. GitHub holds
+the code, runs CI and runs the deploy jobs. It is gated by Launch through GitHub's own extension
+points, not worked around. A session's change is reviewed in Launch by default (an app may keep
+review on GitHub instead, see [Code review](#code-review)).
 
 ## The approvals engine
 
@@ -18,6 +19,7 @@ A single, generic engine handles every kind of request:
 | `app.create` | someone creates an app | platform admins (or auto-approve) |
 | `app.access` | a user is denied at `/oidc/authorize` and asks for access ([05](05-identity-sso.md)) | app owners |
 | `deploy.production` | a release reaches the production environment | app owners (not the author) |
+| `session.merge` | a session's PR is green and its app asks for a review before merging | app owners (not the session's creator or anyone who wrote in it) |
 | `grant.request` | an app asks for shared config ([09](09-config-and-grants.md)) | the shared resource's owner team |
 | `config.change` | an app's own var or secret changes ([09](09-config-and-grants.md)) | app owners |
 | `session.budget` | a session or team hits its cap ([07](07-coding-sessions.md)) | team lead |
@@ -58,11 +60,28 @@ Integrity options:
 
 ## Shipping
 
+**Ship means "my change is live on staging"; Promote means "live in production".** The person who
+made the change never has to visit GitHub.
+
 ```
-session PR ──► GitHub review + CI (the app's own gate) ──► merge to main
-      ──► Launch: "Release" (or automatic on merge) → adapter.release
-          (Rocketflare: bump version + tag X.Y.Z → deploy workflow → STAGING)
-      ──► staging healthy → "Promote to production" in Launch
+Ship ──► Launch's gate in the session (lint, typecheck, tests on a throwaway database; a fix
+      │  turn on red) ──► PR opened (kept as the record engineers can read)
+      ──► the PR's CI (the repo's required `Gate` check, on the SHA Launch gated)
+          └─ red, or no CI, or the branch moved: the session reopens with the reason (for red CI:
+             the check and its redacted log tail), so the person asks the agent to fix it and
+             ships again
+      ──► [optional, per app: a `session.merge` review in Launch — the app's owners or named
+          teams, or an admin policy; never the person who made the change]
+          └─ rejected or expired: the session reopens with the reviewer's note
+      ──► Launch squash-merges the PR as its GitHub App (once; on the gated SHA)
+      ──► release on merge: Launch cuts a PATCH release (bump + tag X.Y.Z, one at a time per app;
+          merges close together share one) → deploy workflow → STAGING
+      ──► staging active and healthy on the version → the session ends on
+          "Live on staging: <link>, vX.Y.Z"
+          └─ a release, deploy or health failure after the merge does not reopen: the session
+             shows "merged, not live yet" and the app page is where to release or retry
+      ──► "Promote to production" on the app page (the pipeline strip: what is on staging, what
+          it would ship in plain words, who must approve)
           (Rocketflare: publish the GitHub Release → production job starts)
       ──► production job starts in GitHub, and asks Launch to deploy (GitHub Actions OIDC)
           └─ Launch opens deploy.production → approvers decide in Launch
@@ -72,6 +91,20 @@ session PR ──► GitHub review + CI (the app's own gate) ──► merge to 
              → rejected or expired: the job fails, and nothing reached production
       ──► Launch mirrors deploy status, version and health into the registry; audit event
 ```
+
+Each app chooses where Ship ends: `staging` (the default, the flow above) or `pr` — the PR is
+opened and the session ends there, for teams that review and merge on GitHub; a person then
+presses Release in Launch. Production is the same either way: Promote, then `deploy.production`.
+
+For Launch to merge and to push the release's version bump, the app repo's default branch is
+protected by a Launch **ruleset** (pull request required, the `Gate` check required, no force
+push or deletion) that Launch's GitHub App may bypass. Launch applies it to the apps it creates,
+and an admin applies it from the app page for an imported repo (classic branch protection cannot
+let an App bypass a required check, so it has to go).
+
+Every step is audited (`session.shipped`, the `session.merge` decision, `pr.merged` and
+`session.merged`, `release.created`, the staging deploy, `release.staging_active`,
+`session.landed`), and a release's chain links PR → release → staging → production.
 
 ### Launch deploys, so Launch is the gate
 
@@ -120,9 +153,18 @@ private repos, and they still leave the credentials in GitHub.
 
 ### Code review
 
-Pull request review stays in GitHub, where the diff tooling is. Launch shows each PR's review
-state, checks and summary beside the app and its sessions, and records merges in the audit log.
-Launch could later offer "approve PR" by acting as the user, but that is out of scope.
+By default a session's change is reviewed **in Launch**, because the people making changes are not
+expected to use GitHub. CI on the PR is always required; on top of it each app picks who reviews
+before Launch merges: nobody (the gate plus CI are the guard — the default), the app's owners, or
+named teams. An admin `session.merge` approval policy overrides the app's choice and makes a review
+mandatory. The reviewer sees the change in plain words — the title, the summary, the diff stat —
+with links to the PR and the session's preview, and approves or rejects it with a comment in the
+approvals inbox. The person who made the change, and anyone who wrote in the session, can never
+approve it. A request lapses after two days.
+
+Teams that want GitHub's diff tooling set the app to `pr`: the PR is the end of the ship, and the
+review, the merge and the Release happen as before. Either way Launch shows each PR's checks and
+summary beside the app and its sessions, and records merges in the audit log.
 
 ## Known gaps
 
@@ -130,3 +172,6 @@ Launch could later offer "approve PR" by acting as the user, but that is out of 
   build and keep in step with wrangler's upload format.
 - Approvals by email reply or chat buttons are a later phase.
 - No emergency "break glass" production deploy yet. It needs a policy and a loud audit trail.
+- Without webhooks, the CI and deploy follow are bounded by their poll rounds (30 s – 2 min).
+- A session waiting for its `session.merge` review holds its database branch and a session slot
+  for up to the two days the request lives.

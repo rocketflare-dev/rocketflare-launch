@@ -551,6 +551,14 @@ export async function runSessionsShip(
     }
     case 'no_pr':
       finish()
+      // An End while the landing waited (CI, a review) abandons it with no reopen row: the PR
+      // opened, and stays open on GitHub, but nothing merges.
+      if (seen.some(event => event.type === 'ship.pr') && session.prNumber !== null) {
+        throw new CliError(
+          `Not merged: the session is ${session.status}, so PR #${session.prNumber} was left open`,
+          { hint: session.prUrl ?? undefined }
+        )
+      }
       throw new CliError(
         `The ship did not open a pull request (session is ${session.status})`,
         session.error ? { hint: session.error } : {}

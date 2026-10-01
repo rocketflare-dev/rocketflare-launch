@@ -81,8 +81,8 @@ the realtime entities `shared_resource` / `grant_push` / `app_config`, `GRANT_NO
 `GRANT_ERROR_CODES`, `sharedResourcePath` / `appConfigPath`); `launch-approvals.ts` built
 `grant.request` (`BUILT_APPROVAL_KINDS` has five, `grant` subject, `grantRequestContextSchema`,
 `GRANT_ITEM_KINDS`, the owner-group default); `launch-sessions.ts` the `ship.config_needs` event ·
-Launch issue #5 (ship means live on staging, `docs/plans/i5-ship-to-staging.md` §2; slice S1 owns
-these lines, S2–S6 import and never edit them): `launch-apps.ts` the app's ship settings
+Launch issue #5 (ship means live on staging, `docs/plans/i5-ship-to-staging.md` §2, the
+contracts every slice built on): `launch-apps.ts` the app's ship settings
 (`SESSION_SHIP_MODES` `staging | pr`, `SHIP_REVIEW_MODES` `none | app_owners | groups`,
 `appShipSettingsSchema` — the `apps.ship_settings` jsonb — `DEFAULT_APP_SHIP_SETTINGS` (staging, no
 review), `resolveAppShipSettings`, `putAppShipSettingsRequestSchema` (`groups` names ≥ 1 team)),

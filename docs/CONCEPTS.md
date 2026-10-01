@@ -483,8 +483,8 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
 case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
 drives Launch P3 coding sessions (§18.14) — `ship` follows the ship to live on staging by default,
-printing each stage, and exits 1 on a reopen or a stall (`--no-wait` returns at once; `--wait` is
-a no-op alias); `approvals ls|show|approve|reject` and `releases
+printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
+(`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
 ls|create|promote [--wait]` are the P4 inbox and shipping (§18.19); `audit verify|export` the
 hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
@@ -1502,9 +1502,10 @@ reload) is restarted as `<id>-rN` from the row.
   over, and `fail` / `cleanup` give back a claim their session still holds (`failed`).
 
 **Known gaps:** proven with fakes (`tests/api/session-e2e.test.ts`, `session-stall.test.ts` and the
-per-slice suites) and booted locally in slice 3b; never deployed. No real model turn or ship has run
-anywhere — only the fake Claude Code output (`claudeStreamJson`, reconstructed from the S7
-transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in
+per-slice suites) and run against a local Launch on hola-world; Launch itself is never deployed.
+Real ships there opened PRs (#2, and #4 whose CI passed, 2026-10-01); a Launch-merged ship to
+staging (issue #5) has not run on real GitHub yet. The suites use fake Claude Code output
+(`claudeStreamJson`, reconstructed from the S7 transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in
 the same checkout) kills the running step; the reconcile settles such a boot as failed after 3
 quiet minutes rather than resuming it — a new session is the recovery; a turn it kills is found
 after 3 quiet minutes (30 s with a Stop pending) and salvaged — its process stopped, its work
@@ -2013,7 +2014,8 @@ workspace dirty, so every turn is followed by a checkpoint that re-reports it; a
 limit that is already TRACKED keeps its last committed
 version (its new content is not saved); the scan and the stale-lock check are proven against real
 git and bash locally (`tests/config/session-checkpoint-scan.test.ts`), not yet inside the session
-image; no real PR opened by the App has triggered `ci.yml` yet; rulesets limiting pushes
+image; a real PR opened by the App has run the repo's CI (hola-world #4, 2026-10-01), but Launch
+has not yet merged a real one; rulesets limiting pushes
 to `session/*` are not set up (only the git handler enforces it); a gate that needs more than the
 sandbox has (a service, a secret) cannot pass; after shipping there is no "keep working" in the UI
 — a new session starts from the default branch unless the API is given `baseRef`. The ship gate
@@ -2030,8 +2032,11 @@ image with the 0.16.0 store (`session-5`) is defined, not yet deployed (`wrangle
 it; drain sessions first). A `shipping`
 session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
 The summary's model is not traced (D32). **The landing** (issue #5) is proven with the FakeCloud's
-GitHub and fake Phase B hooks (`tests/api/session-land.test.ts`), not against GitHub: its job-log
-redirect, its annotations and its 405/409/422 answers to a real squash are read as documented. CI
+GitHub — round by round with fake Phase B hooks (`tests/api/session-land.test.ts`), and end to end
+with every slice's real code from Ship to live on staging, the release's chain and the promotion
+strip (`tests/api/session-land-e2e.test.ts`) — not against GitHub: its job-log redirect, its
+annotations, its rulesets and its 405/409/422 answers to a real squash are read as documented
+(the first real ship to staging, on hola-world, is still to run). CI
 and the review are POLLED (no webhooks, P6): a verdict reaches the session within a round (30 s –
 2 min), and a lost instance within the cron's five minutes plus three rounds. A session waiting in
 `approval` holds its Neon branch and a `maxConcurrentPerApp` slot for up to the request's 48 h. A
@@ -2052,7 +2057,7 @@ cost against the cap and Ship / End / Resume / Extend budget, boot checklist, sh
 [--follow]|ship [--no-wait]|end|ls|preview-url` (§11).
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the
-pure `landingTimeline(events, session.landing)` (`sessionChatModel.ts`): gate → PR → CI (the
+pure `landingTimeline(events, session.landing, session.status)` (`sessionChatModel.ts`): gate → PR → CI (the
 current round in words, the PR's checks by name) → review, when the ship has one (naming who it
 waits on from the `session.merge` request's `eligible`, with a link to it) → merged → released
 vX.Y.Z → "Live on staging: <link>, version vX.Y.Z". It reads only the rows after the last `ship.pr`
@@ -2061,7 +2066,8 @@ one sentence (`REOPEN_TEXT`), and for red CI the failing check, its link, the re
 **Ask Claude to fix it**, which posts the fix as an ordinary turn (`POST /turns`, the composer's
 route; a `suspended` session resumes on it). A stall (after the merge) says why (`STALLED_TEXT` +
 the landing's `error`) and links the app page, where release, retry and production live. `pr`
-mode keeps today's ending (the PR and its CI). The chat gets a notice per landing row; the
+mode keeps today's ending (the PR and its CI), and so does a landing an End abandoned (no landing,
+no reopen, the session no longer shipping: the PR stays open and nothing is waiting on CI). The chat gets a notice per landing row; the
 composer's blocked sentence names the stage; End is hidden while `merging` (the route's 409); the
 Ship confirm words what will happen from the app's ship settings. A session is polled every
 `SESSION_LANDING_POLL_MS` (15 s) while its landing moves — `shipped` included, while `releasing` /
@@ -2289,7 +2295,8 @@ approval is being carried out (`appliedAt` pending). **Settings → Approvals** 
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
 overrides. **The app page** leads with a pipeline strip — `Staging: v1.4.2 (healthy, deployed 10 minutes
 ago)` → **Promote to production** → `Production: v1.4.1` — and, in plain words, what the promotion
-ships (each session's title, then its PR's). Promote is on offer when staging runs the newest
+ships (each session's title and, since issue #5, a line of its stored ship summary, then its PR's
+title). Promote is on offer when staging runs the newest
 release, is `up`, and production runs something older; otherwise the button is disabled with the
 reason ("Staging is still deploying", "Staging is unhealthy", "Production already runs v1.4.2",
 "Nothing on staging yet"). After the click (the same confirmation as a release row, the same
@@ -2308,8 +2315,8 @@ and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` 
 ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list too.
 
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
-naming them; the strip says what ships from session and PR TITLES — a PR's body is not stored, so
-there is no summary beyond them; it polls only while the candidate deploys, so a staging health
+naming them; a PR no Launch session wrote, or one shipped before issue #5 kept summaries, shows
+its titles only; it polls only while the candidate deploys, so a staging health
 change reaches it on the next read, a "Check now" or a release nudge; the strip's Promote is plain
 `btn-primary`, not the page's flame (Start session already holds it); the releases card shows only what the audit log recorded (a release cut outside
 Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.

@@ -2,25 +2,62 @@
 
 ## Unreleased
 
-- **Foundations for "Ship means live on staging"** (rocketflare-launch#5, slice S1;
-  `docs/plans/i5-ship-to-staging.md`, `docs/CONCEPTS.md` §18.15). Contracts only, no behaviour
-  yet: a session answer carries `landing` and `shipSummary` (null), an app's detail its
-  `shipSettings` (default: ship to staging, no review) and `shipReviewSetBy`, a promotion change a
-  `summary` (null), and the approvals engine knows a sixth kind, `session.merge` (app owners, one
-  approval, 48 hours) — it shows on the approval policies page, though nothing opens one yet.
-  Migration `0032_launch-i5-ship-to-staging` adds `sessions.landing`, `sessions.ship_summary`,
-  `apps.ship_settings` and the app's release claim columns.
-
+- **Ship means "live on staging"** (rocketflare-launch#5; `docs/plans/i5-ship-to-staging.md`,
+  `docs/CONCEPTS.md` §18.13, spec/08 § Shipping). A session's Ship no longer ends at an open pull
+  request: after Launch's gate opens the PR, the session waits for the PR's CI (the repo's `Gate`
+  check, on the SHA Launch gated), then — when the app asks for one — a review in Launch, then
+  Launch squash-merges the PR as its GitHub App (once, with the ship summary as the commit message),
+  cuts a patch release, follows it to staging and ends on "Live on staging: <link>, vX.Y.Z". The
+  person who made the change never visits GitHub. Before the merge a red CI (its failing check and
+  a redacted log tail, so "Ask Claude to fix it" works in a normal turn), a CI that never reports,
+  a branch that moved, a closed PR, a refused merge or a rejected or expired review gives the
+  session back (`ready`, or `suspended` once its container was released) with the reason; after
+  the merge a failure never reopens — the session shows "merged, not live yet" with the reason and
+  a link to the app page. A lost Workflow is woken or restarted by the `sessions.checks` cron. No new
+  session status: `shipping` now spans the gate, CI, review and merge, and `sessions.landing`
+  holds the stage; `sessions.ship_summary` keeps the PR's summary. Migration
+  `0032_launch-i5-ship-to-staging`.
+- **Launch releases on merge** (rocketflare-launch#5; `docs/CONCEPTS.md` §18.17). The merge of a
+  session's PR cuts a patch release with no person behind it (`release.created {trigger:
+  'session.merge'}`), one at a time per app under a release claim on the app (PRs merged close
+  together share one release and one tag; a double tag is impossible), and follows it to staging
+  active and healthy on its version. Release by hand still works: while a release is being cut it
+  answers 409 `release_in_progress`. A release's chain now reads PR → review → merge → release →
+  staging → production.
+- **Review a session's change in Launch: the `session.merge` approval** (rocketflare-launch#5;
+  `docs/CONCEPTS.md` §18.15). A sixth approval kind: the PR's title, summary and diff stat with
+  links to the PR and the session's preview; one approval, two days, never by the session's
+  creator or anyone who wrote in it (403 `self_approval`). An eligible reviewer may read the
+  session (its page, preview and PR), never drive it. Ending a session while its review waits
+  cancels the request.
+- **Shipping settings and branch protection on the app page** (rocketflare-launch#5;
+  `docs/CONCEPTS.md` §18.4, §18.5, `SETUP.md`, `docs/DEPLOY.md`). A Shipping card lets an app's
+  owners and admins choose where Ship ends — "go live on staging" (every app's default, imported
+  ones included) or "open a pull request for review on GitHub" (the old behaviour) — and who
+  reviews a merge (nobody, the app's owners, or named teams), via `PUT
+  /api/apps/:id/ship-settings`, audited. An admin `session.merge` approval policy overrides the
+  app's review and shows read-only there. Launch protects an app's default branch with a
+  repository ruleset named `launch` (pull request and the `Gate` check required, Launch's App may
+  bypass — so it can merge and push the release bump): new apps get it at launch, and `GET|POST
+  /api/apps/:id/branch-protection` diagnoses an existing repo and lets an admin apply it (classic
+  protection must be removed by hand). No new GitHub App permission.
 - **Promote to production is the app page's primary action** (rocketflare-launch#5, part 8;
   `docs/CONCEPTS.md` §18.17, §18.19). A pipeline strip leads the page — `Staging: v1.4.2 (healthy,
   deployed 10 minutes ago)` → **Promote to production** → `Production: v1.4.1` — with what the
-  promotion ships in plain words (each session's title, then its pull request's). The button is
-  disabled with the reason when there is nothing to promote ("Staging is still deploying",
-  "Staging is unhealthy", "Production already runs v1.4.2", "Nothing on staging yet"); after the
-  click the strip shows "Waiting for approval from <names>" with the request's link to share,
-  then "Deploying to production…", then "Live in production" with its link. Owners and admins
-  promote; everyone else reads the strip with who can. Same route and approval as before, plus a
-  read model, `GET /api/apps/:id/promotion` (`@launch/shared/launch-promotion`).
+  promotion ships in plain words: each session's title and the one-line summary of its change,
+  then its pull request's title. The button is disabled with the reason when there is nothing to
+  promote ("Staging is still deploying", "Staging is unhealthy", "Production already runs v1.4.2",
+  "Nothing on staging yet"); after the click the strip shows "Waiting for approval from <names>"
+  with the request's link to share, then "Deploying to production…", then "Live in production"
+  with its link. Owners and admins promote; everyone else reads the strip with who can. Same route
+  and `deploy.production` approval as before, plus a read model, `GET /api/apps/:id/promotion`
+  (`@launch/shared/launch-promotion`).
+- **`launch sessions ship` waits through to staging** (rocketflare-launch#5; `.claude/rules/cli.md`).
+  It prints each stage (CI, the review, the merge, the release, staging) and exits 0 when the
+  change is live on staging, 1 on a reopen, a stall or a session ended while it waited; `--no-wait`
+  returns once the ship has started (`--wait` is still accepted). In an app's `pr` mode it ends as
+  before, at the PR and its CI. The session page's ship panel walks the same steps.
+
 - **A launching app's host shows browsers an animated "launching" page** (rocketflare-launch#4;
   `docs/CONCEPTS.md` §18.5). The placeholder Worker answers a `GET`/`HEAD` that accepts
   `text/html` outside `/api/` with a self-contained page (inline CSS/SVG/script, its own CSP, under

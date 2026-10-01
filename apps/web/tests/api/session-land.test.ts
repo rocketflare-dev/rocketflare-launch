@@ -62,7 +62,7 @@ vi.mock('@/api/services/sessions/lifecycle', async importOriginal => {
   return { ...actual, sessionsPaused: vi.fn(async () => false) }
 })
 
-/** S4 fills `reviewPolicyFor` in parallel: here it answers what the test says. */
+/** `reviewPolicyFor` (S4's) answers what the test says; `session-land-e2e.test.ts` runs the real one. */
 const review: { policy: ShipReviewPolicy } = { policy: noReview() }
 vi.mock('@/api/services/launch/ship-settings', async importOriginal => {
   const actual = await importOriginal<typeof import('@/api/services/launch/ship-settings')>()
