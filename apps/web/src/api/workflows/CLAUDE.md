@@ -185,7 +185,10 @@ answers `wait` by a `step.sleep` named `land.release-wait#K.R` / `land.staging-w
 `land.health-wait#K.R`, ending in `land.live#K` or `land.stalled#K` (`MAX_LAND_PHASE_ROUNDS`
 caps each stage). `claim` answers `{ start: 'loop' }` for a Phase A landing (never `salvage`)
 and `{ start: 'land', cleanup }` for a `shipped` one in `releasing` / `deploying` — `run()` then
-runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. The tests are
+runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. That is also how a hand
+merge the `sessions.checks` cron ADOPTS runs (`../services/sessions/land-adopt.ts`: a `releasing`
+landing written on a `shipped` row, then a fresh `<id>-rN` instance via `wakeOrRestartLanding`;
+`tests/api/session-land-adopt.test.ts`). The tests are
 `tests/api/session-land.test.ts` (the `session-ship-gate` harness with fake Phase B hooks; the fake
 step's `sleep` is wrapped there so its names are recorded too) and
 `tests/api/session-land-e2e.test.ts` (every slice's real code at once: the settings route, the

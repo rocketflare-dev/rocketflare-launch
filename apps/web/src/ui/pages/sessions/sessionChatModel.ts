@@ -713,6 +713,7 @@ function stepLabel(
     version: string | null
     reopen: ShipReopenReason | null
     review: SessionShipReviewData | null
+    mergedOnGitHub: boolean
   }
 ): string {
   switch (key) {
@@ -741,7 +742,7 @@ function stepLabel(
       return status === 'active' ? 'Waiting for a review' : 'Review'
     }
     case 'merged':
-      if (status === 'done') return 'Merged'
+      if (status === 'done') return facts.mergedOnGitHub ? 'Merged on GitHub' : 'Merged'
       if (status === 'failed') return facts.reopen === 'pr_closed' ? 'PR closed' : 'Not merged'
       return status === 'active' ? 'Merging' : 'Merge'
     case 'released':
@@ -765,7 +766,10 @@ function stepLabel(
  * It reads the CURRENT ship only — the rows after its last `ship.pr` — and the session's `landing`
  * (null before the PR, and again after a reopen, when the rows carry the story). Null when there
  * is no landing to draw: before the PR, a re-ship's gate after a reopen, or a session shipped
- * before issue #5 (no landing, no landing rows: the panel's PR and CI view). Pure.
+ * before issue #5 (no landing, no landing rows: the panel's PR and CI view). Once `sessions.checks`
+ * ADOPTS such a session's hand merge (`land-adopt.ts`) it has a landing and a `ship.merged` row
+ * `by: 'github'`: the walk reads gate → PR → "Merged on GitHub" → released → live, with no CI
+ * step (Launch never read it). Pure.
  *
  * `status` (the session's, when the caller has it): an End while the landing waited in `ci` or
  * `approval` clears the landing and writes no `ship.reopened` (`endStep`), so landing rows with no
@@ -836,10 +840,21 @@ export function landingTimeline(
     return outcome === 'live' ? 'done' : 'active'
   }
 
+  // Merged by a person on GitHub before Launch read CI (a merge `sessions.checks` adopted, or one
+  // made while the landing waited): Launch never saw CI, so the walk claims nothing about it.
+  const mergedOnGitHub = rows.merged?.by === 'github'
   const keys = STEP_ORDER.filter(key =>
-    outcome === 'pr' ? key === 'gate' || key === 'pr' : key !== 'approval' || reviewed
+    outcome === 'pr'
+      ? key === 'gate' || key === 'pr'
+      : (key !== 'approval' || reviewed) && (key !== 'ci' || !mergedOnGitHub || Boolean(rows.ci))
   )
-  const facts = { prNumber, version, reopen: reopened?.reason ?? null, review: rows.review }
+  const facts = {
+    prNumber,
+    version,
+    reopen: reopened?.reason ?? null,
+    review: rows.review,
+    mergedOnGitHub,
+  }
   const steps = keys.map((key): LandingStep => {
     const status = statusOf(key)
     const step: LandingStep = { key, status, label: stepLabel(key, status, facts) }

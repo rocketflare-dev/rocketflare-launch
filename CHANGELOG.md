@@ -11,6 +11,15 @@
   timing out after 45 minutes. `GET /api/apps/:id/promotion` gains `candidateRun` (nullable,
   defaulted); migration 0033 adds `app_releases.tag_run` / `tag_run_polled_at` (the per-release
   read throttle).
+- **A session PR merged by hand on GitHub releases to staging too.** When `sessions.checks` finds
+  a session's PR merged and no landing was moving (a session shipped before #5, or one left at
+  stage `pr`), it adopts the merge in a `staging`-mode app: a `releasing` landing, `ship.merged`
+  and `session.merged` marked `by: 'github'`, then the session's Workflow restarts into the same
+  release → staging → live follow as after Launch's own merge. Only merges under 24 hours old
+  (`LAND_ADOPT_MAX_AGE_HOURS`) are adopted, so older merged PRs are not released all at once;
+  `pr`-mode apps still release by hand. The ship panel and the CLI say "Merged on GitHub"
+  (`docs/CONCEPTS.md` §18.13).
+
 - **The app page's pipeline strip and Shipping card are compact.** The strip is one row (staging →
   Promote → production) with its reason underneath and what it ships folded away; a release stuck
   in `tagged` for more than 45 minutes reads "vX never reached staging" instead of "still

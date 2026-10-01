@@ -12,6 +12,10 @@
  *    and a close without a merge `pr.closed`, after which the PR is no longer read. GitHub is
  *    polled, not listened to (webhooks are P6); a release's compare catches every other PR.
  *    A PR Launch merged itself (issue #5's landing) is recorded already, so it is skipped.
+ *    A merge made by hand while no landing was moving (a session shipped before issue #5, or one
+ *    left at stage `pr`) is ADOPTED when the app ships to `staging` and the merge is under
+ *    `LAND_ADOPT_MAX_AGE_HOURS` old (`land-adopt.ts`): a `releasing` landing, then the session's
+ *    Workflow runs Phase B — the release and the staging follow — as after Launch's own merge.
  * 3. (Issue #5) the landings' safety net, `nudgeLandingSessions` (`land.ts`): a `shipping` /
  *    `shipped` session whose landing is in a moving stage and quiet for three of its rounds is
  *    woken — or its instance restarted when it is gone — so a lost Workflow never strands a merge
@@ -25,6 +29,7 @@ import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { apps, auditEvents, sessions, tenants } from '../../../db/schema'
 import type { ScheduledTask } from '../../scheduled'
+import type { Logger } from '../../utils/core/logger'
 import { type GitHubPullRequest, getPullRequest } from '../launch/github-app'
 import { withRepoToken } from '../launch/releases/github'
 import {
@@ -35,8 +40,10 @@ import {
   recordPrMerged,
 } from '../launch/releases/pr-audit'
 import { nudgeLandingSessions } from './land'
+import { adoptHandMerge, startAdoptedLanding } from './land-adopt'
 import { defaultSessionPorts, type RepoHostPort } from './ports'
 import { runSessionChecks } from './ship'
+import { landingOf } from './steps'
 
 /** How long after a session a PR is still followed to its merge (plan §1.10: ≤ 14 days). */
 export const MERGE_FOLLOW_WINDOW_MS = 14 * 24 * 60 * 60 * 1000
@@ -62,20 +69,29 @@ export function githubPullReader(cfg: AppConfig, fetchImpl?: typeof fetch): Pull
     )
 }
 
+/** Step 2's adoption of hand merges (`land-adopt.ts`): the session Workflow binding to start. */
+export interface MergeAdoption {
+  workflow: Workflow
+  logger: Logger
+}
+
 /**
  * Step 2: every shipped session PR not yet recorded as merged or closed, read once. One tenant at
- * a time and tenant-first, like `runSessionChecks`.
+ * a time and tenant-first, like `runSessionChecks`. With `adopt` (the cron passes it when the
+ * `SESSION_WORKFLOW` binding exists), a hand merge in a `staging`-mode app is adopted BEFORE
+ * `pr.merged` is recorded — a failed adoption leaves the PR unrecorded, so the next pass tries
+ * again — and its Workflow started after, once the PR is recorded for the release to find.
  */
 export async function followMergedPullRequests(
   db: Database,
   readPull: PullReader,
-  opts: { now?: Date; limitPerTenant?: number; tenantIds?: string[] } = {}
-): Promise<{ merged: number; closed: number; open: number; failed: number }> {
+  opts: { now?: Date; limitPerTenant?: number; tenantIds?: string[]; adopt?: MergeAdoption } = {}
+): Promise<{ merged: number; closed: number; open: number; failed: number; adopted: number }> {
   const now = opts.now ?? new Date()
   const since = new Date(now.getTime() - MERGE_FOLLOW_WINDOW_MS)
   const tenantIds =
     opts.tenantIds ?? (await db.select({ id: tenants.id }).from(tenants)).map(t => t.id)
-  const out = { merged: 0, closed: 0, open: 0, failed: 0 }
+  const out = { merged: 0, closed: 0, open: 0, failed: 0, adopted: 0 }
   for (const tenantId of tenantIds) {
     const rows = await db
       .select({
@@ -83,6 +99,8 @@ export async function followMergedPullRequests(
         appId: sessions.appId,
         prNumber: sessions.prNumber,
         prUrl: sessions.prUrl,
+        landing: sessions.landing,
+        shipSettings: apps.shipSettings,
         repoOwner: apps.repoOwner,
         repoName: apps.repoName,
         defaultBranch: apps.defaultBranch,
@@ -111,6 +129,25 @@ export async function followMergedPullRequests(
       try {
         const pull = await readPull({ db, repo: row, number })
         if (pull?.merged_at) {
+          const landing = landingOf(row)
+          const adopted =
+            opts.adopt && (!landing || landing.stage === 'pr')
+              ? await adoptHandMerge(db, {
+                  tenantId,
+                  sessionId: row.id,
+                  appId: row.appId,
+                  shipSettings: row.shipSettings,
+                  landing,
+                  merge: {
+                    number,
+                    mergeSha: pull.merge_commit_sha ?? null,
+                    mergedAt: pull.merged_at,
+                    headSha: pull.head.sha,
+                    url: pull.html_url ?? row.prUrl ?? '',
+                  },
+                  now,
+                })
+              : null
           await recordPrMerged(db, {
             tenantId,
             appId: row.appId,
@@ -126,6 +163,10 @@ export async function followMergedPullRequests(
             },
           })
           out.merged++
+          if (adopted && opts.adopt) {
+            out.adopted++
+            await startAdoptedLanding(db, opts.adopt.workflow, adopted, opts.adopt.logger)
+          }
         } else if (pull && pull.state === 'closed') {
           await recordPrClosed(db, {
             tenantId,
@@ -153,7 +194,7 @@ export interface LandingNudgeScope {
 
 /**
  * The task over injected ports (tests); the default binds the backend's own. `landings` scopes
- * step 3 to some tenants — a test's own, since the cron's body is cross-tenant.
+ * steps 2 and 3 to some tenants — a test's own, since the cron's body is cross-tenant.
  */
 export function sessionsChecksTask(
   repoHostFor?: (db: Database) => RepoHostPort,
@@ -180,7 +221,11 @@ export function sessionsChecksTask(
           ? null
           : githubPullReader(config)
       if (!reader) return
-      const merges = await followMergedPullRequests(db, reader)
+      const workflow = (env as { SESSION_WORKFLOW?: Workflow }).SESSION_WORKFLOW
+      const merges = await followMergedPullRequests(db, reader, {
+        ...(landings.tenantIds ? { tenantIds: landings.tenantIds } : {}),
+        ...(workflow ? { adopt: { workflow, logger } } : {}),
+      })
       logger.info(merges, 'sessions.checks: followed shipped pull requests to their merge')
     },
   }

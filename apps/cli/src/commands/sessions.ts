@@ -295,7 +295,9 @@ export function formatSessionEvent(event: SessionEvent): string | null {
     case 'ship.merged': {
       const parsed = sessionShipMergedDataSchema.safeParse(event.data)
       return parsed.success
-        ? chalk.green(`✓ merged PR #${parsed.data.number} (${parsed.data.sha.slice(0, 7)})`)
+        ? chalk.green(
+            `✓ merged PR #${parsed.data.number}${parsed.data.by === 'github' ? ' on GitHub' : ''} (${parsed.data.sha.slice(0, 7)})`
+          )
         : null
     }
     case 'ship.released': {

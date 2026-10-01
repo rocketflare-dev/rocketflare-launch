@@ -361,6 +361,13 @@ what was built):
   no reopen, not shipping) reads as the plain PR view instead of "Waiting for CI" for ever, and
   the CLI says the PR was left open instead of "did not open a pull request".
 
+**Follow-up: hand merges are adopted** (found on hola-world, whose PR #4 — shipped before #5 — was
+merged on GitHub and nothing released). `sessions.checks` now adopts a session PR merged by hand
+while no landing was moving (landing null, or stage `pr`) in a `staging`-mode app, within
+`LAND_ADOPT_MAX_AGE_HOURS` (24) of the merge: a `releasing` landing in one CAS, `ship.merged` /
+`session.merged` `by: 'github'`, then a fresh Workflow instance into Phase B
+(`services/sessions/land-adopt.ts`, `tests/api/session-land-adopt.test.ts`, CONCEPTS §18.13).
+
 **What remains** (needs the user and real GitHub):
 
 1. Apply Launch's ruleset to hola-world: remove any classic protection on `main`, then the app

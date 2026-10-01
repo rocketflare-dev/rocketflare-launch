@@ -1518,7 +1518,9 @@ reconciled (no heartbeat is read for it) — a later wake's `claim` salvages it,
 (issue #1) is deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A
 LANDING whose instance died is found by `sessions.checks`' safety net (`nudgeLandingSessions`,
 §18.13) and resumed by `claim` without a salvage — but only within the cron's `*/5` plus three of
-its stage's rounds. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+its stage's rounds. A `shipped` session whose PR a person merged on GitHub is the one terminal
+row that runs again: the same cron ADOPTS the merge (§18.13) and starts a fresh instance for
+Phase B. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
 reading the session page, or the diff, without touching the preview is idle after
 `idleSuspendMinutes` (a visible-tab heartbeat from the page is not built). The warm resume is
@@ -2003,7 +2005,23 @@ reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
 `sessions.checks` (`*/5`) wakes every landing in a moving stage quiet for three of its rounds (by
 `stageAt` AND `last_activity_at`, which each land step stamps), or restarts its instance when that
 is gone; `claim` resumes a Phase A landing straight into the loop (never `salvage`) and a merged one
-into Phase B (after `cleanup` if it never ran).
+into Phase B (after `cleanup` if it never ran). **Adopting a hand merge** (`land-adopt.ts`): a
+PR merged on GitHub while NO landing was moving — a session shipped before issue #5 (landing null),
+or one left at stage `pr` — is picked up by the same cron's merge follower when the app ships to
+`staging` (`resolveAppShipSettings(...).sessionShip`) AND the merge is under
+`LAND_ADOPT_MAX_AGE_HOURS` (24) old, so the first deploy of the rule released only that day's
+merges, not the fortnight `MERGE_FOLLOW_WINDOW_MS` still follows. ONE compare-and-set on `status =
+'shipped' AND (landing IS NULL OR landing->>'stage' = 'pr')` writes a fresh landing (mode
+`staging`, stage `releasing`, review `none`, the merge SHA and time; `gateSha` the PR's head when
+there was none), then `ship.merged` (`approvalId: null`, `by: 'github'`), audit `session.merged`
+(`by: 'github'`, `adopted: true`), then `pr.merged` (via `sessions.checks`), then the session's
+Workflow: its instance is finished, so a fresh one (`wakeOrRestartLanding`, the safety net's
+helper) whose `claim` goes straight to Phase B — the release follows exactly the Launch-merge path.
+A failed adoption leaves `pr.merged` unrecorded (the next pass retries); a failed start is the
+safety net's; a second pass reads nothing (the PR is recorded) and the CAS refuses anyway. A `pr`
+-mode app keeps the old rule — a reviewer merging on GitHub releases by hand. `ship.merged` names
+who merged (`by`, also on a merge made while the landing watched CI), and the ship panel and the
+CLI read "Merged on GitHub", with no CI step when Launch never read CI.
 
 **Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
 conversation) the work and the transcript live only in the container — a crash or a lost instance
@@ -2042,7 +2060,11 @@ and the review are POLLED (no webhooks, P6): a verdict reaches the session withi
 `approval` holds its Neon branch and a `maxConcurrentPerApp` slot for up to the request's 48 h. A
 landing that the safety net restarts resumes with no boot id, so a reopen then always SUSPENDS (it
 cannot prove the container is its own) and destroys the container; the work is safe on the branch.
-Sessions shipped before issue #5 have no stored summary.
+Sessions shipped before issue #5 have no stored summary. An adopted hand merge is
+released without Launch reading its CI (a person chose to merge it), and only within
+`LAND_ADOPT_MAX_AGE_HOURS` of the merge: a merge the cron did not see in that day (GitHub
+unreachable for 24 h, `SESSION_WORKFLOW` missing) is recorded `pr.merged` only and waits for New
+release, as before.
 
 ### 18.14 Drain, the UI and the CLI
 
@@ -2231,7 +2253,8 @@ re-run, which `releaseRunStarted` moves back out of `failed`). A `failed` releas
 that failed it; no other status reads GitHub, and a GitHub error is a null run, never a failed read.
 
 **Release on merge (issue #5, `docs/plans/i5-ship-to-staging.md` §1.8–§1.9, §1.14).** After Launch
-merges a session's PR, the session's Workflow (Phase B, status `shipped`) calls three hooks in
+merges a session's PR — or after `sessions.checks` ADOPTS a person's merge of it on GitHub in a
+`staging`-mode app (§18.13, within 24 h of the merge) — the session's Workflow (Phase B, status `shipped`) calls three hooks in
 `services/sessions/land-release.ts`, one idempotent read or action per step, every bound judged
 from timestamps on rows rather than counters in memory:
 - `land.release` cuts — or SHARES — the patch release that carries the merge. A release of the app
@@ -2271,7 +2294,11 @@ so a branch protected by anything the App cannot bypass (classic protection, or 
 the Launch App as a bypass actor) refuses it — the Launch ruleset (§18.5) closes that gap for apps
 that carry it, and a session's landing stalls `release_failed` for one that does not; a claim whose
 holder died is only taken over after 10 minutes; rate limits on the compare for a large release
-are untested; a failed production run marks the release `failed` but nothing re-dispatches. The
+are untested; a failed production run marks the release `failed` but nothing re-dispatches; a
+session PR merged on GitHub releases on its own only in a `staging`-mode app and within
+`LAND_ADOPT_MAX_AGE_HOURS` (24) of the merge (§18.13) — in a `pr`-mode app, or later than that,
+someone still presses New release; a PR merged on GitHub that no session opened never releases
+on its own. The
 tag's deploy run is found by workflow file (`deploy.yml`), event (`push`) and branch (the tag), the
 newest first — an app whose deploy workflow has another name has no run to show, and falls back to
 the 45-minute "never reached staging"; it is read only while somebody watches the strip or a
