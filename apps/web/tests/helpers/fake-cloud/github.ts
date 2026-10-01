@@ -42,6 +42,11 @@
  * The hook `protect(owner, repo, { requiredChecks, bypassAppId?, classic?, name? })` protects the
  * default branch; a direct ref update of it (`updateRef`, so `commitFiles`) by a token the rules
  * do not let bypass is then a 422.
+ *
+ * A release tag's deploy run (`releases/tag-run.ts`): `pushTagRun(owner, repo, tag, { status,
+ * conclusion, jobs })` records the run a tag push starts (`event: push`); `GET …/workflows/{f}/runs`
+ * filters by `branch` (a branch or tag name) and `event`, and `GET …/actions/runs/{id}/jobs`
+ * (`actions: read`) lists its jobs.
  */
 import {
   belongsTo,
@@ -83,6 +88,17 @@ export interface FakeWorkflowRun {
   head_sha: string
   run_attempt: number
   created_at: string
+  /** What started it (default `workflow_dispatch`); a tag push's run is `push`. */
+  event?: string
+  /** `GET …/actions/runs/{id}/jobs` (default none); a test flips their status as the run goes. */
+  jobs?: FakeWorkflowJob[]
+}
+
+export interface FakeWorkflowJob {
+  id?: number
+  name: string
+  status: 'queued' | 'in_progress' | 'completed'
+  conclusion?: string | null
 }
 
 export interface FakeRepo {
@@ -340,6 +356,44 @@ export class FakeGitHub implements VendorHandler {
     const stored = runs.map(run => ({ ...run, id: run.id ?? this.ids.number() }))
     this.checkRuns.set(this.ciKey(owner, name, ref), stored)
     return stored
+  }
+
+  /**
+   * The run a tag push starts (`deploy.yml`, `event: push`, `head_branch` the tag) — what the
+   * pipeline strip and a landing follow (`releases/tag-run.ts`). Returned so a test can move it:
+   * `run.status = 'completed'; run.conclusion = 'failure'; run.jobs[1].status = …`.
+   */
+  pushTagRun(
+    owner: string,
+    name: string,
+    tag: string,
+    input: {
+      workflow?: string
+      status?: FakeWorkflowRun['status']
+      conclusion?: string | null
+      jobs?: FakeWorkflowJob[]
+    } = {}
+  ): FakeWorkflowRun {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`pushTagRun: no repo ${owner}/${name}`)
+    const run: FakeWorkflowRun = {
+      id: this.ids.number(),
+      owner: repo.owner,
+      repo: repo.name,
+      workflow: input.workflow ?? 'deploy.yml',
+      ref: `refs/tags/${tag}`,
+      inputs: {},
+      status: input.status ?? 'queued',
+      conclusion: input.conclusion ?? null,
+      head_sha:
+        this.resolveRef(repo, `tags/${tag}`) ?? this.resolveRef(repo, repo.default_branch) ?? '',
+      run_attempt: 1,
+      created_at: new Date().toISOString(),
+      event: 'push',
+      jobs: (input.jobs ?? []).map(j => ({ ...j, id: j.id ?? this.ids.number() })),
+    }
+    this.runs.push(run)
+    return run
   }
 
   /** Issue #5: the log `GET …/actions/jobs/{jobId}/logs` answers (null: none — GitHub's 404). */
@@ -1104,8 +1158,12 @@ export class FakeGitHub implements VendorHandler {
     match = rest.match(/^\/actions\/workflows\/([^/]+)\/runs$/)
     if (match && m === 'GET') {
       const workflow = decodeURIComponent(match[1])
+      const branch = req.url.searchParams.get('branch')
+      const event = req.url.searchParams.get('event')
       const runs = this.runs
         .filter(r => r.owner === repo.owner && r.repo === repo.name && r.workflow === workflow)
+        .filter(r => !branch || r.ref.replace(/^refs\/(heads|tags)\//, '') === branch)
+        .filter(r => !event || (r.event ?? 'workflow_dispatch') === event)
         .reverse()
         .map(r => ({
           id: r.id,
@@ -1113,8 +1171,8 @@ export class FakeGitHub implements VendorHandler {
           status: r.status,
           conclusion: r.conclusion,
           head_sha: r.head_sha,
-          head_branch: r.ref.replace(/^refs\/heads\//, ''),
-          event: 'workflow_dispatch',
+          head_branch: r.ref.replace(/^refs\/(heads|tags)\//, ''),
+          event: r.event ?? 'workflow_dispatch',
           created_at: r.created_at,
           html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}`,
         }))
@@ -1133,10 +1191,28 @@ export class FakeGitHub implements VendorHandler {
         conclusion: r.conclusion,
         head_sha: r.head_sha,
         head_branch: r.ref.replace(/^refs\/(heads|tags)\//, ''),
-        event: 'workflow_dispatch',
+        event: r.event ?? 'workflow_dispatch',
         created_at: r.created_at,
         html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}`,
       })
+    }
+    // A run's jobs (a tag run's: which one it is on, which one failed). `actions: read`.
+    match = rest.match(/^\/actions\/runs\/(\d+)\/jobs$/)
+    if (match && m === 'GET') {
+      if (!this.can(token, 'actions', 'read'))
+        return ghError(403, 'Resource not accessible by integration')
+      const id = Number(match[1])
+      const r = this.runs.find(x => x.owner === repo.owner && x.repo === repo.name && x.id === id)
+      if (!r) return ghError(404, 'Not Found')
+      const jobs = (r.jobs ?? []).map(j => ({
+        id: j.id ?? 0,
+        run_id: r.id,
+        name: j.name,
+        status: j.status,
+        conclusion: j.status === 'completed' ? (j.conclusion ?? 'success') : null,
+        html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}/job/${j.id ?? 0}`,
+      }))
+      return json({ total_count: jobs.length, jobs })
     }
 
     // ---- P3: pull requests

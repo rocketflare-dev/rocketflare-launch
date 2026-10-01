@@ -13,14 +13,19 @@
  * - after production runs a release, the next candidate's changes stop at production's version;
  * - each change's summary (issue #5): the session's stored ship summary body, clipped to
  *   `PROMOTION_SUMMARY_MAX`; null for a PR no session wrote, and never another organisation's;
- * - 401 without a session, 404 for another organisation's app (tenant isolation).
+ * - 401 without a session, 404 for another organisation's app (tenant isolation);
+ * - the candidate's tag deploy run (`releases/tag-run.ts`): read from GitHub while the release is
+ *   `tagged` (job by job, throttled per release), never once staging is live; a run that failed
+ *   before staging moves the release to `failed`, audited `release.failed` (in its chain), and the
+ *   failed release keeps naming the job; a GitHub error is a null run, never a failed read; another
+ *   organisation's read neither sees nor polls it.
  */
 import { appPromotionSchema, PROMOTION_SUMMARY_MAX } from '@launch/shared/launch-promotion'
-import { promoteReleaseResponseSchema } from '@launch/shared/launch-releases'
-import { and, eq } from 'drizzle-orm'
+import { promoteReleaseResponseSchema, releaseChainSchema } from '@launch/shared/launch-releases'
+import { and, eq, like } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { decide } from '@/api/services/approvals/engine'
-import { appReleases, sessions } from '@/db/schema'
+import { appReleases, auditEvents, sessions } from '@/db/schema'
 import { actorOf, approvalDeps, viewerOf } from '../helpers/approvals'
 import {
   createTestSession,
@@ -315,5 +320,177 @@ describe('GET /api/apps/:id/promotion', () => {
     const body = await res.json()
     expect(body).toMatchObject({ error: expect.any(String), statusCode: 404 })
     expect(JSON.stringify(body)).not.toContain('0.1')
+  })
+})
+
+describe('GET /api/apps/:id/promotion — the tag’s deploy run', () => {
+  const RUNS = '/actions/workflows/deploy.yml/runs'
+  const runReads = () => cloud.callsTo('github').filter(c => c.path.includes(RUNS)).length
+
+  /** Let the next read poll GitHub again (the throttle window has passed). */
+  async function expireThrottle(releaseId: string) {
+    await db
+      .update(appReleases)
+      .set({ tagRunPolledAt: new Date(Date.now() - 60_000) })
+      .where(eq(appReleases.id, releaseId))
+  }
+
+  async function releaseRow(tenantId: string, id: string) {
+    const [row] = await db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.tenantId, tenantId), eq(appReleases.id, id)))
+    return row
+  }
+
+  it('follows a tagged release’s run job by job, throttled, and fails the release when it fails', async () => {
+    const { tenantId, alice, carol, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+
+    // No run on GitHub yet: no run, the release untouched.
+    const before = await read(app, carol)
+    expect(before.candidate).toMatchObject({ id: cut.id, status: 'tagged' })
+    expect(before.candidateRun).toBeNull()
+
+    const run = cloud.github.pushTagRun(app.owner, app.repo, cut.version, {
+      status: 'in_progress',
+      jobs: [
+        { name: 'guard', status: 'completed', conclusion: 'success' },
+        { name: 'ci / Gate', status: 'in_progress' },
+        { name: 'Deploy to staging', status: 'queued' },
+      ],
+    })
+    // Another tag's run of the same workflow is not this release's.
+    cloud.github.pushTagRun(app.owner, app.repo, '9.9.9', { status: 'in_progress' })
+    await expireThrottle(cut.id)
+    const checking = await read(app, carol)
+    expect(checking.candidate?.status).toBe('tagged')
+    expect(checking.candidateRun).toEqual({
+      status: 'in_progress',
+      conclusion: null,
+      url: `https://github.com/${app.owner}/${app.repo}/actions/runs/${run.id}`,
+      currentJob: 'ci / Gate',
+      failedJob: null,
+    })
+    // The token it read with: the one repo, `actions: read` only, revoked after.
+    const token = [...cloud.github.tokens.values()].at(-1)
+    expect(token).toMatchObject({
+      repositories: [app.repo],
+      permissions: { actions: 'read' },
+      revoked: true,
+    })
+
+    // Within the window another reader gets the same answer without a GitHub call.
+    const reads = runReads()
+    expect((await read(app, alice)).candidateRun?.currentJob).toBe('ci / Gate')
+    expect(runReads()).toBe(reads)
+
+    // The gate goes red: the next read moves the release to `failed`, once, audited.
+    run.status = 'completed'
+    run.conclusion = 'failure'
+    run.jobs = [
+      { name: 'guard', status: 'completed', conclusion: 'success' },
+      { name: 'ci / Gate', status: 'completed', conclusion: 'failure' },
+      { name: 'Deploy to staging', status: 'completed', conclusion: 'skipped' },
+    ]
+    await expireThrottle(cut.id)
+    const failed = await read(app, carol)
+    const runUrl = `https://github.com/${app.owner}/${app.repo}/actions/runs/${run.id}`
+    expect(failed.candidate).toMatchObject({
+      id: cut.id,
+      status: 'failed',
+      error: `staging: the deploy run failed at "ci / Gate" (${runUrl})`,
+    })
+    expect(failed.candidateRun).toMatchObject({
+      status: 'completed',
+      conclusion: 'failure',
+      failedJob: 'ci / Gate',
+      url: runUrl,
+    })
+    const audits = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.tenantId, tenantId),
+          eq(auditEvents.targetId, cut.id),
+          like(auditEvents.action, 'release.failed')
+        )
+      )
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toMatchObject({ actorType: 'system', appId: app.app.id })
+    expect(audits[0]?.summary).toMatchObject({
+      before: { status: 'tagged' },
+      after: { status: 'failed', version: cut.version, failedJob: 'ci / Gate', runUrl },
+    })
+
+    // A failed release keeps naming the job — from its last reading, with no GitHub call.
+    await expireThrottle(cut.id)
+    const callsBefore = runReads()
+    const again = await read(app, carol)
+    expect(again.candidate?.status).toBe('failed')
+    expect(again.candidateRun?.failedJob).toBe('ci / Gate')
+    expect(runReads()).toBe(callsBefore)
+
+    // The chain still reads, and carries the failure.
+    const chain = await request(
+      `/api/apps/${app.app.id}/releases/${cut.id}/chain`,
+      { headers: carol.cookie },
+      { env }
+    )
+    expect(chain.status, await chain.clone().text()).toBe(200)
+    const events = releaseChainSchema.parse(await chain.json()).events.map(e => e.action)
+    expect(events).toEqual(expect.arrayContaining(['release.created', 'release.failed']))
+    expect(events.indexOf('release.failed')).toBeGreaterThan(events.indexOf('release.created'))
+  })
+
+  it('a GitHub error is a null run, never a failed read', async () => {
+    const { alice, carol, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    cloud.github.pushTagRun(app.owner, app.repo, cut.version, { status: 'in_progress' })
+    await expireThrottle(cut.id)
+    cloud.failNext(RUNS, 500)
+    const view = await read(app, carol)
+    expect(view.candidate).toMatchObject({ id: cut.id, status: 'tagged' })
+    expect(view.candidateRun).toBeNull()
+  })
+
+  it('never reads GitHub once the release is live on staging', async () => {
+    const { tenantId, alice, carol, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    cloud.github.pushTagRun(app.owner, app.repo, cut.version, {
+      status: 'completed',
+      conclusion: 'failure',
+      jobs: [{ name: 'smoke', status: 'completed', conclusion: 'failure' }],
+    })
+    await ship(app, 'staging', `refs/tags/${cut.version}`)
+    await expireThrottle(cut.id)
+    const reads = runReads()
+    const view = await read(app, carol)
+    expect(view.candidate).toMatchObject({ id: cut.id, status: 'staging_active' })
+    expect(view.candidateRun).toBeNull()
+    expect(runReads()).toBe(reads)
+    // A run that failed AFTER staging went live never fails the release.
+    expect((await releaseRow(tenantId, cut.id))?.status).toBe('staging_active')
+  })
+
+  it('another organisation can neither read nor poll the run', async () => {
+    const { tenantId, alice, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    cloud.github.pushTagRun(app.owner, app.repo, cut.version, {
+      status: 'completed',
+      conclusion: 'failure',
+    })
+    await expireThrottle(cut.id)
+    const other = await createTestTenantWithUser(db, 'owner')
+    tenantIds.push(other.tenant.id)
+    const cookie = sessionCookieHeader(await createTestSession(db, other.user.id, other.tenant.id))
+    const reads = runReads()
+    const res = await request(`/api/apps/${app.app.id}/promotion`, { headers: cookie }, { env })
+    expect(res.status).toBe(404)
+    expect(runReads()).toBe(reads)
+    const row = await releaseRow(tenantId, cut.id)
+    expect(row?.status).toBe('tagged')
+    expect(row?.tagRun).toBeNull()
   })
 })

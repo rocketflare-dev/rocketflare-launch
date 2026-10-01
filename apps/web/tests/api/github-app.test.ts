@@ -298,6 +298,7 @@ describe('issue #5 calls: merge, CI logs, rulesets, protection', () => {
       merge: { contents: 'write', pull_requests: 'write' },
       readPullRequest: { pull_requests: 'read' },
       jobLogs: { actions: 'read' },
+      tagRun: { actions: 'read' },
       checks: { checks: 'read', statuses: 'read' },
       rulesetsWrite: { administration: 'write' },
       rulesetsRead: { administration: 'read' },

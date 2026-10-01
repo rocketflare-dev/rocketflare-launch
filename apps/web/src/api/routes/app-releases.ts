@@ -17,7 +17,8 @@
  *   → production, from the audit log;
  * - `GET /:id/promotion` → `appPromotionSchema` (members read): the app page's pipeline strip —
  *   the newest release, what each environment runs, the PRs between with their sessions' titles,
- *   and the pending `deploy.production` request with who it waits on (`releases/promotion.ts`).
+ *   the pending `deploy.production` request with who it waits on, and — while the candidate is
+ *   `tagged`/`staging` — its tag's deploy run on GitHub (`releases/promotion.ts`, `tag-run.ts`).
  *
  * Every lookup is tenant-first (`getAppRow`, then the release by app), so another organisation's
  * app or release is a 404. Each answer is parsed through its shared schema on the way out.
@@ -134,9 +135,9 @@ appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
 })
 
 appReleasesRouter.get('/:id/promotion', async c => {
-  const { db, tenantId, app } = await readableApp(c)
+  const { db, cfg, tenantId, logger, app } = await readableApp(c)
   const body: AppPromotion = appPromotionSchema.parse(
-    await appPromotion(db, { tenantId, appId: app.id })
+    await appPromotion(db, cfg, { tenantId, app }, { logger })
   )
   return c.json(body)
 })

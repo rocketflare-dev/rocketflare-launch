@@ -24,7 +24,8 @@
  *   `commitFiles` is the four in a row.
  * - Actions: `POST …/actions/workflows/{file}/dispatches {ref, inputs}` (204; a workflow file
  *   GitHub has not registered yet is a 404, which the pipeline retries), `GET …/runs`, and
- *   `GET …/actions/runs/{id}` — one run, which the deploy progress read polls.
+ *   `GET …/actions/runs/{id}` — one run, which the deploy progress read polls — and
+ *   `GET …/actions/runs/{id}/jobs`, a release tag's run's jobs (the pipeline strip).
  * - Settings: `PUT …/environments/{name}`, repository variables (`PATCH`, falling back to `POST`
  *   when the variable does not exist yet), and `DELETE /installation/token` — a job revoking the
  *   token it was handed.
@@ -633,6 +634,36 @@ export async function getWorkflowRun(
   return (await res.json()) as GitHubWorkflowRun
 }
 
+export interface GitHubWorkflowJob {
+  id: number
+  name: string
+  status: string | null
+  conclusion: string | null
+  started_at?: string | null
+  completed_at?: string | null
+  html_url?: string | null
+}
+
+/**
+ * The jobs of a run's LATEST attempt, in the order GitHub lists them (`GET …/actions/runs/{id}/jobs`,
+ * `actions: read`). The fix for a tag's deploy run (`releases/tag-run.ts`): which job it is on,
+ * and which one failed.
+ */
+export async function listWorkflowRunJobs(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: number | string,
+  opts: GitHubOptions = {}
+): Promise<GitHubWorkflowJob[]> {
+  const body = await githubJson<{ jobs?: GitHubWorkflowJob[] }>(
+    `${repoPath(owner, repo)}/actions/runs/${encodeURIComponent(String(runId))}/jobs?per_page=100`,
+    { token },
+    opts
+  )
+  return body.jobs ?? []
+}
+
 // ---- P2: settings -----------------------------------------------------------------------------
 
 /** Create or update a deployment environment (it scopes the OIDC `environment` claim). */
@@ -966,6 +997,8 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   readPullRequest: { pull_requests: 'read' },
   /** A failed check's job log (`getJobLogs`). */
   jobLogs: { actions: 'read' },
+  /** A release tag's deploy run and its jobs (`listWorkflowRuns`, `listWorkflowRunJobs`). */
+  tagRun: { actions: 'read' },
   /** The check runs, statuses and annotations on a head (`failedCheckLog`). */
   checks: { checks: 'read', statuses: 'read' },
   /** Creating or updating Launch's ruleset. */

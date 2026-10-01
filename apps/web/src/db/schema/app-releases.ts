@@ -11,10 +11,14 @@
  *   the two schema files from importing each other.
  * - `prs` is `releasePrSchema[]`, capped at `RELEASE_MAX_PRS`; GitHub-only authors are logins,
  *   never mapped to Launch users.
+ * - `tag_run` / `tag_run_polled_at`: the last reading of the GitHub run the tag push started
+ *   (`candidateRunSchema`), and when it was taken — the read throttle of `releases/tag-run.ts`
+ *   (one GitHub read per release per window, however many people watch the strip).
  */
+import type { CandidateRun } from '@launch/shared/launch-promotion'
 import { RELEASE_STATUSES, type ReleasePr } from '@launch/shared/launch-releases'
 import { relations } from 'drizzle-orm'
-import { index, jsonb, pgEnum, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core'
+import { index, jsonb, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core'
 import { tenantRef, timestamps } from './_helpers'
 import { approvalRequests } from './approvals'
 import { apps } from './apps'
@@ -53,6 +57,9 @@ export const appReleases = pgTable(
     stagingTicketId: uuid('staging_ticket_id'),
     productionTicketId: uuid('production_ticket_id'),
     error: text('error'),
+    /** The tag's deploy run as last read from GitHub (see the header); null before any reading. */
+    tagRun: jsonb('tag_run').$type<CandidateRun>(),
+    tagRunPolledAt: timestamp('tag_run_polled_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [

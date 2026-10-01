@@ -2214,6 +2214,21 @@ of the Launch session that wrote it and (issue #5) the session's stored ship sum
 a PR no session wrote or a session shipped before summaries were kept), and the candidate's
 `deploy.production` request with the people it still waits on — named for every member, unlike the
 approval's own page. It decides nothing: Promote is the same route and the same approval.
+**The tag's deploy run** (`releases/tag-run.ts`, `candidateRun` on the same read): cutting a
+release pushes tag `X.Y.Z`, and the app's `deploy.yml` runs guard → "Already gated?" → (no green CI
+on the commit yet) the gate → "Deploy to staging" — the FIRST job that calls Launch. Until then the
+release is `tagged` and Launch hears nothing, so while the candidate is `tagged` or `staging` the
+read asks GitHub for the newest `push` run of `deploy.yml` on the tag and its latest attempt's
+jobs (`listWorkflowRuns` + `listWorkflowRunJobs`, a token narrowed to the repo and `actions: read`
+— `GITHUB_TOKEN_PERMISSIONS.tagRun`, revoked after) → `{status, conclusion, url, currentJob,
+failedJob}`. Throttled per release in the database: a compare-and-set on
+`app_releases.tag_run_polled_at` (20 s window) lets one reader poll, and everybody else reads the
+last reading in `app_releases.tag_run`. A run that COMPLETED `failure`/`cancelled`/`timed_out`/
+`startup_failure` moves the release `tagged|staging → failed` (compare-and-set; error `staging: the
+deploy run failed at "<job>" (<run url>)`), audited `release.failed` (target the release, so it is
+in the chain) — settled on the read, and only from a fresh reading (a cached one may predate a
+re-run, which `releaseRunStarted` moves back out of `failed`). A `failed` release keeps the reading
+that failed it; no other status reads GitHub, and a GitHub error is a null run, never a failed read.
 
 **Release on merge (issue #5, `docs/plans/i5-ship-to-staging.md` §1.8–§1.9, §1.14).** After Launch
 merges a session's PR, the session's Workflow (Phase B, status `shipped`) calls three hooks in
@@ -2233,10 +2248,13 @@ from timestamps on rows rather than counters in memory:
   deploying` in one compare-and-set, emitting `ship.released {shared}` only when the CAS won.
   **`POST /api/apps/:id/releases` takes the same claim** and answers 409 `release_in_progress`
   rather than waiting in a request.
-- `land.staging` reads the release: `staging_active` or later → health next (`ship.staging
-  {status:'active'}`); `failed` on its staging run → stalled `deploy_failed`; still `tagged` (or
-  a staging run that never went live) 45 minutes after it was cut → stalled `deploy_timeout`;
-  else another 2-minute round.
+- `land.staging` reads the release — and, while it is `tagged`/`staging`, follows its tag's deploy
+  run the same way (`followTagRun`, the same throttle), so a run that failed before the staging
+  job (a red gate) fails the release there and then: `staging_active` or later → health next
+  (`ship.staging {status:'active'}`); `failed` on its staging run (or its tag's run) → stalled
+  `deploy_failed` with the job that failed and the run's link; still `tagged` (or a staging run
+  that never went live) 45 minutes after it was cut → stalled `deploy_timeout`; else another
+  2-minute round.
 - `land.health` probes through `checkAppHealth`: staging `up` on the release's version (or a newer
   one, which carries the change) → `live` with staging's URL; otherwise a 30-second round, until 10
   `app_health_checks` rows of staging since it went live on the release (or since the landing
@@ -2253,7 +2271,14 @@ so a branch protected by anything the App cannot bypass (classic protection, or 
 the Launch App as a bypass actor) refuses it — the Launch ruleset (§18.5) closes that gap for apps
 that carry it, and a session's landing stalls `release_failed` for one that does not; a claim whose
 holder died is only taken over after 10 minutes; rate limits on the compare for a large release
-are untested; a failed production run marks the release `failed` but nothing re-dispatches.
+are untested; a failed production run marks the release `failed` but nothing re-dispatches. The
+tag's deploy run is found by workflow file (`deploy.yml`), event (`push`) and branch (the tag), the
+newest first — an app whose deploy workflow has another name has no run to show, and falls back to
+the 45-minute "never reached staging"; it is read only while somebody watches the strip or a
+landing follows the release, so a red gate with neither leaves the release `tagged` until one
+does; a re-run of a failed tag run in GitHub moves the release out of `failed` only when its
+staging job calls Launch; a run that skipped its staging job (conclusion `skipped`/`neutral`) is not
+a failure, and waits out the timeout.
 
 ### 18.18 The audit hash chain, verify and export (P4)
 
@@ -2300,10 +2325,15 @@ own name, `main-64a36e6`) — a status line, and, collapsed and only when there 
 what the promotion ships (each session's title and, since issue #5, a line of its stored ship
 summary, then its PR's title). Promote is on offer when staging runs the newest
 release, is `up`, and production runs something older; otherwise the button is disabled with the
-reason ("Staging is still deploying" — or "v1.4.2 never reached staging" once the release is
-older than `RELEASE_STAGING_TIMEOUT_MINUTES`, the same 45 minutes a session's landing waits —
-"Staging runs main-64a36e6, not v1.4.2", "Staging is unhealthy", "Production already runs v1.4.2",
-"Nothing on staging yet"). After the click (the same confirmation as a release row, the same
+reason. Before staging it follows the tag's deploy run on GitHub (`candidateRun`, §18.17): "v1.4.2
+is tagged — GitHub is checking it before it deploys to staging. Running: ci / Gate." while the run
+has not reached its staging job, "Deploying v1.4.2 to staging…" once that job has called Launch,
+and "v1.4.2 did not deploy: ci / Gate failed." when the run failed — each with **View on GitHub**
+(the run). With no run known it says "Staging is still deploying" — or "v1.4.2 never reached
+staging" once the release is older than `RELEASE_STAGING_TIMEOUT_MINUTES`, the same 45 minutes a
+session's landing waits; a run still going is never "stuck". After staging: "Staging runs
+main-64a36e6, not v1.4.2", "Staging is unhealthy", "Production already runs v1.4.2", "Nothing on
+staging yet". After the click (the same confirmation as a release row, the same
 route) the strip stays: "Waiting for approval from <names>" with the request's link and Copy
 link, then "Deploying to production…", then "Live in production: v1.4.2" with the production
 link. Owners and admins (`viewerCanDeploy`) get the button; everyone else reads the strip with who

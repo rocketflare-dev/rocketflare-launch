@@ -9,6 +9,9 @@
  * - Promote opens the same confirmation as a release row (`PromoteDialog`) and the same route
  *   (`POST …/releases/:rid/promote`). The strip then STAYS: "Waiting for approval from …" with the
  *   request's link to share, "Deploying to production…", then "Live in production" with its link.
+ * - Before staging: while the newest release's tag run is on GitHub (`candidateRun`), the reason
+ *   says what it is doing ("v1.4.2 is tagged — GitHub is checking it…", "Deploying v1.4.2 to
+ *   staging…", "v1.4.2 did not deploy: ci / Gate failed") with a "View on GitHub" link.
  * - Promoting is for the app's owners and admins (`viewerCanDeploy`, the server's own rule).
  *   Everybody else reads the same strip, with who can promote instead of the button.
  */
@@ -214,10 +217,26 @@ function StatusLine({
     )
   }
   if (state.kind === 'blocked') {
+    const run = state.run
     return (
       <div className="space-y-1">
-        <p id="pipeline-reason" className="text-sm text-secondary">
-          {state.reason}.
+        <p id="pipeline-reason" className="text-sm text-secondary" role="status">
+          {/[.…!?]$/.test(state.reason) ? state.reason : `${state.reason}.`}
+          {run?.detail && <span className="text-muted"> {run.detail}.</span>}
+          {run?.url && (
+            <>
+              {' '}
+              <a
+                href={run.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="link link-hover inline-flex items-center gap-1"
+              >
+                View on GitHub
+                <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+              </a>
+            </>
+          )}
         </p>
         {promoters}
       </div>

@@ -16,7 +16,9 @@
  *   `release_in_progress`; another tenant can never take an app's claim;
  * - a protected branch Launch cannot bypass → `stalled` `release_failed`, nothing recorded;
  * - the follow: tagged → `wait`; staging activated → `active` → healthy on the version → `live`;
- *   a failed staging run → `deploy_failed`; tagged 45 minutes → `deploy_timeout`; staging never
+ *   a failed staging run → `deploy_failed`; the tag's run failing before staging (a red gate,
+ *   `releases/tag-run.ts`) → the release `failed` and `deploy_failed` at once, not after 45
+ *   minutes; tagged 45 minutes → `deploy_timeout`; staging never
  *   healthy after 10 probes → `unhealthy`.
  */
 
@@ -458,6 +460,60 @@ describe('landStaging and landHealth', () => {
     const result = await landStaging(stepCtx(session))
     expect(result).toMatchObject({ status: 'stalled', reason: 'deploy_failed' })
     if (result.status === 'stalled') expect(result.error).toMatch(/the build was refused/)
+  })
+
+  it('stalls deploy_failed at once when the tag’s run failed before staging (a red gate)', async () => {
+    const f = await fixture()
+    const session = await mergedSession(f, 'Red gate')
+    const released = await landRelease(stepCtx(session))
+    if (released.status !== 'released') throw new Error('not released')
+    const run = cloud.github.pushTagRun(f.app.owner, f.app.repo, released.tag, {
+      status: 'in_progress',
+      jobs: [
+        { name: 'guard', status: 'completed', conclusion: 'success' },
+        { name: 'ci / Gate', status: 'in_progress' },
+        { name: 'Deploy to staging', status: 'queued' },
+      ],
+    })
+    // Still checking: another round, nothing moved.
+    expect(await landStaging(stepCtx(session))).toEqual({
+      status: 'wait',
+      waitSeconds: LAND_STAGING_WAIT_SECONDS,
+    })
+    // The gate goes red a few minutes later — long before the 45-minute timeout.
+    run.status = 'completed'
+    run.conclusion = 'failure'
+    run.jobs = [
+      { name: 'guard', status: 'completed', conclusion: 'success' },
+      { name: 'ci / Gate', status: 'completed', conclusion: 'failure' },
+      { name: 'Deploy to staging', status: 'completed', conclusion: 'skipped' },
+    ]
+    const at3 = () => new Date(Date.now() + 3 * 60_000)
+    const result = await landStaging(stepCtx(session, at3))
+    expect(result).toMatchObject({ status: 'stalled', reason: 'deploy_failed' })
+    if (result.status === 'stalled') {
+      expect(result.error).toContain(`The staging deploy of ${released.version} failed`)
+      expect(result.error).toContain('"ci / Gate"')
+    }
+    const [row] = await db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.tenantId, f.tenantId), eq(appReleases.id, released.releaseId)))
+    expect(row?.status).toBe('failed')
+    expect(row?.error).toMatch(
+      /^staging: the deploy run failed at "ci \/ Gate" \(https:\/\/github\.com\//
+    )
+    const audits = await db
+      .select({ action: auditEvents.action })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.tenantId, f.tenantId),
+          eq(auditEvents.targetId, released.releaseId),
+          eq(auditEvents.action, 'release.failed')
+        )
+      )
+    expect(audits).toHaveLength(1)
   })
 
   it('stalls deploy_timeout when the release is still tagged 45 minutes on', async () => {

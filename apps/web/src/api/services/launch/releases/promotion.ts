@@ -16,6 +16,10 @@
  *   (eligible under its snapshotted policy, not excluded, not yet decided) — the same list the
  *   approval's own page names, but readable by every member here, because "who must approve" is
  *   the strip's whole point and names of colleagues are no secret inside the organisation.
+ * - The CANDIDATE RUN (`tag-run.ts`): while the candidate is `tagged` or `staging`, the GitHub run
+ *   its tag push started — throttled per release, settled on read (a run that failed before the
+ *   staging job moves the release to `failed`, audited `release.failed`), null on any GitHub
+ *   error. A `failed` candidate carries the reading that failed it; no other status reads GitHub.
  *
  * Every query is tenant-first: the app comes from `getAppRow(tenantId, id)`, and each later lookup
  * repeats `tenant_id` rather than trusting ids read from another row.
@@ -28,10 +32,12 @@ import {
 } from '@launch/shared/launch-promotion'
 import { type Release, releaseSchema } from '@launch/shared/launch-releases'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import {
   type AppEnvironmentRow,
   type AppReleaseRow,
+  type AppRow,
   appEnvironments,
   approvalDecisions,
   approvalRequests,
@@ -40,6 +46,7 @@ import {
 } from '../../../../db/schema'
 import { eligibleApprovers } from '../../approvals/policy'
 import { listReleases } from './release'
+import { followTagRun, type TagRunOptions } from './tag-run'
 
 /** At most this many approvers are named (the approval page's own cap). */
 const MAX_APPROVERS = 25
@@ -160,9 +167,15 @@ async function approvalOf(
 
 export async function appPromotion(
   db: Database,
-  input: { tenantId: string; appId: string }
+  cfg: AppConfig,
+  input: {
+    tenantId: string
+    app: Pick<AppRow, 'id' | 'repoOwner' | 'repoName' | 'defaultBranch'>
+  },
+  options: TagRunOptions = {}
 ): Promise<AppPromotion> {
-  const { tenantId, appId } = input
+  const { tenantId, app } = input
+  const appId = app.id
   const [releases, envs] = await Promise.all([
     listReleases({ db }, { tenantId, appId }),
     db
@@ -178,8 +191,7 @@ export async function appPromotion(
     envs.find(e => e.name === 'production'),
     releases
   )
-  const candidateRow = releases[0] ?? null
-  if (!candidateRow) {
+  if (!releases[0]) {
     return {
       candidate: null,
       staging,
@@ -187,8 +199,12 @@ export async function appPromotion(
       changes: [],
       changesTruncated: false,
       approval: null,
+      candidateRun: null,
     }
   }
+  // The tag's deploy run (`tag-run.ts`); a run that failed may move the candidate to `failed`.
+  const followed = await followTagRun(db, cfg, app, releases[0] as AppReleaseRow, options)
+  const candidateRow = followed.release
 
   const shipped = releasesBetween(releases, candidateRow, production?.version ?? null)
   const prs = shipped.flatMap(r => r.prs.map(pr => ({ version: r.version, pr })))
@@ -217,5 +233,6 @@ export async function appPromotion(
     approval: candidate.approvalId
       ? await approvalOf(db, tenantId, appId, candidate.approvalId)
       : null,
+    candidateRun: followed.run,
   }
 }

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The pipeline strip follows a release's tag run on GitHub before staging.** While the newest
+  release is `tagged` (or deploying to staging) the strip says "v0.15.7 is tagged — GitHub is
+  checking it before it deploys to staging" with the job it is on, then "Deploying v0.15.7 to
+  staging…", each with **View on GitHub**. A tag run that fails before its staging job (a red gate)
+  now marks the release `failed` (audited `release.failed`) — the strip says "v0.15.7 did not
+  deploy: ci / Gate failed", and a session's landing stalls `deploy_failed` at once instead of
+  timing out after 45 minutes. `GET /api/apps/:id/promotion` gains `candidateRun` (nullable,
+  defaulted); migration 0033 adds `app_releases.tag_run` / `tag_run_polled_at` (the per-release
+  read throttle).
 - **The app page's pipeline strip and Shipping card are compact.** The strip is one row (staging →
   Promote → production) with its reason underneath and what it ships folded away; a release stuck
   in `tagged` for more than 45 minutes reads "vX never reached staging" instead of "still

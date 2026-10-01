@@ -4,10 +4,13 @@
  *
  * - `ready` — staging runs the newest release, it is healthy, and production runs something older:
  *   Promote is on offer;
- * - `blocked` — Promote is not on offer, with the reason in plain words ("Staging is still
- *   deploying", "v1.4.2 never reached staging" once a release is past
- *   `RELEASE_STAGING_TIMEOUT_MINUTES`, "Staging is unhealthy", "Production already runs v1.4.2",
- *   "Nothing on staging yet");
+ * - `blocked` — Promote is not on offer, with the reason in plain words ("v1.4.2 is tagged — GitHub
+ *   is checking it before it deploys to staging" while its tag's run has not reached the staging
+ *   job, "Deploying v1.4.2 to staging…", "v1.4.2 did not deploy: ci / Gate failed", "Staging is
+ *   still deploying" when no run is known, "v1.4.2 never reached staging" once a release with no
+ *   run in flight is past `RELEASE_STAGING_TIMEOUT_MINUTES`, "Staging is unhealthy", "Production
+ *   already runs v1.4.2", "Nothing on staging yet"). With the tag's run (`view.candidateRun`) it
+ *   carries `run`: the job it is on and the link to it on GitHub;
  * - `awaiting` — promoted; the `deploy.production` request waits on the people it names;
  * - `deploying` — approved; production is deploying it;
  * - `live` — the newest release is in production.
@@ -18,6 +21,8 @@
 import type { HealthStatus } from '@launch/shared/launch-apps'
 import {
   type AppPromotion,
+  type CandidateRun,
+  candidateRunFailed,
   compareReleaseVersions,
   type PromotionApproval,
 } from '@launch/shared/launch-promotion'
@@ -31,10 +36,19 @@ export type PromotionState =
       release: Release | null
       /** Production is at or past the candidate: there is nothing to ship, so no list. */
       productionAhead?: boolean
+      /** The candidate's tag run on GitHub: what it is doing now, and where to see it. */
+      run?: PromotionRunNote
     }
   | { kind: 'awaiting'; release: Release; approval: PromotionApproval | null }
   | { kind: 'deploying'; release: Release }
   | { kind: 'live'; release: Release }
+
+/** A line under the reason about the tag's run, and its link ("View on GitHub"). */
+export interface PromotionRunNote {
+  /** "Running: ci / Gate", or null when GitHub named no job. */
+  detail: string | null
+  url: string | null
+}
 
 /** `1.4.2` → `v1.4.2`; a build that is not a release (`main-64a36e6`) stays as it is. */
 export function v(version: string): string {
@@ -59,16 +73,57 @@ const UNHEALTHY_REASON: Record<Exclude<HealthStatus, 'up'>, string> = {
   unknown: 'Staging has not been checked yet',
 }
 
+/** The note for a run still going: the job it is on, and its link. Pure. */
+function runningNote(run: CandidateRun): PromotionRunNote {
+  return { detail: run.currentJob ? `Running: ${run.currentJob}` : null, url: run.url }
+}
+
+/** The sentence for a run that ended without deploying. Pure. */
+function failedRunReason(version: string, run: CandidateRun): string {
+  return run.failedJob
+    ? `${v(version)} did not deploy: ${run.failedJob} failed`
+    : `${v(version)} did not deploy`
+}
+
 export function promotionState(view: AppPromotion, now: Date = new Date()): PromotionState {
   const release = view.candidate
   if (!release) return { kind: 'blocked', reason: 'Nothing on staging yet', release: null }
   const production = view.production?.version ?? null
+  // `?? null`: a view built by hand (or by an older server) may not carry it.
+  const run = view.candidateRun ?? null
   switch (release.status) {
     case 'tagged':
-    case 'staging':
+    case 'staging': {
+      // The tag's run ended without deploying, and the server has not moved the release yet.
+      if (run && candidateRunFailed(run)) {
+        return {
+          kind: 'blocked',
+          reason: failedRunReason(release.version, run),
+          release,
+          run: { detail: null, url: run.url },
+        }
+      }
+      const inFlight = run && run.status !== 'completed' ? run : null
+      if (release.status === 'staging' && (inFlight || !stuck(release, now))) {
+        return {
+          kind: 'blocked',
+          reason: `Deploying ${v(release.version)} to staging…`,
+          release,
+          ...(run ? { run: runningNote(run) } : {}),
+        }
+      }
+      if (inFlight) {
+        return {
+          kind: 'blocked',
+          reason: `${v(release.version)} is tagged — GitHub is checking it before it deploys to staging`,
+          release,
+          run: runningNote(inFlight),
+        }
+      }
       return stuck(release, now)
         ? { kind: 'blocked', reason: `${v(release.version)} never reached staging`, release }
         : { kind: 'blocked', reason: 'Staging is still deploying', release }
+    }
     case 'awaiting_approval':
       return { kind: 'awaiting', release, approval: view.approval }
     case 'promoting':
@@ -76,7 +131,14 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
     case 'production_active':
       return { kind: 'live', release }
     case 'failed':
-      return { kind: 'blocked', reason: `${v(release.version)} did not deploy`, release }
+      return run && candidateRunFailed(run)
+        ? {
+            kind: 'blocked',
+            reason: failedRunReason(release.version, run),
+            release,
+            run: { detail: null, url: run.url },
+          }
+        : { kind: 'blocked', reason: `${v(release.version)} did not deploy`, release }
     case 'staging_active':
     case 'rejected': {
       if (production && compareReleaseVersions(production, release.version) >= 0) {

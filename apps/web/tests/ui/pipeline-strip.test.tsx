@@ -1,7 +1,9 @@
 /**
  * The app page's pipeline strip (rocketflare-launch#5 part 8): staging → [Promote to production] →
  * production, read from `GET /api/apps/:id/promotion`. Each state — enabled; disabled with its
- * reason (still deploying, unhealthy, production already runs it, nothing on staging); waiting
+ * reason (still deploying, unhealthy, production already runs it, nothing on staging) — and,
+ * before staging, the tag's deploy run on GitHub (checking, deploying, which job failed, with
+ * "View on GitHub"); waiting
  * for approval with who and the request's link; deploying; live with the production link — the
  * read-only strip for somebody who may not promote, what the promotion ships in plain words, and
  * that pressing Promote calls the existing promote route and then shows who it waits on.
@@ -135,9 +137,16 @@ describe('PipelineStrip', () => {
 
   it.each([
     [
+      // Tagged, and no run on GitHub found (yet): the old words.
       'still deploying',
-      view({}, { status: 'staging', createdAt: minutesAgo(5) }),
+      view({}, { status: 'tagged', createdAt: minutesAgo(5) }),
       'Staging is still deploying.',
+    ],
+    [
+      // The staging job has called Launch (a ticket is open).
+      'deploying to staging',
+      view({}, { status: 'staging', createdAt: minutesAgo(5) }),
+      'Deploying v1.4.2 to staging…',
     ],
     [
       // Past the deploy window (RELEASE_STAGING_TIMEOUT_MINUTES): stuck, not deploying.
@@ -172,6 +181,93 @@ describe('PipelineStrip', () => {
     expect(button).toBeDisabled()
     expect(screen.getByText(reason)).toBeInTheDocument()
     expect(button).toHaveAttribute('aria-describedby', 'pipeline-reason')
+  })
+
+  describe('the tag’s deploy run on GitHub (candidateRun)', () => {
+    const RUN_URL = 'https://github.com/acme/expenses/actions/runs/77'
+    const run = (overrides: Record<string, unknown> = {}) => ({
+      status: 'in_progress',
+      conclusion: null,
+      url: RUN_URL,
+      currentJob: 'ci / Gate',
+      failedJob: null,
+      ...overrides,
+    })
+    const reasonLine = () => document.getElementById('pipeline-reason') as HTMLElement
+
+    it('says GitHub is checking a tagged release, with the job it is on and its link', async () => {
+      renderStrip({
+        [PROMOTION]: view({ candidateRun: run() }, { status: 'tagged', createdAt: minutesAgo(3) }),
+      })
+      expect(await promoteButton()).toBeDisabled()
+      expect(reasonLine()).toHaveTextContent(
+        'v1.4.2 is tagged — GitHub is checking it before it deploys to staging. Running: ci / Gate.'
+      )
+      expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', RUN_URL)
+      expect(screen.queryByText(/still deploying/)).toBeNull()
+    })
+
+    it('keeps following a run past 45 minutes: a slow gate is not a stuck release', async () => {
+      renderStrip({
+        [PROMOTION]: view(
+          { candidateRun: run({ status: 'queued', currentJob: null }) },
+          { status: 'tagged', createdAt: minutesAgo(50) }
+        ),
+      })
+      await promoteButton()
+      expect(reasonLine()).toHaveTextContent(/^v1\.4\.2 is tagged — GitHub is checking it/)
+      expect(reasonLine()).not.toHaveTextContent('Running:')
+      expect(screen.queryByText(/never reached staging/)).toBeNull()
+    })
+
+    it('says "Deploying to staging…" once the staging job has called Launch', async () => {
+      renderStrip({
+        [PROMOTION]: view(
+          { candidateRun: run({ currentJob: 'Deploy to staging' }) },
+          { status: 'staging', createdAt: minutesAgo(8) }
+        ),
+      })
+      await promoteButton()
+      expect(reasonLine()).toHaveTextContent(
+        'Deploying v1.4.2 to staging… Running: Deploy to staging.'
+      )
+      expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', RUN_URL)
+    })
+
+    it('names the job that failed, with the run’s link', async () => {
+      renderStrip({
+        [PROMOTION]: view(
+          {
+            candidateRun: run({
+              status: 'completed',
+              conclusion: 'failure',
+              currentJob: null,
+              failedJob: 'ci / Gate',
+            }),
+          },
+          {
+            status: 'failed',
+            error: `staging: the deploy run failed at "ci / Gate" (${RUN_URL})`,
+            createdAt: minutesAgo(9),
+          }
+        ),
+      })
+      expect(await promoteButton()).toBeDisabled()
+      expect(reasonLine()).toHaveTextContent('v1.4.2 did not deploy: ci / Gate failed.')
+      expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', RUN_URL)
+    })
+
+    it('a failed release with no run says only that it did not deploy', async () => {
+      renderStrip({
+        [PROMOTION]: view(
+          {},
+          { status: 'failed', error: 'staging: refused', createdAt: minutesAgo(9) }
+        ),
+      })
+      await promoteButton()
+      expect(reasonLine()).toHaveTextContent('v1.4.2 did not deploy.')
+      expect(screen.queryByRole('link', { name: /View on GitHub/ })).toBeNull()
+    })
   })
 
   it('waits for approval, naming the approvers and linking the request to share', async () => {

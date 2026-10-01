@@ -19,7 +19,10 @@
  *   success it records `releaseId` / `version` / `tag` on the landing and moves `releasing →
  *   deploying` in ONE compare-and-set, then emits `ship.released` (only when the CAS won, so a
  *   retried step never emits twice).
- * - **`landStaging`** (`land.staging#K.R`): reads the release. `staging_active` or later → `active`
+ * - **`landStaging`** (`land.staging#K.R`): reads the release, and while it is `tagged`/`staging`
+ *   follows its tag's deploy run on GitHub (`followTagRun`, `releases/tag-run.ts` — throttled per
+ *   release, a GitHub error ignored): a run that failed before the staging job (a red gate) moves
+ *   the release to `failed` there and then. `staging_active` or later → `active`
  *   (`ship.staging {status:'active'}` emitted); `failed` on its staging run → `deploy_failed`;
  *   still `tagged` (or a staging run never finished) 45 minutes after the release was cut →
  *   `deploy_timeout`; else `wait` 2 minutes.
@@ -56,6 +59,7 @@ import {
   RELEASE_TRIGGER_SESSION_MERGE,
   releaseListingPr,
 } from '../launch/releases/release'
+import { followTagRun } from '../launch/releases/tag-run'
 import { safeErrorMessage } from './events'
 import type {
   LandHealthResult,
@@ -280,7 +284,21 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
 /** `land.staging#K.R` (plan §1.9). */
 export async function landStaging(ctx: SessionStepContext): Promise<LandStagingResult> {
   const { session, landing } = await loadLanding(ctx, 'landStaging')
-  const release = await landingRelease(ctx, session, landing, 'landStaging')
+  const read = await landingRelease(ctx, session, landing, 'landStaging')
+  // While no staging job has gone live, the tag's run on GitHub: one that already failed (its gate
+  // red) fails the release now, rather than after the 45-minute timeout below.
+  const release =
+    read.status === 'tagged' || read.status === 'staging'
+      ? (
+          await followTagRun(
+            ctx.db,
+            ctx.cfg,
+            await getAppRow(ctx.db, ctx.ref.tenantId, session.appId),
+            read,
+            { now: ctx.now(), logger: ctx.logger }
+          )
+        ).release
+      : read
 
   // A production run's failure (`failed` with a `production:` error) came after staging went live.
   const productionFailure = release.status === 'failed' && release.error?.startsWith('production:')

@@ -450,7 +450,8 @@ A `CUSTOM kit.notice` renders
   auto-approve.
 - **The app page**: `PipelineStrip` first (rocketflare-launch#5 — staging → Promote to production →
   production over `useAppPromotion`, `['release','promotion',appId]`, polled only while the
-  candidate deploys; every state and sentence is the pure `promotionModel.ts`; its Promote opens the
+  candidate deploys; every state and sentence is the pure `promotionModel.ts` — before staging from
+  the view's `candidateRun`, the tag's deploy run, with a link to the run; its Promote opens the
   same `PromoteDialog` and STAYS on the page to show who the request waits on), then `ReleasesCard`
   (+ `PromoteButton`, which goes to the approval it opened; a 409 is shown in its dialog) and
   `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).

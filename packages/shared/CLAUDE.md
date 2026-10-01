@@ -101,7 +101,9 @@ its consts at evaluation, so order matters); `launch-approvals.ts` the built `se
 (appended to both kind lists, `sessionMergeContextSchema`, `SESSION_MERGE_EXPIRY_HOURS` 48 and its
 owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
 'release_in_progress'`); `launch-promotion.ts` a change's `summary` (nullable, default null — an
-older answer still parses) and `PROMOTION_SUMMARY_MAX` 600 ·
+older answer still parses) and `PROMOTION_SUMMARY_MAX` 600, and `candidateRunSchema` /
+`candidateRun` (the candidate's tag deploy run on GitHub — status, conclusion, URL, current and
+failed job; nullable, default null) with `CANDIDATE_RUN_FAILED_CONCLUSIONS` / `candidateRunFailed` ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is
