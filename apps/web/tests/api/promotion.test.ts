@@ -25,7 +25,7 @@ import { promoteReleaseResponseSchema, releaseChainSchema } from '@launch/shared
 import { and, eq, like } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { decide } from '@/api/services/approvals/engine'
-import { appReleases, auditEvents, sessions } from '@/db/schema'
+import { appEnvironments, appReleases, auditEvents, sessions } from '@/db/schema'
 import { actorOf, approvalDeps, viewerOf } from '../helpers/approvals'
 import {
   createTestSession,
@@ -186,6 +186,14 @@ describe('GET /api/apps/:id/promotion', () => {
     expect(onStaging.candidate).toMatchObject({ id: cut.id, status: 'staging_active' })
     expect(onStaging.staging).toMatchObject({ version: '0.1.1', releaseId: cut.id })
     expect(onStaging.staging?.deployedAt).toBeInstanceOf(Date)
+    // The deploy's `finish` probed staging, so its health is about THIS version…
+    expect(onStaging.staging?.healthStatus).toBe('up')
+    // …and a check from before the deploy says nothing about it: unknown, so Promote waits.
+    await db
+      .update(appEnvironments)
+      .set({ healthCheckedAt: new Date(Date.now() - 7 * 3_600_000) })
+      .where(and(eq(appEnvironments.tenantId, tenantId), eq(appEnvironments.appId, app.app.id)))
+    expect((await read(app, carol)).staging?.healthStatus).toBe('unknown')
     expect(onStaging.production?.version ?? null).toBeNull()
     expect(onStaging.changes).toEqual([
       expect.objectContaining({

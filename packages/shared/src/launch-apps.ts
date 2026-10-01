@@ -25,6 +25,14 @@ export type AppEnvironmentName = z.infer<typeof appEnvironmentNameSchema>
 /** `up`: health and ready both 200. `degraded`: health 200, ready not. Otherwise `down`. */
 export const HEALTH_STATUSES = ['unknown', 'up', 'degraded', 'down'] as const
 export const healthStatusSchema = z.enum(HEALTH_STATUSES)
+
+/**
+ * The `healthError` of an environment whose host answers with Launch's placeholder Worker — nothing
+ * has been deployed there yet. Its status is `unknown`, never `down`; the app page reads this
+ * sentence to say "Not deployed yet".
+ */
+export const HEALTH_NOT_DEPLOYED_ERROR =
+  'Not deployed yet: Launch’s “being set up” page answers until the first deploy.'
 export type HealthStatus = z.infer<typeof healthStatusSchema>
 
 export const APP_OPERATION_STATUSES = [

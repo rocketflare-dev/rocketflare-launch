@@ -545,7 +545,9 @@ describe('landStaging and landHealth', () => {
 
     const start = Date.now()
     const answers = []
-    for (let probe = 1; probe <= LAND_HEALTH_MAX_PROBES; probe++) {
+    // The deploy's `finish` already probed staging once (`routes/ci-deploy.ts`): that check counts,
+    // so the landing's own probes make up the rest of the ten.
+    for (let probe = 2; probe <= LAND_HEALTH_MAX_PROBES; probe++) {
       const at = new Date(start + probe * 30_000)
       answers.push(await landHealth(stepCtx(session, () => at)))
     }

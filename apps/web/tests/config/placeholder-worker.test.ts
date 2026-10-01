@@ -65,6 +65,8 @@ describe('placeholder fetch', () => {
     expect(res.headers.get('retry-after')).toBe('60')
     expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(res.headers.get('cache-control')).toBe('no-store')
+    // Launch's health probe tells "nothing deployed yet" from "down" by this header.
+    expect(res.headers.get('x-launch-placeholder')).toBe('1')
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'")
     const html = await res.text()
     expect(html).toContain('<h1><span>Hola World</span> is launching</h1>')
@@ -92,6 +94,7 @@ describe('placeholder fetch', () => {
     const res = await load('Shop').fetch(get(accept, path))
     expect(res.status).toBe(503)
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+    expect(res.headers.get('x-launch-placeholder')).toBe('1')
     expect(res.headers.get('retry-after')).toBe('60')
     expect(await res.text()).toBe(PLAIN)
   })

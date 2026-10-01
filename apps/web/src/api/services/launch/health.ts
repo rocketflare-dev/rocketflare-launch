@@ -17,7 +17,7 @@
  *   would otherwise spend its timeout waiting.
  * - **Retention**: checks older than seven days are pruned per tenant on every run.
  */
-import type { HealthStatus } from '@launch/shared/launch-apps'
+import { HEALTH_NOT_DEPLOYED_ERROR, type HealthStatus } from '@launch/shared/launch-apps'
 import { and, eq, inArray, isNotNull, lt, ne } from 'drizzle-orm'
 import { affected, type Database } from '../../../db/client'
 import {
@@ -29,6 +29,7 @@ import {
 } from '../../../db/schema'
 import type { ScheduledTask } from '../../scheduled'
 import { recordAudit, SYSTEM_ACTOR } from './audit'
+import { PLACEHOLDER_HEADER } from './rocketflare/placeholder-worker'
 
 /** Per-probe timeout (spec/06). */
 export const HEALTH_TIMEOUT_MS = 5000
@@ -65,7 +66,15 @@ interface ProbeResult {
   body: unknown
   error: string | null
   ms: number
+  /** Launch's own placeholder Worker answered: nothing has been deployed here yet. */
+  placeholder?: boolean
 }
+
+/** The placeholder's plain-text body, for one uploaded before it carried `PLACEHOLDER_HEADER`. */
+const PLACEHOLDER_TEXT = 'being set up by Launch'
+
+/** The sentence an environment Launch has never deployed carries instead of an HTTP error. */
+export const NOT_DEPLOYED_ERROR = HEALTH_NOT_DEPLOYED_ERROR
 
 function describeFailure(err: unknown, timeoutMs: number): string {
   const name = (err as { name?: unknown })?.name
@@ -83,13 +92,22 @@ async function probe(url: string, doFetch: typeof fetch, timeoutMs: number): Pro
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
     })
+    let text = ''
+    try {
+      text = await res.text()
+    } catch {
+      // No body: the status is all the verdict needs.
+    }
     let body: unknown = null
     try {
-      body = await res.json()
+      body = text ? JSON.parse(text) : null
     } catch {
       // A probe that is not JSON still has a status; that is all the verdict needs.
     }
-    return { status: res.status, body, error: null, ms: Date.now() - started }
+    const placeholder =
+      res.headers.get(PLACEHOLDER_HEADER) === '1' ||
+      (res.status === 503 && text.includes(PLACEHOLDER_TEXT))
+    return { status: res.status, body, error: null, ms: Date.now() - started, placeholder }
   } catch (err) {
     return {
       status: null,
@@ -101,7 +119,8 @@ async function probe(url: string, doFetch: typeof fetch, timeoutMs: number): Pro
 }
 
 export interface EnvironmentVerdict {
-  status: Exclude<HealthStatus, 'unknown'>
+  /** `unknown` only for Launch's placeholder: nothing deployed yet is neither up nor down. */
+  status: HealthStatus
   httpStatus: number | null
   readyStatus: number | null
   latencyMs: number
@@ -111,6 +130,16 @@ export interface EnvironmentVerdict {
 
 /** Both probes → one verdict. Exported for the unit test of the status rule. */
 export function verdictOf(health: ProbeResult, ready: ProbeResult): EnvironmentVerdict {
+  if (health.placeholder) {
+    return {
+      status: 'unknown',
+      httpStatus: health.status,
+      readyStatus: ready.status,
+      latencyMs: health.ms,
+      version: null,
+      error: NOT_DEPLOYED_ERROR,
+    }
+  }
   const status =
     health.status === 200 ? (ready.status === 200 ? 'up' : 'degraded') : ('down' as const)
   const version = (health.body as { version?: unknown } | null)?.version

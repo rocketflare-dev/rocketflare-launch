@@ -70,7 +70,7 @@ export const STAGING_HEALTH_WORD: Record<HealthStatus, string> = {
 const UNHEALTHY_REASON: Record<Exclude<HealthStatus, 'up'>, string> = {
   degraded: 'Staging is unhealthy',
   down: 'Staging is unhealthy',
-  unknown: 'Staging has not been checked yet',
+  unknown: 'Staging has not been checked since it was deployed — press Check now',
 }
 
 /** The note for a run still going: the job it is on, and its link. Pure. */

@@ -3,6 +3,7 @@
  * labels, the fleet summary, search), the Import modal's validation and its in-modal refusal, and
  * the detail page's OIDC card showing the client secret ONCE.
  */
+import { HEALTH_NOT_DEPLOYED_ERROR } from '@launch/shared/launch-apps'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -183,6 +184,32 @@ describe('AppDetailPage', () => {
     expect(screen.queryByRole('button', { name: /Check now/ })).not.toBeInTheDocument()
     expect(await screen.findByText(/Not registered yet/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Register OIDC client/ })).not.toBeInTheDocument()
+  })
+
+  it('says "Not deployed yet" — not Down — where Launch’s placeholder answered the probe', async () => {
+    const base = detail()
+    renderDetail(member(), {
+      '/api/apps/expenses': {
+        ...base,
+        environments: base.environments.map(e =>
+          e.name === 'production'
+            ? {
+                ...e,
+                healthStatus: 'unknown',
+                healthVersion: null,
+                healthError: HEALTH_NOT_DEPLOYED_ERROR,
+              }
+            : e
+        ),
+      },
+    })
+    expect(await screen.findByText('Not deployed yet')).toBeInTheDocument()
+    expect(screen.getByTestId('not-deployed')).toHaveTextContent(
+      'Nothing has been deployed here yet'
+    )
+    // The placeholder's sentence is not shown as an error, and staging (degraded) is unchanged.
+    expect(screen.queryByText(HEALTH_NOT_DEPLOYED_ERROR)).not.toBeInTheDocument()
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
   })
 
   it('carries the coding sessions card, with Start for anyone who may start one (P3)', async () => {

@@ -3,7 +3,11 @@
  * is not up, the last deploy, and the resources its toml declares — ids, as spec/06 records them.
  */
 import { ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline'
-import type { AppEnvironment, AppEnvironmentResources } from '@launch/shared/launch-apps'
+import {
+  type AppEnvironment,
+  type AppEnvironmentResources,
+  HEALTH_NOT_DEPLOYED_ERROR,
+} from '@launch/shared/launch-apps'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
 import { HEALTH_LABEL, HealthDot } from './HealthDot'
 
@@ -37,8 +41,17 @@ export function resourceRows(resources: AppEnvironmentResources): ResourceRow[] 
   ]
 }
 
+/**
+ * Nothing has ever been deployed here: the last probe met Launch's placeholder Worker (the server
+ * records `HEALTH_NOT_DEPLOYED_ERROR`), so it is not an outage. Pure.
+ */
+export function notDeployedYet(env: AppEnvironment): boolean {
+  return env.healthStatus === 'unknown' && env.healthError === HEALTH_NOT_DEPLOYED_ERROR
+}
+
 export function EnvironmentCard({ env }: { env: AppEnvironment }) {
   const resources = resourceRows(env.resources)
+  const empty = notDeployedYet(env)
   const host = env.url ? env.url.replace(/^https?:\/\//, '') : null
   return (
     <section className="surface-panel flex flex-col gap-4 min-w-0">
@@ -65,8 +78,10 @@ export function EnvironmentCard({ env }: { env: AppEnvironment }) {
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0 surface-inset px-2.5 py-1.5">
-          <HealthDot status={env.healthStatus} />
-          <span className="text-sm font-medium">{HEALTH_LABEL[env.healthStatus]}</span>
+          <HealthDot status={empty ? 'unknown' : env.healthStatus} />
+          <span className="text-sm font-medium">
+            {empty ? 'Not deployed yet' : HEALTH_LABEL[env.healthStatus]}
+          </span>
         </div>
       </header>
 
@@ -100,10 +115,18 @@ export function EnvironmentCard({ env }: { env: AppEnvironment }) {
         )}
       </dl>
 
-      {env.healthError && env.healthStatus !== 'up' && (
-        <p className="text-xs font-mono surface-inset px-3 py-2 text-secondary break-words">
-          {env.healthError}
+      {empty ? (
+        <p className="text-sm text-secondary" data-testid="not-deployed">
+          Nothing has been deployed here yet. Until the first deploy, Launch’s “being set up” page
+          answers this address.
         </p>
+      ) : (
+        env.healthError &&
+        env.healthStatus !== 'up' && (
+          <p className="text-xs font-mono surface-inset px-3 py-2 text-secondary break-words">
+            {env.healthError}
+          </p>
+        )
       )}
 
       <div>

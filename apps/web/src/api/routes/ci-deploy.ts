@@ -35,7 +35,8 @@ import {
   ticketState,
   uploadDeploy,
 } from '../services/launch/deploy/gateway'
-import { getTicketById } from '../services/launch/deploy/tickets'
+import { getTicketById, isDeployed } from '../services/launch/deploy/tickets'
+import { checkAppHealth } from '../services/launch/health'
 import type { AppContext } from '../types'
 import { loggerFor } from '../utils/core/logger'
 import { makeDefer, uuidParam } from '../utils/routes/route-helpers'
@@ -127,5 +128,19 @@ ciDeployRouter.post('/:id/activate', async c => {
 
 ciDeployRouter.post('/:id/finish', async c => {
   const { ctx, ticket } = await ticketFor(c)
-  return c.json(ticketState(await finishDeploy(ctx, ticket), ctx.caller.environment.name))
+  const closed = await finishDeploy(ctx, ticket)
+  // The new version is serving: read its health now rather than at the next poll, so the app page
+  // (and Promote) judge THIS version. The job is waiting on this answer anyway; a probe that fails
+  // is logged, never the deploy's failure.
+  if (isDeployed(closed)) {
+    try {
+      await checkAppHealth(ctx.db, ctx.caller.tenantId, ctx.caller.app.id)
+    } catch (err) {
+      ctx.logger?.warn(
+        { ticketId: closed.id, err: err instanceof Error ? err.message : String(err) },
+        'deploy: the post-deploy health check failed'
+      )
+    }
+  }
+  return c.json(ticketState(closed, ctx.caller.environment.name))
 })

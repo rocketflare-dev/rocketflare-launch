@@ -24,6 +24,12 @@ import type { WorkerMetadata, WorkerModule } from '../cloudflare'
 import { LAUNCHING_PAGE_CSP, launchingPage } from './placeholder-page'
 import { type DeclaredMigration, resources } from './toml'
 
+/**
+ * Every answer of the placeholder's `fetch` carries this header, so Launch's health probe can tell
+ * "nothing deployed here yet" from an app that is down (`health.ts`).
+ */
+export const PLACEHOLDER_HEADER = 'x-launch-placeholder'
+
 /** Used when the toml names none; the kit pins its own. */
 const FALLBACK_COMPATIBILITY_DATE = '2026-06-01'
 const MAIN_MODULE = 'placeholder.js'
@@ -125,11 +131,13 @@ function placeholderSource(
     '    if (browser) {',
     '      return new Response(PAGE, {',
     "        status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': '60',",
+    `          '${PLACEHOLDER_HEADER}': '1',`,
     `          'cache-control': 'no-store', 'content-security-policy': ${jsString(LAUNCHING_PAGE_CSP)} },`,
     '      })',
     '    }',
     "    return new Response('This app is being set up by Launch. Try again in a few minutes.', {",
-    "      status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '60' },",
+    "      status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '60',",
+    `        '${PLACEHOLDER_HEADER}': '1' },`,
     '    })',
     '  },',
     // Cloudflare refuses a queue consumer on a script with no `queue` handler (11001). A message

@@ -899,7 +899,11 @@ parties (a cross-site POST with the cookie is refused by CSRF).
 - **Health** (`services/launch/health.ts`, the `*/5` cron and `POST /api/apps/:id/health-check`):
   `GET {url}/api/health` and `/api/ready`, 5 s each. `up` = both 200, `degraded` = health 200 and
   ready not (the Worker runs, its database does not answer), `down` = anything else (timeout,
-  DNS, 5xx). Each probe updates the environment and writes an `app_health_checks` row; a status
+  DNS, 5xx) — except Launch's own placeholder Worker (§18.5: it marks every answer
+  `x-launch-placeholder: 1`, and an older one is known by its "being set up by Launch" text), which
+  is `unknown` with `HEALTH_NOT_DEPLOYED_ERROR`: nothing deployed yet is not an outage, and the app
+  page says "Not deployed yet". A deploy's `POST /ci/deploy/:id/finish` probes the app once it has
+  activated, so the page judges the new version at once rather than at the next poll. Each probe updates the environment and writes an `app_health_checks` row; a status
   CHANGE is audited `app.health.changed` (the first observation is the baseline, not a change);
   checks older than 7 days are pruned. Ten tenants at a time, three environments at once.
 - **OIDC client** (`services/launch/oidc-clients.ts`): `POST /api/apps/:id/oidc-client` registers
@@ -2281,7 +2285,8 @@ from timestamps on rows rather than counters in memory:
 - `land.health` probes through `checkAppHealth`: staging `up` on the release's version (or a newer
   one, which carries the change) → `live` with staging's URL; otherwise a 30-second round, until 10
   `app_health_checks` rows of staging since it went live on the release (or since the landing
-  reached `deploying`, whichever is later — the `*/5` cron's probes count) → stalled `unhealthy`.
+  reached `deploying`, whichever is later — the `*/5` cron's probes and the deploy's own `finish`
+probe count) → stalled `unhealthy`.
 - Decision §0.1: after the merge nothing reopens. GitHub refusing the bump or the tag (a protected
   default branch Launch cannot bypass, a hand-made tag) is stalled `release_failed` with nothing
   recorded; the Workflow writes `live` / `stalled`. `GET …/:rid/chain` also carries the
@@ -2351,7 +2356,8 @@ ago)` → **Promote to production** → `Production: v1.4.1` (a build that is no
 own name, `main-64a36e6`) — a status line, and, collapsed and only when there is something in it,
 what the promotion ships (each session's title and, since issue #5, a line of its stored ship
 summary, then its PR's title). Promote is on offer when staging runs the newest
-release, is `up`, and production runs something older; otherwise the button is disabled with the
+release, is `up` on a check made SINCE its last deploy (an older check reads `unknown` — "not
+checked since it was deployed"), and production runs something older; otherwise the button is disabled with the
 reason. Before staging it follows the tag's deploy run on GitHub (`candidateRun`, §18.17): "v1.4.2
 is tagged — GitHub is checking it before it deploys to staging. Running: ci / Gate." while the run
 has not reached its staging job, "Deploying v1.4.2 to staging…" once that job has called Launch,

@@ -13,7 +13,12 @@
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { healthPollTask, runHealthPoll, verdictOf } from '@/api/services/launch/health'
+import {
+  healthPollTask,
+  NOT_DEPLOYED_ERROR,
+  runHealthPoll,
+  verdictOf,
+} from '@/api/services/launch/health'
 import { appEnvironments, appHealthChecks, auditEvents } from '@/db/schema'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
@@ -23,7 +28,7 @@ import { createExecutionContext, createTestEnv, waitOnExecutionContext } from '.
 
 const db = setupTestDatabase()
 
-type Behaviour = 'up' | 'degraded' | 'down' | 'timeout' | 'hang'
+type Behaviour = 'up' | 'degraded' | 'down' | 'timeout' | 'hang' | 'placeholder' | 'old-placeholder'
 
 /** Host → how it answers. Anything unlisted answers 503. */
 const hosts = new Map<string, Behaviour>()
@@ -49,6 +54,21 @@ function respond(url: URL, behaviour: Behaviour | undefined, signal?: AbortSigna
       )
     case 'down':
       return Promise.resolve(new Response('boom', { status: 500 }))
+    case 'placeholder':
+      // Launch's placeholder Worker (`placeholder-worker.ts`): nothing deployed here yet.
+      return Promise.resolve(
+        new Response('This app is being set up by Launch. Try again in a few minutes.', {
+          status: 503,
+          headers: { 'content-type': 'text/plain', 'x-launch-placeholder': '1' },
+        })
+      )
+    case 'old-placeholder':
+      // One uploaded before the placeholder carried its header: known by its words.
+      return Promise.resolve(
+        new Response('This app is being set up by Launch. Try again in a few minutes.', {
+          status: 503,
+        })
+      )
     case 'timeout':
       return Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))
     case 'hang':
@@ -200,6 +220,32 @@ describe('the */5 health poll', () => {
     expect(seen).toContain(`https://${up.host}/api/ready`)
     // unknown → x is the baseline, not a change anybody made.
     expect(await healthAudits(tenant.id)).toEqual([])
+  })
+
+  it('reads Launch’s placeholder as not deployed yet — neither up nor down', async () => {
+    const tenant = await newTenant()
+    const fresh = await appAnswering(tenant.id, 'placeholder')
+    const older = await appAnswering(tenant.id, 'old-placeholder')
+
+    await runCron(tenant.id)
+
+    for (const { env } of [fresh, older]) {
+      expect(await envRow(env.id)).toMatchObject({
+        healthStatus: 'unknown',
+        healthVersion: null,
+        healthError: NOT_DEPLOYED_ERROR,
+      })
+    }
+    expect(await checksOf(tenant.id, fresh.env.id)).toEqual([
+      expect.objectContaining({ status: 'unknown', httpStatus: 503 }),
+    ])
+    // A plain 503 that is not the placeholder is still an outage.
+    expect(
+      verdictOf(
+        { status: 503, body: null, error: null, ms: 1 },
+        { status: 503, body: null, error: null, ms: 1 }
+      ).status
+    ).toBe('down')
   })
 
   it('audits a transition once, and a steady state never', async () => {

@@ -57,10 +57,14 @@ function environmentOf(
 ): PromotionEnvironment | null {
   if (!row) return null
   const version = row.lastDeployVersion
+  // A check from before the last deploy says nothing about the version running now.
+  const stale =
+    row.lastDeployAt !== null &&
+    (row.healthCheckedAt === null || row.healthCheckedAt < row.lastDeployAt)
   return {
     version,
     deployedAt: row.lastDeployAt,
-    healthStatus: row.healthStatus,
+    healthStatus: stale ? 'unknown' : row.healthStatus,
     url: row.url,
     releaseId: (version && releases.find(r => r.version === version)?.id) || null,
   }

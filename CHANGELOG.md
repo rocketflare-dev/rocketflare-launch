@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The app page no longer calls a never-deployed environment "Down", nor stale health "healthy".**
+  Launch's placeholder Worker marks its answers (`x-launch-placeholder: 1`); the health probe reads
+  it as `unknown` with "Not deployed yet", and the environment card says so instead of Down with an
+  HTTP 503. The pipeline strip ignores a health check older than the environment's last deploy
+  ("not checked since it was deployed", Promote waits), and a deploy's `finish` now probes the app
+  so the new version is judged straight away.
+
 - **The pipeline strip follows a release's tag run on GitHub before staging.** While the newest
   release is `tagged` (or deploying to staging) the strip says "v0.15.7 is tagged — GitHub is
   checking it before it deploys to staging" with the job it is on, then "Deploying v0.15.7 to
