@@ -3,10 +3,15 @@
  * the selectors the boot, preview and ship panels read, the log merge, and the polling decisions.
  * No DOM, no network — each of these guards a specific way the page could be quietly wrong.
  */
-import type { SessionEvent } from '@launch/shared/launch-sessions'
+import {
+  type SessionEvent,
+  type SessionLanding,
+  sessionLandingSchema,
+} from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import { mergeSessionEvents } from '@/ui/hooks/useSessionStream'
 import {
+  SESSION_LANDING_POLL_MS,
   SESSION_POLL_MS,
   sessionHasSandbox,
   sessionListPollInterval,
@@ -16,6 +21,8 @@ import {
 import {
   bootSteps,
   buildSessionChat,
+  ciFixMessage,
+  landingTimeline,
   latestPreviewChangeSeq,
   shipGateAttempts,
   shipGates,
@@ -34,6 +41,19 @@ const ev = (seq: number, type: SessionEvent['type'], data: unknown, turn = 1): S
   data,
   at: new Date(Date.UTC(2026, 8, 28, 10, 0, seq)),
 })
+
+/** A `sessions.landing` as the contract parses it (its defaults filled in). */
+const landingRow = (overrides: Record<string, unknown> = {}): SessionLanding =>
+  sessionLandingSchema.parse({
+    mode: 'staging',
+    stage: 'ci',
+    prNumber: 12,
+    gateSha: 'b'.repeat(40),
+    startedAt: '2026-09-28T10:10:00.000Z',
+    stageAt: '2026-09-28T10:10:00.000Z',
+    reviewMode: 'none',
+    ...overrides,
+  })
 
 describe('buildSessionChat', () => {
   const turn = [
@@ -210,10 +230,97 @@ describe('polling decisions', () => {
     expect(sessionListPollInterval([{ status: 'ready' }])).toBe(false)
   })
 
+  it('follows a landing past the PR at its own pace, and never while it waits on a reviewer (#5)', () => {
+    const base = { pendingMessage: false, requestedAction: null } as const
+    const landing = (stage: string) => landingRow({ stage })
+    expect(sessionPollInterval({ ...base, status: 'shipping', landing: landing('ci') })).toBe(
+      SESSION_LANDING_POLL_MS
+    )
+    // `shipped` is terminal — but the Workflow is still taking it to staging.
+    expect(sessionPollInterval({ ...base, status: 'shipped', landing: landing('deploying') })).toBe(
+      SESSION_LANDING_POLL_MS
+    )
+    expect(sessionPollInterval({ ...base, status: 'shipped', landing: landing('live') })).toBe(
+      false
+    )
+    expect(sessionPollInterval({ ...base, status: 'shipped', landing: landing('stalled') })).toBe(
+      false
+    )
+    // Parked on a PERSON: the approval's nudge moves it, not a poll.
+    expect(sessionPollInterval({ ...base, status: 'shipping', landing: landing('approval') })).toBe(
+      false
+    )
+  })
+
   it('knows when a turn is in progress and when there is a sandbox to preview', () => {
     expect(turnInProgress({ status: 'ready', pendingMessage: true })).toBe(true)
     expect(turnInProgress({ status: 'ready', pendingMessage: false })).toBe(false)
     expect(sessionHasSandbox('shipping')).toBe(true)
     expect(sessionHasSandbox('suspended')).toBe(false)
+  })
+})
+
+describe('landingTimeline (#5)', () => {
+  const pr = ev(10, 'ship.pr', { number: 12, url: 'https://github.com/acme/x/pull/12' })
+  const gate = (seq: number) => ev(seq, 'ship.gate', { step: 'test', passed: true, attempt: 1 })
+  const reopened = ev(12, 'ship.reopened', { reason: 'review_rejected', message: 'Rejected.' })
+  const statuses = (view: ReturnType<typeof landingTimeline>) =>
+    Object.fromEntries((view?.steps ?? []).map(step => [step.key, step.status]))
+
+  it('is null before the PR, and for a session shipped before #5 (no landing, no landing rows)', () => {
+    expect(landingTimeline([gate(9)], null)).toBeNull()
+    expect(landingTimeline([gate(9), pr], null)).toBeNull()
+  })
+
+  it('walks a moving landing, with the review only when the ship has one', () => {
+    expect(statuses(landingTimeline([pr], landingRow({ stage: 'releasing' })))).toEqual({
+      gate: 'done',
+      pr: 'done',
+      ci: 'done',
+      merged: 'done',
+      released: 'active',
+      staging: 'pending',
+    })
+    const reviewed = landingTimeline([pr], landingRow({ stage: 'approval', reviewMode: 'policy' }))
+    expect(statuses(reviewed)).toMatchObject({ ci: 'done', approval: 'active', merged: 'pending' })
+    expect(reviewed?.outcome).toBe('moving')
+  })
+
+  it('reads a reopen from the rows (the landing is null again), with the reviewer’s note', () => {
+    const view = landingTimeline(
+      [
+        pr,
+        ev(11, 'ship.review', {
+          status: 'rejected',
+          approvalId: 'a9900000-0000-4000-8000-000000000001',
+          by: 'Bob',
+          note: 'Keep the old colour.',
+        }),
+        reopened,
+      ],
+      null
+    )
+    expect(view?.outcome).toBe('reopened')
+    expect(view?.reopen).toMatchObject({ reason: 'review_rejected', note: 'Keep the old colour.' })
+    expect(statuses(view)).toMatchObject({ ci: 'done', approval: 'failed', merged: 'pending' })
+    expect(view?.steps.find(step => step.key === 'approval')?.label).toBe('Sent back by Bob')
+  })
+
+  it('steps aside once a re-ship’s gate starts after a reopen', () => {
+    expect(landingTimeline([pr, reopened, gate(13)], null)).toBeNull()
+  })
+
+  it('in `pr` mode stops at the PR', () => {
+    const view = landingTimeline([pr], landingRow({ mode: 'pr', stage: 'pr' }))
+    expect(view?.outcome).toBe('pr')
+    expect(view?.steps.map(step => step.key)).toEqual(['gate', 'pr'])
+  })
+
+  it('clips the CI fix message under its cap, keeping the END of the log', () => {
+    const logTail = `${'early line\n'.repeat(2000)}the actual error`
+    const message = ciFixMessage({ name: 'Gate', url: null, logTail }, 1000)
+    expect(message.length).toBeLessThanOrEqual(1000)
+    expect(message).toContain('“Gate”')
+    expect(message).toContain('the actual error')
   })
 })

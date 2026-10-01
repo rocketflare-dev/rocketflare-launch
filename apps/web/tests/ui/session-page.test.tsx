@@ -16,7 +16,7 @@ import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { queryKeys } from '@/ui/lib/query-keys'
 import SessionPage from '@/ui/pages/sessions/SessionPage'
-import { APPROVAL_ID, approvalRow } from './helpers/approvals'
+import { APPROVAL_ID, approvalDetail, approvalRow } from './helpers/approvals'
 import {
   errorResponse,
   IDS,
@@ -277,6 +277,349 @@ describe('SessionPage', () => {
       screen.getByText('The sandbox is gone; the changes are in the pull request.')
     ).toBeInTheDocument()
     expect(screen.getByTestId('composer-blocked')).toHaveTextContent(/was shipped/)
+  })
+
+  describe('after the PR: the landing, up to live on staging (#5)', () => {
+    const prUrl = 'https://github.com/acme/expenses/pull/12'
+    const APPROVAL = 'a9900000-0000-4000-8000-0000000000aa'
+    const landing = (overrides: Record<string, unknown> = {}) => ({
+      mode: 'staging',
+      stage: 'ci',
+      prNumber: 12,
+      gateSha: 'b'.repeat(40),
+      startedAt: '2026-09-28T10:10:00.000Z',
+      stageAt: '2026-09-28T10:10:00.000Z',
+      reviewMode: 'none',
+      ...overrides,
+    })
+    const SHIPPED = [
+      ...DONE_TURN,
+      sessionEvent(7, 'ship.gate', { step: 'lint', passed: true, attempt: 1 }, 2),
+      sessionEvent(8, 'ship.gate', { step: 'typecheck', passed: true, attempt: 1 }, 2),
+      sessionEvent(9, 'ship.gate', { step: 'test', passed: true, attempt: 1 }, 2),
+      sessionEvent(10, 'ship.pr', { number: 12, url: prUrl, title: 'Friendlier home page' }, 2),
+    ]
+    const ci = (state: string, extra: Record<string, unknown> = {}) => ({
+      state,
+      headSha: 'b'.repeat(40),
+      passed: state === 'success' ? 2 : 1,
+      failed: state === 'failure' ? 1 : 0,
+      pending: state === 'pending' ? 1 : 0,
+      ...extra,
+    })
+    const prRoute = {
+      [`${BASE}/pr`]: {
+        prNumber: 12,
+        prUrl,
+        checks: {
+          state: 'pending',
+          headSha: 'b'.repeat(40),
+          checkedAt: '2026-09-28T10:10:00Z',
+          total: 2,
+          passed: 1,
+          failed: 0,
+          pending: 1,
+          checks: [
+            { name: 'Gate', source: 'check_run', state: 'pending', url: null },
+            { name: 'lint', source: 'check_run', state: 'success', url: null },
+          ],
+        },
+      },
+    }
+    /** The walk, step key → status, as the panel draws it. */
+    const walk = () =>
+      Object.fromEntries(
+        within(screen.getByRole('list', { name: 'After the checks' }))
+          .getAllByRole('listitem')
+          .map(li => [li.getAttribute('data-landing-step'), li.getAttribute('data-step-status')])
+      )
+
+    it('walks gate → PR → CI while CI runs, with the round so far', async () => {
+      renderPage({
+        [BASE]: detailOf({ status: 'shipping', prNumber: 12, prUrl, landing: landing() }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('pending'), 2),
+        ]),
+        ...prRoute,
+      })
+      expect(await screen.findByRole('heading', { name: /Shipping/ })).toBeInTheDocument()
+      await waitFor(() =>
+        expect(walk()).toEqual({
+          gate: 'done',
+          pr: 'done',
+          ci: 'active',
+          merged: 'pending',
+          released: 'pending',
+          staging: 'pending',
+        })
+      )
+      expect(screen.getByText('1 of 2 checks passed · 1 running')).toBeInTheDocument()
+      expect(screen.getByText('Pull request #12 opened')).toBeInTheDocument()
+      // The PR's own checks still list, by name, while CI is the stage.
+      const list = await screen.findByRole('list', { name: 'CI checks' })
+      expect(within(list).getByText('Gate')).toBeInTheDocument()
+      expect(screen.queryByTestId('checks-summary')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer-blocked')).toHaveTextContent('waiting for CI')
+    })
+
+    it('waits on a review, naming who it waits on and linking the request', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipping',
+          prNumber: 12,
+          prUrl,
+          landing: landing({ stage: 'approval', reviewMode: 'app_owners', approvalId: APPROVAL }),
+        }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+          sessionEvent(12, 'ship.review', { status: 'requested', approvalId: APPROVAL }, 2),
+        ]),
+        [`/api/approvals/${APPROVAL}`]: approvalDetail({
+          id: APPROVAL,
+          kind: 'session.merge',
+          subjectType: 'session',
+          subjectId: SESSION_ID,
+          canDecide: false,
+          whyNot: 'self_approval',
+          context: {
+            kind: 'session.merge',
+            sessionId: SESSION_ID,
+            shortId: 'abcdefghijkl',
+            title: 'Friendlier home page',
+            appSlug: 'expenses',
+            prNumber: 12,
+            prUrl,
+            prTitle: 'Friendlier home page',
+            summary: 'Friendlier headline.',
+            diffStat: '',
+            headSha: 'b'.repeat(40),
+            sessionPath: `/sessions/${SESSION_ID}`,
+          },
+          eligible: [{ id: IDS.otherUser, name: 'Bob Builder', email: 'bob@example.test' }],
+        }),
+      })
+      await waitFor(() =>
+        expect(screen.getByTestId('review-waiting')).toHaveTextContent('Waiting on Bob Builder.')
+      )
+      expect(walk()).toMatchObject({ ci: 'done', approval: 'active', merged: 'pending' })
+      expect(screen.getByRole('link', { name: 'Open the request' })).toHaveAttribute(
+        'href',
+        `/approvals/${APPROVAL}`
+      )
+      expect(screen.getByText('Asked for a review before merging.')).toBeInTheDocument()
+      expect(screen.getByTestId('composer-blocked')).toHaveTextContent('waiting for a review')
+    })
+
+    it('cannot be ended while it merges', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipping',
+          prNumber: 12,
+          prUrl,
+          landing: landing({ stage: 'merging' }),
+        }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+        ]),
+      })
+      await waitFor(() => expect(walk()).toMatchObject({ ci: 'done', merged: 'active' }))
+      expect(screen.getByText('Merging')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /End/ })).not.toBeInTheDocument()
+    })
+
+    it('follows the release to staging once merged', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing({
+            stage: 'deploying',
+            mergeSha: 'c'.repeat(40),
+            mergedAt: '2026-09-28T10:20:00.000Z',
+            version: '1.4.3',
+            tag: '1.4.3',
+          }),
+        }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+          sessionEvent(12, 'ship.merged', {
+            number: 12,
+            sha: 'c'.repeat(40),
+            url: prUrl,
+            approvalId: null,
+          }),
+          sessionEvent(13, 'ship.released', {
+            releaseId: '7e1e0000-0000-4000-8000-000000000001',
+            version: '1.4.3',
+            tag: '1.4.3',
+            shared: false,
+          }),
+          sessionEvent(14, 'ship.staging', { status: 'deploying', version: '1.4.3', url: null }),
+        ]),
+      })
+      expect(await screen.findByRole('heading', { name: /Shipping/ })).toBeInTheDocument()
+      await waitFor(() =>
+        expect(walk()).toMatchObject({ merged: 'done', released: 'done', staging: 'active' })
+      )
+      expect(
+        within(screen.getByRole('list', { name: 'After the checks' })).getByText('Released v1.4.3')
+      ).toBeInTheDocument()
+      expect(screen.getByText('Deploying to staging')).toBeInTheDocument()
+      expect(screen.getByText('Merged pull request #12.')).toBeInTheDocument()
+      expect(screen.getByTestId('composer-blocked')).toHaveTextContent('on its way to staging')
+    })
+
+    it('ends on “Live on staging: <link>, version X.Y.Z”', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing({
+            stage: 'live',
+            version: '1.4.3',
+            tag: '1.4.3',
+            stagingUrl: 'https://expenses-staging.apps.test',
+          }),
+        }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+          sessionEvent(12, 'ship.staging', {
+            status: 'live',
+            version: '1.4.3',
+            url: 'https://expenses-staging.apps.test',
+          }),
+        ]),
+      })
+      expect(await screen.findByRole('heading', { name: /Live on staging/ })).toBeInTheDocument()
+      expect(screen.getByTestId('ship-live')).toHaveTextContent(
+        'Live on staging: expenses-staging.apps.test, version v1.4.3'
+      )
+      expect(screen.getByRole('link', { name: 'expenses-staging.apps.test' })).toHaveAttribute(
+        'href',
+        'https://expenses-staging.apps.test'
+      )
+      await waitFor(() =>
+        expect(Object.values(walk()).every(status => status === 'done')).toBe(true)
+      )
+      expect(screen.getByTestId('composer-blocked')).toHaveTextContent('live on staging')
+    })
+
+    it('reopens on red CI: the reason, the check, its log tail, and “Ask Claude to fix it”', async () => {
+      const { fetchMock } = renderPage({
+        // The landing is gone (null) once reopened; the rows carry the story.
+        [BASE]: detailOf({ status: 'ready', prNumber: 12, prUrl, turnCount: 1 }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(
+            11,
+            'ship.ci',
+            ci('failure', {
+              failedCheck: {
+                name: 'Gate',
+                url: 'https://github.com/acme/expenses/actions/runs/9/job/1',
+                logTail: 'FAIL tests/home.test.ts\n  expected "Welcome" to be "Welcome back"',
+              },
+            }),
+            2
+          ),
+          sessionEvent(
+            12,
+            'ship.reopened',
+            { reason: 'ci_failed', message: 'CI failed on the pull request.' },
+            2
+          ),
+        ]),
+        [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true, prNumber: 12, prUrl }),
+      })
+      expect(await screen.findByRole('heading', { name: /Not shipped yet/ })).toBeInTheDocument()
+      expect(screen.getByTestId('ship-reopened')).toHaveTextContent(
+        'CI failed on the pull request, so Launch didn’t merge it.'
+      )
+      const failure = screen.getByTestId('ci-failure')
+      expect(within(failure).getByRole('link', { name: 'Gate' })).toHaveAttribute(
+        'href',
+        'https://github.com/acme/expenses/actions/runs/9/job/1'
+      )
+      expect(
+        within(failure).getByText(/expected "Welcome" to be "Welcome back"/)
+      ).toBeInTheDocument()
+      expect(walk()).toMatchObject({ pr: 'done', ci: 'failed', merged: 'pending' })
+      // The chat says it too, and the session takes messages again.
+      expect(screen.getByText('CI failed: Gate.')).toBeInTheDocument()
+      expect(screen.getByLabelText('Message the coding agent')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /Ask Claude to fix it/ }))
+      await waitFor(() => {
+        const body = requestBody(fetchMock, `POST ${BASE}/turns`) as { message: string }
+        expect(body.message).toMatch(/the check “Gate” is red/)
+        expect(body.message).toContain('expected "Welcome" to be "Welcome back"')
+      })
+    })
+
+    it('stalls after the merge: the reason, and the app page for what comes next', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing({
+            stage: 'stalled',
+            version: '1.4.3',
+            stalledReason: 'deploy_failed',
+            error: 'The staging deploy of 1.4.3 failed: wrangler exited 1.',
+          }),
+        }),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+          sessionEvent(12, 'ship.staging', {
+            status: 'failed',
+            version: '1.4.3',
+            url: null,
+            error: 'The staging deploy of 1.4.3 failed: wrangler exited 1.',
+          }),
+        ]),
+      })
+      expect(
+        await screen.findByRole('heading', { name: /Merged, not live yet/ })
+      ).toBeInTheDocument()
+      expect(screen.getByTestId('ship-stalled')).toHaveTextContent(
+        'The change is merged and released, but the staging deploy failed.'
+      )
+      expect(screen.getAllByText(/wrangler exited 1/).length).toBeGreaterThan(0)
+      expect(screen.getByRole('link', { name: 'the app’s page' })).toHaveAttribute(
+        'href',
+        '/apps/expenses'
+      )
+      expect(walk()).toMatchObject({ released: 'done', staging: 'failed' })
+    })
+
+    it('in `pr` mode ends at the open PR, as before', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing({ mode: 'pr', stage: 'pr' }),
+        }),
+        [`${BASE}/events`]: eventsRoute(SHIPPED),
+        ...prRoute,
+      })
+      expect(await screen.findByRole('heading', { name: /Shipped/ })).toBeInTheDocument()
+      expect(screen.getByTestId('ship-pr-mode')).toHaveTextContent('open for review on GitHub')
+      expect(screen.getByRole('link', { name: /Pull request #12/ })).toHaveAttribute('href', prUrl)
+      expect(await screen.findByTestId('checks-summary')).toHaveTextContent(
+        '1 of 2 checks passed · 1 running'
+      )
+      expect(screen.queryByRole('list', { name: 'After the checks' })).not.toBeInTheDocument()
+    })
   })
 
   it('blocks on the budget: an owner can extend it, with the shared schema', async () => {

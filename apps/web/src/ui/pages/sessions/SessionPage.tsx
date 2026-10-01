@@ -93,7 +93,11 @@ export default function SessionPage() {
   const canExtend =
     session.viewerCanManage && (can('manage', 'Session') || Boolean(app?.viewerCanDeploy))
   const budget = budgetAccess(session, canExtend, pendingBudget?.id ?? null)
-  const showShip = session.status === 'shipping' || session.prNumber !== null || gates.length > 0
+  const showShip =
+    session.status === 'shipping' ||
+    session.prNumber !== null ||
+    session.landing !== null ||
+    gates.length > 0
 
   return (
     <div className="flex flex-col gap-4 lg:h-[calc(100dvh-7.5rem)]">
@@ -103,6 +107,7 @@ export default function SessionPage() {
         appName={app?.displayName ?? slug}
         budget={budget}
         onExtend={() => setExtendOpen(true)}
+        shipSettings={app?.shipSettings}
       />
 
       {session.error && session.status !== 'failed' && (
@@ -127,7 +132,13 @@ export default function SessionPage() {
         </section>
         <div className="flex min-h-0 flex-col gap-4">
           {showShip && (
-            <ShipPanel session={session} gates={gates} configNeeds={configNeeds} appSlug={slug} />
+            <ShipPanel
+              session={session}
+              gates={gates}
+              events={events}
+              configNeeds={configNeeds}
+              appSlug={slug}
+            />
           )}
           <div className="h-[32rem] min-h-0 lg:h-auto lg:flex-1">
             <PreviewFrame

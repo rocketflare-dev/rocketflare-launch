@@ -108,6 +108,31 @@ describe('PipelineStrip', () => {
     expect(ships).not.toHaveTextContent('cccc')
   })
 
+  it('says under each PR title what it changed, from the stored ship summary (#5)', async () => {
+    const base = view()
+    renderStrip({
+      [PROMOTION]: view({
+        changes: [
+          {
+            ...base.changes[0],
+            summary:
+              '## What changed\n\n- The **export** button downloads a CSV again\n- Dates use the `en-GB` format\n\nMore detail on the PR.',
+          },
+          // No session, no stored summary (or a server from before #5): the title alone.
+          base.changes[1],
+        ],
+      }),
+    })
+    const ships = await screen.findByRole('list', { name: 'What this promotion ships' })
+    const rows = within(ships).getAllByRole('listitem')
+    // The first paragraph with words in it, as plain text: no heading, list or code marks.
+    expect(
+      within(rows[0] as HTMLElement).getByText(/The export button downloads/)
+    ).toHaveTextContent('The export button downloads a CSV again Dates use the en-GB format')
+    expect((rows[0] as HTMLElement).querySelector('[data-change-summary]')).not.toBeNull()
+    expect((rows[1] as HTMLElement).querySelector('[data-change-summary]')).toBeNull()
+  })
+
   it.each([
     ['still deploying', view({}, { status: 'staging' }), 'Staging is still deploying.'],
     [

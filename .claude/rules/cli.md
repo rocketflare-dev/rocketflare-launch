@@ -54,12 +54,20 @@ group is a decision about who sees what, and the confirmation the web UI gives b
 narrows access has no honest one-line equivalent in a CLI.
 
 Coding sessions (Launch P3): `sessions start <app>` (slug → `GET /api/apps/:slug` → `POST
-/api/apps/:id/sessions`), `say <id> <msg> [--follow]`, `ship <id> [--wait]`, `end`, `ls <app>
+/api/apps/:id/sessions`), `say <id> <msg> [--follow]`, `ship <id> [--no-wait]`, `end`, `ls <app>
 [--all]`, `preview-url <id> [--open]`. Following POLLS the durable rows (`GET /events?afterSeq=`)
 rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pollMs` are injectable.
-A failed turn, a ship with no PR, or failing CI exit 1; with `--json` a follow prints ONE document
-(`{ session, events[, pr] }`) at the end. The preview URL is a one-minute credential: printed only
-when asked for.
+`ship` WAITS by default (issue #5): one line per stage row — the gate, `ship.pr`, `ship.ci` (a red
+check with its URL and the last 20 lines of its redacted log), `ship.review`, `ship.merged`,
+`ship.released`, `ship.staging` — until `landing.stage` is `live` (exit 0); `ship.reopened` (given
+back before the merge) and `stalled` (after it) exit 1, and so does a ship that opened no PR. Past
+the PR it polls every ten `pollMs` (the Workflow works in 30 s – 2 min rounds). In the app's `pr`
+mode (or against a server with no `landing`) it ends as before: the PR, then its CI (failing CI
+exits 1). `--no-wait` returns once the ship has started; `--wait` is still accepted and changes
+nothing (`shipFollowState` is the pure decision). A failed turn exits 1 too; with `--json` a follow
+prints ONE document (`{ session, events[, pr] }`) at the end. The preview URL is a one-minute
+credential: printed only when asked for. `approvals show` of a `session.merge` prints the PR, the
+session, the head commit, the ship summary and the diff stat.
 
 Approvals and releases (Launch P4): `approvals ls [--box mine|requested|all] [--status] [--kind]
 [--app <slug>]`, `show <id>` (a plain-words summary per kind, the policy, N-of-M, the decisions and

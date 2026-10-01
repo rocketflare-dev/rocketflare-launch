@@ -91,7 +91,7 @@ export function describeApproval(request: ApprovalRequest): string {
     case 'grant.request':
       return `Let ${app} hold ${context.resourceName} in ${context.environment}.`
     case 'session.merge':
-      return `Merge "${context.prTitle}" (#${context.prNumber}) into ${app} and ship it to staging.`
+      return `Merge "${context.prTitle}" (#${context.prNumber}) into ${app} and put it live on staging.`
     case 'config.change':
     case 'app.teardown':
       return context.description
@@ -140,12 +140,19 @@ function contextLines(context: ApprovalContext): string[] {
       lines.push(`Lapses:   ${context.expiresAt ? formatDate(context.expiresAt) : 'never'}`)
       return lines
     }
-    case 'session.merge':
-      return [
+    // Issue #5: the PR, the session it came from, the commit CI passed on, and what it changes.
+    case 'session.merge': {
+      const lines = [
         `Session:  ${context.title ?? context.shortId}`,
         `PR:       ${context.prUrl}`,
         `Head:     ${context.headSha.slice(0, 7)}`,
       ]
+      const summary = context.summary.trim()
+      if (summary) lines.push('Summary:', ...summary.split('\n').map(line => `  ${line}`))
+      const stat = context.diffStat.trim()
+      if (stat) lines.push('Files:', ...stat.split('\n').map(line => `  ${line}`))
+      return lines
+    }
     case 'session.budget':
     case 'config.change':
     case 'app.teardown':

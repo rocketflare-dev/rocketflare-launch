@@ -221,8 +221,9 @@ sessions
   )
 sessions
   .command('ship <id>')
-  .description('run the checks, open a pull request and end the session')
-  .option('--wait', 'follow the checks until the pull request is open and its CI settles')
+  .description('run the checks, open a pull request and (by default) follow it live to staging')
+  .option('--wait', 'follow the ship to its end (the default; kept for older scripts)')
+  .option('--no-wait', 'return as soon as the ship has started')
   .action(action((ctx, cmd) => runSessionsShip(ctx, cmd.args[0] ?? '', cmd.opts())))
 sessions
   .command('end <id>')

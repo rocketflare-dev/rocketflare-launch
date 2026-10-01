@@ -75,6 +75,7 @@ import { PipelineProgress } from './components/PipelineProgress'
 import { PipelineStrip } from './components/PipelineStrip'
 import { ReleasesCard } from './components/ReleasesCard'
 import { SessionsCard } from './components/SessionsCard'
+import { ShipSettingsCard } from './components/ShipSettingsCard'
 import { TeardownModal } from './components/TeardownModal'
 
 function About({ app }: { app: AppDetail }) {
@@ -410,6 +411,7 @@ export default function AppDetailPage() {
           ownerTeam={app.ownerGroup?.name ?? null}
         />
       )}
+      {hasRepo && !holding && <ShipSettingsCard app={app} canApplyProtection={canManage} />}
 
       {/* Each environment's latest deploy, as it runs: dispatched → … → live, or failed. */}
       {app.status !== 'requested' && <DeployProgressPanel appId={app.id} />}

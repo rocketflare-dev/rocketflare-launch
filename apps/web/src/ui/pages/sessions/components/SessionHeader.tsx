@@ -4,8 +4,11 @@
  *
  * - **Ship is the page's one hero action** (`.btn-flame`): it appears once there is something to
  *   ship (a turn has run) and the session is idle, and confirms first — shipping runs the gate
- *   (Launch runs it; Claude only fixes what fails), opens the pull request and ENDS the session.
- *   End stays available while it ships: the gate stops and its database branch is deleted.
+ *   (Launch runs it; Claude only fixes what fails) and opens the pull request; then (issue #5,
+ *   the app's `sessionShip: 'staging'`, the default) waits for CI and any review, merges and
+ *   puts it live on staging — the confirm says which, from the app's ship settings. End stays
+ *   available while it ships (the gate stops, a pending review is withdrawn), except while the
+ *   merge itself runs (`landing.stage === 'merging'`), which cannot stop half-way.
  * - **End** confirms too, and says what is kept (the branch) and what is not (the sandbox and its
  *   database). **Resume** is offered while the session is asleep.
  * - **The cost meter** is spent / cap with a bar that turns amber past 80 % and red at the cap;
@@ -21,6 +24,7 @@ import {
   StopCircleIcon,
 } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
+import type { AppShipSettings } from '@launch/shared/launch-apps'
 import { type Session, SHIP_GATE_ATTEMPTS } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -63,27 +67,60 @@ export function canShipNow(session: Session): boolean {
   )
 }
 
+/**
+ * What pressing Ship will do, in plain words, from the app's ship settings (issue #5) — unknown
+ * settings read as the default, `staging`. Pure.
+ */
+export function shipPlanSentences(shipSettings: AppShipSettings | undefined): {
+  what: string
+  after: string
+} {
+  if (shipSettings?.sessionShip === 'pr') {
+    return {
+      what: 'when they pass, Launch opens a pull request for review on GitHub.',
+      after: 'The session ends once the pull request is open.',
+    }
+  }
+  const review =
+    shipSettings?.review.mode === 'app_owners'
+      ? ' waits for one of the app’s owners to approve it,'
+      : shipSettings?.review.mode === 'groups'
+        ? ' waits for an approval from the reviewing team,'
+        : ''
+  return {
+    what: `when they pass, Launch opens a pull request, waits for CI,${review} merges it and puts it live on staging.`,
+    after:
+      'If CI fails or a reviewer sends it back, the session opens again so you can fix it. Production stays a separate step, from the app’s page.',
+  }
+}
+
 export function SessionHeader({
   session,
   appSlug,
   appName,
   budget,
   onExtend,
+  shipSettings,
 }: {
   session: Session
   appSlug: string
   appName: string
   budget: BudgetAccess
   onExtend: () => void
+  /** The app's ship settings (issue #5), for the confirm's wording; undefined while it loads. */
+  shipSettings?: AppShipSettings
 }) {
   const [confirm, setConfirm] = useState<'ship' | 'end' | null>(null)
   const ship = useShipSession(session.id)
   const end = useEndSession(session.id)
   const resume = useResumeSession(session.id)
   const meter = budgetMeter(session.budget)
+  const plan = shipPlanSentences(shipSettings)
   const settled =
     session.status === 'shipped' || session.status === 'ended' || session.status === 'failed'
-  const endable = session.viewerCanManage && !settled && session.status !== 'ending'
+  // Issue #5: once the merge has started it cannot be stopped half-way (the route answers 409).
+  const merging = session.landing?.stage === 'merging'
+  const endable = session.viewerCanManage && !settled && session.status !== 'ending' && !merging
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -196,13 +233,12 @@ export function SessionHeader({
         message={
           <div className="space-y-2 text-sm">
             <p>
-              Launch runs lint, typecheck and the tests. If one fails, Claude fixes it and Launch
-              runs them again (up to {SHIP_GATE_ATTEMPTS} tries); when they pass, Launch opens a
-              pull request from{' '}
-              <span className="font-mono text-xs">{session.branch ?? 'its branch'}</span> for
-              review.
+              Launch runs lint, typecheck and the tests on{' '}
+              <span className="font-mono text-xs">{session.branch ?? 'its branch'}</span>. If one
+              fails, Claude fixes it and Launch runs them again (up to {SHIP_GATE_ATTEMPTS} tries);{' '}
+              {plan.what}
             </p>
-            <p className="text-secondary">The session ends once the pull request is open.</p>
+            <p className="text-secondary">{plan.after}</p>
           </div>
         }
         confirmText="Ship"

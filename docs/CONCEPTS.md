@@ -482,7 +482,9 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
 case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
-drives Launch P3 coding sessions (§18.14); `approvals ls|show|approve|reject` and `releases
+drives Launch P3 coding sessions (§18.14) — `ship` follows the ship to live on staging by default,
+printing each stage, and exits 1 on a reopen or a stall (`--no-wait` returns at once; `--wait` is
+a no-op alias); `approvals ls|show|approve|reject` and `releases
 ls|create|promote [--wait]` are the P4 inbox and shipping (§18.19); `audit verify|export` the
 hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
@@ -1917,11 +1919,42 @@ whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume th
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
 "Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start|say
-[--follow]|ship [--wait]|end|ls|preview-url` (§11).
+[--follow]|ship [--no-wait]|end|ls|preview-url` (§11).
+
+**Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the
+pure `landingTimeline(events, session.landing)` (`sessionChatModel.ts`): gate → PR → CI (the
+current round in words, the PR's checks by name) → review, when the ship has one (naming who it
+waits on from the `session.merge` request's `eligible`, with a link to it) → merged → released
+vX.Y.Z → "Live on staging: <link>, version vX.Y.Z". It reads only the rows after the last `ship.pr`
+and the row's `landing`; once a reopen clears the landing the rows tell the story — the reason in
+one sentence (`REOPEN_TEXT`), and for red CI the failing check, its link, the redacted log tail and
+**Ask Claude to fix it**, which posts the fix as an ordinary turn (`POST /turns`, the composer's
+route; a `suspended` session resumes on it). A stall (after the merge) says why (`STALLED_TEXT` +
+the landing's `error`) and links the app page, where release, retry and production live. `pr`
+mode keeps today's ending (the PR and its CI). The chat gets a notice per landing row; the
+composer's blocked sentence names the stage; End is hidden while `merging` (the route's 409); the
+Ship confirm words what will happen from the app's ship settings. A session is polled every
+`SESSION_LANDING_POLL_MS` (15 s) while its landing moves — `shipped` included, while `releasing` /
+`deploying` — and never while it waits on a reviewer (`approval`). The app page's **Shipping** card
+(`ShipSettingsCard`, below the pipeline strip) lets owners and admins choose "go live on staging"
+or "open a pull request for review on GitHub" and who reviews (nobody / the app's owners / named
+teams — every group for `manage Group`, the reader's own otherwise); it is read-only for the review
+when an admin `session.merge` policy decides it (the stored review is sent back unchanged), and
+sentences for everyone else. Below it, for owners and admins, the main branch's protection in
+plain words (`ok` Protected · `none` · `blocks` → remove the rule, DEPLOY.md · `unavailable` ·
+`unknown`, plus the server's `detail`), with **Apply Launch's protection** for administrators
+where it helps (`none`, `blocks`). The pipeline strip prints each change's stored summary as one
+plain line under its title (`summaryLine`), and an approval page for a `session.merge` shows the PR,
+the session (link to its page), the head commit, the summary and the diff stat.
 
 **Known gaps:** a drain wakes live sessions in EVERY organisation (it is about the deployment's
 image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
-drain → deploy → resume rehearsal has not been run.
+drain → deploy → resume rehearsal has not been run. Issue #5: the ship panel names who a review
+waits on only for a reader who may read the `session.merge` request (otherwise "an approver in
+Launch"); "Ask Claude to fix it" exists for red CI only (a rejected review's note is shown, not
+sent); the CLI's follow gives up after four hours (a review may wait two days) and says the ship
+carries on; the branch-protection line is shown to owners and admins only, though any member may
+read it.
 
 ### 18.15 The approvals engine (P4)
 

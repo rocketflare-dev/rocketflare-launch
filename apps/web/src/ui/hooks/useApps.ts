@@ -11,10 +11,15 @@
  *
  * The OIDC secret exists only in the create / rotate RESPONSE: the mutation hands it to the page,
  * which shows it once, and nothing puts it in the query cache.
+ *
+ * Issue #5: the app's ship settings (`useUpdateShipSettings` — the detail refetches) and its
+ * default branch's protection (`useBranchProtection`, never polled; `useApplyBranchProtection`,
+ * admins, writes the answer into the cache).
  */
 import {
   type AppDetail,
   type AppHealthCheckRunResponse,
+  appBranchProtectionSchema,
   appDetailSchema,
   appHealthCheckRunResponseSchema,
   appHealthResponseSchema,
@@ -23,6 +28,7 @@ import {
   appOidcClientSecretResponseSchema,
   appOperationListResponseSchema,
   type ImportAppRequest,
+  type PutAppShipSettingsRequest,
   type UpdateAppRedirectUrisRequest,
   type UpdateAppRequest,
 } from '@launch/shared/launch-apps'
@@ -149,6 +155,63 @@ export function useRotateOidcSecret(appId: string) {
         schema: appOidcClientSecretResponseSchema,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.oidcClient(appId) }),
+  })
+}
+
+// ---- Issue #5: where Ship ends, who reviews, and the branch protection the merge needs ------
+
+/**
+ * `PUT /api/apps/:id/ship-settings` (the app's owners and admins, `viewerCanDeploy`) → the app
+ * detail, as `PATCH /:id` answers. The `apps` family is refetched on success. While an admin
+ * policy decides review (`shipReviewSetBy: 'policy'`) the caller sends the stored review back
+ * unchanged — changing it is a 409 `ship_review_set_by_policy`; the destination may still change.
+ */
+export function useUpdateShipSettings(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: PutAppShipSettingsRequest) =>
+      api.put(`/api/apps/${appId}/ship-settings`, body, {
+        schema: appDetailSchema,
+        showSuccessToast: true,
+        successMessage: 'Shipping settings saved',
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),
+  })
+}
+
+/**
+ * `GET /api/apps/:id/branch-protection` — asked of GitHub on each read, so it is never polled and
+ * kept for a minute. No toast: a failure is the card's to say in place.
+ */
+export function useBranchProtection(appId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.apps.branchProtection(appId ?? ''),
+    queryFn: () =>
+      api.get(`/api/apps/${appId}/branch-protection`, {
+        schema: appBranchProtectionSchema,
+        showErrorToast: false,
+      }),
+    enabled: enabled && Boolean(appId),
+    staleTime: HEALTH_STALE_MS,
+  })
+}
+
+/**
+ * `POST /api/apps/:id/branch-protection` (admins, `manage App`): apply Launch's ruleset; the answer
+ * is a fresh diagnosis (still `blocks` while classic protection remains). A refusal (409
+ * `rulesets_unavailable`, 502 `branch_protection_github_failed`) toasts and re-reads the state.
+ */
+export function useApplyBranchProtection(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      api.post(`/api/apps/${appId}/branch-protection`, undefined, {
+        schema: appBranchProtectionSchema,
+      }),
+    onSuccess: protection =>
+      queryClient.setQueryData(queryKeys.apps.branchProtection(appId), protection),
+    onError: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.branchProtection(appId) }),
   })
 }
 

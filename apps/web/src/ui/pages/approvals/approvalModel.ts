@@ -49,7 +49,7 @@ export const KIND_DESCRIPTIONS: Record<ApprovalKind, string> = {
   'config.change': 'Somebody changes an app’s configuration.',
   'app.teardown': 'Somebody asks to archive an app and delete its resources.',
   'session.merge':
-    'A coding session’s pull request passed CI and asks to merge and ship to staging.',
+    'A coding session’s change passed CI and asks to be merged and put live on staging.',
 }
 
 /** The kinds a filter or a policy page offers: the built ones (P4's four and P5's grants). */
@@ -100,7 +100,7 @@ export function approvalSummary(req: SummaryInput): string {
     case 'grant.request':
       return `Let ${appName(req)} hold ${context.resourceName} in ${context.environment}`
     case 'session.merge':
-      return `Merge “${context.prTitle}” (#${context.prNumber}) into ${appName(req)}`
+      return `Merge “${context.prTitle}” (#${context.prNumber}) into ${appName(req)} and put it on staging`
     case 'config.change':
     case 'app.teardown':
       return context.description

@@ -339,3 +339,195 @@ describe('sessions ship', () => {
     expect(shipError.message).toMatch(/did not open a pull request/)
   })
 })
+
+describe('sessions ship — through to live on staging (#5)', () => {
+  const prUrl = 'https://github.com/acme/expenses/pull/12'
+  const stagingUrl = 'https://expenses-staging.apps.test'
+  const RELEASE = '7e1e0000-0000-4000-8000-000000000001'
+  const landing = (stage: string, over: Record<string, unknown> = {}) => ({
+    mode: 'staging',
+    stage,
+    prNumber: 12,
+    gateSha: 'b'.repeat(40),
+    startedAt: at,
+    stageAt: at,
+    reviewMode: 'none',
+    ...over,
+  })
+  const ci = (state: string, extra: Record<string, unknown> = {}) => ({
+    state,
+    headSha: 'b'.repeat(40),
+    passed: state === 'success' ? 2 : 1,
+    failed: state === 'failure' ? 1 : 0,
+    pending: 0,
+    ...extra,
+  })
+
+  /**
+   * A fake server whose session row moves one step per read, appending that step's rows to the
+   * log first — the order the Workflow writes them.
+   */
+  function scripted(steps: { rows: [string, unknown][]; session: Record<string, unknown> }[]) {
+    const log = [event(1, 'turn.end', { turn: 1 })]
+    let read = 0
+    const mock = mockFetch({
+      [`/api/sessions/${ID}/events`]: url => eventsRoute(log)(url),
+      [`/api/sessions/${ID}/ship`]: () =>
+        jsonResponse({ session: session({ status: 'shipping' }) }, 202),
+      [`/api/sessions/${ID}`]: () => {
+        const step = steps[Math.min(read, steps.length - 1)] as (typeof steps)[number]
+        if (read < steps.length)
+          for (const [type, data] of step.rows) log.push(event(log.length + 1, type, data, 2))
+        read += 1
+        return jsonResponse({ session: session(step.session) })
+      },
+    })
+    return mock
+  }
+
+  const toLive = () =>
+    scripted([
+      {
+        rows: [
+          ['ship.gate', { step: 'test', passed: true, attempt: 1 }],
+          ['ship.pr', { number: 12, url: prUrl }],
+        ],
+        session: { status: 'shipping', prNumber: 12, prUrl, landing: landing('ci') },
+      },
+      {
+        rows: [
+          ['ship.ci', ci('success')],
+          ['ship.merged', { number: 12, sha: 'c'.repeat(40), url: prUrl, approvalId: null }],
+        ],
+        session: { status: 'shipped', prNumber: 12, prUrl, landing: landing('releasing') },
+      },
+      {
+        rows: [
+          ['ship.released', { releaseId: RELEASE, version: '1.4.3', tag: '1.4.3', shared: false }],
+          ['ship.staging', { status: 'deploying', version: '1.4.3', url: null }],
+        ],
+        session: {
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing('deploying', { version: '1.4.3' }),
+        },
+      },
+      {
+        rows: [['ship.staging', { status: 'live', version: '1.4.3', url: stagingUrl }]],
+        session: {
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing('live', { version: '1.4.3', stagingUrl }),
+        },
+      },
+    ])
+
+  it('waits through to live by default, printing each stage', async () => {
+    const { fetch, calls } = toLive()
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsShip(ctx, ID, { sleep: noSleep })
+    const text = out.content()
+    expect(text).toContain(`opened PR #12 ${prUrl}`)
+    expect(text).toContain('CI passed')
+    expect(text).toContain('merged PR #12 (ccccccc)')
+    expect(text).toContain('released v1.4.3')
+    expect(text).toContain(`live on staging: ${stagingUrl} (v1.4.3)`)
+    // Live once: the closing line is the row's, not printed twice.
+    expect(text.split('live on staging').length - 1).toBe(1)
+    // Past the PR nothing reads `GET /pr`: the landing rows say it.
+    expect(calls.some(c => c.url.pathname.endsWith('/pr'))).toBe(false)
+  })
+
+  it('--wait is an accepted no-op, and --json prints ONE document at the end', async () => {
+    const { fetch } = toLive()
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch, json: true })
+    await runSessionsShip(ctx, ID, { wait: true, sleep: noSleep })
+    const doc = JSON.parse(out.content()) as {
+      session: { landing: { stage: string } }
+      events: unknown[]
+    }
+    expect(doc.session.landing.stage).toBe('live')
+    const types = doc.events.map(e => sessionEventSchema.parse(e).type)
+    expect(types).toEqual([
+      'ship.gate',
+      'ship.pr',
+      'ship.ci',
+      'ship.merged',
+      'ship.released',
+      'ship.staging',
+      'ship.staging',
+    ])
+  })
+
+  it('--no-wait returns as soon as the ship has started', async () => {
+    const { fetch, calls } = toLive()
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsShip(ctx, ID, { wait: false, sleep: noSleep })
+    expect(out.content()).toContain('Shipping.')
+    expect(calls.map(c => c.url.pathname)).toEqual([`/api/sessions/${ID}/ship`])
+  })
+
+  it('exits 1 when the ship is given back before the merge, with CI’s failing check', async () => {
+    const { fetch } = scripted([
+      {
+        rows: [['ship.pr', { number: 12, url: prUrl }]],
+        session: { status: 'shipping', prNumber: 12, prUrl, landing: landing('ci') },
+      },
+      {
+        rows: [
+          [
+            'ship.ci',
+            ci('failure', {
+              failedCheck: {
+                name: 'Gate',
+                url: 'https://github.com/acme/expenses/actions/runs/9/job/1',
+                logTail: 'FAIL tests/home.test.ts\nexpected "Welcome" to be "Welcome back"',
+              },
+            }),
+          ],
+          ['ship.reopened', { reason: 'ci_failed', message: 'CI failed on the pull request.' }],
+        ],
+        // Reopened: back to `ready`, the landing cleared.
+        session: { status: 'ready', prNumber: 12, prUrl, landing: null },
+      },
+    ])
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
+    const error = await captureError(runSessionsShip(ctx, ID, { sleep: noSleep }))
+    expect(exitCodeFor(error)).toBe(EXIT_ERROR)
+    expect(error.message).toBe('Not merged: CI failed on the pull request.')
+    const text = out.content()
+    expect(text).toContain('CI failed: Gate https://github.com/acme/expenses/actions/runs/9/job/1')
+    expect(text).toContain('expected "Welcome" to be "Welcome back"')
+  })
+
+  it('exits 1 when it stalls after the merge', async () => {
+    const { fetch } = scripted([
+      {
+        rows: [
+          ['ship.pr', { number: 12, url: prUrl }],
+          ['ship.merged', { number: 12, sha: 'c'.repeat(40), url: prUrl, approvalId: null }],
+          [
+            'ship.staging',
+            { status: 'failed', version: '1.4.3', url: null, error: 'Deploy failed.' },
+          ],
+        ],
+        session: {
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing('stalled', {
+            version: '1.4.3',
+            stalledReason: 'deploy_failed',
+            error: 'The staging deploy of 1.4.3 failed.',
+          }),
+        },
+      },
+    ])
+    const { ctx } = await testContext({ store: await loggedInStore(), fetch })
+    const error = await captureError(runSessionsShip(ctx, ID, { sleep: noSleep }))
+    expect(exitCodeFor(error)).toBe(EXIT_ERROR)
+    expect(error.message).toBe('The staging deploy of 1.4.3 failed.')
+  })
+})

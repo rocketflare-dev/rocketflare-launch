@@ -14,7 +14,12 @@
  *   grant would lapse, and the owner team that decides (read from the resource, which every member
  *   may; while it loads, or if it cannot be read, the sentence describes the team instead).
  *
- * User-written text (the access message, the reason) renders verbatim with `whitespace-pre-wrap`.
+ * - `session.merge` (issue #5): the pull request (title, link), the session it came from (a link to
+ *   its page — an eligible approver may read it, chat and preview included), the commit CI passed
+ *   on, the ship summary and the diff stat.
+ *
+ * User-written text (the access message, the reason, a ship summary) renders verbatim with
+ * `whitespace-pre-wrap` — never as markdown, which this chunk does not carry.
  */
 import { ArrowTopRightOnSquareIcon, CodeBracketIcon } from '@heroicons/react/24/outline'
 import type { ApprovalContextOf, ApprovalDetail } from '@launch/shared/launch-approvals'
@@ -253,6 +258,75 @@ function GrantRequestContext({
   )
 }
 
+/**
+ * The session's page in Launch: the context's `sessionPath` when it is one of the app's session
+ * pages, else built from the app slug and the session id (the route is `/apps/:slug/sessions/:id`).
+ */
+export function sessionMergeLink(context: ApprovalContextOf<'session.merge'>): string {
+  return context.sessionPath.startsWith('/apps/')
+    ? context.sessionPath
+    : `/apps/${context.appSlug}/sessions/${context.sessionId}`
+}
+
+function SessionMergeContext({
+  detail,
+  context,
+}: {
+  detail: ApprovalDetail
+  context: ApprovalContextOf<'session.merge'>
+}) {
+  const sessionName = context.title?.trim() || `Session ${context.shortId.slice(0, 6)}`
+  return (
+    <SectionPanel title="The change to merge">
+      <dl>
+        <Row label="Pull request">
+          <External href={context.prUrl}>
+            {context.prTitle} (#{context.prNumber})
+          </External>
+        </Row>
+        <Row label="App">
+          <AppLink detail={detail} />
+        </Row>
+        <Row label="Session">
+          <Link to={sessionMergeLink(context)} className="link link-hover">
+            {sessionName}
+          </Link>
+          <span className="text-muted"> — the chat and its live preview</span>
+        </Row>
+        <Row label="Commit">
+          <Mono>{context.headSha.slice(0, 7)}</Mono>
+        </Row>
+      </dl>
+      <h3 className="text-sm font-semibold mt-4 mb-1">What it changes</h3>
+      {context.summary.trim() ? (
+        <p className="text-sm whitespace-pre-wrap" data-testid="merge-summary">
+          {context.summary}
+        </p>
+      ) : (
+        <p className="text-sm text-muted">No summary was written for this change.</p>
+      )}
+      {context.diffStat.trim() && (
+        <details className="mt-3">
+          <summary className="cursor-pointer select-none text-sm font-medium">
+            Files changed
+          </summary>
+          <pre
+            className="surface-inset mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs"
+            data-testid="merge-diffstat"
+          >
+            {context.diffStat}
+          </pre>
+        </details>
+      )}
+      <p className="text-xs text-muted mt-3">
+        CI has passed on this exact commit. Approving merges the pull request and puts it live on
+        staging; rejecting gives the session back to its author with your comment. Production is a
+        separate step.
+      </p>
+    </SectionPanel>
+  )
+}
+
 function usd(value: number): string {
   return `$${value.toFixed(2)}`
 }
@@ -357,6 +431,8 @@ export function ApprovalContext({
       )
     case 'grant.request':
       return <GrantRequestContext detail={detail} context={context} />
+    case 'session.merge':
+      return <SessionMergeContext detail={detail} context={context} />
     case 'config.change':
     case 'app.teardown':
       return (

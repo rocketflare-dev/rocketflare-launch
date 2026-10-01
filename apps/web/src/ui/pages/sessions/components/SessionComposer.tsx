@@ -10,7 +10,9 @@
  * When the session cannot take a message the composer says WHY in one sentence instead of sitting
  * there disabled (asleep → resume; over budget → the banner above; ended → there is nothing to
  * send to). A refused send keeps the text: a 409 `turn_in_progress` (another tab got there first)
- * is information, not an error.
+ * is information, not an error. While a ship lands (issue #5) the sentence names the stage — CI,
+ * review, merging, on its way to staging, live; a reopened ship takes messages again (the ship
+ * panel's "Ask Claude to fix it" posts through the same `POST /turns`).
  */
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
 import { SESSION_MESSAGE_MAX, type Session } from '@launch/shared/launch-sessions'
@@ -34,15 +36,26 @@ interface SessionComposerProps {
 }
 
 /** Why the session cannot take a message right now, or null when it can. Pure. */
-export function composerBlockedReason(session: Pick<Session, 'status' | 'viewerCanManage'>) {
+export function composerBlockedReason(
+  session: Pick<Session, 'status' | 'viewerCanManage'> & { landing?: Session['landing'] }
+) {
+  const stage = session.landing?.stage
   switch (session.status) {
     case 'suspended':
       return 'This session is asleep. Resume it to keep going.'
     case 'blocked':
       return 'This session has used its budget.'
     case 'shipping':
+      // Issue #5: `shipping` spans the gate AND what follows the PR, up to the merge.
+      if (stage === 'ci') return 'Shipping — waiting for CI on the pull request.'
+      if (stage === 'approval') return 'Shipping — waiting for a review before merging.'
+      if (stage === 'merging') return 'Shipping — merging the pull request.'
       return 'Shipping — checking the code and opening a pull request.'
     case 'shipped':
+      if (stage === 'releasing' || stage === 'deploying')
+        return 'This session was shipped and is on its way to staging. Start a new one to keep changing the app.'
+      if (stage === 'live')
+        return 'This session was shipped and is live on staging. Start a new one to keep changing the app.'
       return 'This session was shipped. Start a new one to keep changing the app.'
     case 'ending':
     case 'ended':
