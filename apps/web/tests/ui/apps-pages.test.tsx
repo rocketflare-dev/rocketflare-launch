@@ -232,6 +232,11 @@ describe('AppDetailPage', () => {
     }
     const card = async () =>
       (await screen.findByRole('heading', { name: 'Shipping' })).closest('section') as HTMLElement
+    /** Change opens the form in a modal; the card itself is a summary. */
+    const openSettings = async (section: HTMLElement) => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Change' }))
+      return within(section).findByRole('dialog')
+    }
     /** A member who is one of the app's named owners: may change the settings, may not Apply. */
     const owner = () => member()
 
@@ -248,20 +253,27 @@ describe('AppDetailPage', () => {
         }),
       })
       const section = await card()
+      // The card is a summary: the settings in words and one line about the main branch.
+      expect(within(section).getByTestId('ship-settings-summary')).toHaveTextContent(
+        'Shipping a session puts the change live on staging.'
+      )
+      expect(await within(section).findByTestId('protection-line')).toHaveAttribute(
+        'data-state',
+        'ok'
+      )
+      const form = await openSettings(section)
       // The default: live on staging, nobody reviews.
-      expect(within(section).getByRole('radio', { name: /Go live on staging/ })).toBeChecked()
-      expect(within(section).getByRole('radio', { name: /Nobody/ })).toBeChecked()
-      expect(within(section).getByRole('button', { name: 'Save' })).toBeDisabled()
+      expect(within(form).getByRole('radio', { name: /Go live on staging/ })).toBeChecked()
+      expect(within(form).getByRole('radio', { name: /Nobody/ })).toBeChecked()
+      expect(within(form).getByRole('button', { name: 'Save' })).toBeDisabled()
 
-      fireEvent.click(within(section).getByRole('radio', { name: /Someone from these teams/ }))
+      fireEvent.click(within(form).getByRole('radio', { name: /Someone from these teams/ }))
       // Teams, but none chosen: the shared schema's own message, and no save.
-      expect(
-        await within(section).findByText('Name at least one team to review')
-      ).toBeInTheDocument()
-      expect(within(section).getByRole('button', { name: 'Save' })).toBeDisabled()
+      expect(await within(form).findByText('Name at least one team to review')).toBeInTheDocument()
+      expect(within(form).getByRole('button', { name: 'Save' })).toBeDisabled()
 
-      fireEvent.click(await within(section).findByRole('button', { name: 'Reviewers' }))
-      fireEvent.click(within(section).getByRole('button', { name: 'Save' }))
+      fireEvent.click(await within(form).findByRole('button', { name: 'Reviewers' }))
+      fireEvent.click(within(form).getByRole('button', { name: 'Save' }))
       await waitFor(() =>
         expect(requestBody(fetchMock, `PUT /api/apps/${APP_ID}/ship-settings`)).toEqual({
           sessionShip: 'staging',
@@ -269,8 +281,8 @@ describe('AppDetailPage', () => {
         })
       )
       // Branch protection, in words.
-      expect(within(section).getByText('Protected')).toBeInTheDocument()
-      expect(within(section).queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument()
+      expect(within(form).getByText('Protected')).toBeInTheDocument()
+      expect(within(form).queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument()
     })
 
     it('shows the review as read-only when an admin’s approval policy decides it', async () => {
@@ -279,12 +291,13 @@ describe('AppDetailPage', () => {
         [PROTECTION]: protection('ok'),
       })
       const section = await card()
-      expect(within(section).getByTestId('review-policy')).toHaveTextContent(
+      const form = await openSettings(section)
+      expect(within(form).getByTestId('review-policy')).toHaveTextContent(
         /that policy decides who approves/
       )
-      expect(within(section).queryByRole('radio', { name: /Nobody/ })).not.toBeInTheDocument()
+      expect(within(form).queryByRole('radio', { name: /Nobody/ })).not.toBeInTheDocument()
       // Where Ship ends is still the app's to choose.
-      expect(within(section).getByRole('radio', { name: /Open a pull request/ })).toBeEnabled()
+      expect(within(form).getByRole('radio', { name: /Open a pull request/ })).toBeEnabled()
     })
 
     it('reads as sentences for somebody who may not change it, and asks GitHub nothing', async () => {
@@ -301,6 +314,7 @@ describe('AppDetailPage', () => {
       )
       expect(within(section).getByText(/One of the app’s owners approves/)).toBeInTheDocument()
       expect(within(section).queryByRole('radio')).not.toBeInTheDocument()
+      expect(within(section).queryByRole('button', { name: 'Change' })).not.toBeInTheDocument()
       expect(fetchMock.mock.calls.some(([u]) => String(u).includes('branch-protection'))).toBe(
         false
       )
@@ -320,14 +334,15 @@ describe('AppDetailPage', () => {
           }),
         })
         const section = await card()
-        expect(await within(section).findByText(title)).toBeInTheDocument()
+        const form = await openSettings(section)
+        expect(await within(form).findByText(title)).toBeInTheDocument()
         expect(
-          within(section).queryByRole('button', { name: 'Apply Launch’s protection' }) !== null
+          within(form).queryByRole('button', { name: 'Apply Launch’s protection' }) !== null
         ).toBe(apply)
         if (state === 'blocks') {
-          expect(within(section).getByText(/DEPLOY\.md/)).toBeInTheDocument()
+          expect(within(form).getByText(/DEPLOY\.md/)).toBeInTheDocument()
           expect(
-            within(section).getByText('Classic branch protection requires 2 reviews.')
+            within(form).getByText('Classic branch protection requires 2 reviews.')
           ).toBeInTheDocument()
         }
       }
@@ -339,10 +354,11 @@ describe('AppDetailPage', () => {
         [`POST ${PROTECTION}`]: protection('ok'),
       })
       const section = await card()
+      const form = await openSettings(section)
       fireEvent.click(
-        await within(section).findByRole('button', { name: 'Apply Launch’s protection' })
+        await within(form).findByRole('button', { name: 'Apply Launch’s protection' })
       )
-      expect(await within(section).findByText('Protected')).toBeInTheDocument()
+      expect(await within(form).findByText('Protected')).toBeInTheDocument()
       expect(
         fetchMock.mock.calls.some(
           ([u, i]) => String(u).endsWith('/branch-protection') && i?.method === 'POST'
@@ -352,15 +368,16 @@ describe('AppDetailPage', () => {
 
       renderDetail(owner(), { [PROTECTION]: protection('none') })
       const ownerSection = await card()
-      expect(await within(ownerSection).findByText('Not protected')).toBeInTheDocument()
+      const ownerForm = await openSettings(ownerSection)
+      expect(await within(ownerForm).findByText('Not protected')).toBeInTheDocument()
       expect(
-        within(ownerSection).queryByRole('button', { name: 'Apply Launch’s protection' })
+        within(ownerForm).queryByRole('button', { name: 'Apply Launch’s protection' })
       ).not.toBeInTheDocument()
       expect(
-        within(ownerSection).getByText('An administrator can apply Launch’s protection.')
+        within(ownerForm).getByText('An administrator can apply Launch’s protection.')
       ).toBeInTheDocument()
       // …while the settings themselves are theirs to change.
-      expect(within(ownerSection).getByRole('radio', { name: /Go live on staging/ })).toBeEnabled()
+      expect(within(ownerForm).getByRole('radio', { name: /Go live on staging/ })).toBeEnabled()
     })
   })
 

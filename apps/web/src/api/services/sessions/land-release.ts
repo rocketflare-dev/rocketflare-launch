@@ -32,6 +32,7 @@
  * the Workflow's `land.stalled#K` records `stalledReason` and the sentence.
  */
 import { compareReleaseVersions } from '@launch/shared/launch-promotion'
+import { RELEASE_STAGING_TIMEOUT_MINUTES } from '@launch/shared/launch-releases'
 import type { SessionLanding } from '@launch/shared/launch-sessions'
 import { and, count, eq, gte, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
@@ -70,7 +71,7 @@ export const LAND_RELEASE_CLAIM_MAX_MINUTES = 15
 /** `land.staging-wait#K.R`: one round of following the release's staging deploy. */
 export const LAND_STAGING_WAIT_SECONDS = 120
 /** A release still not live on staging this long after it was cut has timed out. */
-export const LAND_STAGING_MAX_MINUTES = 45
+export const LAND_STAGING_MAX_MINUTES = RELEASE_STAGING_TIMEOUT_MINUTES
 /** `land.health-wait#K.R`: the gap between two health probes of staging. */
 export const LAND_HEALTH_WAIT_SECONDS = 30
 /** Staging gets this many probes since it went live on the release before the landing stalls. */

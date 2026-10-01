@@ -5,8 +5,9 @@
  * - `ready` — staging runs the newest release, it is healthy, and production runs something older:
  *   Promote is on offer;
  * - `blocked` — Promote is not on offer, with the reason in plain words ("Staging is still
- *   deploying", "Staging is unhealthy", "Production already runs v1.4.2", "Nothing on staging
- *   yet");
+ *   deploying", "v1.4.2 never reached staging" once a release is past
+ *   `RELEASE_STAGING_TIMEOUT_MINUTES`, "Staging is unhealthy", "Production already runs v1.4.2",
+ *   "Nothing on staging yet");
  * - `awaiting` — promoted; the `deploy.production` request waits on the people it names;
  * - `deploying` — approved; production is deploying it;
  * - `live` — the newest release is in production.
@@ -20,7 +21,7 @@ import {
   compareReleaseVersions,
   type PromotionApproval,
 } from '@launch/shared/launch-promotion'
-import type { Release } from '@launch/shared/launch-releases'
+import { RELEASE_STAGING_TIMEOUT_MINUTES, type Release } from '@launch/shared/launch-releases'
 
 export type PromotionState =
   | { kind: 'ready'; release: Release; askedBefore: boolean }
@@ -35,9 +36,14 @@ export type PromotionState =
   | { kind: 'deploying'; release: Release }
   | { kind: 'live'; release: Release }
 
-/** `1.4.2` → `v1.4.2`. */
+/** `1.4.2` → `v1.4.2`; a build that is not a release (`main-64a36e6`) stays as it is. */
 export function v(version: string): string {
-  return `v${version}`
+  return /^\d/.test(version) ? `v${version}` : version
+}
+
+/** A release cut this long ago that is still not live on staging is stuck, not deploying. */
+function stuck(release: Release, now: Date): boolean {
+  return now.getTime() - release.createdAt.getTime() >= RELEASE_STAGING_TIMEOUT_MINUTES * 60_000
 }
 
 export const STAGING_HEALTH_WORD: Record<HealthStatus, string> = {
@@ -53,14 +59,16 @@ const UNHEALTHY_REASON: Record<Exclude<HealthStatus, 'up'>, string> = {
   unknown: 'Staging has not been checked yet',
 }
 
-export function promotionState(view: AppPromotion): PromotionState {
+export function promotionState(view: AppPromotion, now: Date = new Date()): PromotionState {
   const release = view.candidate
   if (!release) return { kind: 'blocked', reason: 'Nothing on staging yet', release: null }
   const production = view.production?.version ?? null
   switch (release.status) {
     case 'tagged':
     case 'staging':
-      return { kind: 'blocked', reason: 'Staging is still deploying', release }
+      return stuck(release, now)
+        ? { kind: 'blocked', reason: `${v(release.version)} never reached staging`, release }
+        : { kind: 'blocked', reason: 'Staging is still deploying', release }
     case 'awaiting_approval':
       return { kind: 'awaiting', release, approval: view.approval }
     case 'promoting':
@@ -84,7 +92,11 @@ export function promotionState(view: AppPromotion): PromotionState {
         return { kind: 'blocked', reason: 'Nothing on staging yet', release }
       }
       if (staging.version !== release.version) {
-        return { kind: 'blocked', reason: 'Staging is still deploying', release }
+        return {
+          kind: 'blocked',
+          reason: `Staging runs ${v(staging.version)}, not ${v(release.version)}`,
+          release,
+        }
       }
       if (staging.healthStatus !== 'up') {
         return { kind: 'blocked', reason: UNHEALTHY_REASON[staging.healthStatus], release }

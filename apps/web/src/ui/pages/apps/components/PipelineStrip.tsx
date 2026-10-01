@@ -50,18 +50,18 @@ function EnvironmentBox({
 }) {
   const version = env?.version ?? null
   return (
-    <div className="min-w-0 flex-1 rounded-box border border-base-300 px-4 py-3">
+    <div className="min-w-0 rounded-box border border-base-300 px-3 py-1.5">
       <p className="text-sm font-semibold flex items-center gap-2">
         {showHealth && env && <HealthDot status={env.healthStatus} />}
-        <span>
+        <span className="truncate">
           {label}: {version ? v(version) : 'nothing yet'}
         </span>
       </p>
       {env && version && (
-        <p className="text-xs text-secondary mt-0.5">
+        <p className="text-xs text-secondary whitespace-nowrap">
           {showHealth ? `${STAGING_HEALTH_WORD[env.healthStatus]}, ` : ''}
           <span title={formatDateTime(env.deployedAt)}>
-            deployed {timeAgo(env.deployedAt, 'some time ago')}
+            {timeAgo(env.deployedAt, 'some time ago')}
           </span>
           {env.url && (
             <>
@@ -83,12 +83,7 @@ function EnvironmentBox({
 }
 
 function Arrow() {
-  return (
-    <ArrowRightIcon
-      aria-hidden="true"
-      className="w-5 h-5 text-muted shrink-0 self-center rotate-90 md:rotate-0"
-    />
-  )
+  return <ArrowRightIcon aria-hidden="true" className="w-4 h-4 text-muted shrink-0" />
 }
 
 /** The middle of the strip: the button, or where the promotion has got to. */
@@ -129,7 +124,7 @@ function Action({
   return (
     <button
       type="button"
-      className="btn btn-primary gap-1.5"
+      className="btn btn-primary btn-sm gap-1.5"
       disabled={!enabled}
       aria-describedby={enabled ? undefined : 'pipeline-reason'}
       onClick={onPromote}
@@ -271,58 +266,58 @@ export function summaryLine(summary: string | null | undefined): string | null {
 function Changes({ view, state }: { view: AppPromotion; state: PromotionState }) {
   const title = changesTitle(state)
   if (!title) return null
+  if (view.changes.length === 0) return null
   const versions = new Set(view.changes.map(c => c.version))
+  const count = `${view.changes.length}${view.changesTruncated ? '+' : ''}`
   return (
-    <div>
-      <h3 className="text-sm font-semibold">{title}</h3>
-      {view.changes.length === 0 ? (
-        <p className="text-sm text-secondary mt-1">No changes were recorded for this release.</p>
-      ) : (
-        <ul className="mt-2 space-y-1.5" aria-label={title}>
-          {view.changes.map(change => {
-            const headline = change.sessionTitle?.trim() || change.title
-            const detail = change.sessionTitle && change.title !== headline ? change.title : null
-            return (
-              <li key={`${change.version}-${change.number}`} className="text-sm flex gap-2">
-                <span aria-hidden="true" className="text-muted">
-                  •
-                </span>
-                <span className="min-w-0">
-                  <span>{headline}</span>
-                  {detail && <span className="text-secondary"> — {detail}</span>}
-                  <span className="text-xs text-muted">
-                    {' '}
-                    {change.url ? (
-                      <a
-                        href={change.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="link link-hover"
-                      >
-                        change #{change.number}
-                      </a>
-                    ) : (
-                      `change #${change.number}`
-                    )}
-                    {versions.size > 1 ? ` · in ${v(change.version)}` : ''}
-                  </span>
-                  {summaryLine(change.summary) && (
-                    <span className="block text-xs text-secondary" data-change-summary>
-                      {summaryLine(change.summary)}
-                    </span>
+    <details>
+      <summary className="cursor-pointer text-sm font-medium">
+        {title} ({count})
+      </summary>
+      <ul className="mt-2 space-y-1.5" aria-label={title}>
+        {view.changes.map(change => {
+          const headline = change.sessionTitle?.trim() || change.title
+          const detail = change.sessionTitle && change.title !== headline ? change.title : null
+          return (
+            <li key={`${change.version}-${change.number}`} className="text-sm flex gap-2">
+              <span aria-hidden="true" className="text-muted">
+                •
+              </span>
+              <span className="min-w-0">
+                <span>{headline}</span>
+                {detail && <span className="text-secondary"> — {detail}</span>}
+                <span className="text-xs text-muted">
+                  {' '}
+                  {change.url ? (
+                    <a
+                      href={change.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="link link-hover"
+                    >
+                      change #{change.number}
+                    </a>
+                  ) : (
+                    `change #${change.number}`
                   )}
+                  {versions.size > 1 ? ` · in ${v(change.version)}` : ''}
                 </span>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+                {summaryLine(change.summary) && (
+                  <span className="block text-xs text-secondary" data-change-summary>
+                    {summaryLine(change.summary)}
+                  </span>
+                )}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
       {view.changesTruncated && (
         <p className="text-xs text-muted mt-1">
           And more — open the release history below for the rest.
         </p>
       )}
-    </div>
+    </details>
   )
 }
 
@@ -358,16 +353,11 @@ export function PipelineStrip({
 
   const state = promotionState(data)
   return (
-    <section className="surface-panel space-y-4" aria-labelledby="pipeline-title">
-      <h2 id="pipeline-title" className="text-base font-semibold">
-        Staging to production
-      </h2>
-      <div className="flex flex-col md:flex-row md:items-stretch gap-3">
+    <section className="surface-panel space-y-2" aria-label="Staging to production">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <EnvironmentBox label="Staging" env={data.staging} showHealth />
         <Arrow />
-        <div className="flex items-center justify-center shrink-0">
-          <Action state={state} canPromote={canPromote} onPromote={() => setOpen(true)} />
-        </div>
+        <Action state={state} canPromote={canPromote} onPromote={() => setOpen(true)} />
         <Arrow />
         <EnvironmentBox label="Production" env={data.production} showHealth={false} />
       </div>

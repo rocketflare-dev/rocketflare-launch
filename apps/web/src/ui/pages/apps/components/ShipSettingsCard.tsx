@@ -9,8 +9,9 @@
  *   every group for `manage Group`, the reader's own otherwise — what they can name). When an
  *   administrator's approval policy for `session.merge` exists (`shipReviewSetBy === 'policy'`) it
  *   wins, and this half is read-only with that explanation.
- * - Editing is for the app's owners and admins (`viewerCanDeploy`, the route's rule); everyone
- *   else reads the same settings as sentences. The form validates with the server's
+ * - The card is a summary — the settings as sentences plus one line about the main branch — and
+ *   for the app's owners and admins (`viewerCanDeploy`, the route's rule) a Change button opening
+ *   the form in a modal; everyone else reads the same sentences. The form validates with the server's
  *   `putAppShipSettingsRequestSchema`, and a save refetches the app.
  * - **Branch protection**, for owners and admins: `GET …/branch-protection` → one plain sentence
  *   per state, and for an administrator an Apply button where Launch can fix it (`none`, `blocks`
@@ -28,7 +29,7 @@ import {
   type ShipReviewMode,
 } from '@launch/shared/launch-apps'
 import { type ReactNode, useMemo, useState } from 'react'
-import { FieldError, SectionPanel } from '@/ui/components/shared'
+import { FieldError, Modal, SectionPanel } from '@/ui/components/shared'
 import {
   useApplyBranchProtection,
   useBranchProtection,
@@ -145,6 +146,36 @@ function useNameableGroups(enabled: boolean): GroupRef[] {
   }, [all, groups.data, mine.data])
 }
 
+/** The card's one line about the main branch: the state's title, its icon, nothing to press. */
+function ProtectionLine({ app }: { app: AppDetail }) {
+  const protection = useBranchProtection(app.id, app.viewerCanDeploy)
+  if (!app.viewerCanDeploy) return null
+  if (protection.isLoading) {
+    return <p className="text-xs text-muted">Checking the main branch on GitHub…</p>
+  }
+  if (!protection.data) {
+    return (
+      <p className="text-xs text-muted" data-testid="protection-line" data-state="error">
+        Main branch: couldn’t check its protection
+      </p>
+    )
+  }
+  const said = protectionSentence(protection.data)
+  const Icon = said.tone === 'ok' ? ShieldCheckIcon : ShieldExclamationIcon
+  const iconClass =
+    said.tone === 'ok' ? 'text-success' : said.tone === 'warning' ? 'text-warning' : 'text-muted'
+  return (
+    <p
+      className="flex items-center gap-1.5 text-xs text-secondary"
+      data-testid="protection-line"
+      data-state={protection.data.state}
+    >
+      <Icon className={`h-4 w-4 shrink-0 ${iconClass}`} aria-hidden="true" />
+      Main branch: {said.title.toLowerCase()}
+    </p>
+  )
+}
+
 function BranchProtection({ app, canApply }: { app: AppDetail; canApply: boolean }) {
   const protection = useBranchProtection(app.id, app.viewerCanDeploy)
   const apply = useApplyBranchProtection(app.id)
@@ -213,6 +244,7 @@ export function ShipSettingsCard({
   const canEdit = app.viewerCanDeploy
   const policy = app.shipReviewSetBy === 'policy'
   const [draft, setDraft] = useState<AppShipSettings | null>(null)
+  const [editing, setEditing] = useState(false)
   const current = draft ?? app.shipSettings
   const save = useUpdateShipSettings(app.id)
   const available = useNameableGroups(canEdit && !policy)
@@ -246,27 +278,65 @@ export function ShipSettingsCard({
       .map(id => ({ id, name: 'A team you can’t see', typeName: '' })),
   ]
 
+  const close = () => {
+    setEditing(false)
+    setDraft(null)
+  }
+
   return (
     <SectionPanel
       title="Shipping"
-      description="What happens when someone ships a coding session on this app."
+      actions={
+        canEdit && (
+          <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>
+            Change
+          </button>
+        )
+      }
     >
-      <div className="space-y-4">
-        {!canEdit ? (
-          <div className="space-y-1 text-sm" data-testid="ship-settings-readonly">
-            <p>{sentences.ship}</p>
-            <p className="text-secondary">{sentences.review}</p>
-            <p className="text-xs text-muted">
-              The app’s owners and administrators can change this.
-            </p>
-          </div>
-        ) : (
+      <div
+        className="space-y-1 text-sm -mt-2"
+        data-testid={canEdit ? 'ship-settings-summary' : 'ship-settings-readonly'}
+      >
+        <p>
+          {sentences.ship} <span className="text-secondary">{sentences.review}</span>
+        </p>
+        {!canEdit && (
+          <p className="text-xs text-muted">The app’s owners and administrators can change this.</p>
+        )}
+        <ProtectionLine app={app} />
+      </div>
+
+      {canEdit && (
+        <Modal
+          open={editing}
+          onClose={close}
+          title="Shipping"
+          className="max-w-xl"
+          actions={
+            <>
+              <button type="button" className="btn btn-ghost" onClick={close}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="ship-settings-form"
+                className="btn btn-primary"
+                disabled={!dirty || !parsed.success || save.isPending}
+              >
+                {save.isPending && <span className="loading loading-spinner loading-xs" />}
+                Save
+              </button>
+            </>
+          }
+        >
           <form
+            id="ship-settings-form"
             className="space-y-4"
             onSubmit={event => {
               event.preventDefault()
               if (!parsed.success || !dirty) return
-              save.mutate(parsed.data, { onSuccess: () => setDraft(null) })
+              save.mutate(parsed.data, { onSuccess: close })
             }}
           >
             <fieldset className="space-y-2">
@@ -350,30 +420,10 @@ export function ShipSettingsCard({
               </fieldset>
             )}
 
-            <div className="flex items-center gap-2">
-              <button
-                type="submit"
-                className="btn btn-sm btn-primary"
-                disabled={!dirty || !parsed.success || save.isPending}
-              >
-                {save.isPending && <span className="loading loading-spinner loading-xs" />}
-                Save
-              </button>
-              {dirty && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => setDraft(null)}
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
+            <BranchProtection app={app} canApply={canApplyProtection} />
           </form>
-        )}
-
-        <BranchProtection app={app} canApply={canApplyProtection} />
-      </div>
+        </Modal>
+      )}
     </SectionPanel>
   )
 }

@@ -2072,12 +2072,13 @@ composer's blocked sentence names the stage; End is hidden while `merging` (the 
 Ship confirm words what will happen from the app's ship settings. A session is polled every
 `SESSION_LANDING_POLL_MS` (15 s) while its landing moves — `shipped` included, while `releasing` /
 `deploying` — and never while it waits on a reviewer (`approval`). The app page's **Shipping** card
-(`ShipSettingsCard`, below the pipeline strip) lets owners and admins choose "go live on staging"
-or "open a pull request for review on GitHub" and who reviews (nobody / the app's owners / named
-teams — every group for `manage Group`, the reader's own otherwise); it is read-only for the review
-when an admin `session.merge` policy decides it (the stored review is sent back unchanged), and
-sentences for everyone else. Below it, for owners and admins, the main branch's protection in
-plain words (`ok` Protected · `none` · `blocks` → remove the rule, DEPLOY.md · `unavailable` ·
+(`ShipSettingsCard`, below the sessions card) is a summary — the settings as two sentences and, for
+owners and admins, one line about the main branch — and its **Change** button opens the form in a
+modal: "go live on staging" or "open a pull request for review on GitHub", and who reviews (nobody
+/ the app's owners / named teams — every group for `manage Group`, the reader's own otherwise); the
+review is read-only when an admin `session.merge` policy decides it (the stored review is sent back
+unchanged), and everyone else reads the sentences only. The modal also carries the main branch's
+protection in plain words (`ok` Protected · `none` · `blocks` → remove the rule, DEPLOY.md · `unavailable` ·
 `unknown`, plus the server's `detail`), with **Apply Launch's protection** for administrators
 where it helps (`none`, `blocks`). The pipeline strip prints each change's stored summary as one
 plain line under its title (`summaryLine`), and an approval page for a `session.merge` shows the PR,
@@ -2293,12 +2294,15 @@ PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`)
 snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
 approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
-overrides. **The app page** leads with a pipeline strip — `Staging: v1.4.2 (healthy, deployed 10 minutes
-ago)` → **Promote to production** → `Production: v1.4.1` — and, in plain words, what the promotion
-ships (each session's title and, since issue #5, a line of its stored ship summary, then its PR's
-title). Promote is on offer when staging runs the newest
+overrides. **The app page** leads with a one-row pipeline strip — `Staging: v1.4.2 (healthy, 10 minutes
+ago)` → **Promote to production** → `Production: v1.4.1` (a build that is not a release keeps its
+own name, `main-64a36e6`) — a status line, and, collapsed and only when there is something in it,
+what the promotion ships (each session's title and, since issue #5, a line of its stored ship
+summary, then its PR's title). Promote is on offer when staging runs the newest
 release, is `up`, and production runs something older; otherwise the button is disabled with the
-reason ("Staging is still deploying", "Staging is unhealthy", "Production already runs v1.4.2",
+reason ("Staging is still deploying" — or "v1.4.2 never reached staging" once the release is
+older than `RELEASE_STAGING_TIMEOUT_MINUTES`, the same 45 minutes a session's landing waits —
+"Staging runs main-64a36e6, not v1.4.2", "Staging is unhealthy", "Production already runs v1.4.2",
 "Nothing on staging yet"). After the click (the same confirmation as a release row, the same
 route) the strip stays: "Waiting for approval from <names>" with the request's link and Copy
 link, then "Deploying to production…", then "Live in production: v1.4.2" with the production

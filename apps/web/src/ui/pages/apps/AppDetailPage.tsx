@@ -411,7 +411,6 @@ export default function AppDetailPage() {
           ownerTeam={app.ownerGroup?.name ?? null}
         />
       )}
-      {hasRepo && !holding && <ShipSettingsCard app={app} canApplyProtection={canManage} />}
 
       {/* Each environment's latest deploy, as it runs: dispatched → … → live, or failed. */}
       {app.status !== 'requested' && <DeployProgressPanel appId={app.id} />}
@@ -450,6 +449,8 @@ export default function AppDetailPage() {
       {hasRepo && !holding && app.status !== 'archived' && (
         <SessionsCard appId={app.id} appSlug={app.slug} canStart={can('create', 'Session')} />
       )}
+      {/* Issue #5: what Ship does on this app — a summary; owners and admins change it in a modal. */}
+      {hasRepo && !holding && <ShipSettingsCard app={app} canApplyProtection={canManage} />}
 
       {app.environments.length > 0 && !holding && (
         <HealthHistory appId={app.id} environments={app.environments} />

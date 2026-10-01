@@ -67,6 +67,12 @@ export const RELEASE_MAX_PRS = 100
  */
 export const RELEASE_REALTIME_ENTITY = 'release'
 
+/**
+ * A release still not live on staging this long after it was cut has stalled: a session's landing
+ * gives up on it (`land-release.ts`) and the app page's pipeline strip stops calling it "deploying".
+ */
+export const RELEASE_STAGING_TIMEOUT_MINUTES = 45
+
 /** Error codes the release routes answer with (the `code` of the error envelope). */
 export const RELEASE_ERROR_CODES = {
   /**

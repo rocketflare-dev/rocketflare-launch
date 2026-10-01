@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The app page's pipeline strip and Shipping card are compact.** The strip is one row (staging →
+  Promote → production) with its reason underneath and what it ships folded away; a release stuck
+  in `tagged` for more than 45 minutes reads "vX never reached staging" instead of "still
+  deploying", and a non-release build shows as `main-64a36e6`, not `vmain-64a36e6`. The Shipping
+  card is a two-line summary below the sessions card; **Change** opens its form in a modal.
+
 - **Ship means "live on staging"** (rocketflare-launch#5; `docs/plans/i5-ship-to-staging.md`,
   `docs/CONCEPTS.md` §18.13, spec/08 § Shipping). A session's Ship no longer ends at an open pull
   request: after Launch's gate opens the PR, the session waits for the PR's CI (the repo's `Gate`

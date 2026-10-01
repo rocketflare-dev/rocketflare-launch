@@ -94,7 +94,7 @@ describe('PipelineStrip', () => {
     renderStrip({ [PROMOTION]: view() })
     expect(await promoteButton()).toBeEnabled()
     expect(screen.getByText('Staging: v1.4.2')).toBeInTheDocument()
-    expect(screen.getByText(/healthy,/)).toHaveTextContent('healthy, deployed 10 minutes ago')
+    expect(screen.getByText(/healthy,/)).toHaveTextContent('healthy, 10 minutes ago')
     expect(screen.getByText('Production: v1.4.1')).toBeInTheDocument()
     const ships = screen.getByRole('list', { name: 'What this promotion ships' })
     // The session's own words lead; the PR title follows; never a SHA.
@@ -134,7 +134,23 @@ describe('PipelineStrip', () => {
   })
 
   it.each([
-    ['still deploying', view({}, { status: 'staging' }), 'Staging is still deploying.'],
+    [
+      'still deploying',
+      view({}, { status: 'staging', createdAt: minutesAgo(5) }),
+      'Staging is still deploying.',
+    ],
+    [
+      // Past the deploy window (RELEASE_STAGING_TIMEOUT_MINUTES): stuck, not deploying.
+      'a release never reached staging',
+      view({}, { status: 'tagged', createdAt: minutesAgo(60 * 24 * 3) }),
+      'v1.4.2 never reached staging.',
+    ],
+    [
+      // A build that is not a release keeps its own name — no "v" in front of it.
+      'staging runs a build that is not the release',
+      view({ staging: environment({ version: 'main-64a36e6', releaseId: null }) }),
+      'Staging runs main-64a36e6, not v1.4.2.',
+    ],
     [
       'unhealthy',
       view({ staging: environment({ healthStatus: 'down' }) }),
