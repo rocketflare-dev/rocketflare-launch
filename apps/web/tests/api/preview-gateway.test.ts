@@ -96,6 +96,8 @@ async function seeded(status: SessionRow['status'] = 'ready') {
             // What the kit's own worker would add; the gateway must take it off.
             'X-Frame-Options': 'DENY',
             'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'",
+            // Cacheable, as Cloudflare's zone default makes a `.css`: a live preview never is.
+            'Cache-Control': 'max-age=14400',
           },
         }
       )
@@ -267,6 +269,10 @@ describe('the gateway', () => {
     expect(page.headers.get('Content-Security-Policy')).toBe(
       "default-src 'self'; frame-ancestors http://localhost:3001"
     )
+    // Never cached — not by the browser, not at the edge: a reload after a resume must not get
+    // the stylesheet from before the session's edits (HMR only ever fetched fresh `?t=` URLs).
+    expect(page.headers.get('Cache-Control')).toBe('no-store, private')
+    expect(page.headers.get('CDN-Cache-Control')).toBe('no-store')
     expect(ports.sandboxes.get(row.id)?.fetches).toEqual([
       { port: 5173, url: `http://${host}/src/main.tsx`, method: 'GET' },
     ])

@@ -1743,6 +1743,10 @@ Partitioned; `launch-preview`, Lax, in development) and redirects to `/`. Every 
 the cookie for this host and session (401 otherwise), an ended session is 410, a booting or
 suspended one 503; only :5173 and :8787 are proxied (`SandboxPort.fetch`), with `frame-ancestors
 <APP_URL>` and a status cache of 15 s per isolate. The UI reloads the frame after every turn.
+**Nothing proxied is cached**: every response gets `Cache-Control: no-store, private` and
+`CDN-Cache-Control: no-store`, whatever the dev server sent — Cloudflare's zone default gave a
+`.css` four hours in the browser, so the reload after a resume showed the stylesheet from before the
+session's edits (HMR only ever fetches fresh `?t=` URLs, which hid it while the session ran).
 **A preview request is the person's activity**: an authenticated request to a `ready` / `blocked`
 session moves `last_activity_at` (the idle clock, §18.9) in `waitUntil`, at most once a minute per
 session per isolate and only on a stamp older than a minute in the database, so a Vite page's

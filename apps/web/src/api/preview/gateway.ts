@@ -362,6 +362,11 @@ async function proxy(
 
   const out = new Headers(res.headers)
   out.delete('X-Frame-Options')
+  // A live dev server is never cached: Cloudflare's zone default gives a `.css` four hours in the
+  // browser, so the reload after a resume showed the stylesheet from before the session's edits
+  // (HMR had only ever fetched fresh `?t=` URLs). `no-store`/`private` are never overridden.
+  out.set('Cache-Control', 'no-store, private')
+  out.set('CDN-Cache-Control', 'no-store')
   out.set(
     'Content-Security-Policy',
     frameAncestors(out.get('Content-Security-Policy'), new URL(cfg.APP_URL).origin)

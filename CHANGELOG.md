@@ -27,6 +27,11 @@
   0.16.0 installs analytics 3.4.2, whose delete names the tenant (plugins#8) — and the kit's scan
   fails a stale entry, so the scaffold's own `test:config` failed. The patch now applies only while
   the plugin's test still holds the unscoped delete (`requiresText`).
+- **A session's preview shows its work after a resume.** The preview gateway passed the dev
+  server's cache headers through, and Cloudflare's zone default gave `/index.css` four hours in the
+  browser: hot reload hid it (fresh `?t=` URLs), but the full reload after a resume served the
+  stylesheet from before the session's edits, so the preview looked as if the work was gone. Every
+  proxied response is now `Cache-Control: no-store, private` and `CDN-Cache-Control: no-store`.
 - **A coding session's agent gets its system note, and never runs the full gate.** The
   `session-system-note` prompt was registered (and editable in Settings) but never sent; every
   turn now appends it with `--append-system-prompt`, resumed turns included. It gains one rule:
