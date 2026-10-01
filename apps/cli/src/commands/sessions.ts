@@ -8,9 +8,13 @@
  * - `say <id> <message> [--follow]` posts one turn; `--follow` tails the session's DURABLE rows
  *   (`GET /api/sessions/:id/events?afterSeq=`) until the turn ends — Claude's text, one line per
  *   tool call, and the turn's footnote. A failed turn exits 1. With `--json` it prints ONE document
- *   at the end, `{ session, events }` (`ship --wait` adds `pr`), so it pipes into `jq`.
- * - `ship <id> [--wait]` asks for the ship; `--wait` follows the gate until the PR is open and then
- *   its CI until it settles, exiting 1 when either fails.
+ *   at the end, `{ session, events }` (`ship` in `pr` mode adds `pr`), so it pipes into `jq`.
+ * - `ship <id> [--no-wait]` asks for the ship and, by default, follows it to the end, one line per
+ *   stage row (issue #5): the gate, the PR, CI (a red check with its log tail), the review, the
+ *   merge, the release and the staging deploy — exit 0 once live on staging; exit 1 when the ship
+ *   is given back before the merge (`ship.reopened`), stalls after it, or opens no PR. In the
+ *   app's `pr` mode it ends as before: the PR, then its CI. `--no-wait` returns once it started;
+ *   `--wait` is still accepted and changes nothing.
  * - `end <id>`, `ls <app> [--all]`, `preview-url <id> [--open]` (a 60-second grant URL — it is a
  *   credential for that preview, so it is printed only when asked for and never logged).
  *
@@ -24,14 +28,21 @@ import {
   previewGrantResponseSchema,
   type Session,
   type SessionEvent,
+  type SessionShipReopenedData,
   type SessionStatus,
   SHIP_GATE_STEP_LABELS,
   sessionDetailResponseSchema,
   sessionEventsResponseSchema,
   sessionListResponseSchema,
   sessionPrResponseSchema,
+  sessionShipCiDataSchema,
   sessionShipGateDataSchema,
+  sessionShipMergedDataSchema,
   sessionShipPrDataSchema,
+  sessionShipReleasedDataSchema,
+  sessionShipReopenedDataSchema,
+  sessionShipReviewDataSchema,
+  sessionShipStagingDataSchema,
   sessionTurnEndDataSchema,
   sessionTurnFailedDataSchema,
   sessionTurnInterruptedDataSchema,
@@ -58,6 +69,12 @@ const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(res
 const sessionPath = (id: string) => `/api/sessions/${encodeURIComponent(id)}`
 
 const usd = (microcents: number) => `$${(microcents / 100_000_000).toFixed(2)}`
+
+/** `v1.4.2`. Pure. */
+const versionLabel = (version: string) => (version.startsWith('v') ? version : `v${version}`)
+
+/** The last lines of a red CI check's log (redacted by the server) a follow prints. */
+const CI_TAIL_LINES = 20
 
 function sessionUrl(ctx: CommandContext, appSlug: string, id: string): string {
   return `${ctx.config.serverUrl.replace(/\/+$/, '')}/apps/${appSlug}/sessions/${id}`
@@ -236,6 +253,81 @@ export function formatSessionEvent(event: SessionEvent): string | null {
         ? chalk.green(`✓ opened PR #${parsed.data.number} ${parsed.data.url}`)
         : null
     }
+    case 'ship.ci': {
+      const parsed = sessionShipCiDataSchema.safeParse(event.data)
+      if (!parsed.success) return null
+      const ci = parsed.data
+      if (ci.state === 'success') return chalk.green('✓ CI passed')
+      if (ci.state === 'failure') {
+        const check = ci.failedCheck
+        const lines = [
+          chalk.red(
+            `✗ CI failed${check ? `: ${check.name}` : ''}${check?.url ? ` ${check.url}` : ''}`
+          ),
+        ]
+        const tail = check?.logTail?.trim().split('\n').slice(-CI_TAIL_LINES)
+        if (tail?.length) lines.push(...tail.map(line => chalk.dim(`    ${line}`)))
+        return lines.join('\n')
+      }
+      return chalk.dim(
+        `  … CI: ${ci.passed} passed${ci.failed ? `, ${ci.failed} failed` : ''}${ci.pending ? `, ${ci.pending} running` : ''}`
+      )
+    }
+    case 'ship.review': {
+      const parsed = sessionShipReviewDataSchema.safeParse(event.data)
+      if (!parsed.success) return null
+      const by = parsed.data.by ? ` by ${parsed.data.by}` : ''
+      const note = parsed.data.note ? `: ${parsed.data.note}` : ''
+      switch (parsed.data.status) {
+        case 'requested':
+          return chalk.cyan(`… waiting for a review in Launch (approval ${parsed.data.approvalId})`)
+        case 'approved':
+          return chalk.green(`✓ approved${by}${note}`)
+        case 'rejected':
+          return chalk.yellow(`! sent back${by}${note}`)
+        case 'expired':
+          return chalk.yellow('! the review request lapsed')
+        case 'cancelled':
+          return chalk.dim('  the review request was withdrawn')
+      }
+      return null
+    }
+    case 'ship.merged': {
+      const parsed = sessionShipMergedDataSchema.safeParse(event.data)
+      return parsed.success
+        ? chalk.green(`✓ merged PR #${parsed.data.number} (${parsed.data.sha.slice(0, 7)})`)
+        : null
+    }
+    case 'ship.released': {
+      const parsed = sessionShipReleasedDataSchema.safeParse(event.data)
+      return parsed.success
+        ? chalk.green(
+            `✓ released ${versionLabel(parsed.data.version)}${parsed.data.shared ? ' (shared with another merge)' : ''}`
+          )
+        : null
+    }
+    case 'ship.staging': {
+      const parsed = sessionShipStagingDataSchema.safeParse(event.data)
+      if (!parsed.success) return null
+      const { status, url, error } = parsed.data
+      const version = versionLabel(parsed.data.version)
+      switch (status) {
+        case 'deploying':
+          return chalk.dim(`  … deploying ${version} to staging`)
+        case 'active':
+          return chalk.dim(`  … ${version} is on staging; checking its health`)
+        case 'live':
+          return chalk.green(`✓ live on staging: ${url ?? 'staging'} (${version})`)
+        default:
+          return chalk.red(`✗ ${error ?? `${version} did not go live on staging (${status})`}`)
+      }
+    }
+    case 'ship.reopened': {
+      const parsed = sessionShipReopenedDataSchema.safeParse(event.data)
+      return parsed.success
+        ? chalk.yellow(`! not merged (${parsed.data.reason}): ${parsed.data.message}`)
+        : null
+    }
     case 'error':
       return chalk.red(`✗ ${typeof data.message === 'string' ? data.message : 'error'}`)
     case 'step':
@@ -326,7 +418,36 @@ export async function runSessionsSay(
 // ---- ship ----------------------------------------------------------------------------------
 
 export interface SessionsShipOptions extends SessionPollOptions {
+  /**
+   * Follow the ship to its end (the default). `false` is `--no-wait`: return once it has started.
+   * `--wait` is still accepted and changes nothing.
+   */
   wait?: boolean
+}
+
+/** Where a followed ship stands. */
+export type ShipFollowState = 'moving' | 'live' | 'stalled' | 'reopened' | 'pr' | 'no_pr'
+
+/**
+ * Where a ship stands from the session row and whether a `ship.reopened` row was seen (issue #5):
+ * still moving (the gate, then `ci → [approval] → merging` while `shipping`, then `releasing →
+ * deploying` once `shipped`), live on staging, stalled after the merge, given back before it, an
+ * open PR (`pr` mode, or a server from before issue #5 — no landing), or no PR at all. Pure.
+ */
+export function shipFollowState(
+  session: Pick<Session, 'status' | 'requestedAction' | 'prNumber' | 'landing'>,
+  sawReopen: boolean
+): ShipFollowState {
+  const stage = session.landing?.stage
+  if (session.status === 'shipping') return 'moving'
+  if (session.status === 'shipped') {
+    if (!session.landing || stage === 'pr') return session.prNumber === null ? 'no_pr' : 'pr'
+    if (stage === 'live') return 'live'
+    if (stage === 'stalled') return 'stalled'
+    return 'moving'
+  }
+  if (session.requestedAction === 'ship' && isActiveSessionStatus(session.status)) return 'moving'
+  return sawReopen ? 'reopened' : 'no_pr'
 }
 
 export async function runSessionsShip(
@@ -335,44 +456,109 @@ export async function runSessionsShip(
   options: SessionsShipOptions = {}
 ): Promise<void> {
   const client = requireClient(ctx)
-  const start = options.wait ? (await readEventsAfter(client, id, 0)).nextSeq : 0
+  const wait = options.wait !== false
+  const start = wait ? (await readEventsAfter(client, id, 0)).nextSeq : 0
   const { data, raw } = await client.request('POST', `${sessionPath(id)}/ship`, {
     schema: sessionDetailResponseSchema,
   })
-  if (!options.wait) {
+  if (!wait) {
     ctx.out.data(
       raw,
       () =>
-        `${chalk.green('✓')} Shipping. Follow it with \`${ctx.binName} sessions ship ${id} --wait\` or on the web.`
+        `${chalk.green('✓')} Shipping. Follow it on the session's page, or with \`${ctx.binName} sessions ls <app>\`.`
     )
     return
   }
 
   const sleep = options.sleep ?? defaultSleep
   const now = options.now ?? Date.now
-  const deadline = now() + (options.timeoutMs ?? 60 * 60_000)
+  // CI may take two hours (SHIP_CI_MAX_MINUTES), the staging follow most of one more.
+  const deadline = now() + (options.timeoutMs ?? 4 * 60 * 60_000)
+  const pollMs = options.pollMs ?? 1000
   let cursor = start
   let session = data.session
   const seen: SessionEvent[] = []
+  let reopened: SessionShipReopenedData | null = null
+  let state: ShipFollowState = 'moving'
 
-  // 1. The gate and the PR: follow the rows until the session settles.
-  while (now() < deadline) {
+  const readRows = async () => {
     const batch = await readEventsAfter(client, id, cursor)
     cursor = batch.nextSeq
-    for (const event of batch.items) emit(ctx, seen, event)
+    for (const event of batch.items) {
+      emit(ctx, seen, event)
+      if (event.type === 'ship.reopened') {
+        const parsed = sessionShipReopenedDataSchema.safeParse(event.data)
+        if (parsed.success) reopened = parsed.data
+      }
+    }
+  }
+
+  // 1. The gate, the PR and (issue #5) the landing: follow the rows until the ship settles.
+  while (now() < deadline) {
+    await readRows()
     session = await getSession(client, id)
-    if (session.status === 'shipped' || !isActiveSessionStatus(session.status)) break
-    if (session.status !== 'shipping' && session.requestedAction !== 'ship') break
-    await sleep(options.pollMs ?? 1000)
+    state = shipFollowState(session, reopened !== null)
+    // The row can settle before its last rows are read: read once more before calling it.
+    if (state !== 'moving') {
+      await readRows()
+      state = shipFollowState(session, reopened !== null)
+      break
+    }
+    // Past the PR, the Workflow works in rounds of 30 s – 2 min.
+    await sleep(session.landing ? Math.max(pollMs, 1000) * 10 : pollMs)
   }
-  if (session.status !== 'shipped' || session.prNumber === null) {
-    throw new CliError(
-      session.status === 'shipping'
-        ? 'Timed out waiting for the ship to finish'
-        : `The ship did not open a pull request (session is ${session.status})`,
-      session.error ? { hint: session.error } : {}
-    )
+
+  const finish = (extra: Record<string, unknown> = {}) => {
+    if (ctx.json) ctx.out.data({ session, events: seen, ...extra }, () => '')
   }
+  switch (state) {
+    case 'moving':
+      finish()
+      throw new CliError(
+        session.landing?.stage === 'approval'
+          ? 'Still waiting for a review in Launch'
+          : 'Timed out waiting for the ship to finish',
+        { hint: 'The ship carries on without the CLI — see it on the session’s page.' }
+      )
+    case 'live': {
+      finish()
+      const sawLive = seen.some(
+        event =>
+          event.type === 'ship.staging' && (event.data as { status?: unknown })?.status === 'live'
+      )
+      if (!ctx.json && !sawLive) {
+        const version = session.landing?.version
+          ? ` (${versionLabel(session.landing.version)})`
+          : ''
+        ctx.out.text(
+          chalk.green(`✓ live on staging: ${session.landing?.stagingUrl ?? 'staging'}${version}`)
+        )
+      }
+      return
+    }
+    case 'stalled':
+      finish()
+      throw new CliError(
+        session.landing?.error ?? 'Merged, but the change did not make it live on staging',
+        { hint: 'Nothing is lost — release, retry or promote from the app’s page.' }
+      )
+    case 'reopened': {
+      finish()
+      const why = reopened as SessionShipReopenedData | null
+      throw new CliError(`Not merged: ${why?.message ?? 'the ship was given back'}`, {
+        hint: `The session is open again — fix it with \`${ctx.binName} sessions say ${id} "…"\`, then ship again.`,
+      })
+    }
+    case 'no_pr':
+      finish()
+      throw new CliError(
+        `The ship did not open a pull request (session is ${session.status})`,
+        session.error ? { hint: session.error } : {}
+      )
+    case 'pr':
+      break
+  }
+  // `pr` mode (or a server from before issue #5): today's ending — the PR, then its CI.
   if (!ctx.json) ctx.out.text(`${chalk.green('✓')} PR #${session.prNumber} ${session.prUrl ?? ''}`)
 
   // 2. Its CI, until it settles.

@@ -187,6 +187,8 @@ const CORE_QUERY_KEYS = {
     deploys: (appId: string) => ['apps', 'deploys', appId] as const,
     /** Each environment's latest deploy and its phase (polled while one is in progress). */
     deployProgress: (appId: string) => ['apps', 'deploy-progress', appId] as const,
+    /** Issue #5: whether the default branch is protected the way Launch's merge needs. */
+    branchProtection: (appId: string) => ['apps', 'branch-protection', appId] as const,
   },
   /**
    * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is

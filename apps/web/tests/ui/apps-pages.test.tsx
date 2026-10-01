@@ -3,7 +3,7 @@
  * labels, the fleet summary, search), the Import modal's validation and its in-modal refusal, and
  * the detail page's OIDC card showing the client secret ONCE.
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AppDetailPage from '@/ui/pages/apps/AppDetailPage'
@@ -206,6 +206,162 @@ describe('AppDetailPage', () => {
     expect(await screen.findByRole('button', { name: /Promote to production/ })).toBeDisabled()
     const strip = screen.getByRole('region', { name: 'Staging to production' })
     expect(within(strip).getByText('Nothing on staging yet.')).toBeInTheDocument()
+  })
+
+  describe('the Shipping card (#5)', () => {
+    const GROUP_ID = '0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a'
+    const PROTECTION = `/api/apps/${APP_ID}/branch-protection`
+    const protection = (state: string, overrides: Record<string, unknown> = {}) => ({
+      state,
+      requiredChecks: state === 'ok' ? ['Gate'] : [],
+      appCanBypass: state === 'ok',
+      rulesetId: state === 'ok' ? 7 : null,
+      detail: null,
+      ...overrides,
+    })
+    const groupRow = {
+      id: GROUP_ID,
+      tenantId: IDS.tenant,
+      groupTypeId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
+      typeName: 'Team',
+      name: 'Reviewers',
+      description: null,
+      memberCount: 3,
+      createdAt: '2026-09-01T00:00:00Z',
+      updatedAt: '2026-09-01T00:00:00Z',
+    }
+    const card = async () =>
+      (await screen.findByRole('heading', { name: 'Shipping' })).closest('section') as HTMLElement
+    /** A member who is one of the app's named owners: may change the settings, may not Apply. */
+    const owner = () => member()
+
+    it('lets an owner or admin choose where Ship ends and who reviews, validated like the server', async () => {
+      const fetchMock = renderDetail(makeSession(), {
+        [PROTECTION]: protection('ok'),
+        '/api/groups': { items: [groupRow] },
+        [`PUT /api/apps/${APP_ID}/ship-settings`]: () => ({
+          ...detail(),
+          shipSettings: {
+            sessionShip: 'staging',
+            review: { mode: 'groups', groupIds: [GROUP_ID] },
+          },
+        }),
+      })
+      const section = await card()
+      // The default: live on staging, nobody reviews.
+      expect(within(section).getByRole('radio', { name: /Go live on staging/ })).toBeChecked()
+      expect(within(section).getByRole('radio', { name: /Nobody/ })).toBeChecked()
+      expect(within(section).getByRole('button', { name: 'Save' })).toBeDisabled()
+
+      fireEvent.click(within(section).getByRole('radio', { name: /Someone from these teams/ }))
+      // Teams, but none chosen: the shared schema's own message, and no save.
+      expect(
+        await within(section).findByText('Name at least one team to review')
+      ).toBeInTheDocument()
+      expect(within(section).getByRole('button', { name: 'Save' })).toBeDisabled()
+
+      fireEvent.click(await within(section).findByRole('button', { name: 'Reviewers' }))
+      fireEvent.click(within(section).getByRole('button', { name: 'Save' }))
+      await waitFor(() =>
+        expect(requestBody(fetchMock, `PUT /api/apps/${APP_ID}/ship-settings`)).toEqual({
+          sessionShip: 'staging',
+          review: { mode: 'groups', groupIds: [GROUP_ID] },
+        })
+      )
+      // Branch protection, in words.
+      expect(within(section).getByText('Protected')).toBeInTheDocument()
+      expect(within(section).queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument()
+    })
+
+    it('shows the review as read-only when an admin’s approval policy decides it', async () => {
+      renderDetail(makeSession(), {
+        '/api/apps/expenses': { ...detail(), shipReviewSetBy: 'policy' },
+        [PROTECTION]: protection('ok'),
+      })
+      const section = await card()
+      expect(within(section).getByTestId('review-policy')).toHaveTextContent(
+        /that policy decides who approves/
+      )
+      expect(within(section).queryByRole('radio', { name: /Nobody/ })).not.toBeInTheDocument()
+      // Where Ship ends is still the app's to choose.
+      expect(within(section).getByRole('radio', { name: /Open a pull request/ })).toBeEnabled()
+    })
+
+    it('reads as sentences for somebody who may not change it, and asks GitHub nothing', async () => {
+      const fetchMock = renderDetail(member(), {
+        '/api/apps/expenses': {
+          ...detail(),
+          viewerCanDeploy: false,
+          shipSettings: { sessionShip: 'staging', review: { mode: 'app_owners', groupIds: [] } },
+        },
+      })
+      const section = await card()
+      expect(within(section).getByTestId('ship-settings-readonly')).toHaveTextContent(
+        'Shipping a session puts the change live on staging.'
+      )
+      expect(within(section).getByText(/One of the app’s owners approves/)).toBeInTheDocument()
+      expect(within(section).queryByRole('radio')).not.toBeInTheDocument()
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes('branch-protection'))).toBe(
+        false
+      )
+    })
+
+    it.each([
+      ['none', 'Not protected', true],
+      ['blocks', 'Another rule is in the way', true],
+      ['unavailable', 'Not available on this plan', false],
+      ['unknown', 'Couldn’t check', false],
+    ] as const)(
+      'says branch protection %s in words, with Apply where it helps',
+      async (state, title, apply) => {
+        renderDetail(makeSession(), {
+          [PROTECTION]: protection(state, {
+            detail: state === 'blocks' ? 'Classic branch protection requires 2 reviews.' : null,
+          }),
+        })
+        const section = await card()
+        expect(await within(section).findByText(title)).toBeInTheDocument()
+        expect(
+          within(section).queryByRole('button', { name: 'Apply Launch’s protection' }) !== null
+        ).toBe(apply)
+        if (state === 'blocks') {
+          expect(within(section).getByText(/DEPLOY\.md/)).toBeInTheDocument()
+          expect(
+            within(section).getByText('Classic branch protection requires 2 reviews.')
+          ).toBeInTheDocument()
+        }
+      }
+    )
+
+    it('lets an administrator apply the protection; an app owner is told who can', async () => {
+      const fetchMock = renderDetail(makeSession(), {
+        [PROTECTION]: protection('none'),
+        [`POST ${PROTECTION}`]: protection('ok'),
+      })
+      const section = await card()
+      fireEvent.click(
+        await within(section).findByRole('button', { name: 'Apply Launch’s protection' })
+      )
+      expect(await within(section).findByText('Protected')).toBeInTheDocument()
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, i]) => String(u).endsWith('/branch-protection') && i?.method === 'POST'
+        )
+      ).toBe(true)
+      cleanup()
+
+      renderDetail(owner(), { [PROTECTION]: protection('none') })
+      const ownerSection = await card()
+      expect(await within(ownerSection).findByText('Not protected')).toBeInTheDocument()
+      expect(
+        within(ownerSection).queryByRole('button', { name: 'Apply Launch’s protection' })
+      ).not.toBeInTheDocument()
+      expect(
+        within(ownerSection).getByText('An administrator can apply Launch’s protection.')
+      ).toBeInTheDocument()
+      // …while the settings themselves are theirs to change.
+      expect(within(ownerSection).getByRole('radio', { name: /Go live on staging/ })).toBeEnabled()
+    })
   })
 
   it('registers the OIDC client and shows the secret once, with the config snippet', async () => {

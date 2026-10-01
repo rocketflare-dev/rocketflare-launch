@@ -12,7 +12,9 @@
  * Polling (ui.md): only while the server still OWES the reader something — a pure decision on the
  * cached row, `sessionPollInterval`. A session sitting at `ready` waits on a PERSON and is not
  * polled; nor is `blocked` (it waits on someone extending the budget) or `suspended` (on a resume),
- * and a settled one never is.
+ * and a settled one never is — except a `shipped` row whose landing is still releasing or
+ * deploying to staging (issue #5), polled at `SESSION_LANDING_POLL_MS` like the rest of a landing;
+ * a landing parked in `approval` waits on a reviewer and is not polled.
  *
  * The chat transcript is NOT here: it is `useSessionStream`, under its own `['session-agui']` root,
  * which the nudge must never reach.
@@ -25,11 +27,13 @@ import {
   type ExtendBudgetRequest,
   extendBudgetResponseSchema,
   isActiveSessionStatus,
+  MOVING_LANDING_STAGES,
   previewGrantResponseSchema,
   type Session,
   type SessionListQuery,
   type SessionStatus,
   type SessionSummary,
+  type ShipLandingStage,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
@@ -61,14 +65,39 @@ export function sessionIsMoving(status: SessionStatus | undefined): boolean {
 }
 
 /**
- * Whether the server still owes this session's reader an answer. Pure. A `ready` row with a
- * message waiting (`pendingMessage`) or an action requested is about to move, so it counts.
+ * Issue #5: a ship's landing still moving — `ci`, `approval`, `merging` while `shipping`, then
+ * `releasing` and `deploying` after the merge, when the row is already `shipped` (terminal) but the
+ * Workflow is still taking it to staging. Pure.
  */
-export function sessionOwesAnswer(
-  session: Pick<Session, 'status' | 'pendingMessage' | 'requestedAction'> | undefined
-): boolean {
+export function landingIsMoving(landing: Session['landing'] | undefined): boolean {
+  return Boolean(
+    landing && (MOVING_LANDING_STAGES as readonly ShipLandingStage[]).includes(landing.stage)
+  )
+}
+
+/** The landing is waiting on a PERSON (a reviewer), not on the Workflow. Pure. */
+function landingWaitsOnPerson(landing: Session['landing'] | undefined): boolean {
+  return landing?.stage === 'approval'
+}
+
+/** CI and the staging deploy move in minutes: a landing is polled at this pace, not every 3 s. */
+export const SESSION_LANDING_POLL_MS = 15_000
+
+type OwesAnswerInput = Pick<Session, 'status' | 'pendingMessage' | 'requestedAction'> & {
+  landing?: Session['landing']
+}
+
+/**
+ * Whether the server still owes this session's reader an answer. Pure. A `ready` row with a
+ * message waiting (`pendingMessage`) or an action requested is about to move, so it counts; so
+ * does a `shipped` row whose landing is still releasing or deploying (issue #5). A landing parked
+ * on a reviewer (`approval`) waits on a person — the approval's nudge moves it, not a poll.
+ */
+export function sessionOwesAnswer(session: OwesAnswerInput | undefined): boolean {
   if (!session) return false
+  if (landingWaitsOnPerson(session.landing) && session.requestedAction === null) return false
   if (sessionIsMoving(session.status)) return true
+  if (session.status === 'shipped') return landingIsMoving(session.landing)
   return (
     isActiveSessionStatus(session.status) &&
     (session.pendingMessage || session.requestedAction !== null)
@@ -76,10 +105,10 @@ export function sessionOwesAnswer(
 }
 
 /** `refetchInterval` for one session. Pure. */
-export function sessionPollInterval(
-  session: Pick<Session, 'status' | 'pendingMessage' | 'requestedAction'> | undefined
-): number | false {
-  return sessionOwesAnswer(session) ? SESSION_POLL_MS : false
+export function sessionPollInterval(session: OwesAnswerInput | undefined): number | false {
+  if (!sessionOwesAnswer(session)) return false
+  // Past the PR the Workflow works in poll ROUNDS (30 s – 2 min): a 3 s poll would show nothing new.
+  return landingIsMoving(session?.landing) ? SESSION_LANDING_POLL_MS : SESSION_POLL_MS
 }
 
 /** `refetchInterval` for a list: poll while any listed row is moving. Pure. */

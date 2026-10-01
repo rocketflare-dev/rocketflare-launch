@@ -77,7 +77,12 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   reports a seq past the cursor, when the row changes, or on a poll after the stream gives up —
   RunPage's `useLiveRun` pattern. `pages/sessions/` is the lazy page (it carries `Markdown`); every
   panel is a selector in the pure `sessionChatModel.ts` (`buildSessionChat`, `toolSummary`,
-  `bootSteps`, `latestPreviewChangeSeq`, `shipGates` — `tests/config/session-chat-model.test.ts`).
+  `bootSteps`, `latestPreviewChangeSeq`, `shipGates`, and issue #5's `landingTimeline(events,
+  landing)` — the ship's walk after the PR up to live on staging, a reopen or a stall —
+  `tests/config/session-chat-model.test.ts`). A landing still moving keeps the row polled at
+  `SESSION_LANDING_POLL_MS`, `shipped` included (`sessionOwesAnswer`); one in `approval` waits on a
+  person and is not polled. The app page's `ShipSettingsCard` reads `useBranchProtection` (never
+  polled) and saves through `useUpdateShipSettings` (`useApps`).
   Launch P4 (approvals and shipping): `useApprovals` (`useApprovalCount` — the nav badge, never
   polled; `useApprovals(filters)` for the inbox; `useApproval(id)` polling `APPROVAL_APPLY_POLL_MS`
   only while `approvalOwesAnswer` — approved, `applyAfter` not yet landed nor failed; a `pending`

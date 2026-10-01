@@ -433,4 +433,57 @@ describe('ApprovalPage', () => {
     expect(screen.queryByText(/nobody \(the policy names no approvers\)/)).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for Carol Checker to decide.')).toBeInTheDocument()
   })
+
+  it('renders a session merge: the PR, its summary and diff stat, and the session to read (#5)', async () => {
+    const sessionId = '5e551000-0000-4000-8000-000000000001'
+    const prUrl = 'https://github.com/acme/expenses/pull/12'
+    renderRequest({
+      [BASE]: approvalDetail({
+        kind: 'session.merge',
+        subjectType: 'session',
+        subjectId: sessionId,
+        reason: null,
+        context: {
+          kind: 'session.merge',
+          sessionId,
+          shortId: 'abcdefghijkl',
+          title: 'Friendlier home page',
+          appSlug: 'expenses',
+          prNumber: 12,
+          prUrl,
+          prTitle: 'Make the home page friendlier',
+          summary: 'Changes the headline to “Welcome back”.\n\nNo data changes.',
+          diffStat: ' src/ui/Home.tsx | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)',
+          headSha: 'b'.repeat(40),
+          sessionPath: `/sessions/${sessionId}`,
+        },
+        policy: {
+          approvers: { appOwners: true, admins: false, groupIds: [], userIds: [] },
+          minApprovals: 1,
+          allowSelfApproval: false,
+          expiresAfterMinutes: 48 * 60,
+          autoApproveRole: null,
+        },
+      }),
+    })
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Merge “Make the home page friendlier” (#12) into Expenses and put it on staging',
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: /Make the home page friendlier \(#12\)/ })
+    ).toHaveAttribute('href', prUrl)
+    // The session is a link an approver may follow — the app's session page, not the context's
+    // bare `/sessions/<id>`, which is no route.
+    expect(screen.getByRole('link', { name: 'Friendlier home page' })).toHaveAttribute(
+      'href',
+      `/apps/expenses/sessions/${sessionId}`
+    )
+    expect(screen.getByTestId('merge-summary')).toHaveTextContent('Changes the headline to')
+    expect(screen.getByTestId('merge-summary')).toHaveTextContent('No data changes.')
+    expect(screen.getByTestId('merge-diffstat')).toHaveTextContent('src/ui/Home.tsx | 4 ++--')
+    expect(screen.getByText('bbbbbbb')).toBeInTheDocument()
+    expect(screen.getByText(/Approving merges the pull request/)).toBeInTheDocument()
+  })
 })

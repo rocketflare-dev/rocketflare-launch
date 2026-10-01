@@ -1,7 +1,8 @@
 /**
  * The app page's pipeline strip (rocketflare-launch#5 part 8): `Staging: v1.4.2 (healthy,
  * deployed 10 minutes ago)` → [Promote to production] → `Production: v1.4.1`, and below it, in
- * plain words, what the promotion ships — the sessions and pull requests between the two versions.
+ * plain words, what the promotion ships — the sessions and pull requests between the two versions,
+ * each with its stored ship summary as one plain line under the title (issue #5, `summaryLine`).
  *
  * - One read, `useAppPromotion` (`GET /api/apps/:id/promotion`); every state and sentence comes
  *   from the pure `promotionModel.ts`.
@@ -238,7 +239,35 @@ function StatusLine({
   )
 }
 
-/** In plain words: each session (or pull request) the promotion carries. */
+/** Longest summary line shown under a change; the rest is one click away on the PR. */
+const SUMMARY_LINE_MAX = 220
+
+/**
+ * Issue #5: a change's stored ship summary (markdown from the PR body) as ONE plain line — its
+ * first paragraph that is not just a heading, list and quote marks stripped, clipped. Rendered as
+ * text, never markdown (this chunk carries no renderer). Null when there is nothing to say. Pure.
+ */
+export function summaryLine(summary: string | null | undefined): string | null {
+  if (!summary) return null
+  const paragraph = summary
+    .split(/\n\s*\n/)
+    .map(part =>
+      part
+        .split('\n')
+        .filter(line => !/^\s*#{1,6}\s/.test(line))
+        .map(line => line.replace(/^\s*([-*+]\s+|\d+\.\s+|>\s?)/, '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\*\*|__|`/g, '')
+    )
+    .find(Boolean)
+  if (!paragraph) return null
+  return paragraph.length > SUMMARY_LINE_MAX
+    ? `${paragraph.slice(0, SUMMARY_LINE_MAX).trimEnd()}…`
+    : paragraph
+}
+
+/** In plain words: each session (or pull request) the promotion carries, and what it changed. */
 function Changes({ view, state }: { view: AppPromotion; state: PromotionState }) {
   const title = changesTitle(state)
   if (!title) return null
@@ -277,6 +306,11 @@ function Changes({ view, state }: { view: AppPromotion; state: PromotionState })
                     )}
                     {versions.size > 1 ? ` · in ${v(change.version)}` : ''}
                   </span>
+                  {summaryLine(change.summary) && (
+                    <span className="block text-xs text-secondary" data-change-summary>
+                      {summaryLine(change.summary)}
+                    </span>
+                  )}
                 </span>
               </li>
             )
