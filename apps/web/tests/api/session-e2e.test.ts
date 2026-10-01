@@ -41,7 +41,7 @@ import { claudeTranscriptPath } from '@/api/services/sessions/rocketflare-dev'
 import { runSessionChecks } from '@/api/services/sessions/ship'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
-import { aiUsage, auditEvents, type SessionRow, sessions } from '@/db/schema'
+import { aiUsage, apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson, createFakeAnthropic } from '../helpers/fake-anthropic'
 import { createFakeCloud } from '../helpers/fake-cloud'
@@ -141,6 +141,11 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
   const env = createTestEnv({ ANTHROPIC_API_KEY: REAL_KEY, SESSION_PREVIEW_URL: PREVIEW_TEMPLATE })
   const cfg = loadConfig(env)
   const f = await seedSessionApp(db, cloud, { prepared: true })
+  // `pr` mode: the ship ends at the open PR (issue #5's landing is `session-land.test.ts`).
+  await db
+    .update(apps)
+    .set({ shipSettings: { sessionShip: 'pr', review: { mode: 'none', groupIds: [] } } })
+    .where(eq(apps.id, f.app.id))
   const anthropic = createFakeAnthropic({
     usage: { input: 1200, output: 340, cacheRead: 9000, cacheWrite: 800 },
   })

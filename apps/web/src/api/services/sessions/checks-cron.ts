@@ -11,6 +11,11 @@
  *    SHA — the first external link of the release chain (PR → merge → tag → … → production) —
  *    and a close without a merge `pr.closed`, after which the PR is no longer read. GitHub is
  *    polled, not listened to (webhooks are P6); a release's compare catches every other PR.
+ *    A PR Launch merged itself (issue #5's landing) is recorded already, so it is skipped.
+ * 3. (Issue #5) the landings' safety net, `nudgeLandingSessions` (`land.ts`): a `shipping` /
+ *    `shipped` session whose landing is in a moving stage and quiet for three of its rounds is
+ *    woken — or its instance restarted when it is gone — so a lost Workflow never strands a merge
+ *    or a release half-way.
  *
  * Registered in `api/scheduled.ts` under `'*\/5 * * * *'`, beside `healthPoll` and `sessions.expire`.
  * With `SESSION_BACKEND=local` the PRs are local stand-ins and step 2 is skipped.
@@ -29,6 +34,7 @@ import {
   recordPrClosed,
   recordPrMerged,
 } from '../launch/releases/pr-audit'
+import { nudgeLandingSessions } from './land'
 import { defaultSessionPorts, type RepoHostPort } from './ports'
 import { runSessionChecks } from './ship'
 
@@ -140,10 +146,19 @@ export async function followMergedPullRequests(
   return out
 }
 
-/** The task over injected ports (tests); the default binds the backend's own. */
+/** Step 3's scope: every tenant (the cron), or the ones a test names. */
+export interface LandingNudgeScope {
+  tenantIds?: string[]
+}
+
+/**
+ * The task over injected ports (tests); the default binds the backend's own. `landings` scopes
+ * step 3 to some tenants — a test's own, since the cron's body is cross-tenant.
+ */
 export function sessionsChecksTask(
   repoHostFor?: (db: Database) => RepoHostPort,
-  pullReaderFor?: (cfg: AppConfig) => PullReader | null
+  pullReaderFor?: (cfg: AppConfig) => PullReader | null,
+  landings: LandingNudgeScope = {}
 ): ScheduledTask {
   return {
     name: 'sessions.checks',
@@ -153,6 +168,12 @@ export function sessionsChecksTask(
         repoHostFor ?? (d => defaultSessionPorts(env, config).repoHost(d))
       )
       logger.info(result, 'sessions.checks: refreshed pending pull request checks')
+      try {
+        const nudged = await nudgeLandingSessions(db, env, logger, new Date(), landings)
+        if (nudged > 0) logger.info({ nudged }, 'sessions.checks: woke quiet landings')
+      } catch (err) {
+        logger.warn({ err }, 'sessions.checks: could not nudge the landings')
+      }
       const reader = pullReaderFor
         ? pullReaderFor(config)
         : config.SESSION_BACKEND === 'local'

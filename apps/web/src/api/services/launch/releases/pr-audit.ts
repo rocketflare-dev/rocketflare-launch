@@ -58,8 +58,11 @@ export async function recordPrMerged(
     appId: string
     pr: ReleasePr
     actor?: AuditActor
-    /** Which path saw it: the cron following a session, or a release's compare. */
-    via: 'sessions.checks' | 'release'
+    /**
+     * Which path saw it: the cron following a session, a release's compare, or (issue #5) the
+     * session's own landing — Launch's squash (`land.merge`).
+     */
+    via: 'sessions.checks' | 'release' | 'session.merge'
   }
 ): Promise<void> {
   const { pr } = input

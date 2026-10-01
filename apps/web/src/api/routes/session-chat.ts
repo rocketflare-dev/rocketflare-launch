@@ -66,10 +66,10 @@ export const sessionChatRouter = createRouter()
 const EVENTS_PAGE = 500
 
 /** The session the caller may see (else the SAME 404 as a missing one), and who they are. */
-async function visibleSession(c: AppContext) {
+async function visibleSession(c: AppContext, opts: { readOnly?: boolean } = {}) {
   const ctx = withAuthAndDb(c)
   const viewer = sessionViewerOf(ctx.auth)
-  const row = await getVisibleSession(ctx.db, ctx.tenantId, uuidParam(c, 'id'), viewer)
+  const row = await getVisibleSession(ctx.db, ctx.tenantId, uuidParam(c, 'id'), viewer, opts)
   return { ...ctx, viewer, row }
 }
 
@@ -115,7 +115,8 @@ sessionChatRouter.post('/:id/cancel', async c => {
 
 sessionChatRouter.get('/:id/events', validate('query', sessionEventsQuerySchema), async c => {
   guardPermission(c, 'read', 'Session')
-  const { db, tenantId, row } = await visibleSession(c)
+  // Issue #5: a pending merge's reviewer reads the log too (`access.ts`).
+  const { db, tenantId, row } = await visibleSession(c, { readOnly: true })
   const afterSeq = c.req.valid('query').afterSeq ?? 0
   const rows = await listSessionEvents(db, tenantId, row.id, afterSeq, EVENTS_PAGE)
   return c.json<SessionEventsResponse>({
@@ -134,7 +135,7 @@ sessionChatRouter.get('/:id/events', validate('query', sessionEventsQuerySchema)
  */
 sessionChatRouter.get('/:id/agui/stream', async c => {
   guardPermission(c, 'read', 'Session')
-  const { row } = await visibleSession(c)
+  const { row } = await visibleSession(c, { readOnly: true })
   return streamSessionAgui(c, row, resolveStreamCursor(c))
 })
 

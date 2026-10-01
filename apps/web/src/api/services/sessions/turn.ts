@@ -91,10 +91,11 @@ import {
   resolveSessionPolicy,
   SESSION_REALTIME_ENTITY,
   type SessionPolicy,
+  sessionShipCiDataSchema,
 } from '@launch/shared/launch-sessions'
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
-import { apps, type SessionRow, sessions, users } from '../../../db/schema'
+import { apps, type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
 import type { Logger } from '../../utils/core/logger'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
@@ -866,7 +867,60 @@ interface StreamTurnResult {
 /** A sentence for `turn.failed`, safe to store and show. */
 const failureText = (text: string) => clipStrings(redactModelKeyText(text), 1_000)
 
-/** `session-system-note` filled in for this session: Claude Code's appended system prompt. */
+/** How far back `latestCiFailure` looks for the last ship's CI verdict. */
+const CI_FAILURE_LOOKBACK = 50
+
+/**
+ * Issue #5: the last ship's CI failure, when it is still unresolved — the latest `ship.ci` with
+ * `state: 'failure'` and no `ship.pr` after it (a re-ship resolves it). Its log tail was redacted
+ * when the event was written (`land.ts`). Null otherwise.
+ */
+export async function latestCiFailure(
+  db: Database,
+  row: Pick<SessionRow, 'id' | 'tenantId'>
+): Promise<{ name: string; url: string | null; logTail: string | null } | null> {
+  const events = await db
+    .select({ type: sessionEvents.type, data: sessionEvents.data })
+    .from(sessionEvents)
+    .where(
+      and(
+        eq(sessionEvents.tenantId, row.tenantId),
+        eq(sessionEvents.sessionId, row.id),
+        inArray(sessionEvents.type, ['ship.pr', 'ship.ci'])
+      )
+    )
+    .orderBy(desc(sessionEvents.seq))
+    .limit(CI_FAILURE_LOOKBACK)
+  for (const event of events) {
+    if (event.type === 'ship.pr') return null
+    const ci = sessionShipCiDataSchema.safeParse(event.data)
+    if (!ci.success || ci.data.state !== 'failure') continue
+    const check = ci.data.failedCheck
+    return {
+      name: check?.name ?? 'a check',
+      url: check?.url ?? null,
+      logTail: check?.logTail ?? null,
+    }
+  }
+  return null
+}
+
+/** The system note's paragraph about an unresolved CI failure (issue #5), so "fix it" works. */
+export function ciFailureNote(failure: NonNullable<Awaited<ReturnType<typeof latestCiFailure>>>) {
+  const lines = [
+    `The last ship's CI failed on GitHub: the check "${failure.name}"${failure.url ? ` (${failure.url})` : ''} is red, so Launch did not merge the pull request.`,
+  ]
+  if (failure.logTail) lines.push('The end of its log:', '```', failure.logTail, '```')
+  lines.push(
+    'When the person asks you to fix it, find and fix the cause, run the checks that failed locally, and tell them to ship again.'
+  )
+  return lines.join('\n')
+}
+
+/**
+ * `session-system-note` filled in for this session: Claude Code's appended system prompt — plus,
+ * after a red CI reopened the ship (issue #5), the failing check and its redacted log tail.
+ */
 export async function sessionSystemNote(db: Database, row: SessionRow): Promise<string> {
   const [app] = await db
     .select({ name: apps.displayName, slug: apps.slug })
@@ -880,12 +934,14 @@ export async function sessionSystemNote(db: Database, row: SessionRow): Promise<
         .where(eq(users.id, row.createdByUserId))
         .limit(1)
     : []
-  return resolvePrompt(db, row.tenantId, 'session-system-note', {
+  const note = await resolvePrompt(db, row.tenantId, 'session-system-note', {
     appName: app?.name,
     appSlug: app?.slug,
     userName: creator?.name ?? 'the person in this session',
     branch: `session/${row.shortId}`,
   })
+  const failure = await latestCiFailure(db, row)
+  return failure ? `${note}\n\n${ciFailureNote(failure)}` : note
 }
 
 /**

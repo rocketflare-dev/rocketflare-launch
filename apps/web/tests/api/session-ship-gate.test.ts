@@ -125,6 +125,11 @@ async function harness(
   const cfg = loadConfig(env)
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud, { prepared: true })
+  // `pr` mode: the ship ends at the open PR, as before issue #5 (the landing: session-land.test.ts).
+  await db
+    .update(apps)
+    .set({ shipSettings: { sessionShip: 'pr', review: { mode: 'none', groupIds: [] } } })
+    .where(eq(apps.id, f.app.id))
   const row = await insertSession(db, f, { status: 'requested', title: null })
   const runs: GateRun[] = []
   const counts = { lint: 0, typecheck: 0, test: 0 }
@@ -429,6 +434,19 @@ describe('the ship gate: green', () => {
     expect(pr?.body).toContain('`pnpm gate lint`, `pnpm gate typecheck`, `pnpm gate test`')
     expect(row.status).toBe('shipped')
     expect(row.prNumber).toBe(pr?.number)
+    // Issue #5: `pr` mode — the landing stops at stage `pr`; the summary the model wrote is kept
+    // on the session (without Launch's footer), with the diff stat it was written from.
+    expect(row.landing).toMatchObject({ mode: 'pr', stage: 'pr', prNumber: pr?.number })
+    expect(row.shipSummary).toMatchObject({
+      title: 'Greet people on the home page',
+      body: 'Adds a bold greeting.',
+      source: 'model',
+      diffStat: expect.stringContaining('src/ui/pages/Home.tsx'),
+      prNumber: pr?.number,
+      gateSha: row.headSha,
+    })
+    const prEvent = (await eventsOf(h)).find(e => e.type === 'ship.pr')
+    expect(prEvent?.data).toMatchObject({ title: 'Greet people on the home page' })
     // Saved before the gate and before the PR; the summary billed to the session.
     expect(h.checkpoints).toEqual(['ship', 'ship'])
     const usage = await db

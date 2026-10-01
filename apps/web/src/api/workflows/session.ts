@@ -25,9 +25,13 @@
  *              the ship (issue #1, `services/sessions/ship-steps.ts`): ship.claim#N → ship.save#N →
  *                ship.kit#N (which commands the checkout's kit takes) → per attempt A: ship.gate#N.A.lint → ship.gate#N.A.typecheck → ship.db#N.A →
  *                ship.gate#N.A.test → ship.db-clean#N.A (always, after ship.db) → on red
- *                ship.fix#N.A → … → green: ship.commit#N → ship.summary#N → ship.pr#N → shipped:
- *                leave the loop · otherwise ship.settle#N (back to ready) · a lost container:
- *                suspended, the next inspect resumes
+ *                ship.fix#N.A → … → green: ship.commit#N → ship.summary#N → ship.pr#N → shipped
+ *                (`pr` mode): leave the loop · `staging` mode (issue #5): still `shipping`, the
+ *                landing in `ci` — the next inspect lands it · otherwise ship.settle#N (back to
+ *                ready) · a lost container: suspended, the next inspect resumes
+ *              the landing (issue #5, `services/sessions/land.ts`, Phase A): land.ci#N →
+ *                [land.review#N] → [land.merge#N] → land.wait#N (one round of the wake event) ·
+ *                land.reopen#N (back to ready / suspended) · merged: leave the loop
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
  *                `services/sessions/warm.ts`): dev#K only · cold: restore.check#K →
@@ -38,6 +42,9 @@
  *   cleanup  ALWAYS: destroy the sandbox, delete the gate branches then the session's branch,
  *            settle `ended` (or keep `shipped` /
  *            `failed`), audit `session.ended`
+ *   Phase B  (issue #5, after a merge — or straight from `claim` for a merged landing whose
+ *            instance was lost): land.release#K.R / land.staging#K.R / land.health#K.R, each with
+ *            a `step.sleep` …-wait#K.R between its rounds → land.live#K | land.stalled#K
  *
  * - One DB client per step (`withStepDatabase`, as `agent-run.ts`) and nudges through
  *   `createStepRealtime().settle()` — no `waitUntil` in a step. The step bodies are
@@ -72,13 +79,30 @@ import {
   type WorkflowStep,
   type WorkflowStepConfig,
 } from 'cloudflare:workers'
-import { SESSION_WAKE_EVENT, type SessionWorkflowParams } from '@launch/shared/launch-sessions'
+import {
+  SESSION_WAKE_EVENT,
+  type SessionWorkflowParams,
+  type ShipStalledReason,
+} from '@launch/shared/launch-sessions'
 import { loadConfig } from '../../config'
 import { createStepRealtime } from '../services/agents/runtime'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
 import type { ShipGateCommand } from '../services/sessions/gate'
 import { defaultSessionStepHooks, type SessionStepHooks } from '../services/sessions/hooks'
+import {
+  LAND_RETRY_SECONDS,
+  type LandRound,
+  landCiStep,
+  landHealthStep,
+  landLiveStep,
+  landMergeStep,
+  landReleaseStep,
+  landReopenStep,
+  landReviewStep,
+  landStagingStep,
+  landStalledStep,
+} from '../services/sessions/land'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
 import {
   type GateStepResult,
@@ -110,6 +134,7 @@ import {
   endStep,
   failStep,
   inspectStep,
+  type PhaseALandingStage,
   prepareStep,
   repoStep,
   restoreCheckStep,
@@ -193,9 +218,26 @@ function gateStepConfig(timeoutMs: number): WorkflowStepConfig {
   }
 }
 
+/**
+ * A Phase B round's step (issue #5): the hooks are I/O against GitHub, Cloudflare and the app's
+ * health; a throw after these retries counts as one more round, never a failed session.
+ */
+const LAND_PHASE_B_STEP: WorkflowStepConfig = {
+  retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
+  timeout: '10 minutes',
+}
+
+/**
+ * The most rounds one Phase B stage takes before the landing stalls (the hooks cap their own waits
+ * — 15 min for the release claim, 45 for the deploy, 10 probes of health — far below this).
+ */
+export const MAX_LAND_PHASE_ROUNDS = 200
+
 /** How one ship round ended, for the loop's dirty state. */
 type ShipRound =
   | { status: 'shipped' }
+  /** Issue #5 `staging` mode: the PR is open and the loop's `land` rounds follow it. */
+  | { status: 'landing' }
   | { status: 'skipped' }
   /** The container is gone and the session `suspended`: nothing is left to save. */
   | { status: 'lost' }
@@ -238,7 +280,17 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
 
     const claim = await run('claim', claimStep)
     if (claim.start === 'skip') return { sessionId: params.sessionId, status: claim.status }
+    if (claim.start === 'land') {
+      // Issue #5 Phase B under a fresh instance: the merge is done; cleanup if it never ran.
+      const outcome = claim.cleanup
+        ? await this.finish(run, params.sessionId)
+        : { sessionId: params.sessionId, status: 'shipped' }
+      await this.release(run, step, 0)
+      return outcome
+    }
 
+    // Issue #5: the merge round, when the loop left for Phase B (`release` after `cleanup`).
+    let merged: number | null = null
     try {
       // The id `sandbox.start` wrote into the container: every turn and checkpoint checks the
       // container still carries it (`boot-marker.ts`). A step result, so replay-safe.
@@ -280,7 +332,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           BOOT_STEP
         )
       }
-      if (claim.start !== 'cleanup') await this.loop(run, step, bootId)
+      if (claim.start !== 'cleanup') merged = (await this.loop(run, step, bootId)).merged
     } catch (err) {
       logger.error({ err }, 'session: giving up')
       const message = safeErrorMessage(
@@ -292,7 +344,10 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         logger.error({ err: failErr }, 'session: could not record the failure')
       )
     }
-    return this.finish(run, params.sessionId)
+    const outcome = await this.finish(run, params.sessionId)
+    // Phase B (issue #5): the container and the branch are gone; follow the merge to staging.
+    if (merged !== null) await this.release(run, step, merged)
+    return outcome
   }
 
   private async finish(run: StepRunner, sessionId: string): Promise<SessionOutcome> {
@@ -300,12 +355,16 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     return { sessionId, status }
   }
 
-  /** The turn loop — see the header. Returns when the session should be cleaned up. */
+  /**
+   * The turn loop — see the header. Returns when the session should be cleaned up; `merged` is the
+   * round whose landing merged (issue #5: Phase B follows `cleanup`), else null.
+   */
   private async loop(
     run: StepRunner,
     step: WorkflowStep,
     initialBootId: string | undefined
-  ): Promise<void> {
+  ): Promise<{ merged: number | null }> {
+    const done = { merged: null }
     let resumes = 0
     // The container the loop's steps must find (`boot-marker.ts`): the boot's, then each resume's.
     let bootId = initialBootId
@@ -321,11 +380,19 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       const next = await run(`inspect#${n}`, scope => inspectStep(scope, before))
       switch (next.action) {
         case 'done':
-          return
+          return done
         case 'end':
           // `endStep` checkpoints a live session first.
           await run(`end#${n}`, scope => endStep(scope, next.reason, bootId))
-          return
+          return done
+        case 'land': {
+          // Issue #5 Phase A: the PR's CI, its review and the merge (`land.ts`).
+          const landed = await this.land(run, step, n, bootId, next.stage)
+          if (landed === 'merged') return { merged: n }
+          // Everything was committed at `ship.commit`; a reopen leaves nothing unsaved.
+          dirty = null
+          break
+        }
         case 'suspend': {
           // `suspendStep` checkpoints before it suspends.
           const { suspended } = await run(`suspend#${n}`, scope =>
@@ -360,7 +427,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             }
             if (next.waitingIn === 'suspended') {
               await run(`end#${n}`, scope => endStep(scope, 'expired', bootId))
-              return
+              return done
             }
             // `suspendStep` checkpoints first; it does nothing when the preview kept it busy.
             const { suspended } = await run(`suspend#${n}`, scope =>
@@ -403,8 +470,9 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         case 'ship': {
           const round = await this.ship(run, n, bootId)
-          if (round.status === 'shipped') return
-          if (round.status === 'lost') dirty = null
+          if (round.status === 'shipped') return done
+          // `ship.commit` checkpointed everything; the next `inspect` starts the landing.
+          if (round.status === 'lost' || round.status === 'landing') dirty = null
           if (round.status === 'settled') {
             // `ship.save` checkpointed what was dirty; the fix turns' changes (if any) debounce.
             dirty = dirtyAfterTurn(round.saved ? null : dirty, {
@@ -474,6 +542,133 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     }
     // A runaway loop: end it rather than grow the instance for ever.
     await run('end#max', scope => endStep(scope, 'max_rounds', bootId))
+    return done
+  }
+
+  /**
+   * One Phase A round (issue #5, `services/sessions/land.ts`): from the landing's stage, `land.ci#N`
+   * → [`land.review#N`] → [`land.merge#N`] as far as each lets it, then one of `land.wait#N` (one
+   * round of `waitForEvent(SESSION_WAKE_EVENT)`), `land.reopen#N`, or nothing (merged — the loop
+   * leaves for Phase B; or the row moved — the next `inspect` reads it). A thrown land step
+   * (GitHub did not answer, after its retries) is one more round, never a failed session.
+   */
+  private async land(
+    run: StepRunner,
+    step: WorkflowStep,
+    n: number,
+    bootId: string | undefined,
+    stage: PhaseALandingStage
+  ): Promise<'merged' | 'continue'> {
+    const waitRound = async (seconds: number) => {
+      try {
+        await step.waitForEvent(`land.wait#${n}`, {
+          type: SESSION_WAKE_EVENT,
+          timeout: waitDuration(seconds) as WorkflowSleepDuration,
+        })
+      } catch {
+        // The round is over: the next `inspect` reads the landing again.
+      }
+    }
+    let todo: 'ci' | 'review' | 'merge' =
+      stage === 'ci' ? 'ci' : stage === 'approval' ? 'review' : 'merge'
+    let round: LandRound
+    try {
+      for (;;) {
+        round =
+          todo === 'ci'
+            ? await run(`land.ci#${n}`, landCiStep, SHIP_STEP)
+            : todo === 'review'
+              ? await run(`land.review#${n}`, landReviewStep, SHIP_STEP)
+              : await run(`land.merge#${n}`, landMergeStep, SHIP_STEP)
+        // Forward only: ci → review → merge, each at most once a round.
+        if (round.next === 'review' && todo === 'ci') todo = 'review'
+        else if (round.next === 'merge' && todo !== 'merge') todo = 'merge'
+        else break
+      }
+    } catch {
+      // Logged by the platform with the step; the next round reads the landing again.
+      await waitRound(LAND_RETRY_SECONDS)
+      return 'continue'
+    }
+    switch (round.next) {
+      case 'release':
+        return 'merged'
+      case 'wait':
+        await waitRound(round.waitSeconds)
+        return 'continue'
+      case 'reopen': {
+        const { reason, message } = round
+        await run(
+          `land.reopen#${n}`,
+          s => landReopenStep(s, { reason, message, bootId: bootId ?? null }),
+          SHIP_STEP
+        )
+        return 'continue'
+      }
+      default:
+        return 'continue'
+    }
+  }
+
+  /**
+   * Phase B (issue #5), after `cleanup`: the release that carries the merge, its staging deploy,
+   * staging's health — each a round of its hook (`land.release#K.R`, `land.staging#K.R`,
+   * `land.health#K.R`) with a `step.sleep` between (`…-wait#K.R`) — then `land.live#K`, or
+   * `land.stalled#K` with the hook's reason. `K` is the merge's loop round (0 under a fresh
+   * instance). Nothing here reopens the session: after the merge a failure stalls (decision §0.1).
+   */
+  private async release(run: StepRunner, step: WorkflowStep, k: number): Promise<void> {
+    const sleep = (name: string, seconds: number) =>
+      step.sleep(name, waitDuration(seconds) as WorkflowSleepDuration)
+    const stall = async (reason: ShipStalledReason, error: string) => {
+      await run(`land.stalled#${k}`, s => landStalledStep(s, { reason, error }), SHIP_STEP)
+    }
+    /** One hook round; a step that threw past its retries is a wait. */
+    const attempt = async <T>(
+      name: string,
+      body: (s: StepScope) => Promise<T>
+    ): Promise<T | { status: 'wait'; waitSeconds: number }> => {
+      try {
+        return await run(name, body, LAND_PHASE_B_STEP)
+      } catch {
+        return { status: 'wait', waitSeconds: LAND_RETRY_SECONDS }
+      }
+    }
+
+    for (let r = 0; ; r++) {
+      if (r >= MAX_LAND_PHASE_ROUNDS) {
+        return stall('release_failed', 'Launch gave up waiting to cut the release')
+      }
+      const res = await attempt(`land.release#${k}.${r}`, landReleaseStep)
+      if (res.status === 'done') return
+      if (res.status === 'released') break
+      if (res.status === 'stalled') return stall(res.reason, res.error)
+      await sleep(`land.release-wait#${k}.${r}`, res.waitSeconds)
+    }
+    for (let r = 0; ; r++) {
+      if (r >= MAX_LAND_PHASE_ROUNDS) {
+        return stall('deploy_timeout', 'The release did not reach staging in time')
+      }
+      const res = await attempt(`land.staging#${k}.${r}`, landStagingStep)
+      if (res.status === 'done') return
+      if (res.status === 'active') break
+      if (res.status === 'stalled') return stall(res.reason, res.error)
+      await sleep(`land.staging-wait#${k}.${r}`, res.waitSeconds)
+    }
+    for (let r = 0; ; r++) {
+      if (r >= MAX_LAND_PHASE_ROUNDS) {
+        return stall('unhealthy', 'Staging never answered healthy on the release')
+      }
+      const res = await attempt(`land.health#${k}.${r}`, landHealthStep)
+      if (res.status === 'done') return
+      if (res.status === 'live') {
+        const { url, version } = res
+        await run(`land.live#${k}`, s => landLiveStep(s, { url, version }), SHIP_STEP)
+        return
+      }
+      if (res.status === 'stalled') return stall(res.reason, res.error)
+      await sleep(`land.health-wait#${k}.${r}`, res.waitSeconds)
+    }
   }
 
   /**
@@ -553,6 +748,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             SHIP_STEP
           )
           if (pr.shipped) return { status: 'shipped' }
+          if (pr.landing) return { status: 'landing' }
           reason = 'not_opened'
         }
       }

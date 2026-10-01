@@ -21,7 +21,10 @@ import {
   previewLabel,
   previewUrl,
   resolveSessionPolicy,
+  type SessionLanding,
   type SessionStatus,
+  type ShipLandingStage,
+  sessionLandingSchema,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, or, sql } from 'drizzle-orm'
@@ -37,6 +40,7 @@ import {
 import { decryptToken, encryptToken } from '../../auth/oauth-encryption'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
+import { cancelMergeApproval } from '../approvals/kinds/session-merge'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
@@ -149,6 +153,41 @@ export function emitterFor(scope: StepScope): SessionEmitter {
     { id: scope.params.sessionId, tenantId: scope.params.tenantId },
     scope.realtime
   )
+}
+
+/**
+ * Issue #5: the row's landing (`sessions.landing`), parsed — null before a ship reaches its PR,
+ * after a reopen, or when the stored value will not parse.
+ */
+export function landingOf(row: Pick<SessionRow, 'landing'>): SessionLanding | null {
+  if (!row.landing) return null
+  const parsed = sessionLandingSchema.safeParse(row.landing)
+  return parsed.success ? parsed.data : null
+}
+
+/** Issue #5 Phase A: the landing stages the turn loop drives (`SessionWorkflow.land`). */
+export const PHASE_A_LANDING_STAGES = [
+  'ci',
+  'approval',
+  'merging',
+] as const satisfies readonly ShipLandingStage[]
+export type PhaseALandingStage = (typeof PHASE_A_LANDING_STAGES)[number]
+
+/** Issue #5 Phase B: the landing stages `SessionWorkflow.release` follows after the merge. */
+export const PHASE_B_LANDING_STAGES = [
+  'releasing',
+  'deploying',
+] as const satisfies readonly ShipLandingStage[]
+
+/** The Phase A stage a `shipping` row's landing is in, or null (no landing, or another stage). */
+export function phaseAStageOf(
+  row: Pick<SessionRow, 'status' | 'landing'>
+): PhaseALandingStage | null {
+  if (row.status !== 'shipping') return null
+  const stage = landingOf(row)?.stage
+  return stage && (PHASE_A_LANDING_STAGES as readonly string[]).includes(stage)
+    ? (stage as PhaseALandingStage)
+    : null
 }
 
 /**
@@ -436,6 +475,11 @@ export type ClaimResult =
   /** A live session whose instance was lost: `salvage` first, then the loop. */
   | { start: 'salvage' }
   | { start: 'cleanup' }
+  /**
+   * Issue #5 Phase B: a merged landing (`shipped`, stage `releasing | deploying`) whose instance
+   * was lost — `cleanup` first when it never ran (`ended_at` still null), then the release follow.
+   */
+  | { start: 'land'; cleanup: boolean }
   | { start: 'skip'; status: SessionStatus }
 
 /** The live statuses whose container may hold work nobody saved when their instance was lost. */
@@ -457,6 +501,25 @@ export const SALVAGE_STATUSES = [
 export async function claimStep(scope: StepScope): Promise<ClaimResult> {
   const session = await loadSession(scope)
   const sandboxId = sandboxFor(scope, session).id
+  // Issue #5: a landing is resumed where it stands, never salvaged — the work is committed (it is
+  // the gate SHA on the PR), and the loop's `land` round needs no container until a reopen.
+  const landing = landingOf(session)
+  if (
+    session.status === 'shipped' &&
+    landing &&
+    (PHASE_B_LANDING_STAGES as readonly string[]).includes(landing.stage)
+  ) {
+    return { start: 'land', cleanup: session.endedAt === null }
+  }
+  if (phaseAStageOf(session)) {
+    await scope.db
+      .update(sessions)
+      .set({ lastActivityAt: scope.now() })
+      .where(
+        and(eq(sessions.tenantId, scope.params.tenantId), eq(sessions.id, scope.params.sessionId))
+      )
+    return { start: 'loop' }
+  }
   if (session.status === 'requested') {
     const claimed = await transition(scope, ['requested'], 'booting', {
       sandboxId,
@@ -1225,6 +1288,8 @@ export function withProgress<T>(
 export type NextAction =
   | { action: 'turn'; maxTurnMinutes: number }
   | { action: 'ship' }
+  /** Issue #5 Phase A: the `shipping` session's landing is in `stage` — `SessionWorkflow.land`. */
+  | { action: 'land'; stage: PhaseALandingStage }
   | { action: 'end'; reason: string }
   | { action: 'resume' }
   | { action: 'suspend'; reason: 'drain' }
@@ -1304,9 +1369,15 @@ export async function inspectStep(
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(status)) {
     return { action: 'done', status }
   }
+  // Issue #5: a merge in flight is never stopped half-way, not even by an End (the route refuses
+  // one in `merging`; this covers the race). Any other landing stage yields to an explicit End,
+  // and beats `maxSessionHours`.
+  const landStage = phaseAStageOf(session)
+  if (landStage === 'merging') return { action: 'land', stage: landStage }
   if (status === 'ending' || session.requestedAction === 'end') {
     return { action: 'end', reason: 'requested' }
   }
+  if (landStage) return { action: 'land', stage: landStage }
   const ageHours = (scope.now().getTime() - session.createdAt.getTime()) / 3_600_000
   if (ageHours >= policy.maxSessionHours) return { action: 'end', reason: 'max_session_hours' }
   const live = status === 'ready' || status === 'blocked'
@@ -1643,7 +1714,7 @@ export async function coolStep(
  * and deleting — the previous one). Best effort: a backup that fails, or is off, costs the next
  * resume a clone and an install, never the suspend. True when a backup was recorded.
  */
-async function backupWorkspace(
+export async function backupWorkspace(
   scope: StepScope,
   session: SessionRow,
   sandbox: SandboxPort
@@ -1785,12 +1856,39 @@ export async function endStep(
   if (session.status === 'ready' || session.status === 'blocked') {
     await checkpointStep(scope, 'end', bootId)
   }
+  // Issue #5: an End while the landing waits in `ci` or `approval` (never `merging` — `inspect`
+  // finishes that first) abandons it: the `session.merge` request is cancelled, the landing
+  // cleared. The PR stays open on GitHub, as it would in `pr` mode.
+  const landing = session.status === 'shipping' ? landingOf(session) : null
   const row = await transition(
     scope,
-    ['requested', 'booting', 'ready', 'working', 'blocked', 'suspended', 'ending'],
+    ['requested', 'booting', 'ready', 'working', 'blocked', 'suspended', 'shipping', 'ending'],
     'ending',
-    { requestedAction: null, lastActivityAt: scope.now() }
+    {
+      requestedAction: null,
+      lastActivityAt: scope.now(),
+      ...(session.status === 'shipping' ? { landing: null } : {}),
+    }
   )
+  if (row && landing?.approvalId) {
+    const cancelled = await cancelMergeApproval(scope.db, {
+      tenantId: scope.params.tenantId,
+      approvalId: landing.approvalId,
+      reason: 'The session was ended',
+      now: scope.now(),
+    })
+    if (cancelled) {
+      await emitterFor(scope)({
+        type: 'ship.review',
+        turn: row.turnCount,
+        data: {
+          status: 'cancelled',
+          approvalId: landing.approvalId,
+          note: 'The session was ended',
+        },
+      })
+    }
+  }
   if (row && reason !== 'requested') {
     await emitterFor(scope)({
       type: 'status',

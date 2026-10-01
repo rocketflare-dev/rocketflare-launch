@@ -13,7 +13,11 @@
  *   status but `ending` (409 `session_not_endable`) — `shipping` included: a gate command stops
  *   within seconds and its database branch is deleted — and a running turn (a chat turn, or a
  *   ship's fix turn) is asked to stop (`cancel_requested_at`) + a wake. Ending an already-ended
- *   session is a 409 too.
+ *   session is a 409 too. Issue #5: an End while the landing waits in `ci` or `approval` abandons
+ *   it (`end#N` cancels the `session.merge` request); while Launch is MERGING it is a 409
+ *   `session_merging` — a merge is never stopped half-way.
+ * - Issue #5: an eligible approver of a pending `session.merge` may use the two READ routes below
+ *   (the preview grant, the PR), never ship or end (`access.ts`).
  * - `POST /:id/preview-grant` → `previewGrantResponseSchema`: a 60 s HMAC grant for the iframe
  *   (`services/sessions/preview.ts`, exchanged at the preview host by `api/preview/gateway.ts`).
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
@@ -33,7 +37,7 @@ import {
   type SessionPrResponse,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
-import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Database } from '../../db/client'
 import { type SessionRow, sessions } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
@@ -46,6 +50,7 @@ import { defaultSessionPorts } from '../services/sessions/ports'
 import { mintGrant, PREVIEW_GRANT_PATH, PREVIEW_UI_PORT } from '../services/sessions/preview'
 import { reconcileSessionSafely, SESSION_END_STALL_MS } from '../services/sessions/reconcile'
 import { PR_CHECKS_MAX_AGE_MS, refreshChecks } from '../services/sessions/ship'
+import { landingOf } from '../services/sessions/steps'
 import type { AppContext } from '../types'
 import { ConflictError, ServiceUnavailableError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
@@ -56,11 +61,13 @@ export const sessionShipRouter = createRouter()
 async function visible(c: AppContext, action: 'read' | 'update') {
   const auth = guardPermission(c, action, 'Session')
   const ctx = withAuthAndDb(c)
+  // Issue #5: a pending merge's reviewer may read (the preview grant, the PR), never ship or end.
   const row = await getVisibleSession(
     ctx.db,
     ctx.tenantId,
     uuidParam(c, 'id'),
-    sessionViewerOf(auth)
+    sessionViewerOf(auth),
+    { readOnly: action === 'read' }
   )
   return { ...ctx, row }
 }
@@ -71,7 +78,8 @@ async function requestAction(
   row: SessionRow,
   from: readonly SessionRow['status'][],
   set: Partial<typeof sessions.$inferInsert>,
-  extra = true
+  extra = true,
+  notMerging = false
 ) {
   const [updated] = await db
     .update(sessions)
@@ -81,11 +89,25 @@ async function requestAction(
         eq(sessions.tenantId, row.tenantId),
         eq(sessions.id, row.id),
         inArray(sessions.status, [...from]),
-        extra ? isNull(sessions.pendingMessage) : undefined
+        extra ? isNull(sessions.pendingMessage) : undefined,
+        // Issue #5: a merge in flight is never stopped half-way.
+        notMerging
+          ? sql`coalesce(${sessions.landing}->>'stage', '') <> ${MERGING_STAGE}`
+          : undefined
       )
     )
     .returning()
   return updated ?? null
+}
+
+const MERGING_STAGE = 'merging'
+
+/** Issue #5: the 409 for an End while Launch is merging the session's PR. */
+function mergingConflict(): ConflictError {
+  return new ConflictError(
+    'Launch is merging this session’s pull request; it can be ended once the merge is done',
+    'session_merging'
+  )
 }
 
 sessionShipRouter.post('/:id/ship', async c => {
@@ -140,6 +162,7 @@ const ENDABLE = [
 sessionShipRouter.post('/:id/end', async c => {
   const { db, logger, realtime, row } = await visible(c, 'update')
   const workflow = requireSessionWorkflow(c.env)
+  if (row.status === 'shipping' && landingOf(row)?.stage === MERGING_STAGE) throw mergingConflict()
   const now = new Date()
   const updated = await requestAction(
     db,
@@ -153,9 +176,14 @@ sessionShipRouter.post('/:id/end', async c => {
         row.status === 'working' || row.status === 'shipping' ? now : row.cancelRequestedAt,
       updatedAt: now,
     },
-    false
+    false,
+    true
   )
   if (!updated) {
+    const current = await getSessionRow(db, row.tenantId, row.id)
+    if (current.status === 'shipping' && landingOf(current)?.stage === MERGING_STAGE) {
+      throw mergingConflict()
+    }
     throw new ConflictError(
       `This session cannot be ended while it is ${row.status}`,
       'session_not_endable'

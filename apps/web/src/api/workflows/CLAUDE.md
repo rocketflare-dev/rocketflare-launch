@@ -159,7 +159,8 @@ its order) → per attempt
 `ship.gate#N.A.typecheck` → `ship.db#N.A` → `ship.gate#N.A.test` → `ship.db-clean#N.A` (in a
 `finally`, so the gate branch never outlives a red, a throw, an end or a lost container) → on red
 `ship.fix#N.A` (`turnStepConfig`: no retry) → … → green: `ship.commit#N` → `ship.summary#N` →
-`ship.pr#N`; no PR: `ship.settle#N`. Every name carries the round and the attempt; the loop only
+`ship.pr#N` (`shipped` in `pr` mode; in issue #5's `staging` mode the round returns `landing`
+and the session stays `shipping`); no PR: `ship.settle#N`. Every name carries the round and the attempt; the loop only
 branches on step RESULTS (a gate step's `{ passed, stop }`), so a replay takes the same path. A gate
 step is `gateStepConfig` (one retry — `runInBackground` re-attaches — and the command's deadline
 plus 5 min). A thrown ship step is caught in the round and settles it (`error`); it never fails the
@@ -167,9 +168,31 @@ session. A lost container (`stop: 'container_lost'`, `lost`) leaves the round wi
 already `suspended` and the loop's dirty state cleared; a settled round's dirty state is
 `ship.save`'s (saved → clean) plus what the fix turns changed (`ship.settle`'s result).
 
+**The landing** (issue #5, `docs/plans/i5-ship-to-staging.md`, bodies in
+`../services/sessions/land.ts`, CONCEPTS §18.13). Phase A is a loop round: `inspect#N` answers
+`{ action: 'land', stage }` for a `shipping` row whose `sessions.landing` is in `ci` / `approval` /
+`merging` (before `maxSessionHours`, after an explicit End — but `merging` beats an End), and
+`SessionWorkflow.land(run, step, n, bootId, stage)` runs `land.ci#N` → [`land.review#N`] →
+[`land.merge#N`], forward only and each at most once a round, then ONE of `land.wait#N`
+(`waitForEvent(SESSION_WAKE_EVENT)` for the step's `waitSeconds`; a timeout just ends the round),
+`land.reopen#N` (the session back to `ready` or `suspended`), nothing (`none`: the row moved), or
+MERGED — `loop()` then returns `{ merged: n }`. A land step that throws past its retries is one
+more round (`land.wait#N`, `LAND_RETRY_SECONDS`), never a failed session. `run()` runs `cleanup`
+FIRST and then Phase B, `SessionWorkflow.release(run, step, k)` with `K` the merge's round:
+`land.release#K.R` / `land.staging#K.R` / `land.health#K.R` (the `landRelease` / `landStaging` /
+`landHealth` hooks through `land.ts`'s wrappers, `LAND_PHASE_B_STEP`), each followed while it
+answers `wait` by a `step.sleep` named `land.release-wait#K.R` / `land.staging-wait#K.R` /
+`land.health-wait#K.R`, ending in `land.live#K` or `land.stalled#K` (`MAX_LAND_PHASE_ROUNDS`
+caps each stage). `claim` answers `{ start: 'loop' }` for a Phase A landing (never `salvage`)
+and `{ start: 'land', cleanup }` for a `shipped` one in `releasing` / `deploying` — `run()` then
+runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. The tests are
+`tests/api/session-land.test.ts` (the `session-ship-gate` harness with fake Phase B hooks; the fake
+step's `sleep` is wrapped there so its names are recorded too).
+
 The calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`, bound
-once in `defaultSessionStepHooks`): `runTurn`, `checkpoint`, `shipFix` (a fix turn) and
-`shipSummary` (the PR's one model call). `runTurn` owns `ready → working` inside its work, the ship
+once in `defaultSessionStepHooks`): `runTurn`, `checkpoint`, `shipFix` (a fix turn),
+`shipSummary` (the PR's one model call) and issue #5's `landRelease` / `landStaging` /
+`landHealth` (`land-release.ts`). `runTurn` owns `ready → working` inside its work, the ship
 steps own `shipping`, and the Workflow reads the row afterwards.
 
 Tests (`tests/api/session-workflow.test.ts`) set `workflow.overrides = { ports, hooks }` —

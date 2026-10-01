@@ -1334,7 +1334,8 @@ its resources and leaves them, and its repo, alone; a deleted repo is gone for g
 ### 18.9 Coding sessions: the lifecycle
 
 A session is a container running Claude Code against one app's repo, with a live preview, ending in
-a pull request (spec/07). State lives in Postgres — `sessions` (status, request columns, sealed
+a pull request (spec/07) — and, in an app's default `staging` ship mode (issue #5), in that PR
+merged, released and live on staging (§18.13 **Landing**). State lives in Postgres — `sessions` (status, request columns, sealed
 credentials, metering, PR) and `session_events` (the append-only log the page, the CLI and the
 stream read) — and one `SessionWorkflow` instance per session (`workflows/session.ts`, step bodies
 in `services/sessions/steps.ts`) does all the work. **Routes never run anything**: they write a
@@ -1403,13 +1404,18 @@ reload) is restarted as `<id>-rN` from the row.
   `maxSessionHours`.
 - **Loop**: `inspect#N` reads the row and picks one of `wait#N` (idle timeout: suspend; a warm
   suspended session's window: cool; a suspended session's expiry: end; the checkpoint debounce:
-  `checkpoint#N` and wait on), `turn#N`, `checkpoint#N` (a debounce already due), the ship round (`ship.claim#N` … §18.13), `suspend#N` (a drain), `cool#N` (a drain, or a warm window already
-  over), `resume#N` (boot again with `#K` names — warm: `sandbox.start#K` → `dev#K` only; cold:
-  the whole boot, then restore the transcript), `end#N`. A message that arrives while
+  `checkpoint#N` and wait on), `turn#N`, `checkpoint#N` (a debounce already due), the ship round (`ship.claim#N` … §18.13), the landing round (issue #5: a `shipping` session whose
+  `sessions.landing` is in `ci`, `approval` or `merging` — `land.ci#N` / `land.review#N` /
+  `land.merge#N`, then `land.wait#N` or `land.reopen#N`, §18.13; checked BEFORE `maxSessionHours`
+  and after an explicit End, except that `merging` beats an End too), `suspend#N` (a drain),
+  `cool#N` (a drain, or a warm window already over), `resume#N` (boot again with `#K` names — warm:
+  `sandbox.start#K` → `dev#K` only; cold: the whole boot, then restore the transcript), `end#N`. A message that arrives while
   booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
   the container, delete the ship gate's branches and then the database branch, forget the sealed
   credentials, settle `ended` (a
-  `shipped` or `failed` session keeps its status), audit `session.ended`.
+  `shipped` or `failed` session keeps its status), audit `session.ended`. A landing that MERGED
+  leaves the loop for cleanup and then **Phase B** (`release`, §18.13): the release follow needs no
+  container and no branch, so both are freed at the merge.
 - **Warm suspend** (`warm.ts`, two thresholds): an IDLE suspend (`idleSuspendMinutes`)
   checkpoints and KEEPS the container, dev server and all (`sessions.container_kept_at`); the
   preview answers 503 as for any suspended session. A resume inside `SESSION_WARM_KEEP_MINUTES`
@@ -1435,6 +1441,11 @@ reload) is restarted as `<id>-rN` from the row.
   the checklist line says "Cloning instead: …". A backup never fails a suspend or a resume.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
+  Issue #5 adds one READ-ONLY grant: someone a PENDING `session.merge` request on the session names
+  (a member of one of its policy's groups, or a user it names) may read it — `GET /:id`
+  (`viewerCanManage: false`), the events and the stream, the preview grant, `GET /:id/pr` — to
+  review what they are asked to merge; never send a turn, ship, end, resume or extend (404 there).
+  Once the request is decided the grant is gone.
 - **Expiry** (`sessions.expire`, `*/5`): the backstop for a suspended session whose instance is
   gone — it asks for `end`, or cleans up inline without `SESSION_WORKFLOW`.
 - **Never hang silently.** Every sandbox call a step makes is bounded (`deadline.ts`:
@@ -1501,9 +1512,12 @@ checkpointed, the container kept for a warm resume — which is proven with the 
 that a real kept container's dev server survives the reload, and that `claude` flushes its
 transcript on SIGTERM, need a real container. The salvaged turn itself is not continued: the person
 sends the message again. A container that answers but whose kill script fails is destroyed, so its
-unsaved edits are still lost then. A `shipping` session whose instance died is not reconciled (no
-heartbeat is read for it) — a later wake's `claim` salvages it, and its gate branch (issue #1) is
-deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
+unsaved edits are still lost then. A `shipping` session whose instance died mid-GATE is not
+reconciled (no heartbeat is read for it) — a later wake's `claim` salvages it, and its gate branch
+(issue #1) is deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A
+LANDING whose instance died is found by `sessions.checks`' safety net (`nudgeLandingSessions`,
+§18.13) and resumed by `claim` without a salvage — but only within the cron's `*/5` plus three of
+its stage's rounds. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
 reading the session page, or the diff, without touching the preview is idle after
 `idleSuspendMinutes` (a visible-tab heartbeat from the page is not built). The warm resume is
@@ -1911,10 +1925,19 @@ stat (`summarizeShip`: `resolveChat` with the `session-ship-summary` prompt key 
 assignment picks the model, else Anthropic's Haiku when the provider is Anthropic, else the
 default; no tenant or platform chat → the sessions' own Anthropic key on Haiku; its usage an
 `ai_usage` row billed to the session, `session:ship-summary`; any failure → the session's title or
-first request and the diff stat) → `ship.pr#N` (`openPullRequest`, head `session/<short>`, base
-the default branch; `pr_number`/`pr_url`, `shipped`, `ship.pr`, audit `session.shipped`, the
-config the PR declares) — and the Workflow cleans up (shipping ends the session). A green gate
-makes no model call but the summary. **No PR** → `ship.settle#N`: an `error` event saying why
+first request and the diff stat; the step returns the diff stat too) → `ship.pr#N`
+(`openPullRequest`, head `session/<short>`, base the default branch; one compare-and-set records
+`pr_number`/`pr_url`, `sessions.landing` and `sessions.ship_summary`; `ship.pr { number, url,
+title }`, audit `session.shipped`, the config the PR declares). **Where the ship ends** is the app's
+`ship_settings.sessionShip` (issue #5, §18.5; `SESSION_BACKEND=local` always `pr`): in `pr` mode
+the session goes `shipped` with landing stage `pr` and the Workflow cleans up (shipping ends the
+session, as before issue #5); in `staging` mode it STAYS `shipping` with the landing in `ci` —
+the review rule snapshotted from `reviewPolicyFor` (`reviewMode`) — and the loop's landing rounds
+take over (**Landing**, below). **`sessions.ship_summary`** keeps what Launch wrote: `{ title, body
+(without the "Opened by Launch…" footer), source: model | fallback, diffStat, prNumber, gateSha,
+at }`, overwritten on a re-ship and never reset by a reopen; the squash message, the
+`session.merge` request's context and the promotion strip (§18.17) read it. A green gate makes no
+model call but the summary. **No PR** → `ship.settle#N`: an `error` event saying why
 (still red after every attempt, the gate cannot run on the app, the fix turn did not run, the save
 or the PR failed, a step threw), `shipping → ready`, and the fix turns' changes debounced like a
 turn's. **A lost container suspends, never `ready`**: every ship step that touches the container
@@ -1931,6 +1954,55 @@ any `gate-*` branch of a session-running app's project older than three hours
 + combined status) is read at once, on `GET /:id/pr` (at most every 30 s) and by `sessions.checks`
 on `*/5` while pending, unread, or `none` within an hour of the ship (GitHub has not queued the
 workflows yet when the PR opens).
+
+**Landing** (issue #5, `docs/plans/i5-ship-to-staging.md`; bodies in `land.ts`, the rounds in
+`SessionWorkflow.land` / `.release`). No new status: `sessions.landing.stage` says where the ship
+stands — `ci → [approval] → merging` while `shipping` (**Phase A**, in the turn loop, so it can
+give the session back), then `releasing → deploying → live | stalled` once `shipped` (**Phase B**,
+after `cleanup`). Every landing write is a compare-and-set on the status AND `landing->>'stage'`
+(a jsonb merge). **The head is Launch's gate SHA, twice**: `ship.pr` records `landing.gateSha` =
+`head_sha` after `ship.commit`; CI is only ever read on it, `land.ci` refuses a PR whose head moved
+(`head_moved`), and the squash passes `sha: gateSha`, so GitHub answers 409 if it moved since.
+**`land.ci#N`** reads the PR and its checks fresh each round: green → `approval` (a review is
+required) or `merging`; red → reopen `ci_failed`, its `ship.ci` event carrying the failing check
+(`Gate` first) with the last 80 lines of its Actions job log (else its annotations), timestamps
+stripped and REDACTED like the gate's tail (`redactCheckLog`: connection strings, model keys,
+GitHub tokens); nothing reported after `SHIP_CI_NONE_GRACE_MINUTES` (10) → `ci_none` (never
+green); still pending after `SHIP_CI_MAX_MINUTES` (120) → `ci_timeout`; merged by a person
+meanwhile → Phase B (`pr.merged` via `sessions.checks`); closed → `pr_closed`. Otherwise
+`land.wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`) for 30 s in the first 10 minutes, then 2.
+**`land.review#N`** opens the `session.merge` request (§18.15) idempotently — `landing.approvalId`
+first, then the pending-subject index (one for another head is cancelled) — with the policy
+`reviewPolicyFor` resolves, the creator as requester and everyone who wrote a `user.message`
+excluded, its context from `ship_summary`; pending → wait (30 min rounds: the decision's own
+effects wake it); rejected / expired / cancelled → reopen `review_rejected` / `review_expired`
+with the reviewer's comment. Approving moves the stage `approval → merging` INSIDE the decision
+(`applyInTx`, on that request and head only) and wakes the session. **`land.merge#N`** reads first
+(a recorded merge, or a PR GitHub says is merged, wins — a retried or second instance finds it
+there), checks the head, CI and the approval again, then ONE squash: title `"<summary title>
+(#n)"`, message the summary body + "Merged by Launch from session <short>[, approved by <name>]";
+409 → `head_moved`, 405/422 → `merge_refused` (audited `session.merge_refused`), 30 minutes in
+`merging` without a merge → `merge_refused`. Merged → one compare-and-set `shipping → shipped`,
+stage `releasing` (`mergeSha`, `mergedAt`, `stageAt`), `pr.merged` (via `session.merge`) unless
+recorded, audit `session.merged`, `ship.merged`. **`land.reopen#N`** gives the session back:
+`ready` while the container is still the loop's (its boot marker), else `suspended` (the next
+message resumes); `landing := null`, a pending review cancelled, `ship.reopened {reason, message}`
++ `error`, audit `session.ship_reopened`. After a red CI the session's system note
+(`sessionSystemNote`) carries the failing check and its redacted tail until the next `ship.pr`, so
+"fix it" works in a normal turn. **The container** is kept through `ci`, then backed up and
+destroyed (`landing.containerReleased`) once the policy's `idleSuspendMinutes` pass in `ci` or in
+`approval`, or under a drain. **End** during `ci` / `approval` abandons the landing (`end#N`: the
+request cancelled, `landing := null`, the PR left open); during `merging` it is a 409
+`session_merging`. **Phase B** (`land.release#K.R`, `land.staging#K.R`, `land.health#K.R`, each
+with a `step.sleep` `…-wait#K.R` between rounds; bodies: the `landRelease` / `landStaging` /
+`landHealth` hooks, §18.17) ends in `land.live#K` (stage `live`, `stagingUrl`, the version,
+`ship.staging {status:'live'}`, audit `session.landed`) or `land.stalled#K` (stage `stalled`, the
+reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
+`session.land_stalled`) — after the merge nothing reopens (decision §0.1). **The safety net**:
+`sessions.checks` (`*/5`) wakes every landing in a moving stage quiet for three of its rounds (by
+`stageAt` AND `last_activity_at`, which each land step stamps), or restarts its instance when that
+is gone; `claim` resumes a Phase A landing straight into the loop (never `salvage`) and a merged one
+into Phase B (after `cleanup` if it never ran).
 
 **Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
 conversation) the work and the transcript live only in the container — a crash or a lost instance
@@ -1957,7 +2029,15 @@ before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so), 
 image with the 0.16.0 store (`session-5`) is defined, not yet deployed (`wrangler deploy` builds
 it; drain sessions first). A `shipping`
 session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
-The summary's model is not traced (D32).
+The summary's model is not traced (D32). **The landing** (issue #5) is proven with the FakeCloud's
+GitHub and fake Phase B hooks (`tests/api/session-land.test.ts`), not against GitHub: its job-log
+redirect, its annotations and its 405/409/422 answers to a real squash are read as documented. CI
+and the review are POLLED (no webhooks, P6): a verdict reaches the session within a round (30 s –
+2 min), and a lost instance within the cron's five minutes plus three rounds. A session waiting in
+`approval` holds its Neon branch and a `maxConcurrentPerApp` slot for up to the request's 48 h. A
+landing that the safety net restarts resumes with no boot id, so a reopen then always SUSPENDS (it
+cannot prove the container is its own) and destroys the container; the work is safe on the branch.
+Sessions shipped before issue #5 have no stored summary.
 
 ### 18.14 Drain, the UI and the CLI
 
@@ -2057,9 +2137,9 @@ nothing opens them (P6).
   app's OWNERS set too: the app's ship settings (`apps.ship_settings.review`: none, the app's
   owners, or named teams) are passed as the snapshotted policy, and an admin `approval_policies`
   row for `session.merge` at app, group or tenant scope wins over them and makes review mandatory
-  (decision §0.3 relaxes "only admins edit" for this kind). **Today (slice S1) the kind is
-  registered with its default policy and description only**: nothing opens one yet, and its
-  `applyInTx` / `applyAfter` / `onClosed` throw `NotWiredError` until slice S2 wires the landing.
+  (decision §0.3 relaxes "only admins edit" for this kind). The session's `land.review` step
+  opens it; approving moves the landing to `merging` and wakes the session, and a rejection,
+  expiry or cancel reopens it with the reviewer's note (§18.13).
 - **Reads**: `GET /api/approvals?box=mine|requested|all&status&kind&appId` (`all` is admins';
   anyone else asking for it gets `mine`), `GET /count` (the nav badge), `GET /:id` —
   `approvalDetailSchema` with the decisions, `canDecide` / `whyNot` / `canCancel` for the caller,
