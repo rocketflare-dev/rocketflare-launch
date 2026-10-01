@@ -43,6 +43,7 @@ import {
 import { decryptToken, encryptToken } from '../../../auth/oauth-encryption'
 import { notify } from '../../notifications'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
+import { applyLaunchRuleset, isRulesetsUnavailable } from '../branch-protection'
 import { FINISHED_BEFORE_ACTIVATE, isDeployed } from '../deploy/tickets'
 import {
   commitFiles,
@@ -77,6 +78,7 @@ import {
   neonClient,
   type PipelineVendors,
   requireAppsDomain,
+  requireVendor,
   resendClient,
 } from './context'
 import { markLaunchFailed } from './create'
@@ -786,7 +788,21 @@ export function githubEnvStep(d: PipelineDeps, params: AppLaunchParams) {
     const issuer = issuerOf(d.cfg)
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_URL', `${issuer}/ci`)
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_AUDIENCE', issuer)
-    return { environments: ENVIRONMENTS.join(','), variables: 'DEPLOYER_URL,DEPLOYER_AUDIENCE' }
+    const done = {
+      environments: ENVIRONMENTS.join(','),
+      variables: 'DEPLOYER_URL,DEPLOYER_AUDIENCE',
+    }
+    // Issue #5 (plan §1.13): Launch's `launch` ruleset on the default branch — `Gate` required,
+    // the App a bypass actor so the release bump still lands. Idempotent by name, so a retry
+    // updates rather than duplicates; a plan without rulesets is recorded, never fatal.
+    const appId = Number(requireVendor(vendors, 'github').auth.appId)
+    try {
+      const { rulesetId } = await applyLaunchRuleset(token, owner, repo.name, appId)
+      return { ...done, rulesetId: String(rulesetId), branchProtection: 'ok' }
+    } catch (err) {
+      if (!isRulesetsUnavailable(err)) throw err
+      return { ...done, branchProtection: 'unavailable', branchProtectionDetail: err.message }
+    }
   })
 }
 

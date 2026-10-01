@@ -297,6 +297,32 @@ and the SDK's 90-minute sleep reaps one whose laptop went away. **Remove it:**
 `wrangler containers list` / `wrangler containers delete <id>` and `wrangler containers images
 delete` for what the Worker leaves behind.
 
+## Launched apps' branch protection (issue #5)
+
+Launch merges a session's PR itself once `Gate` (the kit's CI job) is green and then pushes the
+release bump straight to the app's default branch, so the branch must require `Gate` for
+everyone EXCEPT Launch's GitHub App. Launch does that with a repository ruleset named `launch`
+(`docs/CONCEPTS.md` §18.4) and never with classic branch protection, which no GitHub App can
+bypass — under classic required checks every release fails at the bump (`release_failed`).
+
+- **New apps** get the ruleset from the launch pipeline's `github_env` step. On a plan without
+  rulesets (a private repository outside GitHub Team) the step records `unavailable` and the
+  launch goes on unprotected.
+- **Existing apps** (created before issue #5, or imported): `GET /api/apps/:id/branch-protection`
+  says how the default branch stands. `none` → an admin applies the ruleset (**Apply**,
+  `POST /api/apps/:id/branch-protection`, audited `app.branch_protection.applied`). `blocks` → the
+  detail names the rule:
+  1. Classic protection: on GitHub, the repository's Settings › Branches → delete the rule for the
+     default branch (Launch never edits or removes it), then press **Apply**.
+  2. A ruleset the App may not bypass (an organisation ruleset, or a repository one someone added):
+     add the Launch GitHub App to its bypass list with "Always", or delete it, then **Apply**.
+  `unknown` → the detail says why GitHub could not be asked (no repository, the App not installed
+  on the owner, GitHub down); `unavailable` → upgrade the organisation's plan or accept no
+  protection. Verify: the card reads `ok` and the repository's Settings › Rules › Rulesets lists
+  `launch`, requiring `Gate`, with the App under Bypass list.
+- **Apply rewrites** a `launch` ruleset someone edited on GitHub back to Launch's shape. Add any
+  extra rules of your own in a ruleset of another name, with the App as a bypass actor.
+
 ## Crons
 
 `[triggers] crons` must be identical in both tomls (parity test); `apps/web/src/api/scheduled.ts`

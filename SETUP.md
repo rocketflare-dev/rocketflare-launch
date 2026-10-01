@@ -418,6 +418,16 @@ to default" goes back to Launch's pin. Apps already launched keep their kit; a r
 pin as it is then. Verify: the card shows the tag or `Unreleased commit` with the short SHA you
 pinned.
 
+**The GitHub App's Administration permission also writes rulesets.** Setup already requires
+Repository › Administration: write (environments). From issue #5 Launch uses it for one more thing:
+it protects each app's default branch with a repository ruleset named `launch` — `Gate` (the kit's
+CI job) required, pull requests only, no force-push or deletion, and the App itself allowed to
+bypass so a release can bump the version (`docs/CONCEPTS.md` §18.4). No new permission to grant.
+Rulesets on a PRIVATE repository need GitHub Team (or above) on the organisation; on a free plan
+GitHub refuses them, the launch records that and goes on, and the app page reports branch
+protection as unavailable. Verify: after creating an app, its repository's Settings › Rules ›
+Rulesets lists `launch` with your Launch GitHub App in its bypass list.
+
 ### 2.5 AI — chat, agents, embeddings
 Resolution (`docs/CONCEPTS.md` §9): a per-agent assignment → the tenant's default provider in
 Settings → AI → the platform `ANTHROPIC_API_KEY` → **Workers AI through the `AI` binding**. That last

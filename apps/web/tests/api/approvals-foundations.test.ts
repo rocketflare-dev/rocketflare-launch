@@ -22,7 +22,6 @@ import {
   hasUnsealedEvents,
   tenantsWithUnsealedEvents,
 } from '@/api/services/launch/audit-chain'
-import { reviewPolicyFor } from '@/api/services/launch/ship-settings'
 import { toSessionDetail } from '@/api/services/sessions/chat'
 import {
   landCiStep,
@@ -421,7 +420,6 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
       [landLiveStep(scope, { url: null, version: '1.0.0' }), 'S2'],
       [landStalledStep(scope, { reason: 'unhealthy', error: 'x' }), 'S2'],
       [nudgeLandingSessions(db, {} as never, {} as never, new Date()), 'S2'],
-      [reviewPolicyFor(db, '', { id: '', ownerGroupId: null, shipSettings: null }), 'S4'],
     ]
     for (const [promise, slice] of cases) {
       const error = (await promise.catch(e => e)) as Error
