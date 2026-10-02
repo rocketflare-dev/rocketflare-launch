@@ -6,8 +6,9 @@
  *
  * A reader who can act on none of it reads the same list under "Attention", without the buttons.
  *
- * Retry (stage-aware) and "Fix in a session" arrive with the retry API (P2); until then a failed
- * release offers its details and its GitHub run.
+ * A stuck release (app page P2) offers the stage-aware Retry, labelled with what it does
+ * ("Retry staging deploy", "Check staging again"…), "Fix in a session" (a session seeded with the
+ * failure), its GitHub run and its details (`ReleaseActions.tsx`).
  *
  * A production deploy from before the approvals engine (no `approvalId`) is still decided in
  * place, following the "act on it" rules (ui.md): focus lands on its HEADING, never a button, a
@@ -27,6 +28,7 @@ import {
   ticketVersion,
 } from './appPageModel'
 import { Ago, ExternalLink, StateDot } from './bits'
+import { FixInSessionButton, RetryReleaseButton } from './ReleaseActions'
 
 function DeployDecision({
   ticket,
@@ -126,8 +128,9 @@ function Item({ item, appId, slug }: { item: NeedsYouItem; appId: string; slug: 
           <StateDot tone="error" />
           <ItemBody title={item.title} detail={item.detail} />
           {item.runUrl && <ExternalLink href={item.runUrl}>View run</ExternalLink>}
-          {/* P2 seam: the stage-aware Retry and "Fix in a session" go here. */}
-          <Link to={releasePath(slug, item.version)} className="btn btn-sm">
+          <RetryReleaseButton release={item.release} />
+          <FixInSessionButton release={item.release} />
+          <Link to={releasePath(slug, item.version)} className="btn btn-sm btn-ghost">
             Details
           </Link>
         </>

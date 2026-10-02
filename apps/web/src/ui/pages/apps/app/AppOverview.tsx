@@ -13,6 +13,9 @@
  *   promotion view (`useAppPromotion`). Health is the dot only, kept apart from the deploy result;
  * - **active sessions**, with "All sessions →".
  *
+ * A release in flight's line carries Details and a ⋯ with Cancel release (app page P2); a stuck
+ * one is a Needs-you item with its stage-aware Retry and "Fix in a session" (`ReleaseActions`).
+ *
  * Ship is the view's hero (`.btn-flame`) while it is on offer; it opens `ShipDialog` and the page
  * stays, its Live row then naming who the request waits on. Shipping is for the app's owners and
  * admins (`viewerCanDeploy`); everybody else reads who can.
@@ -24,6 +27,7 @@ import { LinkIcon, ShieldExclamationIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppEnvironment } from '@launch/shared/launch-apps'
 import type { AppPromotion } from '@launch/shared/launch-promotion'
+import type { Release } from '@launch/shared/launch-releases'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { showToast } from '@/ui/components/shared'
@@ -50,11 +54,13 @@ import {
   liveInFlight,
   needsYou,
   notDeployedYet,
+  releasePath,
   stagingInFlight,
 } from './appPageModel'
-import { Ago, ExternalLink, SectionHeading, Version } from './bits'
+import { Ago, ExternalLink, MoreMenu, SectionHeading, Version } from './bits'
 import { type AppPageContext, useAppPage } from './context'
 import { NeedsYou } from './NeedsYou'
+import { useReleaseMenu } from './ReleaseActions'
 
 /** A new app waiting on an admin's approval (P4 `app.create`): say so, and link to the request. */
 function AwaitingCreateApproval({ approvalId }: { approvalId: string }) {
@@ -107,13 +113,27 @@ function FirstBuild({ ctx }: { ctx: AppPageContext }) {
   )
 }
 
+/** A release in flight's Details and ⋯ (Cancel release), on its environment's line. */
+function InFlightActions({ release, slug }: { release: Release; slug: string }) {
+  const { items, dialog } = useReleaseMenu(release)
+  return (
+    <>
+      <Link to={releasePath(slug, release.version)} className="link link-hover">
+        Details
+      </Link>
+      <MoreMenu items={items} label={`Actions for v${release.version}`} />
+      {dialog}
+    </>
+  )
+}
+
 /** The line under an environment row while a release is on its way to it. */
-function InFlightLine({ line }: { line: InFlight }) {
+function InFlightLine({ line, slug }: { line: InFlight; slug: string }) {
   if (line.kind === 'moving') {
     return (
-      <p className="text-sm text-secondary flex flex-wrap items-center gap-x-2" role="status">
+      <div className="text-sm text-secondary flex flex-wrap items-center gap-x-2">
         <span className="loading loading-spinner loading-xs text-primary" aria-hidden="true" />
-        <span>
+        <span role="status">
           → {line.version && <Version>{line.version}</Version>} · {line.what}
           {line.since && (
             <>
@@ -123,7 +143,8 @@ function InFlightLine({ line }: { line: InFlight }) {
           )}
         </span>
         {line.runUrl && <ExternalLink href={line.runUrl}>View run</ExternalLink>}
-      </p>
+        {line.release && <InFlightActions release={line.release} slug={slug} />}
+      </div>
     )
   }
   const copy = async () => {
@@ -158,7 +179,7 @@ function InFlightLine({ line }: { line: InFlight }) {
   )
 }
 
-function EnvRow({ env, line }: { env: AppEnvironment; line: InFlight | null }) {
+function EnvRow({ env, line, slug }: { env: AppEnvironment; line: InFlight | null; slug: string }) {
   const empty = notDeployedYet(env)
   const version = env.lastDeployVersion
   return (
@@ -197,7 +218,7 @@ function EnvRow({ env, line }: { env: AppEnvironment; line: InFlight | null }) {
       </div>
       {line && (
         <div className="sm:pl-20">
-          <InFlightLine line={line} />
+          <InFlightLine line={line} slug={slug} />
         </div>
       )}
     </li>
@@ -381,10 +402,20 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
         ) : (
           <ul className="divide-y divide-base-300 border-y border-base-300">
             {staging && (
-              <EnvRow env={staging} line={stagingInFlight(latestFor('staging'), state)} />
+              <EnvRow
+                env={staging}
+                line={stagingInFlight(latestFor('staging'), state)}
+                slug={app.slug}
+              />
             )}
             {promotion.data && state && <ShipRow ctx={ctx} view={promotion.data} state={state} />}
-            {live && <EnvRow env={live} line={liveInFlight(latestFor('production'), state)} />}
+            {live && (
+              <EnvRow
+                env={live}
+                line={liveInFlight(latestFor('production'), state)}
+                slug={app.slug}
+              />
+            )}
           </ul>
         )}
       </section>

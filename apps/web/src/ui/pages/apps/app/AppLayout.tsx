@@ -16,7 +16,6 @@
 import {
   ArchiveBoxIcon,
   CheckCircleIcon,
-  EllipsisHorizontalIcon,
   ExclamationTriangleIcon,
   PlayIcon,
   Squares2X2Icon,
@@ -53,6 +52,7 @@ import {
   liveVersion,
   settingsPath,
 } from './appPageModel'
+import { type MenuItem, MoreMenu } from './bits'
 import type { AppPageContext } from './context'
 
 const TAB_LABEL: Record<AppTab, string> = {
@@ -81,59 +81,6 @@ function lastFinished(view: Pick<PipelineView, 'steps'>): Date | null {
 interface Kick {
   kind: PipelineKind
   until: number
-}
-
-/** One ⋯ entry: an action, an in-app link, or a link that leaves Launch. */
-type MenuItem =
-  | { label: string; onSelect: () => void }
-  | { label: string; to: string }
-  | { label: string; href: string }
-
-const MENU_ITEM = 'block w-full text-left text-sm px-2.5 py-1.5 rounded hover:bg-base-200'
-
-function MoreMenu({ items }: { items: MenuItem[] }) {
-  const ref = useRef<HTMLDetailsElement>(null)
-  if (items.length === 0) return null
-  const close = () => ref.current?.removeAttribute('open')
-  return (
-    <details ref={ref} className="dropdown dropdown-end">
-      <summary className="btn btn-sm btn-ghost btn-square list-none" aria-label="More actions">
-        <EllipsisHorizontalIcon className="w-5 h-5" />
-      </summary>
-      <ul className="dropdown-content popover-surface z-50 mt-1 w-56 p-1.5 space-y-0.5">
-        {items.map(item => (
-          <li key={item.label}>
-            {'onSelect' in item ? (
-              <button
-                type="button"
-                className={MENU_ITEM}
-                onClick={() => {
-                  close()
-                  item.onSelect()
-                }}
-              >
-                {item.label}
-              </button>
-            ) : 'to' in item ? (
-              <Link to={item.to} className={MENU_ITEM} onClick={close}>
-                {item.label}
-              </Link>
-            ) : (
-              <a
-                href={item.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={MENU_ITEM}
-                onClick={close}
-              >
-                {item.label} ↗
-              </a>
-            )}
-          </li>
-        ))}
-      </ul>
-    </details>
-  )
 }
 
 export default function AppLayout() {

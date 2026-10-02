@@ -18,6 +18,7 @@ import {
   type Release,
   type ReleaseBump,
   type ReleaseStatus,
+  type RetryReleaseResponse,
 } from '@launch/shared/launch-releases'
 
 export const RELEASE_BADGE: Record<ReleaseStatus, { tone: string; label: string }> = {
@@ -80,6 +81,8 @@ const LABELS: Record<string, { label: string; tone: ChainTone }> = {
   'release.production': { label: 'Live in production', tone: 'success' },
   'release.rejected': { label: 'Release rejected', tone: 'error' },
   'release.failed': { label: 'Release failed', tone: 'error' },
+  'release.retried': { label: 'Retried', tone: 'primary' },
+  'release.cancelled': { label: 'Release cancelled', tone: 'warning' },
   'deploy.started': { label: 'Deploy started', tone: 'neutral' },
   'deploy.uploaded': { label: 'Build uploaded', tone: 'neutral' },
   'deploy.activated': { label: 'Deploy activated', tone: 'success' },
@@ -116,5 +119,56 @@ export function chainEntry(event: Pick<AuditEvent, 'action' | 'summary'>): Chain
     tone: known?.tone ?? 'neutral',
     environment,
     detail,
+  }
+}
+
+// ---- app page P2: retry and cancel ---------------------------------------------------------------
+
+/** The statuses whose run Cancel can stop (the server's `releases/cancel.ts` agrees). */
+const CANCELLABLE_STATUSES: readonly ReleaseStatus[] = ['tagged', 'staging', 'promoting']
+
+/** Whether the ⋯ menu offers "Cancel release" (a deploy run may be in flight). Pure. */
+export function canCancelRelease(release: Pick<Release, 'status'>): boolean {
+  return CANCELLABLE_STATUSES.includes(release.status)
+}
+
+/** The Needs-you sentence for a release stuck at its `failedStage`, or null. Pure. */
+export function failedStageTitle(release: Pick<Release, 'version' | 'failedStage'>): string | null {
+  const version = `v${release.version}`
+  switch (release.failedStage) {
+    case 'tag':
+      return `${version} was tagged but GitHub started no deploy for it`
+    case 'staging_deploy':
+      return `Staging deploy of ${version} failed`
+    case 'staging_health':
+      return `Staging runs ${version} but is down`
+    case 'approval_rejected':
+      return `The Live approval of ${version} was turned down`
+    case 'production_deploy':
+      return `Live deploy of ${version} failed`
+    case 'production_health':
+      return `Live runs ${version} but is down`
+    default:
+      return null
+  }
+}
+
+/** What a Retry did, as its toast says it. Pure. */
+export function retryOutcomeMessage(
+  outcome: Pick<RetryReleaseResponse, 'action' | 'attempt' | 'stage' | 'health' | 'release'>
+): string {
+  switch (outcome.action) {
+    case 'rerun':
+      return `Re-running the failed jobs on GitHub${outcome.attempt ? ` (attempt ${outcome.attempt})` : ''}`
+    case 'retag':
+      return `Pushed the tag ${outcome.release.tag} again; staging deploys it next`
+    case 'health_check': {
+      const where = outcome.stage === 'production_health' ? 'Live' : 'Staging'
+      return outcome.health === 'up'
+        ? `${where} is up again`
+        : `${where} is still ${outcome.health ?? 'not answering'}`
+    }
+    case 'approval':
+      return 'Approval requested again'
   }
 }

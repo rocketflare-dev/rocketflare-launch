@@ -17,6 +17,7 @@
  */
 import { approvalPath } from '@launch/shared/launch-approvals'
 import { PRODUCTION_INTENT_TTL_MS } from '@launch/shared/launch-pipeline'
+import type { Release } from '@launch/shared/launch-releases'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ConfirmModal, SkeletonRows, showToast } from '@/ui/components/shared'
@@ -25,11 +26,32 @@ import { useReleases } from '@/ui/hooks/useReleases'
 import { canPromote, latestRelease } from '../components/releaseModel'
 import { ShipButton } from '../components/ShipDialog'
 import { releaseCell, releasePath, releaseRows, ticketRunUrl } from './appPageModel'
-import { Ago, SectionHeading, Version } from './bits'
+import { Ago, MoreMenu, SectionHeading, Version } from './bits'
 import { useAppPage } from './context'
 import { NewReleaseModal } from './NewReleaseModal'
+import { useReleaseMenu } from './ReleaseActions'
 
 const WINDOW = 10
+
+/** A row's ⋯: Retry / Fix in a session / Cancel release (`useReleaseMenu`) and the GitHub run. */
+function RowMenu({
+  release,
+  runUrl,
+  label,
+}: {
+  release: Release | null
+  runUrl: string | null
+  label: string
+}) {
+  const { items, dialog } = useReleaseMenu(release)
+  const all = [...items, ...(runUrl ? [{ label: 'View run on GitHub', href: runUrl }] : [])]
+  return (
+    <>
+      <MoreMenu items={all} label={`Actions for ${label}`} />
+      {dialog}
+    </>
+  )
+}
 
 function Cell({ cell }: { cell: { tone: string; label: string } | null }) {
   if (!cell) return <span className="text-muted">—</span>
@@ -175,23 +197,26 @@ export default function ReleasesTab() {
                         <Ago at={row.at} />
                       </td>
                       <td className="text-right whitespace-nowrap">
-                        {release && canRelease && canPromote(release) ? (
-                          <ShipButton appId={app.id} release={release} />
-                        ) : release?.approvalId ? (
-                          <Link
-                            to={approvalPath(release.approvalId)}
-                            className="link link-hover text-xs"
-                          >
-                            Approval
-                          </Link>
-                        ) : ticket?.approvalId && ticket.status === 'pending' ? (
-                          <Link
-                            to={approvalPath(ticket.approvalId)}
-                            className="link link-hover text-xs"
-                          >
-                            Approval
-                          </Link>
-                        ) : null}
+                        <span className="inline-flex items-center justify-end gap-1">
+                          {release && canRelease && canPromote(release) ? (
+                            <ShipButton appId={app.id} release={release} />
+                          ) : release?.approvalId ? (
+                            <Link
+                              to={approvalPath(release.approvalId)}
+                              className="link link-hover text-xs"
+                            >
+                              Approval
+                            </Link>
+                          ) : ticket?.approvalId && ticket.status === 'pending' ? (
+                            <Link
+                              to={approvalPath(ticket.approvalId)}
+                              className="link link-hover text-xs"
+                            >
+                              Approval
+                            </Link>
+                          ) : null}
+                          <RowMenu release={release} runUrl={run} label={row.label} />
+                        </span>
                       </td>
                     </tr>
                   )

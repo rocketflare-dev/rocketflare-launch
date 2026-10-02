@@ -7,11 +7,15 @@
  * A version with no release row (a deploy of a build that was never tagged) shows its deploys
  * only. Ship is for the app's owners and admins, like everywhere else.
  *
- * P2 seam: the stage-aware Retry, and its attempts, belong on this page.
+ * App page P2: a stuck release shows the stage it is stuck at with the stage-aware Retry and
+ * "Fix in a session" beside it, and a ⋯ with Cancel release while a run is in flight. Every GitHub
+ * run attempt is its own deploy line ("attempt 2"): a Retry re-runs the run's failed jobs, and
+ * attempt 2's deploy job opens a ticket of its own, so the attempts read in order.
  */
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { DeployProgress } from '@launch/shared/launch-apps'
 import type { DeployTicket } from '@launch/shared/launch-pipeline'
+import { RELEASE_STAGE_LABELS, type Release } from '@launch/shared/launch-releases'
 import { Link, useParams } from 'react-router-dom'
 import { SkeletonRows } from '@/ui/components/shared'
 import { useDeployProgress, useDeploys } from '@/ui/hooks/useDeploys'
@@ -21,9 +25,10 @@ import { ReleaseChain } from '../components/ReleaseChain'
 import { canPromote, RELEASE_BADGE } from '../components/releaseModel'
 import { ShipButton } from '../components/ShipDialog'
 import { appTabPath, deployRows, ENV_LABEL, ticketBadge, ticketRunUrl } from './appPageModel'
-import { Ago, ExternalLink, SectionHeading, Version } from './bits'
+import { Ago, ExternalLink, MoreMenu, SectionHeading, Version } from './bits'
 import { useAppPage } from './context'
 import { DeploySteps } from './DeploySteps'
+import { FixInSessionButton, RetryReleaseButton, useReleaseMenu } from './ReleaseActions'
 
 function DeployLine({
   ticket,
@@ -36,6 +41,7 @@ function DeployLine({
   const badge = ticketBadge(ticket)
   const run = ticketRunUrl(ticket)
   const problem = ticket.refused?.length ? `Refused: ${ticket.refused.join(', ')}` : ticket.error
+  const attempt = ticket.runAttempt && ticket.runAttempt > 1 ? ticket.runAttempt : null
   return (
     <li className="py-3 space-y-1.5" data-testid={`deploy-${ticket.environment}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -44,6 +50,7 @@ function DeployLine({
           {badge.label}
         </span>
         <span className="text-xs text-secondary">
+          {attempt && <span className="tabular-nums">attempt {attempt} · </span>}
           started <Ago at={ticket.createdAt} />
           {ticket.actor ? ` by ${ticket.actor}` : ''}
         </span>
@@ -68,6 +75,19 @@ function DeployLine({
         </p>
       )}
     </li>
+  )
+}
+
+/** The release's ⋯ — Cancel release while a run is in flight (Retry and Fix sit beside it). */
+function ReleaseMenu({ release }: { release: Release }) {
+  const { items, dialog } = useReleaseMenu(release)
+  // Retry and Fix in a session are buttons on this page already: the menu keeps the rest.
+  const rest = items.filter(item => item.label.startsWith('Cancel'))
+  return (
+    <>
+      <MoreMenu items={rest} label={`Actions for v${release.version}`} />
+      {dialog}
+    </>
   )
 }
 
@@ -126,14 +146,22 @@ export default function ReleasePage() {
             </span>
           )}
           <span className="ml-auto flex items-center gap-2">
+            {release && <RetryReleaseButton release={release} />}
+            {release && <FixInSessionButton release={release} />}
             {canShip && release && <ShipButton appId={app.id} release={release} />}
             {release?.approvalId && (
               <Link to={approvalPath(release.approvalId)} className="btn btn-sm btn-ghost">
                 The approval
               </Link>
             )}
+            {release && <ReleaseMenu release={release} />}
           </span>
         </div>
+        {release?.failedStage && (
+          <p className="text-sm font-medium" data-testid="failed-stage">
+            Stuck at: {RELEASE_STAGE_LABELS[release.failedStage]}
+          </p>
+        )}
         {release?.error && <p className="text-sm text-error">{release.error}</p>}
       </div>
 

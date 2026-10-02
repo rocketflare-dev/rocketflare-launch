@@ -331,7 +331,7 @@ describe('the in-flight line', () => {
     renderOverview({ [LATEST]: { items: [deployProgress()] } })
     const staging = await screen.findByTestId('env-staging')
     const line = await within(staging).findByText(/uploaded/)
-    expect(line.closest('p')).toHaveTextContent(/→ v1\.4\.3 · uploaded · started/)
+    expect(line.closest('[role="status"]')).toHaveTextContent(/→ v1\.4\.3 · uploaded · started/)
     expect(within(staging).getByRole('link', { name: /View run/ })).toHaveAttribute('href', RUN_URL)
   })
 

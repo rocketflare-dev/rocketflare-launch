@@ -152,11 +152,7 @@ export function ApprovalPanel({
   }
 
   return (
-    <section
-      className="surface-panel border-l-4 border-l-warning"
-      aria-label="Decision"
-      aria-live="polite"
-    >
+    <section className="surface-panel" aria-label="Decision" aria-live="polite">
       <div className="flex items-start gap-2.5">
         <ShieldExclamationIcon className="w-5 h-5 shrink-0 text-warning mt-0.5" />
         <div className="min-w-0 flex-1 space-y-3">

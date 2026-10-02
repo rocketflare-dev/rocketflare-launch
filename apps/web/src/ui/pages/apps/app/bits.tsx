@@ -3,7 +3,9 @@
  * same everywhere (`docs/DESIGN.md`): times relative with the absolute one in `title`, versions in
  * tabular monospace, external links marked.
  */
-import { ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline'
+import { ArrowTopRightOnSquareIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline'
+import { useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
 
 /** "3 minutes ago", with the date and time on hover. */
@@ -78,5 +80,58 @@ export function SectionHeading({
       </h2>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
+  )
+}
+
+/** One ⋯ entry: an action, an in-app link, or a link that leaves Launch. */
+export type MenuItem =
+  | { label: string; onSelect: () => void }
+  | { label: string; to: string }
+  | { label: string; href: string }
+
+const MENU_ITEM = 'block w-full text-left text-sm px-2.5 py-1.5 rounded hover:bg-base-200'
+
+export function MoreMenu({ items, label = 'More actions' }: { items: MenuItem[]; label?: string }) {
+  const ref = useRef<HTMLDetailsElement>(null)
+  if (items.length === 0) return null
+  const close = () => ref.current?.removeAttribute('open')
+  return (
+    <details ref={ref} className="dropdown dropdown-end">
+      <summary className="btn btn-sm btn-ghost btn-square list-none" aria-label={label}>
+        <EllipsisHorizontalIcon className="w-5 h-5" />
+      </summary>
+      <ul className="dropdown-content popover-surface z-50 mt-1 w-56 p-1.5 space-y-0.5">
+        {items.map(item => (
+          <li key={item.label}>
+            {'onSelect' in item ? (
+              <button
+                type="button"
+                className={MENU_ITEM}
+                onClick={() => {
+                  close()
+                  item.onSelect()
+                }}
+              >
+                {item.label}
+              </button>
+            ) : 'to' in item ? (
+              <Link to={item.to} className={MENU_ITEM} onClick={close}>
+                {item.label}
+              </Link>
+            ) : (
+              <a
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={MENU_ITEM}
+                onClick={close}
+              >
+                {item.label} ↗
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }

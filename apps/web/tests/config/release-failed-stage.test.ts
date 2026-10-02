@@ -11,6 +11,55 @@ import {
   releaseSchema,
 } from '@launch/shared/launch-releases'
 import { describe, expect, it } from 'vitest'
+import {
+  canCancelRelease,
+  failedStageTitle,
+  retryOutcomeMessage,
+} from '@/ui/pages/apps/components/releaseModel'
+
+describe('the app page’s retry wording (releaseModel)', () => {
+  it('titles each stuck stage, and nothing for a release that is not stuck', () => {
+    expect(failedStageTitle({ version: '1.4.2', failedStage: 'staging_deploy' })).toBe(
+      'Staging deploy of v1.4.2 failed'
+    )
+    expect(failedStageTitle({ version: '1.4.2', failedStage: 'production_health' })).toBe(
+      'Live runs v1.4.2 but is down'
+    )
+    expect(failedStageTitle({ version: '1.4.2', failedStage: null })).toBeNull()
+  })
+
+  it('says what a retry did', () => {
+    const release = { tag: '1.4.2' } as never
+    expect(
+      retryOutcomeMessage({
+        action: 'rerun',
+        attempt: 3,
+        stage: 'staging_deploy',
+        health: null,
+        release,
+      })
+    ).toBe('Re-running the failed jobs on GitHub (attempt 3)')
+    expect(
+      retryOutcomeMessage({
+        action: 'health_check',
+        attempt: null,
+        stage: 'production_health',
+        health: 'down',
+        release,
+      })
+    ).toBe('Live is still down')
+    expect(
+      retryOutcomeMessage({ action: 'retag', attempt: null, stage: 'tag', health: null, release })
+    ).toBe('Pushed the tag 1.4.2 again; staging deploys it next')
+  })
+
+  it('offers Cancel only while a run may be in flight', () => {
+    expect(canCancelRelease({ status: 'staging' })).toBe(true)
+    expect(canCancelRelease({ status: 'promoting' })).toBe(true)
+    expect(canCancelRelease({ status: 'awaiting_approval' })).toBe(false)
+    expect(canCancelRelease({ status: 'failed' })).toBe(false)
+  })
+})
 
 const NOW = new Date('2026-10-02T12:00:00Z')
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000)

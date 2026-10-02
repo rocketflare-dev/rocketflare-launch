@@ -16,13 +16,16 @@ import type { ApprovalDetail } from '@launch/shared/launch-approvals'
 import { type AppPromotion, appPromotionSchema } from '@launch/shared/launch-promotion'
 import {
   type CreateReleaseRequest,
+  cancelReleaseResponseSchema,
   type PromoteReleaseRequest,
   promoteReleaseResponseSchema,
   type Release,
   type ReleaseStatus,
+  type RetryReleaseRequest,
   releaseChainSchema,
   releaseListResponseSchema,
   releaseSchema,
+  retryReleaseResponseSchema,
 } from '@launch/shared/launch-releases'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/ui/lib/api-client'
@@ -104,6 +107,41 @@ export function useCreateRelease(appId: string) {
     mutationFn: (body: CreateReleaseRequest) =>
       api.post(base(appId), body, { schema: releaseSchema }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.releases.forApp(appId) }),
+  })
+}
+
+/**
+ * App page P2: the stage-aware Retry (`POST …/:rid/retry`). The stage the reader saw travels with
+ * it, so a release that moved on is a 409 `release_stage_changed` rather than a different retry.
+ * The server's message is the toast on a refusal; the caller words the success
+ * (`retryOutcomeMessage`).
+ */
+export function useRetryRelease(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ releaseId, ...body }: RetryReleaseRequest & { releaseId: string }) =>
+      api.post(`${base(appId)}/${releaseId}/retry`, body, { schema: retryReleaseResponseSchema }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.releases.all })
+      // A re-run opens a deploy, a health check moves the environments, a re-request an approval.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apps.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
+    },
+  })
+}
+
+/** App page P2: Cancel release (`POST …/:rid/cancel`) — stops its deploy run on GitHub. */
+export function useCancelRelease(appId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (releaseId: string) =>
+      api.post(`${base(appId)}/${releaseId}/cancel`, undefined, {
+        schema: cancelReleaseResponseSchema,
+      }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.releases.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apps.all })
+    },
   })
 }
 

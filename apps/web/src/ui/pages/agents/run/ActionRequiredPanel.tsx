@@ -140,11 +140,7 @@ export function ActionRequiredPanel({
   const title = spec.title ?? 'Action required'
 
   return (
-    <section
-      className="surface-panel border-l-4 border-l-warning"
-      aria-live="polite"
-      aria-label="Action required"
-    >
+    <section className="surface-panel" aria-live="polite" aria-label="Action required">
       <div className="flex items-start gap-2.5">
         <ExclamationTriangleIcon className="w-5 h-5 shrink-0 text-warning mt-0.5" />
         <div className="min-w-0 flex-1 space-y-3">

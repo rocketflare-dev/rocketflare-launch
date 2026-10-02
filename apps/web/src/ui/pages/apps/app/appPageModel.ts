@@ -33,6 +33,7 @@ import type { Release } from '@launch/shared/launch-releases'
 import { missingEnvironments } from '../components/configModel'
 import { DEPLOY_PHASE_LABELS } from '../components/deployProgressModel'
 import { type PromotionState, peopleSentence, v } from '../components/promotionModel'
+import { failedStageTitle } from '../components/releaseModel'
 
 // ---- Paths ---------------------------------------------------------------------------------------
 
@@ -159,6 +160,8 @@ export type InFlight =
       what: string
       since: Date | null
       runUrl: string | null
+      /** The release this run deploys, when Cancel can stop it (app page P2's ⋯ Cancel). */
+      release?: Release
     }
   | {
       kind: 'awaiting'
@@ -167,6 +170,18 @@ export type InFlight =
       approvers: string | null
       approvalId: string | null
     }
+
+/** The candidate release, when its run in `statuses` is the one this line shows. Pure. */
+function cancellable(
+  state: PromotionState | null,
+  statuses: readonly Release['status'][],
+  version: string | null | undefined
+): { release?: Release } {
+  const release = state && 'release' in state ? state.release : null
+  if (!release || !statuses.includes(release.status)) return {}
+  if (version && version !== release.version) return {}
+  return { release }
+}
 
 function deployVersion(deploy: Pick<DeployProgress, 'version' | 'sha'>): string | null {
   if (deploy.version) return v(deploy.version)
@@ -189,6 +204,7 @@ export function stagingInFlight(
       what: DEPLOY_PHASE_LABELS[deploy.phase],
       since: deploy.startedAt,
       runUrl: deploy.runUrl,
+      ...cancellable(state, ['tagged', 'staging'], deploy.version),
     }
   }
   if (state?.kind === 'blocked' && state.progress === 'moving' && state.release) {
@@ -198,6 +214,7 @@ export function stagingInFlight(
       what: state.release.status === 'tagged' ? 'GitHub is checking it' : 'deploying to staging',
       since: state.release.createdAt,
       runUrl: state.run?.url ?? null,
+      ...cancellable(state, ['tagged', 'staging'], null),
     }
   }
   return null
@@ -236,6 +253,7 @@ export function liveInFlight(
       what: DEPLOY_PHASE_LABELS[deploy.phase],
       since: deploy.startedAt,
       runUrl: deploy.runUrl,
+      ...cancellable(state, ['promoting'], deploy.version),
     }
   }
   if (state?.kind === 'deploying') {
@@ -310,6 +328,8 @@ export type NeedsYouItem =
       version: string
       runUrl: string | null
       canAct: boolean
+      /** The stuck release: its `failedStage` picks the Retry (app page P2). */
+      release: Release
     }
   | {
       kind: 'deploy-failed'
@@ -346,8 +366,11 @@ export function needsYou(input: NeedsYouInput): NeedsYouItem[] {
   const items: NeedsYouItem[] = []
   const { state } = input
 
-  // A release that will not reach staging by itself.
+  // A release that will not get further by itself: one that failed on its way to staging, or any
+  // candidate the server says is stuck (`failedStage` — a failed Live deploy, an environment down
+  // on it, a turned-down approval, a tag GitHub never ran).
   let failedVersion: string | null = null
+  const candidate = state && 'release' in state ? state.release : null
   if (state?.kind === 'blocked' && state.progress === 'failed' && state.release) {
     failedVersion = state.release.version
     items.push({
@@ -358,6 +381,19 @@ export function needsYou(input: NeedsYouInput): NeedsYouItem[] {
       version: state.release.version,
       runUrl: state.run?.url ?? null,
       canAct: input.viewerCanDeploy,
+      release: state.release,
+    })
+  } else if (candidate?.failedStage) {
+    failedVersion = candidate.version
+    items.push({
+      kind: 'release-failed',
+      key: `release:${candidate.id}`,
+      title: failedStageTitle(candidate) ?? `${v(candidate.version)} is stuck`,
+      detail: candidate.error,
+      version: candidate.version,
+      runUrl: null,
+      canAct: input.viewerCanDeploy,
+      release: candidate,
     })
   }
 
