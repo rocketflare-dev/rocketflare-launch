@@ -98,7 +98,7 @@ describe('shared ls / show', () => {
     expect(text).toContain('M365_TENANT_ID=tenant-abc')
     expect(text).toContain('Holders:')
     expect(text).toContain('expenses')
-    expect(text).toContain(`/shared-config/${RESOURCE_ID}`)
+    expect(text).toContain(`/secrets/${RESOURCE_ID}`)
   })
 
   it('a member sees no holders section', async () => {
@@ -112,7 +112,7 @@ describe('shared ls / show', () => {
     const { fetch } = server()
     const { ctx } = await testContext({ store: await store(), fetch })
     const error = await captureError(runSharedShow(ctx, 'nope'))
-    expect(error.message).toContain('No shared config "nope"')
+    expect(error.message).toContain('No secret "nope"')
     expect(exitCodeFor(error)).toBe(EXIT_ERROR)
   })
 })

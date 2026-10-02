@@ -205,7 +205,7 @@ export interface UiPlugin<S extends SharedPlugin = SharedPlugin> {
   /** Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability. */
   settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]
   /**
-   * Quick links for the Home page, merged AHEAD of the kit's own (D31). A feature somebody reaches
+   * Quick links for the Home page, listed under its overview (D31). A feature somebody reaches
    * from Home is one they were told about; a plugin that only adds a nav item is one they have to
    * find. Each link carries the SAME guard object as its route, so Home can never offer a door the
    * page refuses — `useNavGuard` filters these exactly as it filters the nav.

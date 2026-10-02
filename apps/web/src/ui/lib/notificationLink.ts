@@ -45,7 +45,7 @@ export function notificationLink(notification: Pick<Notification, 'type' | 'data
       const approvalId = id(notification.data.approvalId)
       return approvalId ? approvalPath(approvalId) : null
     }
-    // Launch P5: an app needs shared config, or one of its grants is about to lapse — the app's
+    // Launch P5: an app needs a secret (shared config), or one of its grants is about to lapse — the app's
     // config page is where it is requested (or renewed).
     case GRANT_NOTIFICATION_TYPES.needed:
     case GRANT_NOTIFICATION_TYPES.expiring: {

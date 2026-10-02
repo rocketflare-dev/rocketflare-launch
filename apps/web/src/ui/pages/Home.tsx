@@ -1,25 +1,24 @@
 /**
- * Home (D25): where you are (organisation, your role), where to go next, and — for admins — what
- * just happened. Deliberately generic; apps replace the quick links with their own dashboard.
+ * Home: an overview of what this organisation runs and what is waiting on the reader — the
+ * approvals they can decide, then the apps with their Live and Staging versions and one word where
+ * something needs a look. Each block is its own small section component (`pages/home/`), each
+ * behind the same guard as the page it summarises, so a richer widget is one more section rather
+ * than a rewrite. No hero, no stat tiles (docs/DESIGN.md); the full lists are one link away.
+ *
+ * Lazy in `App.tsx` like every other page: its sections reuse the app page's and the inbox's
+ * models, which the eager shell should not carry.
+ *
+ * Installed plugins' quick links (`UiPlugin.homeLinks`, D31) close the page as one quiet line,
+ * each filtered by its route's own guard.
  */
-import {
-  BellIcon,
-  ClockIcon,
-  Cog6ToothIcon,
-  ShieldCheckIcon,
-  UserCircleIcon,
-  WrenchScrewdriverIcon,
-} from '@heroicons/react/24/outline'
 import type { ComponentType } from 'react'
 import { Link } from 'react-router-dom'
 import { uiPlugins } from '@/plugins/ui'
-import { RoleBadge } from '@/ui/components/RoleBadge'
-import { EmptyState, PageHeader, SectionPanel, SkeletonRows } from '@/ui/components/shared'
-import { useActivity } from '@/ui/hooks/useActivity'
+import { PageHeader } from '@/ui/components/shared'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
-import { timeAgo } from '@/ui/lib/format'
-import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
+import { ApprovalsWaitingSection } from './home/ApprovalsWaitingSection'
+import { AppsSection } from './home/AppsSection'
 
 export interface QuickLink {
   to: string
@@ -29,129 +28,38 @@ export interface QuickLink {
   guard?: NavGuard
 }
 
-const CORE_QUICK_LINKS: QuickLink[] = [
-  {
-    to: '/profile',
-    label: 'Your account',
-    description: 'Name, avatar, sign-in methods',
-    icon: UserCircleIcon,
-  },
-  {
-    to: '/notifications',
-    label: 'Notifications',
-    description: 'Everything addressed to you',
-    icon: BellIcon,
-  },
-  {
-    to: '/settings',
-    label: 'Settings',
-    description: 'People, API keys, organisation',
-    icon: Cog6ToothIcon,
-    guard: 'admin',
-  },
-  {
-    to: '/activity',
-    label: 'Activity',
-    description: 'The audit log',
-    icon: ClockIcon,
-    guard: 'admin',
-  },
-  {
-    to: PLATFORM_SETTINGS_PATH,
-    label: 'Setup',
-    description: 'Credentials, domain, sign-in keys, access requests',
-    icon: WrenchScrewdriverIcon,
-    guard: 'platformAdmin',
-  },
-  {
-    to: '/admin',
-    label: 'Admin',
-    description: 'Every organisation and user',
-    icon: ShieldCheckIcon,
-    guard: 'globalAdmin',
-  },
-]
+/** The same guards as `/approvals` and `/apps` (and their nav items). */
+const APPROVALS_GUARD: NavGuard = { action: 'read', subject: 'Approval' }
+const APPS_GUARD: NavGuard = { action: 'read', subject: 'App' }
 
-/**
- * The kit's links, with every installed plugin's ahead of them (D31). Plugin first because a
- * plugin is what this app ADDED — the kit's own links (account, notifications, settings) are the
- * furniture — and because it reproduces where Analytics sat while it was part of the kit.
- */
-const QUICK_LINKS: QuickLink[] = [...uiPlugins.flatMap(p => p.homeLinks ?? []), ...CORE_QUICK_LINKS]
+const PLUGIN_LINKS: QuickLink[] = uiPlugins.flatMap(p => p.homeLinks ?? [])
 
-export default function Home() {
-  const { user, tenant, tenancyMode } = useAuth()
-  const canAccess = useNavGuard()
-  const isAdmin = canAccess('admin')
-  const links = QUICK_LINKS.filter(l => canAccess(l.guard))
-
+function PluginLinks({ links }: { links: QuickLink[] }) {
+  if (links.length === 0) return null
   return (
-    <div className="max-w-4xl">
-      <PageHeader
-        title={tenant ? tenant.name : 'Welcome'}
-        badge={tenant && <RoleBadge role={tenant.role} />}
-        description={
-          user
-            ? `Signed in as ${user.name}${tenant ? ` · your role here is ${tenant.role}` : ''}${tenancyMode === 'single' ? '' : ' · switch organisations from the header'}`
-            : undefined
-        }
-      />
-
-      <SectionPanel title="Quick links" className="mb-4">
-        <ul className="grid gap-2 sm:grid-cols-2">
-          {links.map(link => (
-            <li key={link.to}>
-              <Link
-                to={link.to}
-                className="flex items-start gap-3 surface-inset px-4 py-3 hover:border-[color:var(--border-strong)]"
-              >
-                <link.icon className="w-5 h-5 mt-0.5 text-muted shrink-0" />
-                <span>
-                  <span className="block text-sm font-medium">{link.label}</span>
-                  <span className="block text-xs text-secondary">{link.description}</span>
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </SectionPanel>
-
-      {isAdmin && <RecentActivity />}
-    </div>
+    <nav aria-label="More in Launch" className="text-sm text-secondary">
+      <ul className="flex flex-wrap gap-x-5 gap-y-1">
+        {links.map(link => (
+          <li key={link.to}>
+            <Link to={link.to} className="link link-hover" title={link.description}>
+              {link.label} →
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
   )
 }
 
-function RecentActivity() {
-  const { data, isLoading } = useActivity({ pageSize: 5 })
-  const items = data?.items ?? []
+export default function Home() {
+  const { tenant } = useAuth()
+  const canAccess = useNavGuard()
   return (
-    <SectionPanel
-      title="Recent activity"
-      actions={
-        <Link to="/activity" className="btn btn-ghost btn-xs">
-          View all
-        </Link>
-      }
-    >
-      {isLoading ? (
-        <SkeletonRows rows={3} />
-      ) : items.length === 0 ? (
-        <EmptyState icon={ClockIcon} message="Nothing yet" size="sm" />
-      ) : (
-        <ul className="divide-y divide-[color:var(--border-subtle)] text-sm">
-          {items.map(event => (
-            <li key={event.id} className="flex items-center gap-3 py-2">
-              <code className="text-xs">{event.type}</code>
-              <span className="flex-1 truncate text-secondary">
-                {event.actor?.name ?? 'system'}
-              </span>
-              <span className="text-xs text-muted whitespace-nowrap">
-                {timeAgo(event.createdAt)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionPanel>
+    <div className="max-w-5xl space-y-10">
+      <PageHeader title={tenant?.name ?? 'Home'} className="mb-0" />
+      {canAccess(APPROVALS_GUARD) && <ApprovalsWaitingSection />}
+      {canAccess(APPS_GUARD) && <AppsSection />}
+      <PluginLinks links={PLUGIN_LINKS.filter(link => canAccess(link.guard))} />
+    </div>
   )
 }

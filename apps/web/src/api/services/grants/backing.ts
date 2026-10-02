@@ -131,7 +131,7 @@ export class WorkerSecretsBacking implements GrantBacking {
       keep_bindings: ['secret_text'],
       keep_assets: true,
       annotations: {
-        'workers/message': `Launch: shared config replaces the plain vars ${shadowed.join(', ')}`,
+        'workers/message': `Launch: secrets replace the plain vars ${shadowed.join(', ')}`,
       },
     }
     const created = await client.createVersion(accountId, script, metadata, content.modules)
@@ -139,7 +139,7 @@ export class WorkerSecretsBacking implements GrantBacking {
       accountId,
       script,
       created.id,
-      'Launch: shared config replaces plain vars with secrets'
+      'Launch: secrets replace plain vars'
     )
     return shadowed
   }

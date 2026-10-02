@@ -167,7 +167,7 @@ async function remindExpiry(deps: GrantDeps, grant: AppGrantRow, now: Date): Pro
     {
       tenantId: grant.tenantId,
       type: GRANT_NOTIFICATION_TYPES.expiring,
-      title: `${app?.displayName ?? 'An app'} loses ${resource?.displayName ?? 'shared config'} (${grant.environment}) on ${day}`,
+      title: `${app?.displayName ?? 'An app'} loses ${resource?.displayName ?? 'a secret'} (${grant.environment}) on ${day}`,
       body: `Request it again from ${app ? appConfigPath(app.slug) : "the app's config page"} if the app still needs it.`,
       data: { appId: grant.appId, appSlug: app?.slug ?? null, grantId: grant.id },
     },

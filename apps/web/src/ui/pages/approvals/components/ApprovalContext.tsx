@@ -9,7 +9,7 @@
  *   the pull requests in it with their CI, and — for a job-originated ticket — the GitHub run that
  *   is waiting. The release's whole audit chain sits below it on the page (`ReleaseChain`).
  * - `session.budget`: the session, what it has spent against its cap, and the extra asked for.
- * - `grant.request` (P5): which shared config, for which app and environment, the item NAMES and
+ * - `grant.request` (P5): which secret (shared resource), for which app and environment, the item NAMES and
  *   kinds the app would receive (never a value), which of its plugins declared the need, when the
  *   grant would lapse, and the owner team that decides (read from the resource, which every member
  *   may; while it loads, or if it cannot be read, the sentence describes the team instead).
@@ -212,7 +212,7 @@ function GrantRequestContext({
   return (
     <SectionPanel title="What the app would hold">
       <dl>
-        <Row label="Shared config">
+        <Row label="Secret">
           <Link to={sharedResourcePath(context.resourceId)} className="link link-hover">
             {context.resourceName}
           </Link>
@@ -252,7 +252,7 @@ function GrantRequestContext({
       <p className="text-xs text-muted mt-3">
         Approving writes these values into {appName}’s {context.environment} Worker as secrets.
         Nobody sees them — not you, not the app’s owners. The owner team can revoke the grant later
-        from the shared config’s page.
+        from the secret’s page.
       </p>
     </SectionPanel>
   )

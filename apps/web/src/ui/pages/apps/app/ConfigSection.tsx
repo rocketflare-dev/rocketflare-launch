@@ -81,8 +81,7 @@ function DeclaredKeys({ view }: { view: AppConfigView }) {
                         </Link>
                       ) : (
                         <span className="text-muted text-xs">
-                          No shared config matches — ask an admin to add it, or set it on the app
-                          yourself.
+                          No secret matches — ask an admin to add it, or set it on the app yourself.
                         </span>
                       )}
                     </td>
@@ -240,21 +239,21 @@ export function ConfigSection({ app }: { app: Pick<AppDetail, 'id' | 'displayNam
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-secondary">
-          The shared config this app declares, and the grants that give it.
+          The secrets this app declares, and the grants that give them.
         </p>
         {view.canRequest && <RescanButton appId={appData.id} />}
       </div>
       <ScanLine view={view} />
 
       <SectionPanel
-        title="Shared config it needs"
+        title="Secrets it needs"
         description="Resources whose keys the app declares. The team that owns each one decides who holds it."
       >
         {view.matched.length === 0 ? (
           <EmptyState
             size="sm"
             icon={KeyIcon}
-            message="None of the declared keys match shared config."
+            message="None of the declared keys match a secret."
           />
         ) : (
           <MatchList view={view} appId={appData.id} appName={appData.displayName} />

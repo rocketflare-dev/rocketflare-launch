@@ -93,7 +93,7 @@ function renderConfigPage(routes: RouteTable, session = makeSession()) {
 describe('Settings → Config & secrets', () => {
   it('shows each environment’s state, the declared keys by plugin, and the unmatched hint', async () => {
     renderConfigPage({ [CONFIG]: appConfigView() })
-    const list = await screen.findByRole('list', { name: 'Shared config' })
+    const list = await screen.findByRole('list', { name: 'Secrets' })
     const staging = within(list).getByText('staging').closest('[data-env]') as HTMLElement
     expect(within(staging).getByText('Held · v3')).toBeInTheDocument()
     const production = within(list).getByText('production').closest('[data-env]') as HTMLElement
@@ -192,7 +192,7 @@ describe('Settings → Config & secrets', () => {
         pushId: null,
       },
     })
-    const list = await screen.findByRole('list', { name: 'Shared config' })
+    const list = await screen.findByRole('list', { name: 'Secrets' })
     expect(within(list).getByRole('link', { name: 'View request' })).toHaveAttribute(
       'href',
       `/approvals/${GRANT_APPROVAL_ID}`
@@ -212,7 +212,7 @@ describe('Settings → Config & secrets', () => {
       { [CONFIG]: appConfigView({ canRequest: false }) },
       makeSession({ tenant: { id: IDS.tenant, name: 'Acme', slug: 'acme', role: 'member' } })
     )
-    await screen.findByRole('list', { name: 'Shared config' })
+    await screen.findByRole('list', { name: 'Secrets' })
     expect(screen.queryByRole('button', { name: 'Request' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Re-scan/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument()

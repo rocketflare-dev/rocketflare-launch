@@ -45,7 +45,7 @@ describe('grants needs / ls', () => {
     const text = out.content()
     expect(text).toContain('staging: held (v3)')
     expect(text).toContain('production: missing')
-    expect(text).toContain('Keys no shared config matches: STRIPE_KEY')
+    expect(text).toContain('Keys no secret matches: STRIPE_KEY')
     expect(text).toContain('grants request expenses m365')
   })
 

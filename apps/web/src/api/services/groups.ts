@@ -281,7 +281,7 @@ async function refuseWhileOwningSharedConfig(
     .where(and(eq(sharedResources.tenantId, tenantId), eq(groups.tenantId, tenantId), which))
   if (owned.length === 0) return
   throw new ConflictError(
-    `This group owns shared config (${owned.map(r => r.slug).join(', ')}). Give it another owner group first.`,
+    `This group owns secrets (${owned.map(r => r.slug).join(', ')}). Give it another owner group first.`,
     'group_owns_shared_config'
   )
 }

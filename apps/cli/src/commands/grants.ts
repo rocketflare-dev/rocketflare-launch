@@ -91,12 +91,12 @@ export async function runGrantsNeeds(ctx: CommandContext, app: string): Promise<
       lines.push(chalk.dim(`Scanned ${where} on ${formatDate(data.scan.scannedAt)}`))
       if (data.scan.error) lines.push(chalk.yellow(`The last scan failed: ${data.scan.error}`))
     }
-    if (data.matched.length === 0) lines.push('No declared key matches shared config.')
+    if (data.matched.length === 0) lines.push('No declared key matches a secret.')
     else for (const match of data.matched) lines.push(matchLine(match))
     if (data.unmatched.length > 0)
       lines.push(
         '',
-        `Keys no shared config matches: ${data.unmatched.join(', ')}`,
+        `Keys no secret matches: ${data.unmatched.join(', ')}`,
         chalk.dim('  Ask an admin to add them, or set them on the app yourself.')
       )
     if (data.needs.length > 0 && data.canRequest) {
@@ -150,7 +150,7 @@ export async function runGrantsRequest(
     })
     const match = list.items.find(r => r.slug === wanted)
     if (!match)
-      throw new CliError(`No shared config "${wanted}"`, {
+      throw new CliError(`No secret "${wanted}"`, {
         hint: `List them with \`${ctx.binName} shared ls\`.`,
       })
     resourceId = match.id
@@ -266,12 +266,10 @@ function envListOption(value: string): AppEnvironmentName[] {
 }
 
 export function registerGrantsCommands(program: Command, action: ActionWrapper): void {
-  const grants = program
-    .command('grants')
-    .description('the shared config an app needs, and its grants')
+  const grants = program.command('grants').description('the secrets an app needs, and its grants')
   grants
     .command('needs <app>')
-    .description('what the app declares, the shared config it matches, and what it still needs')
+    .description('what the app declares, the secrets it matches, and what it still needs')
     .action(action((ctx, cmd) => runGrantsNeeds(ctx, cmd.args[0] ?? '')))
   grants
     .command('ls <app>')

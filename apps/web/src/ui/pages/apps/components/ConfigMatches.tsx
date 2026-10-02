@@ -68,7 +68,7 @@ export function MatchList({
   const [requesting, setRequesting] = useState<AppConfigMatch | null>(null)
   return (
     <>
-      <ul className="divide-y divide-[color:var(--border-subtle)]" aria-label="Shared config">
+      <ul className="divide-y divide-[color:var(--border-subtle)]" aria-label="Secrets">
         {view.matched.map(match => {
           const canAsk =
             view.canRequest && !match.resource.archived && missingEnvironments(match).length > 0

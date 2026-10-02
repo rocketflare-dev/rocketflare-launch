@@ -41,7 +41,6 @@ import {
   PLATFORM_SETUP_PATH,
 } from '@/ui/lib/platform-paths'
 import { queryClient } from '@/ui/lib/queryClient'
-import Home from '@/ui/pages/Home'
 import Login from '@/ui/pages/Login'
 import NotFound from '@/ui/pages/NotFound'
 
@@ -51,7 +50,8 @@ const InviteAccept = lazy(() => import('@/ui/pages/InviteAccept'))
 const SelectTenant = lazy(() => import('@/ui/pages/SelectTenant'))
 const Pending = lazy(() => import('@/ui/pages/Pending'))
 const NoAccess = lazy(() => import('@/ui/pages/NoAccess'))
-// Shell pages
+// Shell pages. Home is lazy too: its overview reuses the app page's and the inbox's models.
+const Home = lazy(() => import('@/ui/pages/Home'))
 const Profile = lazy(() => import('@/ui/pages/Profile'))
 const Notifications = lazy(() => import('@/ui/pages/Notifications'))
 const Activity = lazy(() => import('@/ui/pages/Activity'))
@@ -75,7 +75,7 @@ const SessionPage = lazy(() => import('@/ui/pages/sessions/SessionPage'))
 // Launch P4: the approvals inbox and one request (notifications link to it).
 const ApprovalsInboxPage = lazy(() => import('@/ui/pages/approvals/InboxPage'))
 const ApprovalPage = lazy(() => import('@/ui/pages/approvals/ApprovalPage'))
-// Launch P5: shared config — the bundles and one resource (an app's config is its Settings tab).
+// Launch P5: Secrets (shared config) — the bundles and one resource (an app's config is its Settings tab).
 const SharedConfigPage = lazy(() => import('@/ui/pages/shared-config/SharedConfigPage'))
 const SharedResourcePage = lazy(() => import('@/ui/pages/shared-config/SharedResourcePage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
@@ -260,18 +260,24 @@ function ShellRoutes() {
               </RequireGuard>
             }
           />
-          {/* Launch P5 (spec/09): shared config — every member reads the list (they need it to
-              ask); owners and admins act, which the page and the server decide per resource. */}
+          {/* Launch P5 (spec/09): Secrets (shared resources) — every member reads the list (they
+              need it to ask); owners and admins act, which the page and the server decide per
+              resource. It was "Shared config" at `/shared-config`; old links redirect. */}
           <Route
-            path="/shared-config"
+            path="/secrets"
             element={
               <RequireGuard guard={{ action: 'read', subject: 'SharedResource' }}>
                 <SharedConfigPage />
               </RequireGuard>
             }
           />
+          <Route path="/shared-config" element={<Moved to="/secrets" />} />
           <Route
             path="/shared-config/:id"
+            element={<Moved to={({ id = '' }) => `/secrets/${encodeURIComponent(id)}`} />}
+          />
+          <Route
+            path="/secrets/:id"
             element={
               <RequireGuard guard={{ action: 'read', subject: 'SharedResource' }}>
                 <SharedResourcePage />

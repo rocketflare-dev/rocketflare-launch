@@ -3,8 +3,9 @@
  * RESOURCE is a named bundle of config items (M365: two vars and a secret) owned by a group, with
  * sealed values per environment; an app HOLDS it through a grant (one app × resource ×
  * environment, approved as a `grant.request`), and `GRANT_PUSH` writes the values into the app's
- * Worker as secrets. "Catalogue" already means the apps list, so the UI calls this "shared config"
- * (`/shared-config`) and the API `/api/shared-resources`.
+ * Worker as secrets. "Catalogue" already means the apps list, so the UI calls this "Secrets"
+ * (`/secrets`; it was "shared config", `/shared-config`, which redirects) and the API
+ * `/api/shared-resources`.
  *
  * Everything the API, the UI and the CLI say about it is here:
  *
@@ -608,9 +609,14 @@ export const GRANT_ERROR_CODES = {
   appHasNoWorker: 'app_has_no_worker',
 } as const
 
-/** The shared config pages (the resource by id) and an app's config page (by slug). */
+/**
+ * The UI calls shared resources "Secrets": the list at `SECRETS_PATH`, one resource by id (the old
+ * `/shared-config` paths redirect there), and an app's config page (by slug).
+ */
+export const SECRETS_PATH = '/secrets'
+
 export function sharedResourcePath(id: string): string {
-  return `/shared-config/${id}`
+  return `${SECRETS_PATH}/${id}`
 }
 
 export function appConfigPath(appSlug: string): string {

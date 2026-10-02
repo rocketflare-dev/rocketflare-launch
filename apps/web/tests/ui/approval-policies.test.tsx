@@ -98,7 +98,7 @@ describe('ApprovalPoliciesSettings', () => {
     expect(screen.getByRole('heading', { name: 'New app' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'App access' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Session budget' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Shared config' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Secret access' })).toBeInTheDocument()
     // Issue #5: `session.merge` is the sixth built kind.
     expect(screen.getByRole('heading', { name: 'Session merge' })).toBeInTheDocument()
     expect(screen.getAllByText('default')).toHaveLength(6)
@@ -192,7 +192,7 @@ describe('ApprovalPoliciesSettings', () => {
         id: ROW_ID,
       }),
     })
-    const panel = (await screen.findByRole('heading', { name: 'Shared config' })).closest(
+    const panel = (await screen.findByRole('heading', { name: 'Secret access' })).closest(
       'section'
     ) as HTMLElement
     fireEvent.click(within(panel).getByRole('button', { name: /Edit/ }))

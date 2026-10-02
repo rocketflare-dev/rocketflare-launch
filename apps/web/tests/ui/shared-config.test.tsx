@@ -1,8 +1,8 @@
 /**
- * Shared config pages (Launch P5, spec/09, plan §4 5f). What they are arranged to get right:
+ * Secrets pages (shared config, Launch P5, spec/09, plan §4 5f). What they are arranged to get right:
  *
  * - the list shows every resource's value STATUS per environment — never a value — and only an
- *   admin is offered "New shared config";
+ *   admin is offered "New secret";
  * - the resource page tells the owner team what is set ("Set — version 3 … by Carol"), shows var
  *   values to them alone, and its values modal is write-only: set keys read "Set — hidden" with a
  *   Replace button, no input is ever pre-filled, secrets are password inputs, a blank keeps what is
@@ -61,10 +61,7 @@ const member = () =>
 
 const DETAIL = `/api/shared-resources/${RESOURCE_ID}`
 
-function renderPages(
-  routes: RouteTable,
-  { session = makeSession(), route = '/shared-config' } = {}
-) {
+function renderPages(routes: RouteTable, { session = makeSession(), route = '/secrets' } = {}) {
   const fetchMock = stubFetch({
     '/api/groups': { items: [] },
     '/api/groups/mine': { items: [] },
@@ -72,8 +69,8 @@ function renderPages(
   })
   renderWithProviders(
     <Routes>
-      <Route path="/shared-config" element={<SharedConfigPage />} />
-      <Route path="/shared-config/:id" element={<SharedResourcePage />} />
+      <Route path="/secrets" element={<SharedConfigPage />} />
+      <Route path="/secrets/:id" element={<SharedResourcePage />} />
     </Routes>,
     { session, route }
   )
@@ -84,18 +81,18 @@ describe('SharedConfigPage', () => {
   it('lists each resource with its status per environment; an admin may create one', async () => {
     renderPages({ '/api/shared-resources': { items: [resourceRow()] } })
     const link = await screen.findByRole('link', { name: 'Microsoft 365' })
-    expect(link).toHaveAttribute('href', `/shared-config/${RESOURCE_ID}`)
+    expect(link).toHaveAttribute('href', `/secrets/${RESOURCE_ID}`)
     const row = link.closest('tr') as HTMLElement
     expect(within(row).getByText('IT Identity')).toBeInTheDocument()
     expect(within(row).getAllByText('v3')).toHaveLength(2)
     expect(within(row).getByText(/· 2 apps/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /New shared config/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /New secret/ })).toBeInTheDocument()
   })
 
   it('a member reads the list but is not offered New', async () => {
     renderPages({ '/api/shared-resources': { items: [] } }, { session: member() })
-    expect(await screen.findByText('No shared config yet.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /New shared config/ })).not.toBeInTheDocument()
+    expect(await screen.findByText('No secrets yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New secret/ })).not.toBeInTheDocument()
   })
 
   it('creates a resource from the modal with the route’s own schema, then opens it', async () => {
@@ -124,7 +121,7 @@ describe('SharedConfigPage', () => {
       [DETAIL]: ownerDetail({ canManage: true }),
       [`${DETAIL}/pushes`]: { items: [] },
     })
-    fireEvent.click(await screen.findByRole('button', { name: /New shared config/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /New secret/ }))
     const dialog = screen.getByRole('dialog')
     fireEvent.change(within(dialog).getByPlaceholderText('Microsoft 365'), {
       target: { value: 'Microsoft 365' },
@@ -160,7 +157,7 @@ describe('SharedResourcePage — the owner team', () => {
   it('says what is set, shows the vars to owners, and lists holders with a behind flag', async () => {
     renderPages(
       { [DETAIL]: ownerDetail(), [`${DETAIL}/pushes`]: { items: [] } },
-      { route: `/shared-config/${RESOURCE_ID}` }
+      { route: `/secrets/${RESOURCE_ID}` }
     )
     expect(await screen.findByTestId('value-line-staging')).toHaveTextContent(
       /^Set — version 3, rotated .* by Carol Checker$/
@@ -184,7 +181,7 @@ describe('SharedResourcePage — the owner team', () => {
           }),
         [`${DETAIL}/pushes/${PUSH_ID}`]: push(),
       },
-      { route: `/shared-config/${RESOURCE_ID}` }
+      { route: `/secrets/${RESOURCE_ID}` }
     )
     const production = (await screen.findByTestId('value-line-production')).closest(
       'section'
@@ -218,7 +215,7 @@ describe('SharedResourcePage — the owner team', () => {
   it('a blank form is refused before any request', async () => {
     const fetchMock = renderPages(
       { [DETAIL]: ownerDetail(), [`${DETAIL}/pushes`]: { items: [] } },
-      { route: `/shared-config/${RESOURCE_ID}` }
+      { route: `/secrets/${RESOURCE_ID}` }
     )
     const staging = (await screen.findByTestId('value-line-staging')).closest(
       'section'
@@ -252,7 +249,7 @@ describe('SharedResourcePage — the owner team', () => {
             headers: { 'Content-Type': 'application/json' },
           }),
       },
-      { route: `/shared-config/${RESOURCE_ID}` }
+      { route: `/secrets/${RESOURCE_ID}` }
     )
     const row = await screen.findByRole('button', { name: /Rotation/ })
     fireEvent.click(row)
@@ -296,7 +293,7 @@ describe('SharedResourcePage — the owner team', () => {
           pushId: PUSH_ID,
         },
       },
-      { route: `/shared-config/${RESOURCE_ID}` }
+      { route: `/secrets/${RESOURCE_ID}` }
     )
     const holders = await screen.findByRole('table', { name: 'Holders' })
     const expenses = within(holders).getByRole('link', { name: 'Expenses' }).closest('tr')
@@ -313,7 +310,7 @@ describe('SharedResourcePage — a member', () => {
   it('sees names, status and policy — no holders, no vars, no Set — and never asks for pushes', async () => {
     const fetchMock = renderPages(
       { [DETAIL]: memberDetail() },
-      { session: member(), route: `/shared-config/${RESOURCE_ID}` }
+      { session: member(), route: `/secrets/${RESOURCE_ID}` }
     )
     expect(await screen.findByText(/request it from the app’s Config page/)).toBeInTheDocument()
     expect(screen.getByText('M365_CLIENT_SECRET')).toBeInTheDocument()

@@ -448,7 +448,7 @@ The server surface: the context family, and the types a plugin must be able to n
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
     Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
   - `homeLinks?: readonly QuickLink[]`
-    Quick links for the Home page, merged AHEAD of the kit's own (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one…
+    Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
     Families merged into `queryKeys`; every root must start with `<id>:`.
   - `agentForms?: Readonly<Partial<Record<AgentKeyOf<S> & string, AgentForm>>>`
@@ -530,7 +530,7 @@ The only host module a plugin's `ui/index.ts` may import — it ships in the mai
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
     Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
   - `homeLinks?: readonly QuickLink[]`
-    Quick links for the Home page, merged AHEAD of the kit's own (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one…
+    Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
     Families merged into `queryKeys`; every root must start with `<id>:`.
   - `agentForms?: Readonly<Partial<Record<AgentKeyOf<S> & string, AgentForm>>>`
@@ -706,7 +706,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
     Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
   - `homeLinks?: readonly QuickLink[]`
-    Quick links for the Home page, merged AHEAD of the kit's own (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one…
+    Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
     Families merged into `queryKeys`; every root must start with `<id>:`.
   - `agentForms?: Readonly<Partial<Record<AgentKeyOf<S> & string, AgentForm>>>`

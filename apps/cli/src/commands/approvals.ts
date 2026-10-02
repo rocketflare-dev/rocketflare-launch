@@ -54,7 +54,7 @@ const KIND_LABELS: Record<ApprovalContext['kind'], string> = {
   'app.access': 'Access to an app',
   'deploy.production': 'Deploy to production',
   'session.budget': 'More session budget',
-  'grant.request': 'Shared config for an app',
+  'grant.request': 'A secret for an app',
   'config.change': 'A configuration change',
   'app.teardown': 'Tear down an app',
   'session.merge': 'Merge a session’s pull request',

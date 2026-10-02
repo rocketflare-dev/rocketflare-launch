@@ -30,7 +30,7 @@ export function requestRefusal(error: unknown, resourceName: string): string {
     case GRANT_ERROR_CODES.resourceArchived:
       return `${resourceName} is archived: no new grants.`
     case GRANT_ERROR_CODES.notConfigured:
-      return 'Shared config is not set up on this deployment yet. Ask an administrator.'
+      return 'Secrets are not set up on this deployment yet. Ask an administrator.'
     default:
       return error.message
   }

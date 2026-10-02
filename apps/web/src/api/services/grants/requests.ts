@@ -287,7 +287,7 @@ export async function requestGrant(
   const now = nowOf(deps)
   const app = await getAppRow(db, tenantId, appId)
   if (!(await mayRequestFor(db, viewer, app))) {
-    throw new ForbiddenError('Only the app’s owners and admins request shared config', 'forbidden')
+    throw new ForbiddenError('Only the app’s owners and admins request secrets', 'forbidden')
   }
   const resource = await loadResource(db, tenantId, input.resourceId)
   if (resource.archivedAt) {

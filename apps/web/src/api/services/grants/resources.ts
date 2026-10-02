@@ -358,7 +358,7 @@ function refuseUnlessAdmin(
 ): void {
   if (!canManageResource(viewer, resource)) {
     throw new ForbiddenError(
-      'Only an organisation admin can do this to shared config',
+      'Only an organisation admin can do this to a secret',
       GRANT_ERROR_CODES.notResourceAdmin
     )
   }

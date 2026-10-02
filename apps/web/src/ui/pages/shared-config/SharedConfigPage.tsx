@@ -1,5 +1,6 @@
 /**
- * `/shared-config` (Launch P5, spec/09) — the organisation's shared config: each bundle (M365, a
+ * `/secrets` (Launch P5, spec/09; was `/shared-config`, which redirects) — the organisation's
+ * secrets (shared resources): each bundle (M365, a
  * company OpenAI key…), its owner team, its items and each environment's value status — "version
  * 3 · 2 apps" or "not set", never a value. Every member reads it (they need the names to ask for
  * one on an app's Config page); admins create a bundle here (`CreateResourceModal`), and its owner
@@ -56,7 +57,7 @@ export default function SharedConfigPage() {
   return (
     <div className="max-w-6xl space-y-4">
       <PageHeader
-        title="Shared config"
+        title="Secrets"
         description="Credentials many apps use, owned by a team and granted per app and environment. Ask for one from an app's Config page."
         actions={
           canCreate && (
@@ -66,7 +67,7 @@ export default function SharedConfigPage() {
               onClick={() => setCreating(true)}
             >
               <PlusIcon className="w-4 h-4" />
-              New shared config
+              New secret
             </button>
           )
         }
@@ -79,17 +80,17 @@ export default function SharedConfigPage() {
       ) : isError ? (
         <EmptyStateCard
           icon={KeyIcon}
-          message="Shared config could not be loaded"
+          message="Secrets could not be loaded"
           description={error?.message}
         />
       ) : !resources || resources.length === 0 ? (
         <EmptyStateCard
           icon={KeyIcon}
-          message="No shared config yet."
+          message="No secrets yet."
           description={
             canCreate
               ? 'Create one for a credential several apps need — its owner team sets the values.'
-              : 'An admin creates shared config; its owner team sets the values.'
+              : 'An admin creates a secret; its owner team sets the values.'
           }
         />
       ) : (

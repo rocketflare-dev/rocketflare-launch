@@ -104,7 +104,8 @@ It prints the offline check — `node scripts/verify-audit-export.mjs [--filtere
 `z.ZodType<T, z.ZodTypeDef, unknown>`, so `T` is the contract's OUTPUT (its `.default()`s and
 coercions applied) and no call site casts.
 
-Shared config (Launch P5): `shared ls`, `show <slug>` (var values and holders only when the server
+Shared config (Launch P5; "Secrets" in the UI and in the commands' messages, `/secrets/:id` the
+link `show` prints): `shared ls`, `show <slug>` (var values and holders only when the server
 sends them — the owner team and admins), `set <slug> --env <env> [--wait]`, `rotate <slug> --env`
 (= `set --wait`) and `pushes <slug> [--env] [--wait]`. A VALUE never travels in argv: `set` reads a
 hidden TTY prompt (raw mode, one per item, Enter keeps a set key; tests inject `promptHidden`) or,

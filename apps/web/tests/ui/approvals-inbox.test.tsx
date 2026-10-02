@@ -426,7 +426,7 @@ describe('ApprovalPage', () => {
     expect(screen.getByText('m365-connector')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Microsoft 365' })).toHaveAttribute(
       'href',
-      `/shared-config/${RESOURCE_ID}`
+      `/secrets/${RESOURCE_ID}`
     )
     // Who decides comes from the resource's owner group, not the (empty) policy lists.
     expect(await screen.findAllByText('the IT Identity team')).toHaveLength(2)

@@ -32,7 +32,7 @@ export const KIND_LABELS: Record<ApprovalKind, string> = {
   'app.access': 'App access',
   'deploy.production': 'Production deploy',
   'session.budget': 'Session budget',
-  'grant.request': 'Shared config',
+  'grant.request': 'Secret access',
   'config.change': 'Config change',
   'app.teardown': 'App teardown',
   'session.merge': 'Session merge',
@@ -45,7 +45,7 @@ export const KIND_DESCRIPTIONS: Record<ApprovalKind, string> = {
   'deploy.production': 'A release is promoted, or a build asks to deploy, to production.',
   'session.budget': 'A coding session has spent its budget and asks for more.',
   'grant.request':
-    'An app asks to hold shared config in one environment; the resource’s owner team decides.',
+    'An app asks to hold a secret in one environment; the secret’s owner team decides.',
   'config.change': 'Somebody changes an app’s configuration.',
   'app.teardown': 'Somebody asks to archive an app and delete its resources.',
   'session.merge':
@@ -151,7 +151,7 @@ export function orList(items: readonly string[]): string {
 export function extraApprovers(kind: ApprovalKind, ownerTeam?: string | null): string | null {
   switch (kind) {
     case 'grant.request':
-      return ownerTeam ? `the ${ownerTeam} team` : 'the team that owns the shared config'
+      return ownerTeam ? `the ${ownerTeam} team` : 'the team that owns the secret'
     default:
       return null
   }

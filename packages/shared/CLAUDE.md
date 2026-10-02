@@ -78,7 +78,8 @@ are rendered from these), `GRANT_PUSH_TARGET_STATUSES`, `GRANT_BACKENDS`; `share
 — **values are write-only**: no response schema has a field for a secret, and `vars` only reaches
 owners and admins; `appConfigSchema`, `requestGrantSchema`, `grantPushSchema`, `grantPushParamsSchema`;
 the realtime entities `shared_resource` / `grant_push` / `app_config`, `GRANT_NOTIFICATION_TYPES`,
-`GRANT_ERROR_CODES`, `sharedResourcePath` / `appConfigPath`); `launch-approvals.ts` built
+`GRANT_ERROR_CODES`, `SECRETS_PATH` / `sharedResourcePath` — the UI calls them Secrets, `/secrets/:id` —
+/ `appConfigPath`); `launch-approvals.ts` built
 `grant.request` (`BUILT_APPROVAL_KINDS` has five, `grant` subject, `grantRequestContextSchema`,
 `GRANT_ITEM_KINDS`, the owner-group default); `launch-sessions.ts` the `ship.config_needs` event ·
 Launch issue #5 (ship means live on staging, `docs/plans/i5-ship-to-staging.md` §2, the

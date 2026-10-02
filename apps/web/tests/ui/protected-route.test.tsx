@@ -64,6 +64,13 @@ function App() {
                 }
               />
               <Route path="/admin/setup" element={<Moved to="/settings/platform/setup" />} />
+              <Route path="/secrets" element={<Where label="secrets" />} />
+              <Route path="/secrets/:id" element={<Where label="secret" />} />
+              <Route path="/shared-config" element={<Moved to="/secrets" />} />
+              <Route
+                path="/shared-config/:id"
+                element={<Moved to={({ id = '' }) => `/secrets/${encodeURIComponent(id)}`} />}
+              />
               <Route
                 path="/settings/*"
                 element={
@@ -224,6 +231,18 @@ describe('ProtectedRoute', () => {
     })
     expect(page()).toBe('platform')
     expect(path()).toBe('/settings/platform/setup#setup-public_url')
+  })
+
+  it('the old /shared-config links land on Secrets, keeping the id, query and hash', () => {
+    renderWithProviders(<App />, { session: makeSession(), route: '/shared-config?archived=1' })
+    expect(page()).toBe('secrets')
+    expect(path()).toBe('/secrets?archived=1')
+  })
+
+  it('an old /shared-config/:id link lands on that secret', () => {
+    renderWithProviders(<App />, { session: makeSession(), route: '/shared-config/abc-123#push' })
+    expect(page()).toBe('secret')
+    expect(path()).toBe('/secrets/abc-123#push')
   })
 
   it('RequireGuard: global admin opens /admin', () => {

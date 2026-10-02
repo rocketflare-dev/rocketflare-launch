@@ -67,10 +67,12 @@ const CORE_NAVIGATION: NavConfig = [
         icon: Squares2X2Icon,
         guard: { action: 'read', subject: 'App' },
       },
-      // Launch P5 (spec/09): shared config — every member reads it, so they can ask for it.
+      // Launch P5 (spec/09): Secrets (shared resources; was "Shared config") — every member reads
+      // them, so they can ask for one. A literal, not `SECRETS_PATH`: the eager shell does not
+      // load `@launch/shared/launch-grants`.
       {
-        to: '/shared-config',
-        label: 'Shared config',
+        to: '/secrets',
+        label: 'Secrets',
         icon: KeyIcon,
         guard: { action: 'read', subject: 'SharedResource' },
       },

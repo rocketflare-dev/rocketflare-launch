@@ -14,6 +14,7 @@ import {
   GRANT_ERROR_CODES,
   SHARED_RESOURCE_ITEM_KINDS,
   type SharedResourceItemKind,
+  sharedResourcePath,
 } from '@launch/shared/launch-grants'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -89,7 +90,7 @@ export function CreateResourceModal({ open, onClose }: { open: boolean; onClose:
       onSuccess: detail => {
         showToast(`Created ${detail.displayName}. Its owner team sets the values next.`, 'success')
         onClose()
-        navigate(`/shared-config/${detail.id}`)
+        navigate(sharedResourcePath(detail.id))
       },
     })
   }
@@ -101,7 +102,7 @@ export function CreateResourceModal({ open, onClose }: { open: boolean; onClose:
     <Modal
       open={open}
       onClose={onClose}
-      title="New shared config"
+      title="New secret"
       className="max-w-2xl"
       actions={
         <>
@@ -143,7 +144,7 @@ export function CreateResourceModal({ open, onClose }: { open: boolean; onClose:
               }}
             />
             <FieldError
-              message={slugTaken ? 'Another shared config already uses this slug' : errors.slug}
+              message={slugTaken ? 'Another secret already uses this slug' : errors.slug}
             />
           </label>
         </div>

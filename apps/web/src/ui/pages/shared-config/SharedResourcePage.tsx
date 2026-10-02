@@ -1,5 +1,5 @@
 /**
- * `/shared-config/:id` (Launch P5, spec/09) — one shared resource. The push-failed and
+ * `/secrets/:id` (Launch P5, spec/09; was `/shared-config/:id`) — one shared resource. The push-failed and
  * rotation-due notifications link here (`sharedResourcePath(id)`).
  *
  * Top to bottom:
@@ -25,7 +25,11 @@ import {
   KeyIcon,
 } from '@heroicons/react/24/outline'
 import { APP_ENVIRONMENT_NAMES, type AppEnvironmentName } from '@launch/shared/launch-apps'
-import type { SharedResourceDetail, SharedResourceEnvironment } from '@launch/shared/launch-grants'
+import {
+  SECRETS_PATH,
+  type SharedResourceDetail,
+  type SharedResourceEnvironment,
+} from '@launch/shared/launch-grants'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -51,7 +55,7 @@ import {
   valueLine,
 } from './sharedConfigModel'
 
-const CRUMB = { label: 'Shared config', to: '/shared-config' }
+const CRUMB = { label: 'Secrets', to: SECRETS_PATH }
 
 function EnvironmentPanel({
   resource,
@@ -212,7 +216,7 @@ export default function SharedResourcePage() {
   if (isLoading) {
     return (
       <div className="max-w-6xl space-y-4">
-        <PageHeader title="Shared config" breadcrumbs={[CRUMB]} />
+        <PageHeader title="Secrets" breadcrumbs={[CRUMB]} />
         <SectionPanelSkeleton rows={3} />
         <SectionPanelSkeleton rows={4} />
       </div>
@@ -223,16 +227,16 @@ export default function SharedResourcePage() {
     const missing = error instanceof ApiError && error.status === 404
     return (
       <div className="max-w-3xl">
-        <PageHeader title="Shared config" breadcrumbs={[CRUMB]} />
+        <PageHeader title="Secrets" breadcrumbs={[CRUMB]} />
         <EmptyStateCard
           icon={missing ? KeyIcon : ExclamationTriangleIcon}
-          message={missing ? 'No shared config here' : 'This shared config could not be loaded'}
+          message={missing ? 'No secret here' : 'This secret could not be loaded'}
           description={
             missing ? 'It may have been archived, or the link is wrong.' : error?.message
           }
           action={
-            <Link to="/shared-config" className="btn btn-sm">
-              Back to shared config
+            <Link to={SECRETS_PATH} className="btn btn-sm">
+              Back to secrets
             </Link>
           }
         />

@@ -1,5 +1,5 @@
 /**
- * What the shared config pages SAY (Launch P5, spec/09), decided here and nowhere else — pure, so
+ * What the Secrets pages (shared resources) SAY (Launch P5, spec/09), decided here and nowhere else — pure, so
  * the list, the resource page, its panels and the tests describe one resource one way.
  *
  * - `valueLine(env)` — "Set — version 3, rotated 2 days ago by Carol" or "Not set": the most

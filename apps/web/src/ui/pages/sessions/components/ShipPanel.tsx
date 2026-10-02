@@ -433,7 +433,7 @@ export function ShipPanel({
           data-testid="config-needs"
         >
           <span>
-            This pull request needs shared config the app doesn’t hold yet:{' '}
+            This pull request needs secrets the app doesn’t hold yet:{' '}
             {configNeedsSentence(configNeeds.needs)}. The preview answers “not configured” for it
             until it is granted.
             {appSlug && (

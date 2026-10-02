@@ -100,7 +100,7 @@ export function requireGrantPushWorkflow(
   const binding = (env as { GRANT_PUSH_WORKFLOW?: GrantPushStarter }).GRANT_PUSH_WORKFLOW
   if (!binding) {
     throw new ServiceUnavailableError(
-      'Shared config is not configured: this Worker has no GRANT_PUSH_WORKFLOW binding',
+      'Secrets are not configured: this Worker has no GRANT_PUSH_WORKFLOW binding',
       'grants_not_configured'
     )
   }

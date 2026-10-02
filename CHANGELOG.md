@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Home is an overview.** The approvals waiting on you (what, which app, who asked, how long ago —
+  each a link to the request; one quiet line when there are none) and the apps, one row each: the
+  version Live runs with its health, the version on Staging, and one word when something needs a
+  look ("Live deploy failed", "awaiting approval", "not live yet"), those first. "New app" for
+  whoever may create one; the full lists are one link away. It reads the catalogue and the inbox
+  only — no request per app. The old quick links are gone (a plugin's still show, as one line).
+- **"Shared config" is now "Secrets"** in the nav, the pages, the approvals (the kind reads "Secret
+  access"), an app's Config & secrets, the session ship panel and the CLI's messages. The pages
+  moved to `/secrets` and `/secrets/:id`; `/shared-config` links redirect, keeping the id, query and
+  hash. The API (`/api/shared-resources`), the tables and `launch shared` keep their names.
+
 - **Roll back Live to an earlier release.** "Roll back to here…" on a Releases row's ⋯, on the
   release page, or `launch releases rollback <app> <version>`: Launch asks for the same production
   approval as Ship, then runs the repository's own deploy workflow at the old tag

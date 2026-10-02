@@ -296,7 +296,7 @@ describe('grant.request approvers (P5): the owner team, which no policy list nam
 
   it('names the team when known, describes it otherwise, and adds nothing for other kinds', () => {
     expect(extraApprovers('grant.request', 'IT Identity')).toBe('the IT Identity team')
-    expect(extraApprovers('grant.request')).toBe('the team that owns the shared config')
+    expect(extraApprovers('grant.request')).toBe('the team that owns the secret')
     expect(extraApprovers('deploy.production', 'IT Identity')).toBeNull()
   })
 
@@ -316,11 +316,9 @@ describe('grant.request approvers (P5): the owner team, which no policy list nam
       )
     ).toBe('the IT team or the organisation’s admins')
     expect(policySentence(policy, undefined, extraApprovers('grant.request'))).toBe(
-      '1 approval from the team that owns the shared config'
+      '1 approval from the team that owns the secret'
     )
     // Without the server's `eligible`, the waiting sentence falls back to the same words.
-    expect(waitingOn({ kind: 'grant.request', policy }).who).toBe(
-      'the team that owns the shared config'
-    )
+    expect(waitingOn({ kind: 'grant.request', policy }).who).toBe('the team that owns the secret')
   })
 })

@@ -19,7 +19,8 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   Guards: `ProtectedRoute` (session + tenant → `noTenantRoute`; a global admin with NO tenant is
   let through to `/admin/*` and `/settings/platform/*` only — `isAdminPath`), `RequireGuard` (any
   `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`),
-  `Moved` (a redirect that keeps `?query#hash` — the old `/admin/{setup,identity,access-requests}`),
+  `Moved` (a redirect that keeps `?query#hash`; `to` may be a function of the old route's params —
+  the old `/admin/{setup,identity,access-requests}` and `/shared-config[/:id]` → `/secrets[/:id]`),
   `AdminRoute`/`GlobalAdminRoute` (sugar over it). `components/permissions/` — `AbilityProvider`
   (unpacks `session.permissions`), `Can`, `IfCan`/`IfCannot`. Realtime (D8): `WebSocketProvider`
   (connects the singleton once authenticated with a tenant, `useQueryClient()` →
@@ -120,7 +121,8 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   plugin edits no core file (D31).
 - `stores/websocketStore.ts` — the one zustand store: `status | connectedAt | disconnectedAt |
   attempt | lastEvent`; written only by `websocketClient`, read by the status dot and the banner.
-- `pages/` — route-level components, lazy in `App.tsx` except Home/Login/NotFound. `Login.tsx`:
+- `pages/` — route-level components, lazy in `App.tsx` except Login/NotFound. `Home.tsx` is the
+  overview (below, "Home"), lazy since it reuses the app page's and the inbox's models. `Login.tsx`:
   `GET /auth/methods` drives the buttons; `?as=<email>` (what `pnpm bootstrap` opens) calls
   `POST /auth/dev-login` once on mount, ONLY when `methods.devLogin` is true AND the email is in
   `DEV_ACCOUNTS` (the allow-list; an arbitrary address does nothing). With `methods.oidcOnly` it
@@ -475,8 +477,29 @@ A `CUSTOM kit.notice` renders
 - Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `app-overview`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
-## Shared config and grants (Launch P5)
+## Home
 
+- **`/` is an overview built from small section components** (`pages/home/`), each behind the same
+  guard as the page it summarises, so a richer widget is one more section: `ApprovalsWaitingSection`
+  (`useApprovals({ box: 'mine', limit: 5 })` — the inbox's "Waiting on me", the set the nav badge
+  counts — rows worded by `approvalSummary` / `requesterName`; none waiting is ONE quiet line, no
+  heading) and `AppsSection` (`useApps()` only — never a request per app; one row each: name →
+  `appPath`, Live's `HealthDot` + version, Staging's version, one attention word; capped at 8 with
+  "All N apps →"; "New app" opens `CreateAppModal` for `manage App`, as a plain button — Home has no
+  hero). What a row SAYS is the pure `home/homeModel.ts` (`appAttention`, `runningVersion`,
+  `homeAppRows`; `tests/config/home-model.test.ts`) over `appPageModel`'s `ENV_LABEL` /
+  `notDeployedYet` and `promotionModel`'s `v`. The version is what the environment's health probe
+  last reported (`healthVersion`) — the catalogue row carries no `lastDeployVersion` and no
+  releases, so a release that failed before any deploy shows on the app page, not here.
+  `UiPlugin.homeLinks` render last as one line of links. Tests: `home`.
+
+## Shared config and grants (Launch P5) — "Secrets" in the UI
+
+- **The UI says "Secrets"** (nav, pages, the `grant.request` kind label "Secret access") at
+  `/secrets` and `/secrets/:id` (`SECRETS_PATH` / `sharedResourcePath` in
+  `@launch/shared/launch-grants`; SideNav spells the literal so the eager shell does not load that
+  module). `/shared-config[/:id]` redirect through `Moved`. The code, the API, CASL
+  (`SharedResource`) and the `pages/shared-config/` directory keep the old name.
 - **Values are write-only in the UI too.** `ValuesModal` never pre-fills an input: a key the active
   version carries reads "Set — hidden" with Replace, secrets are `type=password`, a blank keeps the
   current value (the server merges), and the modal unmounts on close so nothing typed survives.

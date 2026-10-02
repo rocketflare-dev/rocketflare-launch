@@ -64,7 +64,7 @@ export const grantRequestHandler: KindHandler<'grant.request'> = {
     return DEFAULT_APPROVAL_POLICIES['grant.request']
   },
   describe(request) {
-    if (request.context.kind !== 'grant.request') return `Shared config for ${request.subjectId}`
+    if (request.context.kind !== 'grant.request') return `A secret for ${request.subjectId}`
     const { resourceName, appSlug, environment } = request.context
     return `${resourceName} for ${appSlug} (${environment})`
   },

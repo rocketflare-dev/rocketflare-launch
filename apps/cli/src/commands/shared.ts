@@ -64,7 +64,7 @@ export async function resolveResource(
   ref: string
 ): Promise<SharedResourceDetail> {
   const wanted = ref.trim()
-  if (!wanted) throw new CliError('Give a shared config slug')
+  if (!wanted) throw new CliError('Give a secret’s slug')
   let id = wanted
   if (!UUID.test(wanted)) {
     // The live list first; an archived resource is still addressable (`show` explains it).
@@ -78,7 +78,7 @@ export async function resolveResource(
       if (match) break
     }
     if (!match) {
-      throw new CliError(`No shared config "${wanted}"`, {
+      throw new CliError(`No secret "${wanted}"`, {
         hint: 'List them with `launch shared ls`.',
       })
     }
@@ -471,14 +471,14 @@ function envOption(value: string): AppEnvironmentName {
 export function registerSharedCommands(program: Command, action: ActionWrapper): void {
   const shared = program
     .command('shared')
-    .description('shared config: credentials many apps use, owned by a team')
+    .description('secrets (shared config): credentials many apps use, owned by a team')
   shared
     .command('ls')
-    .description('list the organisation’s shared config')
+    .description('list the organisation’s secrets')
     .action(action(ctx => runSharedList(ctx)))
   shared
     .command('show <slug>')
-    .description('one shared config: items, versions per environment and (owners) its holders')
+    .description('one secret: items, versions per environment and (owners) its holders')
     .action(action((ctx, cmd) => runSharedShow(ctx, cmd.args[0] ?? '')))
   shared
     .command('set <slug>')

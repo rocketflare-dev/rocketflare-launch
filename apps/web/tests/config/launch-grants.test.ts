@@ -318,7 +318,7 @@ describe('the ship event (P5 line of launch-sessions)', () => {
 
 describe('paths, entities, notifications and codes', () => {
   it('names the pages notifications link to and the realtime roots', () => {
-    expect(sharedResourcePath(UUID)).toBe(`/shared-config/${UUID}`)
+    expect(sharedResourcePath(UUID)).toBe(`/secrets/${UUID}`)
     expect(appConfigPath('shop')).toBe('/apps/shop/config')
     expect([
       SHARED_RESOURCE_REALTIME_ENTITY,

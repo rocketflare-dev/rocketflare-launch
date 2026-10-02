@@ -2471,7 +2471,7 @@ health, the repository, archive — each for whoever may use it). The UI calls t
 **Staging** and **Live**; GitHub and wrangler keep staging/production. **The Overview**, top to
 bottom: **Needs you**, shown only when something needs a person (a failed release — which job, its
 run, Details; a failed deploy with why; a release waiting on THIS reader's approval; a production
-ticket waiting on a decision; shared config not held) — a plain list, read-only under "Attention"
+ticket waiting on a decision; a secret (shared config) not held) — a plain list, read-only under "Attention"
 for somebody who can act on none of it; then the flow: first (app page P3) **`main  N commits
 ahead`** (`GET …/releases/compare`, §18.17; the count links to GitHub's compare) with **Release
 to staging ▸** — a plain button, never the hero — which opens the release dialog (patch by
@@ -2528,7 +2528,16 @@ and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` 
 ls|create|promote [--wait]|retry|cancel|rollback` (§11; `ls` adds "main is N commits ahead of
 X.Y.Z", `mainAhead` in `--json`); `approvals show` prints the eligible list too.
 
-**Known gaps:** the policy's own words still count the teams a member cannot list rather than
+**Home** (`/`, `pages/Home.tsx` + `pages/home/`) is the overview: the requests waiting on the reader
+(the inbox's `mine` box, first five, each a link; one quiet line when none) and the apps, one row
+each from the catalogue response alone — Live's version and health, Staging's version, and one
+attention word (`appAttention`: setup failed, awaiting approval, a failed or running deploy, not
+live yet), those needing a person first — with "New app" for `manage App`. Each block is its own
+section component behind its page's guard, so a richer widget is one more section.
+
+**Known gaps:** Home's versions are what each environment's health probe last reported
+(`healthVersion`) — the catalogue row carries no deploy version and no releases, so a release that
+failed before its deploy started shows on the app page, not on Home. The policy's own words still count the teams a member cannot list rather than
 naming them; a PR no Launch session wrote, or one shipped before issue #5 kept summaries, shows
 its titles only; the promotion view polls only while the candidate deploys, so a staging health
 change reaches it on the next read, a "Check now" or a release nudge; a release page shows only
@@ -2547,8 +2556,10 @@ watched the first build go live.
 
 ### 18.20 Shared config and grants (P5)
 
-Spec/09's catalogue is called **shared config** (`/shared-config`, `/api/shared-resources`),
-because "catalogue" already means the apps list. A **shared resource** is a named bundle of items
+Spec/09's catalogue is called **Secrets** in the UI (`/secrets`, `/secrets/:id`; it was "Shared
+config" at `/shared-config`, which redirects keeping the id, query and hash) and shared resources in
+the API (`/api/shared-resources`, CASL `SharedResource`, `@launch/shared/launch-grants`), because
+"catalogue" already means the apps list. A **shared resource** is a named bundle of items
 (`{key, kind: var|secret, rotationDays?}`) owned by a kit group, with values sealed per
 environment as one versioned blob (`services/grants/sealed.ts`, `encryptToken` — the
 `admin_credentials` pattern). An app **holds** it through a grant — one app × resource ×
@@ -2636,9 +2647,9 @@ needed resource (`grant_needed`, linked to the config page). `scanShipConfig` an
 session's PR head as the `ship.config_needs` event, never stored. Sessions never receive grant
 values (spec/03).
 
-**The UI and the CLI (5f).** `/shared-config` lists every resource with its value STATUS per
+**The UI and the CLI (5f).** `/secrets` lists every resource with its value STATUS per
 environment ("v3 · 2 apps"; "Show archived" lists archived ones WITH the live ones — `?archived=
-true`); admins create one (`CreateResourceModal`). `/shared-config/:id` says what is set ("Set —
+true`); admins create one (`CreateResourceModal`). `/secrets/:id` says what is set ("Set —
 version 3, rotated 2 days ago by Carol"), shows var values and the holders to the owner team and
 admins only (the detail's `holders` is the signal), and its values modal is write-only: a set key
 reads "Set — hidden" with Replace, inputs are never pre-filled (secrets are password inputs), a
@@ -2650,7 +2661,7 @@ redirects there) shows the matched resources with a state per
 environment (held / pushing / requested with the request's link / missing with Request), the
 declared keys by plugin and the keys nothing matches. A `grant.request` approval names what the app
 would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team,
-because the policy's own lists are empty; Settings → Approvals accepts a shared-config policy that
+because the policy's own lists are empty; Settings → Approvals accepts a "Secret access" (`grant.request`) policy that
 names nobody for the same reason (`hasImplicitApprovers`). Ship's `ship.config_needs` row is one
 line in the session's ship panel. CLI: `launch shared ls|show|set|rotate|pushes` (values from a
 hidden TTY prompt or stdin, never argv) and `launch grants needs|ls|request|revoke`.

@@ -43,7 +43,7 @@ describe('notificationLink', () => {
       GRANT_NOTIFICATION_TYPES.rotationDue,
       GRANT_NOTIFICATION_TYPES.rotated,
     ]) {
-      expect(notificationLink({ type, data: { resourceId: ID } })).toBe(`/shared-config/${ID}`)
+      expect(notificationLink({ type, data: { resourceId: ID } })).toBe(`/secrets/${ID}`)
       expect(notificationLink({ type, data: { resourceId: 'nope' } })).toBeNull()
     }
   })
