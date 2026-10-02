@@ -119,7 +119,11 @@ export const featureSubject = (feature: string): FeatureSubject => `Feature:${fe
  * then delete the line. Append-only in spirit; the metadata registry is keyed on this. A plugin
  * brings its own through `SharedPlugin.features`, which is where both halves arrive together.
  */
-export const CORE_FEATURES = [] as const satisfies readonly string[]
+export const CORE_FEATURES = [
+  // The kit's own AI surfaces (Chat, Agents, Knowledge, Search) — hidden in Launch for now: the
+  // flag is `environmentGated` and no toml lists it, so it is off everywhere (`features.ts`).
+  'kit-ai',
+] as const satisfies readonly string[]
 
 /** Distributive: `keyof (A | B)` is the keys A and B SHARE, which is never for two plugins' flags. */
 type KeysOfEach<T> = T extends unknown ? keyof T : never
@@ -131,8 +135,8 @@ type PluginFeatureKey = Extract<
 /**
  * Core keys plus every installed plugin's (D31).
  *
- * **It may legitimately be EMPTY**, which is Launch today: no core flag, and no installed plugin
- * declares one. So `FeatureName` can be `never`, `Record<FeatureName, …>` can be `{}`, and
+ * **It may legitimately be EMPTY** — a kit with no core flag and no installed plugin declaring
+ * one (Launch ships one core flag, `kit-ai`). So `FeatureName` can be `never`, `Record<FeatureName, …>` can be `{}`, and
  * `featureNameSchema` cannot be a `z.enum` (which needs a non-empty tuple). `features.ts` spells it
  * as a refined `z.string()` for exactly that reason.
  */

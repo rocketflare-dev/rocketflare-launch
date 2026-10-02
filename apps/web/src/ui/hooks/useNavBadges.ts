@@ -8,6 +8,7 @@
  * Each entry is gated on the same guard as the item it decorates, so a member never fires a request
  * for a count they would not be shown.
  */
+import { AGENTS_GUARD } from '@/ui/lib/feature-guards'
 import { useAwaitingInterruptCount } from './useAgents'
 import { useApprovalCount } from './useApprovals'
 import type { NavGuard } from './useNavGuard'
@@ -17,7 +18,8 @@ import { useNavGuard } from './useNavGuard'
 export type NavBadgeKey = 'agentsAwaiting' | 'approvalsWaiting'
 
 const BADGE_GUARDS: Record<NavBadgeKey, NavGuard> = {
-  agentsAwaiting: { action: 'read', subject: 'AgentRun' },
+  // Behind `kit-ai` like the Agents item itself: a hidden item fires no count request.
+  agentsAwaiting: AGENTS_GUARD,
   // Launch P4: approvals waiting on THIS person (the engine counts only what they may decide).
   approvalsWaiting: { action: 'read', subject: 'Approval' },
 }

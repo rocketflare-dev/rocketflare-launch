@@ -28,7 +28,7 @@
  * ability check hands platform staff a surface the deployment does not ship. See `permissions.ts`.
  */
 import { z } from 'zod'
-import { FEATURES, type FeatureName } from './permissions'
+import { type CORE_FEATURES, FEATURES, type FeatureName } from './permissions'
 import { sharedPlugins } from './plugins'
 
 /** Platform state of a flag. `off` and `rollout` at 0% are the same OUTCOME, not the same intent. */
@@ -45,8 +45,8 @@ export type FeatureRolloutUnit = z.infer<typeof featureRolloutUnitSchema>
  * A key the running deployment actually has (D30, D31).
  *
  * **Not `z.enum(FEATURES)`**, and not for style: `FEATURES` is `[...CORE_FEATURES, ...plugins]`,
- * `CORE_FEATURES` is empty (the kit's demonstration flag shipped as the `example-feature` plugin,
- * which Launch removed), and a `z.enum` needs a non-empty TUPLE — an array of strings is a type error there.
+ * `CORE_FEATURES` may be empty (the kit's demonstration flag shipped as the `example-feature`
+ * plugin, which Launch removed), and a `z.enum` needs a non-empty TUPLE — an array of strings is a type error there.
  * A refined `z.string()` is the same runtime check and the same output type, and it keeps
  * validating against whatever is installed rather than against what was compiled in.
  */
@@ -73,7 +73,7 @@ export interface FeatureDefinition {
 }
 
 /**
- * Every flag the KIT itself ships — none, deliberately. Keys come from `CORE_FEATURES` in
+ * Every flag Launch itself ships. Keys come from `CORE_FEATURES` in
  * `permissions.ts`, so a typo anywhere that gates on one is a type error rather than a route that
  * 404s for ever.
  *
@@ -81,7 +81,22 @@ export interface FeatureDefinition {
  * item it gates, the mount it gates and the page behind it. A flag of Launch's own goes here and
  * in `CORE_FEATURES` — or, better, ships with the whole feature as a plugin.
  */
-export const CORE_FEATURE_FLAGS = {} satisfies Record<string, FeatureDefinition>
+export const CORE_FEATURE_FLAGS = {
+  /**
+   * The kit's AI surfaces in the UI — Chat, Agents, Knowledge and Search (nav items and routes).
+   * Environment-gated and listed in neither toml, so it is off everywhere until a deployment adds
+   * the key to `FEATURES_ENABLED`; then it is on (default `on`) unless an admin turns it off.
+   * Cosmetic: the APIs still answer. Analytics and the AI settings tabs are not behind it — coding
+   * sessions resolve their AI keys through those.
+   */
+  'kit-ai': {
+    label: 'Kit AI surfaces',
+    description: 'Chat, Agents, Knowledge and Search in the navigation.',
+    defaultState: 'on',
+    defaultRolloutUnit: 'tenant',
+    environmentGated: true,
+  },
+} satisfies Record<(typeof CORE_FEATURES)[number], FeatureDefinition>
 
 /**
  * Core flags plus every installed plugin's (D31). `SharedPlugin.features` is typed against the
@@ -101,8 +116,8 @@ export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureName[]
 
 /**
  * The definition of one installed flag. Use this rather than `FEATURE_FLAGS[key]`: with no flag
- * installed (Launch today) `FeatureName` is `never`, and so is any index by it — this keeps the
- * callers typechecking either way.
+ * installed `FeatureName` is `never`, and so is any index by it — this keeps the callers
+ * typechecking either way.
  */
 export function featureDefinition(key: FeatureName): FeatureDefinition {
   return (FEATURE_FLAGS as Record<string, FeatureDefinition>)[key as string] as FeatureDefinition

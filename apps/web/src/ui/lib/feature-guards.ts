@@ -15,9 +15,20 @@ import type { NavGuard } from '@/ui/hooks/useNavGuard'
  * a global admin's `manage all` satisfies the CASL form, which would show them a nav item whose
  * routes the server 404s. The flag is configuration; only `session.features` answers it.
  *
- * Launch ships none of its own today. A plugin (D31) declares its guard beside the route and the
- * nav item it gates, in its own `ui/index.ts`. A plugin never edits this file.
+ * Launch's own flag is `kit-ai` (below). A plugin (D31) declares its guard beside the route and
+ * the nav item it gates, in its own `ui/index.ts`. A plugin never edits this file.
  */
 
 /** `featureGuard(MY_FEATURE, { action: 'read', subject: 'Thing' })` → the flag AND the permission. */
 export const featureGuard = (feature: NavGuard, guard: NavGuard): NavGuard => [feature, guard]
+
+/**
+ * `kit-ai`: the kit's AI surfaces, hidden in Launch for now (environment-gated, in neither toml).
+ * Each guard is used by BOTH the nav item and the route it opens (`SideNav`, `App.tsx`), and the
+ * agents badge's count query (`useNavBadges`), so a link never points at a page that refuses.
+ */
+export const KIT_AI_FEATURE: NavGuard = { feature: 'kit-ai' }
+export const CHAT_GUARD = featureGuard(KIT_AI_FEATURE, { action: 'read', subject: 'Conversation' })
+export const AGENTS_GUARD = featureGuard(KIT_AI_FEATURE, { action: 'read', subject: 'AgentRun' })
+/** Knowledge (`/documents*`) and Search (`/search`) read the same subject. */
+export const KNOWLEDGE_GUARD = featureGuard(KIT_AI_FEATURE, { action: 'read', subject: 'Document' })

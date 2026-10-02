@@ -23,6 +23,7 @@ import { useAppInfo } from '@/ui/hooks/useAppInfo'
 import { useBooleanPreference } from '@/ui/hooks/useLocalStoragePreference'
 import { type NavBadgeKey, type NavBadges, useNavBadges } from '@/ui/hooks/useNavBadges'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
+import { AGENTS_GUARD, CHAT_GUARD, KNOWLEDGE_GUARD } from '@/ui/lib/feature-guards'
 import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
 import { BrandLockup, LogoMark } from './shared/LogoMark'
 
@@ -83,12 +84,14 @@ const CORE_NAVIGATION: NavConfig = [
         badgeKey: 'approvalsWaiting',
         badgeTone: 'warning',
       },
+      // The kit's AI surfaces (Chat, Agents, Knowledge, Search) sit behind the `kit-ai` flag, off in
+      // every Launch deployment for now — each guard is the route's own (`lib/feature-guards.ts`).
       // D17: every role may chat (ownership is the route's userId filter)
       {
         to: '/chat',
         label: 'Chat',
         icon: ChatBubbleLeftRightIcon,
-        guard: { action: 'read', subject: 'Conversation' },
+        guard: CHAT_GUARD,
       },
       // D7: every role may start the example agent; members see their own runs
       // The badge counts the asks waiting on THIS person (issue #17) and is fed by a nudge, never
@@ -97,7 +100,7 @@ const CORE_NAVIGATION: NavConfig = [
         to: '/agents',
         label: 'Agents',
         icon: CpuChipIcon,
-        guard: { action: 'read', subject: 'AgentRun' },
+        guard: AGENTS_GUARD,
         badgeKey: 'agentsAwaiting',
         badgeTone: 'warning',
       },
@@ -106,13 +109,13 @@ const CORE_NAVIGATION: NavConfig = [
         to: '/documents',
         label: 'Knowledge',
         icon: BookOpenIcon,
-        guard: { action: 'read', subject: 'Document' },
+        guard: KNOWLEDGE_GUARD,
       },
       {
         to: '/search',
         label: 'Search',
         icon: MagnifyingGlassIcon,
-        guard: { action: 'read', subject: 'Document' },
+        guard: KNOWLEDGE_GUARD,
       },
     ],
   },
