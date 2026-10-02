@@ -24,6 +24,10 @@ import { auditEventSchema } from './launch-audit'
  *
  *   tagged → staging → staging_active → awaiting_approval → promoting → production_active
  *                                          ↘ rejected                 (and `failed` from anywhere)
+ *
+ * App page P3: `production_active → rolled_back` when a rollback to an EARLIER release goes live
+ * in production (the release that was live is the one rolled back; the one rolled back to stays
+ * `production_active` and records `rolledBackFrom`).
  */
 export const RELEASE_STATUSES = [
   'tagged',
@@ -34,6 +38,7 @@ export const RELEASE_STATUSES = [
   'production_active',
   'rejected',
   'failed',
+  'rolled_back',
 ] as const
 export const releaseStatusSchema = z.enum(RELEASE_STATUSES)
 export type ReleaseStatus = z.infer<typeof releaseStatusSchema>
@@ -90,6 +95,13 @@ export const RELEASE_ERROR_CODES = {
   githubFailed: 'release_github_failed',
   /** Cancel: the release has no deploy run in flight to cancel. A 409. */
   notCancellable: 'release_not_cancellable',
+  /**
+   * Rollback (app page P3): the target is not an earlier release that was live in production
+   * (`rollbackRefusal`), or Live runs nothing a rollback could be measured against. A 409.
+   */
+  notRollbackable: 'release_not_rollbackable',
+  /** Rollback: another production deploy is already asked for, or approved and waiting. A 409. */
+  productionBusy: 'release_production_busy',
 } as const
 
 // ---- failed stages (app page P2, plan decision 7) ----------------------------------------------
@@ -232,6 +244,71 @@ export function releaseTagRef(tag: string): string {
   return `refs/tags/${tag}`
 }
 
+/**
+ * -1 / 0 / 1 for two `X.Y.Z` versions; a missing or unparseable version sorts first. The one
+ * ordering of releases (`@launch/shared/launch-promotion` re-exports it).
+ */
+export function compareReleaseVersions(a: string | null, b: string | null): number {
+  const pa = a ? parseReleaseVersion(a) : null
+  const pb = b ? parseReleaseVersion(b) : null
+  if (!pa || !pb) return pa ? 1 : pb ? -1 : 0
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d < 0 ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * The version a run on a release tag deployed (app page P3). The kit's `deploy.yml` labels a
+ * `workflow_dispatch` build `<ref name>-<sha7>` even when the ref IS a tag, so a rollback (a
+ * dispatch at tag `1.4.1`) uploads `1.4.1-abc1234`. A run whose `ref` is `refs/tags/X.Y.Z` and
+ * whose version is exactly `X.Y.Z-<a prefix of the run's sha>` deployed `X.Y.Z`; anything else is
+ * returned as it came. Pure.
+ */
+export function taggedRunVersion(
+  version: string,
+  run: { ref: string | null; sha: string | null }
+): string {
+  const tag = run.ref?.startsWith('refs/tags/') ? run.ref.slice('refs/tags/'.length) : null
+  if (!tag || !RELEASE_VERSION_RE.test(tag) || !run.sha) return version
+  if (!version.startsWith(`${tag}-`)) return version
+  const suffix = version.slice(tag.length + 1)
+  return /^[0-9a-f]{7,40}$/.test(suffix) && run.sha.startsWith(suffix) ? tag : version
+}
+
+/**
+ * The statuses a rollback may target (app page P3): a release that went live in production —
+ * still marked live (an older release a newer one replaced keeps `production_active`) or rolled
+ * back itself since.
+ */
+export const ROLLBACK_TARGET_STATUSES = [
+  'production_active',
+  'rolled_back',
+] as const satisfies readonly ReleaseStatus[]
+
+/**
+ * Why `target` cannot be rolled back to while Live runs `liveVersion`, or null when it can: it
+ * must have been live in production before (`ROLLBACK_TARGET_STATUSES`) and be EARLIER than what
+ * Live runs now. Pure — the route refuses with it (409 `release_not_rollbackable`), and the UI and
+ * the CLI offer "Roll back to here" on exactly the releases it returns null for.
+ */
+export function rollbackRefusal(
+  target: { status: ReleaseStatus; version: string },
+  liveVersion: string | null | undefined
+): string | null {
+  if (!(ROLLBACK_TARGET_STATUSES as readonly string[]).includes(target.status)) {
+    return `Release ${target.version} was never live in production`
+  }
+  if (!liveVersion || !parseReleaseVersion(liveVersion)) {
+    return 'Live runs no release version a rollback could go back from'
+  }
+  if (compareReleaseVersions(target.version, liveVersion) >= 0) {
+    return `Live runs ${liveVersion}; only an earlier release can be rolled back to`
+  }
+  return null
+}
+
 // ---- jsonb shapes ------------------------------------------------------------------------------
 
 /** One pull request in a release (`app_releases.prs`). `sessionId` when a Launch session shipped it. */
@@ -281,6 +358,11 @@ export const releaseSchema = z.object({
    * The server stamps it on every answer; a row parsed without it defaults to null.
    */
   failedStage: releaseFailedStageSchema.nullable().default(null),
+  /**
+   * App page P3: the version Live ran when a rollback to THIS release went live ("v1.4.1, rolled
+   * back from v1.4.2"); null for a release never rolled back to.
+   */
+  rolledBackFrom: z.string().nullable().default(null),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 })
@@ -348,3 +430,70 @@ export const cancelReleaseResponseSchema = z.object({
   runUrl: z.string().url().nullable(),
 })
 export type CancelReleaseResponse = z.infer<typeof cancelReleaseResponseSchema>
+
+// ---- rollback and main-ahead (app page P3) -----------------------------------------------------
+
+/**
+ * `POST /api/apps/:id/releases/:rid/rollback` — the app's owners and admins. `:rid` is the release
+ * to go back TO. Opens the same `deploy.production` approval Ship does (subject `rollback`, bound
+ * to the release's tag); once granted, Launch dispatches the repo's own `deploy.yml` with
+ * `environment=production` at that tag.
+ */
+export const rollbackReleaseSchema = z.object({
+  reason: z.string().trim().max(1000).optional(),
+})
+export type RollbackReleaseRequest = z.infer<typeof rollbackReleaseSchema>
+
+export const rollbackReleaseResponseSchema = z.object({
+  /** The release rolled back to. */
+  release: releaseSchema,
+  /** The version Live runs now, which the rollback replaces. */
+  from: z.string(),
+  approvalId: z.string().uuid(),
+  /** `approved` when a policy approved it on the spot (the deploy is dispatched), else `pending`. */
+  approvalStatus: z.string(),
+})
+export type RollbackReleaseResponse = z.infer<typeof rollbackReleaseResponseSchema>
+
+/** At most this many commits are listed by the main-ahead compare (the count is GitHub's). */
+export const RELEASE_COMPARE_MAX_COMMITS = 20
+
+/** Launch asks GitHub at most once per app per this window, however many people watch the page. */
+export const RELEASE_COMPARE_TTL_SECONDS = 60
+
+export const releaseCompareCommitSchema = z.object({
+  sha: z.string(),
+  /** The commit message's first line. */
+  message: z.string(),
+  author: z.string().nullable(),
+  /** The PR it merged, when its message says (`… (#12)` or `Merge pull request #12 …`). */
+  prNumber: z.number().int().positive().nullable(),
+})
+export type ReleaseCompareCommit = z.infer<typeof releaseCompareCommitSchema>
+
+/**
+ * `GET /api/apps/:id/releases/compare` — the default branch against the latest release tag: how
+ * many commits a "Release to staging" would carry. `aheadBy` is null when that is unknown — no
+ * release tag yet, or GitHub failed (`error` says so); the UI then shows nothing.
+ */
+export const releaseCompareSchema = z.object({
+  branch: z.string(),
+  /** The tag compared against: the newest release's, else the highest `X.Y.Z` tag on GitHub. */
+  base: z.string().nullable(),
+  headSha: z.string().nullable(),
+  aheadBy: z.number().int().nonnegative().nullable(),
+  /** Newest first, at most `RELEASE_COMPARE_MAX_COMMITS`. */
+  commits: z.array(releaseCompareCommitSchema),
+  compareUrl: z.string().url().nullable(),
+  /** When GitHub was asked (the answer is kept for `RELEASE_COMPARE_TTL_SECONDS`). */
+  checkedAt: z.coerce.date(),
+  error: z.string().nullable(),
+})
+export type ReleaseCompare = z.infer<typeof releaseCompareSchema>
+
+/** The PR a commit message names (a squash `Title (#12)`, or `Merge pull request #12 …`). Pure. */
+export function prNumberOfMessage(message: string): number | null {
+  const first = message.split('\n', 1)[0] ?? ''
+  const match = /^Merge pull request #(\d+)\b/.exec(first) ?? /\(#(\d+)\)\s*$/.exec(first)
+  return match ? Number(match[1]) : null
+}

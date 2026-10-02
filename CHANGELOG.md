@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Roll back Live to an earlier release.** "Roll back to here…" on a Releases row's ⋯, on the
+  release page, or `launch releases rollback <app> <version>`: Launch asks for the same production
+  approval as Ship, then runs the repository's own deploy workflow at the old tag
+  (`workflow_dispatch`, `environment=production`) — the app stays detachable, and nothing is rolled
+  back on Cloudflare's side. Migrations and secrets don't revert, and the confirm says so. Once it
+  is live the Live row reads "v1.4.1 (rolled back from v1.4.2)" and the release rolled back from is
+  marked `rolled_back` (`POST /api/apps/:id/releases/:rid/rollback`; audited
+  `release.rollback_requested` and `release.rolled_back`; migration `0034` adds the status and
+  `app_releases.rolled_back_from`). A tag dispatch's `X.Y.Z-<sha7>` build label is read as `X.Y.Z`.
+- **`main  N commits ahead  [Release to staging ▸]`** above Staging on the Overview: the default
+  branch against the latest release tag (`GET /api/apps/:id/releases/compare`, cached a minute per
+  app), with the release dialog (patch by default) listing the commits. `launch releases ls` says
+  how far main is ahead (`mainAhead` with `--json`).
 - **A stuck release has one Retry, labelled with what it does.** Every release now says where it is
   stuck (`failedStage`), and `POST /api/apps/:id/releases/:rid/retry` does the one thing for that
   stage: re-runs the failed jobs of that GitHub run (attempts are kept, and a Live re-run keeps its

@@ -485,8 +485,9 @@ case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|
 drives Launch P3 coding sessions (§18.14) — `ship` follows the ship to live on staging by default,
 printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
 (`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
-ls|create|promote [--wait]|retry|cancel` are the P4 inbox and shipping (§18.19; `retry` is the
-stage-aware Retry and `cancel` stops a release's run in flight, §18.17); `audit verify|export` the
+ls|create|promote [--wait]|retry|cancel|rollback` are the P4 inbox and shipping (§18.19; `retry` is the
+stage-aware Retry, `cancel` stops a release's run in flight, `rollback` asks to put an earlier
+release back on production, and `ls` says how far main is ahead of the latest tag, §18.17); `audit verify|export` the
 hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
@@ -2348,6 +2349,48 @@ failed-check log; a GitHub error only drops the excerpt) — and stores it as th
 turn, which the Workflow runs once the sandbox is ready; the title defaults to `Fix X.Y.Z: <stage>
 failed`. A release that is not failing is 409 `release_not_retryable`, another app's 404.
 
+**Rollback and main-ahead (app page P3, `releases/{rollback,compare}.ts`).** **`POST …/:rid/rollback
+{reason?}`** (owners and admins) puts an EARLIER release back on Live by running the repo's OWN
+deploy workflow at its tag — `workflow_dispatch` of `deploy.yml` with `environment=production` and
+`ref` = the tag, exactly what a person would do by hand in GitHub, never a Cloudflare-side instant
+rollback (the app stays detachable; the old tag is built, binding-checked, migrated and activated
+through the gateway like any deploy). The target must pass `rollbackRefusal` (shared, pure): it
+was live in production before (`production_active`, or `rolled_back` since) and its version is
+lower than production's `last_deploy_version` — else 409 `release_not_rollbackable`; another
+`deploy.production` request pending for the app, a granted pre-approval still waiting for its run,
+or a release `promoting` is 409 `release_production_busy`. Under the app's release claim (409
+`release_in_progress` while a release is being cut) it opens the SAME `deploy.production` approval
+as Ship, subject `rollback` (the target release) — so the same policy, approvers and auto-approve
+rule — with the context bound to `refs/tags/X.Y.Z` and naming what it replaces (`rollbackFrom`),
+the requester excluded; pressing again returns the open request. Audited
+`release.rollback_requested` on the target. **On approval** the kind writes a pre-approval bound to
+the tag and linked to the release (`RELEASE_INTENT_TTL_MS`) and dispatches the workflow after
+commit (once — its `deploy.production.dispatched` audit row is the idempotency record, as for
+"Deploy to production"). The run's `start` claims the pre-approval (its ref matches) and is linked
+to the release by its ref. **The model change** is one enum value and one column, both on
+`app_releases`: when a production run of a release that was live before (`production_active` /
+`rolled_back`) ACTIVATES (`releaseRunActivated` → `releaseRedeployed`, given the version production
+ran before), a lower version than that is a rollback — the target records `rolled_back_from` (the
+version it replaced) and stays `production_active`, the release that was live goes
+`production_active → rolled_back`, audited `release.rolled_back` on it (summary `{before: {live},
+after: {live, releaseId, status}}`); the same version is a re-deploy, a higher one a roll forward
+(`rolled_back_from` cleared). It is recognised at ACTIVATION and by the run's tag, so a rollback
+dispatched by hand in GitHub reads the same, and a rollback that never goes live changes no
+release. A `rolled_back` release is not promotable again — release a fix. The kit's `deploy.yml`
+labels a `workflow_dispatch` build `<ref name>-<sha7>` even on a tag, so the gateway's `upload`
+reads a version of exactly `X.Y.Z-<a prefix of the run's sha>` on a `refs/tags/X.Y.Z` run as `X.Y.Z`
+(`taggedRunVersion`) — the ticket, `last_deploy_version`, health and the Worker's
+`RELEASE_VERSION` all say `1.4.1`. The promotion view carries production's `rolledBackFrom` and
+the pending rollback request (`rollback`, with who it waits on). **`GET …/releases/compare`**
+(members) is the default branch against the latest release tag — the newest release's tag, else
+the highest `X.Y.Z` tag GitHub lists (`listTags`) — through GitHub's compare (`contents: read`):
+`aheadBy`, `headSha`, the newest `RELEASE_COMPARE_MAX_COMMITS` (20) commits with each message's
+first line, author and the PR number its message names (`… (#12)` / `Merge pull request #12`),
+and the compare URL. Cached on the app row (`apps.main_compare`), asked at most once per app per
+`RELEASE_COMPARE_TTL_SECONDS` (60) through a compare-and-set on `apps.main_compare_at`; a cut
+release moves the base and invalidates the reading at once. A GitHub failure is `aheadBy: null`
+with `error` (200, cached for the window), never a 5xx; no tag at all is `aheadBy: null`.
+
 **Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
 with no earlier tag lists only its session PRs; the bump is a direct push to the default branch,
 so a branch protected by anything the App cannot bypass (classic protection, or a ruleset without
@@ -2369,7 +2412,16 @@ does; a re-run of a failed tag run pressed in GitHub (rather than Launch's Retry
 release out of `failed` only when its staging job calls Launch; `failedStage` health stages count
 only `down` (a `degraded` environment is not offered a Retry); Cancel marks the release failed at
 once, before GitHub has finished cancelling; a run that skipped its staging job (conclusion `skipped`/`neutral`) is not
-a failure, and waits out the timeout.
+a failure, and waits out the timeout. Rollback (P3): migrations and secrets do not revert — the old
+build runs against today's schema and config, and nothing checks that it can; a rollback's run
+that FAILS leaves every release as it was (the failure is on its deploy ticket, not on a release,
+so no Retry is offered for it — dispatch the rollback again); a dispatch that never starts a run
+leaves its pre-approval to expire after an hour with nothing on the Live row; the kit's
+`deploy.yml` labels a tag dispatch `X.Y.Z-<sha7>` (its production job reads `GITHUB_REF_NAME` only
+for a `release` event), which Launch reads back as `X.Y.Z` but which a Launch-less deploy of the
+same app still shows — the template fix is one line in its production job's "Resolve release
+version" step (use the tag when `GITHUB_REF_TYPE` is `tag`, as the staging job does); the main
+compare is up to a minute stale, is not nudged by a push (no webhooks), and lists 20 commits.
 
 ### 18.18 The audit hash chain, verify and export (P4)
 
@@ -2420,7 +2472,12 @@ health, the repository, archive — each for whoever may use it). The UI calls t
 bottom: **Needs you**, shown only when something needs a person (a failed release — which job, its
 run, Details; a failed deploy with why; a release waiting on THIS reader's approval; a production
 ticket waiting on a decision; shared config not held) — a plain list, read-only under "Attention"
-for somebody who can act on none of it; then the flow, one row per environment (version in
+for somebody who can act on none of it; then the flow: first (app page P3) **`main  N commits
+ahead`** (`GET …/releases/compare`, §18.17; the count links to GitHub's compare) with **Release
+to staging ▸** — a plain button, never the hero — which opens the release dialog (patch by
+default) listing the commits it carries; the row is hidden when main is not ahead, when GitHub
+could not say, or while the newest release is `tagged`/`staging` (it already carries main's head),
+and its button is for owners and admins; then one row per environment (version in
 tabular mono, a health dot, the age of its deploy, Open) with **"N changes not live"** and **Ship
 vX live** between them. Ship is on offer when staging runs the newest release, is `up` on a check
 made SINCE its last deploy (an older check reads `unknown`), and Live runs something older;
@@ -2439,6 +2496,9 @@ labelled with what it does (`RELEASE_RETRY_LABELS`: "Retry staging deploy", "Che
 again", "Request approval again", "Retry live deploy"…; owners and admins) and **Fix in a session**
 (whoever may start a session; it opens the seeded session), §18.17. A release in flight's line
 carries Details and a ⋯ with **Cancel release…** (a confirm, then the run is cancelled on GitHub).
+After a rollback the Live row reads "v1.4.1 (rolled back from v1.4.2)" (the promotion view's
+`production.rolledBackFrom`), and while one waits for approval its line is "→ v1.4.1 (rollback) ·
+Waiting for approval from <names>".
 Ship opens
 one confirmation (the version, what it ships, an optional reason; **Request approval** — the
 promote route opens a `deploy.production` request) and the page stays. Owners and admins
@@ -2449,26 +2509,36 @@ sessions →". Every state is a pure function (`pages/apps/app/appPageModel.ts` 
 reason; nothing polls while a create request waits. **Releases** is one row per version — what
 Staging and Live say about it, its PR count, when — merging releases and deploy tickets (a deploy
 of no release gets a row of its own), with New release (a version preview), Ship per row (→ the
-approval it opened), a ⋯ per row (Retry, Fix in a session, Cancel release…, View run on GitHub —
-each for whoever may use it) and, quietly, "Deploy main to Live…" (a `deploy.production` request
+approval it opened), a ⋯ per row (Retry, Fix in a session, Cancel release…, **Roll back to
+here…** — only on an earlier release that was live, while nothing else is on its way to Live —,
+View run on GitHub — each for whoever may use it) and, quietly, "Deploy main to Live…" (a `deploy.production` request
 for the default branch). A version opens its release page: where it is stuck ("Stuck at: Staging
 deploy") with Retry and Fix in a session beside it, its deploys — one line per GitHub run attempt
 ("attempt 2"), the milestones of one still running — its pull requests and its chain (which reads
-`release.retried` / `release.cancelled` too). **Activity**: health (Check now), the app's audit log
+`release.retried` / `release.cancelled` / `release.rollback_requested` / `release.rolled_back`
+too), and Roll back to here beside Retry when it is on offer. Roll back opens one confirm ("Roll
+Live back to v1.4.1?" — Live's current version, that the approvers decide, that the repository's
+own deploy workflow runs at the tag, and that **migrations and secrets don't revert**) and posts
+the rollback route; the toast says whether it waits for approval. **Activity**: health (Check now), the app's audit log
 (`/api/audit?appId=`, admins) and the operations. A pending production ticket links to its
 approval; the access section's requests link to theirs. **The session page**: an
 owner/admin's "Extend" still approves in one click; the creator gets "Ask for more budget" (amount +
 reason → a `session.budget` request) and then a link to it. **The audit page**: Verify (on demand)
 and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` and `launch releases
-ls|create|promote [--wait]|retry|cancel` (§11); `approvals show` prints the eligible list too.
+ls|create|promote [--wait]|retry|cancel|rollback` (§11; `ls` adds "main is N commits ahead of
+X.Y.Z", `mainAhead` in `--json`); `approvals show` prints the eligible list too.
 
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
 naming them; a PR no Launch session wrote, or one shipped before issue #5 kept summaries, shows
 its titles only; the promotion view polls only while the candidate deploys, so a staging health
 change reaches it on the next read, a "Check now" or a release nudge; a release page shows only
 what the audit log recorded (a release cut outside Launch has no chain before its tag). **The app
-page after P2 of its redesign:** no Rollback and no `main  N commits ahead [Release to staging]`
-row (P3 — New release stays on the Releases tab); a stuck candidate whose approval was turned
+page after P3 of its redesign:** the main row is not polled (a push to main shows on the next
+read after the server's one-minute window, a focus or a release nudge), and is hidden from no one
+while a person is mid-way through cutting a release elsewhere; "Roll back to here" is offered from
+the reader's cached view of Live, so a stale page can offer one the server then refuses (409, a
+toast); `launch status` lists no apps, so the main-ahead count is in `launch releases ls` only; a
+stuck candidate whose approval was turned
 down shows both its Needs-you Retry ("Request approval again") and Ship's own "you can ask again";
 "Fix in a session" seeds the first message from what GitHub still has (an expired log is only its
 run link); Activity is three lists, not the plan's one merged feed, and a member sees health and the

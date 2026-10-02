@@ -89,6 +89,10 @@ export function approvalSummary(req: SummaryInput): string {
       return `Let ${personName(req.requester) ?? 'someone'} sign in to ${appName(req)}`
     case 'deploy.production': {
       const what = context.version ?? context.tag ?? shortSha(context.sha)
+      // App page P3: a rollback names what it replaces.
+      if (context.rollbackFrom) {
+        return `Roll ${appName(req)} back to ${what ?? 'an earlier release'} in production (from ${context.rollbackFrom})`
+      }
       return what
         ? `Deploy ${appName(req)} ${what} to production`
         : `Deploy ${appName(req)} to production`

@@ -29,7 +29,8 @@ import {
 } from '@launch/shared/launch-apps'
 import type { AppConfigView } from '@launch/shared/launch-grants'
 import type { DeployTicket, PipelineView } from '@launch/shared/launch-pipeline'
-import type { Release } from '@launch/shared/launch-releases'
+import type { PromotionRollback } from '@launch/shared/launch-promotion'
+import { type Release, rollbackRefusal } from '@launch/shared/launch-releases'
 import { missingEnvironments } from '../components/configModel'
 import { DEPLOY_PHASE_LABELS } from '../components/deployProgressModel'
 import { type PromotionState, peopleSentence, v } from '../components/promotionModel'
@@ -169,6 +170,8 @@ export type InFlight =
       /** "Ana and Ben", or null when the server named nobody. */
       approvers: string | null
       approvalId: string | null
+      /** App page P3: the request is a rollback to `version`. */
+      rollback?: boolean
     }
 
 /** The candidate release, when its run in `statuses` is the one this line shows. Pure. */
@@ -227,8 +230,20 @@ export function stagingInFlight(
  */
 export function liveInFlight(
   deploy: DeployProgress | undefined,
-  state: PromotionState | null
+  state: PromotionState | null,
+  rollback: PromotionRollback | null = null
 ): InFlight | null {
+  // App page P3: a rollback asked for and not yet decided (nothing runs until it is).
+  if (rollback && rollback.approval.status === 'pending' && !deploy?.inProgress) {
+    const approvers = rollback.approval.approvers
+    return {
+      kind: 'awaiting',
+      version: v(rollback.version),
+      approvers: approvers.length ? peopleSentence(approvers) : null,
+      approvalId: rollback.approval.id,
+      rollback: true,
+    }
+  }
   if (state?.kind === 'awaiting') {
     const approvers = state.approval?.approvers ?? []
     return {
@@ -556,4 +571,24 @@ export function releaseCell(
   if (status === 'promoting') return { tone: 'running', label: 'deploying' }
   if (status === 'production_active') return { tone: 'active', label: 'live' }
   return null
+}
+
+// ---- Rollback (app page P3) ----------------------------------------------------------------------
+
+/**
+ * Whether "Roll back to here" is offered on `release`: the reader may deploy, nothing is already
+ * asking to deploy Live, and the server would accept it (`rollbackRefusal` — an earlier release
+ * that was live before). Pure.
+ */
+export function canRollBackTo(
+  release: Pick<Release, 'status' | 'version'>,
+  input: { liveVersion: string | null | undefined; viewerCanDeploy: boolean; busy: boolean }
+): boolean {
+  if (!input.viewerCanDeploy || input.busy) return false
+  return rollbackRefusal(release, input.liveVersion) === null
+}
+
+/** "v1.4.1 (rolled back from v1.4.2)" — the Live row's suffix, or null. Pure. */
+export function rolledBackNote(rolledBackFrom: string | null | undefined): string | null {
+  return rolledBackFrom ? `rolled back from ${v(rolledBackFrom)}` : null
 }

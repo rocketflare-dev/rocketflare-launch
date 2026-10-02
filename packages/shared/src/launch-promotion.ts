@@ -25,22 +25,14 @@
 import { z } from 'zod'
 import { approvalStatusSchema } from './launch-approvals'
 import { healthStatusSchema } from './launch-apps'
-import { parseReleaseVersion, releaseSchema } from './launch-releases'
+import { releaseSchema } from './launch-releases'
 
 /**
- * -1 / 0 / 1 for two `X.Y.Z` versions — the one ordering the server's "what ships" and the strip's
- * "production already runs it" share. A missing or unparseable version sorts first.
+ * -1 / 0 / 1 for two `X.Y.Z` versions — the one ordering the server's "what ships", the strip's
+ * "production already runs it" and a rollback's "earlier than Live" share (defined beside the
+ * versions in `launch-releases`). A missing or unparseable version sorts first.
  */
-export function compareReleaseVersions(a: string | null, b: string | null): number {
-  const pa = a ? parseReleaseVersion(a) : null
-  const pb = b ? parseReleaseVersion(b) : null
-  if (!pa || !pb) return pa ? 1 : pb ? -1 : 0
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d !== 0) return d < 0 ? -1 : 1
-  }
-  return 0
-}
+export { compareReleaseVersions } from './launch-releases'
 
 /** At most this many pull requests are listed in one promotion. */
 export const PROMOTION_MAX_CHANGES = 50
@@ -57,6 +49,11 @@ export const promotionEnvironmentSchema = z.object({
   url: z.string().nullable(),
   /** The release carrying `version`, when there is one. */
   releaseId: z.string().uuid().nullable(),
+  /**
+   * App page P3: Live runs `version` because a rollback put it there — the version it replaced
+   * ("v1.4.1 (rolled back from v1.4.2)"). Null otherwise, and always on staging.
+   */
+  rolledBackFrom: z.string().nullable().default(null),
 })
 export type PromotionEnvironment = z.infer<typeof promotionEnvironmentSchema>
 
@@ -93,6 +90,19 @@ export const promotionApprovalSchema = z.object({
   approvers: z.array(promotionPersonSchema),
 })
 export type PromotionApproval = z.infer<typeof promotionApprovalSchema>
+
+/**
+ * App page P3: a rollback asked for and not yet decided — the `deploy.production` request with
+ * subject `rollback` — so the Live row can say "→ v1.4.1 (rollback) · Waiting for approval".
+ */
+export const promotionRollbackSchema = z.object({
+  releaseId: z.string().uuid(),
+  version: z.string(),
+  /** What Live ran when it was asked for. */
+  from: z.string().nullable(),
+  approval: promotionApprovalSchema,
+})
+export type PromotionRollback = z.infer<typeof promotionRollbackSchema>
 
 /** A GitHub Actions run's status, folded to three (`waiting`/`requested`/`pending` read `queued`). */
 export const CANDIDATE_RUN_STATUSES = ['queued', 'in_progress', 'completed'] as const
@@ -146,5 +156,7 @@ export const appPromotionSchema = z.object({
    * found, GitHub unreachable). Defaulted so an older answer without it still parses.
    */
   candidateRun: candidateRunSchema.nullable().default(null),
+  /** A pending rollback request (app page P3), or null. */
+  rollback: promotionRollbackSchema.nullable().default(null),
 })
 export type AppPromotion = z.infer<typeof appPromotionSchema>

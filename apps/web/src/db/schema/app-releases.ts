@@ -60,6 +60,12 @@ export const appReleases = pgTable(
     /** The tag's deploy run as last read from GitHub (see the header); null before any reading. */
     tagRun: jsonb('tag_run').$type<CandidateRun>(),
     tagRunPolledAt: timestamp('tag_run_polled_at', { withTimezone: true }),
+    /**
+     * App page P3: the version production ran when a rollback to THIS release went live (set by
+     * `releaseRunActivated`); null for a release never rolled back to. The release rolled back
+     * FROM goes `rolled_back`.
+     */
+    rolledBackFrom: text('rolled_back_from'),
     ...timestamps(),
   },
   table => [

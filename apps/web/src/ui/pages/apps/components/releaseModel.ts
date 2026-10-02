@@ -30,6 +30,7 @@ export const RELEASE_BADGE: Record<ReleaseStatus, { tone: string; label: string 
   production_active: { tone: 'completed', label: 'in production' },
   rejected: { tone: 'rejected', label: 'rejected' },
   failed: { tone: 'failed', label: 'failed' },
+  rolled_back: { tone: 'expired', label: 'rolled back' },
 }
 
 /** The version the next release would get, or null when there is nothing to bump from. */
@@ -83,6 +84,8 @@ const LABELS: Record<string, { label: string; tone: ChainTone }> = {
   'release.failed': { label: 'Release failed', tone: 'error' },
   'release.retried': { label: 'Retried', tone: 'primary' },
   'release.cancelled': { label: 'Release cancelled', tone: 'warning' },
+  'release.rollback_requested': { label: 'Rollback requested', tone: 'warning' },
+  'release.rolled_back': { label: 'Rolled back', tone: 'warning' },
   'deploy.started': { label: 'Deploy started', tone: 'neutral' },
   'deploy.uploaded': { label: 'Build uploaded', tone: 'neutral' },
   'deploy.activated': { label: 'Deploy activated', tone: 'success' },

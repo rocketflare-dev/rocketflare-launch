@@ -1006,6 +1006,21 @@ export function compareCommits(
   )
 }
 
+export interface GitHubTag {
+  name: string
+  commit: { sha: string }
+}
+
+/** The repo's tags, first page (GitHub orders them by name, not by semver — sort yourself). */
+export function listTags(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubTag[]> {
+  return githubJson<GitHubTag[]>(`${repoPath(owner, repo)}/tags?per_page=100`, { token }, opts)
+}
+
 /** The pull requests `sha` belongs to — for a merge commit, the PR it merged. */
 export function listPullRequestsForCommit(
   token: string,

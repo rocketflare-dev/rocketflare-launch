@@ -88,7 +88,10 @@ export const TERMINAL_APPROVAL_STATUSES = [
 
 /**
  * What an approval is ABOUT — `(kind, subject_type, subject_id)` is unique while pending. P5's
- * `grant` is one `app_grants` row (one app × resource × environment, plan §1.7).
+ * `grant` is one `app_grants` row (one app × resource × environment, plan §1.7). App page P3's
+ * `rollback` is a release too — the one a `deploy.production` rollback goes back TO — kept apart
+ * from `release` (Promote) because approving it dispatches the deploy at an old tag instead of
+ * publishing a GitHub Release.
  */
 export const APPROVAL_SUBJECT_TYPES = [
   'app',
@@ -97,6 +100,7 @@ export const APPROVAL_SUBJECT_TYPES = [
   'deploy_ticket',
   'session',
   'grant',
+  'rollback',
 ] as const
 export const approvalSubjectTypeSchema = z.enum(APPROVAL_SUBJECT_TYPES)
 export type ApprovalSubjectType = z.infer<typeof approvalSubjectTypeSchema>
@@ -293,6 +297,11 @@ export const deployProductionContextSchema = z.object({
   /** A job-originated ticket: the GitHub run that is waiting, and who started it. */
   runUrl: z.string().url().nullable().optional(),
   actor: z.string().nullable().optional(),
+  /**
+   * App page P3: a rollback — the version Live runs now, which deploying `version` replaces.
+   * Absent on a forward deploy.
+   */
+  rollbackFrom: z.string().nullable().optional(),
 })
 
 export const sessionBudgetContextSchema = z.object({

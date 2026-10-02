@@ -239,6 +239,13 @@
       "when": 1790869988750,
       "tag": "0033_launch-release-tag-run",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790921687312,
+      "tag": "0034_launch-release-rollback",
+      "breakpoints": true
     }
   ]
 }

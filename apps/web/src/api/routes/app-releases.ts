@@ -23,6 +23,14 @@
  * - `POST /:id/releases/:rid/cancel` → 202 `cancelReleaseResponseSchema` (owners and admins): cancel
  *   the release's deploy run in flight on GitHub (`releases/cancel.ts`). 409
  *   `release_not_cancellable`;
+ * - `POST /:id/releases/:rid/rollback` `rollbackReleaseSchema` → 202
+ *   `rollbackReleaseResponseSchema` (owners and admins, app page P3): put the EARLIER release
+ *   `:rid` back on Live through the same `deploy.production` approval as Ship (subject `rollback`);
+ *   once granted, the repo's own `deploy.yml` is dispatched at its tag (`releases/rollback.ts`).
+ *   409 `release_not_rollbackable` / `release_production_busy` / `release_in_progress`;
+ * - `GET /:id/releases/compare` → `releaseCompareSchema` (members read, app page P3): the default
+ *   branch against the latest release tag — commits ahead, throttled per app
+ *   (`releases/compare.ts`); a GitHub failure is `aheadBy: null` with `error`, never a 5xx;
  * - `GET /:id/promotion` → `appPromotionSchema` (members read): the app page's pipeline strip —
  *   the newest release, what each environment runs, the PRs between with their sessions' titles,
  *   the pending `deploy.production` request with who it waits on, and — while the candidate is
@@ -41,9 +49,13 @@ import {
   RELEASE_ERROR_CODES,
   type Release,
   type ReleaseChain,
+  type ReleaseCompare,
   type ReleaseListResponse,
   type RetryReleaseResponse,
+  type RollbackReleaseResponse,
+  releaseCompareSchema,
   retryReleaseSchema,
+  rollbackReleaseSchema,
 } from '@launch/shared/launch-releases'
 import type { Database } from '../../db/client'
 import type { AppReleaseRow } from '../../db/schema'
@@ -53,6 +65,7 @@ import { auditActor } from '../services/launch/audit'
 import { cancelRelease } from '../services/launch/releases/cancel'
 import { releaseChain } from '../services/launch/releases/chain'
 import { withReleaseClaim } from '../services/launch/releases/claim'
+import { releaseCompare } from '../services/launch/releases/compare'
 import {
   releaseViews,
   stageEnvironments,
@@ -62,6 +75,7 @@ import { promoteRelease } from '../services/launch/releases/promote'
 import { appPromotion } from '../services/launch/releases/promotion'
 import { createRelease, getRelease, listReleases } from '../services/launch/releases/release'
 import { retryRelease } from '../services/launch/releases/retry'
+import { rollbackRelease } from '../services/launch/releases/rollback'
 import { ConflictError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
@@ -115,6 +129,15 @@ appReleasesRouter.post('/:id/releases', validate('json', createReleaseSchema), a
     )
   }
   return c.json(await toRelease(deps.db, outcome.value), 201)
+})
+
+// Before `/:id/releases/:rid`, which would read `compare` as a release id.
+appReleasesRouter.get('/:id/releases/compare', async c => {
+  const { db, cfg, tenantId, app } = await readableApp(c)
+  const body: ReleaseCompare = releaseCompareSchema.parse(
+    await releaseCompare(db, cfg, { tenantId, app })
+  )
+  return c.json(body)
 })
 
 appReleasesRouter.get('/:id/releases/:rid', async c => {
@@ -190,6 +213,30 @@ appReleasesRouter.post('/:id/releases/:rid/cancel', async c => {
   }
   return c.json(answer, 202)
 })
+
+appReleasesRouter.post(
+  '/:id/releases/:rid/rollback',
+  validate('json', rollbackReleaseSchema),
+  async c => {
+    const ctx = await deployableApp(c)
+    const deps = approvalDepsOf(c)
+    const outcome = await rollbackRelease(deps, {
+      tenantId: ctx.tenantId,
+      app: ctx.app,
+      releaseId: uuidParam(c, 'rid'),
+      user: { id: ctx.user.id, email: ctx.user.email, role: ctx.auth.tenantUser?.role ?? null },
+      reason: c.req.valid('json').reason ?? null,
+      actor: auditActor(c),
+    })
+    const answer: RollbackReleaseResponse = {
+      release: await toRelease(deps.db, outcome.release),
+      from: outcome.from,
+      approvalId: outcome.approvalId,
+      approvalStatus: outcome.approvalStatus,
+    }
+    return c.json(answer, 202)
+  }
+)
 
 appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
   const { db, tenantId, app } = await readableApp(c)

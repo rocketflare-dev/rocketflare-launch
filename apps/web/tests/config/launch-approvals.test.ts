@@ -320,6 +320,8 @@ describe('releases', () => {
       'production_active',
       'rejected',
       'failed',
+      // App page P3 (migration 0034): appended, never inserted.
+      'rolled_back',
     ])
     expect(createReleaseSchema.safeParse({ bump: 'patch' }).success).toBe(true)
     expect(createReleaseSchema.safeParse({ bump: 'hotfix' }).success).toBe(false)

@@ -139,6 +139,13 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
       return { kind: 'deploying', release }
     case 'production_active':
       return { kind: 'live', release }
+    case 'rolled_back':
+      // App page P3: Live went back to an earlier release; this one is not shipped again.
+      return {
+        kind: 'blocked',
+        reason: `${v(release.version)} was rolled back; release a fix to ship again`,
+        release,
+      }
     case 'failed':
       return run && candidateRunFailed(run)
         ? {

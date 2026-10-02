@@ -18,8 +18,8 @@ pnpm --filter @launch/cli typecheck · test · build   # vitest node env, no ser
 - `src/commands/*.ts` — thin `run<X>(ctx, opts)`; `src/utils/{brand,logger,output}.ts`
 - Launch P4: `commands/approvals.ts` (`approvals ls|show|approve|reject` — short ids resolve against
   the caller's boxes; a 409 on decide is a sentence, exit 1) and `commands/releases.ts` (`releases
-  ls|create|promote [--wait]` — `--wait` polls the approval, then the release, exit 1 unless
-  `production_active`). Each registers itself (`register*Commands(program, action)`); `cli.ts`
+  ls|create|promote [--wait]|retry|cancel|rollback` — `--wait` polls the approval, then the
+  release, exit 1 unless `production_active`; `ls` adds the main-ahead line, app page P3). Each registers itself (`register*Commands(program, action)`); `cli.ts`
   only calls it. The contract schemas carry `.default()`s, so they are pinned to their OUTPUT type
   (`detailSchema`) before `api.ts` infers `T` from them
 - `src/plugins/{index.ts,types.ts}` + `src/plugins/<id>/index.ts` (D31) — the `CLI_PLUGINS` barrel

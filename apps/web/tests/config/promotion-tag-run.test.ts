@@ -36,6 +36,7 @@ const release = (over: Partial<Release> = {}): Release => ({
   productionTicketId: null,
   error: null,
   failedStage: null,
+  rolledBackFrom: null,
   createdAt: minutesAgo(3),
   updatedAt: minutesAgo(3),
   ...over,
@@ -58,6 +59,7 @@ const view = (candidate: Release, candidateRun: CandidateRun | null): AppPromoti
   changesTruncated: false,
   approval: null,
   candidateRun,
+  rollback: null,
 })
 
 describe('appPromotionSchema.candidateRun', () => {

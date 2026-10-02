@@ -7,6 +7,7 @@
  * | `release` | Promote | a pre-approval bound to `refs/tags/X.Y.Z` + the approval + the release; the release `promoting` | publish the GitHub Release (idempotent by `getReleaseByTag`) — `release: published` starts the job, whose `start` claims the pre-approval |
  * | `deploy_ticket` | a production run with nothing to claim (a Release published or a dispatch made by hand in GitHub) | `decidePending(source: 'approval')`; 409 `deploy_run_gone` once the run stopped waiting (the decision rolls back — the approver uses Promote) | nothing: the job's next poll sees `approved` |
  * | `app` | "Deploy to production" with no release | a pre-approval bound to the default branch | `workflow_dispatch` of `deploy.yml` |
+ * | `rollback` (app page P3) | Roll back, the subject the release to go back TO | a pre-approval bound to that release's `refs/tags/X.Y.Z`, linked to it | `workflow_dispatch` of `deploy.yml` at the tag (`environment=production`) — the repo's own workflow, as by hand |
  *
  * `onClosed` (rejected, expired, cancelled): a release goes `rejected` (no GitHub Release is ever
  * published); a waiting ticket is rejected so the job fails at its next poll.
@@ -142,13 +143,74 @@ function releaseNotes(release: AppReleaseRow): string {
   return `Promoted from Launch.\n\n${lines.join('\n')}\n`
 }
 
+/**
+ * `workflow_dispatch` of `deploy.yml` with `environment=production` at `ref` (a branch or a tag
+ * name) for the approval's pre-approval — once. Already claimed (a retry after the run started),
+ * expired or gone: nothing left to dispatch for. A retry after a dispatch that went out (and only
+ * the `applied_at` write failed) must not start a second run: the dispatch's own audit row is the
+ * record.
+ */
+async function dispatchProduction(
+  request: ApprovalRequestRow,
+  deps: ApprovalDeps,
+  app: Awaited<ReturnType<typeof appOf>>,
+  ref: string
+): Promise<void> {
+  const { db } = deps
+  const intent = await findApprovalIntent(db, request.tenantId, request.id)
+  if (!intent || intent.runId !== null || intent.status !== 'approved') return
+  if (intent.expiresAt && intent.expiresAt <= nowOf(deps)) return
+  const [sent] = await db
+    .select({ id: auditEvents.id })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.tenantId, request.tenantId),
+        eq(auditEvents.approvalId, request.id),
+        eq(auditEvents.action, DISPATCHED_ACTION)
+      )
+    )
+    .limit(1)
+  if (sent) return
+  await withRepoToken(
+    db,
+    deps.cfg,
+    app,
+    { actions: 'write' },
+    (token, { owner, repo }) =>
+      dispatchWorkflow(
+        token,
+        owner,
+        repo,
+        DEPLOY_WORKFLOW_FILE,
+        { ref, inputs: { environment: 'production' } },
+        { fetch: deps.fetch }
+      ),
+    { fetch: deps.fetch }
+  )
+  await recordAudit(db, {
+    ...SYSTEM_ACTOR,
+    tenantId: request.tenantId,
+    action: DISPATCHED_ACTION,
+    targetType: 'deploy_ticket',
+    targetId: intent.id,
+    appId: app.id,
+    approvalId: request.id,
+    summary: { after: { workflow: DEPLOY_WORKFLOW_FILE, ref: intent.ref } },
+  })
+}
+
 export const deployProductionHandler: KindHandler<'deploy.production'> = {
   kind: 'deploy.production',
   async defaultPolicy() {
     return DEFAULT_APPROVAL_POLICIES['deploy.production']
   },
   describe(request) {
-    return `Deploy ${request.context.kind === 'deploy.production' ? (request.context.version ?? request.context.ref ?? 'a build') : request.subjectId} to production`
+    const context = request.context.kind === 'deploy.production' ? request.context : null
+    if (request.subjectType === 'rollback' && context) {
+      return `Roll production back to ${context.version ?? context.tag ?? 'an earlier release'}${context.rollbackFrom ? ` (from ${context.rollbackFrom})` : ''}`
+    }
+    return `Deploy ${context ? (context.version ?? context.ref ?? 'a build') : request.subjectId} to production`
   },
 
   async applyInTx(tx, request, deps) {
@@ -225,6 +287,23 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
       return
     }
 
+    if (request.subjectType === 'rollback') {
+      // App page P3: a pre-approval bound to the OLD tag, linked to that release, for the run the
+      // dispatch in `applyAfter` starts. The release itself does not move until it goes live.
+      const release = await releaseOf(tx, request)
+      const scope = await productionScope(tx, request, release.appId)
+      await insertIntent(tx, scope, {
+        userId: approver,
+        expiresAt: new Date(now.getTime() + RELEASE_INTENT_TTL_MS),
+        now,
+        ref: releaseTagRef(release.tag),
+        approvalId: request.id,
+        releaseId: release.id,
+        source: 'approval',
+      })
+      return
+    }
+
     throw new ConflictError(
       `A production deploy cannot be approved for a ${request.subjectType}`,
       'approval_subject_unsupported'
@@ -276,51 +355,18 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
     }
 
     if (request.subjectType === 'app') {
-      const intent = await findApprovalIntent(db, request.tenantId, request.id)
-      // Already claimed (a retry after the run started) or gone: nothing left to dispatch for.
-      if (!intent || intent.runId !== null || intent.status !== 'approved') return
-      if (intent.expiresAt && intent.expiresAt <= nowOf(deps)) return
-      // A retry after a dispatch that went out (and only the `applied_at` write failed) must not
-      // start a second run: the dispatch's own audit row is the record.
-      const [sent] = await db
-        .select({ id: auditEvents.id })
-        .from(auditEvents)
-        .where(
-          and(
-            eq(auditEvents.tenantId, request.tenantId),
-            eq(auditEvents.approvalId, request.id),
-            eq(auditEvents.action, DISPATCHED_ACTION)
-          )
-        )
-        .limit(1)
-      if (sent) return
       const app = await appOf(db, request.tenantId, request.subjectId)
-      await withRepoToken(
-        db,
-        deps.cfg,
-        app,
-        { actions: 'write' },
-        (token, { owner, repo, branch }) =>
-          dispatchWorkflow(
-            token,
-            owner,
-            repo,
-            DEPLOY_WORKFLOW_FILE,
-            { ref: branch, inputs: { environment: 'production' } },
-            { fetch: deps.fetch }
-          ),
-        { fetch: deps.fetch }
-      )
-      await recordAudit(db, {
-        ...SYSTEM_ACTOR,
-        tenantId: request.tenantId,
-        action: DISPATCHED_ACTION,
-        targetType: 'deploy_ticket',
-        targetId: intent.id,
-        appId: app.id,
-        approvalId: request.id,
-        summary: { after: { workflow: DEPLOY_WORKFLOW_FILE, ref: intent.ref } },
-      })
+      await dispatchProduction(request, deps, app, app.defaultBranch ?? 'main')
+      return
+    }
+
+    if (request.subjectType === 'rollback') {
+      // App page P3: the repo's OWN deploy workflow, dispatched at the old tag — exactly what a
+      // person would do by hand in GitHub to roll back, so the app stays detachable.
+      const release = await releaseOf(db, request)
+      const app = await appOf(db, request.tenantId, release.appId)
+      await dispatchProduction(request, deps, app, release.tag)
+      nudgeRelease(deps, release)
     }
     // `deploy_ticket`: the waiting job reads `approved` on its next poll; nothing to do.
   },
@@ -382,6 +428,17 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
           summary: { before: { status: 'pending' }, after: { status: 'rejected', why: status } },
         })
       }
+    }
+    if (request.subjectType === 'rollback') {
+      // Nothing was written before approval; the Live row's "waiting" line just goes away.
+      const [release] = await db
+        .select()
+        .from(appReleases)
+        .where(
+          and(eq(appReleases.tenantId, request.tenantId), eq(appReleases.id, request.subjectId))
+        )
+        .limit(1)
+      if (release) nudgeRelease(deps, release)
     }
     // `app`: nothing was written before approval.
   },

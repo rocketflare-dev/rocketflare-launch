@@ -11,6 +11,9 @@
  * "Fix in a session" beside it, and a ⋯ with Cancel release while a run is in flight. Every GitHub
  * run attempt is its own deploy line ("attempt 2"): a Retry re-runs the run's failed jobs, and
  * attempt 2's deploy job opens a ticket of its own, so the attempts read in order.
+ *
+ * App page P3: an earlier release that was live before offers "Roll back to here" (owners and
+ * admins), and a release Live was rolled back to says what it replaced.
  */
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { DeployProgress } from '@launch/shared/launch-apps'
@@ -28,7 +31,12 @@ import { appTabPath, deployRows, ENV_LABEL, ticketBadge, ticketRunUrl } from './
 import { Ago, ExternalLink, MoreMenu, SectionHeading, Version } from './bits'
 import { useAppPage } from './context'
 import { DeploySteps } from './DeploySteps'
-import { FixInSessionButton, RetryReleaseButton, useReleaseMenu } from './ReleaseActions'
+import {
+  FixInSessionButton,
+  RetryReleaseButton,
+  RollbackButton,
+  useReleaseMenu,
+} from './ReleaseActions'
 
 function DeployLine({
   ticket,
@@ -148,6 +156,7 @@ export default function ReleasePage() {
           <span className="ml-auto flex items-center gap-2">
             {release && <RetryReleaseButton release={release} />}
             {release && <FixInSessionButton release={release} />}
+            {release && <RollbackButton release={release} />}
             {canShip && release && <ShipButton appId={app.id} release={release} />}
             {release?.approvalId && (
               <Link to={approvalPath(release.approvalId)} className="btn btn-sm btn-ghost">
@@ -163,6 +172,12 @@ export default function ReleasePage() {
           </p>
         )}
         {release?.error && <p className="text-sm text-error">{release.error}</p>}
+        {release?.rolledBackFrom && (
+          <p className="text-sm text-secondary" data-testid="rolled-back-from">
+            Live was rolled back to this release from <Version>{v(release.rolledBackFrom)}</Version>
+            .
+          </p>
+        )}
       </div>
 
       <section aria-labelledby="release-deploys-title">

@@ -19,6 +19,11 @@
  *   says which. A release with nothing failing exits 1 (`release_not_retryable`).
  * - `cancel <app> <release>` — cancel the release's deploy run in flight on GitHub; the release
  *   is marked failed so `retry` re-runs it later.
+ * - `rollback <app> <release>` (app page P3) — put an earlier release that was live before back on
+ *   production, through the same approval as `promote` (the repo's own deploy workflow at its tag).
+ *   409 `release_not_rollbackable` for a release that is not earlier than production's, or was
+ *   never live. `ls` also says how far the default branch is ahead of the latest release tag
+ *   (`GET …/releases/compare`; `--json` carries it as `mainAhead`).
  *
  * Slice 4f owns this file. `cli.ts` calls `registerReleasesCommands(program, action)` once, after
  * the kit's own commands, so this file adds its `program.command(...)` entries and never edits
@@ -40,11 +45,14 @@ import {
   RELEASE_STAGE_LABELS,
   type Release,
   type ReleaseBump,
+  type ReleaseCompare,
   type ReleaseStatus,
   type RetryReleaseResponse,
+  releaseCompareSchema,
   releaseListResponseSchema,
   releaseSchema,
   retryReleaseResponseSchema,
+  rollbackReleaseResponseSchema,
 } from '@launch/shared/launch-releases'
 import chalk from 'chalk'
 import { type Command, InvalidArgumentError } from 'commander'
@@ -88,6 +96,24 @@ const STATUS_WORDS: Record<ReleaseStatus, string> = {
   production_active: 'live in production',
   rejected: 'rejected',
   failed: 'failed',
+  rolled_back: 'rolled back',
+}
+
+/** The main-ahead line under the list (app page P3), or null when there is nothing to say. Pure. */
+export function mainAheadSentence(compare: ReleaseCompare | null): string | null {
+  if (!compare || compare.aheadBy === null || !compare.base) return null
+  if (compare.aheadBy === 0) return `${compare.branch} has nothing new since ${compare.base}`
+  const n = compare.aheadBy
+  return `${compare.branch} is ${n} commit${n === 1 ? '' : 's'} ahead of ${compare.base}`
+}
+
+/** The main-ahead compare, or null — a failure here never fails the listing. */
+async function readCompare(client: ApiClient, appId: string): Promise<ReleaseCompare | null> {
+  try {
+    return await client.get(`${releasesPath(appId)}/compare`, { schema: releaseCompareSchema })
+  } catch {
+    return null
+  }
 }
 
 export async function runReleasesList(ctx: CommandContext, app: string): Promise<void> {
@@ -96,22 +122,33 @@ export async function runReleasesList(ctx: CommandContext, app: string): Promise
   const { data, raw } = await client.request('GET', releasesPath(detail.id), {
     schema: releaseListResponseSchema,
   })
-  ctx.out.data(raw, () =>
-    renderTable(data.items, [
+  const compare = await readCompare(client, detail.id)
+  const ahead = mainAheadSentence(compare)
+  const rawObject = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  ctx.out.data({ ...rawObject, mainAhead: compare }, () => {
+    const table = renderTable(data.items, [
       { header: 'Version', value: r => r.version },
       {
         header: 'Status',
         value: r =>
           r.failedStage
             ? `${STATUS_WORDS[r.status]} (${RELEASE_STAGE_LABELS[r.failedStage].toLowerCase()})`
-            : STATUS_WORDS[r.status],
+            : r.rolledBackFrom && r.status === 'production_active'
+              ? `${STATUS_WORDS[r.status]} (rolled back from ${r.rolledBackFrom})`
+              : STATUS_WORDS[r.status],
       },
       { header: 'PRs', value: r => r.prs.length },
       { header: 'Commit', value: r => r.sha.slice(0, 7) },
       { header: 'Created', value: r => formatDate(r.createdAt) },
       { header: 'Id', value: r => r.id },
     ])
-  )
+    if (!ahead) return table
+    const next =
+      compare?.aheadBy && detail.viewerCanDeploy
+        ? chalk.dim(`  Release it: ${ctx.binName} releases create ${detail.slug}`)
+        : null
+    return [table, '', ahead, ...(next ? [next] : [])].join('\n')
+  })
 }
 
 export async function runReleasesCreate(
@@ -298,6 +335,41 @@ export async function runReleasesCancel(
   )
 }
 
+/**
+ * `releases rollback <app> <version>` (app page P3): put an EARLIER release that was live before
+ * back on production. Opens the same `deploy.production` approval Ship does; once granted, Launch
+ * runs the repo's own deploy workflow at that tag. Migrations and secrets do not revert.
+ */
+export async function runReleasesRollback(
+  ctx: CommandContext,
+  app: string,
+  ref: string,
+  options: { reason?: string } = {}
+): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const release = await resolveRelease(client, detail.id, ref)
+  const reason = options.reason?.trim()
+  const { data, raw } = await client.request(
+    'POST',
+    `${releasePath(detail.id, release.id)}/rollback`,
+    { schema: rollbackReleaseResponseSchema, body: reason ? { reason } : {} }
+  )
+  ctx.out.data(raw, () => {
+    const lines =
+      data.approvalStatus === 'approved'
+        ? [
+            `${chalk.green('✓')} Rolling production back from ${data.from} to ${chalk.bold(data.release.version)}: the deploy workflow runs at ${data.release.tag}.`,
+          ]
+        : [
+            `${chalk.green('✓')} Asked to roll production back from ${data.from} to ${chalk.bold(data.release.version)}.`,
+            `  Another owner or admin approves it here: ${approvalUrl(ctx, data.approvalId)}`,
+          ]
+    lines.push(chalk.dim('  Migrations and secrets do not revert with the code.'))
+    return lines.join('\n')
+  })
+}
+
 // ---- registration --------------------------------------------------------------------------
 
 function bumpOption(value: string): ReleaseBump {
@@ -335,6 +407,15 @@ export function registerReleasesCommands(program: Command, action: ActionWrapper
     .option('--reason <text>', 'why — shown on a re-requested approval')
     .action(
       action((ctx, cmd) => runReleasesRetry(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+    )
+  releases
+    .command('rollback <app> <release>')
+    .description('roll production back to an earlier release (id or version) (owners and admins)')
+    .option('--reason <text>', 'why — shown to the approvers')
+    .action(
+      action((ctx, cmd) =>
+        runReleasesRollback(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts())
+      )
     )
   releases
     .command('cancel <app> <release>')

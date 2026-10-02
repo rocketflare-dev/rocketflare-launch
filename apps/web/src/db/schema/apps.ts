@@ -13,6 +13,7 @@
  *   DATABASE rather than in service code.
  */
 import { APP_SOURCES, APP_STATUSES, type AppShipSettings } from '@launch/shared/launch-apps'
+import type { ReleaseCompare } from '@launch/shared/launch-releases'
 import type { AppSessionDb } from '@launch/shared/launch-sessions'
 import { relations } from 'drizzle-orm'
 import {
@@ -102,6 +103,14 @@ export const apps = pgTable(
      */
     releaseClaimHolder: text('release_claim_holder'),
     releaseClaimedAt: timestamp('release_claimed_at', { withTimezone: true }),
+    /**
+     * App page P3: the last main-ahead reading (`releaseCompareSchema` — the default branch against
+     * the latest release tag) and when GitHub was asked — the read throttle of
+     * `releases/compare.ts`: one compare per app per `RELEASE_COMPARE_TTL_SECONDS`, taken by a
+     * compare-and-set on `main_compare_at`. Non-secret, and only ever a cache.
+     */
+    mainCompare: jsonb('main_compare').$type<ReleaseCompare>(),
+    mainCompareAt: timestamp('main_compare_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [

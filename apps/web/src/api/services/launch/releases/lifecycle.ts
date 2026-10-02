@@ -13,10 +13,20 @@
  *   whoever cut it and the creators of the sessions whose PRs it carries. GitHub-only authors are
  *   logins, not Launch users (a known gap).
  *
+ * - **Rollback (app page P3)**: a production run of a release that was live before activating is a
+ *   re-deploy or a rollback (`releaseRedeployed`): an earlier version than production ran records
+ *   `rolled_back_from` on it and moves the replaced release `production_active → rolled_back`,
+ *   audited `release.rolled_back`.
+ *
  * Every transition is a compare-and-set on the current status, so a late or repeated event (a
  * retried activate, a staging re-run after promotion) never moves a release backwards.
  */
-import type { ReleaseStatus } from '@launch/shared/launch-releases'
+import {
+  compareReleaseVersions,
+  parseReleaseVersion,
+  type ReleaseStatus,
+  ROLLBACK_TARGET_STATUSES,
+} from '@launch/shared/launch-releases'
 import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import {
@@ -59,7 +69,10 @@ export async function moveRelease(
   from: readonly ReleaseStatus[],
   to: ReleaseStatus,
   patch: Partial<
-    Pick<AppReleaseRow, 'approvalId' | 'stagingTicketId' | 'productionTicketId' | 'error'>
+    Pick<
+      AppReleaseRow,
+      'approvalId' | 'stagingTicketId' | 'productionTicketId' | 'error' | 'rolledBackFrom'
+    >
   > = {}
 ): Promise<AppReleaseRow | null> {
   const [row] = await db
@@ -96,18 +109,114 @@ export async function releaseRunStarted(
     .where(and(eq(appReleases.id, release.id), eq(appReleases.tenantId, release.tenantId)))
 }
 
-/** A run on the release's tag went live: `staging_active` / `production_active`, audited. */
+interface RunActivatedInput {
+  releaseId: string
+  tenantId: string
+  environment: 'staging' | 'production'
+  ticket: Pick<DeployTicketRow, 'id' | 'approvalId' | 'version'>
+  /** What the environment ran BEFORE this activation (its `last_deploy_version`). */
+  previousVersion?: string | null
+  actor?: AuditActor
+}
+
+/** The app's release `version`, tenant-first, or null. */
+async function releaseByVersion(
+  db: Database,
+  tenantId: string,
+  appId: string,
+  version: string
+): Promise<AppReleaseRow | null> {
+  const [row] = await db
+    .select()
+    .from(appReleases)
+    .where(
+      and(
+        eq(appReleases.tenantId, tenantId),
+        eq(appReleases.appId, appId),
+        eq(appReleases.version, version)
+      )
+    )
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * App page P3: production went live with a release that had been live before
+ * (`ROLLBACK_TARGET_STATUSES`) — a Rollback's dispatch, or the same dispatch made by hand in
+ * GitHub (the app stays detachable, so the run is recognised by its tag, not by who started it).
+ *
+ * - EARLIER than what production ran → a rollback: this release records `rolled_back_from` (the
+ *   version it replaced), the release that was live goes `rolled_back`, audited `release.rolled_back`
+ *   on it (the one rolled back);
+ * - the same version (a re-deploy) or a later one (rolling forward to a release rolled back
+ *   before) → it is simply live again; a roll forward clears its own `rolled_back_from`.
+ */
+async function releaseRedeployed(
+  db: Database,
+  target: AppReleaseRow,
+  input: RunActivatedInput
+): Promise<AppReleaseRow | null> {
+  const from = input.previousVersion ?? null
+  const order = from ? compareReleaseVersions(target.version, from) : 0
+  const back = from !== null && parseReleaseVersion(from) !== null && order < 0
+  if (!back) {
+    return moveRelease(db, target, ROLLBACK_TARGET_STATUSES, 'production_active', {
+      productionTicketId: input.ticket.id,
+      ...(order > 0 ? { rolledBackFrom: null } : {}),
+    })
+  }
+  const moved = await moveRelease(db, target, ROLLBACK_TARGET_STATUSES, 'production_active', {
+    productionTicketId: input.ticket.id,
+    rolledBackFrom: from,
+  })
+  if (!moved) return null
+  const replaced = await releaseByVersion(db, target.tenantId, target.appId, from)
+  const rolledBack = replaced
+    ? await moveRelease(db, replaced, ['production_active'], 'rolled_back')
+    : null
+  await recordAudit(db, {
+    ...(input.actor ?? SYSTEM_ACTOR),
+    tenantId: target.tenantId,
+    action: 'release.rolled_back',
+    targetType: 'release',
+    // The release rolled back, when Launch cut it; else the one rolled back to.
+    targetId: replaced?.id ?? moved.id,
+    appId: moved.appId,
+    approvalId: input.ticket.approvalId ?? null,
+    summary: {
+      before: { live: from, status: replaced?.status ?? null },
+      after: {
+        live: moved.version,
+        tag: moved.tag,
+        releaseId: moved.id,
+        status: rolledBack?.status ?? replaced?.status ?? null,
+        ticketId: input.ticket.id,
+      },
+    },
+  })
+  return moved
+}
+
+/**
+ * A run on the release's tag went live: `staging_active` / `production_active`, audited. A
+ * production run of a release that was live before is a re-deploy or a rollback
+ * (`releaseRedeployed`).
+ */
 export async function releaseRunActivated(
   db: Database,
-  input: {
-    releaseId: string
-    tenantId: string
-    environment: 'staging' | 'production'
-    ticket: Pick<DeployTicketRow, 'id' | 'approvalId' | 'version'>
-    actor?: AuditActor
-  }
+  input: RunActivatedInput
 ): Promise<AppReleaseRow | null> {
   const release = { id: input.releaseId, tenantId: input.tenantId }
+  if (input.environment === 'production') {
+    const [current] = await db
+      .select()
+      .from(appReleases)
+      .where(and(eq(appReleases.id, release.id), eq(appReleases.tenantId, release.tenantId)))
+      .limit(1)
+    if (current && (ROLLBACK_TARGET_STATUSES as readonly string[]).includes(current.status)) {
+      return releaseRedeployed(db, current, input)
+    }
+  }
   const moved =
     input.environment === 'staging'
       ? await moveRelease(db, release, ['tagged', 'staging', 'failed'], 'staging_active', {

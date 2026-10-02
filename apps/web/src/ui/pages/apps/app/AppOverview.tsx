@@ -20,21 +20,26 @@
  * stays, its Live row then naming who the request waits on. Shipping is for the app's owners and
  * admins (`viewerCanDeploy`); everybody else reads who can.
  *
- * P3 seam: the `main  N commits ahead  [Release to staging ▸]` row belongs above Staging once
- * `GET /:id/releases/compare` exists. Until then "New release" lives on the Releases tab.
+ * App page P3: `main  N commits ahead  [Release to staging ▸]` sits above Staging
+ * (`useReleaseCompare`, the default branch against the latest release tag), hidden when main is
+ * not ahead, when a release is already on its way to staging, or when GitHub could not say. Its
+ * button is a plain one — Ship (or Change it) stays the view's one hero — and opens the release
+ * dialog (patch by default) with the commits it carries. The Live row says when a rollback put
+ * its version there ("v1.4.1 (rolled back from v1.4.2)"), and a rollback waiting for approval
+ * is its in-flight line.
  */
 import { LinkIcon, ShieldExclamationIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppEnvironment } from '@launch/shared/launch-apps'
 import type { AppPromotion } from '@launch/shared/launch-promotion'
-import type { Release } from '@launch/shared/launch-releases'
+import type { Release, ReleaseCompare } from '@launch/shared/launch-releases'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { showToast } from '@/ui/components/shared'
 import { useAppConfig } from '@/ui/hooks/useAppConfig'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { useDeployProgress, useDeploys } from '@/ui/hooks/useDeploys'
-import { useAppPromotion } from '@/ui/hooks/useReleases'
+import { useAppPromotion, useReleaseCompare } from '@/ui/hooks/useReleases'
 import { useAppSessions } from '@/ui/hooks/useSessions'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
 import { HEALTH_LABEL, HealthDot } from '../components/HealthDot'
@@ -55,11 +60,13 @@ import {
   needsYou,
   notDeployedYet,
   releasePath,
+  rolledBackNote,
   stagingInFlight,
 } from './appPageModel'
 import { Ago, ExternalLink, MoreMenu, SectionHeading, Version } from './bits'
 import { type AppPageContext, useAppPage } from './context'
 import { NeedsYou } from './NeedsYou'
+import { NewReleaseModal } from './NewReleaseModal'
 import { useReleaseMenu } from './ReleaseActions'
 
 /** A new app waiting on an admin's approval (P4 `app.create`): say so, and link to the request. */
@@ -161,7 +168,8 @@ function InFlightLine({ line, slug }: { line: InFlight; slug: string }) {
   return (
     <p className="text-sm flex flex-wrap items-center gap-x-2 gap-y-1" role="status">
       <span>
-        → {line.version && <Version>{line.version}</Version>} ·{' '}
+        → {line.version && <Version>{line.version}</Version>}
+        {line.rollback ? ' (rollback)' : ''} ·{' '}
         {line.approvers ? `Waiting for approval from ${line.approvers}` : 'Waiting for approval'}
       </span>
       {line.approvalId && (
@@ -179,7 +187,18 @@ function InFlightLine({ line, slug }: { line: InFlight; slug: string }) {
   )
 }
 
-function EnvRow({ env, line, slug }: { env: AppEnvironment; line: InFlight | null; slug: string }) {
+function EnvRow({
+  env,
+  line,
+  slug,
+  note = null,
+}: {
+  env: AppEnvironment
+  line: InFlight | null
+  slug: string
+  /** Beside the version: "rolled back from v1.4.2" (app page P3). */
+  note?: string | null
+}) {
   const empty = notDeployedYet(env)
   const version = env.lastDeployVersion
   return (
@@ -193,6 +212,11 @@ function EnvRow({ env, line, slug }: { env: AppEnvironment; line: InFlight | nul
         ) : (
           <>
             {version ? <Version>{v(version)}</Version> : <span className="text-muted">—</span>}
+            {note && (
+              <span className="text-xs text-secondary" data-testid="rolled-back-note">
+                ({note})
+              </span>
+            )}
             <span className="inline-flex items-center gap-1.5 text-xs text-secondary">
               <HealthDot status={env.healthStatus} />
               <span>{HEALTH_LABEL[env.healthStatus]}</span>
@@ -220,6 +244,71 @@ function EnvRow({ env, line, slug }: { env: AppEnvironment; line: InFlight | nul
         <div className="sm:pl-20">
           <InFlightLine line={line} slug={slug} />
         </div>
+      )}
+    </li>
+  )
+}
+
+/**
+ * Above Staging (app page P3): the default branch's commits since the latest release tag, and
+ * "Release to staging". Nothing when main is not ahead, when GitHub could not say, or while a
+ * release is already on its way to staging (it carries main's head).
+ */
+function MainRow({
+  ctx,
+  compare,
+  latest,
+}: {
+  ctx: AppPageContext
+  compare: ReleaseCompare | undefined
+  latest: Release | null
+}) {
+  const [open, setOpen] = useState(false)
+  const { app } = ctx
+  if (!compare?.aheadBy) return null
+  if (latest && (latest.status === 'tagged' || latest.status === 'staging')) return null
+  const n = compare.aheadBy
+  return (
+    <li className="py-3" data-testid="env-main">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span
+          className="w-16 shrink-0 text-sm font-medium font-mono truncate"
+          title={compare.branch}
+        >
+          {compare.branch}
+        </span>
+        <span className="text-sm">
+          {compare.compareUrl ? (
+            <a
+              href={compare.compareUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link link-hover"
+              title={`Since ${compare.base}`}
+            >
+              <span className="tabular-nums">{n}</span> commit{n === 1 ? '' : 's'} ahead
+            </a>
+          ) : (
+            <>
+              <span className="tabular-nums">{n}</span> commit{n === 1 ? '' : 's'} ahead
+            </>
+          )}
+        </span>
+        {app.viewerCanDeploy && app.status !== 'archived' && (
+          <button type="button" className="btn btn-sm ml-auto" onClick={() => setOpen(true)}>
+            Release to staging ▸
+          </button>
+        )}
+      </div>
+      {open && (
+        <NewReleaseModal
+          appId={app.id}
+          latest={latest}
+          open={open}
+          onClose={() => setOpen(false)}
+          title="Release to staging"
+          compare={compare}
+        />
       )}
     </li>
   )
@@ -372,6 +461,7 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
   const { user } = useAuth()
   const running = app.status !== 'requested' && app.status !== 'archived'
   const promotion = useAppPromotion(app.id, hasRepo && running)
+  const compare = useReleaseCompare(app.id, hasRepo && running)
   const latest = useDeployProgress(app.id, app.status !== 'requested')
   const tickets = useDeploys(app.id, running)
   const config = useAppConfig(app.id, hasRepo && app.status !== 'archived')
@@ -401,6 +491,13 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
           <p className="text-sm text-muted">No environments recorded.</p>
         ) : (
           <ul className="divide-y divide-base-300 border-y border-base-300">
+            {hasRepo && running && (
+              <MainRow
+                ctx={ctx}
+                compare={compare.data}
+                latest={promotion.data?.candidate ?? null}
+              />
+            )}
             {staging && (
               <EnvRow
                 env={staging}
@@ -412,8 +509,17 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
             {live && (
               <EnvRow
                 env={live}
-                line={liveInFlight(latestFor('production'), state)}
+                line={liveInFlight(
+                  latestFor('production'),
+                  state,
+                  promotion.data?.rollback ?? null
+                )}
                 slug={app.slug}
+                note={
+                  promotion.data?.production?.version === live.lastDeployVersion
+                    ? rolledBackNote(promotion.data?.production?.rolledBackFrom)
+                    : null
+                }
               />
             )}
           </ul>

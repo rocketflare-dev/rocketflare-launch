@@ -86,7 +86,13 @@ posts that stage (so a release that moved on is the server's 409 `release_stage_
 different retry) and prints what Launch did (`retrySentence`: re-ran the failed jobs — attempt N
 and the run's URL —, re-pushed the tag, the health it read, or the re-opened approval's URL);
 `releases cancel <app> <id|X.Y.Z>` cancels the run in flight and points at `retry`. Both print the
-raw body with `--json`; a 403 exits 3.
+raw body with `--json`; a 403 exits 3. `releases rollback <app> <id|X.Y.Z> [--reason]` (app page
+P3) posts the rollback and prints the approval's URL (or, auto-approved, that the deploy workflow
+runs at the tag) and that migrations and secrets do not revert; a 409 `release_not_rollbackable`
+/ `release_production_busy` is the server's sentence, exit 1. `releases ls` reads
+`GET …/releases/compare` too and prints "main is N commits ahead of X.Y.Z" under the table
+(`mainAheadSentence`; nothing when unknown, and a failed compare never fails the listing); with
+`--json` the list body gains `mainAhead` (the compare, or null).
 
 The audit log (Launch P4, admin+): `audit verify` (exit 1 at the first broken link, printed) and
 `audit export --out <file> [--format json|csv] [--app] [--action] [--from] [--to] [--force]`. The

@@ -38,6 +38,7 @@
  */
 import { githubRequesterLabel } from '@launch/shared/launch-approvals'
 import { DEPLOY_FINISHED_EVENT, type DeployUpload } from '@launch/shared/launch-pipeline'
+import { taggedRunVersion } from '@launch/shared/launch-releases'
 import { and, eq } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import type { AppConfig } from '../../../../config'
@@ -538,6 +539,9 @@ export async function uploadDeploy(
   assertProtocol(body.protocol)
   if (ticket.status !== 'approved') wrongState(ticket, 'approved')
   const { environment } = ctx.caller
+  // App page P3: a dispatch on a release tag (a rollback) labels its build `X.Y.Z-<sha7>`; it IS
+  // release X.Y.Z, and the ticket, the environment and the Worker's RELEASE_VERSION say so.
+  const version = taggedRunVersion(body.version, ticket)
 
   let config: Record<string, unknown>
   try {
@@ -557,7 +561,7 @@ export async function uploadDeploy(
     const error = 'bindings not registered for this app'
     const failed = await transitionTicket(ctx.db, ticket, ['approved'], 'failed', {
       refused: check.refused,
-      version: body.version,
+      version,
       error,
     })
     if (failed) {
@@ -581,7 +585,7 @@ export async function uploadDeploy(
       workerName,
       config,
       check: uploading,
-      upload: body,
+      upload: { ...body, version },
       ticketId: ticket.id,
     })
   } catch (err) {
@@ -592,7 +596,7 @@ export async function uploadDeploy(
   }
 
   const uploaded = await transitionTicket(ctx.db, ticket, ['approved'], 'uploaded', {
-    version: body.version,
+    version,
     cfVersionId: versionId,
     bindings: ticketBindings(uploading, { shadowedVars, uploadedAt }) as unknown as Record<
       string,
@@ -621,7 +625,7 @@ export async function uploadDeploy(
   }
 
   await audit(ctx, uploaded, 'deploy.uploaded', {
-    version: body.version,
+    version,
     versionId,
     bindings: ticketBindings(uploading).bindings.map(b => `${b.type}:${b.name}`),
     ...(shadowedVars.length > 0 ? { shadowedVars } : {}),
@@ -778,6 +782,8 @@ export async function activateDeploy(
       tenantId: active.tenantId,
       environment: environment.name,
       ticket: active,
+      // Read when the caller was resolved, so before the update above: what it replaced.
+      previousVersion: environment.lastDeployVersion,
       actor: ctx.actor,
     })
   }

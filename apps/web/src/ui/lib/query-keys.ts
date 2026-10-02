@@ -245,6 +245,9 @@ const CORE_QUERY_KEYS = {
     /** The app page's pipeline strip (`GET /api/apps/:id/promotion`) — under `release`, so a
      *  release nudge refreshes it with the card. */
     promotion: (appId: string) => ['release', 'promotion', appId] as const,
+    /** App page P3: main against the latest release tag (`GET …/releases/compare`) — under
+     *  `release`, so cutting a release refreshes it. */
+    compare: (appId: string) => ['release', 'compare', appId] as const,
   },
   /**
    * Launch P5: shared config (`/api/shared-resources`, spec/09). Invalidated on save; the push

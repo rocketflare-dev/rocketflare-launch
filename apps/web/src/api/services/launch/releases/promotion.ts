@@ -21,6 +21,9 @@
  *   staging job moves the release to `failed`, audited `release.failed`), null on any GitHub
  *   error. A `failed` candidate carries the reading that failed it; no other status reads GitHub.
  *
+ * - App page P3: production carries `rolledBackFrom` when a rollback put its version there, and
+ *   `rollback` is the app's pending rollback request (subject `rollback`) with who it waits on.
+ *
  * Every query is tenant-first: the app comes from `getAppRow(tenantId, id)`, and each later lookup
  * repeats `tenant_id` rather than trusting ids read from another row.
  */
@@ -31,7 +34,7 @@ import {
   PROMOTION_SUMMARY_MAX,
 } from '@launch/shared/launch-promotion'
 import type { Release } from '@launch/shared/launch-releases'
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import {
@@ -58,6 +61,7 @@ function environmentOf(
 ): PromotionEnvironment | null {
   if (!row) return null
   const version = row.lastDeployVersion
+  const release = version ? releases.find(r => r.version === version) : undefined
   // A check from before the last deploy says nothing about the version running now.
   const stale =
     row.lastDeployAt !== null &&
@@ -67,7 +71,43 @@ function environmentOf(
     deployedAt: row.lastDeployAt,
     healthStatus: stale ? 'unknown' : row.healthStatus,
     url: row.url,
-    releaseId: (version && releases.find(r => r.version === version)?.id) || null,
+    releaseId: release?.id ?? null,
+    // App page P3: Live runs this release because a rollback put it there.
+    rolledBackFrom: row.name === 'production' ? (release?.rolledBackFrom ?? null) : null,
+  }
+}
+
+/** The app's pending rollback request (app page P3), with who it waits on, or null. */
+async function pendingRollbackOf(
+  db: Database,
+  tenantId: string,
+  appId: string,
+  releases: readonly AppReleaseRow[]
+): Promise<AppPromotion['rollback']> {
+  const [row] = await db
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.appId, appId),
+        eq(approvalRequests.kind, 'deploy.production'),
+        eq(approvalRequests.subjectType, 'rollback'),
+        eq(approvalRequests.status, 'pending')
+      )
+    )
+    .orderBy(desc(approvalRequests.createdAt))
+    .limit(1)
+  const release = row ? releases.find(r => r.id === row.subjectId) : undefined
+  if (!row || !release) return null
+  const approval = await approvalOf(db, tenantId, appId, row.id)
+  if (!approval) return null
+  const context = row.context.kind === 'deploy.production' ? row.context : null
+  return {
+    releaseId: release.id,
+    version: release.version,
+    from: context?.rollbackFrom ?? null,
+    approval,
   }
 }
 
@@ -205,6 +245,7 @@ export async function appPromotion(
       changesTruncated: false,
       approval: null,
       candidateRun: null,
+      rollback: await pendingRollbackOf(db, tenantId, appId, releases),
     }
   }
   // The tag's deploy run (`tag-run.ts`); a run that failed may move the candidate to `failed`.
@@ -239,5 +280,6 @@ export async function appPromotion(
       ? await approvalOf(db, tenantId, appId, candidate.approvalId)
       : null,
     candidateRun: followed.run,
+    rollback: await pendingRollbackOf(db, tenantId, appId, releases),
   }
 }
