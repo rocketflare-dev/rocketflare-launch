@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **The app page is an Overview and tabs.** `/apps/:slug` answers "use it, change it, is my change
+  live?": a Needs-you list only when something needs a person (a failed release or deploy, an
+  approval waiting on you, missing config), then Staging and Live as one row each with "N changes
+  not live" and **Ship vX live** between them, a release in flight as one line on the row it is
+  changing ("→ v1.4.2 · Waiting for approval from Bob · Copy link"), and the active sessions. The
+  header carries `vX live`, Open ↗, **Change it** (start a session) and a ⋯ menu. Sessions,
+  Releases (one row per version, each with its own page: deploys, PRs, history), Activity (health,
+  the app's audit log for admins, operations) and Settings (General, Config & secrets, Access &
+  sign-in, Shipping, Danger zone) are tabs. The old `/apps/:slug/config` and `/apps/:slug/access`
+  redirect into Settings. The pipeline strip, the deploy stepper panel, the large environment
+  cards and the standalone deploys card are gone; "Promote to production" is now **Ship**, and
+  the UI calls the environments Staging and Live. Actions a reader cannot use are hidden.
+- **`docs/DESIGN.md`**: the visual rules Launch's screens follow (rows over tiles, no card-in-card,
+  no accent stripes, one hero action per view, colour for state only). The catalogue's red card
+  edge for an unhealthy app is gone — its dots already say so.
+- **Chat, Agents, Knowledge and Search are hidden** behind a new environment-gated feature flag,
+  `kit-ai`, that no toml lists. Add it to `FEATURES_ENABLED` to bring them back; the APIs still
+  answer. Analytics and the AI settings tabs stay.
+
 - **The app page no longer calls a never-deployed environment "Down", nor stale health "healthy".**
   Launch's placeholder Worker marks its answers (`x-launch-placeholder: 1`); the health probe reads
   it as `unknown` with "Not deployed yet", and the environment card says so instead of Down with an

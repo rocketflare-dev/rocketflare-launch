@@ -14,6 +14,13 @@ Dev: Vite on :3000 proxies `/api`, `/auth`, `/ws` — plus every prefix an insta
 Either port moves with `DEV_UI_PORT` / `DEV_API_PORT` (`scripts/lib/dev-ports.mjs`, shell or
 `.dev.vars`); `DEV_ALLOWED_HOSTS` adds hostnames Vite answers for.
 
+## Design rules first
+
+**`docs/DESIGN.md`** is how a screen looks and reads — rows over tiles, no card-in-card, no
+left-border accent stripes, one `.btn-flame` hero per view, colour for state only, versions in
+tabular mono, relative times with the absolute one in `title`, hide what the reader cannot use.
+Read it before building or restyling a page; the app page (`pages/apps/app/`) follows it.
+
 ## Design tokens, not raw colours
 
 - Themes are two `@plugin "daisyui/theme"` blocks in `apps/web/src/ui/index.css` (`launch-light` default,

@@ -551,8 +551,14 @@ The full gate stays green at every step. `SETUP.md` is the walkthrough.
   `environmentGated` flags. Then the admin rollout: tenant override → `on`/`off` → `rollout`
   percentage → registry default.
 - **Keys are code** (`FEATURES` + metadata). No migration is needed to add one; orphaned rows are
-  inert. Launch ships **no** flag yet, so `featureNameSchema` is a refined string and
+  inert. `featureNameSchema` is a refined string (the registry may be empty) and
   `featureDefinition(key)` is how code reads a flag's metadata.
+- **Launch's one core flag is `kit-ai`**: the kit's AI surfaces in the UI — Chat, Agents (and its
+  badge's count query), Knowledge and Search, each nav item and its route behind the same guard
+  (`ui/lib/feature-guards.ts`). It is `environmentGated` and listed in neither toml, so it is off
+  in every deployment; adding the key to `FEATURES_ENABLED` brings them back (default `on`), and
+  no code was removed. Analytics and the AI settings tabs are not behind it — coding sessions
+  resolve their AI keys through those.
 - **`featureBucket` is a wire format**: FNV-1a over `"<key>:<unit>"` mod 100, with golden vectors
   in `features.test.ts`. It is monotonic (the percentage is never hashed) and independent across
   flags.
@@ -564,8 +570,9 @@ The full gate stays green at every step. `SETUP.md` is the walkthrough.
   updates, it has no local store, and the browser SDK needs a token. It fits the kit's own
   cross-deployment rollouts, not per-tenant entitlements.
 
-**Known gaps:** gated code still ships in the bundle (the server is the protection); no per-user
-forcing or scheduling; platform flips reach open tabs only on their next session fetch; no cache on
+**Known gaps:** gated code still ships in the bundle (the server is the protection); `kit-ai` is
+cosmetic — it hides the UI only, and the chat, agent, knowledge and search APIs still answer, an
+agent-run notification still links to a page that now refuses; no per-user forcing or scheduling; platform flips reach open tabs only on their next session fetch; no cache on
 the Bearer path; flags cannot gate pre-tenant surfaces.
 
 ## 16. Plugins
@@ -893,9 +900,13 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   `<PLACEHOLDER>` is not an id). The slug must follow spec/04 (a letter first, not `*-staging`, not
   reserved) and is globally unique. `apps`, one `app_environments` row per toml, the
   `app_operations` steps and `app.imported` are written in one transaction.
-- **Catalogue and detail** (`/apps`, `/apps/:slug`; members read): name, team, kit version, a
-  status dot per environment with its last check; the detail page shows resources, 24 h health
-  history, the operations log and the OIDC card.
+- **Catalogue and app page** (`/apps`, `/apps/:slug/*`; members read): the catalogue shows name,
+  team, kit version and a status dot per environment with its last check. One app is an Overview
+  and tabs (§18.19, `docs/DESIGN.md`): the Overview's Staging and Live rows carry the health dot;
+  Activity has the 24 h health history (Check now for `manage App`), the app's audit log (admins)
+  and the operations log; Settings → General lists each environment's Worker and declared
+  resources, Settings → Access & sign-in the OIDC card and who may sign in. The old
+  `/apps/:slug/config` and `/apps/:slug/access` redirect into Settings.
 - **Health** (`services/launch/health.ts`, the `*/5` cron and `POST /api/apps/:id/health-check`):
   `GET {url}/api/health` and `/api/ready`, 5 s each. `up` = both 200, `degraded` = health 200 and
   ready not (the Worker runs, its database does not answer), `down` = anything else (timeout,
@@ -2098,7 +2109,7 @@ composer's blocked sentence names the stage; End is hidden while `merging` (the 
 Ship confirm words what will happen from the app's ship settings. A session is polled every
 `SESSION_LANDING_POLL_MS` (15 s) while its landing moves — `shipped` included, while `releasing` /
 `deploying` — and never while it waits on a reviewer (`approval`). The app page's **Shipping** card
-(`ShipSettingsCard`, below the sessions card) is a summary — the settings as two sentences and, for
+(`ShipSettingsCard`, Settings → Shipping) is a summary — the settings as two sentences and, for
 owners and admins, one line about the main branch — and its **Change** button opens the form in a
 modal: "go live on staging" or "open a pull request for review on GitHub", and who reviews (nobody
 / the app's owners / named teams — every group for `manage Group`, the reader's own otherwise); the
@@ -2106,7 +2117,7 @@ review is read-only when an admin `session.merge` policy decides it (the stored 
 unchanged), and everyone else reads the sentences only. The modal also carries the main branch's
 protection in plain words (`ok` Protected · `none` · `blocks` → remove the rule, DEPLOY.md · `unavailable` ·
 `unknown`, plus the server's `detail`), with **Apply Launch's protection** for administrators
-where it helps (`none`, `blocks`). The pipeline strip prints each change's stored summary as one
+where it helps (`none`, `blocks`). The Overview's "changes not live" list prints each change's stored summary as one
 plain line under its title (`summaryLine`), and an approval page for a `session.merge` shows the PR,
 the session (link to its page), the head commit, the summary and the diff stat.
 
@@ -2230,7 +2241,7 @@ release (`release_id`); activation (never a mere `finish` — §18.7) moves it `
 `production_active`. The
 `sessions.checks` cron follows shipped session PRs to their merge (`pr.merged` with the merge
 SHA, `pr.closed`), and `GET …/:rid/chain` is the audit trail from PR to production, linked by ids.
-**The pipeline strip** (rocketflare-launch#5) reads `GET /api/apps/:id/promotion`
+**The app page's flow** (rocketflare-launch#5; the Overview, §18.19) reads `GET /api/apps/:id/promotion`
 (`releases/promotion.ts`, any member): the newest release (the candidate), each environment's
 `last_deploy_version` / `last_deploy_at` / health / URL and the release carrying it, the PRs of
 every release after production's version up to the candidate (the code is cumulative, so an
@@ -2239,7 +2250,7 @@ of the Launch session that wrote it and (issue #5) the session's stored ship sum
 (`sessions.ship_summary->>'body'`, tenant-first, clipped to `PROMOTION_SUMMARY_MAX` = 600; null for
 a PR no session wrote or a session shipped before summaries were kept), and the candidate's
 `deploy.production` request with the people it still waits on — named for every member, unlike the
-approval's own page. It decides nothing: Promote is the same route and the same approval.
+approval's own page. It decides nothing: Ship is the promote route and the same approval.
 **The tag's deploy run** (`releases/tag-run.ts`, `candidateRun` on the same read): cutting a
 release pushes tag `X.Y.Z`, and the app's `deploy.yml` runs guard → "Already gated?" → (no green CI
 on the commit yet) the gate → "Deploy to staging" — the FIRST job that calls Launch. Until then the
@@ -2351,31 +2362,43 @@ PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`)
 snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
 approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
-overrides. **The app page** leads with a one-row pipeline strip — `Staging: v1.4.2 (healthy, 10 minutes
-ago)` → **Promote to production** → `Production: v1.4.1` (a build that is not a release keeps its
-own name, `main-64a36e6`) — a status line, and, collapsed and only when there is something in it,
-what the promotion ships (each session's title and, since issue #5, a line of its stored ship
-summary, then its PR's title). Promote is on offer when staging runs the newest
-release, is `up` on a check made SINCE its last deploy (an older check reads `unknown` — "not
-checked since it was deployed"), and production runs something older; otherwise the button is disabled with the
-reason. Before staging it follows the tag's deploy run on GitHub (`candidateRun`, §18.17): "v1.4.2
-is tagged — GitHub is checking it before it deploys to staging. Running: ci / Gate." while the run
-has not reached its staging job, "Deploying v1.4.2 to staging…" once that job has called Launch,
-and "v1.4.2 did not deploy: ci / Gate failed." when the run failed — each with **View on GitHub**
-(the run). With no run known it says "Staging is still deploying" — or "v1.4.2 never reached
-staging" once the release is older than `RELEASE_STAGING_TIMEOUT_MINUTES`, the same 45 minutes a
-session's landing waits; a run still going is never "stuck". After staging: "Staging runs
-main-64a36e6, not v1.4.2", "Staging is unhealthy", "Production already runs v1.4.2", "Nothing on
-staging yet". After the click (the same confirmation as a release row, the same
-route) the strip stays: "Waiting for approval from <names>" with the request's link and Copy
-link, then "Deploying to production…", then "Live in production: v1.4.2" with the production
-link. Owners and admins (`viewerCanDeploy`) get the button; everyone else reads the strip with who
-can promote. Every state is one pure function (`pages/apps/components/promotionModel.ts`). Below
-it the Releases card (New release with a version preview, Promote → the
-approval it opened, each release's chain on demand); a pending production ticket links to its
-approval; "Deploy to production" opens a `deploy.production` request; the access page's requests
-link to their approvals; a member's new app waiting in `requested` on an `app.create` approval shows
-that request instead of the launch panel, and nothing polls while it waits. **The session page**: an
+overrides. **The app page** (`/apps/:slug/*`, `pages/apps/AppPage.tsx`; `docs/DESIGN.md`) is an
+Overview and tabs — Sessions · Releases (+ `/releases/:version`) · Activity · Settings
+(`/settings/:section?`: General · Config & secrets · Access & sign-in · Shipping · Danger zone) —
+each its own sub-route under one layout. The header: name · `v1.4.1 live` · Open ↗ (Live) ·
+**Change it** (starts a coding session; the hero unless Ship is on offer) · ⋯ (edit, check
+health, the repository, archive — each for whoever may use it). The UI calls the environments
+**Staging** and **Live**; GitHub and wrangler keep staging/production. **The Overview**, top to
+bottom: **Needs you**, shown only when something needs a person (a failed release — which job, its
+run, Details; a failed deploy with why; a release waiting on THIS reader's approval; a production
+ticket waiting on a decision; shared config not held) — a plain list, read-only under "Attention"
+for somebody who can act on none of it; then the flow, one row per environment (version in
+tabular mono, a health dot, the age of its deploy, Open) with **"N changes not live"** and **Ship
+vX live** between them. Ship is on offer when staging runs the newest release, is `up` on a check
+made SINCE its last deploy (an older check reads `unknown`), and Live runs something older;
+otherwise the row says why ("Staging runs main-64a36e6, not v1.4.2", "Staging is unhealthy") and
+offers nothing. A release on its way is ONE line on the row it is changing, never a stepper: on
+Staging "→ v1.4.2 · GitHub is checking it" while the tag's run (`candidateRun`, §18.17) has not
+reached its staging job, then the staging deploy's phase from `GET /deploys/latest` ("→ v1.4.3 ·
+uploaded · started 48 seconds ago", View run); on Live "→ v1.4.2 · Waiting for approval from
+<names>" with the request's link and Copy link, then the Live deploy's phase. A run that failed
+("v1.4.2 did not deploy: ci / Gate failed"), and a release older than
+`RELEASE_STAGING_TIMEOUT_MINUTES` with no run going ("never reached staging", the same 45 minutes
+a session's landing waits), go to Needs you instead (`promotionState`'s `progress`). Ship opens
+one confirmation (the version, what it ships, an optional reason; **Request approval** — the
+promote route opens a `deploy.production` request) and the page stays. Owners and admins
+(`viewerCanDeploy`) get Ship; everyone else reads who can. Then the active sessions, with "All
+sessions →". Every state is a pure function (`pages/apps/app/appPageModel.ts` over
+`components/promotionModel.ts`). Until the first build is live the Overview is the launch
+(`PipelineProgress`) or the create-approval notice, and Sessions / Releases are disabled with the
+reason; nothing polls while a create request waits. **Releases** is one row per version — what
+Staging and Live say about it, its PR count, when — merging releases and deploy tickets (a deploy
+of no release gets a row of its own), with New release (a version preview), Ship per row (→ the
+approval it opened) and, quietly, "Deploy main to Live…" (a `deploy.production` request for the
+default branch). A version opens its release page: its deploys (the milestones of one still
+running), its pull requests and its chain. **Activity**: health (Check now), the app's audit log
+(`/api/audit?appId=`, admins) and the operations. A pending production ticket links to its
+approval; the access section's requests link to theirs. **The session page**: an
 owner/admin's "Extend" still approves in one click; the creator gets "Ask for more budget" (amount +
 reason → a `session.budget` request) and then a link to it. **The audit page**: Verify (on demand)
 and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` and `launch releases
@@ -2383,10 +2406,15 @@ ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list to
 
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
 naming them; a PR no Launch session wrote, or one shipped before issue #5 kept summaries, shows
-its titles only; it polls only while the candidate deploys, so a staging health
-change reaches it on the next read, a "Check now" or a release nudge; the strip's Promote is plain
-`btn-primary`, not the page's flame (Start session already holds it); the releases card shows only what the audit log recorded (a release cut outside
-Launch has no chain before its tag); nothing re-dispatches a failed production run from the UI.
+its titles only; the promotion view polls only while the candidate deploys, so a staging health
+change reaches it on the next read, a "Check now" or a release nudge; a release page shows only
+what the audit log recorded (a release cut outside Launch has no chain before its tag). **The app
+page, P1 of its redesign:** no Retry anywhere yet (a failed release offers Details and its run;
+the stage-aware retry and "Fix in a session" are P2), no Rollback and no `main  N commits ahead
+[Release to staging]` row (P3 — New release stays on the Releases tab), no Cancel in a release's ⋯
+menu; Activity is three lists, not the plan's one merged feed, and a member sees health and the
+operations only (the audit log is admin+); the "You're live" line shows only to a tab that
+watched the first build go live.
 
 ### 18.20 Shared config and grants (P5)
 
@@ -2488,7 +2516,8 @@ reads "Set — hidden" with Replace, inputs are never pre-filled (secrets are pa
 blank keeps the current value, and saving where apps hold it is a rotation whose push shows N/M
 with the failed apps and Retry (`PushProgress`, polled only while queued/running). Revoke per
 holder is confirmed; admins edit the per-environment policy (`ResourcePolicyForm`). An app's
-`/apps/:slug/config` and the Config card on its page show the matched resources with a state per
+Settings → Config & secrets (`/apps/:slug/settings/config`; the notifications' `/apps/:slug/config`
+redirects there) shows the matched resources with a state per
 environment (held / pushing / requested with the request's link / missing with Request), the
 declared keys by plugin and the keys nothing matches. A `grant.request` approval names what the app
 would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team,
