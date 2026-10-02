@@ -302,6 +302,9 @@ describe('issue #5 calls: merge, CI logs, rulesets, protection', () => {
       checks: { checks: 'read', statuses: 'read' },
       rulesetsWrite: { administration: 'write' },
       rulesetsRead: { administration: 'read' },
+      // App page P2: Retry / Cancel of a release's run, and re-pushing a lost tag.
+      releaseRun: { actions: 'write', contents: 'read' },
+      releaseTag: { contents: 'write', actions: 'read' },
     })
     const levels = { read: 1, write: 2 } as const
     for (const scope of Object.values(GITHUB_TOKEN_PERMISSIONS)) {

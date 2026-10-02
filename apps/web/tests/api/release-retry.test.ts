@@ -432,6 +432,24 @@ describe('POST /api/apps/:id/releases/:rid/retry — tag, health, approval', () 
     expect(repo?.refs.get(`tags/${cut.tag}`)).toBe(cut.sha)
   })
 
+  it('a failed staging deploy with no run and no tag left pushes the tag again', async () => {
+    const { tenantId, alice, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    await db
+      .update(appReleases)
+      .set({ status: 'failed', error: 'staging: the deploy run ended cancelled' })
+      .where(and(eq(appReleases.tenantId, tenantId), eq(appReleases.id, cut.id)))
+    cloud.github.repo(app.owner, app.repo)?.refs.delete(`tags/${cut.tag}`)
+    const res = await retry(app, alice, cut.id, { stage: 'staging_deploy' })
+    expect(res.status, await res.clone().text()).toBe(202)
+    expect(retryReleaseResponseSchema.parse(await res.json())).toMatchObject({
+      stage: 'tag',
+      action: 'retag',
+      release: { status: 'tagged', error: null },
+    })
+    expect(cloud.github.repo(app.owner, app.repo)?.refs.get(`tags/${cut.tag}`)).toBe(cut.sha)
+  })
+
   it('checks staging health now', async () => {
     const { tenantId, alice, app } = await fixture()
     const cut = await cutRelease(app, alice)

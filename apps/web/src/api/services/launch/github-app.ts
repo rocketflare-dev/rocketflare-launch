@@ -1044,7 +1044,7 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   /** The branch-protection diagnosis: rulesets and classic protection, read only. */
   rulesetsRead: { administration: 'read' },
   /** App page P2: a release run's re-run of its failed jobs, or its cancel (and the reads around). */
-  releaseRun: { actions: 'write' },
+  releaseRun: { actions: 'write', contents: 'read' },
   /** App page P2: re-pushing a release's tag (and reading its runs). */
   releaseTag: { contents: 'write', actions: 'read' },
 } as const satisfies Record<string, GitHubPermissions>

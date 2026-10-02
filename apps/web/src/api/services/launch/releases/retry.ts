@@ -165,7 +165,7 @@ async function rerun(
   stage: ReleaseFailedStage,
   environment: ReleaseEnvironment,
   now: Date
-): Promise<RetryReleaseOutcome> {
+): Promise<RetryReleaseOutcome | 'retag'> {
   const gh: GitHubOptions = { fetch: deps.fetch }
   return withRepoToken(
     deps.db,
@@ -178,8 +178,8 @@ async function rerun(
       )
       if (!found) {
         if (environment === 'staging' && !(await tagExists(token, repo, release.tag, gh))) {
-          // No run because the tag itself is gone: that is the tag step's retry.
-          return retag(deps, input, release, now, { token, repo, gh })
+          // No run because the tag itself is gone: that is the tag step's retry (its own token).
+          return 'retag' as const
         }
         notRetryable(
           environment === 'staging'
@@ -387,24 +387,30 @@ export async function retryRelease(
     )
   }
 
+  const retagNow = () =>
+    withRepoToken(
+      deps.db,
+      deps.cfg,
+      input.app,
+      GITHUB_TOKEN_PERMISSIONS.releaseTag,
+      (token, repo) => retag(deps, input, release, now, { token, repo, gh: { fetch: deps.fetch } }),
+      { fetch: deps.fetch }
+    )
   let outcome: RetryReleaseOutcome
   switch (stage) {
-    case 'staging_deploy':
-      outcome = await rerun(deps, input, release, stage, 'staging', now)
+    case 'staging_deploy': {
+      const rerun1 = await rerun(deps, input, release, stage, 'staging', now)
+      outcome = rerun1 === 'retag' ? await retagNow() : rerun1
       break
-    case 'production_deploy':
-      outcome = await rerun(deps, input, release, stage, 'production', now)
+    }
+    case 'production_deploy': {
+      const rerun1 = await rerun(deps, input, release, stage, 'production', now)
+      if (rerun1 === 'retag') notRetryable('Launch has no record of the production run to re-run')
+      outcome = rerun1
       break
+    }
     case 'tag':
-      outcome = await withRepoToken(
-        deps.db,
-        deps.cfg,
-        input.app,
-        GITHUB_TOKEN_PERMISSIONS.releaseTag,
-        (token, repo) =>
-          retag(deps, input, release, now, { token, repo, gh: { fetch: deps.fetch } }),
-        { fetch: deps.fetch }
-      )
+      outcome = await retagNow()
       break
     case 'staging_health':
     case 'production_health':
