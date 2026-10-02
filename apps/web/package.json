@@ -74,6 +74,7 @@
     "@anthropic-ai/sdk": "^0.122.0",
     "@casl/ability": "^6.8.1",
     "@casl/react": "^5.0.1",
+    "@cloudflare/puppeteer": "1.4.0",
     "@cloudflare/sandbox": "0.12.10",
     "@heroicons/react": "^2.2.0",
     "@hono/zod-validator": "^0.7.6",

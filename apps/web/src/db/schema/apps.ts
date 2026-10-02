@@ -111,6 +111,12 @@ export const apps = pgTable(
      */
     mainCompare: jsonb('main_compare').$type<ReleaseCompare>(),
     mainCompareAt: timestamp('main_compare_at', { withTimezone: true }),
+    /**
+     * The "Refresh thumbnail" claim: `POST /:id/thumbnail/refresh` takes it by a compare-and-set
+     * (`… WHERE thumbnail_refresh_at IS NULL OR thumbnail_refresh_at < now() - 60 s RETURNING`),
+     * so two clicks a second apart enqueue one capture, whatever isolate each lands on.
+     */
+    thumbnailRefreshAt: timestamp('thumbnail_refresh_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [

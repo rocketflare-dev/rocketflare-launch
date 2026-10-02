@@ -71,6 +71,14 @@ export const appEnvironments = pgTable(
     healthVersion: text('health_version'),
     healthLatencyMs: integer('health_latency_ms'),
     healthError: text('health_error'),
+    /**
+     * The environment's thumbnail (`app.thumbnail` job): the R2 key under the tenant's prefix
+     * (`tenants/<tenantId>/apps/<appId>/thumbnail-<env>.webp`, so `tenant.purge` covers it), when it
+     * was taken and the `last_deploy_version` it shows — the debounce compares that version.
+     */
+    thumbnailKey: text('thumbnail_key'),
+    thumbnailCapturedAt: timestamp('thumbnail_captured_at', { withTimezone: true }),
+    thumbnailVersion: text('thumbnail_version'),
     ...timestamps(),
   },
   table => [

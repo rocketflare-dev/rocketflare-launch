@@ -1,5 +1,5 @@
 /**
- * Home: the company's apps, one row each — name, the version Live runs with its health dot, the
+ * Home: the company's apps, one row each — thumbnail and name, the version Live runs with its health dot, the
  * version on Staging, and one word when something needs a look (`appAttention`). Apps that need
  * somebody come first; the full list, search and the table are the catalogue's (`/apps`).
  *
@@ -15,6 +15,7 @@ import { useApps } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { appPath } from '../apps/app/appPageModel'
 import { SectionHeading, Version } from '../apps/app/bits'
+import { AppThumbnail } from '../apps/components/AppThumbnail'
 import { CreateAppModal } from '../apps/components/CreateAppModal'
 import { HealthDot } from '../apps/components/HealthDot'
 import { type Attention, environmentOf, homeAppRows, runningVersion } from './homeModel'
@@ -93,9 +94,13 @@ export function AppsSection() {
               const live = environmentOf(app, 'production')
               return (
                 <tr key={app.id} data-testid="home-app-row">
-                  <td className="py-2.5 pr-4 min-w-0">
-                    <Link to={appPath(app.slug)} className="link link-hover font-medium">
-                      {app.displayName}
+                  <td className="py-2 pr-4 min-w-0">
+                    <Link
+                      to={appPath(app.slug)}
+                      className="flex items-center gap-3 min-w-0 link link-hover font-medium"
+                    >
+                      <AppThumbnail app={app} size="xs" />
+                      <span className="truncate">{app.displayName}</span>
                     </Link>
                   </td>
                   <td className="py-2.5 pr-4 whitespace-nowrap">

@@ -314,7 +314,9 @@ Jobs rules (D7):
   cannot make it valid). Handler error → `retry({ delaySeconds: backoffSeconds(attempts) })`, 30 s
   doubling to a 15 min cap; the toml's `max_retries = 3` ends it. Unknown queue → `ackAll()`
 - Missing `JOBS_QUEUE` → `JobsQueueNotConfiguredError`, never a silent inline fallback. Queued in
-  the kit: `tenant.purge`, and invitation (create/bulk/resend) and access-request-decided emails. The **magic-link email
+  the kit: `tenant.purge`, and invitation (create/bulk/resend) and access-request-decided emails;
+  Launch's `app.thumbnail` (a screenshot after a deploy goes live — a missing `BROWSER` binding is
+  ACKED with a log, like `tenant.purge`'s missing `FILES`, because no retry can conjure one). The **magic-link email
   stays inline** — a person is waiting on it
 - **`tenant.purge` is the out-of-database half of deleting a tenant.** The FK cascade is complete
   inside Postgres and reaches nothing else, so `deleteTenant` proves the queue binding BEFORE the

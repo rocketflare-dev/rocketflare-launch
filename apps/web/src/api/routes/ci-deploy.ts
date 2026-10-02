@@ -16,6 +16,9 @@
  * it (403) — see `services/launch/deploy/gateway.ts`. Non-2xx bodies are the shared envelope,
  * whose `error` is what the job prints. Mounted by `routes/ci.ts`; public by design.
  *
+ * The call that closes a DEPLOYED ticket also probes the app's health and queues its thumbnail
+ * (`app.thumbnail`, `services/launch/thumbnails`) — neither can fail the deploy.
+ *
  * `migratorUrl` is a credential. It is in the upload response and nowhere else — no log line, no
  * row, no audit summary.
  */
@@ -37,6 +40,7 @@ import {
 } from '../services/launch/deploy/gateway'
 import { getTicketById, isDeployed } from '../services/launch/deploy/tickets'
 import { checkAppHealth } from '../services/launch/health'
+import { enqueueThumbnailAfterDeploy } from '../services/launch/thumbnails/thumbnails'
 import type { AppContext } from '../types'
 import { loggerFor } from '../utils/core/logger'
 import { makeDefer, uuidParam } from '../utils/routes/route-helpers'
@@ -141,6 +145,22 @@ ciDeployRouter.post('/:id/finish', async c => {
         'deploy: the post-deploy health check failed'
       )
     }
+  }
+  // The app's thumbnail follows the version now serving: queued on the call that CLOSED a deployed
+  // ticket (a repeated `finish` queues nothing), and skipped when that version is already pictured.
+  // Only enqueued — never awaited work, and never the deploy's failure.
+  if (isDeployed(closed) && !ticket.finishedAt) {
+    await enqueueThumbnailAfterDeploy(
+      ctx.db,
+      c.env.JOBS_QUEUE,
+      {
+        tenantId: ctx.caller.tenantId,
+        appId: ctx.caller.app.id,
+        environment: ctx.caller.environment.name,
+        version: closed.version,
+      },
+      ctx.logger
+    )
   }
   return c.json(ticketState(closed, ctx.caller.environment.name))
 })

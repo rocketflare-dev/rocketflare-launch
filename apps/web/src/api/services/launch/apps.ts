@@ -34,6 +34,7 @@ import { BadRequestError, NotFoundError } from '../../utils/core/errors'
 import { isAppOwner } from '../oidc/policy'
 import { type AuditActor, recordAudit } from './audit'
 import { shipReviewSetByFor } from './ship-settings'
+import { thumbnailOf } from './thumbnails/thumbnails'
 
 /** Staging before production, everywhere an app's environments are listed. */
 const ENVIRONMENT_ORDER: Record<AppEnvironmentName, number> = { staging: 0, production: 1 }
@@ -89,6 +90,7 @@ function toSummary(
     ownerGroup,
     environments: [...environments].sort(byEnvironmentOrder).map(toEnvironmentSummary),
     createdAt: app.createdAt,
+    thumbnail: thumbnailOf(app.id, environments),
   }
 }
 

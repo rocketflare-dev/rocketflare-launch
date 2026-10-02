@@ -21,6 +21,7 @@ import { tracerFor } from '../observability/tracing'
 import type { AppBindings } from '../types'
 import type { Logger } from '../utils/core/logger'
 import { handleActivityRecord } from './handlers/activity-record'
+import { handleAppThumbnail } from './handlers/app-thumbnail'
 import { handleChatCompact } from './handlers/chat-compact'
 import { handleDocumentConvert } from './handlers/document-convert'
 import { handleDocumentIndex } from './handlers/document-index'
@@ -67,6 +68,7 @@ const coreHandlers: { [T in CoreJobType]: JobHandler<T> } = {
   'document.convert': handleDocumentConvert,
   'chat.compact': handleChatCompact,
   'tenant.purge': handleTenantPurge,
+  'app.thumbnail': handleAppThumbnail,
 }
 
 /**

@@ -65,6 +65,7 @@ const app = (overrides: Partial<AppCatalogueItem> = {}): AppCatalogueItem => ({
   environments: [env('staging'), env('production')],
   createdAt: new Date(),
   latestDeploy: deploy(),
+  thumbnail: null,
   ...overrides,
 })
 

@@ -1,6 +1,7 @@
 /**
  * `/apps/:slug/settings/:section?` (decision 9): one section at a time, picked from the list on the
- * left — General (About, Edit, each environment's Worker and declared resources) · Config & secrets
+ * left — General (About, Edit, each environment's Worker and declared resources, the thumbnail and
+ * "Refresh thumbnail") · Config & secrets
  * (`ConfigSection`) · Access & sign-in (`OidcClientCard` + `AccessSection`) · Shipping
  * (`ShipSettingsCard`) · Danger zone (Archive, `TeardownModal`).
  *
@@ -13,9 +14,13 @@ import { CodeBracketIcon } from '@heroicons/react/24/outline'
 import type { AppDetail } from '@launch/shared/launch-apps'
 import { useState } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router-dom'
+import { useRefreshAppThumbnail } from '@/ui/hooks/useApps'
+import { ApiError } from '@/ui/lib/api-client'
 import { formatDate } from '@/ui/lib/format'
+import { AppThumbnail } from '../components/AppThumbnail'
 import { EditAppModal } from '../components/EditAppModal'
 import { OidcClientCard } from '../components/OidcClientCard'
+import { v } from '../components/promotionModel'
 import { ShipSettingsCard } from '../components/ShipSettingsCard'
 import { TeardownModal } from '../components/TeardownModal'
 import { AccessSection } from './AccessSection'
@@ -26,7 +31,7 @@ import {
   type SettingsSection,
   settingsPath,
 } from './appPageModel'
-import { SectionHeading } from './bits'
+import { Ago, SectionHeading } from './bits'
 import { ConfigSection } from './ConfigSection'
 import { type AppPageContext, useAppPage } from './context'
 
@@ -181,8 +186,83 @@ function General({ app, canManage }: { app: AppDetail; canManage: boolean }) {
         )}
       </section>
 
+      <ThumbnailSection app={app} canManage={canManage} />
+
       {editOpen && <EditAppModal app={app} open={editOpen} onClose={() => setEditOpen(false)} />}
     </div>
+  )
+}
+
+/** What the refresh's failure says, in a sentence. Pure. */
+export function refreshRefusal(error: unknown): string {
+  if (error instanceof ApiError && error.status === 429) {
+    return 'The thumbnail was refreshed less than a minute ago. Try again shortly.'
+  }
+  return error instanceof Error ? error.message : 'The thumbnail could not be refreshed.'
+}
+
+/**
+ * The app's thumbnail: what it shows (Live's screenshot, else Staging's), when it was taken, and —
+ * for whoever may manage the app — "Refresh thumbnail", which only queues a capture: the picture
+ * replaces itself when the job's nudge lands. Hidden for an archived app or one with no address.
+ */
+function ThumbnailSection({ app, canManage }: { app: AppDetail; canManage: boolean }) {
+  const refresh = useRefreshAppThumbnail(app.id)
+  const canRefresh =
+    canManage && app.status !== 'archived' && app.environments.some(env => env.url !== null)
+  const thumbnail = app.thumbnail
+  return (
+    <section aria-labelledby="thumbnail-title">
+      <SectionHeading
+        id="thumbnail-title"
+        actions={
+          canRefresh && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={refresh.isPending}
+              onClick={() => refresh.mutate()}
+            >
+              {refresh.isPending && <span className="loading loading-spinner loading-xs" />}
+              Refresh thumbnail
+            </button>
+          )
+        }
+      >
+        Thumbnail
+      </SectionHeading>
+      <div className="flex flex-wrap items-start gap-4">
+        <AppThumbnail app={app} size="lg" />
+        <div className="text-sm space-y-1 min-w-0">
+          {thumbnail ? (
+            <p>
+              A screenshot of {ENV_LABEL[thumbnail.env]}
+              {thumbnail.version ? (
+                <>
+                  {' at '}
+                  <span className="font-mono tabular-nums">{v(thumbnail.version)}</span>
+                </>
+              ) : null}
+              , taken <Ago at={thumbnail.capturedAt} />.
+            </p>
+          ) : (
+            <p className="text-muted">No screenshot yet.</p>
+          )}
+          <p className="text-muted">
+            Taken after each deploy goes live, without signing in — an app behind sign-in shows its
+            login page.
+          </p>
+          {refresh.isSuccess && (
+            <p role="status">Capture queued. The thumbnail updates when it is taken.</p>
+          )}
+          {refresh.isError && (
+            <p role="alert" className="text-error">
+              {refreshRefusal(refresh.error)}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }
 

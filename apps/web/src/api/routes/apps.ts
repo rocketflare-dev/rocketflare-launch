@@ -10,6 +10,8 @@
  * (`app-sessions.ts`, an app's coding sessions), P4 a fourth (`app-releases.ts`) and P5 two more
  * (`app-config.ts`, `app-config-scan.ts` — shared config and grants); see below.
  *
+ * App thumbnails add a seventh (`app-thumbnail.ts`): the picture and "Refresh thumbnail".
+ *
  * Issue #5 adds `PUT /:id/ship-settings` (the app's owners and admins) and
  * `GET|POST /:id/branch-protection` (members read; admins apply Launch's ruleset).
  *
@@ -61,6 +63,7 @@ import { appDeploysRouter, appViewer, deployableApp } from './app-deploys'
 import { appPipelineRouter } from './app-pipeline'
 import { appReleasesRouter } from './app-releases'
 import { appSessionsRouter } from './app-sessions'
+import { appThumbnailRouter } from './app-thumbnail'
 
 export const appsRouter = createRouter()
 
@@ -77,6 +80,8 @@ appsRouter.route('/', appReleasesRouter)
 // (5d), and `POST /:id/config/scan` (5e).
 appsRouter.route('/', appConfigRouter)
 appsRouter.route('/', appConfigScanRouter)
+// App thumbnails: `GET /:id/thumbnail`, `POST /:id/thumbnail/refresh`.
+appsRouter.route('/', appThumbnailRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')

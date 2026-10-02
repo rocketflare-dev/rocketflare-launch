@@ -178,6 +178,15 @@ binding = "AI"
 # embeddings then fall back to EMBEDDINGS_API_KEY or "none".
 remote = true
 
+# App thumbnails (Browser Rendering): after a deploy goes live, the `app.thumbnail` job screenshots
+# the app's root URL into R2 (`tenants/<id>/apps/<appId>/thumbnail-<env>.webp`). Needs Workers Paid
+# for sensible limits (Free: 10 browser-minutes a day, 3 concurrent). Optional in code: without it
+# the job logs and acks, and apps show their initial. Nothing to create. Under `wrangler dev` the
+# binding is LOCAL — wrangler downloads a headless Chrome into its cache on the first capture; add
+# `remote = true` to use Cloudflare's browsers instead (needs `wrangler login`).
+[browser]
+binding = "BROWSER"
+
 # Agent runs (D7): the ONE Workflow class — the agent runtime IS the example workflow. `name` is
 # ACCOUNT-scoped (staging uses `-staging`); binding and class_name are identical in both tomls.
 # Nothing to create: `wrangler deploy` registers the Workflow. Instance id = agent_runs.id.

@@ -203,6 +203,13 @@ pnpm dev              # apps/web: wrangler dev :3001 + vite :3000 (strict ports;
 > `apps/web/worker-configuration.d.ts` without `AI` — restore the block (`--online`) before
 > committing so CI's typegen diff stays clean.
 
+> **App thumbnails locally.** The `[browser]` binding (`BROWSER`, Browser Rendering) is LOCAL under
+> `wrangler dev`: nothing to set up, and the first capture downloads a headless Chrome into
+> wrangler's cache (once per machine). A deploy only reaches a local Launch through the
+> tunnel, so locally a thumbnail is usually taken with Settings → General → "Refresh thumbnail" on an
+> app whose environment has a public `https` URL. To use Cloudflare's browsers instead, add
+> `remote = true` under `[browser]` for your run — never commit it.
+
 Verify: both processes report ready; `curl -s localhost:3001/api/health` returns `{"status":"ok",…}`;
 http://localhost:3000 renders the shell. Sign in: enter the seeded owner email, copy the magic-link
 URL from the **wrangler dev console** (no `RESEND_API_KEY` → links are logged, not sent), open it,

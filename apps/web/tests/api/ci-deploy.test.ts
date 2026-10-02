@@ -148,6 +148,13 @@ async function auditRows(tenantId: string) {
 
 const neonCalls = () => cloud.callsTo('neon').length
 
+/** The `app.thumbnail` payloads this test's env queued. */
+const thumbnailJobs = () =>
+  stubs(env)
+    .queue.messages.map(m => m.body as { type: string; payload: unknown })
+    .filter(b => b.type === 'app.thumbnail')
+    .map(b => b.payload)
+
 describe('authentication (DEPLOYER.md: 401 for a bad token, 403 for one not accepted)', () => {
   it('401 without a token, with a forged one, and for another audience', async () => {
     const t = await tenant()
@@ -386,6 +393,10 @@ describe('upload → activate → finish (staging)', () => {
     expect(stubs(env).launchWorkflow?.events).toEqual([
       { instanceId: launchRunId, type: 'deploy_finished', payload: { ticketId: id } },
     ])
+    // The version is live: its thumbnail is queued once, by the call that closed the ticket.
+    expect(thumbnailJobs()).toEqual([
+      { tenantId: t.tenantId, appId: seeded.app.id, environment: 'staging' },
+    ])
 
     const row = await ticketRow(id)
     expect(row).toMatchObject({
@@ -448,8 +459,9 @@ describe('upload → activate → finish (staging)', () => {
       activated: false,
       error: 'finished before activate',
     })
-    // No launch run was waiting: no event.
+    // No launch run was waiting: no event. Nothing went live: no thumbnail.
     expect(stubs(env).launchWorkflow?.events).toEqual([])
+    expect(thumbnailJobs()).toEqual([])
   })
 
   it('a failed activation fails the ticket, revokes, and leaves the old version serving', async () => {

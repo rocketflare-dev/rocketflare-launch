@@ -14,6 +14,7 @@
  */
 import { z } from 'zod'
 import { activityMetadataSchema } from './activity'
+import { appEnvironmentNameSchema } from './launch-apps'
 import { type DeclaredBy, type SHARED_PLUGINS, sharedPlugins } from './plugins'
 
 // ---- Payloads ------------------------------------------------------------------------------
@@ -88,6 +89,21 @@ export const tenantPurgePayloadSchema = z.object({
 })
 export type TenantPurgePayload = z.infer<typeof tenantPurgePayloadSchema>
 
+/**
+ * Screenshot one app environment's root URL into its thumbnail (Launch, `docs/CONCEPTS.md` §18.21).
+ * Enqueued when a deploy goes live (`/ci/deploy/:id/finish`) and by "Refresh thumbnail". Ids only:
+ * the handler reads the URL Launch RECORDED for the environment — a message can never name one.
+ * `force` recaptures a version that already has a picture (the manual refresh); without it a
+ * capture of the environment's current version is skipped (the debounce).
+ */
+export const appThumbnailPayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  appId: z.string().uuid(),
+  environment: appEnvironmentNameSchema,
+  force: z.boolean().optional(),
+})
+export type AppThumbnailPayload = z.infer<typeof appThumbnailPayloadSchema>
+
 // ---- Envelope ------------------------------------------------------------------------------
 
 /**
@@ -101,6 +117,7 @@ export const CORE_JOB_VARIANTS = [
   z.object({ type: z.literal('document.convert'), payload: documentConvertPayloadSchema }),
   z.object({ type: z.literal('chat.compact'), payload: chatCompactPayloadSchema }),
   z.object({ type: z.literal('tenant.purge'), payload: tenantPurgePayloadSchema }),
+  z.object({ type: z.literal('app.thumbnail'), payload: appThumbnailPayloadSchema }),
 ] as const
 
 type PluginJobVariant = NonNullable<DeclaredBy<(typeof SHARED_PLUGINS)[number], 'jobs'>>[number]

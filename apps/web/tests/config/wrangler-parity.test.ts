@@ -144,6 +144,11 @@ describe('wrangler parity: must match', () => {
     expect(get(staging, 'ai.binding')).toEqual(get(prod, 'ai.binding'))
   })
 
+  it('[browser] (app thumbnails) is declared in both, identically, as BROWSER', () => {
+    expect(get(prod, 'browser')).toEqual({ binding: 'BROWSER' })
+    expect(get(staging, 'browser')).toEqual(get(prod, 'browser'))
+  })
+
   it('[[migrations]] (Durable Object class migrations) are identical', () => {
     expect(staging.migrations).toEqual(prod.migrations)
   })

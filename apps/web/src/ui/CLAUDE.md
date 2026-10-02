@@ -483,7 +483,9 @@ A `CUSTOM kit.notice` renders
   guard as the page it summarises, so a richer widget is one more section: `ApprovalsWaitingSection`
   (`useApprovals({ box: 'mine', limit: 5 })` — the inbox's "Waiting on me", the set the nav badge
   counts — rows worded by `approvalSummary` / `requesterName`; none waiting is ONE quiet line, no
-  heading) and `AppsSection` (`useApps()` only — never a request per app; one row each: name →
+  heading) and `AppsSection` (`useApps()` only — never a request per app; one row each: thumbnail
+  (`pages/apps/components/AppThumbnail.tsx`, also the catalogue's and the app header's — the
+  screenshot or the app's initial in a fixed 16:10 box) and name →
   `appPath`, Live's `HealthDot` + version, Staging's version, one attention word; capped at 8 with
   "All N apps →"; "New app" opens `CreateAppModal` for `manage App`, as a plain button — Home has no
   hero). What a row SAYS is the pure `home/homeModel.ts` (`appAttention`, `runningVersion`,

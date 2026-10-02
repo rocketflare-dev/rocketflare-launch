@@ -222,7 +222,8 @@ work goes to `AGENT_RUN_WORKFLOW`, and cron only dispatches.
   switch. `type` is the version seam (`x.v2`). An invalid envelope is acked; a handler error retries
   with backoff up to `max_retries`. A missing binding throws. Consumers await everything and never
   use `waitUntil`. Queued today: `tenant.purge`, invitation and access-decision emails,
-  `document.index`/`document.convert`, `chat.compact`. The magic link stays inline.
+  `document.index`/`document.convert`, `chat.compact`, and Launch's `app.thumbnail` (§18.21). The
+  magic link stays inline.
   Detail: `.claude/rules/api.md`.
 - **Workflow**: `AgentRunWorkflow` (§9). **Concurrency is a DB claim row, never a `Map`**:
   `ACTIVE_RUN_STATUSES` (exclusive index, includes parked runs) ⊃ `CLAIMABLE_RUN_STATUSES`
@@ -757,7 +758,8 @@ append-only audit log (spec/03–06, 08; the build plans are `docs/plans/p1-foun
 coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESSIONS-LOCAL.md`);
 from P4 a second person approves what needs one, releases ship through a production gate, and the
 audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`); from P5 apps hold shared
-config through approved grants (§18.20, `docs/plans/p5-grants.md`).
+config through approved grants (§18.20, `docs/plans/p5-grants.md`); every app has a thumbnail
+taken after each deploy goes live (§18.21).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases,grants}.ts`.
 
@@ -2735,3 +2737,64 @@ push.
 - The exit test drives `GrantPushWorkflow` step by step under Node, not in workerd; the real exit
   run (a connector installed through a session, real Entra credentials, a rotation in Entra) is a
   staging task.
+
+### 18.21 App thumbnails
+
+Every app carries a picture: a screenshot of its root URL, taken after a deploy goes live, shown
+small in Home's app rows, the catalogue (card and table) and the app header, and larger under
+Settings → General (`pages/apps/components/AppThumbnail.tsx`; the app's initial on `bg-base-200`
+in the same fixed 16:10 box when there is none, so nothing shifts). The one shown is Live's, else
+Staging's (`thumbnail: { url, capturedAt, env, version } | null` on every `appSummarySchema` row —
+list and detail). Service: `services/launch/thumbnails/` — `thumbnails.ts` is the policy,
+`screenshot.ts` the `ScreenshotPort` and its one adapter.
+
+- **When.** `/ci/deploy/:id/finish`, on the call that closes a DEPLOYED ticket, enqueues
+  `app.thumbnail { tenantId, appId, environment }` (`enqueueThumbnailAfterDeploy`, never throws —
+  a missing queue costs the picture, not the deploy). Every deploy reaches Launch there: a
+  release, a rollback, "Deploy to production" and a created app's first build. "Refresh
+  thumbnail" (`POST /api/apps/:id/thumbnail/refresh`, `manage App`, 202 `{ queued }`) enqueues a
+  `force`d capture per environment with a URL; it is taken at most once a minute per app by a
+  compare-and-set on `apps.thumbnail_refresh_at` (429 `rate_limited`; 409 `app_archived` /
+  `no_environment_url`).
+- **Debounce.** A version already pictured is skipped twice over: the enqueue reads the row, and
+  the handler checks `thumbnail_version = last_deploy_version` again (a redelivered message).
+  `force` bypasses both.
+- **Where it may look.** The message carries ids only; the handler reads the URL Launch RECORDED
+  for the environment and opens `<origin>/` — never a path, query or anything a caller supplied.
+  `captureTarget` refuses a URL that is not `https`, carries credentials, or names a host only this
+  network can reach (`isLocalHostname`, shared with the public-URL check), and for a CREATED app
+  one that is not `<slug>[-staging].<apps_domain>`. Refused → logged and acked.
+- **How.** Cloudflare Browser Rendering: `[browser] binding = "BROWSER"` in both tomls (parity
+  test), `@cloudflare/puppeteer` imported lazily in `screenshot.ts` alone. A fresh browser (no
+  cookies, no credentials), viewport 1280×800, `goto` until `load` within 15 s, then whatever is
+  left of the 15 s for the network to go quiet (a page that polls is pictured as it stands), one
+  WebP at quality 70, the browser closed in `finally`. Over 2 MB is not stored.
+- **Storage.** R2 `FILES` at `tenants/<tenantId>/apps/<appId>/thumbnail-<env>.webp`, overwritten
+  in place — inside the tenant's prefix, so `tenant.purge` removes it. The row records
+  `thumbnail_key`, `thumbnail_captured_at`, `thumbnail_version` (`app_environments`) without
+  touching `updated_at`, then nudges `entity.changed { entity: 'apps' }` so open lists and app
+  pages refetch.
+- **Serving.** `GET /api/apps/:id/thumbnail` (`read App`, tenant-first — another tenant's app is a
+  404) streams the object with its ETag and `Cache-Control: private, max-age=3600`; the wire `url`
+  carries `?v=<capturedAt>`, so a new picture is a new URL. 404 `thumbnail_not_found` when none.
+- **Failure.** No `BROWSER` or `FILES` binding, an archived app, no URL, a refused URL or an
+  oversized picture is permanent: logged and acked. A navigation error or timeout throws, the
+  consumer retries with backoff until the toml's `max_retries`, then drops it; the app keeps its
+  previous picture.
+
+**Known gaps:**
+
+- *Unauthenticated by design*: an app behind sign-in (most Rocketflare apps) shows its login page,
+  and one that redirects to an identity provider shows the provider's page. Redirects are followed
+  — only the first navigation is pinned to the app's host.
+- *Plan and limits*: Browser Rendering needs Workers Paid for practical use (Free: 10 browser
+  minutes a day, 3 concurrent browsers, a new one every 20 s); every capture is billed browser
+  time. A burst of deploys across many apps can meet the concurrency limit — those captures fail,
+  retry with backoff, and may be dropped.
+- *Local development*: the binding is LOCAL under `wrangler dev` (wrangler downloads a headless
+  Chrome into its cache on the first capture); deploy-triggered captures need a public Launch
+  anyway (the deploy job calls back), so locally it is "Refresh thumbnail" against a deployed app.
+- *No history*: one picture per environment, overwritten; a rollback recaptures the version it
+  restores. An imported app whose recorded host moved keeps capturing the old one until
+  re-imported.
+- The capture is proven with a fake `ScreenshotPort`; the real adapter has not run in CI.

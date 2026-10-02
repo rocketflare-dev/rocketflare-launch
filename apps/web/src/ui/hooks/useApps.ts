@@ -27,6 +27,7 @@ import {
   appOidcClientResponseSchema,
   appOidcClientSecretResponseSchema,
   appOperationListResponseSchema,
+  appThumbnailRefreshResponseSchema,
   type ImportAppRequest,
   type PutAppShipSettingsRequest,
   type UpdateAppRedirectUrisRequest,
@@ -225,5 +226,19 @@ export function useUpdateRedirectUris(appId: string) {
         successMessage: 'Redirect URIs saved',
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.oidcClient(appId) }),
+  })
+}
+
+/**
+ * "Refresh thumbnail" (`manage App`): queues a capture of every environment with a URL. The new
+ * picture arrives on its own — the job nudges the `apps` root when it lands — so this only says
+ * it was queued. No toast: a 429 (refreshed within the minute) or a 409 is said in place.
+ */
+export function useRefreshAppThumbnail(appId: string) {
+  return useMutation({
+    mutationFn: () =>
+      api.post(`/api/apps/${appId}/thumbnail/refresh`, undefined, {
+        schema: appThumbnailRefreshResponseSchema,
+      }),
   })
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **App thumbnails.** After a deploy goes live, Launch takes a screenshot of the app's root URL in
+  the background (Cloudflare Browser Rendering, 1280×800, WebP) and shows it beside the app on
+  Home, in the catalogue and in the app header — Live's, else Staging's, else the app's initial.
+  It is taken without signing in, so an app behind sign-in shows its login page. Settings → General
+  has "Refresh thumbnail" for admins (once a minute per app). New `[browser] binding = "BROWSER"`
+  in both tomls (Workers Paid recommended; without it there are no thumbnails and nothing fails),
+  `GET /api/apps/:id/thumbnail`, `POST /api/apps/:id/thumbnail/refresh`, the `app.thumbnail` job,
+  and `thumbnail` on the app list and detail; migration `0035` adds the columns.
 - **Home is an overview.** The approvals waiting on you (what, which app, who asked, how long ago —
   each a link to the request; one quiet line when there are none) and the apps, one row each: the
   version Live runs with its health, the version on Staging, and one word when something needs a

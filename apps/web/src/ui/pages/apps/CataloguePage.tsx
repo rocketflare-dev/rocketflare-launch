@@ -4,6 +4,9 @@
  * with a fleet summary above and, for admins, "Create app" (P2 — the page's one flame button) and
  * "Import app" for an existing repo. Every member may read it (`read App`).
  *
+ * Each app leads with its thumbnail (`AppThumbnail`: the screenshot of Live, else Staging, else the
+ * app's initial).
+ *
  * Each app also carries its latest deploy (`latestDeploy`: an in-progress one first) — a card's
  * line and the table's column show it running (dispatched → … → activating), failed or live, and
  * the list polls while one is in progress (`useApps`).
@@ -32,6 +35,7 @@ import { useApps } from '@/ui/hooks/useApps'
 import { useLocalStoragePreference } from '@/ui/hooks/useLocalStoragePreference'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { timeAgo } from '@/ui/lib/format'
+import { AppThumbnail } from './components/AppThumbnail'
 import { CreateAppModal } from './components/CreateAppModal'
 import {
   DEPLOY_PHASE_LABELS,
@@ -42,21 +46,6 @@ import { EnvironmentHealth } from './components/HealthDot'
 import { ImportAppModal } from './components/ImportAppModal'
 
 type View = 'cards' | 'table'
-
-/** Literal classes for the monogram tile, picked by slug so an app keeps its colour. */
-const MONOGRAM_TONES = ['tone-primary', 'tone-accent', 'tone-warning'] as const
-
-function monogramTone(slug: string): string {
-  let hash = 0
-  for (const ch of slug) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
-  return MONOGRAM_TONES[hash % MONOGRAM_TONES.length] ?? MONOGRAM_TONES[0]
-}
-
-function monogram(name: string): string {
-  const words = name.split(/[\s-]+/).filter(Boolean)
-  const letters = words.length >= 2 ? `${words[0]?.[0]}${words[1]?.[0]}` : name.slice(0, 2)
-  return letters.toUpperCase()
-}
 
 /** The worst status across an app's environments — what "needs attention" means. */
 const SEVERITY: Record<HealthStatus, number> = { unknown: 0, up: 1, degraded: 2, down: 3 }
@@ -75,17 +64,6 @@ export function matchesSearch(app: AppCatalogueItem, query: string): boolean {
   return [app.displayName, app.slug, app.ownerGroup?.name, app.repoOwner, app.repoName]
     .filter((v): v is string => Boolean(v))
     .some(v => v.toLowerCase().includes(q))
-}
-
-function Monogram({ app }: { app: AppCatalogueItem }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`grid place-items-center w-10 h-10 shrink-0 rounded-lg border text-sm font-semibold tracking-wide ${monogramTone(app.slug)}`}
-    >
-      {monogram(app.displayName)}
-    </span>
-  )
 }
 
 function StatusTag({ app }: { app: AppCatalogueItem }) {
@@ -165,7 +143,7 @@ function AppCard({ app }: { app: AppCatalogueItem }) {
       className="surface-panel group flex flex-col gap-4 transition-colors hover:border-primary focus-visible:outline-2 focus-visible:outline-primary"
     >
       <div className="flex items-start gap-3 min-w-0">
-        <Monogram app={app} />
+        <AppThumbnail app={app} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="font-semibold truncate group-hover:text-primary transition-colors">
@@ -219,7 +197,7 @@ function AppTable({ apps }: { apps: AppCatalogueItem[] }) {
                     to={`/apps/${encodeURIComponent(app.slug)}`}
                     className="flex items-center gap-3 min-w-0 group"
                   >
-                    <Monogram app={app} />
+                    <AppThumbnail app={app} size="sm" />
                     <span className="min-w-0">
                       <span className="flex items-center gap-2">
                         <span className="font-medium group-hover:text-primary truncate">

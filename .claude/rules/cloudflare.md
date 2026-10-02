@@ -38,8 +38,13 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   missing one is a 503 `grants_not_configured` before any row, and `[vars] GRANT_BACKEND =
   "cloudflare"` (`local` is development only). The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`
-  dataset is deliberately NOT wired (the toml comment is the only trace). Optional: `ANALYTICS_ENGINE`,
-  `HYPERDRIVE_APP`
+  dataset is deliberately NOT wired (the toml comment is the only trace). App thumbnails:
+  `BROWSER` (`[browser] binding = "BROWSER"`, Browser Rendering — no resource to create, Workers
+  Paid for sensible limits) — optional in code: without it the `app.thumbnail` job logs and acks
+  and apps show their initial; `@cloudflare/puppeteer` is imported lazily in
+  `services/launch/thumbnails/screenshot.ts` alone. Under `wrangler dev` it is a LOCAL binding
+  (wrangler downloads a headless Chrome on the first capture); never add `remote = true` to the
+  committed tomls. Optional: `ANALYTICS_ENGINE`, `HYPERDRIVE_APP`
 - Optional bindings are optional in code too: the rate limiter no-ops without `RATE_LIMIT_KV`,
   OTLP export without a configured backend (the local `ai_spans` store still records, D32), email without `RESEND_API_KEY`, realtime nudges without
   `NOTIFICATIONS_HUB`. Check presence, don't crash — **except where silence would lose data**: a

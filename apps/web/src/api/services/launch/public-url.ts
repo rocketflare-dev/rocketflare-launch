@@ -76,6 +76,24 @@ function ipv6Private(host: string): boolean {
 }
 
 /**
+ * `localhost`, a `.local` / `.internal` / `.home.arpa` name, or a loopback, private, CGNAT,
+ * link-local or unspecified IP literal — a host only this machine or network can reach. Pure; also
+ * what the thumbnail capture refuses (`services/launch/thumbnails`).
+ */
+export function isLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.home.arpa') ||
+    ipv4Private(host) ||
+    ipv6Private(host)
+  )
+}
+
+/**
  * Why the internet cannot reach `url`, or null when nothing static rules it out. Pure — the
  * create modal's hint and the tests use it as is.
  */
@@ -87,15 +105,7 @@ export function publicUrlProblem(url: string): string | null {
     return `${url} is not a URL`
   }
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
-  const local =
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
-    host.endsWith('.local') ||
-    host.endsWith('.internal') ||
-    host.endsWith('.home.arpa') ||
-    ipv4Private(host) ||
-    ipv6Private(host)
-  if (local) {
+  if (isLocalHostname(host)) {
     return `${parsed.origin} is only reachable from this machine or network, so GitHub's runners cannot call Launch back. Run Launch behind a public HTTPS URL (locally: pnpm dev:tunnel, then restart pnpm dev).`
   }
   if (!host.includes('.') && !host.includes(':')) {

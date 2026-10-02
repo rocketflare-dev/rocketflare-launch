@@ -1,7 +1,7 @@
 /**
  * `/apps/:slug/*` — the frame of one app's page (decisions 2, 5, 10, 11 of the app page plan):
  *
- * - the header: name · `v1.4.2 live` · Open ↗ (Live) · Change it ▸ (start a coding session) · ⋯
+ * - the header: thumbnail · name · `v1.4.2 live` · Open ↗ (Live) · Change it ▸ (start a coding session) · ⋯
  *   (edit, check health, the repository, archive — each only for whoever may use it);
  * - the tabs, each its own sub-route: Overview · Sessions · Releases · Activity · Settings. Until
  *   the first build is live, Sessions and Releases are disabled with a hint, and the Overview is
@@ -39,6 +39,7 @@ import { useAppPromotion } from '@/ui/hooks/useReleases'
 import { useStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDateTime } from '@/ui/lib/format'
+import { AppThumbnail } from '../components/AppThumbnail'
 import { EditAppModal } from '../components/EditAppModal'
 import { PipelineProgress } from '../components/PipelineProgress'
 import { promotionState, v } from '../components/promotionModel'
@@ -239,6 +240,7 @@ export default function AppLayout() {
       <div>
         <PageHeader
           className="mb-0"
+          leading={<AppThumbnail app={app} size="md" />}
           title={app.displayName}
           badge={
             app.status === 'live' ? (

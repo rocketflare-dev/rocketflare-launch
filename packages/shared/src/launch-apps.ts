@@ -223,6 +223,38 @@ export type AppEnvironment = z.infer<typeof appEnvironmentSchema>
 export const appOwnerGroupSchema = z.object({ id: z.string().uuid(), name: z.string() })
 export type AppOwnerGroup = z.infer<typeof appOwnerGroupSchema>
 
+// ---- Thumbnails ----------------------------------------------------------------------------------
+
+/**
+ * App thumbnails: a screenshot of an environment's root URL, taken in the background after a
+ * deploy goes live (`app.thumbnail` job, Cloudflare Browser Rendering) or on "Refresh thumbnail".
+ * Unauthenticated — an app behind sign-in shows its login page. The one shown is Live's, falling
+ * back to Staging's until Live has one.
+ */
+export const THUMBNAIL_VIEWPORT = { width: 1280, height: 800 } as const
+
+/** `POST /api/apps/:id/thumbnail/refresh` is taken at most once per this many seconds per app. */
+export const THUMBNAIL_REFRESH_MIN_INTERVAL_SECONDS = 60
+
+/**
+ * The thumbnail an app shows. `url` is Launch's own authed route (`GET /api/apps/:id/thumbnail`)
+ * with the capture time as a cache-buster, never the app's address; `env` and `version` say which
+ * environment and which deployed version the picture is of.
+ */
+export const appThumbnailSchema = z.object({
+  url: z.string(),
+  capturedAt: z.coerce.date(),
+  env: appEnvironmentNameSchema,
+  version: z.string().nullable(),
+})
+export type AppThumbnail = z.infer<typeof appThumbnailSchema>
+
+/** `POST /api/apps/:id/thumbnail/refresh` — the environments a capture was queued for. */
+export const appThumbnailRefreshResponseSchema = z.object({
+  queued: z.array(appEnvironmentNameSchema),
+})
+export type AppThumbnailRefreshResponse = z.infer<typeof appThumbnailRefreshResponseSchema>
+
 /** A catalogue row. */
 export const appSummarySchema = z.object({
   id: z.string().uuid(),
@@ -239,6 +271,8 @@ export const appSummarySchema = z.object({
   /** Staging first, then production; an environment the app does not have is simply absent. */
   environments: z.array(appEnvironmentSummarySchema),
   createdAt: z.coerce.date(),
+  /** Live's screenshot, else Staging's, else null. Defaulted so an older answer parses. */
+  thumbnail: appThumbnailSchema.nullable().default(null),
 })
 export type AppSummary = z.infer<typeof appSummarySchema>
 
