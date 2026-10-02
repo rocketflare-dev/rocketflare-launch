@@ -80,7 +80,125 @@ export const RELEASE_ERROR_CODES = {
    * or a person — and holds the app's release claim (`apps.release_claim_holder`). A 409.
    */
   inProgress: 'release_in_progress',
+  /** Retry (app page P2): nothing about the release is failing that Launch could retry. A 409. */
+  notRetryable: 'release_not_retryable',
+  /** Retry: the caller asked to retry a stage the release is no longer failing at. A 409. */
+  stageChanged: 'release_stage_changed',
+  /** Retry: the GitHub run is still going (re-running needs it completed). A 409. */
+  runInProgress: 'release_run_in_progress',
+  /** Retry / Cancel: GitHub refused the re-run, the re-tag or the cancel. A 502. */
+  githubFailed: 'release_github_failed',
+  /** Cancel: the release has no deploy run in flight to cancel. A 409. */
+  notCancellable: 'release_not_cancellable',
 } as const
+
+// ---- failed stages (app page P2, plan decision 7) ----------------------------------------------
+
+/**
+ * Where a release is stuck — one Retry per stage, each a plain GitHub operation or a Launch-side
+ * re-check (decision 3: the app stays detachable):
+ *
+ * - `tag` — the tag's push started no deploy run within `RELEASE_STAGING_TIMEOUT_MINUTES` → Retry
+ *   pushes the tag again when GitHub no longer has it;
+ * - `staging_deploy` — the tag's deploy run failed (its gate, or the staging job) → GitHub's
+ *   "re-run failed jobs" on that run (a new attempt of the same run);
+ * - `staging_health` — staging runs the release but its health check says `down` → probe now;
+ * - `approval_rejected` — the production approval was rejected (or expired) → request it again;
+ * - `production_deploy` — the production run failed after its approval → re-run its failed jobs,
+ *   under the same approval;
+ * - `production_health` — production runs the release but is `down` → probe now.
+ */
+export const RELEASE_FAILED_STAGES = [
+  'tag',
+  'staging_deploy',
+  'staging_health',
+  'approval_rejected',
+  'production_deploy',
+  'production_health',
+] as const
+export const releaseFailedStageSchema = z.enum(RELEASE_FAILED_STAGES)
+export type ReleaseFailedStage = z.infer<typeof releaseFailedStageSchema>
+
+/** What failed, in the words the app page uses (Staging and Live, decision 4). */
+export const RELEASE_STAGE_LABELS: Record<ReleaseFailedStage, string> = {
+  tag: 'Tag',
+  staging_deploy: 'Staging deploy',
+  staging_health: 'Staging health',
+  approval_rejected: 'Live approval',
+  production_deploy: 'Live deploy',
+  production_health: 'Live health',
+}
+
+/** The Retry button's label: what pressing it does. */
+export const RELEASE_RETRY_LABELS: Record<ReleaseFailedStage, string> = {
+  tag: 'Push the tag again',
+  staging_deploy: 'Retry staging deploy',
+  staging_health: 'Check staging again',
+  approval_rejected: 'Request approval again',
+  production_deploy: 'Retry live deploy',
+  production_health: 'Check Live again',
+}
+
+/** What a retry did: re-pushed the tag, re-ran a GitHub run, probed health, re-opened approval. */
+export const RELEASE_RETRY_ACTIONS = ['retag', 'rerun', 'health_check', 'approval'] as const
+export type ReleaseRetryAction = (typeof RELEASE_RETRY_ACTIONS)[number]
+
+/** One environment as the stage derivation needs it: what it runs and whether that is up. */
+export interface ReleaseStageEnvironment {
+  lastDeployVersion: string | null
+  healthStatus: string
+}
+
+export interface ReleaseStageFacts {
+  status: ReleaseStatus
+  version: string
+  error: string | null
+  productionTicketId: string | null
+  /** When the release last moved — the clock of the `tag` stage. */
+  updatedAt: Date
+  /** Whether GitHub has shown a deploy run for the tag at all (`app_releases.tag_run`). */
+  tagRunSeen: boolean
+  staging: ReleaseStageEnvironment | null
+  production: ReleaseStageEnvironment | null
+}
+
+/** `env` runs `version` and its health check says it is down. */
+function downOn(env: ReleaseStageEnvironment | null, version: string): boolean {
+  return !!env && env.lastDeployVersion === version && env.healthStatus === 'down'
+}
+
+/**
+ * The stage a release is stuck at, or null when nothing is failing. Pure — the server stamps it on
+ * every release it answers with (`failedStage`); the UI and the CLI only read it.
+ *
+ * A `failed` release names its environment in its error (`staging: …` / `production: …`, written by
+ * the deploy gateway, the run poll and the tag-run follower); one without a prefix is production's
+ * when a production run was recorded, else staging's.
+ */
+export function releaseFailedStage(
+  f: ReleaseStageFacts,
+  now: Date = new Date()
+): ReleaseFailedStage | null {
+  switch (f.status) {
+    case 'rejected':
+      return 'approval_rejected'
+    case 'failed':
+      if (f.error?.startsWith('production:')) return 'production_deploy'
+      if (f.error?.startsWith('staging:')) return 'staging_deploy'
+      return f.productionTicketId ? 'production_deploy' : 'staging_deploy'
+    case 'tagged': {
+      const stalled =
+        now.getTime() - f.updatedAt.getTime() > RELEASE_STAGING_TIMEOUT_MINUTES * 60_000
+      return stalled && !f.tagRunSeen ? 'tag' : null
+    }
+    case 'staging_active':
+      return downOn(f.staging, f.version) ? 'staging_health' : null
+    case 'production_active':
+      return downOn(f.production, f.version) ? 'production_health' : null
+    default:
+      return null
+  }
+}
 
 // ---- versions ----------------------------------------------------------------------------------
 
@@ -158,6 +276,11 @@ export const releaseSchema = z.object({
   stagingTicketId: z.string().uuid().nullable(),
   productionTicketId: z.string().uuid().nullable(),
   error: z.string().nullable(),
+  /**
+   * App page P2: where the release is stuck (`releaseFailedStage`), null when nothing is failing.
+   * The server stamps it on every answer; a row parsed without it defaults to null.
+   */
+  failedStage: releaseFailedStageSchema.nullable().default(null),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 })
@@ -184,3 +307,44 @@ export const releaseChainSchema = z.object({
   events: z.array(auditEventSchema),
 })
 export type ReleaseChain = z.infer<typeof releaseChainSchema>
+
+// ---- retry and cancel (app page P2) ------------------------------------------------------------
+
+/**
+ * `POST /api/apps/:id/releases/:rid/retry` — the app's owners and admins. `stage`, when given, is
+ * the stage the caller saw: a release that has moved on since answers 409 `release_stage_changed`
+ * rather than retrying something else.
+ */
+export const retryReleaseSchema = z.object({
+  stage: releaseFailedStageSchema.optional(),
+  /** Why (an `approval_rejected` retry carries it onto the new request). */
+  reason: z.string().trim().max(1000).optional(),
+})
+export type RetryReleaseRequest = z.infer<typeof retryReleaseSchema>
+
+export const retryReleaseResponseSchema = z.object({
+  release: releaseSchema,
+  /** The stage that was retried. */
+  stage: releaseFailedStageSchema,
+  action: z.enum(RELEASE_RETRY_ACTIONS),
+  /** A re-run: the GitHub run attempt it starts (2 for the first retry). Null otherwise. */
+  attempt: z.number().int().positive().nullable(),
+  /** The GitHub run re-run, when there is one. */
+  runUrl: z.string().url().nullable(),
+  /** A re-opened approval's id. */
+  approvalId: z.string().uuid().nullable(),
+  /** A health check: what the environment answered (`HEALTH_STATUSES`). */
+  health: z.string().nullable(),
+})
+export type RetryReleaseResponse = z.infer<typeof retryReleaseResponseSchema>
+
+/**
+ * `POST /api/apps/:id/releases/:rid/cancel` — the app's owners and admins: cancels the release's
+ * deploy run in flight on GitHub (`POST …/actions/runs/{id}/cancel`) and marks the release `failed`
+ * (cancelled), so Retry re-runs it later. 409 `release_not_cancellable` with no run in flight.
+ */
+export const cancelReleaseResponseSchema = z.object({
+  release: releaseSchema,
+  runUrl: z.string().url().nullable(),
+})
+export type CancelReleaseResponse = z.infer<typeof cancelReleaseResponseSchema>

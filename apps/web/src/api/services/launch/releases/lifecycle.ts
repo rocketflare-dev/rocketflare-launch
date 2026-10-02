@@ -17,7 +17,7 @@
  * retried activate, a staging re-run after promotion) never moves a release backwards.
  */
 import type { ReleaseStatus } from '@launch/shared/launch-releases'
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import {
   type AppReleaseRow,
@@ -142,21 +142,37 @@ export async function releaseRunActivated(
   return moved
 }
 
-/** A run on the release's tag failed (a refused build, a failed upload or activation). */
+/**
+ * A run on the release's tag failed (a refused build, a failed upload or activation).
+ *
+ * Only the release's CURRENT run of that environment may fail it (app page P2): after a Retry
+ * re-ran the run, attempt 2 opened a ticket of its own and the release names that one, so attempt
+ * 1's ticket — failed late by the run poll ("attempt 2 is a deploy of its own") — leaves the
+ * release alone instead of failing the retry it was superseded by.
+ */
 export async function releaseRunFailed(
   db: Database,
-  ticket: Pick<DeployTicketRow, 'releaseId' | 'tenantId'>,
+  ticket: Pick<DeployTicketRow, 'id' | 'releaseId' | 'tenantId'>,
   environment: 'staging' | 'production',
   error: string
 ): Promise<void> {
   if (!ticket.releaseId) return
-  await moveRelease(
-    db,
-    { id: ticket.releaseId, tenantId: ticket.tenantId },
-    environment === 'staging' ? ['tagged', 'staging'] : ['promoting'],
-    'failed',
-    { error: `${environment}: ${error}` }
-  )
+  const current =
+    environment === 'staging' ? appReleases.stagingTicketId : appReleases.productionTicketId
+  await db
+    .update(appReleases)
+    .set({ status: 'failed', error: `${environment}: ${error}`, updatedAt: new Date() })
+    .where(
+      and(
+        eq(appReleases.id, ticket.releaseId),
+        eq(appReleases.tenantId, ticket.tenantId),
+        inArray(
+          appReleases.status,
+          environment === 'staging' ? ['tagged', 'staging'] : ['promoting']
+        ),
+        or(isNull(current), eq(current, ticket.id))
+      )
+    )
 }
 
 /**

@@ -30,7 +30,7 @@ import {
   PROMOTION_MAX_CHANGES,
   PROMOTION_SUMMARY_MAX,
 } from '@launch/shared/launch-promotion'
-import { type Release, releaseSchema } from '@launch/shared/launch-releases'
+import type { Release } from '@launch/shared/launch-releases'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
@@ -45,6 +45,7 @@ import {
   users,
 } from '../../../../db/schema'
 import { eligibleApprovers } from '../../approvals/policy'
+import { environmentsOf, toReleaseView } from './failed-stage'
 import { listReleases } from './release'
 import { followTagRun, type TagRunOptions } from './tag-run'
 
@@ -219,7 +220,7 @@ export async function appPromotion(
     appId,
     kept.map(c => c.pr.sessionId).filter((id): id is string => Boolean(id))
   )
-  const candidate: Release = releaseSchema.parse(candidateRow)
+  const candidate: Release = toReleaseView(candidateRow, environmentsOf(envs))
   return {
     candidate,
     staging,

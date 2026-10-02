@@ -124,11 +124,15 @@ export function deployJob(
   env: TestEnv,
   seeded: DeployableApp,
   environment: 'staging' | 'production',
-  opts: { ref?: string; runId?: string; actor?: string } = {}
+  opts: { ref?: string; runId?: string; runAttempt?: number; actor?: string } = {}
 ) {
   const runId = opts.runId ?? String(5_000_000 + Math.floor(Math.random() * 1_000_000))
   const claims = {
-    ...deployClaims(seeded, environment, { runId, ref: opts.ref }),
+    ...deployClaims(seeded, environment, {
+      runId,
+      ref: opts.ref,
+      ...(opts.runAttempt ? { runAttempt: String(opts.runAttempt) } : {}),
+    }),
     ...(opts.actor ? { actor: opts.actor } : {}),
   }
   const call = async (method: string, path: string, body?: unknown) => {

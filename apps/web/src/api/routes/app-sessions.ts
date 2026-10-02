@@ -8,7 +8,10 @@
  *   `sessions_paused` while drained, 409 `session_limit` at `maxConcurrentPerApp`, 409
  *   `session_budget_exhausted` over the app's month, 503 `sessions_not_configured` without
  *   `SESSION_WORKFLOW` — every refusal before any write; then the row, audit `session.created` and
- *   `SESSION_WORKFLOW.create({ id, params })`.
+ *   `SESSION_WORKFLOW.create({ id, params })`. App page P2: `fixRelease: { releaseId }` seeds the
+ *   session from a failed release of this app — its first message (stage, GitHub run, log tail) is
+ *   composed by `releases/fix-session.ts` and stored as the pending turn; 404 for another app's
+ *   release, 409 `release_not_retryable` for one that is not failing.
  * - `GET /:id/sessions[?scope=active|all]` → `sessionListResponseSchema` (members see their own;
  *   the app's owners and admins see all of the app's).
  */
@@ -16,6 +19,7 @@ import { createSessionRequestSchema, sessionListQuerySchema } from '@launch/shar
 import { guardPermission } from '../middleware/permissions'
 import { getAppRow, mayDeployApp } from '../services/launch/apps'
 import { auditActor } from '../services/launch/audit'
+import { fixSessionSeed } from '../services/launch/releases/fix-session'
 import { sessionViewerOf } from '../services/sessions/access'
 import { toSessionDetail } from '../services/sessions/chat'
 import { createSession, listAppSessions } from '../services/sessions/lifecycle'
@@ -29,15 +33,25 @@ export const appSessionsRouter = createRouter()
 appSessionsRouter.post('/:id/sessions', validate('json', createSessionRequestSchema), async c => {
   guardPermission(c, 'read', 'App')
   guardPermission(c, 'create', 'Session')
-  const { db, tenantId, user, realtime } = withAuthAndDb(c)
+  const { db, cfg, tenantId, user, realtime, logger } = withAuthAndDb(c)
   const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
+  const request = c.req.valid('json')
+  const seed = request.fixRelease
+    ? await fixSessionSeed(
+        db,
+        cfg,
+        { tenantId, app, releaseId: request.fixRelease.releaseId },
+        { logger }
+      )
+    : null
   const session = await createSession(db, c.env, {
     tenantId,
     app,
     userId: user.id,
-    request: c.req.valid('json'),
+    request: { ...request, title: request.title ?? seed?.title },
     actor: auditActor(c),
     realtime,
+    firstMessage: seed?.message ?? null,
   })
   return c.json({ session: toSessionDetail(session, true) }, 202)
 })

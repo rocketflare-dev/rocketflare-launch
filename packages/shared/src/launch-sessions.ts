@@ -683,6 +683,13 @@ export const createSessionRequestSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   /** Defaults to the app's default branch. */
   baseRef: gitRefSchema.optional(),
+  /**
+   * App page P2 ("Fix in a session"): seed the session with a failed release of THIS app — the
+   * server writes its first message (the failed stage, the GitHub run and the tail of the failing
+   * job's log when GitHub still has it) and the session takes it as its first turn once it is
+   * ready. 409 `release_not_retryable` when the release is not failing.
+   */
+  fixRelease: z.object({ releaseId: z.string().uuid() }).optional(),
 })
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>
 

@@ -35,6 +35,7 @@ const release = (over: Partial<Release> = {}): Release => ({
   stagingTicketId: null,
   productionTicketId: null,
   error: null,
+  failedStage: null,
   createdAt: minutesAgo(3),
   updatedAt: minutesAgo(3),
   ...over,

@@ -664,6 +664,44 @@ export async function listWorkflowRunJobs(
   return body.jobs ?? []
 }
 
+/**
+ * App page P2 (stage-aware Retry): GitHub's "Re-run failed jobs" on a COMPLETED run
+ * (`POST …/actions/runs/{id}/rerun-failed-jobs`, `actions: write`) — the failed and cancelled jobs
+ * and everything that depends on them run again as the run's next attempt (`run_attempt + 1`),
+ * on the same commit. GitHub answers 201 with no body; a run still going is its 403.
+ */
+export function rerunFailedJobs(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: number | string,
+  opts: GitHubOptions = {}
+): Promise<void> {
+  return githubVoid(
+    `${repoPath(owner, repo)}/actions/runs/${encodeURIComponent(String(runId))}/rerun-failed-jobs`,
+    { method: 'POST', token, body: {} },
+    opts
+  )
+}
+
+/**
+ * App page P2 (Cancel release): cancel a run in progress (`POST …/actions/runs/{id}/cancel`,
+ * `actions: write`). GitHub answers 202; a run that already completed is its 409.
+ */
+export function cancelWorkflowRun(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: number | string,
+  opts: GitHubOptions = {}
+): Promise<void> {
+  return githubVoid(
+    `${repoPath(owner, repo)}/actions/runs/${encodeURIComponent(String(runId))}/cancel`,
+    { method: 'POST', token },
+    opts
+  )
+}
+
 // ---- P2: settings -----------------------------------------------------------------------------
 
 /** Create or update a deployment environment (it scopes the OIDC `environment` claim). */
@@ -1005,6 +1043,10 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   rulesetsWrite: { administration: 'write' },
   /** The branch-protection diagnosis: rulesets and classic protection, read only. */
   rulesetsRead: { administration: 'read' },
+  /** App page P2: a release run's re-run of its failed jobs, or its cancel (and the reads around). */
+  releaseRun: { actions: 'write' },
+  /** App page P2: re-pushing a release's tag (and reading its runs). */
+  releaseTag: { contents: 'write', actions: 'read' },
 } as const satisfies Record<string, GitHubPermissions>
 
 export interface MergePullRequestInput {

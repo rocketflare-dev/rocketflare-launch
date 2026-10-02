@@ -47,6 +47,13 @@
  * conclusion, jobs })` records the run a tag push starts (`event: push`); `GET …/workflows/{f}/runs`
  * filters by `branch` (a branch or tag name) and `event`, and `GET …/actions/runs/{id}/jobs`
  * (`actions: read`) lists its jobs.
+ *
+ * App page P2 (stage-aware Retry): `POST …/actions/runs/{id}/rerun-failed-jobs` (`actions: write`;
+ * a completed, unsuccessful run's next attempt — `run_attempt + 1`, its failed and cancelled jobs
+ * queued again — recorded in `reruns`; 403 for a run still going or one that succeeded) and
+ * `POST …/actions/runs/{id}/cancel` (`actions: write`; the run and its unfinished jobs end
+ * `cancelled`, recorded in `cancels`; 409 for a completed run). `pushRun(owner, repo, ref, …)`
+ * records any run (a production run on a tag is `event: release`).
  */
 import {
   belongsTo,
@@ -248,6 +255,10 @@ export class FakeGitHub implements VendorHandler {
   readonly commits = new Map<string, FakeCommit>()
   readonly trees = new Map<string, Map<string, string>>()
   readonly runs: FakeWorkflowRun[] = []
+  /** App page P2: every accepted "re-run failed jobs" (`{ runId, attempt }` — the new attempt). */
+  readonly reruns: { runId: number; attempt: number }[] = []
+  /** App page P2: every accepted run cancel, by run id. */
+  readonly cancels: number[] = []
   /** Called after each accepted `workflow_dispatch` (awaited) — the test's stand-in for the job. */
   onDispatch: ((run: FakeWorkflowRun) => unknown | Promise<unknown>) | null = null
   /** P3: every pull request opened, in order. */
@@ -393,6 +404,30 @@ export class FakeGitHub implements VendorHandler {
       jobs: (input.jobs ?? []).map(j => ({ ...j, id: j.id ?? this.ids.number() })),
     }
     this.runs.push(run)
+    return run
+  }
+
+  /**
+   * App page P2: any run of `deploy.yml` on `ref` (`refs/tags/X` or `refs/heads/b`) — a production
+   * run a published Release started is `event: release`. Returned so a test can move it, and its
+   * `id` is what the deploy job's OIDC `run_id` claim must carry.
+   */
+  pushRun(
+    owner: string,
+    name: string,
+    ref: string,
+    input: {
+      event?: string
+      workflow?: string
+      status?: FakeWorkflowRun['status']
+      conclusion?: string | null
+      jobs?: FakeWorkflowJob[]
+    } = {}
+  ): FakeWorkflowRun {
+    const tag = ref.replace(/^refs\/(heads|tags)\//, '')
+    const run = this.pushTagRun(owner, name, tag, input)
+    run.ref = ref
+    run.event = input.event ?? 'push'
     return run
   }
 
@@ -1213,6 +1248,52 @@ export class FakeGitHub implements VendorHandler {
         html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}/job/${j.id ?? 0}`,
       }))
       return json({ total_count: jobs.length, jobs })
+    }
+
+    // App page P2: "Re-run failed jobs" (`actions: write`) — a COMPLETED run that did not succeed
+    // starts its next attempt: the failed and cancelled jobs queue again. GitHub's 403 otherwise.
+    match = rest.match(/^\/actions\/runs\/(\d+)\/rerun-failed-jobs$/)
+    if (match && m === 'POST') {
+      const refused = writable('actions')
+      if (refused) return refused
+      const id = Number(match[1])
+      const r = this.runs.find(x => x.owner === repo.owner && x.repo === repo.name && x.id === id)
+      if (!r) return ghError(404, 'Not Found')
+      if (r.status !== 'completed') return ghError(403, 'This workflow is already running')
+      if (r.conclusion === 'success') return ghError(403, 'This workflow run has no failed jobs')
+      r.run_attempt += 1
+      r.status = 'queued'
+      r.conclusion = null
+      for (const job of r.jobs ?? []) {
+        if (job.status === 'completed' && job.conclusion !== 'success') {
+          job.status = 'queued'
+          job.conclusion = null
+        }
+      }
+      this.reruns.push({ runId: r.id, attempt: r.run_attempt })
+      return json({}, 201)
+    }
+    // App page P2: cancel a run in progress (`actions: write`); a completed one is GitHub's 409.
+    match = rest.match(/^\/actions\/runs\/(\d+)\/cancel$/)
+    if (match && m === 'POST') {
+      const refused = writable('actions')
+      if (refused) return refused
+      const id = Number(match[1])
+      const r = this.runs.find(x => x.owner === repo.owner && x.repo === repo.name && x.id === id)
+      if (!r) return ghError(404, 'Not Found')
+      if (r.status === 'completed') {
+        return ghError(409, 'Cannot cancel a workflow run that is completed.')
+      }
+      r.status = 'completed'
+      r.conclusion = 'cancelled'
+      for (const job of r.jobs ?? []) {
+        if (job.status !== 'completed') {
+          job.status = 'completed'
+          job.conclusion = 'cancelled'
+        }
+      }
+      this.cancels.push(r.id)
+      return json({}, 202)
     }
 
     // ---- P3: pull requests

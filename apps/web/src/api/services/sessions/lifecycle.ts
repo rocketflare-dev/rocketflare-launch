@@ -144,6 +144,12 @@ export interface CreateSessionInput {
   actor: AuditActor
   realtime?: Realtime
   now?: Date
+  /**
+   * App page P2 ("Fix in a session"): the session's first message, written as its pending turn so
+   * the Workflow runs it as soon as the sandbox is ready. The route composes it
+   * (`releases/fix-session.ts`).
+   */
+  firstMessage?: string | null
 }
 
 /** Start a session on `app` — see the header for every refusal. */
@@ -198,6 +204,7 @@ export async function createSession(
           previewToken: newPreviewToken(),
           title: input.request.title ?? null,
           status: 'requested',
+          pendingMessage: input.firstMessage ?? null,
           baseRef: input.request.baseRef ?? app.defaultBranch ?? 'main',
           branch: sessionBranchName(shortId),
           instanceId: id,
