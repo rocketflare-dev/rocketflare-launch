@@ -1,16 +1,15 @@
 /**
  * The app's sign-in through Launch (spec/05): whether it has an OIDC client, its public id, the
  * secret's hint, and the redirect URIs Launch will send codes to. Admins register the client,
- * rotate its secret (shown once, `OidcSecretModal`) and edit the URIs; everyone may follow the
- * link to who may sign in.
+ * rotate its secret (shown once, `OidcSecretModal`) and edit the URIs. It heads Settings → Access &
+ * sign-in, above who may sign in (`AccessSection`).
  */
-import { ArrowPathIcon, KeyIcon, PencilSquareIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, PencilSquareIcon } from '@heroicons/react/24/outline'
 import {
   type AppOidcClientSecretResponse,
   updateAppRedirectUrisRequestSchema,
 } from '@launch/shared/launch-apps'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   ConfirmModal,
   FieldError,
@@ -110,15 +109,7 @@ function RedirectUriEditor({
   )
 }
 
-export function OidcClientCard({
-  appId,
-  slug,
-  canManage,
-}: {
-  appId: string
-  slug: string
-  canManage: boolean
-}) {
+export function OidcClientCard({ appId, canManage }: { appId: string; canManage: boolean }) {
   const { data, isLoading } = useAppOidcClient(appId)
   const create = useCreateOidcClient(appId)
   const rotate = useRotateOidcSecret(appId)
@@ -128,22 +119,10 @@ export function OidcClientCard({
   const [editing, setEditing] = useState(false)
   const client = data?.client ?? null
 
-  const accessLink = (
-    <Link to={`/apps/${encodeURIComponent(slug)}/access`} className="link link-primary text-sm">
-      Who can sign in →
-    </Link>
-  )
-
   return (
     <SectionPanel
-      title={
-        <span className="flex items-center gap-2">
-          <KeyIcon className="w-4 h-4 text-accent" />
-          Sign-in through Launch
-        </span>
-      }
+      title="Sign-in through Launch"
       description="The app’s OIDC client: Launch is the issuer, the app is the relying party."
-      actions={accessLink}
     >
       {isLoading ? (
         <SkeletonRows rows={3} />

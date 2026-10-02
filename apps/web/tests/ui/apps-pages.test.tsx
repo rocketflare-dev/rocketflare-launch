@@ -1,18 +1,21 @@
 /**
  * The registry pages (spec/06): the catalogue's empty state and cards (health dots with their
  * labels, the fleet summary, search), the Import modal's validation and its in-modal refusal, and
- * the detail page's OIDC card showing the client secret ONCE.
+ * the app page — the Overview's environment rows, the header's Change it, what a member does NOT
+ * see, Settings (General, Shipping, Access & sign-in with the OIDC secret shown ONCE) and the old
+ * `/access` link's redirect.
  */
 import { HEALTH_NOT_DEPLOYED_ERROR } from '@launch/shared/launch-apps'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import AppDetailPage from '@/ui/pages/apps/AppDetailPage'
+import AppPage from '@/ui/pages/apps/AppPage'
 import CataloguePage from '@/ui/pages/apps/CataloguePage'
 import {
   errorResponse,
   IDS,
   makeSession,
+  type RouteTable,
   renderWithProviders,
   requestBody,
   stubFetch,
@@ -153,8 +156,12 @@ describe('CataloguePage', () => {
   })
 })
 
-describe('AppDetailPage', () => {
-  function renderDetail(session = makeSession(), routes: Record<string, unknown> = {}) {
+describe('App page', () => {
+  function renderDetail(
+    session = makeSession(),
+    routes: Record<string, unknown> = {},
+    route = '/apps/expenses'
+  ) {
     const fetchMock = stubFetch({
       '/api/apps/expenses': detail(),
       [`/api/apps/${APP_ID}/health`]: { since: '2026-09-26T00:00:00Z', items: [] },
@@ -164,26 +171,27 @@ describe('AppDetailPage', () => {
     })
     renderWithProviders(
       <Routes>
-        <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/apps/:slug/*" element={<AppPage />} />
       </Routes>,
-      { session, route: '/apps/expenses' }
+      { session, route }
     )
     return fetchMock
   }
 
-  it('shows environments, resources and the link to who can sign in', async () => {
+  it('shows one row per environment — Staging and Live — with a health dot each', async () => {
     renderDetail(member())
     expect(await screen.findByRole('heading', { name: 'Expense Tracker' })).toBeInTheDocument()
-    expect(screen.getByText('expenses-staging.apps.test')).toBeInTheDocument()
-    expect(screen.getAllByText('JOBS_QUEUE')).toHaveLength(2)
-    expect(screen.getByRole('link', { name: /Who can sign in/ })).toHaveAttribute(
+    const staging = screen.getByTestId('env-staging')
+    expect(within(staging).getByText('Staging')).toBeInTheDocument()
+    expect(within(staging).getByRole('img', { name: 'Degraded' })).toBeInTheDocument()
+    const live = screen.getByTestId('env-production')
+    expect(within(live).getByText('Live')).toBeInTheDocument()
+    expect(within(live).getByRole('link', { name: 'Open Live' })).toHaveAttribute(
       'href',
-      '/apps/expenses/access'
+      'https://expenses.apps.test'
     )
-    // A member sees no admin actions.
-    expect(screen.queryByRole('button', { name: /Check now/ })).not.toBeInTheDocument()
-    expect(await screen.findByText(/Not registered yet/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Register OIDC client/ })).not.toBeInTheDocument()
+    // Nothing needs anybody: no band at all.
+    expect(screen.queryByRole('heading', { name: /Needs you|Attention/ })).not.toBeInTheDocument()
   })
 
   it('says "Not deployed yet" — not Down — where Launch’s placeholder answered the probe', async () => {
@@ -203,36 +211,55 @@ describe('AppDetailPage', () => {
         ),
       },
     })
-    expect(await screen.findByText('Not deployed yet')).toBeInTheDocument()
-    expect(screen.getByTestId('not-deployed')).toHaveTextContent(
-      'Nothing has been deployed here yet'
-    )
+    const live = await screen.findByTestId('env-production')
+    expect(within(live).getByTestId('not-deployed')).toHaveTextContent('Not deployed yet')
     // The placeholder's sentence is not shown as an error, and staging (degraded) is unchanged.
     expect(screen.queryByText(HEALTH_NOT_DEPLOYED_ERROR)).not.toBeInTheDocument()
     expect(screen.getByText('Degraded')).toBeInTheDocument()
   })
 
-  it('carries the coding sessions card, with Start for anyone who may start one (P3)', async () => {
-    renderDetail(member(), { [`/api/apps/${APP_ID}/sessions`]: { items: [] } })
+  it('puts Change it in the header for anyone who may start a session, and the list on Sessions (P3)', async () => {
+    renderDetail(
+      member(),
+      { [`/api/apps/${APP_ID}/sessions`]: { items: [] } },
+      '/apps/expenses/sessions'
+    )
     expect(await screen.findByRole('heading', { name: 'Coding sessions' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Start session' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change it' })).toHaveClass('btn-flame')
+    expect(screen.getByRole('button', { name: 'Start session' })).not.toHaveClass('btn-flame')
     expect(await screen.findByText('No sessions running')).toBeInTheDocument()
   })
 
-  it('leads with the pipeline strip: staging → Promote to production → production (#5)', async () => {
-    renderDetail(makeSession(), {
-      [`/api/apps/${APP_ID}/promotion`]: {
-        candidate: null,
-        staging: null,
-        production: null,
-        changes: [],
-        changesTruncated: false,
-        approval: null,
-      },
-    })
-    expect(await screen.findByRole('button', { name: /Promote to production/ })).toBeDisabled()
-    const strip = screen.getByRole('region', { name: 'Staging to production' })
-    expect(within(strip).getByText('Nothing on staging yet.')).toBeInTheDocument()
+  it('hides what a member cannot use: no Edit, no Check health, no Danger zone', async () => {
+    renderDetail(member(), {}, '/apps/expenses/settings')
+    expect(await screen.findByRole('heading', { name: 'About' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Danger zone' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.queryByRole('button', { name: 'Edit details' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check health now' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /View repository/ })).toBeInTheDocument()
+  })
+
+  it('lists each environment’s Worker and declared resources under Settings → General', async () => {
+    renderDetail(makeSession(), {}, '/apps/expenses/settings/general')
+    const table = await screen.findByRole('table', { name: 'Environments' })
+    expect(within(table).getByText('expenses-staging')).toBeInTheDocument()
+    expect(within(table).getAllByText('JOBS_QUEUE')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+  })
+
+  it('redirects the old /access page into Settings → Access & sign-in, read-only for a member', async () => {
+    renderDetail(member(), {}, '/apps/expenses/access')
+    expect(await screen.findByRole('link', { name: 'Access & sign-in' })).toHaveAttribute(
+      'aria-current',
+      'page'
+    )
+    expect(await screen.findByText(/Not registered yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Register OIDC client/ })).not.toBeInTheDocument()
+    expect(
+      await screen.findByText(/Only this app’s owners and your organisation’s admins/)
+    ).toBeInTheDocument()
   })
 
   describe('the Shipping card (#5)', () => {
@@ -266,9 +293,11 @@ describe('AppDetailPage', () => {
     }
     /** A member who is one of the app's named owners: may change the settings, may not Apply. */
     const owner = () => member()
+    const renderShipping = (session = makeSession(), routes: Record<string, unknown> = {}) =>
+      renderDetail(session, routes, '/apps/expenses/settings/shipping')
 
     it('lets an owner or admin choose where Ship ends and who reviews, validated like the server', async () => {
-      const fetchMock = renderDetail(makeSession(), {
+      const fetchMock = renderShipping(makeSession(), {
         [PROTECTION]: protection('ok'),
         '/api/groups': { items: [groupRow] },
         [`PUT /api/apps/${APP_ID}/ship-settings`]: () => ({
@@ -313,7 +342,7 @@ describe('AppDetailPage', () => {
     })
 
     it('shows the review as read-only when an admin’s approval policy decides it', async () => {
-      renderDetail(makeSession(), {
+      renderShipping(makeSession(), {
         '/api/apps/expenses': { ...detail(), shipReviewSetBy: 'policy' },
         [PROTECTION]: protection('ok'),
       })
@@ -328,7 +357,7 @@ describe('AppDetailPage', () => {
     })
 
     it('reads as sentences for somebody who may not change it, and asks GitHub nothing', async () => {
-      const fetchMock = renderDetail(member(), {
+      const fetchMock = renderShipping(member(), {
         '/api/apps/expenses': {
           ...detail(),
           viewerCanDeploy: false,
@@ -355,7 +384,7 @@ describe('AppDetailPage', () => {
     ] as const)(
       'says branch protection %s in words, with Apply where it helps',
       async (state, title, apply) => {
-        renderDetail(makeSession(), {
+        renderShipping(makeSession(), {
           [PROTECTION]: protection(state, {
             detail: state === 'blocks' ? 'Classic branch protection requires 2 reviews.' : null,
           }),
@@ -376,7 +405,7 @@ describe('AppDetailPage', () => {
     )
 
     it('lets an administrator apply the protection; an app owner is told who can', async () => {
-      const fetchMock = renderDetail(makeSession(), {
+      const fetchMock = renderShipping(makeSession(), {
         [PROTECTION]: protection('none'),
         [`POST ${PROTECTION}`]: protection('ok'),
       })
@@ -393,7 +422,7 @@ describe('AppDetailPage', () => {
       ).toBe(true)
       cleanup()
 
-      renderDetail(owner(), { [PROTECTION]: protection('none') })
+      renderShipping(owner(), { [PROTECTION]: protection('none') })
       const ownerSection = await card()
       const ownerForm = await openSettings(ownerSection)
       expect(await within(ownerForm).findByText('Not protected')).toBeInTheDocument()
@@ -421,7 +450,9 @@ describe('AppDetailPage', () => {
       createdAt: '2026-09-27T00:00:00Z',
     }
     let registered = false
-    renderDetail(makeSession(), {
+    const renderAccess = (session: ReturnType<typeof makeSession>, routes: RouteTable) =>
+      renderDetail(session, routes, '/apps/expenses/settings/access')
+    renderAccess(makeSession(), {
       [`/api/apps/${APP_ID}/oidc-client`]: () => ({ client: registered ? client : null }),
       [`POST /api/apps/${APP_ID}/oidc-client`]: () => {
         registered = true

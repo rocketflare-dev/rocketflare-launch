@@ -32,6 +32,7 @@ import { UserMenu } from '@/ui/components/UserMenu'
 import { WebSocketProvider } from '@/ui/components/WebSocketProvider'
 import { WebSocketStatus } from '@/ui/components/WebSocketStatus'
 import { AuthProvider, useAuth } from '@/ui/hooks/useAuth'
+import { AGENTS_GUARD, CHAT_GUARD, KNOWLEDGE_GUARD } from '@/ui/lib/feature-guards'
 import { NavigationBridge } from '@/ui/lib/navigation'
 import {
   PLATFORM_ACCESS_REQUESTS_PATH,
@@ -67,17 +68,16 @@ const SearchPage = lazy(() => import('@/ui/pages/documents/SearchPage'))
 const DocumentViewPage = lazy(() => import('@/ui/pages/documents/DocumentViewPage'))
 // Launch (spec/05, 06, 08): the app registry, per-app sign-in access, request-access and the audit log.
 const CataloguePage = lazy(() => import('@/ui/pages/apps/CataloguePage'))
-const AppDetailPage = lazy(() => import('@/ui/pages/apps/AppDetailPage'))
-const AppAccessPage = lazy(() => import('@/ui/pages/apps/AppAccessPage'))
+// One app: Overview + tabs (sessions, releases, activity, settings — config and access included).
+const AppPage = lazy(() => import('@/ui/pages/apps/AppPage'))
 // Launch P3: a coding session — chat + live preview. Its own chunk: it carries `Markdown`.
 const SessionPage = lazy(() => import('@/ui/pages/sessions/SessionPage'))
 // Launch P4: the approvals inbox and one request (notifications link to it).
 const ApprovalsInboxPage = lazy(() => import('@/ui/pages/approvals/InboxPage'))
 const ApprovalPage = lazy(() => import('@/ui/pages/approvals/ApprovalPage'))
-// Launch P5: shared config — the bundles, one resource, and an app's config page.
+// Launch P5: shared config — the bundles and one resource (an app's config is its Settings tab).
 const SharedConfigPage = lazy(() => import('@/ui/pages/shared-config/SharedConfigPage'))
 const SharedResourcePage = lazy(() => import('@/ui/pages/shared-config/SharedResourcePage'))
-const AppConfigPage = lazy(() => import('@/ui/pages/apps/AppConfigPage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
 const Audit = lazy(() => import('@/ui/pages/Audit'))
 const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
@@ -174,10 +174,12 @@ function ShellRoutes() {
           <Route path="/" element={<Home />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/notifications" element={<Notifications />} />
+          {/* The kit's AI surfaces (Chat, Agents, Knowledge, Search) are behind `kit-ai`, off in
+              every Launch deployment for now: each guard is its nav item's (`feature-guards`). */}
           <Route
             path="/chat/:conversationId?"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'Conversation' }}>
+              <RequireGuard guard={CHAT_GUARD}>
                 <ChatPage />
               </RequireGuard>
             }
@@ -188,7 +190,7 @@ function ShellRoutes() {
           <Route
             path="/agents"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'AgentRun' }}>
+              <RequireGuard guard={AGENTS_GUARD}>
                 <AgentsPage />
               </RequireGuard>
             }
@@ -196,7 +198,7 @@ function ShellRoutes() {
           <Route
             path="/agents/runs/:runId"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'AgentRun' }}>
+              <RequireGuard guard={AGENTS_GUARD}>
                 <RunPage />
               </RequireGuard>
             }
@@ -204,7 +206,7 @@ function ShellRoutes() {
           <Route
             path="/documents"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'Document' }}>
+              <RequireGuard guard={KNOWLEDGE_GUARD}>
                 <DocumentsPage />
               </RequireGuard>
             }
@@ -216,7 +218,7 @@ function ShellRoutes() {
           <Route
             path="/documents/:documentId"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'Document' }}>
+              <RequireGuard guard={KNOWLEDGE_GUARD}>
                 <DocumentViewPage />
               </RequireGuard>
             }
@@ -224,13 +226,15 @@ function ShellRoutes() {
           <Route
             path="/search"
             element={
-              <RequireGuard guard={{ action: 'read', subject: 'Document' }}>
+              <RequireGuard guard={KNOWLEDGE_GUARD}>
                 <SearchPage />
               </RequireGuard>
             }
           />
-          {/* Launch (spec/06): the catalogue and one app are every member's (`read App`); the
-              access page is for the app's owners and admins, which the server decides. */}
+          {/* Launch (spec/06): the catalogue and one app are every member's (`read App`); what
+              each reader may DO on an app (ship, request config, manage access) the page hides
+              and the server decides. The app's tabs — and the old `/config` and `/access`, which
+              redirect into its Settings — are nested routes in `AppPage`. */}
           <Route
             path="/apps"
             element={
@@ -240,36 +244,19 @@ function ShellRoutes() {
             }
           />
           <Route
-            path="/apps/:slug"
+            path="/apps/:slug/*"
             element={
               <RequireGuard guard={{ action: 'read', subject: 'App' }}>
-                <AppDetailPage />
+                <AppPage />
               </RequireGuard>
             }
           />
+          {/* Ranked above the splat: a session keeps its own chunk (it carries `Markdown`). */}
           <Route
             path="/apps/:slug/sessions/:id"
             element={
               <RequireGuard guard={{ action: 'read', subject: 'Session' }}>
                 <SessionPage />
-              </RequireGuard>
-            }
-          />
-          <Route
-            path="/apps/:slug/access"
-            element={
-              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
-                <AppAccessPage />
-              </RequireGuard>
-            }
-          />
-          {/* Launch P5 (spec/09): an app's declared config and grants — readers see it, the app's
-              owners and admins request; the server decides who may do what. */}
-          <Route
-            path="/apps/:slug/config"
-            element={
-              <RequireGuard guard={{ action: 'read', subject: 'App' }}>
-                <AppConfigPage />
               </RequireGuard>
             }
           />

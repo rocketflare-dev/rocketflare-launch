@@ -5,6 +5,7 @@
  */
 import type { AppEnvironment, AppHealthCheck, HealthStatus } from '@launch/shared/launch-apps'
 import { format } from 'date-fns'
+import type { ReactNode } from 'react'
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useAppHealth } from '@/ui/hooks/useApps'
 import { HEALTH_LABEL } from './HealthDot'
@@ -74,7 +75,9 @@ function EnvironmentStrip({
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3 mb-1.5">
-        <span className="text-sm font-medium capitalize">{env.name}</span>
+        <span className="text-sm font-medium">
+          {env.name === 'production' ? 'Live' : 'Staging'}
+        </span>
         <span className="text-xs text-muted tabular-nums">
           {uptime === null
             ? 'no checks yet'
@@ -107,9 +110,12 @@ function EnvironmentStrip({
 export function HealthHistory({
   appId,
   environments,
+  actions,
 }: {
   appId: string
   environments: AppEnvironment[]
+  /** Beside the title: the Activity tab's "Check now". */
+  actions?: ReactNode
 }) {
   const { data, isLoading, dataUpdatedAt } = useAppHealth(appId, HOURS)
   const now = new Date(dataUpdatedAt || Date.now())
@@ -117,6 +123,7 @@ export function HealthHistory({
     <SectionPanel
       title="Health, last 24 hours"
       description="Checked every five minutes: /api/health and /api/ready, five-second timeout."
+      actions={actions}
     >
       {isLoading ? (
         <SkeletonRows rows={2} />

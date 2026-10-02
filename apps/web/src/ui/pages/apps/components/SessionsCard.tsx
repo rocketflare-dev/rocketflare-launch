@@ -1,6 +1,7 @@
 /**
- * An app's coding sessions (Launch P3, spec/07) on its detail page: "Start session" — the page's
- * way into the Lovable loop — and the sessions already running or recently finished.
+ * An app's coding sessions (Launch P3, spec/07) — the app page's Sessions tab: "Start session" (the
+ * header's "Change it" does the same, and is the page's hero) and the sessions already running or
+ * recently finished.
  *
  * - **Start** posts `POST /api/apps/:id/sessions` and goes straight to the new session's page;
  *   there is nothing to fill in first (a title is optional, and the chat is where you say what
@@ -145,7 +146,7 @@ export function SessionsCard({
           {canStart && (
             <button
               type="button"
-              className="btn btn-sm btn-primary btn-flame gap-1.5"
+              className="btn btn-sm gap-1.5"
               onClick={onStart}
               disabled={start.isPending}
             >

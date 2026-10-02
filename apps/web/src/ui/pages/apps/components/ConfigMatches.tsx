@@ -1,26 +1,23 @@
 /**
- * An app's shared config on its detail page (Launch P5, spec/09): what the last scan found the app
- * declares, the shared resources those keys match, and per environment whether the app holds each
- * one — held, pushing, requested (with the request's link), or missing (with a Request button for
- * the app's owners and admins). Re-scan reads the repository again. The whole story — keys grouped
- * by plugin, keys nothing matches, every grant with Revoke — is the Config page
- * (`/apps/:slug/config`); `MatchList` and `ScanLine` are shared with it.
+ * The pieces Settings → Config & secrets (`ConfigSection`) is built from (Launch P5, spec/09): the
+ * last scan (`ScanLine`) and Re-scan, the shared resources the declared keys match and, per
+ * environment, whether the app holds each one (`MatchList`, `EnvStatus`) — held, pushing,
+ * requested (with the request's link), or missing (with a Request button for the app's owners and
+ * admins). The Overview's Needs-you list reads the same `configModel` for what is missing.
  *
  * Never a value: an app's page shows item NAMES and states only.
  */
-import { ArrowPathIcon, KeyIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import { APP_ENVIRONMENT_NAMES } from '@launch/shared/launch-apps'
 import {
   type AppConfigMatch,
   type AppConfigView,
-  appConfigPath,
   sharedResourcePath,
 } from '@launch/shared/launch-grants'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
-import { useAppConfig, useRescanAppConfig } from '@/ui/hooks/useAppConfig'
+import { useRescanAppConfig } from '@/ui/hooks/useAppConfig'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
 import { ENV_STATE, envGrantState, lastOutcome, missingEnvironments } from './configModel'
 import { RequestGrantModal } from './RequestGrantModal'
@@ -165,68 +162,5 @@ export function RescanButton({ appId }: { appId: string }) {
       )}
       Re-scan
     </button>
-  )
-}
-
-export function ConfigCard({
-  appId,
-  appSlug,
-  appName,
-}: {
-  appId: string
-  appSlug: string
-  appName: string
-}) {
-  const { data: view, isLoading, isError } = useAppConfig(appId)
-  const unmatched = view?.unmatched.length ?? 0
-
-  return (
-    <SectionPanel
-      title="Config"
-      description="Shared config this app declares, and whether it holds it."
-      actions={
-        <>
-          {view?.canRequest && <RescanButton appId={appId} />}
-          <Link to={appConfigPath(appSlug)} className="btn btn-sm btn-ghost">
-            Open config
-          </Link>
-        </>
-      }
-    >
-      {isLoading ? (
-        <SkeletonRows rows={3} />
-      ) : isError || !view ? (
-        <p className="text-sm text-muted">This app’s config could not be loaded.</p>
-      ) : (
-        <div className="space-y-3">
-          <ScanLine view={view} />
-          {view.matched.length === 0 && unmatched === 0 ? (
-            <EmptyState
-              size="sm"
-              icon={KeyIcon}
-              message={
-                view.scan ? 'This app declares no shared config.' : 'Nothing is known about it yet.'
-              }
-            />
-          ) : (
-            <>
-              {view.matched.length > 0 && <MatchList view={view} appId={appId} appName={appName} />}
-              {unmatched > 0 && (
-                <p className="text-xs text-muted">
-                  {unmatched === 1
-                    ? 'One declared key matches'
-                    : `${unmatched} declared keys match`}{' '}
-                  no shared config —{' '}
-                  <Link to={appConfigPath(appSlug)} className="link link-hover">
-                    see which
-                  </Link>
-                  .
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </SectionPanel>
   )
 }

@@ -19,12 +19,8 @@ import {
   PIPELINE_POLL_MS,
   pipelinePollInterval,
 } from '@/ui/hooks/usePipeline'
+import { pendingProduction, ticketBadge, ticketVersion } from '@/ui/pages/apps/app/appPageModel'
 import { hostPreview, slugFromName } from '@/ui/pages/apps/components/CreateAppModal'
-import {
-  pendingProduction,
-  ticketBadge,
-  ticketVersion,
-} from '@/ui/pages/apps/components/DeploysCard'
 import {
   groupPhases,
   pipelineRows,

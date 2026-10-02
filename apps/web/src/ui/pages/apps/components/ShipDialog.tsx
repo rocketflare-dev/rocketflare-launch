@@ -1,42 +1,51 @@
 /**
- * "Promote to production" for a release staging is running (plan §1.8). Promoting does not deploy:
- * it opens a `deploy.production` approval, and the page then goes to that request — the approver
- * is somebody else (the promoter is excluded from deciding), so the natural next step is to see
- * who it is waiting on and share the link.
+ * Ship a release that staging is running to Live (plan §1.8, app page decision 6). Shipping does
+ * not deploy: it opens a `deploy.production` approval — the approver is somebody else (the shipper
+ * is excluded from deciding) — so the button reads "Request approval".
+ *
+ * `ShipDialog` is the one confirmation: the version and the changes it carries (when the caller
+ * has them), and an optional reason for the approvers. The Overview's Ship stays on the page —
+ * its Live row then shows who the request waits on — and a Releases row's `ShipButton` goes to the
+ * request it opened.
  *
  * A 409 (staging no longer runs this release, or is not up) is information, shown in the dialog in
  * place of a toast: the release list behind it refreshes, and the reader can see why.
- *
- * `PromoteDialog` is the confirmation itself, shared with the app page's pipeline strip
- * (`PipelineStrip`), which stays on the page after promoting and shows who the request waits on.
  */
-import { RocketLaunchIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
+import type { PromotionChange } from '@launch/shared/launch-promotion'
 import { promoteReleaseSchema, type Release } from '@launch/shared/launch-releases'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FieldError, Modal, showToast } from '@/ui/components/shared'
 import { usePromoteRelease } from '@/ui/hooks/useReleases'
 import { ApiError } from '@/ui/lib/api-client'
+import { summaryLine, v } from './promotionModel'
 
-export function PromoteDialog({
+/** At most this many changes are listed in the dialog; the rest are counted. */
+const DIALOG_CHANGES = 8
+
+export function ShipDialog({
   appId,
   release,
+  changes,
   open,
   onClose,
-  onPromoted,
+  onShipped,
 }: {
   appId: string
   release: Pick<Release, 'id' | 'version'>
+  /** What it carries that Live does not, when known (`GET /:id/promotion`). */
+  changes?: readonly PromotionChange[]
   open: boolean
   onClose: () => void
   /** After the request opened (the dialog has closed itself). */
-  onPromoted: (approvalId: string) => void
+  onShipped: (approvalId: string) => void
 }) {
   const [reason, setReason] = useState('')
   const [error, setError] = useState<string | null>(null)
   const promote = usePromoteRelease(appId)
   const conflict = promote.error instanceof ApiError && promote.error.status === 409
+  const version = v(release.version)
 
   const close = () => {
     onClose()
@@ -53,19 +62,22 @@ export function PromoteDialog({
       { releaseId: release.id, ...parsed.data },
       {
         onSuccess: ({ approvalId }) => {
-          showToast(`Production approval requested for ${release.version}`, 'success')
+          showToast(`Approval requested to ship ${version} live`, 'success')
           onClose()
-          onPromoted(approvalId)
+          onShipped(approvalId)
         },
       }
     )
   }
 
+  const listed = changes?.slice(0, DIALOG_CHANGES) ?? []
+  const more = (changes?.length ?? 0) - listed.length
+
   return (
     <Modal
       open={open}
       onClose={close}
-      title={`Promote ${release.version} to production?`}
+      title={`Ship ${version} live?`}
       actions={
         <>
           <button type="button" className="btn btn-sm" onClick={close}>
@@ -80,7 +92,7 @@ export function PromoteDialog({
             {promote.isPending ? (
               <span className="loading loading-spinner loading-xs" />
             ) : (
-              'Ask for approval'
+              'Request approval'
             )}
           </button>
         </>
@@ -88,18 +100,34 @@ export function PromoteDialog({
     >
       <div className="space-y-3 text-sm">
         <p>
-          This asks the app’s approvers to release <strong>{release.version}</strong> to production.
-          Nothing is deployed until someone other than you approves it; then Launch publishes the
-          GitHub release and the deploy runs.
+          This asks the app’s approvers to put <span className="font-mono">{version}</span> live.
+          Nothing changes until someone other than you approves it; then Launch publishes the GitHub
+          release and the deploy runs.
         </p>
+        {listed.length > 0 && (
+          <ul className="space-y-1" aria-label="What it ships">
+            {listed.map(change => (
+              <li key={`${change.version}-${change.number}`}>
+                {change.sessionTitle?.trim() || change.title}
+                <span className="text-xs text-muted"> #{change.number}</span>
+                {summaryLine(change.summary) && (
+                  <span className="block text-xs text-secondary">
+                    {summaryLine(change.summary)}
+                  </span>
+                )}
+              </li>
+            ))}
+            {more > 0 && <li className="text-xs text-muted">and {more} more</li>}
+          </ul>
+        )}
         {conflict ? (
-          <div className="alert alert-info alert-soft text-sm" role="status">
-            <span>{promote.error?.message}</span>
-          </div>
+          <p className="text-sm text-secondary" role="status">
+            {promote.error?.message}
+          </p>
         ) : promote.error ? (
-          <div className="alert alert-error alert-soft text-sm" role="alert">
-            <span>{promote.error.message}</span>
-          </div>
+          <p className="text-sm text-error" role="alert">
+            {promote.error.message}
+          </p>
         ) : null}
         <label className="block">
           <span className="text-xs text-muted">Why now? (optional, shown to the approvers)</span>
@@ -122,23 +150,23 @@ export function PromoteDialog({
   )
 }
 
-export function PromoteButton({ appId, release }: { appId: string; release: Release }) {
+/** A Releases row's Ship: the same dialog, then the request it opened. */
+export function ShipButton({ appId, release }: { appId: string; release: Release }) {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
 
   return (
     <>
-      <button type="button" className="btn btn-xs btn-primary gap-1" onClick={() => setOpen(true)}>
-        <RocketLaunchIcon className="w-3.5 h-3.5" />
-        Promote
+      <button type="button" className="btn btn-xs" onClick={() => setOpen(true)}>
+        Ship {v(release.version)}
       </button>
       {open && (
-        <PromoteDialog
+        <ShipDialog
           appId={appId}
           release={release}
           open={open}
           onClose={() => setOpen(false)}
-          onPromoted={approvalId => navigate(approvalPath(approvalId))}
+          onShipped={approvalId => navigate(approvalPath(approvalId))}
         />
       )}
     </>

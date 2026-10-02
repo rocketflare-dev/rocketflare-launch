@@ -64,7 +64,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `useAppsDomain`, which reads the catalogue's `appsDomain` and otherwise infers the domain from
   a created app's staging URL, else null) and `useDeploys` (`useDeploys` polling while a ticket is
   in flight — `approved`/`uploaded`, never `pending`, which waits on a person — `useDecideDeploy`,
-  `useDeployProduction`; and `useDeployProgress(appId)` — the overview's `DeployProgressPanel`, each environment's latest deploy and phase, polled every `DEPLOY_PROGRESS_POLL_MS` while `deployProgressPollInterval` says one runs and does not wait on a person (the catalogue's `useApps` polls on the same decision over `latestDeploy`), refreshing the rest of the `apps` family once when it settles; what the stepper and the catalogue line SAY is `pages/apps/components/deployProgressModel.ts`).
+  `useDeployProduction`; and `useDeployProgress(appId)` — the app Overview's in-flight lines and the release page's milestones, each environment's latest deploy and phase, polled every `DEPLOY_PROGRESS_POLL_MS` while `deployProgressPollInterval` says one runs and does not wait on a person (the catalogue's `useApps` polls on the same decision over `latestDeploy`), refreshing the rest of the `apps` family once when it settles; what the stepper and the catalogue line SAY is `pages/apps/components/deployProgressModel.ts`).
   Launch P3 (coding sessions): `useSessions` (`useSession(id)` / `useAppSessions(appId, scope)` /
   `useAdminSessions(scope)` polling `SESSION_POLL_MS` only while `sessionOwesAnswer` — `ready`,
   `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession`, `useSendTurn`,
@@ -448,22 +448,31 @@ A `CUSTOM kit.notice` renders
   organisation row or the SERVER-reported default per kind, then team/app overrides; the modal
   validates with `putApprovalPolicySchema` and refuses a policy with no approver and no
   auto-approve.
-- **The app page**: `PipelineStrip` first (rocketflare-launch#5 — staging → Promote to production →
-  production over `useAppPromotion`, `['release','promotion',appId]`, polled only while the
-  candidate deploys; every state and sentence is the pure `promotionModel.ts` — before staging from
-  the view's `candidateRun`, the tag's deploy run, with a link to the run; its Promote opens the
-  same `PromoteDialog` and STAYS on the page to show who the request waits on), then `ReleasesCard`
-  (+ `PromoteButton`, which goes to the approval it opened; a 409 is shown in its dialog) and
-  `releaseModel.ts` (the lifecycle badges, `nextVersion`, `chainEntry`).
-  A pending production ticket with an `approvalId` links to the request instead of deciding in
-  place; the access page's requests link to their `app.access` approvals. A `requested` app asks
-  `usePendingApproval({ kind: 'app.create', appId, box })` (`all` for admins, else `requested`):
-  while one is pending the page shows it instead of the launch panel and the pipeline is not
-  polled — it waits on a person. `CreateAppModal` words the toast by the 202's `approvalId`.
+- **The app page** (`pages/apps/AppPage.tsx` + `pages/apps/app/`, `docs/DESIGN.md` first): an
+  Overview and tabs as nested routes under `AppLayout` (`/apps/:slug/*` — Overview, `sessions`,
+  `releases` + `releases/:version`, `activity`, `settings/:section?`; the old `config` and
+  `access` redirect into Settings with `Moved`; `/apps/:slug/sessions/:id` is ranked above the
+  splat in `App.tsx` and keeps its own chunk). `AppLayout` owns the create/teardown
+  `usePipeline` queries and hands the tabs `useAppPage()` (Outlet context); until the first build
+  is live the Overview is the takeover and Sessions / Releases are disabled with the reason.
+  Everything the page SAYS is the pure `app/appPageModel.ts` (`appStage`, `stagingInFlight` /
+  `liveInFlight` — the ONE line under an environment row, `needsYou`, `releaseRows` /
+  `releaseCell`, the ticket badges; `tests/config/app-page-model.test.ts`) over
+  `promotionModel.ts` (`promotionState` over `useAppPromotion`, `['release','promotion',appId]`,
+  polled only while the candidate deploys; `progress: 'moving' | 'failed'` sorts a candidate into
+  the Staging row's line or Needs you). Ship (`ShipDialog`) stays on the Overview — the Live row
+  then names who the request waits on — and a Releases row's `ShipButton` goes to the approval it
+  opened; a 409 is shown in the dialog. `releaseModel.ts` keeps the lifecycle badges,
+  `nextVersion` and `chainEntry`. A pending production ticket with an `approvalId` is a Needs-you
+  link to the request; one without is still decided in place (heading focus, 409 as information).
+  A `requested` app asks `usePendingApproval({ kind: 'app.create', appId, box })` (`all` for
+  admins, else `requested`): while one is pending the Overview shows it instead of the launch
+  panel and the pipeline is not polled — it waits on a person. `CreateAppModal` words the toast
+  by the 202's `approvalId`.
 - **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
   extends (owners/admins — their click also approves), asks (the creator), or reads; header and
   banner take the same object.
-- Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `pipeline-strip`, `audit-integrity`, the P4 cases
+- Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `app-overview`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
 ## Shared config and grants (Launch P5)
@@ -478,8 +487,10 @@ A `CUSTOM kit.notice` renders
 - Everything the pages SAY is `shared-config/sharedConfigModel.ts` (`valueLine`, `missingKeys`,
   `pushProgress`, `holderBehind`, the badge maps) and `apps/components/configModel.ts`
   (`envGrantState` — held / pushing / push_failed / requested / revoking / missing —
-  `missingEnvironments`, `declaredByPlugin`); `MatchList` / `ScanLine` / `RescanButton` are shared
-  by `AppConfigPage` and the app page's `ConfigCard`. `RequestGrantModal` pre-selects only the
+  `missingEnvironments`, `declaredByPlugin`); `MatchList` / `ScanLine` / `RescanButton`
+  (`components/ConfigMatches.tsx`) build the app page's Settings → Config & secrets
+  (`app/ConfigSection.tsx`), and the Overview's Needs you reads the same model for what is
+  missing. `RequestGrantModal` pre-selects only the
   missing environments and renders refusals as sentences.
 - Hooks: `useSharedResources` (`useSharedResource`, create/patch/values, `useGrantPushes`,
   `useGrantPush`, `useRetryGrantPush`; `grantPushPollInterval` polls only while `queued`/`running`)
@@ -494,7 +505,10 @@ A `CUSTOM kit.notice` renders
 ## Feature flags (D30)
 
 - `lib/feature-guards.ts` is the client-side spelling: one `NavGuard` const per feature plus
-  `featureGuard(feature, guard)` to compose the flag with a permission. `useNavGuard` gains a
+  `featureGuard(feature, guard)` to compose the flag with a permission. Launch's own is `kit-ai`
+  (`CHAT_GUARD`, `AGENTS_GUARD`, `KNOWLEDGE_GUARD`): Chat, Agents (and its badge's count query),
+  Knowledge and Search — nav item AND route — are hidden until a deployment lists the key in
+  `FEATURES_ENABLED` (`tests/ui/kit-ai-flag.test.tsx`). `useNavGuard` gains a
   `{ feature }` form (answered from `session.features`, checked BEFORE the tenant check — a feature
   that is off is off for everyone) and a LIST form meaning AND. `useFeature('x')` is the hook.
 - **Never gate on `{ action: 'access', subject: 'Feature:x' }`.** A global admin's `manage all`

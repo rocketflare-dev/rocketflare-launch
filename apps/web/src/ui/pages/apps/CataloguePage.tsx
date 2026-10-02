@@ -158,13 +158,11 @@ function EnvCell({ app, name }: { app: AppCatalogueItem; name: 'staging' | 'prod
 }
 
 function AppCard({ app }: { app: AppCatalogueItem }) {
-  const attention = ['down', 'degraded'].includes(worstHealth(app))
+  // Status is the dot and word per environment below, never a coloured edge (docs/DESIGN.md).
   return (
     <Link
       to={`/apps/${encodeURIComponent(app.slug)}`}
-      className={`surface-panel group flex flex-col gap-4 transition-colors hover:border-primary focus-visible:outline-2 focus-visible:outline-primary ${
-        attention ? 'border-l-4 border-l-error' : ''
-      }`}
+      className="surface-panel group flex flex-col gap-4 transition-colors hover:border-primary focus-visible:outline-2 focus-visible:outline-primary"
     >
       <div className="flex items-start gap-3 min-w-0">
         <Monogram app={app} />

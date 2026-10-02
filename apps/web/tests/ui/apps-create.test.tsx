@@ -1,7 +1,8 @@
 /**
  * Creating an app (Launch P2, slice 2e): the Create modal's live slug check, host preview and
- * navigation; the launch's progress with a failed step and "Retry from failed step"; the Archive
- * modal's typed confirmation; and a pending production deploy decided on the app page. The server
+ * navigation; the launch's progress with a failed step and "Retry from failed step" (the Overview
+ * takeover); the Archive modal's typed confirmation (Settings → Danger zone); a pending Live deploy
+ * decided in the Overview's Needs-you list, and the direct Live deploy on the Releases tab. The server
  * is a `stubFetch` route table built from the shared P2 contracts' shapes.
  */
 import { APP_LAUNCH_VIEW_STEPS } from '@launch/shared/launch-pipeline'
@@ -9,7 +10,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useToastStore } from '@/ui/components/shared'
-import AppDetailPage from '@/ui/pages/apps/AppDetailPage'
+import AppPage from '@/ui/pages/apps/AppPage'
 import CataloguePage from '@/ui/pages/apps/CataloguePage'
 import { approvalRow } from './helpers/approvals'
 import {
@@ -360,7 +361,7 @@ describe('CreateAppModal', () => {
   })
 })
 
-describe('AppDetailPage — the launch', () => {
+describe('App page — the first build takes the Overview over', () => {
   function renderDetail(
     session: ReturnType<typeof makeSession>,
     app: Record<string, unknown>,
@@ -376,7 +377,7 @@ describe('AppDetailPage — the launch', () => {
     })
     renderWithProviders(
       <Routes>
-        <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/apps/:slug/*" element={<AppPage />} />
         <Route path="/approvals/:id" element={<ApprovalStub />} />
       </Routes>,
       { session, route: '/apps/expenses' }
@@ -651,10 +652,11 @@ describe('AppDetailPage — the launch', () => {
   })
 })
 
-describe('AppDetailPage — archive and deploys', () => {
+describe('App page — archive and deploys', () => {
   function renderLive(
     session: ReturnType<typeof makeSession>,
-    routes: Record<string, unknown> = {}
+    routes: Record<string, unknown> = {},
+    route = '/apps/expenses'
   ) {
     const fetchMock = stubFetch({
       '/api/apps/expenses': detail(),
@@ -676,18 +678,22 @@ describe('AppDetailPage — archive and deploys', () => {
     })
     renderWithProviders(
       <Routes>
-        <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/apps/:slug/*" element={<AppPage />} />
         <Route path="/approvals/:id" element={<ApprovalStub />} />
       </Routes>,
-      { session, route: '/apps/expenses' }
+      { session, route }
     )
     return fetchMock
   }
 
   it('archives only once the slug is typed, and warns before deleting the repository', async () => {
-    const fetchMock = renderLive(makeSession(), {
-      [`POST /api/apps/${APP_ID}/teardown`]: () => jsonResponse({ runId: TEARDOWN_RUN_ID }, 202),
-    })
+    const fetchMock = renderLive(
+      makeSession(),
+      {
+        [`POST /api/apps/${APP_ID}/teardown`]: () => jsonResponse({ runId: TEARDOWN_RUN_ID }, 202),
+      },
+      '/apps/expenses/settings/danger'
+    )
     fireEvent.click(await screen.findByRole('button', { name: /Archive app/ }))
     const dialog = screen.getByRole('dialog')
     const confirm = within(dialog).getByRole('button', { name: 'Archive app' })
@@ -710,7 +716,7 @@ describe('AppDetailPage — archive and deploys', () => {
     })
   })
 
-  it('puts a pending production deploy above the list, focuses its heading, and approves it', async () => {
+  it('puts a pending Live deploy in Needs you, focuses its heading, and approves it', async () => {
     let decided = false
     const fetchMock = renderLive(makeSession(), {
       [`/api/apps/${APP_ID}/deploys`]: () => ({
@@ -734,13 +740,10 @@ describe('AppDetailPage — archive and deploys', () => {
       },
     })
     const heading = await screen.findByRole('heading', {
-      name: 'Production deploy of 1.2.0 is waiting for approval',
+      name: 'Live deploy of 1.2.0 is waiting for approval',
     })
     await waitFor(() => expect(heading).toHaveFocus())
-    const table = screen.getByRole('table')
-    expect(within(table).getByText('awaiting approval')).toBeInTheDocument()
-    expect(within(table).getByText('finished')).toBeInTheDocument()
-    expect(within(table).getAllByText('octocat')).toHaveLength(2)
+    expect(screen.getByRole('heading', { name: 'Needs you' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() =>
@@ -751,6 +754,35 @@ describe('AppDetailPage — archive and deploys', () => {
     expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/deploys/${TICKET_ID}/decide`)).toEqual({
       decision: 'approve',
     })
+  })
+
+  it('lists every deploy on the Releases tab, one row per version', async () => {
+    renderLive(
+      makeSession(),
+      {
+        [`/api/apps/${APP_ID}/deploys`]: {
+          items: [
+            ticket(),
+            ticket({
+              id: '78787878-7878-4787-8787-787878787878',
+              environment: 'staging',
+              environmentId: STAGING_ID,
+              status: 'finished',
+              version: '1.1.0',
+              cfVersionId: 'ver-110',
+              activatedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+              decisionSource: 'auto',
+            }),
+          ],
+        },
+        [`/api/apps/${APP_ID}/releases`]: { items: [] },
+      },
+      '/apps/expenses/releases'
+    )
+    const table = await screen.findByRole('table', { name: 'Releases' })
+    const row = (version: string) => within(table).getByText(version).closest('tr') as HTMLElement
+    expect(within(row('v1.2.0')).getByText('awaiting approval')).toBeInTheDocument()
+    expect(within(row('v1.1.0')).getByText('finished')).toBeInTheDocument()
   })
 
   it('renders a decision somebody else made first as information, not an error', async () => {
@@ -767,7 +799,7 @@ describe('AppDetailPage — archive and deploys', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
   })
 
-  it('shows a member one sentence instead of the decision buttons, and no production button', async () => {
+  it('shows a member one sentence under Attention instead of the decision buttons', async () => {
     renderLive(member(), {
       '/api/apps/expenses': detail({ viewerCanDeploy: false }),
       [`/api/apps/${APP_ID}/deploys`]: { items: [ticket()] },
@@ -775,43 +807,69 @@ describe('AppDetailPage — archive and deploys', () => {
     expect(
       await screen.findByText(/Waiting for an app owner or an administrator/)
     ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Attention' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Deploy to production/ })).not.toBeInTheDocument()
+  })
+
+  it('hides the direct Live deploy and New release from somebody who may not ship', async () => {
+    renderLive(
+      member(),
+      {
+        '/api/apps/expenses': detail({ viewerCanDeploy: false }),
+        [`/api/apps/${APP_ID}/releases`]: { items: [] },
+      },
+      '/apps/expenses/releases'
+    )
+    expect(await screen.findByText(/An owner of this app cuts them/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Deploy main to Live/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New release/ })).not.toBeInTheDocument()
   })
 
   it('lets a member who OWNS the app approve and deploy, as the server does', async () => {
     renderLive(member(), { [`/api/apps/${APP_ID}/deploys`]: { items: [ticket()] } })
     expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Deploy to production/ })).toBeInTheDocument()
-    // Retry and archive stay with admins.
+    fireEvent.click(screen.getByRole('link', { name: 'Releases' }))
+    expect(await screen.findByRole('button', { name: /Deploy main to Live/ })).toBeInTheDocument()
+    // Retry and archive stay with admins: the Danger zone is not even listed.
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }))
+    expect(await screen.findByRole('link', { name: 'General' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Danger zone' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Archive app/ })).not.toBeInTheDocument()
   })
 
-  it('confirms before deploying to production, then goes to the approval it opened (P4)', async () => {
+  it('confirms before deploying to Live, then goes to the approval it opened (P4)', async () => {
     const approvalId = '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a'
-    const fetchMock = renderLive(makeSession(), {
-      [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
-        jsonResponse({ ticket: null, approvalId }, 202),
-    })
-    fireEvent.click(await screen.findByRole('button', { name: /Deploy to production/ }))
+    const fetchMock = renderLive(
+      makeSession(),
+      {
+        [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
+          jsonResponse({ ticket: null, approvalId }, 202),
+      },
+      '/apps/expenses/releases'
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Deploy main to Live/ }))
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText(/someone other than you approves/)).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for approval' }))
+    expect(within(dialog).getByText(/other than you approves/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Request approval' }))
     expect(await screen.findByText(`approval page ${approvalId}`)).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
   })
 
   it('still accepts a pre-approved ticket from a server without the engine', async () => {
-    const fetchMock = renderLive(makeSession(), {
-      [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
-        jsonResponse(
-          { ticket: ticket({ status: 'approved', decisionSource: 'intent', runId: null }) },
-          202
-        ),
-    })
-    fireEvent.click(await screen.findByRole('button', { name: /Deploy to production/ }))
+    const fetchMock = renderLive(
+      makeSession(),
+      {
+        [`POST /api/apps/${APP_ID}/deploys/production`]: () =>
+          jsonResponse(
+            { ticket: ticket({ status: 'approved', decisionSource: 'intent', runId: null }) },
+            202
+          ),
+      },
+      '/apps/expenses/releases'
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Deploy main to Live/ }))
     fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Ask for approval' })
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Request approval' })
     )
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
@@ -819,7 +877,7 @@ describe('AppDetailPage — archive and deploys', () => {
     expect(screen.queryByText(/approval page/)).not.toBeInTheDocument()
   })
 
-  it('links a pending production ticket to its approval instead of deciding it in place', async () => {
+  it('links a pending Live deploy to its approval instead of deciding it in place', async () => {
     const approvalId = '5a5a5a5a-5a5a-45a5-8a5a-5a5a5a5a5a5a'
     renderLive(makeSession(), {
       [`/api/apps/${APP_ID}/deploys`]: () => ({ items: [ticket({ approvalId })] }),

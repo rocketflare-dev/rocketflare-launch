@@ -1,15 +1,15 @@
 /**
- * Deploy progress in the UI: the overview's `DeployProgressPanel` (a deploy in progress shows its
- * stepper with the step it is on and its run; a failed one where it stopped and why; a live one a
- * single line), the catalogue's deploy line, and the pure halves — `deployStepStates` and the
- * poll decision `deployProgressPollInterval` (never while waiting on a person).
+ * Deploy progress in the UI: the release page's milestones (`DeploySteps` — the step a deploy is
+ * on, or where it stopped), the catalogue's deploy line, and the pure halves — `deployStepStates`
+ * and the poll decision `deployProgressPollInterval` (never while waiting on a person). The
+ * Overview's one-line version is in `app-overview.test.tsx`.
  */
 import type { DeployProgress } from '@launch/shared/launch-apps'
 import { screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEPLOY_PROGRESS_POLL_MS, deployProgressPollInterval } from '@/ui/hooks/useDeploys'
+import { DeploySteps } from '@/ui/pages/apps/app/DeploySteps'
 import CataloguePage from '@/ui/pages/apps/CataloguePage'
-import { DeployProgressPanel } from '@/ui/pages/apps/components/DeployProgressPanel'
 import { deployStepStates, deployTitle } from '@/ui/pages/apps/components/deployProgressModel'
 import { makeSession, renderWithProviders, stubFetch } from './helpers/renderWithProviders'
 
@@ -84,36 +84,12 @@ describe('deployProgressPollInterval', () => {
   })
 })
 
-describe('DeployProgressPanel', () => {
-  it('shows a running deploy with its stepper, step and run, and a live one as a line', async () => {
-    stubFetch({
-      [`/api/apps/${APP_ID}/deploys/latest`]: {
-        items: [
-          deploy({
-            ticketId: '22222222-2222-4222-8222-222222222222',
-            environment: 'staging',
-            phase: 'done',
-            reached: 'done',
-            inProgress: false,
-            activatedAt: minutesAgo(30),
-            runUrl: null,
-          }),
-          deploy(),
-        ],
-      },
-    })
-    renderWithProviders(<DeployProgressPanel appId={APP_ID} />, { session: makeSession() })
-    expect(await screen.findByText('Deploying')).toBeInTheDocument()
-
-    const production = screen.getByTestId('deploy-production')
-    expect(within(production).getByText('Production deploy of 1.4.0')).toBeInTheDocument()
-    expect(within(production).getByText('migrating')).toBeInTheDocument()
-    expect(within(production).getByText('by octocat')).toBeInTheDocument()
-    expect(within(production).getByRole('link', { name: /View run/ })).toHaveAttribute(
-      'href',
-      RUN_URL
+describe('DeploySteps (the release page)', () => {
+  it('marks each milestone, and names its state for a screen reader', () => {
+    renderWithProviders(<DeploySteps deploy={deploy() as never} />, { session: makeSession() })
+    const steps = within(screen.getByRole('list', { name: 'Deploy steps' })).getAllByRole(
+      'listitem'
     )
-    const steps = within(production).getAllByRole('listitem')
     expect(steps.map(s => s.getAttribute('data-state'))).toEqual([
       'done',
       'done',
@@ -122,56 +98,17 @@ describe('DeployProgressPanel', () => {
       'current',
       'todo',
     ])
-    expect(within(production).getByText(/Activating/)).toHaveTextContent('in progress')
-
-    const staging = screen.getByTestId('deploy-staging')
-    expect(within(staging).getByText('live')).toBeInTheDocument()
-    expect(within(staging).queryByRole('list', { name: 'Deploy steps' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Activating/)).toHaveTextContent('in progress')
   })
 
-  it('says where a failed deploy stopped and why', async () => {
-    stubFetch({
-      [`/api/apps/${APP_ID}/deploys/latest`]: {
-        items: [
-          deploy({
-            phase: 'failed',
-            reached: 'migrating',
-            inProgress: false,
-            error: 'The GitHub Actions run ended “cancelled” before it was activated',
-          }),
-        ],
-      },
-    })
-    renderWithProviders(<DeployProgressPanel appId={APP_ID} />, { session: makeSession() })
-    expect(await screen.findByText('Latest deploys')).toBeInTheDocument()
-    expect(screen.getByText(/ended “cancelled”/)).toBeInTheDocument()
-    const failed = screen
-      .getAllByRole('listitem')
-      .find(li => li.getAttribute('data-state') === 'failed')
-    expect(failed).toHaveTextContent('Activating')
-  })
-
-  it('links a deploy waiting on an approval to its request', async () => {
-    const approvalId = '33333333-3333-4333-8333-333333333333'
-    stubFetch({
-      [`/api/apps/${APP_ID}/deploys/latest`]: {
-        items: [deploy({ phase: 'awaiting_approval', reached: 'dispatched', approvalId })],
-      },
-    })
-    renderWithProviders(<DeployProgressPanel appId={APP_ID} />, { session: makeSession() })
-    expect(await screen.findByRole('link', { name: 'See the request' })).toHaveAttribute(
-      'href',
-      `/approvals/${approvalId}`
+  it('says where a failed deploy stopped', () => {
+    renderWithProviders(
+      <DeploySteps deploy={deploy({ phase: 'failed', reached: 'uploaded' }) as never} />,
+      {
+        session: makeSession(),
+      }
     )
-  })
-
-  it('renders nothing for an app that never deployed', async () => {
-    const fetch = stubFetch({ [`/api/apps/${APP_ID}/deploys/latest`]: { items: [] } })
-    const { container } = renderWithProviders(<DeployProgressPanel appId={APP_ID} />, {
-      session: makeSession(),
-    })
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalled())
-    expect(container).toBeEmptyDOMElement()
+    expect(screen.getByText(/Migrating/)).toHaveTextContent('failed here')
   })
 })
 

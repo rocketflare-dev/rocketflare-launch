@@ -1,26 +1,20 @@
 /**
- * `/apps/:slug/access` (spec/05): who may sign in to this app through Launch — the access policy
- * (the whole organisation, or only the groups and people granted), the grants, and the queue of
- * access requests — each an `app.access` approval, decided on its own page (P4). For the app's
- * owners and the organisation's admins; the server answers 404 to anyone else, which this page
- * shows as "not yours to manage".
+ * Settings → Access & sign-in, below the OIDC client (`/apps/:slug/settings/access`; spec/05; the
+ * old `/apps/:slug/access` redirects here): who may sign in to this app through Launch — the
+ * access policy (the whole organisation, or only the groups and people granted), the grants, and
+ * the queue of access requests — each an `app.access` approval, decided on its own page (P4). For
+ * the app's owners and the organisation's admins; the server answers 404 to anyone else, which
+ * this section shows as one sentence.
  *
  * The app's owners can always sign in, whatever the policy says — restricting an app can never
  * lock its owners out.
  */
-import { InboxIcon, KeyIcon, TrashIcon, UserGroupIcon } from '@heroicons/react/24/outline'
+import { InboxIcon, TrashIcon, UserGroupIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppAccessRequestStatus, OidcAccessPolicy } from '@launch/shared/launch-oidc'
 import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import {
-  ConfirmModal,
-  EmptyState,
-  EmptyStateCard,
-  PageHeader,
-  SectionPanel,
-  SkeletonRows,
-} from '@/ui/components/shared'
+import { Link } from 'react-router-dom'
+import { ConfirmModal, EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import {
   useAddAppAccessGrant,
   useAppAccessGrants,
@@ -313,43 +307,25 @@ function RequestsPanel({ app }: { app: string }) {
   )
 }
 
-export default function AppAccessPage() {
-  const { slug = '' } = useParams<{ slug: string }>()
+export function AccessSection({ slug }: { slug: string }) {
   const { data, isLoading, isError } = useAppAccessPolicy(slug)
-  const appPath = `/apps/${encodeURIComponent(slug)}`
 
   return (
-    <div className="max-w-5xl space-y-6">
-      <PageHeader
-        title="Access"
-        breadcrumbs={[
-          { label: 'Apps', to: '/apps' },
-          { label: data?.app.displayName ?? slug, to: appPath },
-          { label: 'Access' },
-        ]}
-        description="Who may sign in to this app through Launch."
-      />
+    <section className="space-y-6" aria-labelledby="who-can-sign-in-title">
+      <h3 id="who-can-sign-in-title" className="text-base font-semibold">
+        Who can sign in
+      </h3>
       {isLoading ? (
-        <SectionPanel>
-          <SkeletonRows rows={4} />
-        </SectionPanel>
+        <SkeletonRows rows={4} />
       ) : isError || !data ? (
-        <EmptyStateCard
-          icon={KeyIcon}
-          message="Not available"
-          description="Only this app's owners and your organisation's admins manage who can sign in to it."
-        />
+        <p className="text-sm text-muted">
+          Only this app’s owners and your organisation’s admins manage who can sign in to it.
+        </p>
       ) : !data.hasClient || !data.accessPolicy ? (
-        <EmptyStateCard
-          icon={KeyIcon}
-          message="This app does not sign in through Launch yet"
-          description="Register its OIDC client on the app's page; its access policy is managed here afterwards."
-          action={
-            <Link to={appPath} className="btn btn-sm">
-              Go to the app
-            </Link>
-          }
-        />
+        <p className="text-sm text-muted">
+          Once the app signs in through Launch (its OIDC client, above), who may sign in is managed
+          here.
+        </p>
       ) : (
         <>
           <PolicyPanel app={data.app.id} policy={data.accessPolicy} />
@@ -357,6 +333,6 @@ export default function AppAccessPage() {
           <RequestsPanel app={data.app.id} />
         </>
       )}
-    </div>
+    </section>
   )
 }

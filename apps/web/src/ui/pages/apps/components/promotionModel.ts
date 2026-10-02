@@ -1,19 +1,21 @@
 /**
- * What the app page's pipeline strip SAYS (rocketflare-launch#5 part 8) — pure, so every state and
- * its sentence is decided in one place over `appPromotionSchema`:
+ * Where the app page's Staging → Live flow stands (rocketflare-launch#5 part 8) — pure, so every
+ * state and its sentence is decided in one place over `appPromotionSchema`. The UI calls the
+ * environments Staging and Live; GitHub and wrangler keep the names staging/production.
  *
- * - `ready` — staging runs the newest release, it is healthy, and production runs something older:
- *   Promote is on offer;
- * - `blocked` — Promote is not on offer, with the reason in plain words ("v1.4.2 is tagged — GitHub
+ * - `ready` — staging runs the newest release, it is healthy, and Live runs something older: Ship
+ *   is on offer;
+ * - `blocked` — Ship is not on offer, with the reason in plain words ("v1.4.2 is tagged — GitHub
  *   is checking it before it deploys to staging" while its tag's run has not reached the staging
  *   job, "Deploying v1.4.2 to staging…", "v1.4.2 did not deploy: ci / Gate failed", "Staging is
  *   still deploying" when no run is known, "v1.4.2 never reached staging" once a release with no
- *   run in flight is past `RELEASE_STAGING_TIMEOUT_MINUTES`, "Staging is unhealthy", "Production
+ *   run in flight is past `RELEASE_STAGING_TIMEOUT_MINUTES`, "Staging is unhealthy", "Live
  *   already runs v1.4.2", "Nothing on staging yet"). With the tag's run (`view.candidateRun`) it
- *   carries `run`: the job it is on and the link to it on GitHub;
- * - `awaiting` — promoted; the `deploy.production` request waits on the people it names;
- * - `deploying` — approved; production is deploying it;
- * - `live` — the newest release is in production.
+ *   carries `run`: the job it is on and the link to it on GitHub; `progress` sorts the candidate's
+ *   reasons into on-its-way (`moving`) and needs-a-person (`failed`);
+ * - `awaiting` — shipped; the `deploy.production` request waits on the people it names;
+ * - `deploying` — approved; Live is deploying it;
+ * - `live` — the newest release is Live.
  *
  * The server stays the judge: the route re-checks staging (and probes it when the reading is
  * stale), so a stale `ready` costs a 409 shown in the dialog, never a wrong deploy.
@@ -38,6 +40,12 @@ export type PromotionState =
       productionAhead?: boolean
       /** The candidate's tag run on GitHub: what it is doing now, and where to see it. */
       run?: PromotionRunNote
+      /**
+       * For the app page: `moving` — the candidate is on its way to staging (an inline line on the
+       * Staging row); `failed` — it will not get there by itself (a Needs-you item). Absent for
+       * every other reason.
+       */
+      progress?: 'moving' | 'failed'
     }
   | { kind: 'awaiting'; release: Release; approval: PromotionApproval | null }
   | { kind: 'deploying'; release: Release }
@@ -60,17 +68,10 @@ function stuck(release: Release, now: Date): boolean {
   return now.getTime() - release.createdAt.getTime() >= RELEASE_STAGING_TIMEOUT_MINUTES * 60_000
 }
 
-export const STAGING_HEALTH_WORD: Record<HealthStatus, string> = {
-  up: 'healthy',
-  degraded: 'partly working',
-  down: 'down',
-  unknown: 'not checked yet',
-}
-
 const UNHEALTHY_REASON: Record<Exclude<HealthStatus, 'up'>, string> = {
   degraded: 'Staging is unhealthy',
   down: 'Staging is unhealthy',
-  unknown: 'Staging has not been checked since it was deployed — press Check now',
+  unknown: 'Staging has not been checked since it was deployed — Check now is on Activity',
 }
 
 /** The note for a run still going: the job it is on, and its link. Pure. */
@@ -101,6 +102,7 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
           reason: failedRunReason(release.version, run),
           release,
           run: { detail: null, url: run.url },
+          progress: 'failed',
         }
       }
       const inFlight = run && run.status !== 'completed' ? run : null
@@ -110,6 +112,7 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
           reason: `Deploying ${v(release.version)} to staging…`,
           release,
           ...(run ? { run: runningNote(run) } : {}),
+          progress: 'moving',
         }
       }
       if (inFlight) {
@@ -118,11 +121,17 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
           reason: `${v(release.version)} is tagged — GitHub is checking it before it deploys to staging`,
           release,
           run: runningNote(inFlight),
+          progress: 'moving',
         }
       }
       return stuck(release, now)
-        ? { kind: 'blocked', reason: `${v(release.version)} never reached staging`, release }
-        : { kind: 'blocked', reason: 'Staging is still deploying', release }
+        ? {
+            kind: 'blocked',
+            reason: `${v(release.version)} never reached staging`,
+            release,
+            progress: 'failed',
+          }
+        : { kind: 'blocked', reason: 'Staging is still deploying', release, progress: 'moving' }
     }
     case 'awaiting_approval':
       return { kind: 'awaiting', release, approval: view.approval }
@@ -137,14 +146,20 @@ export function promotionState(view: AppPromotion, now: Date = new Date()): Prom
             reason: failedRunReason(release.version, run),
             release,
             run: { detail: null, url: run.url },
+            progress: 'failed',
           }
-        : { kind: 'blocked', reason: `${v(release.version)} did not deploy`, release }
+        : {
+            kind: 'blocked',
+            reason: `${v(release.version)} did not deploy`,
+            release,
+            progress: 'failed',
+          }
     case 'staging_active':
     case 'rejected': {
       if (production && compareReleaseVersions(production, release.version) >= 0) {
         return {
           kind: 'blocked',
-          reason: `Production already runs ${v(production)}`,
+          reason: `Live already runs ${v(production)}`,
           release,
           productionAhead: true,
         }
@@ -181,18 +196,53 @@ export function peopleSentence(
   return `${names.slice(0, shown).join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
 }
 
-/** Who may press Promote, for somebody who may not: the app's owners and the admins. */
+/** Who may press Ship, for somebody who may not: the app's owners and the admins. */
 export function promotersSentence(ownerTeam: string | null): string {
   return ownerTeam
-    ? `The ${ownerTeam} team and organisation admins can promote to production.`
-    : 'This app’s owners and organisation admins can promote to production.'
+    ? `The ${ownerTeam} team and organisation admins can ship it live.`
+    : 'This app’s owners and organisation admins can ship it live.'
 }
 
-/** The heading over what the promotion ships, or null when there is nothing to list. */
-export function changesTitle(state: PromotionState): string | null {
-  if (!state.release) return null
+/**
+ * How many changes (sessions and pull requests) staging carries that Live does not — "3 changes
+ * not live", "50+ changes not live" — or null when there is nothing to list: no candidate, Live is
+ * at or past it, or it is already Live. Pure.
+ */
+export function changesNotLive(
+  view: Pick<AppPromotion, 'changes' | 'changesTruncated'>,
+  state: PromotionState
+): string | null {
+  if (!state.release || state.kind === 'live') return null
   if (state.kind === 'blocked' && state.productionAhead) return null
-  return state.kind === 'live'
-    ? `What ${v(state.release.version)} brought to production`
-    : 'What this promotion ships'
+  const count = view.changes.length
+  if (count === 0) return null
+  return `${count}${view.changesTruncated ? '+' : ''} ${count === 1 && !view.changesTruncated ? 'change' : 'changes'} not live`
+}
+
+/** Longest summary line shown under a change; the rest is one click away on the PR. */
+const SUMMARY_LINE_MAX = 220
+
+/**
+ * Issue #5: a change's stored ship summary (markdown from the PR body) as ONE plain line — its
+ * first paragraph that is not just a heading, list and quote marks stripped, clipped. Rendered as
+ * text, never markdown (this chunk carries no renderer). Null when there is nothing to say. Pure.
+ */
+export function summaryLine(summary: string | null | undefined): string | null {
+  if (!summary) return null
+  const paragraph = summary
+    .split(/\n\s*\n/)
+    .map(part =>
+      part
+        .split('\n')
+        .filter(line => !/^\s*#{1,6}\s/.test(line))
+        .map(line => line.replace(/^\s*([-*+]\s+|\d+\.\s+|>\s?)/, '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\*\*|__|`/g, '')
+    )
+    .find(Boolean)
+  if (!paragraph) return null
+  return paragraph.length > SUMMARY_LINE_MAX
+    ? `${paragraph.slice(0, SUMMARY_LINE_MAX).trimEnd()}…`
+    : paragraph
 }

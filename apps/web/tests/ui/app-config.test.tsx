@@ -1,6 +1,6 @@
 /**
- * An app's shared config (Launch P5, spec/09, plan §4 5f): the Config page, the Config card on the
- * app page, the Request flow, and the session ship panel's needs line. What they are arranged to
+ * An app's shared config (Launch P5, spec/09, plan §4 5f): the app page's Settings → Config & secrets,
+ * the Request flow, and the session ship panel's needs line. What they are arranged to
  * get right:
  *
  * - each matched resource shows its state per environment (held with the version, requested with
@@ -19,8 +19,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useToastStore } from '@/ui/components/shared'
 import { appConfigPollInterval, grantOwesPush } from '@/ui/hooks/useAppConfig'
-import AppConfigPage from '@/ui/pages/apps/AppConfigPage'
-import { ConfigCard } from '@/ui/pages/apps/components/ConfigCard'
+import AppPage from '@/ui/pages/apps/AppPage'
 import {
   declaredByPlugin,
   envGrantState,
@@ -84,14 +83,14 @@ function renderConfigPage(routes: RouteTable, session = makeSession()) {
   const fetchMock = stubFetch({ '/api/apps/expenses': appDetail, ...routes })
   renderWithProviders(
     <Routes>
-      <Route path="/apps/:slug/config" element={<AppConfigPage />} />
+      <Route path="/apps/:slug/*" element={<AppPage />} />
     </Routes>,
     { session, route: '/apps/expenses/config' }
   )
   return fetchMock
 }
 
-describe('AppConfigPage', () => {
+describe('Settings → Config & secrets', () => {
   it('shows each environment’s state, the declared keys by plugin, and the unmatched hint', async () => {
     renderConfigPage({ [CONFIG]: appConfigView() })
     const list = await screen.findByRole('list', { name: 'Shared config' })
@@ -220,19 +219,19 @@ describe('AppConfigPage', () => {
   })
 })
 
-describe('ConfigCard', () => {
-  it('re-scans and shows the new answer', async () => {
-    const fetchMock = stubFetch({
+describe('Re-scan', () => {
+  it('re-scans and shows the new answer — the old /config link lands on the section', async () => {
+    const fetchMock = renderConfigPage({
       [CONFIG]: appConfigView({ scan: null, declared: [], matched: [], unmatched: [], grants: [] }),
       [`POST ${CONFIG}/scan`]: appConfigView(),
     })
-    renderWithProviders(<ConfigCard appId={APP_ID} appSlug="expenses" appName="Expenses" />, {
-      session: makeSession(),
-    })
     expect(await screen.findByText('Not scanned yet.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Config & secrets' })).toHaveAttribute(
+      'aria-current',
+      'page'
+    )
     fireEvent.click(screen.getByRole('button', { name: /Re-scan/ }))
-    expect(await screen.findByRole('link', { name: 'Microsoft 365' })).toBeInTheDocument()
-    expect(screen.getByText(/2 declared keys match/)).toBeInTheDocument()
+    expect(await screen.findAllByRole('link', { name: 'Microsoft 365' })).not.toHaveLength(0)
     expect(
       fetchMock.mock.calls.some(
         ([input, init]) => String(input).endsWith('/config/scan') && init?.method === 'POST'

@@ -1,14 +1,15 @@
 /**
- * The releases card on the app page (Launch P4, plan §1.8): the lifecycle per release, cutting one
- * (`POST {bump}` with the version previewed), promoting one staging runs (→ the approval it opened),
- * a 409 on promote shown as information, a link to a release's pending approval, and each row's
- * chain — read only when opened, in the order the server answered.
+ * The app page's Releases tab and a release's page (Launch P4, plan §1.8; the app page plan's
+ * decision 9): one row per version with what Staging and Live say about it, cutting one
+ * (`POST {bump}` with the version previewed), shipping one staging runs (→ the approval it opened),
+ * a 409 on ship shown as information, a link to a release's pending approval, and the release
+ * page's chain — read only when the page is opened, in the order the server answered.
  */
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useToastStore } from '@/ui/components/shared'
-import { ReleasesCard } from '@/ui/pages/apps/components/ReleasesCard'
+import AppPage from '@/ui/pages/apps/AppPage'
 import { APP_ID, APPROVAL_ID, auditRow, RELEASE_ID, releaseRow } from './helpers/approvals'
 import {
   errorResponse,
@@ -34,19 +35,43 @@ function ApprovalStub() {
 const BASE = `/api/apps/${APP_ID}/releases`
 const OLDER = 'e1e1e1e1-0000-4000-8000-000000000002'
 
-function renderCard(routes: RouteTable, canRelease = true) {
-  const fetchMock = stubFetch(routes)
+const appDetail = (viewerCanDeploy: boolean) => ({
+  id: APP_ID,
+  slug: 'expenses',
+  displayName: 'Expenses',
+  description: null,
+  status: 'live',
+  source: 'imported',
+  template: 'rocketflare',
+  templateVersion: '0.15.0',
+  repoOwner: 'acme',
+  repoName: 'expenses',
+  ownerGroup: null,
+  environments: [],
+  createdAt: '2026-09-27T00:00:00Z',
+  templateContractVersion: null,
+  defaultBranch: 'main',
+  updatedAt: '2026-09-27T00:00:00Z',
+  viewerCanDeploy,
+})
+
+function renderCard(routes: RouteTable, canRelease = true, route = '/apps/expenses/releases') {
+  const fetchMock = stubFetch({
+    '/api/apps/expenses': appDetail(canRelease),
+    [`/api/apps/${APP_ID}/deploys`]: { items: [] },
+    ...routes,
+  })
   renderWithProviders(
     <Routes>
-      <Route path="/apps/:slug" element={<ReleasesCard appId={APP_ID} canRelease={canRelease} />} />
+      <Route path="/apps/:slug/*" element={<AppPage />} />
       <Route path="/approvals/:id" element={<ApprovalStub />} />
     </Routes>,
-    { session: makeSession(), route: '/apps/expenses' }
+    { session: makeSession(), route }
   )
   return fetchMock
 }
 
-describe('ReleasesCard', () => {
+describe('Releases tab', () => {
   it('lists releases with their place in the lifecycle, and links a pending approval', async () => {
     renderCard({
       [BASE]: {
@@ -57,13 +82,21 @@ describe('ReleasesCard', () => {
       },
     })
     const table = await screen.findByRole('table', { name: 'Releases' })
-    expect(within(table).getByText('awaiting approval')).toBeInTheDocument()
-    expect(within(table).getByText('in production')).toBeInTheDocument()
-    expect(within(table).getByRole('link', { name: /Approval/ })).toHaveAttribute(
+    const row = (version: string) =>
+      within(table).getByRole('link', { name: version }).closest('tr') as HTMLElement
+    // One status per environment cell: Live is the one that moved.
+    expect(within(row('v1.3.0')).getByText('awaiting approval')).toBeInTheDocument()
+    expect(within(row('v1.2.0')).getByText('live')).toBeInTheDocument()
+    expect(within(row('v1.3.0')).getByRole('link', { name: /Approval/ })).toHaveAttribute(
       'href',
       `/approvals/${APPROVAL_ID}`
     )
-    expect(within(table).queryByRole('button', { name: /Promote/ })).not.toBeInTheDocument()
+    expect(within(table).queryByRole('button', { name: /Ship/ })).not.toBeInTheDocument()
+    // A version opens its release page.
+    expect(within(table).getByRole('link', { name: 'v1.3.0' })).toHaveAttribute(
+      'href',
+      '/apps/expenses/releases/1.3.0'
+    )
   })
 
   it('cuts a release with the bump chosen, previewing the version', async () => {
@@ -85,7 +118,7 @@ describe('ReleasesCard', () => {
     )
   })
 
-  it('promotes a release staging runs, with a reason, and goes to the approval', async () => {
+  it('ships a release staging runs, with a reason, and goes to the approval', async () => {
     const fetchMock = renderCard({
       [BASE]: { items: [releaseRow()] },
       [`POST ${BASE}/${RELEASE_ID}/promote`]: () =>
@@ -97,20 +130,20 @@ describe('ReleasesCard', () => {
           202
         ),
     })
-    fireEvent.click(await screen.findByRole('button', { name: /Promote/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ship v1.3.0' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/someone other than you approves it/)).toBeInTheDocument()
     fireEvent.change(within(dialog).getByLabelText(/Why now/), {
       target: { value: 'Month end' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for approval' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Request approval' }))
     expect(await screen.findByText(`approval page ${APPROVAL_ID}`)).toBeInTheDocument()
     expect(requestBody(fetchMock, `POST ${BASE}/${RELEASE_ID}/promote`)).toEqual({
       reason: 'Month end',
     })
   })
 
-  it('shows a 409 on promote as information in the dialog, with no toast', async () => {
+  it('shows a 409 on ship as information in the dialog, with no toast', async () => {
     renderCard({
       [BASE]: { items: [releaseRow()] },
       [`POST ${BASE}/${RELEASE_ID}/promote`]: errorResponse(
@@ -119,9 +152,9 @@ describe('ReleasesCard', () => {
         'release_not_on_staging'
       ),
     })
-    fireEvent.click(await screen.findByRole('button', { name: /Promote/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Ship v1.3.0' }))
     const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for approval' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Request approval' }))
     expect(
       await within(dialog).findByText('Staging is not running 1.3.0 any more')
     ).toBeInTheDocument()
@@ -129,14 +162,14 @@ describe('ReleasesCard', () => {
     expect(useToastStore.getState().toasts).toHaveLength(0)
   })
 
-  it('offers neither New release nor Promote to someone who may not ship', async () => {
+  it('offers neither New release nor Ship to someone who may not ship', async () => {
     renderCard({ [BASE]: { items: [releaseRow()] } }, false)
     await screen.findByRole('table', { name: 'Releases' })
     expect(screen.queryByRole('button', { name: /New release/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Promote/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ship/ })).not.toBeInTheDocument()
   })
 
-  it('reads a release’s chain only when it is opened, and renders it in order', async () => {
+  it('reads a release’s chain only when its page is opened, and renders it in order', async () => {
     const fetchMock = renderCard({
       [BASE]: { items: [releaseRow({ status: 'production_active' })] },
       [`${BASE}/${RELEASE_ID}/chain`]: {
@@ -157,7 +190,10 @@ describe('ReleasesCard', () => {
     const chainCalls = () =>
       fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/chain')).length
     expect(chainCalls()).toBe(0)
-    fireEvent.click(screen.getByRole('button', { name: 'History of 1.3.0' }))
+    fireEvent.click(screen.getByRole('link', { name: 'v1.3.0' }))
+    expect(await screen.findByRole('heading', { name: 'History' })).toBeInTheDocument()
+    // The page says what it carries, before the story.
+    expect(screen.getByText('Friendlier home page')).toBeInTheDocument()
     const chain = await screen.findByRole('list', { name: 'Release chain' })
     expect(
       within(chain)

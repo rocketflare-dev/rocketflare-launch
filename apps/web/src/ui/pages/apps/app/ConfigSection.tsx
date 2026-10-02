@@ -1,13 +1,14 @@
 /**
- * `/apps/:slug/config` (Launch P5, spec/09) — what the app declares it needs, grouped by plugin,
- * the shared resources those keys match with a status and a Request button per environment, and
- * the keys nothing matches ("ask an admin to add it"). The grant-needed and grant-expiring
- * notifications link here (`appConfigPath(slug)`).
+ * Settings → Config & secrets (`/apps/:slug/settings/config`; Launch P5, spec/09) — what the app
+ * declares it needs, grouped by plugin, the shared resources those keys match with a status and a
+ * Request button per environment, and the keys nothing matches ("ask an admin to add it"). The
+ * grant-needed and grant-expiring notifications link to `/apps/:slug/config` (`appConfigPath`),
+ * which redirects here.
  *
  * Top to bottom:
  * - the last scan (ref, sha, when, or its error) and Re-scan — the app's owners and admins;
- * - the matched resources (`MatchList`, shared with the app page's `ConfigCard`): held / pushing /
- *   requested with the request's link / missing with Request;
+ * - the matched resources (`MatchList`): held / pushing / requested with the request's link /
+ *   missing with Request;
  * - the declared keys by plugin, each with the resource it matched or the hint;
  * - every grant of the app, declared or not, with Revoke (an active grant) and Re-push (one whose
  *   push failed) for the app's owners and admins.
@@ -15,25 +16,22 @@
  * Every reader of the app may read it (the server decides `canRequest`). It never shows a value —
  * the app's owners hold a grant, they never see what is in it.
  */
-import { ArrowPathIcon, ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, KeyIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
+import type { AppDetail } from '@launch/shared/launch-apps'
 import { type AppConfigView, type AppGrant, sharedResourcePath } from '@launch/shared/launch-grants'
 import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import {
   ConfirmModal,
   EmptyState,
-  EmptyStateCard,
-  PageHeader,
   SectionPanel,
   SectionPanelSkeleton,
 } from '@/ui/components/shared'
 import { useAppConfig, useRepushGrant, useRevokeGrant } from '@/ui/hooks/useAppConfig'
-import { useApp } from '@/ui/hooks/useApps'
-import { ApiError } from '@/ui/lib/api-client'
 import { formatDate, timeAgo } from '@/ui/lib/format'
-import { MatchList, RescanButton, ScanLine } from './components/ConfigCard'
-import { declaredByPlugin, ENV_STATE, envGrantState } from './components/configModel'
+import { MatchList, RescanButton, ScanLine } from '../components/ConfigMatches'
+import { declaredByPlugin, ENV_STATE, envGrantState } from '../components/configModel'
 
 const GRANT_STATUS_TONE: Record<AppGrant['status'], string> = {
   requested: 'awaiting-review',
@@ -216,51 +214,36 @@ function GrantsTable({ view, appId }: { view: AppConfigView; appId: string }) {
   )
 }
 
-export default function AppConfigPage() {
-  const { slug = '' } = useParams<{ slug: string }>()
-  const app = useApp(slug)
-  const config = useAppConfig(app.data?.id)
-  const crumbs = [
-    { label: 'Apps', to: '/apps' },
-    { label: app.data?.displayName ?? slug, to: `/apps/${slug}` },
-  ]
+export function ConfigSection({ app }: { app: Pick<AppDetail, 'id' | 'displayName'> }) {
+  const config = useAppConfig(app.id)
 
-  if (app.isLoading || (app.data && config.isLoading)) {
+  if (config.isLoading) {
     return (
-      <div className="max-w-5xl space-y-4">
-        <PageHeader title="Config" breadcrumbs={crumbs} />
+      <div className="space-y-4">
         <SectionPanelSkeleton rows={3} />
         <SectionPanelSkeleton rows={4} />
       </div>
     )
   }
 
-  const error = app.error ?? config.error
-  if (error || !app.data || !config.data) {
-    const missing = error instanceof ApiError && error.status === 404
+  if (config.error || !config.data) {
     return (
-      <div className="max-w-5xl">
-        <PageHeader title="Config" breadcrumbs={crumbs} />
-        <EmptyStateCard
-          icon={missing ? KeyIcon : ExclamationTriangleIcon}
-          message={missing ? 'No app here' : 'This app’s config could not be loaded'}
-          description={missing ? undefined : (error?.message ?? undefined)}
-        />
-      </div>
+      <p className="text-sm text-error" role="alert">
+        This app’s config could not be loaded{config.error ? `: ${config.error.message}` : '.'}
+      </p>
     )
   }
 
   const view = config.data
-  const appData = app.data
+  const appData = app
   return (
-    <div className="max-w-5xl space-y-6">
-      <PageHeader
-        className="mb-0"
-        title="Config"
-        breadcrumbs={crumbs}
-        description="The shared config this app declares, and the grants that give it."
-        actions={view.canRequest && <RescanButton appId={appData.id} />}
-      />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-secondary">
+          The shared config this app declares, and the grants that give it.
+        </p>
+        {view.canRequest && <RescanButton appId={appData.id} />}
+      </div>
       <ScanLine view={view} />
 
       <SectionPanel
