@@ -485,7 +485,8 @@ case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|
 drives Launch P3 coding sessions (§18.14) — `ship` follows the ship to live on staging by default,
 printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
 (`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
-ls|create|promote [--wait]` are the P4 inbox and shipping (§18.19); `audit verify|export` the
+ls|create|promote [--wait]|retry|cancel` are the P4 inbox and shipping (§18.19; `retry` is the
+stage-aware Retry and `cancel` stops a release's run in flight, §18.17); `audit verify|export` the
 hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
@@ -2304,13 +2305,58 @@ probe count) → stalled `unhealthy`.
   `session.merge` approvals of the release's sessions (by `approval_id`), so the chain reads PR →
   review → merge → release → staging → production.
 
+**Stage-aware Retry, Cancel and Fix in a session (app page P2, `releases/{failed-stage,retry,
+cancel,release-run,fix-session}.ts`).** Every release the API answers with carries `failedStage`
+(`releaseFailedStage`, `@launch/shared/launch-releases`, pure): `tag` (still `tagged`
+`RELEASE_STAGING_TIMEOUT_MINUTES` after it last moved with no tag run ever seen), `staging_deploy` /
+`production_deploy` (`failed`, by the `staging:` / `production:` prefix the gateway, the run poll and
+the tag-run follower write), `staging_health` / `production_health` (`staging_active` /
+`production_active` while that environment runs the version and its health is `down`) and
+`approval_rejected` (`rejected`); null otherwise. **`POST …/:rid/retry {stage?, reason?}`** (owners
+and admins, like Promote) does the one thing for that stage — each a plain GitHub operation or a
+Launch-side re-check, never state GitHub does not reflect: **a deploy stage** re-runs THAT run's
+failed jobs (`POST …/actions/runs/{id}/rerun-failed-jobs`, a token narrowed to `actions: write`) —
+the run of the release's staging/production ticket, or, before any staging job reached Launch, the
+newest `push` run of `deploy.yml` on the tag; GitHub's next attempt (`run_attempt + 1`) keeps the
+commit, and attempt 2's deploy job opens a ticket of its own (the unique `(environment, purpose,
+run_id, run_attempt)`), so both attempts stay on the release and its page lists them. A production
+re-run carries its first attempt's approval forward: Retry writes a pre-approval bound to the tag
+ref with that `approval_id` (`insertIntent`, `source: 'approval'`, `PRODUCTION_INTENT_TTL_MS`), which
+attempt 2's `start` claims — it is not sent to approval again, and a production deploy that was
+never approved is 409. **`tag`** pushes the tag again on the release's commit when GitHub no longer
+has it (409 when it does: the repo's workflow did not run on the tag, and Launch has nothing to
+redo); **a health stage** probes now (`checkAppHealth`); **`approval_rejected`** is Promote again (a
+new `deploy.production` request). Concurrency is the release row: a compare-and-set moves it out of
+`failed` (to `staging`, `tagged` or `promoting`) BEFORE GitHub is asked, stamping the tag-run
+follower's read turn in the same write; the loser of two presses gets 409, and a GitHub refusal
+moves the row back (dropping the unclaimed pre-approval) and answers 502 `release_github_failed`.
+`stage` in the body is the stage the caller saw — a release that moved on is 409
+`release_stage_changed`; nothing failing is 409 `release_not_retryable`; a run still going is 409
+`release_run_in_progress`. Audited `release.retried {stage, action, attempt, runUrl}` on the
+release (so it is in the chain). `releaseRunFailed` now fails a release only from its CURRENT run
+of that environment, so attempt 1's ticket failed late by the run poll ("attempt 2 is a deploy of
+its own") leaves the retried release alone. **`POST …/:rid/cancel`** (owners and admins) cancels
+the release's run in flight (`tagged`/`staging` → the tag's run, `promoting` → the production run;
+`POST …/actions/runs/{id}/cancel`) and marks the release `failed` (`<env>: cancelled in Launch by
+<email> (<run>)`), audited `release.cancelled`; the cancelled job's ticket settles through the run
+poll as before, and Retry re-runs the run. Nothing in flight is 409 `release_not_cancellable`;
+`awaiting_approval` is not a run (withdraw the request on its page). **Fix in a session** is
+`POST /api/apps/:id/sessions { fixRelease: { releaseId } }`: the server composes the session's
+first message — the stage, the release's error, the GitHub run, the failed job and the tail of its
+log (`getJobLogs` under `actions: read`, timestamps stripped and redacted like a landing's
+failed-check log; a GitHub error only drops the excerpt) — and stores it as the session's pending
+turn, which the Workflow runs once the sandbox is ready; the title defaults to `Fix X.Y.Z: <stage>
+failed`. A release that is not failing is 409 `release_not_retryable`, another app's 404.
+
 **Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
 with no earlier tag lists only its session PRs; the bump is a direct push to the default branch,
 so a branch protected by anything the App cannot bypass (classic protection, or a ruleset without
 the Launch App as a bypass actor) refuses it — the Launch ruleset (§18.5) closes that gap for apps
 that carry it, and a session's landing stalls `release_failed` for one that does not; a claim whose
 holder died is only taken over after 10 minutes; rate limits on the compare for a large release
-are untested; a failed production run marks the release `failed` but nothing re-dispatches; a
+are untested; a failed production run is re-run only by Retry (nothing re-dispatches on its own),
+and a production run that died before its job reached Launch has no ticket, so its release stays
+`promoting` with nothing for Retry or Cancel to name; a
 session PR merged on GitHub releases on its own only in a `staging`-mode app and within
 `LAND_ADOPT_MAX_AGE_HOURS` (24) of the merge (§18.13) — in a `pr`-mode app, or later than that,
 someone still presses New release; a PR merged on GitHub that no session opened never releases
@@ -2319,8 +2365,10 @@ tag's deploy run is found by workflow file (`deploy.yml`), event (`push`) and br
 newest first — an app whose deploy workflow has another name has no run to show, and falls back to
 the 45-minute "never reached staging"; it is read only while somebody watches the strip or a
 landing follows the release, so a red gate with neither leaves the release `tagged` until one
-does; a re-run of a failed tag run in GitHub moves the release out of `failed` only when its
-staging job calls Launch; a run that skipped its staging job (conclusion `skipped`/`neutral`) is not
+does; a re-run of a failed tag run pressed in GitHub (rather than Launch's Retry) moves the
+release out of `failed` only when its staging job calls Launch; `failedStage` health stages count
+only `down` (a `degraded` environment is not offered a Retry); Cancel marks the release failed at
+once, before GitHub has finished cancelling; a run that skipped its staging job (conclusion `skipped`/`neutral`) is not
 a failure, and waits out the timeout.
 
 ### 18.18 The audit hash chain, verify and export (P4)
@@ -2384,7 +2432,14 @@ uploaded · started 48 seconds ago", View run); on Live "→ v1.4.2 · Waiting f
 <names>" with the request's link and Copy link, then the Live deploy's phase. A run that failed
 ("v1.4.2 did not deploy: ci / Gate failed"), and a release older than
 `RELEASE_STAGING_TIMEOUT_MINUTES` with no run going ("never reached staging", the same 45 minutes
-a session's landing waits), go to Needs you instead (`promotionState`'s `progress`). Ship opens
+a session's landing waits), go to Needs you instead (`promotionState`'s `progress`), as does a
+candidate the server says is stuck anywhere else (`failedStage`: a failed Live deploy, an
+environment down on it, a turned-down approval). Each stuck release there carries ONE **Retry**
+labelled with what it does (`RELEASE_RETRY_LABELS`: "Retry staging deploy", "Check staging
+again", "Request approval again", "Retry live deploy"…; owners and admins) and **Fix in a session**
+(whoever may start a session; it opens the seeded session), §18.17. A release in flight's line
+carries Details and a ⋯ with **Cancel release…** (a confirm, then the run is cancelled on GitHub).
+Ship opens
 one confirmation (the version, what it ships, an optional reason; **Request approval** — the
 promote route opens a `deploy.production` request) and the page stays. Owners and admins
 (`viewerCanDeploy`) get Ship; everyone else reads who can. Then the active sessions, with "All
@@ -2394,25 +2449,29 @@ sessions →". Every state is a pure function (`pages/apps/app/appPageModel.ts` 
 reason; nothing polls while a create request waits. **Releases** is one row per version — what
 Staging and Live say about it, its PR count, when — merging releases and deploy tickets (a deploy
 of no release gets a row of its own), with New release (a version preview), Ship per row (→ the
-approval it opened) and, quietly, "Deploy main to Live…" (a `deploy.production` request for the
-default branch). A version opens its release page: its deploys (the milestones of one still
-running), its pull requests and its chain. **Activity**: health (Check now), the app's audit log
+approval it opened), a ⋯ per row (Retry, Fix in a session, Cancel release…, View run on GitHub —
+each for whoever may use it) and, quietly, "Deploy main to Live…" (a `deploy.production` request
+for the default branch). A version opens its release page: where it is stuck ("Stuck at: Staging
+deploy") with Retry and Fix in a session beside it, its deploys — one line per GitHub run attempt
+("attempt 2"), the milestones of one still running — its pull requests and its chain (which reads
+`release.retried` / `release.cancelled` too). **Activity**: health (Check now), the app's audit log
 (`/api/audit?appId=`, admins) and the operations. A pending production ticket links to its
 approval; the access section's requests link to theirs. **The session page**: an
 owner/admin's "Extend" still approves in one click; the creator gets "Ask for more budget" (amount +
 reason → a `session.budget` request) and then a link to it. **The audit page**: Verify (on demand)
 and CSV / JSON Lines export. **CLI**: `launch approvals ls|show|approve|reject` and `launch releases
-ls|create|promote [--wait]` (§11); `approvals show` prints the eligible list too.
+ls|create|promote [--wait]|retry|cancel` (§11); `approvals show` prints the eligible list too.
 
 **Known gaps:** the policy's own words still count the teams a member cannot list rather than
 naming them; a PR no Launch session wrote, or one shipped before issue #5 kept summaries, shows
 its titles only; the promotion view polls only while the candidate deploys, so a staging health
 change reaches it on the next read, a "Check now" or a release nudge; a release page shows only
 what the audit log recorded (a release cut outside Launch has no chain before its tag). **The app
-page, P1 of its redesign:** no Retry anywhere yet (a failed release offers Details and its run;
-the stage-aware retry and "Fix in a session" are P2), no Rollback and no `main  N commits ahead
-[Release to staging]` row (P3 — New release stays on the Releases tab), no Cancel in a release's ⋯
-menu; Activity is three lists, not the plan's one merged feed, and a member sees health and the
+page after P2 of its redesign:** no Rollback and no `main  N commits ahead [Release to staging]`
+row (P3 — New release stays on the Releases tab); a stuck candidate whose approval was turned
+down shows both its Needs-you Retry ("Request approval again") and Ship's own "you can ask again";
+"Fix in a session" seeds the first message from what GitHub still has (an expired log is only its
+run link); Activity is three lists, not the plan's one merged feed, and a member sees health and the
 operations only (the audit log is admin+); the "You're live" line shows only to a tab that
 watched the first build go live.
 

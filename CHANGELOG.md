@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A stuck release has one Retry, labelled with what it does.** Every release now says where it is
+  stuck (`failedStage`), and `POST /api/apps/:id/releases/:rid/retry` does the one thing for that
+  stage: re-runs the failed jobs of that GitHub run (attempts are kept, and a Live re-run keeps its
+  approval), pushes a lost tag again, checks health now, or asks for approval again. Needs you, a
+  Releases row's ⋯ and the release page offer it ("Retry staging deploy", "Check staging again",
+  "Request approval again"), the release page lists each run attempt, and `launch releases retry
+  <app> <version>` is the same from a terminal. **Fix in a session** starts a coding session
+  seeded with the failure — the stage, the run and the failed job's log tail
+  (`POST /api/apps/:id/sessions { fixRelease }`). **Cancel release** (⋯, or `launch releases
+  cancel`) cancels a release's deploy run in flight on GitHub; Retry runs it again. The approval
+  and agent action panels lose their coloured left edge (`docs/DESIGN.md`).
 - **The app page is an Overview and tabs.** `/apps/:slug` answers "use it, change it, is my change
   live?": a Needs-you list only when something needs a person (a failed release or deploy, an
   approval waiting on you, missing config), then Staging and Live as one row each with "N changes

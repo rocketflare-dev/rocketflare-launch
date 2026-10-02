@@ -80,7 +80,13 @@ an 8-character prefix, looked up in the caller's boxes. `releases ls <app>`, `cr
 approval's URL; `--wait` polls the approval to a terminal status, then the release to
 `production_active` (exit 1 on reject, expiry or failure; with `--json` ONE `{ release, approval }`
 document), with `sleep` / `pollMs` injectable. The CLI never approves its own promote — the
-promoter is excluded from deciding.
+promoter is excluded from deciding. `releases retry <app> <id|X.Y.Z> [--reason]` (app page P2)
+reads the release's `failedStage`, exits 1 before any POST when nothing is failing, and otherwise
+posts that stage (so a release that moved on is the server's 409 `release_stage_changed`, not a
+different retry) and prints what Launch did (`retrySentence`: re-ran the failed jobs — attempt N
+and the run's URL —, re-pushed the tag, the health it read, or the re-opened approval's URL);
+`releases cancel <app> <id|X.Y.Z>` cancels the run in flight and points at `retry`. Both print the
+raw body with `--json`; a 403 exits 3.
 
 The audit log (Launch P4, admin+): `audit verify` (exit 1 at the first broken link, printed) and
 `audit export --out <file> [--format json|csv] [--app] [--action] [--from] [--to] [--force]`. The

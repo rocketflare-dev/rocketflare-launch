@@ -11,6 +11,10 @@
  * release, which starts the Live deploy. "Deploy <branch> to Live" asks for approval to deploy the
  * default branch as it is — the way round the release flow, kept as a quiet secondary action.
  *
+ * Each row's ⋯ (app page P2, `ReleaseActions.tsx`) carries the stage-aware Retry and "Fix in a
+ * session" for a stuck release, Cancel release for one whose run may be in flight, and its GitHub
+ * run.
+ *
  * New release, Ship and the direct deploy are for the app's owners and admins (`viewerCanDeploy`,
  * the server's own rule) and hidden from everybody else. The lists poll only while something is in
  * flight (`releasesPollInterval`, `deploysPollInterval`); the `release` nudge covers the rest.

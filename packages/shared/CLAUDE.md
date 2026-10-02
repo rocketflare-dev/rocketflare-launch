@@ -100,7 +100,12 @@ default null), the six events `ship.ci` · `ship.review` · `ship.merged` · `sh
 its consts at evaluation, so order matters); `launch-approvals.ts` the built `session.merge`
 (appended to both kind lists, `sessionMergeContextSchema`, `SESSION_MERGE_EXPIRY_HOURS` 48 and its
 owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
-'release_in_progress'`); `launch-promotion.ts` a change's `summary` (nullable, default null — an
+'release_in_progress'`; app page P2 adds `notRetryable`, `stageChanged`, `runInProgress`,
+`githubFailed`, `notCancellable`), and (app page P2) `RELEASE_FAILED_STAGES` + the pure
+`releaseFailedStage` (what `releaseSchema.failedStage` — nullable, default null — carries),
+`RELEASE_STAGE_LABELS` / `RELEASE_RETRY_LABELS`, `retryReleaseSchema` /
+`retryReleaseResponseSchema` and `cancelReleaseResponseSchema`; `launch-sessions.ts`'s
+`createSessionRequestSchema` gained `fixRelease: { releaseId }`; `launch-promotion.ts` a change's `summary` (nullable, default null — an
 older answer still parses) and `PROMOTION_SUMMARY_MAX` 600, and `candidateRunSchema` /
 `candidateRun` (the candidate's tag deploy run on GitHub — status, conclusion, URL, current and
 failed job; nullable, default null) with `CANDIDATE_RUN_FAILED_CONCLUSIONS` / `candidateRunFailed` ·

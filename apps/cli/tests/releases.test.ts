@@ -2,9 +2,17 @@
  * `releases ls|create|promote [--wait]` (Launch P4), in-process against a fake server: the app is
  * resolved by slug, `create` posts the bump, `promote` accepts a version and prints the approval's
  * page, and `--wait` follows the approval then the release — exit 1 unless production is live.
+ * `retry` (app page P2) sends the stage the release is stuck at and says what Launch did; a release
+ * with nothing failing exits 1 before any POST; `cancel` posts and points at `retry`.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { runReleasesCreate, runReleasesList, runReleasesPromote } from '../src/commands/releases'
+import {
+  runReleasesCancel,
+  runReleasesCreate,
+  runReleasesList,
+  runReleasesPromote,
+  runReleasesRetry,
+} from '../src/commands/releases'
 import { EXIT_ERROR, exitCodeFor } from '../src/errors'
 import { captureError, jsonResponse, mockFetch, testContext } from './helpers'
 import {
@@ -152,5 +160,75 @@ describe('releases promote', () => {
     const { ctx } = await testContext({ store: await store(), fetch })
     const error = await captureError(runReleasesPromote(ctx, 'expenses', '9.9.9'))
     expect(error.message).toBe('No release 9.9.9 on this app')
+  })
+})
+
+describe('releases retry / cancel', () => {
+  const stuck = () =>
+    release({ status: 'failed', error: 'staging: refused', failedStage: 'staging_deploy' })
+  const retried = () =>
+    jsonResponse(
+      {
+        release: release({ status: 'staging' }),
+        stage: 'staging_deploy',
+        action: 'rerun',
+        attempt: 2,
+        runUrl: 'https://github.com/acme/expenses/actions/runs/77',
+        approvalId: null,
+        health: null,
+      },
+      202
+    )
+
+  it('retries the stage the release is stuck at and says what it did; --json is the raw body', async () => {
+    const { fetch, calls } = mockFetch({
+      '/api/apps/expenses': () => jsonResponse(appDetail),
+      [releases]: () => jsonResponse({ items: [stuck()] }),
+      [`${releases}/${RELEASE_ID}/retry`]: retried,
+    })
+    const { ctx, out } = await testContext({ store: await store(), fetch })
+    await runReleasesRetry(ctx, 'expenses', '1.4.0')
+    expect(calls[2]?.url.pathname).toBe(`${releases}/${RELEASE_ID}/retry`)
+    expect(JSON.parse(String(calls[2]?.init.body))).toEqual({ stage: 'staging_deploy' })
+    expect(out.content()).toContain(
+      'Retry staging deploy: re-running the failed jobs on GitHub (attempt 2)'
+    )
+
+    const json = await testContext({ store: await store(), fetch, json: true })
+    await runReleasesRetry(json.ctx, 'expenses', '1.4.0')
+    const body = JSON.parse(json.out.content())
+    expect(body).toMatchObject({ stage: 'staging_deploy', action: 'rerun', attempt: 2 })
+  })
+
+  it('a release with nothing failing exits 1 without posting', async () => {
+    const { fetch, calls } = mockFetch({
+      '/api/apps/expenses': () => jsonResponse(appDetail),
+      [releases]: () => jsonResponse({ items: [release()] }),
+    })
+    const { ctx } = await testContext({ store: await store(), fetch })
+    const error = await captureError(runReleasesRetry(ctx, 'expenses', '1.4.0'))
+    expect(exitCodeFor(error)).toBe(EXIT_ERROR)
+    expect(error.message).toMatch(/nothing about it is failing/)
+    expect(calls.some(c => c.url.pathname.endsWith('/retry'))).toBe(false)
+  })
+
+  it('cancels the run in flight and points at retry', async () => {
+    const { fetch, calls } = mockFetch({
+      '/api/apps/expenses': () => jsonResponse(appDetail),
+      [releases]: () => jsonResponse({ items: [release({ status: 'staging' })] }),
+      [`${releases}/${RELEASE_ID}/cancel`]: () =>
+        jsonResponse(
+          {
+            release: stuck(),
+            runUrl: 'https://github.com/acme/expenses/actions/runs/77',
+          },
+          202
+        ),
+    })
+    const { ctx, out } = await testContext({ store: await store(), fetch })
+    await runReleasesCancel(ctx, 'expenses', '1.4.0')
+    expect(calls[2]?.init.method).toBe('POST')
+    expect(out.content()).toContain('Cancelled the deploy run of 1.4.0')
+    expect(out.content()).toContain('releases retry expenses 1.4.0')
   })
 })

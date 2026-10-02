@@ -13,6 +13,13 @@
  *   (`production_active`), and exits 1 on anything else. Polling, not SSE, with an injectable
  *   `sleep`/`pollMs` — the sessions pattern.
  *
+ * - `retry <app> <release>` (app page P2) — the stage-aware Retry: whatever stage the release is
+ *   stuck at (`failedStage`), Launch does the one thing that unsticks it — re-runs the failed
+ *   GitHub run's jobs, re-pushes a lost tag, re-checks health or asks for approval again — and
+ *   says which. A release with nothing failing exits 1 (`release_not_retryable`).
+ * - `cancel <app> <release>` — cancel the release's deploy run in flight on GitHub; the release
+ *   is marked failed so `retry` re-runs it later.
+ *
  * Slice 4f owns this file. `cli.ts` calls `registerReleasesCommands(program, action)` once, after
  * the kit's own commands, so this file adds its `program.command(...)` entries and never edits
  * `cli.ts` (the plugin `register` shape, `plugins/types.ts`).
@@ -25,14 +32,19 @@ import {
 } from '@launch/shared/launch-approvals'
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import {
+  cancelReleaseResponseSchema,
   parseReleaseVersion,
   promoteReleaseResponseSchema,
   RELEASE_BUMPS,
+  RELEASE_RETRY_LABELS,
+  RELEASE_STAGE_LABELS,
   type Release,
   type ReleaseBump,
   type ReleaseStatus,
+  type RetryReleaseResponse,
   releaseListResponseSchema,
   releaseSchema,
+  retryReleaseResponseSchema,
 } from '@launch/shared/launch-releases'
 import chalk from 'chalk'
 import { type Command, InvalidArgumentError } from 'commander'
@@ -87,7 +99,13 @@ export async function runReleasesList(ctx: CommandContext, app: string): Promise
   ctx.out.data(raw, () =>
     renderTable(data.items, [
       { header: 'Version', value: r => r.version },
-      { header: 'Status', value: r => STATUS_WORDS[r.status] },
+      {
+        header: 'Status',
+        value: r =>
+          r.failedStage
+            ? `${STATUS_WORDS[r.status]} (${RELEASE_STAGE_LABELS[r.failedStage].toLowerCase()})`
+            : STATUS_WORDS[r.status],
+      },
       { header: 'PRs', value: r => r.prs.length },
       { header: 'Commit', value: r => r.sha.slice(0, 7) },
       { header: 'Created', value: r => formatDate(r.createdAt) },
@@ -208,6 +226,78 @@ export async function runReleasesPromote(
   if (!ctx.json) ctx.out.text(chalk.green(`✓ ${current.version} is live in production`))
 }
 
+/** What a retry did, in one line. Pure. */
+export function retrySentence(data: RetryReleaseResponse): string {
+  const label = RELEASE_RETRY_LABELS[data.stage]
+  switch (data.action) {
+    case 'rerun':
+      return `${label}: re-running the failed jobs on GitHub${data.attempt ? ` (attempt ${data.attempt})` : ''}`
+    case 'retag':
+      return `${label}: pushed the tag ${data.release.tag} again; staging deploys it next`
+    case 'health_check':
+      return `${label}: ${data.stage === 'production_health' ? 'production' : 'staging'} is ${data.health ?? 'not answering'}`
+    case 'approval':
+      return `${label}: asked for the production approval again`
+  }
+}
+
+export async function runReleasesRetry(
+  ctx: CommandContext,
+  app: string,
+  ref: string,
+  options: { reason?: string } = {}
+): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const release = await resolveRelease(client, detail.id, ref)
+  if (!release.failedStage) {
+    throw new CliError(
+      `Release ${release.version} is ${STATUS_WORDS[release.status]}; nothing about it is failing`
+    )
+  }
+  const reason = options.reason?.trim()
+  const { data, raw } = await client.request(
+    'POST',
+    `${releasePath(detail.id, release.id)}/retry`,
+    {
+      schema: retryReleaseResponseSchema,
+      // The stage this command saw: a release that moved on meanwhile is refused, not re-tried.
+      body: { stage: release.failedStage, ...(reason ? { reason } : {}) },
+    }
+  )
+  ctx.out.data(raw, () => {
+    const lines = [`${chalk.green('✓')} ${retrySentence(data)}`]
+    if (data.runUrl) lines.push(chalk.dim(`  ${data.runUrl}`))
+    if (data.approvalId)
+      lines.push(`  Another owner or admin approves it here: ${approvalUrl(ctx, data.approvalId)}`)
+    return lines.join('\n')
+  })
+}
+
+export async function runReleasesCancel(
+  ctx: CommandContext,
+  app: string,
+  ref: string
+): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const release = await resolveRelease(client, detail.id, ref)
+  const { data, raw } = await client.request(
+    'POST',
+    `${releasePath(detail.id, release.id)}/cancel`,
+    { schema: cancelReleaseResponseSchema }
+  )
+  ctx.out.data(raw, () =>
+    [
+      `${chalk.green('✓')} Cancelled the deploy run of ${chalk.bold(data.release.version)} on GitHub.`,
+      chalk.dim(`  ${data.runUrl ?? ''}`),
+      chalk.dim(
+        `  Run it again: ${ctx.binName} releases retry ${detail.slug} ${data.release.version}`
+      ),
+    ].join('\n')
+  )
+}
+
 // ---- registration --------------------------------------------------------------------------
 
 function bumpOption(value: string): ReleaseBump {
@@ -239,4 +329,15 @@ export function registerReleasesCommands(program: Command, action: ActionWrapper
         runReleasesPromote(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts())
       )
     )
+  releases
+    .command('retry <app> <release>')
+    .description('retry whatever a release (id or version) is stuck at (owners and admins)')
+    .option('--reason <text>', 'why — shown on a re-requested approval')
+    .action(
+      action((ctx, cmd) => runReleasesRetry(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+    )
+  releases
+    .command('cancel <app> <release>')
+    .description('cancel a release’s deploy run in flight on GitHub (owners and admins)')
+    .action(action((ctx, cmd) => runReleasesCancel(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '')))
 }
