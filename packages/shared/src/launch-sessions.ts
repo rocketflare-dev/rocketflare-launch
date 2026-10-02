@@ -618,6 +618,8 @@ export const sessionDbSchema = z.object({
 export type SessionDb = z.infer<typeof sessionDbSchema>
 
 export const APP_SESSION_DB_STATUSES = ['none', 'preparing', 'ready', 'failed'] as const
+export const APP_SESSION_DEV_SOURCES = ['staging', 'main'] as const
+export type AppSessionDevSource = (typeof APP_SESSION_DEV_SOURCES)[number]
 
 /**
  * `apps.session_db` — the app's prepared `dev` branch, which sessions branch from. `preparedCommit`
@@ -641,6 +643,12 @@ export const appSessionDbSchema = z.object({
    * Missing on a `dev` prepared before it was recorded.
    */
   migrationsHash: z.string().optional(),
+  /**
+   * Where `dev` was cut from: `staging` (`parent-data`, then scrubbed of the app's data and its
+   * inherited passwords before any session saw it) or `main` (`schema-only` — an app with no
+   * staging branch). Recorded only once that scrub finished; missing on a `dev` cut before it was.
+   */
+  devSource: z.enum(APP_SESSION_DEV_SOURCES).optional(),
 })
 export type AppSessionDb = z.infer<typeof appSessionDbSchema>
 

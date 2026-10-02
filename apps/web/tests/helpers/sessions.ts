@@ -64,6 +64,8 @@ export interface SessionAppFixture {
   neonProjectId: string
   /** The `dev` branch id when `prepared`, else null. */
   devBranchId: string | null
+  /** The `staging` branch id when `withStaging`, else null. */
+  neonStagingBranchId: string | null
 }
 
 export interface SeedSessionAppOptions {
@@ -78,6 +80,14 @@ export interface SeedSessionAppOptions {
    * role `session_owner`, database `session_app`) and record it READY in `apps.session_db`.
    */
   prepared?: boolean
+  /**
+   * As a launched app that has deployed: on `main`, `migrator` + `app` (LOGIN, made in SQL),
+   * database `app` (owned by `migrator`) holding a table, and the kit's NOLOGIN RLS role
+   * (`<slug>_app`, as the app's own `db-roles` makes it — so Neon refuses a schema-only child of
+   * `main`); then branch `staging` (parent-data) with both passwords reset, recorded on the
+   * `staging` environment row.
+   */
+  withStaging?: boolean
 }
 
 /** The files a fresh repo gets on `main` — enough for a clone and a PR. */
@@ -110,6 +120,23 @@ export async function seedSessionApp(
   })
   const project = await neon.createProject({ name: slug, regionId: 'aws-us-east-2' })
   const neonProjectId = project.project.id
+
+  let neonStagingBranchId: string | null = null
+  if (opts.withStaging) {
+    const mainId = project.branch.id
+    cloud.neon.sqlRole(neonProjectId, mainId, 'migrator', { canCreateRole: true })
+    cloud.neon.sqlRole(neonProjectId, mainId, 'app')
+    await neon.createDatabase(neonProjectId, mainId, { name: 'app', ownerName: 'migrator' })
+    cloud.neon.addTable(neonProjectId, mainId, 'app', 'orders')
+    cloud.neon.sqlRole(neonProjectId, mainId, `${slug.replaceAll('-', '_')}_app`, {
+      createdBy: 'migrator',
+      noLogin: true,
+    })
+    const staging = await neon.createBranch(neonProjectId, { name: 'staging', parentId: mainId })
+    neonStagingBranchId = staging.branch.id
+    await neon.resetRolePassword(neonProjectId, neonStagingBranchId, 'migrator')
+    await neon.resetRolePassword(neonProjectId, neonStagingBranchId, 'app')
+  }
 
   let devBranchId: string | null = null
   let sessionDb: AppSessionDb | null = null
@@ -158,6 +185,20 @@ export async function seedSessionApp(
         eq(appEnvironments.name, 'production')
       )
     )
+  if (neonStagingBranchId) {
+    await db
+      .update(appEnvironments)
+      .set({
+        neon: { projectId: neonProjectId, branchId: neonStagingBranchId, databaseName: 'app' },
+      })
+      .where(
+        and(
+          eq(appEnvironments.tenantId, tenant.id),
+          eq(appEnvironments.appId, app.id),
+          eq(appEnvironments.name, 'staging')
+        )
+      )
+  }
 
   const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
   return {
@@ -168,6 +209,7 @@ export async function seedSessionApp(
     repo: { owner, repo: slug },
     neonProjectId,
     devBranchId,
+    neonStagingBranchId,
   }
 }
 
@@ -181,6 +223,7 @@ export function sessionAppRef(f: SessionAppFixture): SessionAppRef {
     repoName: f.repo.repo,
     defaultBranch: f.app.defaultBranch ?? 'main',
     neonProjectId: f.neonProjectId,
+    neonStagingBranchId: f.neonStagingBranchId,
     sessionDb: f.app.sessionDb ?? null,
   }
 }

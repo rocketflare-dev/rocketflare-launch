@@ -61,6 +61,8 @@ export async function runGateSweep(
       repoName: app.repoName ?? '',
       defaultBranch: app.defaultBranch ?? 'main',
       neonProjectId: projectId,
+      // The sweep only deletes gate branches; it never cuts `dev`, so it needs no staging branch.
+      neonStagingBranchId: null,
       sessionDb: app.sessionDb ?? null,
     }
     try {

@@ -75,6 +75,11 @@ export interface SessionAppRef {
   defaultBranch: string
   /** The app's Neon project (`app_environments.neon.projectId`); null when it has none. */
   neonProjectId: string | null
+  /**
+   * The app's staging branch in that project (`app_environments` `staging` → `neon.branchId`) —
+   * what `dev` is cut from (`parent-data`, then scrubbed); null when it has none.
+   */
+  neonStagingBranchId: string | null
   /** `apps.session_db` as it stands. */
   sessionDb: AppSessionDb | null
 }
@@ -88,8 +93,10 @@ export interface SessionBranch {
 
 export interface SessionDbPort {
   /**
-   * Make sure the app has a `dev` database to branch from — Neon: a `dev` branch created
-   * `init_source: 'schema-only'` from `main` with role `session_owner` (made in SQL) and an empty
+   * Make sure the app has a `dev` database to branch from — Neon: a `dev` branch cut
+   * `parent-data` from the app's STAGING branch and scrubbed (the app's databases dropped, every
+   * inherited password reset) before anything else sees it — or, with no staging branch,
+   * `schema-only` from `main` — with role `session_owner` (made in SQL) and an empty
    * `session_app`. Returns what `apps.session_db` should now say (status `none`
    * until a prepare run has migrated and seeded it). Idempotent.
    */

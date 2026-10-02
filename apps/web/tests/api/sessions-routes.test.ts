@@ -344,6 +344,7 @@ describe('sessions.expire (the five-minute cron)', () => {
         repoName: f.repo.repo,
         defaultBranch: 'main',
         neonProjectId: f.neonProjectId,
+        neonStagingBranchId: null,
         sessionDb: f.app.sessionDb ?? null,
       },
       row

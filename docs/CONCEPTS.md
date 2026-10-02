@@ -1618,6 +1618,23 @@ bootstrap on the session's own branch. `session_owner` (`LOGIN CREATEROLE`) is m
 a role an earlier Launch made through Neon's role API (a `neon_superuser` member) is dropped
 through the API with `session_app` and made again, and that `dev` is prepared afresh. The branch
 URI is still the only credential in the container.
+**Where `dev` comes from** (`NeonSessionDb.ensureDev`). `dev` is cut `parent-data` from the app's
+STAGING branch (`app_environments` `staging` → `neon.branchId`, the same project as production —
+`SessionAppRef.neonStagingBranchId`, `sessions/app-neon.ts`) and then SCRUBBED as `neondb_owner`
+before `ensureDev` returns, so before any prepare run or session branch exists: every database but
+`neondb` and `session_app` is deleted through the API (the app's `app`, owned by `migrator` — the
+API can drop it, `neondb_owner` cannot; `dev` needs no empty copy of it, sessions run on
+`session_app`), `neondb`'s own relations (an app whose database IS `neondb`) are dropped schema by
+schema with `public` made again, and every inherited LOGIN password (`migrator`, `app`) is reset
+and discarded, so staging's credentials open nothing on `dev` or a session branch. A scrub that
+fails deletes `dev` (the retry cuts it afresh); a finished one is recorded as
+`apps.session_db.devSource = 'staging'`, and until it is recorded a re-run scrubs again (idempotent).
+It is not `schema-only` from `main` any more because Neon refuses a schema-only branch of a parent
+holding a NOLOGIN role ("legacy web access role"), and every app has one on `main` after its first
+production migration: the kit's RLS role (`<app>_app`, its `db-roles`). An app with NO staging
+branch still gets `schema-only` from `main` (`devSource: 'main'`) — fine before its first
+migration; after it, a 503 `session_dev_needs_staging` instead of Neon's error. An existing `dev`
+is found by id or name and reused as it is, whichever way it was cut.
 **Waiting on Neon** (`NeonClient.waitForOperations`, `services/launch/neon.ts`): a new branch is
 waited on for its `create_branch` operation ONLY (`waitForBranch`) — the session branch, `dev` and
 the launch pipeline's `staging` — not the `start_compute` Neon returns with it: the compute starts
@@ -1676,7 +1693,14 @@ step `scope.progress(detail)`, a `step` row still `running` with a `detail` — 
 and the AG-UI projection sends a running row for an already-open step as `kit.agent.step` alone,
 never a second `STEP_STARTED`.
 
-**Known gaps:** the Neon wait's speed-up (only `create_branch`, 200 ms backoff) is proven with
+**Known gaps:** a `dev` cut from staging briefly HOLDS staging's data, roles and passwords — from
+the cut until the scrub, inside one `ensureDev` call and visible to no session — and keeps
+staging's role SET for good (`migrator`, `app`, the NOLOGIN `<app>_app`, passwords reset); a
+scrub that fails and whose `dev` delete also fails leaves that copy until the next attempt
+scrubs it. The scrub of `neondb`'s own relations drops schemas as `neondb_owner`, which a schema
+another role owns refuses (the session start then fails; Launch's apps keep their data in `app`).
+The cut-from-staging path is proven against the FakeCloud's Neon, not yet against real Neon. The
+Neon wait's speed-up (only `create_branch`, 200 ms backoff) is proven with
 fakes, not yet timed against real Neon; the session branch still waits for its password reset's
 operations, which Neon may hold until the compute has started; and the branch step still runs
 before the sandbox starts rather than alongside it (`docs/plans/sandbox-session-issues.md`,

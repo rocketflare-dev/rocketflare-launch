@@ -12,7 +12,13 @@
   access"), an app's Config & secrets, the session ship panel and the CLI's messages. The pages
   moved to `/secrets` and `/secrets/:id`; `/shared-config` links redirect, keeping the id, query and
   hash. The API (`/api/shared-resources`), the tables and `launch shared` keep their names.
-
+- **A coding session starts for an app that has deployed.** The app's session database (`dev`)
+  was cut schema-only from production, which Neon refuses once the app's first migration has made
+  its RLS role there ("legacy web access role"). `dev` is now copied from the app's staging branch
+  and scrubbed before any session can see it — the app's database dropped, every inherited
+  password reset — and `apps.session_db.devSource` records which. An app with no staging branch
+  keeps the old schema-only copy, and once that is refused says so (503
+  `session_dev_needs_staging`). An existing `dev` is reused unchanged.
 - **Roll back Live to an earlier release.** "Roll back to here…" on a Releases row's ⋯, on the
   release page, or `launch releases rollback <app> <version>`: Launch asks for the same production
   approval as Ship, then runs the repository's own deploy workflow at the old tag

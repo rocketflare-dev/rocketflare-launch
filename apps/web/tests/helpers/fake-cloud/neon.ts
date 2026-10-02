@@ -21,7 +21,10 @@
  * `DELETE …/databases/{d}` exist; a role that owns a database is refused. `addTable` seeds a
  * table (a database with data), `addMigrations` drizzle's `__drizzle_migrations` rows (read back
  * through `to_regclass(…)` and `count(*)`, as the re-scaffold check asks), `sqlRole` a role as if
- * created in SQL.
+ * created in SQL (`noLogin`: a NOLOGIN role, as an app's kit RLS role — Neon then refuses a
+ * `schema-only` child of that branch, and lists it `authentication_method: no_login`).
+ * `GET …/databases` lists a branch's databases; the session dev's scrub reads its owner database's
+ * data schemas (`public` when it has tables) and `DROP SCHEMA … CASCADE` empties them.
  */
 import {
   belongsTo,
@@ -43,6 +46,8 @@ export interface FakeNeonRole {
   createdBy: string
   /** CREATEROLE. */
   canCreateRole: boolean
+  /** NOLOGIN (`authentication_method: no_login`): no password to reset, and no schema-only child. */
+  noLogin?: boolean
 }
 
 export interface FakeNeonBranch {
@@ -158,6 +163,7 @@ export class FakeNeon implements VendorHandler {
       name: role.name,
       branch_id: branch.id,
       protected: false,
+      authentication_method: role.noLogin ? 'no_login' : 'password',
       ...(withPassword ? { password: role.password } : {}),
     }
   }
@@ -227,6 +233,14 @@ export class FakeNeon implements VendorHandler {
         return neonError(409, `branch ${name} already exists`)
       }
       const initSource = input.init_source === 'schema-only' ? 'schema-only' : 'parent-data'
+      // As Neon answers it (2026): a NOLOGIN role on the parent rules out a schema-only child.
+      const noLogin = [...parent.roles.values()].find(r => r.noLogin)
+      if (initSource === 'schema-only' && noLogin) {
+        return neonError(
+          400,
+          `project with a legacy web access role do not support schema-only branches; role:"${noLogin.name}"`
+        )
+      }
       const endpoints = (req.json as { endpoints?: unknown[] } | null)?.endpoints
       const withCompute = !Array.isArray(endpoints) || endpoints.length > 0
       const branch = this.newBranch(project, name, parent.id, { initSource, withCompute })
@@ -293,6 +307,11 @@ export class FakeNeon implements VendorHandler {
         201
       )
     }
+    if (sub === '/databases' && m === 'GET') {
+      return json({
+        databases: [...branch.databases.values()].map(d => ({ ...d, branch_id: branch.id })),
+      })
+    }
     if (sub === '/roles' && m === 'GET') {
       return json({ roles: [...branch.roles.values()].map(r => this.roleJson(branch, r, false)) })
     }
@@ -333,6 +352,7 @@ export class FakeNeon implements VendorHandler {
     if (match && m === 'POST') {
       const role = branch.roles.get(decodeURIComponent(match[1]))
       if (!role) return neonError(404, 'role not found')
+      if (role.noLogin) return neonError(400, `role ${role.name} cannot log in`)
       role.password = this.ids.secret('npg_')
       role.resets++
       return json({
@@ -524,6 +544,7 @@ export class FakeNeon implements VendorHandler {
         superuser: false,
         createdBy: caller.name,
         canCreateRole: /\bCREATEROLE\b/i.test(attrs),
+        noLogin: /\bNOLOGIN\b/i.test(attrs),
       })
       return ok('CREATE')
     }
@@ -571,6 +592,15 @@ export class FakeNeon implements VendorHandler {
     if (match) {
       this.addTable(project.id, branch.id, database, bare(match[2]))
       return ok('CREATE')
+    }
+    // The session dev's scrub: the schemas of `database` holding relations (here: `public`).
+    if (/FROM\s+pg_class\s+c\s+JOIN\s+pg_namespace/i.test(query)) {
+      return ok('SELECT', branch.tables.get(database)?.size ? [{ name: 'public' }] : [])
+    }
+    match = /^DROP\s+SCHEMA\s+(IF\s+EXISTS\s+)?("?\w+"?)\s+CASCADE$/i.exec(query)
+    if (match) {
+      if (bare(match[2]) === 'public') branch.tables.delete(database)
+      return ok('DROP')
     }
     if (/FROM\s+pg_roles\s+r\s+WHERE\s+r\.rolname\s+IN/i.test(query)) {
       const rows = params
@@ -630,7 +660,7 @@ export class FakeNeon implements VendorHandler {
     projectId: string,
     branchId: string,
     name: string,
-    opts: { createdBy?: string; canCreateRole?: boolean } = {}
+    opts: { createdBy?: string; canCreateRole?: boolean; noLogin?: boolean } = {}
   ): FakeNeonRole {
     const branch = this.projects.get(projectId)?.branches.get(branchId)
     if (!branch) throw new Error(`no branch ${branchId}`)
@@ -641,6 +671,7 @@ export class FakeNeon implements VendorHandler {
       superuser: false,
       createdBy: opts.createdBy ?? 'neondb_owner',
       canCreateRole: opts.canCreateRole ?? false,
+      noLogin: opts.noLogin ?? false,
     }
     branch.roles.set(name, role)
     return role

@@ -2,10 +2,22 @@
  * `NeonSessionDb` — THE `SessionDbPort` (plan §1.7), under either `SESSION_BACKEND`: a session's
  * database is always a real Neon branch of the app's project, which the container reaches
  * directly over the neon driver (HTTPS + WebSocket) with exactly that endpoint allow-listed
- * (`sessionDbEgressHosts`). The app's `dev` branch (`init_source: 'schema-only'` from `main`, role
+ * (`sessionDbEgressHosts`). The app's `dev` branch (cut from STAGING and scrubbed — below — role
  * `session_owner`, empty database `session_app`), and per session a branch of `dev` with
  * `session_owner`'s password reset. Built on `NeonClient` (`services/launch/neon.ts`) and the
  * sealed `neon_org_api_key` credential.
+ *
+ * - **`dev` is cut `parent-data` from the app's staging branch, then scrubbed.** It was once
+ *   `schema-only` from `main`, but Neon refuses a schema-only branch of a parent holding a NOLOGIN
+ *   role ("legacy web access role"), and every app has one on `main` from its first production
+ *   migration: the kit's RLS role (`<app>_app`, its `db-roles`). Staging is the same project, its
+ *   data is test data, and a `parent-data` branch has no such limit. Before `ensureDev` returns —
+ *   so before any prepare run or session branch can exist — `scrubDev` deletes every database but
+ *   `neondb` and `session_app` (the app's `app`), empties `neondb` of relations of its own, and
+ *   resets every inherited LOGIN password (`migrator`, `app`), so staging's credentials open
+ *   nothing here. A failed scrub deletes `dev`; `devSource: 'staging'` on `apps.session_db` records
+ *   a finished one. An app with no staging branch still gets `schema-only` from `main` (fine
+ *   until its first migration; after it, a 503 `session_dev_needs_staging`, not Neon's words).
  *
  * - **`session_owner` is made IN SQL, as `neondb_owner`** (`LOGIN CREATEROLE`, a throwaway password
  *   the API resets before anyone uses it) — exactly as `provision-neon.ts` makes `migrator`. A role
@@ -22,8 +34,8 @@
  *   WebSocket through the container's egress interception, and on real Cloudflare containers the
  *   third or so of those hangs (docs/plans/sandbox-session-issues.md). A branch inherits it.
  *
- * - **`dev` never holds production data.** It is cut `schema-only` from `main` and filled by a
- *   PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
+ * - **`dev` never holds production data.** It is cut from staging (scrubbed) or `schema-only` from
+ *   `main`, and filled by a PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
  *   same seeded workspace in ~1 s (S7: a prepared parent saves ~45 s of migrate + seed).
  * - **One role per branch, one password per session.** A branch inherits its parent's roles WITH
  *   their passwords, so `createBranch` resets `session_owner` on the new branch: the credential a
@@ -41,7 +53,7 @@
  *   session's branch: Neon refuses to delete a parent) and `sweepGateBranches` (the cron, by the
  *   `gate-` prefix and `created_at`) — so no row has to remember them.
  */
-import type { AppSessionDb, SessionDb } from '@launch/shared/launch-sessions'
+import type { AppSessionDb, AppSessionDevSource, SessionDb } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { ServiceUnavailableError } from '../../../utils/core/errors'
@@ -58,6 +70,7 @@ import {
   isTrue,
   NEON_SUPERUSER,
   OWNER_DATABASE,
+  OWNER_ROLE,
   type OwnerSession,
   ownerSession,
   quoteIdent,
@@ -115,6 +128,20 @@ export function sessionDbEgressHosts(uri: string): string[] {
 
 const isConflict = (err: unknown) =>
   err instanceof NeonApiError && (err.status === 409 || /already exists/i.test(err.message))
+
+/**
+ * Neon's refusal to cut a `schema-only` branch from a parent that has a NOLOGIN role: "project
+ * with a legacy web access role do not support schema-only branches; role: …".
+ */
+export const isSchemaOnlyRefused = (err: unknown) =>
+  err instanceof NeonApiError && /not support schema-only branches/i.test(err.message)
+
+/**
+ * The schemas of the owner's database that hold relations of their own — not Postgres' own, and
+ * not an extension's members (a `neon` or `vector` object is no app data). Read by `scrubDev`.
+ */
+const OWNER_DATA_SCHEMAS_SQL =
+  "SELECT DISTINCT n.nspname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND left(n.nspname, 3) <> 'pg_' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')"
 
 export interface NeonSessionDbOptions {
   fetch?: typeof fetch
@@ -184,19 +211,33 @@ export class NeonSessionDb implements SessionDbPort {
     let dev =
       (app.sessionDb?.devBranchId && all.find(b => b.id === app.sessionDb?.devBranchId)) ||
       all.find(b => b.name === DEV_BRANCH_NAME)
+    const staging = app.neonStagingBranchId
+      ? all.find(b => b.id === app.neonStagingBranchId)
+      : undefined
     if (!dev) {
-      const main = all.find(b => b.default) ?? all.find(b => b.name === 'main') ?? all[0]
-      if (!main) throw new ServiceUnavailableError('The app’s Neon project has no branches')
-      const created = await neon.createBranch(projectId, {
-        name: DEV_BRANCH_NAME,
-        parentId: main.id,
-        initSource: 'schema-only',
-        endpoints: [{ type: 'read_write' }],
-      })
-      await this.settleBranch(projectId, created.operations)
-      dev = created.branch
+      if (staging) {
+        // `parent-data`: Neon refuses `schema-only` from a parent with a NOLOGIN role (see the
+        // header). The copied data is scrubbed below, before `ensureDev` returns.
+        const created = await neon.createBranch(projectId, {
+          name: DEV_BRANCH_NAME,
+          parentId: staging.id,
+          initSource: 'parent-data',
+          endpoints: [{ type: 'read_write' }],
+        })
+        await this.settleBranch(projectId, created.operations)
+        dev = created.branch
+      } else {
+        dev = await this.cutDevFromMain(projectId, all)
+      }
     }
-    const repaired = await this.ensureSessionRole(projectId, dev.id)
+    const devSource: AppSessionDevSource =
+      staging && dev.parent_id === staging.id ? 'staging' : 'main'
+    // Launch never keeps `neondb_owner`'s password: one is minted for these statements and dropped.
+    const owner = await ownerSession(neon, { redact: () => {} }, projectId, dev.id)
+    // Recorded only after a scrub finished (this method's result is what records it).
+    const scrubbed = app.sessionDb?.devBranchId === dev.id && app.sessionDb.devSource === 'staging'
+    if (devSource === 'staging' && !scrubbed) await this.scrubDev(projectId, dev.id, owner)
+    const repaired = await this.ensureSessionRole(projectId, dev.id, owner)
     const kept = app.sessionDb?.devBranchId === dev.id && !repaired ? app.sessionDb : null
     return {
       devBranchId: dev.id,
@@ -204,6 +245,7 @@ export class NeonSessionDb implements SessionDbPort {
       preparedCommit: kept?.preparedCommit ?? null,
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',
+      devSource,
       ...(kept?.migrationsHash ? { migrationsHash: kept.migrationsHash } : {}),
       // A prepare claim in flight stays with its holder (`claimDevPrepare`).
       ...(kept?.status === 'preparing' && kept.preparingSessionId
@@ -213,14 +255,103 @@ export class NeonSessionDb implements SessionDbPort {
   }
 
   /**
+   * The fallback for an app with no staging branch: `dev` cut `schema-only` from `main` — which
+   * works only until `main` has a NOLOGIN role (the app's kit RLS role, made by its first
+   * production migration). Neon's refusal then becomes a 503 with a code, not Neon's own words.
+   */
+  private async cutDevFromMain(projectId: string, all: NeonBranch[]): Promise<NeonBranch> {
+    const main = all.find(b => b.default) ?? all.find(b => b.name === 'main') ?? all[0]
+    if (!main) throw new ServiceUnavailableError('The app’s Neon project has no branches')
+    const neon = await this.neon()
+    try {
+      const created = await neon.createBranch(projectId, {
+        name: DEV_BRANCH_NAME,
+        parentId: main.id,
+        initSource: 'schema-only',
+        endpoints: [{ type: 'read_write' }],
+      })
+      await this.settleBranch(projectId, created.operations)
+      return created.branch
+    } catch (err) {
+      if (isSchemaOnlyRefused(err)) {
+        throw new ServiceUnavailableError(
+          'Coding sessions cannot copy this app’s database: it has no staging branch, and Neon ' +
+            'refuses a schema-only copy of production once the app has migrated',
+          'session_dev_needs_staging'
+        )
+      }
+      throw err
+    }
+  }
+
+  /**
+   * A `dev` cut `parent-data` from staging holds staging's DATA and staging's PASSWORDS; neither
+   * may reach a session. Done as `neondb_owner` before `ensureDev` returns — so before any prepare
+   * run or session branch exists — and safe to repeat (a retried step, or a crash between the cut
+   * and the record of `devSource`):
+   *
+   * 1. every database on `dev` but the owner's (`neondb`) and `session_app` is DELETED through the
+   *    API. The app's `app` is owned by `migrator`, so `neondb_owner` cannot `DROP DATABASE` it in
+   *    SQL, and `dev` needs no empty copy of it: sessions run on `session_app`. Gone is success;
+   * 2. if the owner's database holds relations of its own (an app whose database IS `neondb`), each
+   *    schema holding them is dropped `CASCADE`, and `public` is made again as Postgres makes it;
+   * 3. every LOGIN role's password is reset and the answer dropped — all but `neondb_owner` (just
+   *    reset by `ownerSession`) and `session_owner` (reset before every use) — so staging's
+   *    `migrator` and `app` credentials open nothing on `dev` or any branch of it. A NOLOGIN role
+   *    (`authentication_method: no_login`, the app's kit RLS role) has no password.
+   *
+   * Any failure DELETES `dev` before rethrowing: a half-scrubbed copy of staging is never left for
+   * a later step to find, and the retry cuts it afresh.
+   */
+  private async scrubDev(
+    projectId: string,
+    devBranchId: string,
+    owner: OwnerSession
+  ): Promise<void> {
+    const neon = await this.neon()
+    try {
+      for (const database of await neon.listDatabases(projectId, devBranchId)) {
+        if (database.name === OWNER_DATABASE || database.name === SESSION_DB_NAME) continue
+        try {
+          const deleted = await neon.deleteDatabase(projectId, devBranchId, database.name)
+          await this.settle(projectId, deleted.operations)
+        } catch (err) {
+          if (!isNeonNotFound(err)) throw err
+        }
+      }
+      const schemas = await owner.sql(OWNER_DATABASE, OWNER_DATA_SCHEMAS_SQL)
+      for (const row of schemas.rows) {
+        const schema = String(row.name)
+        await owner.sql(OWNER_DATABASE, `DROP SCHEMA IF EXISTS ${quoteIdent(schema)} CASCADE`)
+        if (schema === 'public') {
+          await owner.sql(OWNER_DATABASE, 'CREATE SCHEMA public AUTHORIZATION pg_database_owner')
+          await owner.sql(OWNER_DATABASE, 'GRANT USAGE ON SCHEMA public TO PUBLIC')
+        }
+      }
+      for (const role of await neon.listRoles(projectId, devBranchId)) {
+        if (role.name === OWNER_ROLE || role.name === SESSION_DB_ROLE) continue
+        if (role.authentication_method === 'no_login') continue
+        // The new password is in the answer; it is dropped here, unread.
+        const reset = await neon.resetRolePassword(projectId, devBranchId, role.name)
+        await this.settle(projectId, reset.operations)
+      }
+    } catch (err) {
+      await this.deleteBranchById(projectId, devBranchId).catch(() => {})
+      throw err
+    }
+  }
+
+  /**
    * `session_owner` (in SQL, as `neondb_owner`), `session_app` owned by it, and `vector` in it —
    * see the header. True when an API-made `session_owner` was replaced, so `dev` must be prepared
    * again. Every write is checked first or takes a 409 as done: a retried step repeats nothing.
    */
-  private async ensureSessionRole(projectId: string, devBranchId: string): Promise<boolean> {
+  private async ensureSessionRole(
+    projectId: string,
+    devBranchId: string,
+    owner: OwnerSession
+  ): Promise<boolean> {
     const neon = await this.neon()
-    // Launch never keeps `neondb_owner`'s password: one is minted for these statements and dropped.
-    const owner = await ownerSession(neon, { redact: () => {} }, projectId, devBranchId)
     const readRole = async () =>
       (
         await owner.sql(

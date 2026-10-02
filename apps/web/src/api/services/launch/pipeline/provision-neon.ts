@@ -43,7 +43,7 @@ export const MIGRATOR_ROLE = 'migrator'
 export const APP_ROLE = 'app'
 export const APP_DATABASE = 'app'
 export const STAGING_BRANCH = 'staging'
-const OWNER_ROLE = 'neondb_owner'
+export const OWNER_ROLE = 'neondb_owner'
 export const OWNER_DATABASE = 'neondb'
 /** The group Neon's role API puts every role it creates in. */
 export const NEON_SUPERUSER = 'neon_superuser'

@@ -265,9 +265,11 @@ a fake `WebSocket` factory left set) is on you.
   `claudeStreamJson(turn)` — a `FakeSandbox.onProcess` script of one Claude Code
   `--output-format stream-json` turn (`system:init` → tool_use / tool_result pairs → text →
   `result`, shaped like `spikes/s7-sandbox/output-locked-session.txt`). `tests/helpers/sessions.ts`:
-  `seedSessionApp(db, cloud, { role?, prepared? })` (tenant + cookie, an app whose repo is in the
-  FakeCloud's GitHub, a Neon project on the production environment, and with `prepared` a `dev`
-  branch — `schema-only`, `session_owner`, `session_app` — recorded ready in `apps.session_db`),
+  `seedSessionApp(db, cloud, { role?, prepared?, withStaging? })` (tenant + cookie, an app whose
+  repo is in the FakeCloud's GitHub, a Neon project on the production environment, with `prepared`
+  a `dev` branch — `schema-only`, `session_owner`, `session_app` — recorded ready in
+  `apps.session_db`, and with `withStaging` a deployed app's `main` — `migrator`, `app`, database
+  `app` with a table, the NOLOGIN RLS role — and its `staging` branch on the staging environment),
   `insertSession(db, fixture, overrides)`, `sessionAppRef(fixture)`, and
   `createFakeSessionPorts({ sessionDb?, repoHost?, model?, egress? })` (`egress` absent = the
   `proxied` mode; `tests/api/session-host-egress.test.ts` hands in a `HostEgress` over a recording

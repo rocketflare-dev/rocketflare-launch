@@ -30,13 +30,7 @@ import {
 import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
-import {
-  appEnvironments,
-  apps,
-  type SessionRow,
-  type SessionWorkspaceBackup,
-  sessions,
-} from '../../../db/schema'
+import { apps, type SessionRow, type SessionWorkspaceBackup, sessions } from '../../../db/schema'
 import { decryptToken, encryptToken } from '../../auth/oauth-encryption'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
@@ -45,6 +39,7 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
+import { loadAppNeon } from './app-neon'
 import {
   checkContainer,
   containerIsOurs,
@@ -231,7 +226,10 @@ async function updateSession(
   return row
 }
 
-/** The app as the ports need it, tenant-first; its production Neon project if it has one. */
+/**
+ * The app as the ports need it, tenant-first; its production Neon project and staging branch if it
+ * has them.
+ */
 export async function loadAppRef(scope: StepScope, appId: string): Promise<SessionAppRef> {
   const tenantId = scope.params.tenantId
   const [app] = await scope.db
@@ -240,16 +238,6 @@ export async function loadAppRef(scope: StepScope, appId: string): Promise<Sessi
     .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId)))
   if (!app) throw new Error('The session’s app no longer exists')
   if (!app.repoOwner || !app.repoName) throw new Error('The app has no repository')
-  const [production] = await scope.db
-    .select({ neon: appEnvironments.neon })
-    .from(appEnvironments)
-    .where(
-      and(
-        eq(appEnvironments.tenantId, tenantId),
-        eq(appEnvironments.appId, appId),
-        eq(appEnvironments.name, 'production')
-      )
-    )
   return {
     id: app.id,
     tenantId,
@@ -257,7 +245,7 @@ export async function loadAppRef(scope: StepScope, appId: string): Promise<Sessi
     repoOwner: app.repoOwner,
     repoName: app.repoName,
     defaultBranch: app.defaultBranch ?? 'main',
-    neonProjectId: production?.neon?.projectId ?? null,
+    ...(await loadAppNeon(scope.db, tenantId, appId)),
     sessionDb: app.sessionDb ?? null,
   }
 }

@@ -20,10 +20,11 @@ import { resolveSessionPolicy } from '@launch/shared/launch-sessions'
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
-import { appEnvironments, apps, type SessionRow, sessions } from '../../../db/schema'
+import { apps, type SessionRow, sessions } from '../../../db/schema'
 import type { ScheduledTask } from '../../scheduled'
 import type { AppBindings } from '../../types'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
+import { loadAppNeon } from './app-neon'
 import { wakeOrRestart } from './lifecycle'
 import { defaultSessionPorts, type SessionPorts } from './ports'
 import { reconcileStaleSessions } from './reconcile'
@@ -56,16 +57,6 @@ async function cleanUpInline(
       .select()
       .from(apps)
       .where(and(eq(apps.tenantId, tenantId), eq(apps.id, session.appId)))
-    const [production] = await db
-      .select({ neon: appEnvironments.neon })
-      .from(appEnvironments)
-      .where(
-        and(
-          eq(appEnvironments.tenantId, tenantId),
-          eq(appEnvironments.appId, session.appId),
-          eq(appEnvironments.name, 'production')
-        )
-      )
     if (app) {
       const ref = {
         id: app.id,
@@ -74,7 +65,7 @@ async function cleanUpInline(
         repoOwner: app.repoOwner ?? '',
         repoName: app.repoName ?? '',
         defaultBranch: app.defaultBranch ?? 'main',
-        neonProjectId: production?.neon?.projectId ?? null,
+        ...(await loadAppNeon(db, tenantId, session.appId)),
         sessionDb: app.sessionDb ?? null,
       }
       const port = ports.sessionDb(db)

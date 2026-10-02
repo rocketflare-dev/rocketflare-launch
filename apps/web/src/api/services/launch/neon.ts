@@ -174,6 +174,13 @@ export interface NeonRole {
   branch_id?: string
   /** Present only on a create or a reset — a secret. */
   password?: string
+  /**
+   * How the role signs in, as the roles list reports it: `password`, or `no_login` for a
+   * `NOLOGIN` role (an app's kit RLS role) — which has no password to reset.
+   */
+  authentication_method?: string
+  /** Neon's own roles (e.g. a project's system roles) are `protected`. */
+  protected?: boolean
 }
 
 export interface NeonDatabase {
@@ -342,6 +349,22 @@ export class NeonClient {
 
   async deleteProject(projectId: string): Promise<void> {
     await this.request('DELETE', `/projects/${enc(projectId)}`)
+  }
+
+  /** Every role on a branch (no passwords) — the API's own and the ones made in SQL. */
+  async listRoles(projectId: string, branchId: string): Promise<NeonRole[]> {
+    const body = await this.get<{ roles?: NeonRole[] }>(
+      `/projects/${enc(projectId)}/branches/${enc(branchId)}/roles`
+    )
+    return body.roles ?? []
+  }
+
+  /** Every database on a branch (Postgres' own `postgres` and templates are not listed). */
+  async listDatabases(projectId: string, branchId: string): Promise<NeonDatabase[]> {
+    const body = await this.get<{ databases?: NeonDatabase[] }>(
+      `/projects/${enc(projectId)}/branches/${enc(branchId)}/databases`
+    )
+    return body.databases ?? []
   }
 
   /** Create a role on a branch. The answer carries its PASSWORD — use it, never store it. */
