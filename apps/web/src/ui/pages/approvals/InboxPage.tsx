@@ -210,7 +210,7 @@ export default function InboxPage() {
   const box = tabs.find(t => t.id === params.get('box'))?.id ?? 'mine'
 
   return (
-    <div className="max-w-6xl">
+    <div>
       <PageHeader
         title="Approvals"
         description="Requests waiting on your decision, and the ones you asked for."

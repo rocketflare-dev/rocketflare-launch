@@ -106,7 +106,7 @@ export default function Audit() {
   const items = data?.pages.flatMap(page => page.items) ?? []
 
   return (
-    <div className="max-w-5xl space-y-4">
+    <div className="space-y-4">
       <PageHeader
         className="mb-0"
         title="Audit"

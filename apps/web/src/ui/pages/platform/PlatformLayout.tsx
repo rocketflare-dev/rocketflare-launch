@@ -34,7 +34,7 @@ export default function PlatformLayout() {
   ]
 
   return (
-    <div className="max-w-5xl">
+    <div>
       <PageHeader
         title="Platform"
         description={

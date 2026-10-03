@@ -24,7 +24,7 @@ export default function AdminLayout() {
   ]
 
   return (
-    <div className="max-w-5xl">
+    <div>
       <PageHeader
         title="Admin"
         description="Across every organisation on this deployment."

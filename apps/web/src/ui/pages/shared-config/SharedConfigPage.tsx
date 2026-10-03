@@ -55,7 +55,7 @@ export default function SharedConfigPage() {
   } = useSharedResources(showArchived ? { archived: true } : {})
 
   return (
-    <div className="max-w-6xl space-y-4">
+    <div className="space-y-4">
       <PageHeader
         title="Secrets"
         description="Credentials many apps use, owned by a team and granted per app and environment. Ask for one from an app's Config page."

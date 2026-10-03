@@ -133,7 +133,7 @@ export default function ApprovalPoliciesSettings() {
   const rowsFor = (kind: ApprovalKind) => data.items.filter(row => row.kind === kind)
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <p className="text-sm text-secondary">
         Who approves each kind of request. An app’s own policy wins, then its team’s, then the
         organisation’s, then Launch’s default. Changes apply to requests made from now on.

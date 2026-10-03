@@ -71,7 +71,7 @@ export default function ApprovalPage() {
 
   if (isLoading) {
     return (
-      <div className="max-w-6xl space-y-4">
+      <div className="space-y-4">
         <PageHeader title="Approval" breadcrumbs={[CRUMB]} />
         <SectionPanelSkeleton rows={3} />
         <SectionPanelSkeleton rows={5} />
@@ -108,7 +108,7 @@ export default function ApprovalPage() {
   const policy = detail.policy
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6">
       <PageHeader
         className="mb-0"
         title={approvalSummary(detail)}

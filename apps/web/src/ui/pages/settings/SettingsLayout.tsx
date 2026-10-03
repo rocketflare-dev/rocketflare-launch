@@ -77,7 +77,7 @@ export default function SettingsLayout() {
       }) ?? []
   )
   return (
-    <div className="max-w-5xl">
+    <div>
       <PageHeader
         title={single ? 'Workspace settings' : 'Settings'}
         description={

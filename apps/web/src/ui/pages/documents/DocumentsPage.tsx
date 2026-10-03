@@ -103,7 +103,7 @@ export default function DocumentsPage() {
     },
   ]
   return (
-    <div className="max-w-6xl">
+    <div>
       <PageHeader
         title="Knowledge"
         description="Documents this workspace can search. Anything indexed here is searchable on the Search page and available to every agent through the search_knowledge and get_document tools."

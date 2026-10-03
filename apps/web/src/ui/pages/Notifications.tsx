@@ -24,7 +24,7 @@ export default function Notifications() {
   const items = data?.items ?? []
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <PageHeader
         title="Notifications"
         actions={

@@ -45,7 +45,7 @@ export default function AgentsPage() {
   const titleOf = (key: string) => items.find(a => a.key === key)?.title ?? key
 
   return (
-    <div className="max-w-6xl">
+    <div>
       <PageHeader
         title="Agents"
         description="Start an agent and watch it work. Every run is durable — come back to it any time."

@@ -316,7 +316,7 @@ export default function CataloguePage() {
   )
 
   return (
-    <div className="max-w-6xl">
+    <div>
       <PageHeader
         title="Apps"
         description="Every Rocketflare app the company runs, and whether it is answering."

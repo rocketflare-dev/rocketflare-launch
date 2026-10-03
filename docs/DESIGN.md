@@ -15,6 +15,9 @@ reference implementation, and a new screen follows it.
   card one link, with the cards themselves the surface (no panel around them).
 - **No left-border accent stripes** (`border-l-4 border-l-*`). State is a small dot and a word
   (`.status-badge`, `HealthDot`), not a coloured edge.
+- **Pages use the full width.** Lists, tables, logs and detail pages take the whole main area — no
+  `max-w-*` on the page root. Only a form or running prose keeps a reading width (`max-w-2xl` /
+  `max-w-3xl`: Profile, Request access, the prompt editor, a not-found sentence), set on that block.
 
 ## Actions
 

@@ -107,7 +107,7 @@ export default function RunPage() {
   const title = agent?.title ?? run.data?.agentKey ?? 'Run'
 
   return (
-    <div className="max-w-7xl">
+    <div>
       <PageHeader
         breadcrumbs={[{ label: 'Agents', to: '/agents' }, { label: title }]}
         title={title}

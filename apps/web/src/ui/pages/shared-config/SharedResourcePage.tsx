@@ -215,7 +215,7 @@ export default function SharedResourcePage() {
 
   if (isLoading) {
     return (
-      <div className="max-w-6xl space-y-4">
+      <div className="space-y-4">
         <PageHeader title="Secrets" breadcrumbs={[CRUMB]} />
         <SectionPanelSkeleton rows={3} />
         <SectionPanelSkeleton rows={4} />
@@ -262,7 +262,7 @@ export default function SharedResourcePage() {
   )
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6">
       <PageHeader
         className="mb-0"
         title={resource.displayName}
