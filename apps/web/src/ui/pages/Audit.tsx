@@ -1,7 +1,9 @@
 /**
  * `/audit` (spec/08): the organisation's audit log — every sign-in, access decision, credential
- * change and app event Launch recorded, newest first. Admin-level (`read AuditEvent`); read-only,
- * because the log is append-only. Filter by action prefix (`oidc` → every `oidc.*` event).
+ * change and app event Launch recorded, and every kit activity (`member.*`, `invitation.*`,
+ * `api_key.*`, `group.*`, `tenant.*` …) — the ONE log; `/activity` redirects here. Newest first.
+ * Admin-level (`read AuditEvent`); read-only, because the log is append-only. Filter by action
+ * prefix (`oidc` → every `oidc.*` event, `member` → every `member.*`).
  */
 import { ArrowDownTrayIcon, ShieldCheckIcon } from '@heroicons/react/24/outline'
 import { useState } from 'react'
@@ -14,18 +16,7 @@ import {
 } from '@/ui/components/shared'
 import { auditExportUrl, useAudit, useAuditVerify } from '@/ui/hooks/useAudit'
 import { formatDateTime } from '@/ui/lib/format'
-
-/** `{ after: { token: 'set' } }` → `token: set`. The summary never carries a secret value. */
-function summaryText(summary: {
-  before?: Record<string, unknown>
-  after?: Record<string, unknown>
-}) {
-  const facts = summary.after ?? summary.before
-  if (!facts) return ''
-  return Object.entries(facts)
-    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
-    .join(' · ')
-}
+import { auditActionLabel, auditSummaryText } from './auditModel'
 
 /**
  * P4 (spec/08 "Integrity"): the log is hash-chained by the `audit.seal` cron. Verify recomputes the
@@ -119,7 +110,7 @@ export default function Audit() {
       <PageHeader
         className="mb-0"
         title="Audit"
-        description="Who did what to which app — recorded by Launch, and never edited."
+        description="Who did what — to the organisation, its people and its apps — recorded by Launch, and never edited."
       />
       <Integrity action={validAction} />
       <SectionPanel
@@ -128,7 +119,7 @@ export default function Audit() {
           <SearchInput
             value={search}
             onChange={setSearch}
-            placeholder="Action, e.g. oidc"
+            placeholder="Action, e.g. member or oidc"
             aria-label="Filter by action"
           />
         }
@@ -156,7 +147,9 @@ export default function Audit() {
                   <tr key={event.id}>
                     <td className="whitespace-nowrap text-secondary">{formatDateTime(event.at)}</td>
                     <td>
-                      <code className="text-xs">{event.action}</code>
+                      <code className="text-xs" title={auditActionLabel(event.action)}>
+                        {event.action}
+                      </code>
                     </td>
                     <td>
                       {event.actorType === 'user' ? (
@@ -182,7 +175,7 @@ export default function Audit() {
                         '—'
                       )}
                     </td>
-                    <td className="text-secondary text-xs">{summaryText(event.summary)}</td>
+                    <td className="text-secondary text-xs">{auditSummaryText(event.summary)}</td>
                   </tr>
                 ))}
               </tbody>

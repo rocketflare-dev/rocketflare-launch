@@ -244,6 +244,7 @@ The server surface: the context family, and the types a plugin must be able to n
 - `interface PluginNavGroup`
   A nav group, placed relative to a named core group ("Organisation" by default).
   - `label?: string`
+    A labelled group renders as its own headed group. An UNLABELLED one landing directly after an unlabelled group is merged into it (items appended, in order), so one item never…
   - `before?: string`
     Insert before the core group with this label; appended when the label is not found.
   - `items: NavItem[]`
@@ -284,6 +285,7 @@ The server surface: the context family, and the types a plugin must be able to n
   Everything a service needs to nudge: how to defer, and the hub binding. Built by `withAuth`.
 - `function realtimeEvent( type: RealtimeEventType, tenantId: string, payload?: unknown ): RealtimeEvent`
 - `async function recordActivity(db: Database, input: ActivityInput): Promise<void>`
+  Both rows in ONE statement — `WITH activity AS (INSERT …) INSERT INTO audit_events …` — for two reasons. It is atomic without a transaction (an audit row never exists without its…
 - `async function recordUsage(db: Database, input: UsageInput): Promise<void>`
 - `function requestCtx(c: AppContext): RequestCtx`
   Build a plugin's request context from the kit's.
@@ -508,6 +510,7 @@ The only host module a plugin's `ui/index.ts` may import — it ships in the mai
 - `interface PluginNavGroup`
   A nav group, placed relative to a named core group ("Organisation" by default).
   - `label?: string`
+    A labelled group renders as its own headed group. An UNLABELLED one landing directly after an unlabelled group is merged into it (items appended, in order), so one item never…
   - `before?: string`
     Insert before the core group with this label; appended when the label is not found.
   - `items: NavItem[]`
@@ -590,7 +593,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
   Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,…
 - `function notifyUnauthorized(error: ApiError): void`
   Invoke the 401 handler. A stale session makes every in-flight query fail at once, so calls within the same tick are coalesced into ONE handler invocation. Called by `request()`…
-- `function PageHeader({ title, description, breadcrumbs, badge, actions, className = '', }: PageHeaderProps)`
+- `function PageHeader({ title, description, breadcrumbs, badge, actions, leading, className = '', }: PageHeaderProps)`
   Page title row: breadcrumbs, a modest title (no enormous headings), description, actions.
 - `function PaginationControls({ pagination, onPageChange, isLoading = false, className = '', }: PaginationControlsProps)`
   "Showing X to Y of Z" + Previous/Next. Renders nothing for a single page.
@@ -650,6 +653,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
 - `interface PluginNavGroup`
   A nav group, placed relative to a named core group ("Organisation" by default).
   - `label?: string`
+    A labelled group renders as its own headed group. An UNLABELLED one landing directly after an unlabelled group is merged into it (items appended, in order), so one item never…
   - `before?: string`
     Insert before the core group with this label; appended when the label is not found.
   - `items: NavItem[]`
@@ -1290,7 +1294,7 @@ nothing in the comparison that can throw.
 @/plugins/api/ui :: interface :: ModalProps :: interface ModalProps
 @/plugins/api/ui :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
 @/plugins/api/ui :: function :: notifyUnauthorized :: function notifyUnauthorized(error: ApiError): void
-@/plugins/api/ui :: function :: PageHeader :: function PageHeader({ title, description, breadcrumbs, badge, actions, className = '', }: PageHeaderProps)
+@/plugins/api/ui :: function :: PageHeader :: function PageHeader({ title, description, breadcrumbs, badge, actions, leading, className = '', }: PageHeaderProps)
 @/plugins/api/ui :: function :: PaginationControls :: function PaginationControls({ pagination, onPageChange, isLoading = false, className = '', }: PaginationControlsProps)
 @/plugins/api/ui :: function :: SearchInput :: function SearchInput({ value, onChange, placeholder = 'Search…', debounceMs = 300, className = '', size = 'md', 'aria-label': ariaLabel = 'Search', }: SearchInputProps)
 @/plugins/api/ui :: function :: SectionPanel :: function SectionPanel({ title, description, actions, children, className = '', flush = false, }: SectionPanelProps)

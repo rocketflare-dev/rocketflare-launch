@@ -68,6 +68,15 @@ function App() {
               <Route path="/secrets/:id" element={<Where label="secret" />} />
               <Route path="/shared-config" element={<Moved to="/secrets" />} />
               <Route
+                path="/audit"
+                element={
+                  <RequireGuard guard="admin">
+                    <Where label="audit" />
+                  </RequireGuard>
+                }
+              />
+              <Route path="/activity" element={<Moved to="/audit" />} />
+              <Route
                 path="/shared-config/:id"
                 element={<Moved to={({ id = '' }) => `/secrets/${encodeURIComponent(id)}`} />}
               />
@@ -237,6 +246,15 @@ describe('ProtectedRoute', () => {
     renderWithProviders(<App />, { session: makeSession(), route: '/shared-config?archived=1' })
     expect(page()).toBe('secrets')
     expect(path()).toBe('/secrets?archived=1')
+  })
+
+  it('the old /activity link lands on Audit — the one log — keeping the query and hash', () => {
+    renderWithProviders(<App />, {
+      session: makeSession({ tenant: makeTenant({ role: 'admin' }) }),
+      route: '/activity?page=2#top',
+    })
+    expect(page()).toBe('audit')
+    expect(path()).toBe('/audit?page=2#top')
   })
 
   it('an old /shared-config/:id link lands on that secret', () => {

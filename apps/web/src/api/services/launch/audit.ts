@@ -4,6 +4,10 @@
  * awaited** — an action Launch cannot record is an action it should not report as done — and the
  * table it writes is append-only by the database (a trigger, plus the revoked grants).
  *
+ * Audit is the ONE log: `recordActivity` calls this too, so every kit activity event
+ * (`member.joined`, `invitation.revoked`, `api_key.created`, …) also lands here, action = the
+ * activity type (`services/activity.ts`).
+ *
  * Every console action records its actor through `auditActor(c)`; a cron or a pipeline step
  * passes `SYSTEM_ACTOR`. `summary` holds the facts that changed and **never a secret value** —
  * write `{ after: { token: 'set' } }`, never the token.
@@ -17,7 +21,7 @@ import type {
   AuditListResponse,
   AuditSummary,
 } from '@launch/shared/launch-audit'
-import { and, desc, eq, or, sql } from 'drizzle-orm'
+import { and, desc, eq, or, type SQL, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type AuditEventRow, auditEvents } from '../../../db/schema'
 import { clientIpOf } from '../../routes/auth/helpers'
@@ -75,26 +79,35 @@ export function auditActor(c: AppContext, user?: { id: string; email: string } |
   }
 }
 
+/**
+ * The INSERT for one row, built and not yet run — the one place an `audit_events` row is shaped.
+ * `recordAudit` runs it; `recordActivity` embeds it in ONE statement beside its own insert
+ * (`services/activity.ts` says why), passing the actor's email as a scalar subquery.
+ */
+export function auditInsert(
+  db: Database,
+  input: Omit<AuditInput, 'actorEmail'> & { actorEmail?: string | SQL | null }
+) {
+  return db.insert(auditEvents).values({
+    tenantId: input.tenantId,
+    actorType: input.actorType ?? 'system',
+    actorUserId: input.actorUserId ?? null,
+    actorEmail: input.actorEmail ?? null,
+    action: input.action,
+    targetType: input.targetType ?? null,
+    targetId: input.targetId ?? null,
+    appId: input.appId ?? null,
+    summary: input.summary ?? {},
+    requestId: input.requestId ?? null,
+    approvalId: input.approvalId ?? null,
+    ip: input.ip ?? null,
+    userAgent: input.userAgent ?? null,
+  })
+}
+
 /** Append one row. Awaited — see the header. Pass the transaction's `tx` to write atomically. */
 export async function recordAudit(db: Database, input: AuditInput): Promise<AuditEventRow> {
-  const [row] = await db
-    .insert(auditEvents)
-    .values({
-      tenantId: input.tenantId,
-      actorType: input.actorType ?? 'system',
-      actorUserId: input.actorUserId ?? null,
-      actorEmail: input.actorEmail ?? null,
-      action: input.action,
-      targetType: input.targetType ?? null,
-      targetId: input.targetId ?? null,
-      appId: input.appId ?? null,
-      summary: input.summary ?? {},
-      requestId: input.requestId ?? null,
-      approvalId: input.approvalId ?? null,
-      ip: input.ip ?? null,
-      userAgent: input.userAgent ?? null,
-    })
-    .returning()
+  const [row] = await auditInsert(db, input).returning()
   if (!row) throw new Error('audit_events insert returned no row')
   return row
 }

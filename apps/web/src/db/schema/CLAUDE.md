@@ -31,7 +31,7 @@ closes a cycle back through `plugins/schema.ts`.
 | `tenant_settings` | `tenant-settings.ts` | `tenant_id` (PK) | ✓ | `timezone`, `notificationsEnabled`, `settings` jsonb |
 | `tenant_user_settings` | `tenant-user-settings.ts` | `tenant_id` | ✓ | PK `(tenant_id, user_id)`; `preferences` jsonb |
 | `notifications` | `notifications.ts` | `tenant_id` | ✓ | per user; `readAt`; `data` jsonb |
-| `activity_events` | `activity-events.ts` | `tenant_id` | ✓ | audit log, and the source the analytics plugin's cubes and fact table read; `(tenant_id, created_at DESC)` |
+| `activity_events` | `activity-events.ts` | `tenant_id` | ✓ | the kit activity feed (each row is also written to `audit_events` in the same statement — audit is the one log), and the source the analytics plugin's cubes and fact table read; `(tenant_id, created_at DESC)` |
 | `files` | `files.ts` | `tenant_id` | ✓ | R2 object index (D23): `key` unique (`tenants/<tenant>/<scope>/<uuid>-<name>`), `scope` enum (`avatars`, `uploads`, `documents` — mirrors `FILE_SCOPES` in shared), `ownerUserId`, immutable (no `updated_at`) |
 | `ai_configs` | `ai-configs.ts` | `tenant_id` | ✓ | tenant AI providers (D17): `scope` chat\|embeddings, `provider` text enum, `label` (unique per tenant+scope, the upsert key), `apiKeyEnc` (AES-GCM, never returned), `thinking` jsonb, partial unique **one default per (tenant, scope)**; only `services/ai/resolve.ts` reads it |
 | `prompt_overrides` | `prompt-overrides.ts` | `tenant_id` | ✓ | PK `(tenant_id, key)`; row exists only when a registry prompt is overridden (revert = delete); `updatedByUserId` |

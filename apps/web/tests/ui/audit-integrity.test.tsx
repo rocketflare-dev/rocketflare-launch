@@ -71,3 +71,41 @@ describe('Audit — integrity', () => {
     )
   })
 })
+
+describe('Audit — the one log', () => {
+  const kitEvent = {
+    id: '22222222-0000-4000-8000-000000000000',
+    tenantId: '11111111-0000-4000-8000-000000000000',
+    at: new Date().toISOString(),
+    actorType: 'user',
+    actorUserId: '33333333-0000-4000-8000-000000000000',
+    actorEmail: 'owner@example.test',
+    action: 'member.role_changed',
+    targetType: 'TenantMember',
+    targetId: '44444444-0000-4000-8000-000000000000',
+    appId: null,
+    summary: { after: { from: 'member', to: 'admin' } },
+    requestId: null,
+    approvalId: null,
+    ip: null,
+    userAgent: null,
+  }
+
+  it('renders a kit activity readably, and filters it by its action prefix', async () => {
+    const fetchMock = stubFetch({ '/api/audit': { items: [kitEvent], nextCursor: null } })
+    renderWithProviders(<Audit />, { session: makeSession() })
+    expect(await screen.findByText('member.role_changed')).toHaveAttribute(
+      'title',
+      'Member role changed'
+    )
+    expect(screen.getByText('owner@example.test')).toBeInTheDocument()
+    expect(screen.getByText('from: member · to: admin')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Filter by action'), { target: { value: 'member' } })
+    await vi.waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes('action=member'))).toBe(
+        true
+      )
+    )
+  })
+})

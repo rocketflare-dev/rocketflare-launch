@@ -20,7 +20,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   let through to `/admin/*` and `/settings/platform/*` only — `isAdminPath`), `RequireGuard` (any
   `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`),
   `Moved` (a redirect that keeps `?query#hash`; `to` may be a function of the old route's params —
-  the old `/admin/{setup,identity,access-requests}` and `/shared-config[/:id]` → `/secrets[/:id]`),
+  the old `/admin/{setup,identity,access-requests}`, `/shared-config[/:id]` → `/secrets[/:id]`, and `/activity` → `/audit`),
   `AdminRoute`/`GlobalAdminRoute` (sugar over it). `components/permissions/` — `AbilityProvider`
   (unpacks `session.permissions`), `Can`, `IfCan`/`IfCannot`. Realtime (D8): `WebSocketProvider`
   (connects the singleton once authenticated with a tenant, `useQueryClient()` →
@@ -35,7 +35,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `useTenancyMode`), `usePermissions` (`can/cannot/isOwnerLevel/isAdminLevel/isGlobalAdmin`),
   `useNavGuard` (the ONE place nav and route guards are decided), one file per resource
   (`useMembers`, `useInvitations`, `useApiKeys`, `useNotifications`, `useTenant`, `useProfile`,
-  `useActivity`, `useAccessRequests`, `useAdminAccessRequests`, `useAdminTenants`, `useAdminUsers`,
+  `useAccessRequests`, `useAdminAccessRequests`, `useAdminTenants`, `useAdminUsers`,
   `useAuthMethods`) exporting `xQueryOptions()` + `useX()` + mutation hooks; `useProfile` also
   holds the avatar upload (`useUploadAvatar`, `validateAvatarFile`, `AVATAR_ACCEPT` — D23);
   `useAppInfo`, `useDebounce`, `useModalState`, `useLocalStoragePreference`;
@@ -474,6 +474,13 @@ A `CUSTOM kit.notice` renders
 - **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
   extends (owners/admins — their click also approves), asks (the creator), or reads; header and
   banner take the same object.
+- **`/audit` is the one log** (`pages/Audit.tsx`, nav "Audit" under Organisation; the kit's Activity
+  page and its `useActivity` hook are gone and `/activity` is a `Moved` to `/audit`). Kit activity
+  events arrive there with their type as the action (`member.role_changed`), so the action filter's
+  prefixes are `member`, `invitation`, `api_key`, `group`, `tenant` as well as `oidc`, `app` ….
+  What a row SAYS is the pure `pages/auditModel.ts` (`auditSummaryText` — `key: before → after`
+  when both halves carry a key, ids shortened, lists joined; `auditActionLabel` for the code's
+  `title`; `tests/config/audit-model.test.ts`).
 - Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `app-overview`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
 
@@ -591,7 +598,9 @@ A `CUSTOM kit.notice` renders
 - **An installed plugin contributes UI through `UiPlugin`** (`apps/web/src/plugins/types.ts`), one
   line in `src/plugins/ui.ts`, and its own entry `src/plugins/<id>/ui/index.ts`. `App.tsx` maps
   `UI_PLUGINS.flatMap(p => p.routes)` per tier (`shell | noTenant | public`) inside the existing
-  `Suspense`; `SideNav`'s `navigationConfig` is `composeNav(CORE_NAVIGATION, …)`;
+  `Suspense`; `SideNav`'s `navigationConfig` is `composeNav(CORE_NAVIGATION, …)` (an UNLABELLED
+  plugin group landing right after an unlabelled group is merged into it, so the analytics item
+  sits in the first group; `filterNavConfig` drops a group its guards empty);
   `SettingsLayout` appends `settingsTabs(ctx)`; `queryKeys` is `CORE_QUERY_KEYS` spread with every
   plugin's families; `pages/agents/forms/index.ts` is `CORE_AGENT_FORMS` plus every plugin's.
   **Nothing in the shell names a plugin** — that is what makes install and remove a handful of

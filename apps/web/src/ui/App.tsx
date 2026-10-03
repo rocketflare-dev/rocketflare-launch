@@ -54,7 +54,6 @@ const NoAccess = lazy(() => import('@/ui/pages/NoAccess'))
 const Home = lazy(() => import('@/ui/pages/Home'))
 const Profile = lazy(() => import('@/ui/pages/Profile'))
 const Notifications = lazy(() => import('@/ui/pages/Notifications'))
-const Activity = lazy(() => import('@/ui/pages/Activity'))
 const SettingsLayout = lazy(() => import('@/ui/pages/settings/SettingsLayout'))
 // D17: its own chunk — the markdown renderer must not ride in the main bundle.
 const ChatPage = lazy(() => import('@/ui/pages/chat/ChatPage'))
@@ -312,14 +311,8 @@ function ShellRoutes() {
               </RequireGuard>
             }
           />
-          <Route
-            path="/activity"
-            element={
-              <RequireGuard guard="admin">
-                <Activity />
-              </RequireGuard>
-            }
-          />
+          {/* Audit is the one log: the kit's activity events are appended to it too. */}
+          <Route path="/activity" element={<Moved to="/audit" />} />
           <Route
             path="/settings"
             element={

@@ -84,7 +84,7 @@ suites on vitest 4, §9 — never part of the gate).
 dev-login does not apply `BOOTSTRAP_ADMIN_EMAILS` (the seed makes its admin an owner instead);
 no IdP group sync (SCIM/SAML claims); no group hierarchy or per-group roles;
 conversations, runs, prompts and non-Knowledge files have no visibility; agent-written documents
-are always `tenant`; no audit log beyond `activity_events`; no personal API keys (tenant keys only).
+are always `tenant`; no personal API keys (tenant keys only).
 
 ## 2. Auth
 
@@ -290,7 +290,7 @@ restrictable to groups, fact tables rebuild on the `:15` cron, and its cube-isol
 mandatory. The kit core knows nothing about drizzle-cube, and other plugins extend it through
 `analyticsExtensions({...})`. `bootstrap --no-plugins` gives a kit without it.
 
-The kit still owns `activity_events`, the catch-all/`run_worker_first`/Vite-proxy files its
+The kit still owns `activity_events` (every row of which is also an audit event, §18.1), the catch-all/`run_worker_first`/Vite-proxy files its
 prefixes must be added to, and the visibility registry it registers into.
 
 **Known gaps (kit side):** `activity_events` has no retention; nothing proves a plugin's cron reached
@@ -601,6 +601,13 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   tuple plus a widened list, so an empty kit still typechecks. **Opening a closed set** always
   follows one pattern: `X = [...CORE_X, ...plugins]`. `ServerPlugin<S>` checks handlers, agents and
   prompts exhaustively against the plugin's own keys.
+- **Nav composition**: `UiPlugin.nav` groups are spliced by `composeNav` before the core group a
+  group names (`before`, default "Organisation"), appended when that label is missing. An
+  UNLABELLED group landing directly after an unlabelled group is MERGED into it, items appended in
+  order — so the analytics plugin's one "Analytics" item sits in the first group instead of
+  floating alone after a group gap. A labelled group always stays its own group. After guards,
+  `filterNavConfig` drops any group left with no items, so a group the `kit-ai` flag empties leaves
+  no spacing behind.
 - **Namespacing**: the id is `^[a-z][a-z0-9-]*$` and namespaces jobs (`<id>.x`), query keys
   (`<id>:`), `/api/<id>`, CLI commands and CUSTOM events. Never `kit.`. Table prefixes are a human
   convention; **two plugins declaring the same table is a `plugin check` failure**.
@@ -786,8 +793,26 @@ action, cursor-paged) backs the `/audit` page.
 From P4 the log is sealed into a hash chain, verifiable and exportable (§18.18), and every
 approval's audit rows carry `approval_id`.
 
+**Audit is the one log.** The kit's activity events (D13/D19 — `member.invited|joined|removed|
+role_changed`, `invitation.*`, `api_key.*`, `group.*`, `tenant.*`, `support.*`, the AI and
+document events, and a plugin's own such as the analytics plugin's `dashboard.*`) are ALSO audit
+events: `recordActivity` (`services/activity.ts`) writes its `activity_events` row and an
+`audit_events` row in ONE statement (`WITH activity AS (INSERT …) INSERT INTO audit_events …`,
+through `auditInsert`, the row builder `recordAudit` runs), so the two commit together and a
+deferred write is a single round trip that a closing request client cannot cut in half. The audit
+`action` IS the activity type, the subject is the target, the metadata becomes `summary.after`
+with any secret-looking key (`secret`, `token`, `password`, `apiKey`, …) reduced to `'set'`, and
+the actor is `user` with the email copied at write time (a scalar subquery on `users`), or
+`system` when the activity has no user. `activity_events` and `GET /api/activity` stay (the
+analytics plugin's cubes read the table); the UI's Activity page is gone, and `/activity`
+redirects to `/audit`, whose action filter takes `member`, `invitation`, `api_key` … like `oidc`.
+
 **Known gaps:** no SIEM stream (spec/08, P6); no retention policy; the page filters only by app and
-action.
+action. Kit activity is **forward-only**: rows recorded in `activity_events` before this landed
+were not backfilled into the hash chain (the chain cannot take back-dated rows honestly). A kit
+activity's audit row carries no IP, user agent or request id — `recordActivity` has no request in
+hand — and it keeps the kit's fire-and-forget semantics: a failed deferred write is logged, not
+surfaced, unlike an awaited `recordAudit`.
 
 ### 18.2 Admin credentials and setup checks
 

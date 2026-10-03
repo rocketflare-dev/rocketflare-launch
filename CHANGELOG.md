@@ -7,6 +7,17 @@
   screenshot — or a large initial — with its name, what needs a look, and the Live and Staging
   versions; the whole card opens the app. "Waiting on you" lists its requests on one panel;
   nothing waiting stays one quiet line.
+- **Audit is the one log.** Every kit activity — inviting, joining, removing or re-roling a member,
+  invitations, API keys, groups, organisation settings, support access, and the plugins' own (the
+  analytics dashboards) — is now also an audit event, hash-chained and sealed like Launch's own,
+  with the activity type as the action (`member.role_changed`) and the metadata as its summary
+  (secret-looking keys recorded only as `set`). The sidebar's "Activity" item is gone and
+  `/activity` redirects to `/audit` (query and anchor kept), whose filter takes `member`,
+  `invitation`, `api_key` …. Forward-only: activity recorded before this release is not in the
+  chain. `activity_events` and `GET /api/activity` are unchanged.
+- **Sidebar: no gap above Analytics.** A plugin's unlabelled nav group now joins the unlabelled
+  group it lands after instead of starting a group of its own, so "Analytics" sits with Home,
+  Apps, Secrets and Approvals; a group whose items are all hidden leaves no space behind.
 - **App thumbnails.** After a deploy goes live, Launch takes a screenshot of the app's root URL in
   the background (Cloudflare Browser Rendering, 1280×800, WebP) and shows it beside the app on
   Home, in the catalogue and in the app header — Live's, else Staging's, else the app's initial.

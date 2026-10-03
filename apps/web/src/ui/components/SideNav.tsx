@@ -4,7 +4,6 @@ import {
   CheckBadgeIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  ClockIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   DocumentMagnifyingGlassIcon,
@@ -125,8 +124,8 @@ const CORE_NAVIGATION: NavConfig = [
     label: 'Organisation',
     items: [
       { to: '/settings', label: 'Settings', icon: Cog6ToothIcon, guard: 'admin' },
-      { to: '/activity', label: 'Activity', icon: ClockIcon, guard: 'admin' },
-      // Launch (spec/08): the append-only audit log — the same guard as its route.
+      // Launch (spec/08): the append-only audit log — the ONE log; the kit's activity events are
+      // appended to it too, and the old `/activity` redirects here. The same guard as its route.
       { to: '/audit', label: 'Audit', icon: DocumentMagnifyingGlassIcon, guard: 'admin' },
     ],
   },
@@ -160,15 +159,32 @@ export const DEFAULT_NAV_ANCHOR = 'Organisation'
  * that label is not there — which is what an app that deleted the anchor group gets, rather than a
  * plugin whose pages have no way in. Several groups naming the same anchor keep their declared
  * order. The core config is never mutated.
+ *
+ * An UNLABELLED plugin group whose insertion point is directly after an unlabelled group is MERGED
+ * into that group (its items appended, in order) rather than spliced in as a group of its own: a
+ * group of its own renders with group spacing, so one item ("Analytics") would float alone after a
+ * gap. A labelled group always stays a group — its heading is the point.
  */
 export function composeNav(core: NavConfig, plugins: readonly PluginNavGroup[] = []): NavConfig {
-  const out: NavConfig = [...core]
+  // Every group is copied up front, so a merge never writes into the caller's config.
+  const out: NavConfig = core.map(item =>
+    isNavGroup(item) ? { ...item, items: [...item.items] } : item
+  )
   for (const group of plugins) {
     const anchor = group.before ?? DEFAULT_NAV_ANCHOR
-    const entry: NavGroup = { label: group.label, items: group.items }
-    const at = out.findIndex(item => isNavGroup(item) && item.label === anchor)
-    if (at === -1) out.push(entry)
-    else out.splice(at, 0, entry)
+    const found = out.findIndex(item => isNavGroup(item) && item.label === anchor)
+    const at = found === -1 ? out.length : found
+    const previous = out[at - 1]
+    if (
+      group.label === undefined &&
+      previous &&
+      isNavGroup(previous) &&
+      previous.label === undefined
+    ) {
+      previous.items.push(...group.items)
+      continue
+    }
+    out.splice(at, 0, { label: group.label, items: [...group.items] })
   }
   return out
 }
@@ -179,7 +195,11 @@ export const navigationConfig: NavConfig = composeNav(
   uiPlugins.flatMap(p => p.nav ?? [])
 )
 
-/** Apply `canAccess` to every item and drop groups that end up empty. Pure — unit-testable. */
+/**
+ * Apply `canAccess` to every item and drop groups that end up empty — a group whose items are ALL
+ * guarded away (the `kit-ai` surfaces with the flag off) renders nothing, not an empty block with
+ * group spacing. Pure — unit-testable.
+ */
 export function filterNavConfig(
   config: NavConfig,
   canAccess: (guard: NavGuard | undefined) => boolean

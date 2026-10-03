@@ -1,6 +1,7 @@
 /**
  * `audit_events` — Launch's system of record for who did what (spec/08). Distinct from the kit's
- * `activity_events` on purpose: that one is a fire-and-forget feed; this one is awaited, and it is
+ * `activity_events`: that one is a fire-and-forget feed (whose every row `recordActivity` ALSO
+ * appends here — audit is the one log); this one is awaited by Launch's own writers, and it is
  * **append-only by the database**.
  *
  * - A `BEFORE UPDATE OR DELETE` row trigger (appended to the P1 migration) raises unless

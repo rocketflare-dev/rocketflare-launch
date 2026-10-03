@@ -9,6 +9,7 @@ import SideNav, {
   filterNavConfig,
   isPathActive,
   type NavConfig,
+  navigationConfig,
 } from '@/ui/components/SideNav'
 import type { NavGuard } from '@/ui/hooks/useNavGuard'
 import {
@@ -70,6 +71,25 @@ describe('filterNavConfig', () => {
     // The Platform group vanished entirely rather than rendering an empty heading
     expect(visible.some(item => 'label' in item && item.label === 'Platform')).toBe(false)
   })
+
+  it('drops an UNLABELLED group whose items are all guarded away — no empty block, no gap', () => {
+    const hidden: NavGuard = { feature: 'kit-ai' }
+    const visible = filterNavConfig(
+      [
+        { items: [{ to: '/', label: 'Home', icon: HomeIcon }] },
+        {
+          items: [
+            { to: '/chat', label: 'Chat', icon: HomeIcon, guard: hidden },
+            { to: '/agents', label: 'Agents', icon: HomeIcon, guard: hidden },
+          ],
+        },
+        { label: 'Organisation', items: [{ to: '/audit', label: 'Audit', icon: HomeIcon }] },
+      ],
+      guard => guard !== hidden
+    )
+    expect(visible).toHaveLength(2)
+    expect(visible.every(item => 'items' in item && item.items.length > 0)).toBe(true)
+  })
 })
 
 describe('composeNav', () => {
@@ -100,14 +120,68 @@ describe('composeNav', () => {
     expect((out[1] as { label?: string }).label).toBe('A')
   })
 
+  it('MERGES an unlabelled group into the unlabelled group it lands after, keeping order', () => {
+    // The analytics plugin's case: no label, no `before` → it lands after the kit's unlabelled
+    // first group, and joins it rather than floating alone after a group gap.
+    const out = composeNav(config, [
+      { items: [item('/analytics')] },
+      { items: [item('/orders'), item('/reports')] },
+    ])
+    expect(out).toHaveLength(config.length)
+    const first = out[0] as { label?: string; items: { to: string }[] }
+    expect(first.label).toBeUndefined()
+    expect(first.items.map(i => i.to)).toEqual(['/', '/analytics', '/orders', '/reports'])
+  })
+
+  it('merges with an explicit anchor too, when the group before it is unlabelled', () => {
+    const out = composeNav(config, [{ items: [item('/x')], before: 'Organisation' }])
+    expect((out[0] as { items: { to: string }[] }).items.map(i => i.to)).toEqual(['/', '/x'])
+  })
+
+  it('keeps an unlabelled group separate when it lands after a LABELLED group', () => {
+    const out = composeNav(config, [{ items: [item('/x')], before: 'Platform' }])
+    expect(out).toHaveLength(config.length + 1)
+    const at = out.findIndex(e => 'items' in e && e.items.some(i => i.to === '/x'))
+    expect((out[at - 1] as { label?: string }).label).toBe('Organisation')
+    expect((out[at] as { label?: string }).label).toBeUndefined()
+  })
+
+  it('never merges a LABELLED group, even after an unlabelled one', () => {
+    const out = composeNav(config, [{ label: 'Orders', items: [item('/orders')] }])
+    expect(out).toHaveLength(config.length + 1)
+    expect((out[1] as { label?: string }).label).toBe('Orders')
+    expect((out[0] as { items: unknown[] }).items).toHaveLength(1)
+  })
+
   it('does not mutate the core config', () => {
     const before = config.length
+    const firstItems = (config[0] as { items: unknown[] }).items.length
     composeNav(config, [plugin, plugin])
     expect(config).toHaveLength(before)
+    expect((config[0] as { items: unknown[] }).items).toHaveLength(firstItems)
   })
 
   it('is the identity with no plugins installed — which is the kit today', () => {
     expect(composeNav(config)).toEqual(config)
+  })
+})
+
+describe('navigationConfig', () => {
+  const groups = navigationConfig.filter(e => 'items' in e) as {
+    label?: string
+    items: { to: string }[]
+  }[]
+
+  it('puts the analytics plugin item IN the first group, not in a group of its own', () => {
+    expect(groups[0]?.label).toBeUndefined()
+    expect(groups[0]?.items.map(i => i.to)).toContain('/analytics')
+    expect(groups.filter(g => g.label === undefined)).toHaveLength(1)
+  })
+
+  it('lists Audit as the one log — no Activity item', () => {
+    const tos = groups.flatMap(g => g.items.map(i => i.to))
+    expect(tos).toContain('/audit')
+    expect(tos).not.toContain('/activity')
   })
 })
 

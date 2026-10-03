@@ -192,6 +192,11 @@ export interface PluginRoute {
 
 /** A nav group, placed relative to a named core group ("Organisation" by default). */
 export interface PluginNavGroup {
+  /**
+   * A labelled group renders as its own headed group. An UNLABELLED one landing directly after an
+   * unlabelled group is merged into it (items appended, in order), so one item never floats alone
+   * after a group gap.
+   */
   label?: string
   /** Insert before the core group with this label; appended when the label is not found. */
   before?: string
