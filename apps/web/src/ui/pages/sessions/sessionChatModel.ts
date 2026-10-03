@@ -15,7 +15,7 @@
  * - `turn.end` becomes a footnote (how long, what it cost).
  *
  * Plus the selectors the page needs from the same rows, so nothing re-derives them:
- * `bootSteps` (the boot panel), `latestTurnEndSeq` (the preview reloads when it moves),
+ * `bootSteps` (the boot panel), `latestPreviewChangeSeq` (the preview reloads when the dev server comes back up),
  * `shipGates` (the ship panel) and `landingTimeline` (issue #5: what follows the PR — CI, review,
  * merge, release, live on staging — folded from the `ship.*` rows and the session's `landing`).
  */
@@ -340,21 +340,15 @@ export function bootSteps(events: readonly SessionEvent[]): BootStep[] {
 }
 
 /**
- * The `seq` of the newest row after which the app's code may have changed — a finished, failed or
- * interrupted turn, or the dev server coming (back) up. The preview reloads whenever it moves. Pure.
+ * The `seq` of the newest `preview.ready` — the dev server coming (back) up, after which the
+ * frame's HMR socket points at a server that is gone. The preview reloads only when it moves: a
+ * turn's edits reach the frame through Vite's HMR as they are saved, and the Reload button forces
+ * a fresh load. Pure.
  */
 export function latestPreviewChangeSeq(events: readonly SessionEvent[]): number {
   let seq = 0
   for (const event of events) {
-    if (
-      (event.type === 'turn.end' ||
-        event.type === 'turn.failed' ||
-        event.type === 'turn.interrupted' ||
-        event.type === 'preview.ready') &&
-      event.seq > seq
-    ) {
-      seq = event.seq
-    }
+    if (event.type === 'preview.ready' && event.seq > seq) seq = event.seq
   }
   return seq
 }

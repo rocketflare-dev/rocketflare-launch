@@ -263,7 +263,7 @@ Local Docker run on 2026-09-29, session `608db49e` on hola-world (idle suspend c
 - **Local crons never fire.** `wrangler dev` does not run `[triggers] crons`, so the `*/5` reconcile never ran: a session sat in `ending` for 9 hours until the cron was fired by hand (`curl "http://localhost:3001/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*"`). Fix: `dev-server.mjs` fires each cron on its schedule.
 - **`grep` is broken in Claude's Bash after a recreated container**: every `grep` answered `error: unknown option '-G'`, and Claude fell back to `command grep`. It is likely Claude Code's shell snapshot aliasing `grep` to a tool that is missing or different in the image.
 - **"Starting sandbox" took 1 m 44 s** once the killed container had been recreated by workerd (compare 1 s normally). This is the same symptom as the resume hang noted in `README.md`.
-- **The preview reloads after every turn.** HMR already shows edits live; the reload is only needed when the dev server restarts (`preview.ready`).
+- **The preview reloads after every turn.** HMR already shows edits live; the reload is only needed when the dev server restarts (`preview.ready`). **Fixed 2026-10-03:** the frame reloads only on `preview.ready`; the Reload button forces one.
 
 ## Deployed resources (created 2026-09-28, with the user's go-ahead)
 

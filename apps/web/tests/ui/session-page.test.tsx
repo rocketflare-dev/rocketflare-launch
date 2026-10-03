@@ -150,19 +150,23 @@ describe('SessionPage', () => {
     expect(screen.getByRole('button', { name: 'Stop this turn' })).toBeInTheDocument()
   })
 
-  it('frames the preview through a grant and reloads it with a fresh one after turn.end', async () => {
+  it('frames the preview through a grant; a turn’s end leaves it to HMR, a dev server coming back reloads it', async () => {
     const log = [...DONE_TURN]
     let row = detailOf()
     const { queryClient, fetchMock } = renderPage({
       [BASE]: () => row,
       [`${BASE}/events`]: eventsRoute(log),
     })
+    const grantCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([input, init]) => String(input).endsWith('/preview-grant') && init?.method === 'POST'
+      )
 
     const frame = await screen.findByTitle('App preview')
     expect(frame.getAttribute('src')).toMatch(/__launch\/grant\?g=1$/)
     expect(screen.getByText('5173-abcdefghijkl-t0k3n00000.localhost:3001')).toBeInTheDocument()
 
-    // The next turn ends; the row moves and the nudge refreshes it.
+    // The next turn ends: its edits already reached the frame by HMR, so no reload.
     log.push(
       sessionEvent(7, 'user.message', { text: 'Now make it blue', userId: IDS.user }, 2),
       sessionEvent(8, 'text', { text: 'Done — it is blue.' }, 2),
@@ -170,16 +174,19 @@ describe('SessionPage', () => {
     )
     row = detailOf({ turnCount: 2, updatedAt: '2026-09-28T10:05:00.000Z' })
     await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }))
+    expect(await screen.findByText('Done — it is blue.')).toBeInTheDocument()
+    expect(screen.getByTitle('App preview').getAttribute('src')).toMatch(/g=1$/)
+    expect(grantCalls()).toHaveLength(1)
 
+    // The dev server comes back up (a restart): the frame's HMR socket is dead, so it reloads.
+    log.push(sessionEvent(10, 'preview.ready', { port: 5173 }, 2))
+    row = detailOf({ turnCount: 2, updatedAt: '2026-09-28T10:06:00.000Z' })
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }))
     await waitFor(() =>
       expect(screen.getByTitle('App preview').getAttribute('src')).toMatch(/g=2$/)
     )
-    expect(screen.getByText('Done — it is blue.')).toBeInTheDocument()
     expect(screen.getByText('Updated')).toBeInTheDocument()
-    const grantCalls = fetchMock.mock.calls.filter(
-      ([input, init]) => String(input).endsWith('/preview-grant') && init?.method === 'POST'
-    )
-    expect(grantCalls).toHaveLength(2)
+    expect(grantCalls()).toHaveLength(2)
   })
 
   it('ships after a confirm, and shows the ship panel while it runs', async () => {

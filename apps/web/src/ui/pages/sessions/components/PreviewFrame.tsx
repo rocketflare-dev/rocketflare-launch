@@ -9,9 +9,11 @@
  * "Open in new tab" does the same in a window opened SYNCHRONOUSLY on the click (so no popup
  * blocker eats it), then pointed at the grant once it arrives.
  *
- * **It reloads after every turn** — when `changeSeq` (the newest `turn.end` / `turn.failed` /
- * `turn.interrupted` / `preview.ready` row, `latestPreviewChangeSeq`) moves past the one the frame
- * was loaded at — with a brief "Updated" mark so the change is noticed, not just made.
+ * **Edits arrive by HMR, not by reloading.** Vite's HMR socket reaches the frame through the
+ * preview gateway, so a turn's changes show as they are saved; the frame reloads by itself only
+ * when the dev server comes (back) up — `changeSeq`, the newest `preview.ready`
+ * (`latestPreviewChangeSeq`), moving past the one it was loaded at, when its HMR socket points at a
+ * server that is gone — with a brief "Updated" mark. The Reload button forces a fresh load.
  *
  * With no sandbox there is nothing to frame, and the pane says why in one line with the one thing
  * to do: booting shows `BootProgress`, asleep offers Resume, shipped points at the PR.
@@ -312,7 +314,7 @@ export function PreviewFrame({
             role="status"
           >
             <span className="loading loading-dots loading-xs" />
-            Claude is editing — the preview reloads when this turn finishes.
+            The agent is editing — changes appear as they are saved. Reload if it looks stale.
           </div>
         )}
         <div className="relative min-h-0 flex-1">

@@ -135,7 +135,7 @@ describe('selectors', () => {
     )
   })
 
-  it('latestPreviewChangeSeq moves on a settled turn or a dev server coming up', () => {
+  it('latestPreviewChangeSeq moves only when a dev server comes up — never at a turn’s end (HMR)', () => {
     expect(
       latestPreviewChangeSeq([
         ev(1, 'preview.ready', { port: 5173 }, 0),
@@ -143,7 +143,7 @@ describe('selectors', () => {
         ev(3, 'turn.end', { turn: 1 }),
         ev(4, 'user.message', { text: 'y', userId: null }, 2),
       ])
-    ).toBe(3)
+    ).toBe(1)
     expect(latestPreviewChangeSeq([])).toBe(0)
   })
 

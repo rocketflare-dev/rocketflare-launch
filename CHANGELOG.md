@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A session's preview no longer reloads at the end of every turn.** Edits reach it through Vite's
+  HMR as they are saved; it reloads by itself only when the dev server comes (back) up, and the
+  Reload button forces a fresh load.
 - **The remote sandbox host runs everything Launch's own sandboxes run** (`docs/CONCEPTS.md`
   §18.10, §18.22). Codex (on Launch's OpenAI key or a person's ChatGPT plan), sessions on a
   person's Claude subscription and personal sign-ins now work on the sandbox host, not only Claude
