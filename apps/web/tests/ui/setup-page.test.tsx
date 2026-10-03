@@ -130,6 +130,7 @@ function render(current: SetupOverview = overview) {
       ],
     },
     'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
+    'PUT /api/platform/setup/credentials/openai_api_key': checkResponse,
     'PUT /api/platform/setup/settings': overview,
     'POST /api/platform/setup/public-url/check': {
       url: 'http://localhost:3000',
@@ -200,6 +201,32 @@ describe('Admin → Setup', () => {
     )
     // Settings did not change, so they were not sent.
     expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
+  })
+
+  it('the OpenAI key for Codex is a card after the steps (not a step), and saves what was typed', async () => {
+    const fetchMock = render({
+      ...overview,
+      credentials: [...overview.credentials, unset('openai_api_key')],
+    })
+    const card = await screen.findByRole('region', { name: /OpenAI key for Codex sessions/ })
+    const nav = screen.getByRole('navigation', { name: 'Setup steps' })
+    expect(within(nav).queryByText(/OpenAI/)).toBeNull()
+    expect(card.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('todo')
+    // Built, not written out: a literal key-shaped string in a test is what secret scanners look for.
+    const key = ['sk', 'proj', 'typed-into-the-setup-card-000000'].join('-')
+    fireEvent.change(within(card).getByLabelText('API key'), { target: { value: key } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Save and check' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/credentials/openai_api_key')).toEqual({
+        apiKey: key,
+      })
+    )
+  })
+
+  it('a server that reports no OpenAI credential shows no OpenAI card', async () => {
+    render()
+    await screen.findByRole('navigation', { name: 'Setup steps' })
+    expect(screen.queryByRole('region', { name: /OpenAI/ })).toBeNull()
   })
 
   it('offers the Neon regions as a select, with a free-text fallback for any other id', async () => {

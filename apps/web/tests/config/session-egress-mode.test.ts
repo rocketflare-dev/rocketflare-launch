@@ -88,8 +88,12 @@ describe('the session sandbox’s egress mode', () => {
   })
 
   it('the model and git hosts keep their handlers in both modes; the database has none', () => {
+    // Codex's hosts are on the shared allow-list, so the host refuses them (§18.22-B).
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
+      'api.openai.com',
+      'auth.openai.com',
+      'chatgpt.com',
       'github.com',
     ])
   })

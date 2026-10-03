@@ -411,8 +411,12 @@ describe('HostedSessionSandbox', () => {
   }
 
   it('declares its OWN handlers for the model and git hosts, and none for the database (the registry is keyed by class name)', () => {
+    // Codex's hosts are on the shared allow-list, so the host refuses them (§18.22-B).
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
+      'api.openai.com',
+      'auth.openai.com',
+      'chatgpt.com',
       'github.com',
     ])
   })

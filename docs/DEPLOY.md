@@ -238,7 +238,12 @@ needs, beyond the bindings above:
   `-staging`; nothing to create) runs a sign-in in a throwaway `login-<id>` sandbox of the
   existing `SessionSandbox` class — those count against `max_instances`. Optional secret
   `OPENAI_API_KEY` (or the Setup page's `openai_api_key` credential): what Codex sessions on
-  Launch's account will spend. Nothing to do on a deploy that leaves both vars at their defaults.
+  Launch's account spend (the Setup page checks it against Codex's model). Nothing to do on a
+  deploy that leaves both vars at their defaults. To offer Codex, add `codex` to `SESSION_RUNTIMES`
+  (and to `SESSION_USER_CREDENTIALS` for ChatGPT plans — device-code sign-in must be allowed on the
+  person's account or workspace). **The image carries Codex from `session-6`** (a pinned
+  `@openai/codex`, `ARG CODEX_VERSION`): the first deploy of it replaces every container, so drain
+  first (below).
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409

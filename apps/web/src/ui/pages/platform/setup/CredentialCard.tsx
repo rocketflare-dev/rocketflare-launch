@@ -130,8 +130,10 @@ export interface PayloadFieldSpec {
 }
 
 interface CredentialCardProps {
-  id: SetupStepId
-  number: number
+  /** The anchor: a step's id, or a card's own (`openai`). */
+  id: SetupStepId | string
+  /** Absent for a card that is not a numbered step. */
+  number?: number
   title: string
   description: ReactNode
   status: SetupStepStatus

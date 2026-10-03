@@ -23,6 +23,7 @@ import {
   type SandboxStopParams,
   SessionSandboxBase,
 } from '../api/durable-objects/session-sandbox-base'
+import { OPENAI_EGRESS_HOSTS, refuseHost } from '../api/services/sessions/egress/refuse'
 import type { EgressGrant } from '../api/services/sessions/sandbox-host/protocol'
 import { type GrantLookup, hostedAnthropic, hostedGitHub } from './egress'
 import type { SandboxHostEnv } from './env'
@@ -81,4 +82,7 @@ const lookupIn = (env: unknown): GrantLookup => grantLookup(env as SandboxHostEn
 HostedSessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => hostedAnthropic(req, lookupIn(env), ctx),
   'github.com': (req, env, ctx) => hostedGitHub(req, lookupIn(env), ctx),
+  // §18.22-B: Codex never runs here (`supportsHostEgress: false`), but its hosts are on the shared
+  // allow-list — refused, so they cannot pass straight through.
+  ...Object.fromEntries(OPENAI_EGRESS_HOSTS.map(host => [host, refuseHost(host)])),
 }

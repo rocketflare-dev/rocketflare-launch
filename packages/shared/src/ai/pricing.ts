@@ -18,7 +18,7 @@ import type { TokenUsage } from './chat'
 import type { AiProvider } from './config'
 
 /** When the rates below were last checked, ISO date. Update it when you edit a price. */
-export const PRICES_UPDATED = '2026-09-13'
+export const PRICES_UPDATED = '2026-10-03'
 
 /** USD per MILLION tokens. `cacheRead`/`cacheWrite` default to the input rate when absent. */
 export interface ModelPrice {
@@ -41,6 +41,10 @@ export const MODEL_PRICES: Partial<Record<AiProvider, Record<string, ModelPrice>
     'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   },
   openai: {
+    // Codex sessions (§18.22-B): the model Codex 0.160 ships as its default (`models.json`
+    // priority 1). Standard tier, prompts up to 272k input tokens; longer prompts bill at 2× input
+    // and 1.5× output, which this table does not model. Other Codex models are left unpriced.
+    'gpt-6.1-sol': { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
     'gpt-4.1-mini': { input: 0.4, output: 1.6, cacheRead: 0.1 },
     'gpt-4.1-nano': { input: 0.1, output: 0.4, cacheRead: 0.025 },
     'gpt-4.1': { input: 2, output: 8, cacheRead: 0.5 },

@@ -627,8 +627,12 @@ function runtimesShape(): Record<AgentRuntimeId, typeof runtimePolicySchema> {
   >
 }
 
-/** Codex's model when the policy names none (Stream B pins and prices it). */
-export const DEFAULT_CODEX_MODEL = 'gpt-5-codex'
+/**
+ * Codex's model when the policy names none (§18.22-B): Codex 0.160's own default — the first of
+ * its bundled `models-manager/models.json` by priority, "latest workhorse model for coding" — and
+ * priced in `@launch/shared/ai/pricing`. A policy's `runtimes.codex.model` overrides it.
+ */
+export const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol'
 
 /**
  * The policy for one runtime, defaults filled in. With no `runtimes` entry a runtime is enabled on

@@ -1,0 +1,5 @@
+# HAND-WRITTEN from the Codex 0.160 source (exec/src/exec_events.rs) during spike S-B1, not captured from a real run. Re-capture once a real sandbox runs Codex.
+{"type":"thread.started","thread_id":"0199a213-9f02-7a11-b7c4-5d0e1f2a3b4c"}
+{"type":"turn.started"}
+{"type":"error","message":"unexpected status 401 Unauthorized: Incorrect API key provided"}
+{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Incorrect API key provided"}}

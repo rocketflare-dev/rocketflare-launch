@@ -1080,7 +1080,7 @@ async function runLeasedTurn(
   let parser: RuntimeStreamParser
   let processId: string
   try {
-    parser = runtime.createParser(p.turn)
+    parser = runtime.createParser(p.turn, { runtimeState: row.runtimeState ?? null })
     const systemNote = await sessionSystemNote(db, row)
     const files = [
       ...(runtime.beforeTurnFiles?.({
@@ -1248,6 +1248,13 @@ async function runLeasedTurn(
         await db
           .update(sessions)
           .set({ claudeSessionId })
+          .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+      }
+      if (mapping.runtimeState) {
+        // §18.22: what the runtime keeps between turns (Codex: its running usage total).
+        await db
+          .update(sessions)
+          .set({ runtimeState: mapping.runtimeState })
           .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
       }
       if (mapping.result) out.result = mapping.result

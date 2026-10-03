@@ -121,9 +121,13 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
     expect(probe.interceptHttps).toBe(true)
     expect(probe.enableInternet).toBe(false)
     expect(probe.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
-    // The two credential hosts only: a database key would intercept Neon even with internet on.
+    // The credential hosts only — Anthropic, GitHub and Codex's three (§18.22-B): a database key
+    // would intercept Neon even with internet on.
     expect(Object.keys(SessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
+      'api.openai.com',
+      'auth.openai.com',
+      'chatgpt.com',
       'github.com',
     ])
     // SESSION_EGRESS=open (the tomls): internet on, no allow-list, HTTPS still intercepted.

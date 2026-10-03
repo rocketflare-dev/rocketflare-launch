@@ -1673,8 +1673,8 @@ for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a
 pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code and a warm pnpm store for the default pin's kit (0.16.0, `SESSION_KIT_TAG`; image
-`session-5`). The checkout is `/workspace/app` and `$HOME` is
+Claude Code, a pinned Codex (§18.22-B) and a warm pnpm store for the default pin's kit (0.16.0,
+`SESSION_KIT_TAG`; image `session-6`). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
@@ -2118,7 +2118,7 @@ run inside a real sandbox (the memory the suite needs beside the dev server, a v
 hangs on exit under `allowlist` — the deadline kills it, which then reads as red). An app on a kit
 before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so), and a kit whose
 `pnpm gate` gains a step Launch does not know cannot ship until Launch learns it. The session
-image with the 0.16.0 store (`session-5`) is defined, not yet deployed (`wrangler deploy` builds
+image with the 0.16.0 store (`session-5`, now `session-6` with Codex) is defined, not yet deployed (`wrangler deploy` builds
 it; drain sessions first). A `shipping`
 session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
 The summary's model is not traced (D32). **The landing** (issue #5) is proven with the FakeCloud's
@@ -2921,12 +2921,80 @@ modal body (`ui/pages/profile/agent-logins/ClaudeLogin.tsx`) are stubs that fail
 
 #### 18.22-B Codex
 
-`codex exec --json` per turn (`codex exec resume <thread>` after the first), its JSONL mapped onto
-the same events, its rollout file checkpointed like Claude's transcript, on Launch's OpenAI key
-(the `openai_api_key` admin credential, else `OPENAI_API_KEY`, swapped in at the egress) or a
-person's ChatGPT plan (a claimed `auth.json` per turn, resealed when Codex rotates it). **Not wired
-yet**: every member of `runtimes/codex/` that would run Codex throws `NotWiredError` ("stream B");
-the `openai_api_key` check answers "not checked yet"; the OpenAI hosts are staged refusals.
+**Wired** (`services/sessions/runtimes/codex/`), behind `SESSION_RUNTIMES` (add `codex`) — and, for
+ChatGPT plans, `SESSION_USER_CREDENTIALS`. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image
+`session-6`); the default model is Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in
+`ai/pricing.ts`), overridable per policy (`runtimes.codex.model`). This section supersedes the
+"staged" note in the egress paragraph above: Codex's three hosts are registered with their real
+handlers and are on the allow-list.
+
+- **A turn** (`command.ts`): `codex exec --json -s danger-full-access --skip-git-repo-check -m
+  <model> '<message>' < /dev/null`; after the first, `… -m <model> resume <thread> '<message>'` —
+  the global flags BEFORE `resume`, which rejects `-s` after it. `< /dev/null` because `exec`
+  appends a piped stdin to the prompt and would wait on an open pipe for ever.
+- **Before every turn** (`config.ts`, `beforeTurnFiles`) into `$CODEX_HOME` (`/root/.codex`):
+  `config.toml` (approval `never`, sandbox `danger-full-access`, credentials in a FILE, no update
+  check, analytics / feedback / OTEL metrics off, hosted web search off, memories off — their
+  extraction calls other models — and request compression off, so the egress can read the model
+  out of every body), `AGENTS.md` = the session system note (the repository's own AGENTS.md still
+  loads after it), and `rules/launch.rules` — an execpolicy forbidding `git push` and GitHub CLI
+  writes (a guardrail; the egress is the boundary). The environment: `CODEX_HOME`, `HOME`, and on
+  Launch's account `CODEX_API_KEY` = the placeholder (the variable `codex exec` reads); on a
+  person's plan NO key, because one would win over `auth.json`.
+- **Its output** (`stream.ts`): `thread.started` → the resume id (`sessions.claude_session_id`);
+  `command_execution` → `Bash`, `file_change` → `Edit`, MCP / web search / sub-agent / todo items →
+  tools, `agent_message` → text (the last one is the turn's answer, which the ship turn parses),
+  `turn.failed` → an `error` event and no result (the turn fails with Codex's exit),
+  `turn.completed` → the result. **Its usage is the THREAD's running total**, so the parser
+  measures the turn from the last total in `sessions.runtime_state.usage` and hands the new total
+  back (`RuntimeLineMapping.runtimeState`, which the turn writes at once); a new thread starts from
+  zero. OpenAI counts cached input inside `input_tokens`; the session's counters stay disjoint.
+- **The conversation** (`state.ts`) is Codex's rollout file, copied to R2 at
+  `sessions/<id>/codex.jsonl`. Codex finds a thread's rollout by its FILE NAME anywhere under
+  `$CODEX_HOME/sessions/`, so a restore writes a canonical name
+  (`sessions/launch/rollout-1970-01-01T00-00-00-<thread>.jsonl`) and the "is it there?" check
+  passes on any non-empty rollout of the thread — no stored path. A resume is never retried
+  without its thread (`resumeRefused` is false).
+- **Launch's key** (`egress/openai.ts`, `api.openai.com`): a WebSocket upgrade is answered 426
+  (Codex tries `wss://…/responses` first, then streams over HTTP); a live Codex session on Launch's
+  account only; `POST /v1/responses` (and `/compact`) for the policy's model, and `GET /v1/models`
+  unmetered; the budget; `Authorization: Bearer` from `resolveOpenAiKey` (the `openai_api_key`
+  credential — a card on the Setup page after the steps, checked against Codex's model — else
+  `OPENAI_API_KEY`); `response.completed` metered into `ai_usage` as provider `openai`.
+- **A person's ChatGPT plan.** The lease (`credentials.ts`) CLAIMS the credential (another session
+  holding it: "in use by another session"), writes `auth.json`, and on release — success, failure,
+  cancel, a rollout, a container that no longer answers — reads it back, reseals it only if Codex
+  rotated the tokens and it is not older than what is stored, removes it and releases the claim.
+  `chatgpt.com` (`egress/chatgpt.ts`) passes Codex's own Bearer and `ChatGPT-Account-ID` through to
+  `/backend-api/codex/responses` (+ `/compact`, policy model only) and `/models`, only while the
+  session's turn holds the claim, refuses everything else (analytics included), and meters as
+  `subscription`. `auth.openai.com` (`egress/openai-auth.ts`) lets such a session only REFRESH
+  (`POST /oauth/token`, `grant_type: refresh_token`); a 200's rotated tokens are resealed at once
+  (compare-and-set), so a container that dies mid-turn cannot take the only valid refresh token
+  with it; `refresh_token_expired|reused|invalidated`, a 400 `invalid_grant` or a 401 mark the plan
+  `needs_login`.
+- **Connecting a plan** (`login.ts`): `codex login --device-auth` in a scratch `CODEX_HOME` in the
+  login sandbox, its streams and exit code in files (each Workflow step is stateless); the device
+  URL (`https://auth.openai.com/codex/device`) and one-time code are read out of its coloured
+  prompt onto the row — the person types the code AT OpenAI, nothing comes back
+  (`CodexLogin.tsx`: the code expires in 15 minutes; device-code sign-in may have to be enabled in
+  ChatGPT's security settings or by a workspace admin); on exit 0 the `auth.json` is captured,
+  sealed with the plan and an account FINGERPRINT as metadata (the id token decoded, never
+  verified), and the scratch directory deleted. A login sandbox reaches only the device flow on
+  `auth.openai.com`.
+- **The sandbox host** never runs Codex; its `HostedSessionSandbox` answers the three hosts with the
+  OpenAI-shaped refusal (`refuse.ts`), since they are on the shared allow-list.
+
+**Known gaps (Codex):** nothing here has run against a real Codex binary — the JSONL, the prompt and
+the rules are fixtures hand-written from the 0.160 source (`tests/fixtures/codex/`), and spike S-B1
+could not run Codex with its sandbox-bypass flags; the WebSocket → SSE fallback, `CODEX_API_KEY`
+honoured through the egress, `enable_request_compression = false` and the rollout restore by file
+name are read from the source, not observed. `gpt-6.1-sol`'s price comes from third-party listings
+of OpenAI's rate card (OpenAI's own page refused automated reads), and long-context pricing (over
+272k input tokens) is not modelled. A turn that fails after Codex counted tokens folds them into
+the NEXT turn's usage line (the egress's `ai_usage` rows are exact either way). The `auth.json`,
+refresh token included, is in the container for the length of a turn. Codex's hosted web search is
+off rather than metered.
 
 **Known gaps:**
 

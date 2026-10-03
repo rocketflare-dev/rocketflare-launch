@@ -19,6 +19,7 @@ import {
   checkCloudflare,
   checkGitHubApp,
   checkNeon,
+  checkOpenAi,
   checkResend,
   identityStatus,
   missingGitHubPermissions,
@@ -530,6 +531,50 @@ describe('checkAnthropic (P3)', () => {
         ),
     })
     const out = await checkAnthropic({ apiKey: KEY }, settings, { fetch: fake.fetch })
+    expect(out.checks).toEqual([
+      expect.objectContaining({
+        id: 'key',
+        status: 'failed',
+        detail: expect.stringContaining('401'),
+      }),
+    ])
+    expect(JSON.stringify(out)).not.toContain(KEY)
+  })
+})
+
+describe('checkOpenAi (§18.22-B)', () => {
+  // Built, not written out: a literal key-shaped string in a test is what secret scanners look for.
+  const KEY = ['sk', 'proj', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('-')
+  const models = (ids: string[]) =>
+    fakeVendorFetch({
+      'api.openai.com/v1/models': () =>
+        jsonResponse({ object: 'list', data: ids.map(id => ({ id, object: 'model' })) }),
+    })
+
+  it('accepts a key that lists Codex’s model (exactly or dated), with a Bearer header', async () => {
+    const fake = models(['gpt-6.1-sol-2026-09-30', 'gpt-6-luna'])
+    const out = await checkOpenAi({ apiKey: KEY }, settings, { fetch: fake.fetch })
+    expect(byId(out.checks)).toEqual({ key: 'ok', model: 'ok' })
+    expect(out.metadata).toMatchObject({ models: 2, fingerprint: expect.any(String) })
+    expect(JSON.stringify(out)).not.toContain(KEY)
+  })
+
+  it('warns when the key cannot see the Codex model', async () => {
+    const out = await checkOpenAi({ apiKey: KEY }, settings, { fetch: models(['gpt-4.1']).fetch })
+    expect(byId(out.checks)).toEqual({ key: 'ok', model: 'warning' })
+  })
+
+  it('fails on a key OpenAI refuses, without echoing it', async () => {
+    const fake = fakeVendorFetch({
+      'api.openai.com/v1/models': () =>
+        jsonResponse(
+          {
+            error: { message: `Incorrect API key provided: ${KEY}`, type: 'invalid_request_error' },
+          },
+          401
+        ),
+    })
+    const out = await checkOpenAi({ apiKey: KEY }, settings, { fetch: fake.fetch })
     expect(out.checks).toEqual([
       expect.objectContaining({
         id: 'key',

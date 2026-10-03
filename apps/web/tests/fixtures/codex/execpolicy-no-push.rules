@@ -1,0 +1,19 @@
+# $CODEX_HOME/rules/launch.rules — loaded from the user layer (CODEX_HOME/rules/*.rules); skipped by --ignore-rules
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "Launch pushes for you when you ship; do not run git push.",
+    match = [["git", "push"], "git push origin main", "git push --force"],
+    not_match = ["git status", "git pull"],
+)
+prefix_rule(
+    pattern = ["git", ["-C", "-c"]],
+    decision = "prompt",
+    justification = "git with -C/-c is not allowed in Launch sessions.",
+    match = ["git -C /workspace push", "git -c a=b push"],
+)
+prefix_rule(
+    pattern = ["gh", ["pr", "repo", "release", "api", "auth"]],
+    decision = "forbidden",
+    justification = "Launch owns GitHub operations.",
+)
