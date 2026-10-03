@@ -21,7 +21,7 @@
  * (`sandbox-lookup.ts`), never by anything the sandbox sends.
  */
 import type { AppBindings } from '../../../types'
-import { handleAnthropic } from './anthropic'
+import { handleAnthropic, handleClaudeLoginHost } from './anthropic'
 import type { EgressContext } from './forward-git'
 import { handleGitHub } from './github'
 import { OPENAI_EGRESS_HOSTS, refuseHost } from './refuse'
@@ -35,6 +35,7 @@ export type SessionOutboundHandler = (
 /** What `SessionSandbox.outboundByHost` is. */
 export const SESSION_OUTBOUND_HANDLERS: Record<string, SessionOutboundHandler> = {
   'api.anthropic.com': (req, env, ctx) => handleAnthropic(req, env as AppBindings, ctx),
+  'platform.claude.com': (req, env, ctx) => handleClaudeLoginHost(req, env as AppBindings, ctx),
   'github.com': (req, env, ctx) => handleGitHub(req, env as AppBindings, ctx),
 }
 

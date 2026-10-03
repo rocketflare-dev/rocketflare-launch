@@ -1,0 +1,18 @@
+# claude -p, CLAUDE_CODE_OAUTH_TOKEN=<placeholder>, Claude Code 2.1.283, local MITM (no real traffic)
+## CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, no ANTHROPIC_BASE_URL (the sandbox case)
+GET  api.anthropic.com /api/claude_code/policy_limits   Authorization: Bearer <token>  anthropic-beta: oauth-2025-04-20   (404 tolerated)
+GET  api.anthropic.com /api/claude_code/settings        Authorization: Bearer <token>  anthropic-beta: oauth-2025-04-20   (404 tolerated)
+POST api.anthropic.com /v1/messages?beta=true           Authorization: Bearer <token>  (x2: retried once on 401)
+## same, nonessential traffic NOT disabled: adds
+GET  api.anthropic.com /api/claude_cli/bootstrap?entrypoint=sdk-cli&model=claude-sonnet-5   (Bearer)
+GET  api.anthropic.com /mcp-registry/v0/servers?version=latest&limit=100&visibility=...     (no auth)
+POST api.anthropic.com /api/eval/sdk-<key>                                                  (Bearer)
+POST api.anthropic.com /api/event_logging/v2/batch                                          (Bearer and unauthenticated)
+## /v1/messages headers (OAuth)
+anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,extended-cache-ttl-2025-04-11
+anthropic-version: 2023-06-01
+anthropic-dangerous-direct-browser-access: true
+x-app: cli
+user-agent: claude-cli/2.1.283 (external, sdk-cli)
+x-claude-code-session-id: <session uuid>
+## both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set -> x-api-key sent, no Authorization, no oauth beta; init apiKeySource="ANTHROPIC_API_KEY"

@@ -2914,10 +2914,57 @@ handlers in stream B — a host on the allow-list with no handler would pass str
 The relayed `claude setup-token` (a year-long, inference-only token: no refresh, so concurrent
 sessions are fine and nothing is written back) and its egress: the turn runs with a placeholder
 OAuth token and no API key, and the model proxy swaps the real token in as `Authorization: Bearer`
-with the OAuth beta header — the token never enters the container. **Not wired yet**: the driver
-(`runtimes/claude-code/login.ts`), the lease (`runtimes/claude-code/credentials.ts`) and the
-modal body (`ui/pages/profile/agent-logins/ClaudeLogin.tsx`) are stubs that fail by name
-(`NotWiredError`, "stream A").
+with the OAuth beta header — the token never enters the container.
+
+- **Sign-in** (`runtimes/claude-code/login.ts`). The base image has no python3 and the Sandbox SDK
+  no stdin, so the CLI runs under util-linux `script` (a pseudo-terminal at 2000 columns, so nothing
+  wraps) fed by `tail -F` on a file: `tail -n +1 -F <dir>/in | script -q -f -e -c 'stty cols 2000
+  rows 50; claude setup-token; echo $? > <dir>/exit' <dir>/out`, in `/tmp/launch-login/<login id>`,
+  with `BROWSER=/bin/true`. The authorize URL is read from the OSC 8 hyperlink target in `out`
+  (`claude.com` / `claude.ai` / `platform.claude.com` `…/oauth/authorize`, `https` only); the
+  person's paste must be `<code>#<state>` (checked in the modal and again before it is written to
+  `in` with `\r`); "OAuth error" after the paste — the CLI then waits for Enter for ever — fails
+  the login with a sentence; exit 0 plus an `sk-ant-oat01-…` line is the token, sealed with an
+  expiry a year out, and `capture` deletes the login directory before it returns, success or not.
+  The login sandbox's allow-list is `platform.claude.com` and `api.anthropic.com`.
+- **Its egress** (`egress/anthropic.ts`). A login sandbox (`loginForSandbox`, no session) may make
+  exactly `CLAUDE_LOGIN_PASSTHROUGH`: `POST platform.claude.com/v1/oauth/token` (its own outbound
+  handler, `handleClaudeLoginHost`, the one entry this stream adds to `SESSION_OUTBOUND_HANDLERS` —
+  it refuses sessions and everything else) and `GET api.anthropic.com/api/oauth/profile`, passed
+  through untouched; anything else is a 403.
+- **The lease** (`runtimes/claude-code/credentials.ts`): the session's own credential (same tenant,
+  the creator's, `claude_oauth_token`, `active`, unexpired — `usableClaudeCredential`) or
+  `CredentialNeedsLoginError` ("Reconnect your Claude account in Profile…"); stamps `last_used_at`;
+  carries nothing (no env, no file, no claim). `claudeTurnEnv(model, 'user')` sets
+  `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>` and OMITS `ANTHROPIC_API_KEY`, which would win (spike
+  S-A2); `platform` is unchanged byte for byte.
+- **The model proxy on a subscription**: `ModelAuth` (`forward-model.ts`) is `api_key` or `oauth`;
+  for `oauth` the sandbox's credentials are dropped, `Authorization: Bearer <token>` set and
+  `oauth-2025-04-20` merged into the client's own `anthropic-beta` (order kept, never doubled).
+  `POST /v1/messages` (with `?beta=true`) and `count_tokens` only, the policy model only, no money
+  budget, usage recorded `billing: 'subscription'` with a null cost. `GET /api/claude_code/*` (the
+  organisation's managed settings and policy limits Claude Code asks for on an OAuth token) answers
+  **404** — tolerated by the CLI — so a person's org-managed settings never override Launch's
+  permission and deny setup. A credential the session may not spend is a 401 sentence with no
+  upstream call; an upstream 401 marks it `needs_login` (the next turn's lease then refuses); a 429
+  passes through. The sandbox host stays API-key only.
+- **The modal body** (`ClaudeLogin.tsx`): "Open Anthropic sign-in" (new tab, `noopener`), the
+  paste field, each status in a sentence, and one line saying the sign-in happens with Anthropic
+  and Launch stores the resulting token encrypted.
+
+Tests: `tests/config/claude-login-driver.test.ts` (the parsers over spike S-A1's real terminal
+output in `tests/fixtures/claude-login/`, the relay, the driver over a `FakeSandbox`, the turn
+environment and the keyed request), `tests/api/claude-subscription-login.test.ts` (the Workflow
+end to end with the real driver over `emulateClaudeRelay`, a rejected code, the login egress) and
+`tests/api/claude-subscription-proxy.test.ts` (the proxy, the lease, a whole turn).
+
+**Known gaps (A):** no real `claude setup-token` exchange has run through the relay under the
+Sandbox SDK — the success screen in the tests is synthetic, and `script` + `tail -F` reading a
+file the SDK's `writeFile` replaced is unverified on the platform; the parsing depends on Claude
+Code's terminal output (pinned by the image, fixture-tested); a person's organisation-managed
+Claude settings and policy limits are deliberately hidden from the CLI (404), so an org limit
+Anthropic enforces server-side still applies but its client-side hints do not; the token is
+valid for a year with no refresh, so a revoked one is noticed only at the next model call.
 
 #### 18.22-B Codex
 

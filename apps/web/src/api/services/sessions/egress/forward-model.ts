@@ -6,8 +6,10 @@
  * - {@link readModelCall}: only `POST /v1/messages` and `/v1/messages/count_tokens`, and only the
  *   policy's model (or a dated id of it) — else an Anthropic-shaped 403;
  * - {@link keyedModelRequest}: the sandbox's own `x-api-key` / `Authorization` (the placeholder)
- *   and hop headers dropped, the real key set, sent to {@link ANTHROPIC_UPSTREAM_ORIGIN} — the
- *   path and query come from the sandbox's request, the host never does;
+ *   and hop headers dropped, the real credential set ({@link ModelAuth}: Launch's key as
+ *   `x-api-key`, or — §18.22-A — a person's subscription token as `Authorization: Bearer` with
+ *   the OAuth beta flag merged into `anthropic-beta`), sent to {@link ANTHROPIC_UPSTREAM_ORIGIN} —
+ *   the path and query (`?beta=true`) come from the sandbox's request, the host never does;
  * - {@link forwardModel}: both, then the upstream call (unreachable → 502). What the sandbox host's
  *   `HostedSessionSandbox` runs over the key and model in its egress grant.
  *
@@ -21,6 +23,14 @@ export const ANTHROPIC_UPSTREAM_ORIGIN = 'https://api.anthropic.com'
 
 /** The only paths a session may call; everything else is a 403. */
 export const ALLOWED_MODEL_PATHS = ['/v1/messages', '/v1/messages/count_tokens'] as const
+
+/**
+ * What Claude Code on a subscription (OAuth) token GETs besides the Messages API (spike S-A2): its
+ * organisation's policy limits and managed settings. The model proxy answers 404 — which Claude
+ * Code tolerates — so a person's org-managed settings never override Launch's permission and deny
+ * setup (§18.22-A).
+ */
+export const OAUTH_NOT_FOUND_PREFIX = '/api/claude_code/'
 
 /** An error in Anthropic's own shape, so Claude Code reports it as the API would. */
 export function anthropicError(status: number, type: string, message: string): Response {
@@ -85,11 +95,36 @@ export async function readModelCall(
   }
 }
 
-/** The upstream request for `call`: the sandbox's headers minus its credentials, and `apiKey`. */
-export function keyedModelRequest(req: Request, call: ModelCall, apiKey: string): Request {
+/** The beta flag Anthropic requires on a request authorised by a subscription's OAuth token. */
+export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20'
+
+/**
+ * What authorises the upstream request: Launch's API key (`x-api-key`), or — a session on a
+ * person's own Claude subscription (§18.22-A) — their OAuth token (`Authorization: Bearer`, with
+ * {@link ANTHROPIC_OAUTH_BETA}). The sandbox host only ever forwards `api_key`.
+ */
+export type ModelAuth = { kind: 'api_key'; key: string } | { kind: 'oauth'; token: string }
+
+/** `anthropic-beta` with the OAuth flag in it, the client's other flags kept in their order. */
+export function withOAuthBeta(existing: string | null): string {
+  const flags = (existing ?? '')
+    .split(',')
+    .map(flag => flag.trim())
+    .filter(Boolean)
+  if (!flags.includes(ANTHROPIC_OAUTH_BETA)) flags.push(ANTHROPIC_OAUTH_BETA)
+  return flags.join(',')
+}
+
+/** The upstream request for `call`: the sandbox's headers minus its credentials, and `auth`. */
+export function keyedModelRequest(req: Request, call: ModelCall, auth: ModelAuth): Request {
   const headers = new Headers(req.headers)
   for (const name of DROPPED_HEADERS) headers.delete(name)
-  headers.set('x-api-key', apiKey)
+  if (auth.kind === 'oauth') {
+    headers.set('authorization', `Bearer ${auth.token}`)
+    headers.set('anthropic-beta', withOAuthBeta(headers.get('anthropic-beta')))
+  } else {
+    headers.set('x-api-key', auth.key)
+  }
   return new Request(`${ANTHROPIC_UPSTREAM_ORIGIN}${call.path}${call.search}`, {
     method: 'POST',
     headers,
@@ -112,7 +147,7 @@ export async function forwardModel(req: Request, opts: ForwardModelOptions): Pro
   if (call instanceof Response) return call
   const upstream = opts.upstream ?? { fetch: (r: Request) => fetch(r) }
   try {
-    return await upstream.fetch(keyedModelRequest(req, call, opts.key))
+    return await upstream.fetch(keyedModelRequest(req, call, { kind: 'api_key', key: opts.key }))
   } catch {
     return anthropicError(502, 'api_error', 'Launch could not reach the Anthropic API')
   }

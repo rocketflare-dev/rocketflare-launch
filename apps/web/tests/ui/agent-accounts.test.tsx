@@ -194,12 +194,12 @@ describe('AgentAccountsPanel', () => {
     expect(link).toHaveAttribute('target', '_blank')
 
     fireEvent.change(screen.getByLabelText(/Code from Anthropic/), {
-      target: { value: 'abc-123' },
+      target: { value: 'abc-123#state-xyz' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send code' }))
     await waitFor(() =>
       expect(requestBody(fetchMock, `POST /api/me/agent-logins/${LOGIN_ID}/code`)).toEqual({
-        code: 'abc-123',
+        code: 'abc-123#state-xyz',
       })
     )
     expect(await screen.findByText('Sending your code…')).toBeInTheDocument()
