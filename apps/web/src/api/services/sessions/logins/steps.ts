@@ -206,7 +206,8 @@ export async function loginFinishStep(
 export async function loginCaptureStep(scope: LoginStepScope): Promise<{ ok: boolean }> {
   const row = await loadLogin(scope)
   if (!isActive(row)) return { ok: false }
-  const capture = await driverOf(scope, row.runtime).capture(contextOf(scope))
+  const driver = driverOf(scope, row.runtime)
+  const capture = await driver.capture(contextOf(scope))
   await putSealed(scope.db, scope.cfg, {
     tenantId: row.tenantId,
     userId: row.userId,
@@ -217,6 +218,8 @@ export async function loginCaptureStep(scope: LoginStepScope): Promise<{ ok: boo
     metadata: capture.metadata,
     now: scope.now(),
   })
+  // Sealed: only now may the CLI's copy go (a failure above leaves it for the retry to read).
+  await driver.discard(contextOf(scope)).catch(() => {})
   const done = await transition(scope, AGENT_LOGIN_ACTIVE_STATUSES, {
     status: 'succeeded',
     finishedAt: scope.now(),

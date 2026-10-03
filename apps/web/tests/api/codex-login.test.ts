@@ -137,7 +137,7 @@ describe('Codex’s device-code sign-in', () => {
     )
   })
 
-  it('a non-zero exit after the prompt, or no auth.json, fails capture with a sentence — and still deletes the directory', async () => {
+  it('a non-zero exit after the prompt, or no auth.json, fails capture with a sentence — and leaves the files for the retry', async () => {
     const { scope, sandbox, dir } = await setup()
     await loginStartStep(scope)
     sandbox.files.set(`${dir}/out`, PROMPT)
@@ -149,7 +149,8 @@ describe('Codex’s device-code sign-in', () => {
     sandbox.files.set(`${dir}/exit`, '1\n')
     expect(await loginFinishStep(scope)).toEqual({ state: 'exited', exitCode: 1 })
     await expect(loginCaptureStep(scope)).rejects.toThrow(/took too long/)
-    expect(sandbox.commands).toContain(`rm -rf ${dir}`)
+    expect(sandbox.commands).not.toContain(`rm -rf ${dir}`)
+    await expect(loginCaptureStep(scope)).rejects.toThrow(/took too long/)
 
     const again = await setup()
     await loginStartStep(again.scope)

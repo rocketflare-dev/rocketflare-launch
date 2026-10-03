@@ -141,28 +141,30 @@ export const codexLoginDriver: LoginDriver = {
 
   async capture(ctx): Promise<LoginCapture> {
     const dir = codexLoginDir(ctx.loginId)
-    try {
-      const exit = await readExit(ctx, dir)
-      if (exit !== 0) {
-        throw new Error(
-          codexLoginFailure((await ctx.sandbox.readFile(`${dir}/err`)) ?? '', exit ?? null)
-        )
-      }
-      const auth = parseCodexAuthJson(await ctx.sandbox.readFile(`${dir}/home/auth.json`))
-      if (!auth) throw new Error('Codex finished but left no ChatGPT sign-in behind.')
-      return {
-        kind: 'codex_chatgpt_auth',
-        secret: JSON.stringify(auth, null, 2),
-        // The refresh token outlives the access token; Launch learns it is dead when OpenAI says so.
-        expiresAt: null,
-        metadata: {
-          ...(await codexAuthMetadata(auth)),
-          accessExpiresAt: jwtExpiry(auth.tokens.access_token)?.toISOString() ?? null,
-        },
-      }
-    } finally {
-      // Whatever happened, the credential leaves the sandbox (which `cleanup` destroys anyway).
-      await ctx.sandbox.exec(`rm -rf ${dir}`, { timeoutMs: 15_000 }).catch(() => {})
+    const exit = await readExit(ctx, dir)
+    if (exit !== 0) {
+      throw new Error(
+        codexLoginFailure((await ctx.sandbox.readFile(`${dir}/err`)) ?? '', exit ?? null)
+      )
     }
+    const auth = parseCodexAuthJson(await ctx.sandbox.readFile(`${dir}/home/auth.json`))
+    if (!auth) throw new Error('Codex finished but left no ChatGPT sign-in behind.')
+    return {
+      kind: 'codex_chatgpt_auth',
+      secret: JSON.stringify(auth, null, 2),
+      // The refresh token outlives the access token; Launch learns it is dead when OpenAI says so.
+      expiresAt: null,
+      metadata: {
+        ...(await codexAuthMetadata(auth)),
+        accessExpiresAt: jwtExpiry(auth.tokens.access_token)?.toISOString() ?? null,
+      },
+    }
+  },
+
+  async discard(ctx) {
+    // The credential leaves the sandbox once sealed (which `cleanup` destroys anyway).
+    await ctx.sandbox
+      .exec(`rm -rf ${codexLoginDir(ctx.loginId)}`, { timeoutMs: 15_000 })
+      .catch(() => {})
   },
 }

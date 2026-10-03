@@ -197,7 +197,7 @@ describe('the driver over a FakeSandbox', () => {
     expect(await claudeLoginDriver.poll(ctx)).toEqual({ state: 'exited', exitCode: 0 })
   })
 
-  it('capture: the token, a year, value-free metadata — and the login directory is gone', async () => {
+  it('capture: the token, a year, value-free metadata — read only; discard then removes the directory', async () => {
     const { sandbox, ctx } = setup()
     sandbox.files.set(`${dir}/in`, 'code#state\r')
     sandbox.files.set(`${dir}/out`, `${segments(WIDE)[0]}${setupTokenSuccessScreen()}`)
@@ -210,11 +210,14 @@ describe('the driver over a FakeSandbox', () => {
     expect(expires).toBeGreaterThanOrEqual(before + CLAUDE_TOKEN_LIFETIME_MS)
     expect(expires).toBeLessThanOrEqual(Date.now() + CLAUDE_TOKEN_LIFETIME_MS)
     expect(JSON.stringify(captured.metadata)).not.toContain('sk-ant')
+    // A retried capture must find what the first attempt found.
+    expect(await claudeLoginDriver.capture(ctx)).toEqual(captured)
+    await claudeLoginDriver.discard(ctx)
     expect([...sandbox.files.keys()].filter(p => p.startsWith(dir))).toEqual([])
     expect(sandbox.commands.at(-1)).toBe(`rm -rf ${dir}`)
   })
 
-  it('capture after a failed exit, or with no token printed, fails — and still removes the directory', async () => {
+  it('capture after a failed exit, or with no token printed, fails — and leaves the files for the retry', async () => {
     for (const [out, exit] of [
       [`${segments(WIDE)[0]}${setupTokenSuccessScreen()}`, '1\n'],
       [segments(WIDE)[0] ?? '', '0\n'],
@@ -226,7 +229,7 @@ describe('the driver over a FakeSandbox', () => {
       expect(err).toBeInstanceOf(Error)
       expect((err as Error).message).toMatch(/without a token/)
       expect((err as Error).message).not.toContain('sk-ant')
-      expect([...sandbox.files.keys()].filter(p => p.startsWith(dir))).toEqual([])
+      expect(sandbox.files.has(`${dir}/out`)).toBe(true)
     }
   })
 

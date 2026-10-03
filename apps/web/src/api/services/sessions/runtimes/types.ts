@@ -199,8 +199,17 @@ export interface LoginDriver {
   /** Hand the CLI the code the person pasted (only when `needsCode`). */
   submitCode?(ctx: LoginContext, code: string): Promise<void>
   poll(ctx: LoginContext): Promise<LoginProgress>
-  /** The credential the CLI wrote; throws when there is none. Deletes it from the sandbox. */
+  /**
+   * The credential the CLI wrote; throws (with the CLI's own reason) when there is none. Reads
+   * only: the `capture` step is retried, and a retry must find what the first attempt saw — a
+   * capture that deleted on failure hid the reason and, after a failed write, the token itself.
+   */
   capture(ctx: LoginContext): Promise<LoginCapture>
+  /**
+   * Remove the CLI's files (the credential among them) once the credential is sealed. Belt and
+   * braces: `cleanup` destroys the whole login sandbox on every path.
+   */
+  discard(ctx: LoginContext): Promise<void>
 }
 
 // ---- the runtime ---------------------------------------------------------------------------------

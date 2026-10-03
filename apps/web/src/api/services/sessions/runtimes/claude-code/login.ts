@@ -255,20 +255,20 @@ export const claudeLoginDriver: LoginDriver = {
 
   async capture(ctx) {
     const p = paths(ctx)
-    try {
-      const exit = exitCodeOf(await ctx.sandbox.readFile(p.exit))
-      const out = (await ctx.sandbox.readFile(p.out)) ?? ''
-      const token = exit === 0 ? parseClaudeSetupToken(out) : null
-      if (!token) throw endedWithoutToken(exit, out)
-      return {
-        kind: 'claude_oauth_token',
-        secret: token,
-        expiresAt: new Date(Date.now() + CLAUDE_TOKEN_LIFETIME_MS),
-        metadata: { method: 'setup-token', scope: 'user:inference' },
-      }
-    } finally {
-      // The token is in `out`: gone before this returns, whatever happened.
-      await ctx.sandbox.exec(`rm -rf ${p.dir}`)
+    const exit = exitCodeOf(await ctx.sandbox.readFile(p.exit))
+    const out = (await ctx.sandbox.readFile(p.out)) ?? ''
+    const token = exit === 0 ? parseClaudeSetupToken(out) : null
+    if (!token) throw endedWithoutToken(exit, out)
+    return {
+      kind: 'claude_oauth_token',
+      secret: token,
+      expiresAt: new Date(Date.now() + CLAUDE_TOKEN_LIFETIME_MS),
+      metadata: { method: 'setup-token', scope: 'user:inference' },
     }
+  },
+
+  async discard(ctx) {
+    // The token is in `out` until this runs (and until `cleanup` destroys the sandbox).
+    await ctx.sandbox.exec(`rm -rf ${paths(ctx).dir}`)
   },
 }

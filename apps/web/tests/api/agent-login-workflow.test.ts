@@ -81,6 +81,7 @@ function fakeDriver(opts: { needsCode: boolean; captureFails?: string; userCode?
         metadata: { source: 'setup-token' },
       }
     },
+    async discard() {},
   }
   if (!opts.needsCode) delete driver.submitCode
   return driver

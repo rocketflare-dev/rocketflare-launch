@@ -138,10 +138,10 @@ describe('claude setup-token through the relay', () => {
     let filesAfterCapture: string[] | null = null
     const watched: LoginDriver = {
       ...claudeLoginDriver,
-      capture: async ctx => {
-        const captured = await claudeLoginDriver.capture(ctx)
+      // Capture only reads (a retry must see what it saw); the files go once the token is sealed.
+      discard: async ctx => {
+        await claudeLoginDriver.discard(ctx)
         filesAfterCapture = [...s.sandbox.files.keys()].filter(p => p.startsWith(s.dir))
-        return captured
       },
     }
     const { outcome, names, results } = await drive(
