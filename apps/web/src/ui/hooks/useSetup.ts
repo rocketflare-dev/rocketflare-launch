@@ -9,6 +9,7 @@ import {
   type CredentialPayload,
   kitTagsResponseSchema,
   publicUrlCheckResponseSchema,
+  type SessionAgentsUpdate,
   type SetupSettingsUpdate,
   setupCheckResponseSchema,
   setupOverviewSchema,
@@ -102,6 +103,23 @@ export function useSetTemplatePin() {
     mutationFn: (body: TemplatePinRequest) =>
       api.put(`${BASE}/template-pin`, body, { schema: setupOverviewSchema }),
     onSuccess: () => invalidate(),
+  })
+}
+
+/**
+ * §18.22: the Coding agents card — on/off, model and who pays, per agent. What people can pick
+ * when they start a session (and connect in Profile) changes too, so that family is refreshed.
+ */
+export function useUpdateSessionAgents() {
+  const invalidate = useInvalidateSetup()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: SessionAgentsUpdate) =>
+      api.put(`${BASE}/session-agents`, body, { schema: setupOverviewSchema }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentAccounts.list })
+      return invalidate()
+    },
   })
 }
 

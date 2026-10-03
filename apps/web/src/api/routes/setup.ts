@@ -17,6 +17,8 @@
  *   GET    /template-pin/tags[?repo]  the kit repo's tags (the Kit version card's picker)
  *   PUT    /template-pin              a tag or a commit, resolved through GitHub → setting.changed
  *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the row deleted) → setting.changed
+ *   PUT    /session-agents            coding agents: on/off, model, who pays — merged into
+ *                                     `session_policy.runtimes` → setting.changed (§18.22)
  *
  * **A value never leaves.** The body of a PUT is sealed by `putCredential` and every response is
  * built from `credentialStatus` (which does not even select the sealed column); audit summaries say
@@ -33,6 +35,7 @@ import {
   credentialKindSchema,
   credentialPayloadSchemas,
   kitTagsQuerySchema,
+  sessionAgentsUpdateSchema,
   setupSettingsUpdateSchema,
   type TemplatePin,
   templatePinRequestSchema,
@@ -48,6 +51,7 @@ import {
 } from '../services/launch/credentials'
 import { listKitTags, resolveTemplatePinRequest } from '../services/launch/kit-pin'
 import { runPublicUrlCheck } from '../services/launch/public-url'
+import { updateSessionAgents } from '../services/launch/session-agents'
 import {
   type CheckEffect,
   fingerprint,
@@ -117,9 +121,14 @@ async function auditEffects(
   }
 }
 
+/** The organisation the overview's per-organisation facts are for: the session's, else the one. */
+async function overviewTenant(db: Database, sessionTenantId: string | null) {
+  return sessionTenantId ?? (await getSingleTenant(db))?.id ?? null
+}
+
 setupRouter.get('/', async c => {
-  const { db, cfg } = withAuth(c)
-  return c.json(await setupOverview(db, cfg))
+  const { db, cfg, tenantId } = withAuth(c)
+  return c.json(await setupOverview(db, cfg, await overviewTenant(db, tenantId)))
 })
 
 setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async c => {
@@ -140,7 +149,7 @@ setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async 
       },
     })
   }
-  return c.json(await setupOverview(db, cfg))
+  return c.json(await setupOverview(db, cfg, auditTenantId))
 })
 
 setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async c => {
@@ -243,7 +252,7 @@ setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), asy
   const before = await getSetting(db, 'template_pin')
   await putSetting(db, 'template_pin', pin, user.id)
   await auditPinChange(c, db, auditTenantId, before, pin)
-  return c.json(await setupOverview(db, cfg))
+  return c.json(await setupOverview(db, cfg, auditTenantId))
 })
 
 /** Reset to the code default: the row is deleted, so the default moves with Launch again. */
@@ -255,5 +264,29 @@ setupRouter.delete('/template-pin', async c => {
     await putSetting(db, 'template_pin', null, null)
     await auditPinChange(c, db, auditTenantId, before, null)
   }
-  return c.json(await setupOverview(db, cfg))
+  return c.json(await setupOverview(db, cfg, auditTenantId))
+})
+
+// ---- coding agents (`launch_settings.session_policy.runtimes`, §18.22) ---------------------------
+
+/**
+ * Merge per-agent settings into the session policy (its budgets and limits kept) →
+ * `setting.changed` with the effective before and after. 409 `session_agents_none_enabled` when
+ * nothing would be left on. New sessions only: every session froze its policy at create.
+ */
+setupRouter.put('/session-agents', validate('json', sessionAgentsUpdateSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const change = await updateSessionAgents(db, cfg, c.req.valid('json'), user.id)
+  if (change) {
+    await recordAudit(db, {
+      tenantId: auditTenantId,
+      ...auditActor(c),
+      action: 'setting.changed',
+      targetType: 'Setting',
+      targetId: 'session_policy.runtimes',
+      summary: { before: { runtimes: change.before }, after: { runtimes: change.after } },
+    })
+  }
+  return c.json(await setupOverview(db, cfg, auditTenantId))
 })

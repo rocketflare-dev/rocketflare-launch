@@ -9,14 +9,15 @@
  *   `verificationUrl` and `userCode` are what the PERSON needs to finish the provider's own flow —
  *   neither is a credential — and the code a person pastes back is accepted, sealed and never
  *   echoed.
- * - Both deployment flags fail closed: `SESSION_RUNTIMES` (default `claude_code`) decides which
- *   runtimes exist at all, `SESSION_USER_CREDENTIALS` (default none) which may bill a personal
- *   account. The session policy (`launch-sessions.ts`, `runtimes`) narrows further; the deployment
- *   flag always wins.
+ * - Which runtimes sessions may run, their models and whose account they bill is a PLATFORM
+ *   SETTING — `launch_settings.session_policy.runtimes`, edited on the Setup page's Coding agents
+ *   card (`PUT /api/platform/setup/session-agents`), never a deployment var. It fails closed: with
+ *   nothing stored, Claude Code on Launch's key and nothing else (`runtimePolicyOf`).
  * - `AGENT_LOGIN_CODE_EVENT` is golden-tested against Cloudflare's event-type rule
  *   (`/^[A-Za-z0-9_-]{1,100}$/` — a `.` is `workflow.invalid_event_type`).
  */
 import { z } from 'zod'
+import { priceFor } from './ai/pricing'
 
 // ---- runtimes ----------------------------------------------------------------------------------
 
@@ -32,6 +33,27 @@ export const DEFAULT_AGENT_RUNTIME: AgentRuntimeId = 'claude_code'
 export const AGENT_RUNTIME_LABELS: Record<AgentRuntimeId, string> = {
   claude_code: 'Claude Code',
   codex: 'Codex',
+}
+
+/** Whose API a runtime's sessions on Launch's account spend — the pricing table's provider. */
+export const AGENT_RUNTIME_PROVIDERS: Record<AgentRuntimeId, 'anthropic' | 'openai'> = {
+  claude_code: 'anthropic',
+  codex: 'openai',
+}
+
+/**
+ * The models the Setup page offers for each runtime, first = the suggestion. Every one is priced
+ * in `ai/pricing` (a config test pins it): a session's budget is money, so a model without a price
+ * could never be held to one. A stored model outside the list still works while it is priced.
+ */
+export const AGENT_RUNTIME_MODELS: Record<AgentRuntimeId, readonly string[]> = {
+  claude_code: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
+  codex: ['gpt-6.1-sol'],
+}
+
+/** A model a runtime may be set to: one the pricing table can put a price on. */
+export function isPricedRuntimeModel(runtime: AgentRuntimeId, model: string): boolean {
+  return priceFor(AGENT_RUNTIME_PROVIDERS[runtime], model) !== null
 }
 
 /** The personal account each runtime can bill. */
@@ -205,11 +227,11 @@ export const agentRuntimeOptionSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
   accountLabel: z.string(),
-  /** `SESSION_RUNTIMES` lists it and the session policy has it enabled. */
+  /** The session policy (the Setup page's Coding agents card) has it on, and it can run here. */
   enabled: z.boolean(),
-  /** The policy's mode, already narrowed by `SESSION_USER_CREDENTIALS`. */
+  /** The policy's mode, narrowed by what this deployment can run (`SESSION_SANDBOX_HOST`). */
   credentialMode: sessionCredentialModeSchema,
-  /** A personal account may be connected for it (`SESSION_USER_CREDENTIALS` lists it). */
+  /** A personal account may be connected for it: enabled, and its mode allows one. */
   userCredentials: z.boolean(),
   needsCode: z.boolean(),
 })

@@ -5,11 +5,13 @@
  *
  * Three layers, narrowest wins:
  *
- * 1. **The deployment** (`config.ts`): `SESSION_RUNTIMES` (default `claude_code`) — which runtimes
- *    exist at all; `SESSION_USER_CREDENTIALS` (default none) — which may bill a personal account;
- *    `SESSION_SANDBOX_HOST=remote` — only a runtime that `supportsHostEgress`, on Launch's key.
- * 2. **The session policy** (`runtimePolicyOf`): enabled, model, `credentialMode`.
- * 3. **The request** (`runtime?`, `credential?`), checked against the two above.
+ * 1. **The deployment** (`config.ts`): only `SESSION_SANDBOX_HOST=remote` — a runtime that
+ *    `supportsHostEgress`, on Launch's key. Nothing else about runtimes is a deployment var.
+ * 2. **The session policy** (`runtimePolicyOf`) — the platform setting the Setup page's Coding
+ *    agents card edits: enabled, model, `credentialMode`. Fail-closed when nothing is stored:
+ *    Claude Code on Launch's key, nothing else.
+ * 3. **The request** (`runtime?`, `credential?`), checked against the two above. A request naming
+ *    no runtime gets the policy's default, or the first enabled runtime when that one is off.
  *
  * Refusals, all BEFORE any write: 409 `session_runtime_disabled` (the runtime is not on offer),
  * 409 `agent_credential_not_allowed` (a personal account was asked for where none may be used),
@@ -37,28 +39,18 @@ import { ConflictError } from '../../../utils/core/errors'
 import { runtimeFor } from '../runtimes'
 import { getForUser } from './store'
 
-/** The deployment's side of the decision, read from config. */
+/** The deployment's side of the decision, read from config: only where the sandbox runs. */
 export interface RuntimeFlags {
-  runtimes: readonly AgentRuntimeId[]
-  userCredentials: readonly AgentRuntimeId[]
   /** `SESSION_SANDBOX_HOST=remote`: the `host` egress mode. */
   hostEgress: boolean
 }
 
-/** The flags `loadConfig` defaults to: Claude Code on Launch's key, nothing else. */
-export const DEFAULT_RUNTIME_FLAGS: RuntimeFlags = {
-  runtimes: ['claude_code'],
-  userCredentials: [],
-  hostEgress: false,
-}
+/** No config (a test, a fixture): the Cloudflare sandbox. */
+export const DEFAULT_RUNTIME_FLAGS: RuntimeFlags = { hostEgress: false }
 
 export function runtimeFlagsOf(cfg: AppConfig | undefined): RuntimeFlags {
   if (!cfg) return DEFAULT_RUNTIME_FLAGS
-  return {
-    runtimes: cfg.SESSION_RUNTIMES,
-    userCredentials: cfg.SESSION_USER_CREDENTIALS,
-    hostEgress: cfg.SESSION_SANDBOX_HOST === 'remote',
-  }
+  return { hostEgress: cfg.SESSION_SANDBOX_HOST === 'remote' }
 }
 
 /** One runtime as this deployment and policy offer it. */
@@ -70,7 +62,7 @@ export interface RuntimeOffer {
   userAllowed: boolean
   /** The policy's mode narrowed by the flags. */
   credentialMode: SessionCredentialMode
-  /** The deployment lets a personal account be connected for it at all. */
+  /** A personal account may be connected for it: it is on offer and its mode allows one. */
   userCredentials: boolean
 }
 
@@ -80,13 +72,11 @@ export function runtimeOffer(
   runtime: AgentRuntimeId
 ): RuntimeOffer {
   const rp = runtimePolicyOf(policy, runtime)
-  const deployed =
-    flags.runtimes.includes(runtime) &&
-    (!flags.hostEgress || runtimeFor(runtime).supportsHostEgress)
-  const userCredentials = flags.userCredentials.includes(runtime) && !flags.hostEgress
+  const runnable = !flags.hostEgress || runtimeFor(runtime).supportsHostEgress
   const platformAllowed = rp.credentialMode !== 'user'
-  const userAllowed = rp.credentialMode !== 'platform' && userCredentials
-  const enabled = deployed && rp.enabled && (platformAllowed || userAllowed)
+  // The host egress forwards only Launch's Anthropic key: no personal account there.
+  const userAllowed = rp.credentialMode !== 'platform' && !flags.hostEgress
+  const enabled = runnable && rp.enabled && (platformAllowed || userAllowed)
   return {
     runtime,
     enabled,
@@ -95,7 +85,7 @@ export function runtimeOffer(
     userAllowed,
     credentialMode:
       platformAllowed && userAllowed ? 'user_or_platform' : userAllowed ? 'user' : 'platform',
-    userCredentials,
+    userCredentials: enabled && userAllowed,
   }
 }
 
@@ -113,6 +103,17 @@ export function runtimeOptions(flags: RuntimeFlags, policy: SessionPolicy): Agen
       needsCode: AGENT_LOGIN_NEEDS_CODE[runtime],
     }
   })
+}
+
+/**
+ * The runtime a session naming none runs: the policy's default while it is on offer, else the
+ * first runtime that is (an admin may have turned Claude Code off and Codex on). With none on
+ * offer, the default — which `resolveSessionCredential` then refuses.
+ */
+export function defaultRuntimeFor(flags: RuntimeFlags, policy: SessionPolicy): AgentRuntimeId {
+  const preferred = defaultRuntimeOf(policy)
+  if (runtimeOffer(flags, policy, preferred).enabled) return preferred
+  return AGENT_RUNTIMES.find(r => runtimeOffer(flags, policy, r).enabled) ?? preferred
 }
 
 export interface ResolvedSessionCredential {
@@ -135,7 +136,7 @@ export async function resolveSessionCredential(
     now?: Date
   }
 ): Promise<ResolvedSessionCredential> {
-  const runtime = input.request.runtime ?? defaultRuntimeOf(input.policy)
+  const runtime = input.request.runtime ?? defaultRuntimeFor(input.flags, input.policy)
   const offer = runtimeOffer(input.flags, input.policy, runtime)
   const label = AGENT_RUNTIME_LABELS[runtime]
   const account = AGENT_ACCOUNT_LABELS[runtime]

@@ -1,8 +1,11 @@
+// @vitest-isolate
+// Reads the GLOBAL `session_policy` setting, so the credentials module is mocked over a store.
 /**
  * Personal AI accounts under `/api/me` (§18.22, `routes/me-agents.ts`): the offer and the caller's
  * accounts, disconnect, and the relayed sign-in's routes — which START a login (a row and a
- * Workflow instance) and never run one. Covers: 401 without a session; 503 when the deployment
- * keeps personal accounts off (the default) and without the binding; 202 + exactly one instance;
+ * Workflow instance) and never run one. Covers: 401 without a session; 409 when the session
+ * policy keeps a runtime's personal accounts off (the default, or "Launch" chosen on the Setup
+ * page), 503 without the binding; 202 + exactly one instance;
  * 409 for a second active login; the code sealed on the row and a wake with an EMPTY payload;
  * cancel; tenant and person isolation (the same 404 as a missing row); and that no credential or
  * code appears in any response.
@@ -15,7 +18,7 @@ import {
   agentLoginResponseSchema,
 } from '@launch/shared/launch-agents'
 import { and, eq } from 'drizzle-orm'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { agentCredentials, agentLogins, auditEvents } from '@/db/schema'
 import {
   createTestSession,
@@ -29,11 +32,30 @@ import { json, request } from '../helpers/request'
 import { AGENT_SECRET_SENTINEL, seedAgentCredential } from '../helpers/sessions'
 import { createTestEnv, stubs, type TestEnv } from '../mocks/bindings'
 
+const store = vi.hoisted(() => ({ credentials: new Map(), settings: new Map() }))
+vi.mock('@/api/services/launch/credentials', async importOriginal =>
+  (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
+)
+
 const db = setupTestDatabase()
 
-/** A deployment that lets Claude Code bill a personal account. */
-const enabledEnv = (overrides: Partial<TestEnv> = {}) =>
-  createTestEnv({ SESSION_USER_CREDENTIALS: 'claude_code', ...overrides })
+/** The Setup page lets Claude Code bill a personal account ("Either"). */
+const enabledEnv = (overrides: Partial<TestEnv> = {}) => {
+  store.settings.set('session_policy', {
+    runtimes: {
+      claude_code: {
+        enabled: true,
+        model: 'claude-sonnet-4-5',
+        credentialMode: 'user_or_platform',
+      },
+    },
+  })
+  return createTestEnv(overrides)
+}
+
+beforeEach(() => {
+  store.settings.clear()
+})
 
 async function person(role: 'owner' | 'member' = 'member') {
   const f = await createTestTenantWithUser(db, role)
@@ -139,14 +161,14 @@ describe('DELETE /api/me/agent-credentials/:runtime', () => {
 })
 
 describe('POST /api/me/agent-logins', () => {
-  it('503 agent_logins_disabled on a default deployment, before any row', async () => {
+  it('409 agent_logins_disabled with nothing set on the Setup page, before any row', async () => {
     const p = await person()
     const env = createTestEnv()
     const res = await send('POST', '/api/me/agent-logins', p.cookie, env, {
       runtime: 'claude_code',
     })
-    expect(res.status).toBe(503)
-    expect(await json(res)).toMatchObject({ code: 'agent_logins_disabled', statusCode: 503 })
+    expect(res.status).toBe(409)
+    expect(await json(res)).toMatchObject({ code: 'agent_logins_disabled', statusCode: 409 })
     expect(stubs(env).agentLoginWorkflow?.created).toEqual([])
     const rows = await db.select().from(agentLogins).where(eq(agentLogins.userId, p.user.id))
     expect(rows).toEqual([])
@@ -187,12 +209,34 @@ describe('POST /api/me/agent-logins', () => {
     expect(stubs(env).agentLoginWorkflow?.created).toHaveLength(1)
   })
 
-  it('a runtime the deployment does not run is refused', async () => {
+  it('a runtime the setting keeps off (Codex, by default) is refused', async () => {
     const p = await person()
     const res = await send('POST', '/api/me/agent-logins', p.cookie, enabledEnv(), {
       runtime: 'codex',
     })
-    expect(res.status).toBe(503)
+    expect(res.status).toBe(409)
+    expect(await json(res)).toMatchObject({ code: 'agent_logins_disabled' })
+  })
+
+  it('a runtime that is on but billed to Launch only refuses a personal sign-in', async () => {
+    const p = await person()
+    store.settings.set('session_policy', {
+      runtimes: {
+        claude_code: { enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+        codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'user' },
+      },
+    })
+    const env = createTestEnv()
+    const claude = await send('POST', '/api/me/agent-logins', p.cookie, env, {
+      runtime: 'claude_code',
+    })
+    expect(claude.status).toBe(409)
+    expect(await json(claude)).toMatchObject({
+      code: 'agent_logins_disabled',
+      details: { runtime: 'claude_code' },
+    })
+    const codex = await send('POST', '/api/me/agent-logins', p.cookie, env, { runtime: 'codex' })
+    expect(codex.status).toBe(202)
   })
 })
 

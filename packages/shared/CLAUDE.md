@@ -55,7 +55,15 @@ start/code bodies, `AGENT_LOGIN_CODE_EVENT` (golden-tested), `AGENT_LOGIN_TTL_MS
 `runtimePolicySchema` + `runtimePolicyOf` / `defaultRuntimeOf`, the policy's optional `runtime` /
 `runtimes`, the create body's `runtime?` / `credential?` and the session's `runtime`,
 `credentialSource`, `credentialOwnerUserId` (defaulted, so an older payload parses);
-`launch-setup.ts` the `openai_api_key` kind; `ai/usage.ts` `AI_USAGE_BILLINGS` ·
+`launch-setup.ts` the `openai_api_key` kind; `ai/usage.ts` `AI_USAGE_BILLINGS`; then the Coding
+agents setting (the runtimes moved from deployment vars to the policy): `launch-agents.ts`
+`AGENT_RUNTIME_PROVIDERS`, `AGENT_RUNTIME_MODELS` (the offered, priced models) and
+`isPricedRuntimeModel` (imports `ai/pricing`); `runtimePolicyOf` fails closed (no entry: Claude
+Code on Launch's key, every other runtime off); `launch-setup.ts` `AGENT_RUNTIME_MIN_IMAGE`,
+`AGENT_RUNTIME_PLATFORM_KEY`, `sessionAgentsUpdateSchema` (`PUT /session-agents`, an unpriced model
+refused), `SESSION_AGENTS_NONE_ENABLED`, `sessionAgentStatusSchema` / `sessionAgentsStatusSchema`
+and the overview's `sessionAgents` (`launch-setup.ts` imports `launch-agents` and
+`launch-sessions`, never the reverse) ·
 Launch (P4, `docs/plans/p4-approvals.md`): `launch-approvals.ts` (the approvals engine —
 `APPROVAL_KINDS` (+ `BUILT_APPROVAL_KINDS`, the four with handlers), `APPROVAL_STATUSES`,
 `APPROVAL_SUBJECT_TYPES`, `APPROVAL_POLICY_SCOPES`, `AUTO_APPROVE_ROLES` + `meetsAutoApproveRole`,

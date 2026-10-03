@@ -34,7 +34,6 @@ import {
   type AgentRuntimeId,
   agentRuntimeSchema,
   DEFAULT_AGENT_RUNTIME,
-  type SessionCredentialMode,
   sessionCredentialModeSchema,
   sessionCredentialSourceSchema,
 } from './launch-agents'
@@ -569,8 +568,8 @@ export interface SessionEventInput<T extends SessionEventType = SessionEventType
 
 /**
  * One agent runtime under the session policy (§18.22): whether sessions may run it, its model, and
- * whose account they bill. The deployment flags (`SESSION_RUNTIMES`, `SESSION_USER_CREDENTIALS`)
- * always win over it.
+ * whose account they bill. The ONE place these switches live — a platform setting edited on the
+ * Setup page's Coding agents card (`PUT /api/platform/setup/session-agents`), not a deployment var.
  */
 export const runtimePolicySchema = z.object({
   enabled: z.boolean(),
@@ -635,19 +634,18 @@ function runtimesShape(): Record<AgentRuntimeId, typeof runtimePolicySchema> {
 export const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol'
 
 /**
- * The policy for one runtime, defaults filled in. With no `runtimes` entry a runtime is enabled on
- * either account, Claude Code on the policy's own `model` — so every policy stored before runtimes
- * existed is unchanged in effect: the DEPLOYMENT flags (`SESSION_RUNTIMES`, default Claude Code;
- * `SESSION_USER_CREDENTIALS`, default none) narrow it to Claude Code on Launch's key, and turning
- * a flag on is the one switch an operator needs. An entry narrows further, never widens.
+ * The policy for one runtime, defaults filled in. FAIL-CLOSED: with no `runtimes` entry Claude Code
+ * runs on Launch's key only (on the policy's own `model` — so every policy stored before runtimes
+ * existed is unchanged in effect) and every other runtime is OFF. Turning a runtime on, or letting
+ * people bill their own account, is an admin's explicit choice on the Setup page, which stores an
+ * entry; an entry is then taken as it stands.
  */
 export function runtimePolicyOf(policy: SessionPolicy, runtime: AgentRuntimeId): RuntimePolicy {
   const stored = policy.runtimes?.[runtime]
   if (stored) return stored
-  const credentialMode: SessionCredentialMode = 'user_or_platform'
   return runtime === 'claude_code'
-    ? { enabled: true, model: policy.model, credentialMode }
-    : { enabled: true, model: DEFAULT_CODEX_MODEL, credentialMode }
+    ? { enabled: true, model: policy.model, credentialMode: 'platform' }
+    : { enabled: false, model: DEFAULT_CODEX_MODEL, credentialMode: 'platform' }
 }
 
 /** The runtime a new session runs when the request names none. */

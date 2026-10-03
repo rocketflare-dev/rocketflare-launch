@@ -2,9 +2,9 @@
  * Your AI accounts (§18.22) — the Profile panel where a person connects their own Claude
  * subscription or ChatGPT plan, so coding sessions can bill it instead of Launch's key.
  *
- * - **Hidden unless the deployment allows it**: only runtimes with `userCredentials` (the
- *   `SESSION_USER_CREDENTIALS` flag — off by default) get a row, and with none the panel renders
- *   nothing at all.
+ * - **Hidden unless an admin allows it**: only runtimes with `userCredentials` (the Setup page's
+ *   Coding agents card set "Who pays" to the person's own account, or Either — off by default)
+ *   get a row, and with none the panel renders nothing at all.
  * - **Connect** starts the relayed sign-in (`POST /api/me/agent-logins`) and opens a modal that
  *   polls it: the provider's page opens in a new tab (Launch never sees a password), and Claude's
  *   code is pasted back here. The body is the runtime's own component (`agent-logins/registry.ts`).

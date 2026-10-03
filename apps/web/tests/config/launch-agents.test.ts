@@ -1,18 +1,23 @@
 /**
  * §18.22's pure contracts: the event name Cloudflare must accept, the policy defaults that keep
- * every stored policy on Claude Code and Launch's key, the session payloads an older server (or
- * CLI) still parses, the two fail-closed deployment flags, and the offer rules
- * (`credentials/resolve.ts`) the routes and the picker share.
+ * every stored policy on Claude Code and Launch's key (fail-closed: Codex and personal accounts
+ * off until an admin turns them on), the session payloads an older server (or CLI) still parses,
+ * the priced model lists, and the offer rules (`credentials/resolve.ts`) the routes and the picker
+ * share.
  */
 import {
   AGENT_LOGIN_ACTIVE_STATUSES,
   AGENT_LOGIN_CODE_EVENT,
+  AGENT_RUNTIME_MODELS,
+  AGENT_RUNTIMES,
   agentCredentialSchema,
   agentPickerVisible,
   agentRuntimeOptionSchema,
+  isPricedRuntimeModel,
 } from '@launch/shared/launch-agents'
 import {
   createSessionRequestSchema,
+  DEFAULT_CODEX_MODEL,
   DEFAULT_SESSION_POLICY,
   defaultRuntimeOf,
   resolveSessionPolicy,
@@ -22,6 +27,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_RUNTIME_FLAGS,
+  defaultRuntimeFor,
   runtimeFlagsOf,
   runtimeOffer,
   runtimeOptions,
@@ -41,12 +47,16 @@ describe('the session policy', () => {
     expect(old.runtime).toBeUndefined()
     expect(old.runtimes).toBeUndefined()
     expect(defaultRuntimeOf(old)).toBe('claude_code')
+    // Fail-closed: Claude Code on Launch's key, Codex off — exactly what it always was.
     expect(runtimePolicyOf(old, 'claude_code')).toEqual({
       enabled: true,
       model: 'claude-opus-4-1',
-      credentialMode: 'user_or_platform',
+      credentialMode: 'platform',
     })
-    // …which the default flags narrow to exactly what it always was.
+    expect(runtimePolicyOf(old, 'codex')).toMatchObject({
+      enabled: false,
+      credentialMode: 'platform',
+    })
     expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, old, 'claude_code')).toMatchObject({
       enabled: true,
       model: 'claude-opus-4-1',
@@ -109,27 +119,28 @@ describe('the request and response bodies', () => {
   })
 })
 
-describe('the deployment flags fail closed', () => {
-  it('missing or blank: Claude Code only, no personal accounts', () => {
-    const cfg = loadConfig(createTestEnv())
-    expect(cfg.SESSION_RUNTIMES).toEqual(['claude_code'])
-    expect(cfg.SESSION_USER_CREDENTIALS).toEqual([])
-    const blank = loadConfig(createTestEnv({ SESSION_RUNTIMES: '', SESSION_USER_CREDENTIALS: '' }))
-    expect(blank.SESSION_RUNTIMES).toEqual(['claude_code'])
-    expect(blank.SESSION_USER_CREDENTIALS).toEqual([])
+describe('runtimes are a platform setting, not a deployment var', () => {
+  it('the config has no runtime switches; the one flag left is where the sandbox runs', () => {
+    const cfg = loadConfig(createTestEnv()) as Record<string, unknown>
+    expect(cfg).not.toHaveProperty('SESSION_RUNTIMES')
+    expect(cfg).not.toHaveProperty('SESSION_USER_CREDENTIALS')
     expect(runtimeFlagsOf(undefined)).toEqual(DEFAULT_RUNTIME_FLAGS)
+    expect(DEFAULT_RUNTIME_FLAGS).toEqual({ hostEgress: false })
+    const remote = { ...loadConfig(createTestEnv()), SESSION_SANDBOX_HOST: 'remote' } as const
+    expect(runtimeFlagsOf(remote)).toEqual({ hostEgress: true })
   })
 
-  it('a list is parsed, de-duplicated, and an unknown runtime is a config error', () => {
-    const cfg = loadConfig(
-      createTestEnv({
-        SESSION_RUNTIMES: 'claude_code, codex,codex',
-        SESSION_USER_CREDENTIALS: 'claude_code',
-      })
-    )
-    expect(cfg.SESSION_RUNTIMES).toEqual(['claude_code', 'codex'])
-    expect(cfg.SESSION_USER_CREDENTIALS).toEqual(['claude_code'])
-    expect(() => loadConfig(createTestEnv({ SESSION_RUNTIMES: 'claude_code,cursor' }))).toThrow()
+  it('every model the Setup page offers is priced (a budget needs a price)', () => {
+    for (const runtime of AGENT_RUNTIMES) {
+      for (const model of AGENT_RUNTIME_MODELS[runtime]) {
+        expect(isPricedRuntimeModel(runtime, model), `${runtime} ${model}`).toBe(true)
+      }
+    }
+    expect(isPricedRuntimeModel('claude_code', DEFAULT_SESSION_POLICY.model)).toBe(true)
+    expect(isPricedRuntimeModel('codex', DEFAULT_CODEX_MODEL)).toBe(true)
+    // A model of the other vendor, or one the table does not know, is not.
+    expect(isPricedRuntimeModel('codex', 'claude-sonnet-4-5')).toBe(false)
+    expect(isPricedRuntimeModel('claude_code', 'claude-mystery-9')).toBe(false)
   })
 })
 
@@ -147,55 +158,83 @@ describe('what a deployment offers', () => {
     expect(agentPickerVisible(options)).toBe(false)
   })
 
-  it('the deployment flag wins over the policy: a personal account needs SESSION_USER_CREDENTIALS', () => {
+  it('the policy alone opens personal accounts: a `user` entry bills only the person', () => {
     const userPolicy = resolveSessionPolicy({
       runtimes: {
         claude_code: { enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'user' },
       },
     })
-    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, userPolicy, 'claude_code').enabled).toBe(false)
-    const flags = { ...DEFAULT_RUNTIME_FLAGS, userCredentials: ['claude_code' as const] }
-    expect(runtimeOffer(flags, userPolicy, 'claude_code')).toMatchObject({
+    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, userPolicy, 'claude_code')).toMatchObject({
       enabled: true,
       credentialMode: 'user',
       userAllowed: true,
       platformAllowed: false,
+      userCredentials: true,
     })
   })
 
-  it('one flag turns personal accounts on; a policy entry can narrow it back', () => {
-    const flags = { ...DEFAULT_RUNTIME_FLAGS, userCredentials: ['claude_code' as const] }
-    expect(runtimeOffer(flags, policy, 'claude_code').credentialMode).toBe('user_or_platform')
-    const platformOnly = resolveSessionPolicy({
+  it('a disabled entry offers nothing, personal accounts included', () => {
+    const off = resolveSessionPolicy({
       runtimes: {
-        claude_code: { enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+        claude_code: {
+          enabled: false,
+          model: 'claude-sonnet-4-5',
+          credentialMode: 'user_or_platform',
+        },
       },
     })
-    expect(runtimeOffer(flags, platformOnly, 'claude_code').userAllowed).toBe(false)
+    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, off, 'claude_code')).toMatchObject({
+      enabled: false,
+      userCredentials: false,
+    })
   })
 
   it('both runtimes on, Claude on either account: the picker shows', () => {
-    const flags = {
-      runtimes: ['claude_code', 'codex'] as const,
-      userCredentials: ['claude_code'] as const,
-      hostEgress: false,
-    }
-    const options = runtimeOptions(flags, policy)
+    const both = resolveSessionPolicy({
+      runtimes: {
+        claude_code: {
+          enabled: true,
+          model: 'claude-sonnet-4-5',
+          credentialMode: 'user_or_platform',
+        },
+        codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
+      },
+    })
+    const options = runtimeOptions(DEFAULT_RUNTIME_FLAGS, both)
     expect(options.filter(o => o.enabled).map(o => o.runtime)).toEqual(['claude_code', 'codex'])
     expect(options.find(o => o.runtime === 'claude_code')?.credentialMode).toBe('user_or_platform')
-    // Codex's personal accounts are not in the flag: platform only.
-    expect(options.find(o => o.runtime === 'codex')?.credentialMode).toBe('platform')
+    expect(options.find(o => o.runtime === 'codex')).toMatchObject({
+      credentialMode: 'platform',
+      userCredentials: false,
+    })
     expect(agentPickerVisible(options)).toBe(true)
   })
 
+  it('a request naming no runtime gets the first enabled one when the default is off', () => {
+    const codexOnly = resolveSessionPolicy({
+      runtimes: {
+        claude_code: { enabled: false, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+        codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
+      },
+    })
+    expect(defaultRuntimeFor(DEFAULT_RUNTIME_FLAGS, codexOnly)).toBe('codex')
+    expect(defaultRuntimeFor(DEFAULT_RUNTIME_FLAGS, policy)).toBe('claude_code')
+  })
+
   it('the sandbox host runs Claude Code on Launch’s key only', () => {
-    const flags = {
-      runtimes: ['claude_code', 'codex'] as const,
-      userCredentials: ['claude_code', 'codex'] as const,
-      hostEgress: true,
-    }
-    expect(runtimeOffer(flags, policy, 'codex').enabled).toBe(false)
-    expect(runtimeOffer(flags, policy, 'claude_code')).toMatchObject({
+    const everything = resolveSessionPolicy({
+      runtimes: {
+        claude_code: {
+          enabled: true,
+          model: 'claude-sonnet-4-5',
+          credentialMode: 'user_or_platform',
+        },
+        codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'user_or_platform' },
+      },
+    })
+    const flags = { hostEgress: true }
+    expect(runtimeOffer(flags, everything, 'codex').enabled).toBe(false)
+    expect(runtimeOffer(flags, everything, 'claude_code')).toMatchObject({
       enabled: true,
       userAllowed: false,
       credentialMode: 'platform',

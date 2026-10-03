@@ -7,7 +7,6 @@
  * `c.env`. Nothing in `src/` reads `process.env` — the validation style is the Node reference app's
  * `src/config.ts`, the source is the env object Cloudflare hands us.
  */
-import { AGENT_RUNTIMES, type AgentRuntimeId } from '@launch/shared/launch-agents'
 import { GRANT_BACKENDS } from '@launch/shared/launch-grants'
 import { sharedPlugins } from '@launch/shared/plugins'
 import { z } from 'zod'
@@ -46,24 +45,6 @@ const optionalBoolean = (fallback: boolean) =>
     if (typeof value === 'boolean') return value
     return !['false', '0', 'no', 'off'].includes(String(value).trim().toLowerCase())
   }, z.boolean())
-
-/**
- * §18.22: a comma-separated list of agent runtimes (`AGENT_RUNTIMES`). Blank or missing = the
- * fallback; an unknown name is a config error, not a silent drop.
- */
-const agentRuntimeList = (fallback: AgentRuntimeId[]) =>
-  z.preprocess(
-    value => {
-      if (value === undefined || value === null) return fallback
-      if (Array.isArray(value)) return value
-      const items = String(value)
-        .split(',')
-        .map(s => s.trim().toLowerCase())
-        .filter(Boolean)
-      return items.length > 0 ? [...new Set(items)] : fallback
-    },
-    z.array(z.enum(AGENT_RUNTIMES))
-  )
 
 /**
  * A comma-separated list of lowercase identifiers (feature keys). `csvList` below coerces to email
@@ -313,19 +294,6 @@ const coreConfigSchema = z.object({
   ),
   CLOUDFLARE_R2_ACCOUNT_ID: optionalString,
   CLOUDFLARE_ACCOUNT_ID: optionalString,
-  /**
-   * §18.22: the coding agents this deployment runs at all — comma-separated `AGENT_RUNTIMES`
-   * (`claude_code`, `codex`). Missing or blank = `claude_code`, exactly as before runtimes existed.
-   * Fail-closed: the session policy can only narrow it.
-   */
-  SESSION_RUNTIMES: agentRuntimeList(['claude_code']),
-  /**
-   * §18.22: the runtimes whose sessions may bill a person's OWN account (a Claude subscription, a
-   * ChatGPT plan) instead of Launch's key. Missing or blank = none. Off by default deliberately: a
-   * stored subscription token is a policy question (`docs/CONCEPTS.md` §18.22 Known gaps) that
-   * needs sign-off before a deployment turns it on.
-   */
-  SESSION_USER_CREDENTIALS: agentRuntimeList([]),
   /** `SESSION_BACKEND=local`: the git server sessions clone from and push to (`pnpm sessions:local-git`). */
   SESSION_LOCAL_GIT_URL: z.preprocess(
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),

@@ -81,6 +81,7 @@ import { templatePinStatus } from './kit-pin'
 import { NeonApiError, NeonClient, type NeonProject } from './neon'
 import { publicUrlOverview } from './public-url'
 import { ResendApiError, ResendClient } from './resend'
+import { sessionAgentsStatus } from './session-agents'
 
 /** What every vendor call takes, so tests hand in a fake and nothing reaches the network. */
 export interface VendorOptions {
@@ -939,13 +940,23 @@ export function stepStatuses(
   })
 }
 
-export async function setupOverview(db: Database, cfg: AppConfig): Promise<SetupOverview> {
+/**
+ * Everything the Setup page renders. `tenantId` is the organisation the admin acts for (the
+ * session's, else the deployment's one) — only the Coding agents card's count of connected
+ * personal accounts reads it; without one that count is 0.
+ */
+export async function setupOverview(
+  db: Database,
+  cfg: AppConfig,
+  tenantId: string | null = null
+): Promise<SetupOverview> {
   const [settings, credentials, publicUrl, templatePin] = await Promise.all([
     readSettings(db),
     setupCredentials(db),
     publicUrlOverview(db, cfg),
     templatePinStatus(db),
   ])
+  const sessionAgents = await sessionAgentsStatus(db, cfg, credentials, tenantId)
   const identity = identityStatus(cfg)
   return {
     steps: stepStatuses(settings, credentials, identity, publicUrl),
@@ -959,5 +970,6 @@ export async function setupOverview(db: Database, cfg: AppConfig): Promise<Setup
     }),
     identity,
     templatePin,
+    sessionAgents,
   }
 }

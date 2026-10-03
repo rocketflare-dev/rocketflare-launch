@@ -5,14 +5,15 @@
  * or login is the same 404 as a missing one.
  *
  * - `GET /agent-credentials` → `agentAccountsResponseSchema`: the runtimes this deployment offers
- *   (`SESSION_RUNTIMES`, `SESSION_USER_CREDENTIALS`, the session policy), the caller's connected
+ *   (the session policy's `runtimes` — the Setup page's Coding agents card), the caller's connected
  *   accounts (value-free) and their logins in flight. The Profile panel and the session picker
  *   both read it.
  * - `DELETE /agent-credentials/:runtime` → 204: disconnect (audited `agent_credential.removed`);
  *   404 when nothing was connected.
  * - `POST /agent-logins` `startAgentLoginRequestSchema` → 202 `agentLoginResponseSchema`: a
- *   `starting` row and `AGENT_LOGIN_WORKFLOW.create` — 503 `agent_logins_disabled` /
- *   `agent_logins_not_configured`, 409 `agent_login_in_progress`, all before any write that
+ *   `starting` row and `AGENT_LOGIN_WORKFLOW.create` — 409 `agent_logins_disabled` (the policy
+ *   keeps this runtime on Launch's account), 503 `agent_logins_not_configured`, 409
+ *   `agent_login_in_progress`, all before any write that
  *   sticks. The route runs nothing in a sandbox.
  * - `GET /agent-logins/:id` → `agentLoginResponseSchema` (the modal polls it).
  * - `POST /agent-logins/:id/code` `submitAgentLoginCodeRequestSchema` → 202: the code SEALED onto

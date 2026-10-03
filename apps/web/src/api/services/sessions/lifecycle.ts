@@ -158,8 +158,8 @@ export interface CreateSessionInput {
    */
   firstMessage?: string | null
   /**
-   * §18.22: the deployment's runtime flags (`SESSION_RUNTIMES`, `SESSION_USER_CREDENTIALS`,
-   * `SESSION_SANDBOX_HOST`). Absent = the defaults: Claude Code on Launch's key.
+   * §18.22: the deployment's one runtime flag, `SESSION_SANDBOX_HOST`. Absent = the Cloudflare
+   * sandbox. Which runtimes run, and on whose account, is the session policy's `runtimes`.
    */
   cfg?: AppConfig
 }

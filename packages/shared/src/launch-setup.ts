@@ -8,6 +8,15 @@
  * overview every step renders from, and the result of a put or a check.
  */
 import { z } from 'zod'
+import {
+  AGENT_RUNTIME_LABELS,
+  AGENT_RUNTIMES,
+  type AgentRuntimeId,
+  agentRuntimeSchema,
+  isPricedRuntimeModel,
+  sessionCredentialModeSchema,
+} from './launch-agents'
+import { runtimePolicySchema } from './launch-sessions'
 
 /** One row each in `admin_credentials` (`kind` is unique). Mirrors the pg enum — append-only. */
 export const CREDENTIAL_KINDS = [
@@ -135,7 +144,8 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  * And P3's two (`@launch/shared/launch-sessions`):
  *
  * - `session_policy` — the coding-session budgets and limits (`DEFAULT_SESSION_POLICY`), read
- *   through `resolveSessionPolicy` and snapshotted on each session at create.
+ *   through `resolveSessionPolicy` and snapshotted on each session at create. Its `runtimes` are
+ *   the coding agents sessions may run (§18.22) — the Setup page's Coding agents card.
  * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
  *   answer 409 until it is cleared.
  *
@@ -476,6 +486,88 @@ export type LaunchNotReachableDetails = z.infer<typeof launchNotReachableDetails
 /** `POST /api/platform/setup/public-url/check` — probe now; the stored result. */
 export const publicUrlCheckResponseSchema = publicUrlCheckSchema
 
+// ---- coding agents (§18.22) ---------------------------------------------------------------------
+
+/**
+ * The session image a runtime needs at least — documentation for the card, not a check: Launch
+ * cannot see which image the `SessionSandbox` container was deployed with. Codex arrived in
+ * `session-6`; Claude Code has been in every image.
+ */
+export const AGENT_RUNTIME_MIN_IMAGE: Record<AgentRuntimeId, string | null> = {
+  claude_code: null,
+  codex: 'session-6',
+}
+
+/** The platform credential a runtime's sessions on Launch's account spend. */
+export const AGENT_RUNTIME_PLATFORM_KEY = {
+  claude_code: 'anthropic_api_key',
+  codex: 'openai_api_key',
+} as const satisfies Record<AgentRuntimeId, CredentialKind>
+
+/** One runtime's entry in `PUT /session-agents`: its model must have a price (budgets need one). */
+function sessionAgentSettingSchema(runtime: AgentRuntimeId) {
+  return runtimePolicySchema.refine(v => isPricedRuntimeModel(runtime, v.model), {
+    path: ['model'],
+    message: `Launch has no price for that model, so ${AGENT_RUNTIME_LABELS[runtime]} sessions could not be held to a budget`,
+  })
+}
+
+/**
+ * `PUT /api/platform/setup/session-agents` — any subset of the runtimes, each whole (`enabled`,
+ * `model`, `credentialMode`). The server merges them into `session_policy.runtimes`, keeping the
+ * policy's budgets and limits, and refuses a result with no runtime enabled (409
+ * `session_agents_none_enabled`). It applies to NEW sessions: each session froze its policy.
+ */
+export const sessionAgentsUpdateSchema = z.object({
+  runtimes: z
+    .object(
+      Object.fromEntries(AGENT_RUNTIMES.map(id => [id, sessionAgentSettingSchema(id)])) as Record<
+        AgentRuntimeId,
+        ReturnType<typeof sessionAgentSettingSchema>
+      >
+    )
+    .partial()
+    .strict()
+    .refine(r => Object.keys(r).length > 0, 'Send at least one agent'),
+})
+export type SessionAgentsUpdate = z.infer<typeof sessionAgentsUpdateSchema>
+
+/** 409 from `PUT /session-agents` when the result would leave no coding agent enabled. */
+export const SESSION_AGENTS_NONE_ENABLED = 'session_agents_none_enabled'
+
+/** One coding agent as the Setup page's card draws it. Never a credential value. */
+export const sessionAgentStatusSchema = z.object({
+  runtime: agentRuntimeSchema,
+  label: z.string(),
+  /** The personal account it can bill ("Claude subscription", "ChatGPT plan"). */
+  accountLabel: z.string(),
+  enabled: z.boolean(),
+  model: z.string(),
+  credentialMode: sessionCredentialModeSchema,
+  /** No stored entry: the fail-closed code default applies. */
+  isDefault: z.boolean(),
+  /** The models the card offers (all priced), plus the current one when it is not among them. */
+  models: z.array(z.string()),
+  /**
+   * The key its sessions on Launch's account spend: the sealed credential, else the Worker secret
+   * (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), else none (`source` null).
+   */
+  platformKey: z.object({
+    kind: z.enum(['anthropic_api_key', 'openai_api_key']),
+    source: z.enum(['credential', 'secret']).nullable(),
+  }),
+  /** People with a personal account connected for it (any status). */
+  connectedAccounts: z.number().int().nonnegative(),
+  /** `AGENT_RUNTIME_MIN_IMAGE` — the session image it needs at least, or null. */
+  minImage: z.string().nullable(),
+  /** `SESSION_SANDBOX_HOST=remote` and the runtime cannot run there: off whatever is stored. */
+  unavailableOnHost: z.boolean(),
+})
+export type SessionAgentStatus = z.infer<typeof sessionAgentStatusSchema>
+
+export const sessionAgentsStatusSchema = z.object({ runtimes: z.array(sessionAgentStatusSchema) })
+export type SessionAgentsStatus = z.infer<typeof sessionAgentsStatusSchema>
+
 /** `GET /api/platform/setup` — everything the page renders. Never a credential value. */
 export const setupOverviewSchema = z.object({
   steps: z.array(setupStepSchema),
@@ -496,6 +588,8 @@ export const setupOverviewSchema = z.object({
   }),
   /** The kit new apps are cut from (`launch_settings.template_pin`, else the default). */
   templatePin: templatePinStatusSchema,
+  /** §18.22: the coding agents sessions may run (`session_policy.runtimes`), with readiness. */
+  sessionAgents: sessionAgentsStatusSchema,
 })
 export type SetupOverview = z.infer<typeof setupOverviewSchema>
 

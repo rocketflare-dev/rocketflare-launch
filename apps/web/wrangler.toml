@@ -38,8 +38,6 @@ SESSION_PREVIEW_URL = "https://{label}.clewro.com"  # P3: preview origins, {labe
 GRANT_BACKEND = "cloudflare"            # Shared config (P5): cloudflare | local (local = wrangler dev only; loadConfig refuses it elsewhere)
 SESSION_EGRESS = "open"                # P3: open | allowlist (missing = allowlist). open until the egress interception ends
                                        # a container's stream after a WebSocket closes (docs/plans/sandbox-websocket-close.md)
-SESSION_RUNTIMES = "claude_code"       # Sessions §18.22: coding agents this deployment runs (claude_code,codex); blank = claude_code
-SESSION_USER_CREDENTIALS = ""          # §18.22: runtimes that may bill a person's OWN account; blank = none (needs policy sign-off first)
 # Coding sessions' workspace backups (P3) — add to BOTH files, with the R2 secrets, to turn them on
 # deployed (docs/DEPLOY.md § Coding sessions):  SESSION_WORKSPACE_BACKUP = "presigned"
 # Tracing backend (D32) — add these to BOTH files when you pick one (docs/DEPLOY.md § Tracing):

@@ -109,6 +109,38 @@ const overview: SetupOverview = {
     checkedAt: null,
   },
   templatePin: { pin: DEFAULT_TEMPLATE_PIN, isDefault: true, default: DEFAULT_TEMPLATE_PIN },
+  sessionAgents: {
+    runtimes: [
+      {
+        runtime: 'claude_code',
+        label: 'Claude Code',
+        accountLabel: 'Claude subscription',
+        enabled: true,
+        model: 'claude-sonnet-4-5',
+        credentialMode: 'platform',
+        isDefault: true,
+        models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
+        platformKey: { kind: 'anthropic_api_key', source: 'secret' },
+        connectedAccounts: 0,
+        minImage: null,
+        unavailableOnHost: false,
+      },
+      {
+        runtime: 'codex',
+        label: 'Codex',
+        accountLabel: 'ChatGPT plan',
+        enabled: false,
+        model: 'gpt-6.1-sol',
+        credentialMode: 'platform',
+        isDefault: true,
+        models: ['gpt-6.1-sol'],
+        platformKey: { kind: 'openai_api_key', source: null },
+        connectedAccounts: 2,
+        minImage: 'session-6',
+        unavailableOnHost: false,
+      },
+    ],
+  },
 }
 
 const checkResponse = {
@@ -132,6 +164,7 @@ function render(current: SetupOverview = overview) {
     'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
     'PUT /api/platform/setup/credentials/openai_api_key': checkResponse,
     'PUT /api/platform/setup/settings': overview,
+    'PUT /api/platform/setup/session-agents': current,
     'POST /api/platform/setup/public-url/check': {
       url: 'http://localhost:3000',
       status: 'failed',
@@ -360,5 +393,79 @@ describe('Admin → Setup: the Kit version card', () => {
         )
       ).toBe(true)
     )
+  })
+})
+
+describe('Admin → Setup: the Coding agents card', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows each agent with its switch, model and who pays, plus readiness', async () => {
+    render()
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    expect(within(card).getByText(/Changes apply to new sessions/)).toBeInTheDocument()
+    expect(within(card).getByLabelText('Claude Code')).toBeChecked()
+    expect(within(card).getByLabelText('Codex')).not.toBeChecked()
+    expect(card.querySelector('#coding-agent-claude_code-model')).toHaveValue('claude-sonnet-4-5')
+    expect(card.querySelector('#coding-agent-claude_code-pays')).toHaveValue('platform')
+    expect(within(card).getByText(/Launch's account: the Worker secret/)).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Set it' })).toHaveAttribute(
+      'href',
+      '#setup-openai'
+    )
+    expect(within(card).getByText(/2 people have connected a ChatGPT plan/)).toBeInTheDocument()
+    expect(within(card).getByText(/session-6 session image/)).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('turning Codex on and saving sends every agent', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    fireEvent.click(within(card).getByLabelText('Codex'))
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/session-agents')).toEqual({
+        runtimes: {
+          claude_code: { enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+          codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
+        },
+      })
+    )
+  })
+
+  it('allowing personal accounts asks first, with the vendor terms; cancelling keeps Launch', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    const [pays] = within(card).getAllByLabelText('Who pays')
+    if (!pays) throw new Error('no Who pays select')
+    fireEvent.change(pays, { target: { value: 'user_or_platform' } })
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Anthropic's terms restrict storing/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(pays).toHaveValue('platform')
+
+    fireEvent.change(pays, { target: { value: 'user' } })
+    fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', { name: 'Accept and allow' })
+    )
+    expect(pays).toHaveValue('user')
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(
+        (
+          requestBody(fetchMock, 'PUT /api/platform/setup/session-agents') as
+            | { runtimes: Record<string, unknown> }
+            | undefined
+        )?.runtimes.claude_code
+      ).toEqual({ enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'user' })
+    )
+  })
+
+  it('will not save with every agent off', async () => {
+    const fetchMock = render()
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    fireEvent.click(within(card).getByLabelText('Claude Code'))
+    expect(within(card).getByText(/Keep at least one agent on/)).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(requestBody(fetchMock, 'PUT /api/platform/setup/session-agents')).toBeUndefined()
   })
 })

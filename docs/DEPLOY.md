@@ -230,20 +230,19 @@ needs, beyond the bindings above:
   handlers IN THIS WORKER — the sandbox never holds either. A change to the var is a redeploy; a
   container already running keeps its interception until it restarts, so check with a NEW
   session.
-- **Agent runtimes and personal AI accounts** (`docs/CONCEPTS.md` §18.22). `[vars]` in both tomls:
-  `SESSION_RUNTIMES = "claude_code"` (the coding agents sessions may run; `codex` once stream B
-  ships) and `SESSION_USER_CREDENTIALS = ""` (the runtimes whose sessions may bill a person's own
-  Claude subscription or ChatGPT plan — off, and it stays off until the policy question in §18.22's
-  Known gaps has a sign-off). `[[workflows]]` `AGENT_LOGIN_WORKFLOW` (`launch-agent-login`, staging
-  `-staging`; nothing to create) runs a sign-in in a throwaway `login-<id>` sandbox of the
-  existing `SessionSandbox` class — those count against `max_instances`. Optional secret
-  `OPENAI_API_KEY` (or the Setup page's `openai_api_key` credential): what Codex sessions on
-  Launch's account spend (the Setup page checks it against Codex's model). Nothing to do on a
-  deploy that leaves both vars at their defaults. To offer Codex, add `codex` to `SESSION_RUNTIMES`
-  (and to `SESSION_USER_CREDENTIALS` for ChatGPT plans — device-code sign-in must be allowed on the
-  person's account or workspace). **The image carries Codex from `session-6`** (a pinned
-  `@openai/codex`, `ARG CODEX_VERSION`): the first deploy of it replaces every container, so drain
-  first (below).
+- **Agent runtimes and personal AI accounts** (`docs/CONCEPTS.md` §18.22). Not vars: which coding
+  agents sessions run, each one's model and who pays (Launch, the person's own Claude subscription
+  or ChatGPT plan, or either) are set on Settings → Platform → Setup → **Coding agents**, a platform
+  setting (`session_policy.runtimes`). With nothing set there: Claude Code on Launch's key only.
+  `[[workflows]]` `AGENT_LOGIN_WORKFLOW` (`launch-agent-login`, staging `-staging`; nothing to
+  create) runs a sign-in in a throwaway `login-<id>` sandbox of the existing `SessionSandbox` class
+  — those count against `max_instances`. Optional secret `OPENAI_API_KEY` (or the Setup page's
+  `openai_api_key` credential, which wins): what Codex sessions on Launch's account spend; likewise
+  `ANTHROPIC_API_KEY` or the `anthropic_api_key` credential for Claude Code. Nothing to do on a
+  deploy. To offer Codex, deploy the `session-6` image (or later), then turn Codex on in the card
+  (for ChatGPT plans, device-code sign-in must be allowed on the person's account or workspace).
+  **The image carries Codex from `session-6`** (a pinned `@openai/codex`, `ARG CODEX_VERSION`):
+  the first deploy of it replaces every container, so drain first (below).
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409

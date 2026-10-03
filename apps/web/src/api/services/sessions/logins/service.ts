@@ -3,9 +3,9 @@
  * login: it writes the row (or a compare-and-set on it) and starts or wakes `AgentLoginWorkflow`,
  * which re-reads the row and does the work in a sandbox.
  *
- * - `startLogin`: 503 `agent_logins_not_configured` without the Workflow binding, 503
- *   `agent_logins_disabled` when the deployment does not let this runtime bill a personal account
- *   (`SESSION_USER_CREDENTIALS`, or the policy turned it off), 409 `agent_login_in_progress` when
+ * - `startLogin`: 503 `agent_logins_not_configured` without the Workflow binding, 409
+ *   `agent_logins_disabled` when the session policy (the Setup page's Coding agents card) does not
+ *   let this runtime bill a personal account, 409 `agent_login_in_progress` when
  *   one is already active (the partial unique index decides — two clicks are one login) — all
  *   before any write that sticks; then the `starting` row and `create({ id: loginId })`.
  * - `submitLoginCode`: a compare-and-set `awaiting_user → submitting` that SEALS the code onto the
@@ -72,7 +72,10 @@ export function requireLoginWorkflow(env: AppBindings): Workflow {
   return workflow
 }
 
-/** 503 `agent_logins_disabled` unless this runtime may bill a personal account here. */
+/**
+ * 409 `agent_logins_disabled` unless this runtime may bill a personal account — the session
+ * policy's Coding agents setting (off unless an admin turned it on), not a deployment var.
+ */
 export function assertLoginsEnabled(
   flags: RuntimeFlags,
   policy: SessionPolicy,
@@ -80,9 +83,10 @@ export function assertLoginsEnabled(
 ): void {
   const offer = runtimeOffer(flags, policy, runtime)
   if (!offer.enabled || !offer.userAllowed) {
-    throw new ServiceUnavailableError(
-      `Personal ${AGENT_RUNTIME_LABELS[runtime]} accounts are not enabled on this deployment`,
-      'agent_logins_disabled'
+    throw new ConflictError(
+      `${AGENT_RUNTIME_LABELS[runtime]} sessions do not use personal accounts here. An admin can allow them on the Setup page.`,
+      'agent_logins_disabled',
+      { runtime }
     )
   }
 }

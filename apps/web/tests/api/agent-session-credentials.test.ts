@@ -1,6 +1,6 @@
 // @vitest-isolate
-// Creates sessions through the route, which refuses while `sessions_paused` is set: a GLOBAL
-// setting `sessions-routes.test.ts` flips in the shared run, so this file runs in `api-isolated`.
+// Creates sessions through the route, which reads GLOBAL settings (`sessions_paused`,
+// `session_policy`), so the credentials module is mocked over an in-memory store.
 /**
  * Sessions and the runtime/credential seam (§18.22), end to end through the routes and the turn
  * runner:
@@ -16,9 +16,13 @@
  * - money: a personal-account session has no money budget, and its usage is recorded with a null
  *   cost that the summary never prices.
  */
-import { DEFAULT_SESSION_POLICY, sessionDetailResponseSchema } from '@launch/shared/launch-sessions'
+import {
+  DEFAULT_SESSION_POLICY,
+  type SessionPolicy,
+  sessionDetailResponseSchema,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { summarizeUsage } from '@/api/services/ai/usage'
 import { checkBudget } from '@/api/services/sessions/budget'
 import { PLATFORM_LEASE } from '@/api/services/sessions/credentials/lease'
@@ -50,6 +54,11 @@ import {
 } from '../helpers/sessions'
 import { createTestEnv, type TestEnv } from '../mocks/bindings'
 
+const store = vi.hoisted(() => ({ credentials: new Map(), settings: new Map() }))
+vi.mock('@/api/services/launch/credentials', async importOriginal =>
+  (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
+)
+
 const db = setupTestDatabase()
 
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 1))
@@ -58,7 +67,26 @@ const FAST: RunTurnOptions = { sleep: tick, cancelPollMs: 5, flushMs: 5 }
 const post = (path: string, headers: Record<string, string>, env: TestEnv, body: unknown = {}) =>
   request(path, { method: 'POST', headers }, { env, json: body })
 
-const personalEnv = () => createTestEnv({ SESSION_USER_CREDENTIALS: 'claude_code' })
+/** Store a session policy in the in-memory settings (the Setup page's Coding agents card). */
+function storePolicy(runtimes: SessionPolicy['runtimes']) {
+  store.settings.set('session_policy', { runtimes })
+}
+
+/** Claude Code may bill a personal account (the admin chose "Either" on the Setup page). */
+const personalEnv = () => {
+  storePolicy({
+    claude_code: {
+      enabled: true,
+      model: DEFAULT_SESSION_POLICY.model,
+      credentialMode: 'user_or_platform',
+    },
+  })
+  return createTestEnv()
+}
+
+beforeEach(() => {
+  store.settings.clear()
+})
 
 async function sessionRows(appId: string, tenantId: string) {
   return db
@@ -114,6 +142,26 @@ describe('creating a session', () => {
     expect(res.status).toBe(409)
     expect(await json(res)).toMatchObject({ statusCode: 409, code: 'session_runtime_disabled' })
     expect(await sessionRows(f.app.id, f.tenant.id)).toEqual([])
+  })
+
+  it('honours the Coding agents setting: Claude off and Codex on — a bare start runs Codex on its model', async () => {
+    storePolicy({
+      claude_code: { enabled: false, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+      codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
+    })
+    const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
+    const claude = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, createTestEnv(), {
+      runtime: 'claude_code',
+    })
+    expect(claude.status).toBe(409)
+    expect(await json(claude)).toMatchObject({ code: 'session_runtime_disabled' })
+
+    const res = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, createTestEnv())
+    expect(res.status).toBe(202)
+    const [row] = await sessionRows(f.app.id, f.tenant.id)
+    expect(row).toMatchObject({ runtime: 'codex', credentialSource: 'platform' })
+    // The frozen policy names the chosen runtime's model — the only one its egress lets through.
+    expect(row?.policy.model).toBe('gpt-6.1-sol')
   })
 
   it('409 agent_credential_not_allowed for a personal account where none may be used', async () => {

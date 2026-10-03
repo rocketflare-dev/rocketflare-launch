@@ -298,9 +298,9 @@ describe('wrangler parity: agent runtimes and personal AI accounts (§18.22)', (
         binding: 'AGENT_LOGIN_WORKFLOW',
         class_name: 'AgentLoginWorkflow',
       })
-      // Claude Code only, on Launch's key, until a deployment deliberately opts in.
-      expect(get(config, 'vars.SESSION_RUNTIMES')).toBe('claude_code')
-      expect(get(config, 'vars.SESSION_USER_CREDENTIALS')).toBe('')
+      // Which agents run and who pays is a platform setting (the Setup page), never a var.
+      expect(get(config, 'vars.SESSION_RUNTIMES')).toBeUndefined()
+      expect(get(config, 'vars.SESSION_USER_CREDENTIALS')).toBeUndefined()
     }
   )
 })

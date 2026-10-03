@@ -2851,12 +2851,31 @@ command, the environment, the parsed events, the workspace file and the transcri
 (`checkpoint.ts`) call the seam; `sessions.claude_session_id` is the generic resume id
 (`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
 
-**Deciding at create** (`credentials/resolve.ts`), narrowest wins: the DEPLOYMENT —
-`SESSION_RUNTIMES` (default `claude_code`) and `SESSION_USER_CREDENTIALS` (default none), and
-`SESSION_SANDBOX_HOST=remote` allowing only Claude Code on Launch's key; then the policy
-(`runtimePolicyOf`: with no entry, a runtime is enabled on either account, so turning the flag on
-is the one switch an operator needs); then the request (`POST /api/apps/:id/sessions { runtime?,
-credential? }`, the session card's picker, `launch sessions start --runtime`). Refusals before any
+**Where the switches live**: a PLATFORM SETTING, not a deployment var — the session policy's
+`runtimes` (`launch_settings.session_policy`), edited on Settings → Platform → Setup's **Coding
+agents** card (`PUT /api/platform/setup/session-agents`, platform admins, audited
+`setting.changed` with the effective before and after). Per agent: on/off, its model (only a model
+`ai/pricing.ts` prices — `AGENT_RUNTIME_MODELS` is the offered list — because a budget needs a
+price; 400 otherwise) and who pays (`platform` = Launch, `user` = the person's own account,
+`user_or_platform` = either). The PUT merges whole per-agent entries into the policy (budgets and
+limits kept, Claude's model mirrored onto `model`) and refuses a result with nothing on (409
+`session_agents_none_enabled`). Choosing an option that allows personal accounts asks the admin to
+accept the vendor terms first (Known gaps). The overview's `sessionAgents` carries readiness:
+Launch's key per agent (sealed credential, else the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` secret,
+never the value), people with a connected account in the admin's organisation, the image an agent
+needs (Codex: `session-6`, documented, not checked), and whether the sandbox host can run it.
+**Fail-closed**: with no entry for a runtime (`runtimePolicyOf`), Claude Code runs on Launch's key
+on the policy's own `model` and every other runtime is OFF — so a policy stored before runtimes
+existed reads exactly as it always did. A change reaches NEW sessions only; each session froze its
+policy at create.
+
+**Deciding at create** (`credentials/resolve.ts`), narrowest wins: the DEPLOYMENT — only
+`SESSION_SANDBOX_HOST=remote`, allowing only Claude Code on Launch's key; then the policy's
+`runtimes`; then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the session
+card's picker, `launch sessions start --runtime`). A request naming no runtime gets the policy's
+default runtime, or the first enabled one when that is off (`defaultRuntimeFor`). Starting a
+personal sign-in (`POST /api/me/agent-logins`) for a runtime whose policy bills Launch only is 409
+`agent_logins_disabled`; the Profile panel shows only runtimes that allow one. Refusals before any
 row: 409 `session_runtime_disabled`, `agent_credential_not_allowed`, `agent_credential_required`
 (not connected, needs a reconnect, or expired). A personal-account session skips the app's monthly
 money check at create and the money budget per turn (`checkBudget` → ok): Launch does not pay for
@@ -2973,10 +2992,11 @@ valid for a year with no refresh, so a revoked one is noticed only at the next m
 
 #### 18.22-B Codex
 
-**Wired** (`services/sessions/runtimes/codex/`), behind `SESSION_RUNTIMES` (add `codex`) — and, for
-ChatGPT plans, `SESSION_USER_CREDENTIALS`. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image
-`session-6`); the default model is Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in
-`ai/pricing.ts`), overridable per policy (`runtimes.codex.model`). Codex's three hosts are
+**Wired** (`services/sessions/runtimes/codex/`), off until an admin turns it on in the Setup page's
+Coding agents card — and, for ChatGPT plans, sets its "Who pays" to the person's own account or
+Either. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image `session-6`); the default model is
+Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in `ai/pricing.ts`), chosen on the same
+card (`runtimes.codex.model`). Codex's three hosts are
 registered with their real handlers and are on the allow-list (the egress paragraph above).
 
 - **A turn** (`command.ts`): `codex exec --json -s danger-full-access --skip-git-repo-check -m
@@ -3051,9 +3071,17 @@ off rather than metered.
 
 - *Policy*: Anthropic's terms forbid a third party offering claude.ai sign-in or intermediating
   subscription tokens; hosting the unmodified CLI while the person signs in through Anthropic's own
-  flow is allowed, but STORING the resulting token is grey. `SESSION_USER_CREDENTIALS` is off by
-  default and needs legal sign-off before a deployment lists `claude_code`. OpenAI's ChatGPT-plan
-  sign-in for hosted commercial use needs their "Sign in with ChatGPT" approval.
+  flow is allowed, but STORING the resulting token is grey. Personal accounts are off by default;
+  the Coding agents card asks the admin to accept that responsibility, in one sentence, before it
+  lets people use a Claude subscription — it is a confirmation, not legal sign-off. OpenAI's
+  ChatGPT-plan sign-in for hosted commercial use needs their "Sign in with ChatGPT" approval; the
+  card says so the same way.
+- *The card cannot see the deployed image*: Codex needs `session-6` or later, which the card
+  states but does not check.
+- *Two admins saving the card at once*: the PUT reads, merges and writes the policy without a
+  compare-and-set, so the later save wins whole entries.
+- *The model list is the pricing table's*: a model Codex or Claude Code supports but
+  `ai/pricing.ts` does not price cannot be chosen until it is priced there.
 - *Codex's `auth.json` sits in the container during a turn* (a placeholder with a server-side swap
   and refresh is the hardening path); its refresh token rotates, so one is never used concurrently
   (the claim).
