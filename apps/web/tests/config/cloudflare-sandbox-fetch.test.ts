@@ -66,3 +66,18 @@ describe('CloudflareSandbox.streamLogs', () => {
     expect(ns.calls.map(c => [c.method, ...c.args])).toEqual([['streamProcessLogs', 'p1']])
   })
 })
+
+describe('CloudflareSandbox.readFile', () => {
+  // Live: the Claude sign-in's terminal output came back base64, and its token was never found.
+  it('decodes what the SDK sends as base64, and passes text through', async () => {
+    const screen = '\u001b[2G\u2713 token sk-ant-oat01-abc \u2593\u2593\r\n'
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(screen)))
+    const ns = new FakeSandboxNamespace()
+    ns.handlers.exists = () => ({ exists: true })
+    ns.handlers.readFile = (_name, path) =>
+      path === '/b' ? { content: b64, encoding: 'base64', isBinary: true } : { content: 'plain' }
+    const sandbox = sandboxOver(ns)
+    expect(await sandbox.readFile('/b')).toBe(screen)
+    expect(await sandbox.readFile('/t')).toBe('plain')
+  })
+})

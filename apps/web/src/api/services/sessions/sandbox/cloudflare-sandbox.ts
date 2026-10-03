@@ -266,6 +266,17 @@ export async function* parseLogStream(
 // biome-ignore lint/suspicious/noExplicitAny: the SDK's own bound (`getSandbox<T extends Sandbox<any>>`)
 type AnySandbox = Sandbox<any>
 
+/**
+ * A file's text. The SDK sends what it judges BINARY as base64 (`encoding: 'base64'`) — and a
+ * terminal transcript full of escapes and block glyphs is judged binary: the Claude sign-in's
+ * `out` arrived base64 and its token was never found. Every `readFile` caller wants text.
+ */
+export function textOf(file: { content: string; encoding?: string }): string {
+  if (file.encoding !== 'base64') return file.content
+  const bytes = Uint8Array.from(atob(file.content), c => c.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
 export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements SandboxPort {
   constructor(
     private readonly ns: DurableObjectNamespace<S>,
@@ -385,7 +396,7 @@ export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements San
       const exists = await this.sandbox.exists(path)
       if (!exists.exists) return null
       const file = await this.sandbox.readFile(path)
-      return file.content
+      return textOf(file)
     })
   }
 
