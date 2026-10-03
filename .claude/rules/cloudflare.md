@@ -39,7 +39,7 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   "cloudflare"` (`local` is development only). §18.22: `AGENT_LOGIN_WORKFLOW`
   (`launch-agent-login[-staging]`, class `AgentLoginWorkflow`; a missing one is a 503
   `agent_logins_not_configured` before any row) — which agents run and who pays is a platform
-  setting (the Setup page's Coding agents card), deliberately NOT a `[vars]` entry; its sign-in
+  setting (the Platform → Coding agents tab), deliberately NOT a `[vars]` entry; its sign-in
   sandboxes are the existing
   `SessionSandbox` class, so no new container block. The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`

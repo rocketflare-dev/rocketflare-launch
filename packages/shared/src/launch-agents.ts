@@ -227,7 +227,7 @@ export const agentRuntimeOptionSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
   accountLabel: z.string(),
-  /** The session policy (the Setup page's Coding agents card) has it on, and it can run here. */
+  /** The session policy (the Platform → Coding agents tab) has it on, and it can run here. */
   enabled: z.boolean(),
   /** The policy's mode, narrowed by what this deployment can run (`SESSION_SANDBOX_HOST`). */
   credentialMode: sessionCredentialModeSchema,

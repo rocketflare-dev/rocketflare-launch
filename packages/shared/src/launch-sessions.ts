@@ -569,7 +569,7 @@ export interface SessionEventInput<T extends SessionEventType = SessionEventType
 /**
  * One agent runtime under the session policy (§18.22): whether sessions may run it, its model, and
  * whose account they bill. The ONE place these switches live — a platform setting edited on the
- * Setup page's Coding agents card (`PUT /api/platform/setup/session-agents`), not a deployment var.
+ * Platform → Coding agents tab (`PUT /api/platform/setup/session-agents`), not a deployment var.
  */
 export const runtimePolicySchema = z.object({
   enabled: z.boolean(),

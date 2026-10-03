@@ -145,7 +145,7 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *
  * - `session_policy` — the coding-session budgets and limits (`DEFAULT_SESSION_POLICY`), read
  *   through `resolveSessionPolicy` and snapshotted on each session at create. Its `runtimes` are
- *   the coding agents sessions may run (§18.22) — the Setup page's Coding agents card.
+ *   the coding agents sessions may run (§18.22) — the Platform → Coding agents tab.
  * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
  *   answer 409 until it is cleared.
  *
@@ -562,6 +562,11 @@ export const sessionAgentStatusSchema = z.object({
   minImage: z.string().nullable(),
   /** `SESSION_SANDBOX_HOST=remote` and the runtime cannot run there: off whatever is stored. */
   unavailableOnHost: z.boolean(),
+  /**
+   * `SESSION_SANDBOX_HOST=remote`: the host egress forwards only Launch's key, so a personal
+   * account cannot pay here — "The person's own account" leaves the agent unusable.
+   */
+  personalAccountsUnavailableOnHost: z.boolean().default(false),
 })
 export type SessionAgentStatus = z.infer<typeof sessionAgentStatusSchema>
 

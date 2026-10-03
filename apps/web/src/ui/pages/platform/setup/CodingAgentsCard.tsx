@@ -1,10 +1,10 @@
 /**
  * The coding agents sessions may run (§18.22) — `launch_settings.session_policy.runtimes`, the ONE
- * place these switches live. Not a setup STEP (Claude Code on Launch's key works with nothing set),
- * so it sits after the stepper's cards with no status dot, like the Kit version card.
+ * place these switches live. The first panel of Settings → Platform → Coding agents
+ * (`pages/platform/CodingAgents.tsx`), above Launch's keys for the agents.
  *
- * One row per agent: on/off, its model (only priced ones — a session's budget is money), and who
- * pays. Choosing an option that lets people bill their OWN account asks first, in one sentence, about
+ * A table, one row per agent: on/off, its model (only priced ones — a session's budget is money),
+ * who pays, and one status line. Choosing an option that lets people bill their OWN account asks first, in one sentence, about
  * the vendor's terms: the admin is accepting that responsibility. Readiness comes from the server
  * (`sessionAgentStatusSchema`): whether Launch's key for the agent is set, how many people have
  * connected an account, and the image it needs. Saving sends every row; the server merges them into
@@ -44,6 +44,11 @@ const KEY_LABEL: Record<SessionAgentStatus['platformKey']['kind'], string> = {
   openai_api_key: 'an OpenAI key',
 }
 
+const KEY_SECRET: Record<SessionAgentStatus['platformKey']['kind'], string> = {
+  anthropic_api_key: 'ANTHROPIC_API_KEY',
+  openai_api_key: 'OPENAI_API_KEY',
+}
+
 const KEY_ANCHOR: Record<SessionAgentStatus['platformKey']['kind'], string> = {
   anthropic_api_key: stepAnchor('anthropic'),
   openai_api_key: stepAnchor('openai'),
@@ -66,6 +71,12 @@ function draftsOf(status: SessionAgentsStatus): Record<AgentRuntimeId, Draft> {
 
 const allowsPersonal = (mode: SessionCredentialMode) => mode !== 'platform'
 
+/** The server's own rule (`runtimeOffer`): whether this draft gives people a usable agent. */
+function usable(agent: SessionAgentStatus, draft: Draft): boolean {
+  if (!draft.enabled || agent.unavailableOnHost) return false
+  return !(agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user')
+}
+
 /** The card's React key: the stored settings, so it remounts only when they change. */
 export function codingAgentsKey(status: SessionAgentsStatus): string {
   return status.runtimes
@@ -73,54 +84,59 @@ export function codingAgentsKey(status: SessionAgentsStatus): string {
     .join('|')
 }
 
-/** What stands between this agent and a working session — plain lines, the blocking one first. */
-function Readiness({ agent, draft }: { agent: SessionAgentStatus; draft: Draft }) {
-  const lines: { text: ReactNode; warn?: boolean }[] = []
-  if (agent.unavailableOnHost) {
-    lines.push({ text: "Cannot run on this deployment's sandbox host.", warn: true })
+/** The agent's state in one line (the blocking reason first), plus a quieter detail line. */
+function AgentStatus({ agent, draft }: { agent: SessionAgentStatus; draft: Draft }) {
+  const usesLaunchKey = draft.credentialMode !== 'user'
+  const kind = agent.platformKey.kind
+  const keyMissing = usesLaunchKey && agent.platformKey.source === null
+
+  let headline: ReactNode
+  let tone = 'text-success'
+  if (!draft.enabled) {
+    headline = 'Off'
+    tone = 'text-muted'
+  } else if (agent.unavailableOnHost) {
+    headline = 'Not available with the remote sandbox host'
+    tone = 'text-warning'
+  } else if (agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user') {
+    headline = "Personal accounts don't work with the remote sandbox host"
+    tone = 'text-warning'
+  } else if (keyMissing) {
+    headline = (
+      <>
+        Needs {KEY_LABEL[kind]}{' '}
+        <a className="link" href={`#${KEY_ANCHOR[kind]}`}>
+          Set it
+        </a>
+      </>
+    )
+    tone = 'text-warning'
+  } else {
+    headline = 'Ready'
   }
-  if (draft.credentialMode !== 'user') {
-    const kind = agent.platformKey.kind
-    if (agent.platformKey.source === null) {
-      lines.push({
-        warn: draft.enabled,
-        text: (
-          <>
-            Needs {KEY_LABEL[kind]} to run on Launch's account.{' '}
-            <a className="link" href={`#${KEY_ANCHOR[kind]}`}>
-              Set it
-            </a>
-          </>
-        ),
-      })
-    } else if (agent.platformKey.source === 'secret') {
-      lines.push({ text: "Launch's account: the Worker secret." })
-    } else {
-      lines.push({ text: "Launch's account: key set." })
-    }
+
+  const details: string[] = []
+  if (usesLaunchKey && agent.platformKey.source === 'secret') {
+    details.push(`Launch pays with the ${KEY_SECRET[kind]} secret`)
+  } else if (usesLaunchKey && agent.platformKey.source === 'credential') {
+    details.push('Launch pays with the saved key')
   }
-  if (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0) {
+  if (agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user_or_platform') {
+    details.push('Personal accounts are ignored with the remote sandbox host')
+  } else if (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0) {
     const n = agent.connectedAccounts
-    lines.push({
-      text:
-        n === 0
-          ? `Nobody has connected a ${agent.accountLabel} yet (Profile → AI accounts).`
-          : `${n} ${n === 1 ? 'person has' : 'people have'} connected a ${agent.accountLabel}.`,
-    })
+    details.push(
+      n === 0
+        ? `No one has connected a ${agent.accountLabel} yet`
+        : `${n} ${n === 1 ? 'person has' : 'people have'} connected a ${agent.accountLabel}`
+    )
   }
-  if (agent.minImage) {
-    lines.push({ text: `Needs the ${agent.minImage} session image or later.` })
-  }
-  if (lines.length === 0) return null
+
   return (
-    <ul className="text-xs space-y-0.5">
-      {lines.map((line, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: a fixed, ordered list rebuilt each render
-        <li key={i} className={line.warn ? 'text-warning' : 'text-muted'}>
-          {line.text}
-        </li>
-      ))}
-    </ul>
+    <div className="text-sm leading-5">
+      <div className={tone}>{headline}</div>
+      {details.length > 0 && <div className="text-xs text-muted">{details.join(' · ')}</div>}
+    </div>
   )
 }
 
@@ -139,7 +155,7 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
     const d = drafts[a.runtime]
     return d.enabled !== a.enabled || d.model !== a.model || d.credentialMode !== a.credentialMode
   })
-  const noneEnabled = agents.every(a => !drafts[a.runtime].enabled)
+  const noneEnabled = agents.every(a => !usable(a, drafts[a.runtime]))
 
   function set(runtime: AgentRuntimeId, patch: Partial<Draft>) {
     setDrafts(prev => ({ ...prev, [runtime]: { ...prev[runtime], ...patch } }))
@@ -168,113 +184,127 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
     <section
       id={stepAnchor('coding-agents')}
       aria-labelledby={HEADING_ID}
-      className="surface-panel p-5 space-y-4 scroll-mt-6"
+      className="surface-panel p-0 overflow-hidden scroll-mt-6"
     >
-      <header className="min-w-0">
+      <header className="px-5 pt-5 pb-3 min-w-0">
         <h2 id={HEADING_ID} className="text-base font-semibold leading-6">
           Coding agents
         </h2>
-        <div className="text-sm text-secondary mt-0.5">
-          The agents people can run in a coding session, the model each one uses, and whose account
-          pays for it. Changes apply to new sessions; sessions already running keep what they
-          started with.
-        </div>
+        <p className="text-sm text-secondary mt-0.5">
+          Which agents people can run in a coding session, the model each one uses, and who pays.
+        </p>
       </header>
 
-      <form className="space-y-4" onSubmit={onSubmit}>
-        <div className="divide-y divide-base-300">
-          {agents.map(agent => {
-            const draft = drafts[agent.runtime]
-            const id = `coding-agent-${agent.runtime}`
-            return (
-              <div
-                key={agent.runtime}
-                className="grid gap-3 py-3 first:pt-0 last:pb-0 sm:grid-cols-[10rem_1fr_1fr] sm:items-start"
-              >
-                <label className="flex items-center gap-2 text-sm font-medium" htmlFor={id}>
-                  <input
-                    id={id}
-                    type="checkbox"
-                    className="toggle toggle-sm"
-                    checked={draft.enabled}
-                    onChange={e => set(agent.runtime, { enabled: e.target.checked })}
-                  />
-                  {agent.label}
-                </label>
-                <div className="space-y-1">
-                  <label htmlFor={`${id}-model`} className="block text-xs text-muted">
-                    Model
-                  </label>
-                  <select
-                    id={`${id}-model`}
-                    className="select select-bordered select-sm w-full font-mono"
-                    value={draft.model}
-                    disabled={!draft.enabled}
-                    onChange={e => set(agent.runtime, { model: e.target.value })}
-                  >
-                    {agent.models.map(m => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor={`${id}-pays`} className="block text-xs text-muted">
-                    Who pays
-                  </label>
-                  <select
-                    id={`${id}-pays`}
-                    className="select select-bordered select-sm w-full"
-                    value={draft.credentialMode}
-                    disabled={!draft.enabled}
-                    onChange={e =>
-                      chooseMode(agent.runtime, e.target.value as SessionCredentialMode)
-                    }
-                  >
-                    {(['platform', 'user', 'user_or_platform'] as const).map(mode => (
-                      <option key={mode} value={mode}>
-                        {WHO_PAYS[mode]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="sm:col-start-2 sm:col-span-2">
-                  <Readiness agent={agent} draft={draft} />
-                </div>
-              </div>
-            )
-          })}
+      <form onSubmit={onSubmit}>
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th className="w-48">Agent</th>
+                <th className="w-64">Model</th>
+                <th className="w-64">Who pays</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agents.map(agent => {
+                const draft = drafts[agent.runtime]
+                const id = `coding-agent-${agent.runtime}`
+                return (
+                  <tr key={agent.runtime}>
+                    <td className="py-3">
+                      <label className="flex items-center gap-3 font-medium" htmlFor={id}>
+                        <input
+                          id={id}
+                          type="checkbox"
+                          className="toggle toggle-sm"
+                          checked={draft.enabled}
+                          onChange={e => set(agent.runtime, { enabled: e.target.checked })}
+                        />
+                        {agent.label}
+                      </label>
+                    </td>
+                    <td className="py-3">
+                      <label htmlFor={`${id}-model`} className="sr-only">
+                        Model
+                      </label>
+                      <select
+                        id={`${id}-model`}
+                        className="select select-sm w-full font-mono"
+                        value={draft.model}
+                        onChange={e => set(agent.runtime, { model: e.target.value })}
+                      >
+                        {agent.models.map(m => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="py-3">
+                      <label htmlFor={`${id}-pays`} className="sr-only">
+                        Who pays
+                      </label>
+                      <select
+                        id={`${id}-pays`}
+                        className="select select-sm w-full"
+                        value={draft.credentialMode}
+                        onChange={e =>
+                          chooseMode(agent.runtime, e.target.value as SessionCredentialMode)
+                        }
+                      >
+                        {(['platform', 'user', 'user_or_platform'] as const).map(mode => (
+                          <option key={mode} value={mode}>
+                            {WHO_PAYS[mode]}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="py-3">
+                      <AgentStatus agent={agent} draft={draft} />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
 
-        {noneEnabled && (
-          <p className="text-sm text-warning" role="status">
-            Keep at least one agent on, or nobody can start a session.
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+          <p className="text-xs text-muted">
+            Changes apply to new sessions. Sessions already running keep what they started with.
           </p>
-        )}
-        {update.error && (
-          <p className="text-sm text-error" role="alert">
-            {update.error.message}
-          </p>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="submit"
-            className="btn btn-sm btn-primary"
-            disabled={!dirty || noneEnabled || update.isPending}
-          >
-            Save
-          </button>
-          {dirty && (
+          <div className="flex items-center gap-2">
+            {noneEnabled && (
+              <span className="text-sm text-warning" role="status">
+                {agents.some(a => drafts[a.runtime].enabled)
+                  ? 'No agent can run as set, so nobody could start a session.'
+                  : 'Keep at least one agent on, or nobody can start a session.'}
+              </span>
+            )}
+            {update.error && (
+              <span className="text-sm text-error" role="alert">
+                {update.error.message}
+              </span>
+            )}
+            {dirty && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                disabled={update.isPending}
+                onClick={() => setDrafts(draftsOf(sessionAgents))}
+              >
+                Discard changes
+              </button>
+            )}
             <button
-              type="button"
-              className="btn btn-sm btn-ghost"
-              disabled={update.isPending}
-              onClick={() => setDrafts(draftsOf(sessionAgents))}
+              type="submit"
+              className="btn btn-sm btn-primary"
+              disabled={!dirty || noneEnabled || update.isPending}
             >
-              Discard changes
+              Save
             </button>
-          )}
+          </div>
         </div>
       </form>
 

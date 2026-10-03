@@ -3030,7 +3030,7 @@ registered with their real handlers and are on the allow-list (the egress paragr
   (Codex tries `wss://…/responses` first, then streams over HTTP); a live Codex session on Launch's
   account only; `POST /v1/responses` (and `/compact`) for the policy's model, and `GET /v1/models`
   unmetered; the budget; `Authorization: Bearer` from `resolveOpenAiKey` (the `openai_api_key`
-  credential — a card on the Setup page after the steps, checked against Codex's model — else
+  credential — a card on the Platform → Coding agents tab, checked against Codex's model — else
   `OPENAI_API_KEY`); `response.completed` metered into `ai_usage` as provider `openai`.
 - **A person's ChatGPT plan.** The lease (`credentials.ts`) CLAIMS the credential (another session
   holding it: "in use by another session"), writes `auth.json`, and on release — success, failure,

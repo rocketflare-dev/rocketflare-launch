@@ -5,7 +5,7 @@
 - **Sessions: agent runtimes and personal AI accounts — the foundation** (`docs/CONCEPTS.md`
   §18.22). A session now records which coding agent it runs and whose account it bills, fixed at
   start; nothing changes on a default deployment (Claude Code on Launch's key). New, all off by
-  default: the Setup page's Coding agents card (below), the `AGENT_LOGIN_WORKFLOW` Workflow, the
+  default: the Platform → Coding agents tab (below), the `AGENT_LOGIN_WORKFLOW` Workflow, the
   optional `OPENAI_API_KEY` secret and the
   `openai_api_key` Setup credential; `POST /api/apps/:id/sessions` takes `runtime?` and
   `credential?` (409 `session_runtime_disabled` / `agent_credential_not_allowed` /

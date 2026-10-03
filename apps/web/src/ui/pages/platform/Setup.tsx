@@ -2,9 +2,7 @@
  * `/settings/platform/setup` (spec/03, spec/04): the setup wizard — a stepper over seven cards, in the order a
  * company sets Launch up: the apps domain and zone, then the Cloudflare, Neon, Resend and GitHub
  * App credentials Launch acts with, then the upstream IdP (read-only), then whether Launch's own
- * public URL is reachable from the internet (the CI jobs call it back). After the steps, the
- * Coding agents card (§18.22 — which agents sessions run, their models and who pays; not a step),
- * the optional Anthropic and OpenAI keys sessions on Launch's account spend, and the Kit
+ * public URL is reachable from the internet (the CI jobs call it back). After the steps, the Kit
  * version card: the kit new apps are cut from (not a step — it has a default). `canAdministerPlatform` — a
  * global admin, or in single mode the organisation's owner/admin (the platform layout's guard; the
  * server's `platformAdminMiddleware`).
@@ -23,7 +21,6 @@ import {
 } from '@launch/shared/launch-setup'
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'
-import { CodingAgentsCard, codingAgentsKey } from './setup/CodingAgentsCard'
 import { CredentialCard } from './setup/CredentialCard'
 import { DomainCard } from './setup/DomainCard'
 import { IdentityCard } from './setup/IdentityCard'
@@ -92,9 +89,6 @@ export default function Setup() {
   }
 
   const status = (id: SetupStepId) => data.steps.find(s => s.id === id)?.status ?? 'todo'
-  // §18.22-B: not a step — shown when the server reports it (every current server does).
-  const openAi = data.credentials.find(c => c.kind === 'openai_api_key')
-  const anthropic = data.credentials.find(c => c.kind === 'anthropic_api_key')
   const done = data.steps.filter(s => s.status === 'ok' || s.status === 'warning').length
 
   return (
@@ -246,57 +240,6 @@ export default function Setup() {
       <IdentityCard status={status('identity')} identity={data.identity} />
 
       <PublicUrlCard status={status('public_url')} publicUrl={data.publicUrl} />
-
-      <CodingAgentsCard
-        key={codingAgentsKey(data.sessionAgents)}
-        sessionAgents={data.sessionAgents}
-      />
-
-      {anthropic && (
-        <CredentialCard
-          id="anthropic"
-          title="Anthropic key for Claude Code sessions"
-          status={anthropic.set ? (anthropic.lastCheckStatus ?? 'unchecked') : 'todo'}
-          kind="anthropic_api_key"
-          credential={anthropic}
-          settings={data.settings}
-          description="Optional. The key Claude Code sessions on Launch's account spend. It never enters a sandbox: Launch swaps it in on the way out."
-          help={
-            <p>
-              Create an API key in the Anthropic Console (not an admin key). Not a setup step:
-              without it, Claude Code sessions use the Worker's <code>ANTHROPIC_API_KEY</code>{' '}
-              secret, or cannot run on Launch's account at all.
-            </p>
-          }
-          settingFields={[]}
-          payloadFields={[
-            { name: 'apiKey', label: 'API key', secret: true, placeholder: 'sk-ant-api03-…' },
-          ]}
-        />
-      )}
-
-      {openAi && (
-        <CredentialCard
-          id="openai"
-          title="OpenAI key for Codex sessions"
-          status={openAi.set ? (openAi.lastCheckStatus ?? 'unchecked') : 'todo'}
-          kind="openai_api_key"
-          credential={openAi}
-          settings={data.settings}
-          description="Optional. The key Codex sessions on Launch's account spend. It never enters a sandbox: Launch swaps it in on the way out."
-          help={
-            <p>
-              Create a project key in the OpenAI dashboard (API keys). Not a setup step: without it,
-              Codex sessions use the Worker's <code>OPENAI_API_KEY</code> secret, or cannot run on
-              Launch's account at all.
-            </p>
-          }
-          settingFields={[]}
-          payloadFields={[
-            { name: 'apiKey', label: 'API key', secret: true, placeholder: 'sk-proj-…' },
-          ]}
-        />
-      )}
 
       <KitVersionCard templatePin={data.templatePin} />
     </div>

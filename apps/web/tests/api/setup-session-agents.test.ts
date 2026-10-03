@@ -106,6 +106,7 @@ describe('the overview', () => {
       platformKey: { kind: 'anthropic_api_key', source: null },
       minImage: null,
       unavailableOnHost: false,
+      personalAccountsUnavailableOnHost: false,
     })
     expect(codex).toMatchObject({
       enabled: false,

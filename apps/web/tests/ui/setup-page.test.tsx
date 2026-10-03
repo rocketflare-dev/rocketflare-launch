@@ -11,6 +11,7 @@ import {
 } from '@launch/shared/launch-setup'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import CodingAgents from '@/ui/pages/platform/CodingAgents'
 import Setup from '@/ui/pages/platform/Setup'
 import {
   makeSession,
@@ -124,6 +125,7 @@ const overview: SetupOverview = {
         connectedAccounts: 0,
         minImage: null,
         unavailableOnHost: false,
+        personalAccountsUnavailableOnHost: false,
       },
       {
         runtime: 'codex',
@@ -138,6 +140,7 @@ const overview: SetupOverview = {
         connectedAccounts: 2,
         minImage: 'session-6',
         unavailableOnHost: false,
+        personalAccountsUnavailableOnHost: false,
       },
     ],
   },
@@ -149,7 +152,7 @@ const checkResponse = {
   checks: overview.credentials[0]?.lastCheck ?? [],
 }
 
-function render(current: SetupOverview = overview) {
+function render(current: SetupOverview = overview, Page: () => JSX.Element = Setup) {
   const fetchMock = stubFetch({
     '/api/platform/setup': current,
     'PUT /api/platform/setup/template-pin': current,
@@ -172,7 +175,7 @@ function render(current: SetupOverview = overview) {
       checkedAt: '2026-09-28T00:00:00.000Z',
     },
   })
-  renderWithProviders(<Setup />, {
+  renderWithProviders(<Page />, {
     session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
   })
   return fetchMock
@@ -236,30 +239,11 @@ describe('Admin → Setup', () => {
     expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
   })
 
-  it('the OpenAI key for Codex is a card after the steps (not a step), and saves what was typed', async () => {
-    const fetchMock = render({
-      ...overview,
-      credentials: [...overview.credentials, unset('openai_api_key')],
-    })
-    const card = await screen.findByRole('region', { name: /OpenAI key for Codex sessions/ })
-    const nav = screen.getByRole('navigation', { name: 'Setup steps' })
-    expect(within(nav).queryByText(/OpenAI/)).toBeNull()
-    expect(card.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('todo')
-    // Built, not written out: a literal key-shaped string in a test is what secret scanners look for.
-    const key = ['sk', 'proj', 'typed-into-the-setup-card-000000'].join('-')
-    fireEvent.change(within(card).getByLabelText('API key'), { target: { value: key } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Save and check' }))
-    await waitFor(() =>
-      expect(requestBody(fetchMock, 'PUT /api/platform/setup/credentials/openai_api_key')).toEqual({
-        apiKey: key,
-      })
-    )
-  })
-
-  it('a server that reports no OpenAI credential shows no OpenAI card', async () => {
-    render()
+  it('the Setup tab no longer carries the coding agents or their keys', async () => {
+    render({ ...overview, credentials: [...overview.credentials, unset('openai_api_key')] })
     await screen.findByRole('navigation', { name: 'Setup steps' })
-    expect(screen.queryByRole('region', { name: /OpenAI/ })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Coding agents' })).toBeNull()
+    expect(screen.queryByRole('region', { name: /OpenAI key/ })).toBeNull()
   })
 
   it('offers the Neon regions as a select, with a free-text fallback for any other id', async () => {
@@ -396,29 +380,26 @@ describe('Admin → Setup: the Kit version card', () => {
   })
 })
 
-describe('Admin → Setup: the Coding agents card', () => {
+describe('Admin → Coding agents tab', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('shows each agent with its switch, model and who pays, plus readiness', async () => {
-    render()
+    render(overview, CodingAgents)
     const card = await screen.findByRole('region', { name: 'Coding agents' })
     expect(within(card).getByText(/Changes apply to new sessions/)).toBeInTheDocument()
     expect(within(card).getByLabelText('Claude Code')).toBeChecked()
     expect(within(card).getByLabelText('Codex')).not.toBeChecked()
     expect(card.querySelector('#coding-agent-claude_code-model')).toHaveValue('claude-sonnet-4-5')
     expect(card.querySelector('#coding-agent-claude_code-pays')).toHaveValue('platform')
-    expect(within(card).getByText(/Launch's account: the Worker secret/)).toBeInTheDocument()
-    expect(within(card).getByRole('link', { name: 'Set it' })).toHaveAttribute(
-      'href',
-      '#setup-openai'
-    )
+    expect(within(card).getByText('Ready')).toBeInTheDocument()
+    expect(within(card).getByText(/ANTHROPIC_API_KEY secret/)).toBeInTheDocument()
+    expect(within(card).getByText('Off')).toBeInTheDocument()
     expect(within(card).getByText(/2 people have connected a ChatGPT plan/)).toBeInTheDocument()
-    expect(within(card).getByText(/session-6 session image/)).toBeInTheDocument()
     expect(within(card).getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('turning Codex on and saving sends every agent', async () => {
-    const fetchMock = render()
+    const fetchMock = render(overview, CodingAgents)
     const card = await screen.findByRole('region', { name: 'Coding agents' })
     fireEvent.click(within(card).getByLabelText('Codex'))
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }))
@@ -433,7 +414,7 @@ describe('Admin → Setup: the Coding agents card', () => {
   })
 
   it('allowing personal accounts asks first, with the vendor terms; cancelling keeps Launch', async () => {
-    const fetchMock = render()
+    const fetchMock = render(overview, CodingAgents)
     const card = await screen.findByRole('region', { name: 'Coding agents' })
     const [pays] = within(card).getAllByLabelText('Who pays')
     if (!pays) throw new Error('no Who pays select')
@@ -461,11 +442,46 @@ describe('Admin → Setup: the Coding agents card', () => {
   })
 
   it('will not save with every agent off', async () => {
-    const fetchMock = render()
+    const fetchMock = render(overview, CodingAgents)
     const card = await screen.findByRole('region', { name: 'Coding agents' })
     fireEvent.click(within(card).getByLabelText('Claude Code'))
     expect(within(card).getByText(/Keep at least one agent on/)).toBeInTheDocument()
     expect(within(card).getByRole('button', { name: 'Save' })).toBeDisabled()
     expect(requestBody(fetchMock, 'PUT /api/platform/setup/session-agents')).toBeUndefined()
+  })
+
+  it('an agent turned on without a key says so and links to the key card', async () => {
+    render(overview, CodingAgents)
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    fireEvent.click(within(card).getByLabelText('Codex'))
+    expect(within(card).getByText(/Needs an OpenAI key/)).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Set it' })).toHaveAttribute(
+      'href',
+      '#setup-openai'
+    )
+  })
+
+  it('the OpenAI key card sits under the agents and saves what was typed', async () => {
+    const fetchMock = render(
+      { ...overview, credentials: [...overview.credentials, unset('openai_api_key')] },
+      CodingAgents
+    )
+    const card = await screen.findByRole('region', { name: /OpenAI key/ })
+    expect(card.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('todo')
+    // Built, not written out: a literal key-shaped string in a test is what secret scanners look for.
+    const key = ['sk', 'proj', 'typed-into-the-setup-card-000000'].join('-')
+    fireEvent.change(within(card).getByLabelText('API key'), { target: { value: key } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Save and check' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/credentials/openai_api_key')).toEqual({
+        apiKey: key,
+      })
+    )
+  })
+
+  it('a server that reports no OpenAI credential shows no OpenAI card', async () => {
+    render(overview, CodingAgents)
+    await screen.findByRole('region', { name: 'Coding agents' })
+    expect(screen.queryByRole('region', { name: /OpenAI/ })).toBeNull()
   })
 })

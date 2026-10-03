@@ -1,5 +1,5 @@
 /**
- * The Setup page's Coding agents card (§18.22): which coding agents sessions may run, each one's
+ * The Platform → Coding agents tab (§18.22): which coding agents sessions may run, each one's
  * model, and whose account it bills — `launch_settings.session_policy.runtimes`, the ONE place
  * these switches live (there is no deployment var for them).
  *
@@ -102,6 +102,7 @@ export async function sessionAgentsStatus(
       connectedAccounts: accounts[runtime],
       minImage: AGENT_RUNTIME_MIN_IMAGE[runtime],
       unavailableOnHost: flags.hostEgress && !runtimeFor(runtime).supportsHostEgress,
+      personalAccountsUnavailableOnHost: flags.hostEgress,
     }
   })
   return { runtimes }
@@ -149,7 +150,9 @@ export async function updateSessionAgents(
   const flags = runtimeFlagsOf(cfg)
   if (!AGENT_RUNTIMES.some(r => runtimeOffer(flags, policy, r).enabled)) {
     throw new ConflictError(
-      'Keep at least one coding agent on, or nobody can start a session.',
+      flags.hostEgress && AGENT_RUNTIMES.some(r => runtimePolicyOf(policy, r).enabled)
+        ? 'With the remote sandbox host only Claude Code paid by Launch can run: set its Who pays to Launch or Either.'
+        : 'Keep at least one coding agent on, or nobody can start a session.',
       SESSION_AGENTS_NONE_ENABLED
     )
   }

@@ -4,7 +4,7 @@
  * which re-reads the row and does the work in a sandbox.
  *
  * - `startLogin`: 503 `agent_logins_not_configured` without the Workflow binding, 409
- *   `agent_logins_disabled` when the session policy (the Setup page's Coding agents card) does not
+ *   `agent_logins_disabled` when the session policy (the Platform → Coding agents tab) does not
  *   let this runtime bill a personal account, 409 `agent_login_in_progress` when
  *   one is already active (the partial unique index decides — two clicks are one login) — all
  *   before any write that sticks; then the `starting` row and `create({ id: loginId })`.
@@ -84,7 +84,7 @@ export function assertLoginsEnabled(
   const offer = runtimeOffer(flags, policy, runtime)
   if (!offer.enabled || !offer.userAllowed) {
     throw new ConflictError(
-      `${AGENT_RUNTIME_LABELS[runtime]} sessions do not use personal accounts here. An admin can allow them on the Setup page.`,
+      `${AGENT_RUNTIME_LABELS[runtime]} sessions do not use personal accounts here. An admin can allow them under Platform → Coding agents.`,
       'agent_logins_disabled',
       { runtime }
     )
