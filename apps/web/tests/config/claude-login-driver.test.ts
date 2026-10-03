@@ -22,6 +22,7 @@ import {
   claudeLoginCommand,
   claudeLoginDir,
   claudeLoginDriver,
+  claudeLoginEnterCommand,
   claudeLoginLastLine,
   claudeLoginRejectedCode,
   claudeLoginScreenText,
@@ -180,7 +181,7 @@ describe('the driver over a FakeSandbox', () => {
     // One write of "code\r" reads as a single paste and never submits (seen live): Enter is appended
     // after it, never written with it, and the file is never rewritten (tail -F would replay it).
     expect(sandbox.files.get(`${dir}/in`)).toBe('theCode_1#theState-2')
-    expect(sandbox.commands.at(-1)).toBe(`sleep 0.5; printf '\\r' >> ${dir}/in`)
+    expect(sandbox.commands.at(-1)).toBe(claudeLoginEnterCommand(loginId))
   })
 
   it('poll: running, a rejected code (the CLI waits for Enter) → a sentence, then the exit', async () => {

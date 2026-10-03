@@ -73,6 +73,19 @@ export function claudeLoginCommand(loginId: string): string {
   ].join(' && ')
 }
 
+/**
+ * Press Enter once the CLI shows the pasted code: up to ~8 s for the mask (8+ `*`) to appear in
+ * `out`, then one more second so the relay's next poll carries the Enter on its own.
+ */
+export function claudeLoginEnterCommand(loginId: string): string {
+  const dir = claudeLoginDir(loginId)
+  return [
+    `for i in $(seq 1 80); do grep -q '[*]\\{8,\\}' ${dir}/out 2>/dev/null && break; sleep 0.1; done`,
+    'sleep 1',
+    `printf '\\r' >> ${dir}/in`,
+  ].join('; ')
+}
+
 // ---- reading the terminal --------------------------------------------------------------------
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: terminal escapes are control characters
@@ -232,11 +245,13 @@ export const claudeLoginDriver: LoginDriver = {
       )
     }
     const p = paths(ctx)
-    // The code, then Enter as a key press of its own. Sent in one write, the CLI's terminal UI
-    // reads "code\r" as a single paste and never submits. Appended, not rewritten: the relay's
-    // `tail -F` re-reads a replaced file from the start, which would type the code twice.
+    // The code, then Enter as a key press of its own. Sent together, the CLI's terminal UI reads
+    // "code\r" as one paste and never submits — and so does a gap shorter than the relay's
+    // `tail -F` poll (about a second; seen live). So: wait until the CLI has echoed the code (its
+    // `****` mask), give it a second more, then append Enter. Appended, never rewritten: `tail -F`
+    // replays a replaced file from the start, which would type the code twice.
     await ctx.sandbox.writeFile(p.in, trimmed)
-    await ctx.sandbox.exec(`sleep 0.5; printf '\\r' >> ${p.in}`)
+    await ctx.sandbox.exec(claudeLoginEnterCommand(ctx.loginId), { timeoutMs: 15_000 })
   },
 
   async poll(ctx) {

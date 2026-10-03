@@ -26,6 +26,7 @@ import {
   CLAUDE_LOGIN_HOSTS,
   claudeLoginDir,
   claudeLoginDriver,
+  claudeLoginEnterCommand,
 } from '@/api/services/sessions/runtimes/claude-code/login'
 import type { LoginDriver } from '@/api/services/sessions/runtimes/types'
 import { AgentLoginWorkflow } from '@/api/workflows/agent-login'
@@ -250,7 +251,7 @@ describe('claude setup-token through the relay', () => {
     })
     expect(outcome.status).toBe('succeeded')
     expect(input).toBe(CODE)
-    expect(s.sandbox.commands).toContain(`sleep 0.5; printf '\\r' >> ${s.dir}/in`)
+    expect(s.sandbox.commands).toContain(claudeLoginEnterCommand(s.login.id))
   })
 
   it('a code Anthropic rejects: the CLI waits for Enter, the login fails with a sentence, no credential', async () => {
