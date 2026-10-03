@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Sessions: Codex as a second coding agent** (`docs/CONCEPTS.md` §18.22-B). With `codex` in
+  `SESSION_RUNTIMES`, a session can run OpenAI's Codex CLI (pinned 0.160.0, default model
+  `gpt-6.1-sol`) on Launch's OpenAI key — the new Setup card's `openai_api_key`, checked against the
+  model, else `OPENAI_API_KEY` — swapped in at the egress and metered as `openai`; with `codex` also
+  in `SESSION_USER_CREDENTIALS`, on a person's ChatGPT plan, connected in Profile → AI accounts by
+  OpenAI's device-code sign-in (one session at a time per plan; rotated tokens stored as Codex
+  refreshes them). The session image is now `session-6`: drain sessions before deploying it
+  (`docs/DEPLOY.md`). OpenAI keys and JWTs are redacted from session transcripts like Anthropic
+  keys.
 - **Sessions: agent runtimes and personal AI accounts — the foundation** (`docs/CONCEPTS.md`
   §18.22). A session now records which coding agent it runs and whose account it bills, fixed at
   start; nothing changes on a default deployment (Claude Code on Launch's key). New, all off by

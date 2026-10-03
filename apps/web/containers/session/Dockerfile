@@ -16,7 +16,7 @@
 FROM docker.io/cloudflare/sandbox:0.12.10
 
 # Recorded on every session row (`sessions.image_version`) so a drain can tell who ran on what.
-LABEL dev.rocketflare.launch.session-image="session-5"
+LABEL dev.rocketflare.launch.session-image="session-6"
 
 # Node 24 FIRST on PATH (S7 finding 6): the base image ships Node 22 in /usr/local/bin, ahead of
 # /usr/bin, and the kit refuses anything below 24. The base's own server is not Node, so replacing
@@ -34,13 +34,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # pnpm 10 through corepack (the kit's `packageManager` pin), and a PINNED Claude Code: its
 # stream-json output is what `services/sessions/claude-stream.ts` parses. npm 11 blocks install
 # scripts by default; Claude Code's postinstall fetches its native binary, so it is allowed by name.
+# And a PINNED Codex (§18.22-B): its `exec --json` output is what `runtimes/codex/stream.ts` parses
+# and its device-code prompt what `runtimes/codex/login.ts` reads. Its native binary arrives as a
+# platform optional dependency (`@openai/codex-linux-x64`), so it needs no install script.
 ARG PNPM_VERSION=10.18.0
 ARG CLAUDE_CODE_VERSION=2.1.283
+ARG CODEX_VERSION=0.160.0
 RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
       corepack@latest "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
  && corepack enable \
  && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
- && pnpm -v && claude --version
+ && pnpm -v && claude --version && codex --version
 
 # A warm pnpm store for the pinned kit tag (~12 s saved per session, S7): a session's
 # `pnpm install --frozen-lockfile --prefer-offline` resolves from here, not the registry. Only the
@@ -51,8 +56,8 @@ RUN git clone --depth 1 --branch "${KIT_TAG}" https://github.com/rocketflare-dev
  && cd /tmp/kit && pnpm fetch --frozen-lockfile --config.ignore-scripts=true \
  && rm -rf /tmp/kit
 
-# Non-secret defaults every session shares. No key: `ANTHROPIC_API_KEY` is a placeholder the model
-# proxy swaps (set per command by the turn runner, never here).
+# Non-secret defaults every session shares. No key: `ANTHROPIC_API_KEY` (Claude) and `CODEX_API_KEY`
+# (Codex) are placeholders the model proxies swap (set per command by the turn runner, never here).
 ENV NODE_USE_SYSTEM_CA=1 \
     CI=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \

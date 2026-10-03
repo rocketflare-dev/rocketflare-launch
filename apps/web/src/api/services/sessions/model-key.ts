@@ -8,6 +8,9 @@
  *   upstream request and dropped. For a remote sandbox (`egress/host.ts`) it is read per turn and
  *   pushed to the sandbox host's Durable Object, whose handler swaps it in the same way — it never
  *   enters the container in either mode.
+ * - **OpenAI (§18.22-B)**: Codex sessions on Launch's account spend the admin credential
+ *   `openai_api_key`, falling back to the Worker's `OPENAI_API_KEY` secret ({@link resolveOpenAiKey}),
+ *   swapped in by `egress/openai.ts` for the same placeholder (`CODEX_API_KEY`).
  * - **The placeholder**: a sandbox is started with `ANTHROPIC_API_KEY=launch-session-placeholder`
  *   (`claudeTurnEnv`, `claude-stream.ts`), so Claude Code believes it has a key and the handler can
  *   tell the call came through a session. It is not a secret, but a session's transcript is shown
@@ -47,6 +50,14 @@ export async function resolveModelKey(db: Database, cfg: AppConfig): Promise<Mod
   return null
 }
 
+/** The OpenAI key Codex sessions on Launch's account spend, or null when neither is set. */
+export async function resolveOpenAiKey(db: Database, cfg: AppConfig): Promise<ModelKey | null> {
+  const stored = await getCredential(db, cfg, 'openai_api_key').catch(() => null)
+  if (stored?.secret.apiKey) return { apiKey: stored.secret.apiKey, source: 'credential' }
+  if (cfg.OPENAI_API_KEY) return { apiKey: cfg.OPENAI_API_KEY, source: 'env' }
+  return null
+}
+
 /**
  * Anthropic key shapes (`sk-ant-api03-…`, `sk-ant-admin01-…`), the placeholder, and GitHub token
  * shapes (`ghs_…` installation tokens, `ghp_…`, `github_pat_…`) — belt and braces: no container
@@ -54,15 +65,32 @@ export async function resolveModelKey(db: Database, cfg: AppConfig): Promise<Mod
  * transcript is shown to people and kept for ever.
  */
 const KEY_PATTERN = new RegExp(
-  `sk-ant-[A-Za-z0-9_-]{4,}|${MODEL_KEY_PLACEHOLDER}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}`,
+  [
+    `sk-ant-[A-Za-z0-9_-]{4,}`,
+    MODEL_KEY_PLACEHOLDER,
+    `gh[pousr]_[A-Za-z0-9]{20,}`,
+    `github_pat_[A-Za-z0-9_]{20,}`,
+    // §18.22-B: OpenAI keys (`sk-…`, project keys `sk-proj-…`, service accounts `sk-svcacct-…`)…
+    `(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}`,
+    // …and JWTs — a ChatGPT plan's id and access tokens (`auth.json`), or any other.
+    `(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*`,
+  ].join('|'),
   'g'
 )
+
+/**
+ * A token named as one in JSON or an env line — `"refresh_token": "…"`, `access_token=…` — whatever
+ * its shape: a ChatGPT refresh token is opaque, so only its NAME gives it away (a `cat` of Codex's
+ * `auth.json`). The name is kept, the value replaced.
+ */
+const NAMED_TOKEN_PATTERN =
+  /("?(?:refresh_token|access_token|id_token)"?\s*[:=]\s*"?)([^"\s,}]{8,})/g
 
 export const REDACTED = '[redacted]'
 
 /** `text` with every key-shaped substring and the placeholder replaced by `[redacted]`. */
 export function redactModelKeyText(text: string): string {
-  return text.replace(KEY_PATTERN, REDACTED)
+  return text.replace(KEY_PATTERN, REDACTED).replace(NAMED_TOKEN_PATTERN, `$1${REDACTED}`)
 }
 
 /**

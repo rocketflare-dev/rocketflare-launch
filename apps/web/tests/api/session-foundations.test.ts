@@ -121,10 +121,14 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
     expect(probe.interceptHttps).toBe(true)
     expect(probe.enableInternet).toBe(false)
     expect(probe.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
-    // The credential hosts only: a database key would intercept Neon even with internet on.
-    // (§18.22-A: `platform.claude.com` is a Claude sign-in's token exchange, refused to sessions.)
+    // The credential hosts only — Anthropic, GitHub, Codex's three (§18.22-B) and a Claude
+    // sign-in's token exchange (§18.22-A: `platform.claude.com`, refused to sessions): a database
+    // key would intercept Neon even with internet on.
     expect(Object.keys(SessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
+      'api.openai.com',
+      'auth.openai.com',
+      'chatgpt.com',
       'github.com',
       'platform.claude.com',
     ])

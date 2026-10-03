@@ -264,7 +264,12 @@ a fake `WebSocket` factory left set) is on you.
   Anthropic puts it), `anthropicSse` / `anthropicJson` / `anthropicSseText`, and
   `claudeStreamJson(turn)` — a `FakeSandbox.onProcess` script of one Claude Code
   `--output-format stream-json` turn (`system:init` → tool_use / tool_result pairs → text →
-  `result`, shaped like `spikes/s7-sandbox/output-locked-session.txt`). `tests/helpers/sessions.ts`:
+  `result`, shaped like `spikes/s7-sandbox/output-locked-session.txt`). Codex (§18.22-B) has the
+  same pair in `tests/helpers/fake-openai.ts`: `createFakeOpenAi(opts)` (the Responses API, the
+  model list and `/oauth/token` refreshes, every request recorded) and `codexExecJson(turn)` (one
+  `codex exec --json` turn — its `usage` is the thread's running total, as Codex reports it), plus
+  `fakeJwt` / `codexAuthJsonText` for a ChatGPT plan's `auth.json`; the fixtures in
+  `tests/fixtures/codex/` are hand-written from the 0.160 source. `tests/helpers/sessions.ts`:
   `seedSessionApp(db, cloud, { role?, prepared?, withStaging? })` (tenant + cookie, an app whose
   repo is in the FakeCloud's GitHub, a Neon project on the production environment, with `prepared`
   a `dev` branch — `schema-only`, `session_owner`, `session_app` — recorded ready in

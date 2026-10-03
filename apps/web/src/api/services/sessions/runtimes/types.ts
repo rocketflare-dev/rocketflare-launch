@@ -26,6 +26,7 @@ import type {
   AgentCredentialKind,
   AgentCredentialMetadata,
   AgentRuntimeId,
+  AgentRuntimeState,
   SessionCredentialSource,
 } from '@launch/shared/launch-agents'
 import type { SessionEventInput } from '@launch/shared/launch-sessions'
@@ -62,6 +63,17 @@ export interface RuntimeLineMapping {
   messageUsage?: ClaudeMessageUsage
   /** The turn's usage per model, from its last line. */
   turnUsage?: ClaudeModelUsage[]
+  /**
+   * The new `sessions.runtime_state`, when this line changed it (Codex: the thread's running usage
+   * total, which the next turn's usage is measured from). The turn writes it at once.
+   */
+  runtimeState?: AgentRuntimeState
+}
+
+/** What a parser is handed besides the turn number. */
+export interface RuntimeParserContext {
+  /** `sessions.runtime_state` as the turn read it. */
+  runtimeState?: AgentRuntimeState | null
 }
 
 /** Raw process output in (chunks may split a line anywhere), mappings out. */
@@ -201,7 +213,7 @@ export interface AgentRuntime {
   provider: AiProvider
   buildCommand(input: RuntimeCommandInput): string
   turnEnv(input: { model: string; source: SessionCredentialSource }): Record<string, string>
-  createParser(turn: number): RuntimeStreamParser
+  createParser(turn: number, ctx?: RuntimeParserContext): RuntimeStreamParser
   resumeRefused(run: RuntimeRunSummary): boolean
   workspaceFiles(): RuntimeFile[]
   beforeTurnFiles?(input: {

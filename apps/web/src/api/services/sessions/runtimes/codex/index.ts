@@ -1,48 +1,36 @@
 /**
- * Codex as an `AgentRuntime` (§18.22-B): `codex exec --json` per turn, `codex exec resume <thread>`
- * after the first, its JSONL mapped onto the same `session_events`, its rollout file checkpointed
- * like Claude's transcript, and both billing modes — Launch's OpenAI key at the egress, or a
- * person's ChatGPT plan through a leased `auth.json`.
+ * Codex as an `AgentRuntime` (§18.22-B): `codex exec --json` per turn, `… resume <thread>` after
+ * the first (`command.ts`), `$CODEX_HOME` written before every turn (`config.ts`), its JSONL mapped
+ * onto the same `session_events` (`stream.ts`), its rollout file checkpointed like Claude's
+ * transcript (`state.ts`), and both billing modes — Launch's OpenAI key swapped in at the egress
+ * (`egress/openai.ts`), or a person's ChatGPT plan through a claimed `auth.json` (`credentials.ts`,
+ * `egress/chatgpt.ts`, `egress/openai-auth.ts`), connected by a relayed device-code sign-in
+ * (`login.ts`).
  *
- * **Stream B owns this directory** (`command.ts`, `config.ts`, `stream.ts`, `state.ts`,
- * `credentials.ts`, `login.ts`). Until it lands every member that would run Codex throws
- * `NotWiredError` by name — and `SESSION_RUNTIMES` (default `claude_code`) keeps the runtime out of
- * every deployment that has not opted in.
+ * `SESSION_RUNTIMES` (default `claude_code`) keeps it out of every deployment that has not opted
+ * in; the sandbox host (`SESSION_SANDBOX_HOST=remote`) never runs it (`supportsHostEgress`).
  */
-import { NotWiredError } from '../../ports'
-import type { AgentRuntime, RuntimeStateFiles } from '../types'
+import type { AgentRuntime } from '../types'
+import { buildCodexCommand } from './command'
+import { codexBeforeTurnFiles, codexTurnEnv } from './config'
 import { leaseCodexUserCredential } from './credentials'
 import { codexLoginDriver } from './login'
-
-const notWired = (what: string) => new NotWiredError(`Codex ${what}`, 'B')
-
-const codexState: RuntimeStateFiles = {
-  key: sessionId => `sessions/${sessionId}/codex.jsonl`,
-  contentType: 'application/x-ndjson',
-  locate: async () => {
-    throw notWired('conversation state')
-  },
-  restorePath: () => {
-    throw notWired('conversation state')
-  },
-  checkCommand: path => `test -s ${path}`,
-}
+import { codexState } from './state'
+import { createCodexStreamParser } from './stream'
 
 export const codexRuntime: AgentRuntime = {
   id: 'codex',
   label: 'Codex',
   provider: 'openai',
-  buildCommand: () => {
-    throw notWired('turns')
-  },
-  turnEnv: () => {
-    throw notWired('turns')
-  },
-  createParser: () => {
-    throw notWired('output')
-  },
+  buildCommand: buildCodexCommand,
+  turnEnv: ({ source }) => codexTurnEnv(source),
+  createParser: (turn, ctx) => createCodexStreamParser(turn, { runtimeState: ctx?.runtimeState }),
+  // Never re-run a turn without its thread: the turn checks the rollout is there before it resumes
+  // (`state.checkCommand`), and a failed resume says why in its own output — retrying fresh would
+  // throw a conversation away over a transient failure.
   resumeRefused: () => false,
   workspaceFiles: () => [],
+  beforeTurnFiles: ({ model, systemNote }) => codexBeforeTurnFiles({ model, systemNote }),
   state: codexState,
   supportsHostEgress: false,
   login: codexLoginDriver,

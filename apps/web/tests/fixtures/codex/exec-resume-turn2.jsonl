@@ -1,0 +1,7 @@
+# HAND-WRITTEN from the Codex 0.160 source (exec/src/exec_events.rs) during spike S-B1, not captured from a real run. Re-capture once a real sandbox runs Codex.
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'git status --short'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'git status --short'","aggregated_output":" M README.md\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Only README.md is modified."}}
+{"type":"turn.completed","usage":{"input_tokens":51320,"cached_input_tokens":45056,"cache_write_input_tokens":0,"output_tokens":530,"reasoning_output_tokens":160}}

@@ -20,6 +20,8 @@
  * **Anthropic (P3)** is probed with `GET /v1/models`: the key works, and the session policy's
  * default model is one it can see. It has no setup STEP — coding sessions fall back to the
  * Worker's `ANTHROPIC_API_KEY` secret without it — so the wizard's dots never wait on it.
+ * **OpenAI (§18.22-B)** the same way, for Codex's model (`DEFAULT_CODEX_MODEL`); also no step —
+ * its card sits after the steps, and sessions fall back to `OPENAI_API_KEY`.
  *
  * **The one probe that WRITES.** A zone with no `*.<apps domain>` record at all gets a proxied
  * `AAAA * → 100::` created by the Cloudflare check (spike S2), reported `ok` ("Created …") and
@@ -38,7 +40,7 @@
  * than a green light the check did not earn.
  */
 
-import { DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
+import { DEFAULT_CODEX_MODEL, DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
 import {
   CREDENTIAL_KINDS,
   type CredentialCheck,
@@ -687,19 +689,62 @@ export async function checkAnthropic(
   return { checks, metadata, settings: {} }
 }
 
-// ---- OpenAI (§18.22) -------------------------------------------------------------------------
+// ---- OpenAI (§18.22-B) -----------------------------------------------------------------------
+
+export const OPENAI_API_BASE = 'https://api.openai.com'
 
 /**
- * The key Codex sessions on Launch's account spend. Its real probe (`GET /v1/models`, the session
- * model among them) is Stream B's (`docs/CONCEPTS.md` §18.22-B); until then a stored key is
- * reported as not yet checked rather than as good.
+ * The key Codex sessions on Launch's account spend: `GET /v1/models` proves it authenticates and
+ * lists what it may call; Codex's model (`DEFAULT_CODEX_MODEL`, or the caller's) must be among
+ * them, exactly or as a dated id. A model this key cannot see is a `warning` — the policy may name
+ * another — and a refused key `failed`.
  */
-export async function checkOpenAi(): Promise<CheckOutcome> {
-  return {
-    checks: [warn('key', 'API key accepted', 'Launch does not check OpenAI keys yet.')],
-    metadata: {},
-    settings: {},
+export async function checkOpenAi(
+  secret: CredentialPayload<'openai_api_key'>,
+  _settings: Partial<SetupSettings>,
+  opts: VendorOptions & { model?: string } = {}
+): Promise<CheckOutcome> {
+  const secrets = [secret.apiKey]
+  const checks: CredentialCheck[] = []
+  const metadata: CredentialMetadata = {}
+  const doFetch = opts.fetch ?? fetch
+  const model = opts.model ?? DEFAULT_CODEX_MODEL
+  let ids: string[]
+  try {
+    const res = await doFetch(`${OPENAI_API_BASE}/v1/models`, {
+      headers: { Authorization: `Bearer ${secret.apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const body = (await res.json().catch(() => ({}))) as {
+      data?: { id?: unknown }[]
+      error?: { message?: unknown }
+    }
+    if (!res.ok) {
+      const message =
+        typeof body.error?.message === 'string' ? body.error.message : `OpenAI ${res.status}`
+      checks.push(
+        fail('key', 'API key accepted', scrub(`OpenAI ${res.status}: ${message}`, secrets))
+      )
+      return { checks, metadata, settings: {} }
+    }
+    ids = (body.data ?? []).map(m => m.id).filter((id): id is string => typeof id === 'string')
+  } catch (err) {
+    checks.push(fail('key', 'API key accepted', errorDetail(err, 'OpenAI', secrets)))
+    return { checks, metadata, settings: {} }
   }
+  metadata.models = ids.length
+  metadata.fingerprint = await fingerprint(secret.apiKey)
+  checks.push(ok('key', 'API key accepted', `${ids.length} models visible`))
+  checks.push(
+    ids.some(id => id === model || id.startsWith(`${model}-`))
+      ? ok('model', 'Codex model available', model)
+      : warn(
+          'model',
+          'Codex model available',
+          `${model} is not among the models this key can call. Change the session policy's Codex model, or use a key that has it.`
+        )
+  )
+  return { checks, metadata, settings: {} }
 }
 
 // ---- identity (read-only) --------------------------------------------------------------------
@@ -779,7 +824,7 @@ function probe(
     case 'anthropic_api_key':
       return checkAnthropic(secret as CredentialPayload<typeof kind>, settings, opts)
     case 'openai_api_key':
-      return checkOpenAi()
+      return checkOpenAi(secret as CredentialPayload<typeof kind>, settings, opts)
   }
 }
 

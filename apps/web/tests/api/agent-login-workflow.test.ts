@@ -14,6 +14,7 @@ import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { getForUser, openSecret } from '@/api/services/sessions/credentials/store'
+import { refuseHost } from '@/api/services/sessions/egress/refuse'
 import { CODEX_OUTBOUND_HANDLERS } from '@/api/services/sessions/egress/registry'
 import { loginForSandbox } from '@/api/services/sessions/egress/sandbox-lookup'
 import { cancelLogin, startLogin, submitLoginCode } from '@/api/services/sessions/logins/service'
@@ -374,17 +375,15 @@ describe('the egress side of a login sandbox', () => {
     expect(await loginForSandbox(db, sandbox.id)).toBeNull()
   })
 
-  it('Codex’s hosts are staged as OpenAI-shaped refusals', async () => {
+  it('Codex’s hosts have their handlers (§18.22-B); the refusal the sandbox host uses is OpenAI-shaped', async () => {
     expect(Object.keys(CODEX_OUTBOUND_HANDLERS).sort()).toEqual(
       ['api.openai.com', 'auth.openai.com', 'chatgpt.com'].sort()
     )
-    const res = await CODEX_OUTBOUND_HANDLERS['api.openai.com']?.(
-      new Request('https://api.openai.com/v1/responses', { method: 'POST' }),
-      {},
-      { containerId: 'x' }
+    const res = await refuseHost('api.openai.com')(
+      new Request('https://api.openai.com/v1/responses', { method: 'POST' })
     )
-    expect(res?.status).toBe(403)
-    expect(await res?.json()).toMatchObject({ error: { type: 'permission_error' } })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ error: { type: 'permission_error' } })
   })
 })
 

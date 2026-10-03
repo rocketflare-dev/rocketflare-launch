@@ -11,7 +11,6 @@ import {
   claudeTurnEnv,
   createClaudeStreamParser,
 } from '@/api/services/sessions/claude-stream'
-import { NotWiredError } from '@/api/services/sessions/ports'
 import {
   CLAUDE_PROJECT_DIR,
   claudeSettingsLocal,
@@ -141,22 +140,5 @@ describe('Claude Code through the seam is the P3 turn, byte for byte', () => {
   it('runs on the sandbox host; Codex does not', () => {
     expect(claudeCodeRuntime.supportsHostEgress).toBe(true)
     expect(codexRuntime.supportsHostEgress).toBe(false)
-  })
-})
-
-describe('the stubs the streams fill in fail by name', () => {
-  it('Codex turns, Codex’s sign-in and personal lease throw NotWiredError', async () => {
-    expect(() => codexRuntime.buildCommand({ message: 'x', model: 'm' })).toThrow(NotWiredError)
-    expect(() => codexRuntime.createParser(1)).toThrow(/stream B/)
-    const ctx = { sandbox: new FakeSandbox(), loginId: 'l1' }
-    await expect(codexRuntime.login?.start(ctx)).rejects.toThrow(/stream B/)
-    const lease = {
-      db: {},
-      cfg: {},
-      session: row(null),
-      sandbox: ctx.sandbox,
-      now: () => new Date(),
-    }
-    await expect(codexRuntime.userLease?.(lease as never)).rejects.toThrow(NotWiredError)
   })
 })

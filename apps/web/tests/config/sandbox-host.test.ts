@@ -258,8 +258,12 @@ describe('the host mode puts no credential in the container', () => {
   // a fresh token's 401 — the clone then failed "could not read Username". The token and the key
   // now live only in the host Durable Object's grant, injected by its outbound handlers.
   it('the host class declares its own handlers for the model and git hosts, and none for the database', () => {
+    // Codex's hosts are on the shared allow-list, so the host refuses them (§18.22-B).
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
+      'api.openai.com',
+      'auth.openai.com',
+      'chatgpt.com',
       'github.com',
     ])
   })
