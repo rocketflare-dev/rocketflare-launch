@@ -225,7 +225,7 @@ describe('claude setup-token through the relay', () => {
     expect(JSON.stringify(results)).not.toContain(CODE)
   })
 
-  it('the code reaches the CLI exactly as pasted, plus Enter', async () => {
+  it('the code reaches the CLI exactly as pasted, then Enter as its own key press', async () => {
     const s = await setup()
     let input: string | undefined
     s.sandbox.onProcess(/claude setup-token/, {
@@ -249,7 +249,8 @@ describe('claude setup-token through the relay', () => {
       return {}
     })
     expect(outcome.status).toBe('succeeded')
-    expect(input).toBe(`${CODE}\r`)
+    expect(input).toBe(CODE)
+    expect(s.sandbox.commands).toContain(`sleep 0.5; printf '\\r' >> ${s.dir}/in`)
   })
 
   it('a code Anthropic rejects: the CLI waits for Enter, the login fails with a sentence, no credential', async () => {

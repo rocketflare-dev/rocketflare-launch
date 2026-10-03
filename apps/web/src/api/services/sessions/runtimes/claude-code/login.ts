@@ -142,9 +142,45 @@ export function claudeLoginRejectedCode(raw: string): boolean {
 
 const TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]{16,}/
 
-/** The token setup-token printed, or null. Never logged, never in an error. */
+/**
+ * The token setup-token printed, or null. Never logged, never in an error. Read from the screen
+ * text, then from the raw output with the escapes simply dropped — a cursor move read as a space
+ * must never be what splits a token in two.
+ */
 export function parseClaudeSetupToken(raw: string): string | null {
-  return TOKEN_RE.exec(claudeLoginScreenText(raw))?.[0] ?? null
+  const bare = raw.replace(OSC_ANY, '').replace(CSI_ANY, '').replace(ESC_OTHER, '')
+  const candidates = [TOKEN_RE.exec(claudeLoginScreenText(raw))?.[0], TOKEN_RE.exec(bare)?.[0]]
+  // The longer reading wins: a split one is a prefix of the whole.
+  return candidates.reduce<string | null>(
+    (best, t) => (t && (!best || t.length > best.length) ? t : best),
+    null
+  )
+}
+
+/** Anything secret-shaped the screen may hold: a token, or the pasted `<code>#<state>`. */
+const SECRETISH = /sk-ant-[A-Za-z0-9_-]+|[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{8,}|[A-Za-z0-9_-]{40,}/g
+
+/**
+ * The last thing the CLI said, for an error a person (and a log) can read: the final non-empty
+ * screen line that is not decoration, secret-shaped runs replaced, clipped. Never the token.
+ */
+export function claudeLoginLastLine(raw: string): string | null {
+  const lines = claudeLoginScreenText(raw)
+    .split('\n')
+    .map(line => line.replace(/\s+/g, ' ').trim().replace(SECRETISH, '[redacted]'))
+    // Words left once the secrets are out: a line that was only a code or a token says nothing.
+    .filter(line => /[A-Za-z]{3,}/.test(line.replaceAll('[redacted]', '')))
+  const last = lines.at(-1)
+  if (!last) return null
+  return last.length > 200 ? `${last.slice(0, 200)}…` : last
+}
+
+function endedWithoutToken(exit: number | null | undefined, raw: string): Error {
+  const said = claudeLoginLastLine(raw)
+  const how = typeof exit === 'number' ? ` (exit ${exit})` : ''
+  return new Error(
+    `Claude Code’s sign-in ended without a token${how}${said ? `: “${said}”` : ''}. Start it again.`
+  )
 }
 
 /** What Anthropic's code page shows: `<code>#<state>`. Checked before it reaches the CLI. */
@@ -195,7 +231,12 @@ export const claudeLoginDriver: LoginDriver = {
         'That is not the code Anthropic showed (it has a # in the middle). Start the sign-in again and paste the whole code.'
       )
     }
-    await ctx.sandbox.writeFile(paths(ctx).in, `${trimmed}\r`)
+    const p = paths(ctx)
+    // The code, then Enter as a key press of its own. Sent in one write, the CLI's terminal UI
+    // reads "code\r" as a single paste and never submits. Appended, not rewritten: the relay's
+    // `tail -F` re-reads a replaced file from the start, which would type the code twice.
+    await ctx.sandbox.writeFile(p.in, trimmed)
+    await ctx.sandbox.exec(`sleep 0.5; printf '\\r' >> ${p.in}`)
   },
 
   async poll(ctx) {
@@ -216,11 +257,9 @@ export const claudeLoginDriver: LoginDriver = {
     const p = paths(ctx)
     try {
       const exit = exitCodeOf(await ctx.sandbox.readFile(p.exit))
-      if (exit !== 0) {
-        throw new Error('Claude Code’s sign-in ended without a token. Start it again.')
-      }
-      const token = parseClaudeSetupToken((await ctx.sandbox.readFile(p.out)) ?? '')
-      if (!token) throw new Error('Claude Code’s sign-in ended without a token. Start it again.')
+      const out = (await ctx.sandbox.readFile(p.out)) ?? ''
+      const token = exit === 0 ? parseClaudeSetupToken(out) : null
+      if (!token) throw endedWithoutToken(exit, out)
       return {
         kind: 'claude_oauth_token',
         secret: token,

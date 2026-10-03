@@ -22,6 +22,7 @@ import {
   claudeLoginCommand,
   claudeLoginDir,
   claudeLoginDriver,
+  claudeLoginLastLine,
   claudeLoginRejectedCode,
   claudeLoginScreenText,
   claudeLoginWantsCode,
@@ -171,12 +172,15 @@ describe('the driver over a FakeSandbox', () => {
     await expect(claudeLoginDriver.readPrompt(crashed.ctx)).rejects.toThrow(/stopped before/)
   })
 
-  it('submitCode writes the code and Enter to `in`; a malformed code never reaches the CLI', async () => {
+  it('submitCode writes the code, then appends Enter as its own key press; a malformed code never reaches the CLI', async () => {
     const { sandbox, ctx } = setup()
     await expect(claudeLoginDriver.submitCode?.(ctx, 'no-hash-here')).rejects.toThrow(/#/)
     expect(sandbox.files.has(`${dir}/in`)).toBe(false)
     await claudeLoginDriver.submitCode?.(ctx, '  theCode_1#theState-2 ')
-    expect(sandbox.files.get(`${dir}/in`)).toBe('theCode_1#theState-2\r')
+    // One write of "code\r" reads as a single paste and never submits (seen live): Enter is appended
+    // after it, never written with it, and the file is never rewritten (tail -F would replay it).
+    expect(sandbox.files.get(`${dir}/in`)).toBe('theCode_1#theState-2')
+    expect(sandbox.commands.at(-1)).toBe(`sleep 0.5; printf '\\r' >> ${dir}/in`)
   })
 
   it('poll: running, a rejected code (the CLI waits for Enter) → a sentence, then the exit', async () => {
@@ -224,6 +228,26 @@ describe('the driver over a FakeSandbox', () => {
       expect((err as Error).message).not.toContain('sk-ant')
       expect([...sandbox.files.keys()].filter(p => p.startsWith(dir))).toEqual([])
     }
+  })
+
+  it('a failed sign-in says the exit code and the CLI’s last line, never a token or the code', async () => {
+    const { sandbox, ctx } = setup()
+    const code = `${'c'.repeat(40)}#${'s'.repeat(20)}`
+    sandbox.files.set(
+      `${dir}/out`,
+      `${code}\r\n\u001b[2GOAuth\u001b[8Gerror:\u001b[15Grequest\u001b[23Gfailed\u001b[30G${FAKE_TOKEN}\r\n`
+    )
+    sandbox.files.set(`${dir}/exit`, '1\n')
+    const err = (await claudeLoginDriver.capture(ctx).catch(e => e)) as Error
+    expect(err.message).toMatch(/\(exit 1\): “OAuth error: request failed \[redacted\]”/)
+    expect(err.message).not.toContain('sk-ant')
+    expect(err.message).not.toContain(code)
+    expect(claudeLoginLastLine(code)).toBeNull()
+  })
+
+  it('a token split by a cursor move on screen is still read from the raw output', () => {
+    const [head, tail] = [FAKE_TOKEN.slice(0, 30), FAKE_TOKEN.slice(30)]
+    expect(parseClaudeSetupToken(`${head}\u001b[1C${tail}\r\n`)).toBe(FAKE_TOKEN)
   })
 })
 
