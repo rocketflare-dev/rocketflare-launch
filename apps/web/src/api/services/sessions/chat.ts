@@ -14,6 +14,9 @@
  * - `wakeSession`: `SESSION_WORKFLOW.get(instance).sendEvent(...)`. A lost wake is logged, not
  *   thrown — the request is already on the row, and the Workflow's idle wait re-reads it.
  * - `toSessionDetail`: the row as `sessionSchema` — no token, no sealed column, no preview token.
+ * - §18.22: the sender is recorded (`pending_message_user_id`) so the turn's `user.message` names
+ *   who wrote it; a session on a personal account takes messages only from its owner
+ *   (`assertCredentialOwner`, 409 `session_credential_owner_only`).
  */
 import {
   resolveSessionPolicy,
@@ -83,13 +86,32 @@ function turnConflict(row: SessionRow): ConflictError {
   return new ConflictError(`This session is ${row.status}`, 'session_not_active')
 }
 
-/** Store the next message (see the header). Returns the updated row. */
+/**
+ * §18.22: a session on a personal account takes turns (and ships) only from that account's owner —
+ * its creator. 409 `session_credential_owner_only` for anyone else; they can still read and end it.
+ */
+export function assertCredentialOwner(
+  row: Pick<SessionRow, 'credentialSource' | 'createdByUserId'>,
+  userId: string | null | undefined
+): void {
+  if (row.credentialSource === 'user' && (!userId || userId !== row.createdByUserId)) {
+    throw new ConflictError(
+      'This session uses its creator’s own AI account; only they can send it messages or ship it.',
+      'session_credential_owner_only'
+    )
+  }
+}
+
+/** Store the next message (see the header) from `userId`. Returns the updated row. */
 export async function requestTurn(
   db: Database,
   row: SessionRow,
   message: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  /** Who sent it (§18.22): recorded for the turn's `user.message`, and checked on a `user` session. */
+  userId: string | null = null
 ): Promise<SessionRow> {
+  if (userId !== null) assertCredentialOwner(row, userId)
   if (!(TURN_ACCEPTING_STATUSES as readonly SessionStatus[]).includes(row.status)) {
     throw turnConflict(row)
   }
@@ -97,6 +119,7 @@ export async function requestTurn(
     .update(sessions)
     .set({
       pendingMessage: message,
+      pendingMessageUserId: userId,
       // A suspended session has no sandbox: ask for the resume that will run it.
       ...(row.status === 'suspended' && !row.requestedAction
         ? { requestedAction: 'resume' as const }
@@ -194,5 +217,8 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     viewerCanManage,
     landing: row.landing ?? null,
     shipSummary: row.shipSummary ?? null,
+    runtime: row.runtime ?? 'claude_code',
+    credentialSource: row.credentialSource ?? 'platform',
+    credentialOwnerUserId: row.credentialSource === 'user' ? row.createdByUserId : null,
   }
 }

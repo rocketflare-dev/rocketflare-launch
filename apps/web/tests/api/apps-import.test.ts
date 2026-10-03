@@ -174,6 +174,11 @@ describe('the Rocketflare manifest and tomls', () => {
           name: 'launch-grant-push',
           className: 'GrantPushWorkflow',
         },
+        {
+          binding: 'AGENT_LOGIN_WORKFLOW',
+          name: 'launch-agent-login',
+          className: 'AgentLoginWorkflow',
+        },
       ],
     })
     const staging = parseWranglerToml(STAGING_TOML, 'apps/web/wrangler.staging.toml')

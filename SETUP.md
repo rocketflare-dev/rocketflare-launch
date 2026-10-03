@@ -761,8 +761,8 @@ in `apps/web/.dev.vars.example` (skip `DATABASE_DRIVER` and `NEON_LOCAL_PROXY` �
 `OIDC_CLIENT_SECRET`, and `AUTH_OIDC_ONLY`, are `[vars]` — Part 2.3b):
 ```bash
 # one per name: OAUTH_ENCRYPTION_KEY RESEND_API_KEY BOOTSTRAP_ADMIN_EMAILS GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
-#   MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET OIDC_CLIENT_SECRET ANTHROPIC_API_KEY EMBEDDINGS_API_KEY LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY
-#   OTEL_EXPORTER_OTLP_HEADERS
+#   MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET OIDC_CLIENT_SECRET ANTHROPIC_API_KEY OPENAI_API_KEY EMBEDDINGS_API_KEY
+#   LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY OTEL_EXPORTER_OTLP_HEADERS
 printf '%s' "$OAUTH_ENCRYPTION_KEY" | pnpm web exec wrangler secret put OAUTH_ENCRYPTION_KEY -c wrangler.staging.toml
 ```
 `wrangler secret put NAME` reads the value from stdin when stdin is not a terminal — pipe it with
@@ -770,7 +770,10 @@ printf '%s' "$OAUTH_ENCRYPTION_KEY" | pnpm web exec wrangler secret put OAUTH_EN
 (interactively it prompts). `pnpm provision secrets <env>` does exactly this for every name exported
 in the shell. Repeat without `-c` for production after its first deploy. Use different keys per
 environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, the two `LANGFUSE_*` keys and `OTEL_EXPORTER_OTLP_HEADERS` are optional
-(Part 2.5/2.6): skip them and the features degrade as described there.
+(Part 2.5/2.6): skip them and the features degrade as described there. `OPENAI_API_KEY` is optional
+too and unused until Codex sessions ship (`docs/CONCEPTS.md` §18.22). `SESSION_RUNTIMES` and
+`SESSION_USER_CREDENTIALS` in `.dev.vars.example` are `[vars]` (both tomls: `claude_code` and
+blank — Claude Code on Launch's key, no personal accounts), not secrets.
 Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the names;
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns
 ok (it runs a query — a 503 there means the Worker cannot reach Neon: under `neon` a missing or

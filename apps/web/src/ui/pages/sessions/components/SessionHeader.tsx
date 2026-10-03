@@ -16,6 +16,9 @@
  *   the session's creator without that right gets "Ask for more" (a `session.budget` approval,
  *   P4), and while that request is open a link to it instead.
  * - Only the people who may act on the session (`viewerCanManage`) see the buttons at all.
+ * - §18.22: a session on another runtime, or billed to a personal account, says so in one muted
+ *   line beside the branch (`sessionRuntimeLine`) — nothing for Claude Code on Launch's key, the
+ *   default. A personal-account session has no money budget, so its header shows no meter.
  */
 import {
   ArrowPathIcon,
@@ -23,6 +26,7 @@ import {
   RocketLaunchIcon,
   StopCircleIcon,
 } from '@heroicons/react/24/outline'
+import { AGENT_ACCOUNT_LABELS, AGENT_RUNTIME_LABELS } from '@launch/shared/launch-agents'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppShipSettings } from '@launch/shared/launch-apps'
 import { type Session, SHIP_GATE_ATTEMPTS } from '@launch/shared/launch-sessions'
@@ -50,6 +54,21 @@ export function budgetMeter(budget: Session['budget']): {
 }
 
 const METER_CLASS = { ok: 'progress-primary', warning: 'progress-warning', error: 'progress-error' }
+
+/**
+ * §18.22: what the header says about the session's agent and billing — null for the default
+ * (Claude Code on Launch's key), so nothing changes for the sessions everyone already has. Pure.
+ */
+export function sessionRuntimeLine(
+  session: Pick<Session, 'runtime' | 'credentialSource'>
+): string | null {
+  const runtime = session.runtime ?? 'claude_code'
+  const personal = session.credentialSource === 'user'
+  if (runtime === 'claude_code' && !personal) return null
+  const parts = [AGENT_RUNTIME_LABELS[runtime]]
+  if (personal) parts.push(`billed to the creator’s ${AGENT_ACCOUNT_LABELS[runtime]}`)
+  return parts.join(' · ')
+}
 
 /** The session's display name: its title, else "Session <short id>". Pure. */
 export function sessionName(session: Pick<Session, 'title' | 'shortId'>): string {
@@ -121,6 +140,8 @@ export function SessionHeader({
   // Issue #5: once the merge has started it cannot be stopped half-way (the route answers 409).
   const merging = session.landing?.stage === 'merging'
   const endable = session.viewerCanManage && !settled && session.status !== 'ending' && !merging
+  const runtimeLine = sessionRuntimeLine(session)
+  const metered = session.credentialSource !== 'user'
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -142,39 +163,46 @@ export function SessionHeader({
               {session.branch}
             </span>
           )}
+          {runtimeLine && (
+            <span className="truncate text-xs text-muted" data-testid="session-runtime">
+              {runtimeLine}
+            </span>
+          )}
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2" data-testid="session-cost">
-          <div className="text-right leading-tight">
-            <p className="text-xs tabular-nums">
-              <span className="font-medium">{formatCost(session.budget.spentMicrocents)}</span>
-              <span className="text-muted"> of {formatCost(session.budget.capMicrocents)}</span>
-            </p>
-            <progress
-              className={`progress h-1.5 w-28 ${METER_CLASS[meter.tone]}`}
-              value={Math.round(meter.fraction * 100)}
-              max={100}
-              aria-label="Budget used"
-            />
+        {metered && (
+          <div className="flex items-center gap-2" data-testid="session-cost">
+            <div className="text-right leading-tight">
+              <p className="text-xs tabular-nums">
+                <span className="font-medium">{formatCost(session.budget.spentMicrocents)}</span>
+                <span className="text-muted"> of {formatCost(session.budget.capMicrocents)}</span>
+              </p>
+              <progress
+                className={`progress h-1.5 w-28 ${METER_CLASS[meter.tone]}`}
+                value={Math.round(meter.fraction * 100)}
+                max={100}
+                aria-label="Budget used"
+              />
+            </div>
+            {!settled && budget.pendingApprovalId ? (
+              <Link
+                to={approvalPath(budget.pendingApprovalId)}
+                className="btn btn-ghost btn-xs text-warning"
+              >
+                Budget request pending
+              </Link>
+            ) : (
+              budget.mode &&
+              !settled && (
+                <button type="button" className="btn btn-ghost btn-xs" onClick={onExtend}>
+                  {budget.mode === 'extend' ? 'Extend' : 'Ask for more'}
+                </button>
+              )
+            )}
           </div>
-          {!settled && budget.pendingApprovalId ? (
-            <Link
-              to={approvalPath(budget.pendingApprovalId)}
-              className="btn btn-ghost btn-xs text-warning"
-            >
-              Budget request pending
-            </Link>
-          ) : (
-            budget.mode &&
-            !settled && (
-              <button type="button" className="btn btn-ghost btn-xs" onClick={onExtend}>
-                {budget.mode === 'extend' ? 'Extend' : 'Ask for more'}
-              </button>
-            )
-          )}
-        </div>
+        )}
 
         {session.viewerCanManage && session.status === 'suspended' && (
           <button

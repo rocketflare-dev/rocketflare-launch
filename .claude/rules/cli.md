@@ -53,8 +53,9 @@ Groups (D29) are READ-only here: `groups list` and `groups members <id>`. Creati
 group is a decision about who sees what, and the confirmation the web UI gives before a delete
 narrows access has no honest one-line equivalent in a CLI.
 
-Coding sessions (Launch P3): `sessions start <app>` (slug → `GET /api/apps/:slug` → `POST
-/api/apps/:id/sessions`), `say <id> <msg> [--follow]`, `ship <id> [--no-wait]`, `end`, `ls <app>
+Coding sessions (Launch P3): `sessions start <app> [--runtime <claude_code|codex>]` (slug → `GET
+/api/apps/:slug` → `POST /api/apps/:id/sessions`; an unknown runtime is refused before any request,
+§18.22), `say <id> <msg> [--follow]`, `ship <id> [--no-wait]`, `end`, `ls <app>
 [--all]`, `preview-url <id> [--open]`. Following POLLS the durable rows (`GET /events?afterSeq=`)
 rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pollMs` are injectable.
 `ship` WAITS by default (issue #5): one line per stage row — the gate, `ship.pr`, `ship.ci` (a red

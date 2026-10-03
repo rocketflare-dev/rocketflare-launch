@@ -74,8 +74,6 @@ import {
 } from './ports'
 import {
   type BootstrapSkip,
-  claudeSettingsLocal,
-  claudeTranscriptPath,
   healDevSetup,
   migrationsHash,
   previewHostSuffix,
@@ -91,12 +89,12 @@ import {
   startDevServer,
   writeDevVars,
 } from './rocketflare-dev'
+import { runtimeOf } from './runtimes'
 import {
   CONVERSATION_LOST_MESSAGE,
   containerGone,
   TURN_HEARTBEAT_MS,
   TURN_KILL_GRACE_SECONDS,
-  transcriptCheckCommand,
   turnKillScript,
 } from './turn'
 import { warmMinutesLeft } from './warm'
@@ -892,7 +890,10 @@ async function checkOut(
   if (result.exitCode !== 0) throw checkoutFailure(app, result)
   const baseSha = /base=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? ''
   const headSha = /head=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? baseSha
-  await sandbox.writeFile(`${SESSION_WORKSPACE}/.claude/settings.local.json`, claudeSettingsLocal())
+  // The runtime's own files in the checkout (§18.22 — Claude: `.claude/settings.local.json`).
+  for (const file of runtimeOf(session).workspaceFiles()) {
+    await sandbox.writeFile(file.path, file.content)
+  }
   await updateSession(scope, {
     baseSha: session.baseSha ?? (baseSha || null),
     headSha: session.headSha ?? (headSha || null),
@@ -1085,12 +1086,15 @@ export async function restoreTranscriptStep(
     session.transcriptKey && scope.env.FILES
       ? await scope.env.FILES.get(session.transcriptKey)
       : null
-  if (object && /^[A-Za-z0-9-]+$/.test(claudeSessionId)) {
+  // Where the session's runtime keeps the conversation (§18.22 — Claude: its transcript).
+  const state = runtimeOf(session).state
+  const path = object ? state.restorePath(session) : null
+  if (object && path) {
     const text = await object.text()
     const sandbox = sandboxFor(scope, session)
     const there = await inOurContainer(scope, sandbox, bootId, async () => {
-      await sandbox.writeFile(claudeTranscriptPath(claudeSessionId), text)
-      const check = await sandbox.exec(transcriptCheckCommand(claudeSessionId), {
+      await sandbox.writeFile(path, text)
+      const check = await sandbox.exec(state.checkCommand(path), {
         timeoutMs: 15_000,
       })
       return check.exitCode === 0

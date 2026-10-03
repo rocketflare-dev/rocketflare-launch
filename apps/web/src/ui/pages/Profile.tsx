@@ -4,6 +4,8 @@
  * sign-in methods linked to it. Connecting a provider is a full-page OAuth round trip in LINK
  * mode (`?link=1&returnUrl=/profile`, so the identity attaches to THIS user instead of signing
  * in as whoever it matches); disconnecting is refused when it would leave no way to sign in.
+ * §18.22: the person's own AI accounts (`profile/AgentAccountsPanel.tsx`), shown only when the
+ * deployment lets sessions bill one.
  */
 
 import { LinkIcon } from '@heroicons/react/24/outline'
@@ -31,6 +33,7 @@ import {
 } from '@/ui/hooks/useProfile'
 import { formatDate, initials } from '@/ui/lib/format'
 import { hardNavigate } from '@/ui/lib/navigation'
+import { AgentAccountsPanel } from './profile/AgentAccountsPanel'
 
 export default function Profile() {
   return (
@@ -42,6 +45,7 @@ export default function Profile() {
       <ProfileForm />
       <YourGroups />
       <SignInMethods />
+      <AgentAccountsPanel />
     </div>
   )
 }

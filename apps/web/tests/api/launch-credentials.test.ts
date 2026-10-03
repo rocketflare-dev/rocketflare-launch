@@ -81,6 +81,7 @@ describe('sealed credential store', () => {
         'cloudflare_api_token',
         'github_app',
         'neon_org_api_key',
+        'openai_api_key',
         'resend_api_key',
       ].sort()
     )

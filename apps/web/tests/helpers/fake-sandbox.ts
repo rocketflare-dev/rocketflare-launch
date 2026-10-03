@@ -15,10 +15,12 @@
  * - `onExec(match, result | fn)` — the first matching script answers `exec` (`{ exitCode: 0,
  *   stdout: '', stderr: '' }` filled in); an unscripted command succeeds with no output. `match` is a
  *   RegExp or a substring.
- * - `onProcess(match, lines[] | { lines, exitCode?, hang?, ports? })` — what a background process
- *   prints: `streamLogs` yields each line as one `stdout` chunk (`line + '\n'`), then `exit`
- *   (`exitCode`, default 0). `hang: true` keeps it running after the lines until `kill` (exit 137)
- *   — a dev server, or a turn a test cancels. `ports` open when the process starts.
+ * - `onProcess(match, lines[] | { lines, exitCode?, hang?, ports?, waitForFile?, thenLines? })` —
+ *   what a background process prints: `streamLogs` yields each line as one `stdout` chunk
+ *   (`line + '\n'`), then `exit` (`exitCode`, default 0). `hang: true` keeps it running after the
+ *   lines until `kill` (exit 137) — a dev server, or a turn a test cancels. `ports` open when the
+ *   process starts. `waitForFile` (§18.22) blocks after `lines` until that path is written, then
+ *   prints `thenLines` — a CLI waiting on input (the login relay's `in` file).
  * - `onPort(port, handler)` / `openPort(port)` — a port `waitForPort` finds and `fetch(port, req)`
  *   answers (a closed port: `waitForPort` rejects, `fetch` is a 502).
  * - `onBackground(match, script | fn)` — a long command run through `runInBackground`
@@ -87,6 +89,14 @@ export type ExecScript =
 
 export interface ProcessScript {
   lines: readonly string[]
+  /**
+   * §18.22: after `lines`, wait until this file is written (`writeFile`) — a CLI blocked on input,
+   * like a login relay tailing its `in` file — then print `thenLines`. A kill or an aborted reader
+   * ends the wait.
+   */
+  waitForFile?: string
+  /** Printed once `waitForFile` exists. */
+  thenLines?: readonly string[]
   exitCode?: number
   /** Keep running after the lines until killed (then exit 137). */
   hang?: boolean
@@ -201,6 +211,7 @@ export class FakeSandbox implements SandboxPort {
   recreations = 0
   deaths = 0
   private readonly killWaiters = new Map<string, () => void>()
+  private readonly fileWaiters = new Map<string, (() => void)[]>()
   private interruptArmed = false
   private nextPid = 1
 
@@ -390,6 +401,22 @@ export class FakeSandbox implements SandboxPort {
       first = false
     }
     if (interrupting) this.interrupt()
+    const waitFor = proc.script.waitForFile
+    if (waitFor && !proc.killed && !opts.signal?.aborted) {
+      if (!this.files.has(waitFor)) {
+        await new Promise<void>(resolve => {
+          const waiters = this.fileWaiters.get(waitFor) ?? []
+          waiters.push(resolve)
+          this.fileWaiters.set(waitFor, waiters)
+          this.killWaiters.set(processId, resolve)
+          opts.signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+        this.killWaiters.delete(processId)
+      }
+      if (!proc.killed && !opts.signal?.aborted) {
+        for (const line of proc.script.thenLines ?? []) yield { type: 'stdout', data: `${line}\n` }
+      }
+    }
     if (proc.script.hang && !proc.killed && proc.exitCode === null) {
       await new Promise<void>(resolve => {
         this.killWaiters.set(processId, resolve)
@@ -433,6 +460,11 @@ export class FakeSandbox implements SandboxPort {
   async writeFile(path: string, content: string): Promise<void> {
     await this.guard('writeFile')
     this.files.set(path, content)
+    const waiters = this.fileWaiters.get(path)
+    if (waiters) {
+      this.fileWaiters.delete(path)
+      for (const wake of waiters) wake()
+    }
   }
 
   async readFile(path: string): Promise<string | null> {

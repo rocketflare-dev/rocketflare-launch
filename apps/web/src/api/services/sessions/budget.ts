@@ -103,15 +103,21 @@ export type BudgetVerdict =
       capMicrocents: number
     }
 
-/** Is the session under both caps? The session cap is checked first (it needs no query). */
+/**
+ * Is the session under both caps? The session cap is checked first (it needs no query). A session
+ * on a personal account (§18.22, `credential_source = 'user'`) has no money budget — Launch does
+ * not pay for it; its turn and time limits still hold.
+ */
 export async function checkBudget(
   db: Database,
   session: Pick<
     SessionRow,
     'tenantId' | 'appId' | 'policy' | 'costMicrocents' | 'budgetExtraMicrocents'
-  >,
+  > &
+    Partial<Pick<SessionRow, 'credentialSource'>>,
   now: Date = new Date()
 ): Promise<BudgetVerdict> {
+  if (session.credentialSource === 'user') return { ok: true }
   const own = sessionSpend(session)
   if (own.spentMicrocents >= own.capMicrocents) {
     return {

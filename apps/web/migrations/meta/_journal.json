@@ -253,6 +253,13 @@
       "when": 1790928254397,
       "tag": "0035_launch-app-thumbnails",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791001924614,
+      "tag": "0036_launch-agent-runtimes",
+      "breakpoints": true
     }
   ]
 }

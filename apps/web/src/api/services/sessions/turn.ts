@@ -106,25 +106,32 @@ import {
   checkContainer,
 } from './boot-marker'
 import { type BudgetHeadroom, budgetHeadroom, checkBudget } from './budget'
+import { type ClaudeTurnResult, clipStrings, SESSION_WORKDIR } from './claude-stream'
 import {
-  buildClaudeCommand,
-  type ClaudeLineMapping,
-  type ClaudeTurnResult,
-  claudeTurnEnv,
-  clipStrings,
-  createClaudeStreamParser,
-  SESSION_WORKDIR,
-} from './claude-stream'
+  CredentialBusyError,
+  CredentialNeedsLoginError,
+  CredentialPortMissingError,
+} from './credentials/errors'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
 import { ModelKeyMissingError, redactModelKeyText } from './model-key'
 import {
+  credentialsFor,
   egressFor,
+  NotWiredError,
   SandboxInterruptedError,
   type SandboxPort,
   type SessionEgressPort,
   type SessionPorts,
 } from './ports'
 import { claudeTranscriptPath, SESSION_LAUNCH_DIR } from './rocketflare-dev'
+import { runtimeOf } from './runtimes'
+import type {
+  AgentRuntime,
+  RuntimeLineMapping,
+  RuntimeStreamParser,
+  SessionCredentialPort,
+  TurnCredentialLease,
+} from './runtimes/types'
 import { createTurnMeter, recordTurnUsage, type TurnMeter } from './turn-meter'
 
 /** Write buffered events at least this often while a turn streams (plan §3c). */
@@ -173,6 +180,10 @@ export const TURN_KILL_CALL_MS = 30_000
  */
 export const CONVERSATION_LOST_MESSAGE =
   'The earlier conversation could not be restored; Claude starts fresh with the code as it is.'
+
+/** What a message from anyone but a personal-account session's owner meets (§18.22). */
+export const CREDENTIAL_OWNER_ONLY_MESSAGE =
+  'Only the person whose account this session uses can send it messages.'
 
 /** `test -s` on the transcript `--resume` needs: exit 1 = missing or empty. */
 export const transcriptCheckCommand = (claudeSessionId: string) =>
@@ -321,7 +332,7 @@ export function containerGone(outcome: { status: string; reason?: string }): boo
 export type TurnOutcome =
   | { status: 'skipped'; sessionId: string }
   | { status: 'blocked'; sessionId: string; scope: 'session' | 'app_month' }
-  | { status: 'rejected'; sessionId: string; reason: 'max_turns' }
+  | { status: 'rejected'; sessionId: string; reason: 'max_turns' | 'credential_owner_only' }
   | {
       status: 'completed' | 'failed'
       sessionId: string
@@ -370,6 +381,8 @@ export async function runTurn(
     return { status: 'skipped', sessionId }
   }
   const message = current.pendingMessage
+  // §18.22: who sent it — the creator for every row written before `pending_message_user_id`.
+  const senderId = current.pendingMessageUserId ?? current.createdByUserId
   const policy = resolveSessionPolicy(current.policy)
   const writer = await createSessionEventWriter(db, current)
 
@@ -470,6 +483,26 @@ export async function runTurn(
     return { status: 'blocked', sessionId, scope: verdict.scope }
   }
 
+  // §18.22: a session on a personal account runs only its owner's messages (the route refuses
+  // everyone else with 409 `session_credential_owner_only`; this is the backstop).
+  if (current.credentialSource === 'user' && senderId !== current.createdByUserId) {
+    const [dropped] = await db
+      .update(sessions)
+      .set({ pendingMessage: null, pendingMessageUserId: null, updatedAt: new Date(now()) })
+      .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, sessionId)))
+      .returning({ id: sessions.id })
+    if (dropped) {
+      writer.append({
+        type: 'error',
+        turn: current.turnCount,
+        data: { message: CREDENTIAL_OWNER_ONLY_MESSAGE },
+      })
+      await writer.flush()
+      changed()
+    }
+    return { status: 'rejected', sessionId, reason: 'credential_owner_only' }
+  }
+
   if (current.turnCount >= policy.maxTurns) {
     const [dropped] = await db
       .update(sessions)
@@ -495,6 +528,7 @@ export async function runTurn(
       status: 'working',
       turnCount: current.turnCount + 1,
       pendingMessage: null,
+      pendingMessageUserId: null,
       cancelRequestedAt: null,
       lastActivityAt: new Date(now()),
       updatedAt: new Date(now()),
@@ -516,7 +550,7 @@ export async function runTurn(
     {
       type: 'user.message',
       turn,
-      data: { text: redactModelKeyText(message), userId: claimed.createdByUserId },
+      data: { text: redactModelKeyText(message), userId: senderId },
     },
     { type: 'turn.start', turn, data: { turn } }
   )
@@ -607,18 +641,20 @@ async function executeTurn(
     probeFailures: opts.probeFailures ?? TURN_LIVENESS_MAX_FAILURES,
     logger: opts.logger,
     egress: egressFor(ports, db),
+    credentials: credentialsFor(ports, db),
   }
 
   // A conversation to resume whose transcript is not in the container (a resume that had nothing
   // to restore, a turn that died before any checkpoint): `claude --resume` would fail every turn
   // from now on, so start a fresh conversation instead — the code is all in the checkout.
+  const runtime = runtimeOf(row)
   let resumeId = row.claudeSessionId
-  if (resumeId && (await transcriptMissing(sandbox, resumeId, opts.logger))) {
+  if (resumeId && (await transcriptMissing(sandbox, runtime, row, opts.logger))) {
     await forgetConversation(db, row, writer, turn)
     resumeId = null
   }
   let run = await streamTurn(db, sandbox, { ...row, claudeSessionId: resumeId }, writer, params)
-  if (resumeId && resumeRefused(run)) {
+  if (resumeId && runtime.resumeRefused(run)) {
     // The transcript was there but Claude Code would not resume it (an `error_during_execution`
     // with no tokens and nothing said): the same turn once more, as a new conversation.
     opts.logger?.warn(
@@ -662,7 +698,7 @@ async function executeTurn(
     writer.append({
       type: 'turn.failed',
       turn,
-      data: { turn, message: run.failure ?? 'Claude Code stopped without finishing the turn' },
+      data: { turn, message: run.failure ?? `${runtime.label} stopped without finishing the turn` },
     })
     executed = { status: 'failed', costMicrocents, result: run.result }
   }
@@ -677,30 +713,21 @@ async function executeTurn(
  */
 async function transcriptMissing(
   sandbox: SandboxPort,
-  claudeSessionId: string,
+  runtime: AgentRuntime,
+  row: SessionRow,
   logger?: Logger
 ): Promise<boolean> {
-  if (!/^[A-Za-z0-9-]+$/.test(claudeSessionId)) return true
+  const path = runtime.state.restorePath(row)
+  if (!path) return true
   try {
     const result = await bounded(TURN_KILL_CALL_MS, () =>
-      sandbox.exec(transcriptCheckCommand(claudeSessionId), { timeoutMs: 15_000 })
+      sandbox.exec(runtime.state.checkCommand(path), { timeoutMs: 15_000 })
     )
     return result.exitCode === 1
   } catch (err) {
     logger?.warn({ err }, 'session turn: could not check the transcript; resuming as asked')
     return false
   }
-}
-
-/**
- * A `--resume` that Claude Code refused: a `result` of `error_during_execution` with no tokens at
- * all and nothing said — what it prints when the session it was told to resume does not exist.
- * A turn that did any work (tokens, text, a tool) is never re-run.
- */
-function resumeRefused(run: StreamTurnResult): boolean {
-  if (run.stop || run.output || run.result?.subtype !== 'error_during_execution') return false
-  const u = run.result.usage
-  return !u || u.tokensIn + u.tokensOut + u.cacheRead + u.cacheWrite === 0
 }
 
 /** Clear `claude_session_id` (the next `claude -p` starts a conversation) and say so. */
@@ -852,6 +879,8 @@ interface StreamTurnParams {
   logger?: Logger
   /** How the container reaches Anthropic and GitHub (`proxied` unless the sandbox is remote). */
   egress: SessionEgressPort
+  /** §18.22: the turn's credential lease (platform: nothing). */
+  credentials: SessionCredentialPort
 }
 
 interface StreamTurnResult {
@@ -956,6 +985,7 @@ async function streamTurn(
   p: StreamTurnParams
 ): Promise<StreamTurnResult> {
   const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
+  const runtime = runtimeOf(row)
 
   // `host` (a remote sandbox): the host is granted the key and a fresh token (the process gets
   // only the placeholder), and the turn meters itself against what the budget has left
@@ -985,25 +1015,107 @@ async function streamTurn(
     return out
   }
 
+  // §18.22: the turn's credential. Platform: nothing (the egress swaps Launch's key in). A personal
+  // account: the runtime's lease, released in the `finally` below whatever happens.
+  let lease: TurnCredentialLease
+  try {
+    lease = await p.credentials.lease(row, sandbox, runtime)
+  } catch (err) {
+    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
+    else out.failure = leaseFailure(err, runtime, row.id, p.logger)
+    return out
+  }
+  try {
+    return await runLeasedTurn(db, sandbox, row, writer, p, {
+      out,
+      runtime,
+      lease,
+      egressEnv,
+      meter,
+      headroom,
+    })
+  } finally {
+    await lease
+      .release()
+      .catch(err =>
+        p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not release the credential')
+      )
+  }
+}
+
+/** A lease that would not come: a sentence safe for `turn.failed`, never the credential. */
+function leaseFailure(err: unknown, runtime: AgentRuntime, sessionId: string, logger?: Logger) {
+  if (
+    err instanceof CredentialNeedsLoginError ||
+    err instanceof CredentialBusyError ||
+    err instanceof CredentialPortMissingError ||
+    err instanceof NotWiredError
+  ) {
+    return err.message
+  }
+  logger?.warn({ err, sessionId }, 'session turn: could not lease the credential')
+  return `Launch could not get ${runtime.label} its credential for this turn`
+}
+
+/** What `streamTurn` hands the leased half of the turn. */
+interface LeasedTurn {
+  out: StreamTurnResult
+  runtime: AgentRuntime
+  lease: TurnCredentialLease
+  egressEnv: Record<string, string>
+  meter: TurnMeter | null
+  headroom: BudgetHeadroom
+}
+
+/** The turn once its credential is leased: start, read, watch, end. */
+async function runLeasedTurn(
+  db: Database,
+  sandbox: SandboxPort,
+  row: SessionRow,
+  writer: SessionEventWriter,
+  p: StreamTurnParams,
+  leased: LeasedTurn
+): Promise<StreamTurnResult> {
+  const { out, runtime, lease, egressEnv, meter, headroom } = leased
+  let parser: RuntimeStreamParser
   let processId: string
   try {
+    parser = runtime.createParser(p.turn)
+    const systemNote = await sessionSystemNote(db, row)
+    const files = [
+      ...(runtime.beforeTurnFiles?.({
+        model: p.policy.model,
+        systemNote,
+        source: lease.source,
+      }) ?? []),
+      ...lease.files,
+    ]
+    for (const file of files) await sandbox.writeFile(file.path, file.content)
     const proc = await sandbox.startProcess(
       turnProcessCommand(
-        buildClaudeCommand({
+        runtime.buildCommand({
           message: p.message,
           model: p.policy.model,
-          resumeSessionId: row.claudeSessionId,
-          systemNote: await sessionSystemNote(db, row),
+          resumeId: row.claudeSessionId,
+          systemNote,
         })
       ),
-      { cwd: p.cwd, env: { ...claudeTurnEnv(p.policy.model), ...egressEnv } }
+      {
+        cwd: p.cwd,
+        env: {
+          ...runtime.turnEnv({ model: p.policy.model, source: lease.source }),
+          ...lease.env,
+          ...egressEnv,
+        },
+      }
     )
     processId = proc.id
   } catch (err) {
     if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
+    else if (err instanceof NotWiredError) out.failure = err.message
     else {
-      p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not start Claude Code')
-      out.failure = 'Claude Code could not be started in the sandbox'
+      p.logger?.warn({ err, sessionId: row.id }, `session turn: could not start ${runtime.label}`)
+      out.failure = `${runtime.label} could not be started in the sandbox`
     }
     return out
   }
@@ -1128,10 +1240,10 @@ async function streamTurn(
   let claudeSessionId = row.claudeSessionId
   let exitCode: number | null = null
   let stderrTail = ''
-  const apply = async (mappings: ClaudeLineMapping[]) => {
+  const apply = async (mappings: RuntimeLineMapping[]) => {
     for (const mapping of mappings) {
-      if (mapping.claudeSessionId && mapping.claudeSessionId !== claudeSessionId) {
-        claudeSessionId = mapping.claudeSessionId
+      if (mapping.resumeId && mapping.resumeId !== claudeSessionId) {
+        claudeSessionId = mapping.resumeId
         // At once, not at the end: a turn that fails later must still be resumable.
         await db
           .update(sessions)
@@ -1151,7 +1263,6 @@ async function streamTurn(
     if (writer.pending >= p.flushEvery) await writer.flush()
   }
 
-  const parser = createClaudeStreamParser(p.turn)
   let readFailed = false
   let exited = false
   try {
@@ -1169,7 +1280,7 @@ async function streamTurn(
     else if (!out.stop && !overBudget) {
       readFailed = true
       p.logger?.warn({ err, sessionId: row.id }, 'session turn: reading the process failed')
-      out.failure = 'Launch lost the connection to Claude Code in the sandbox'
+      out.failure = `Launch lost the connection to ${runtime.label} in the sandbox`
     }
   } finally {
     finished = true
@@ -1227,7 +1338,7 @@ async function streamTurn(
   if (!out.stop && !out.failure && !out.result) {
     const detail = stderrTail.trim() ? `: ${stderrTail.trim()}` : ''
     const code = exitCode === null ? '' : ` with code ${exitCode}`
-    out.failure = failureText(`Claude Code exited${code} before finishing the turn${detail}`)
+    out.failure = failureText(`${runtime.label} exited${code} before finishing the turn${detail}`)
   }
   return out
 }

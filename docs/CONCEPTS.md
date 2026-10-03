@@ -483,7 +483,7 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
 case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
-drives Launch P3 coding sessions (§18.14) — `ship` follows the ship to live on staging by default,
+drives Launch P3 coding sessions (§18.14; `start --runtime` picks the coding agent, §18.22) — `ship` follows the ship to live on staging by default,
 printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
 (`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
 ls|create|promote [--wait]|retry|cancel|rollback` are the P4 inbox and shipping (§18.19; `retry` is the
@@ -766,7 +766,8 @@ coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESS
 from P4 a second person approves what needs one, releases ship through a production gate, and the
 audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`); from P5 apps hold shared
 config through approved grants (§18.20, `docs/plans/p5-grants.md`); every app has a thumbnail
-taken after each deploy goes live (§18.21).
+taken after each deploy goes live (§18.21); and a session's coding agent and whose account it bills
+sit behind one runtime seam (§18.22).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases,grants}.ts`.
 
@@ -774,7 +775,7 @@ Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
 `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `audit_events`, and from P4 `approval_requests`,
 `approval_decisions`, `approval_policies`, `app_releases`, `audit_chain`, and from P5
 `shared_resources`, `shared_resource_values`, `app_grants`, `grant_pushes`, `grant_push_targets`,
-`app_config_scans`) are
+`app_config_scans`, and §18.22's `agent_credentials`, `agent_logins`) are
 tenant tables like any other, scoped to the single company tenant. Three are platform
 infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
 `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
@@ -1377,7 +1378,8 @@ its resources and leaves them, and its repo, alone; a deleted repo is gone for g
 
 ### 18.9 Coding sessions: the lifecycle
 
-A session is a container running Claude Code against one app's repo, with a live preview, ending in
+A session is a container running a coding agent — Claude Code, the default; which one, and whose
+account it bills, is fixed at start (§18.22) — against one app's repo, with a live preview, ending in
 a pull request (spec/07) — and, in an app's default `staging` ship mode (issue #5), in that PR
 merged, released and live on staging (§18.13 **Landing**). State lives in Postgres — `sessions` (status, request columns, sealed
 credentials, metering, PR) and `session_events` (the append-only log the page, the CLI and the
@@ -1800,8 +1802,10 @@ runs under bash in `background-command.test.ts` where `setsid` exists).
 ### 18.11 Chat, the model proxy and budgets
 
 A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `maxTurnMinutes`)
-checks the budget, claims `ready → working`, writes `user.message` + `turn.start`, and runs
-`claude -p … --resume <id> --output-format stream-json` in the sandbox; `claude-stream.ts` maps
+checks the budget, claims `ready → working`, writes `user.message` (naming who sent it,
+`pending_message_user_id`) + `turn.start`, leases the session's credential (nothing on Launch's key,
+§18.22), and runs the session runtime's command — for Claude Code
+`claude -p … --resume <id> --output-format stream-json` — in the sandbox; `claude-stream.ts` maps
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
 events. Every turn, resumed ones included (the flag does not survive `--resume`), carries
 `--append-system-prompt` with the `session-system-note` prompt filled in (`sessionSystemNote`;
@@ -2143,8 +2147,9 @@ whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume th
 `docs/DEPLOY.md` makes it a required step before a deploy that touches the image. **UI**: the
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
-"Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start|say
-[--follow]|ship [--no-wait]|end|ls|preview-url` (§11).
+"Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start
+[--runtime]|say [--follow]|ship [--no-wait]|end|ls|preview-url` (§11). §18.22 adds the session card's
+agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the
 pure `landingTimeline(events, session.landing, session.status)` (`sessionChatModel.ts`): gate → PR → CI (the
@@ -2823,3 +2828,122 @@ list and detail). Service: `services/launch/thumbnails/` — `thumbnails.ts` is 
   restores. An imported app whose recorded host moved keeps capturing the old one until
   re-imported.
 - The capture is proven with a fake `ScreenshotPort`; the real adapter has not run in CI.
+
+### 18.22 Agent runtimes and personal AI accounts
+
+A session runs ONE coding agent and bills ONE account, both fixed when it is created: the
+**runtime** (`sessions.runtime` — `claude_code`, or `codex`) and the **credential source**
+(`sessions.credential_source` — `platform`, Launch's key swapped in at the egress as since P3, or
+`user`, the creator's own Claude subscription / ChatGPT plan, `sessions.agent_credential_id`).
+Contracts: `@launch/shared/launch-agents`; the session policy gains `runtime?` (the default a
+session starts with) and `runtimes?` (`{ enabled, model, credentialMode }` per runtime), and the
+frozen `policy.model` is the CHOSEN runtime's model, so the model allow-list never learns about
+runtimes. **A default deployment is exactly P3**: Claude Code on Launch's key, every stored policy
+and row reading as before (the 0036 migration defaults both columns), and every `session-*` test
+unchanged.
+
+**The seam** (`services/sessions/runtimes/`): `AgentRuntime { buildCommand, turnEnv, createParser,
+resumeRefused, workspaceFiles, beforeTurnFiles?, state, supportsHostEgress, login?, userLease? }`,
+reached only through `runtimeFor(id)` / `runtimeOf(row)`. Claude Code is `claude-code/index.ts`,
+wrapping `claude-stream.ts` byte for byte (`tests/config/agent-runtime-claude.test.ts` pins the
+command, the environment, the parsed events, the workspace file and the transcript paths). The turn
+(`turn.ts`), the boot's `repo` and `transcript#K` steps (`steps.ts`) and the checkpoint
+(`checkpoint.ts`) call the seam; `sessions.claude_session_id` is the generic resume id
+(`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
+
+**Deciding at create** (`credentials/resolve.ts`), narrowest wins: the DEPLOYMENT —
+`SESSION_RUNTIMES` (default `claude_code`) and `SESSION_USER_CREDENTIALS` (default none), and
+`SESSION_SANDBOX_HOST=remote` allowing only Claude Code on Launch's key; then the policy
+(`runtimePolicyOf`: with no entry, a runtime is enabled on either account, so turning the flag on
+is the one switch an operator needs); then the request (`POST /api/apps/:id/sessions { runtime?,
+credential? }`, the session card's picker, `launch sessions start --runtime`). Refusals before any
+row: 409 `session_runtime_disabled`, `agent_credential_not_allowed`, `agent_credential_required`
+(not connected, needs a reconnect, or expired). A personal-account session skips the app's monthly
+money check at create and the money budget per turn (`checkBudget` → ok): Launch does not pay for
+it; turn and time limits still apply.
+
+**Each turn leases its credential** (`ports.credentials(db)`, `credentials/lease.ts`): `platform`
+leases nothing (`PLATFORM_LEASE`); `user` calls the runtime's `userLease`, whose `env` and `files`
+reach the process after the placeholders and whose `release()` runs in the turn's `finally`
+whatever happened. A lease that cannot be had fails the turn with a sentence
+(`CredentialNeedsLoginError`, `CredentialBusyError`). Ports with no credential port (the fakes)
+lease nothing for platform rows and refuse `user` rows by name.
+
+**Only the owner drives it.** A `user` session takes turns and ships only from its creator — the
+account's owner: 409 `session_credential_owner_only` for anyone else, who may still read and end
+it; the turn drops a message its owner did not send (the backstop). The sender is recorded for
+every session (`pending_message_user_id` → `user.message.userId`), which also makes issue #5's
+"who wrote messages" count everyone, not only the creator.
+
+**Personal credentials** (`agent_credentials`, `credentials/store.ts` — the one module that
+touches the table): one per (tenant, person, runtime), `secret_sealed` (`encryptToken`), never in a
+response (`agentCredentialSchema` is value-free), `version` for a compare-and-set reseal (a
+rotated refresh token), a claim (`claimed_by_session_id`, `claim_expires_at`) so one credential is
+never used by two turns at once, `needs_login` when the provider refuses it. Leaving the
+organisation deletes it (the composite FK to `tenant_users`). Usage on a personal account is
+`ai_usage.billing = 'subscription'`: tokens recorded, cost null and never estimated by the summary,
+the session's cost total unmoved (`recordSessionUsage(..., { billing })`).
+
+**Connecting an account is a relayed sign-in** (`agent_logins`, `AgentLoginWorkflow`): Launch never
+runs the OAuth exchange — the provider's own CLI, unmodified, runs in a throwaway `login-<id>`
+sandbox (the `SessionSandbox` class) and the person finishes the provider's flow in their browser.
+`/api/me/agent-credentials` (the offer, the person's accounts, logins in flight) and
+`/api/me/agent-logins` (start → 202 and a Workflow instance, poll, paste a code, cancel) — the
+routes write the row and wake the instance, never more. The Workflow: `start` (record the sandbox
+id first, so its egress can find the login — `egress/sandbox-lookup.ts` `loginForSandbox` — boot
+with the driver's hosts, start the CLI) → `prompt#N` (the URL, and a device code, onto the row) →
+`code#N` / `submit#N` (a runtime that takes a code back: the pasted code is SEALED on the row by
+the route, decrypted in the step, handed to the CLI and nulled) → `finish#N` (the CLI exits) →
+`capture` (sealed into `agent_credentials`, audited `agent_credential.connected`; the step returns
+`{ ok }` only) → `cleanup` ALWAYS (destroy the sandbox, null the URL and codes). One active login
+per person and runtime (a partial unique index); 15 minutes to finish (`AGENT_LOGIN_TTL_MS`),
+after which the step — or the `*/5` sweep, `logins/sweep.ts`, which also releases stale claims —
+says `expired`. The UI: Profile → AI accounts (hidden unless a runtime allows personal accounts),
+a polling modal whose body is the runtime's component (`ui/pages/profile/agent-logins/`), the
+session card's agent / "Bill to" picker (only when there is a choice), and one muted line in the
+session header for a non-default agent or billing.
+
+**Egress** (`egress/registry.ts`): `SESSION_OUTBOUND_HANDLERS` is the one table of hosts Launch
+handles a container's traffic for (`api.anthropic.com`, `github.com`). Codex's hosts
+(`api.openai.com`, `chatgpt.com`, `auth.openai.com`) are STAGED there as OpenAI-shaped 403s
+(`CODEX_OUTBOUND_HANDLERS`), joining the handler table and the allow-list together with their real
+handlers in stream B — a host on the allow-list with no handler would pass straight through.
+
+#### 18.22-A Claude subscriptions
+
+The relayed `claude setup-token` (a year-long, inference-only token: no refresh, so concurrent
+sessions are fine and nothing is written back) and its egress: the turn runs with a placeholder
+OAuth token and no API key, and the model proxy swaps the real token in as `Authorization: Bearer`
+with the OAuth beta header — the token never enters the container. **Not wired yet**: the driver
+(`runtimes/claude-code/login.ts`), the lease (`runtimes/claude-code/credentials.ts`) and the
+modal body (`ui/pages/profile/agent-logins/ClaudeLogin.tsx`) are stubs that fail by name
+(`NotWiredError`, "stream A").
+
+#### 18.22-B Codex
+
+`codex exec --json` per turn (`codex exec resume <thread>` after the first), its JSONL mapped onto
+the same events, its rollout file checkpointed like Claude's transcript, on Launch's OpenAI key
+(the `openai_api_key` admin credential, else `OPENAI_API_KEY`, swapped in at the egress) or a
+person's ChatGPT plan (a claimed `auth.json` per turn, resealed when Codex rotates it). **Not wired
+yet**: every member of `runtimes/codex/` that would run Codex throws `NotWiredError` ("stream B");
+the `openai_api_key` check answers "not checked yet"; the OpenAI hosts are staged refusals.
+
+**Known gaps:**
+
+- *Policy*: Anthropic's terms forbid a third party offering claude.ai sign-in or intermediating
+  subscription tokens; hosting the unmodified CLI while the person signs in through Anthropic's own
+  flow is allowed, but STORING the resulting token is grey. `SESSION_USER_CREDENTIALS` is off by
+  default and needs legal sign-off before a deployment lists `claude_code`. OpenAI's ChatGPT-plan
+  sign-in for hosted commercial use needs their "Sign in with ChatGPT" approval.
+- *Codex's `auth.json` sits in the container during a turn* (a placeholder with a server-side swap
+  and refresh is the hardening path); its refresh token rotates, so one is never used concurrently
+  (the claim).
+- *The relay depends on each CLI's terminal output*: the versions are pinned and the parsing is
+  fixture-tested.
+- *The sandbox host* runs Claude Code on Launch's key only.
+- *Login sandboxes* count against the containers' `max_instances`.
+- *A personal-account session has no money budget*; the ship's PR summary always spends Launch's
+  key.
+- *The policy's `runtimes` has no editor yet*: it is set in `launch_settings.session_policy`.
+- The login Workflow is proven with a fake driver over the `FakeSandbox`
+  (`tests/api/agent-login-workflow.test.ts`); no real CLI has run through it.

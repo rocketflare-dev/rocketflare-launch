@@ -271,7 +271,13 @@ a fake `WebSocket` factory left set) is on you.
   `apps.session_db`, and with `withStaging` a deployed app's `main` — `migrator`, `app`, database
   `app` with a table, the NOLOGIN RLS role — and its `staging` branch on the staging environment),
   `insertSession(db, fixture, overrides)`, `sessionAppRef(fixture)`, and
-  `createFakeSessionPorts({ sessionDb?, repoHost?, model?, egress? })` (`egress` absent = the
+  `createFakeSessionPorts({ sessionDb?, repoHost?, model?, egress?, credentials? })` (§18.22:
+  `credentials` absent = `PLATFORM_CREDENTIALS` — platform rows lease nothing, a `user` row fails
+  its turn by name; `seedAgentCredential(db, f, { runtime?, status?, … })` seals a personal
+  credential the way the store does, and `AGENT_SECRET_SENTINEL` is the value a "never echoed"
+  assertion searches for; `FakeSandbox.onProcess(match, { lines, waitForFile, thenLines })` blocks
+  after `lines` until a file is written — a login relay waiting on its input; the login Workflow is
+  driven with a fake `LoginDriver` in `tests/api/agent-login-workflow.test.ts`) (`egress` absent = the
   `proxied` mode; `tests/api/session-host-egress.test.ts` hands in a `HostEgress` over a recording
   grant sink, and `tests/config/session-egress-forward.test.ts` covers the shared forwarding cores
   and the host's own handlers over a stored grant; the sandbox

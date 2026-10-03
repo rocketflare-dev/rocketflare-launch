@@ -19,6 +19,12 @@
  * own suites hand in.
  */
 import { readFileSync } from 'node:fs'
+import type {
+  AgentCredentialKind,
+  AgentCredentialMetadata,
+  AgentCredentialStatus,
+  AgentRuntimeId,
+} from '@launch/shared/launch-agents'
 import {
   type AppSessionDb,
   DEFAULT_SESSION_POLICY,
@@ -30,6 +36,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { createOrgRepo } from '@/api/services/launch/github-app'
 import { NeonClient } from '@/api/services/launch/neon'
+import { putSealed } from '@/api/services/sessions/credentials/store'
 import { GATE_KIT_PROBE, GATE_LIST_COMMAND } from '@/api/services/sessions/gate'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import type {
@@ -40,15 +47,20 @@ import type {
   SessionEgressPort,
   SessionPorts,
 } from '@/api/services/sessions/ports'
+import type { SessionCredentialPort } from '@/api/services/sessions/runtimes/types'
+import { loadConfig } from '@/config'
 import type { Database } from '@/db/client'
 import {
+  type AgentCredentialRow,
   type AppRow,
+  agentCredentials,
   appEnvironments,
   apps,
   type NewSessionRow,
   type SessionRow,
   sessions,
 } from '@/db/schema'
+import { createTestEnv } from '../mocks/bindings'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from './auth'
 import type { FakeCloud } from './fake-cloud'
 import { FakeSandbox } from './fake-sandbox'
@@ -313,6 +325,11 @@ export function createFakeSessionPorts(
     model?: ModelUpstream
     /** The egress mode (default: none — `egressFor` answers `proxied`). */
     egress?: SessionEgressPort | ((db: Database) => SessionEgressPort)
+    /**
+     * §18.22: each turn's credential lease (default: none — `credentialsFor` answers
+     * `PLATFORM_CREDENTIALS`: platform rows lease nothing, a `user` row fails its turn by name).
+     */
+    credentials?: SessionCredentialPort | ((db: Database) => SessionCredentialPort)
   } = {}
 ): FakeSessionPorts {
   const sandboxes = new Map<string, FakeSandbox>()
@@ -350,8 +367,75 @@ export function createFakeSessionPorts(
               : (overrides.egress as SessionEgressPort),
         }
       : {}),
+    ...(overrides.credentials
+      ? {
+          credentials: (db: Database) =>
+            typeof overrides.credentials === 'function'
+              ? overrides.credentials(db)
+              : (overrides.credentials as SessionCredentialPort),
+        }
+      : {}),
   }
   return ports
+}
+
+// ---- §18.22: personal AI accounts ----------------------------------------------------------------
+
+/** A sentinel that must never appear in a response, an event, a step result or a log line. */
+export const AGENT_SECRET_SENTINEL = 'sk-ant-oat01-SENTINEL-agent-credential-never-echoed'
+
+/**
+ * A connected personal account, sealed exactly as the store seals one (`putSealed`). Returns the
+ * row (sealed — never hand it to a response) and the secret that went in.
+ */
+export async function seedAgentCredential(
+  db: Database,
+  f: { tenant: { id: string }; user: { id: string } },
+  opts: {
+    runtime?: AgentRuntimeId
+    kind?: AgentCredentialKind
+    secret?: string
+    status?: AgentCredentialStatus
+    expiresAt?: Date | null
+    metadata?: AgentCredentialMetadata
+  } = {}
+): Promise<{ row: AgentCredentialRow; secret: string }> {
+  const runtime = opts.runtime ?? 'claude_code'
+  const secret = opts.secret ?? AGENT_SECRET_SENTINEL
+  await putSealed(db, loadConfig(createTestEnv()), {
+    tenantId: f.tenant.id,
+    userId: f.user.id,
+    runtime,
+    kind: opts.kind ?? (runtime === 'codex' ? 'codex_chatgpt_auth' : 'claude_oauth_token'),
+    secret,
+    expiresAt: opts.expiresAt ?? null,
+    metadata: opts.metadata ?? {},
+  })
+  if (opts.status && opts.status !== 'active') {
+    await db
+      .update(agentCredentials)
+      .set({ status: opts.status })
+      .where(
+        and(
+          eq(agentCredentials.tenantId, f.tenant.id),
+          eq(agentCredentials.userId, f.user.id),
+          eq(agentCredentials.runtime, runtime)
+        )
+      )
+  }
+  const [row] = await db
+    .select()
+    .from(agentCredentials)
+    .where(
+      and(
+        eq(agentCredentials.tenantId, f.tenant.id),
+        eq(agentCredentials.userId, f.user.id),
+        eq(agentCredentials.runtime, runtime)
+      )
+    )
+    .limit(1)
+  if (!row) throw new Error('seedAgentCredential: no row')
+  return { row, secret }
 }
 
 /** The pinned kit's `pnpm gate --list --json` (`tests/fixtures/kit-gate/`), verbatim. */

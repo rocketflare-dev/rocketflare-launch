@@ -11,7 +11,9 @@
  *   `SESSION_WORKFLOW.create({ id, params })`. App page P2: `fixRelease: { releaseId }` seeds the
  *   session from a failed release of this app — its first message (stage, GitHub run, log tail) is
  *   composed by `releases/fix-session.ts` and stored as the pending turn; 404 for another app's
- *   release, 409 `release_not_retryable` for one that is not failing.
+ *   release, 409 `release_not_retryable` for one that is not failing. §18.22: `runtime?` and
+ *   `credential?` pick the coding agent and whose account it bills (`credentials/resolve.ts` —
+ *   409 `session_runtime_disabled` / `agent_credential_not_allowed` / `agent_credential_required`).
  * - `GET /:id/sessions[?scope=active|all]` → `sessionListResponseSchema` (members see their own;
  *   the app's owners and admins see all of the app's).
  */
@@ -52,6 +54,7 @@ appSessionsRouter.post('/:id/sessions', validate('json', createSessionRequestSch
     actor: auditActor(c),
     realtime,
     firstMessage: seed?.message ?? null,
+    cfg,
   })
   return c.json({ session: toSessionDetail(session, true) }, 202)
 })

@@ -13,7 +13,7 @@
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { AiProvider } from '@launch/shared/ai/config'
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
-import type { AiUsageRowSummary, AiUsageSummary } from '@launch/shared/ai/usage'
+import type { AiUsageBilling, AiUsageRowSummary, AiUsageSummary } from '@launch/shared/ai/usage'
 import { and, eq, gte, lt, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { aiUsage } from '../../../db/schema'
@@ -29,11 +29,19 @@ export interface UsageInput {
   costMicrocents?: number | null
   /** Launch P3: the coding session billed (the model proxy's calls); null everywhere else. */
   sessionId?: string | null
+  /**
+   * §18.22: `subscription` — a person's own plan paid. The cost is stored null and never
+   * estimated, here or in `summarizeUsage`. Default `metered`.
+   */
+  billing?: AiUsageBilling
 }
 
 export async function recordUsage(db: Database, input: UsageInput): Promise<void> {
+  const billing = input.billing ?? 'metered'
   const cost =
-    input.costMicrocents ?? estimateCostMicrocents(input.provider, input.model, input.usage)
+    billing === 'subscription'
+      ? null
+      : (input.costMicrocents ?? estimateCostMicrocents(input.provider, input.model, input.usage))
   await db.insert(aiUsage).values({
     tenantId: input.tenantId,
     userId: input.userId ?? null,
@@ -46,6 +54,7 @@ export async function recordUsage(db: Database, input: UsageInput): Promise<void
     cacheReadTokens: input.usage.cacheReadTokens ?? 0,
     cacheWriteTokens: input.usage.cacheWriteTokens ?? 0,
     costMicrocents: cost,
+    billing,
   })
 }
 
@@ -96,12 +105,13 @@ export async function summarizeUsage(
       cacheReadTokens: sql<number>`coalesce(sum(${aiUsage.cacheReadTokens}), 0)::bigint`,
       cacheWriteTokens: sql<number>`coalesce(sum(${aiUsage.cacheWriteTokens}), 0)::bigint`,
       costMicrocents: sql<number | null>`sum(${aiUsage.costMicrocents})::bigint`,
-      // Rows written before this model had a price: priced below from their tokens.
-      unpricedCalls: sql<number>`count(*) filter (where ${aiUsage.costMicrocents} is null)::int`,
-      unpricedInput: sql<number>`coalesce(sum(${aiUsage.inputTokens}) filter (where ${aiUsage.costMicrocents} is null), 0)::bigint`,
-      unpricedOutput: sql<number>`coalesce(sum(${aiUsage.outputTokens}) filter (where ${aiUsage.costMicrocents} is null), 0)::bigint`,
-      unpricedCacheRead: sql<number>`coalesce(sum(${aiUsage.cacheReadTokens}) filter (where ${aiUsage.costMicrocents} is null), 0)::bigint`,
-      unpricedCacheWrite: sql<number>`coalesce(sum(${aiUsage.cacheWriteTokens}) filter (where ${aiUsage.costMicrocents} is null), 0)::bigint`,
+      // Rows written before this model had a price: priced below from their tokens. A
+      // `subscription` row (§18.22) is null on purpose — a person's plan paid — and is never priced.
+      unpricedCalls: sql<number>`count(*) filter (where ${aiUsage.costMicrocents} is null and ${aiUsage.billing} = 'metered')::int`,
+      unpricedInput: sql<number>`coalesce(sum(${aiUsage.inputTokens}) filter (where ${aiUsage.costMicrocents} is null and ${aiUsage.billing} = 'metered'), 0)::bigint`,
+      unpricedOutput: sql<number>`coalesce(sum(${aiUsage.outputTokens}) filter (where ${aiUsage.costMicrocents} is null and ${aiUsage.billing} = 'metered'), 0)::bigint`,
+      unpricedCacheRead: sql<number>`coalesce(sum(${aiUsage.cacheReadTokens}) filter (where ${aiUsage.costMicrocents} is null and ${aiUsage.billing} = 'metered'), 0)::bigint`,
+      unpricedCacheWrite: sql<number>`coalesce(sum(${aiUsage.cacheWriteTokens}) filter (where ${aiUsage.costMicrocents} is null and ${aiUsage.billing} = 'metered'), 0)::bigint`,
     })
     .from(aiUsage)
     .where(and(eq(aiUsage.tenantId, tenantId), gte(aiUsage.at, from), upper))

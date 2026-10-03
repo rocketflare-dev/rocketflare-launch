@@ -3,8 +3,10 @@
  * terminal: start one on an app, talk to it, ship it, end it. The same routes and the same
  * `@launch/shared/launch-sessions` schemas as the web page.
  *
- * - `start <app>` resolves the app by slug (`GET /api/apps/:slug`), then `POST
- *   /api/apps/:id/sessions`, and prints the session id and its page's URL.
+ * - `start <app> [--runtime <claude_code|codex>]` resolves the app by slug (`GET /api/apps/:slug`),
+ *   then `POST /api/apps/:id/sessions`, and prints the session id and its page's URL. `--runtime`
+ *   (§18.22) picks the coding agent; an unknown name is a usage error before any request, and one
+ *   the deployment does not run is the server's 409 `session_runtime_disabled`.
  * - `say <id> <message> [--follow]` posts one turn; `--follow` tails the session's DURABLE rows
  *   (`GET /api/sessions/:id/events?afterSeq=`) until the turn ends — Claude's text, one line per
  *   tool call, and the turn's footnote. A failed turn exits 1. With `--json` it prints ONE document
@@ -22,6 +24,11 @@
  * and a CLI tailing a turn every second is cheap. `sleep` and `pollMs` are injectable so the tests
  * run in-process without waiting.
  */
+import {
+  AGENT_RUNTIMES,
+  type AgentRuntimeId,
+  agentRuntimeSchema,
+} from '@launch/shared/launch-agents'
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import {
   isActiveSessionStatus,
@@ -93,6 +100,8 @@ async function getSession(client: ApiClient, id: string): Promise<Session> {
 export interface SessionsStartOptions {
   title?: string
   base?: string
+  /** §18.22: the coding agent (`AGENT_RUNTIMES`); omitted = the deployment's default. */
+  runtime?: string
 }
 
 export async function runSessionsStart(
@@ -100,6 +109,16 @@ export async function runSessionsStart(
   app: string,
   options: SessionsStartOptions = {}
 ): Promise<void> {
+  let runtime: AgentRuntimeId | undefined
+  if (options.runtime) {
+    const parsed = agentRuntimeSchema.safeParse(options.runtime)
+    if (!parsed.success) {
+      throw new CliError(`Unknown runtime "${options.runtime}"`, {
+        hint: `Use one of: ${AGENT_RUNTIMES.join(', ')}`,
+      })
+    }
+    runtime = parsed.data
+  }
   const client = requireClient(ctx)
   const detail = await resolveApp(client, app)
   const { data, raw } = await client.request('POST', `/api/apps/${detail.id}/sessions`, {
@@ -107,6 +126,7 @@ export async function runSessionsStart(
     body: {
       ...(options.title ? { title: options.title } : {}),
       ...(options.base ? { baseRef: options.base } : {}),
+      ...(runtime ? { runtime } : {}),
     },
   })
   const { session } = data

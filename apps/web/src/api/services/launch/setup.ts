@@ -687,6 +687,21 @@ export async function checkAnthropic(
   return { checks, metadata, settings: {} }
 }
 
+// ---- OpenAI (§18.22) -------------------------------------------------------------------------
+
+/**
+ * The key Codex sessions on Launch's account spend. Its real probe (`GET /v1/models`, the session
+ * model among them) is Stream B's (`docs/CONCEPTS.md` §18.22-B); until then a stored key is
+ * reported as not yet checked rather than as good.
+ */
+export async function checkOpenAi(): Promise<CheckOutcome> {
+  return {
+    checks: [warn('key', 'API key accepted', 'Launch does not check OpenAI keys yet.')],
+    metadata: {},
+    settings: {},
+  }
+}
+
 // ---- identity (read-only) --------------------------------------------------------------------
 
 export function identityStatus(cfg: AppConfig): SetupIdentity {
@@ -763,6 +778,8 @@ function probe(
       return checkGitHubApp(secret as CredentialPayload<typeof kind>, settings, opts)
     case 'anthropic_api_key':
       return checkAnthropic(secret as CredentialPayload<typeof kind>, settings, opts)
+    case 'openai_api_key':
+      return checkOpenAi()
   }
 }
 

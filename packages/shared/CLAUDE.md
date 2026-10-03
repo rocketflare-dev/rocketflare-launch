@@ -47,7 +47,15 @@ token and no sealed column — a config test pins it), `sessionWorkflowParamsSch
 `SESSION_WAKE_EVENT` (golden-tested) and `SESSION_REALTIME_ENTITY`, and the preview-host grammar:
 `newSessionShortId` / `newPreviewToken`, `previewLabel`, `previewUrl`, `parsePreviewHost`);
 `launch-setup.ts` gained the `anthropic_api_key` kind and the `session_policy` / `sessions_paused`
-settings ·
+settings · §18.22: `launch-agents.ts` (`AGENT_RUNTIMES` + labels, `SESSION_CREDENTIAL_MODES` /
+`SESSION_CREDENTIAL_SOURCES`, the value-free `agentCredentialSchema`, `AGENT_LOGIN_STATUSES` with
+`AGENT_LOGIN_ACTIVE_STATUSES` (the active-login index renders it), `agentLoginSchema`, the
+start/code bodies, `AGENT_LOGIN_CODE_EVENT` (golden-tested), `AGENT_LOGIN_TTL_MS`,
+`agentAccountsResponseSchema`, `agentPickerVisible`); `launch-sessions.ts` gained
+`runtimePolicySchema` + `runtimePolicyOf` / `defaultRuntimeOf`, the policy's optional `runtime` /
+`runtimes`, the create body's `runtime?` / `credential?` and the session's `runtime`,
+`credentialSource`, `credentialOwnerUserId` (defaulted, so an older payload parses);
+`launch-setup.ts` the `openai_api_key` kind; `ai/usage.ts` `AI_USAGE_BILLINGS` ·
 Launch (P4, `docs/plans/p4-approvals.md`): `launch-approvals.ts` (the approvals engine —
 `APPROVAL_KINDS` (+ `BUILT_APPROVAL_KINDS`, the four with handlers), `APPROVAL_STATUSES`,
 `APPROVAL_SUBJECT_TYPES`, `APPROVAL_POLICY_SCOPES`, `AUTO_APPROVE_ROLES` + `meetsAutoApproveRole`,

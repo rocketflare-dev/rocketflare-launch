@@ -627,6 +627,8 @@ export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
     SESSION_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     // Launch P5: shared config pushes — the same recorder; tests drive the class.
     GRANT_PUSH_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
+    // §18.22: personal-account sign-ins — the same recorder; tests drive the class.
+    AGENT_LOGIN_WORKFLOW: new RecordingWorkflow() as unknown as Workflow,
     APP_ENV: process.env.APP_ENV ?? 'development',
     APP_URL: process.env.APP_URL ?? 'http://localhost:3001',
     APP_NAME: process.env.APP_NAME ?? 'Launch Test',
@@ -666,6 +668,8 @@ export function stubs(env: TestEnv) {
     sandboxes: env.SESSION_SANDBOX as unknown as FakeSandboxNamespace | undefined,
     /** Launch P5: `GRANT_PUSH_WORKFLOW` — `created[i]` is `{ id: pushId, params: GrantPushParams }`. */
     grantPushWorkflow: env.GRANT_PUSH_WORKFLOW as unknown as RecordingWorkflow | undefined,
+    /** §18.22: `AGENT_LOGIN_WORKFLOW` — `created[i]` is `{ id: loginId, params: AgentLoginParams }`. */
+    agentLoginWorkflow: env.AGENT_LOGIN_WORKFLOW as unknown as RecordingWorkflow | undefined,
   }
 }
 

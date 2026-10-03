@@ -228,3 +228,20 @@ push ends `partial`), so a vendor error never retries a whole batch. Values are 
 Tests (`tests/api/grant-push-workflow.test.ts`) set `workflow.overrides = { backing }` — a
 `WorkerSecretsBacking` whose client has `cloud.fetch`, or a `LocalGrantBacking` — and drive `run`
 with `createFakeWorkflowStep()`, asserting the step names.
+
+## §18.22: `agent-login.ts`
+
+`AgentLoginWorkflow` (`AGENT_LOGIN_WORKFLOW`, `launch-agent-login[-staging]`) runs one relayed
+sign-in for a personal AI account; params `AgentLoginParams` (`{ loginId, tenantId }`,
+`@launch/shared/launch-agents`), instance id = the login id. Shape: `start` (record the sandbox id,
+boot `login-<id>` with the driver's hosts, start the CLI) → `prompt#N` → `runtime` → (a runtime
+whose login takes a code back) `code#N` (`waitForEvent(AGENT_LOGIN_CODE_EVENT)`, payload ignored —
+the route sealed the code onto the row) + `submit#N` → `finish#N` → `capture` (sealed into
+`agent_credentials`; returns `{ ok }`) — then `expire` / `fail` when a loop ran past the TTL or a
+step threw past its retries — and `cleanup` ALWAYS, in a `finally` (destroy the sandbox, null the
+URL and codes). A cancel is the row flipping under it: the next step reads `stopped`. The bodies
+are `services/sessions/logins/steps.ts`; the runtime's `LoginDriver` (`runtimes/<id>/login.ts`)
+does the CLI-specific part. Tests (`tests/api/agent-login-workflow.test.ts`) set `overrides = {
+ports, driverFor, now, sleep }` with a fake driver over the `FakeSandbox` and assert the step
+names, the destroyed sandbox and that the credential is in no step result.
+

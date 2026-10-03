@@ -24,8 +24,10 @@
  * - **`interceptHttps = true`, set explicitly.** It defaults to `false` on the stable packages
  *   (containers 0.3.7 / sandbox 0.12.10) despite the docs, and without it no HTTPS leaves a locked
  *   sandbox, allow-listed or not (S7 finding 1).
- * - `outboundByHost` hands `api.anthropic.com` to the model proxy (`egress/anthropic.ts`, slice 3c)
- *   and `github.com` to the git proxy (`egress/github.ts`, slice 3d) — in both modes. Under
+ * - `outboundByHost` is `SESSION_OUTBOUND_HANDLERS` (`egress/registry.ts`, §18.22): it hands
+ *   `api.anthropic.com` to the model proxy (`egress/anthropic.ts`, slice 3c) and `github.com` to the
+ *   git proxy (`egress/github.ts`, slice 3d) — in both modes. Codex's hosts are staged there for
+ *   Stream B. A login sandbox (`login-<id>`, `AgentLoginWorkflow`) is this class too. Under
  *   `allowlist` a host must ALSO be on the allow-list for its handler to run at all (S7: otherwise
  *   the proxy answers 520). The database has no handler: see `egress/forward-database.ts`. The handlers
  *   identify the session by `ctx.containerId` — this object's id — never by anything the sandbox
@@ -45,8 +47,7 @@
 import { type AppConfig, loadConfig } from '../../config'
 import { openDatabase } from '../../db/client'
 import { withDeadline } from '../services/sessions/deadline'
-import { handleAnthropic } from '../services/sessions/egress/anthropic'
-import { handleGitHub } from '../services/sessions/egress/github'
+import { SESSION_OUTBOUND_HANDLERS } from '../services/sessions/egress/registry'
 import { recordContainerStop } from '../services/sessions/lifecycle'
 import type { AppBindings } from '../types'
 import { loggerFor } from '../utils/core/logger'
@@ -81,7 +82,6 @@ export class SessionSandbox extends SessionSandboxBase<AppBindings> {
   }
 }
 
-SessionSandbox.outboundByHost = {
-  'api.anthropic.com': (req, env, ctx) => handleAnthropic(req, env as AppBindings, ctx),
-  'github.com': (req, env, ctx) => handleGitHub(req, env as AppBindings, ctx),
-}
+// Every host Launch handles a container's traffic for, from ONE table (§18.22,
+// `egress/registry.ts`): the model proxy and the git proxy.
+SessionSandbox.outboundByHost = SESSION_OUTBOUND_HANDLERS

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Sessions: agent runtimes and personal AI accounts — the foundation** (`docs/CONCEPTS.md`
+  §18.22). A session now records which coding agent it runs and whose account it bills, fixed at
+  start; nothing changes on a default deployment (Claude Code on Launch's key). New, all off by
+  default: `[vars]` `SESSION_RUNTIMES` (`claude_code`) and `SESSION_USER_CREDENTIALS` (blank) in
+  both tomls, the `AGENT_LOGIN_WORKFLOW` Workflow, the optional `OPENAI_API_KEY` secret and the
+  `openai_api_key` Setup credential; `POST /api/apps/:id/sessions` takes `runtime?` and
+  `credential?` (409 `session_runtime_disabled` / `agent_credential_not_allowed` /
+  `agent_credential_required`); `/api/me/agent-credentials` and `/api/me/agent-logins` (a relayed
+  sign-in in a throwaway sandbox); Profile → AI accounts and the session card's agent / "Bill to"
+  picker appear only when a deployment allows a choice; `launch sessions start --runtime`. A session
+  billed to a personal account takes turns and ships only from its owner (409
+  `session_credential_owner_only`) and has no money budget; its usage is recorded with
+  `ai_usage.billing = 'subscription'` and no cost. The sender of every message is now recorded, so
+  a landing's "who wrote messages" counts everyone who did. Claude subscriptions and Codex are wired
+  in later releases; until then those paths fail with "not wired yet". Migration 0036.
 - **Pages use the full width.** Audit, Secrets, Approvals, the apps catalogue, Notifications and the
   Settings, Setup and Admin areas no longer stop at a fixed width; forms and prose keep a reading
   width (`docs/DESIGN.md`).

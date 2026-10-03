@@ -1,6 +1,7 @@
 /**
  * `/api/me` (D13): the signed-in user's profile and per-tenant preferences. Profile belongs to the
- * PERSON (`users`), preferences to the person-in-this-tenant (`tenant_user_settings`).
+ * PERSON (`users`), preferences to the person-in-this-tenant (`tenant_user_settings`). §18.22: the
+ * person's own AI accounts and their sign-ins are `me-agents.ts`, mounted below.
  */
 import {
   updateProfileRequestSchema,
@@ -13,8 +14,12 @@ import { getUserPreferences, updateUserPreferences } from '../services/tenants'
 import { withAuth, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
+import { meAgentsRouter } from './me-agents'
 
 export const meRouter = createRouter()
+
+// §18.22: `/agent-credentials` and `/agent-logins` — the person's own AI accounts.
+meRouter.route('/', meAgentsRouter)
 
 meRouter.get('/', async c => {
   const { db, user, tenantId } = withAuth(c)

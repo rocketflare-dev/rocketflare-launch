@@ -78,6 +78,7 @@ import {
   WRANGLER_STAGING_TOML,
   WRANGLER_TOML,
 } from './rocketflare-dev'
+import { runtimeOf } from './runtimes'
 
 /** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
 export const SESSION_REPO_DIR = SESSION_WORKSPACE
@@ -312,15 +313,8 @@ export async function workspaceChanged(
   }
 }
 
-/** Claude Code's per-project directory name for `cwd`. */
-export function claudeProjectDir(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, '-')
-}
-
-/** The R2 key of a session's transcript. */
-export function transcriptKeyFor(sessionId: string): string {
-  return `sessions/${sessionId}/claude.jsonl`
-}
+/** Claude Code's transcript helpers live with its runtime (§18.22); re-exported where they always were. */
+export { claudeProjectDir, transcriptKeyFor } from './runtimes/claude-code/state'
 
 /** The last `max` characters of a command's output, for an error or an event. */
 export function outputTail(result: Pick<SandboxExecResult, 'stdout' | 'stderr'>, max = 4000) {
@@ -461,16 +455,23 @@ export async function checkpoint(
     pushed = true
   }
 
+  // The conversation, where the session's runtime keeps it (§18.22 — Claude: its transcript).
   let transcriptKey: string | null = null
-  if (deps.storage && session.claudeSessionId && /^[A-Za-z0-9-]+$/.test(session.claudeSessionId)) {
-    const home = opts.claudeHome ?? SESSION_CLAUDE_HOME
-    const path = `${home}/.claude/projects/${claudeProjectDir(cwd)}/${session.claudeSessionId}.jsonl`
+  const state = runtimeOf(session).state
+  const path =
+    deps.storage && session.claudeSessionId
+      ? await state.locate(deps.sandbox, session, {
+          cwd,
+          home: opts.claudeHome ?? SESSION_CLAUDE_HOME,
+        })
+      : null
+  if (deps.storage && path) {
     const transcript = await deps.sandbox.readFile(path)
     if (transcript !== null) {
-      transcriptKey = transcriptKeyFor(session.id)
+      transcriptKey = state.key(session.id)
       await deps.storage.put(transcriptKey, transcript, {
-        contentType: 'application/x-ndjson',
-        metadata: { sessionId: session.id, claudeSessionId: session.claudeSessionId },
+        contentType: state.contentType,
+        metadata: { sessionId: session.id, claudeSessionId: session.claudeSessionId ?? '' },
       })
     }
   }

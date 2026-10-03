@@ -21,6 +21,12 @@ export const CREDENTIAL_KINDS = [
    * sessions fall back to the Worker's `ANTHROPIC_API_KEY` secret.
    */
   'anthropic_api_key',
+  /**
+   * §18.22: the OpenAI key Codex sessions on Launch's account spend — swapped in at the egress
+   * like the Anthropic key, never in a sandbox. Its check and setup card are Stream B's
+   * (`services/launch/setup.ts` answers "not checked" until then).
+   */
+  'openai_api_key',
 ] as const
 export const credentialKindSchema = z.enum(CREDENTIAL_KINDS)
 export type CredentialKind = z.infer<typeof credentialKindSchema>
@@ -71,12 +77,18 @@ export const anthropicCredentialSchema = z.object({
     .refine(key => !key.startsWith('sk-ant-admin'), 'An API key, not an admin key'),
 })
 
+/** An OpenAI API key (`sk-…`, project keys `sk-proj-…`). */
+export const openAiCredentialSchema = z.object({
+  apiKey: z.string().trim().startsWith('sk-').min(20),
+})
+
 export const credentialPayloadSchemas = {
   cloudflare_api_token: cloudflareCredentialSchema,
   neon_org_api_key: neonCredentialSchema,
   resend_api_key: resendCredentialSchema,
   github_app: githubAppCredentialSchema,
   anthropic_api_key: anthropicCredentialSchema,
+  openai_api_key: openAiCredentialSchema,
 } as const satisfies Record<CredentialKind, z.ZodTypeAny>
 
 export type CredentialPayload<K extends CredentialKind = CredentialKind> = z.infer<

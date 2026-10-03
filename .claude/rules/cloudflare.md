@@ -36,7 +36,11 @@ workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm prov
   resume clones.
   Launch P5: `GRANT_PUSH_WORKFLOW` (`launch-grant-push[-staging]`, class `GrantPushWorkflow`); a
   missing one is a 503 `grants_not_configured` before any row, and `[vars] GRANT_BACKEND =
-  "cloudflare"` (`local` is development only). The analytics PLUGIN (D19, D31) adds **no binding**:
+  "cloudflare"` (`local` is development only). §18.22: `AGENT_LOGIN_WORKFLOW`
+  (`launch-agent-login[-staging]`, class `AgentLoginWorkflow`; a missing one is a 503
+  `agent_logins_not_configured` before any row) and `[vars] SESSION_RUNTIMES = "claude_code"` /
+  `SESSION_USER_CREDENTIALS = ""` (fail-closed); its sign-in sandboxes are the existing
+  `SessionSandbox` class, so no new container block. The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`
   dataset is deliberately NOT wired (the toml comment is the only trace). App thumbnails:
   `BROWSER` (`[browser] binding = "BROWSER"`, Browser Rendering — no resource to create, Workers

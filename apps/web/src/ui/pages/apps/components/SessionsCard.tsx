@@ -13,16 +13,27 @@
  *   PR. Members see their own sessions; the app's owners and admins see everyone's — the route
  *   decides, the card just renders what it gets.
  * - Freshness is the `['session']` nudge, plus a poll only while a listed session is moving.
+ * - §18.22: when the deployment offers a CHOICE — more than one coding agent, or a runtime that may
+ *   bill your own account — a compact picker sits above the list (`agentPickerVisible`): the agent,
+ *   and "Bill to: Launch / my <account>". With no choice to make (the default) there is no picker
+ *   and Start sends exactly what it always did.
  */
 import {
   ArrowTopRightOnSquareIcon,
   ChatBubbleLeftRightIcon,
   PlayIcon,
 } from '@heroicons/react/24/outline'
-import type { SessionSummary } from '@launch/shared/launch-sessions'
+import {
+  type AgentAccountsResponse,
+  type AgentRuntimeId,
+  agentPickerVisible,
+  type SessionCredentialSource,
+} from '@launch/shared/launch-agents'
+import type { CreateSessionRequest, SessionSummary } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
+import { useAgentAccounts } from '@/ui/hooks/useAgentAccounts'
 import { useAppSessions, useStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { timeAgo } from '@/ui/lib/format'
@@ -56,12 +67,104 @@ export function startRefusal(error: unknown): { tone: 'info' | 'warning'; messag
         tone: 'warning',
         message: 'Coding sessions are not set up on this deployment yet. Ask an administrator.',
       }
+    case 'agent_credential_required':
+      return { tone: 'info', message: `${error.message} Profile → AI accounts.` }
     default:
       return { tone: 'warning', message: error.message }
   }
 }
 
 const usd = (microcents: number) => `$${(microcents / 100_000_000).toFixed(2)}`
+
+/** The picker's choice, when there is one to make. */
+interface StartChoice {
+  runtime: AgentRuntimeId
+  credential: SessionCredentialSource
+}
+
+/**
+ * The start request for the picker's choice — `{}` when there is no picker (the P3 request,
+ * unchanged), else the runtime and, when the person may choose, whose account. Pure.
+ */
+export function startRequestFor(
+  accounts: AgentAccountsResponse | undefined,
+  choice: StartChoice | null
+): CreateSessionRequest {
+  if (!accounts || !choice || !agentPickerVisible(accounts.runtimes)) return {}
+  const option = accounts.runtimes.find(r => r.runtime === choice.runtime && r.enabled)
+  if (!option) return {}
+  if (option.credentialMode === 'platform') return { runtime: option.runtime }
+  if (option.credentialMode === 'user') return { runtime: option.runtime, credential: 'user' }
+  return { runtime: option.runtime, credential: choice.credential }
+}
+
+function StartPicker({
+  accounts,
+  choice,
+  onChange,
+}: {
+  accounts: AgentAccountsResponse
+  choice: StartChoice
+  onChange: (choice: StartChoice) => void
+}) {
+  const enabled = accounts.runtimes.filter(r => r.enabled)
+  const option = enabled.find(r => r.runtime === choice.runtime) ?? enabled[0]
+  if (!option) return null
+  const connected = accounts.credentials.some(
+    c => c.runtime === option.runtime && c.status === 'active'
+  )
+  return (
+    <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
+      {enabled.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="session-start-runtime" className="text-xs text-muted">
+            Coding agent
+          </label>
+          <select
+            id="session-start-runtime"
+            className="select select-sm"
+            value={option.runtime}
+            onChange={e => onChange({ ...choice, runtime: e.target.value as AgentRuntimeId })}
+          >
+            {enabled.map(r => (
+              <option key={r.runtime} value={r.runtime}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {option.credentialMode === 'user_or_platform' && (
+        <div className="flex flex-col gap-1">
+          <label htmlFor="session-start-billing" className="text-xs text-muted">
+            Bill to
+          </label>
+          <select
+            id="session-start-billing"
+            className="select select-sm"
+            value={choice.credential}
+            onChange={e =>
+              onChange({ ...choice, credential: e.target.value as SessionCredentialSource })
+            }
+          >
+            <option value="platform">Launch</option>
+            <option value="user">My {option.accountLabel}</option>
+          </select>
+        </div>
+      )}
+      {option.credentialMode === 'user' && (
+        <span className="text-xs text-muted">Billed to your {option.accountLabel}</span>
+      )}
+      {option.credentialMode !== 'platform' &&
+        (choice.credential === 'user' || option.credentialMode === 'user') &&
+        !connected && (
+          <span className="text-xs text-warning">
+            Connect your {option.accountLabel} in Profile first.
+          </span>
+        )}
+    </div>
+  )
+}
 
 function SessionRow({ appSlug, session }: { appSlug: string; session: SessionSummary }) {
   const title = session.title?.trim() || `Session ${session.shortId.slice(0, 6)}`
@@ -118,15 +221,19 @@ export function SessionsCard({
   const [showAll, setShowAll] = useState(false)
   const list = useAppSessions(appId, showAll ? 'all' : 'active')
   const start = useStartSession(appId)
+  const accounts = useAgentAccounts(canStart)
+  const [choice, setChoice] = useState<StartChoice | null>(null)
   const navigate = useNavigate()
   const items = list.data?.items ?? []
   const refusal = start.isError ? startRefusal(start.error) : null
+  const picker = canStart && accounts.data && agentPickerVisible(accounts.data.runtimes)
+  const firstEnabled = accounts.data?.runtimes.find(r => r.enabled)?.runtime ?? 'claude_code'
+  const current: StartChoice = choice ?? { runtime: firstEnabled, credential: 'platform' }
 
   const onStart = () =>
-    start.mutate(
-      {},
-      { onSuccess: ({ session }) => navigate(`/apps/${appSlug}/sessions/${session.id}`) }
-    )
+    start.mutate(startRequestFor(accounts.data, picker ? current : null), {
+      onSuccess: ({ session }) => navigate(`/apps/${appSlug}/sessions/${session.id}`),
+    })
 
   return (
     <SectionPanel
@@ -161,6 +268,9 @@ export function SessionsCard({
         </>
       }
     >
+      {picker && accounts.data && (
+        <StartPicker accounts={accounts.data} choice={current} onChange={setChoice} />
+      )}
       {refusal && (
         <div
           className={`alert alert-soft mb-3 text-sm ${refusal.tone === 'info' ? 'alert-info' : 'alert-warning'}`}

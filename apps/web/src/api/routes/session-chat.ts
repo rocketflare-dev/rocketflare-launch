@@ -7,8 +7,9 @@
  * - `POST /:id/turns` `sessionTurnRequestSchema` → 202 `sessionDetailResponseSchema`: stores
  *   `pending_message` and wakes the Workflow (`wakeOrRestart` — a lost instance is restarted); 409 `turn_in_progress` while
  *   one is pending or `working`, 409 `session_budget_exhausted` when `blocked`, 409
- *   `session_not_active` once it is shipping or over; 503 `sessions_not_configured` without the
- *   Workflow binding, before any write.
+ *   `session_not_active` once it is shipping or over; 409 `session_credential_owner_only` from
+ *   anyone but the owner of a session on a personal account (§18.22); 503
+ *   `sessions_not_configured` without the Workflow binding, before any write.
  * - `POST /:id/cancel` → `sessionCancelResponseSchema` (`cancel_requested_at`; the turn polls it
  *   and kills the process — or a waiting message is withdrawn); 409 `no_turn_in_progress`. A
  *   running turn whose heartbeat is stale (`SESSION_CANCEL_STALL_MS`: its turn step is gone, so
@@ -85,10 +86,11 @@ function changed(c: AppContext, tenantId: string, sessionId: string) {
 
 sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema), async c => {
   guardPermission(c, 'update', 'Session')
-  const { db, tenantId, logger, row } = await visibleSession(c)
+  const { db, tenantId, logger, user, row } = await visibleSession(c)
   const workflow = requireSessionWorkflow(c.env)
   const { message } = c.req.valid('json')
-  const updated = await requestTurn(db, row, message)
+  // §18.22: the sender is recorded, and a personal-account session takes only its owner's turns.
+  const updated = await requestTurn(db, row, message, new Date(), user.id)
   // A lost instance (a `wrangler dev` reload, retention) is restarted from the row.
   const woken = await wakeOrRestart(db, workflow, updated, logger)
   changed(c, tenantId, woken.id)

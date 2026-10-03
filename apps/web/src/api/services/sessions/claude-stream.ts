@@ -40,6 +40,7 @@
  * the placeholder) and is clipped, because a `Read` of a large file must not become a megabyte row.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
+import type { SessionCredentialSource } from '@launch/shared/launch-agents'
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
 import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
@@ -107,7 +108,14 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
  * `IS_SANDBOX=1` lets `bypassPermissions` run as root (the session image's user); `HOME` is pinned
  * to `SESSION_HOME` because the transcript path (`CLAUDE_PROJECT_DIR`) is derived from it.
  */
-export function claudeTurnEnv(model: string): Record<string, string> {
+export function claudeTurnEnv(
+  model: string,
+  /**
+   * §18.22: whose account the turn bills. `platform` is the only source wired; Stream A swaps the
+   * placeholder key for a placeholder OAuth token on `user` (the token itself never enters).
+   */
+  _source: SessionCredentialSource = 'platform'
+): Record<string, string> {
   return {
     ANTHROPIC_API_KEY: MODEL_KEY_PLACEHOLDER,
     ANTHROPIC_SMALL_FAST_MODEL: model,

@@ -8,7 +8,8 @@
  *   compare-and-set on `status = 'ready'` with nothing pending — 409 `session_not_ready`
  *   otherwise) + a wake; the Workflow's ship steps (`services/sessions/ship-steps.ts`, issue #1)
  *   run the gate themselves, a fix turn on red, and open the PR. Audited
- *   `session.ship_requested` (the Workflow records `session.shipped`).
+ *   `session.ship_requested` (the Workflow records `session.shipped`). §18.22: 409
+ *   `session_credential_owner_only` from anyone but the owner of a session on a personal account.
  * - `POST /:id/end` → 202 `sessionDetailResponseSchema`: `requested_action = 'end'` from any live
  *   status but `ending` (409 `session_not_endable`) — `shipping` included: a gate command stops
  *   within seconds and its database branch is deleted — and a running turn (a chat turn, or a
@@ -43,7 +44,11 @@ import { type SessionRow, sessions } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import { getSessionRow, getVisibleSession, sessionViewerOf } from '../services/sessions/access'
-import { requireSessionWorkflow, toSessionDetail } from '../services/sessions/chat'
+import {
+  assertCredentialOwner,
+  requireSessionWorkflow,
+  toSessionDetail,
+} from '../services/sessions/chat'
 import { nudgeSession } from '../services/sessions/events'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { defaultSessionPorts } from '../services/sessions/ports'
@@ -111,8 +116,10 @@ function mergingConflict(): ConflictError {
 }
 
 sessionShipRouter.post('/:id/ship', async c => {
-  const { db, tenantId, logger, realtime, row } = await visible(c, 'update')
+  const { db, tenantId, logger, realtime, user, row } = await visible(c, 'update')
   const workflow = requireSessionWorkflow(c.env)
+  // §18.22: a ship runs fix turns on the session's account — its owner's call alone.
+  assertCredentialOwner(row, user.id)
   if (row.status === 'working' || row.pendingMessage !== null) {
     throw new ConflictError(
       'Wait for the current turn to finish before shipping',

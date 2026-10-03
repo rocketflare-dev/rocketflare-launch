@@ -24,6 +24,11 @@
  * continues across turns and resumes, `turn` 0 for boot and lifecycle rows.
  */
 import {
+  AGENT_RUNTIMES,
+  type AgentRuntimeState,
+  SESSION_CREDENTIAL_SOURCES,
+} from '@launch/shared/launch-agents'
+import {
   ACTIVE_SESSION_STATUSES,
   type PrChecks,
   SESSION_ACTIONS,
@@ -50,6 +55,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core'
 import { tenantRef, timestamps } from './_helpers'
+import { agentCredentials } from './agent-credentials'
 import { apps } from './apps'
 import { tenantIsolation } from './rls'
 import { tenants } from './tenants'
@@ -143,8 +149,30 @@ export const sessions = pgTable(
     githubTokenSealed: text('github_token_sealed'),
     githubTokenExpiresAt: timestamp('github_token_expires_at', { withTimezone: true }),
 
+    // ---- the agent (§18.22)
+    /** The coding agent this session runs. Fixed at create. */
+    runtime: text('runtime', { enum: AGENT_RUNTIMES }).notNull().default('claude_code'),
+    /** `platform` (Launch's key) or `user` (the creator's personal account). Fixed at create. */
+    credentialSource: text('credential_source', { enum: SESSION_CREDENTIAL_SOURCES })
+      .notNull()
+      .default('platform'),
+    /** The personal credential a `user` session bills; null for `platform`. */
+    agentCredentialId: uuid('agent_credential_id').references(() => agentCredentials.id, {
+      onDelete: 'set null',
+    }),
+    /** Runtime-specific state the checkpoint and restore need (Codex: its rollout path). */
+    runtimeState: jsonb('runtime_state').$type<AgentRuntimeState>(),
+    /** Who sent the waiting `pending_message` (the turn's `user.message` names them). */
+    pendingMessageUserId: uuid('pending_message_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+
     // ---- Claude Code
-    /** `system.init`'s `session_id` — what the next turn passes to `--resume`. */
+    /**
+     * `system.init`'s `session_id` — what the next turn passes to `--resume`. The GENERIC resume id
+     * since §18.22 (Codex's thread id), read through `resumeIdOf(row)`; the name stays, because a
+     * rename is churn in every migration-applied database for no behaviour.
+     */
     claudeSessionId: text('claude_session_id'),
     /** R2 key of the checkpointed transcript: `sessions/<id>/claude.jsonl`. */
     transcriptKey: text('transcript_key'),

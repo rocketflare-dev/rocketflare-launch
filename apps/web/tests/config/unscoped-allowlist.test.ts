@@ -57,8 +57,10 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
   // Launch P3: a session's egress handlers get the platform's container id and nothing else, and a
   // preview host names the session by short id (then its signed cookie) — no session cookie, no
   // tenant, until the row is found.
-  'src/api/services/sessions/egress/anthropic.ts':
-    'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
+  // §18.22: the egress handlers' lookup moved to one file, which also finds a login sandbox's
+  // `agent_logins` row the same way.
+  'src/api/services/sessions/egress/sandbox-lookup.ts':
+    'pre-tenant: sandbox id → the live session (or the login in flight) row; tenant taken from the row',
   'src/api/services/sessions/egress/github.ts':
     'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
   'src/api/preview/gateway.ts':

@@ -22,6 +22,7 @@ import { healthPoll } from './services/launch/health'
 import { sessionsChecks } from './services/sessions/checks-cron'
 import { expireSessions } from './services/sessions/expire'
 import { sessionsGateSweep } from './services/sessions/gate-sweep'
+import { agentLoginsSweep } from './services/sessions/logins/sweep'
 import type { AppBindings } from './types'
 import { type Logger, loggerFor } from './utils/core/logger'
 
@@ -107,12 +108,14 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   // P4: expire approvals and retry their owed effects, then seal new audit events into the chain;
   // P5: remind and expire grants, and flag secrets due for rotation — before the seal, so its
   // audit rows join this run's chain. Issue #1: delete ship-gate database branches a ship left
-  // behind (`gate-*`, older than three hours).
+  // behind (`gate-*`, older than three hours). §18.22: expire personal-account sign-ins past their
+  // TTL and release credential claims a dead turn left.
   '*/5 * * * *': [
     healthPoll,
     expireSessions,
     sessionsChecks,
     sessionsGateSweep,
+    agentLoginsSweep,
     approvalsSweep,
     grantsSweep,
     auditSeal,

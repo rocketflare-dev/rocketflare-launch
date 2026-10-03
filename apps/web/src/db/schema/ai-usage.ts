@@ -5,6 +5,7 @@
  * app supplies a pricing table — cheap to record now, impossible to backfill later.
  */
 import type { AiProvider } from '@launch/shared/ai/config'
+import { AI_USAGE_BILLINGS } from '@launch/shared/ai/usage'
 import { relations } from 'drizzle-orm'
 import { bigint, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { tenantRef } from './_helpers'
@@ -42,6 +43,11 @@ export const aiUsage = pgTable(
     cacheReadTokens: integer('cache_read_tokens').notNull().default(0),
     cacheWriteTokens: integer('cache_write_tokens').notNull().default(0),
     costMicrocents: bigint('cost_microcents', { mode: 'number' }),
+    /**
+     * §18.22: `subscription` — a person's own plan paid (a coding session on a connected account):
+     * tokens recorded, `cost_microcents` null and never estimated (`summarizeUsage`).
+     */
+    billing: text('billing', { enum: AI_USAGE_BILLINGS }).notNull().default('metered'),
     at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
   },
   table => [

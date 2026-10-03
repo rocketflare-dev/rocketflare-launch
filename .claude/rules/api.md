@@ -90,6 +90,15 @@ Auth is per-mount, not global: the public surface is enumerable and small.
   and reconciles as before. The cost is bounded and stated: a dead instance is detected up to one
   window later
 - **Streaming routes speak AG-UI** (`services/ai/chat-turn.ts` is the ONE implementation; `routes/chat.ts` and `routes/agui.ts` are wrappers around it): resolve, authorise, validate and write anything that can fail as JSON **before** the stream opens — after the first frame a failure can only be a `RUN_ERROR`. Inside the stream use `streamDatabase(c)` (`utils/routes/route-helpers.ts`) for every write and close it in the stream's `finally`: `databaseMiddleware` ends the request's `db` in `waitUntil` the moment the Response object is returned, which is BEFORE the stream body runs. Transport is hono's generic `stream(c, cb)` plus `createAguiEncoder(c.req.header('Accept'))` (`services/ai/agui.ts`) — **never `streamSSE`**, whose `writeSSE` imposes an `event:` line and pins the content type, and spec AG-UI frames are `data:` only. `encodeBinary` covers SSE and protobuf in one path; await every write and the tracer flush inside the stream — there is no `defer` after the Response. A cancelled run emits NOTHING: closing with neither `RUN_FINISHED` nor `RUN_ERROR` IS the cancellation signal
+- **A coding session's agent and account are decided ONCE, at create** (§18.22,
+  `services/sessions/credentials/resolve.ts`): `SESSION_RUNTIMES` / `SESSION_USER_CREDENTIALS`
+  (fail-closed) narrow the policy's `runtimes`, which narrow the request. Everything else reaches a
+  runtime through `runtimeOf(row)` (`services/sessions/runtimes/`) — never an `if (runtime ===
+  'codex')` outside that directory — and a turn's credential through `ports.credentials(db)`'s lease.
+  `/api/me/agent-credentials` and `/api/me/agent-logins` (`routes/me-agents.ts`, mounted by
+  `me.ts`) are the caller's own (tenant AND user in every predicate); starting a sign-in is a row
+  and an `AGENT_LOGIN_WORKFLOW` instance, and a pasted code is sealed onto the row by
+  compare-and-set before the wake, whose payload is empty
 
 ## Contracts live in `packages/shared` (`@launch/shared`)
 

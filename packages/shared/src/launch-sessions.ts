@@ -29,6 +29,15 @@ import {
   agentToolEndEventDataSchema,
   agentToolStartEventDataSchema,
 } from './ai/agents'
+import {
+  AGENT_RUNTIMES,
+  type AgentRuntimeId,
+  agentRuntimeSchema,
+  DEFAULT_AGENT_RUNTIME,
+  type SessionCredentialMode,
+  sessionCredentialModeSchema,
+  sessionCredentialSourceSchema,
+} from './launch-agents'
 import { healthStatusSchema, sessionShipModeSchema } from './launch-apps'
 
 // ---- enums -------------------------------------------------------------------------------------
@@ -559,12 +568,29 @@ export interface SessionEventInput<T extends SessionEventType = SessionEventType
 // ---- policy ------------------------------------------------------------------------------------
 
 /**
+ * One agent runtime under the session policy (§18.22): whether sessions may run it, its model, and
+ * whose account they bill. The deployment flags (`SESSION_RUNTIMES`, `SESSION_USER_CREDENTIALS`)
+ * always win over it.
+ */
+export const runtimePolicySchema = z.object({
+  enabled: z.boolean(),
+  model: z.string().trim().min(1).max(100),
+  credentialMode: sessionCredentialModeSchema,
+})
+export type RuntimePolicy = z.infer<typeof runtimePolicySchema>
+
+/**
  * `launch_settings.session_policy`, with code defaults, snapshotted on `sessions.policy` at create
  * so a policy edit never changes a session already running. `model` is the ONLY model the model
- * proxy lets through for the session.
+ * proxy lets through for the session — the CHOSEN runtime's model once frozen on a row
+ * (`createSession`), so the allow-list never has to know about runtimes. `runtime` (the default a
+ * session starts with) and `runtimes` (per-runtime settings) are optional: a stored policy without
+ * them is Claude Code on Launch's key, exactly as before (`runtimePolicyOf`).
  */
 export const sessionPolicySchema = z.object({
   model: z.string().trim().min(1).max(100),
+  runtime: agentRuntimeSchema.optional(),
+  runtimes: z.object(runtimesShape()).partial().optional(),
   maxSessionUsd: z.number().positive().max(10_000),
   appMonthlyUsd: z.number().positive().max(1_000_000),
   maxConcurrentPerApp: z.number().int().positive().max(25),
@@ -592,6 +618,37 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
 export function resolveSessionPolicy(stored: unknown): SessionPolicy {
   const partial = sessionPolicySchema.partial().safeParse(stored)
   return partial.success ? { ...DEFAULT_SESSION_POLICY, ...partial.data } : DEFAULT_SESSION_POLICY
+}
+
+function runtimesShape(): Record<AgentRuntimeId, typeof runtimePolicySchema> {
+  return Object.fromEntries(AGENT_RUNTIMES.map(id => [id, runtimePolicySchema])) as Record<
+    AgentRuntimeId,
+    typeof runtimePolicySchema
+  >
+}
+
+/** Codex's model when the policy names none (Stream B pins and prices it). */
+export const DEFAULT_CODEX_MODEL = 'gpt-5-codex'
+
+/**
+ * The policy for one runtime, defaults filled in. With no `runtimes` entry a runtime is enabled on
+ * either account, Claude Code on the policy's own `model` — so every policy stored before runtimes
+ * existed is unchanged in effect: the DEPLOYMENT flags (`SESSION_RUNTIMES`, default Claude Code;
+ * `SESSION_USER_CREDENTIALS`, default none) narrow it to Claude Code on Launch's key, and turning
+ * a flag on is the one switch an operator needs. An entry narrows further, never widens.
+ */
+export function runtimePolicyOf(policy: SessionPolicy, runtime: AgentRuntimeId): RuntimePolicy {
+  const stored = policy.runtimes?.[runtime]
+  if (stored) return stored
+  const credentialMode: SessionCredentialMode = 'user_or_platform'
+  return runtime === 'claude_code'
+    ? { enabled: true, model: policy.model, credentialMode }
+    : { enabled: true, model: DEFAULT_CODEX_MODEL, credentialMode }
+}
+
+/** The runtime a new session runs when the request names none. */
+export function defaultRuntimeOf(policy: SessionPolicy): AgentRuntimeId {
+  return policy.runtime ?? DEFAULT_AGENT_RUNTIME
 }
 
 /** Microcents (1/1 000 000 of a cent) per USD — `ai_usage.cost_microcents`'s unit. */
@@ -698,6 +755,14 @@ export const createSessionRequestSchema = z.object({
    * ready. 409 `release_not_retryable` when the release is not failing.
    */
   fixRelease: z.object({ releaseId: z.string().uuid() }).optional(),
+  /** §18.22: the coding agent (default: the policy's `runtime`, else Claude Code). */
+  runtime: agentRuntimeSchema.optional(),
+  /**
+   * §18.22: whose account the session bills — `platform` (Launch's key) or `user` (the creator's
+   * connected personal account). Default: `user` when the runtime's mode is `user`, else
+   * `platform`. Fixed for the session's life.
+   */
+  credential: sessionCredentialSourceSchema.optional(),
 })
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>
 
@@ -785,6 +850,15 @@ export const sessionSchema = sessionSummarySchema.extend({
   landing: sessionLandingSchema.nullable().default(null),
   /** Issue #5: the PR's title and body as Launch wrote them; null before the first ship. */
   shipSummary: sessionShipSummarySchema.nullable().default(null),
+  /** §18.22: the coding agent this session runs. */
+  runtime: agentRuntimeSchema.default(DEFAULT_AGENT_RUNTIME),
+  /** §18.22: `platform` (Launch's key) or `user` (a personal account) — fixed at create. */
+  credentialSource: sessionCredentialSourceSchema.default('platform'),
+  /**
+   * §18.22: whose personal account a `user` session bills — the only person who may send it turns
+   * or ship it (409 `session_credential_owner_only` for anyone else). Null for `platform`.
+   */
+  credentialOwnerUserId: z.string().uuid().nullable().default(null),
 })
 export type Session = z.infer<typeof sessionSchema>
 

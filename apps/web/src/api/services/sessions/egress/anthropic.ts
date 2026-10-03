@@ -37,8 +37,9 @@
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { AiProvider } from '@launch/shared/ai/config'
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
-import { ACTIVE_SESSION_STATUSES, resolveSessionPolicy } from '@launch/shared/launch-sessions'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import type { AiUsageBilling } from '@launch/shared/ai/usage'
+import { resolveSessionPolicy } from '@launch/shared/launch-sessions'
+import { and, eq, sql } from 'drizzle-orm'
 import { type AppConfig, loadConfig } from '../../../../config'
 import { type Database, type DatabaseHandle, openDatabase } from '../../../../db/client'
 import { type SessionRow, sessions } from '../../../../db/schema'
@@ -50,6 +51,7 @@ import { MODEL_KEY_PLACEHOLDER, resolveModelKey } from '../model-key'
 import type { ModelUpstream } from '../ports'
 import type { EgressContext } from './forward-git'
 import { anthropicError, keyedModelRequest, type ModelCall, readModelCall } from './forward-model'
+import { sessionForSandbox } from './sandbox-lookup'
 
 export type { EgressContext } from './forward-git'
 export {
@@ -70,23 +72,8 @@ export interface AnthropicEgressDeps {
 /** The `ai_usage.feature` a session's model calls are recorded under. */
 export const SESSION_USAGE_FEATURE = 'session'
 
-/**
- * The live session a container belongs to, or null. PRE-TENANT: `sandbox_id` is unique and the
- * platform — not the sandbox — supplies it; the tenant is taken from the row that comes back.
- */
-export async function sessionForSandbox(
-  db: Database,
-  sandboxId: string
-): Promise<SessionRow | null> {
-  const [row] = await db
-    .select()
-    .from(sessions)
-    .where(
-      and(eq(sessions.sandboxId, sandboxId), inArray(sessions.status, [...ACTIVE_SESSION_STATUSES]))
-    )
-    .limit(1)
-  return row ?? null
-}
+/** The pre-tenant lookup moved to `sandbox-lookup.ts` (§18.22); re-exported where it always was. */
+export { sessionForSandbox }
 
 const defaultDeps = (): AnthropicEgressDeps => ({
   upstream: { fetch: req => fetch(req) },
@@ -285,11 +272,14 @@ export async function recordSessionUsage(
   /**
    * A call Launch made itself for the session (the ship's PR summary, `ship.ts`): its provider
    * and `ai_usage.feature`. Default: the session's own Anthropic call, feature `session`.
+   * `billing: 'subscription'` (§18.22): a personal account paid — recorded with a null cost.
    */
-  opts: { provider?: AiProvider; feature?: string } = {}
+  opts: { provider?: AiProvider; feature?: string; billing?: AiUsageBilling } = {}
 ): Promise<void> {
   const provider = opts.provider ?? 'anthropic'
-  const cost = estimateCostMicrocents(provider, model, usage)
+  // §18.22: a person's own plan paid — the tokens count, the cost is null and the total unmoved.
+  const billing = opts.billing ?? 'metered'
+  const cost = billing === 'subscription' ? null : estimateCostMicrocents(provider, model, usage)
   await db.transaction(async tx => {
     await recordUsage(tx, {
       tenantId: session.tenantId,
@@ -300,6 +290,7 @@ export async function recordSessionUsage(
       model,
       usage,
       costMicrocents: cost,
+      billing,
     })
     await tx
       .update(sessions)

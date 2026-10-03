@@ -211,6 +211,7 @@ sessions
   .description('start a session on an app (by slug)')
   .option('--title <title>', 'a name for the session')
   .option('--base <ref>', 'branch, tag or commit to start from (default: the app’s default branch)')
+  .option('--runtime <runtime>', 'coding agent: claude_code or codex (default: the deployment’s)')
   .action(action((ctx, cmd) => runSessionsStart(ctx, cmd.args[0] ?? '', cmd.opts())))
 sessions
   .command('say <id> <message>')

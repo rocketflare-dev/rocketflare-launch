@@ -286,6 +286,25 @@ describe('wrangler parity: shared config and grants (Launch P5)', () => {
   })
 })
 
+describe('wrangler parity: agent runtimes and personal AI accounts (§18.22)', () => {
+  it.each([
+    ['production', prod, 'launch-agent-login'],
+    ['staging', staging, 'launch-agent-login-staging'],
+  ] as const)(
+    '%s binds the sign-in Workflow, and both flags fail closed',
+    (_label, config, name) => {
+      expect(rows(config, 'workflows')).toContainEqual({
+        name,
+        binding: 'AGENT_LOGIN_WORKFLOW',
+        class_name: 'AgentLoginWorkflow',
+      })
+      // Claude Code only, on Launch's key, until a deployment deliberately opts in.
+      expect(get(config, 'vars.SESSION_RUNTIMES')).toBe('claude_code')
+      expect(get(config, 'vars.SESSION_USER_CREDENTIALS')).toBe('')
+    }
+  )
+})
+
 // ---- the database driver (D35) -------------------------------------------------------------
 
 describe('wrangler parity: database driver', () => {

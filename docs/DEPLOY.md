@@ -230,6 +230,15 @@ needs, beyond the bindings above:
   handlers IN THIS WORKER — the sandbox never holds either. A change to the var is a redeploy; a
   container already running keeps its interception until it restarts, so check with a NEW
   session.
+- **Agent runtimes and personal AI accounts** (`docs/CONCEPTS.md` §18.22). `[vars]` in both tomls:
+  `SESSION_RUNTIMES = "claude_code"` (the coding agents sessions may run; `codex` once stream B
+  ships) and `SESSION_USER_CREDENTIALS = ""` (the runtimes whose sessions may bill a person's own
+  Claude subscription or ChatGPT plan — off, and it stays off until the policy question in §18.22's
+  Known gaps has a sign-off). `[[workflows]]` `AGENT_LOGIN_WORKFLOW` (`launch-agent-login`, staging
+  `-staging`; nothing to create) runs a sign-in in a throwaway `login-<id>` sandbox of the
+  existing `SessionSandbox` class — those count against `max_instances`. Optional secret
+  `OPENAI_API_KEY` (or the Setup page's `openai_api_key` credential): what Codex sessions on
+  Launch's account will spend. Nothing to do on a deploy that leaves both vars at their defaults.
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409

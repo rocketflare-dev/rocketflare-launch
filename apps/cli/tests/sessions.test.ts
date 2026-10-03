@@ -138,6 +138,24 @@ describe('sessions start / ls / end / preview-url', () => {
     expect(out.content()).toContain(`${SERVER}/apps/expenses/sessions/${ID}`)
   })
 
+  it('--runtime picks the coding agent; an unknown one is refused before any request', async () => {
+    const { fetch, calls } = mockFetch({
+      '/api/apps/expenses': () => jsonResponse(appDetail),
+      [`/api/apps/${APP_ID}/sessions`]: () =>
+        jsonResponse({ session: session({ status: 'requested' }) }, 202),
+    })
+    const { ctx } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsStart(ctx, 'expenses', { runtime: 'codex' })
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ runtime: 'codex' })
+
+    const refused = mockFetch({})
+    const second = await testContext({ store: await loggedInStore(), fetch: refused.fetch })
+    await expect(runSessionsStart(second.ctx, 'expenses', { runtime: 'cursor' })).rejects.toThrow(
+      /Unknown runtime/
+    )
+    expect(refused.calls).toHaveLength(0)
+  })
+
   it('lists with --json as the raw body, and asks for finished ones with --all', async () => {
     const { fetch, calls } = mockFetch({
       '/api/apps/expenses': () => jsonResponse(appDetail),

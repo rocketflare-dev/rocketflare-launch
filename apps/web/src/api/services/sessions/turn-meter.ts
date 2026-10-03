@@ -26,8 +26,8 @@ export interface TurnUsageEntry {
 }
 
 export interface TurnMeter {
-  /** Feed every mapping the turn's parser produced. */
-  observe(mapping: ClaudeLineMapping): void
+  /** Feed every mapping the turn's parser produced (any runtime's: only the usage is read). */
+  observe(mapping: Pick<ClaudeLineMapping, 'messageUsage' | 'turnUsage'>): void
   /** The priced sum of the responses seen so far (an unpriced model counts 0, as in the proxy). */
   runningCostMicrocents(): number
   /** What to record: the `result` line's usage, else the responses seen. Empty usage is dropped. */

@@ -8,6 +8,15 @@
 import { z } from 'zod'
 import { aiProviderSchema } from './config'
 
+/**
+ * Who paid for a generation (§18.22): `metered` — an account Launch or the tenant holds, priced from
+ * the table; `subscription` — a person's own plan (a coding session on a connected Claude or
+ * ChatGPT account), recorded for its tokens with a null cost that is never estimated.
+ */
+export const AI_USAGE_BILLINGS = ['metered', 'subscription'] as const
+export const aiUsageBillingSchema = z.enum(AI_USAGE_BILLINGS)
+export type AiUsageBilling = z.infer<typeof aiUsageBillingSchema>
+
 export const aiUsageSchema = z.object({
   id: z.string().uuid(),
   tenantId: z.string().uuid(),
@@ -22,6 +31,7 @@ export const aiUsageSchema = z.object({
   cacheWriteTokens: z.number().int().nonnegative(),
   /** 1/1,000,000 of a cent; null until an app supplies pricing. */
   costMicrocents: z.number().int().nullable(),
+  billing: aiUsageBillingSchema.default('metered'),
   at: z.coerce.date(),
 })
 export type AiUsage = z.infer<typeof aiUsageSchema>

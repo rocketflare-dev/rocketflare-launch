@@ -37,10 +37,12 @@ import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { AppBindings } from '../../types'
+import { createSessionCredentialPort, PLATFORM_CREDENTIALS } from './credentials/lease'
 import { NeonSessionDb } from './db/neon-session-db'
 import { HostEgress } from './egress/host'
 import { GitHubRepoHost } from './repo/github-repo-host'
 import { LocalRepoHost } from './repo/local-repo-host'
+import type { SessionCredentialPort } from './runtimes/types'
 import { CloudflareSandbox } from './sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from './sandbox/remote-sandbox'
 import type { SandboxHostBinding } from './sandbox-host/protocol'
@@ -53,8 +55,16 @@ import type { SandboxPort } from './sandbox-port'
  * too early fails by NAME rather than by `undefined is not a function`.
  */
 export class NotWiredError extends Error {
-  constructor(what: string, slice: '3b' | '3c' | '3d') {
-    super(`${what} is not wired yet (P3 slice ${slice}, docs/plans/p3-sessions.md)`)
+  /**
+   * `slice`: a P3 slice, or one of §18.22's streams — `A` (Claude subscriptions) or `B` (Codex),
+   * which fill in the runtime seam's stubs (`runtimes/`, `docs/CONCEPTS.md` §18.22).
+   */
+  constructor(what: string, slice: '3b' | '3c' | '3d' | 'A' | 'B') {
+    super(
+      slice === 'A' || slice === 'B'
+        ? `${what} is not wired yet (§18.22 stream ${slice}, docs/CONCEPTS.md)`
+        : `${what} is not wired yet (P3 slice ${slice}, docs/plans/p3-sessions.md)`
+    )
     this.name = 'NotWiredError'
   }
 }
@@ -294,6 +304,17 @@ export function egressFor(ports: Pick<SessionPorts, 'egress'>, db: Database): Se
   return ports.egress?.(db) ?? PROXIED_EGRESS
 }
 
+/**
+ * §18.22: how a turn gets its credential — `PLATFORM_CREDENTIALS` (lease nothing; a `user` row
+ * fails its turn by name) for any ports that do not say otherwise (the fakes).
+ */
+export function credentialsFor(
+  ports: Pick<SessionPorts, 'credentials'>,
+  db: Database
+): SessionCredentialPort {
+  return ports.credentials?.(db) ?? PLATFORM_CREDENTIALS
+}
+
 // ---- the bundle --------------------------------------------------------------------------------
 
 export interface SessionPorts {
@@ -306,6 +327,8 @@ export interface SessionPorts {
   model: ModelUpstream
   /** How the container reaches Anthropic and GitHub; absent = `proxied` (see `egressFor`). */
   egress?(db: Database): SessionEgressPort
+  /** §18.22: each turn's credential lease; absent = platform only (see `credentialsFor`). */
+  credentials?(db: Database): SessionCredentialPort
 }
 
 /** What a caller needs besides the ports to act on a session: the policy it runs under. */
@@ -345,6 +368,7 @@ export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPo
             setEgressGrant: (name, grant) => sandboxHostBinding(env).setEgressGrant(name, grant),
           })
         : PROXIED_EGRESS,
+    credentials: db => createSessionCredentialPort(db, cfg),
   }
 }
 

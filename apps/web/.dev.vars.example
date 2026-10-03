@@ -75,6 +75,9 @@ OIDC_TRUST_EMAIL=
 # Launch P3: coding sessions spend this key too (through the model proxy — it never enters a
 # sandbox) unless the Setup page holds an `anthropic_api_key` credential.
 ANTHROPIC_API_KEY=
+# §18.22: the OpenAI key Codex sessions on Launch's account spend (through the egress — never in a
+# sandbox) unless the Setup page holds an `openai_api_key` credential. Unused until Codex is wired.
+OPENAI_API_KEY=
 EMBEDDINGS_API_KEY=
 # Evals only (D33, docs/EVALS.md): `pnpm eval --provider fireworks|gemini` (and `--judge-provider`)
 # read these; the Worker never does, which is why they are comments here and not bindings.
@@ -126,6 +129,13 @@ SESSION_EGRESS=
 # what went wrong; `pretty` prints it on one line instead of a multi-line object.
 SANDBOX_LOG_LEVEL=warn
 SANDBOX_LOG_FORMAT=pretty
+# Agent runtimes and personal AI accounts (docs/CONCEPTS.md §18.22). SESSION_RUNTIMES: the coding
+# agents sessions may run, comma-separated (claude_code, codex); blank = claude_code.
+# SESSION_USER_CREDENTIALS: the runtimes whose sessions may bill a person's OWN account (a Claude
+# subscription, a ChatGPT plan), connected in Profile; blank = none. Codex and personal accounts are
+# wired in later releases — until then the sign-in and the Codex turn fail with "not wired yet".
+SESSION_RUNTIMES=
+SESSION_USER_CREDENTIALS=
 
 # --- Shared config and grants (Launch P5, docs/plans/p5-grants.md) ----------------------
 # `local` records the names a push would put on an app's Worker and calls no vendor. Only with

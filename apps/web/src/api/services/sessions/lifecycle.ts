@@ -11,8 +11,13 @@
  * - 409 `sessions_paused` while an operator has drained sessions;
  * - 409 `session_limit` at `maxConcurrentPerApp` active sessions (`ACTIVE_SESSION_STATUSES`, the
  *   partial index `sessions_app_active_idx`);
- * - 409 `session_budget_exhausted` when the app's month is spent (`appMonthSpend`, `budget.ts`).
- * Then the row (the policy SNAPSHOTTED onto it), audit `session.created`, and
+ * - 409 `session_budget_exhausted` when the app's month is spent (`appMonthSpend`, `budget.ts`) —
+ *   not for a session on a personal account, which Launch does not pay for;
+ * - §18.22 (`credentials/resolve.ts`): 409 `session_runtime_disabled`,
+ *   `agent_credential_not_allowed` or `agent_credential_required` for a runtime or account that is
+ *   not on offer.
+ * Then the row (the policy SNAPSHOTTED onto it, with the chosen runtime's model; the runtime and
+ * whose account it bills fixed for its life), audit `session.created`, and
  * `SESSION_WORKFLOW.create({ id: session.id, params })`.
  *
  * Waking is 3c's `wakeSession`. When it cannot deliver — the instance is gone (a `wrangler dev`
@@ -33,6 +38,7 @@ import {
   sessionBranchName,
 } from '@launch/shared/launch-sessions'
 import { and, desc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
+import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { type AppRow, apps, type SessionRow, sessions } from '../../../db/schema'
 import type { AppBindings } from '../../types'
@@ -42,6 +48,7 @@ import { getSetting, putSetting } from '../launch/credentials'
 import type { Realtime } from '../realtime'
 import { appMonthSpend } from './budget'
 import { requireSessionWorkflow, type WarnLogger, wakeSession } from './chat'
+import { resolveSessionCredential, runtimeFlagsOf } from './credentials/resolve'
 import { nudgeSession } from './events'
 import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
 
@@ -150,6 +157,11 @@ export interface CreateSessionInput {
    * (`releases/fix-session.ts`).
    */
   firstMessage?: string | null
+  /**
+   * §18.22: the deployment's runtime flags (`SESSION_RUNTIMES`, `SESSION_USER_CREDENTIALS`,
+   * `SESSION_SANDBOX_HOST`). Absent = the defaults: Claude Code on Launch's key.
+   */
+  cfg?: AppConfig
 }
 
 /** Start a session on `app` — see the header for every refusal. */
@@ -169,7 +181,17 @@ export async function createSession(
       'sessions_paused'
     )
   }
-  const policy = await loadSessionPolicy(db)
+  const stored = await loadSessionPolicy(db)
+  // §18.22: which runtime, whose account, and the model to freeze — refused before any write.
+  const resolved = await resolveSessionCredential(db, {
+    flags: runtimeFlagsOf(input.cfg),
+    policy: stored,
+    tenantId,
+    userId: input.userId,
+    request: { runtime: input.request.runtime, credential: input.request.credential },
+    now: input.now,
+  })
+  const policy = resolved.policy
   if ((await activeSessionCount(db, tenantId, app.id)) >= policy.maxConcurrentPerApp) {
     throw new ConflictError(
       `This app already has ${policy.maxConcurrentPerApp} active sessions. End one first.`,
@@ -177,8 +199,11 @@ export async function createSession(
       { limit: policy.maxConcurrentPerApp }
     )
   }
-  const month = await appMonthSpend(db, { tenantId, appId: app.id, policy }, input.now)
-  if (month.spentMicrocents >= month.capMicrocents) {
+  const month =
+    resolved.source === 'user'
+      ? null
+      : await appMonthSpend(db, { tenantId, appId: app.id, policy }, input.now)
+  if (month && month.spentMicrocents >= month.capMicrocents) {
     throw new ConflictError(
       'This app has used its coding-session budget for the month',
       'session_budget_exhausted',
@@ -210,6 +235,10 @@ export async function createSession(
           instanceId: id,
           imageVersion: SESSION_IMAGE_VERSION,
           policy,
+          runtime: resolved.runtime,
+          credentialSource: resolved.source,
+          agentCredentialId: resolved.credentialId,
+          pendingMessageUserId: input.firstMessage ? input.userId : null,
           lastActivityAt: now,
         })
         .returning()
@@ -226,7 +255,16 @@ export async function createSession(
     targetType: 'session',
     targetId: row.id,
     appId: app.id,
-    summary: { after: { branch: row.branch, baseRef: row.baseRef, title: row.title } },
+    summary: {
+      after: {
+        branch: row.branch,
+        baseRef: row.baseRef,
+        title: row.title,
+        // §18.22: only when not the default, so a Claude-on-Launch audit row reads as it always did.
+        ...(row.runtime !== 'claude_code' ? { runtime: row.runtime } : {}),
+        ...(row.credentialSource !== 'platform' ? { credentialSource: row.credentialSource } : {}),
+      },
+    },
   })
 
   try {
