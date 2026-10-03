@@ -17,6 +17,14 @@
   `ai_usage.billing = 'subscription'` and no cost. The sender of every message is now recorded, so
   a landing's "who wrote messages" counts everyone who did. Claude subscriptions and Codex are wired
   in later releases; until then those paths fail with "not wired yet". Migration 0036.
+- **Sessions on your own Claude subscription** (`docs/CONCEPTS.md` §18.22-A; only where
+  `SESSION_USER_CREDENTIALS` lists `claude_code`). Profile → AI accounts → Connect runs Claude
+  Code's own `claude setup-token` in a throwaway sandbox: open Anthropic's sign-in in a new tab,
+  paste the `code#state` it shows back into Launch, and the year-long token is stored encrypted. A
+  session billed to it runs with a placeholder token; Launch's model proxy swaps the real one in,
+  records the usage with no cost and no money budget, answers 404 to Claude Code's requests for
+  org-managed settings, and marks the account "Needs reconnecting" when Anthropic refuses the
+  token. The sandbox egress gains a `platform.claude.com` handler that only a sign-in may use.
 - **Pages use the full width.** Audit, Secrets, Approvals, the apps catalogue, Notifications and the
   Settings, Setup and Admin areas no longer stop at a fixed width; forms and prose keep a reading
   width (`docs/DESIGN.md`).

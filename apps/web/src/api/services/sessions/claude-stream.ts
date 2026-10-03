@@ -107,17 +107,24 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
  * policy's so the proxy's allow-list does not refuse Claude Code's own small-model calls.
  * `IS_SANDBOX=1` lets `bypassPermissions` run as root (the session image's user); `HOME` is pinned
  * to `SESSION_HOME` because the transcript path (`CLAUDE_PROJECT_DIR`) is derived from it.
+ *
+ * §18.22-A: a session on the creator's own Claude subscription (`source: 'user'`) gets a
+ * placeholder OAuth token instead — `CLAUDE_CODE_OAUTH_TOKEN`, so Claude Code sends
+ * `Authorization: Bearer` and the model proxy swaps the real token in — and NO `ANTHROPIC_API_KEY`
+ * at all: with both set Claude Code sends the key and ignores the token (spike S-A2). The token
+ * itself never enters the container. `platform` is the P3 environment, byte for byte.
  */
 export function claudeTurnEnv(
   model: string,
-  /**
-   * §18.22: whose account the turn bills. `platform` is the only source wired; Stream A swaps the
-   * placeholder key for a placeholder OAuth token on `user` (the token itself never enters).
-   */
-  _source: SessionCredentialSource = 'platform'
+  /** §18.22: whose account the turn bills. */
+  source: SessionCredentialSource = 'platform'
 ): Record<string, string> {
+  const credential: Record<string, string> =
+    source === 'user'
+      ? { CLAUDE_CODE_OAUTH_TOKEN: MODEL_KEY_PLACEHOLDER }
+      : { ANTHROPIC_API_KEY: MODEL_KEY_PLACEHOLDER }
   return {
-    ANTHROPIC_API_KEY: MODEL_KEY_PLACEHOLDER,
+    ...credential,
     ANTHROPIC_SMALL_FAST_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',

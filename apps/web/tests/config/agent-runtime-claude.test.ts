@@ -145,11 +145,10 @@ describe('Claude Code through the seam is the P3 turn, byte for byte', () => {
 })
 
 describe('the stubs the streams fill in fail by name', () => {
-  it('Codex turns, Claude’s and Codex’s sign-ins and personal leases throw NotWiredError', async () => {
+  it('Codex turns, Codex’s sign-in and personal lease throw NotWiredError', async () => {
     expect(() => codexRuntime.buildCommand({ message: 'x', model: 'm' })).toThrow(NotWiredError)
     expect(() => codexRuntime.createParser(1)).toThrow(/stream B/)
     const ctx = { sandbox: new FakeSandbox(), loginId: 'l1' }
-    await expect(claudeCodeRuntime.login?.start(ctx)).rejects.toThrow(/stream A/)
     await expect(codexRuntime.login?.start(ctx)).rejects.toThrow(/stream B/)
     const lease = {
       db: {},
@@ -158,7 +157,6 @@ describe('the stubs the streams fill in fail by name', () => {
       sandbox: ctx.sandbox,
       now: () => new Date(),
     }
-    await expect(claudeCodeRuntime.userLease?.(lease as never)).rejects.toThrow(NotWiredError)
     await expect(codexRuntime.userLease?.(lease as never)).rejects.toThrow(NotWiredError)
   })
 })

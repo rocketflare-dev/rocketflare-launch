@@ -30,6 +30,19 @@
  * the sandbox host's `HostedSessionSandbox` runs too — without 3 and 5, which need the database
  * (`SESSION_SANDBOX_HOST=remote`: the turn meters itself, `turn-meter.ts`).
  *
+ * **A session on the creator's own Claude subscription** (§18.22-A, `credential_source = 'user'`)
+ * holds `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>` instead. For it: `GET /api/claude_code/*` (its
+ * organisation's managed settings and limits) is a 404, so they cannot override Launch's setup;
+ * step 3 is skipped (the person's plan pays — turn and time limits still hold); step 4 decrypts the
+ * session's own `agent_credentials` row (same tenant, the creator's, active, unexpired — else a 401
+ * telling them to reconnect) and sends it as `Authorization: Bearer` with `oauth-2025-04-20` merged
+ * into `anthropic-beta`; step 5 records `billing: 'subscription'` with a null cost. An upstream 401
+ * marks the credential `needs_login` and answers a sentence; a 429 passes through as it came.
+ *
+ * **A Claude sign-in's sandbox** (`loginForSandbox`, no session) may make exactly the requests in
+ * `CLAUDE_LOGIN_PASSTHROUGH` — here `GET /api/oauth/profile`, and the token exchange on
+ * `platform.claude.com` through `handleClaudeLoginHost` — passed through untouched.
+ *
  * `count_tokens` is free, so it is keyed but not metered. A response the reader abandons half way
  * (the container died mid-stream) records nothing — the TransformStream's `flush` never runs; the
  * row's running cost is then short by that one call.
@@ -47,11 +60,20 @@ import type { AppBindings } from '../../../types'
 import { loggerFor } from '../../../utils/core/logger'
 import { recordUsage } from '../../ai/usage'
 import { checkBudget } from '../budget'
+import { getById, markNeedsLogin, openSecret } from '../credentials/store'
 import { MODEL_KEY_PLACEHOLDER, resolveModelKey } from '../model-key'
 import type { ModelUpstream } from '../ports'
+import { usableClaudeCredential } from '../runtimes/claude-code/credentials'
 import type { EgressContext } from './forward-git'
-import { anthropicError, keyedModelRequest, type ModelCall, readModelCall } from './forward-model'
-import { sessionForSandbox } from './sandbox-lookup'
+import {
+  anthropicError,
+  keyedModelRequest,
+  type ModelAuth,
+  type ModelCall,
+  OAUTH_NOT_FOUND_PREFIX,
+  readModelCall,
+} from './forward-model'
+import { loginForSandbox, sessionForSandbox } from './sandbox-lookup'
 
 export type { EgressContext } from './forward-git'
 export {
@@ -81,6 +103,88 @@ const defaultDeps = (): AnthropicEgressDeps => ({
   now: () => new Date(),
 })
 
+/** A subscription session whose credential is gone, refused, or past its expiry. */
+export const SUBSCRIPTION_NEEDS_LOGIN_MESSAGE =
+  'Your Claude subscription is not connected. Reconnect your Claude account in Launch (Profile), then send your message again.'
+
+/** Anthropic answered 401 to a subscription session's token. */
+export const SUBSCRIPTION_REFUSED_MESSAGE =
+  'Anthropic refused your Claude subscription token. Reconnect your Claude account in Launch (Profile), then send your message again.'
+
+/** A model call that passed every check, ready to key and send. */
+interface PreparedCall {
+  session: SessionRow
+  call: ModelCall
+  auth: ModelAuth
+  /** §18.22-A: the session's own subscription credential, when it bills one. */
+  credentialId: string | null
+}
+
+/**
+ * Who is asking, what for, and with which credential — every database read the handler makes
+ * before the upstream call. A refusal is the `Response` to send; `'sign-in'` is a Claude login's
+ * sandbox (`loginForSandbox`), which only reaches its account profile here.
+ */
+async function prepareModelCall(
+  req: Request,
+  db: Database,
+  cfg: AppConfig,
+  ctx: EgressContext,
+  now: Date
+): Promise<PreparedCall | Response | 'sign-in'> {
+  const session = await sessionForSandbox(db, ctx.containerId)
+  if (!session) {
+    if ((await loginForSandbox(db, ctx.containerId))?.runtime === 'claude_code') return 'sign-in'
+    return anthropicError(403, 'permission_error', 'This sandbox is not a live Launch session')
+  }
+  const subscription = session.credentialSource === 'user'
+
+  // Claude Code on an OAuth token asks for its organisation's managed settings and limits:
+  // "none" (404, tolerated), so they can never override Launch's permission and deny setup.
+  if (
+    subscription &&
+    req.method === 'GET' &&
+    new URL(req.url).pathname.startsWith(OAUTH_NOT_FOUND_PREFIX)
+  ) {
+    return anthropicError(404, 'not_found_error', 'Not available in a Launch session')
+  }
+
+  // The path and model allow-list (`forward-model.ts`, shared with the sandbox host).
+  const call = await readModelCall(req, resolveSessionPolicy(session.policy).model)
+  if (call instanceof Response) return call
+
+  if (subscription) {
+    // The person's own plan pays: no money budget (turn and time limits still hold), and the
+    // token is the session's credential — same tenant, the creator's, active, unexpired.
+    const row = session.agentCredentialId
+      ? await getById(db, session.tenantId, session.agentCredentialId)
+      : null
+    if (!usableClaudeCredential(row, session, now)) {
+      return anthropicError(401, 'authentication_error', SUBSCRIPTION_NEEDS_LOGIN_MESSAGE)
+    }
+    return {
+      session,
+      call,
+      auth: { kind: 'oauth', token: await openSecret(cfg, row) },
+      credentialId: row.id,
+    }
+  }
+
+  const verdict = await checkBudget(db, session, now)
+  if (!verdict.ok) {
+    return anthropicError(
+      403,
+      'permission_error',
+      verdict.scope === 'session'
+        ? 'This Launch session has reached its budget. Ask an app owner to extend it.'
+        : "This app's coding sessions have reached their monthly budget."
+    )
+  }
+  const key = await resolveModelKey(db, cfg)
+  if (!key) return anthropicError(503, 'api_error', 'Launch has no Anthropic key configured')
+  return { session, call, auth: { kind: 'api_key', key: key.apiKey }, credentialId: null }
+}
+
 export async function handleAnthropic(
   req: Request,
   env: AppBindings,
@@ -91,59 +195,56 @@ export async function handleAnthropic(
   const cfg = loadConfig(env)
   const logger = loggerFor(cfg, { handler: 'egress', host: 'api.anthropic.com' })
   const handle = deps.openDb(env, cfg)
-  let session: SessionRow
-  let apiKey: string
-  let call: ModelCall
+  let prepared: Awaited<ReturnType<typeof prepareModelCall>>
   try {
-    const found = await sessionForSandbox(handle.db, ctx.containerId)
-    if (!found) {
-      return anthropicError(403, 'permission_error', 'This sandbox is not a live Launch session')
-    }
-    session = found
-
-    // The path and model allow-list (`forward-model.ts`, shared with the sandbox host).
-    const read = await readModelCall(req, resolveSessionPolicy(session.policy).model)
-    if (read instanceof Response) return read
-    call = read
-
-    const verdict = await checkBudget(handle.db, session, deps.now())
-    if (!verdict.ok) {
-      return anthropicError(
-        403,
-        'permission_error',
-        verdict.scope === 'session'
-          ? 'This Launch session has reached its budget. Ask an app owner to extend it.'
-          : "This app's coding sessions have reached their monthly budget."
-      )
-    }
-
-    const key = await resolveModelKey(handle.db, cfg)
-    if (!key) {
-      return anthropicError(503, 'api_error', 'Launch has no Anthropic key configured')
-    }
-    apiKey = key.apiKey
+    prepared = await prepareModelCall(req, handle.db, cfg, ctx, deps.now())
   } finally {
     await handle.close()
   }
+  if (prepared instanceof Response) return prepared
+  if (prepared === 'sign-in') return passThroughLogin(req, 'api.anthropic.com', deps, logger)
+  const { session, call, auth, credentialId } = prepared
 
   let res: Response
   try {
-    res = await deps.upstream.fetch(keyedModelRequest(req, call, apiKey))
+    res = await deps.upstream.fetch(keyedModelRequest(req, call, auth))
   } catch (err) {
     logger.warn({ err, sessionId: session.id }, 'model proxy: upstream unreachable')
     return anthropicError(502, 'api_error', 'Launch could not reach the Anthropic API')
   }
 
+  if (credentialId && res.status === 401) {
+    // Revoked or otherwise dead: the person must reconnect. Later calls stop here, before Anthropic.
+    await res.body?.cancel().catch(() => {})
+    const markHandle = deps.openDb(env, cfg)
+    try {
+      await markNeedsLogin(markHandle.db, session.tenantId, credentialId, deps.now())
+    } catch (err) {
+      logger.error({ err, sessionId: session.id }, 'model proxy: could not mark needs_login')
+    } finally {
+      await markHandle.close()
+    }
+    logger.warn(
+      { sessionId: session.id, credentialId },
+      'model proxy: Anthropic refused a subscription token'
+    )
+    return anthropicError(401, 'authentication_error', SUBSCRIPTION_REFUSED_MESSAGE)
+  }
+
+  // A 429 (the subscription's own rate limit) and every other answer pass through as they came.
   if (call.path !== '/v1/messages' || !res.ok || !res.body) return res
 
   const model = call.model
+  const billing: AiUsageBilling = credentialId ? 'subscription' : 'metered'
   const meter = createUsageMeter(res.headers.get('content-type') ?? '')
   const record = async (): Promise<void> => {
     const usage = meter.result()
     if (!usage) return
     const recordHandle = deps.openDb(env, cfg)
     try {
-      await recordSessionUsage(recordHandle.db, session, usage.model ?? model, usage.usage)
+      await recordSessionUsage(recordHandle.db, session, usage.model ?? model, usage.usage, {
+        billing,
+      })
     } catch (err) {
       logger.error({ err, sessionId: session.id }, 'model proxy: could not record usage')
     } finally {
@@ -168,6 +269,81 @@ export async function handleAnthropic(
     statusText: res.statusText,
     headers: res.headers,
   })
+}
+
+// ---- a Claude sign-in's own traffic (§18.22-A) ---------------------------------------------------
+
+/**
+ * The ONLY requests a Claude login sandbox (`claude setup-token`, `runtimes/claude-code/login.ts`)
+ * may make through Launch, per host: the token exchange, and the account profile. Each passes
+ * through untouched — the CLI's own credentials, Anthropic's own answer; Launch adds nothing, logs
+ * nothing of it and keeps nothing. Anything else from a login sandbox is a 403.
+ */
+export const CLAUDE_LOGIN_PASSTHROUGH: Readonly<
+  Record<string, readonly { method: string; path: string }[]>
+> = {
+  'platform.claude.com': [{ method: 'POST', path: '/v1/oauth/token' }],
+  'api.anthropic.com': [{ method: 'GET', path: '/api/oauth/profile' }],
+}
+
+/** Headers never forwarded on a passthrough: what the new request sets itself. */
+const PASSTHROUGH_DROPPED = ['host', 'content-length', 'cookie']
+
+async function passThroughLogin(
+  req: Request,
+  host: string,
+  deps: Pick<AnthropicEgressDeps, 'upstream'>,
+  logger: Pick<ReturnType<typeof loggerFor>, 'warn'>
+): Promise<Response> {
+  const url = new URL(req.url)
+  const allowed = (CLAUDE_LOGIN_PASSTHROUGH[host] ?? []).some(
+    entry => entry.method === req.method && entry.path === url.pathname
+  )
+  if (!allowed) {
+    return anthropicError(403, 'permission_error', 'A Launch sign-in may not call that')
+  }
+  const headers = new Headers(req.headers)
+  for (const name of PASSTHROUGH_DROPPED) headers.delete(name)
+  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer()
+  try {
+    return await deps.upstream.fetch(
+      new Request(`https://${host}${url.pathname}${url.search}`, {
+        method: req.method,
+        headers,
+        body,
+      })
+    )
+  } catch (err) {
+    logger.warn({ err, host }, 'sign-in passthrough: upstream unreachable')
+    return anthropicError(502, 'api_error', `Launch could not reach ${host}`)
+  }
+}
+
+/**
+ * `SessionSandbox.outboundByHost['platform.claude.com']` — a Claude sign-in's token exchange,
+ * passed through for a login sandbox (`loginForSandbox`, PRE-TENANT like the session lookup) and
+ * refused for everything else, sessions included: a session has no business on this host.
+ */
+export async function handleClaudeLoginHost(
+  req: Request,
+  env: AppBindings,
+  ctx: EgressContext,
+  overrides: Partial<AnthropicEgressDeps> = {}
+): Promise<Response> {
+  const deps = { ...defaultDeps(), ...overrides }
+  const cfg = loadConfig(env)
+  const logger = loggerFor(cfg, { handler: 'egress', host: 'platform.claude.com' })
+  const handle = deps.openDb(env, cfg)
+  let signIn = false
+  try {
+    signIn = (await loginForSandbox(handle.db, ctx.containerId))?.runtime === 'claude_code'
+  } finally {
+    await handle.close()
+  }
+  if (!signIn) {
+    return anthropicError(403, 'permission_error', 'This sandbox is not a Launch sign-in')
+  }
+  return passThroughLogin(req, 'platform.claude.com', deps, logger)
 }
 
 // ---- metering ------------------------------------------------------------------------------------
