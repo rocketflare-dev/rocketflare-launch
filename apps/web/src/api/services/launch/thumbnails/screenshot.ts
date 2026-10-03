@@ -52,13 +52,25 @@ export interface BrowserBinding {
 }
 
 /** A promise that rejects after `ms` — the hard stop around the whole capture. */
-function deadline(ms: number, what: string): { promise: Promise<never>; clear: () => void } {
+function deadline(
+  ms: number,
+  what: string
+): { promise: Promise<never>; clear: () => void; expired: () => boolean } {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let fired = false
   const promise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms)
+    timer = setTimeout(() => {
+      fired = true
+      reject(new Error(`${what} timed out after ${ms} ms`))
+    }, ms)
   })
-  return { promise, clear: () => clearTimeout(timer) }
+  // Raced, never awaited alone: a cleared deadline must not surface as an unhandled rejection.
+  promise.catch(() => {})
+  return { promise, clear: () => clearTimeout(timer), expired: () => fired }
 }
+
+/** How long a browser may take to come up before the capture fails (and the job retries). */
+export const BROWSER_LAUNCH_TIMEOUT_MS = 30_000
 
 /** The real adapter: Cloudflare Browser Rendering through `@cloudflare/puppeteer`. */
 export function browserRenderingScreenshots(binding: BrowserBinding): ScreenshotPort {
@@ -67,7 +79,18 @@ export function browserRenderingScreenshots(binding: BrowserBinding): Screenshot
       const { default: puppeteer } = await import('@cloudflare/puppeteer')
       // `BrowserWorker` is `{ fetch: typeof fetch }`; the binding's `fetch` is the same call with
       // the platform's narrower overloads, which TypeScript cannot see are compatible.
-      const browser = await puppeteer.launch(binding as Parameters<typeof puppeteer.launch>[0])
+      // The launch has its own deadline: a browser that never comes up (a broken local Chrome under
+      // `wrangler dev`, an exhausted concurrency limit) would otherwise hold the queue batch for ever.
+      const launching = puppeteer.launch(binding as Parameters<typeof puppeteer.launch>[0])
+      const launchStop = deadline(BROWSER_LAUNCH_TIMEOUT_MS, 'thumbnail browser launch')
+      // A launch that loses the race but succeeds later still opens a browser: close it.
+      launching.then(b => (launchStop.expired() ? b.close() : undefined)).catch(() => {})
+      let browser: Awaited<typeof launching>
+      try {
+        browser = await Promise.race([launching, launchStop.promise])
+      } finally {
+        launchStop.clear()
+      }
       // Started AFTER the launch: a cold browser is the platform's time, not the page's.
       const started = Date.now()
       const stop = deadline(timeoutMs + 5_000, 'thumbnail capture')

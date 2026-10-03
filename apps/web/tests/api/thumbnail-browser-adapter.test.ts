@@ -44,6 +44,7 @@ const fake = vi.hoisted(() => {
 vi.mock('@cloudflare/puppeteer', () => ({ default: { launch: fake.launch } }))
 
 import {
+  BROWSER_LAUNCH_TIMEOUT_MS,
   browserRenderingScreenshots,
   defaultScreenshotPort,
 } from '@/api/services/launch/thumbnails/screenshot'
@@ -101,6 +102,22 @@ describe('browserRenderingScreenshots', () => {
     )
     expect(fake.state.calls.map(c => c[0])).not.toContain('screenshot')
     expect(fake.state.closed).toBe(1)
+  })
+
+  it('fails a launch that never comes up instead of holding the batch', async () => {
+    // Only the timers: the adapter's dynamic `import()` must still settle on its own.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fake.launch.mockImplementationOnce(() => new Promise(() => {}))
+      const capture = browserRenderingScreenshots(binding).capture(request)
+      const failed = expect(capture).rejects.toThrow('thumbnail browser launch timed out')
+      while (fake.launch.mock.calls.length === 0) await new Promise(r => setImmediate(r))
+      await vi.advanceTimersByTimeAsync(BROWSER_LAUNCH_TIMEOUT_MS)
+      await failed
+      expect(fake.state.calls).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

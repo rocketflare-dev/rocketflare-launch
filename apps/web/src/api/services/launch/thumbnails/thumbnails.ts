@@ -316,6 +316,10 @@ export async function captureAppThumbnail(
     return { status: 'skipped', reason: 'refused_url' }
   }
 
+  deps.logger.info(
+    { tenantId, appId, environment, host: new URL(target.url).host },
+    'thumbnail: capturing'
+  )
   // Throws on a navigation error or a timeout: the consumer retries with backoff.
   const shot = await deps.screenshots.capture({
     url: target.url,
