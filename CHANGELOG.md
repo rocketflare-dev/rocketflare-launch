@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Pages use the full width.** Audit, Secrets, Approvals, the apps catalogue, Notifications and the
+  Settings, Setup and Admin areas no longer stop at a fixed width; forms and prose keep a reading
+  width (`docs/DESIGN.md`).
 - **Home is bolder and full width.** Each section has a real heading, a count and its actions on
   the right. The apps are large cards in a grid (up to four across), each led by the app's
   screenshot — or a large initial — with its name, what needs a look, and the Live and Staging
