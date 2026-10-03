@@ -1,3 +1,6 @@
+// @vitest-isolate
+// Creates sessions through the route, which refuses while `sessions_paused` is set: a GLOBAL
+// setting `sessions-routes.test.ts` flips in the shared run, so this file runs in `api-isolated`.
 /**
  * Sessions and the runtime/credential seam (§18.22), end to end through the routes and the turn
  * runner:

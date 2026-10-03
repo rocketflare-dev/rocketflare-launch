@@ -90,13 +90,29 @@ async function caught(promise: Promise<unknown>): Promise<{ statusCode?: number;
   throw new Error('expected a refusal')
 }
 
+/**
+ * Where each action falls in a request's life — the tie-break for rows ONE transaction wrote:
+ * they share `at` (`now()` is the transaction's start), and `id` is a random uuid, so `ORDER BY
+ * at` alone returns e.g. an auto-approval's `requested` and `approved` in either order.
+ */
+const LIFECYCLE_RANK: Record<string, number> = {
+  'approval.requested': 0,
+  'approval.decided': 1,
+  'approval.approved': 2,
+  'approval.rejected': 2,
+  'approval.apply_failed': 3,
+  'approval.expired': 4,
+  'approval.cancelled': 4,
+}
+
 async function auditActions(tenantId: string, approvalId: string) {
   const rows = await db
     .select()
     .from(auditEvents)
     .where(and(eq(auditEvents.tenantId, tenantId), eq(auditEvents.approvalId, approvalId)))
     .orderBy(auditEvents.at)
-  return rows
+  const rank = (action: string) => LIFECYCLE_RANK[action] ?? 99
+  return rows.sort((a, b) => a.at.getTime() - b.at.getTime() || rank(a.action) - rank(b.action))
 }
 
 async function notificationsOf(tenantId: string, type: string) {

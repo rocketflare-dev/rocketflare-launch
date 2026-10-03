@@ -2,15 +2,6 @@
 
 ## Unreleased
 
-- **Sessions: Codex as a second coding agent** (`docs/CONCEPTS.md` §18.22-B). With `codex` in
-  `SESSION_RUNTIMES`, a session can run OpenAI's Codex CLI (pinned 0.160.0, default model
-  `gpt-6.1-sol`) on Launch's OpenAI key — the new Setup card's `openai_api_key`, checked against the
-  model, else `OPENAI_API_KEY` — swapped in at the egress and metered as `openai`; with `codex` also
-  in `SESSION_USER_CREDENTIALS`, on a person's ChatGPT plan, connected in Profile → AI accounts by
-  OpenAI's device-code sign-in (one session at a time per plan; rotated tokens stored as Codex
-  refreshes them). The session image is now `session-6`: drain sessions before deploying it
-  (`docs/DEPLOY.md`). OpenAI keys and JWTs are redacted from session transcripts like Anthropic
-  keys.
 - **Sessions: agent runtimes and personal AI accounts — the foundation** (`docs/CONCEPTS.md`
   §18.22). A session now records which coding agent it runs and whose account it bills, fixed at
   start; nothing changes on a default deployment (Claude Code on Launch's key). New, all off by
@@ -24,8 +15,8 @@
   billed to a personal account takes turns and ships only from its owner (409
   `session_credential_owner_only`) and has no money budget; its usage is recorded with
   `ai_usage.billing = 'subscription'` and no cost. The sender of every message is now recorded, so
-  a landing's "who wrote messages" counts everyone who did. Claude subscriptions and Codex are wired
-  in later releases; until then those paths fail with "not wired yet". Migration 0036.
+  a landing's "who wrote messages" counts everyone who did. Migration 0036. The two runtimes'
+  sign-ins and egress follow in the next two entries.
 - **Sessions on your own Claude subscription** (`docs/CONCEPTS.md` §18.22-A; only where
   `SESSION_USER_CREDENTIALS` lists `claude_code`). Profile → AI accounts → Connect runs Claude
   Code's own `claude setup-token` in a throwaway sandbox: open Anthropic's sign-in in a new tab,
@@ -33,7 +24,16 @@
   session billed to it runs with a placeholder token; Launch's model proxy swaps the real one in,
   records the usage with no cost and no money budget, answers 404 to Claude Code's requests for
   org-managed settings, and marks the account "Needs reconnecting" when Anthropic refuses the
-  token. The sandbox egress gains a `platform.claude.com` handler that only a sign-in may use.
+  token. The sandbox egress gains a `platform.claude.com` handler that only a Claude sign-in may use.
+- **Sessions: Codex as a second coding agent** (`docs/CONCEPTS.md` §18.22-B). With `codex` in
+  `SESSION_RUNTIMES`, a session can run OpenAI's Codex CLI (pinned 0.160.0, default model
+  `gpt-6.1-sol`) on Launch's OpenAI key — the new Setup card's `openai_api_key`, checked against the
+  model, else `OPENAI_API_KEY` — swapped in at the egress and metered as `openai`; with `codex` also
+  in `SESSION_USER_CREDENTIALS`, on a person's ChatGPT plan, connected in Profile → AI accounts by
+  OpenAI's device-code sign-in (one session at a time per plan; rotated tokens stored as Codex
+  refreshes them). The session image is now `session-6`: drain sessions before deploying it
+  (`docs/DEPLOY.md`). OpenAI keys and JWTs are redacted from session transcripts like Anthropic
+  keys.
 - **Pages use the full width.** Audit, Secrets, Approvals, the apps catalogue, Notifications and the
   Settings, Setup and Admin areas no longer stop at a fixed width; forms and prose keep a reading
   width (`docs/DESIGN.md`).

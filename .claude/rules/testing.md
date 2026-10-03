@@ -99,6 +99,13 @@ mid-assertion (`scheduled.test.ts`, `scheduled-prune.test.ts`). Better still, sc
 test's own tenants — `healthPollTask({ tenantIds })`, `auditSealTask({ tenantIds })` — as every
 P4 cron test does.
 
+The same goes for the one GLOBAL launch setting a shared file flips: `sessions-routes.test.ts`
+drains and undrains sessions (`sessions_paused`) in the shared run, so a file that creates a
+session through `POST /api/apps/:id/sessions` (which answers 409 `sessions_paused` while drained)
+carries the marker (`agent-session-credentials.test.ts`) — the isolated project is a separate
+`vitest run` after the shared one — and a file whose steps read the flag mocks `sessionsPaused`
+as the Workflow and landing suites do.
+
 `isMarkedIsolated` (`apps/web/tests/helpers/isolation.ts`) compares the trimmed first line to
 `// @vitest-isolate` — `// @vitest-isolate — mocks a module` does NOT match, and `vitest.config.ts`
 then places the file in the shared `api` project. Forgetting it does not fail in your file; it hands
@@ -269,7 +276,14 @@ a fake `WebSocket` factory left set) is on you.
   model list and `/oauth/token` refreshes, every request recorded) and `codexExecJson(turn)` (one
   `codex exec --json` turn — its `usage` is the thread's running total, as Codex reports it), plus
   `fakeJwt` / `codexAuthJsonText` for a ChatGPT plan's `auth.json`; the fixtures in
-  `tests/fixtures/codex/` are hand-written from the 0.160 source. `tests/helpers/sessions.ts`:
+  `tests/fixtures/codex/` are hand-written from the 0.160 source. A Claude subscription's relayed
+  sign-in (§18.22-A) has `tests/helpers/claude-login.ts`: `claudeLoginFixture(name)` /
+  `spikeSegments(raw)` over spike S-A1's real `claude setup-token` terminal output in
+  `tests/fixtures/claude-login/`, a synthetic `setupTokenSuccessScreen(token)` with
+  `FAKE_CLAUDE_TOKEN`, and `emulateClaudeRelay(sandbox)` — the relay's `script` half over a
+  `FakeSandbox`, so the real driver runs end to end (script the CLI with
+  `onProcess(/claude setup-token/, { lines, waitForFile: <dir>/in, thenLines })`).
+  `tests/helpers/sessions.ts`:
   `seedSessionApp(db, cloud, { role?, prepared?, withStaging? })` (tenant + cookie, an app whose
   repo is in the FakeCloud's GitHub, a Neon project on the production environment, with `prepared`
   a `dev` branch — `schema-only`, `session_owner`, `session_app` — recorded ready in

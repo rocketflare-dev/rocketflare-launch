@@ -4,7 +4,10 @@
  * undrain), and the `sessions.expire` cron. Every refusal is checked BEFORE a row is written.
  *
  * `sessions_paused` is a global setting: only this file writes it, always restoring it in
- * `finally`, and the Workflow suite mocks its read.
+ * `afterEach`. While its drain test runs, any OTHER file in the shared `api` run that creates a
+ * session through the route (or reads the flag) gets 409 `sessions_paused` — so such a file
+ * carries `// @vitest-isolate` (the `api-isolated` project is a separate `vitest run`, after this
+ * one: `agent-session-credentials.test.ts`), and the Workflow and landing suites mock the read.
  */
 import {
   adminSessionListResponseSchema,

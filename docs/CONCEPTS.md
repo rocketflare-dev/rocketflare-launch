@@ -2904,10 +2904,15 @@ session card's agent / "Bill to" picker (only when there is a choice), and one m
 session header for a non-default agent or billing.
 
 **Egress** (`egress/registry.ts`): `SESSION_OUTBOUND_HANDLERS` is the one table of hosts Launch
-handles a container's traffic for (`api.anthropic.com`, `github.com`). Codex's hosts
-(`api.openai.com`, `chatgpt.com`, `auth.openai.com`) are STAGED there as OpenAI-shaped 403s
-(`CODEX_OUTBOUND_HANDLERS`), joining the handler table and the allow-list together with their real
-handlers in stream B — a host on the allow-list with no handler would pass straight through.
+handles a container's traffic for: `api.anthropic.com` and `github.com` (P3), `platform.claude.com`
+(a Claude sign-in's token exchange, login sandboxes only — 18.22-A) and Codex's `api.openai.com`,
+`chatgpt.com`, `auth.openai.com` (`CODEX_OUTBOUND_HANDLERS`, 18.22-B). Codex's three are also on
+`SESSION_BASE_ALLOWED_HOSTS` — a host on the allow-list with no handler would pass straight through
+— and each handler refuses a container that is not a session (or login) of the right runtime and
+account. `platform.claude.com` is not on the base allow-list: only a Claude login sandbox gets it
+(its driver's `hosts`). The sandbox host's `HostedSessionSandbox` (Claude Code on Launch's key
+only) handles `api.anthropic.com` and `github.com` and refuses Codex's three; it registers nothing
+for `platform.claude.com`, which carries no credential of Launch's (see the known gaps).
 
 #### 18.22-A Claude subscriptions
 
@@ -2971,9 +2976,8 @@ valid for a year with no refresh, so a revoked one is noticed only at the next m
 **Wired** (`services/sessions/runtimes/codex/`), behind `SESSION_RUNTIMES` (add `codex`) — and, for
 ChatGPT plans, `SESSION_USER_CREDENTIALS`. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image
 `session-6`); the default model is Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in
-`ai/pricing.ts`), overridable per policy (`runtimes.codex.model`). This section supersedes the
-"staged" note in the egress paragraph above: Codex's three hosts are registered with their real
-handlers and are on the allow-list.
+`ai/pricing.ts`), overridable per policy (`runtimes.codex.model`). Codex's three hosts are
+registered with their real handlers and are on the allow-list (the egress paragraph above).
 
 - **A turn** (`command.ts`): `codex exec --json -s danger-full-access --skip-git-repo-check -m
   <model> '<message>' < /dev/null`; after the first, `… -m <model> resume <thread> '<message>'` —
@@ -3060,5 +3064,13 @@ off rather than metered.
 - *A personal-account session has no money budget*; the ship's PR summary always spends Launch's
   key.
 - *The policy's `runtimes` has no editor yet*: it is set in `launch_settings.session_policy`.
-- The login Workflow is proven with a fake driver over the `FakeSandbox`
-  (`tests/api/agent-login-workflow.test.ts`); no real CLI has run through it.
+- *The login drivers are unverified against the real CLIs.* Both exist — Claude's relayed
+  `claude setup-token` (18.22-A) and Codex's `codex login --device-auth` (18.22-B) — and the
+  Workflow is proven over the `FakeSandbox` with a fake driver
+  (`tests/api/agent-login-workflow.test.ts`) and each real driver over emulated terminal output
+  (`emulateClaudeRelay`, the Codex fixtures); no real sign-in has completed through a real sandbox.
+- *A sign-in under `SESSION_SANDBOX_HOST=remote`* (development only) boots its login sandbox on the
+  sandbox host, which has no `platform.claude.com` handler (the token exchange then reaches Anthropic
+  directly if the allow-list or open egress lets it — no Launch credential is involved, but
+  Launch's login-only check is skipped) and no login passthrough on `api.anthropic.com` (the
+  profile call is refused, which the CLI tolerates). Unexercised.

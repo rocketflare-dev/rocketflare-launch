@@ -26,8 +26,8 @@
  *   sandbox, allow-listed or not (S7 finding 1).
  * - `outboundByHost` is `SESSION_OUTBOUND_HANDLERS` (`egress/registry.ts`, §18.22): it hands
  *   `api.anthropic.com` to the model proxy (`egress/anthropic.ts`, slice 3c) and `github.com` to the
- *   git proxy (`egress/github.ts`, slice 3d) — in both modes. Codex's hosts are staged there for
- *   Stream B. A login sandbox (`login-<id>`, `AgentLoginWorkflow`) is this class too. Under
+ *   git proxy (`egress/github.ts`, slice 3d) — in both modes — plus a Claude sign-in's
+ *   `platform.claude.com` (§18.22-A) and Codex's three OpenAI hosts (§18.22-B). A login sandbox (`login-<id>`, `AgentLoginWorkflow`) is this class too. Under
  *   `allowlist` a host must ALSO be on the allow-list for its handler to run at all (S7: otherwise
  *   the proxy answers 520). The database has no handler: see `egress/forward-database.ts`. The handlers
  *   identify the session by `ctx.containerId` — this object's id — never by anything the sandbox
