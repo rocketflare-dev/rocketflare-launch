@@ -93,8 +93,12 @@ Auth is per-mount, not global: the public surface is enumerable and small.
 - **A coding session's agent and account are decided ONCE, at create** (§18.22,
   `services/sessions/credentials/resolve.ts`): the policy's `runtimes` — a PLATFORM SETTING the
   Platform → Coding agents tab writes (`PUT /api/platform/setup/session-agents`), fail-closed to
-  Claude Code on Launch's key, never a deployment var — narrow the request, and only
-  `SESSION_SANDBOX_HOST=remote` narrows them further. Everything else reaches a
+  Claude Code on Launch's key, never a deployment var — narrow the request, and nothing
+  narrows them further (both sandbox hosts run every runtime on either account). WHERE its
+  container runs is decided at create too and frozen on the row (`sessions.sandbox_host`, the
+  `session_sandbox_host` platform setting, `services/sessions/sandbox-host.ts`,
+  `PUT /api/platform/setup/session-sandbox`): build ports for an existing session with
+  `defaultSessionPorts(env, cfg, sandboxHostOf(row))`, never from the current setting. Everything else reaches a
   runtime through `runtimeOf(row)` (`services/sessions/runtimes/`) — never an `if (runtime ===
   'codex')` outside that directory — and a turn's credential through `ports.credentials(db)`'s lease.
   `/api/me/agent-credentials` and `/api/me/agent-logins` (`routes/me-agents.ts`, mounted by

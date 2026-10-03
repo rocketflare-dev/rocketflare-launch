@@ -9,7 +9,7 @@
  *
  * This is one of the TWO files that import the SDK (the other is the Durable Object base,
  * `durable-objects/session-sandbox-base.ts`). Everything else sees `SandboxPort`. The sandbox
- * host Worker (`src/sandbox-host/`, `SESSION_SANDBOX_HOST=remote`) runs THIS adapter on its side
+ * host Worker (`src/sandbox-host/`, a session on the remote sandbox host) runs THIS adapter on its side
  * of the RPC, so the two paths drive the SDK identically.
  *
  * Choices worth knowing:

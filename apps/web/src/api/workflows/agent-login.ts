@@ -50,7 +50,7 @@ import { withStepDatabase } from './agent-run'
 
 /** What the tests hand the class instead of the real adapters. */
 export interface AgentLoginWorkflowOverrides {
-  ports?: Pick<SessionPorts, 'sandbox'>
+  ports?: Pick<SessionPorts, 'sandbox' | 'egress'>
   driverFor?: (runtime: AgentRuntimeId) => LoginDriver | undefined
   now?: () => Date
   sleep?: (ms: number) => Promise<void>
@@ -102,12 +102,17 @@ export class AgentLoginWorkflow extends WorkflowEntrypoint<AppBindings, AgentLog
     const env = this.env
     const cfg = loadConfig(env)
     const logger = loggerFor(cfg, { handler: 'workflow', workflow: 'agent-login', ...params })
-    const ports = this.overrides.ports ?? defaultSessionPorts(env, cfg)
+    // Where the login sandbox runs: frozen in the params when the sign-in started.
+    const ports =
+      this.overrides.ports ?? defaultSessionPorts(env, cfg, params.sandboxHost ?? 'local')
     const scopeOf = (db: Database): LoginStepScope => ({
       db,
       cfg,
       params,
       sandbox: name => ports.sandbox(name),
+      prepareLogin: async (sandbox, runtime) => {
+        await ports.egress?.(db).prepareLogin?.(sandbox, runtime)
+      },
       logger,
       now: this.overrides.now ?? (() => new Date()),
       sleep: this.overrides.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))),

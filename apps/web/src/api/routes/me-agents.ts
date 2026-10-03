@@ -13,7 +13,9 @@
  * - `POST /agent-logins` `startAgentLoginRequestSchema` → 202 `agentLoginResponseSchema`: a
  *   `starting` row and `AGENT_LOGIN_WORKFLOW.create` — 409 `agent_logins_disabled` (the policy
  *   keeps this runtime on Launch's account), 503 `agent_logins_not_configured`, 409
- *   `agent_login_in_progress`, all before any write that
+ *   `session_sandbox_unavailable` (the sandbox host setting names a host that cannot run one
+ *   now — the login sandbox runs where a session would), 409 `agent_login_in_progress`, all
+ *   before any write that
  *   sticks. The route runs nothing in a sandbox.
  * - `GET /agent-logins/:id` → `agentLoginResponseSchema` (the modal polls it).
  * - `POST /agent-logins/:id/code` `submitAgentLoginCodeRequestSchema` → 202: the code SEALED onto
@@ -32,7 +34,7 @@ import {
 } from '@launch/shared/launch-agents'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import { runtimeFlagsOf, runtimeOptions } from '../services/sessions/credentials/resolve'
+import { runtimeOptions } from '../services/sessions/credentials/resolve'
 import { listPublic, removeForUser } from '../services/sessions/credentials/store'
 import { loadSessionPolicy } from '../services/sessions/lifecycle'
 import {
@@ -45,6 +47,7 @@ import {
   submitLoginCode,
   toAgentLogin,
 } from '../services/sessions/logins/service'
+import { resolveNewSandboxHost } from '../services/sessions/sandbox-host'
 import { NotFoundError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
@@ -56,14 +59,14 @@ export const meAgentsRouter = createRouter()
 
 meAgentsRouter.get('/agent-credentials', async c => {
   guardPermission(c, 'read', 'Session')
-  const { db, cfg, tenantId, user } = withAuthAndDb(c)
+  const { db, tenantId, user } = withAuthAndDb(c)
   const policy = await loadSessionPolicy(db)
   const [credentials, logins] = await Promise.all([
     listPublic(db, tenantId, user.id),
     listActiveLogins(db, tenantId, user.id),
   ])
   return c.json<AgentAccountsResponse>({
-    runtimes: runtimeOptions(runtimeFlagsOf(cfg), policy),
+    runtimes: runtimeOptions(policy),
     credentials,
     logins: logins.map(toAgentLogin),
   })
@@ -97,13 +100,16 @@ meAgentsRouter.post('/agent-logins', validate('json', startAgentLoginRequestSche
   guardPermission(c, 'create', 'Session')
   const { db, cfg, tenantId, user } = withAuthAndDb(c)
   const { runtime } = c.req.valid('json')
-  assertLoginsEnabled(runtimeFlagsOf(cfg), await loadSessionPolicy(db), runtime)
+  assertLoginsEnabled(await loadSessionPolicy(db), runtime)
   const workflow = requireLoginWorkflow(c.env)
+  // The login sandbox runs where a new session would (the platform setting), frozen for its run.
+  const sandboxHost = await resolveNewSandboxHost(db, c.env, cfg)
   const row = await startLogin(db, workflow, {
     tenantId,
     userId: user.id,
     runtime,
     actor: auditActor(c),
+    sandboxHost,
   })
   return c.json<AgentLoginResponse>({ login: toAgentLogin(row) }, 202)
 })

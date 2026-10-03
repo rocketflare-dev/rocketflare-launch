@@ -120,14 +120,20 @@ files only (the DO base `durable-objects/session-sandbox-base.ts` and
 and a second Worker (`launch-sandbox-dev`, entry `src/sandbox-host/worker.ts`) — outside the parity
 test on purpose, never deployed by CI, pinned by `tests/config/sandbox-host.test.ts` (no public URL,
 the same image, instance type and compatibility date as `wrangler.toml`). Local Launch reaches it
-with `SESSION_SANDBOX_HOST=remote` through the remote service binding `SANDBOX_HOST`, which lives
-ONLY in the git-ignored `wrangler.dev-remote.toml` that `pnpm dev` generates from `wrangler.toml`
-(`scripts/lib/dev-remote-sandbox.mjs`) — never add it to the two deployed tomls. Its env type is
+— for a session whose frozen `sandbox_host` is `remote` (the Session sandbox platform setting, not
+a var) — through the remote service binding `SANDBOX_HOST`, which lives ONLY in the git-ignored
+`wrangler.dev-remote.toml` that `pnpm dev` generates from `wrangler.toml` whenever wrangler can open
+it (logged in, the host deployed) while keeping local containers on unless Docker is down
+(`scripts/lib/dev-remote-sandbox.mjs`; `DEV_LOCAL_CONTAINERS` / `DEV_SANDBOX_HOST_STATUS` tell the
+Worker what it could not get) — never add it to the two deployed tomls. Redeploy it
+(`pnpm --filter @launch/web deploy:sandbox-host`) whenever the session image or `src/sandbox-host/`
+changes; nothing else does. Its env type is
 hand-written (`src/sandbox-host/env.ts`: a second generated file would declare a second
 `Cloudflare.Env`), and `AppBindings` adds `SANDBOX_HOST?: Fetcher` beside `HYPERDRIVE`. The host
 cannot reach Launch's database, so its class (`HostedSessionSandbox`) has its OWN `outboundByHost`
-handlers (`src/sandbox-host/egress.ts`, over the shared `egress/forward-git.ts` /
-`forward-model.ts` cores) fed by the `EgressGrant` Launch sends over the binding
+handlers for the same six hosts as Launch's (`src/sandbox-host/egress.ts`, over the shared
+`egress/forward-git.ts` / `forward-model.ts` / `forward-openai.ts` cores) fed by the `EgressGrant`
+Launch sends over the binding
 (`setEgressGrant`, the `host` egress mode) and keeps in the object's storage — it holds no secret
 of its own, and they import nothing of Launch's database or config. Its one `[vars]` entry is
 `SESSION_EGRESS` (declared in `env.ts` too), set as in the two deployed tomls; the egress mode is

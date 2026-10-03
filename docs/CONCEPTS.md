@@ -1608,33 +1608,62 @@ the sandbox host's class, and the `CloudflareSandbox` adapter); everything else 
 `SandboxPort` (`sandbox-port.ts`, re-exported by `ports.ts`), with `SessionDbPort` (`NeonSessionDb`,
 always), `RepoHostPort` (GitHub, or the local git server), `ModelUpstream` and `SessionEgressPort`,
 all bound once in `defaultSessionPorts`.
-**Where the container runs (`SESSION_SANDBOX_HOST`).** `local` (the default, and every deployed
-Launch): this Worker's `SESSION_SANDBOX` — under `wrangler dev`, local Docker. `remote`
+**Where the container runs — a platform setting** (`launch_settings.session_sandbox_host`,
+`services/sessions/sandbox-host.ts`; Settings → Platform → Coding agents → **Session sandbox**,
+`PUT /api/platform/setup/session-sandbox`, platform admins, audited `setting.changed`). `local`
+(the default, and the only choice a deployed Launch offers — a stored `remote` is ignored there and
+a PUT of it refused): this Worker's `SESSION_SANDBOX` — under `wrangler dev`, local Docker. `remote`
 (development only, never with `SESSION_BACKEND=local`): a real Cloudflare container in the SANDBOX
 HOST Worker (`launch-sandbox-dev`, `wrangler.sandbox-host.toml`), because `wrangler dev` runs every
 `[[containers]]` on Docker and a Durable Object cannot be a remote binding, but a service binding
-can. `RemoteSandbox` drives it through the remote binding `SANDBOX_HOST` (declared only in the
+can. **The host is FROZEN where it is used**: on the session row at create (`sessions.sandbox_host`,
+migration 0037 — the Workflow builds each step's ports from it, `sandboxHostOf`, as do the preview
+gateway and the expiry sweep) and in a sign-in's Workflow params (`AgentLoginParams.sandboxHost`;
+its sweep reads the `remote:` prefix of the recorded sandbox id) — so a change reaches new sessions
+only, with no restart, and a resume never moves host. **Availability** is computed per request:
+under `pnpm dev` both are on offer whenever they can be — `dev-server.mjs` probes Docker (down →
+`--enable-containers=false` and `DEV_LOCAL_CONTAINERS=off`) and `wrangler whoami` + `wrangler
+deployments list --name launch-sandbox-dev` (either failing → no binding, and
+`DEV_SANDBOX_HOST_STATUS` says why) — and an unavailable choice is disabled on the tab with its
+reason, a session created on it a 409 `session_sandbox_unavailable` before any row
+(`resolveNewSandboxHost`). The retired `SESSION_SANDBOX_HOST` var is no longer config; a
+`.dev.vars` still saying `remote` is read as the setting's starting value until one is saved.
+`RemoteSandbox` drives the host through the remote binding `SANDBOX_HOST` (declared only in the
 `wrangler.dev-remote.toml` that `pnpm dev` generates — the two deployed tomls never carry it): its
 `WorkerEntrypoint` is `SandboxPort` with the sandbox name first, run by the same `CloudflareSandbox`
 adapter, errors returned as `{ name, message }` so a rollout is still `SandboxInterruptedError`; the
 log stream crosses as a `ReadableStream` and is parsed locally (no `AbortSignal` crosses); the
 preview goes through the binding's `fetch`, which carries the HMR upgrade. A remote sandbox's
 `sessions.sandbox_id` is `remote:<name>` (another Worker's Durable Object id cannot be computed).
-**How the container reaches Anthropic and GitHub (`SessionEgressPort`).** `proxied` (every
-in-process sandbox): the egress handlers below. `host` (a remote sandbox — the host cannot reach
-Launch's database to run the handlers, `egress/host.ts`): Launch PUSHES the host what to inject —
-an `EgressGrant` (the repo, the session's branch and upstream, the session's sealed installation
-token (`sessionGitToken`, the git handler's own) with its expiry; the key and the policy's model)
-over the host's RPC (`setEgressGrant`) before the clone, each turn and each checkpoint's push.
-`HostedSessionSandbox` keeps it in its Durable Object storage (cleared on `destroy()` and
-`onStop`) and has its OWN outbound handlers for `github.com` and `api.anthropic.com`
-(`sandbox-host/egress.ts`), which find the grant from `ctx.containerId` and inject through the
-same pure cores as Launch's handlers (`egress/forward-git.ts`, `egress/forward-model.ts`): one
-repo, a push only to `session/<short>` and never a delete, the Messages API on the policy's model
-only, a fresh token's 401/404 retried. No grant → the same 403 as the proxies. The container holds
-no credential in EITHER mode — only the placeholder key, and no git credential or helper. The
-turn runner and the checkpoint are the same code in both — they ask the port and `proxied` answers
-"nothing to do" — and the transcript scrubs GitHub token shapes as well as Anthropic keys.
+**How the container reaches its model provider and GitHub (`SessionEgressPort`).** `proxied`
+(every in-process sandbox): the egress handlers below and in §18.11 / §18.22. `host` (a remote
+sandbox — the host cannot reach Launch's database to run the handlers, `egress/host.ts`): Launch
+PUSHES the host what to inject — an `EgressGrant`, one PART per kind of traffic, over the host's
+RPC (`setEgressGrant`: a part replaces the stored one, `null` removes it): `git` (the repo, the
+session's branch and upstream, the session's sealed installation token — `sessionGitToken`, the git
+handler's own — with its expiry) before the clone, each turn and each checkpoint's push; before
+each turn the model credential for the session's runtime and account (`HostEgress.turnEnv`):
+`anthropic` (`{ auth: { kind: 'api_key' | 'oauth', value }, model }` — Launch's key, or the
+creator's Claude subscription token by the proxy's own `usableClaudeCredential` rule), `openai`
+(Launch's OpenAI key and the model) or `chatgpt` (the model only; granted for the turn and revoked
+after it by `endTurn`, as the proxy allows the plan only while a turn holds it); and `login` (the
+runtime) for a sign-in's sandbox before its CLI starts (`prepareLogin`). `turnEnv` returns NO
+environment: each runtime's own `turnEnv` carries its placeholder, and an extra
+`ANTHROPIC_API_KEY` would beat a subscription's `CLAUDE_CODE_OAUTH_TOKEN`. `HostedSessionSandbox`
+keeps the grant in its Durable Object storage (cleared on `destroy()` and `onStop`) and has its OWN
+outbound handlers for the same six hosts as Launch's (`sandbox-host/egress.ts`; a test keeps the
+key sets equal), which find the grant from `ctx.containerId` and run the SAME pure functions as
+Launch's handlers: `egress/forward-git.ts` (one repo, a push only to `session/<short>` and never a
+delete, a fresh token's 401/404 retried), `egress/forward-model.ts` (the Messages API on the
+policy's model; the OAuth Bearer swap with the beta header merged; `GET /api/claude_code/*` a 404
+on a subscription; a Claude sign-in's two passthroughs) and `egress/forward-openai.ts` (426 for a
+WebSocket, the Responses paths on the policy's model, 415 for a compressed body, the key swap, the
+ChatGPT allow-list, a session's refresh-only and a sign-in's device flow). No part for the host →
+the same 403 as the proxies. The container holds no Launch credential in EITHER mode — only the
+placeholder, and no git credential or helper (a person's ChatGPT `auth.json` is in it for a turn in
+both, §18.22-B). The turn runner, the checkpoint and the login Workflow are the same code in both —
+they ask the port and `proxied` answers "nothing to do" — and the transcript scrubs GitHub token
+shapes as well as Anthropic keys.
 **The database.** A session's database is ALWAYS a real Neon branch of the app's project, under
 either `SESSION_BACKEND`, reached DIRECTLY from the container: there is no TCP out, so the app runs
 `DATABASE_DRIVER=neon` (the `Pool`'s `wss://<endpoint>/v2` for the kit's migrate, seed and
@@ -1780,14 +1809,23 @@ unproven on Cloudflare (plan §5). That a fresh installation token's 404 is GitH
 consistency is inferred from one incident (re-mint at :21, "Repository not found" at :22, both
 services 200 minutes later), not reproduced; the retry is bounded at 3.5 s, and a token-lifetime
 change at GitHub would make the "sealed within a minute" test miss (the minting request itself
-still retries). **The `host` mode (`SESSION_SANDBOX_HOST=remote`, development only) gives up one
-of the proxies' guarantees:** the host has no database, so it neither meters nor checks the budget
-per request — the budget is enforced per turn (checked before, the process killed when its
-running cost reaches what is left, §18.11), so one response can overshoot by its own size. The key
-and the token never reach the container, and the branch rule is kept. The grant crossing the
-remote binding and the host's handlers injecting on a real container are covered by unit tests
-(`session-host-egress`, `session-egress-forward`), not yet run end to end
-(`docs/plans/sandbox-session-issues.md`). A remote container's time is not
+still retries). **The `host` mode (the remote sandbox host, development only) gives up some of
+the proxies' guarantees:** the host has no database, so per request it neither meters nor checks
+the budget — the budget is enforced per turn (checked before; a Claude Code turn's process killed
+when its running cost reaches what is left, §18.11), so one response can overshoot by its own
+size, and a Codex turn, which reports usage only at its end, is not cut short at all; a
+subscription token Anthropic refuses (401) is passed back but not marked `needs_login` (the next
+lease still finds it `active`); and a rotated ChatGPT refresh token is not resealed the moment it
+rotates — the turn's lease reads `auth.json` back afterwards and reseals it, so a container lost
+mid-turn after a rotation loses the only valid refresh token and the plan needs a reconnect. The
+keys and the token never reach the container, and the branch rule is kept. The grant crossing the
+remote binding and the host's handlers injecting on a real container — Claude on a subscription,
+Codex on either account, a sign-in through the host — are covered by unit tests
+(`session-host-egress`, `session-egress-forward`, `agent-login-workflow`), not yet run end to end
+(`docs/plans/sandbox-session-issues.md`); so is `wrangler dev` running local containers and a
+remote binding at once, which `pnpm dev` now always asks for. The host must be redeployed for any
+of this (`docs/DEPLOY.md` § The sandbox host): an older one answers only Claude Code on Launch's
+key. A remote container's time is not
 metered (`container_seconds` stays 0; the host's `onStop` has nowhere to write), a container the
 platform put to sleep is not marked `suspended` by it, and the host keeps no workspace backups. JS
 RPC, a `ReadableStream` result and the HMR upgrade through a REMOTE binding are read from wrangler
@@ -1856,13 +1894,16 @@ admin who is not the creator approves it in the same call (200), anyone else —
 included — waits for one (202, `approvalId`). The approval extends the cap (audited
 `session.budget.extended` with the approval id) and wakes a blocked session.
 **The `host` egress mode meters the turn instead** (`turn-meter.ts`: the host's handlers inject
-but do not meter, having no database): each `assistant` line's usage (per response id, repeated
-content lines counted once) is the running cost, compared with `budgetHeadroom` (the nearer of the session's and
+but do not meter, having no database): each Claude Code `assistant` line's usage (per response id,
+repeated content lines counted once) is the running cost, compared with `budgetHeadroom` (the nearer of the session's and
 the app month's remaining cap, read at the turn's start) — reached, the process is killed,
-`budget.reached` and a `turn.failed` saying why. At the end the `result` line's `modelUsage`
-(Claude Code's background calls included; else its `usage` under the policy's model; else what the
-running sum saw, so a killed turn is still paid for) is written through the proxy's own
-`recordSessionUsage`: the same pricing, one transaction per row.
+`budget.reached` and a `turn.failed` saying why. At the end the turn's usage per model — Claude
+Code's `result` line's `modelUsage` (its background calls included; else its `usage` under the
+policy's model), Codex's `turn.completed` measured from the thread's last total — or else what the
+running sum saw, so a killed turn is still paid for, is written through the proxy's own
+`recordSessionUsage`: the same pricing under the runtime's provider (`anthropic` / `openai`), one
+transaction per row. A personal account's turn has no headroom (no money budget) and is recorded
+`billing: 'subscription'` with a null cost, as the proxies record it.
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); the liveness probe is proven with the `FakeSandbox` only (`die()`: a stream that
@@ -2843,7 +2884,7 @@ and row reading as before (the 0036 migration defaults both columns), and every 
 unchanged.
 
 **The seam** (`services/sessions/runtimes/`): `AgentRuntime { buildCommand, turnEnv, createParser,
-resumeRefused, workspaceFiles, beforeTurnFiles?, state, supportsHostEgress, login?, userLease? }`,
+resumeRefused, workspaceFiles, beforeTurnFiles?, state, login?, userLease? }`,
 reached only through `runtimeFor(id)` / `runtimeOf(row)`. Claude Code is `claude-code/index.ts`,
 wrapping `claude-stream.ts` byte for byte (`tests/config/agent-runtime-claude.test.ts` pins the
 command, the environment, the parsed events, the workspace file and the transcript paths). The turn
@@ -2863,15 +2904,15 @@ limits kept, Claude's model mirrored onto `model`) and refuses a result with not
 accept the vendor terms first (Known gaps). The overview's `sessionAgents` carries readiness:
 Launch's key per agent (sealed credential, else the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` secret,
 never the value), people with a connected account in the admin's organisation, the image an agent
-needs (Codex: `session-6`, documented, not checked), and whether the sandbox host can run it.
+needs (Codex: `session-6`, documented, not checked). Both sandbox hosts run every agent on either
+account, so the host is no part of readiness (its own section sits below the table, §18.10).
 **Fail-closed**: with no entry for a runtime (`runtimePolicyOf`), Claude Code runs on Launch's key
 on the policy's own `model` and every other runtime is OFF — so a policy stored before runtimes
 existed reads exactly as it always did. A change reaches NEW sessions only; each session froze its
 policy at create.
 
-**Deciding at create** (`credentials/resolve.ts`), narrowest wins: the DEPLOYMENT — only
-`SESSION_SANDBOX_HOST=remote`, allowing only Claude Code on Launch's key; then the policy's
-`runtimes`; then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the session
+**Deciding at create** (`credentials/resolve.ts`), narrowest wins: the policy's `runtimes`
+(nothing about runtimes is a deployment var, and the sandbox host narrows nothing); then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the session
 card's picker, `launch sessions start --runtime`). A request naming no runtime gets the policy's
 default runtime, or the first enabled one when that is off (`defaultRuntimeFor`). Starting a
 personal sign-in (`POST /api/me/agent-logins`) for a runtime whose policy bills Launch only is 409
@@ -2929,9 +2970,9 @@ handles a container's traffic for: `api.anthropic.com` and `github.com` (P3), `p
 `SESSION_BASE_ALLOWED_HOSTS` — a host on the allow-list with no handler would pass straight through
 — and each handler refuses a container that is not a session (or login) of the right runtime and
 account. `platform.claude.com` is not on the base allow-list: only a Claude login sandbox gets it
-(its driver's `hosts`). The sandbox host's `HostedSessionSandbox` (Claude Code on Launch's key
-only) handles `api.anthropic.com` and `github.com` and refuses Codex's three; it registers nothing
-for `platform.claude.com`, which carries no credential of Launch's (see the known gaps).
+(its driver's `hosts`). The sandbox host's `HostedSessionSandbox` handles the SAME six hosts from
+the sandbox's egress grant (§18.10), through the same forwarding functions — every runtime, either
+account, and sign-ins.
 
 #### 18.22-A Claude subscriptions
 
@@ -2971,7 +3012,8 @@ with the OAuth beta header — the token never enters the container.
   **404** — tolerated by the CLI — so a person's org-managed settings never override Launch's
   permission and deny setup. A credential the session may not spend is a 401 sentence with no
   upstream call; an upstream 401 marks it `needs_login` (the next turn's lease then refuses); a 429
-  passes through. The sandbox host stays API-key only.
+  passes through. The sandbox host forwards a subscription the same way (`forwardModel` with an `oauth` grant),
+  without the 401 → `needs_login`.
 - **The modal body** (`ClaudeLogin.tsx`): "Open Anthropic sign-in" (new tab, `noopener`), the
   paste field, each status in a sentence, and one line saying the sign-in happens with Anthropic
   and Launch stores the resulting token encrypted.
@@ -3053,8 +3095,10 @@ registered with their real handlers and are on the allow-list (the egress paragr
   sealed with the plan and an account FINGERPRINT as metadata (the id token decoded, never
   verified), and the scratch directory deleted. A login sandbox reaches only the device flow on
   `auth.openai.com`.
-- **The sandbox host** never runs Codex; its `HostedSessionSandbox` answers the three hosts with the
-  OpenAI-shaped refusal (`refuse.ts`), since they are on the shared allow-list.
+- **The sandbox host** runs Codex on either account: `openai` / `chatgpt` grants
+  (`egress/host.ts`) and its own handlers over `forward-openai.ts` (`sandbox-host/egress.ts`); the
+  turn is metered from `turn.completed` (§18.11). The refresh is passed through without the
+  immediate reseal (§18.10's known gaps).
 
 **Known gaps (Codex):** nothing here has run against a real Codex binary — the JSONL, the prompt and
 the rules are fixtures hand-written from the 0.160 source (`tests/fixtures/codex/`), and spike S-B1
@@ -3087,7 +3131,9 @@ off rather than metered.
   (the claim).
 - *The relay depends on each CLI's terminal output*: the versions are pinned and the parsing is
   fixture-tested.
-- *The sandbox host* runs Claude Code on Launch's key only.
+- *The sandbox host* (development only) has no database: no per-request metering or budget, no
+  `needs_login` on a refused subscription, no immediate reseal of a rotated ChatGPT refresh token
+  (§18.10's known gaps).
 - *Login sandboxes* count against the containers' `max_instances`.
 - *A personal-account session has no money budget*; the ship's PR summary always spends Launch's
   key.
@@ -3097,8 +3143,6 @@ off rather than metered.
   Workflow is proven over the `FakeSandbox` with a fake driver
   (`tests/api/agent-login-workflow.test.ts`) and each real driver over emulated terminal output
   (`emulateClaudeRelay`, the Codex fixtures); no real sign-in has completed through a real sandbox.
-- *A sign-in under `SESSION_SANDBOX_HOST=remote`* (development only) boots its login sandbox on the
-  sandbox host, which has no `platform.claude.com` handler (the token exchange then reaches Anthropic
-  directly if the allow-list or open egress lets it — no Launch credential is involved, but
-  Launch's login-only check is skipped) and no login passthrough on `api.anthropic.com` (the
-  profile call is refused, which the CLI tolerates). Unexercised.
+- *A sign-in on the remote sandbox host* (development only) boots its login sandbox there, granted
+  exactly its runtime's passthrough (`login`, §18.10) — proven over the `FakeSandbox` and the
+  host's handlers in unit tests, never through a real host.

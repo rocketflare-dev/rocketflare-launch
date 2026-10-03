@@ -27,12 +27,14 @@
  *   (`durable-objects/session-sandbox.ts`) and `sandbox/cloudflare-sandbox.ts`. Everything else
  *   sees `SandboxPort`.
  */
+import type { AgentRuntimeId } from '@launch/shared/launch-agents'
 import type {
   AppSessionDb,
   PrChecks,
   SessionDb,
   SessionPolicy,
 } from '@launch/shared/launch-sessions'
+import type { SessionSandboxHost } from '@launch/shared/launch-setup'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
@@ -263,33 +265,45 @@ export interface ModelUpstream {
 // ---- SessionEgressPort -------------------------------------------------------------------------
 
 /**
- * How a session's container reaches Anthropic and GitHub — the one thing that differs between a
- * container in Launch's own Worker and one on the sandbox host (`SESSION_SANDBOX_HOST=remote`). In
- * BOTH the container holds no credential and an outbound handler injects it on the way out:
+ * How a session's container reaches its model provider and GitHub — the one thing that differs
+ * between a container in Launch's own Worker and one on the sandbox host (`sessions.sandbox_host`
+ * `remote`). In BOTH the container holds no Launch credential and an outbound handler injects it
+ * on the way out:
  *
  * | mode      | model calls | git | metering and budget |
  * |-----------|-------------|-----|---------------------|
- * | `proxied` | the placeholder key; `egress/anthropic.ts` swaps the real one in, in Launch's Worker | `egress/github.ts` injects the session's token, only for its repo and branch | per request, in the model proxy; over budget → 403 before the call |
- * | `host`    | the placeholder key; the host's handler swaps in the key Launch granted it (`egress/host.ts`) | the host's handler injects the token Launch granted it — same repo and branch rules | per turn, from Claude Code's own usage (`turn-meter.ts`): checked before the turn, and the turn is killed when its running cost reaches the budget |
+ * | `proxied` | the placeholder; Launch's egress handlers (`egress/registry.ts`) swap the real credential in, in Launch's Worker | `egress/github.ts` injects the session's token, only for its repo and branch | per request, in the proxies; over budget → 403 before the call |
+ * | `host`    | the placeholder; the host's handlers swap in the credential Launch granted the sandbox for the turn (`egress/host.ts`) | the host's handler injects the token Launch granted it — same repo and branch rules | per turn, from the CLI's own usage (`turn-meter.ts`): checked before the turn, and a turn on Launch's account is killed when its running cost reaches the budget |
  *
  * `proxied` is every deployed Launch and `wrangler dev` on local Docker; `host` is development
  * only (the host cannot reach Launch's database, so Launch pushes the handlers an egress grant).
- * The turn runner and the checkpoint are the same code in both: they ask this port to grant git
- * and the model before they are used, and `proxied` answers "nothing to do".
+ * The turn runner, the checkpoint and the login Workflow are the same code in both: they ask this
+ * port to grant what is about to be used, and `proxied` answers "nothing to do".
  */
 export interface SessionEgressPort {
   readonly mode: 'proxied' | 'host'
   /**
-   * Before a turn: variables the turn's process gets on top of `claudeTurnEnv` — never a secret.
-   * `host` grants the sandbox the model key (on the host, not in the container) and returns only
-   * the placeholder; throws `ModelKeyMissingError` when no key is configured.
+   * Before a turn: variables the turn's process gets on top of the runtime's own `turnEnv` —
+   * never a secret. `host` grants the sandbox the turn's model credential (on the host, not in
+   * the container) and adds nothing; throws `ModelKeyMissingError` when Launch's key is not
+   * configured, `CredentialNeedsLoginError` when the creator's subscription cannot be spent.
    */
   turnEnv(sandbox: SandboxPort, session: SessionRow): Promise<Record<string, string>>
+  /**
+   * After a turn, whatever happened (absent = nothing): `host` revokes what was granted for the
+   * length of the turn only (a ChatGPT plan).
+   */
+  endTurn?(sandbox: SandboxPort, session: SessionRow): Promise<void>
   /**
    * Before git talks to the remote (the clone, a turn, a checkpoint's push): `host` grants the
    * sandbox a fresh-enough installation token for its repo and branch. `proxied`: nothing.
    */
   prepareGit(sandbox: SandboxPort, session: SessionRow): Promise<void>
+  /**
+   * Before a LOGIN sandbox's CLI starts (§18.22, absent = nothing): `host` grants it `runtime`'s
+   * sign-in passthrough. `proxied`: nothing (Launch's handlers find the login row).
+   */
+  prepareLogin?(sandbox: SandboxPort, runtime: AgentRuntimeId): Promise<void>
 }
 
 /** The egress handlers do the work; the container holds no credential. */
@@ -339,16 +353,22 @@ export interface SessionRuntimeContext {
 
 /**
  * The real adapters for this Worker, per `SESSION_BACKEND` (`local` only under
- * `APP_ENV=development` — `loadConfig` refuses it elsewhere) and `SESSION_SANDBOX_HOST`. A
- * session's database is ALWAYS a real Neon branch of the app's project, reached directly from the
- * container. `SESSION_BACKEND=local` swaps only the repo host (the local git server).
- * `SESSION_SANDBOX_HOST=remote` (development only, never with `local`) swaps the sandbox for
- * `RemoteSandbox` over the `SANDBOX_HOST` binding and the egress mode for `host`; otherwise the
- * container is this Worker's `SESSION_SANDBOX` (`wrangler dev`'s Docker locally) behind the proxies.
+ * `APP_ENV=development` — `loadConfig` refuses it elsewhere) and the sandbox HOST the caller
+ * resolved — a session's frozen `sessions.sandbox_host` (`sandboxHostOf(row)`), a login's
+ * Workflow params, or the platform setting for something new (`sandbox-host.ts`). A session's
+ * database is ALWAYS a real Neon branch of the app's project, reached directly from the
+ * container. `SESSION_BACKEND=local` swaps only the repo host (the local git server). `remote`
+ * (development only, never with `local`) swaps the sandbox for `RemoteSandbox` over the
+ * `SANDBOX_HOST` binding and the egress mode for `host`; `local` (the default) is this Worker's
+ * `SESSION_SANDBOX` (`wrangler dev`'s Docker locally) behind the proxies.
  */
-export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPorts {
+export function defaultSessionPorts(
+  env: AppBindings,
+  cfg: AppConfig,
+  host: SessionSandboxHost = 'local'
+): SessionPorts {
   const local = cfg.SESSION_BACKEND === 'local'
-  const remote = cfg.SESSION_SANDBOX_HOST === 'remote'
+  const remote = host === 'remote'
   const repoHost = (db: Database): RepoHostPort =>
     local ? new LocalRepoHost(cfg) : new GitHubRepoHost(db, cfg)
   return {
@@ -372,13 +392,19 @@ export function defaultSessionPorts(env: AppBindings, cfg: AppConfig): SessionPo
   }
 }
 
-/** `SANDBOX_HOST`, declared only in the config `pnpm dev` generates for `SESSION_SANDBOX_HOST=remote`. */
+/** `SANDBOX_HOST`, declared only in the dev config `pnpm dev` generates (`wrangler.dev-remote.toml`). */
 function sandboxHostBinding(env: AppBindings): SandboxHostBinding {
   if (!env.SANDBOX_HOST) {
     throw new Error(
-      'SESSION_SANDBOX_HOST=remote, but this Worker has no SANDBOX_HOST binding: start Launch with ' +
-        '`pnpm dev`, which runs wrangler with wrangler.dev-remote.toml (docs/SESSIONS-LOCAL.md)'
+      'This session runs on the remote sandbox host, but this Worker has no SANDBOX_HOST binding: ' +
+        'start Launch with `pnpm dev` while logged in to wrangler, with the host deployed ' +
+        '(docs/SESSIONS-LOCAL.md § Real containers from a laptop)'
     )
   }
   return env.SANDBOX_HOST as unknown as SandboxHostBinding
+}
+
+/** The host a session's container runs on — frozen on the row at create. */
+export function sandboxHostOf(row: Pick<SessionRow, 'sandboxHost'>): SessionSandboxHost {
+  return row.sandboxHost === 'remote' ? 'remote' : 'local'
 }

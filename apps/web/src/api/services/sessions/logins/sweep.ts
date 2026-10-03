@@ -12,6 +12,7 @@
  * inside its own tenant. `tenantIds` scopes it for the tests.
  */
 import { AGENT_LOGIN_ACTIVE_STATUSES } from '@launch/shared/launch-agents'
+import type { SessionSandboxHost } from '@launch/shared/launch-setup'
 import { and, eq, inArray, lt } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { agentLogins } from '../../../../db/schema'
@@ -19,6 +20,7 @@ import type { ScheduledTask } from '../../../scheduled'
 import type { Logger } from '../../../utils/core/logger'
 import { sweepStaleClaims } from '../credentials/store'
 import { defaultSessionPorts, type SandboxPort } from '../ports'
+import { isRemoteSandboxId } from '../sandbox-host/protocol'
 import { loginSandboxName } from './steps'
 
 export interface AgentLoginsSweepResult {
@@ -31,14 +33,18 @@ export async function runAgentLoginsSweep(
   opts: {
     now?: Date
     tenantIds?: readonly string[]
-    /** The login sandbox by name, to destroy it; absent = leave it to the platform. */
-    sandbox?: (name: string) => SandboxPort
+    /** The login sandbox by name and host, to destroy it; absent = leave it to the platform. */
+    sandbox?: (name: string, host: SessionSandboxHost) => SandboxPort
     logger?: Pick<Logger, 'warn'>
   } = {}
 ): Promise<AgentLoginsSweepResult> {
   const now = opts.now ?? new Date()
   const stale = await db
-    .select({ id: agentLogins.id, tenantId: agentLogins.tenantId })
+    .select({
+      id: agentLogins.id,
+      tenantId: agentLogins.tenantId,
+      sandboxId: agentLogins.sandboxId,
+    })
     .from(agentLogins)
     .where(
       and(
@@ -72,7 +78,10 @@ export async function runAgentLoginsSweep(
     expired++
     if (opts.sandbox) {
       await opts
-        .sandbox(loginSandboxName(login.id))
+        .sandbox(
+          loginSandboxName(login.id),
+          isRemoteSandboxId(login.sandboxId) ? 'remote' : 'local'
+        )
         .destroy()
         .catch(err =>
           opts.logger?.warn({ err, loginId: login.id }, 'agent login sweep: destroy failed')
@@ -86,9 +95,9 @@ export async function runAgentLoginsSweep(
 export const agentLoginsSweep: ScheduledTask = {
   name: 'agent-logins.sweep',
   async run({ db, env, config, logger }) {
-    const ports = defaultSessionPorts(env, config)
     const result = await runAgentLoginsSweep(db, {
-      sandbox: name => ports.sandbox(name),
+      // The host a login ran on is in its recorded sandbox id (`remote:<name>` on the sandbox host).
+      sandbox: (name, host) => defaultSessionPorts(env, config, host).sandbox(name),
       logger,
     })
     if (result.expired || result.claimsReleased) {

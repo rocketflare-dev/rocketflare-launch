@@ -84,8 +84,9 @@ Worker in that same step and returns ids only.
 
 ## Launch P3: `session.ts`
 
-`SessionWorkflow` (`SESSION_WORKFLOW`, `launch-session[-staging]`) drives one coding session;
-params `SessionWorkflowParams` (`{ sessionId, tenantId }`, `@launch/shared/launch-sessions`), the
+`SessionWorkflow` (`SESSION_WORKFLOW`, `launch-session[-staging]`) drives one coding session — on
+the sandbox host frozen on its row (`sessions.sandbox_host`, read once per step to build the
+ports); params `SessionWorkflowParams` (`{ sessionId, tenantId }`, `@launch/shared/launch-sessions`), the
 instance id is the session id (`<id>-rN` after a restart — `wakeOrRestart`,
 `services/sessions/lifecycle.ts`). The class wires names and configs only; the bodies are plain
 functions in `../services/sessions/steps.ts` over a `StepScope` (one DB client, the ports, the
@@ -232,9 +233,11 @@ with `createFakeWorkflowStep()`, asserting the step names.
 ## §18.22: `agent-login.ts`
 
 `AgentLoginWorkflow` (`AGENT_LOGIN_WORKFLOW`, `launch-agent-login[-staging]`) runs one relayed
-sign-in for a personal AI account; params `AgentLoginParams` (`{ loginId, tenantId }`,
-`@launch/shared/launch-agents`), instance id = the login id. Shape: `start` (record the sandbox id,
-boot `login-<id>` with the driver's hosts, start the CLI) → `prompt#N` → `runtime` → (a runtime
+sign-in for a personal AI account; params `AgentLoginParams` (`{ loginId, tenantId,
+sandboxHost? }`, `@launch/shared/launch-agents` — `sandboxHost` is the Session sandbox setting when
+the sign-in started, frozen for the run and picking the ports), instance id = the login id. Shape:
+`start` (record the sandbox id, boot `login-<id>` with the driver's hosts, `prepareLogin` — on the
+remote host the grant for that runtime's sign-in passthrough — start the CLI) → `prompt#N` → `runtime` → (a runtime
 whose login takes a code back) `code#N` (`waitForEvent(AGENT_LOGIN_CODE_EVENT)`, payload ignored —
 the route sealed the code onto the row) + `submit#N` → `finish#N` → `capture` (sealed into
 `agent_credentials`; returns `{ ok }`) — then `expire` / `fail` when a loop ran past the TTL or a

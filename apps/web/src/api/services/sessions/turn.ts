@@ -987,9 +987,31 @@ async function streamTurn(
   const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
   const runtime = runtimeOf(row)
 
-  // `host` (a remote sandbox): the host is granted the key and a fresh token (the process gets
-  // only the placeholder), and the turn meters itself against what the budget has left
-  // (`turn-meter.ts`). `proxied`: none of it.
+  // `host` (a remote sandbox): the host is granted the turn's model credential and a fresh token
+  // (the process keeps the runtime's placeholders), and the turn meters itself against what the
+  // budget has left (`turn-meter.ts`) — a personal account has no money budget, so it is only
+  // recorded. `proxied`: none of it.
+  try {
+    return await streamGrantedTurn(db, sandbox, row, writer, p, out, runtime)
+  } finally {
+    await p.egress
+      .endTurn?.(sandbox, row)
+      .catch(err =>
+        p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not revoke the turn grant')
+      )
+  }
+}
+
+/** The turn once the egress may be granted: grant, lease, run. */
+async function streamGrantedTurn(
+  db: Database,
+  sandbox: SandboxPort,
+  row: SessionRow,
+  writer: SessionEventWriter,
+  p: StreamTurnParams,
+  out: StreamTurnResult,
+  runtime: AgentRuntime
+): Promise<StreamTurnResult> {
   let egressEnv: Record<string, string>
   let meter: TurnMeter | null = null
   let headroom: BudgetHeadroom = {
@@ -1002,15 +1024,20 @@ async function streamTurn(
     await p.egress.prepareGit(sandbox, row)
     egressEnv = await p.egress.turnEnv(sandbox, row)
     if (p.egress.mode === 'host') {
-      meter = createTurnMeter(p.policy.model)
-      headroom = await budgetHeadroom(db, row, new Date(p.now()))
+      const subscription = row.credentialSource === 'user'
+      meter = createTurnMeter(p.policy.model, {
+        provider: runtime.provider,
+        billing: subscription ? 'subscription' : 'metered',
+      })
+      if (!subscription) headroom = await budgetHeadroom(db, row, new Date(p.now()))
     }
   } catch (err) {
     if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (err instanceof ModelKeyMissingError) out.failure = err.message
-    else {
+    else if (err instanceof ModelKeyMissingError || err instanceof CredentialNeedsLoginError) {
+      out.failure = err.message
+    } else {
       p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not prepare the sandbox')
-      out.failure = 'Launch could not give the sandbox its repository credential'
+      out.failure = 'Launch could not give the sandbox its credentials for this turn'
     }
     return out
   }

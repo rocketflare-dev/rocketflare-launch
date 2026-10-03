@@ -111,14 +111,13 @@ SESSION_LOCAL_GIT_URL=http://localhost:9420
 # | presigned. Unset = binding under APP_ENV=development (the archive goes through the Durable
 # Object into the local BACKUP_BUCKET); `off` if a restore is slower than a clone on your machine.
 SESSION_WORKSPACE_BACKUP=
-# Where a session's CONTAINER runs: local (wrangler dev's Docker, amd64-emulated on an ARM Mac) |
-# remote (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker, reached through
-# a remote service binding — `pnpm dev` generates wrangler.dev-remote.toml and skips the local
-# image build). remote needs SESSION_BACKEND=cloud, `wrangler login`, and the host deployed
-# (docs/DEPLOY.md § The sandbox host); the host's outbound handlers inject the key and token Launch
-# grants it, as Launch's own do (docs/SESSIONS-LOCAL.md § Real containers from a laptop).
-# Development only.
-SESSION_SANDBOX_HOST=
+# Where a session's CONTAINER runs is a PLATFORM SETTING now, not a var: Settings → Platform →
+# Coding agents → Session sandbox — this Worker's containers (wrangler dev's Docker) or the remote
+# sandbox host (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker). `pnpm dev`
+# makes both available whenever it can (Docker running; `wrangler login` and the host deployed —
+# docs/DEPLOY.md § The sandbox host) and says which it could not. DEV_REMOTE_SANDBOX=0 in your
+# shell skips the remote check. A leftover SESSION_SANDBOX_HOST=remote here is read once as the
+# setting's starting value; delete it (docs/SESSIONS-LOCAL.md § Real containers from a laptop).
 # How a session's container reaches the internet: allowlist (internet off, the egress allow-list)
 # | open (internet on; only the model and git hosts intercepted, for their credentials). Blank =
 # allowlist, which works under wrangler dev. The deployed tomls say open until Cloudflare's egress

@@ -1,7 +1,7 @@
 /**
  * The egress FORWARDING CORES (`egress/forward-git.ts`, `egress/forward-model.ts`) — what Launch's
  * own proxies and the sandbox host's handlers share, with no database — and the sandbox host's
- * side of the `host` egress mode (`SESSION_SANDBOX_HOST=remote`): `HostedSessionSandbox` keeps an
+ * side of the `host` egress mode (a session on the remote sandbox host): `HostedSessionSandbox` keeps an
  * EGRESS GRANT in its storage, its OWN `outboundByHost` finds it by `ctx.containerId`, and the
  * handlers inject the grant's token and key under the proxies' rules. No grant → 403.
  *
@@ -19,9 +19,18 @@ import {
   MAX_PUSH_BYTES,
 } from '@/api/services/sessions/egress/forward-git'
 import { forwardModel } from '@/api/services/sessions/egress/forward-model'
+import { CODEX_LOGIN_AUTH_PATHS } from '@/api/services/sessions/egress/forward-openai'
+import { SESSION_OUTBOUND_HANDLERS } from '@/api/services/sessions/egress/registry'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
 import type { EgressGrant } from '@/api/services/sessions/sandbox-host/protocol'
-import { hostedAnthropic, hostedGitHub } from '@/sandbox-host/egress'
+import {
+  hostedAnthropic,
+  hostedChatGpt,
+  hostedClaudeSignIn,
+  hostedGitHub,
+  hostedOpenAi,
+  hostedOpenAiAuth,
+} from '@/sandbox-host/egress'
 import { grantLookup, HostedSessionSandbox } from '@/sandbox-host/hosted-session-sandbox'
 import SandboxHost from '@/sandbox-host/worker'
 import { createFakeAnthropic } from '../helpers/fake-anthropic'
@@ -243,7 +252,7 @@ describe('forwardModel', () => {
   it('drops the placeholder, sets the key, and keeps the path and query', async () => {
     const anthropic = createFakeAnthropic({ text: 'hi' })
     const res = await forwardModel(modelRequest({ model: `${MODEL}-20250929`, max_tokens: 5 }), {
-      key: KEY,
+      auth: { kind: 'api_key', key: KEY },
       model: MODEL,
       upstream: anthropic.upstream,
     })
@@ -258,7 +267,11 @@ describe('forwardModel', () => {
 
   it('another path, method or model is an Anthropic-shaped 403 with no upstream call', async () => {
     const anthropic = createFakeAnthropic()
-    const opts = { key: KEY, model: MODEL, upstream: anthropic.upstream }
+    const opts = {
+      auth: { kind: 'api_key' as const, key: KEY },
+      model: MODEL,
+      upstream: anthropic.upstream,
+    }
     for (const req of [
       modelRequest({ model: MODEL }, '/v1/models', 'GET'),
       modelRequest({ model: MODEL }, '/v1/messages/batches'),
@@ -276,7 +289,7 @@ describe('forwardModel', () => {
 
   it('an unreachable upstream is a 502, and says nothing of the key', async () => {
     const res = await forwardModel(modelRequest({ model: MODEL }), {
-      key: KEY,
+      auth: { kind: 'api_key', key: KEY },
       model: MODEL,
       upstream: { fetch: () => Promise.reject(new Error(`boom ${KEY}`)) },
     })
@@ -297,7 +310,7 @@ const grant = (over: Partial<EgressGrant> = {}): EgressGrant => ({
     token: TOKEN,
     expiresAt: Date.now() + 30 * 60_000,
   },
-  model: { key: KEY, model: MODEL },
+  anthropic: { auth: { kind: 'api_key', value: KEY }, model: MODEL },
   ...over,
 })
 
@@ -319,7 +332,7 @@ describe('the sandbox host’s outbound handlers', () => {
     const up = upstream()
     for (const lookup of [
       lookupOf(null),
-      lookupOf({ model: { key: KEY, model: MODEL } }),
+      lookupOf({ anthropic: { auth: { kind: 'api_key', value: KEY }, model: MODEL } }),
       async () => {
         throw new Error('no such object')
       },
@@ -387,6 +400,299 @@ describe('the sandbox host’s outbound handlers', () => {
   })
 })
 
+/** An upstream that records every request whole (headers included) and answers `answer`. */
+function recordingUpstream(answer: (req: Request) => Response = () => Response.json({ ok: true })) {
+  const seen: { url: string; method: string; headers: Headers; body: string }[] = []
+  return {
+    seen,
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init)
+      seen.push({
+        url: req.url,
+        method: req.method,
+        headers: req.headers,
+        body: req.method === 'GET' ? '' : await req.text(),
+      })
+      return answer(req)
+    }) as typeof globalThis.fetch,
+  }
+}
+
+describe('the sandbox host runs everything Launch’s egress runs', () => {
+  const ctx = { containerId: 'the-do-id', className: 'HostedSessionSandbox' }
+  const lookupOf = (g: EgressGrant | null) => async () => g
+  const SUB_TOKEN = 'sk-ant-oat01-subscription-token-000000000000'
+  const OPENAI_KEY = 'sk-proj-launch-openai-key-0000000000000000'
+  const CODEX_MODEL = 'gpt-6.1-sol'
+  const oauthGrant: EgressGrant = {
+    anthropic: { auth: { kind: 'oauth', value: SUB_TOKEN }, model: MODEL },
+  }
+  const responses = (
+    body: unknown,
+    headers: Record<string, string> = {},
+    url = 'https://api.openai.com/v1/responses'
+  ) =>
+    new Request(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${MODEL_KEY_PLACEHOLDER}`,
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    })
+
+  it('Claude on a subscription: the token as Bearer with the OAuth beta merged, no x-api-key, the placeholder never upstream', async () => {
+    const up = recordingUpstream()
+    const req = modelRequest({ model: MODEL })
+    req.headers.set('anthropic-beta', 'fine-grained-tool-streaming-2025-05-14')
+    const res = await hostedAnthropic(req, lookupOf(oauthGrant), ctx, { fetch: up.fetch })
+    expect(res.status).toBe(200)
+    const [sent] = up.seen
+    expect(sent?.headers.get('authorization')).toBe(`Bearer ${SUB_TOKEN}`)
+    expect(sent?.headers.get('x-api-key')).toBeNull()
+    expect(sent?.headers.get('anthropic-beta')).toBe(
+      'fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20'
+    )
+    expect(JSON.stringify([...(sent?.headers ?? [])])).not.toContain(MODEL_KEY_PLACEHOLDER)
+  })
+
+  it('Claude on a subscription: GET /api/claude_code/* is a 404 with no upstream call; on Launch’s key it is a 403', async () => {
+    const up = recordingUpstream()
+    const settings = modelRequest(null, '/api/claude_code/settings', 'GET')
+    const hidden = await hostedAnthropic(settings, lookupOf(oauthGrant), ctx, { fetch: up.fetch })
+    expect(hidden.status).toBe(404)
+    const keyed = await hostedAnthropic(
+      modelRequest(null, '/api/claude_code/policy_limits', 'GET'),
+      lookupOf(grant()),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(keyed.status).toBe(403)
+    expect(up.seen).toHaveLength(0)
+  })
+
+  it('forwardModel itself: an oauth credential is a Bearer, never x-api-key', async () => {
+    const up = recordingUpstream()
+    const res = await forwardModel(modelRequest({ model: MODEL }), {
+      auth: { kind: 'oauth', token: SUB_TOKEN },
+      model: MODEL,
+      upstream: { fetch: r => up.fetch(r) },
+    })
+    expect(res.status).toBe(200)
+    expect(up.seen[0]?.headers.get('authorization')).toBe(`Bearer ${SUB_TOKEN}`)
+    expect(up.seen[0]?.headers.get('x-api-key')).toBeNull()
+  })
+
+  it('Codex on Launch’s key: the key replaces the placeholder; a WebSocket is a 426; another model or a compressed body is refused', async () => {
+    const up = recordingUpstream()
+    const g: EgressGrant = { openai: { key: OPENAI_KEY, model: CODEX_MODEL } }
+    const ok = await hostedOpenAi(
+      responses({ model: CODEX_MODEL, stream: true }),
+      lookupOf(g),
+      ctx,
+      {
+        fetch: up.fetch,
+      }
+    )
+    expect(ok.status).toBe(200)
+    expect(up.seen[0]?.url).toBe('https://api.openai.com/v1/responses')
+    expect(up.seen[0]?.headers.get('authorization')).toBe(`Bearer ${OPENAI_KEY}`)
+    expect(up.seen[0]?.body).toContain(CODEX_MODEL)
+
+    const models = await hostedOpenAi(
+      new Request('https://api.openai.com/v1/models', {
+        headers: { authorization: `Bearer ${MODEL_KEY_PLACEHOLDER}` },
+      }),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(models.status).toBe(200)
+    expect(up.seen[1]?.headers.get('authorization')).toBe(`Bearer ${OPENAI_KEY}`)
+
+    const ws = await hostedOpenAi(
+      new Request('https://api.openai.com/v1/responses', { headers: { upgrade: 'websocket' } }),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(ws.status).toBe(426)
+    const other = await hostedOpenAi(responses({ model: 'gpt-4o' }), lookupOf(g), ctx, {
+      fetch: up.fetch,
+    })
+    expect(other.status).toBe(403)
+    const zipped = await hostedOpenAi(
+      responses({ model: CODEX_MODEL }, { 'content-encoding': 'zstd' }),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(zipped.status).toBe(415)
+    const files = await hostedOpenAi(
+      responses({}, {}, 'https://api.openai.com/v1/files'),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(files.status).toBe(403)
+    expect(up.seen).toHaveLength(2)
+  })
+
+  it('Codex on Launch’s key needs the openai part: a Claude session’s grant is refused', async () => {
+    const up = recordingUpstream()
+    for (const g of [grant(), oauthGrant, { chatgpt: { model: CODEX_MODEL } }, null]) {
+      const res = await hostedOpenAi(responses({ model: CODEX_MODEL }), lookupOf(g), ctx, {
+        fetch: up.fetch,
+      })
+      expect(res.status).toBe(403)
+    }
+    expect(up.seen).toHaveLength(0)
+  })
+
+  it('Codex on a ChatGPT plan: the Responses path passes with Codex’s own token; analytics and everything else are refused', async () => {
+    const up = recordingUpstream()
+    const g: EgressGrant = { chatgpt: { model: CODEX_MODEL } }
+    const own = { authorization: 'Bearer plan-access-token', 'chatgpt-account-id': 'acct-1' }
+    const ok = await hostedChatGpt(
+      responses({ model: CODEX_MODEL }, own, 'https://chatgpt.com/backend-api/codex/responses'),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(ok.status).toBe(200)
+    expect(up.seen[0]?.url).toBe('https://chatgpt.com/backend-api/codex/responses')
+    expect(up.seen[0]?.headers.get('authorization')).toBe('Bearer plan-access-token')
+    expect(up.seen[0]?.headers.get('chatgpt-account-id')).toBe('acct-1')
+
+    for (const url of [
+      'https://chatgpt.com/backend-api/codex/analytics-events/events',
+      'https://chatgpt.com/backend-api/conversation',
+    ]) {
+      const res = await hostedChatGpt(
+        responses({ model: CODEX_MODEL }, own, url),
+        lookupOf(g),
+        ctx,
+        {
+          fetch: up.fetch,
+        }
+      )
+      expect(res.status).toBe(403)
+    }
+    const otherModel = await hostedChatGpt(
+      responses({ model: 'gpt-4o' }, own, 'https://chatgpt.com/backend-api/codex/responses'),
+      lookupOf(g),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(otherModel.status).toBe(403)
+    // Outside a turn (the part revoked) — or a Launch-key session — nothing passes.
+    const outside = await hostedChatGpt(
+      responses({ model: CODEX_MODEL }, own, 'https://chatgpt.com/backend-api/codex/responses'),
+      lookupOf({ openai: { key: OPENAI_KEY, model: CODEX_MODEL } }),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(outside.status).toBe(403)
+    expect(up.seen).toHaveLength(1)
+  })
+
+  it('auth.openai.com: a session on a plan may only refresh; a Codex sign-in only its device flow', async () => {
+    const up = recordingUpstream()
+    const auth = (path: string, body: unknown) =>
+      new Request(`https://auth.openai.com${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const plan: EgressGrant = { chatgpt: { model: CODEX_MODEL } }
+    const refresh = await hostedOpenAiAuth(
+      auth('/oauth/token', { grant_type: 'refresh_token', refresh_token: 'rt' }),
+      lookupOf(plan),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(refresh.status).toBe(200)
+    expect(up.seen[0]?.url).toBe('https://auth.openai.com/oauth/token')
+    for (const req of [
+      auth('/oauth/token', { grant_type: 'authorization_code', code: 'c' }),
+      auth('/api/accounts/deviceauth/usercode', {}),
+    ]) {
+      expect((await hostedOpenAiAuth(req, lookupOf(plan), ctx, { fetch: up.fetch })).status).toBe(
+        403
+      )
+    }
+
+    const signIn: EgressGrant = { login: { runtime: 'codex' } }
+    for (const path of CODEX_LOGIN_AUTH_PATHS) {
+      const res = await hostedOpenAiAuth(auth(path, {}), lookupOf(signIn), ctx, {
+        fetch: up.fetch,
+      })
+      expect(res.status, path).toBe(200)
+    }
+    const elsewhere = await hostedOpenAiAuth(auth('/api/accounts/me', {}), lookupOf(signIn), ctx, {
+      fetch: up.fetch,
+    })
+    expect(elsewhere.status).toBe(403)
+    // A Claude sign-in, a Launch-key session, no grant: nothing on this host.
+    for (const g of [{ login: { runtime: 'claude_code' as const } }, grant(), null]) {
+      const res = await hostedOpenAiAuth(
+        auth('/oauth/token', { grant_type: 'refresh_token' }),
+        lookupOf(g),
+        ctx,
+        { fetch: up.fetch }
+      )
+      expect(res.status).toBe(403)
+    }
+    expect(up.seen).toHaveLength(1 + CODEX_LOGIN_AUTH_PATHS.length)
+  })
+
+  it('a Claude sign-in: the token exchange and the profile pass untouched, nothing else; a session gets neither', async () => {
+    const up = recordingUpstream()
+    const signIn: EgressGrant = { login: { runtime: 'claude_code' } }
+    const exchange = new Request('https://platform.claude.com/v1/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: 'c#s' }),
+    })
+    expect(
+      (await hostedClaudeSignIn(exchange, lookupOf(signIn), ctx, { fetch: up.fetch })).status
+    ).toBe(200)
+    expect(up.seen[0]?.url).toBe('https://platform.claude.com/v1/oauth/token')
+    const profile = new Request('https://api.anthropic.com/api/oauth/profile', {
+      headers: { authorization: 'Bearer cli-own-token' },
+    })
+    expect(
+      (await hostedAnthropic(profile, lookupOf(signIn), ctx, { fetch: up.fetch })).status
+    ).toBe(200)
+    expect(up.seen[1]?.headers.get('authorization')).toBe('Bearer cli-own-token')
+
+    // A sign-in may not call the Messages API, nor anything else on platform.claude.com.
+    const messages = await hostedAnthropic(modelRequest({ model: MODEL }), lookupOf(signIn), ctx, {
+      fetch: up.fetch,
+    })
+    expect(messages.status).toBe(403)
+    const other = await hostedClaudeSignIn(
+      new Request('https://platform.claude.com/v1/organizations'),
+      lookupOf(signIn),
+      ctx,
+      { fetch: up.fetch }
+    )
+    expect(other.status).toBe(403)
+    // A session (or a Codex sign-in, or nobody) on platform.claude.com: refused.
+    for (const g of [grant(), oauthGrant, { login: { runtime: 'codex' as const } }, null]) {
+      const res = await hostedClaudeSignIn(
+        new Request('https://platform.claude.com/v1/oauth/token', { method: 'POST', body: '{}' }),
+        lookupOf(g),
+        ctx,
+        { fetch: up.fetch }
+      )
+      expect(res.status).toBe(403)
+    }
+    expect(up.seen).toHaveLength(2)
+  })
+})
+
 /** A Durable Object's storage, in memory. */
 function memoryStorage() {
   const map = new Map<string, unknown>()
@@ -410,28 +716,37 @@ describe('HostedSessionSandbox', () => {
     return { obj, mem }
   }
 
-  it('declares its OWN handlers for the model and git hosts, and none for the database (the registry is keyed by class name)', () => {
-    // Codex's hosts are on the shared allow-list, so the host refuses them (§18.22-B).
+  it('declares its OWN handlers for exactly Launch’s hosts, and none for the database (the registry is keyed by class name)', () => {
+    // The same set as Launch's own `SessionSandbox` — the host runs everything Launch's egress runs.
+    expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual(
+      Object.keys(SESSION_OUTBOUND_HANDLERS).sort()
+    )
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
       'chatgpt.com',
       'github.com',
+      'platform.claude.com',
     ])
   })
 
-  it('merges each half of a grant, and forgets it on clear, destroy and a stopped container', async () => {
+  it('merges each part of a grant, removes a part on null, and forgets it on clear, destroy and a stopped container', async () => {
     const { obj } = sandbox()
     expect(await obj.getEgressGrant()).toBeNull()
-    const { git, model } = grant()
+    const { git, anthropic } = grant()
     await obj.setEgressGrant({ git })
-    await obj.setEgressGrant({ model })
-    expect(await obj.getEgressGrant()).toEqual({ git, model })
-    // A later git grant (a checkpoint's push) keeps the model half.
+    await obj.setEgressGrant({ anthropic })
+    expect(await obj.getEgressGrant()).toEqual({ git, anthropic })
+    // A later git grant (a checkpoint's push) keeps the model part.
     const later = { ...(git as NonNullable<typeof git>), token: `ghs_${'N'.repeat(36)}` }
     await obj.setEgressGrant({ git: later })
-    expect(await obj.getEgressGrant()).toEqual({ git: later, model })
+    expect(await obj.getEgressGrant()).toEqual({ git: later, anthropic })
+    // A turn's ChatGPT part comes and goes; nothing else moves.
+    await obj.setEgressGrant({ chatgpt: { model: 'gpt-6.1-sol' } })
+    expect((await obj.getEgressGrant())?.chatgpt).toEqual({ model: 'gpt-6.1-sol' })
+    await obj.setEgressGrant({ chatgpt: null })
+    expect(await obj.getEgressGrant()).toEqual({ git: later, anthropic })
 
     await obj.clearEgressGrant()
     expect(await obj.getEgressGrant()).toBeNull()

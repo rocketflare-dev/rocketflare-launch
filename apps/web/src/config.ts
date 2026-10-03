@@ -215,21 +215,9 @@ const coreConfigSchema = z.object({
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.enum(['cloud', 'local']).default('cloud')
   ),
-  /**
-   * Launch P3, development only: where a session's CONTAINER runs. `local` — `SESSION_SANDBOX` in
-   * this Worker (deployed: Cloudflare; under `wrangler dev`: local Docker, amd64-emulated on an ARM
-   * Mac). `remote` — a real Cloudflare container in the sandbox host Worker
-   * (`wrangler.sandbox-host.toml`), reached through the remote service binding `SANDBOX_HOST`
-   * (`RemoteSandbox`), which `pnpm dev` declares in the dev-only config it generates. The host's
-   * outbound handlers inject the key and the token Launch grants the sandbox (the `host` egress
-   * mode, `egress/host.ts`); the container holds neither. `loadConfig` refuses `remote` outside
-   * `APP_ENV=development`, and with `SESSION_BACKEND=local` (a Cloudflare container cannot reach
-   * a laptop's git server).
-   */
-  SESSION_SANDBOX_HOST: z.preprocess(
-    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
-    z.enum(['local', 'remote']).default('local')
-  ),
+  // Where a session's CONTAINER runs is no longer a var: it is the `session_sandbox_host` platform
+  // setting (`services/sessions/sandbox-host.ts`, the Platform → Coding agents tab), development
+  // only for `remote` and never with SESSION_BACKEND=local — enforced there, frozen per session.
   /**
    * Launch P3: how a session's CONTAINER reaches the internet. `allowlist` — internet off, the
    * egress allow-list, everything through the egress interception (spec/03). `open` — internet
@@ -380,22 +368,6 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       code: z.ZodIssueCode.custom,
       path: ['SESSION_BACKEND'],
       message: 'SESSION_BACKEND=local is only allowed with APP_ENV=development',
-    })
-  }
-  // A remote sandbox's key and token sit on the sandbox host (`host` egress mode): a laptop only.
-  if (cfg.SESSION_SANDBOX_HOST === 'remote' && cfg.APP_ENV !== 'development') {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['SESSION_SANDBOX_HOST'],
-      message: 'SESSION_SANDBOX_HOST=remote is only allowed with APP_ENV=development',
-    })
-  }
-  if (cfg.SESSION_SANDBOX_HOST === 'remote' && cfg.SESSION_BACKEND === 'local') {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['SESSION_SANDBOX_HOST'],
-      message:
-        "SESSION_SANDBOX_HOST=remote needs SESSION_BACKEND=cloud: a Cloudflare container cannot reach the laptop's git server",
     })
   }
   // The local grant backing pushes nothing: never in a deployed Worker.

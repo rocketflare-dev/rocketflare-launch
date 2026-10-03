@@ -1,7 +1,7 @@
 /**
  * The `SandboxPort` half of `ports.ts` (Launch P3): the interface one session's container is
  * driven through, its errors, and the egress allow-list. A LEAF — it imports nothing — so the
- * sandbox host Worker (`src/sandbox-host/`, `SESSION_SANDBOX_HOST=remote`) can bundle the adapter
+ * sandbox host Worker (`src/sandbox-host/`, a session on the remote sandbox host) can bundle the adapter
  * and the Durable Object without Launch's database, config or vendor adapters. `ports.ts`
  * re-exports all of it; import from there everywhere else.
  */

@@ -1,14 +1,17 @@
 # The SANDBOX HOST Worker — real Cloudflare containers for a laptop's Launch (development only).
 # NOT part of Launch's deploy: Launch is `wrangler.toml` / `wrangler.staging.toml`, and this file is
-# outside their parity test on purpose (it is one small Worker with one binding). Deployed once, by
-# hand, as `launch-sandbox-dev`: `pnpm --filter @launch/web deploy:sandbox-host` (docs/DEPLOY.md §
-# The sandbox host). Local Launch reaches it through the REMOTE service binding `SANDBOX_HOST` when
-# `.dev.vars` says `SESSION_SANDBOX_HOST=remote` (docs/SESSIONS-LOCAL.md § Real containers from a
-# laptop); `pnpm dev` then generates `wrangler.dev-remote.toml` with that binding.
+# outside their parity test on purpose (it is one small Worker with one binding). Deployed by hand,
+# as `launch-sandbox-dev`: `pnpm --filter @launch/web deploy:sandbox-host` (docs/DEPLOY.md § The
+# sandbox host) — again whenever the session image or `src/sandbox-host/` changes. Local Launch
+# reaches it through the REMOTE service binding `SANDBOX_HOST`, which `pnpm dev` declares in the
+# `wrangler.dev-remote.toml` it generates whenever you are logged in and this Worker is deployed;
+# a session runs here when the Session sandbox platform setting says so (docs/SESSIONS-LOCAL.md §
+# Real containers from a laptop).
 #
-# Its containers hold no credential: `HostedSessionSandbox`'s outbound handlers inject the GitHub
-# token and the Anthropic key local Launch grants each sandbox over the binding (the `host` egress
-# mode), kept in the sandbox's Durable Object storage. No secrets of its own.
+# Its containers hold no Launch credential: `HostedSessionSandbox`'s outbound handlers inject what
+# local Launch grants each sandbox over the binding (the `host` egress mode) — the GitHub token,
+# the turn's Anthropic key or subscription token, OpenAI key, or ChatGPT model, a sign-in's
+# passthrough — kept in the sandbox's Durable Object storage. No secrets of its own.
 
 name = "launch-sandbox-dev"
 main = "src/sandbox-host/worker.ts"

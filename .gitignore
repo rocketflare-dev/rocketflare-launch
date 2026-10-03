@@ -36,7 +36,7 @@ coverage/
 .claude/worktrees/
 .claude/settings.local.json
 
-# `pnpm dev` with SESSION_SANDBOX_HOST=remote writes this (wrangler.toml + a dev-only binding)
+# `pnpm dev` writes this when the remote sandbox host is reachable (wrangler.toml + a dev-only binding)
 apps/web/wrangler.dev-remote.toml
 
 # Provisioning answer cache (ids and hostnames only — no secrets; scripts/provision.ts)

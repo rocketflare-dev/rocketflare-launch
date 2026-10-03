@@ -50,7 +50,6 @@ export const claudeCodeRuntime: AgentRuntime = {
     { path: `${SESSION_WORKSPACE}/.claude/settings.local.json`, content: claudeSettingsLocal() },
   ],
   state: claudeState,
-  supportsHostEgress: true,
   login: claudeLoginDriver,
   userLease: leaseClaudeUserCredential,
 }

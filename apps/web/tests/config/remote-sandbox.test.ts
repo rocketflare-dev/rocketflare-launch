@@ -1,5 +1,5 @@
 /**
- * `RemoteSandbox` (`SESSION_SANDBOX_HOST=remote`) driven END TO END in-process: the adapter talks to
+ * `RemoteSandbox` (the remote sandbox host) driven END TO END in-process: the adapter talks to
  * the sandbox host Worker's REAL entrypoint (`src/sandbox-host/worker.ts`) through a binding that
  * behaves like RPC — it refuses an `AbortSignal` anywhere in the arguments, as workerd does — and
  * the entrypoint drives a `FakeSandboxNamespace` exactly as Launch's in-process adapter does.

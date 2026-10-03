@@ -1,5 +1,5 @@
 /**
- * `RemoteSandbox` — the `SandboxPort` over the sandbox host Worker (`SESSION_SANDBOX_HOST=remote`,
+ * `RemoteSandbox` — the `SandboxPort` over the sandbox host Worker (a session on the remote sandbox host,
  * development only): a laptop's `wrangler dev` reaches a REAL Cloudflare container through a
  * remote service binding (`SANDBOX_HOST`) instead of running one on local Docker under amd64
  * emulation (`docs/SESSIONS-LOCAL.md` § Real containers from a laptop).

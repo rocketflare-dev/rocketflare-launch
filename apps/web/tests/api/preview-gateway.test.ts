@@ -278,6 +278,29 @@ describe('the gateway', () => {
     ])
   })
 
+  it('a session on the remote sandbox host is proxied through ITS host’s ports (frozen on the row)', async () => {
+    const { f, row, ports, host } = await seeded()
+    await db
+      .update(sessions)
+      .set({ sandboxHost: 'remote' })
+      .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+    const cookie = await cookieFor(row, f.user.id)
+    const hosts: string[] = []
+    const req = new Request(`http://${host}/`, { headers: cookie })
+    const previewHost = previewHostOf(req, previewEnv())
+    if (!previewHost) throw new Error('not a preview host')
+    const ctx = createExecutionContext()
+    const res = await handlePreview(req, previewEnv(), ctx, previewHost, {
+      ports: (_env, _cfg, sandboxHost) => {
+        hosts.push(sandboxHost)
+        return ports
+      },
+    })
+    await waitOnExecutionContext(ctx)
+    expect(res.status).toBe(200)
+    expect(hosts).toEqual(['remote'])
+  })
+
   it('in production the cookie is __Host-, Secure, SameSite=None and Partitioned', async () => {
     const { f, row, ports, host } = await seeded()
     const env = createTestEnv({

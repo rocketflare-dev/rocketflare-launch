@@ -180,10 +180,15 @@ export const AGENT_LOGIN_TTL_MS = 15 * 60_000
 /** `step.waitForEvent` type the code route wakes the login with. The row carries the code. */
 export const AGENT_LOGIN_CODE_EVENT = 'agent-login-code'
 
-/** `AGENT_LOGIN_WORKFLOW.create({ id: loginId, params })` — ids only. */
+/**
+ * `AGENT_LOGIN_WORKFLOW.create({ id: loginId, params })` — ids, and where the login sandbox runs
+ * (`launch_settings.session_sandbox_host` when the sign-in started, frozen for its whole run —
+ * `SESSION_SANDBOX_HOSTS` in `launch-setup.ts`; absent = `local`).
+ */
 export const agentLoginParamsSchema = z.object({
   loginId: z.string().uuid(),
   tenantId: z.string().uuid(),
+  sandboxHost: z.enum(['local', 'remote']).optional(),
 })
 export type AgentLoginParams = z.infer<typeof agentLoginParamsSchema>
 
@@ -227,9 +232,9 @@ export const agentRuntimeOptionSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
   accountLabel: z.string(),
-  /** The session policy (the Platform → Coding agents tab) has it on, and it can run here. */
+  /** The session policy (the Platform → Coding agents tab) has it on. */
   enabled: z.boolean(),
-  /** The policy's mode, narrowed by what this deployment can run (`SESSION_SANDBOX_HOST`). */
+  /** The policy's mode: who may pay for its sessions. */
   credentialMode: sessionCredentialModeSchema,
   /** A personal account may be connected for it: enabled, and its mode allows one. */
   userCredentials: z.boolean(),

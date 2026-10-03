@@ -5,7 +5,7 @@
  *
  * - `handleGitHub` (Launch's own `SessionSandbox`): looks the session up by `ctx.containerId`,
  *   reads its app's repo and branch, and hands over a token getter over the sealed row token.
- * - `hostedGitHub` (`HostedSessionSandbox`, `SESSION_SANDBOX_HOST=remote`): reads the same three
+ * - `hostedGitHub` (`HostedSessionSandbox`, a session on the remote sandbox host): reads the same three
  *   things from the EGRESS GRANT local Launch stored on the sandbox's Durable Object
  *   (`sandbox-host/protocol.ts`), because the host cannot reach Launch's database.
  *

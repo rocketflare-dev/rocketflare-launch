@@ -260,6 +260,13 @@
       "when": 1791001924614,
       "tag": "0036_launch-agent-runtimes",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791011458029,
+      "tag": "0037_launch-session-sandbox-host",
+      "breakpoints": true
     }
   ]
 }

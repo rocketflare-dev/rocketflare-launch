@@ -14,13 +14,15 @@ import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { getForUser, openSecret } from '@/api/services/sessions/credentials/store'
-import { refuseHost } from '@/api/services/sessions/egress/refuse'
+import { HostEgress } from '@/api/services/sessions/egress/host'
+import { openAiError } from '@/api/services/sessions/egress/refuse'
 import { CODEX_OUTBOUND_HANDLERS } from '@/api/services/sessions/egress/registry'
 import { loginForSandbox } from '@/api/services/sessions/egress/sandbox-lookup'
 import { cancelLogin, startLogin, submitLoginCode } from '@/api/services/sessions/logins/service'
 import { loginSandboxName } from '@/api/services/sessions/logins/steps'
 import { runAgentLoginsSweep } from '@/api/services/sessions/logins/sweep'
 import type { LoginDriver } from '@/api/services/sessions/runtimes/types'
+import type { EgressGrantUpdate } from '@/api/services/sessions/sandbox-host/protocol'
 import { AgentLoginWorkflow } from '@/api/workflows/agent-login'
 import { loadConfig } from '@/config'
 import { type AgentLoginRow, agentLogins, auditEvents } from '@/db/schema'
@@ -283,6 +285,48 @@ describe('a runtime that only shows a code (Codex-shaped)', () => {
   })
 })
 
+describe('a sign-in on the remote sandbox host', () => {
+  it('grants the login sandbox its runtime’s sign-in passthrough before the CLI starts', async () => {
+    const f = await createTestTenantWithUser(db, 'member')
+    const binding = new RecordingWorkflow()
+    const login = await startLogin(db, binding as unknown as Workflow, {
+      tenantId: f.tenant.id,
+      userId: f.user.id,
+      runtime: 'codex',
+      actor: { ...SYSTEM_ACTOR },
+      sandboxHost: 'remote',
+    })
+    expect(binding.created[0]?.params).toMatchObject({ sandboxHost: 'remote' })
+    const env = createTestEnv()
+    const cfg = loadConfig(env)
+    const grants: { name: string; grant: EgressGrantUpdate; processes: number }[] = []
+    const sink = {
+      setEgressGrant: async (name: string, grant: EgressGrantUpdate) => {
+        grants.push({ name, grant, processes: sandboxOf(ports, login).processes.length })
+        return { ok: true as const, value: null }
+      },
+    }
+    const ports = createFakeSessionPorts({
+      egress: d => new HostEgress(d, cfg, createFakeSessionPorts().repoHost(d), sink),
+    })
+    const sandbox = sandboxOf(ports, login)
+    sandbox.onProcess('fake-cli login', { lines: [URL_LINE, `done ${TOKEN}`] })
+    const base = fakeDriver({ needsCode: false, userCode: 'ABCD-1234' })
+    const driver: LoginDriver = {
+      ...base,
+      capture: async ctx => ({ ...(await base.capture(ctx)), kind: 'codex_chatgpt_auth' }),
+    }
+    const s = { f, login, env, ports, workflowBinding: binding, cfg }
+    const { outcome } = await drive(s, driver, fakeClock())
+    expect(outcome.status).toBe('succeeded')
+    // One grant, to the login sandbox, before the CLI's process existed — and nothing secret in it.
+    expect(grants).toEqual([
+      { name: loginSandboxName(login.id), grant: { login: { runtime: 'codex' } }, processes: 0 },
+    ])
+    expect(sandbox.destroyed).toBe(true)
+  })
+})
+
 describe('a login that does not finish', () => {
   it('past its TTL: expired, with a sentence; the sandbox destroyed', async () => {
     const s = await setup()
@@ -375,13 +419,11 @@ describe('the egress side of a login sandbox', () => {
     expect(await loginForSandbox(db, sandbox.id)).toBeNull()
   })
 
-  it('Codex’s hosts have their handlers (§18.22-B); the refusal the sandbox host uses is OpenAI-shaped', async () => {
+  it('Codex’s hosts have their handlers (§18.22-B); the OpenAI refusal is OpenAI-shaped', async () => {
     expect(Object.keys(CODEX_OUTBOUND_HANDLERS).sort()).toEqual(
       ['api.openai.com', 'auth.openai.com', 'chatgpt.com'].sort()
     )
-    const res = await refuseHost('api.openai.com')(
-      new Request('https://api.openai.com/v1/responses', { method: 'POST' })
-    )
+    const res = openAiError(403, 'permission_error', 'no')
     expect(res.status).toBe(403)
     expect(await res.json()).toMatchObject({ error: { type: 'permission_error' } })
   })

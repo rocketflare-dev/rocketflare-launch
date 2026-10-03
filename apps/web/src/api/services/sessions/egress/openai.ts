@@ -29,8 +29,8 @@ import { checkBudget } from '../budget'
 import { resolveOpenAiKey } from '../model-key'
 import { recordSessionUsage } from './anthropic'
 import type { EgressContext } from './forward-git'
+import { openAiKeyedRequest, openAiRoute } from './forward-openai'
 import {
-  forwardHeaders,
   meteredResponse,
   type OpenAiEgressDeps,
   openAiError,
@@ -40,13 +40,12 @@ import {
 } from './openai-common'
 import { sessionForSandbox } from './sandbox-lookup'
 
-/** Where a keyed request goes; the path and query come from the sandbox's request. */
-export const OPENAI_UPSTREAM_ORIGIN = 'https://api.openai.com'
-
-/** The model calls a Codex session may make on Launch's key. */
-export const OPENAI_MODEL_PATHS = ['/v1/responses', '/v1/responses/compact'] as const
-/** Codex's model discovery: keyed, not metered. */
-export const OPENAI_MODELS_PATH = '/v1/models'
+/** The paths and the upstream: `forward-openai.ts`, shared with the sandbox host. */
+export {
+  OPENAI_MODEL_PATHS,
+  OPENAI_MODELS_PATH,
+  OPENAI_UPSTREAM_ORIGIN,
+} from './forward-openai'
 
 const defaultDeps = (): OpenAiEgressDeps => ({
   upstream: { fetch: req => fetch(req) },
@@ -65,7 +64,6 @@ export async function handleOpenAi(
   const deps = { ...defaultDeps(), ...overrides }
   const cfg = loadConfig(env)
   const logger = loggerFor(cfg, { handler: 'egress', host: 'api.openai.com' })
-  const url = new URL(req.url)
   const handle = deps.openDb(env, cfg)
   let session: SessionRow
   let apiKey: string
@@ -83,18 +81,9 @@ export async function handleOpenAi(
     }
     session = found
 
-    const isModels = req.method === 'GET' && url.pathname === OPENAI_MODELS_PATH
-    if (!isModels) {
-      if (
-        req.method !== 'POST' ||
-        !(OPENAI_MODEL_PATHS as readonly string[]).includes(url.pathname)
-      ) {
-        return openAiError(
-          403,
-          'permission_error',
-          `Launch sessions may only call POST ${OPENAI_MODEL_PATHS.join(' and ')} and GET ${OPENAI_MODELS_PATH}`
-        )
-      }
+    const route = openAiRoute(req)
+    if (route instanceof Response) return route
+    if (route === 'call') {
       const read = await readResponsesCall(req, resolveSessionPolicy(session.policy).model)
       if (read instanceof Response) return read
       call = read
@@ -118,22 +107,9 @@ export async function handleOpenAi(
     await handle.close()
   }
 
-  const headers = forwardHeaders(req, { dropAuth: true })
-  headers.set('authorization', `Bearer ${apiKey}`)
-  const upstreamReq = call
-    ? new Request(`${OPENAI_UPSTREAM_ORIGIN}${call.path}${call.search}`, {
-        method: 'POST',
-        headers,
-        body: call.body,
-      })
-    : new Request(`${OPENAI_UPSTREAM_ORIGIN}${url.pathname}${url.search}`, {
-        method: 'GET',
-        headers,
-      })
-
   let res: Response
   try {
-    res = await deps.upstream.fetch(upstreamReq)
+    res = await deps.upstream.fetch(openAiKeyedRequest(req, call, apiKey))
   } catch (err) {
     logger.warn({ err, sessionId: session.id }, 'openai proxy: upstream unreachable')
     return openAiError(502, 'api_error', 'Launch could not reach the OpenAI API')

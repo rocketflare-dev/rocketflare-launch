@@ -70,11 +70,27 @@ export type AppBindings = Cloudflare.Env & {
   HYPERDRIVE?: Hyperdrive
   /**
    * Launch P3, development only: the sandbox host Worker (`wrangler.sandbox-host.toml`) as a
-   * REMOTE service binding, declared only in the dev config `pnpm dev` generates when `.dev.vars`
-   * says `SESSION_SANDBOX_HOST=remote` — never in the two tomls, so `wrangler types` omits it.
-   * Its RPC surface is `SandboxHostBinding` (`services/sessions/sandbox-host/protocol.ts`).
+   * REMOTE service binding, declared only in the dev config `pnpm dev` generates
+   * (`wrangler.dev-remote.toml`, whenever it can: logged in to wrangler, the host deployed) —
+   * never in the two tomls, so `wrangler types` omits it. Its RPC surface is
+   * `SandboxHostBinding` (`services/sessions/sandbox-host/protocol.ts`).
    */
   SANDBOX_HOST?: Fetcher
+  /**
+   * Development only, set by `pnpm dev` (`--var`): `off` when Docker was not running, so wrangler
+   * started without local containers (`services/sessions/sandbox-host.ts` then offers no `local`).
+   */
+  DEV_LOCAL_CONTAINERS?: string
+  /**
+   * Development only, set by `pnpm dev`: why `SANDBOX_HOST` is missing — `not_logged_in`,
+   * `not_deployed`, `off` — or `ok`.
+   */
+  DEV_SANDBOX_HOST_STATUS?: string
+  /**
+   * The RETIRED dev var (now the `session_sandbox_host` platform setting): a `.dev.vars` still
+   * saying `remote` is honoured as the setting's initial value, nothing more.
+   */
+  SESSION_SANDBOX_HOST?: string
 }
 
 export interface AppVariables {

@@ -20,9 +20,10 @@
  * (`CODEX_EGRESS_HOSTS` → `SESSION_BASE_ALLOWED_HOSTS`) TOGETHER, with their real handlers: a host on
  * the allow-list with no handler would pass straight through. Each refuses a container that is not
  * a Codex session (or login) of the right kind, so Claude sessions gain nothing from them. The
- * sandbox host (`SESSION_SANDBOX_HOST=remote`, Claude Code only) answers the same hosts with the
- * OpenAI-shaped refusals instead (`refuse.ts`, `src/sandbox-host/hosted-session-sandbox.ts`), and
- * registers nothing for `platform.claude.com` (no Launch credential crosses it).
+ * remote sandbox host's `HostedSessionSandbox` (`src/sandbox-host/hosted-session-sandbox.ts`)
+ * handles exactly these six hosts too, from the egress grant Launch sends it, through the same
+ * forwarding functions (`forward-git.ts`, `forward-model.ts`, `forward-openai.ts`) — a test keeps
+ * the two key sets equal.
  *
  * Under `SESSION_EGRESS=allowlist` a host must ALSO be on `SESSION_BASE_ALLOWED_HOSTS` for its
  * handler to run at all (S7). A handler identifies the sandbox by `ctx.containerId`

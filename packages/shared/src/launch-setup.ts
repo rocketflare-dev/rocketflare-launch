@@ -148,6 +148,10 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *   the coding agents sessions may run (§18.22) — the Platform → Coding agents tab.
  * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
  *   answer 409 until it is cleared.
+ * - `session_sandbox_host` — where a NEW session's container runs (`SESSION_SANDBOX_HOSTS`): this
+ *   Worker's own containers (`local`, the default and the only choice deployed) or the remote
+ *   sandbox host (`remote`, development only). The Platform → Coding agents tab's Session sandbox
+ *   section; each session freezes it at create (`sessions.sandbox_host`).
  *
  * And one Launch writes itself:
  *
@@ -160,6 +164,7 @@ export const LAUNCH_SETTING_KEYS = [
   'app_create_role',
   'session_policy',
   'sessions_paused',
+  'session_sandbox_host',
   'public_url_check',
 ] as const
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
@@ -560,18 +565,60 @@ export const sessionAgentStatusSchema = z.object({
   connectedAccounts: z.number().int().nonnegative(),
   /** `AGENT_RUNTIME_MIN_IMAGE` — the session image it needs at least, or null. */
   minImage: z.string().nullable(),
-  /** `SESSION_SANDBOX_HOST=remote` and the runtime cannot run there: off whatever is stored. */
-  unavailableOnHost: z.boolean(),
-  /**
-   * `SESSION_SANDBOX_HOST=remote`: the host egress forwards only Launch's key, so a personal
-   * account cannot pay here — "The person's own account" leaves the agent unusable.
-   */
-  personalAccountsUnavailableOnHost: z.boolean().default(false),
 })
 export type SessionAgentStatus = z.infer<typeof sessionAgentStatusSchema>
 
 export const sessionAgentsStatusSchema = z.object({ runtimes: z.array(sessionAgentStatusSchema) })
 export type SessionAgentsStatus = z.infer<typeof sessionAgentsStatusSchema>
+
+// ---- the session sandbox (where a session's container runs) -------------------------------------
+
+/**
+ * Where a session's CONTAINER runs — `launch_settings.session_sandbox_host`, frozen on each session
+ * at create (`sessions.sandbox_host`):
+ *
+ * - `local` — this Worker's own `SESSION_SANDBOX` containers: Cloudflare's when deployed, local
+ *   Docker under `wrangler dev`. The default, and the only choice outside development.
+ * - `remote` — a real Cloudflare container in the SANDBOX HOST Worker (`launch-sandbox-dev`),
+ *   reached through the `SANDBOX_HOST` remote service binding `pnpm dev` declares. Development
+ *   only, and never with `SESSION_BACKEND=local` (a Cloudflare container cannot reach a laptop's
+ *   git server).
+ */
+export const SESSION_SANDBOX_HOSTS = ['local', 'remote'] as const
+export const sessionSandboxHostSchema = z.enum(SESSION_SANDBOX_HOSTS)
+export type SessionSandboxHost = z.infer<typeof sessionSandboxHostSchema>
+
+/** What the section calls each choice. */
+export const SESSION_SANDBOX_HOST_LABELS: Record<SessionSandboxHost, string> = {
+  local: "This Worker's containers",
+  remote: 'Remote sandbox host',
+}
+
+/** `PUT /api/platform/setup/session-sandbox`. Applies to NEW sessions; running ones keep theirs. */
+export const sessionSandboxUpdateSchema = z.object({ host: sessionSandboxHostSchema })
+export type SessionSandboxUpdate = z.infer<typeof sessionSandboxUpdateSchema>
+
+/** 409 from that PUT, and from creating a session, when the chosen host cannot run one now. */
+export const SESSION_SANDBOX_UNAVAILABLE = 'session_sandbox_unavailable'
+
+/** One choice as the section draws it: can this Worker use it right now, and if not, why. */
+export const sessionSandboxOptionSchema = z.object({
+  host: sessionSandboxHostSchema,
+  label: z.string(),
+  available: z.boolean(),
+  /** A sentence saying why it cannot be used (null when it can). */
+  reason: z.string().nullable(),
+})
+export type SessionSandboxOption = z.infer<typeof sessionSandboxOptionSchema>
+
+export const sessionSandboxStatusSchema = z.object({
+  /** What a new session gets: the stored setting, else the default. */
+  host: sessionSandboxHostSchema,
+  /** Nothing is stored: `host` is the default (or a leftover `.dev.vars` value, development only). */
+  isDefault: z.boolean(),
+  options: z.array(sessionSandboxOptionSchema),
+})
+export type SessionSandboxStatus = z.infer<typeof sessionSandboxStatusSchema>
 
 /** `GET /api/platform/setup` — everything the page renders. Never a credential value. */
 export const setupOverviewSchema = z.object({
@@ -595,6 +642,8 @@ export const setupOverviewSchema = z.object({
   templatePin: templatePinStatusSchema,
   /** §18.22: the coding agents sessions may run (`session_policy.runtimes`), with readiness. */
   sessionAgents: sessionAgentsStatusSchema,
+  /** Where a new session's container runs (`launch_settings.session_sandbox_host`), with availability. */
+  sessionSandbox: sessionSandboxStatusSchema,
 })
 export type SetupOverview = z.infer<typeof setupOverviewSchema>
 

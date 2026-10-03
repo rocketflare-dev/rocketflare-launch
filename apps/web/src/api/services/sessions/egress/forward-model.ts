@@ -10,8 +10,11 @@
  *   `x-api-key`, or — §18.22-A — a person's subscription token as `Authorization: Bearer` with
  *   the OAuth beta flag merged into `anthropic-beta`), sent to {@link ANTHROPIC_UPSTREAM_ORIGIN} —
  *   the path and query (`?beta=true`) come from the sandbox's request, the host never does;
- * - {@link forwardModel}: both, then the upstream call (unreachable → 502). What the sandbox host's
- *   `HostedSessionSandbox` runs over the key and model in its egress grant.
+ * - {@link oauthNotFound}: on a subscription token, `GET /api/claude_code/*` is a 404;
+ * - {@link forwardModel}: all three, then the upstream call (unreachable → 502). What the sandbox
+ *   host's `HostedSessionSandbox` runs over the credential and model in its egress grant;
+ * - {@link forwardClaudeSignIn}: a Claude login sandbox's two passthrough requests
+ *   ({@link CLAUDE_LOGIN_PASSTHROUGH}), for Launch's handlers and the host's alike.
  *
  * Metering and the budget are NOT here: `handleAnthropic` (Launch's own sandboxes) checks the
  * budget between the two halves and meters the answer as it streams back; a remote sandbox's turn
@@ -101,7 +104,7 @@ export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20'
 /**
  * What authorises the upstream request: Launch's API key (`x-api-key`), or — a session on a
  * person's own Claude subscription (§18.22-A) — their OAuth token (`Authorization: Bearer`, with
- * {@link ANTHROPIC_OAUTH_BETA}). The sandbox host only ever forwards `api_key`.
+ * {@link ANTHROPIC_OAUTH_BETA}). Launch's proxy and the sandbox host forward both.
  */
 export type ModelAuth = { kind: 'api_key'; key: string } | { kind: 'oauth'; token: string }
 
@@ -132,23 +135,96 @@ export function keyedModelRequest(req: Request, call: ModelCall, auth: ModelAuth
   })
 }
 
+/**
+ * `GET /api/claude_code/*` on a subscription (OAuth) session: the 404 that hides the person's
+ * organisation-managed settings and limits from Claude Code (see {@link OAUTH_NOT_FOUND_PREFIX}).
+ * Null for anything else — and always for Launch's key.
+ */
+export function oauthNotFound(req: Request, auth: ModelAuth['kind']): Response | null {
+  if (auth !== 'oauth' || req.method !== 'GET') return null
+  if (!new URL(req.url).pathname.startsWith(OAUTH_NOT_FOUND_PREFIX)) return null
+  return anthropicError(404, 'not_found_error', 'Not available in a Launch session')
+}
+
+/** Where a request goes; the global `fetch` by default. */
+export interface UpstreamFetch {
+  fetch(req: Request): Promise<Response>
+}
+
+const globalUpstream: UpstreamFetch = { fetch: (r: Request) => fetch(r) }
+
 export interface ForwardModelOptions {
-  /** The real key. It goes on the one upstream request and nowhere else. */
-  key: string
+  /** The real credential. It goes on the one upstream request and nowhere else. */
+  auth: ModelAuth
   /** The session policy's model. */
   model: string
   /** Where the keyed request goes; the global `fetch` by default. */
-  upstream?: { fetch(req: Request): Promise<Response> }
+  upstream?: UpstreamFetch
 }
 
-/** Check, key and forward one model request — unmetered (see the header). */
+/**
+ * Check, key and forward one model request — unmetered (see the header). The sandbox host's whole
+ * `api.anthropic.com` handler for a session: the OAuth 404, the path and model allow-list, the
+ * credential swap.
+ */
 export async function forwardModel(req: Request, opts: ForwardModelOptions): Promise<Response> {
+  const hidden = oauthNotFound(req, opts.auth.kind)
+  if (hidden) return hidden
   const call = await readModelCall(req, opts.model)
   if (call instanceof Response) return call
-  const upstream = opts.upstream ?? { fetch: (r: Request) => fetch(r) }
+  const upstream = opts.upstream ?? globalUpstream
   try {
-    return await upstream.fetch(keyedModelRequest(req, call, { kind: 'api_key', key: opts.key }))
+    return await upstream.fetch(keyedModelRequest(req, call, opts.auth))
   } catch {
     return anthropicError(502, 'api_error', 'Launch could not reach the Anthropic API')
+  }
+}
+
+// ---- a Claude sign-in's own traffic (§18.22-A) ---------------------------------------------------
+
+/**
+ * The ONLY requests a Claude login sandbox (`claude setup-token`, `runtimes/claude-code/login.ts`)
+ * may make through Launch, per host: the token exchange, and the account profile. Each passes
+ * through untouched — the CLI's own credentials, Anthropic's own answer; Launch adds nothing, logs
+ * nothing of it and keeps nothing. Anything else from a login sandbox is a 403. Launch's handlers
+ * (`anthropic.ts`) and the sandbox host's (a login grant) both run {@link forwardClaudeSignIn}.
+ */
+export const CLAUDE_LOGIN_PASSTHROUGH: Readonly<
+  Record<string, readonly { method: string; path: string }[]>
+> = {
+  'platform.claude.com': [{ method: 'POST', path: '/v1/oauth/token' }],
+  'api.anthropic.com': [{ method: 'GET', path: '/api/oauth/profile' }],
+}
+
+/** Headers never forwarded on a passthrough: what the new request sets itself. */
+const PASSTHROUGH_DROPPED = ['host', 'content-length', 'cookie']
+
+/** A Claude sign-in's request to `host`: passed through when it is in the table, else a 403. */
+export async function forwardClaudeSignIn(
+  req: Request,
+  host: string,
+  opts: { upstream?: UpstreamFetch; onUnreachable?: (err: unknown) => void } = {}
+): Promise<Response> {
+  const url = new URL(req.url)
+  const allowed = (CLAUDE_LOGIN_PASSTHROUGH[host] ?? []).some(
+    entry => entry.method === req.method && entry.path === url.pathname
+  )
+  if (!allowed) {
+    return anthropicError(403, 'permission_error', 'A Launch sign-in may not call that')
+  }
+  const headers = new Headers(req.headers)
+  for (const name of PASSTHROUGH_DROPPED) headers.delete(name)
+  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer()
+  try {
+    return await (opts.upstream ?? globalUpstream).fetch(
+      new Request(`https://${host}${url.pathname}${url.search}`, {
+        method: req.method,
+        headers,
+        body,
+      })
+    )
+  } catch (err) {
+    opts.onUnreachable?.(err)
+    return anthropicError(502, 'api_error', `Launch could not reach ${host}`)
   }
 }

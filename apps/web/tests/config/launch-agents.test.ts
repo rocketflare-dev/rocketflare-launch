@@ -26,9 +26,7 @@ import {
 } from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_RUNTIME_FLAGS,
   defaultRuntimeFor,
-  runtimeFlagsOf,
   runtimeOffer,
   runtimeOptions,
 } from '@/api/services/sessions/credentials/resolve'
@@ -57,13 +55,13 @@ describe('the session policy', () => {
       enabled: false,
       credentialMode: 'platform',
     })
-    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, old, 'claude_code')).toMatchObject({
+    expect(runtimeOffer(old, 'claude_code')).toMatchObject({
       enabled: true,
       model: 'claude-opus-4-1',
       credentialMode: 'platform',
       userAllowed: false,
     })
-    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, old, 'codex').enabled).toBe(false)
+    expect(runtimeOffer(old, 'codex').enabled).toBe(false)
     // The defaults themselves are unchanged — a frozen policy reads exactly as before.
     expect(resolveSessionPolicy(undefined)).toEqual(DEFAULT_SESSION_POLICY)
     expect(Object.keys(DEFAULT_SESSION_POLICY)).not.toContain('runtimes')
@@ -120,14 +118,14 @@ describe('the request and response bodies', () => {
 })
 
 describe('runtimes are a platform setting, not a deployment var', () => {
-  it('the config has no runtime switches; the one flag left is where the sandbox runs', () => {
-    const cfg = loadConfig(createTestEnv()) as Record<string, unknown>
+  it('the config has no runtime switches — and where the sandbox runs is a setting too', () => {
+    const cfg = loadConfig(createTestEnv({ SESSION_SANDBOX_HOST: 'remote' })) as Record<
+      string,
+      unknown
+    >
     expect(cfg).not.toHaveProperty('SESSION_RUNTIMES')
     expect(cfg).not.toHaveProperty('SESSION_USER_CREDENTIALS')
-    expect(runtimeFlagsOf(undefined)).toEqual(DEFAULT_RUNTIME_FLAGS)
-    expect(DEFAULT_RUNTIME_FLAGS).toEqual({ hostEgress: false })
-    const remote = { ...loadConfig(createTestEnv()), SESSION_SANDBOX_HOST: 'remote' } as const
-    expect(runtimeFlagsOf(remote)).toEqual({ hostEgress: true })
+    expect(cfg).not.toHaveProperty('SESSION_SANDBOX_HOST')
   })
 
   it('every model the Setup page offers is priced (a budget needs a price)', () => {
@@ -148,7 +146,7 @@ describe('what a deployment offers', () => {
   const policy = DEFAULT_SESSION_POLICY
 
   it('by default: Claude Code on Launch’s key, nothing else — and no picker', () => {
-    const options = runtimeOptions(DEFAULT_RUNTIME_FLAGS, policy)
+    const options = runtimeOptions(policy)
     for (const option of options) agentRuntimeOptionSchema.parse(option)
     expect(options.filter(o => o.enabled).map(o => o.runtime)).toEqual(['claude_code'])
     expect(options.find(o => o.runtime === 'claude_code')).toMatchObject({
@@ -164,7 +162,7 @@ describe('what a deployment offers', () => {
         claude_code: { enabled: true, model: 'claude-sonnet-4-5', credentialMode: 'user' },
       },
     })
-    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, userPolicy, 'claude_code')).toMatchObject({
+    expect(runtimeOffer(userPolicy, 'claude_code')).toMatchObject({
       enabled: true,
       credentialMode: 'user',
       userAllowed: true,
@@ -183,7 +181,7 @@ describe('what a deployment offers', () => {
         },
       },
     })
-    expect(runtimeOffer(DEFAULT_RUNTIME_FLAGS, off, 'claude_code')).toMatchObject({
+    expect(runtimeOffer(off, 'claude_code')).toMatchObject({
       enabled: false,
       userCredentials: false,
     })
@@ -200,7 +198,7 @@ describe('what a deployment offers', () => {
         codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
       },
     })
-    const options = runtimeOptions(DEFAULT_RUNTIME_FLAGS, both)
+    const options = runtimeOptions(both)
     expect(options.filter(o => o.enabled).map(o => o.runtime)).toEqual(['claude_code', 'codex'])
     expect(options.find(o => o.runtime === 'claude_code')?.credentialMode).toBe('user_or_platform')
     expect(options.find(o => o.runtime === 'codex')).toMatchObject({
@@ -217,11 +215,11 @@ describe('what a deployment offers', () => {
         codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'platform' },
       },
     })
-    expect(defaultRuntimeFor(DEFAULT_RUNTIME_FLAGS, codexOnly)).toBe('codex')
-    expect(defaultRuntimeFor(DEFAULT_RUNTIME_FLAGS, policy)).toBe('claude_code')
+    expect(defaultRuntimeFor(codexOnly)).toBe('codex')
+    expect(defaultRuntimeFor(policy)).toBe('claude_code')
   })
 
-  it('the sandbox host runs Claude Code on Launch’s key only', () => {
+  it('nothing narrows the policy any more: every runtime on either account is offered as set', () => {
     const everything = resolveSessionPolicy({
       runtimes: {
         claude_code: {
@@ -232,12 +230,13 @@ describe('what a deployment offers', () => {
         codex: { enabled: true, model: 'gpt-6.1-sol', credentialMode: 'user_or_platform' },
       },
     })
-    const flags = { hostEgress: true }
-    expect(runtimeOffer(flags, everything, 'codex').enabled).toBe(false)
-    expect(runtimeOffer(flags, everything, 'claude_code')).toMatchObject({
-      enabled: true,
-      userAllowed: false,
-      credentialMode: 'platform',
-    })
+    for (const runtime of AGENT_RUNTIMES) {
+      expect(runtimeOffer(everything, runtime)).toMatchObject({
+        enabled: true,
+        userAllowed: true,
+        platformAllowed: true,
+        credentialMode: 'user_or_platform',
+      })
+    }
   })
 })

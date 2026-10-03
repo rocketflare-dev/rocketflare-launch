@@ -234,6 +234,10 @@ needs, beyond the bindings above:
   agents sessions run, each one's model and who pays (Launch, the person's own Claude subscription
   or ChatGPT plan, or either) are set on Settings → Platform → Setup → **Coding agents**, a platform
   setting (`session_policy.runtimes`). With nothing set there: Claude Code on Launch's key only.
+  Where a session's container runs is a platform setting too (Settings → Platform → Coding agents →
+  **Session sandbox**, `launch_settings.session_sandbox_host`); a deployed Launch offers only its
+  own containers, so there is nothing to set — the retired `SESSION_SANDBOX_HOST` var was
+  development only and never in the tomls.
   `[[workflows]]` `AGENT_LOGIN_WORKFLOW` (`launch-agent-login`, staging `-staging`; nothing to
   create) runs a sign-in in a throwaway `login-<id>` sandbox of the existing `SessionSandbox` class
   — those count against `max_instances`. Optional secret `OPENAI_API_KEY` (or the Setup page's
@@ -281,18 +285,19 @@ needs, beyond the bindings above:
 ## The sandbox host (development only)
 
 `launch-sandbox-dev` (`apps/web/wrangler.sandbox-host.toml`, entry `src/sandbox-host/worker.ts`) is
-a second, small Worker that gives a LAPTOP's Launch real Cloudflare session containers
-(`SESSION_SANDBOX_HOST=remote`, `docs/SESSIONS-LOCAL.md` § Real containers from a laptop). It is
-NOT part of Launch's deploy — no CI job, no provisioning phase, and deployed Launch never binds to
-it: the `SANDBOX_HOST` remote service binding exists only in the `wrangler.dev-remote.toml` that
-`pnpm dev` generates, and `loadConfig` refuses the setting outside `APP_ENV=development`.
+a second, small Worker that gives a LAPTOP's Launch real Cloudflare session containers (the
+Session sandbox platform setting's **Remote sandbox host**, `docs/SESSIONS-LOCAL.md` § Real
+containers from a laptop). It is NOT part of Launch's deploy — no CI job, no provisioning phase,
+and deployed Launch never binds to it: the `SANDBOX_HOST` remote service binding exists only in the
+`wrangler.dev-remote.toml` that `pnpm dev` generates, and outside `APP_ENV=development` the setting
+offers only the Worker's own containers (a stored `remote` is ignored, a PUT of it refused).
 
 | | |
 |---|---|
 | Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`) — nothing else |
 | Container | the SAME `./containers/session/Dockerfile` and `standard-3` as Launch (a config test pins both), `max_instances = 3`; container application `launch-sandbox-dev-hostedsessionsandbox` |
 | Reachability | `workers_dev = false`, `preview_urls = false`, no routes: only a service binding in the account reaches it |
-| Secrets | none. The laptop's Launch sends each sandbox an egress grant (the GitHub token, the Anthropic key) over the binding before the clone, each turn and each push (the `host` egress mode); `HostedSessionSandbox` keeps it in its Durable Object storage and its own outbound handlers inject it — the containers hold no credential |
+| Secrets | none. The laptop's Launch sends each sandbox an egress grant over the binding (the `host` egress mode): the GitHub token before the clone and each push; before each turn the model credential for the session's runtime and account (Launch's Anthropic or OpenAI key, a person's Claude subscription token, or a ChatGPT plan's model); a sign-in's passthrough. `HostedSessionSandbox` keeps it in its Durable Object storage and its own outbound handlers (the same six hosts as Launch's) inject it — the containers hold no Launch credential |
 | Build check | `pnpm build:sandbox-host` (a dry run, part of `pnpm build`; it builds the image with the local Docker) |
 
 **Deploy** (by hand, from a machine with Docker and `wrangler login` on the Launch account):
@@ -304,7 +309,21 @@ pnpm --filter @launch/web deploy:sandbox-host   # = wrangler deploy -c wrangler.
 The first push builds the amd64 image (minutes under emulation on an ARM Mac; cached after). The
 same rules as Launch's own containers: a change to the image or the `[[containers]]` block replaces
 running containers (end or suspend dev sessions first), and `@cloudflare/sandbox` and the image's
-base stay on one version. **Costs:** a `standard-3` bills memory and disk while awake (~$0.076/hour)
+base stay on one version. **Redeploy it whenever the session image or `src/sandbox-host/`
+changes** — it builds the same Dockerfile, so a Launch deploy of a new image does not reach it.
+**Now (Codex and personal accounts on the host):** a host deployed before it answers only the old
+`model` grant — Claude Code on Launch's key — and refuses Codex's hosts and the sign-in hosts.
+Redeploy it, which also moves it to the `session-6` image (Codex installed) and so replaces its
+running containers: end or suspend remote sessions first (there is no drain switch for the host —
+it has no database), then
+
+```bash
+pnpm --filter @launch/web exec wrangler login           # if not already, on the Launch account
+pnpm --filter @launch/web deploy:sandbox-host           # = wrangler deploy -c wrangler.sandbox-host.toml
+pnpm --filter @launch/web exec wrangler containers list # check the new version's application
+```
+
+and restart `pnpm dev` (it re-checks that the host is deployed and declares the binding). **Costs:** a `standard-3` bills memory and disk while awake (~$0.076/hour)
 and CPU when used; a session's container lives through its idle window plus the 45-minute warm keep,
 and the SDK's 90-minute sleep reaps one whose laptop went away. **Remove it:**
 `pnpm --filter @launch/web exec wrangler delete -c wrangler.sandbox-host.toml`, then

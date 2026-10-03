@@ -6,8 +6,9 @@
  * - `sessionAgentsStatus` — every runtime as the card draws it: the resolved policy (fail-closed
  *   defaults filled in, `isDefault` when nothing is stored for it) plus readiness: whether Launch's
  *   key for it is set (the sealed credential, else the Worker secret — never the value), how many
- *   people have connected a personal account, the image it needs, and whether the sandbox host
- *   can run it at all.
+ *   people have connected a personal account, and the image it needs. Both sandbox hosts run
+ *   every agent on either account, so the host is not a readiness question
+ *   (`sessions/sandbox-host.ts` is the Session sandbox section beside it).
  * - `updateSessionAgents` — merges whole per-runtime entries into the stored policy, keeping every
  *   other field (budgets, limits, the default runtime), and refuses a result with nothing enabled
  *   (409 `session_agents_none_enabled`). Claude Code's model is mirrored onto the policy's own
@@ -43,8 +44,7 @@ import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { agentCredentials } from '../../../db/schema'
 import { ConflictError } from '../../utils/core/errors'
-import { runtimeFlagsOf, runtimeOffer } from '../sessions/credentials/resolve'
-import { runtimeFor } from '../sessions/runtimes'
+import { runtimeOffer } from '../sessions/credentials/resolve'
 import { getSetting, putSetting } from './credentials'
 
 /** The Worker secret each platform key falls back to — only whether it is set is ever read. */
@@ -79,7 +79,6 @@ export async function sessionAgentsStatus(
 ): Promise<SessionAgentsStatus> {
   const stored = await getSetting(db, 'session_policy')
   const policy = resolveSessionPolicy(stored)
-  const flags = runtimeFlagsOf(cfg)
   const accounts = await connectedAccounts(db, tenantId)
   const runtimes = AGENT_RUNTIMES.map((runtime): SessionAgentStatus => {
     const rp = runtimePolicyOf(policy, runtime)
@@ -101,8 +100,6 @@ export async function sessionAgentsStatus(
       },
       connectedAccounts: accounts[runtime],
       minImage: AGENT_RUNTIME_MIN_IMAGE[runtime],
-      unavailableOnHost: flags.hostEgress && !runtimeFor(runtime).supportsHostEgress,
-      personalAccountsUnavailableOnHost: flags.hostEgress,
     }
   })
   return { runtimes }
@@ -117,7 +114,6 @@ export interface SessionAgentsChange {
 /** Merge `update` into `session_policy.runtimes`; null when nothing changed. */
 export async function updateSessionAgents(
   db: Database,
-  cfg: AppConfig,
   update: SessionAgentsUpdate,
   userId: string
 ): Promise<SessionAgentsChange | null> {
@@ -147,12 +143,9 @@ export async function updateSessionAgents(
     runtimes,
     ...(runtimes.claude_code ? { model: runtimes.claude_code.model } : {}),
   }
-  const flags = runtimeFlagsOf(cfg)
-  if (!AGENT_RUNTIMES.some(r => runtimeOffer(flags, policy, r).enabled)) {
+  if (!AGENT_RUNTIMES.some(r => runtimeOffer(policy, r).enabled)) {
     throw new ConflictError(
-      flags.hostEgress && AGENT_RUNTIMES.some(r => runtimePolicyOf(policy, r).enabled)
-        ? 'With the remote sandbox host only Claude Code paid by Launch can run: set its Who pays to Launch or Either.'
-        : 'Keep at least one coding agent on, or nobody can start a session.',
+      'Keep at least one coding agent on, or nobody can start a session.',
       SESSION_AGENTS_NONE_ENABLED
     )
   }

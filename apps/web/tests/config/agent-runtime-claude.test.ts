@@ -137,8 +137,8 @@ describe('Claude Code through the seam is the P3 turn, byte for byte', () => {
     expect(sandbox.commands).toEqual([])
   })
 
-  it('runs on the sandbox host; Codex does not', () => {
-    expect(claudeCodeRuntime.supportsHostEgress).toBe(true)
-    expect(codexRuntime.supportsHostEgress).toBe(false)
+  it('has no sandbox-host switch: both runtimes run on either host', () => {
+    expect(claudeCodeRuntime).not.toHaveProperty('supportsHostEgress')
+    expect(codexRuntime).not.toHaveProperty('supportsHostEgress')
   })
 })

@@ -5,8 +5,8 @@ under `wrangler dev`, a real Neon branch per session, a real git server, and the
 The design is `docs/plans/p3-sessions.md`; this is the procedure, and what it measured.
 
 Under `wrangler dev` the container is a local Docker container, whichever backend you pick —
-unless `SESSION_SANDBOX_HOST=remote` puts it on real Cloudflare hardware (§ Real containers from a
-laptop, below). `SESSION_BACKEND=local` changes only where the REPOSITORY lives. The Workflow, the steps, the
+unless the **Session sandbox** platform setting puts new sessions on real Cloudflare hardware (§ Real
+containers from a laptop, below). `SESSION_BACKEND=local` changes only where the REPOSITORY lives. The Workflow, the steps, the
 container image, the database and the egress handlers are the deployed ones:
 
 | | Deployed (`cloud`) | Laptop (`local`) |
@@ -21,13 +21,39 @@ database for sessions: neither your Docker Postgres nor the kit's local Neon pro
 a session needs the Neon credential connected in Setup and an app with a Neon project (a launched
 app has one; `sessions:local-app` takes `--neon-project`).
 
-## Real containers from a laptop (`SESSION_SANDBOX_HOST=remote`)
+## Real containers from a laptop (the remote sandbox host)
 
 The amd64 session image under emulation on an ARM Mac has cost us QEMU crashes (5 GB core dumps),
-esbuild segfaults, 2+ minute installs, 12 GB of Docker memory and start hangs. With
-`SESSION_SANDBOX_HOST=remote` a laptop's Launch runs each session container on **Cloudflare**, in a
-small second Worker, and keeps everything else — the Workflow, the database, the routes, the UI —
-on the laptop.
+esbuild segfaults, 2+ minute installs, 12 GB of Docker memory and start hangs. With the remote
+sandbox host a laptop's Launch runs each session container on **Cloudflare**, in a small second
+Worker, and keeps everything else — the Workflow, the database, the routes, the UI — on the laptop.
+
+**Choosing it is a platform setting, not a var.** Settings → Platform → Coding agents → **Session
+sandbox** (`launch_settings.session_sandbox_host`, `PUT /api/platform/setup/session-sandbox`,
+audited `setting.changed`): **This Worker's containers** (local Docker under `pnpm dev`) or **Remote
+sandbox host** (development only, never with `SESSION_BACKEND=local`). A change applies to NEW
+sessions and sign-ins — no restart: each session froze its host at create (`sessions.sandbox_host`)
+and a sign-in in its Workflow params, so a resume or a turn never moves host. A choice this Worker
+cannot use right now is disabled with the reason, and creating a session on it is a 409
+`session_sandbox_unavailable` before any row. A leftover `SESSION_SANDBOX_HOST=remote` in
+`.dev.vars` is read as the setting's starting value until someone saves it (and `pnpm dev` says
+so); delete the line.
+
+**`pnpm dev` makes both available whenever it can** (`scripts/lib/dev-remote-sandbox.mjs`, the
+probes in `apps/web/scripts/dev-server.mjs`), and never fails the start over either:
+
+- **Docker** answers → wrangler builds and runs the local `SessionSandbox` (the docker build is
+  layer-cached: an unchanged image is quick). Docker down → wrangler starts with
+  `--enable-containers=false` and `DEV_LOCAL_CONTAINERS=off`, and the section says to start Docker
+  and restart `pnpm dev`.
+- **`wrangler whoami`** logged in and **`wrangler deployments list --name launch-sandbox-dev`**
+  finds the host → `wrangler.dev-remote.toml` is generated (wrangler.toml plus the `SANDBOX_HOST`
+  remote binding) and wrangler runs on it. Otherwise it starts on `wrangler.toml` without the
+  binding, `DEV_SANDBOX_HOST_STATUS` = `not_logged_in` | `not_deployed`, and the section says
+  which. `DEV_REMOTE_SANDBOX=0` in your shell skips the two calls (`off`).
+
+It prints one line for each, e.g. `sessions: remote sandbox host (launch-sandbox-dev) available`.
+`pnpm dev:api` (the unfiltered server) runs plain `wrangler dev` — local containers, no binding.
 
 **How it fits together.** `wrangler dev` always runs `[[containers]]` on local Docker, and a
 Durable Object cannot be a remote binding. A **service** binding can (`remote = true`, wrangler
@@ -35,71 +61,75 @@ Durable Object cannot be a remote binding. A **service** binding can (`remote = 
 
 | Piece | Where | What |
 |---|---|---|
-| `launch-sandbox-dev` | Cloudflare (`apps/web/wrangler.sandbox-host.toml`, `src/sandbox-host/`) | `HostedSessionSandbox` (the same egress settings as `SessionSandbox`, with its own outbound handlers fed by the grant Launch sends) + `[[containers]]` with the SAME image and `standard-3`; its default `WorkerEntrypoint` is `SandboxPort` with the sandbox name first, run by the same `CloudflareSandbox` adapter Launch uses in-process. No public URL (`workers_dev = false`, `preview_urls = false`), no secrets |
+| `launch-sandbox-dev` | Cloudflare (`apps/web/wrangler.sandbox-host.toml`, `src/sandbox-host/`) | `HostedSessionSandbox` (the same egress settings and the same handled hosts as `SessionSandbox`, its own outbound handlers fed by the grant Launch sends) + `[[containers]]` with the SAME image (`session-6`) and `standard-3`; its default `WorkerEntrypoint` is `SandboxPort` with the sandbox name first, run by the same `CloudflareSandbox` adapter Launch uses in-process. No public URL (`workers_dev = false`, `preview_urls = false`), no secrets |
 | `SANDBOX_HOST` | `apps/web/wrangler.dev-remote.toml` — GENERATED by `pnpm dev` from `wrangler.toml`, git-ignored | the remote service binding to it. Never in `wrangler.toml` / `wrangler.staging.toml`: the two deployed files keep one shape, and a deploy can never bind production to a dev Worker |
 | `RemoteSandbox` | local Launch (`services/sessions/sandbox/remote-sandbox.ts`) | `SandboxPort` over the binding: RPC for commands, files, processes and backups; the raw log stream crosses as a `ReadableStream` and is parsed locally (no `AbortSignal` ever crosses — `DataCloneError`); the preview (HTTP and the HMR WebSocket) goes through the binding's `fetch`, which carries an upgrade where RPC cannot |
 
-**What changes for the container: nothing credential-related (the `host` egress mode).** The
-proxies (`egress/anthropic.ts`, `egress/github.ts`) run in the Worker that hosts the container, and
-the host cannot reach Launch's database. So Launch PUSHES the host what to inject instead
-(`egress/host.ts`, `HostEgress`):
+**What changes for the container: nothing credential-related (the `host` egress mode).** Launch's
+egress handlers run in the Worker that hosts the container, and the host cannot reach Launch's
+database. So Launch PUSHES the host what to inject instead (`egress/host.ts`, `HostEgress`), one
+part of an `EgressGrant` per kind of traffic, over the binding (`setEgressGrant`):
 
-- before the clone, each turn and each checkpoint's push, an `EgressGrant` goes over the binding
-  (`setEgressGrant`): the app's repo, the session's branch and upstream, and the repo-scoped
-  installation token (`contents: write`, one hour — the same sealed token the git proxy uses) with
-  its expiry; before each turn, the key and the policy's model;
-- `HostedSessionSandbox` keeps the grant in its Durable Object storage — never in the container —
-  and clears it on `destroy()` and when the container stops;
-- its OWN outbound handlers (`src/sandbox-host/egress.ts`) find the grant from `ctx.containerId`
-  and inject the token or the key through the same pure cores as Launch's proxies
-  (`egress/forward-git.ts`, `egress/forward-model.ts`): one repo, a push only to `session/<short>`
-  and never a delete, only the Messages API on the policy's model, a fresh token's 401/404
-  retried. No grant → 403, as from the proxies;
-- the container holds only the placeholder key, and git has no credential file or helper.
+- `git` — before the clone, each turn and each checkpoint's push: the app's repo, the session's
+  branch and upstream, and the repo-scoped installation token (the same sealed token the git proxy
+  uses) with its expiry;
+- the turn's model credential, before each turn, by the session's runtime and account — Claude
+  Code on Launch's key (`anthropic`, `api_key`), Claude Code on the creator's subscription
+  (`anthropic`, `oauth`: the token the proxy would decrypt, by the same `usableClaudeCredential`
+  rule), Codex on Launch's OpenAI key (`openai`), or Codex on a ChatGPT plan (`chatgpt`: the model
+  only — the plan's `auth.json` is in the container for the turn, by design, as in-process — granted
+  for the turn and revoked after it);
+- `login` — a sign-in's sandbox (`login-<id>`), before its CLI starts: the runtime whose sign-in
+  requests may pass (Claude: the token exchange on `platform.claude.com` and the profile on
+  `api.anthropic.com`; Codex: the device flow on `auth.openai.com`).
 
-**The trade-off, stated:** the host has no database, so it neither meters nor checks the budget
-per request. The turn meters itself from Claude Code's stream-json (the `result` line's
-`modelUsage`, else its `usage`; per-response usage while it runs) into `ai_usage` and the
-session's totals, exactly as the proxy would; the budget is checked before the turn and the turn is
-KILLED when its running cost reaches what is left (`budget.reached`, then `turn.failed` saying
-why), so one response can overshoot by its own size.
+`HostedSessionSandbox` keeps the grant in its Durable Object storage — never in the container —
+and clears it on `destroy()` and when the container stops. Its OWN outbound handlers
+(`src/sandbox-host/egress.ts`) cover the same six hosts as Launch's and inject through the SAME
+functions: `forward-git.ts` (one repo, a push only to `session/<short>`, never a delete, a fresh
+token's 401/404 retried), `forward-model.ts` (the Messages API on the policy's model; the OAuth
+Bearer and beta header; `GET /api/claude_code/*` a 404 on a subscription; a Claude sign-in's two
+passthroughs) and `forward-openai.ts` (426 for a WebSocket, the Responses paths on the policy's
+model, 415 for a compressed body, the ChatGPT allow-list, a session's refresh-only and a sign-in's
+device flow). No part for the host → 403, as from the proxies. The turn's process gets only the
+runtime's own placeholder environment — `HostEgress.turnEnv` adds nothing (an extra
+`ANTHROPIC_API_KEY` would beat a subscription's OAuth token).
 
-**This needs the host redeployed.** A host deployed before the grant handlers (before 2026-09-28's
-`a7ff9c1`) has no `setEgressGrant` and no outbound handlers — redeploy it, then check the new
-version's container application:
+**The trade-off, stated:** the host has no database, so per request it neither meters, checks the
+budget, marks a refused subscription `needs_login`, nor reseals a rotated ChatGPT refresh token. The
+turn meters itself from the CLI's own output (`turn-meter.ts`: Claude Code's `result` line's
+`modelUsage`, else its `usage`, per-response usage while it runs; Codex's `turn.completed`
+measured from the thread's last total) into `ai_usage` and the session's totals, priced under the
+runtime's provider, as the proxies would — a personal account as `billing: 'subscription'` with no
+cost and no budget. On Launch's account the budget is checked before the turn, and a Claude Code
+turn is KILLED when its running cost reaches what is left (`budget.reached`, then `turn.failed`
+saying why), so one response can overshoot by its own size; Codex reports usage only when its turn
+ends, so a Codex turn is not cut short. A rotated ChatGPT refresh token is resealed by the turn's
+lease reading `auth.json` back afterwards — a container lost mid-turn after a rotation loses it
+(the plan then needs a reconnect); in-process the egress reseals at once.
+
+**This needs the host redeployed** whenever the session image or `src/sandbox-host/` changes — and
+now: a host from before this change answers only `model` grants and refuses Codex's and the
+sign-in hosts. The redeploy also moves it to the `session-6` image (Codex installed), which
+REPLACES its running containers — end remote sessions first:
 
 ```bash
-pnpm --filter @launch/web deploy:sandbox-host
-pnpm --filter @launch/web exec wrangler containers list
+pnpm --filter @launch/web exec wrangler login           # once: remote bindings need your account
+pnpm --filter @launch/web deploy:sandbox-host           # = wrangler deploy -c wrangler.sandbox-host.toml
+pnpm --filter @launch/web exec wrangler containers list # the new version's container application
 ```
 
-**Setup (once, needs the deploy — docs/DEPLOY.md § The sandbox host):**
-
-```bash
-pnpm --filter @launch/web exec wrangler login        # remote bindings need your account
-pnpm --filter @launch/web deploy:sandbox-host        # builds the image with Docker, deploys launch-sandbox-dev
-```
-
-**Use it** — in `apps/web/.dev.vars`:
-
-```bash
-SESSION_SANDBOX_HOST=remote
-SESSION_BACKEND=cloud      # required: a Cloudflare container cannot reach the laptop's git server
-ANTHROPIC_API_KEY=…        # or the Setup page's anthropic_api_key credential
-```
-
-then `pnpm dev`. It prints `sessions: real Cloudflare containers (…wrangler.dev-remote.toml)`,
-runs `wrangler dev -c wrangler.dev-remote.toml --enable-containers=false` (no local image build,
-no Docker needed for sessions) and the rest is as before. `pnpm dev:api` (the unfiltered server)
-does NOT read the setting — it always uses `wrangler.toml`. `loadConfig` refuses `remote` outside
-`APP_ENV=development` and with `SESSION_BACKEND=local`; a Worker started without the binding fails
-the first session step with "no SANDBOX_HOST binding… start Launch with `pnpm dev`".
+**Use it**: `SESSION_BACKEND=cloud` in `apps/web/.dev.vars` (a Cloudflare container cannot reach
+the laptop's git server) and Launch's keys (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, or the Coding
+agents tab's credentials), `pnpm dev`, then choose **Remote sandbox host** on the Coding agents tab.
+A Worker whose binding went away under a remote session fails its next step with "no SANDBOX_HOST
+binding… start Launch with `pnpm dev`".
 
 **What differs from the in-process sandbox:**
 
-- `sessions.sandbox_id` is `remote:<session id>` (a laptop cannot compute another Worker's Durable
-  Object id); nothing looks it up — the host's handlers find the grant by the container's own
-  Durable Object id.
+- `sessions.sandbox_id` is `remote:<session id>` (`remote:login-<id>` for a sign-in; a laptop cannot
+  compute another Worker's Durable Object id); nothing looks it up — the host's handlers find the
+  grant by the container's own Durable Object id.
 - No container time is metered (`container_seconds` stays 0): the host's `onStop` has nowhere to
   write. A container the platform put to sleep is not marked `suspended` by it either; the next
   step's boot-marker check finds the empty container and says so.
@@ -113,7 +143,9 @@ wrangler's remote-proxy session (capnweb over a WebSocket, read from wrangler 4.
 `ReadableStream` in an RPC result, a command that runs for 10 minutes on one call, and the HMR
 upgrade through the binding's `fetch` (the proxy passes `Upgrade` through) are all read from the
 code, not run. Boot time, the per-turn metering against a real Claude Code `result` line
-(`modelUsage`) and the host's grant handlers on a real container are unmeasured (checklist:
+(`modelUsage`) and a real Codex `turn.completed`, the host's grant handlers on a real container (a
+subscription's Bearer, the OpenAI swap, the ChatGPT passthrough, a sign-in through the host), and
+wrangler starting with BOTH local containers and a remote binding are unmeasured (checklist:
 `docs/plans/sandbox-session-issues.md`).
 
 **Costs.** Each container is a `standard-3` (2 vCPU, 8 GiB, 16 GB disk) billed while it is awake:
@@ -148,7 +180,7 @@ The allow-list is `SESSION_EGRESS=allowlist`, which `.dev.vars.example` keeps lo
 The deployed tomls and the sandbox host say `open` (internet on, only the model and git hosts
 intercepted), because on real containers the interception never ends the container's stream after
 a WebSocket closes (`docs/plans/sandbox-websocket-close.md`). A `.dev.vars` without the line gets
-the toml's `open`. A remote session (`SESSION_SANDBOX_HOST=remote`) follows the host's toml, not
+the toml's `open`. A session on the remote sandbox host follows the host's toml, not
 `.dev.vars`.
 
 So there is no local-only fallback: the git clone goes to `https://github.com/<o>/<r>.git` and the

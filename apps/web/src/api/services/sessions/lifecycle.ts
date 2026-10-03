@@ -15,9 +15,11 @@
  *   not for a session on a personal account, which Launch does not pay for;
  * - §18.22 (`credentials/resolve.ts`): 409 `session_runtime_disabled`,
  *   `agent_credential_not_allowed` or `agent_credential_required` for a runtime or account that is
- *   not on offer.
- * Then the row (the policy SNAPSHOTTED onto it, with the chosen runtime's model; the runtime and
- * whose account it bills fixed for its life), audit `session.created`, and
+ *   not on offer;
+ * - 409 `session_sandbox_unavailable` when the `session_sandbox_host` setting names a host this
+ *   Worker cannot run a container on right now (`sandbox-host.ts`).
+ * Then the row (the policy SNAPSHOTTED onto it, with the chosen runtime's model; the runtime,
+ * whose account it bills and the sandbox host fixed for its life), audit `session.created`, and
  * `SESSION_WORKFLOW.create({ id: session.id, params })`.
  *
  * Waking is 3c's `wakeSession`. When it cannot deliver — the instance is gone (a `wrangler dev`
@@ -48,9 +50,10 @@ import { getSetting, putSetting } from '../launch/credentials'
 import type { Realtime } from '../realtime'
 import { appMonthSpend } from './budget'
 import { requireSessionWorkflow, type WarnLogger, wakeSession } from './chat'
-import { resolveSessionCredential, runtimeFlagsOf } from './credentials/resolve'
+import { resolveSessionCredential } from './credentials/resolve'
 import { nudgeSession } from './events'
 import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
+import { resolveNewSandboxHost } from './sandbox-host'
 
 // ---- settings ----------------------------------------------------------------------------------
 
@@ -158,8 +161,9 @@ export interface CreateSessionInput {
    */
   firstMessage?: string | null
   /**
-   * §18.22: the deployment's one runtime flag, `SESSION_SANDBOX_HOST`. Absent = the Cloudflare
-   * sandbox. Which runtimes run, and on whose account, is the session policy's `runtimes`.
+   * The Worker's config: with it, the `session_sandbox_host` setting is resolved (and refused when
+   * unavailable) and frozen on the row; absent (a fixture) = this Worker's own containers. Which
+   * runtimes run, and on whose account, is the session policy's `runtimes`.
    */
   cfg?: AppConfig
 }
@@ -184,7 +188,6 @@ export async function createSession(
   const stored = await loadSessionPolicy(db)
   // §18.22: which runtime, whose account, and the model to freeze — refused before any write.
   const resolved = await resolveSessionCredential(db, {
-    flags: runtimeFlagsOf(input.cfg),
     policy: stored,
     tenantId,
     userId: input.userId,
@@ -192,6 +195,8 @@ export async function createSession(
     now: input.now,
   })
   const policy = resolved.policy
+  // Where its container runs, frozen on the row: a resume never moves to another host.
+  const sandboxHost = input.cfg ? await resolveNewSandboxHost(db, env, input.cfg) : 'local'
   if ((await activeSessionCount(db, tenantId, app.id)) >= policy.maxConcurrentPerApp) {
     throw new ConflictError(
       `This app already has ${policy.maxConcurrentPerApp} active sessions. End one first.`,
@@ -234,6 +239,7 @@ export async function createSession(
           branch: sessionBranchName(shortId),
           instanceId: id,
           imageVersion: SESSION_IMAGE_VERSION,
+          sandboxHost,
           policy,
           runtime: resolved.runtime,
           credentialSource: resolved.source,
@@ -263,6 +269,7 @@ export async function createSession(
         // §18.22: only when not the default, so a Claude-on-Launch audit row reads as it always did.
         ...(row.runtime !== 'claude_code' ? { runtime: row.runtime } : {}),
         ...(row.credentialSource !== 'platform' ? { credentialSource: row.credentialSource } : {}),
+        ...(row.sandboxHost !== 'local' ? { sandboxHost: row.sandboxHost } : {}),
       },
     },
   })

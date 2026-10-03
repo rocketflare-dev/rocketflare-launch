@@ -50,6 +50,12 @@ export interface LoginStepScope {
   params: AgentLoginParams
   /** The sandbox named `name` — `ports.sandbox`, the same adapter sessions use. */
   sandbox(name: string): SandboxPort
+  /**
+   * Before the CLI starts: the egress's `prepareLogin` — on the remote sandbox host, the grant
+   * that lets exactly this runtime's sign-in through (`egress/host.ts`). Absent / `proxied`:
+   * nothing (Launch's handlers find the login row by the sandbox id).
+   */
+  prepareLogin?(sandbox: SandboxPort, runtime: AgentRuntimeId): Promise<void>
   logger?: Pick<Logger, 'warn' | 'info' | 'error'>
   now: () => Date
   /** MUST yield (a timer) — tests pass one that advances `now`. */
@@ -128,6 +134,7 @@ export async function loginStartStep(scope: LoginStepScope): Promise<{ go: boole
   const marked = await transition(scope, ['starting'], { sandboxId: ctx.sandbox.id })
   if (!marked) return { go: false }
   await ctx.sandbox.start({ extraAllowedHosts: [...driver.hosts] })
+  await scope.prepareLogin?.(ctx.sandbox, row.runtime)
   await driver.start(ctx)
   return { go: true }
 }

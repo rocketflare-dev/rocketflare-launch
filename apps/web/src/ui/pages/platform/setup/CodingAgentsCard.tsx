@@ -71,12 +71,6 @@ function draftsOf(status: SessionAgentsStatus): Record<AgentRuntimeId, Draft> {
 
 const allowsPersonal = (mode: SessionCredentialMode) => mode !== 'platform'
 
-/** The server's own rule (`runtimeOffer`): whether this draft gives people a usable agent. */
-function usable(agent: SessionAgentStatus, draft: Draft): boolean {
-  if (!draft.enabled || agent.unavailableOnHost) return false
-  return !(agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user')
-}
-
 /** The card's React key: the stored settings, so it remounts only when they change. */
 export function codingAgentsKey(status: SessionAgentsStatus): string {
   return status.runtimes
@@ -95,12 +89,6 @@ function AgentStatus({ agent, draft }: { agent: SessionAgentStatus; draft: Draft
   if (!draft.enabled) {
     headline = 'Off'
     tone = 'text-muted'
-  } else if (agent.unavailableOnHost) {
-    headline = 'Not available with the remote sandbox host'
-    tone = 'text-warning'
-  } else if (agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user') {
-    headline = "Personal accounts don't work with the remote sandbox host"
-    tone = 'text-warning'
   } else if (keyMissing) {
     headline = (
       <>
@@ -121,9 +109,7 @@ function AgentStatus({ agent, draft }: { agent: SessionAgentStatus; draft: Draft
   } else if (usesLaunchKey && agent.platformKey.source === 'credential') {
     details.push('Launch pays with the saved key')
   }
-  if (agent.personalAccountsUnavailableOnHost && draft.credentialMode === 'user_or_platform') {
-    details.push('Personal accounts are ignored with the remote sandbox host')
-  } else if (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0) {
+  if (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0) {
     const n = agent.connectedAccounts
     details.push(
       n === 0
@@ -155,7 +141,8 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
     const d = drafts[a.runtime]
     return d.enabled !== a.enabled || d.model !== a.model || d.credentialMode !== a.credentialMode
   })
-  const noneEnabled = agents.every(a => !usable(a, drafts[a.runtime]))
+  // The server's own rule (`runtimeOffer`): nothing on, nobody can start a session.
+  const noneEnabled = agents.every(a => !drafts[a.runtime].enabled)
 
   function set(runtime: AgentRuntimeId, patch: Partial<Draft>) {
     setDrafts(prev => ({ ...prev, [runtime]: { ...prev[runtime], ...patch } }))
@@ -277,9 +264,7 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
           <div className="flex items-center gap-2">
             {noneEnabled && (
               <span className="text-sm text-warning" role="status">
-                {agents.some(a => drafts[a.runtime].enabled)
-                  ? 'No agent can run as set, so nobody could start a session.'
-                  : 'Keep at least one agent on, or nobody can start a session.'}
+                Keep at least one agent on, or nobody can start a session.
               </span>
             )}
             {update.error && (

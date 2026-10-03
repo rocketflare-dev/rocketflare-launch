@@ -28,7 +28,7 @@
  *
  * Steps 2 and 4 are `readModelCall` / `keyedModelRequest` (`forward-model.ts`, no database), which
  * the sandbox host's `HostedSessionSandbox` runs too — without 3 and 5, which need the database
- * (`SESSION_SANDBOX_HOST=remote`: the turn meters itself, `turn-meter.ts`).
+ * (a session on the remote sandbox host: the turn meters itself, `turn-meter.ts`).
  *
  * **A session on the creator's own Claude subscription** (§18.22-A, `credential_source = 'user'`)
  * holds `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>` instead. For it: `GET /api/claude_code/*` (its
@@ -67,10 +67,12 @@ import { usableClaudeCredential } from '../runtimes/claude-code/credentials'
 import type { EgressContext } from './forward-git'
 import {
   anthropicError,
+  CLAUDE_LOGIN_PASSTHROUGH,
+  forwardClaudeSignIn,
   keyedModelRequest,
   type ModelAuth,
   type ModelCall,
-  OAUTH_NOT_FOUND_PREFIX,
+  oauthNotFound,
   readModelCall,
 } from './forward-model'
 import { loginForSandbox, sessionForSandbox } from './sandbox-lookup'
@@ -141,13 +143,8 @@ async function prepareModelCall(
 
   // Claude Code on an OAuth token asks for its organisation's managed settings and limits:
   // "none" (404, tolerated), so they can never override Launch's permission and deny setup.
-  if (
-    subscription &&
-    req.method === 'GET' &&
-    new URL(req.url).pathname.startsWith(OAUTH_NOT_FOUND_PREFIX)
-  ) {
-    return anthropicError(404, 'not_found_error', 'Not available in a Launch session')
-  }
+  const hidden = oauthNotFound(req, subscription ? 'oauth' : 'api_key')
+  if (hidden) return hidden
 
   // The path and model allow-list (`forward-model.ts`, shared with the sandbox host).
   const call = await readModelCall(req, resolveSessionPolicy(session.policy).model)
@@ -273,50 +270,19 @@ export async function handleAnthropic(
 
 // ---- a Claude sign-in's own traffic (§18.22-A) ---------------------------------------------------
 
-/**
- * The ONLY requests a Claude login sandbox (`claude setup-token`, `runtimes/claude-code/login.ts`)
- * may make through Launch, per host: the token exchange, and the account profile. Each passes
- * through untouched — the CLI's own credentials, Anthropic's own answer; Launch adds nothing, logs
- * nothing of it and keeps nothing. Anything else from a login sandbox is a 403.
- */
-export const CLAUDE_LOGIN_PASSTHROUGH: Readonly<
-  Record<string, readonly { method: string; path: string }[]>
-> = {
-  'platform.claude.com': [{ method: 'POST', path: '/v1/oauth/token' }],
-  'api.anthropic.com': [{ method: 'GET', path: '/api/oauth/profile' }],
-}
+/** `CLAUDE_LOGIN_PASSTHROUGH` and its forwarding live in `forward-model.ts`, shared with the host. */
+export { CLAUDE_LOGIN_PASSTHROUGH }
 
-/** Headers never forwarded on a passthrough: what the new request sets itself. */
-const PASSTHROUGH_DROPPED = ['host', 'content-length', 'cookie']
-
-async function passThroughLogin(
+function passThroughLogin(
   req: Request,
   host: string,
   deps: Pick<AnthropicEgressDeps, 'upstream'>,
   logger: Pick<ReturnType<typeof loggerFor>, 'warn'>
 ): Promise<Response> {
-  const url = new URL(req.url)
-  const allowed = (CLAUDE_LOGIN_PASSTHROUGH[host] ?? []).some(
-    entry => entry.method === req.method && entry.path === url.pathname
-  )
-  if (!allowed) {
-    return anthropicError(403, 'permission_error', 'A Launch sign-in may not call that')
-  }
-  const headers = new Headers(req.headers)
-  for (const name of PASSTHROUGH_DROPPED) headers.delete(name)
-  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer()
-  try {
-    return await deps.upstream.fetch(
-      new Request(`https://${host}${url.pathname}${url.search}`, {
-        method: req.method,
-        headers,
-        body,
-      })
-    )
-  } catch (err) {
-    logger.warn({ err, host }, 'sign-in passthrough: upstream unreachable')
-    return anthropicError(502, 'api_error', `Launch could not reach ${host}`)
-  }
+  return forwardClaudeSignIn(req, host, {
+    upstream: deps.upstream,
+    onUnreachable: err => logger.warn({ err, host }, 'sign-in passthrough: upstream unreachable'),
+  })
 }
 
 /**

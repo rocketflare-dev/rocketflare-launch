@@ -29,24 +29,20 @@ import { parseCodexAuthJson, withRefreshedTokens } from '../runtimes/codex/auth-
 import { claimedCodexSession } from './chatgpt'
 import type { EgressContext } from './forward-git'
 import {
-  forwardHeaders,
-  type OpenAiEgressDeps,
-  openAiError,
-  refuseWebSocket,
-} from './openai-common'
+  CODEX_REFRESH_PATH,
+  isCodexSignInRequest,
+  openAiAuthRequest,
+  readCodexRefresh,
+} from './forward-openai'
+import { type OpenAiEgressDeps, openAiError, refuseWebSocket } from './openai-common'
 import { loginForSandbox } from './sandbox-lookup'
 
-export const OPENAI_AUTH_UPSTREAM_ORIGIN = 'https://auth.openai.com'
-
-/** What a Codex login sandbox may call: the device-code flow and its exchange. */
-export const CODEX_LOGIN_AUTH_PATHS = [
-  '/api/accounts/deviceauth/usercode',
-  '/api/accounts/deviceauth/token',
-  '/oauth/token',
-] as const
-
-/** What a Codex session may call: the token refresh. */
-export const CODEX_REFRESH_PATH = '/oauth/token'
+/** The paths and the upstream: `forward-openai.ts`, shared with the sandbox host. */
+export {
+  CODEX_LOGIN_AUTH_PATHS,
+  CODEX_REFRESH_PATH,
+  OPENAI_AUTH_UPSTREAM_ORIGIN,
+} from './forward-openai'
 
 /** The refusal codes that mean the plan is signed out (Codex 0.160 `classify_refresh_token_failure`). */
 export const SIGNED_OUT_REFRESH_CODES = [
@@ -145,22 +141,12 @@ export async function handleOpenAiAuth(
     const login = await loginForSandbox(handle.db, ctx.containerId)
     if (login) {
       const active = (AGENT_LOGIN_ACTIVE_STATUSES as readonly string[]).includes(login.status)
-      if (
-        login.runtime !== 'codex' ||
-        !active ||
-        !(CODEX_LOGIN_AUTH_PATHS as readonly string[]).includes(url.pathname)
-      ) {
+      if (login.runtime !== 'codex' || !active || !isCodexSignInRequest(req)) {
         return openAiError(403, 'permission_error', `Launch sign-ins may not call ${url.pathname}`)
       }
       const body = await req.text()
       try {
-        return await deps.upstream.fetch(
-          new Request(`${OPENAI_AUTH_UPSTREAM_ORIGIN}${url.pathname}${url.search}`, {
-            method: 'POST',
-            headers: forwardHeaders(req, { dropAuth: false }),
-            body,
-          })
-        )
+        return await deps.upstream.fetch(openAiAuthRequest(req, body))
       } catch (err) {
         logger.warn({ err, loginId: login.id }, 'openai auth: upstream unreachable (login)')
         return openAiError(502, 'api_error', 'Launch could not reach OpenAI sign-in')
@@ -173,21 +159,12 @@ export async function handleOpenAiAuth(
     }
     const found = await claimedCodexSession(handle.db, ctx.containerId, deps.now())
     if (found instanceof Response) return found
-    const body = await req.text()
-    const grant = parseJson(body) as { grant_type?: unknown } | null
-    if (grant?.grant_type !== 'refresh_token') {
-      return openAiError(403, 'permission_error', 'Launch sessions may only refresh their token')
-    }
+    const body = await readCodexRefresh(req)
+    if (body instanceof Response) return body
 
     let res: Response
     try {
-      res = await deps.upstream.fetch(
-        new Request(`${OPENAI_AUTH_UPSTREAM_ORIGIN}${url.pathname}${url.search}`, {
-          method: 'POST',
-          headers: forwardHeaders(req, { dropAuth: false }),
-          body,
-        })
-      )
+      res = await deps.upstream.fetch(openAiAuthRequest(req, body))
     } catch (err) {
       logger.warn({ err, sessionId: found.session.id }, 'openai auth: upstream unreachable')
       return openAiError(502, 'api_error', 'Launch could not reach OpenAI sign-in')

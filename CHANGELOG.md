@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **The remote sandbox host runs everything Launch's own sandboxes run** (`docs/CONCEPTS.md`
+  §18.10, §18.22). Codex (on Launch's OpenAI key or a person's ChatGPT plan), sessions on a
+  person's Claude subscription and personal sign-ins now work on the sandbox host, not only Claude
+  Code on Launch's key: Launch grants each turn the credential for its runtime and account, and the
+  host's handlers forward through the SAME functions as Launch's (`egress/forward-model.ts`, the new
+  `egress/forward-openai.ts`, `egress/forward-git.ts`). Usage on the host is metered per turn from
+  the CLI's own output, OpenAI-priced for Codex and recorded as `subscription` for personal
+  accounts. Fixes a host-mode Claude subscription turn that would have run on a placeholder API key
+  instead of its OAuth token. **Redeploy the host** (`pnpm --filter @launch/web
+  deploy:sandbox-host`, `docs/DEPLOY.md` § The sandbox host) — it also moves it to the `session-6`
+  image and replaces its running containers; an older host answers only Claude Code on Launch's
+  key. The Coding agents card's "not available with the remote sandbox host" lines are gone.
+- **Where a session's container runs is a platform setting** (`docs/CONCEPTS.md` §18.10):
+  Settings → Platform → Coding agents → **Session sandbox** — this Worker's containers (local
+  Docker under `pnpm dev`, Cloudflare deployed) or the remote sandbox host (development only),
+  `PUT /api/platform/setup/session-sandbox` (audited; 409 `session_sandbox_unavailable` for a host
+  this Worker cannot use now). It applies to new sessions with no restart; each session keeps the
+  host it started on (`sessions.sandbox_host`, migration 0037). `pnpm dev` now offers both whenever
+  it can — local containers unless Docker is down, the remote binding when you are logged in to
+  wrangler and the host is deployed — and says which it could not. The `SESSION_SANDBOX_HOST` var is
+  retired: a `.dev.vars` still saying `remote` is read once as the setting's starting value.
+
 - **Sessions: agent runtimes and personal AI accounts — the foundation** (`docs/CONCEPTS.md`
   §18.22). A session now records which coding agent it runs and whose account it bills, fixed at
   start; nothing changes on a default deployment (Claude Code on Launch's key). New, all off by

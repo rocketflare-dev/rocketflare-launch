@@ -22,6 +22,10 @@ pnpm is missing, `corepack enable` (it reads `packageManager` from the root `pac
 Docker is unavailable on macOS, `brew install colima docker && colima start`. On an Apple Silicon
 Mac that runs coding sessions locally, use `colima start --vm-type vz --vz-rosetta --cpu 6 --memory 12`:
 the session image is amd64-only, and QEMU emulation crashes it (`docs/SESSIONS-LOCAL.md` § Emulation).
+Or skip local session containers entirely: with the sandbox host deployed and `wrangler login`,
+`pnpm dev` also offers the **remote sandbox host** (real Cloudflare containers), chosen on Settings →
+Platform → Coding agents → Session sandbox (`docs/SESSIONS-LOCAL.md` § Real containers from a
+laptop); `pnpm dev` says which of the two it could make available.
 On Linux install Docker
 Engine and add your user to the `docker` group. Confirm the tool works, then carry on.
 
@@ -774,7 +778,8 @@ environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, the two `LANGFUSE_*` key
 too: what Codex sessions on Launch's account spend (`docs/CONCEPTS.md` §18.22). Which coding agents
 sessions run, and whether people may use their own Claude subscription or ChatGPT plan, is not a
 var: enable them on Settings → Platform → Setup → Coding agents (by default, Claude Code on
-Launch's key only).
+Launch's key only). Nor is where session containers run: a deployed Launch always uses its own
+containers (the Session sandbox setting's remote host is for development only).
 Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the names;
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns
 ok (it runs a query — a 503 there means the Worker cannot reach Neon: under `neon` a missing or

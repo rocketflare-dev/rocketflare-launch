@@ -26,7 +26,7 @@ import type { AppBindings } from '../../types'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { loadAppNeon } from './app-neon'
 import { wakeOrRestart } from './lifecycle'
-import { defaultSessionPorts, type SessionPorts } from './ports'
+import { defaultSessionPorts, type SessionPorts, sandboxHostOf } from './ports'
 import { reconcileStaleSessions } from './reconcile'
 
 export interface ExpireResult {
@@ -130,7 +130,8 @@ export async function expireSuspendedSessions(
     const tenantId = session.tenantId
     const workflow = env.SESSION_WORKFLOW
     if (!workflow) {
-      await cleanUpInline(db, opts.ports ?? defaultSessionPorts(env, cfg), session, now)
+      const ports = opts.ports ?? defaultSessionPorts(env, cfg, sandboxHostOf(session))
+      await cleanUpInline(db, ports, session, now)
       result.cleanedInline += 1
       continue
     }

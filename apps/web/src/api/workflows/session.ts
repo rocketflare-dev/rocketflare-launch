@@ -85,6 +85,7 @@ import {
   type ShipStalledReason,
 } from '@launch/shared/launch-sessions'
 import { loadConfig } from '../../config'
+import type { Database } from '../../db/client'
 import { createStepRealtime } from '../services/agents/runtime'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
@@ -104,6 +105,7 @@ import {
   landStalledStep,
 } from '../services/sessions/land'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
+import { sessionSandboxHostOf } from '../services/sessions/sandbox-host'
 import {
   type GateStepResult,
   type ShipSettleReason,
@@ -256,7 +258,15 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     const env = this.env
     const cfg = loadConfig(env)
     const logger = loggerFor(cfg, { handler: 'workflow', workflow: 'session', ...params })
-    const ports = this.overrides.ports ?? defaultSessionPorts(env, cfg)
+    // The session's frozen sandbox host (`sessions.sandbox_host`), read once per step — the
+    // setting can change while a session runs, and a session never moves host.
+    const portsFor = async (db: Database): Promise<SessionPorts> =>
+      this.overrides.ports ??
+      defaultSessionPorts(
+        env,
+        cfg,
+        await sessionSandboxHostOf(db, params.tenantId, params.sessionId)
+      )
     const hooks = this.overrides.hooks ?? defaultSessionStepHooks
     const now = this.overrides.now ?? (() => new Date())
     const limits = { ...SESSION_CALL_LIMITS, ...this.overrides.limits }
@@ -266,6 +276,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       withStepDatabase(env, cfg, async db => {
         const { realtime, settle } = createStepRealtime(env, logger)
         try {
+          const ports = await portsFor(db)
           return await fn({ db, env, cfg, ports, hooks, realtime, logger, now, params, limits })
         } finally {
           await settle()

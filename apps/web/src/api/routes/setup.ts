@@ -19,6 +19,8 @@
  *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the row deleted) → setting.changed
  *   PUT    /session-agents            coding agents: on/off, model, who pays — merged into
  *                                     `session_policy.runtimes` → setting.changed (§18.22)
+ *   PUT    /session-sandbox           where new sessions' containers run (`session_sandbox_host`:
+ *                                     local | remote, remote in development only) → setting.changed
  *
  * **A value never leaves.** The body of a PUT is sealed by `putCredential` and every response is
  * built from `credentialStatus` (which does not even select the sealed column); audit summaries say
@@ -36,6 +38,7 @@ import {
   credentialPayloadSchemas,
   kitTagsQuerySchema,
   sessionAgentsUpdateSchema,
+  sessionSandboxUpdateSchema,
   setupSettingsUpdateSchema,
   type TemplatePin,
   templatePinRequestSchema,
@@ -60,6 +63,7 @@ import {
   setupOverview,
   updateSettings,
 } from '../services/launch/setup'
+import { updateSessionSandboxHost } from '../services/sessions/sandbox-host'
 import type { AppContext } from '../types'
 import { ConflictError, NotFoundError, ValidationError } from '../utils/core/errors'
 import { getSingleTenant } from '../utils/db/tenant-helpers'
@@ -128,7 +132,7 @@ async function overviewTenant(db: Database, sessionTenantId: string | null) {
 
 setupRouter.get('/', async c => {
   const { db, cfg, tenantId } = withAuth(c)
-  return c.json(await setupOverview(db, cfg, await overviewTenant(db, tenantId)))
+  return c.json(await setupOverview(db, cfg, await overviewTenant(db, tenantId), c.env))
 })
 
 setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async c => {
@@ -149,7 +153,7 @@ setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async 
       },
     })
   }
-  return c.json(await setupOverview(db, cfg, auditTenantId))
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 
 setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async c => {
@@ -252,7 +256,7 @@ setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), asy
   const before = await getSetting(db, 'template_pin')
   await putSetting(db, 'template_pin', pin, user.id)
   await auditPinChange(c, db, auditTenantId, before, pin)
-  return c.json(await setupOverview(db, cfg, auditTenantId))
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 
 /** Reset to the code default: the row is deleted, so the default moves with Launch again. */
@@ -264,7 +268,7 @@ setupRouter.delete('/template-pin', async c => {
     await putSetting(db, 'template_pin', null, null)
     await auditPinChange(c, db, auditTenantId, before, null)
   }
-  return c.json(await setupOverview(db, cfg, auditTenantId))
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 
 // ---- coding agents (`launch_settings.session_policy.runtimes`, §18.22) ---------------------------
@@ -277,7 +281,7 @@ setupRouter.delete('/template-pin', async c => {
 setupRouter.put('/session-agents', validate('json', sessionAgentsUpdateSchema), async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
-  const change = await updateSessionAgents(db, cfg, c.req.valid('json'), user.id)
+  const change = await updateSessionAgents(db, c.req.valid('json'), user.id)
   if (change) {
     await recordAudit(db, {
       tenantId: auditTenantId,
@@ -288,5 +292,29 @@ setupRouter.put('/session-agents', validate('json', sessionAgentsUpdateSchema), 
       summary: { before: { runtimes: change.before }, after: { runtimes: change.after } },
     })
   }
-  return c.json(await setupOverview(db, cfg, auditTenantId))
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
+})
+
+// ---- the session sandbox (`launch_settings.session_sandbox_host`) --------------------------------
+
+/**
+ * Where NEW sessions' containers run → `setting.changed`. 409 `session_sandbox_unavailable` when
+ * the choice cannot run one on this Worker now (deployed, `remote` never can; under `pnpm dev`,
+ * a missing binding or Docker). Running sessions keep the host they started on.
+ */
+setupRouter.put('/session-sandbox', validate('json', sessionSandboxUpdateSchema), async c => {
+  const { db, cfg, user, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const change = await updateSessionSandboxHost(db, c.env, cfg, c.req.valid('json').host, user.id)
+  if (change) {
+    await recordAudit(db, {
+      tenantId: auditTenantId,
+      ...auditActor(c),
+      action: 'setting.changed',
+      targetType: 'Setting',
+      targetId: 'session_sandbox_host',
+      summary: { before: { host: change.before }, after: { host: change.after } },
+    })
+  }
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })

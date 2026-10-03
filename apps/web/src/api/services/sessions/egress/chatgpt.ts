@@ -25,8 +25,8 @@ import { loggerFor } from '../../../utils/core/logger'
 import { getById } from '../credentials/store'
 import { recordSessionUsage } from './anthropic'
 import type { EgressContext } from './forward-git'
+import { chatGptRequest, chatGptRoute } from './forward-openai'
 import {
-  forwardHeaders,
   meteredResponse,
   type OpenAiEgressDeps,
   openAiError,
@@ -36,12 +36,12 @@ import {
 } from './openai-common'
 import { sessionForSandbox } from './sandbox-lookup'
 
-export const CHATGPT_UPSTREAM_ORIGIN = 'https://chatgpt.com'
-export const CHATGPT_MODEL_PATHS = [
-  '/backend-api/codex/responses',
-  '/backend-api/codex/responses/compact',
-] as const
-export const CHATGPT_MODELS_PATH = '/backend-api/codex/models'
+/** The paths and the upstream: `forward-openai.ts`, shared with the sandbox host. */
+export {
+  CHATGPT_MODEL_PATHS,
+  CHATGPT_MODELS_PATH,
+  CHATGPT_UPSTREAM_ORIGIN,
+} from './forward-openai'
 
 const defaultDeps = (): OpenAiEgressDeps => ({
   upstream: { fetch: req => fetch(req) },
@@ -92,14 +92,8 @@ export async function handleChatGpt(
   const deps = { ...defaultDeps(), ...overrides }
   const cfg = loadConfig(env)
   const logger = loggerFor(cfg, { handler: 'egress', host: 'chatgpt.com' })
-  const url = new URL(req.url)
-
-  const isModels = req.method === 'GET' && url.pathname === CHATGPT_MODELS_PATH
-  const isModelCall =
-    req.method === 'POST' && (CHATGPT_MODEL_PATHS as readonly string[]).includes(url.pathname)
-  if (!isModels && !isModelCall) {
-    return openAiError(403, 'permission_error', `Launch sessions may not call ${url.pathname}`)
-  }
+  const route = chatGptRoute(req)
+  if (route instanceof Response) return route
 
   const handle = deps.openDb(env, cfg)
   let session: SessionRow
@@ -108,7 +102,7 @@ export async function handleChatGpt(
     const found = await claimedCodexSession(handle.db, ctx.containerId, deps.now())
     if (found instanceof Response) return found
     session = found.session
-    if (isModelCall) {
+    if (route === 'call') {
       const read = await readResponsesCall(req, resolveSessionPolicy(session.policy).model)
       if (read instanceof Response) return read
       call = read
@@ -118,21 +112,9 @@ export async function handleChatGpt(
   }
 
   // The plan's own token and account id, as Codex sent them — this host is the person's account.
-  const headers = forwardHeaders(req, { dropAuth: false })
-  const upstreamReq = call
-    ? new Request(`${CHATGPT_UPSTREAM_ORIGIN}${call.path}${call.search}`, {
-        method: 'POST',
-        headers,
-        body: call.body,
-      })
-    : new Request(`${CHATGPT_UPSTREAM_ORIGIN}${url.pathname}${url.search}`, {
-        method: 'GET',
-        headers,
-      })
-
   let res: Response
   try {
-    res = await deps.upstream.fetch(upstreamReq)
+    res = await deps.upstream.fetch(chatGptRequest(req, call))
   } catch (err) {
     logger.warn({ err, sessionId: session.id }, 'chatgpt egress: upstream unreachable')
     return openAiError(502, 'api_error', 'Launch could not reach ChatGPT')

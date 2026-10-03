@@ -124,8 +124,6 @@ const overview: SetupOverview = {
         platformKey: { kind: 'anthropic_api_key', source: 'secret' },
         connectedAccounts: 0,
         minImage: null,
-        unavailableOnHost: false,
-        personalAccountsUnavailableOnHost: false,
       },
       {
         runtime: 'codex',
@@ -139,8 +137,19 @@ const overview: SetupOverview = {
         platformKey: { kind: 'openai_api_key', source: null },
         connectedAccounts: 2,
         minImage: 'session-6',
-        unavailableOnHost: false,
-        personalAccountsUnavailableOnHost: false,
+      },
+    ],
+  },
+  sessionSandbox: {
+    host: 'local',
+    isDefault: true,
+    options: [
+      { host: 'local', label: "This Worker's containers", available: true, reason: null },
+      {
+        host: 'remote',
+        label: 'Remote sandbox host',
+        available: false,
+        reason: 'pnpm dev could not use your Cloudflare account. Run wrangler login.',
       },
     ],
   },
@@ -168,6 +177,7 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = Set
     'PUT /api/platform/setup/credentials/openai_api_key': checkResponse,
     'PUT /api/platform/setup/settings': overview,
     'PUT /api/platform/setup/session-agents': current,
+    'PUT /api/platform/setup/session-sandbox': current,
     'POST /api/platform/setup/public-url/check': {
       url: 'http://localhost:3000',
       status: 'failed',
@@ -483,5 +493,78 @@ describe('Admin → Coding agents tab', () => {
     render(overview, CodingAgents)
     await screen.findByRole('region', { name: 'Coding agents' })
     expect(screen.queryByRole('region', { name: /OpenAI/ })).toBeNull()
+  })
+})
+
+describe('Admin → Coding agents tab: the Session sandbox section', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const bothAvailable: SetupOverview = {
+    ...overview,
+    sessionSandbox: {
+      host: 'local',
+      isDefault: true,
+      options: [
+        { host: 'local', label: "This Worker's containers", available: true, reason: null },
+        { host: 'remote', label: 'Remote sandbox host', available: true, reason: null },
+      ],
+    },
+  }
+
+  it('shows both hosts, the current one chosen, and disables an unavailable one with its reason', async () => {
+    render(overview, CodingAgents)
+    const section = await screen.findByRole('region', { name: 'Session sandbox' })
+    expect(within(section).getByLabelText("This Worker's containers")).toBeChecked()
+    const remote = within(section).getByLabelText('Remote sandbox host')
+    expect(remote).toBeDisabled()
+    expect(within(section).getByText(/Run wrangler login/)).toBeInTheDocument()
+    expect(within(section).getByText(/Applies to new sessions/)).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('choosing the remote host and saving sends it', async () => {
+    const fetchMock = render(bothAvailable, CodingAgents)
+    const section = await screen.findByRole('region', { name: 'Session sandbox' })
+    fireEvent.click(within(section).getByLabelText('Remote sandbox host'))
+    fireEvent.click(within(section).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/session-sandbox')).toEqual({
+        host: 'remote',
+      })
+    )
+  })
+
+  it('a chosen host that is no longer available says new sessions cannot start', async () => {
+    render(
+      {
+        ...overview,
+        sessionSandbox: {
+          host: 'remote',
+          isDefault: false,
+          options: overview.sessionSandbox.options,
+        },
+      },
+      CodingAgents
+    )
+    const section = await screen.findByRole('region', { name: 'Session sandbox' })
+    expect(within(section).getByText(/New sessions cannot start/)).toBeInTheDocument()
+  })
+
+  it('deployed, only this Worker’s containers are offered', async () => {
+    render(
+      {
+        ...overview,
+        sessionSandbox: {
+          host: 'local',
+          isDefault: true,
+          options: [
+            { host: 'local', label: "This Worker's containers", available: true, reason: null },
+          ],
+        },
+      },
+      CodingAgents
+    )
+    const section = await screen.findByRole('region', { name: 'Session sandbox' })
+    expect(within(section).queryByLabelText('Remote sandbox host')).toBeNull()
   })
 })

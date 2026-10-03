@@ -6,7 +6,7 @@
  *   `wrangler dev`. Its outbound handlers ARE the egress handlers, and its container time goes
  *   straight to Launch's database.
  * - `HostedSessionSandbox` (`src/sandbox-host/hosted-session-sandbox.ts`) — in the sandbox host
- *   Worker a laptop reaches over a remote service binding (`SESSION_SANDBOX_HOST=remote`). Its
+ *   Worker a laptop reaches over a remote service binding (a session on the remote sandbox host). Its
  *   outbound handlers run the same forwarding cores over an EGRESS GRANT Launch pushes to it (the
  *   host cannot reach Launch's database — the `host` egress mode), and it records no container
  *   time.

@@ -1,11 +1,12 @@
 /**
- * `SESSION_SANDBOX_HOST=remote` — the configuration half (no database):
+ * The remote sandbox host — the configuration half (no database):
  *
  * - the sandbox host Worker's toml: no public URL, the SAME image, instance type and
  *   compatibility date as Launch's `SessionSandbox`, and exactly the binding `SandboxHostEnv` names;
  * - the dev config `pnpm dev` generates: `wrangler.toml` untouched plus the remote binding — so the
- *   two deployed tomls never carry it;
- * - `loadConfig` refuses `remote` outside development and with the local git server;
+ *   two deployed tomls never carry it — and the plan that keeps BOTH hosts available whenever it
+ *   can (Docker down, not logged in, host not deployed);
+ * - the retired `SESSION_SANDBOX_HOST` var is no longer config (it is a platform setting);
  * - `defaultSessionPorts` picks `RemoteSandbox` + the `host` egress mode only when asked, and a
  *   missing binding fails by name;
  * - the host Worker's own outbound handlers, and nothing credential-shaped written into a container
@@ -20,20 +21,27 @@ import type { ClaudeLineMapping } from '@/api/services/sessions/claude-stream'
 import { createClaudeStreamParser } from '@/api/services/sessions/claude-stream'
 import { HostEgress } from '@/api/services/sessions/egress/host'
 import { redactModelKeyText } from '@/api/services/sessions/model-key'
-import { defaultSessionPorts, egressFor, PROXIED_EGRESS } from '@/api/services/sessions/ports'
+import {
+  defaultSessionPorts,
+  egressFor,
+  PROXIED_EGRESS,
+  sandboxHostOf,
+} from '@/api/services/sessions/ports'
+import { createCodexStreamParser } from '@/api/services/sessions/runtimes/codex/stream'
 import { CloudflareSandbox } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from '@/api/services/sessions/sandbox/remote-sandbox'
 import { createTurnMeter } from '@/api/services/sessions/turn-meter'
 import type { AppBindings } from '@/api/types'
-import { ConfigError, loadConfig } from '@/config'
+import { loadConfig } from '@/config'
 import type { Database } from '@/db/client'
 import { HostedSessionSandbox } from '@/sandbox-host/hosted-session-sandbox'
 import {
+  devSandboxPlan,
+  legacyRemoteRequested,
   REMOTE_DEV_CONFIG,
   remoteDevConfigText,
-  remoteDevWranglerArgs,
-  remoteSandboxEnabled,
   SANDBOX_HOST_SERVICE,
+  whoamiLoggedIn,
 } from '../../../../scripts/lib/dev-remote-sandbox.mjs'
 import { claudeStreamJsonLines } from '../helpers/fake-anthropic'
 import { createTestEnv } from '../mocks/bindings'
@@ -103,61 +111,104 @@ describe('the dev config pnpm dev generates', () => {
     expect(rest).toEqual(TOML.parse(text('wrangler.toml')))
   })
 
-  it('is used only when .dev.vars asks, without local containers', () => {
-    expect(remoteSandboxEnabled({ SESSION_SANDBOX_HOST: 'remote' })).toBe(true)
-    expect(remoteSandboxEnabled({ SESSION_SANDBOX_HOST: ' remote ' })).toBe(true)
-    expect(remoteSandboxEnabled({ SESSION_SANDBOX_HOST: 'local' })).toBe(false)
-    expect(remoteSandboxEnabled({})).toBe(false)
-    expect(remoteDevWranglerArgs()).toEqual(['-c', REMOTE_DEV_CONFIG, '--enable-containers=false'])
-  })
-
   it('is git-ignored', () => {
     const ignore = fs.readFileSync(path.join(WEB_DIR, '../../.gitignore'), 'utf8')
     expect(ignore).toContain(`apps/web/${REMOTE_DEV_CONFIG}`)
   })
 })
 
-describe('SESSION_SANDBOX_HOST in loadConfig', () => {
-  const base = { SESSION_BACKEND: 'cloud', SESSION_SANDBOX_HOST: 'remote' }
-
-  it('defaults to local, and allows remote under development with the cloud backend', () => {
-    expect(loadConfig(createTestEnv({ APP_ENV: 'development' })).SESSION_SANDBOX_HOST).toBe('local')
-    expect(
-      loadConfig(createTestEnv({ ...base, APP_ENV: 'development' })).SESSION_SANDBOX_HOST
-    ).toBe('remote')
+describe('pnpm dev makes both sandbox hosts available whenever it can', () => {
+  it('both available: the generated config (the remote binding) AND local containers', () => {
+    const plan = devSandboxPlan({ docker: true, remote: 'ok' })
+    expect(plan.writeRemoteConfig).toBe(true)
+    expect(plan.args).toEqual([
+      '-c',
+      REMOTE_DEV_CONFIG,
+      '--var',
+      'DEV_LOCAL_CONTAINERS:on',
+      '--var',
+      'DEV_SANDBOX_HOST_STATUS:ok',
+    ])
+    expect(plan.args).not.toContain('--enable-containers=false')
+    expect(plan.lines.join('\n')).toMatch(/containers \(local Docker\) available/)
+    expect(plan.lines.join('\n')).toMatch(/remote sandbox host \(launch-sandbox-dev\) available/)
   })
 
-  it('refuses remote anywhere but development', () => {
-    for (const APP_ENV of ['staging', 'production']) {
-      expect(() => loadConfig(createTestEnv({ ...base, APP_ENV }))).toThrow(
-        /SESSION_SANDBOX_HOST=remote is only allowed with APP_ENV=development/
-      )
+  it('Docker not running: starts without local containers, and tells the Worker and the developer', () => {
+    const plan = devSandboxPlan({ docker: false, remote: 'ok' })
+    expect(plan.args).toContain('--enable-containers=false')
+    expect(plan.args).toContain('DEV_LOCAL_CONTAINERS:off')
+    expect(plan.writeRemoteConfig).toBe(true)
+    expect(plan.lines[0]).toMatch(/Docker is not running/)
+  })
+
+  it('the remote binding cannot be declared: starts on wrangler.toml without it, saying why', () => {
+    for (const [remote, why] of [
+      ['not_logged_in', /wrangler login/],
+      ['not_deployed', /not deployed/],
+      ['off', /DEV_REMOTE_SANDBOX=0/],
+    ] as const) {
+      const plan = devSandboxPlan({ docker: true, remote })
+      expect(plan.writeRemoteConfig).toBe(false)
+      expect(plan.args).not.toContain('-c')
+      expect(plan.args).toContain(`DEV_SANDBOX_HOST_STATUS:${remote}`)
+      expect(plan.args).toContain('DEV_LOCAL_CONTAINERS:on')
+      expect(plan.lines[1]).toMatch(why)
     }
+    // Neither: still starts, with nothing to run a session on — and says both.
+    const neither = devSandboxPlan({ docker: false, remote: 'not_logged_in' })
+    expect(neither.args).toEqual([
+      '--enable-containers=false',
+      '--var',
+      'DEV_LOCAL_CONTAINERS:off',
+      '--var',
+      'DEV_SANDBOX_HOST_STATUS:not_logged_in',
+    ])
+    // An unknown probe answer reads as not deployed rather than a bad var.
+    expect(devSandboxPlan({ docker: true, remote: 'weird' }).status).toBe('not_deployed')
   })
 
-  it('refuses remote with the local git server (a Cloudflare container cannot reach a laptop)', () => {
-    expect(() =>
-      loadConfig(createTestEnv({ ...base, APP_ENV: 'development', SESSION_BACKEND: 'local' }))
-    ).toThrow(ConfigError)
+  it('reads wrangler whoami, and notices the retired .dev.vars line', () => {
+    expect(whoamiLoggedIn('👋 You are logged in with an OAuth Token, associated with…')).toBe(true)
+    expect(whoamiLoggedIn('You are not authenticated. Please run `wrangler login`.')).toBe(false)
+    expect(whoamiLoggedIn('')).toBe(false)
+    expect(legacyRemoteRequested({ SESSION_SANDBOX_HOST: ' remote ' })).toBe(true)
+    expect(legacyRemoteRequested({ SESSION_SANDBOX_HOST: 'local' })).toBe(false)
+    expect(legacyRemoteRequested({})).toBe(false)
+  })
+})
+
+describe('the sandbox host is no longer a var', () => {
+  it('loadConfig neither reads nor refuses SESSION_SANDBOX_HOST, anywhere', () => {
+    for (const APP_ENV of ['development', 'staging', 'production']) {
+      const cfg = loadConfig(createTestEnv({ APP_ENV, SESSION_SANDBOX_HOST: 'remote' }))
+      expect(cfg as Record<string, unknown>).not.toHaveProperty('SESSION_SANDBOX_HOST')
+    }
+    const example = text('.dev.vars.example')
+    expect(example).not.toMatch(/^SESSION_SANDBOX_HOST=/m)
   })
 })
 
 describe('defaultSessionPorts', () => {
   const db = {} as Database
 
-  it('local: the in-process sandbox behind the proxies', () => {
+  it('local (the default): the in-process sandbox behind the proxies', () => {
     const env = createTestEnv({ APP_ENV: 'development' })
-    const ports = defaultSessionPorts(env, loadConfig(env))
-    expect(ports.sandbox('s-1')).toBeInstanceOf(CloudflareSandbox)
-    expect(egressFor(ports, db)).toBe(PROXIED_EGRESS)
+    for (const ports of [
+      defaultSessionPorts(env, loadConfig(env)),
+      defaultSessionPorts(env, loadConfig(env), 'local'),
+    ]) {
+      expect(ports.sandbox('s-1')).toBeInstanceOf(CloudflareSandbox)
+      expect(egressFor(ports, db)).toBe(PROXIED_EGRESS)
+    }
   })
 
   it('remote: RemoteSandbox over SANDBOX_HOST, and the host egress mode', () => {
     const env = {
-      ...createTestEnv({ APP_ENV: 'development', SESSION_SANDBOX_HOST: 'remote' }),
+      ...createTestEnv({ APP_ENV: 'development' }),
       SANDBOX_HOST: { fetch: async () => new Response('ok') },
     } as unknown as AppBindings
-    const ports = defaultSessionPorts(env, loadConfig(env))
+    const ports = defaultSessionPorts(env, loadConfig(env), 'remote')
     const sandbox = ports.sandbox('s-1')
     expect(sandbox).toBeInstanceOf(RemoteSandbox)
     expect(sandbox.id).toBe('remote:s-1')
@@ -166,9 +217,14 @@ describe('defaultSessionPorts', () => {
   })
 
   it('remote without the binding fails by name when a sandbox is asked for', () => {
-    const env = createTestEnv({ APP_ENV: 'development', SESSION_SANDBOX_HOST: 'remote' })
-    const ports = defaultSessionPorts(env, loadConfig(env))
+    const env = createTestEnv({ APP_ENV: 'development' })
+    const ports = defaultSessionPorts(env, loadConfig(env), 'remote')
     expect(() => ports.sandbox('s-1')).toThrow(/no SANDBOX_HOST binding.*pnpm dev/)
+  })
+
+  it('a row’s frozen host picks its ports', () => {
+    expect(sandboxHostOf({ sandboxHost: 'remote' })).toBe('remote')
+    expect(sandboxHostOf({ sandboxHost: 'local' })).toBe('local')
   })
 })
 
@@ -242,6 +298,56 @@ describe('the host mode’s turn meter', () => {
   })
 })
 
+describe('the host mode’s turn meter for Codex and personal accounts', () => {
+  const codexMappings = (usage: { input: number; cached: number; output: number }) => {
+    const parser = createCodexStreamParser(1)
+    const lines = [
+      JSON.stringify({ type: 'thread.started', thread_id: 't-1' }),
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: {
+          input_tokens: usage.input,
+          cached_input_tokens: usage.cached,
+          output_tokens: usage.output,
+        },
+      }),
+    ]
+    return [...parser.push(`${lines.join('\n')}\n`), ...parser.end()]
+  }
+
+  it('Codex’s turn.completed feeds the meter: one entry under the policy model, priced as OpenAI', () => {
+    const meter = createTurnMeter('gpt-6.1-sol', { provider: 'openai' })
+    for (const m of codexMappings({ input: 1000, cached: 400, output: 50 })) meter.observe(m)
+    expect(meter.entries()).toEqual([
+      {
+        model: 'gpt-6.1-sol',
+        usage: { inputTokens: 600, outputTokens: 50, cacheReadTokens: 400, cacheWriteTokens: 0 },
+      },
+    ])
+    expect(meter.provider).toBe('openai')
+    // Codex says nothing per response: there is no running cost to cut a turn short with.
+    expect(meter.runningCostMicrocents()).toBe(0)
+  })
+
+  it('a personal account is recorded as a subscription and costs nothing to the budget', () => {
+    const meter = createTurnMeter('claude-sonnet-4-5', { billing: 'subscription' })
+    const parser = createClaudeStreamParser(1)
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg_1',
+        model: 'claude-sonnet-4-5',
+        content: [{ type: 'text', text: 'x' }],
+        usage: { input_tokens: 100_000, output_tokens: 10_000 },
+      },
+    })
+    for (const m of [...parser.push(`${line}\n`), ...parser.end()]) meter.observe(m)
+    expect(meter.billing).toBe('subscription')
+    expect(meter.runningCostMicrocents()).toBe(0)
+    expect(meter.entries()).toHaveLength(1)
+  })
+})
+
 describe('the transcript scrubs key and token shapes', () => {
   it('redacts GitHub tokens as well as Anthropic keys', () => {
     const token = `ghs_${'a'.repeat(36)}`
@@ -257,14 +363,14 @@ describe('the host mode puts no credential in the container', () => {
   // The first design wrote the token to a file for git's `store` helper, which erases the file on
   // a fresh token's 401 — the clone then failed "could not read Username". The token and the key
   // now live only in the host Durable Object's grant, injected by its outbound handlers.
-  it('the host class declares its own handlers for the model and git hosts, and none for the database', () => {
-    // Codex's hosts are on the shared allow-list, so the host refuses them (§18.22-B).
+  it('the host class declares its own handlers for the model, sign-in and git hosts, and none for the database', () => {
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
       'chatgpt.com',
       'github.com',
+      'platform.claude.com',
     ])
   })
 

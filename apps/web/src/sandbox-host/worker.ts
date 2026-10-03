@@ -3,7 +3,7 @@
  * Cloudflare containers for a laptop's Launch. `wrangler dev` always runs `[[containers]]` on local
  * Docker, and a Durable Object cannot be a remote binding — but a service binding can
  * (`remote = true`). So this small Worker holds the session sandbox Durable Object and its
- * container, and local Launch reaches it through `SANDBOX_HOST` with `SESSION_SANDBOX_HOST=remote`
+ * container, and local Launch reaches it through `SANDBOX_HOST` for a session on the `remote` host
  * (`RemoteSandbox`, `docs/SESSIONS-LOCAL.md` § Real containers from a laptop).
  *
  * The default export is a `WorkerEntrypoint` whose methods are `SandboxPort` with the sandbox name
@@ -12,7 +12,7 @@
  * `fetch` is the preview's way in (a WebSocket upgrade crosses a service binding's `fetch`, never
  * RPC). `ContainerProxy` is exported because the platform routes the container's intercepted
  * traffic through it — and runs `HostedSessionSandbox`'s outbound handlers in it, which inject the
- * token and key from the sandbox's EGRESS GRANT (`setEgressGrant` / `clearEgressGrant`, stored on
+ * credentials from the sandbox's EGRESS GRANT (`setEgressGrant` / `clearEgressGrant`, stored on
  * the sandbox's Durable Object, `sandbox-host/egress.ts`).
  *
  * It has no public URL (`workers_dev = false`, `preview_urls = false`) and no secrets of its own:
@@ -26,7 +26,7 @@ import {
   mapSandboxError,
 } from '../api/services/sessions/sandbox/cloudflare-sandbox'
 import {
-  type EgressGrant,
+  type EgressGrantUpdate,
   type HostResult,
   PREVIEW_HEADERS,
   type SandboxHostRpc,
@@ -149,7 +149,7 @@ export default class SandboxHost
     return hostCall(() => done(this.sandbox(name).deleteBackup(backup)))
   }
 
-  setEgressGrant(name: string, grant: EgressGrant) {
+  setEgressGrant(name: string, grant: EgressGrantUpdate) {
     return hostCall(() => done(this.object(name).setEgressGrant(grant)))
   }
 

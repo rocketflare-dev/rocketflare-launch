@@ -67,6 +67,7 @@ import type { Database } from '../../../db/client'
 import { users } from '../../../db/schema'
 import { configuredProviders } from '../../auth/providers'
 import { NotFoundError } from '../../utils/core/errors'
+import { type SandboxHostBindings, sessionSandboxStatus } from '../sessions/sandbox-host'
 import { CloudflareApiError, CloudflareClient } from './cloudflare'
 import {
   credentialStatus,
@@ -948,13 +949,16 @@ export function stepStatuses(
 export async function setupOverview(
   db: Database,
   cfg: AppConfig,
-  tenantId: string | null = null
+  tenantId: string | null = null,
+  /** The Worker's bindings — what the Session sandbox section's availability is read from. */
+  env?: SandboxHostBindings
 ): Promise<SetupOverview> {
-  const [settings, credentials, publicUrl, templatePin] = await Promise.all([
+  const [settings, credentials, publicUrl, templatePin, sessionSandbox] = await Promise.all([
     readSettings(db),
     setupCredentials(db),
     publicUrlOverview(db, cfg),
     templatePinStatus(db),
+    sessionSandboxStatus(db, env, cfg),
   ])
   const sessionAgents = await sessionAgentsStatus(db, cfg, credentials, tenantId)
   const identity = identityStatus(cfg)
@@ -971,5 +975,6 @@ export async function setupOverview(
     identity,
     templatePin,
     sessionAgents,
+    sessionSandbox,
   }
 }

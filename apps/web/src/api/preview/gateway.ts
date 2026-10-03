@@ -53,11 +53,12 @@ import {
   type SessionStatus,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
+import type { SessionSandboxHost } from '@launch/shared/launch-setup'
 import { and, eq, inArray, isNull, lt, or } from 'drizzle-orm'
 import { type AppConfig, loadConfig } from '../../config'
 import { type Database, type DatabaseHandle, openDatabase } from '../../db/client'
 import { type SessionRow, sessions } from '../../db/schema'
-import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
+import { defaultSessionPorts, type SessionPorts, sandboxHostOf } from '../services/sessions/ports'
 import {
   mintCookie,
   PREVIEW_COOKIE_TTL_S,
@@ -87,13 +88,17 @@ const ACTIVITY_STATUSES: readonly SessionStatus[] = ['ready', 'blocked']
 /** Everything the gateway reaches, injectable so a test drives it with fakes. */
 export interface PreviewGatewayDeps {
   openDb: (env: AppBindings, cfg: AppConfig) => DatabaseHandle
-  ports: (env: AppBindings, cfg: AppConfig) => Pick<SessionPorts, 'sandbox'>
+  ports: (
+    env: AppBindings,
+    cfg: AppConfig,
+    host: SessionSandboxHost
+  ) => Pick<SessionPorts, 'sandbox'>
   now: () => Date
 }
 
 const defaultDeps = (): PreviewGatewayDeps => ({
   openDb: (env, cfg) => openDatabase({ ...cfg, HYPERDRIVE: env.HYPERDRIVE }),
-  ports: (env, cfg) => defaultSessionPorts(env, cfg),
+  ports: (env, cfg, host) => defaultSessionPorts(env, cfg, host),
   now: () => new Date(),
 })
 
@@ -141,6 +146,8 @@ interface PreviewView {
   tenantId: string
   status: SessionStatus
   previewToken: string
+  /** Where its container runs (frozen on the row). */
+  sandboxHost: SessionSandboxHost
 }
 
 const statusCache = new Map<string, { view: PreviewView; at: number }>()
@@ -177,6 +184,7 @@ async function lookup(
       tenantId: row.tenantId,
       status: row.status,
       previewToken: row.previewToken,
+      sandboxHost: sandboxHostOf(row),
     }
     statusCache.set(host.shortId, { view, at: now })
     // Keep the map bounded: a busy isolate sees many previews, each is re-read after 15 s anyway.
@@ -350,7 +358,7 @@ async function proxy(
     // @ts-expect-error — `duplex` is required by Node's fetch for a streamed body, unknown to the Workers types.
     duplex: 'half',
   })
-  const sandbox = deps.ports(env, cfg).sandbox(view.id)
+  const sandbox = deps.ports(env, cfg, view.sandboxHost).sandbox(view.id)
   let res: Response
   try {
     res = await sandbox.fetch(port, forwarded)

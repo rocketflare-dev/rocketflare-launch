@@ -40,6 +40,7 @@ import {
   type SessionPolicy,
   type SessionShipSummary,
 } from '@launch/shared/launch-sessions'
+import { SESSION_SANDBOX_HOSTS } from '@launch/shared/launch-setup'
 import { relations, sql } from 'drizzle-orm'
 import {
   bigint,
@@ -178,6 +179,12 @@ export const sessions = pgTable(
     transcriptKey: text('transcript_key'),
 
     // ---- runtime
+    /**
+     * Where the session's container runs — `launch_settings.session_sandbox_host` as it stood at
+     * create, frozen so a resume or a turn never moves to another host when the setting changes:
+     * `local` (this Worker's `SESSION_SANDBOX`) or `remote` (the sandbox host, development only).
+     */
+    sandboxHost: text('sandbox_host', { enum: SESSION_SANDBOX_HOSTS }).notNull().default('local'),
     /** The session image this session ran on (drain and rollouts, plan §1.8). */
     imageVersion: text('image_version'),
     /** `launch_settings.session_policy` with defaults, frozen at create. */

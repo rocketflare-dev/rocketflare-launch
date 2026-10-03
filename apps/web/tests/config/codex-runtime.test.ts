@@ -455,10 +455,9 @@ describe('the device-code sign-in (output parse)', () => {
 })
 
 describe('around the runtime', () => {
-  it('is registered, provider openai, not on the sandbox host', () => {
+  it('is registered, provider openai', () => {
     expect(runtimeFor('codex')).toBe(codexRuntime)
     expect(codexRuntime.provider).toBe('openai')
-    expect(codexRuntime.supportsHostEgress).toBe(false)
     expect(codexRuntime.login?.needsCode).toBe(false)
     expect(codexRuntime.login?.hosts).toEqual(['auth.openai.com'])
   })

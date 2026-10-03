@@ -7,7 +7,9 @@
  * `egress/chatgpt.ts`, `egress/openai-auth.ts`), connected by a relayed device-code sign-in
  * (`login.ts`).
  *
- * Off until an admin turns it on (the session policy's `runtimes.codex`, the Platform → Coding agents tab — `runtimePolicyOf` fails closed); the sandbox host (`SESSION_SANDBOX_HOST=remote`) never runs it (`supportsHostEgress`).
+ * Off until an admin turns it on (the session policy's `runtimes.codex`, the Platform → Coding
+ * agents tab — `runtimePolicyOf` fails closed). It runs on either sandbox host: the remote one's
+ * handlers forward its three hosts from the turn's egress grant (`egress/host.ts`).
  */
 import type { AgentRuntime } from '../types'
 import { buildCodexCommand } from './command'
@@ -31,7 +33,6 @@ export const codexRuntime: AgentRuntime = {
   workspaceFiles: () => [],
   beforeTurnFiles: ({ model, systemNote }) => codexBeforeTurnFiles({ model, systemNote }),
   state: codexState,
-  supportsHostEgress: false,
   login: codexLoginDriver,
   userLease: leaseCodexUserCredential,
 }

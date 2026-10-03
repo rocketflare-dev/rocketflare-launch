@@ -274,13 +274,27 @@ export function createCodexStreamParser(
       }
       case 'turn.completed': {
         const totals = totalsOf(threadId ?? before?.threadId ?? '', msg.usage)
+        const usage = codexUsageDelta(totals, before)
         out.result = {
           subtype: 'success',
           isError: false,
           durationMs: null,
-          usage: codexUsageDelta(totals, before),
+          usage,
           text: lastText ? redactModelKeys(clipStrings(lastText, CLAUDE_RESULT_TEXT_MAX)) : null,
         }
+        // What the `host` egress mode records as the turn's `ai_usage` row (`turn-meter.ts`): the
+        // host's handlers forward without metering, so this is the turn's only ledger there.
+        out.turnUsage = [
+          {
+            model: null,
+            usage: {
+              inputTokens: usage.tokensIn,
+              outputTokens: usage.tokensOut,
+              cacheReadTokens: usage.cacheRead,
+              cacheWriteTokens: usage.cacheWrite,
+            },
+          },
+        ]
         if (threadId) out.runtimeState = { ...(state ?? {}), usage: totals }
         return out
       }

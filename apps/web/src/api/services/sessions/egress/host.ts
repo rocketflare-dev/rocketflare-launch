@@ -1,9 +1,9 @@
 /**
- * The `host` egress mode (`SessionEgressPort`, `ports.ts`) — a session container on the sandbox
- * host (`SESSION_SANDBOX_HOST=remote`, DEVELOPMENT ONLY). The host Worker cannot reach Launch's
- * database, so its outbound handlers cannot look the session up the way Launch's own proxies do
- * (`egress/github.ts`, `egress/anthropic.ts`). Instead, Launch PUSHES them what they inject — an
- * {@link EgressGrant}, over the host's RPC (`setEgressGrant`), stored on the sandbox's Durable
+ * The `host` egress mode (`SessionEgressPort`, `ports.ts`) — a session (or sign-in) container on
+ * the sandbox host (a session whose `sandbox_host` is `remote`, DEVELOPMENT ONLY). The host Worker
+ * cannot reach Launch's database, so its outbound handlers cannot look the session up the way
+ * Launch's own proxies do (`egress/registry.ts`). Instead, Launch PUSHES them what they inject —
+ * an {@link EgressGrant}, over the host's RPC (`setEgressGrant`), stored on the sandbox's Durable
  * Object on the host, NEVER in the container:
  *
  * - **git** ({@link HostEgress.prepareGit}, before the clone, each turn and each checkpoint's
@@ -11,29 +11,47 @@
  *   installation token — the same sealed token the git proxy uses (`sessionGitToken`: reused while
  *   it has more than 10 minutes left, else re-minted and sealed back) — with its expiry, so the
  *   host retries a freshly minted token's 401/404 as the proxy does.
- * - **the model** ({@link HostEgress.turnEnv}, before each turn): the key (`resolveModelKey`; none
- *   → {@link ModelKeyMissingError}, the turn fails by name) and the policy's model. The turn's
- *   process gets only the PLACEHOLDER, exactly as in the proxied mode: Claude Code sends it, the
- *   host's handler drops it and sets the key.
+ * - **the model** ({@link HostEgress.turnEnv}, before each turn), by the session's runtime and
+ *   credential source — the same credential Launch's own proxy would swap in:
  *
- * So the container holds no credential in either mode, git needs no credential helper, and the
- * host's handlers keep the proxies' rules — one repo, a push only to `session/<short>` and never a
- * delete, only the Messages API with the policy's model (`forward-git.ts`, `forward-model.ts`).
+ *   | runtime × source        | grant                                                        |
+ *   |-------------------------|--------------------------------------------------------------|
+ *   | Claude Code × platform  | `anthropic` — Launch's key (`resolveModelKey`), `api_key`     |
+ *   | Claude Code × user      | `anthropic` — the creator's subscription token, `oauth` (`usableClaudeCredential`, the proxy's own rule) |
+ *   | Codex × platform        | `openai` — Launch's OpenAI key (`resolveOpenAiKey`)           |
+ *   | Codex × user            | `chatgpt` — the model only; revoked again by {@link HostEgress.endTurn} |
+ *
+ *   It returns NO environment: each runtime's own `turnEnv` already gives the process its
+ *   placeholder (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, or none on a
+ *   ChatGPT plan), and an extra `ANTHROPIC_API_KEY` would WIN over a subscription's OAuth token.
+ * - **a sign-in** ({@link HostEgress.prepareLogin}, before the login sandbox's CLI starts): the
+ *   `login` part, naming the runtime whose sign-in requests the host passes through.
+ *
+ * So the container holds no Launch credential in either mode, git needs no credential helper, and
+ * the host's handlers keep the proxies' rules (`forward-git.ts`, `forward-model.ts`,
+ * `forward-openai.ts` — the same functions).
  *
  * **What it still gives up, against the proxies**: the BUDGET is enforced per turn, not per
- * request — checked before a turn, and a turn is KILLED when its running cost (from Claude Code's
- * own usage lines) reaches what is left (`turn-meter.ts`, `turn.ts`), so one response can
- * overshoot by its own size; and the host records no container time.
+ * request — checked before a turn, and a turn on Launch's account is KILLED when its running cost
+ * (from the CLI's own usage) reaches what is left (`turn-meter.ts`, `turn.ts`), so one response can
+ * overshoot by its own size (Codex reports usage only at the end of a turn, so its turn is not cut
+ * short at all); a subscription token Anthropic refuses is not marked `needs_login`; a ChatGPT
+ * refresh is not resealed the moment it rotates (the lease's read-back after the turn reseals it);
+ * and the host records no container time.
  */
+import type { AgentRuntimeId } from '@launch/shared/launch-agents'
 import { resolveSessionPolicy, sessionBranchName } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { apps, type SessionRow } from '../../../../db/schema'
-import { MODEL_KEY_PLACEHOLDER, ModelKeyMissingError, resolveModelKey } from '../model-key'
+import { CredentialNeedsLoginError } from '../credentials/errors'
+import { getById, openSecret } from '../credentials/store'
+import { ModelKeyMissingError, resolveModelKey, resolveOpenAiKey } from '../model-key'
 import type { RepoHostPort, SessionEgressPort } from '../ports'
+import { CLAUDE_ACCOUNT_LABEL, usableClaudeCredential } from '../runtimes/claude-code/credentials'
 import { unwrap } from '../sandbox/remote-sandbox'
-import type { EgressGrant, SandboxHostRpc } from '../sandbox-host/protocol'
+import type { EgressGrantUpdate, SandboxHostRpc } from '../sandbox-host/protocol'
 import type { SandboxPort } from '../sandbox-port'
 import { sessionGitToken } from './github'
 
@@ -53,17 +71,53 @@ export class HostEgress implements SessionEgressPort {
     private readonly now: () => Date = () => new Date()
   ) {}
 
-  private async grant(sandbox: SandboxPort, grant: EgressGrant): Promise<void> {
+  private async grant(sandbox: SandboxPort, grant: EgressGrantUpdate): Promise<void> {
     await unwrap(this.host.setEgressGrant(sandbox.name, grant))
   }
 
-  async turnEnv(sandbox: SandboxPort, session: SessionRow): Promise<Record<string, string>> {
+  /** The model part for this turn — see the header's table. Throws by name when there is none. */
+  private async modelGrant(session: SessionRow): Promise<EgressGrantUpdate> {
+    const model = resolveSessionPolicy(session.policy).model
+    const user = session.credentialSource === 'user'
+    if (session.runtime === 'codex') {
+      if (user) return { chatgpt: { model } }
+      const key = await resolveOpenAiKey(this.db, this.cfg)
+      if (!key) throw new ModelKeyMissingError('openai')
+      return { openai: { key: key.apiKey, model } }
+    }
+    if (user) {
+      // The proxy's own rule: the session's credential, same tenant, the creator's, active, unexpired.
+      const row = session.agentCredentialId
+        ? await getById(this.db, session.tenantId, session.agentCredentialId)
+        : null
+      if (!usableClaudeCredential(row, session, this.now())) {
+        throw new CredentialNeedsLoginError(CLAUDE_ACCOUNT_LABEL)
+      }
+      return {
+        anthropic: { auth: { kind: 'oauth', value: await openSecret(this.cfg, row) }, model },
+      }
+    }
     const key = await resolveModelKey(this.db, this.cfg)
     if (!key) throw new ModelKeyMissingError()
-    const model = resolveSessionPolicy(session.policy).model
-    await this.grant(sandbox, { model: { key: key.apiKey, model } })
-    // The process holds the placeholder, never the key (the host's handler swaps it).
-    return { ANTHROPIC_API_KEY: MODEL_KEY_PLACEHOLDER }
+    return { anthropic: { auth: { kind: 'api_key', value: key.apiKey }, model } }
+  }
+
+  async turnEnv(sandbox: SandboxPort, session: SessionRow): Promise<Record<string, string>> {
+    await this.grant(sandbox, await this.modelGrant(session))
+    // The runtime's own environment carries the placeholders; nothing to add (see the header).
+    return {}
+  }
+
+  /** After a turn: a ChatGPT plan is reachable only while a turn holds it, as in the proxy. */
+  async endTurn(sandbox: SandboxPort, session: SessionRow): Promise<void> {
+    if (session.runtime === 'codex' && session.credentialSource === 'user') {
+      await this.grant(sandbox, { chatgpt: null })
+    }
+  }
+
+  /** Before a login sandbox's CLI starts: let exactly that runtime's sign-in through. */
+  async prepareLogin(sandbox: SandboxPort, runtime: AgentRuntimeId): Promise<void> {
+    await this.grant(sandbox, { login: { runtime } })
   }
 
   async prepareGit(sandbox: SandboxPort, session: SessionRow): Promise<void> {

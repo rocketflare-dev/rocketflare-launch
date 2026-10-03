@@ -222,11 +222,6 @@ export interface AgentRuntime {
     source: SessionCredentialSource
   }): RuntimeFile[]
   state: RuntimeStateFiles
-  /**
-   * May run on the sandbox host (`SESSION_SANDBOX_HOST=remote`, the `host` egress mode), which
-   * meters turns from Claude Code's own output and forwards only Anthropic.
-   */
-  supportsHostEgress: boolean
   login?: LoginDriver
   /** A personal account's credential for one turn. Absent: the runtime has no personal accounts. */
   userLease?(ctx: UserLeaseContext): Promise<TurnCredentialLease>

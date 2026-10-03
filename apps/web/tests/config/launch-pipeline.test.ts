@@ -265,6 +265,8 @@ describe('P2 settings', () => {
       'app_create_role',
       'session_policy',
       'sessions_paused',
+      // Where a new session's container runs (`services/sessions/sandbox-host.ts`), default local.
+      'session_sandbox_host',
       // Written by Launch itself: the cached public-URL check (`services/launch/public-url.ts`).
       'public_url_check',
     ])

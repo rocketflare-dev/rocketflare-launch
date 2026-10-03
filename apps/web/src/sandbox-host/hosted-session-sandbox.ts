@@ -1,14 +1,16 @@
 /**
- * `HostedSessionSandbox` — a coding session's container in the SANDBOX HOST Worker
+ * `HostedSessionSandbox` — a coding session's (or a sign-in's) container in the SANDBOX HOST Worker
  * (`wrangler.sandbox-host.toml`), the Durable Object a laptop's Launch drives over a remote service
- * binding when `SESSION_SANDBOX_HOST=remote` (development only). Same egress settings as Launch's
- * own `SessionSandbox` (`SessionSandboxBase`: the `SESSION_EGRESS` mode from this Worker's own toml,
- * HTTPS intercepted), and the same rule that the container holds NO credential — with two differences:
+ * binding for a session on the `remote` sandbox host (development only). Same egress settings as
+ * Launch's own `SessionSandbox` (`SessionSandboxBase`: the `SESSION_EGRESS` mode from this Worker's
+ * own toml, HTTPS intercepted), the same hosts handled, and the same rule that the container holds
+ * no Launch credential — with two differences:
  *
  * - **Its outbound handlers work from a GRANT, not the database.** The host cannot reach Launch's
  *   database, so local Launch pushes what the handlers inject — the session's repo, branch and
- *   installation token, the model key and the policy's model — to THIS object before git or a turn
- *   needs it (`setEgressGrant` over the host's RPC, the `host` egress mode,
+ *   installation token; the turn's model credential (Anthropic key or subscription token, OpenAI
+ *   key, or a ChatGPT plan's model) and the policy's model; a login sandbox's runtime — to THIS
+ *   object before git, a turn or a sign-in needs it (`setEgressGrant` over the host's RPC, the `host` egress mode,
  *   `services/sessions/egress/host.ts`). It is kept in this object's storage, never in the
  *   container, and cleared on `destroy()` and when the container stops. The handlers
  *   (`sandbox-host/egress.ts`) run the same forwarding cores as Launch's proxies. The registry
@@ -23,24 +25,30 @@ import {
   type SandboxStopParams,
   SessionSandboxBase,
 } from '../api/durable-objects/session-sandbox-base'
-import { OPENAI_EGRESS_HOSTS, refuseHost } from '../api/services/sessions/egress/refuse'
-import type { EgressGrant } from '../api/services/sessions/sandbox-host/protocol'
-import { type GrantLookup, hostedAnthropic, hostedGitHub } from './egress'
+import {
+  type EgressGrant,
+  type EgressGrantUpdate,
+  mergeEgressGrant,
+} from '../api/services/sessions/sandbox-host/protocol'
+import {
+  type GrantLookup,
+  hostedAnthropic,
+  hostedChatGpt,
+  hostedClaudeSignIn,
+  hostedGitHub,
+  hostedOpenAi,
+  hostedOpenAiAuth,
+} from './egress'
 import type { SandboxHostEnv } from './env'
 
 /** Where the grant lives in this object's storage. */
 const EGRESS_GRANT_KEY = 'launch:egress-grant'
 
 export class HostedSessionSandbox extends SessionSandboxBase<SandboxHostEnv> {
-  /** Store the grant: each half it carries replaces the stored one, the other is kept. */
-  async setEgressGrant(grant: EgressGrant): Promise<void> {
+  /** Store the grant: each part it carries replaces the stored one, `null` removes it, the rest is kept. */
+  async setEgressGrant(grant: EgressGrantUpdate): Promise<void> {
     const current = (await this.ctx.storage.get<EgressGrant>(EGRESS_GRANT_KEY)) ?? {}
-    const next: EgressGrant = {}
-    const git = grant.git ?? current.git
-    const model = grant.model ?? current.model
-    if (git) next.git = git
-    if (model) next.model = model
-    await this.ctx.storage.put(EGRESS_GRANT_KEY, next)
+    await this.ctx.storage.put(EGRESS_GRANT_KEY, mergeEgressGrant(current, grant))
   }
 
   /** What the outbound handlers inject, or null (they refuse). */
@@ -79,10 +87,15 @@ export function grantLookup(env: SandboxHostEnv): GrantLookup {
 /** The handlers' `env` is typed as Launch's `Cloudflare.Env`; on the host it is this Worker's. */
 const lookupIn = (env: unknown): GrantLookup => grantLookup(env as SandboxHostEnv)
 
+/**
+ * The same hosts as Launch's `SESSION_OUTBOUND_HANDLERS` (`egress/registry.ts`) — the parity test
+ * (`session-egress-forward.test.ts`) keeps the two key sets equal — each answered from the grant.
+ */
 HostedSessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => hostedAnthropic(req, lookupIn(env), ctx),
+  'platform.claude.com': (req, env, ctx) => hostedClaudeSignIn(req, lookupIn(env), ctx),
   'github.com': (req, env, ctx) => hostedGitHub(req, lookupIn(env), ctx),
-  // §18.22-B: Codex never runs here (`supportsHostEgress: false`), but its hosts are on the shared
-  // allow-list — refused, so they cannot pass straight through.
-  ...Object.fromEntries(OPENAI_EGRESS_HOSTS.map(host => [host, refuseHost(host)])),
+  'api.openai.com': (req, env, ctx) => hostedOpenAi(req, lookupIn(env), ctx),
+  'chatgpt.com': (req, env, ctx) => hostedChatGpt(req, lookupIn(env), ctx),
+  'auth.openai.com': (req, env, ctx) => hostedOpenAiAuth(req, lookupIn(env), ctx),
 }

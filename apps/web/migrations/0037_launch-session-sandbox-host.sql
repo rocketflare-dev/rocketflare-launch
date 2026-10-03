@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "sandbox_host" text DEFAULT 'local' NOT NULL;

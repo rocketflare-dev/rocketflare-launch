@@ -28,6 +28,7 @@ import {
   type AgentRuntimeId,
 } from '@launch/shared/launch-agents'
 import type { SessionPolicy } from '@launch/shared/launch-sessions'
+import type { SessionSandboxHost } from '@launch/shared/launch-setup'
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
@@ -42,7 +43,7 @@ import {
 } from '../../../utils/core/errors'
 import { type AuditActor, recordAudit } from '../../launch/audit'
 import type { WarnLogger } from '../chat'
-import { type RuntimeFlags, runtimeOffer } from '../credentials/resolve'
+import { runtimeOffer } from '../credentials/resolve'
 
 /** The row as the polling modal reads it. No sealed code, no sandbox id. */
 export function toAgentLogin(row: AgentLoginRow): AgentLogin {
@@ -76,12 +77,8 @@ export function requireLoginWorkflow(env: AppBindings): Workflow {
  * 409 `agent_logins_disabled` unless this runtime may bill a personal account — the session
  * policy's Coding agents setting (off unless an admin turned it on), not a deployment var.
  */
-export function assertLoginsEnabled(
-  flags: RuntimeFlags,
-  policy: SessionPolicy,
-  runtime: AgentRuntimeId
-): void {
-  const offer = runtimeOffer(flags, policy, runtime)
+export function assertLoginsEnabled(policy: SessionPolicy, runtime: AgentRuntimeId): void {
+  const offer = runtimeOffer(policy, runtime)
   if (!offer.enabled || !offer.userAllowed) {
     throw new ConflictError(
       `${AGENT_RUNTIME_LABELS[runtime]} sessions do not use personal accounts here. An admin can allow them under Platform → Coding agents.`,
@@ -137,6 +134,8 @@ export interface StartLoginInput {
   userId: string
   runtime: AgentRuntimeId
   actor: AuditActor
+  /** Where the login sandbox runs (`resolveNewSandboxHost`), frozen in the Workflow's params. */
+  sandboxHost?: SessionSandboxHost
   now?: Date
 }
 
@@ -170,7 +169,11 @@ export async function startLogin(
   }
   if (!row) throw new Error('startLogin: insert returned no row')
 
-  const params: AgentLoginParams = { loginId: row.id, tenantId: input.tenantId }
+  const params: AgentLoginParams = {
+    loginId: row.id,
+    tenantId: input.tenantId,
+    ...(input.sandboxHost === 'remote' ? { sandboxHost: 'remote' as const } : {}),
+  }
   try {
     await workflow.create({ id: row.id, params })
   } catch (err) {

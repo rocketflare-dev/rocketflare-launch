@@ -1,7 +1,7 @@
 /**
- * The wire between local Launch and the sandbox host Worker (`SESSION_SANDBOX_HOST=remote`,
- * `docs/SESSIONS-LOCAL.md` § Real containers from a laptop). Imported by BOTH sides, so it is a
- * leaf: types and constants, nothing of Launch's database or config.
+ * The wire between local Launch and the sandbox host Worker (a session whose `sandbox_host` is
+ * `remote`, `docs/SESSIONS-LOCAL.md` § Real containers from a laptop). Imported by BOTH sides, so
+ * it is a leaf: types and constants, nothing of Launch's database or config.
  *
  * ONE direction only: Launch → host, over a REMOTE service binding (`SANDBOX_HOST`) — the RPC
  * surface ({@link SandboxHostRpc}) and the preview's `fetch`. The host Worker has no public URL
@@ -10,10 +10,11 @@
  * host trusts its callers the way any Worker trusts its service bindings.
  *
  * Nothing flows back. The host cannot reach Launch's database, so its outbound handlers (the same
- * forwarding cores as Launch's own: `egress/forward-git.ts`, `egress/forward-model.ts`) work from
- * an {@link EgressGrant} Launch PUSHES to the sandbox's Durable Object before git or a turn needs
- * it (`setEgressGrant`, the `host` egress mode, `egress/host.ts`). The container itself holds no
- * credential in either mode.
+ * forwarding cores as Launch's own: `egress/forward-git.ts`, `egress/forward-model.ts`,
+ * `egress/forward-openai.ts`) work from an {@link EgressGrant} Launch PUSHES to the sandbox's
+ * Durable Object before git, a turn or a sign-in needs it (`setEgressGrant`, the `host` egress
+ * mode, `egress/host.ts`). The container holds no Launch credential in either mode (a person's
+ * ChatGPT `auth.json` is in it for a turn, by design, in both).
  */
 import type {
   SandboxBackup,
@@ -36,6 +37,11 @@ export function remoteSandboxId(name: string): string {
   return `remote:${name}`
 }
 
+/** Is this recorded sandbox id one on the sandbox host ({@link remoteSandboxId})? */
+export function isRemoteSandboxId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.startsWith('remote:')
+}
+
 // ---- the egress grant ---------------------------------------------------------------------------
 
 /**
@@ -56,22 +62,77 @@ export interface GitEgressGrant {
   expiresAt: number
 }
 
-/** What the model handler on the host needs: the real key (a SECRET) and the policy's model. */
-export interface ModelEgressGrant {
+/**
+ * Claude Code's model calls (`api.anthropic.com`): the credential (a SECRET) — Launch's API key
+ * (`api_key`, sent as `x-api-key`) or the session creator's Claude subscription token (`oauth`,
+ * sent as `Authorization: Bearer` with the OAuth beta flag) — and the policy's model.
+ */
+export interface AnthropicEgressGrant {
+  auth: { kind: 'api_key' | 'oauth'; value: string }
+  model: string
+}
+
+/** Codex on Launch's account (`api.openai.com`): Launch's OpenAI key (a SECRET) and the model. */
+export interface OpenAiEgressGrant {
   key: string
   model: string
 }
 
 /**
+ * Codex on the creator's ChatGPT plan (`chatgpt.com`, and `auth.openai.com`'s token refresh):
+ * the model only — the plan's tokens are in the container's `auth.json` for the turn by design
+ * (§18.22-B), so the handler passes Codex's own Bearer through. Granted for one turn and revoked
+ * after it, as Launch's handler allows the plan only while a turn holds it.
+ */
+export interface ChatGptEgressGrant {
+  model: string
+}
+
+/**
+ * A LOGIN sandbox (`login-<id>`, §18.22): the runtime whose sign-in it runs. Its handlers pass
+ * exactly that driver's sign-in requests through untouched (Claude: `CLAUDE_LOGIN_PASSTHROUGH`;
+ * Codex: `CODEX_LOGIN_AUTH_PATHS`) — no Launch credential is involved.
+ */
+export interface LoginEgressGrant {
+  runtime: 'claude_code' | 'codex'
+}
+
+/**
  * The credentials a remote sandbox's outbound handlers inject — stored in the sandbox's Durable
- * Object storage on the host, never in the container. `setEgressGrant` REPLACES each half it
- * carries and keeps the other (git is granted before the clone and each push, the model before
- * each turn); it is cleared when the sandbox is destroyed or its container stops. No half → the
- * handler refuses with a 403.
+ * Object storage on the host, never in the container — one PART per kind of traffic. No part for
+ * a host → its handler refuses with a 403. Cleared whole when the sandbox is destroyed or its
+ * container stops.
  */
 export interface EgressGrant {
+  /** git (`github.com`): before the clone and each push. */
   git?: GitEgressGrant
-  model?: ModelEgressGrant
+  /** Claude Code's model calls: before each turn. */
+  anthropic?: AnthropicEgressGrant
+  /** Codex on Launch's key: before each turn. */
+  openai?: OpenAiEgressGrant
+  /** Codex on a ChatGPT plan: for the length of a turn. */
+  chatgpt?: ChatGptEgressGrant
+  /** A login sandbox's sign-in. */
+  login?: LoginEgressGrant
+}
+
+/** Every part, in one list — what the host merges. */
+export const EGRESS_GRANT_PARTS = ['git', 'anthropic', 'openai', 'chatgpt', 'login'] as const
+
+/**
+ * What `setEgressGrant` takes: per part, a value REPLACES the stored one, `null` REMOVES it, and an
+ * absent part is kept as it was.
+ */
+export type EgressGrantUpdate = { [K in keyof EgressGrant]?: EgressGrant[K] | null }
+
+/** `current` with `update` applied (see {@link EgressGrantUpdate}). */
+export function mergeEgressGrant(current: EgressGrant, update: EgressGrantUpdate): EgressGrant {
+  const next: Record<string, unknown> = {}
+  for (const part of EGRESS_GRANT_PARTS) {
+    const value = part in update ? update[part] : current[part]
+    if (value) next[part] = value
+  }
+  return next as EgressGrant
 }
 
 // ---- the RPC surface ---------------------------------------------------------------------------
@@ -120,8 +181,8 @@ export interface SandboxHostRpc {
   backup(name: string, opts: SandboxBackupOptions): Promise<HostResult<SandboxBackup>>
   restore(name: string, backup: SandboxBackup): Promise<HostResult<null>>
   deleteBackup(name: string, backup: SandboxBackup): Promise<HostResult<null>>
-  /** Store (merge) the sandbox's {@link EgressGrant}. Idempotent. */
-  setEgressGrant(name: string, grant: EgressGrant): Promise<HostResult<null>>
+  /** Store (merge, {@link EgressGrantUpdate}) the sandbox's {@link EgressGrant}. Idempotent. */
+  setEgressGrant(name: string, grant: EgressGrantUpdate): Promise<HostResult<null>>
   /** Forget the sandbox's grant: its handlers refuse everything until the next one. */
   clearEgressGrant(name: string): Promise<HostResult<null>>
 }

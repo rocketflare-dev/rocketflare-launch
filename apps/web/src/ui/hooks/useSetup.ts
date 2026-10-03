@@ -10,6 +10,7 @@ import {
   kitTagsResponseSchema,
   publicUrlCheckResponseSchema,
   type SessionAgentsUpdate,
+  type SessionSandboxUpdate,
   type SetupSettingsUpdate,
   setupCheckResponseSchema,
   setupOverviewSchema,
@@ -120,6 +121,16 @@ export function useUpdateSessionAgents() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentAccounts.list })
       return invalidate()
     },
+  })
+}
+
+/** Where new sessions' containers run (`launch_settings.session_sandbox_host`). */
+export function useUpdateSessionSandbox() {
+  const invalidate = useInvalidateSetup()
+  return useMutation({
+    mutationFn: (body: SessionSandboxUpdate) =>
+      api.put(`${BASE}/session-sandbox`, body, { schema: setupOverviewSchema }),
+    onSuccess: () => invalidate(),
   })
 }
 

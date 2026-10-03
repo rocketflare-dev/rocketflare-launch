@@ -27,8 +27,8 @@ export const MODEL_KEY_PLACEHOLDER = 'launch-session-placeholder'
 
 /** No key is configured: a turn cannot start (the same sentence the model proxy answers). */
 export class ModelKeyMissingError extends Error {
-  constructor() {
-    super('Launch has no Anthropic key configured')
+  constructor(provider: 'anthropic' | 'openai' = 'anthropic') {
+    super(`Launch has no ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} key configured`)
     this.name = 'ModelKeyMissingError'
   }
 }

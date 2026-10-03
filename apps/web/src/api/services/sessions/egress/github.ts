@@ -30,7 +30,7 @@
  *
  * Steps 2, 3, 5 and 6 are `forwardGit` (`forward-git.ts`, no database), which the sandbox host's
  * `HostedSessionSandbox` runs too, over the egress grant local Launch stores on it instead of
- * this lookup (`SESSION_SANDBOX_HOST=remote`, `egress/host.ts`).
+ * this lookup (a session on the remote sandbox host, `egress/host.ts`).
  *
  * **Pre-tenant by design**, like the model proxy: the container id is all the request carries, so
  * the lookup names no tenant and the tenant comes from the row (`unscoped-allowlist.test.ts`).

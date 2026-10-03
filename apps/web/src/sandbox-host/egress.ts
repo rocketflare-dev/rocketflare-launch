@@ -1,27 +1,39 @@
 /**
- * The sandbox host's OUTBOUND HANDLERS (`HostedSessionSandbox.outboundByHost`) — the same
- * injection Launch's own `SessionSandbox` does (`egress/github.ts`, `egress/anthropic.ts`), over
- * the {@link EgressGrant} local Launch pushed to the sandbox's Durable Object instead of a lookup
- * in Launch's database, which the host cannot reach (`SESSION_SANDBOX_HOST=remote`, the `host`
- * egress mode, `services/sessions/egress/host.ts`). The container holds no credential: git and
- * Claude Code send their requests bare (Claude Code with the placeholder key), and these handlers,
- * running in the host Worker's `ContainerProxy`, add the token or the key on the way out.
+ * The sandbox host's OUTBOUND HANDLERS (`HostedSessionSandbox.outboundByHost`) — the same rules
+ * Launch's own `SessionSandbox` applies (`egress/registry.ts`), over the {@link EgressGrant} local
+ * Launch pushed to the sandbox's Durable Object instead of a lookup in Launch's database, which the
+ * host cannot reach (a session on the `remote` sandbox host, the `host` egress mode,
+ * `services/sessions/egress/host.ts`). Every rule is the SAME function Launch's handlers call —
+ * `forward-git.ts`, `forward-model.ts`, `forward-openai.ts` — so the two cannot drift.
  *
  * - **Who is asking**: `ctx.containerId`, which the platform sets to the Durable Object's own id
  *   (`this.ctx.id.toString()` in `@cloudflare/containers` 0.3.7's `ContainerProxy` props) — never
  *   anything the sandbox sends. The handler resolves the object with `idFromString` and asks it
  *   for its grant over RPC (`getEgressGrant`); the handler runs in the proxy's own invocation, not
  *   inside the object, so the call is an ordinary one.
- * - **git** (`github.com`): `forwardGit` — only the grant's repo, a push only to its branch and
- *   never a delete, the token injected, a fresh token's 401/404 retried.
- * - **the model** (`api.anthropic.com`): `forwardModel` — only the two Messages paths and the
- *   grant's model, the sandbox's placeholder dropped and the real key set. NOT metered and no
- *   budget check here: the turn meters itself from Claude Code's output and is killed at its
- *   budget (`turn-meter.ts`).
- * - **No grant** (never set, or cleared when the sandbox was destroyed or its container stopped):
- *   a 403 in the same words Launch's proxies use for a container that is not a live session.
+ * - **git** (`github.com`, the `git` part): `forwardGit` — only the grant's repo, a push only to
+ *   its branch and never a delete, the token injected, a fresh token's 401/404 retried.
+ * - **Claude Code** (`api.anthropic.com`, the `anthropic` part): `forwardModel` — only the two
+ *   Messages paths and the grant's model; Launch's key as `x-api-key`, or a subscription token as
+ *   `Authorization: Bearer` with the OAuth beta flag, and then `GET /api/claude_code/*` is a 404.
+ * - **Codex on Launch's key** (`api.openai.com`, the `openai` part): `forwardOpenAi` — 426 for a
+ *   WebSocket, `POST /v1/responses` (+ `/compact`) on the grant's model and `GET /v1/models`, the
+ *   sandbox's placeholder dropped and the key set.
+ * - **Codex on a ChatGPT plan** (`chatgpt.com` and `auth.openai.com`, the `chatgpt` part, granted
+ *   for one turn): `forwardChatGpt` — 426, the Responses paths on the grant's model and the model
+ *   list, Codex's own Bearer passed through; `forwardCodexRefresh` — the token refresh only.
+ * - **A sign-in** (the `login` part): Claude's `POST platform.claude.com/v1/oauth/token` and `GET
+ *   api.anthropic.com/api/oauth/profile` (`forwardClaudeSignIn`), or Codex's device flow on
+ *   `auth.openai.com` (`forwardCodexSignIn`) — passed through untouched, and nothing else.
+ * - **No part for the host** (never granted, or cleared when the sandbox was destroyed or its
+ *   container stopped): a 403 in the same words Launch's proxies use.
  *
- * Imports only the two forwarding cores and the protocol — nothing of Launch's database or config.
+ * NOT here, because they need Launch's database: per-request metering and the budget (the turn
+ * meters itself from the CLI's own output and is killed at its budget, `turn-meter.ts`), marking a
+ * refused subscription `needs_login`, and resealing a rotated ChatGPT refresh token the moment it
+ * rotates (the turn's lease reads `auth.json` back afterwards and reseals it).
+ *
+ * Imports only the forwarding cores and the protocol — nothing of Launch's database or config.
  */
 import {
   type EgressContext,
@@ -29,7 +41,20 @@ import {
   isFreshToken,
   refuseGit,
 } from '../api/services/sessions/egress/forward-git'
-import { anthropicError, forwardModel } from '../api/services/sessions/egress/forward-model'
+import {
+  anthropicError,
+  forwardClaudeSignIn,
+  forwardModel,
+  type UpstreamFetch,
+} from '../api/services/sessions/egress/forward-model'
+import {
+  forwardChatGpt,
+  forwardCodexRefresh,
+  forwardCodexSignIn,
+  forwardOpenAi,
+  openAiError,
+  refuseWebSocket,
+} from '../api/services/sessions/egress/forward-openai'
 import type { EgressGrant } from '../api/services/sessions/sandbox-host/protocol'
 
 /** The grant of the sandbox whose container sent the request (null: none, or no such object). */
@@ -48,7 +73,7 @@ const defaultDeps = (): HostedEgressDeps => ({
 })
 
 /** The same words Launch's proxies use for a container that is not a live session. */
-const NO_GRANT = 'This sandbox is not a live Launch session'
+export const NO_GRANT = 'This sandbox is not a live Launch session'
 
 /** The grant, or null when the lookup fails (an unknown id is nobody, not a 500). */
 async function grantFor(lookup: GrantLookup, ctx: EgressContext): Promise<EgressGrant | null> {
@@ -57,6 +82,12 @@ async function grantFor(lookup: GrantLookup, ctx: EgressContext): Promise<Egress
   } catch {
     return null
   }
+}
+
+/** The upstream as the forwarding cores take it. */
+function upstreamOf(overrides: Partial<Pick<HostedEgressDeps, 'fetch'>>): UpstreamFetch {
+  const doFetch = overrides.fetch ?? ((r: Request) => fetch(r))
+  return { fetch: r => doFetch(r) }
 }
 
 /** `github.com`: git smart-HTTP to the grant's repo, keyed with the grant's token. */
@@ -79,19 +110,111 @@ export async function hostedGitHub(
   })
 }
 
-/** `api.anthropic.com`: the Messages API with the grant's model, keyed with the grant's key. */
+/**
+ * `api.anthropic.com`: the Messages API on the grant's model with the grant's credential — or, for
+ * a Claude sign-in, the account profile only.
+ */
 export async function hostedAnthropic(
   req: Request,
   lookup: GrantLookup,
   ctx: EgressContext,
   overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
 ): Promise<Response> {
-  const model = (await grantFor(lookup, ctx))?.model
+  const grant = await grantFor(lookup, ctx)
+  const upstream = upstreamOf(overrides)
+  if (grant?.login?.runtime === 'claude_code') {
+    return forwardClaudeSignIn(req, 'api.anthropic.com', { upstream })
+  }
+  const model = grant?.anthropic
   if (!model) return anthropicError(403, 'permission_error', NO_GRANT)
-  const doFetch = overrides.fetch ?? ((r: Request) => fetch(r))
   return forwardModel(req, {
-    key: model.key,
+    auth:
+      model.auth.kind === 'oauth'
+        ? { kind: 'oauth', token: model.auth.value }
+        : { kind: 'api_key', key: model.auth.value },
     model: model.model,
-    upstream: { fetch: r => doFetch(r) },
+    upstream,
   })
+}
+
+/** `platform.claude.com`: a Claude sign-in's token exchange, and nothing for anyone else. */
+export async function hostedClaudeSignIn(
+  req: Request,
+  lookup: GrantLookup,
+  ctx: EgressContext,
+  overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
+): Promise<Response> {
+  const grant = await grantFor(lookup, ctx)
+  if (grant?.login?.runtime !== 'claude_code') {
+    return anthropicError(403, 'permission_error', 'This sandbox is not a Launch sign-in')
+  }
+  return forwardClaudeSignIn(req, 'platform.claude.com', { upstream: upstreamOf(overrides) })
+}
+
+/** `api.openai.com`: Codex on Launch's key — the Responses API on the grant's model. */
+export async function hostedOpenAi(
+  req: Request,
+  lookup: GrantLookup,
+  ctx: EgressContext,
+  overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
+): Promise<Response> {
+  const upgrade = refuseWebSocket(req)
+  if (upgrade) return upgrade
+  const openai = (await grantFor(lookup, ctx))?.openai
+  if (!openai) {
+    return openAiError(
+      403,
+      'permission_error',
+      'This Launch session does not use Launch’s OpenAI key'
+    )
+  }
+  return forwardOpenAi(req, {
+    key: openai.key,
+    model: openai.model,
+    upstream: upstreamOf(overrides),
+  })
+}
+
+/** `chatgpt.com`: Codex on a ChatGPT plan, during a turn — the Responses API on the grant's model. */
+export async function hostedChatGpt(
+  req: Request,
+  lookup: GrantLookup,
+  ctx: EgressContext,
+  overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
+): Promise<Response> {
+  const upgrade = refuseWebSocket(req)
+  if (upgrade) return upgrade
+  const chatgpt = (await grantFor(lookup, ctx))?.chatgpt
+  if (!chatgpt) {
+    return openAiError(403, 'permission_error', 'No turn of this session is using the ChatGPT plan')
+  }
+  return forwardChatGpt(req, { model: chatgpt.model, upstream: upstreamOf(overrides) })
+}
+
+/**
+ * `auth.openai.com`: a Codex sign-in's device flow, or — a session on a ChatGPT plan, during a
+ * turn — its token refresh. Nothing else.
+ */
+export async function hostedOpenAiAuth(
+  req: Request,
+  lookup: GrantLookup,
+  ctx: EgressContext,
+  overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
+): Promise<Response> {
+  const upgrade = refuseWebSocket(req)
+  if (upgrade) return upgrade
+  const grant = await grantFor(lookup, ctx)
+  const upstream = upstreamOf(overrides)
+  if (grant?.login) {
+    if (grant.login.runtime !== 'codex') {
+      return openAiError(
+        403,
+        'permission_error',
+        `Launch sign-ins may not call ${new URL(req.url).pathname}`
+      )
+    }
+    return forwardCodexSignIn(req, { upstream })
+  }
+  if (grant?.chatgpt) return forwardCodexRefresh(req, { upstream })
+  return openAiError(403, 'permission_error', NO_GRANT)
 }

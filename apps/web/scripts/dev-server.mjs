@@ -25,17 +25,19 @@
  * killed.
  * `ps`/`lsof` only — no pidfile to go stale, no dependency to install.
  */
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readDevVars } from '../../../scripts/lib/bootstrap-lib.mjs'
 import { devPorts } from '../../../scripts/lib/dev-ports.mjs'
 import {
+  devSandboxPlan,
+  legacyRemoteRequested,
   REMOTE_DEV_CONFIG,
   remoteDevConfigText,
-  remoteDevWranglerArgs,
-  remoteSandboxEnabled,
+  SANDBOX_HOST_SERVICE,
+  whoamiLoggedIn,
 } from '../../../scripts/lib/dev-remote-sandbox.mjs'
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -340,21 +342,63 @@ function tunnelUrl(flags) {
   return running ? url : null
 }
 
+/** Run `cmd args` without a shell; `{ ok, output }`, never a throw (a missing binary is `ok: false`). */
+function probe(cmd, args, timeoutMs) {
+  return new Promise(resolve => {
+    execFile(
+      cmd,
+      args,
+      { cwd: WEB_DIR, timeout: timeoutMs, encoding: 'utf8', env: { ...process.env, CI: '1' } },
+      (err, stdout, stderr) => resolve({ ok: !err, output: `${stdout ?? ''}${stderr ?? ''}` })
+    )
+  })
+}
+
+/** Is Docker answering? (`wrangler dev` needs it to build and run the local `SessionSandbox`.) */
+async function dockerRunning() {
+  return (await probe('docker', ['info', '--format', '{{.ServerVersion}}'], 10_000)).ok
+}
+
 /**
- * `SESSION_SANDBOX_HOST=remote` in `.dev.vars`: write `wrangler.dev-remote.toml` (wrangler.toml
- * plus the `SANDBOX_HOST` remote service binding) and run wrangler on it without local containers
- * (`scripts/lib/dev-remote-sandbox.mjs`). Otherwise nothing: wrangler reads `wrangler.toml`.
+ * Can wrangler open the `SANDBOX_HOST` remote binding? Logged in (`wrangler whoami`), and the host
+ * Worker deployed in that account (`wrangler deployments list --name launch-sandbox-dev`). A
+ * `SANDBOX_HOST_STATUSES` value; `DEV_REMOTE_SANDBOX=0` skips both calls.
  */
-function remoteSandboxArgs() {
+async function sandboxHostStatus() {
+  if (process.env.DEV_REMOTE_SANDBOX === '0') return 'off'
+  const wrangler = path.join(WEB_DIR, 'node_modules/.bin/wrangler')
+  const who = await probe(wrangler, ['whoami'], 30_000)
+  if (!who.ok || !whoamiLoggedIn(who.output)) return 'not_logged_in'
+  const listed = await probe(
+    wrangler,
+    ['deployments', 'list', '--name', SANDBOX_HOST_SERVICE, '--json'],
+    30_000
+  )
+  return listed.ok ? 'ok' : 'not_deployed'
+}
+
+/**
+ * Both session sandbox hosts, whenever they can be had (`scripts/lib/dev-remote-sandbox.mjs`):
+ * local containers unless Docker is down, and the `SANDBOX_HOST` remote binding — through a
+ * generated `wrangler.dev-remote.toml` — unless wrangler cannot open it. Never fails the start:
+ * what is missing is reported here and disabled, with the reason, on the Coding agents tab.
+ */
+async function sessionSandboxArgs() {
+  const [docker, remote] = await Promise.all([dockerRunning(), sandboxHostStatus()])
+  const plan = devSandboxPlan({ docker, remote })
+  if (plan.writeRemoteConfig) {
+    const base = readFileSync(path.join(WEB_DIR, 'wrangler.toml'), 'utf8')
+    writeFileSync(path.join(WEB_DIR, REMOTE_DEV_CONFIG), remoteDevConfigText(base))
+  }
+  for (const line of plan.lines) process.stdout.write(`${COLOR.dim}  ${line}${COLOR.reset}\n`)
   const file = path.join(WEB_DIR, '.dev.vars')
   const devVars = existsSync(file) ? readDevVars(readFileSync(file, 'utf8')) : {}
-  if (!remoteSandboxEnabled(devVars)) return []
-  const base = readFileSync(path.join(WEB_DIR, 'wrangler.toml'), 'utf8')
-  writeFileSync(path.join(WEB_DIR, REMOTE_DEV_CONFIG), remoteDevConfigText(base))
-  process.stdout.write(
-    `${COLOR.dim}  sessions: real Cloudflare containers (SESSION_SANDBOX_HOST=remote, ${REMOTE_DEV_CONFIG})${COLOR.reset}\n`
-  )
-  return remoteDevWranglerArgs()
+  if (legacyRemoteRequested(devVars)) {
+    process.stdout.write(
+      `${COLOR.dim}  sessions: .dev.vars still says SESSION_SANDBOX_HOST=remote — read as the Session sandbox setting's starting value; choose on Settings → Platform → Coding agents and delete the line${COLOR.reset}\n`
+    )
+  }
+  return plan.args
 }
 
 async function start({ verbose }) {
@@ -484,15 +528,10 @@ async function start({ verbose }) {
   process.on('SIGINT', () => void shutdown(0))
   process.on('SIGTERM', () => void shutdown(0))
 
+  const sandboxArgs = await sessionSandboxArgs()
   phase()
   const apiVars = publicUrl ? ['--var', `APP_URL:${publicUrl}`] : []
-  launch('api', 'wrangler', [
-    'dev',
-    ...remoteSandboxArgs(),
-    '--port',
-    String(DEV_PORTS.api),
-    ...apiVars,
-  ])
+  launch('api', 'wrangler', ['dev', ...sandboxArgs, '--port', String(DEV_PORTS.api), ...apiVars])
   launch('ui', 'vite', [])
 }
 
