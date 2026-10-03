@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Home is bolder and full width.** Each section has a real heading, a count and its actions on
+  the right. The apps are large cards in a grid (up to four across), each led by the app's
+  screenshot — or a large initial — with its name, what needs a look, and the Live and Staging
+  versions; the whole card opens the app. "Waiting on you" lists its requests on one panel;
+  nothing waiting stays one quiet line.
 - **App thumbnails.** After a deploy goes live, Launch takes a screenshot of the app's root URL in
   the background (Cloudflare Browser Rendering, 1280×800, WebP) and shows it beside the app on
   Home, in the catalogue and in the app header — Live's, else Staging's, else the app's initial.

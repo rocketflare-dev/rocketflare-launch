@@ -480,20 +480,28 @@ A `CUSTOM kit.notice` renders
 ## Home
 
 - **`/` is an overview built from small section components** (`pages/home/`), each behind the same
-  guard as the page it summarises, so a richer widget is one more section: `ApprovalsWaitingSection`
-  (`useApprovals({ box: 'mine', limit: 5 })` — the inbox's "Waiting on me", the set the nav badge
-  counts — rows worded by `approvalSummary` / `requesterName`; none waiting is ONE quiet line, no
-  heading) and `AppsSection` (`useApps()` only — never a request per app; one row each: thumbnail
-  (`pages/apps/components/AppThumbnail.tsx`, also the catalogue's and the app header's — the
-  screenshot or the app's initial in a fixed 16:10 box) and name →
-  `appPath`, Live's `HealthDot` + version, Staging's version, one attention word; capped at 8 with
+  guard as the page it summarises, so a richer widget is one more section. The page spans the
+  whole main area (no max-width). Each section is `HomeSection` — an `h2` (`text-xl`), a muted
+  tabular count and its actions on the right — over content that brings its OWN surface, so there
+  is one level only: `ApprovalsWaitingSection` (`useApprovals({ box: 'mine', limit: 5 })` — the
+  inbox's "Waiting on me", the set the nav badge counts — "Waiting on you" + count, rows worded by
+  `approvalSummary` / `requesterName` on one `surface-panel`; none waiting is ONE compact panel,
+  "Nothing waiting on you." + "All approvals →", no heading) and `AppsSection` (`useApps()` only —
+  never a request per app; a grid of large cards, 1 → `sm` 2 → `lg` 3 → `2xl` 4 columns, each card
+  a `surface-panel` that is ONE `<Link>` to `appPath`, named by the app (`aria-labelledby`, the rest
+  is its `aria-describedby`): `AppThumbnail size="fill"` (`pages/apps/components/AppThumbnail.tsx`,
+  also the catalogue's and the app header's — the screenshot or the app's initial at 16:10; `fill`
+  is the container's width, a large initial, only a bottom edge, and a slight scale on the card's
+  hover/focus), the name, one attention word in its state colour, then Live's `HealthDot` +
+  version and Staging's version in a small `dl`; capped at 8 (two rows of four) with
   "All N apps →"; "New app" opens `CreateAppModal` for `manage App`, as a plain button — Home has no
-  hero). What a row SAYS is the pure `home/homeModel.ts` (`appAttention`, `runningVersion`,
+  hero). No panel wraps the cards — they are the surface. What a card SAYS is the pure
+  `home/homeModel.ts` (`appAttention`, `runningVersion`,
   `homeAppRows`; `tests/config/home-model.test.ts`) over `appPageModel`'s `ENV_LABEL` /
   `notDeployedYet` and `promotionModel`'s `v`. The version is what the environment's health probe
   last reported (`healthVersion`) — the catalogue row carries no `lastDeployVersion` and no
   releases, so a release that failed before any deploy shows on the app page, not here.
-  `UiPlugin.homeLinks` render last as one line of links. Tests: `home`.
+  `UiPlugin.homeLinks` render last as one line of links. Tests: `home`, `app-thumbnails`.
 
 ## Shared config and grants (Launch P5) — "Secrets" in the UI
 

@@ -107,6 +107,20 @@ describe('AppThumbnail', () => {
     expect(screen.getByTestId('app-thumbnail').querySelector('img')).toBeNull()
   })
 
+  it('fills its container for a card: full width, the bottom edge only, a large initial', () => {
+    const { container } = render(
+      <AppThumbnail app={{ displayName: 'Atlas', thumbnail: parsed }} size="fill" />
+    )
+    const box = screen.getByTestId('app-thumbnail')
+    expect(box.className).toMatch(/\bw-full\b/)
+    expect(box.className).toContain('aspect-[16/10]')
+    expect(box.className).toContain('border-b')
+    expect(box.className).not.toMatch(/\brounded\b/)
+    fireEvent.error(container.querySelector('img') as HTMLImageElement)
+    expect(screen.getByTestId('app-thumbnail-placeholder')).toHaveTextContent('A')
+    expect(box.className).toMatch(/\btext-6xl\b/)
+  })
+
   it('falls back to the initial when the picture fails to load', () => {
     const { container } = render(
       <AppThumbnail app={{ displayName: 'Atlas', thumbnail: parsed }} size="md" />
@@ -149,9 +163,10 @@ describe('where thumbnails appear', () => {
     unmount()
 
     renderWithProviders(<AppsSection />, { session: member() })
-    const rows = await screen.findAllByTestId('home-app-row')
-    expect(rows).toHaveLength(2)
-    const expenses = rows.find(r => within(r).queryByText('Expense Tracker')) as HTMLElement
+    const cards = await screen.findAllByTestId('home-app-card')
+    expect(cards).toHaveLength(2)
+    const expenses = screen.getByRole('link', { name: 'Expense Tracker' })
+    expect(cards).toContain(expenses)
     expect(within(expenses).getByTestId('app-thumbnail').querySelector('img')).toHaveAttribute(
       'src',
       THUMB_URL

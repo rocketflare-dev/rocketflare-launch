@@ -10,7 +10,9 @@ reference implementation, and a new screen follows it.
   hairline divider (`divide-y divide-base-300`, `border-y border-base-300`). A `SectionPanel` is
   for a self-contained block at the top level of a page, never inside another one.
 - **Lists are rows or tables, not tiles.** Environments, releases, sessions and activity are one
-  row each, so they scan top to bottom and line up.
+  row each, so they scan top to bottom and line up. The exception is a list whose items are
+  best recognised by sight: Home's apps are cards led by each app's screenshot, in a grid, each
+  card one link, with the cards themselves the surface (no panel around them).
 - **No left-border accent stripes** (`border-l-4 border-l-*`). State is a small dot and a word
   (`.status-badge`, `HealthDot`), not a coloured edge.
 

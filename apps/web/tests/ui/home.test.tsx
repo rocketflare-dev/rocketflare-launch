@@ -1,7 +1,9 @@
 /**
- * Home: the overview. The approvals waiting on the reader (rows linking to each request, or one
- * quiet line when there are none), the apps — one row each with Live's version and health, Staging's
- * version and an attention word — "New app" only for whoever may create one, and no request per app.
+ * Home: the overview. The approvals waiting on the reader (a "Waiting on you" section with a count
+ * and rows linking to each request, or one compact quiet line when there are none), the apps — a
+ * grid of large cards, each one link to the app, with its screenshot or initial, Live's version and
+ * health, Staging's version and an attention word — "New app" only for whoever may create one, and
+ * no request per app.
  */
 import { HEALTH_NOT_DEPLOYED_ERROR } from '@launch/shared/launch-apps'
 import { screen, within } from '@testing-library/react'
@@ -78,6 +80,8 @@ describe('Home — approvals waiting on you', () => {
     const fetchMock = stub({ approvals: [approvalRow()] })
     renderWithProviders(<Home />, { session: makeSession() })
     const list = await screen.findByRole('list', { name: 'Approvals waiting on you' })
+    expect(screen.getByRole('heading', { level: 2, name: 'Waiting on you' })).toBeInTheDocument()
+    expect(screen.getByTestId('home-approvals-count')).toHaveTextContent('1')
     const link = within(list).getByRole('link', { name: 'Deploy Expenses 1.3.0 to production' })
     expect(link).toHaveAttribute('href', `/approvals/${APPROVAL_ID}`)
     expect(within(list).getByText(/Bob Builder asked/)).toBeInTheDocument()
@@ -92,34 +96,44 @@ describe('Home — approvals waiting on you', () => {
     expect(String(call?.[0])).toContain('box=mine')
   })
 
-  it('is one quiet line when nothing is waiting', async () => {
+  it('is one compact quiet line when nothing is waiting, with the inbox one link away', async () => {
     stub()
     renderWithProviders(<Home />, { session: makeSession() })
-    expect(await screen.findByText(/Nothing waiting on you\./)).toBeInTheDocument()
+    const none = await screen.findByTestId('home-approvals-none')
+    expect(none).toHaveTextContent('Nothing waiting on you.')
+    expect(within(none).getByRole('link', { name: 'All approvals →' })).toHaveAttribute(
+      'href',
+      '/approvals'
+    )
     expect(screen.queryByRole('list', { name: 'Approvals waiting on you' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Waiting on you' })).not.toBeInTheDocument()
   })
 })
 
 describe('Home — apps', () => {
-  it('shows one row per app: Live version and health, Staging version, and what needs a look', async () => {
+  const cards = async () => {
+    const grid = await screen.findByRole('list', { name: 'Apps' })
+    return within(grid).getAllByTestId('home-app-card')
+  }
+
+  it('shows one card per app, each one link to the app with its versions and what needs a look', async () => {
     const fetchMock = stub()
     renderWithProviders(<Home />, { session: makeSession() })
-    const table = await screen.findByRole('table', { name: 'Apps' })
-    const rows = within(table).getAllByTestId('home-app-row')
-    expect(rows).toHaveLength(2)
+    const all = await cards()
+    expect(all).toHaveLength(2)
+    expect(screen.getByRole('heading', { level: 2, name: 'Apps' })).toBeInTheDocument()
+    expect(screen.getByTestId('home-apps-count')).toHaveTextContent('2')
     // "not live yet" is quiet, so it does not jump the queue: by name.
-    const [billing, expenses] = rows as [HTMLElement, HTMLElement]
-    expect(within(billing).getByRole('link', { name: 'Billing' })).toHaveAttribute(
-      'href',
-      '/apps/billing'
-    )
-    expect(within(billing).getByText('not live yet')).toBeInTheDocument()
-    expect(within(expenses).getByRole('link', { name: 'Expenses' })).toHaveAttribute(
-      'href',
-      '/apps/expenses'
-    )
-    expect(within(expenses).getByText('v1.4.2')).toBeInTheDocument()
+    const [billing, expenses] = all as [HTMLElement, HTMLElement]
+    // The whole card is the link, named by the app alone.
+    expect(billing.tagName).toBe('A')
+    expect(screen.getByRole('link', { name: 'Billing' })).toBe(billing)
+    expect(billing).toHaveAttribute('href', '/apps/billing')
+    expect(within(billing).getByText('not live yet')).toHaveClass('text-muted')
+    expect(screen.getByRole('link', { name: 'Expenses' })).toBe(expenses)
+    expect(expenses).toHaveAttribute('href', '/apps/expenses')
+    expect(expenses).toHaveAccessibleDescription(/Live.*v1\.4\.2.*Staging.*v1\.5\.0/)
+    expect(within(expenses).getByText('v1.4.2')).toHaveClass('font-mono', 'tabular-nums')
     expect(within(expenses).getByText('v1.5.0')).toBeInTheDocument()
     expect(within(expenses).getByRole('img', { name: 'Up' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'All apps →' })).toHaveAttribute('href', '/apps')
@@ -128,7 +142,29 @@ describe('Home — apps', () => {
     expect(paths.filter(p => p.startsWith('/api/apps/'))).toEqual([])
   })
 
-  it('puts a failed deploy first and says so', async () => {
+  it('leads each card with the screenshot filling its width, or a large initial without one', async () => {
+    const url = '/api/apps/cccccccc-cccc-4ccc-8ccc-cccccccccccc/thumbnail?v=1'
+    stub({
+      apps: [
+        catalogueApp({
+          thumbnail: { url, capturedAt: checked, env: 'production', version: '1.4.2' },
+        }),
+        BILLING,
+      ],
+    })
+    renderWithProviders(<Home />, { session: makeSession() })
+    const [billing, expenses] = (await cards()) as [HTMLElement, HTMLElement]
+    const shot = within(expenses).getByTestId('app-thumbnail')
+    expect(shot.className).toMatch(/\bw-full\b/)
+    expect(shot.className).toContain('aspect-[16/10]')
+    expect(shot.querySelector('img')).toHaveAttribute('src', url)
+    const initial = within(billing).getByTestId('app-thumbnail-placeholder')
+    expect(initial).toHaveTextContent('B')
+    expect(within(billing).getByTestId('app-thumbnail').className).toMatch(/\btext-6xl\b/)
+    expect(within(billing).getByTestId('app-thumbnail').className).toContain('bg-base-200')
+  })
+
+  it('puts a failed deploy first and says so, in the error colour', async () => {
     stub({
       apps: [
         catalogueApp(),
@@ -158,10 +194,24 @@ describe('Home — apps', () => {
       ],
     })
     renderWithProviders(<Home />, { session: makeSession() })
-    const rows = within(await screen.findByRole('table', { name: 'Apps' })).getAllByTestId(
-      'home-app-row'
+    const [first] = (await cards()) as [HTMLElement]
+    expect(first).toHaveAttribute('href', '/apps/payroll')
+    expect(within(first).getByText('Live deploy failed')).toHaveClass('text-error')
+  })
+
+  it('caps the grid at eight cards and names the total on All apps', async () => {
+    const apps = Array.from({ length: 10 }, (_, i) =>
+      catalogueApp({
+        id: `cccccccc-cccc-4ccc-8ccc-cccccccccc${String(i).padStart(2, '0')}`,
+        slug: `app-${i}`,
+        displayName: `App ${String.fromCharCode(65 + i)}`,
+      })
     )
-    expect(within(rows[0] as HTMLElement).getByText('Live deploy failed')).toBeInTheDocument()
+    stub({ apps })
+    renderWithProviders(<Home />, { session: makeSession() })
+    expect(await cards()).toHaveLength(8)
+    expect(screen.getByTestId('home-apps-count')).toHaveTextContent('10')
+    expect(screen.getByRole('link', { name: 'All 10 apps →' })).toHaveAttribute('href', '/apps')
   })
 
   it('offers New app to an admin, beside All apps', async () => {
@@ -173,7 +223,7 @@ describe('Home — apps', () => {
   it('a member reads the overview without the create action', async () => {
     stub({ approvals: [approvalRow()] })
     renderWithProviders(<Home />, { session: member() })
-    expect(await screen.findByRole('table', { name: 'Apps' })).toBeInTheDocument()
+    expect(await cards()).toHaveLength(2)
     expect(screen.queryByRole('button', { name: /New app/ })).not.toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Approvals waiting on you' })).toBeInTheDocument()
   })
@@ -181,7 +231,7 @@ describe('Home — apps', () => {
   it('never links the hidden kit-ai surfaces', async () => {
     stub()
     renderWithProviders(<Home />, { session: makeSession() })
-    await screen.findByRole('table', { name: 'Apps' })
+    await cards()
     for (const href of ['/chat', '/agents', '/documents', '/search']) {
       expect(document.querySelector(`a[href^="${href}"]`)).toBeNull()
     }

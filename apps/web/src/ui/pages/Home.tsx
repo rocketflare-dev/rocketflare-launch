@@ -3,7 +3,8 @@
  * approvals they can decide, then the apps with their Live and Staging versions and one word where
  * something needs a look. Each block is its own small section component (`pages/home/`), each
  * behind the same guard as the page it summarises, so a richer widget is one more section rather
- * than a rewrite. No hero, no stat tiles (docs/DESIGN.md); the full lists are one link away.
+ * than a rewrite. It spans the whole main area. No hero, no stat tiles (docs/DESIGN.md); the full
+ * lists are one link away.
  *
  * Lazy in `App.tsx` like every other page: its sections reuse the app page's and the inbox's
  * models, which the eager shell should not carry.
@@ -55,7 +56,7 @@ export default function Home() {
   const { tenant } = useAuth()
   const canAccess = useNavGuard()
   return (
-    <div className="max-w-5xl space-y-10">
+    <div className="w-full space-y-10">
       <PageHeader title={tenant?.name ?? 'Home'} className="mb-0" />
       {canAccess(APPROVALS_GUARD) && <ApprovalsWaitingSection />}
       {canAccess(APPS_GUARD) && <AppsSection />}
