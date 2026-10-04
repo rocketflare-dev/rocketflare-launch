@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Kit upgrades for one app.** Moving the template pin (Setup → Kit version) now flags every app
+  below it: the catalogue, Settings and the app's Overview say "Requires upgrade → X.Y.Z". The
+  Overview's Kit section (and `launch apps upgrade <app>`) starts a coding session that runs the
+  kit's `/rf-upgrade` to the pinned tag — the session may fetch the public kit, read-only — and
+  ships it on its own when the first turn ends cleanly (`LAUNCH-UPGRADE: DONE`, no question, the
+  checkout's `.rocketflare.json` at the target); anything else waits for the owner in the session.
+  Every Release now re-reads `.rocketflare.json` at its tag, so the app's recorded kit version
+  follows upgrades — Launch's or anyone's — and `app_upgrades` keeps the history.
 - **A ship or landing whose Workflow died is restarted.** A `wrangler dev` reload during a
   landing's CI wait left a session `shipping` at stage `ci` for ever, its PR green and never
   merged. Ship, landing and Phase B steps now beat `last_activity_at` while they run, and the

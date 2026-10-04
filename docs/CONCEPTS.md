@@ -507,7 +507,8 @@ printing each stage, and exits 1 on a reopen, a stall, or a session ended while 
 ls|create|promote [--wait]|retry|cancel|rollback` are the P4 inbox and shipping (§18.19; `retry` is the
 stage-aware Retry, `cancel` stops a release's run in flight, `rollback` asks to put an earlier
 release back on production, and `ls` says how far main is ahead of the latest tag, §18.17); `audit verify|export` the
-hash-chained log (§18.18). Exit codes: 0 ok · 1 error · 2 not logged in ·
+hash-chained log (§18.18); `apps show <app>` names the kit against the template pin and `apps
+upgrade <app>` starts its kit upgrade session (§18.23). Exit codes: 0 ok · 1 error · 2 not logged in ·
 3 forbidden.
 No command prints a full key. Plugins register top-level commands named after their id.
 Detail: `.claude/rules/cli.md`.
@@ -785,16 +786,17 @@ coding sessions on them (§18.9–18.14, `docs/plans/p3-sessions.md`, `docs/SESS
 from P4 a second person approves what needs one, releases ship through a production gate, and the
 audit log is hash-chained (§18.15–18.19, `docs/plans/p4-approvals.md`); from P5 apps hold shared
 config through approved grants (§18.20, `docs/plans/p5-grants.md`); every app has a thumbnail
-taken after each deploy goes live (§18.21); and a session's coding agent and whose account it bills
-sit behind one runtime seam (§18.22).
+taken after each deploy goes live (§18.21); a session's coding agent and whose account it bills
+sit behind one runtime seam (§18.22); and an app behind the template pin "requires upgrade" and
+upgrades its kit in a session that ships itself (§18.23, the single-app half of P6 6c).
 Services live in `api/services/launch/` and `api/services/oidc/`; contracts in
-`packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases,grants}.ts`.
+`packages/shared/src/launch-{apps,oidc,setup,audit,pipeline,sessions,approvals,releases,grants,upgrades}.ts`.
 
 **Tables** (`apps`, `app_owners`, `app_environments`, `app_health_checks`, `app_operations`,
 `oidc_clients`, `oidc_client_grants`, `oidc_codes`, `audit_events`, and from P4 `approval_requests`,
 `approval_decisions`, `approval_policies`, `app_releases`, `audit_chain`, and from P5
 `shared_resources`, `shared_resource_values`, `app_grants`, `grant_pushes`, `grant_push_targets`,
-`app_config_scans`, and §18.22's `agent_credentials`, `agent_logins`) are
+`app_config_scans`, §18.22's `agent_credentials`, `agent_logins`, and §18.23's `app_upgrades`) are
 tenant tables like any other, scoped to the single company tenant. Three are platform
 infrastructure with no tenant and are revoked from the app role: `oidc_signing_keys`,
 `admin_credentials`, `launch_settings`. Teams are the kit's `groups` (D29) — there is no `teams`.
@@ -1010,7 +1012,9 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   them, 502 `branch_protection_github_failed` otherwise. No new App permission: `administration`
   is already required (environments).
 
-**Known gaps:** no Cloudflare verification of the recorded resource ids; no re-sync from the repo after import; health is
+**Known gaps:** no Cloudflare verification of the recorded resource ids; the kit version is re-read
+at every Release (§18.23), but nothing else is re-synced from the repo after import (the tomls'
+resource ids, the app's names); health is
 polled, not pushed, and the cron does not run under `pnpm dev` (use "Check now" or
 `/cdn-cgi/local/scheduled`); no alerting on a status change beyond the audit row. Ship settings:
 deleting a team a `groups` review names is not refused (`group_in_use` does not count it) — the
@@ -1297,7 +1301,10 @@ any branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
 installed there; no App → 409 `github_app_not_configured`): a tag through `GET …/git/ref/tags/{tag}`,
 an annotated tag dereferenced through `GET …/git/tags/{sha}`; a commit through
 `GET …/commits/{ref}`, which also proves it is in that repo. A ref the repo lacks is 422
-`kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). "Reset to default" is
+`kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). Moving the pin is also
+what "the kit bumped" means for the apps that already exist: every app whose `template_version` is
+below the pin's tag reads "Requires upgrade → X.Y.Z" at once (computed on read, §18.23); a commit
+pin flags nothing. "Reset to default" is
 `DELETE …/template-pin` (the row deleted, so the default moves with Launch again). Both audit
 `setting.changed` with the pin before and after. A commit pin shows "Unreleased commit — for
 development".
@@ -3367,3 +3374,110 @@ local experiment, not observed on a deployed Worker.
 - *A sign-in on the remote sandbox host* (development only) boots its login sandbox there, granted
   exactly its runtime's passthrough (`login`, §18.10) — proven over the `FakeSandbox` and the
   host's handlers in unit tests, never through a real host.
+
+### 18.23 Kit upgrades (one app)
+
+The single-app half of P6 slice 6c (`docs/plans/p6-fleet.md` §1 items 1–6): the kit moves, the apps
+behind it say so, one click upgrades one, and the next Release records it. "Upgrade all" (the
+fleet run) is the other half and is not built.
+
+**The target is the template pin** (§18.6), never the kit's latest tag: an app **requires upgrade**
+when `apps.template_version` is semver-below the pin's tag (`kitVersionBehind`,
+`@launch/shared/launch-upgrades`; a leading `v` is ignored). It is computed on READ
+(`services/launch/upgrades.ts` `kitStatuses`: the pin read once per request, the open upgrades in
+one query), so moving the pin flags every app behind it with no cron; a commit pin, or an app with
+no recorded version, is never behind. The app summary and detail carry `kit` — `{ current, target,
+behind, openUpgrade, notesUrl }`, `notesUrl` being the kit's `docs/upgrades/<version>.md` at the
+tag. The catalogue and Settings → General say **"Requires upgrade → 0.16.1"** in plain text beside
+the kit version; the Overview's **Kit** section (`UpgradeCard`) shows while the app is behind or an
+upgrade is open.
+
+**`app_upgrades` is Launch's history of upgrades**: one row per attempt — `from_version`,
+`to_version`, `status` (`queued · running · pr_open · needs_attention · released · failed ·
+cancelled`, text typed by `APP_UPGRADE_STATUSES`), the session, the PR, a sentence in `error`,
+who asked. `app_upgrades_open_idx` — partial unique `(app_id, target_kind, coalesce(plugin_id,
+''))` over `OPEN_APP_UPGRADE_STATUSES`, rendered from the shared list — keeps one open upgrade per
+app. Every status write is a compare-and-set on the statuses it may move from, and is audited
+(`app.upgrade.started|needs_attention|pr_opened|released|failed|cancelled`).
+
+**Starting one** — `POST /api/apps/:id/upgrade` (the app's owners and admins who may start a
+session; `routes/app-upgrades.ts`), the Overview's Upgrade, or `launch apps upgrade <app>`. 409s
+before any write: `app_archived`, `app_has_no_repo`, `upgrade_no_pin_tag`, `upgrade_not_behind`,
+`upgrade_open` (with the open one's id and status). Then a `running` row and a coding session of
+kind **`upgrade`** (`session_kind` gained it; `sessions.upgrade_id`, `sessions.auto_ship`) whose
+first message is the adapter's **`upgradePrompt`** (`rocketflare/upgrade-prompt.ts`), run as its
+first turn the moment it is ready (§18.9). Every refusal a session start has (`session_limit`,
+`session_budget_exhausted`, `sessions_paused`…) passes through unchanged and removes the row —
+nothing started. An upgrade session is a coding session in every other respect: it counts against
+`maxConcurrentPerApp` and the app's month, it is listed with the app's sessions, and its branch is
+deleted at cleanup (`CODING_SESSION_KINDS`).
+
+**The prompt** drives `/rf-upgrade --to <tag>`, one commit per kit release, with the rules an
+unattended run needs on top of the skill's: never `--force`, never `--apply-deletes` or a kit
+deletion, never recreate a file under an absent surface, never hand-edit `.rocketflare.json`, never
+a resource id in a toml, no plugin upgrades, no full gate (Launch runs it), and **no question** —
+wherever the skill would ask (exit 6, an unresolvable reject at exit 4, a release-range decision, a
+manual step), it stops and explains. It must end its final answer with exactly one line:
+`LAUNCH-UPGRADE: DONE` or `LAUNCH-UPGRADE: STOPPED`.
+
+**Auto-ship — whether the first turn "ended cleanly"** (`steps.ts` `autoShipAfterTurn`, the pure
+`upgrades.ts` `autoShipVerdict`). The decision is made once, after the first turn whose message
+actually ran (a budget stop or a container lost before the turn ran leaves the message waiting, and
+the turn that later runs it decides), and `auto_ship` is cleared either way by a compare-and-set.
+It ships — `requested_action = ship` on the `ready` row, which the loop's next `inspect` starts at
+once — only on POSITIVE evidence, every piece of it:
+
+1. the turn completed with a `success` result line that is not flagged an error (not failed,
+   interrupted, timed out, rejected or out of turns — `TurnOutcome.result`, the end of the final
+   answer carried as a flag-sized tail);
+2. its final answer's last `LAUNCH-UPGRADE:` line says `DONE` (`upgradeResultOf`), and no
+   `tool.start` of that turn named `AskUserQuestion`;
+3. the workspace changed (`workspaceChanged`, the checkpoint's own check);
+4. the checkout's `.rocketflare.json` says the target version (read in the sandbox) — the upgrade
+   script writes it last, and only after a clean apply, so this is the checkout's word, not the
+   agent's.
+
+**A turn that ends with a question cannot pass**: it has no `DONE` line (a question is either a
+plain answer or an `AskUserQuestion` call, and both fail rule 2), and an agent that says `DONE`
+anyway still fails rule 4 unless the apply finished. There is no reliable "ended asking" signal in
+Claude Code's stream to detect, so Launch requires the opposite instead. Anything else marks the
+upgrade **`needs_attention`** with the reason; a `status` session event (`reason:
+upgrade.needs_attention` / `upgrade.auto_ship`) puts Launch's decision in the chat, and the owner
+carries on and ships as usual. A ship that settles with no PR (a red gate, exhausted fix turns)
+marks a `running` upgrade `needs_attention` too. The ship itself is unchanged (§18.13): Launch's
+gate, then the PR. The gate's kit probe reads the CHECKOUT, so an upgrade from a kit too old for
+the gate is gated by the new kit it just applied.
+
+**Following it**: the PR opening (`ship.ts` `openShipPullRequest`) moves it to `pr_open` with the
+number and URL; the session's cleanup settles one that never opened a PR — `failed` when the
+session failed, `cancelled` when it ended. In `staging` ship mode the landing merges and cuts a
+patch Release (§18.17); in `pr` mode a person merges and releases.
+
+**Recording the version** (`releases/release.ts`, beside the config scan at the tag): every
+Release reads `.rocketflare.json` AT ITS TAG (`recordKitVersionAtRelease`, a `contents: read`
+token for the one repo), updates `template_version` / `template_commit` when they differ (audit
+`app.kit_version_changed` with before and after), and settles every open kit upgrade that version
+reaches as `released`. A missing or unreadable manifest changes nothing and a GitHub failure is
+logged — neither fails the Release. So an upgrade done outside Launch is recorded at its first
+Release too.
+
+**Fetching the kit** (§18.10's git proxy, `egress/forward-git.ts`): `pnpm kit:upgrade` clones
+`kit.repo` into `.upgrade/kit.git` over `github.com`, which a session could never reach. A session of
+kind `upgrade` — and only that kind — may also FETCH the template pin's repo:
+`info/refs?service=git-upload-pack` and `POST …/git-upload-pack`, forwarded to `https://github.com`
+with **no token minted and no `Authorization` sent** (the kit is public; whatever the sandbox sent
+is dropped like every other header). Its receive-pack is a 403, the advertisement included. On the
+remote sandbox host the same list rides the git grant (`GitEgressGrant.readOnlyRepos`, set by
+`HostEgress.prepareGit`) and `hostedGitHub` passes it to the same `forwardGit`.
+
+**Known gaps:** nothing here has run on real infrastructure — the kit fetch through the proxy, a real
+`/rf-upgrade` in a sandbox, and how a headless `claude -p` treats `AskUserQuestion` (either way it
+is not a clean end) are proven against the `FakeSandbox`, the fake Anthropic stream and a recording
+upstream only (`tests/api/app-upgrade{,-session}.test.ts`, `upgrade-egress.test.ts`). The kit only:
+plugin upgrades, "Upgrade all" (`fleet_runs`, `fleet.tick`, the `queued` path, `wait_reason`) and
+the fleet page are the fleet half of 6c. An upgrade whose PR is closed without merging stays
+`pr_open` and blocks the next one (there is no cancel route yet). An upgrade that adds a binding is
+not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocketflare.json`
+`kit.repo` is not the pin's repo (a fork) is refused the fetch. `notesUrl` assumes the kit's
+`docs/upgrades/<version>.md` exists at the tag.
+

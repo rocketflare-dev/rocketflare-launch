@@ -126,6 +126,15 @@ owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
 older answer still parses) and `PROMOTION_SUMMARY_MAX` 600, and `candidateRunSchema` /
 `candidateRun` (the candidate's tag deploy run on GitHub — status, conclusion, URL, current and
 failed job; nullable, default null) with `CANDIDATE_RUN_FAILED_CONCLUSIONS` / `candidateRunFailed` ·
+Launch P6 6c (kit upgrades, one app): `launch-upgrades.ts` — `UPGRADE_TARGET_KINDS`,
+`APP_UPGRADE_STATUSES` + `OPEN_APP_UPGRADE_STATUSES` (the open index renders it) and their labels,
+`UPGRADE_ERROR_CODES`, the semver helpers over `compareReleaseVersions` (`kitVersionOf`,
+`kitVersionBehind`, `kitVersionReached`), `appUpgradeSchema`, `kitStatusSchema` (what
+`appSummarySchema.kit` carries, defaulted null), `requiresUpgradeLabel`, `kitUpgradeNotesUrl`,
+the start/list responses, and the upgrade session's `UPGRADE_RESULT_MARKER` + `upgradeResultOf`
+and its `status` event (`UPGRADE_SESSION_REASONS`, `upgradeSessionStatusDataSchema`);
+`launch-sessions.ts` gained the `upgrade` kind and `CODING_SESSION_KINDS`; `launch-apps.ts`
+imports `launch-upgrades`, never the reverse ·
 `features.ts` (D30) — the feature-flag registry (`CORE_FEATURE_FLAGS`, EMPTY — Launch ships no
 flag yet — merged with each plugin's `SharedPlugin.features` into
 `FEATURE_FLAGS`, keyed on `FEATURES`/`FeatureName` from `permissions.ts`, where `CORE_FEATURES` is

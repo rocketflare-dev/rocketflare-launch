@@ -194,6 +194,16 @@ It follows the P1–P5 process: 6a runs first and alone, then 6b–6g in paralle
 
 ### 6c: fleet upgrades
 
+**Status: the single-app half is built** (`docs/CONCEPTS.md` §18.23): `app_upgrades` (without
+`fleet_run_id` and `wait_reason`, which the fleet half adds), `sessions.upgrade_id` / `auto_ship` and
+the `upgrade` session kind, `POST /api/apps/:id/upgrade` (in `routes/app-upgrades.ts`, with
+`GET /:id/upgrades`), `rocketflare/upgrade-prompt.ts`, auto-ship in `sessions/steps.ts`, the
+read-only kit fetch in `sessions/egress/`, the manifest re-read in `releases/release.ts`, the
+"Requires upgrade" kit status on the app summary, the app page's Kit section and `launch apps
+show|upgrade`. Still open: "Upgrade all" — `fleet_runs`, `routes/fleet.ts`, `services/fleet/*`,
+`fleet.tick`, the `queued` path, plugin upgrades, the fleet page — and item 7 (a new binding).
+Item 4's plugin `source.repo` allowance waits for plugin upgrades.
+
 **Owns:** `services/fleet/*`, `routes/fleet.ts`, the upgrade routes in `routes/app-fleet.ts`, `rocketflare/upgrade-prompt.ts`, the `upgrade`/`auto_ship` paths in `sessions/{lifecycle,steps}.ts`, the upload-pack allowance in `sessions/egress/github.ts`, the manifest re-read in `releases/release.ts`.
 
 **Routes:**

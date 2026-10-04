@@ -108,6 +108,12 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `releaseOfApproval`), `useAudit`'s `useAuditVerify` (on demand) / `auditExportUrl`, and in
   `useSessions` `useExtendBudget` (answers `{ session, approvalId? }`) + `usePendingBudgetApproval`.
   All sit under the `approval` / `release` roots the server nudges.
+  Launch P6 6c (kit upgrades): `useUpgrades` (`useAppUpgrades(appId)` — the history, never polled;
+  `useStartUpgrade(appId)` — the 202 answers the session, which the caller opens), keyed
+  `queryKeys.apps.upgrades` under the `apps` root the server's `entity.changed { entity: 'apps' }`
+  names whenever an upgrade moves. The Overview's Kit section is `pages/apps/app/UpgradeCard.tsx`
+  (shown only while `kit.behind` or an upgrade is open; Upgrade for `viewerCanDeploy` +
+  `useCanStartSession`); the catalogue and Settings print `requiresUpgradeLabel` in plain text.
   An installed PLUGIN's hooks live in its own tree (`src/plugins/<id>/ui/hooks/`) and read its own
   query keys directly rather than the merged `queryKeys` — a plugin must work the same whether it is
   the only one installed or the fifth. The analytics plugin's are `useAnalyticsPages`, `useCubeMeta`
