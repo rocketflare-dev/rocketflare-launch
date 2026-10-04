@@ -11,6 +11,7 @@ import {
   AGENT_RUNTIME_MODELS,
   AGENT_RUNTIMES,
   agentCredentialSchema,
+  agentModelLabel,
   agentPickerVisible,
   agentRuntimeOptionSchema,
   isPricedRuntimeModel,
@@ -139,6 +140,17 @@ describe('runtimes are a platform setting, not a deployment var', () => {
     // A model of the other vendor, or one the table does not know, is not.
     expect(isPricedRuntimeModel('codex', 'claude-sonnet-4-5')).toBe(false)
     expect(isPricedRuntimeModel('claude_code', 'claude-mystery-9')).toBe(false)
+  })
+
+  it('names every offered Claude model in words, and any other model by its id', () => {
+    expect(AGENT_RUNTIME_MODELS.claude_code.map(agentModelLabel)).toEqual([
+      'Sonnet 5',
+      'Opus 5.5',
+      'Fable 5.1',
+      'Haiku 4.5',
+    ])
+    expect(agentModelLabel('gpt-6.1-sol')).toBe('gpt-6.1-sol')
+    expect(agentModelLabel('constructor')).toBe('constructor')
   })
 })
 

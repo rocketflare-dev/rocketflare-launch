@@ -2047,6 +2047,30 @@ shows it in the address pill, hands it to `onPathChange`, and mints every reload
 control character, nothing parsing to another origin, not `/__launch/…`); the route answers a bad
 one with a 400, the gateway with `/`.
 
+**Screenshot preview** (the pane's camera, `services/sessions/preview-screenshot.ts`): `POST
+/:id/preview-screenshot { path?, port?, width, height }` (the upload's right; a `ready` or
+`working` session, else 409 `preview_not_running`; `port` one of `SESSION_PREVIEW_PORTS`, the
+viewport within `PREVIEW_SCREENSHOT_BOUNDS` — 320–2560 × 240–1600) only reserves an image id and
+enqueues `session.preview_screenshot` on `JOBS_QUEUE`, answering 202 `{ attachmentId }`; 503
+`screenshots_not_configured` without `BROWSER` (and `previews_not_configured`,
+`storage_not_configured`) before the enqueue. The job mints a fresh grant for the person who
+asked (`previewGrantUrl` with `to=` the page the bridge last reported), so a fresh Browser
+Rendering browser exchanges it for the preview cookie and lands on their page, and captures one
+PNG at the pane's rendered size through the app thumbnails' `ScreenshotPort` (`format: 'png'` —
+thumbnails keep WebP) into the image's key (`sessions/<id>/attachments/<aid>`). A capture that
+fails — no browser, the preview not running, a page that will not load, a non-PNG answer, over
+5 MB — writes `<key>.failed` holding a sentence instead and the job RETURNS (acked: the person is
+watching a spinner, and a retry 30 s later would land after they gave up); the image's `GET`
+answers it as 422 `screenshot_failed`. The UI adds a chip at once and `HEAD`s the image every
+second, for up to 25 s (`takePreviewScreenshot`): 404 while the job runs. The camera shows only
+when the grant says so — `POST /:id/preview-grant` answers `screenshots: Boolean(BROWSER)`, the
+one place the pane learns the deployment's preview capabilities. **Locally**, `wrangler dev`'s
+`BROWSER` is a LOCAL headless Chrome (miniflare downloads Chrome for Testing on first use and
+launches it on the laptop), and Chrome resolves every `*.localhost` name to loopback itself, so
+it can reach `http://<label>.localhost:3001`'s grant and gateway — the button shows and should
+work; with `remote = true` under `[browser]` the browser is Cloudflare's, which cannot reach a
+laptop, and every capture fails with the marker.
+
 **Unclaimed hosts.** The `*.<domain>/*` route brings EVERY host under the preview zone to this
 Worker, not only previews (an app's custom domain wins, so its slug never arrives). After the
 preview check `worker.ts` asks `unclaimedHostOf` (`api/preview/unclaimed-host.ts`): a host under
@@ -2072,7 +2096,14 @@ standing in for them) leaves out `'self'`, or that uses `'strict-dynamic'` (whic
 HTML answer is not injected either (Vite's dev server does not compress). The injection is
 proven against a fake `HTMLRewriter` in the suite, not yet through a real sandbox's Vite.
 A preview left open with nothing requesting (Vite's HMR socket idles silently) is idle; a
-running preview app that polls its API keeps its session live until `maxSessionHours`.
+running preview app that polls its API keeps its session live until `maxSessionHours`. A
+screenshot is proven against a fake `ScreenshotPort` only: that Browser Rendering's browser takes
+the grant's cookie on a deployed preview host, and that the local Chrome reaches
+`*.localhost:3001` and holds the development cookie through the grant's 302, are unverified; it
+captures the page as a FRESH browser sees it (the app's own sign-in state, local storage and
+scroll position are not the person's); a queue batch can hold the job for up to 5 s
+(`max_batch_timeout`) and a cold browser launch for more, so a capture can outlast the UI's 25 s
+and land unseen (the chip says it took too long; the image is never named).
 
 ### 18.13 Checkpoints, ship and the PR
 

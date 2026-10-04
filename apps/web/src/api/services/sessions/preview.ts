@@ -19,7 +19,12 @@
  * so a cookie can never be presented as a grant or the other way round. Verification is
  * constant-time (`crypto.subtle.verify`) and a malformed token is simply `null`.
  */
-import { previewLabel, previewUrl, safePreviewPath } from '@launch/shared/launch-sessions'
+import {
+  previewLabel,
+  previewUrl,
+  SESSION_PREVIEW_PORTS,
+  safePreviewPath,
+} from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../config'
 import { requireEncryptionKey } from '../../auth/oauth-encryption'
 
@@ -28,7 +33,7 @@ export const PREVIEW_GRANT_PATH = '/__launch/grant'
 /** The grant URL's parameter naming the page to land on after the exchange. */
 export const PREVIEW_GRANT_TO_PARAM = 'to'
 /** The container port the preview iframe shows: the app's Vite dev UI (`:3000` is the SDK's, S7). */
-export const PREVIEW_UI_PORT = 5173
+export const PREVIEW_UI_PORT = SESSION_PREVIEW_PORTS[0]
 
 /** How long a grant may wait between the route minting it and the iframe exchanging it. */
 export const PREVIEW_GRANT_TTL_S = 60
@@ -201,7 +206,7 @@ export function verifyCookie(
 
 /**
  * The URL the iframe (or a new tab) loads to open `session`'s UI preview as `userId`: a fresh
- * grant for its `:5173` host, plus `to=<path>` when `path` is a page on it (anything else is
+ * grant for its `:5173` host (or `port`'s — a screenshot of the API's), plus `to=<path>` when `path` is a page on it (anything else is
  * dropped — the frame lands on `/`). The caller answers a missing `SESSION_PREVIEW_URL` itself
  * (the route's 503); here it is a programming error.
  */
@@ -209,12 +214,12 @@ export async function previewGrantUrl(
   cfg: AppConfig,
   session: { id: string; shortId: string; previewToken: string },
   userId: string,
-  options: { path?: string | null; now?: Date } = {}
+  options: { path?: string | null; now?: Date; port?: number } = {}
 ): Promise<{ url: string; expiresAt: Date }> {
   if (!cfg.SESSION_PREVIEW_URL) throw new Error('SESSION_PREVIEW_URL is not set')
   const origin = previewUrl(
     cfg.SESSION_PREVIEW_URL,
-    previewLabel(PREVIEW_UI_PORT, session.shortId, session.previewToken)
+    previewLabel(options.port ?? PREVIEW_UI_PORT, session.shortId, session.previewToken)
   )
   const { token, expiresAt } = await mintGrant(cfg, {
     sessionId: session.id,

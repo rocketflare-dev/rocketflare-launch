@@ -6,7 +6,7 @@
  */
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PreviewFrame } from '@/ui/pages/sessions/components/PreviewFrame'
+import { PreviewFrame, screenshotViewport } from '@/ui/pages/sessions/components/PreviewFrame'
 import { renderWithProviders, stubFetch } from './helpers/renderWithProviders'
 import { SESSION_ID, sessionRow } from './helpers/sessions'
 
@@ -57,6 +57,15 @@ function post(data: unknown, { origin = ORIGIN, source = frameWindow() as Window
 }
 
 const address = () => screen.getByTestId('preview-address')
+
+describe('screenshotViewport', () => {
+  it('is the frame’s rendered size, rounded and clamped to the route’s bounds', () => {
+    expect(screenshotViewport(1024.4, 700.6)).toEqual({ width: 1024, height: 701 })
+    expect(screenshotViewport(0, 0)).toEqual({ width: 320, height: 240 })
+    expect(screenshotViewport(5000, 3000)).toEqual({ width: 2560, height: 1600 })
+    expect(screenshotViewport(Number.NaN, 800)).toEqual({ width: 320, height: 800 })
+  })
+})
 
 describe('PreviewFrame and the preview bridge', () => {
   it('follows its own frame’s reports; ignores another window, another origin and bad paths', async () => {

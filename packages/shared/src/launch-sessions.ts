@@ -1035,12 +1035,66 @@ export const previewLocationMessageSchema = z.object({
 })
 export type PreviewLocationMessage = z.infer<typeof previewLocationMessageSchema>
 
-/** `POST /api/sessions/:id/preview-grant` — load `url` in the iframe within `expiresAt`. */
+/**
+ * `POST /api/sessions/:id/preview-grant` — load `url` in the iframe within `expiresAt`.
+ * `screenshots`: this deployment can capture the preview (`POST /:id/preview-screenshot` — it has
+ * Browser Rendering's `BROWSER`); the pane shows its camera only then.
+ */
 export const previewGrantResponseSchema = z.object({
   url: z.string(),
   expiresAt: z.coerce.date(),
+  screenshots: z.boolean().default(false),
 })
 export type PreviewGrantResponse = z.infer<typeof previewGrantResponseSchema>
+
+/** The container ports a session's preview serves: the app's Vite UI, then its API (`wrangler dev`). */
+export const SESSION_PREVIEW_PORTS = [5173, 8787] as const
+
+/** The viewport a preview screenshot may ask for (the pane's rendered size, within reason). */
+export const PREVIEW_SCREENSHOT_BOUNDS = {
+  width: { min: 320, max: 2560 },
+  height: { min: 240, max: 1600 },
+} as const
+
+/**
+ * `POST /api/sessions/:id/preview-screenshot` — capture the preview as the person sees it, into a
+ * new image for the next message: `path` (`safePreviewPath`) is the page, `port` one of
+ * {@link SESSION_PREVIEW_PORTS} (default the UI's), `width` × `height` the viewport.
+ */
+export const previewScreenshotRequestSchema = z.object({
+  path: z
+    .string()
+    .max(PREVIEW_PATH_MAX)
+    .refine(v => safePreviewPath(v) !== null, 'Must be a page path on the preview, like /orders')
+    .optional(),
+  port: z
+    .number()
+    .int()
+    .refine(
+      p => (SESSION_PREVIEW_PORTS as readonly number[]).includes(p),
+      `Must be one of ${SESSION_PREVIEW_PORTS.join(', ')}`
+    )
+    .default(SESSION_PREVIEW_PORTS[0]),
+  width: z
+    .number()
+    .int()
+    .min(PREVIEW_SCREENSHOT_BOUNDS.width.min)
+    .max(PREVIEW_SCREENSHOT_BOUNDS.width.max),
+  height: z
+    .number()
+    .int()
+    .min(PREVIEW_SCREENSHOT_BOUNDS.height.min)
+    .max(PREVIEW_SCREENSHOT_BOUNDS.height.max),
+})
+export type PreviewScreenshotRequest = z.infer<typeof previewScreenshotRequestSchema>
+export type PreviewScreenshotRequestInput = z.input<typeof previewScreenshotRequestSchema>
+
+/**
+ * 202: the capture is queued and will land as the image `attachmentId` — `GET
+ * /:id/attachments/:aid` is 404 until then, and 422 `screenshot_failed` if it could not be taken.
+ */
+export const previewScreenshotResponseSchema = z.object({ attachmentId: z.string().uuid() })
+export type PreviewScreenshotResponse = z.infer<typeof previewScreenshotResponseSchema>
 
 /** `GET /api/sessions/:id/pr`. */
 export const sessionPrResponseSchema = z.object({

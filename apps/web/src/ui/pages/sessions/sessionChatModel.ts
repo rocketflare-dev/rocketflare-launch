@@ -26,7 +26,7 @@ import {
   agentErrorEventDataSchema,
   agentStepEventDataSchema,
 } from '@launch/shared/ai/agents'
-import { shortModelName } from '@launch/shared/ai/config'
+import { agentModelLabel } from '@launch/shared/launch-agents'
 import {
   type SessionAttachment,
   type SessionEvent,
@@ -232,7 +232,7 @@ function modelSwitchItem(
       seq: event.seq,
       at: event.at,
       tone: 'info',
-      text: `Switched to ${shortModelName(model)}`,
+      text: `Switched to ${agentModelLabel(model)}`,
     },
   }
 }

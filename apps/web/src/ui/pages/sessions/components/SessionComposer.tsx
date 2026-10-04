@@ -24,13 +24,13 @@
  * failed one is still there; a message may be images alone.
  *
  * The footer's model picker chooses the model for the NEXT message — the runtime's offered list
- * (`AGENT_RUNTIME_MODELS`), seeded from the session's current one. A different pick travels with
- * the message (`model`) and becomes the session's model when that turn starts.
+ * (`AGENT_RUNTIME_MODELS`, named by `agentModelLabel`: "Opus 5.5"), seeded from the session's
+ * current one. A different pick travels with the message (`model`) and becomes the session's model
+ * when that turn starts.
  */
 import { PaperClipIcon, PhotoIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
-import { shortModelName } from '@launch/shared/ai/config'
-import { AGENT_RUNTIME_MODELS } from '@launch/shared/launch-agents'
+import { AGENT_RUNTIME_MODELS, agentModelLabel } from '@launch/shared/launch-agents'
 import {
   SESSION_ATTACHMENT_MIME_TYPES,
   SESSION_MESSAGE_MAX,
@@ -426,14 +426,14 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                 </label>
                 <select
                   id="session-composer-model"
-                  className="select select-xs select-ghost w-auto font-mono"
+                  className="select select-xs select-ghost w-auto"
                   value={model}
                   onChange={event => onModelChange(event.target.value)}
                   title="Model for the next message"
                 >
                   {models.map(option => (
                     <option key={option} value={option}>
-                      {shortModelName(option)}
+                      {agentModelLabel(option)}
                     </option>
                   ))}
                 </select>

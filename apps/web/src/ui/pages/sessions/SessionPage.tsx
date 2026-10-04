@@ -21,7 +21,12 @@ import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
 import { useApp } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useSessionStream } from '@/ui/hooks/useSessionStream'
-import { usePendingBudgetApproval, useResumeSession, useSession } from '@/ui/hooks/useSessions'
+import {
+  takePreviewScreenshot,
+  usePendingBudgetApproval,
+  useResumeSession,
+  useSession,
+} from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { budgetAccess } from './components/budgetAccess'
 import { ExtendBudgetModal } from './components/ExtendBudgetModal'
@@ -153,6 +158,12 @@ export default function SessionPage() {
               onResume={() => resume.mutate()}
               resuming={resume.isPending}
               appSlug={slug}
+              onScreenshot={request =>
+                attachments.addPending(
+                  request.path ? `Screenshot of ${request.path}` : 'Screenshot of the preview',
+                  () => takePreviewScreenshot(id, request)
+                )
+              }
             />
           </div>
         </div>

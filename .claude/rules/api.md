@@ -334,7 +334,10 @@ Jobs rules (D7):
 - Missing `JOBS_QUEUE` → `JobsQueueNotConfiguredError`, never a silent inline fallback. Queued in
   the kit: `tenant.purge`, and invitation (create/bulk/resend) and access-request-decided emails;
   Launch's `app.thumbnail` (a screenshot after a deploy goes live — a missing `BROWSER` binding is
-  ACKED with a log, like `tenant.purge`'s missing `FILES`, because no retry can conjure one). The **magic-link email
+  ACKED with a log, like `tenant.purge`'s missing `FILES`, because no retry can conjure one) and
+  `session.preview_screenshot` (the preview pane's camera — every failure, a missing `BROWSER`
+  included, is written as a marker the image's `GET` reports and ACKED: a person is waiting on it,
+  so a retry with backoff would only land after they gave up). The **magic-link email
   stays inline** — a person is waiting on it
 - **`tenant.purge` is the out-of-database half of deleting a tenant.** The FK cascade is complete
   inside Postgres and reaches nothing else, so `deleteTenant` proves the queue binding BEFORE the

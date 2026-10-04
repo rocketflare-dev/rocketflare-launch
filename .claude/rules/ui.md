@@ -59,7 +59,7 @@ Read it before building or restyling a page; the app page (`pages/apps/app/`) fo
 
 ## Data layer
 
-- All HTTP via `lib/api-client.ts` (`api.get/post/patch/delete/upload`): `credentials: 'include'`, typed
+- All HTTP via `lib/api-client.ts` (`api.get/post/patch/delete/upload`, and `api.head` — a bodyless existence check): `credentials: 'include'`, typed
   `ApiError` from the shared envelope, `schema` option zod-parses the response with the same
   `@launch/shared/<module>` schema the server validates with (import from `@launch/shared/...`, never a
   relative path into `packages/`). No `hono/client` RPC (D13)

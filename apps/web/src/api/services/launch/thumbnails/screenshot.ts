@@ -16,7 +16,8 @@
  * so an app behind sign-in shows its login page), a 1280×800 viewport, `goto` until `load` within
  * the timeout (a failure here THROWS: the job retries), then up to the rest of the budget for the
  * network to go quiet (a page that polls never does — it is captured as it stands), then one WebP
- * of the viewport. The browser is closed in `finally`, whatever happened, so a failed capture never
+ * of the viewport (or a PNG, `format: 'png'` — a session's preview screenshot,
+ * `services/sessions/preview-screenshot.ts`, which reuses this port). The browser is closed in `finally`, whatever happened, so a failed capture never
  * holds a session until its keep-alive runs out.
  */
 import type { AppBindings } from '../../../types'
@@ -27,6 +28,11 @@ export interface ScreenshotRequest {
   viewport: { width: number; height: number }
   /** The whole capture's budget, navigation included. */
   timeoutMs: number
+  /**
+   * `webp` (the default — a thumbnail) or lossless `png` (a session's preview screenshot, read by a
+   * model: small text must survive).
+   */
+  format?: 'webp' | 'png'
 }
 
 export interface Screenshot {
@@ -75,7 +81,7 @@ export const BROWSER_LAUNCH_TIMEOUT_MS = 30_000
 /** The real adapter: Cloudflare Browser Rendering through `@cloudflare/puppeteer`. */
 export function browserRenderingScreenshots(binding: BrowserBinding): ScreenshotPort {
   return {
-    async capture({ url, viewport, timeoutMs }) {
+    async capture({ url, viewport, timeoutMs, format = 'webp' }) {
       const { default: puppeteer } = await import('@cloudflare/puppeteer')
       // `BrowserWorker` is `{ fetch: typeof fetch }`; the binding's `fetch` is the same call with
       // the platform's narrower overloads, which TypeScript cannot see are compatible.
@@ -107,8 +113,15 @@ export function browserRenderingScreenshots(binding: BrowserBinding): Screenshot
               .waitForNetworkIdle({ idleTime: NETWORK_IDLE_MS, timeout: left })
               .catch(() => {})
           }
-          const shot = await page.screenshot({ type: 'webp', quality: THUMBNAIL_WEBP_QUALITY })
-          return { bytes: new Uint8Array(shot), contentType: 'image/webp', finalUrl: page.url() }
+          const shot =
+            format === 'png'
+              ? await page.screenshot({ type: 'png' })
+              : await page.screenshot({ type: 'webp', quality: THUMBNAIL_WEBP_QUALITY })
+          return {
+            bytes: new Uint8Array(shot),
+            contentType: format === 'png' ? 'image/png' : 'image/webp',
+            finalUrl: page.url(),
+          }
         }
         const work = run()
         // When the deadline wins, the page's own call rejects later, once the browser is closed:

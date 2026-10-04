@@ -792,7 +792,7 @@ describe('SessionPage', () => {
       within(picker)
         .getAllByRole('option')
         .map(o => o.textContent)
-    ).toEqual(['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'])
+    ).toEqual(['Sonnet 5', 'Opus 5.5', 'Fable 5.1', 'Haiku 4.5'])
     fireEvent.change(picker, { target: { value: 'claude-opus-5-5' } })
     const box = screen.getByLabelText('Message the coding agent')
     fireEvent.change(box, { target: { value: 'Think it through' } })
@@ -839,7 +839,7 @@ describe('SessionPage', () => {
         sessionEvent(8, 'turn.start', { turn: 3, model: 'claude-opus-5-5' }),
       ]),
     })
-    expect(await screen.findByText('Switched to claude-opus-5-5')).toBeInTheDocument()
+    expect(await screen.findByText('Switched to Opus 5.5')).toBeInTheDocument()
     expect(screen.getAllByText(/^Switched to/)).toHaveLength(1)
   })
 
@@ -1040,6 +1040,48 @@ describe('SessionPage', () => {
     const chip = await screen.findByTestId('composer-attachment')
     expect(chip).toHaveAttribute('data-status', 'ready')
     expect(screen.getByRole('button', { name: 'Queue' })).toBeEnabled()
+  })
+
+  it('the preview’s camera adds a chip at once, which fills in when the capture lands', async () => {
+    const SHOT = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
+    let heads = 0
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf(),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/preview-grant`]: () => ({ ...grantRoute(), screenshots: true }),
+      [`POST ${BASE}/preview-screenshot`]: () => ({ attachmentId: SHOT }),
+      // 404 while the job runs, then the image.
+      [`HEAD ${BASE}/attachments/${SHOT}`]: () => {
+        heads += 1
+        return heads === 1 ? notFoundResponse() : new Response(null, { status: 200 })
+      },
+    })
+    const camera = await screen.findByRole('button', {
+      name: 'Screenshot the preview into the next message',
+    })
+    await waitFor(() => expect(camera).toBeEnabled())
+    fireEvent.click(camera)
+    const chip = await screen.findByTestId('composer-attachment')
+    expect(chip).toHaveAttribute('data-status', 'uploading')
+    // The frame's rendered size, clamped to the route's bounds (jsdom lays nothing out).
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/preview-screenshot`)).toEqual({
+        width: 320,
+        height: 240,
+      })
+    )
+    await waitFor(() => expect(chip).toHaveAttribute('data-status', 'ready'), { timeout: 4000 })
+    expect(heads).toBe(2)
+    expect(within(chip).getByRole('img')).toHaveAttribute('src', `${BASE}/attachments/${SHOT}`)
+  })
+
+  it('hides the camera when the deployment cannot take screenshots', async () => {
+    renderPage({ [BASE]: detailOf(), [`${BASE}/events`]: eventsRoute(DONE_TURN) })
+    await screen.findByRole('button', { name: 'Reload preview' })
+    await waitFor(() => expect(screen.getByTitle('App preview')).toBeInTheDocument())
+    expect(
+      screen.queryByRole('button', { name: 'Screenshot the preview into the next message' })
+    ).not.toBeInTheDocument()
   })
 
   it('cancels the running turn with Stop', async () => {

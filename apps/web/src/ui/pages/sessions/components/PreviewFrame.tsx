@@ -24,12 +24,18 @@
  * tab" — lands on it (`to=`) instead of `/`. An app whose CSP blocks the script reports nothing:
  * the pill shows the host alone and a reload goes to `/`.
  *
+ * **Screenshot preview** (the camera, shown only when the grant says the deployment has Browser
+ * Rendering — `screenshots`): captures the page the bridge last reported, at the frame's rendered
+ * size (`screenshotViewport`, clamped to `PREVIEW_SCREENSHOT_BOUNDS`), on the server, into the
+ * next message's images — `onScreenshot` hands the request to the page, which adds a chip at once.
+ *
  * With no sandbox there is nothing to frame, and the pane says why in one line with the one thing
  * to do: booting shows `BootProgress`, asleep offers Resume, shipped points at the PR.
  */
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
+  CameraIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
   GlobeAltIcon,
@@ -37,6 +43,8 @@ import {
   NoSymbolIcon,
 } from '@heroicons/react/24/outline'
 import {
+  PREVIEW_SCREENSHOT_BOUNDS,
+  type PreviewScreenshotRequestInput,
   previewLocationMessageSchema,
   type Session,
   safePreviewPath,
@@ -58,6 +66,16 @@ export function previewOriginOf(url: string | null): string | null {
     return new URL(url).origin
   } catch {
     return null
+  }
+}
+
+/** The frame's rendered size as a screenshot viewport, within the route's bounds. Pure. */
+export function screenshotViewport(width: number, height: number) {
+  const clamp = (value: number, { min, max }: { min: number; max: number }) =>
+    Math.min(max, Math.max(min, Math.round(Number.isFinite(value) ? value : 0)))
+  return {
+    width: clamp(width, PREVIEW_SCREENSHOT_BOUNDS.width),
+    height: clamp(height, PREVIEW_SCREENSHOT_BOUNDS.height),
   }
 }
 
@@ -132,6 +150,7 @@ export function PreviewFrame({
   resuming,
   appSlug,
   onPathChange,
+  onScreenshot,
 }: {
   session: Session
   /** Where a failed session sends the person to start a new one. */
@@ -144,6 +163,8 @@ export function PreviewFrame({
   resuming: boolean
   /** The page the frame is on (as the bridge reports it), or null before it has said. */
   onPathChange?: (path: string | null) => void
+  /** Capture the preview into the next message (the camera); absent: no camera. */
+  onScreenshot?: (request: PreviewScreenshotRequestInput) => void
 }) {
   const grant = usePreviewGrant(session.id)
   const tabGrant = usePreviewGrant(session.id)
@@ -152,6 +173,8 @@ export function PreviewFrame({
   const [frameLoaded, setFrameLoaded] = useState(false)
   const [updated, setUpdated] = useState(false)
   const [path, setPath] = useState<string | null>(null)
+  // The grant says whether this deployment can take screenshots (it has `BROWSER`).
+  const [canCapture, setCanCapture] = useState(false)
   const pathRef = useRef<string | null>(null)
   const frameRef = useRef<HTMLIFrameElement>(null)
   const onPathChangeRef = useRef(onPathChange)
@@ -167,6 +190,7 @@ export function PreviewFrame({
       mint(pathRef.current, {
         onSuccess: next => {
           setSrc(next.url)
+          setCanCapture(next.screenshots)
           setNonce(n => n + 1)
           setFrameLoaded(false)
           if (reason === 'change') setUpdated(true)
@@ -231,6 +255,14 @@ export function PreviewFrame({
     })
   }
 
+  const capture = () => {
+    const rect = frameRef.current?.getBoundingClientRect()
+    onScreenshot?.({
+      ...(pathRef.current ? { path: pathRef.current } : {}),
+      ...screenshotViewport(rect?.width ?? 0, rect?.height ?? 0),
+    })
+  }
+
   const host = previewHostOf(src)
   const address = host && path ? `${host}${path}` : host
   const toolbar = (
@@ -264,6 +296,18 @@ export function PreviewFrame({
       >
         <ArrowPathIcon className={`h-4 w-4 ${grant.isPending ? 'animate-spin' : ''}`} />
       </button>
+      {onScreenshot && canCapture && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm btn-square"
+          onClick={capture}
+          disabled={!alive || !src}
+          aria-label="Screenshot the preview into the next message"
+          title="Screenshot into the next message"
+        >
+          <CameraIcon className="h-4 w-4" />
+        </button>
+      )}
       <button
         type="button"
         className="btn btn-ghost btn-sm btn-square"

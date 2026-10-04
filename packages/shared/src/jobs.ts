@@ -15,6 +15,7 @@
 import { z } from 'zod'
 import { activityMetadataSchema } from './activity'
 import { appEnvironmentNameSchema } from './launch-apps'
+import { PREVIEW_PATH_MAX } from './launch-sessions'
 import { type DeclaredBy, type SHARED_PLUGINS, sharedPlugins } from './plugins'
 
 // ---- Payloads ------------------------------------------------------------------------------
@@ -104,6 +105,25 @@ export const appThumbnailPayloadSchema = z.object({
 })
 export type AppThumbnailPayload = z.infer<typeof appThumbnailPayloadSchema>
 
+/**
+ * Capture a coding session's preview into one of its images (`POST /api/sessions/:id/preview-
+ * screenshot`, `docs/CONCEPTS.md` §18.12). The route reserved `attachmentId` and checked who may;
+ * the handler mints a preview grant for `userId` (the session is re-read, tenant-first) and writes
+ * the PNG — or a failure marker the image's `GET` reports — under the session's prefix.
+ */
+export const sessionPreviewScreenshotPayloadSchema = z.object({
+  tenantId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  userId: z.string().uuid(),
+  attachmentId: z.string().uuid(),
+  /** The page, already `safePreviewPath`-checked by the route; null = `/`. */
+  path: z.string().max(PREVIEW_PATH_MAX).nullable(),
+  port: z.number().int().positive(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+})
+export type SessionPreviewScreenshotPayload = z.infer<typeof sessionPreviewScreenshotPayloadSchema>
+
 // ---- Envelope ------------------------------------------------------------------------------
 
 /**
@@ -118,6 +138,10 @@ export const CORE_JOB_VARIANTS = [
   z.object({ type: z.literal('chat.compact'), payload: chatCompactPayloadSchema }),
   z.object({ type: z.literal('tenant.purge'), payload: tenantPurgePayloadSchema }),
   z.object({ type: z.literal('app.thumbnail'), payload: appThumbnailPayloadSchema }),
+  z.object({
+    type: z.literal('session.preview_screenshot'),
+    payload: sessionPreviewScreenshotPayloadSchema,
+  }),
 ] as const
 
 type PluginJobVariant = NonNullable<DeclaredBy<(typeof SHARED_PLUGINS)[number], 'jobs'>>[number]
