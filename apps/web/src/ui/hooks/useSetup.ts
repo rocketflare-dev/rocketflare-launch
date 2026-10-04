@@ -109,7 +109,7 @@ export function useSetTemplatePin() {
 
 /**
  * §18.22: the Coding agents card — on/off, model and who pays, per agent. What people can pick
- * when they start a session (and connect in Profile) changes too, so that family is refreshed.
+ * when they start a session (and connect on Home) changes too, so that family is refreshed.
  */
 export function useUpdateSessionAgents() {
   const invalidate = useInvalidateSetup()

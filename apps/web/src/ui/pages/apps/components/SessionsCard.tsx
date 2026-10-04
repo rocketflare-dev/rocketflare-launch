@@ -68,7 +68,7 @@ export function startRefusal(error: unknown): { tone: 'info' | 'warning'; messag
         message: 'Coding sessions are not set up on this deployment yet. Ask an administrator.',
       }
     case 'agent_credential_required':
-      return { tone: 'info', message: `${error.message} Profile → AI accounts.` }
+      return { tone: 'info', message: error.message }
     default:
       return { tone: 'warning', message: error.message }
   }
@@ -159,7 +159,11 @@ function StartPicker({
         (choice.credential === 'user' || option.credentialMode === 'user') &&
         !connected && (
           <span className="text-xs text-warning">
-            Connect your {option.accountLabel} in Profile first.
+            Connect your {option.accountLabel} on{' '}
+            <Link to="/" className="link">
+              Home
+            </Link>{' '}
+            first.
           </span>
         )}
     </div>

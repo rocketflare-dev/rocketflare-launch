@@ -1,13 +1,15 @@
 /**
- * Personal AI accounts in the UI (§18.22): the Profile panel is invisible on a default deployment,
- * lists the connectable accounts when one is allowed, and Connect starts a sign-in whose modal
- * relays the provider's URL out and the pasted code in; the app's Sessions card offers a picker
+ * Personal AI accounts in the UI (§18.22): Home's coding agents section is absent on a default
+ * deployment, LEADS the page while nothing usable is connected (Connect starts a sign-in whose modal
+ * relays the provider's URL out and the pasted code in), and drops to one quiet line once an
+ * account is connected; the app's Sessions card offers a picker
  * ONLY when there is a choice, and sends exactly the P3 request when there is not; the session
  * header names a non-default agent or billing in one muted line. The pure decisions are tested
  * directly.
  */
 import type {
   AgentAccountsResponse,
+  AgentCredential,
   AgentLogin,
   AgentRuntimeOption,
 } from '@launch/shared/launch-agents'
@@ -20,12 +22,13 @@ import {
   AGENT_LOGIN_POLL_MS,
   agentLoginPollInterval,
 } from '@/ui/hooks/useAgentAccounts'
-import { SessionsCard, startRequestFor } from '@/ui/pages/apps/components/SessionsCard'
 import {
-  AgentAccountsPanel,
+  agentOnboarding,
   connectableRuntimes,
   credentialStatusText,
-} from '@/ui/pages/profile/AgentAccountsPanel'
+} from '@/ui/pages/agent-accounts/agentAccountsModel'
+import { SessionsCard, startRequestFor } from '@/ui/pages/apps/components/SessionsCard'
+import Home from '@/ui/pages/Home'
 import { sessionRuntimeLine } from '@/ui/pages/sessions/components/SessionHeader'
 import {
   makeSession,
@@ -146,12 +149,108 @@ describe('the pure decisions', () => {
   })
 })
 
-describe('AgentAccountsPanel', () => {
-  it('renders nothing on a default deployment', async () => {
-    const fetchMock = stubFetch({ '/api/me/agent-credentials': accounts() })
-    const { container } = renderWithProviders(<AgentAccountsPanel />, { session: makeSession() })
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
-    expect(container).toBeEmptyDOMElement()
+const credential = (overrides: Partial<AgentCredential> = {}): AgentCredential => ({
+  id: 'c0000000-0000-4000-8000-000000000001',
+  runtime: 'claude_code',
+  kind: 'claude_oauth_token',
+  status: 'active',
+  metadata: {},
+  expiresAt: null,
+  lastUsedAt: null,
+  inUse: false,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  ...overrides,
+})
+
+describe('Home: onboarding the decision', () => {
+  const allowed = [
+    option({ credentialMode: 'user', userCredentials: true }),
+    codex({ enabled: true, credentialMode: 'user', userCredentials: true }),
+  ]
+
+  it('is hidden when no account may be connected, prominent until one works, quiet after', () => {
+    expect(agentOnboarding(undefined).state).toBe('hidden')
+    expect(agentOnboarding(accounts()).state).toBe('hidden')
+    const none = agentOnboarding(accounts({ runtimes: allowed }))
+    expect(none).toMatchObject({ state: 'connect', required: true })
+    // A refused credential is not "connected": still prominent, with Reconnect.
+    const refused = agentOnboarding(
+      accounts({ runtimes: allowed, credentials: [credential({ status: 'needs_login' })] })
+    )
+    expect(refused.state).toBe('connect')
+    expect(refused.state === 'connect' && refused.rows[0]?.reconnect).toBe(true)
+    expect(
+      agentOnboarding(accounts({ runtimes: allowed, credentials: [credential()] })).state
+    ).toBe('connected')
+    // With Launch's key as the alternative, connecting is encouraged but not required.
+    const either = agentOnboarding(
+      accounts({
+        runtimes: [option({ credentialMode: 'user_or_platform', userCredentials: true })],
+      })
+    )
+    expect(either).toMatchObject({ state: 'connect', required: false })
+  })
+})
+
+describe('Home: coding agents section', () => {
+  const homeRoutes = (agentAccounts: AgentAccountsResponse) => ({
+    '/api/me/agent-credentials': agentAccounts,
+    '/api/approvals/count': { count: 0 },
+    '/api/approvals': { items: [] },
+    '/api/apps': { items: [], appsDomain: 'apps.test' },
+  })
+
+  it('is absent on a default deployment', async () => {
+    const fetchMock = stubFetch(homeRoutes(accounts()))
+    renderWithProviders(<Home />, { session: makeSession() })
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/me/agent-credentials'))
+      ).toBe(true)
+    )
+    expect(screen.queryByText('Connect your coding agent')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-coding-agents-line')).not.toBeInTheDocument()
+  })
+
+  it('leads Home with both accounts to choose from while nothing is connected', async () => {
+    stubFetch(
+      homeRoutes(
+        accounts({
+          runtimes: [
+            option({ credentialMode: 'user', userCredentials: true }),
+            codex({ enabled: true, credentialMode: 'user', userCredentials: true }),
+          ],
+        })
+      )
+    )
+    renderWithProviders(<Home />, { session: makeSession() })
+    expect(
+      await screen.findByRole('heading', { name: 'Connect your coding agent' })
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Connect one to start building/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect Claude subscription' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect ChatGPT plan' })).toBeInTheDocument()
+  })
+
+  it('once one is connected it is one quiet line, offering the other', async () => {
+    stubFetch(
+      homeRoutes(
+        accounts({
+          runtimes: [
+            option({ credentialMode: 'user', userCredentials: true }),
+            codex({ enabled: true, credentialMode: 'user', userCredentials: true }),
+          ],
+          credentials: [credential()],
+        })
+      )
+    )
+    renderWithProviders(<Home />, { session: makeSession() })
+    const line = await screen.findByTestId('home-coding-agents-line')
+    expect(screen.queryByText('Connect your coding agent')).not.toBeInTheDocument()
+    expect(line).toHaveTextContent('Claude subscription · Connected')
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect your ChatGPT plan' })).toBeInTheDocument()
   })
 
   it('Connect starts a sign-in, shows the provider link, and pastes the code back', async () => {
@@ -160,6 +259,9 @@ describe('AgentAccountsPanel', () => {
       '/api/me/agent-credentials': accounts({
         runtimes: [option({ credentialMode: 'user_or_platform', userCredentials: true }), codex()],
       }),
+      '/api/approvals/count': { count: 0 },
+      '/api/approvals': { items: [] },
+      '/api/apps': { items: [], appsDomain: 'apps.test' },
       'POST /api/me/agent-logins': () =>
         new Response(JSON.stringify({ login: current }), {
           status: 202,
@@ -174,16 +276,15 @@ describe('AgentAccountsPanel', () => {
         })
       },
     })
-    renderWithProviders(<AgentAccountsPanel />, { session: makeSession() })
-    expect(await screen.findByText('Claude subscription')).toBeInTheDocument()
-    expect(screen.getByText(/Not connected/)).toBeInTheDocument()
+    renderWithProviders(<Home />, { session: makeSession() })
+    expect(await screen.findByText(/instead of the organisation’s key/)).toBeInTheDocument()
 
     // The Workflow puts the URL up while the modal polls.
     current = login({
       status: 'awaiting_user',
       verificationUrl: 'https://claude.ai/oauth/authorize?state=x',
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Claude subscription' }))
     await waitFor(() =>
       expect(requestBody(fetchMock, 'POST /api/me/agent-logins')).toEqual({
         runtime: 'claude_code',

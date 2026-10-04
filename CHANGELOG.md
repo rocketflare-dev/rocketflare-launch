@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Connecting your Claude subscription or ChatGPT plan moved from Profile to Home.** While nothing
+  is connected it leads the page ("Connect your coding agent", one row per account your
+  organisation allows); once one is connected it is one quiet line above the apps.
 - **A session's preview no longer reloads at the end of every turn.** Edits reach it through Vite's
   HMR as they are saved; it reloads by itself only when the dev server comes (back) up, and the
   Reload button forces a fresh load.

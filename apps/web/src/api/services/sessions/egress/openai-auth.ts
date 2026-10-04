@@ -14,7 +14,7 @@
  *   Codex — so a container that dies mid-turn cannot take the only valid refresh token with it. A
  *   refusal that means the plan is signed out (`refresh_token_expired`, `refresh_token_reused`,
  *   `refresh_token_invalidated`, a 400 `invalid_grant`, a 401 — Codex 0.160's own "permanent" rule)
- *   marks the credential `needs_login`, and the person reconnects in Profile.
+ *   marks the credential `needs_login`, and the person reconnects on Home.
  *
  * Everything else is a 403. The bodies pass through to Codex unchanged; none of them is logged.
  */

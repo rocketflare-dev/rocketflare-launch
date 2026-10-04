@@ -553,7 +553,7 @@ describe('runTurn in the host mode — every runtime on either account', () => {
     expect((await runTurn(db, ports, row, FAST)).status).toBe('failed')
     const events = await listSessionEvents(db, row.tenantId, row.id)
     expect(events.at(-1)?.data).toMatchObject({
-      message: 'Reconnect your Claude account in Profile, then send your message again.',
+      message: 'Reconnect your Claude account on the Home page, then send your message again.',
     })
     expect(ports.sandboxes.get(row.id)?.processes ?? []).toHaveLength(0)
   })

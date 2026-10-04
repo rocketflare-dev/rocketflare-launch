@@ -6,7 +6,7 @@
 import type { AgentLogin } from '@launch/shared/launch-agents'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { CodexLogin } from '@/ui/pages/profile/agent-logins/CodexLogin'
+import { CodexLogin } from '@/ui/pages/agent-accounts/logins/CodexLogin'
 
 const login = (overrides: Partial<AgentLogin> = {}): AgentLogin => ({
   id: '1091a000-0000-4000-8000-000000000002',

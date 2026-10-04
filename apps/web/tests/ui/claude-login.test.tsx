@@ -1,5 +1,5 @@
 /**
- * Claude's sign-in body (§18.22-A, `ui/pages/profile/agent-logins/ClaudeLogin.tsx`): Anthropic's page
+ * Claude's sign-in body (§18.22-A, `ui/pages/agent-accounts/logins/ClaudeLogin.tsx`): Anthropic's page
  * in a new tab (`noopener`), a paste field that refuses anything but `<code>#<state>` before it is
  * sent, each status in a sentence, and the one-line note about where the sign-in happens.
  */
@@ -11,7 +11,7 @@ import {
   ClaudeLogin,
   claudeCodeProblem,
   isClaudeLoginCode,
-} from '@/ui/pages/profile/agent-logins/ClaudeLogin'
+} from '@/ui/pages/agent-accounts/logins/ClaudeLogin'
 
 afterEach(cleanup)
 

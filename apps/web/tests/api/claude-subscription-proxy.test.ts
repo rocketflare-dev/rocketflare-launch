@@ -427,7 +427,7 @@ describe('the turn’s lease', () => {
       const err = await leaseFor(s).catch(e => e as Error)
       expect(err).toBeInstanceOf(CredentialNeedsLoginError)
       expect((err as Error).message).toBe(
-        'Reconnect your Claude account in Profile, then send your message again.'
+        'Reconnect your Claude account on the Home page, then send your message again.'
       )
     }
   })
@@ -459,7 +459,7 @@ describe('the turn’s lease', () => {
       e => e.type === 'turn.failed'
     )
     expect((failed?.data as { message?: string } | undefined)?.message).toBe(
-      'Reconnect your Claude account in Profile, then send your message again.'
+      'Reconnect your Claude account on the Home page, then send your message again.'
     )
     expect((ports.sandbox(s.row.id) as FakeSandbox).processes).toEqual([])
   })

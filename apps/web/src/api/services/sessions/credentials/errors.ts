@@ -6,7 +6,7 @@
 /** The personal account is disconnected, refused by the provider, or past its expiry. */
 export class CredentialNeedsLoginError extends Error {
   constructor(accountLabel: string) {
-    super(`Reconnect your ${accountLabel} in Profile, then send your message again.`)
+    super(`Reconnect your ${accountLabel} on the Home page, then send your message again.`)
     this.name = 'CredentialNeedsLoginError'
   }
 }

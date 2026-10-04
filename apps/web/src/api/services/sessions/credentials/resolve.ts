@@ -132,7 +132,7 @@ export async function resolveSessionCredential(
   }
   if (source === 'platform' && !offer.platformAllowed) {
     throw new ConflictError(
-      `${label} sessions bill your own ${account}. Connect it in Profile first.`,
+      `${label} sessions bill your own ${account}. Connect it on the Home page first.`,
       'agent_credential_required',
       { runtime }
     )
@@ -153,8 +153,8 @@ export async function resolveSessionCredential(
   ) {
     throw new ConflictError(
       credential
-        ? `Reconnect your ${account} in Profile before starting a session on it.`
-        : `Connect your ${account} in Profile before starting a session on it.`,
+        ? `Reconnect your ${account} on the Home page before starting a session on it.`
+        : `Connect your ${account} on the Home page before starting a session on it.`,
       'agent_credential_required',
       { runtime }
     )

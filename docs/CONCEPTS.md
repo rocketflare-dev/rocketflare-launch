@@ -2958,8 +2958,13 @@ the route, decrypted in the step, handed to the CLI and nulled) → `finish#N` (
 `{ ok }` only) → `cleanup` ALWAYS (destroy the sandbox, null the URL and codes). One active login
 per person and runtime (a partial unique index); 15 minutes to finish (`AGENT_LOGIN_TTL_MS`),
 after which the step — or the `*/5` sweep, `logins/sweep.ts`, which also releases stale claims —
-says `expired`. The UI: Profile → AI accounts (hidden unless a runtime allows personal accounts),
-a polling modal whose body is the runtime's component (`ui/pages/profile/agent-logins/`), the
+says `expired`. The UI: connecting is part of onboarding, so it is on HOME, not in Profile
+(`ui/pages/home/CodingAgentsSection.tsx`, decided by the pure `agentOnboarding`): while nothing
+usable is connected, "Connect your coding agent" leads the page — one row per account the policy
+allows, saying whether connecting is required or an alternative to the organisation's key; once one
+works, one quiet line above the apps (state, Reconnect, Disconnect, Connect the other); absent when
+no runtime allows personal accounts. A polling modal whose body is the runtime's component
+(`ui/pages/agent-accounts/logins/`), the
 session card's agent / "Bill to" picker (only when there is a choice), and one muted line in the
 session header for a non-default agent or billing.
 
