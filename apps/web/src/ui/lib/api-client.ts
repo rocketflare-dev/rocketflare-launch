@@ -7,6 +7,7 @@
  *   defence in depth and lets a server-side rule single out the SPA if it ever needs to.
  * - Non-2xx → `ApiError`, parsed from the shared error envelope (`@launch/shared/errors`)
  * - Optional zod `schema` validates the response body
+ * - `api.head(url)` resolves on a 2xx and throws `ApiError` otherwise (a bodyless existence check)
  * - `api.upload(url, formData)` posts multipart (no JSON content-type; the browser sets the boundary)
  * - 401 → the registered unauthorized handler (D20). Phase 1 wires it to
  *   `queryClient.clear()` + redirect to `/login?returnUrl=…`.
@@ -228,6 +229,13 @@ export const api = {
       showErrorToast: true,
       ...options,
     })
+  },
+  /**
+   * `HEAD` — does it exist yet? Resolves on a 2xx, throws `ApiError` otherwise (with the status and
+   * no body: a HEAD answer has none). No error toast, like `get`.
+   */
+  head(url: string, options?: ApiRequestOptions<void>): Promise<void> {
+    return request<void>(url, { method: 'HEAD', showErrorToast: false, ...options })
   },
   /** `POST` a `FormData` body (file uploads, D23). Same envelope/schema handling as the rest. */
   upload<T>(url: string, form: FormData, options?: ApiRequestOptions<T>): Promise<T> {

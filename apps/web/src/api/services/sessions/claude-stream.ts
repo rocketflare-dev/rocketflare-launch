@@ -24,6 +24,19 @@
  *   boot) — deny rules still hold in bypass mode; allow rules have no effect there.
  * - The message is shell-quoted here, never interpolated raw: it is user text. So is the system
  *   note (`session-system-note`, an admin may edit it), on every turn, resumed ones included.
+ * - **A message with images** is not an argv string: the turn first writes
+ *   {@link CLAUDE_TURN_INPUT} — ONE stream-json `user` line, an `image` block per image (base64)
+ *   and the `text` block — and the command reads it on stdin instead (spike S8: `claude -p` exits
+ *   at the file's EOF, after one turn, and prints the same stream-json):
+ *
+ *   ```
+ *   claude -p --input-format stream-json [--resume <id>] --output-format stream-json --verbose …
+ *          < /workspace/.launch/turn-input.jsonl
+ *   ```
+ *
+ *   The line is assembled IN the container (`buildClaudeTurnInputScript`, run by the turn with
+ *   `exec`) from the image files the turn already wrote there, so the bytes cross Launch's RPC to
+ *   the container once rather than twice (an image's base64 is a third larger again).
  *
  * The stream-json lines, and what each becomes (`mapClaudeLine`):
  *
@@ -43,7 +56,7 @@ import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { SessionCredentialSource } from '@launch/shared/launch-agents'
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
-import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
+import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './rocketflare-dev'
 
 // ---- the command ---------------------------------------------------------------------------------
 
@@ -65,7 +78,12 @@ export interface ClaudeCommandInput {
    * on EVERY turn: `--append-system-prompt` does not survive `--resume`.
    */
   systemNote?: string | null
+  /** Images already written into the container: the message goes in on stdin (see the header). */
+  attachments?: readonly { path: string; contentType: string }[]
 }
+
+/** Where a turn with images writes its stream-json input (the command reads it on stdin). */
+export const CLAUDE_TURN_INPUT = `${SESSION_LAUNCH_DIR}/turn-input.jsonl`
 
 /** A token that is safe unquoted in a shell word — ids and model names are nothing else. */
 const SAFE_TOKEN = /^[A-Za-z0-9._:@/-]{1,200}$/
@@ -79,7 +97,10 @@ export function shellQuote(text: string): string {
 /** The shell command for one turn. Throws on a model or resume id that is not a plain token. */
 export function buildClaudeCommand(input: ClaudeCommandInput): string {
   if (!SAFE_TOKEN.test(input.model)) throw new Error('buildClaudeCommand: invalid model id')
-  const parts = ['claude', '-p', shellQuote(input.message)]
+  const stdin = Boolean(input.attachments?.length)
+  const parts = stdin
+    ? ['claude', '-p', '--input-format', 'stream-json']
+    : ['claude', '-p', shellQuote(input.message)]
   if (input.resumeSessionId) {
     if (!SAFE_TOKEN.test(input.resumeSessionId)) {
       throw new Error('buildClaudeCommand: invalid resume session id')
@@ -98,7 +119,38 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
     `"${CLAUDE_DISALLOWED_TOOLS}"`
   )
   if (input.systemNote) parts.push('--append-system-prompt', shellQuote(input.systemNote))
+  if (stdin) parts.push('<', CLAUDE_TURN_INPUT)
   return parts.join(' ')
+}
+
+/** A container path the input script may name: what `attachments.ts` builds, nothing else. */
+const SAFE_PATH = /^\/[A-Za-z0-9._/-]{1,300}$/
+
+/**
+ * The shell script that writes {@link CLAUDE_TURN_INPUT} for a turn with images: one stream-json
+ * `user` line — each image's file as a base64 `image` block, in order, then the message as the
+ * `text` block — assembled with `printf` and `base64` in the container (see the header). Throws on
+ * a path or media type that is not a plain token; the text is JSON-encoded, then shell-quoted.
+ */
+export function buildClaudeTurnInputScript(
+  input: { message: string; attachments: readonly { path: string; contentType: string }[] },
+  target: string = CLAUDE_TURN_INPUT
+): string {
+  const literal = (text: string) => `printf '%s' ${shellQuote(text)}`
+  const steps = [literal('{"type":"user","message":{"role":"user","content":[')]
+  for (const { path, contentType } of input.attachments) {
+    if (!SAFE_PATH.test(path) || !/^image\/[a-z]+$/.test(contentType)) {
+      throw new Error('buildClaudeTurnInputScript: invalid attachment')
+    }
+    steps.push(
+      literal(`{"type":"image","source":{"type":"base64","media_type":"${contentType}","data":"`),
+      // GNU base64 wraps at 76 columns; a JSON string may not hold a newline.
+      `base64 < ${path} | tr -d '\\n'`,
+      literal('"}},')
+    )
+  }
+  steps.push(literal(`${JSON.stringify({ type: 'text', text: input.message })}]}}`), "printf '\\n'")
+  return `mkdir -p ${target.slice(0, target.lastIndexOf('/'))} && { ${steps.join('; ')}; } > ${target}`
 }
 
 /**

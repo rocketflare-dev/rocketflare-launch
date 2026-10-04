@@ -149,6 +149,8 @@ export interface SandboxPort {
    */
   waitForPort(port: number, opts?: SandboxWaitForPortOptions): Promise<void>
   writeFile(path: string, content: string): Promise<void>
+  /** Write raw bytes (an image) — the SDK's `writeFile` with `encoding: 'base64'`. */
+  writeFileBytes(path: string, bytes: Uint8Array): Promise<void>
   /** The file's text, or null when it does not exist. */
   readFile(path: string): Promise<string | null>
   /** Replace the runtime allow-list (base hosts included — pass the whole list). */

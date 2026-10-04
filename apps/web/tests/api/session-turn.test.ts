@@ -13,16 +13,23 @@ import { SESSION_EVENT_DATA, usdToMicrocents } from '@launch/shared/launch-sessi
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import {
+  AttachmentsUnavailableError,
+  SESSION_ATTACHMENT_DIR,
+  sessionAttachmentKey,
+} from '@/api/services/sessions/attachments'
+import {
   CONTAINER_LOST_BEFORE_TURN_MESSAGE,
   CONTAINER_LOST_MESSAGE,
   SESSION_BOOT_MARKER,
 } from '@/api/services/sessions/boot-marker'
 import { requestTurn } from '@/api/services/sessions/chat'
+import { CLAUDE_TURN_INPUT } from '@/api/services/sessions/claude-stream'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
   CONVERSATION_LOST_MESSAGE,
   createShipTurnRunner,
+  imageOnlyMessage,
   type RunTurnOptions,
   runTurn,
   TURN_PID_FILE,
@@ -31,13 +38,14 @@ import {
   turnKillScript,
   turnStepConfig,
 } from '@/api/services/sessions/turn'
+import { createR2Storage } from '@/api/services/storage'
 import { auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson, createFakeAnthropic } from '../helpers/fake-anthropic'
 import { createFakeCloud } from '../helpers/fake-cloud'
 import { FakeSandbox } from '../helpers/fake-sandbox'
 import { createFakeSessionPorts, insertSession, seedSessionApp } from '../helpers/sessions'
-import { createTestEnv } from '../mocks/bindings'
+import { createTestEnv, MemoryR2Bucket } from '../mocks/bindings'
 
 const db = setupTestDatabase()
 
@@ -946,5 +954,135 @@ describe('runTurn: a conversation that cannot be resumed never breaks the sessio
     const errors = (await eventsOf(row)).filter(e => e.type === 'error')
     expect(errors.map(e => e.data)).toEqual([{ message: CONVERSATION_LOST_MESSAGE }])
     expect((await reload(row)).claudeSessionId).toBe('claude-new-2')
+  })
+})
+
+describe('runTurn: a message with images', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+
+  /** R2 holding one image for `row`, and the attachment that names it. */
+  async function withImage(sessionId: string) {
+    const storage = createR2Storage(new MemoryR2Bucket() as unknown as R2Bucket)
+    const attachment = { id: crypto.randomUUID(), contentType: 'image/png' as const }
+    await storage.put(sessionAttachmentKey(sessionId, attachment.id), PNG, {
+      contentType: 'image/png',
+    })
+    return { storage, attachment }
+  }
+
+  it('copies each image into the container, writes the stream-json input, and runs Claude on stdin', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-img-1' })
+    const { storage, attachment } = await withImage(row.id)
+    await db
+      .update(sessions)
+      .set({ pendingMessage: 'What is wrong here?', pendingAttachments: [attachment] })
+      .where(eq(sessions.id, row.id))
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ sessionId: 'claude-img-1', text: 'A typo.' }))
+    )
+    const outcome = await runTurn(db, ports, row, { ...FAST, storage })
+    expect(outcome).toMatchObject({ status: 'completed', turn: 1 })
+
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    const path = `${SESSION_ATTACHMENT_DIR}/${attachment.id}.png`
+    expect(sandbox.binaryFiles.get(path)).toEqual(PNG)
+    const input = sandbox.execs.find(e => e.command.includes(CLAUDE_TURN_INPUT))
+    expect(input?.command).toContain(`base64 < ${path}`)
+    expect(input?.command).toContain(JSON.stringify({ type: 'text', text: 'What is wrong here?' }))
+    // The stdin form: no message in argv, the resume and the model as ever.
+    const command = sandbox.processes[0]?.command ?? ''
+    expect(command).toContain('claude -p --input-format stream-json --resume claude-img-1')
+    expect(command).toContain(`< ${CLAUDE_TURN_INPUT}`)
+    expect(command).not.toContain('What is wrong')
+    expect(sandbox.commands.indexOf(input?.command ?? '')).toBeLessThan(
+      sandbox.commands.indexOf(sandbox.processes[0]?.command ?? '')
+    )
+
+    const [message] = await eventsOf(row)
+    expect(message?.data).toEqual({
+      text: 'What is wrong here?',
+      userId: row.createdByUserId,
+      attachments: [attachment],
+    })
+    expect(SESSION_EVENT_DATA['user.message'].safeParse(message?.data).success).toBe(true)
+    expect(await reload(row)).toMatchObject({ pendingMessage: null, pendingAttachments: null })
+  })
+
+  it('an image-only message runs: the transcript keeps it empty, the agent reads a stand-in', async () => {
+    const { row } = await readySession()
+    const { storage, attachment } = await withImage(row.id)
+    await db
+      .update(sessions)
+      .set({ pendingMessage: '', pendingAttachments: [attachment] })
+      .where(eq(sessions.id, row.id))
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ text: 'A login page.' }))
+    )
+    expect(await runTurn(db, ports, row, { ...FAST, storage })).toMatchObject({
+      status: 'completed',
+    })
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    const input = sandbox.execs.find(e => e.command.includes(CLAUDE_TURN_INPUT))
+    expect(input?.command).toContain(imageOnlyMessage(1))
+    expect((await eventsOf(row))[0]?.data).toMatchObject({ text: '', attachments: [attachment] })
+  })
+
+  it('an image that is gone from R2 fails the turn with a sentence, and nothing runs', async () => {
+    const { row } = await readySession()
+    const storage = createR2Storage(new MemoryR2Bucket() as unknown as R2Bucket)
+    await db
+      .update(sessions)
+      .set({ pendingAttachments: [{ id: crypto.randomUUID(), contentType: 'image/png' }] })
+      .where(eq(sessions.id, row.id))
+    const ports = createFakeSessionPorts()
+    expect(await runTurn(db, ports, row, { ...FAST, storage })).toMatchObject({
+      status: 'failed',
+    })
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    expect(sandbox.processes).toHaveLength(0)
+    const failed = (await eventsOf(row)).find(e => e.type === 'turn.failed')
+    expect(failed?.data).toMatchObject({ message: new AttachmentsUnavailableError().message })
+    expect(await reload(row)).toMatchObject({ status: 'ready', pendingAttachments: null })
+  })
+
+  it('the resume retry reuses the staged images: one copy, the input written for each attempt', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-lost-img' })
+    const { storage, attachment } = await withImage(row.id)
+    await db
+      .update(sessions)
+      .set({ pendingAttachments: [attachment] })
+      .where(eq(sessions.id, row.id))
+    const refused = JSON.stringify({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/--resume claude-lost-img/, { lines: [refused], exitCode: 1 })
+        .onProcess(/claude -p/, claudeStreamJson({ sessionId: 'claude-new-img', text: 'Done.' }))
+    )
+    const writes: string[] = []
+    const sandboxOf = ports.sandbox.bind(ports)
+    ports.sandbox = name => {
+      const sandbox = sandboxOf(name) as FakeSandbox
+      const original = sandbox.writeFileBytes.bind(sandbox)
+      sandbox.writeFileBytes = async (path, bytes) => {
+        writes.push(path)
+        return original(path, bytes)
+      }
+      return sandbox
+    }
+    expect(await runTurn(db, ports, row, { ...FAST, storage })).toMatchObject({
+      status: 'completed',
+    })
+    const sandbox = ports.sandboxes.get(row.id) as FakeSandbox
+    expect(writes).toHaveLength(1)
+    expect(sandbox.processes.map(p => p.command.includes('--input-format stream-json'))).toEqual([
+      true,
+      true,
+    ])
+    expect(sandbox.execs.filter(e => e.command.includes(CLAUDE_TURN_INPUT))).toHaveLength(2)
   })
 })

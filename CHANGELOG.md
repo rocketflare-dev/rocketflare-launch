@@ -14,6 +14,22 @@
   now shows for Codex sessions too; a switch passes `-m` on the resumed turn and the
   `api.openai.com` egress allows only the new model. A Codex session's composer and queued message
   now say "Codex" where they said "Claude".
+- **Show a coding session what its preview looks like.** A camera button in the preview's toolbar
+  captures the page you are on, at the pane's size, into the next message as an image chip
+  (`POST /api/sessions/:id/preview-screenshot`, a queued `session.preview_screenshot` job through
+  Browser Rendering, as PNG). The chip spins until the picture lands, or says why it could not be
+  taken. The button shows only where the deployment has Browser Rendering (`BROWSER`); the preview
+  grant now says so (`screenshots`) (`docs/CONCEPTS.md` §18.12).
+- **The composer names models in words.** The model picker and the transcript's "Switched to …"
+  read "Opus 5.5", "Sonnet 5", "Fable 5.1", "Haiku 4.5" (`agentModelLabel`); any other model reads
+  as its id.
+- **Show a coding session a picture.** Paste an image into the composer, drop one on it, or pick
+  one with the paperclip: it uploads at once (shrunk to 1568 px on its long edge first) and shows
+  as a chip with a spinner and ×; Send carries up to five, with or without words. Claude Code reads
+  them as images (the message goes in on stdin as stream-json); Codex gets them with `-i`. The
+  transcript shows each message's images as thumbnails that open full size. Images live in R2
+  under the session (`POST /api/sessions/:id/attachments`, `GET …/attachments/:aid`), checked by
+  their bytes, 5 MB each (`docs/CONCEPTS.md` §18.11).
 - **Write to a coding session while it works: queue the message, or send it now.** The composer
   stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
   the turn and runs the message next, resuming the conversation, with one line telling Claude its

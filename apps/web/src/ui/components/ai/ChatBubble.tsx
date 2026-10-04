@@ -36,6 +36,8 @@ export interface ChatBubbleProps {
   error?: string
   /** Rendered in the footer after the usage line — the thumbs on a persisted answer (D33). */
   actions?: ReactNode
+  /** Rendered in the bubble above the text — a coding session's message images. */
+  media?: ReactNode
 }
 
 /** `1,204 in · 87 out` (+ cache figures when the provider reported them). */
@@ -61,6 +63,7 @@ function ChatBubbleImpl({
   documents,
   error,
   actions,
+  media,
 }: ChatBubbleProps) {
   const mine = speaker === 'user'
   const footnote = [usage ? `${formatUsage(usage)} tokens` : null, model].filter(Boolean)
@@ -94,6 +97,7 @@ function ChatBubbleImpl({
           </ul>
         )}
         {notice && <p className="mb-1 text-xs text-muted italic">{notice}</p>}
+        {media}
         {mine ? (
           <span className="whitespace-pre-wrap break-words">{content}</span>
         ) : content ? (

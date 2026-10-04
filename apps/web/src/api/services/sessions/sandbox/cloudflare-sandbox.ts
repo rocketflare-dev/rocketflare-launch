@@ -1,7 +1,8 @@
 /**
  * `CloudflareSandbox` — the `SandboxPort` over the Sandbox SDK (`@cloudflare/sandbox` 0.12.10,
  * stable): `getSandbox(env.SESSION_SANDBOX, name)` → `exec`, `startProcess` + `streamProcessLogs`
- * + `killProcess`, `waitForPort` (on the process), `writeFile` / `readFile`, `setAllowedHosts`,
+ * + `killProcess`, `waitForPort` (on the process), `writeFile` (text, or base64 for
+ * `writeFileBytes`) / `readFile`, `setAllowedHosts`,
  * `containerFetch(req, port)` and `destroy()`. Used by BOTH backends — locally the container is
  * `wrangler dev`'s own, which honours the same egress settings (checked in slice 3b:
  * `outboundByHost`, `interceptHttps`, `enableInternet = false` and a runtime `setAllowedHosts` all
@@ -277,6 +278,15 @@ export function textOf(file: { content: string; encoding?: string }): string {
   return new TextDecoder().decode(bytes)
 }
 
+/** Bytes as standard base64, a chunk at a time (one `String.fromCharCode` call per 32 KB). */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
+}
+
 export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements SandboxPort {
   constructor(
     private readonly ns: DurableObjectNamespace<S>,
@@ -388,6 +398,14 @@ export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements San
       const dir = path.slice(0, path.lastIndexOf('/'))
       if (dir) await this.sandbox.mkdir(dir, { recursive: true })
       await this.sandbox.writeFile(path, content)
+    })
+  }
+
+  writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    return mapped(async () => {
+      const dir = path.slice(0, path.lastIndexOf('/'))
+      if (dir) await this.sandbox.mkdir(dir, { recursive: true })
+      await this.sandbox.writeFile(path, bytesToBase64(bytes), { encoding: 'base64' })
     })
   }
 

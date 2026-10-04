@@ -160,6 +160,10 @@ export function boundedSandbox(
       ),
     writeFile: (path, content) =>
       withDeadline(label('writeFile'), limits.controlMs, () => port.writeFile(path, content)),
+    writeFileBytes: (path, bytes) =>
+      withDeadline(label('writeFileBytes'), limits.controlMs, () =>
+        port.writeFileBytes(path, bytes)
+      ),
     readFile: path => withDeadline(label('readFile'), limits.controlMs, () => port.readFile(path)),
     setAllowedHosts: hosts =>
       withDeadline(label('setAllowedHosts'), limits.controlMs, () => port.setAllowedHosts(hosts)),

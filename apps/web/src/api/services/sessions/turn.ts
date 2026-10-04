@@ -48,7 +48,13 @@
  *    `user.message` and `turn.start` (naming the model the turn runs on). When the turn before
  *    was stopped (`turn.interrupted { cancelled }` — Stop, or a message sent with `interrupt`),
  *    the command's message starts with the `session-interrupted` line; `user.message` does not.
- * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`: each
+ *    A message with images (`pending_attachments`) names them in `user.message`'s data; one that is
+ *    ONLY images (`pending_message = ''`) reaches the agent as {@link imageOnlyMessage}.
+ * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`. First,
+ *    the message's images go from R2 into the container (`attachments.ts`' `stageAttachments`, to
+ *    `/workspace/.launch/attachments/`, outside the checkout) once — before the resume retry, which
+ *    reuses them — and the runtime's `turnInputCommand` runs (Claude: the stream-json input the
+ *    command reads on stdin); an image that cannot be loaded fails the turn with a sentence. Then each
  *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
  *    `system.init`'s session id is stored at once (the next turn `--resume`s it). **A resume that
  *    cannot work never breaks the session**: when the container answers that the transcript is
@@ -93,6 +99,7 @@
 import {
   resolveSessionPolicy,
   SESSION_REALTIME_ENTITY,
+  type SessionAttachment,
   type SessionPolicy,
   sessionShipCiDataSchema,
   sessionTurnInterruptedDataSchema,
@@ -104,6 +111,8 @@ import type { Logger } from '../../utils/core/logger'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
+import type { StorageService } from '../storage'
+import { AttachmentsUnavailableError, stageAttachments } from './attachments'
 import {
   CONTAINER_LOST_BEFORE_TURN_MESSAGE,
   CONTAINER_LOST_MESSAGE,
@@ -131,6 +140,7 @@ import { claudeTranscriptPath, SESSION_LAUNCH_DIR } from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
 import type {
   AgentRuntime,
+  RuntimeAttachment,
   RuntimeLineMapping,
   RuntimeStreamParser,
   SessionCredentialPort,
@@ -177,6 +187,8 @@ export const TURN_PID_FILE = `${SESSION_LAUNCH_DIR}/turn.pid`
 export const TURN_KILL_GRACE_SECONDS = 5
 /** The bound on each call {@link terminateTurnProcess} makes: it never holds the turn up longer. */
 export const TURN_KILL_CALL_MS = 30_000
+/** How long writing a turn's input (the images' stream-json line) may take in the container. */
+export const TURN_INPUT_TIMEOUT_MS = 60_000
 
 /**
  * What the person reads when the conversation a turn would `--resume` is gone (its transcript was
@@ -315,6 +327,11 @@ export interface RunTurnOptions {
   probeCallMs?: number
   /** Overrides {@link TURN_LIVENESS_MAX_FAILURES}. */
   probeFailures?: number
+  /**
+   * R2 (`createR2Storage(env.FILES)`) — where a message's images are (`attachments.ts`); null or
+   * absent: a message with images fails its turn, saying so.
+   */
+  storage?: StorageService | null
 }
 
 /**
@@ -381,10 +398,16 @@ export async function runTurn(
 
   // ---- 1. claim ------------------------------------------------------------------------------
   const current = await readRow(db, session)
-  if (!current || !current.pendingMessage || !['ready', 'blocked'].includes(current.status)) {
+  if (
+    !current ||
+    current.pendingMessage === null ||
+    !['ready', 'blocked'].includes(current.status)
+  ) {
     return { status: 'skipped', sessionId }
   }
+  // An image-only message is the empty string: it still runs.
   const message = current.pendingMessage
+  const attachments = current.pendingAttachments ?? []
   // §18.22: who sent it — the creator for every row written before `pending_message_user_id`.
   const senderId = current.pendingMessageUserId ?? current.createdByUserId
   const policy = resolveSessionPolicy(current.policy)
@@ -496,6 +519,7 @@ export async function runTurn(
         pendingMessage: null,
         pendingMessageUserId: null,
         pendingModel: null,
+        pendingAttachments: null,
         updatedAt: new Date(now()),
       })
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, sessionId)))
@@ -515,7 +539,12 @@ export async function runTurn(
   if (current.turnCount >= policy.maxTurns) {
     const [dropped] = await db
       .update(sessions)
-      .set({ pendingMessage: null, pendingModel: null, updatedAt: new Date(now()) })
+      .set({
+        pendingMessage: null,
+        pendingModel: null,
+        pendingAttachments: null,
+        updatedAt: new Date(now()),
+      })
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, sessionId)))
       .returning({ id: sessions.id })
     if (dropped) {
@@ -544,6 +573,7 @@ export async function runTurn(
       policy: sql`case when ${sessions.pendingModel} is null then ${sessions.policy}
         else jsonb_set(${sessions.policy}, '{model}', to_jsonb(${sessions.pendingModel})) end`,
       pendingModel: null,
+      pendingAttachments: null,
       cancelRequestedAt: null,
       lastActivityAt: new Date(now()),
       updatedAt: new Date(now()),
@@ -564,15 +594,21 @@ export async function runTurn(
   // After a Stop (or Send now) the agent is told its last turn was cut off, so it takes this
   // message as the new instruction rather than finishing the old one. The transcript keeps the
   // person's own words.
+  // An image-only message still needs words for the agent to act on.
+  const words = message || imageOnlyMessage(attachments.length)
   const prompt = (await previousTurnStopped(db, claimed))
-    ? `${await resolvePrompt(db, claimed.tenantId, 'session-interrupted', {})}\n\n${message}`
-    : message
+    ? `${await resolvePrompt(db, claimed.tenantId, 'session-interrupted', {})}\n\n${words}`
+    : words
 
   writer.append(
     {
       type: 'user.message',
       turn,
-      data: { text: redactModelKeyText(message), userId: senderId },
+      data: {
+        text: redactModelKeyText(message),
+        userId: senderId,
+        ...(attachments.length ? { attachments } : {}),
+      },
     },
     { type: 'turn.start', turn, data: { turn, model: turnPolicy.model } }
   )
@@ -585,7 +621,7 @@ export async function runTurn(
     ports,
     claimed,
     writer,
-    { turn, message: prompt, policy: turnPolicy },
+    { turn, message: prompt, policy: turnPolicy, attachments },
     opts
   )
   const outcome: TurnOutcome =
@@ -618,6 +654,11 @@ export async function runTurn(
     )
   changed()
   return outcome
+}
+
+/** What the agent reads for a message that is only images (the transcript keeps it empty). */
+export function imageOnlyMessage(images: number): string {
+  return images > 1 ? 'See the attached images.' : 'See the attached image.'
 }
 
 /** Whether the session's last turn ended `turn.interrupted { cancelled }` — a Stop or a Send now. */
@@ -664,7 +705,13 @@ async function executeTurn(
   ports: SessionPorts,
   row: SessionRow,
   writer: SessionEventWriter,
-  input: { turn: number; message: string; policy: SessionPolicy },
+  input: {
+    turn: number
+    message: string
+    policy: SessionPolicy
+    /** The message's images (none for Launch's own prompts). */
+    attachments?: readonly SessionAttachment[]
+  },
   opts: RunTurnOptions
 ): Promise<ExecutedTurn> {
   const { turn, policy } = input
@@ -689,12 +736,18 @@ async function executeTurn(
     logger: opts.logger,
     egress: egressFor(ports, db),
     credentials: credentialsFor(ports, db),
+    attachments: [],
   }
+
+  // The images go into the container once, before the run (and its resume retry) reads them.
+  const runtime = runtimeOf(row)
+  const staged = await stageTurnAttachments(sandbox, row, input.attachments ?? [], opts)
+  if ('stop' in staged) return closeTurn(db, row, writer, turn, costBefore, runtime, staged)
+  params.attachments = staged.attachments
 
   // A conversation to resume whose transcript is not in the container (a resume that had nothing
   // to restore, a turn that died before any checkpoint): `claude --resume` would fail every turn
   // from now on, so start a fresh conversation instead — the code is all in the checkout.
-  const runtime = runtimeOf(row)
   let resumeId = row.claudeSessionId
   if (resumeId && (await transcriptMissing(sandbox, runtime, row, opts.logger))) {
     await forgetConversation(db, row, writer, turn)
@@ -711,7 +764,45 @@ async function executeTurn(
     await forgetConversation(db, row, writer, turn)
     run = await streamTurn(db, sandbox, { ...row, claudeSessionId: null }, writer, params)
   }
+  return closeTurn(db, row, writer, turn, costBefore, runtime, run)
+}
 
+/**
+ * Put the message's images into the container (`stageAttachments`), or the run result that ends
+ * the turn when they cannot be: a rollout, or `turn.failed` with a sentence for the person.
+ */
+async function stageTurnAttachments(
+  sandbox: SandboxPort,
+  row: SessionRow,
+  attachments: readonly SessionAttachment[],
+  opts: RunTurnOptions
+): Promise<{ attachments: RuntimeAttachment[] } | StreamTurnResult> {
+  try {
+    return {
+      attachments: await stageAttachments(sandbox, opts.storage ?? null, row.id, attachments),
+    }
+  } catch (err) {
+    const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
+    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
+    else if (err instanceof AttachmentsUnavailableError) out.failure = err.message
+    else {
+      opts.logger?.warn({ err, sessionId: row.id }, 'session turn: could not stage the images')
+      out.failure = new AttachmentsUnavailableError().message
+    }
+    return out
+  }
+}
+
+/** Write the turn's ONE closing event from what the run came to (see {@link executeTurn}). */
+async function closeTurn(
+  db: Database,
+  row: SessionRow,
+  writer: SessionEventWriter,
+  turn: number,
+  costBefore: number,
+  runtime: AgentRuntime,
+  run: StreamTurnResult
+): Promise<ExecutedTurn> {
   // The turn's cost is what was metered while it ran — by the model proxy, or (`host`, and a
   // ChatGPT plan's Codex turn) by the turn itself as it ended: either way the row's total moved.
   const after = await readRow(db, row)
@@ -928,6 +1019,8 @@ interface StreamTurnParams {
   egress: SessionEgressPort
   /** §18.22: the turn's credential lease (platform: nothing). */
   credentials: SessionCredentialPort
+  /** The message's images, already in the container. */
+  attachments: RuntimeAttachment[]
 }
 
 interface StreamTurnResult {
@@ -1181,24 +1274,34 @@ async function runLeasedTurn(
       ...lease.files,
     ]
     for (const file of files) await sandbox.writeFile(file.path, file.content)
-    const proc = await sandbox.startProcess(
-      turnProcessCommand(
-        runtime.buildCommand({
-          message: p.message,
-          model: p.policy.model,
-          resumeId: row.claudeSessionId,
-          systemNote,
-        })
-      ),
-      {
-        cwd: p.cwd,
-        env: {
-          ...runtime.turnEnv({ model: p.policy.model, source: lease.source }),
-          ...lease.env,
-          ...egressEnv,
-        },
+    const command = {
+      message: p.message,
+      model: p.policy.model,
+      resumeId: row.claudeSessionId,
+      systemNote,
+      attachments: p.attachments,
+    }
+    // What the command reads besides its argv (Claude with images: the stream-json input).
+    const input = runtime.turnInputCommand?.(command)
+    if (input) {
+      const written = await sandbox.exec(input, { timeoutMs: TURN_INPUT_TIMEOUT_MS })
+      if (written.exitCode !== 0) {
+        p.logger?.warn(
+          { sessionId: row.id, exitCode: written.exitCode, stderr: written.stderr.slice(0, 500) },
+          'session turn: could not write the turn input'
+        )
+        out.failure = new AttachmentsUnavailableError().message
+        return out
       }
-    )
+    }
+    const proc = await sandbox.startProcess(turnProcessCommand(runtime.buildCommand(command)), {
+      cwd: p.cwd,
+      env: {
+        ...runtime.turnEnv({ model: p.policy.model, source: lease.source }),
+        ...lease.env,
+        ...egressEnv,
+      },
+    })
     processId = proc.id
   } catch (err) {
     if (err instanceof SandboxInterruptedError) out.stop = 'rollout'

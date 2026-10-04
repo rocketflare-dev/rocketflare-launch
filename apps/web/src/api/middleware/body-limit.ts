@@ -1,8 +1,9 @@
 /**
  * Request body caps (04 §4). Cloudflare already caps bodies at 100–500 MB; 1 MB of JSON is plenty
- * for every kit route and protects the DB/LLM paths. The upload routes (`/api/files`, D23, and
- * `/api/ai/documents/upload`, D18) are the exceptions: they get `MAX_UPLOAD_BYTES` plus multipart
- * overhead, and each handler enforces the exact per-file limit. Over-limit → 413 in the shared envelope.
+ * for every kit route and protects the DB/LLM paths. The upload routes (`/api/files`, D23,
+ * `/api/ai/documents/upload`, D18, and a coding session's `/api/sessions/:id/attachments`) are
+ * the exceptions: they get `MAX_UPLOAD_BYTES` plus multipart overhead, and each handler enforces
+ * the exact per-file limit. Over-limit → 413 in the shared envelope.
  *
  * `/ci/*` (Launch P2, the GitHub-OIDC surface) has its own: `ciBodyLimit` allows
  * `MAX_CI_UPLOAD_BYTES` on the deployer's `upload` — a whole build, base64 inside one JSON body
@@ -30,8 +31,14 @@ export const uploadBodyLimit = bodyLimit({
 /** Paths that mount `uploadBodyLimit` themselves and must be skipped by the JSON cap. */
 export const UPLOAD_PATHS = ['/api/files', '/api/ai/documents/upload'] as const
 
+/** Upload routes with an id in the path: a coding session's images (`POST /api/sessions/:id/attachments`). */
+export const UPLOAD_PATH_PATTERNS: readonly RegExp[] = [/^\/api\/sessions\/[^/]+\/attachments\/?$/]
+
 export function isUploadPath(pathname: string): boolean {
-  return UPLOAD_PATHS.some(p => pathname === p || pathname.startsWith(`${p}/`))
+  return (
+    UPLOAD_PATHS.some(p => pathname === p || pathname.startsWith(`${p}/`)) ||
+    UPLOAD_PATH_PATTERNS.some(re => re.test(pathname))
+  )
 }
 
 /** The deployer protocol's `upload` body cap: 64 MB (DEPLOYER.md: "at least 50 MB"). */

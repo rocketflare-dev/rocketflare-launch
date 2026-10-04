@@ -1,12 +1,18 @@
 /**
  * Claude Code as an `AgentRuntime` (§18.22) — the P3 behaviour, wrapped byte for byte: the command
- * is `buildClaudeCommand`, the environment `claudeTurnEnv`, the parser `createClaudeStreamParser`
+ * is `buildClaudeCommand` (with images: `buildClaudeTurnInputScript` first, the message on stdin),
+ * the environment `claudeTurnEnv`, the parser `createClaudeStreamParser`
  * (its `claudeSessionId` becomes the generic `resumeId`), the workspace file the boot always wrote
  * (`.claude/settings.local.json`), and the transcript the checkpoint always copied. Nothing here
  * decides anything new: `claude-stream.ts` and its tests are unchanged, and
  * `tests/api/agent-runtime-claude.test.ts` pins the equivalence.
  */
-import { buildClaudeCommand, claudeTurnEnv, createClaudeStreamParser } from '../../claude-stream'
+import {
+  buildClaudeCommand,
+  buildClaudeTurnInputScript,
+  claudeTurnEnv,
+  createClaudeStreamParser,
+} from '../../claude-stream'
 import { claudeSettingsLocal, SESSION_WORKSPACE } from '../../rocketflare-dev'
 import type { AgentRuntime, RuntimeRunSummary } from '../types'
 import { leaseClaudeUserCredential } from './credentials'
@@ -34,7 +40,13 @@ export const claudeCodeRuntime: AgentRuntime = {
       model: input.model,
       resumeSessionId: input.resumeId,
       systemNote: input.systemNote,
+      attachments: input.attachments,
     }),
+  // With images the message goes in on stdin, as a stream-json line written first.
+  turnInputCommand: input =>
+    input.attachments?.length
+      ? buildClaudeTurnInputScript({ message: input.message, attachments: input.attachments })
+      : null,
   turnEnv: ({ model, source }) => claudeTurnEnv(model, source),
   createParser(turn) {
     const parser = createClaudeStreamParser(turn)

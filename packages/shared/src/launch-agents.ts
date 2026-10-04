@@ -51,6 +51,24 @@ export const AGENT_RUNTIME_MODELS: Record<AgentRuntimeId, readonly string[]> = {
   codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'],
 }
 
+/**
+ * What a person reads for a model id — the composer's picker, "Switched to …". A model not named
+ * here (an older or a pinned one) reads as its id.
+ */
+export const AGENT_MODEL_LABELS: Readonly<Record<string, string>> = {
+  'claude-opus-5-5': 'Opus 5.5',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-fable-5-1': 'Fable 5.1',
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-sonnet-4-5': 'Sonnet 4.5',
+  'claude-opus-4-1': 'Opus 4.1',
+}
+
+/** {@link AGENT_MODEL_LABELS}' name for `model`, else the id itself. Pure. */
+export function agentModelLabel(model: string): string {
+  return Object.hasOwn(AGENT_MODEL_LABELS, model) ? (AGENT_MODEL_LABELS[model] as string) : model
+}
+
 /** A model a runtime may be set to: one the pricing table can put a price on. */
 export function isPricedRuntimeModel(runtime: AgentRuntimeId, model: string): boolean {
   return priceFor(AGENT_RUNTIME_PROVIDERS[runtime], model) !== null

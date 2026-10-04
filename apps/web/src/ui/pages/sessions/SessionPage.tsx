@@ -21,7 +21,12 @@ import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
 import { useApp } from '@/ui/hooks/useApps'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useSessionStream } from '@/ui/hooks/useSessionStream'
-import { usePendingBudgetApproval, useResumeSession, useSession } from '@/ui/hooks/useSessions'
+import {
+  takePreviewScreenshot,
+  usePendingBudgetApproval,
+  useResumeSession,
+  useSession,
+} from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { budgetAccess } from './components/budgetAccess'
 import { ExtendBudgetModal } from './components/ExtendBudgetModal'
@@ -30,6 +35,7 @@ import { SessionChat } from './components/SessionChat'
 import { SessionHeader } from './components/SessionHeader'
 import { ShipPanel, shipConfigNeeds } from './components/ShipPanel'
 import { bootSteps, latestPreviewChangeSeq, shipGates } from './sessionChatModel'
+import { useComposerAttachments } from './useComposerAttachments'
 
 export default function SessionPage() {
   const { slug = '', id = '' } = useParams<{ slug: string; id: string }>()
@@ -39,6 +45,8 @@ export default function SessionPage() {
   const stream = useSessionStream(session)
   const resume = useResumeSession(id)
   const [extendOpen, setExtendOpen] = useState(false)
+  // The next message's images: the composer adds them, and so does the preview's screenshot.
+  const attachments = useComposerAttachments(id)
   // P4: the creator's open `session.budget` request, so a reload still links to it. Only asked
   // for by someone who may act on a session that can still run.
   const pendingBudget = usePendingBudgetApproval(
@@ -128,6 +136,7 @@ export default function SessionPage() {
             isLoading={stream.isLoading}
             budget={budget}
             onExtend={() => setExtendOpen(true)}
+            attachments={attachments}
           />
         </section>
         <div className="flex min-h-0 flex-col gap-4">
@@ -149,6 +158,12 @@ export default function SessionPage() {
               onResume={() => resume.mutate()}
               resuming={resume.isPending}
               appSlug={slug}
+              onScreenshot={request =>
+                attachments.addPending(
+                  request.path ? `Screenshot of ${request.path}` : 'Screenshot of the preview',
+                  () => takePreviewScreenshot(id, request)
+                )
+              }
             />
           </div>
         </div>

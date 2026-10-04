@@ -59,6 +59,7 @@
 import {
   type PreviewHost,
   parsePreviewHost,
+  SESSION_PREVIEW_PORTS,
   type SessionStatus,
   safePreviewPath,
   TERMINAL_SESSION_STATUSES,
@@ -74,7 +75,6 @@ import {
   PREVIEW_COOKIE_TTL_S,
   PREVIEW_GRANT_PATH,
   PREVIEW_GRANT_TO_PARAM,
-  PREVIEW_UI_PORT,
   verifyCookie,
   verifyGrant,
 } from '../services/sessions/preview'
@@ -86,7 +86,7 @@ export const PREVIEW_COOKIE = '__Host-launch-preview'
 /** The development variant: `http://*.localhost` cannot hold a Secure (so `__Host-`) cookie. */
 export const DEV_PREVIEW_COOKIE = 'launch-preview'
 /** The container ports a preview host may name: the dev UI and the API behind it. Never `:3000`. */
-export const PREVIEW_PORTS: readonly number[] = [PREVIEW_UI_PORT, 8787]
+export const PREVIEW_PORTS: readonly number[] = SESSION_PREVIEW_PORTS
 /** How long a session's status is trusted in one isolate. */
 export const PREVIEW_STATUS_CACHE_MS = 15_000
 /** At most one `last_activity_at` write per session per this long (per isolate, and in the DB). */

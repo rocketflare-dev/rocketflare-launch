@@ -6,7 +6,9 @@
  *
  * - `POST /:id/turns` `sessionTurnRequestSchema` → 202 `sessionDetailResponseSchema`: stores
  *   `pending_message` (and `pending_model` when `model` switches it — 400 `model_not_offered` for
- *   one the runtime does not offer) and wakes the Workflow (`wakeOrRestart` — a lost instance is
+ *   one the runtime does not offer — and `pending_attachments`: the `attachments` ids, each found
+ *   under the session's R2 prefix first, else 400 `attachment_not_found`; 503
+ *   `storage_not_configured` without `FILES`) and wakes the Workflow (`wakeOrRestart` — a lost instance is
  *   restarted). While a turn is `working` the message waits behind it (`mode: 'queue'`) or stops
  *   it (`mode: 'interrupt'`: `cancel_requested_at` in the same write) — and then, as for
  *   `/cancel`, the turn is reconciled instead of woken (its step is mid-turn; a stale heartbeat
@@ -22,7 +24,7 @@
  *   a fresh one's `salvage` step stops the process, saves the work and closes the turn
  *   (`reconcile.ts`) — the route itself runs nothing in the sandbox.
  * - `POST /:id/queued/withdraw` → `sessionDetailResponseSchema`: takes the waiting message back
- *   (`pending_message`, its sender and `pending_model`) — while a turn runs too, which `/cancel`
+ *   (`pending_message`, its sender, `pending_model` and `pending_attachments`) — while a turn runs too, which `/cancel`
  *   cannot (it stops the turn); 409 `nothing_queued` when nothing waits. Same check as `/turns`.
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
@@ -51,6 +53,7 @@ import { approvalViewerOf } from '../services/approvals/types'
 import { auditActor } from '../services/launch/audit'
 import { nudge, realtimeEvent } from '../services/realtime'
 import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
+import { requireSessionStorage, resolveSessionAttachments } from '../services/sessions/attachments'
 import { requestBudgetExtension } from '../services/sessions/budget-request'
 import {
   assertCredentialOwner,
@@ -98,9 +101,19 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, logger, realtime, user, row } = await visibleSession(c)
   const workflow = requireSessionWorkflow(c.env)
-  const { message, model, mode } = c.req.valid('json')
+  const { message, model, mode, attachments: ids } = c.req.valid('json')
+  // The images must be this session's: looked up under its own prefix, never trusted by id.
+  const attachments = ids.length
+    ? await resolveSessionAttachments(requireSessionStorage(c.env), row.id, ids)
+    : []
   // §18.22: the sender is recorded, and a personal-account session takes only its owner's turns.
-  const updated = await requestTurn(db, row, { message, model, mode }, new Date(), user.id)
+  const updated = await requestTurn(
+    db,
+    row,
+    { message, model, mode, attachments },
+    new Date(),
+    user.id
+  )
   if (updated.status === 'working') {
     // Behind a running turn: its step reads the cancel (an interrupt) within 2 s, and the loop's
     // next inspect runs the message. A stale heartbeat means that step is gone — reconcile now,

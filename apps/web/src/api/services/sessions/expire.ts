@@ -88,6 +88,7 @@ async function cleanUpInline(
       requestedAction: null,
       pendingMessage: null,
       pendingModel: null,
+      pendingAttachments: null,
       containerKeptAt: null,
       workspaceBackup: null,
     })

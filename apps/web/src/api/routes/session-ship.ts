@@ -21,7 +21,8 @@
  *   (the preview grant, the PR), never ship or end (`access.ts`).
  * - `POST /:id/preview-grant {path?}` → `previewGrantResponseSchema`: a 60 s HMAC grant for the
  *   iframe (`services/sessions/preview.ts`, exchanged at the preview host by
- *   `api/preview/gateway.ts`); `path` (`safePreviewPath`, else a 400) is the page it lands on.
+ *   `api/preview/gateway.ts`); `path` (`safePreviewPath`, else a 400) is the page it lands on, and
+ *   `screenshots` says whether this deployment has `BROWSER` (the pane's camera).
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
  * - `GET /:id/pr` → `sessionPrResponseSchema`, refreshing `pr_checks` from the repo host when older
  *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks.
@@ -247,7 +248,9 @@ sessionShipRouter.post('/:id/preview-grant', async c => {
     throw new ConflictError('This session has ended', 'session_ended')
   }
   const { url, expiresAt } = await previewGrantUrl(cfg, row, user.id, { path })
-  return c.json({ url, expiresAt } satisfies PreviewGrantResponse)
+  // Whether the pane may offer its camera (`POST /:id/preview-screenshot`).
+  const screenshots = Boolean(c.env.BROWSER)
+  return c.json({ url, expiresAt, screenshots } satisfies PreviewGrantResponse)
 })
 
 sessionShipRouter.get('/:id/pr', async c => {

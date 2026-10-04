@@ -2,7 +2,8 @@
  * Coding sessions (Launch P3, spec/07): one session (`GET /api/sessions/:id`), an app's sessions
  * (`GET /api/apps/:id/sessions`), the live sessions across the deployment for the operator
  * (`GET /api/admin/sessions`), and every act on one — start, send a message, cancel the turn, ship,
- * end, resume, extend the budget, mint a preview grant, drain.
+ * end, resume, extend the budget, mint a preview grant, upload a message's image, screenshot the
+ * preview into one, drain.
  *
  * **Routes START work; the Workflow does it.** Every mutation here answers 202 with the row as it
  * is now (`sessionDetailResponseSchema`) and writes it into the cache, so the page moves the moment
@@ -29,20 +30,25 @@ import {
   isActiveSessionStatus,
   MOVING_LANDING_STAGES,
   type PreviewGrantRequest,
+  type PreviewScreenshotRequestInput,
   previewGrantResponseSchema,
+  previewScreenshotResponseSchema,
   type Session,
+  type SessionAttachment,
   type SessionListQuery,
   type SessionStatus,
   type SessionSummary,
   type SessionTurnRequestInput,
   type ShipLandingStage,
+  sessionAttachmentPath,
+  sessionAttachmentUploadResponseSchema,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
   sessionPrResponseSchema,
 } from '@launch/shared/launch-sessions'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/ui/lib/api-client'
+import { ApiError, api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 import { useApprovals } from './useApprovals'
 
@@ -281,6 +287,57 @@ export function usePendingBudgetApproval(sessionId: string, enabled: boolean) {
  */
 export function useWithdrawQueued(id: string) {
   return useSessionAction(id, 'queued/withdraw', { toast: false })
+}
+
+/**
+ * `POST /:id/attachments` — one image for the next message (multipart). A plain function, not a
+ * hook: the composer runs several at once and owns their state (`useComposerAttachments`). No
+ * toast — a refusal (415, 413) is shown on the image's own chip.
+ */
+export function uploadSessionAttachment(id: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return api.upload(`${sessionPath(id)}/attachments`, form, {
+    schema: sessionAttachmentUploadResponseSchema,
+    showErrorToast: false,
+  })
+}
+
+/** How often a queued preview screenshot is looked for, and for how long. */
+export const SCREENSHOT_POLL_MS = 1000
+export const SCREENSHOT_WAIT_MS = 25_000
+
+/**
+ * The preview pane's camera: `POST /:id/preview-screenshot` (202, an image id reserved and the
+ * capture queued), then `HEAD` the image until it lands — 404 while the job runs, 422 once it
+ * could not be taken — for at most `SCREENSHOT_WAIT_MS`. A plain function the composer's chip
+ * waits on (`useComposerAttachments.addPending`), not a query: it is one bounded wait for one job,
+ * and nothing about it belongs in the cache. Throws a sentence for the chip.
+ */
+export async function takePreviewScreenshot(
+  id: string,
+  body: PreviewScreenshotRequestInput,
+  opts: { pollMs?: number; waitMs?: number } = {}
+): Promise<SessionAttachment> {
+  const { attachmentId } = await api.post(`${sessionPath(id)}/preview-screenshot`, body, {
+    schema: previewScreenshotResponseSchema,
+    showErrorToast: false,
+  })
+  const pollMs = opts.pollMs ?? SCREENSHOT_POLL_MS
+  const deadline = Date.now() + (opts.waitMs ?? SCREENSHOT_WAIT_MS)
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollMs))
+    try {
+      await api.head(sessionAttachmentPath(id, attachmentId))
+      return { id: attachmentId, contentType: 'image/png' }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 422) {
+        throw new Error('The screenshot could not be taken. Check that the page loads.')
+      }
+      if (!(err instanceof ApiError && err.status === 404)) throw err
+    }
+  }
+  throw new Error('The screenshot took too long. Try again.')
 }
 
 /** `POST /:id/cancel` — the turn polls `cancel_requested_at` and stops within a couple of seconds. */

@@ -6,7 +6,7 @@
  *
  * What this file adds is the chat's shape rather than a stage timeline's:
  *
- * - `user.message` is the person's bubble, `text` Claude's;
+ * - `user.message` is the person's bubble (with its images' ids), `text` Claude's;
  * - consecutive tool calls fold into ONE `tools` item — a turn that reads nine files is one quiet
  *   block of one-liners between two bubbles, not nine rows shouting over the answer;
  * - the lifecycle rows a person needs to know about become `notice`s (a failed or cut-off turn,
@@ -26,8 +26,9 @@ import {
   agentErrorEventDataSchema,
   agentStepEventDataSchema,
 } from '@launch/shared/ai/agents'
-import { shortModelName } from '@launch/shared/ai/config'
+import { agentModelLabel } from '@launch/shared/launch-agents'
 import {
+  type SessionAttachment,
   type SessionEvent,
   type SessionLanding,
   type SessionShipCiData,
@@ -68,7 +69,15 @@ import {
 export type NoticeTone = 'info' | 'success' | 'warning' | 'error'
 
 export type ChatItem =
-  | { kind: 'user'; id: string; seq: number; text: string; at: Date }
+  | {
+      kind: 'user'
+      id: string
+      seq: number
+      text: string
+      at: Date
+      /** The images it carried, in order (empty for text alone). */
+      attachments: SessionAttachment[]
+    }
   | { kind: 'assistant'; id: string; seq: number; text: string; at: Date }
   | { kind: 'tools'; id: string; seq: number; rows: ToolRow[] }
   | {
@@ -103,7 +112,14 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
   switch (event.type) {
     case 'user.message': {
       const parsed = sessionUserMessageDataSchema.safeParse(event.data)
-      return parsed.success ? { kind: 'user', ...base, text: parsed.data.text } : null
+      return parsed.success
+        ? {
+            kind: 'user',
+            ...base,
+            text: parsed.data.text,
+            attachments: parsed.data.attachments ?? [],
+          }
+        : null
     }
     case 'turn.end': {
       const parsed = sessionTurnEndDataSchema.safeParse(event.data)
@@ -216,7 +232,7 @@ function modelSwitchItem(
       seq: event.seq,
       at: event.at,
       tone: 'info',
-      text: `Switched to ${shortModelName(model)}`,
+      text: `Switched to ${agentModelLabel(model)}`,
     },
   }
 }

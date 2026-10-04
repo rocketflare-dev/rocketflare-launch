@@ -4,6 +4,7 @@
  * ```
  * codex exec --json -s danger-full-access --skip-git-repo-check -m <policy model> '<message>' < /dev/null
  * codex exec --json -s danger-full-access --skip-git-repo-check -m <policy model> resume <thread> '<message>' < /dev/null
+ * codex exec --json -s danger-full-access --skip-git-repo-check -i <image> … -m <policy model> [resume <thread>] '<message>' < /dev/null
  * ```
  *
  * - The global flags come BEFORE `resume`: Codex 0.160 rejects `-s` / `-C` after it (spike S-B1).
@@ -18,6 +19,10 @@
  *   hang the turn.
  * - The message is shell-quoted (`shellQuote`), never interpolated: it is user text. One starting
  *   with `-` gets a leading space so the CLI cannot read it as a flag.
+ * - Images: `-i <path>` per image, among the global flags BEFORE `resume` (where `-s` must be too)
+ *   and each followed by another flag — `-i` takes several values, so one right before the
+ *   message would read the message as a file. The paths are the turn's staged files
+ *   (`attachments.ts`), checked to be plain tokens.
  * - The system note is NOT on the command line: Codex has no `--append-system-prompt`, so it is
  *   `$CODEX_HOME/AGENTS.md`, written before every turn (`config.ts`).
  */
@@ -34,16 +39,12 @@ export const CODEX_THREAD_ID_RE =
 /** The shell command for one Codex turn. Throws on a model or thread id that is not a plain token. */
 export function buildCodexCommand(input: RuntimeCommandInput): string {
   if (!SAFE_TOKEN.test(input.model)) throw new Error('buildCodexCommand: invalid model id')
-  const parts = [
-    'codex',
-    'exec',
-    '--json',
-    '-s',
-    'danger-full-access',
-    '--skip-git-repo-check',
-    '-m',
-    input.model,
-  ]
+  const parts = ['codex', 'exec', '--json', '-s', 'danger-full-access', '--skip-git-repo-check']
+  for (const attachment of input.attachments ?? []) {
+    if (!SAFE_TOKEN.test(attachment.path)) throw new Error('buildCodexCommand: invalid image path')
+    parts.push('-i', attachment.path)
+  }
+  parts.push('-m', input.model)
   if (input.resumeId) {
     if (!CODEX_THREAD_ID_RE.test(input.resumeId)) {
       throw new Error('buildCodexCommand: invalid thread id')

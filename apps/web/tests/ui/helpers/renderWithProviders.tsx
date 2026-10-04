@@ -87,7 +87,9 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 /** `{ 'GET /api/members': handler }`; the method defaults to GET when omitted from the key. */
 export type RouteTable = Record<
   string,
-  Response | unknown | ((init: RequestInit | undefined, url: URL) => Response | unknown)
+  | Response
+  | unknown
+  | ((init: RequestInit | undefined, url: URL) => Response | unknown | Promise<Response | unknown>)
 >
 
 function urlOf(input: RequestInfo | URL): URL {
@@ -112,7 +114,8 @@ export function stubFetch(routes: RouteTable = {}) {
     for (const [key, value] of Object.entries(routes)) {
       const [m, p] = key.includes(' ') ? key.split(' ', 2) : ['GET', key]
       if (m.toUpperCase() !== method || p !== url.pathname) continue
-      return toResponse(typeof value === 'function' ? value(init, url) : value)
+      // A handler may answer later (a promise): an upload the test holds open.
+      return toResponse(await (typeof value === 'function' ? value(init, url) : value))
     }
     return notFoundResponse()
   })

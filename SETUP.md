@@ -212,7 +212,9 @@ pnpm dev              # apps/web: wrangler dev :3001 + vite :3000 (strict ports;
 > wrangler's cache (once per machine). A deploy only reaches a local Launch through the
 > tunnel, so locally a thumbnail is usually taken with Settings → General → "Refresh thumbnail" on an
 > app whose environment has a public `https` URL. To use Cloudflare's browsers instead, add
-> `remote = true` under `[browser]` for your run — never commit it.
+> `remote = true` under `[browser]` for your run — never commit it. The same local browser takes a
+> session's "Screenshot preview" (it reaches `*.localhost:3001` itself); with `remote = true` those
+> captures fail, because Cloudflare's browsers cannot reach your laptop.
 
 Verify: both processes report ready; `curl -s localhost:3001/api/health` returns `{"status":"ok",…}`;
 http://localhost:3000 renders the shell. Sign in: enter the seeded owner email, copy the magic-link
