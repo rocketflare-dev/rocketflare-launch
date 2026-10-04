@@ -42,7 +42,12 @@ import { sql } from 'drizzle-orm'
 import { nameFromEmail } from '../../src/api/services/auth'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from '../../src/api/services/launch/audit'
 import { credentialStatus, putCredential } from '../../src/api/services/launch/credentials'
-import { fingerprint, updateSettings } from '../../src/api/services/launch/setup'
+import {
+  fingerprint,
+  runCredentialCheck,
+  updateSettings,
+  type VendorOptions,
+} from '../../src/api/services/launch/setup'
 import { createTenantForUser, getSingleTenant } from '../../src/api/utils/db/tenant-helpers'
 import type { AppConfig } from '../../src/config'
 import type { Database } from '../../src/db/client'
@@ -65,6 +70,12 @@ export interface InstanceSetupInput {
    * stored rows are sealed with a key the Worker no longer has.
    */
   force?: boolean
+  /**
+   * Run each credential's check after sealing it, as the Setup page does on every save: the
+   * checks record what later steps read (the Cloudflare zone id, the GitHub App's installation)
+   * and may create the zone's wildcard record. Off (`false`) only in tests without vendors.
+   */
+  checks?: VendorOptions | false
 }
 
 export type CredentialOutcome = 'set' | 'rotated' | 'unchanged'
@@ -74,6 +85,8 @@ export interface InstanceSetupResult {
   tenantCreated: boolean
   settingsChanged: string[]
   credentials: Partial<Record<CredentialKind, CredentialOutcome>>
+  /** Each credential's check: its overall status and the ids of the probes that failed. */
+  checks: Partial<Record<CredentialKind, { status: string; failed: string[] }>>
 }
 
 /** The organisation audit rows go to: the one there is, else created with its owner. */
@@ -167,10 +180,43 @@ export async function writeInstanceSetup(
     outcomes[kind] = rotated ? 'rotated' : 'set'
   }
 
+  const checks: InstanceSetupResult['checks'] = {}
+  if (input.checks !== false) {
+    for (const [kind] of payloads) {
+      const {
+        status,
+        checks: probes,
+        effects,
+      } = await runCredentialCheck(db, cfg, kind, null, input.checks ?? {})
+      // The same audit rows the Setup page's check writes (src/api/routes/setup.ts).
+      for (const effect of effects) {
+        await recordAudit(db, {
+          tenantId: tenant.id,
+          ...PROVISION_ACTOR,
+          action: effect.action,
+          targetType: effect.targetType,
+          targetId: effect.targetId,
+          summary: { after: effect.after },
+        })
+      }
+      const failed = probes.filter(p => p.status === 'failed').map(p => p.id)
+      await recordAudit(db, {
+        tenantId: tenant.id,
+        ...PROVISION_ACTOR,
+        action: 'credential.checked',
+        targetType: 'Credential',
+        targetId: kind,
+        summary: { after: { checkStatus: status, failed } },
+      })
+      checks[kind] = { status, failed }
+    }
+  }
+
   return {
     tenantId: tenant.id,
     tenantCreated: tenant.created,
     settingsChanged: keys,
     credentials: outcomes,
+    checks,
   }
 }

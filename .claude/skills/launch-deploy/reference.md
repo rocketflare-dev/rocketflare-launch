@@ -82,8 +82,10 @@ to the instance file. Never run it from the agent's shell.
   (no template key, and no read-only probe).
 - **`apps/web/wrangler.deploy.toml` is shared across instances.** Never run two instances' phases at
   once. Render before a hand-run wrangler command.
-- **`setup` doesn't run the Setup checks.** The owner presses Check after signing in, which also
-  proves the Worker can unseal what was sealed.
+- **`setup` runs each credential's check from this machine**, as the Setup page does on save (it
+  records the Cloudflare zone id app creation needs). A check that failed (usually a GitHub App not
+  yet installed) is fixed, then rechecked from the Setup page or by rerunning `setup`. Pressing
+  Check in the page is the proof that the Worker itself can unseal what was sealed.
 - **`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` alone don't turn on workspace backups.** The template's
   `SESSION_WORKSPACE_BACKUP` and `BACKUP_BUCKET_NAME` vars must be set too (`docs/DEPLOY.md`
   § Coding sessions); render doesn't add them.

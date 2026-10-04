@@ -84,6 +84,7 @@ const input = (overrides: { apiToken?: string; force?: boolean } = {}) => ({
   tenantName: 'Launch',
   ownerEmail: 'owner@example.test',
   force: overrides.force,
+  checks: false as const,
 })
 
 /** Every `launch-provision` audit row, so a test can take the ones it added (by id, not clock). */
@@ -204,5 +205,34 @@ describe('provision setup', () => {
     )
     await expect(writeInstanceSetup(db, cfg, bad)).rejects.not.toThrow(/not-a-resend-key-value/)
     expect(store.sealed.get('resend_api_key')).toBe(before)
+  })
+  it('runs each credential check like the Setup page does, and audits it', async () => {
+    const before = await seen()
+    // Every vendor answers 401: the checks run (through the fake), fail, and are recorded.
+    const fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ success: false, errors: [{ code: 9109, message: 'no' }] }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    ) as unknown as typeof globalThis.fetch
+    const { github_app: _app, ...credentials } = input().credentials
+    const result = await writeInstanceSetup(db, cfg, {
+      ...input(),
+      credentials,
+      checks: { fetch },
+    })
+    expect(fetch).toHaveBeenCalled()
+    expect(Object.keys(result.checks).sort()).toEqual([
+      'cloudflare_api_token',
+      'neon_org_api_key',
+      'resend_api_key',
+    ])
+    for (const check of Object.values(result.checks))
+      expect(check?.failed.length).toBeGreaterThan(0)
+    const checked = (await added(result.tenantId, before)).filter(
+      r => r.action === 'credential.checked'
+    )
+    expect(checked.map(r => r.targetId).sort()).toEqual(Object.keys(result.checks).sort())
   })
 })

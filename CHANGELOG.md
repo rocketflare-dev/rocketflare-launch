@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`pnpm provision setup` runs each Setup credential's check**, as the Setup page does on save.
+  Before, it only sealed the values, so the Cloudflare zone id was never recorded and creating an
+  app failed at "Create the Workers" until someone pressed Check.
 - **A subdomain nothing is launched at no longer opens Launch.** The `*.<domain>/*` route that
   brings session previews to Launch brought every other host too, so `bob.<domain>` showed the
   Launch app. Now any host under the preview domain that is not a preview, not Launch's own and not

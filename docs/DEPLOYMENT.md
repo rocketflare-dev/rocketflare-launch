@@ -234,11 +234,12 @@ email DNS record's presence when verification stalls.
    `--skip-email`, copy it from `wrangler tail -c wrangler.deploy.toml`). Signing in makes you the
    organisation's owner and the platform admin. `SIGNUP_MODE` is `invite_only`, so nobody else
    can sign up until you invite them.
-2. **Settings → Platform → Setup** (`/settings/platform/setup`). `setup` already stored every value,
-   but it doesn't run the checks, so:
-   - press **Check** on each card: Domain and zone, Cloudflare, Neon, Resend, GitHub App. A green
-     GitHub App check means you also clicked Install. This is also the proof that the Worker can
-     unseal what `setup` sealed;
+2. **Settings → Platform → Setup** (`/settings/platform/setup`). `setup` stored every value and ran
+   each card's check (it printed `check passed` or the failing probes; the Cloudflare one records
+   the zone id that creating an app needs), so:
+   - every card should be green. Press **Check** on any that isn't once you've fixed the cause
+     (a GitHub App that failed because it wasn't installed yet is the usual one). Pressing Check
+     here is also the proof that the Worker can unseal what `setup` sealed;
    - run the **Public URL** check (GitHub's runners call Launch back at it, and creating an app is
      refused until it passes);
    - **pin the kit version** apps are created from (Kit version card).

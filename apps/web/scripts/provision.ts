@@ -1155,8 +1155,17 @@ async function setupPhase(flags: Flags): Promise<void> {
         `  organisation "${appName}" created with ${instance.adminEmails[0]} as its owner (they sign in to claim it)`
       )
     log(`  settings changed: ${result.settingsChanged.join(', ') || 'none'}`)
-    for (const [kind, outcome] of Object.entries(result.credentials))
-      log(`  ${kind.padEnd(22)} ${outcome}`)
+    for (const [kind, outcome] of Object.entries(result.credentials)) {
+      const check = result.checks[kind as keyof typeof result.checks]
+      log(
+        `  ${kind.padEnd(22)} ${outcome}${check ? `, check ${check.status}${check.failed.length ? ` (failed: ${check.failed.join(', ')})` : ''}` : ''}`
+      )
+    }
+    const failing = Object.entries(result.checks).filter(([, c]) => c?.failed.length)
+    if (failing.length)
+      warn(
+        `setup: ${failing.map(([k]) => k).join(', ')} failed a check — open Settings → Platform → Setup for the reasons (a GitHub App not yet installed on the org is the usual one), fix, and press Check there or rerun \`pnpm provision setup\``
+      )
     verifyLine(
       `setup ok — ${Object.keys(result.credentials).length} credential(s) sealed with the instance key (${Object.entries(
         result.credentials
