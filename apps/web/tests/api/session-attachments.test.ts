@@ -136,7 +136,8 @@ describe('POST /api/sessions/:id/attachments', () => {
     )
     expect(missing.status).toBe(404)
     expect(await json(missing)).toMatchObject({ code: 'attachment_not_found' })
-  })
+    // 2 MB through multipart parsing and back: ~1.5 s locally, over 5 s on a loaded CI runner.
+  }, 20_000)
 
   it('refuses what is not an image by its bytes (415), too big (413), empty or absent (400)', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
