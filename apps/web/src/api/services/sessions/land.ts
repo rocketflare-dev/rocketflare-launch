@@ -13,8 +13,9 @@
  *   land.review#N   open the `session.merge` approval idempotently and read it: pending → wait;
  *                   approved (on this head) → merge; rejected / expired / cancelled → reopen.
  *   land.merge#N    read first (a recorded or GitHub-side merge wins), the head and CI again, the
- *                   approval again, then ONE squash on the gate SHA, then ONE compare-and-set
- *                   `shipping → shipped`, stage `releasing`.
+ *                   approval again, then ONE squash on the gate SHA (a refused one reads the PR
+ *                   again: an earlier instance's squash that just landed is recorded, not
+ *                   reopened), then ONE compare-and-set `shipping → shipped`, stage `releasing`.
  *   land.reopen#N   give the session back: `ready` while the container is still the loop's, else
  *                   `suspended`; the landing cleared.
  *   land.wait#N     (the Workflow's) `waitForEvent(SESSION_WAKE_EVENT)` for one round.
@@ -31,8 +32,9 @@
  * Rules on top of `steps.ts`'s: every landing write is a compare-and-set on the status AND
  * `landing->>'stage'` (a jsonb merge, so a concurrent field write is not lost); every query names
  * the tenant; a check's log is redacted before it reaches an event (and through it, the system
- * note a fix turn reads); each round stamps `last_activity_at`, the liveness the safety-net cron
- * (`nudgeLandingSessions`, on `sessions.checks`) reads.
+ * note a fix turn reads); each round stamps `last_activity_at` (and beats it while it runs —
+ * `withHeartbeat`), the liveness the safety-net cron (`nudgeLandingSessions`, on `sessions.checks`)
+ * and the reconcile (`reconcile.ts`, which restarts an instance alive in name only) read.
  */
 import {
   DEFAULT_APPROVAL_POLICIES,
@@ -800,6 +802,14 @@ export async function landMergeStep(
     commitMessage: body ? `${body}\n\n${signature}` : signature,
   })
   if (!merged.merged) {
+    // A merge already in flight when this round began — an earlier instance's squash, killed
+    // after GitHub took it (the reconcile restarts a landing in `merging`) — is refused as "not
+    // mergeable": read the PR once more before calling it refused, so it is recorded, not reopened.
+    const after = await host.getPullRequest(repo, landing.prNumber).catch(() => null)
+    if (after?.merged) {
+      const sha = await recordMerge(scope, session, landing, mergeOf(after, scope), 'session.merge')
+      return sha ? { next: 'release', mergeSha: sha } : { next: 'none' }
+    }
     if (merged.code === 'head_moved') return reopen('head_moved', { gateSha: landing.gateSha })
     await recordAudit(scope.db, {
       ...SYSTEM_ACTOR,

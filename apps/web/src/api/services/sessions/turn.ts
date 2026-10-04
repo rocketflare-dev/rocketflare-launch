@@ -1344,7 +1344,8 @@ async function runLeasedTurn(
       if (p.now() - startedAt >= p.timeoutMs) return stop('timeout')
       if (p.now() - lastBeat >= p.heartbeatMs) {
         lastBeat = p.now()
-        // "This turn is alive" — only while `working` (a ship turn's `shipping` is not reconciled).
+        // "This turn is alive" — only while `working` (a ship's fix turn runs `shipping`, and its
+        // step's `withHeartbeat` beats for it).
         // A failed beat is not a failed turn: the next one tries again.
         await db
           .update(sessions)

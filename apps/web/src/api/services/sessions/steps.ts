@@ -573,6 +573,20 @@ export function lostTurnMessage(outcome: SalvageOutcome, detail?: string): strin
   }
 }
 
+/** The `error` a ship whose Workflow was lost mid-gate ends with, by what `salvage` managed. */
+export function lostShipMessage(outcome: SalvageOutcome, detail?: string): string {
+  const head =
+    'The ship stopped before it opened a pull request: Launch lost track of it (its Workflow stopped).'
+  switch (outcome) {
+    case 'saved':
+      return `${head} Your work is saved on the session’s branch; ship again to run the gate.`
+    case 'kept':
+      return `${head} Launch could not save your work to the branch${detail ? ` (${detail})` : ''}; it is still in the session’s workspace, which Launch kept. Ship again to run the gate.`
+    case 'lost':
+      return `${head} The sandbox could not be reached, so the session restarts from its last checkpoint; ship again to run the gate.`
+  }
+}
+
 /** The `turn.interrupted { reason: 'cancelled' }` sentence for a Stop that `salvage` carried out. */
 export function salvagedCancelMessage(outcome: SalvageOutcome, detail?: string): string {
   switch (outcome) {
@@ -589,12 +603,15 @@ export function salvagedCancelMessage(outcome: SalvageOutcome, detail?: string):
 const SALVAGE_PHASE = 'Saving the interrupted work'
 
 /**
- * Write the heartbeat of a live session while `salvage` runs, so neither the reconcile (3 min) nor
- * a Stop's fast path (`SESSION_CANCEL_STALL_MS`, 30 s) mistakes the salvage itself for another
- * lost turn and terminates the instance doing it. Returns the stop function.
+ * Write the session's heartbeat (`last_activity_at`) now and every `every` ms while it is in one
+ * of `statuses`, until the returned stop function is called. A failed beat is not a failed step:
+ * the next one tries again.
  */
-function keepAlive(scope: StepScope): () => void {
-  const every = Math.min(limitsOf(scope).heartbeatMs, TURN_HEARTBEAT_MS)
+function startBeating(
+  scope: StepScope,
+  statuses: readonly SessionStatus[],
+  every: number
+): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const beat = async () => {
@@ -606,7 +623,7 @@ function keepAlive(scope: StepScope): () => void {
         and(
           eq(sessions.tenantId, scope.params.tenantId),
           eq(sessions.id, scope.params.sessionId),
-          inArray(sessions.status, [...SALVAGE_STATUSES])
+          inArray(sessions.status, [...statuses])
         )
       )
       .catch(() => {})
@@ -616,6 +633,51 @@ function keepAlive(scope: StepScope): () => void {
   return () => {
     stopped = true
     clearTimeout(timer)
+  }
+}
+
+/**
+ * Write the heartbeat of a live session while `salvage` runs, so neither the reconcile (3 min) nor
+ * a Stop's fast path (`SESSION_CANCEL_STALL_MS`, 30 s) mistakes the salvage itself for another
+ * lost turn and terminates the instance doing it. Returns the stop function.
+ */
+function keepAlive(scope: StepScope): () => void {
+  return startBeating(
+    scope,
+    SALVAGE_STATUSES,
+    Math.min(limitsOf(scope).heartbeatMs, TURN_HEARTBEAT_MS)
+  )
+}
+
+/**
+ * A step body that writes the session's heartbeat when it starts and every `heartbeatMs` while it
+ * runs — but only while the row is in one of `statuses` — so the reconcile (`reconcile.ts`) can
+ * tell a healthy ship, landing or Phase B step, however long it takes (a gate command, a fix turn,
+ * a slow GitHub answer), from an instance that died under it. The gap a healthy instance leaves is
+ * then only what it waits BETWEEN steps (a retry's delay, a landing round's wait), from which the
+ * reconcile's windows are computed.
+ */
+export function withHeartbeat<T>(
+  statuses: readonly SessionStatus[],
+  body: (scope: StepScope) => Promise<T>
+): (scope: StepScope) => Promise<T> {
+  return async scope => {
+    const stop = startBeating(scope, statuses, limitsOf(scope).heartbeatMs)
+    try {
+      await scope.db
+        .update(sessions)
+        .set({ lastActivityAt: scope.now() })
+        .where(
+          and(
+            eq(sessions.tenantId, scope.params.tenantId),
+            eq(sessions.id, scope.params.sessionId),
+            inArray(sessions.status, [...statuses])
+          )
+        )
+      return await body(scope)
+    } finally {
+      stop()
+    }
   }
 }
 
@@ -719,6 +781,14 @@ export async function salvageStep(
   } else if (session.status === 'working') {
     const message = lostTurnMessage(outcome, detail)
     await emit({ type: 'turn.failed', turn, data: { turn, message } })
+  } else if (session.status === 'shipping') {
+    // A ship whose Workflow died before it opened a pull request (a Phase A landing is resumed by
+    // `claim`, never salvaged): the gate is not re-run on its own — the person ships again.
+    await emit({
+      type: 'error',
+      turn: session.turnCount,
+      data: { message: lostShipMessage(outcome, detail) },
+    })
   } else if (outcome === 'kept') {
     await emit({
       type: 'error',

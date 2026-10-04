@@ -1565,7 +1565,21 @@ reload) is restarted as `<id>-rN` from the row.
   now (End, Ship, Resume, a message). A `queued` instance is left alone; a live one is terminated;
   the status is NOT changed and nothing fails — a fresh instance runs the owed work from the row
   (`claim` salvages a `ready`/`blocked` container first, so an End still checkpoints). Reading the
-  session page (or the cron) is enough to unstick it. **A conversation that cannot come back is forgotten**: a cold resume whose
+  session page (or the cron) is enough to unstick it. **A ship, a landing, a release** (a
+  `wrangler dev` reload during a landing's CI wait left session 7a679a43 `shipping` at stage `ci`
+  for ever, its PR green and unmerged, every wake going to an instance "running" in name only):
+  every ship step, Phase A land step and Phase B step (and a merged landing's `cleanup`) beats
+  `last_activity_at` every 30 s while it runs (`withHeartbeat`, a fix turn and a 25-minute gate
+  command included), so a healthy instance is quiet only BETWEEN steps, and each window is computed
+  from those gaps (`step-config.ts`'s retry delays, `land.ts`'s round waits) plus a beat and two
+  minutes: the gate 5 min 10 s (`cleanup`'s 160 s retry delay), a landing in `ci` or `merging`
+  4 min 30 s (the 2-minute round or retry wait), in `approval` 32 min 30 s (its 30-minute round),
+  a merged landing in Phase B (`shipped`, `releasing`/`deploying`) 5 min 10 s; an End asked of a
+  landing outside `merging` 75 s from the request. Past it, the owed-work rescue — `queued` left,
+  any other live instance terminated, a fresh one started, the status and the landing untouched:
+  `claim` resumes a landing in the loop (`land.ci` → `land.merge`, or `end` for an End), a release
+  in Phase B, and salvages a gate (`→ suspended`, an `error` saying the ship stopped; the person
+  ships again). `GET /:id/pr`, the ship panel's poll, reconciles too. **A conversation that cannot come back is forgotten**: a cold resume whose
   `claude_session_id` has no transcript to restore (or one the container does not hold after the
   write) clears it with an `error` event ("The earlier conversation could not be restored; Claude
   starts fresh with the code as it is."), and a turn clears it too when the container says the
@@ -1589,12 +1603,15 @@ transcript on SIGTERM, need a real container. The salvaged turn itself is not co
 sends the message again. A container that answers but whose kill script fails is destroyed, so its
 unsaved edits are still lost then. An owed SHIP that the reconcile restarts is dropped: the salvage swaps
 `requested_action = 'ship'` for the `resume` it needs, so the session comes back `ready` and the
-person ships again. A `shipping` session whose instance died mid-GATE is not
-reconciled (no heartbeat is read for it) — a later wake's `claim` salvages it, and its gate branch
-(issue #1) is deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A
-LANDING whose instance died is found by `sessions.checks`' safety net (`nudgeLandingSessions`,
-§18.13) and resumed by `claim` without a salvage — but only within the cron's `*/5` plus three of
-its stage's rounds. A `shipped` session whose PR a person merged on GitHub is the one terminal
+person ships again. A `shipping` session whose instance died mid-GATE is restarted
+after 5 minutes of quiet and salvaged, but its ship is dropped (the person ships again), a gate
+command still running in a kept container runs on to its deadline, and its gate branch (issue #1)
+is deleted by the next ship's `ship.db`, the session's cleanup or, after three hours,
+`sessions.gate-sweep`. A LANDING whose instance died is restarted by the reconcile within its window
+(4.5 min in `ci`, 32.5 in `approval`) and the next read or `*/5` sweep; the safety net
+(`nudgeLandingSessions`, §18.13) still only WAKES a live one. A squash GitHub took from an instance
+that died before recording it is found by the re-run's reads (proven with the FakeCloud's GitHub,
+not GitHub's real answer to a second squash). A `shipped` session whose PR a person merged on GitHub is the one terminal
 row that runs again: the same cron ADOPTS the merge (§18.13) and starts a fresh instance for
 Phase B. A step cannot be cancelled mid-call: a timeout or an End fails it, and `cleanup`'s destroy is
 what stops the command still running in the container. Presence is only the preview: someone
@@ -2269,7 +2286,8 @@ with the reviewer's comment. Approving moves the stage `approval → merging` IN
 (a recorded merge, or a PR GitHub says is merged, wins — a retried or second instance finds it
 there), checks the head, CI and the approval again, then ONE squash: title `"<summary title>
 (#n)"`, message the summary body + "Merged by Launch from session <short>[, approved by <name>]";
-409 → `head_moved`, 405/422 → `merge_refused` (audited `session.merge_refused`), 30 minutes in
+409 → `head_moved`, 405/422 → `merge_refused` (audited `session.merge_refused`) unless the PR now
+reads merged (an earlier instance's squash that landed: recorded, not reopened), 30 minutes in
 `merging` without a merge → `merge_refused`. Merged → one compare-and-set `shipping → shipped`,
 stage `releasing` (`mergeSha`, `mergedAt`, `stageAt`), `pr.merged` (via `session.merge`) unless
 recorded, audit `session.merged`, `ship.merged`. **`land.reopen#N`** gives the session back:
@@ -2288,8 +2306,9 @@ with a `step.sleep` `…-wait#K.R` between rounds; bodies: the `landRelease` / `
 reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
 `session.land_stalled`) — after the merge nothing reopens (decision §0.1). **The safety net**:
 `sessions.checks` (`*/5`) wakes every landing in a moving stage quiet for three of its rounds (by
-`stageAt` AND `last_activity_at`, which each land step stamps), or restarts its instance when that
-is gone; `claim` resumes a Phase A landing straight into the loop (never `salvage`) and a merged one
+`stageAt` AND `last_activity_at`, which each land step stamps and beats), or restarts its instance
+when that is gone — one alive in name only (a `wrangler dev` reload) is the reconcile's, which
+terminates and restarts it past the landing's window; `claim` resumes a Phase A landing straight into the loop (never `salvage`) and a merged one
 into Phase B (after `cleanup` if it never ran). **Adopting a hand merge** (`land-adopt.ts`): a
 PR merged on GitHub while NO landing was moving — a session shipped before issue #5 (landing null),
 or one left at stage `pr` — is picked up by the same cron's merge follower when the app ships to
@@ -2333,7 +2352,8 @@ before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so), 
 `pnpm gate` gains a step Launch does not know cannot ship until Launch learns it. The session
 image with the 0.16.0 store (`session-5`, now `session-6` with Codex) is defined, not yet deployed (`wrangler deploy` builds
 it; drain sessions first). A `shipping`
-session whose Workflow died is still not reconciled (its gate branch is swept after three hours).
+session whose Workflow died is restarted by the reconcile (§18 Reconcile) — a landing resumes where
+it stood, a gate is salvaged and the person ships again (its gate branch swept after three hours).
 The summary's model is not traced (D32). **The landing** (issue #5) is proven with the FakeCloud's
 GitHub — round by round with fake Phase B hooks (`tests/api/session-land.test.ts`), and end to end
 with every slice's real code from Ship to live on staging, the release's chain and the promotion

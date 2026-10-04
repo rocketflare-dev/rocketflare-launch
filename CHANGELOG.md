@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A ship or landing whose Workflow died is restarted.** A `wrangler dev` reload during a
+  landing's CI wait left a session `shipping` at stage `ci` for ever, its PR green and never
+  merged. Ship, landing and Phase B steps now beat `last_activity_at` while they run, and the
+  reconcile (on `GET /api/sessions/:id`, `GET /:id/pr` and the `*/5` cron) terminates an instance
+  quiet past a window computed from the longest healthy gap (4.5 min in `ci`/`merging`, 32.5 in
+  `approval`, 5 min 10 s for the gate and Phase B) and starts a fresh one that resumes the landing
+  where it stood; a gate is salvaged and the person ships again. A squash refused because an
+  earlier one just landed is recorded, not reopened.
 - **Coding sessions default to Opus 5.5.** A new Claude Code session starts on `claude-opus-5-5`
   (it heads the Setup page's model list too); a deployment whose stored session policy names a model
   keeps it until changed on Setup → Coding agents. The composer's picker still switches per message.

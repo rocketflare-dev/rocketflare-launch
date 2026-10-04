@@ -25,7 +25,8 @@
  *   `screenshots` says whether this deployment has `BROWSER` (the pane's camera).
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
  * - `GET /:id/pr` → `sessionPrResponseSchema`, refreshing `pr_checks` from the repo host when older
- *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks.
+ *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks. Then the session is
+ *   reconciled (`reconcile.ts`): a ship or landing whose Workflow died is restarted.
  *
  * Routes START work (plan §1.2): they write the request columns and wake the `SessionWorkflow`
  * (`wakeOrRestart`, `lifecycle.ts`: `SESSION_WAKE_EVENT` with an empty payload — the row is the
@@ -262,7 +263,7 @@ sessionShipRouter.post('/:id/preview-grant', async c => {
 })
 
 sessionShipRouter.get('/:id/pr', async c => {
-  const { db, cfg, logger, row } = await visible(c, 'read')
+  const { db, cfg, logger, realtime, row } = await visible(c, 'read')
   let checks = row.prChecks ?? null
   if (row.prNumber) {
     try {
@@ -273,6 +274,9 @@ sessionShipRouter.get('/:id/pr', async c => {
       logger.warn({ err, sessionId: row.id }, 'PR checks refresh failed; answering the stored ones')
     }
   }
+  // The ship panel polls this while a landing waits on CI: a landing whose Workflow died under it
+  // is restarted here, throttled, as on `GET /:id` (`reconcile.ts`) — a fresh one costs nothing.
+  await reconcileSessionSafely(db, c.env, row, { logger, realtime })
   return c.json({
     prNumber: row.prNumber,
     prUrl: row.prUrl,

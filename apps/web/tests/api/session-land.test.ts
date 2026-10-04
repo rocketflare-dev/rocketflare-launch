@@ -13,8 +13,10 @@
  * a moved head, a closed PR and a CI that never reports reopen; a retried merge step merges once;
  * a person's merge goes straight to Phase B; End during `ci` abandons the landing and a merge in
  * flight refuses an End; a lost instance in `ci` is restarted by the cron's safety net and resumed
- * without a salvage; the squash message and the review's context come from `ship_summary`; and
- * every step name is distinct.
+ * without a salvage; the squash message and the review's context come from `ship_summary`; a
+ * ship, landing or release whose instance died "running" (a `wrangler dev` reload) is restarted
+ * by the reconcile past its window and resumed — merging once, ending on an End, salvaging a gate;
+ * and every step name is distinct.
  */
 import { generateKeyPairSync } from 'node:crypto'
 import {
@@ -32,9 +34,23 @@ import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
-import { casLanding, nudgeLandingSessions } from '@/api/services/sessions/land'
+import {
+  casLanding,
+  LAND_CI_SLOW_SECONDS,
+  LAND_RETRY_SECONDS,
+  nudgeLandingSessions,
+} from '@/api/services/sessions/land'
+import type { RepoHostPort } from '@/api/services/sessions/ports'
+import {
+  reconcileSession,
+  reconcileStaleSessions,
+  SESSION_LANDING_STALL_MS,
+  SESSION_RELEASE_STALL_MS,
+  SESSION_SHIP_GATE_STALL_MS,
+} from '@/api/services/sessions/reconcile'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
-import { summarizeShip } from '@/api/services/sessions/ship'
+import { sessionRepo, summarizeShip } from '@/api/services/sessions/ship'
+import { lostShipMessage, type StepScope, withHeartbeat } from '@/api/services/sessions/steps'
 import { sessionSystemNote } from '@/api/services/sessions/turn'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
@@ -54,7 +70,13 @@ import {
   scriptKitGate,
   seedSessionApp,
 } from '../helpers/sessions'
-import { createExecutionContext, createTestEnv, stubs, type TestEnv } from '../mocks/bindings'
+import {
+  createExecutionContext,
+  createTestEnv,
+  type RecordingWorkflow,
+  stubs,
+  type TestEnv,
+} from '../mocks/bindings'
 import { createFakeWorkflowStep, type RecordedWait } from '../mocks/cloudflare-workers'
 
 vi.mock('@/api/services/sessions/lifecycle', async importOriginal => {
@@ -94,6 +116,7 @@ const WAKE = { type: SESSION_WAKE_EVENT, payload: {} }
 const SUMMARY = '{"title": "Greet people on the home page", "body": "Adds a bold greeting."}'
 const LIMITS = { endPollMs: 5, commandPollMs: 1, heartbeatMs: 60_000 }
 const MINUTE = 60_000
+const HOUR = 60 * MINUTE
 const { privateKey: APP_PEM } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -926,6 +949,299 @@ describe('Phase B: a stall never reopens', () => {
       'land.health#3.2',
       'land.live#3',
     ])
+  })
+})
+
+describe('reconcile: a ship or landing whose Workflow died (a `wrangler dev` reload)', () => {
+  const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+  const msAgo = (ms: number) => new Date(Date.now() - ms)
+
+  /**
+   * Run until the step named `at` is about to start, then lose the instance there: that step never
+   * runs and the run never settles — as a reload leaves it — while the local engine still says
+   * `running`. `before` runs first (GitHub moving on under the dying step).
+   */
+  async function dieAt(h: Harness, at: string, before?: () => Promise<void>): Promise<SessionRow> {
+    let lose: () => void = () => {}
+    const reached = new Promise<void>(resolve => {
+      lose = resolve
+    })
+    void drive(h, {
+      onLand: async (h, _wait, n) => {
+        if (n === 0) setGate(h, await gateShaOf(h), 'success')
+        return 'wake'
+      },
+      wrapDo: async (name, body) => {
+        if (name !== at) return body()
+        await before?.()
+        lose()
+        return new Promise(() => {})
+      },
+    })
+    await reached
+    workflowOf(h).setStatus(h.row.id, { status: 'running' })
+    return reload(h.row)
+  }
+
+  /** The row, quiet for `ms` by the clock the reconcile reads. */
+  async function quietFor(h: Harness, ms: number): Promise<SessionRow> {
+    await patch(h.row, { lastActivityAt: msAgo(ms) })
+    return reload(h.row)
+  }
+
+  it('shipping in ci, quiet past its window under a "running" instance: terminated and restarted; the fresh one merges once CI is green', async () => {
+    const h = await harness()
+    const stuck = await dieAt(h, 'inspect#3')
+    expect(stuck).toMatchObject({ status: 'shipping', landing: { stage: 'ci' } })
+    const row = await quietFor(h, SESSION_LANDING_STALL_MS.ci + MINUTE)
+
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toEqual({
+      outcome: 'settled',
+      status: 'shipping',
+      instanceStatus: 'running',
+      restartedAs: `${row.id}-r1`,
+    })
+    const wf = workflowOf(h)
+    expect(wf.terminated).toEqual([row.id])
+    expect(wf.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+    // Nothing settled: the status and the landing are where they were.
+    const after = await reload(row)
+    expect(after).toMatchObject({ status: 'shipping', instanceId: `${row.id}-r1`, error: null })
+    expect(after.landing).toEqual(stuck.landing)
+    const [audit] = await auditOf(h, 'session.reconciled')
+    expect(audit?.summary).toMatchObject({
+      after: { status: 'shipping', phase: 'landing', stage: 'ci', instanceStatus: 'running' },
+    })
+
+    // The fresh instance: claim → the loop (no salvage), CI green → ONE merge → Phase B → live.
+    const run = await drive(h, { fresh: true })
+    expect(run.names.slice(0, 4)).toEqual(['claim', 'inspect#0', 'land.ci#0', 'land.merge#0'])
+    expect(run.names).not.toContain('salvage')
+    expect(run.names.at(-1)).toBe('land.live#0')
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(1)
+    expect(await reload(row)).toMatchObject({ status: 'shipped', landing: { stage: 'live' } })
+  })
+
+  it('inside the window — a healthy landing between rounds — is left alone', async () => {
+    const h = await harness()
+    await dieAt(h, 'inspect#3')
+    const row = await quietFor(h, SESSION_LANDING_STALL_MS.ci - MINUTE)
+    expect(await reconcileSession(db, h.env, row)).toEqual({ outcome: 'skipped' })
+    // The window is the longest healthy gap (a 2-minute CI round, or the retry wait) and then some.
+    expect(SESSION_LANDING_STALL_MS.ci).toBeGreaterThan(
+      (LAND_CI_SLOW_SECONDS + LAND_RETRY_SECONDS) * 1000
+    )
+    // An `approval` landing waits 30-minute rounds: quiet for 20 minutes is healthy.
+    await patch(h.row, { landing: { ...(row.landing as SessionLanding), stage: 'approval' } })
+    expect(await reconcileSession(db, h.env, await quietFor(h, 20 * MINUTE))).toEqual({
+      outcome: 'skipped',
+    })
+    expect(workflowOf(h).statusCalls).toEqual([])
+  })
+
+  it('a queued (fresh) instance is left alone', async () => {
+    const h = await harness()
+    await dieAt(h, 'inspect#3')
+    workflowOf(h).setStatus(h.row.id, { status: 'queued' })
+    const row = await quietFor(h, 10 * MINUTE)
+    expect(await reconcileSession(db, h.env, row)).toEqual({
+      outcome: 'alive',
+      instanceStatus: 'queued',
+    })
+    expect(workflowOf(h).terminated).toEqual([])
+    expect(workflowOf(h).created).toEqual([])
+  })
+
+  it('the cron sweep selects it, and not a landing inside its window', async () => {
+    const h = await harness()
+    await dieAt(h, 'inspect#3')
+    await quietFor(h, 10 * MINUTE)
+    const fresh = await insertSession(db, h.f, {
+      status: 'shipping',
+      landing: { ...((await reload(h.row)).landing as SessionLanding), prNumber: 2 },
+      lastActivityAt: msAgo(MINUTE),
+    })
+    const settled = await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })
+    expect(settled).toBe(1)
+    expect(workflowOf(h).created.map(c => c.id)).toEqual([`${h.row.id}-r1`])
+    expect((await reload(fresh)).instanceId).toBe(fresh.instanceId)
+  })
+
+  it('GET /api/sessions/:id and GET /:id/pr unstick it: viewing the session is enough', async () => {
+    const h = await harness()
+    await dieAt(h, 'inspect#3')
+    await quietFor(h, 10 * MINUTE)
+    const res = await request(`/api/sessions/${h.row.id}`, { headers: h.f.cookie }, { env: h.env })
+    expect(res.status).toBe(200)
+    expect(workflowOf(h).terminated).toEqual([h.row.id])
+    expect((await reload(h.row)).instanceId).toBe(`${h.row.id}-r1`)
+
+    // The fresh instance died too: the ship panel's PR poll reaches it.
+    workflowOf(h).setStatus(`${h.row.id}-r1`, { status: 'errored' })
+    await quietFor(h, 10 * MINUTE)
+    const pr = await request(
+      `/api/sessions/${h.row.id}/pr`,
+      { headers: h.f.cookie },
+      { env: h.env }
+    )
+    expect(pr.status).toBe(200)
+    expect((await reload(h.row)).instanceId).toBe(`${h.row.id}-r2`)
+  })
+
+  it('End asked of a dead landing: judged from the request (75 s), and the fresh instance ends it', async () => {
+    const h = await harness()
+    await dieAt(h, 'inspect#3')
+    await quietFor(h, 10 * MINUTE)
+    // A reload just now: the End's wake reaches nothing; its immediate reconcile must not kill
+    // the instance it woke, so it is judged from the request.
+    workflowOf(h).setStatus(h.row.id, { status: 'running' })
+    await patch(h.row, { lastActivityAt: new Date() })
+    const res = await request(
+      `/api/sessions/${h.row.id}/end`,
+      { method: 'POST', headers: { ...h.f.cookie, 'X-Requested-With': 'fetch' } },
+      { env: h.env }
+    )
+    expect(res.status).toBe(202)
+    expect(workflowOf(h).terminated).toEqual([])
+    // 90 s later nobody has acted on it.
+    await patch(h.row, { cancelRequestedAt: msAgo(90_000), lastActivityAt: msAgo(90_000) })
+    const result = await reconcileSession(db, h.env, await reload(h.row))
+    expect(result).toMatchObject({ outcome: 'settled', status: 'shipping' })
+    expect(workflowOf(h).terminated).toEqual([h.row.id])
+    const run = await drive(h, { fresh: true })
+    expect(run.names.slice(0, 3)).toEqual(['claim', 'inspect#0', 'end#0'])
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', landing: null })
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
+  })
+
+  it('merging, the squash taken by GitHub before the instance died: the re-run records it — no second merge', async () => {
+    const h = await harness()
+    const stuck = await dieAt(h, 'land.merge#3', async () => {
+      // The dying step's squash reached GitHub; its compare-and-set never ran.
+      const row = await reload(h.row)
+      const host = h.ports.repoHost(db)
+      const merged = await host.mergePullRequest(await sessionRepo(db, row), {
+        prNumber: 1,
+        sha: row.landing?.gateSha ?? '',
+        commitTitle: 'Greet people on the home page (#1)',
+        commitMessage: 'Adds a bold greeting.',
+      })
+      expect(merged.merged).toBe(true)
+    })
+    expect(stuck).toMatchObject({ status: 'shipping', landing: { stage: 'merging' } })
+    const row = await quietFor(h, SESSION_LANDING_STALL_MS.merging + MINUTE)
+    expect(await reconcileSession(db, h.env, row)).toMatchObject({ outcome: 'settled' })
+
+    const run = await drive(h, { fresh: true })
+    expect(run.names.slice(0, 3)).toEqual(['claim', 'inspect#0', 'land.merge#0'])
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(1)
+    expect(await eventData(h, 'ship.merged')).toHaveLength(1)
+    expect(await auditOf(h, 'pr.merged')).toHaveLength(1)
+    expect(await reload(row)).toMatchObject({ status: 'shipped', landing: { stage: 'live' } })
+  })
+
+  it('a squash refused because it had just landed (read open, then "not mergeable"): recorded, not reopened', async () => {
+    const h = await harness()
+    // The round reads the PR open; by the time its squash arrives an earlier one (a dead
+    // instance's) has landed, so GitHub refuses it as "not mergeable".
+    const real = h.ports.repoHost
+    h.ports.repoHost = d => {
+      const host = real(d)
+      // A class instance: keep its prototype, replace one method.
+      const wrapped: RepoHostPort = Object.create(host)
+      wrapped.mergePullRequest = async (repo, input) => {
+        h.cloud.github.merge(h.f.repo.owner, h.f.repo.repo, input.prNumber)
+        const answer = await host.mergePullRequest(repo, input)
+        expect(answer.merged).toBe(false)
+        return answer
+      }
+      return wrapped
+    }
+    const run = await drive(h, {
+      onLand: async h => {
+        setGate(h, await gateShaOf(h), 'success')
+        return 'wake'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(await eventData(h, 'ship.reopened')).toEqual([])
+    expect(await auditOf(h, 'session.merge_refused')).toHaveLength(0)
+    expect(await reload(h.row)).toMatchObject({ status: 'shipped', landing: { stage: 'live' } })
+  })
+
+  it('a ship that died mid-gate: restarted past its window; the fresh instance salvages and says to ship again', async () => {
+    const h = await harness()
+    const stuck = await dieAt(h, 'ship.gate#1.1.test')
+    expect(stuck).toMatchObject({ status: 'shipping', landing: null })
+    expect(await reconcileSession(db, h.env, await quietFor(h, 4 * MINUTE))).toEqual({
+      outcome: 'skipped',
+    })
+    const row = await quietFor(h, SESSION_SHIP_GATE_STALL_MS + MINUTE)
+    expect(await reconcileSession(db, h.env, row)).toMatchObject({
+      outcome: 'settled',
+      status: 'shipping',
+      restartedAs: `${row.id}-r1`,
+    })
+    const run = await drive(h, { fresh: true })
+    expect(run.names.slice(0, 3)).toEqual(['claim', 'salvage', 'inspect#0'])
+    const errors = await eventData<{ message: string }>(h, 'error')
+    expect(errors.map(e => e.message)).toContain(lostShipMessage('saved'))
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
+  })
+
+  it('a merged landing whose release died (Phase B, `shipped`): restarted past its window', async () => {
+    const h = await harness()
+    const stuck = await dieAt(h, 'land.staging#3.0')
+    expect(stuck).toMatchObject({ status: 'shipped', landing: { stage: 'deploying' } })
+    expect(await reconcileSession(db, h.env, await quietFor(h, 2 * MINUTE))).toEqual({
+      outcome: 'skipped',
+    })
+    const row = await quietFor(h, SESSION_RELEASE_STALL_MS + MINUTE)
+    expect(await reconcileSession(db, h.env, row)).toMatchObject({
+      outcome: 'settled',
+      status: 'shipped',
+      instanceStatus: 'running',
+    })
+    expect(workflowOf(h).terminated).toEqual([row.id])
+    h.phaseB.length = 0
+    const run = await drive(h, { fresh: true })
+    expect(run.names).toEqual([
+      'claim',
+      'land.release#0.0',
+      'land.staging#0.0',
+      'land.health#0.0',
+      'land.live#0',
+    ])
+    expect((await reload(row)).landing?.stage).toBe('live')
+  })
+
+  it('a ship step beats while it runs, and only while the row is shipping', async () => {
+    const h = await harness()
+    await patch(h.row, { status: 'shipping', lastActivityAt: msAgo(HOUR) })
+    const clock = { ms: Date.now() - HOUR }
+    const scope = {
+      db,
+      params: { tenantId: h.row.tenantId, sessionId: h.row.id },
+      now: () => {
+        clock.ms += 1000
+        return new Date(clock.ms)
+      },
+      limits: { heartbeatMs: 5 },
+    } as unknown as StepScope
+    const seen: number[] = []
+    await withHeartbeat(['shipping'], async () => {
+      for (let i = 0; i < 4; i++) {
+        await new Promise(r => setTimeout(r, 15))
+        seen.push((await reload(h.row)).lastActivityAt?.getTime() ?? 0)
+      }
+    })(scope)
+    expect(new Set(seen).size).toBeGreaterThan(1)
+    await patch(h.row, { status: 'ready', lastActivityAt: msAgo(HOUR) })
+    await withHeartbeat(['shipping'], async () => {
+      await new Promise(r => setTimeout(r, 15))
+    })(scope)
+    expect((await reload(h.row)).lastActivityAt?.getTime()).toBeLessThan(Date.now() - 30 * MINUTE)
   })
 })
 

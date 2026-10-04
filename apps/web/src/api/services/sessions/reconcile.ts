@@ -4,9 +4,10 @@
  * recording anything: a `wrangler dev` reload kills the running step and the local engine keeps
  * reporting the instance `running` while nothing runs (measured: until something pokes the engine
  * again, minutes later), the platform can lose an instance, a step can wedge on an RPC. The row
- * then says `booting` (or `working`) for ever and the page spins — or an idle row's request (an
- * End, a message) waits for ever on a wake that went nowhere. On read (`GET /api/sessions/:id`),
- * on an end request (`POST /:id/end`) and from the five-minute cron (`sessions.expire`), this asks:
+ * then says `booting` (or `working`, or `shipping`) for ever and the page spins — or an idle row's
+ * request (an End, a message) waits for ever on a wake that went nowhere. On read (`GET
+ * /api/sessions/:id`, `GET /:id/pr`), on an end request (`POST /:id/end`) and from the five-minute
+ * cron (`sessions.expire`), this asks:
  *
  * 1. **Only a quiet session.** `requested` / `booting` / `working` / `ending` with no heartbeat
  *    for {@link SESSION_STALL_MS} (a boot step writes `last_activity_at` every 30 s while it runs —
@@ -59,6 +60,30 @@
  * replaces `requested_action = 'ship'` with the `resume` it needs, so the session comes back
  * `ready` with no ship asked — the person ships again. Audited `session.reconciled` with `owed`.
  *
+ * **A ship, a landing, a release.** A `shipping` session runs steps, then waits between them — a
+ * landing waits on CI for a round at a time (`land.wait#N`, a `waitForEvent`) — and a `wrangler
+ * dev` reload in that wait left a landing at stage `ci` for ever: every wake went to an instance
+ * `running` in name only, and the safety net (`nudgeLandingSessions`) only woke it. So every ship
+ * step, every Phase A land step and every Phase B step (with the merged landing's `cleanup`) beats
+ * `last_activity_at` while it runs (`withHeartbeat`, `steps.ts`), and the only quiet a healthy
+ * instance leaves is what it waits BETWEEN steps — from which each window is computed, never
+ * hard-coded: the gate (no Phase A landing yet) {@link SESSION_SHIP_GATE_STALL_MS} (the longest
+ * retry delay, `cleanup`'s 160 s); a landing {@link SESSION_LANDING_STALL_MS} by stage (`ci`'s
+ * 2-minute round or the 2-minute retry wait; `approval`'s 30-minute round); a merged landing in
+ * Phase B (`shipped`, `releasing` / `deploying` — it runs after `cleanup`, so it is not `shipping`)
+ * {@link SESSION_RELEASE_STALL_MS} — each plus one beat and two minutes. An End asked of a landing
+ * outside `merging` wakes a healthy instance at once, so it is judged {@link SESSION_END_STALL_MS}
+ * after the request (`cancel_requested_at`, which the End route writes). Past the window, the
+ * owed-work rescue: `queued` is left alone, any other live status terminated, and a FRESH instance
+ * started with the status and the landing untouched. Its `claim` resumes a Phase A landing straight
+ * into the loop (`inspect` → `land`, or `end` for an End), a Phase B one into the release (after
+ * `cleanup` if that never ran), and sends a gate to `salvage` (checkpoint, `→ suspended`, an
+ * `error` saying the ship stopped — the person ships again; the gate is not re-run on its own). A
+ * landing restarted in `merging` is safe to re-run: `land.merge` reads a recorded or GitHub-side
+ * merge first, and a squash refused because an earlier one just landed reads the PR again and
+ * records it. Audited `session.reconciled` with `phase` and `stage`. `GET /:id/pr` — the ship
+ * panel's poll — reconciles too.
+ *
  * **Why the salvage is a step and not done here**: stopping a process, committing and pushing take
  * seconds to minutes in the container, and this runs on a request path (a read, End, Stop) or the
  * cron. Routes enqueue, never run: the fresh instance is the queue.
@@ -79,8 +104,29 @@ import type { AppBindings } from '../../types'
 import { isMissingInstanceError } from '../agents/runs'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
+import { SESSION_CALL_LIMITS } from './deadline'
 import { createSessionEmitter, nudgeSession } from './events'
+import {
+  LAND_APPROVAL_ROUND_SECONDS,
+  LAND_CI_FAST_SECONDS,
+  LAND_CI_SLOW_SECONDS,
+  LAND_RETRY_SECONDS,
+} from './land'
+import {
+  LAND_HEALTH_WAIT_SECONDS,
+  LAND_RELEASE_WAIT_SECONDS,
+  LAND_STAGING_WAIT_SECONDS,
+} from './land-release'
 import { restartSessionInstance, sessionsPaused } from './lifecycle'
+import {
+  BOOT_STEP,
+  CLEANUP_STEP,
+  gateStepConfig,
+  LAND_PHASE_B_STEP,
+  longestRetryDelayMs,
+  SHIP_STEP,
+} from './step-config'
+import { landingOf, PHASE_B_LANDING_STAGES, type PhaseALandingStage, phaseAStageOf } from './steps'
 
 /** How long a booting session may go without a heartbeat before its instance is asked. */
 export const SESSION_STALL_MS = 3 * 60_000
@@ -98,6 +144,56 @@ export const SESSION_END_STALL_MS = 75_000
  * (`TURN_HEARTBEAT_MS`, 10 s) say the turn step that should act on it is gone.
  */
 export const SESSION_CANCEL_STALL_MS = 30_000
+
+// ---- shipping: the windows (see the header) ------------------------------------------------------
+
+/**
+ * The slack on top of the longest gap a healthy shipping instance leaves between two heartbeats:
+ * one beat interval (`withHeartbeat` beats every `heartbeatMs` while a step runs) and two minutes
+ * for the platform to schedule the next step after a wait or a retry's delay.
+ */
+const SHIPPING_SLACK_MS = SESSION_CALL_LIMITS.heartbeatMs + 2 * 60_000
+
+/**
+ * A `shipping` session in its GATE (no Phase A landing yet): every ship step beats while it runs
+ * — a gate command, a fix turn included — so the only quiet a healthy instance leaves is a
+ * retry's delay between two attempts; the longest is `ship.db-clean`'s (`CLEANUP_STEP`, 160 s).
+ */
+export const SESSION_SHIP_GATE_STALL_MS =
+  Math.max(...[SHIP_STEP, BOOT_STEP, CLEANUP_STEP, gateStepConfig(0)].map(longestRetryDelayMs)) +
+  SHIPPING_SLACK_MS
+
+/**
+ * A `shipping` session whose landing is in Phase A, by stage: each round's step stamps and beats,
+ * then `land.wait#N` waits the stage's round (`ci`: 30 s, then 2 min; `approval`: 30 min) or
+ * `LAND_RETRY_SECONDS` after a step that threw (`merging` never waits otherwise) — the longest of
+ * those, or of a land step's retry delay, plus the slack.
+ */
+export const SESSION_LANDING_STALL_MS: Record<PhaseALandingStage, number> = (() => {
+  const gap = (waitSeconds: number) =>
+    Math.max(waitSeconds * 1000, LAND_RETRY_SECONDS * 1000, longestRetryDelayMs(SHIP_STEP)) +
+    SHIPPING_SLACK_MS
+  return {
+    ci: gap(Math.max(LAND_CI_FAST_SECONDS, LAND_CI_SLOW_SECONDS)),
+    approval: gap(LAND_APPROVAL_ROUND_SECONDS),
+    merging: gap(0),
+  }
+})()
+
+/**
+ * A merged landing in Phase B (`shipped`, `releasing` / `deploying`): its `cleanup` and each
+ * round's step beat; between them a `step.sleep` of the hook's wait (20 s – 2 min), the retry
+ * wait, or a retry's delay (`cleanup`'s up to 160 s).
+ */
+export const SESSION_RELEASE_STALL_MS =
+  Math.max(
+    LAND_RELEASE_WAIT_SECONDS * 1000,
+    LAND_STAGING_WAIT_SECONDS * 1000,
+    LAND_HEALTH_WAIT_SECONDS * 1000,
+    LAND_RETRY_SECONDS * 1000,
+    longestRetryDelayMs(LAND_PHASE_B_STEP),
+    longestRetryDelayMs(CLEANUP_STEP)
+  ) + SHIPPING_SLACK_MS
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'waitingForPause', 'paused'])
 const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'working', 'ending']
@@ -256,6 +352,10 @@ export async function reconcileSession(
   if (!workflow) return SKIPPED
   const now = options.now ?? new Date()
   const quietSince = session.lastActivityAt ?? session.updatedAt
+
+  // ---- a ship, a landing, or a merged landing's release whose instance died (see the header)
+  const shipWindow = shippingWindowOf(session)
+  if (shipWindow) return reconcileShipping(db, workflow, session, shipWindow, now, options)
 
   // ---- a settled session whose cleanup never ran
   if (isTerminal(session.status)) {
@@ -425,14 +525,34 @@ async function reconcileIdleOwed(
   if (owed !== 'end' && (await sessionsPaused(db))) return SKIPPED
   if (!(await claimTurn(db, session, cutoff, now))) return SKIPPED
 
+  return restartQuietInstance(db, workflow, session, options, {
+    quiet: `${OWED_LABEL[owed]} had not started after ${quietFor(SESSION_END_STALL_MS)}`,
+    audit: { owed },
+    message:
+      'session reconcile: an idle session owed its Workflow work that never started; restarted it',
+  })
+}
+
+/**
+ * The rescue an idle session's owed work and a quiet ship share: ask the instance — `queued` is a
+ * fresh one (a restart) that has not run its `claim` yet, left alone; any other live status is
+ * alive in name only and is terminated (best effort) — then, dead or terminated, start a FRESH
+ * instance that carries on from the row. The status is not changed here.
+ */
+async function restartQuietInstance(
+  db: Database,
+  workflow: SessionWorkflowBinding,
+  session: SessionRow,
+  options: ReconcileSessionOptions,
+  what: { quiet: string; audit: Record<string, unknown>; message: string }
+): Promise<SessionReconcileResult> {
   const instanceId = session.instanceId ?? session.id
   const status = await instanceStatus(workflow, instanceId, options.logger)
   if (status === null) return SKIPPED
-  // A `queued` instance is a fresh one (a restart) that has not run its `claim` yet.
   if (status === 'queued') return { outcome: 'alive', instanceStatus: status }
   let label: string
   if (LIVE_STATUSES.has(status)) {
-    label = `its Workflow was ${status}, but ${OWED_LABEL[owed]} had not started after ${quietFor(SESSION_END_STALL_MS)}`
+    label = `its Workflow was ${status}, but ${what.quiet}`
     try {
       await (await workflow.get(instanceId)).terminate()
     } catch {
@@ -454,15 +574,94 @@ async function reconcileIdleOwed(
     targetId: session.id,
     appId: session.appId,
     summary: {
-      after: { status: session.status, owed, instanceId, instanceStatus: status, restartedAs },
+      after: {
+        status: session.status,
+        ...what.audit,
+        instanceId,
+        instanceStatus: status,
+        restartedAs,
+      },
     },
   })
   if (current) nudgeSession(options.realtime, current)
   options.logger?.warn(
-    { sessionId: session.id, instanceId, instanceStatus: status, owed, label, restartedAs },
-    'session reconcile: an idle session owed its Workflow work that never started; restarted it'
+    {
+      sessionId: session.id,
+      instanceId,
+      instanceStatus: status,
+      ...what.audit,
+      label,
+      restartedAs,
+    },
+    what.message
   )
   return { outcome: 'settled', status: session.status, instanceStatus: status, restartedAs }
+}
+
+/** Which window a ship, a landing or a release is judged by (see the header), or null. */
+interface ShippingWindow {
+  phase: 'gate' | 'landing' | 'release'
+  stage: string | null
+  stallMs: number
+  quietSince: Date
+}
+
+function shippingWindowOf(session: SessionRow): ShippingWindow | null {
+  const quietSince = session.lastActivityAt ?? session.updatedAt
+  if (session.status === 'shipped') {
+    const stage = landingOf(session)?.stage
+    if (!stage || !(PHASE_B_LANDING_STAGES as readonly string[]).includes(stage)) return null
+    return { phase: 'release', stage, stallMs: SESSION_RELEASE_STALL_MS, quietSince }
+  }
+  if (session.status !== 'shipping') return null
+  const stage = phaseAStageOf(session)
+  if (!stage) return { phase: 'gate', stage: null, stallMs: SESSION_SHIP_GATE_STALL_MS, quietSince }
+  const asked = session.cancelRequestedAt
+  if (stage !== 'merging' && session.requestedAction === 'end' && asked) {
+    // An End wakes a healthy landing at once (`inspect` ends it between rounds), so its window is
+    // an end's, run from the request — which the End route writes as `cancel_requested_at`.
+    return {
+      phase: 'landing',
+      stage,
+      stallMs: Math.min(SESSION_END_STALL_MS, SESSION_LANDING_STALL_MS[stage]),
+      quietSince: asked > quietSince ? asked : quietSince,
+    }
+  }
+  return { phase: 'landing', stage, stallMs: SESSION_LANDING_STALL_MS[stage], quietSince }
+}
+
+const SHIPPING_QUIET: Record<ShippingWindow['phase'], string> = {
+  gate: 'its ship had not moved',
+  landing: 'its landing had not moved',
+  release: 'its release had not moved',
+}
+
+/**
+ * A ship (`shipping`, in its gate or its Phase A landing) or a merged landing's release (`shipped`,
+ * Phase B) quiet past its window (see the header): the same rescue as owed work — nothing is
+ * settled, the landing is untouched, and the fresh instance's `claim` resumes it where the row
+ * stands (a landing in the loop, a release in Phase B, a gate through `salvage`).
+ */
+async function reconcileShipping(
+  db: Database,
+  workflow: SessionWorkflowBinding,
+  session: SessionRow,
+  window: ShippingWindow,
+  now: Date,
+  options: ReconcileSessionOptions
+): Promise<SessionReconcileResult> {
+  const cutoff = new Date(now.getTime() - window.stallMs)
+  if (window.quietSince > cutoff) return SKIPPED
+  if (!(await claimTurn(db, session, cutoff, now))) return SKIPPED
+  return restartQuietInstance(db, workflow, session, options, {
+    quiet: `${SHIPPING_QUIET[window.phase]} for ${quietFor(window.stallMs)}`,
+    audit: {
+      phase: window.phase,
+      stage: window.stage,
+      ...(session.requestedAction === 'end' ? { endAsked: true } : {}),
+    },
+    message: 'session reconcile: a ship or landing whose Workflow stopped; restarted it',
+  })
 }
 
 /** {@link reconcileSession} for a route or a cron: any error is logged and nothing changes. */
@@ -482,7 +681,8 @@ export async function reconcileSessionSafely(
 
 /**
  * The cron's sweep (`sessions.expire`): every quiet boot, turn or end, every idle session owing
- * work nobody started, and every settled session never cleaned up, across organisations — each reconciled inside its own tenant.
+ * work nobody started, every quiet ship, landing or release, and every settled session never
+ * cleaned up, across organisations — each reconciled inside its own tenant.
  */
 export async function reconcileStaleSessions(
   db: Database,
@@ -493,6 +693,17 @@ export async function reconcileStaleSessions(
   const cutoff = new Date(now.getTime() - Math.min(SESSION_STALL_MS, SESSION_CLEANUP_GRACE_MS))
   const stopCutoff = new Date(now.getTime() - SESSION_CANCEL_STALL_MS)
   const owedCutoff = new Date(now.getTime() - SESSION_END_STALL_MS)
+  // A ship's shortest window; `reconcileSession` judges each by its own (an `approval` landing
+  // quiet for less than its 30-minute round is read and left).
+  const shipCutoff = new Date(
+    now.getTime() -
+      Math.min(
+        SESSION_SHIP_GATE_STALL_MS,
+        SESSION_LANDING_STALL_MS.ci,
+        SESSION_LANDING_STALL_MS.merging
+      )
+  )
+  const releaseCutoff = new Date(now.getTime() - SESSION_RELEASE_STALL_MS)
   const quietSince = sql`coalesce(${sessions.lastActivityAt}, ${sessions.updatedAt})`
   const candidates = await db
     .select()
@@ -530,6 +741,23 @@ export async function reconcileStaleSessions(
               and(eq(sessions.status, 'suspended'), eq(sessions.requestedAction, 'resume'))
             ),
             sql`${quietSince} < ${owedCutoff.toISOString()}::timestamptz`
+          ),
+          // A ship or a landing whose instance died, and a merged landing's release (see the
+          // header): an End asked of a landing is judged from the request, sooner.
+          and(
+            eq(sessions.status, 'shipping'),
+            or(
+              sql`${quietSince} < ${shipCutoff.toISOString()}::timestamptz`,
+              and(
+                eq(sessions.requestedAction, 'end'),
+                sql`${quietSince} < ${owedCutoff.toISOString()}::timestamptz`
+              )
+            )
+          ),
+          and(
+            eq(sessions.status, 'shipped'),
+            inArray(sql<string>`${sessions.landing}->>'stage'`, [...PHASE_B_LANDING_STAGES]),
+            sql`${quietSince} < ${releaseCutoff.toISOString()}::timestamptz`
           )
         ),
         options.tenantIds ? inArray(sessions.tenantId, [...options.tenantIds]) : undefined

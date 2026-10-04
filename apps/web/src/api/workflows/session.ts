@@ -65,6 +65,10 @@
  *   came back EMPTY (out of memory, most often) is never worked on. A turn refuses it before it
  *   starts (the message kept, the session `suspended` with a resume requested) and probes it while
  *   it runs; a checkpoint reports it lost instead of failing at `cd` (`boot-marker.ts`).
+ * - **Ship, landing and Phase B steps beat** `last_activity_at` while they run (`withHeartbeat`):
+ *   the reconcile (`services/sessions/reconcile.ts`) restarts an instance quiet past a window
+ *   computed from the waits and retry delays between them (`services/sessions/step-config.ts`
+ *   holds the retry policies for that reason).
  * - The turn step runs with `retries: 0` (a turn is not idempotent — it spends money and edits
  *   files) and the policy's `maxTurnMinutes` as its timeout; the boot steps keep the platform's
  *   default retries, which is why each of them is idempotent.
@@ -122,6 +126,14 @@ import {
   shipSummaryStep,
 } from '../services/sessions/ship-steps'
 import {
+  BOOT_STEP,
+  CLEANUP_STEP,
+  gateStepConfig,
+  LAND_PHASE_B_STEP,
+  SALVAGE_STEP,
+  SHIP_STEP,
+} from '../services/sessions/step-config'
+import {
   BOOT_ERROR_MAX_CHARS,
   bootstrapStep,
   branchStep,
@@ -152,6 +164,7 @@ import {
   turnSettleStep,
   turnStep,
   waitDuration,
+  withHeartbeat,
   withProgress,
 } from '../services/sessions/steps'
 import { containerGone, turnStepConfig } from '../services/sessions/turn'
@@ -188,52 +201,19 @@ type StepRunner = <T>(
   config?: WorkflowStepConfig
 ) => Promise<T>
 
-/** Boot steps: a few retries — each is idempotent (`steps.ts`). */
-const BOOT_STEP: WorkflowStepConfig = {
-  retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
-  timeout: '20 minutes',
-}
-/** Salvage: its sandbox calls are bounded and caught, so a retry only covers the database. */
-const SALVAGE_STEP: WorkflowStepConfig = {
-  retries: { limit: 1, delay: '5 seconds', backoff: 'constant' },
-  timeout: '15 minutes',
-}
-/** Cleanup must happen: more retries, patient. */
-const CLEANUP_STEP: WorkflowStepConfig = {
-  retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' },
-  timeout: '5 minutes',
-}
-/** The ship's short steps (claim, save, commit, summary, the PR, settle): idempotent, retried. */
-const SHIP_STEP: WorkflowStepConfig = {
-  retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' },
-  timeout: '10 minutes',
-}
-/**
- * A gate command: ONE retry, which re-attaches to the command still running
- * (`runInBackground`), and the command's own deadline plus a margin — the command is killed at
- * its deadline first, so the step answers red rather than being cut off.
- */
-function gateStepConfig(timeoutMs: number): WorkflowStepConfig {
-  return {
-    retries: { limit: 1, delay: '5 seconds', backoff: 'constant' },
-    timeout: `${Math.ceil(timeoutMs / 60_000) + 5} minutes`,
-  }
-}
-
-/**
- * A Phase B round's step (issue #5): the hooks are I/O against GitHub, Cloudflare and the app's
- * health; a throw after these retries counts as one more round, never a failed session.
- */
-const LAND_PHASE_B_STEP: WorkflowStepConfig = {
-  retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
-  timeout: '10 minutes',
-}
-
 /**
  * The most rounds one Phase B stage takes before the landing stalls (the hooks cap their own waits
  * — 15 min for the release claim, 45 for the deploy, 10 probes of health — far below this).
  */
 export const MAX_LAND_PHASE_ROUNDS = 200
+
+/**
+ * A ship or Phase A landing step's body, beating `last_activity_at` while the row is `shipping`
+ * (`withHeartbeat`): the clock the reconcile reads to tell a dead instance from a busy one.
+ */
+const shipping = <T>(body: (scope: StepScope) => Promise<T>) => withHeartbeat(['shipping'], body)
+/** The same for a merged landing's `cleanup` and Phase B steps (the row is `shipped`). */
+const released = <T>(body: (scope: StepScope) => Promise<T>) => withHeartbeat(['shipped'], body)
 
 /** How one ship round ended, for the loop's dirty state. */
 type ShipRound =
@@ -362,7 +342,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
   }
 
   private async finish(run: StepRunner, sessionId: string): Promise<SessionOutcome> {
-    const { status } = await run('cleanup', cleanupStep, CLEANUP_STEP)
+    const { status } = await run('cleanup', released(cleanupStep), CLEANUP_STEP)
     return { sessionId, status }
   }
 
@@ -587,10 +567,10 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       for (;;) {
         round =
           todo === 'ci'
-            ? await run(`land.ci#${n}`, landCiStep, SHIP_STEP)
+            ? await run(`land.ci#${n}`, shipping(landCiStep), SHIP_STEP)
             : todo === 'review'
-              ? await run(`land.review#${n}`, landReviewStep, SHIP_STEP)
-              : await run(`land.merge#${n}`, landMergeStep, SHIP_STEP)
+              ? await run(`land.review#${n}`, shipping(landReviewStep), SHIP_STEP)
+              : await run(`land.merge#${n}`, shipping(landMergeStep), SHIP_STEP)
         // Forward only: ci → review → merge, each at most once a round.
         if (round.next === 'review' && todo === 'ci') todo = 'review'
         else if (round.next === 'merge' && todo !== 'merge') todo = 'merge'
@@ -611,7 +591,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         const { reason, message } = round
         await run(
           `land.reopen#${n}`,
-          s => landReopenStep(s, { reason, message, bootId: bootId ?? null }),
+          shipping(s => landReopenStep(s, { reason, message, bootId: bootId ?? null })),
           SHIP_STEP
         )
         return 'continue'
@@ -632,7 +612,11 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     const sleep = (name: string, seconds: number) =>
       step.sleep(name, waitDuration(seconds) as WorkflowSleepDuration)
     const stall = async (reason: ShipStalledReason, error: string) => {
-      await run(`land.stalled#${k}`, s => landStalledStep(s, { reason, error }), SHIP_STEP)
+      await run(
+        `land.stalled#${k}`,
+        released(s => landStalledStep(s, { reason, error })),
+        SHIP_STEP
+      )
     }
     /** One hook round; a step that threw past its retries is a wait. */
     const attempt = async <T>(
@@ -640,7 +624,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       body: (s: StepScope) => Promise<T>
     ): Promise<T | { status: 'wait'; waitSeconds: number }> => {
       try {
-        return await run(name, body, LAND_PHASE_B_STEP)
+        return await run(name, released(body), LAND_PHASE_B_STEP)
       } catch {
         return { status: 'wait', waitSeconds: LAND_RETRY_SECONDS }
       }
@@ -674,7 +658,11 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (res.status === 'done') return
       if (res.status === 'live') {
         const { url, version } = res
-        await run(`land.live#${k}`, s => landLiveStep(s, { url, version }), SHIP_STEP)
+        await run(
+          `land.live#${k}`,
+          released(s => landLiveStep(s, { url, version })),
+          SHIP_STEP
+        )
         return
       }
       if (res.status === 'stalled') return stall(res.reason, res.error)
@@ -688,7 +676,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
    * failing the session.
    */
   private async ship(run: StepRunner, n: number, bootId: string | undefined): Promise<ShipRound> {
-    const claim = await run(`ship.claim#${n}`, shipClaimStep, SHIP_STEP)
+    const claim = await run(`ship.claim#${n}`, shipping(shipClaimStep), SHIP_STEP)
     if (claim.status === 'shipped') return { status: 'shipped' }
     if (claim.status === 'skipped') return { status: 'skipped' }
     let saved = false
@@ -697,14 +685,18 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     try {
       const save = await run(
         `ship.save#${n}`,
-        s => shipCheckpointStep(s, bootId, 'before the gate'),
+        shipping(s => shipCheckpointStep(s, bootId, 'before the gate')),
         SHIP_STEP
       )
       if (save.lost) return { status: 'lost' }
       saved = save.ok
       const first = claim.firstAttempt
       const last = first + claim.maxAttempts - 1
-      const kit = await run(`ship.kit#${n}`, s => shipKitStep(s, first, bootId), SHIP_STEP)
+      const kit = await run(
+        `ship.kit#${n}`,
+        shipping(s => shipKitStep(s, first, bootId)),
+        SHIP_STEP
+      )
       if (!kit.ok && kit.stop === 'container_lost') return { status: 'lost' }
       if (!kit.ok) reason = kit.stop === 'ended' ? 'ended' : 'unfixable'
       const commands = kit.ok ? kit.commands : []
@@ -726,12 +718,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         const fix = await run(
           `ship.fix#${n}.${attempt}`,
-          s =>
+          shipping(s =>
             shipFixStep(
               s,
               { attempt: attempt - first + 1, maxAttempts: claim.maxAttempts, failed: gate },
               bootId
-            ),
+            )
+          ),
           turnStepConfig(claim)
         )
         if (fix.lost) return { status: 'lost' }
@@ -744,18 +737,18 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         const fixTurns = green - first
         const commit = await run(
           `ship.commit#${n}`,
-          s => shipCheckpointStep(s, bootId, 'to open the pull request'),
+          shipping(s => shipCheckpointStep(s, bootId, 'to open the pull request')),
           SHIP_STEP
         )
         if (commit.lost) return { status: 'lost' }
         if (!commit.ok) {
           reason = 'not_committed'
         } else {
-          const summary = await run(`ship.summary#${n}`, shipSummaryStep, SHIP_STEP)
+          const summary = await run(`ship.summary#${n}`, shipping(shipSummaryStep), SHIP_STEP)
           const ran = commands.map(c => c.command)
           const pr = await run(
             `ship.pr#${n}`,
-            s => shipPrStep(s, summary, fixTurns, ran),
+            shipping(s => shipPrStep(s, summary, fixTurns, ran)),
             SHIP_STEP
           )
           if (pr.shipped) return { status: 'shipped' }
@@ -769,8 +762,9 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     }
     const settle = await run(
       `ship.settle#${n}`,
-      s =>
-        shipSettleStep(s, { reason, attempts: claim.maxAttempts, ...(detail ? { detail } : {}) }),
+      shipping(s =>
+        shipSettleStep(s, { reason, attempts: claim.maxAttempts, ...(detail ? { detail } : {}) })
+      ),
       SHIP_STEP
     )
     return { status: 'settled', saved, settle }
@@ -796,23 +790,25 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         try {
           const db = await run(
             `ship.db#${tag}`,
-            s => shipDbStep(s, attempt, bootId, command.command),
+            shipping(s => shipDbStep(s, attempt, bootId, command.command)),
             BOOT_STEP
           )
           if (!db.ok) return { passed: false, step: command.step, stop: db.stop }
           const branch = db.branch
           result = await run(
             name,
-            s => shipGateStep(s, { step: command.step, attempt, branch, command }, bootId),
+            shipping(s =>
+              shipGateStep(s, { step: command.step, attempt, branch, command }, bootId)
+            ),
             config
           )
         } finally {
-          await run(`ship.db-clean#${tag}`, shipDbCleanStep, CLEANUP_STEP)
+          await run(`ship.db-clean#${tag}`, shipping(shipDbCleanStep), CLEANUP_STEP)
         }
       } else {
         result = await run(
           name,
-          s => shipGateStep(s, { step: command.step, attempt, command }, bootId),
+          shipping(s => shipGateStep(s, { step: command.step, attempt, command }, bootId)),
           config
         )
       }
