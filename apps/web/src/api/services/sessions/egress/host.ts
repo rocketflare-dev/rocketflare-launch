@@ -53,7 +53,7 @@ import { CLAUDE_ACCOUNT_LABEL, usableClaudeCredential } from '../runtimes/claude
 import { unwrap } from '../sandbox/remote-sandbox'
 import type { EgressGrantUpdate, SandboxHostRpc } from '../sandbox-host/protocol'
 import type { SandboxPort } from '../sandbox-port'
-import { sessionGitToken } from './github'
+import { sessionGitToken, upgradeReadOnlyRepos } from './github'
 
 export { ModelKeyMissingError }
 
@@ -133,6 +133,8 @@ export class HostEgress implements SessionEgressPort {
     const token = await sessionGitToken(this.db, this.cfg, this.repoHost, session, repo, this.now())
     // The host's handler has no other way to authenticate: no token is a failure, not a skip.
     if (!token) throw new Error('Launch could not get a GitHub token for this repository')
+    // P6 6c: a kit upgrade session may also fetch the pinned kit, read-only (`forwardGit`).
+    const readOnlyRepos = session.kind === 'upgrade' ? await upgradeReadOnlyRepos(this.db) : []
     await this.grant(sandbox, {
       git: {
         ...repo,
@@ -140,6 +142,7 @@ export class HostEgress implements SessionEgressPort {
         upstream: this.repoHost.gitUpstream(repo),
         token: token.token,
         expiresAt: token.expiresAt.getTime(),
+        ...(readOnlyRepos.length ? { readOnlyRepos } : {}),
       },
     })
   }

@@ -107,6 +107,7 @@ export async function hostedGitHub(
     upstream: git.upstream,
     fetch: deps.fetch,
     sleep: deps.sleep,
+    ...(git.readOnlyRepos?.length ? { readOnlyRepos: git.readOnlyRepos } : {}),
   })
 }
 

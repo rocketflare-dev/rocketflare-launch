@@ -28,7 +28,11 @@
  *    buffered, and a 401/404 means GitHub did nothing with it. A token that has been valid for a
  *    while gets no retry — its 404 is real.
  *
- * Steps 2, 3, 5 and 6 are `forwardGit` (`forward-git.ts`, no database), which the sandbox host's
+ * 7. **P6 6c: a kit upgrade session** (`kind = 'upgrade'`) may also FETCH the template pin's repo —
+ *    upload-pack only, to `https://github.com`, with no token minted or injected (the kit is
+ *    public); pushing to it is a 403. Every other session gains nothing.
+ *
+ * Steps 2, 3, 5, 6 and 7 are `forwardGit` (`forward-git.ts`, no database), which the sandbox host's
  * `HostedSessionSandbox` runs too, over the egress grant local Launch stores on it instead of
  * this lookup (a session on the remote sandbox host, `egress/host.ts`).
  *
@@ -43,10 +47,12 @@ import { type Database, type DatabaseHandle, openDatabase } from '../../../../db
 import { apps, type SessionRow, sessions } from '../../../../db/schema'
 import { decryptToken, encryptToken } from '../../../auth/oauth-encryption'
 import type { AppBindings } from '../../../types'
+import { templatePinStatus } from '../../launch/kit-pin'
 import { defaultSessionPorts, type RepoHostPort, type RepoRef } from '../ports'
 import {
   type EgressContext,
   forwardGit,
+  type GitRepo,
   type GitToken,
   isFreshToken,
   refuseGit,
@@ -174,6 +180,16 @@ export async function sessionGitToken(
   return { token: auth.token, fresh: true, expiresAt: auth.expiresAt }
 }
 
+/**
+ * The repositories a kit upgrade session may fetch read-only: the template pin's (the kit it is
+ * upgrading to). Also what the `host` egress mode puts in a remote sandbox's git grant.
+ */
+export async function upgradeReadOnlyRepos(db: Database): Promise<GitRepo[]> {
+  const { pin } = await templatePinStatus(db)
+  const [owner, repo] = pin.repo.split('/')
+  return owner && repo ? [{ owner, repo }] : []
+}
+
 export async function handleGitHub(
   req: Request,
   env: AppBindings,
@@ -196,7 +212,10 @@ export async function handleGitHub(
       app?.repoOwner && app.repoName ? { owner: app.repoOwner, repo: app.repoName } : null
 
     const host = deps.repoHost(handle.db, cfg)
+    // P6 6c: a kit upgrade session may also fetch the pinned kit (public, read-only, no token).
+    const readOnlyRepos = session.kind === 'upgrade' ? await upgradeReadOnlyRepos(handle.db) : []
     return await forwardGit(req, {
+      readOnlyRepos,
       repo,
       branch: session.branch ?? sessionBranchName(session.shortId),
       // Minted (or read back) only once the request has passed every check.

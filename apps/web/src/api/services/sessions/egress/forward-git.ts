@@ -15,6 +15,12 @@
  * nothing); the allow-listed headers copied and `Authorization: Basic x-access-token:<token>`
  * injected; the fresh-token 401/404 retry ({@link FRESH_TOKEN_RETRY_DELAYS_MS}, `github.ts` §6);
  * `Set-Cookie` stripped from the answer. Refusals are plain text, which is what git prints.
+ *
+ * **A read-only repo** (P6 6c, `ForwardGitOptions.readOnlyRepos`): a kit upgrade session may also
+ * FETCH the kit — `info/refs?service=git-upload-pack` and `POST …/git-upload-pack` on exactly the
+ * repos listed, forwarded to `https://github.com` with NO credential at all (the kit is public, so
+ * nothing is minted and nothing is injected). Its receive-pack is a 403, advertisement included.
+ * Every other session passes no list and gains nothing.
  */
 
 /** A GitHub installation token's lifetime (fixed by GitHub). */
@@ -147,7 +153,23 @@ export interface ForwardGitOptions {
   fetch: typeof fetch
   /** The backoff between a fresh token's retries (tests pass a recorder). */
   sleep: (ms: number) => Promise<void>
+  /**
+   * Public repositories this session may FETCH and never push — a kit upgrade's kit (P6 6c). No
+   * credential is ever sent to them. Absent or empty for every other session.
+   */
+  readOnlyRepos?: readonly GitRepo[]
 }
+
+/** Where a read-only (public) repository is fetched from: GitHub itself, whatever the session's host. */
+export const READ_ONLY_GIT_UPSTREAM = 'https://github.com'
+
+const sameRepo = (a: GitRepo | null | undefined, b: { owner: string; repo: string }): boolean =>
+  Boolean(
+    a?.owner &&
+      a.repo &&
+      a.owner.toLowerCase() === b.owner.toLowerCase() &&
+      a.repo.toLowerCase() === b.repo.toLowerCase()
+  )
 
 /** Check, key and forward one git request (see the header). */
 export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise<Response> {
@@ -156,12 +178,8 @@ export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise
     return refuseGit(403, 'Launch sessions may only use git over HTTPS on their own repository')
 
   const { repo } = opts
-  if (
-    !repo?.owner ||
-    !repo.repo ||
-    repo.owner.toLowerCase() !== git.owner.toLowerCase() ||
-    repo.repo.toLowerCase() !== git.repo.toLowerCase()
-  ) {
+  if (!sameRepo(repo, git)) {
+    if (opts.readOnlyRepos?.some(r => sameRepo(r, git))) return forwardReadOnly(req, git, opts)
     return refuseGit(403, "Launch sessions may only reach their own app's repository")
   }
 
@@ -221,6 +239,51 @@ export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise
   } catch {
     // An upstream that cannot be reached (the local git server not running, a network failure):
     // a thrown handler reaches git as "Empty reply from server", which names nothing.
+    return refuseGit(502, `Launch could not reach the git server at ${upstream.origin}`)
+  }
+  const out = new Headers(res.headers)
+  out.delete('Set-Cookie')
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out })
+}
+
+/**
+ * A fetch from a read-only (public) repository: upload-pack only, to {@link READ_ONLY_GIT_UPSTREAM},
+ * with the allow-listed headers and no `Authorization` — whatever the sandbox sent is dropped like
+ * every other header. A push (its advertisement included) is a 403.
+ */
+async function forwardReadOnly(
+  req: Request,
+  git: GitRequest,
+  opts: Pick<ForwardGitOptions, 'fetch'>
+): Promise<Response> {
+  if (git.service !== 'git-upload-pack') {
+    return refuseGit(
+      403,
+      `Launch sessions may only fetch ${git.owner}/${git.repo}, never push to it`
+    )
+  }
+  let body: ArrayBuffer | null = null
+  if (git.kind === 'rpc') {
+    const declared = Number(req.headers.get('Content-Length') ?? 0)
+    if (declared > MAX_PUSH_BYTES) return refuseGit(413, 'This request is too large for Launch')
+    body = await req.arrayBuffer()
+  }
+  const incoming = new URL(req.url)
+  const upstream = new URL(`${READ_ONLY_GIT_UPSTREAM}${incoming.pathname}${incoming.search}`)
+  const headers = new Headers()
+  for (const name of FORWARDED_GIT_HEADERS) {
+    const value = req.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  let res: Response
+  try {
+    res = await opts.fetch(upstream.toString(), {
+      method: req.method,
+      headers,
+      body: body ?? undefined,
+      redirect: 'manual',
+    })
+  } catch {
     return refuseGit(502, `Launch could not reach the git server at ${upstream.origin}`)
   }
   const out = new Headers(res.headers)

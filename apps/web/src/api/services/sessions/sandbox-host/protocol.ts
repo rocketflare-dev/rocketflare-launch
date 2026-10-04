@@ -60,6 +60,11 @@ export interface GitEgressGrant {
   token: string
   /** ms since the epoch. */
   expiresAt: number
+  /**
+   * P6 6c: public repos a kit upgrade session may FETCH (upload-pack only, no credential) — the
+   * pinned kit. Absent for every other session (`forwardGit`'s `readOnlyRepos`).
+   */
+  readOnlyRepos?: { owner: string; repo: string }[]
 }
 
 /**
