@@ -272,7 +272,7 @@ describe('HostEgress.turnEnv — the grant per runtime × credential source', ()
     }
   })
 
-  it('Codex × platform: Launch’s OpenAI key and the Codex model; Codex × user: the model only', async () => {
+  it('Codex × platform: Launch’s OpenAI key and the Codex model; Codex × user: the token refresh only', async () => {
     const platform = await readySession({ runtime: 'codex', policy: CODEX_POLICY })
     const keyed = await turnEnvOf(platform.row, openAiCfg)
     expect(keyed.env).toEqual({})
@@ -284,7 +284,8 @@ describe('HostEgress.turnEnv — the grant per runtime × credential source', ()
     const plan = await planSession()
     const user = await turnEnvOf(plan.row, openAiCfg)
     expect(user.env).toEqual({})
-    expect(user.grants[0]?.grant).toEqual({ chatgpt: { model: CODEX_MODEL } })
+    // chatgpt.com is reached directly (ChatGPT blocks the Workers runtime): only the refresh.
+    expect(user.grants[0]?.grant).toEqual({ chatgptRefresh: true })
   })
 
   it('no key configured: ModelKeyMissingError naming the provider, and nothing is granted', async () => {
@@ -307,7 +308,7 @@ describe('HostEgress.turnEnv — the grant per runtime × credential source', ()
     expect(grants).toHaveLength(0)
   })
 
-  it('endTurn revokes a ChatGPT plan’s part and nothing else; prepareLogin grants a sign-in', async () => {
+  it('endTurn revokes a ChatGPT plan’s refresh part and nothing else; prepareLogin grants a sign-in', async () => {
     const plan = await planSession()
     const { sink, grants } = grantSink()
     const egress = new HostEgress(db, cfg, mintingHost().host, sink)
@@ -317,7 +318,7 @@ describe('HostEgress.turnEnv — the grant per runtime × credential source', ()
     await egress.endTurn(new FakeSandbox({ name: claude.id }), claude)
     await egress.prepareLogin(new FakeSandbox({ name: 'login-x' }), 'codex')
     expect(grants).toEqual([
-      { name: plan.row.id, grant: { chatgpt: null } },
+      { name: plan.row.id, grant: { chatgptRefresh: null } },
       { name: 'login-x', grant: { login: { runtime: 'codex' } } },
     ])
   })
@@ -469,7 +470,7 @@ describe('runTurn in the host mode — every runtime on either account', () => {
     expect((await reload(row)).costMicrocents).toBe(rows[0]?.costMicrocents)
   })
 
-  it('Codex on a ChatGPT plan: auth.json leased for the turn, the plan granted for the turn and revoked after it, usage recorded as a subscription', async () => {
+  it('Codex on a ChatGPT plan: auth.json leased for the turn, the refresh granted for the turn and revoked after it, usage recorded as a subscription', async () => {
     const plan = await planSession()
     const { sink, grants } = grantSink()
     const ports = createFakeSessionPorts({
@@ -480,8 +481,8 @@ describe('runTurn in the host mode — every runtime on either account', () => {
 
     expect(grants.map(g => g.grant)).toEqual([
       expect.objectContaining({ git: expect.anything() }),
-      { chatgpt: { model: CODEX_MODEL } },
-      { chatgpt: null },
+      { chatgptRefresh: true },
+      { chatgptRefresh: null },
     ])
     const sandbox = ports.sandboxes.get(plan.row.id)
     expect(sandbox?.commands).toContain(`rm -f ${CODEX_AUTH_PATH}`)
@@ -494,7 +495,7 @@ describe('runTurn in the host mode — every runtime on either account', () => {
     expect((await reload(plan.row)).costMicrocents).toBe(0)
   })
 
-  it('a ChatGPT plan’s part is revoked even when the lease is refused (another session holds it)', async () => {
+  it('a ChatGPT plan’s refresh part is revoked even when the lease is refused (another session holds it)', async () => {
     const plan = await planSession()
     await claim(db, {
       tenantId: plan.row.tenantId,
@@ -508,7 +509,7 @@ describe('runTurn in the host mode — every runtime on either account', () => {
       credentials: d => createSessionCredentialPort(d, cfg),
     })
     expect((await runTurn(db, ports, plan.row, FAST)).status).toBe('failed')
-    expect(grants.at(-1)?.grant).toEqual({ chatgpt: null })
+    expect(grants.at(-1)?.grant).toEqual({ chatgptRefresh: null })
     expect(ports.sandboxes.get(plan.row.id)?.processes ?? []).toHaveLength(0)
   })
 

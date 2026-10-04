@@ -178,8 +178,10 @@ export const SESSION_BASE_ALLOWED_HOSTS = [
   // Must be allow-listed for its outbound handler to run at all (S7: otherwise the proxy answers 520).
   'api.anthropic.com',
   // §18.22-B: Codex's hosts (`OPENAI_EGRESS_HOSTS`, `egress/refuse.ts` — spelled out because this
-  // file is a leaf), each with its handler in `egress/registry.ts` and a refusal on the sandbox
-  // host, never a bare pass-through.
+  // file is a leaf). `api.openai.com` and `auth.openai.com` have their handlers in
+  // `egress/registry.ts` (and on the sandbox host); `chatgpt.com` is a DELIBERATE pass-through —
+  // ChatGPT blocks requests from the Workers runtime, so a ChatGPT plan's container reaches it
+  // directly with the person's own token (`DIRECT_CODEX_HOSTS`, only under `SESSION_EGRESS=open`).
   'api.openai.com',
   'chatgpt.com',
   'auth.openai.com',

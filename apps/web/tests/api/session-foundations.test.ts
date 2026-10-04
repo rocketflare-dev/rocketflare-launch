@@ -121,17 +121,18 @@ describe('worker.ts: preview hosts go to the gateway, before the Hono app', () =
     expect(probe.interceptHttps).toBe(true)
     expect(probe.enableInternet).toBe(false)
     expect(probe.allowedHosts).toEqual([...SESSION_BASE_ALLOWED_HOSTS])
-    // The credential hosts only — Anthropic, GitHub, Codex's three (§18.22-B) and a Claude
+    // The credential hosts only — Anthropic, GitHub, Codex's two (§18.22-B) and a Claude
     // sign-in's token exchange (§18.22-A: `platform.claude.com`, refused to sessions): a database
-    // key would intercept Neon even with internet on.
+    // key would intercept Neon even with internet on. `chatgpt.com` is allow-listed but has NO
+    // handler: ChatGPT blocks requests from the Workers runtime, so the container goes direct.
     expect(Object.keys(SessionSandbox.outboundByHost ?? {}).sort()).toEqual([
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
-      'chatgpt.com',
       'github.com',
       'platform.claude.com',
     ])
+    expect(SESSION_BASE_ALLOWED_HOSTS).toContain('chatgpt.com')
     // SESSION_EGRESS=open (the tomls): internet on, no allow-list, HTTPS still intercepted.
     const deleted: string[] = []
     const ctx = { storage: { kv: { delete: (key: string) => void deleted.push(key) } } }

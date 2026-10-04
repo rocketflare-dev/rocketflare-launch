@@ -79,14 +79,14 @@ export interface OpenAiEgressGrant {
 }
 
 /**
- * Codex on the creator's ChatGPT plan (`chatgpt.com`, and `auth.openai.com`'s token refresh):
- * the model only — the plan's tokens are in the container's `auth.json` for the turn by design
- * (§18.22-B), so the handler passes Codex's own Bearer through. Granted for one turn and revoked
- * after it, as Launch's handler allows the plan only while a turn holds it.
+ * Codex on the creator's ChatGPT plan: `true` lets the session's token refresh (`POST
+ * auth.openai.com/oauth/token`, `grant_type: refresh_token`) through. Nothing more — the plan's
+ * tokens are in the container's `auth.json` for the turn by design (§18.22-B), and its model calls
+ * go to `chatgpt.com` DIRECTLY (ChatGPT blocks requests from the Workers runtime, so the host has
+ * no handler for it). Granted for one turn and revoked after it, as Launch's handler allows the
+ * refresh only while a turn holds the plan.
  */
-export interface ChatGptEgressGrant {
-  model: string
-}
+export type ChatGptRefreshGrant = true
 
 /**
  * A LOGIN sandbox (`login-<id>`, §18.22): the runtime whose sign-in it runs. Its handlers pass
@@ -110,14 +110,14 @@ export interface EgressGrant {
   anthropic?: AnthropicEgressGrant
   /** Codex on Launch's key: before each turn. */
   openai?: OpenAiEgressGrant
-  /** Codex on a ChatGPT plan: for the length of a turn. */
-  chatgpt?: ChatGptEgressGrant
+  /** Codex on a ChatGPT plan, its token refresh: for the length of a turn. */
+  chatgptRefresh?: ChatGptRefreshGrant
   /** A login sandbox's sign-in. */
   login?: LoginEgressGrant
 }
 
 /** Every part, in one list — what the host merges. */
-export const EGRESS_GRANT_PARTS = ['git', 'anthropic', 'openai', 'chatgpt', 'login'] as const
+export const EGRESS_GRANT_PARTS = ['git', 'anthropic', 'openai', 'chatgptRefresh', 'login'] as const
 
 /**
  * What `setEgressGrant` takes: per part, a value REPLACES the stored one, `null` REMOVES it, and an

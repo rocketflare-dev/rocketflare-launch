@@ -93,7 +93,6 @@ describe('the session sandbox’s egress mode', () => {
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
-      'chatgpt.com',
       'github.com',
       'platform.claude.com',
     ])

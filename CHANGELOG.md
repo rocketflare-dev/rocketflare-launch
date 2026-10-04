@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Codex on a ChatGPT plan works again: `chatgpt.com` is no longer proxied** (`docs/CONCEPTS.md`
+  §18.22-B). ChatGPT answers requests sent from the Workers runtime with a 403 block page, so every
+  turn failed at model discovery ("workspace routing discovery failed"). The container now reaches
+  `chatgpt.com` directly with Codex's own client — it already holds the person's `auth.json` for the
+  turn — and the turn is metered from Codex's own `turn.completed` usage (`subscription`, no cost),
+  as on the sandbox host. Lost: the path and model allow-list on `chatgpt.com` (Codex's
+  `config.toml` keeps analytics, feedback and OTEL off). Needs `SESSION_EGRESS=open` (the tomls).
+  The token refresh on `auth.openai.com` is still proxied and resealed at once. **Redeploy the
+  sandbox host** (`pnpm --filter @launch/web deploy:sandbox-host`): its egress grant's `chatgpt`
+  part is now `chatgptRefresh`, and an old host refuses a ChatGPT plan's turn.
 - **Connecting your Claude subscription or ChatGPT plan moved from Profile to Home.** While nothing
   is connected it leads the page ("Connect your coding agent", one row per account your
   organisation allows, with Claude's and Codex's own marks); once one is connected it shrinks to

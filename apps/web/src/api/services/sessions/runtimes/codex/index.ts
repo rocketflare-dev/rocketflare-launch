@@ -3,13 +3,13 @@
  * the first (`command.ts`), `$CODEX_HOME` written before every turn (`config.ts`), its JSONL mapped
  * onto the same `session_events` (`stream.ts`), its rollout file checkpointed like Claude's
  * transcript (`state.ts`), and both billing modes — Launch's OpenAI key swapped in at the egress
- * (`egress/openai.ts`), or a person's ChatGPT plan through a claimed `auth.json` (`credentials.ts`,
- * `egress/chatgpt.ts`, `egress/openai-auth.ts`), connected by a relayed device-code sign-in
+ * (`egress/openai.ts`), or a person's ChatGPT plan through a claimed `auth.json` (`credentials.ts`;
+ * `chatgpt.com` reached directly, the refresh through `egress/openai-auth.ts`), connected by a relayed device-code sign-in
  * (`login.ts`).
  *
  * Off until an admin turns it on (the session policy's `runtimes.codex`, the Platform → Coding
  * agents tab — `runtimePolicyOf` fails closed). It runs on either sandbox host: the remote one's
- * handlers forward its three hosts from the turn's egress grant (`egress/host.ts`).
+ * handlers forward its two proxied hosts from the turn's egress grant (`egress/host.ts`).
  */
 import type { AgentRuntime } from '../types'
 import { buildCodexCommand } from './command'

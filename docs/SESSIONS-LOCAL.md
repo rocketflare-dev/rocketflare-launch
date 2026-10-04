@@ -76,22 +76,23 @@ part of an `EgressGrant` per kind of traffic, over the binding (`setEgressGrant`
 - the turn's model credential, before each turn, by the session's runtime and account — Claude
   Code on Launch's key (`anthropic`, `api_key`), Claude Code on the creator's subscription
   (`anthropic`, `oauth`: the token the proxy would decrypt, by the same `usableClaudeCredential`
-  rule), Codex on Launch's OpenAI key (`openai`), or Codex on a ChatGPT plan (`chatgpt`: the model
-  only — the plan's `auth.json` is in the container for the turn, by design, as in-process — granted
-  for the turn and revoked after it);
+  rule), Codex on Launch's OpenAI key (`openai`), or Codex on a ChatGPT plan (`chatgptRefresh`: the
+  plan's token refresh on `auth.openai.com` only — its model calls go to `chatgpt.com` DIRECTLY,
+  because ChatGPT blocks requests from the Workers runtime, and the plan's `auth.json` is in the
+  container for the turn anyway, as in-process — granted for the turn and revoked after it);
 - `login` — a sign-in's sandbox (`login-<id>`), before its CLI starts: the runtime whose sign-in
   requests may pass (Claude: the token exchange on `platform.claude.com` and the profile on
   `api.anthropic.com`; Codex: the device flow on `auth.openai.com`).
 
 `HostedSessionSandbox` keeps the grant in its Durable Object storage — never in the container —
 and clears it on `destroy()` and when the container stops. Its OWN outbound handlers
-(`src/sandbox-host/egress.ts`) cover the same six hosts as Launch's and inject through the SAME
+(`src/sandbox-host/egress.ts`) cover the same five hosts as Launch's (neither has one for
+`chatgpt.com`) and inject through the SAME
 functions: `forward-git.ts` (one repo, a push only to `session/<short>`, never a delete, a fresh
 token's 401/404 retried), `forward-model.ts` (the Messages API on the policy's model; the OAuth
 Bearer and beta header; `GET /api/claude_code/*` a 404 on a subscription; a Claude sign-in's two
 passthroughs) and `forward-openai.ts` (426 for a WebSocket, the Responses paths on the policy's
-model, 415 for a compressed body, the ChatGPT allow-list, a session's refresh-only and a sign-in's
-device flow). No part for the host → 403, as from the proxies. The turn's process gets only the
+model, 415 for a compressed body, a ChatGPT plan's refresh-only and a sign-in's device flow). No part for the host → 403, as from the proxies. The turn's process gets only the
 runtime's own placeholder environment — `HostEgress.turnEnv` adds nothing (an extra
 `ANTHROPIC_API_KEY` would beat a subscription's OAuth token).
 
@@ -144,7 +145,7 @@ wrangler's remote-proxy session (capnweb over a WebSocket, read from wrangler 4.
 upgrade through the binding's `fetch` (the proxy passes `Upgrade` through) are all read from the
 code, not run. Boot time, the per-turn metering against a real Claude Code `result` line
 (`modelUsage`) and a real Codex `turn.completed`, the host's grant handlers on a real container (a
-subscription's Bearer, the OpenAI swap, the ChatGPT passthrough, a sign-in through the host), and
+subscription's Bearer, the OpenAI swap, the ChatGPT refresh, a sign-in through the host), and
 wrangler starting with BOTH local containers and a remote binding are unmeasured (checklist:
 `docs/plans/sandbox-session-issues.md`).
 

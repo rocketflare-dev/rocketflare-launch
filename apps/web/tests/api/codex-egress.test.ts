@@ -7,9 +7,9 @@
  *   the policy's model and `GET /v1/models`; the budget is checked before any upstream call; the
  *   placeholder is replaced by Launch's key and never reaches OpenAI; usage is metered as provider
  *   `openai` with a price.
- * - `chatgpt.com` (`egress/chatgpt.ts`): only a Codex session on a ChatGPT plan whose turn holds
- *   the claim, only the responses and models paths (analytics refused), the plan's own token passed
- *   through, usage recorded as `subscription` with no cost.
+ * - `chatgpt.com`: NO handler — ChatGPT blocks requests from the Workers runtime, so the container
+ *   reaches it directly (`egress/registry.ts`); a plan's turn is metered from Codex's own output
+ *   (`codex-turn.test.ts`).
  * - `auth.openai.com` (`egress/openai-auth.ts`): a Codex login sandbox's device flow passes; a
  *   session's refresh passes and its rotated tokens are stored AT ONCE (compare-and-set); a reused
  *   refresh token marks the plan `needs_login`; anything else is refused.
@@ -22,11 +22,15 @@ import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { putCredential, removeCredential } from '@/api/services/launch/credentials'
 import { claim, getById, openSecret } from '@/api/services/sessions/credentials/store'
-import { handleChatGpt } from '@/api/services/sessions/egress/chatgpt'
 import { handleOpenAi } from '@/api/services/sessions/egress/openai'
 import { handleOpenAiAuth, refreshSignedOut } from '@/api/services/sessions/egress/openai-auth'
+import {
+  DIRECT_CODEX_HOSTS,
+  SESSION_OUTBOUND_HANDLERS,
+} from '@/api/services/sessions/egress/registry'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
 import { parseCodexAuthJson } from '@/api/services/sessions/runtimes/codex/auth-json'
+import { SESSION_BASE_ALLOWED_HOSTS } from '@/api/services/sessions/sandbox-port'
 import { loadConfig } from '@/config'
 import { agentLogins, aiUsage, sessions } from '@/db/schema'
 import { createTestTenantWithUser } from '../helpers/auth'
@@ -281,120 +285,13 @@ async function planSession(opts: { claimed?: boolean } = {}) {
 }
 
 const ACCESS = fakeJwt({ exp: 4_102_444_800, sub: 'u' })
-const planHeaders = { authorization: `Bearer ${ACCESS}`, 'chatgpt-account-id': 'acct-fake-0001' }
-
-describe('chatgpt.com: Codex on a person’s plan', () => {
-  it('passes the plan’s own token through to the responses path, and records usage as subscription with no cost', async () => {
-    const openai = createFakeOpenAi({ usage: { input: 500, cached: 100, output: 40 } })
-    const { row, sandboxId } = await planSession()
-    const res = await handleChatGpt(
-      responsesRequest(
-        'chatgpt.com',
-        '/backend-api/codex/responses',
-        { model: MODEL },
-        {
-          headers: planHeaders,
-        }
-      ),
-      env(),
-      { containerId: sandboxId },
-      openai
-    )
-    expect(res.status).toBe(200)
-    await res.text()
-    expect(openai.requests[0]).toMatchObject({
-      url: 'https://chatgpt.com/backend-api/codex/responses',
-      authorization: `Bearer ${ACCESS}`,
-      accountId: 'acct-fake-0001',
-    })
-    const [usage] = await usageRows(row.id)
-    expect(usage).toMatchObject({
-      provider: 'openai',
-      billing: 'subscription',
-      costMicrocents: null,
-      inputTokens: 400,
-      cacheReadTokens: 100,
-    })
-    expect(Number((await sessionRow(row.id)).costMicrocents)).toBe(0)
-  })
-
-  it('refuses analytics and every other path, an upgrade (426), and the wrong model', async () => {
-    const openai = createFakeOpenAi()
-    const { sandboxId } = await planSession()
-    for (const [path, method] of [
-      ['/backend-api/codex/analytics-events/events', 'POST'],
-      ['/backend-api/conversation', 'POST'],
-      ['/backend-api/codex/responses', 'GET'],
-      ['/', 'GET'],
-    ] as const) {
-      const res = await handleChatGpt(
-        responsesRequest('chatgpt.com', path, { model: MODEL }, { method, headers: planHeaders }),
-        env(),
-        { containerId: sandboxId },
-        openai
-      )
-      expect(res.status, `${method} ${path}`).toBe(403)
-    }
-    const ws = await handleChatGpt(
-      new Request('https://chatgpt.com/backend-api/codex/responses', {
-        headers: { upgrade: 'websocket' },
-      }),
-      env(),
-      { containerId: sandboxId },
-      openai
-    )
-    expect(ws.status).toBe(426)
-    const wrong = await handleChatGpt(
-      responsesRequest('chatgpt.com', '/backend-api/codex/responses', { model: 'gpt-6-astra' }),
-      env(),
-      { containerId: sandboxId },
-      openai
-    )
-    expect(wrong.status).toBe(403)
-    expect(openai.requests).toHaveLength(0)
-  })
-
-  it('a session whose turn does not hold the claim — or a platform session — is refused', async () => {
-    const openai = createFakeOpenAi()
-    const req = () =>
-      responsesRequest('chatgpt.com', '/backend-api/codex/responses', { model: MODEL })
-    const unclaimed = await planSession({ claimed: false })
-    expect(
-      (await handleChatGpt(req(), env(), { containerId: unclaimed.sandboxId }, openai)).status
-    ).toBe(403)
-    const other = await planSession({ claimed: false })
-    await claim(db, {
-      tenantId: other.f.tenant.id,
-      id: other.credential.id,
-      sessionId: crypto.randomUUID(),
-    })
-    expect(
-      (await handleChatGpt(req(), env(), { containerId: other.sandboxId }, openai)).status
-    ).toBe(403)
-    const platform = await liveSession()
-    expect(
-      (await handleChatGpt(req(), env(), { containerId: platform.sandboxId }, openai)).status
-    ).toBe(403)
-    expect(openai.requests).toHaveLength(0)
-  })
-
-  it('GET /backend-api/codex/models passes through unmetered', async () => {
-    const openai = createFakeOpenAi()
-    const { row, sandboxId } = await planSession()
-    const res = await handleChatGpt(
-      responsesRequest('chatgpt.com', '/backend-api/codex/models?client_version=0.160.0', null, {
-        method: 'GET',
-        headers: planHeaders,
-      }),
-      env(),
-      { containerId: sandboxId },
-      openai
-    )
-    expect(res.status).toBe(200)
-    expect(openai.requests[0]?.url).toBe(
-      'https://chatgpt.com/backend-api/codex/models?client_version=0.160.0'
-    )
-    expect(await usageRows(row.id)).toEqual([])
+describe('chatgpt.com: Codex on a person’s plan goes direct', () => {
+  it('is allow-listed but has no outbound handler, so the container reaches it itself', () => {
+    expect(DIRECT_CODEX_HOSTS).toEqual(['chatgpt.com'])
+    expect(SESSION_BASE_ALLOWED_HOSTS).toContain('chatgpt.com')
+    expect(Object.keys(SESSION_OUTBOUND_HANDLERS)).not.toContain('chatgpt.com')
+    // The plan's refresh still goes through Launch, which can reseal it at once.
+    expect(Object.keys(SESSION_OUTBOUND_HANDLERS)).toContain('auth.openai.com')
   })
 })
 

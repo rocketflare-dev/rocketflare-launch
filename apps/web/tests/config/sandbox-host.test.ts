@@ -368,7 +368,6 @@ describe('the host mode puts no credential in the container', () => {
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
-      'chatgpt.com',
       'github.com',
       'platform.claude.com',
     ])

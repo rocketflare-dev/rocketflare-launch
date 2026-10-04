@@ -131,7 +131,7 @@ changes; nothing else does. Its env type is
 hand-written (`src/sandbox-host/env.ts`: a second generated file would declare a second
 `Cloudflare.Env`), and `AppBindings` adds `SANDBOX_HOST?: Fetcher` beside `HYPERDRIVE`. The host
 cannot reach Launch's database, so its class (`HostedSessionSandbox`) has its OWN `outboundByHost`
-handlers for the same six hosts as Launch's (`src/sandbox-host/egress.ts`, over the shared
+handlers for the same five hosts as Launch's (`src/sandbox-host/egress.ts`, over the shared
 `egress/forward-git.ts` / `forward-model.ts` / `forward-openai.ts` cores) fed by the `EgressGrant`
 Launch sends over the binding
 (`setEgressGrant`, the `host` egress mode) and keeps in the object's storage — it holds no secret

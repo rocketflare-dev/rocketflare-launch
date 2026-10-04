@@ -17,16 +17,21 @@
  *   marks the credential `needs_login`, and the person reconnects on Home.
  *
  * Everything else is a 403. The bodies pass through to Codex unchanged; none of them is logged.
+ *
+ * `chatgpt.com` itself — the plan's model calls — is NOT handled by Launch: ChatGPT refuses
+ * requests sent from the Workers runtime (a 403 HTML page), so the container reaches it directly
+ * with Codex's own client (`egress/registry.ts`). This host, which answers a Worker normally,
+ * stays proxied so the rotated refresh token is captured the moment it rotates.
  */
 import { AGENT_LOGIN_ACTIVE_STATUSES } from '@launch/shared/launch-agents'
 import { type AppConfig, loadConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { openDatabase } from '../../../../db/client'
+import type { SessionRow } from '../../../../db/schema'
 import type { AppBindings } from '../../../types'
 import { loggerFor } from '../../../utils/core/logger'
 import { getById, markNeedsLogin, openSecret, resealIfVersion } from '../credentials/store'
 import { parseCodexAuthJson, withRefreshedTokens } from '../runtimes/codex/auth-json'
-import { claimedCodexSession } from './chatgpt'
 import type { EgressContext } from './forward-git'
 import {
   CODEX_REFRESH_PATH,
@@ -35,7 +40,7 @@ import {
   readCodexRefresh,
 } from './forward-openai'
 import { type OpenAiEgressDeps, openAiError, refuseWebSocket } from './openai-common'
-import { loginForSandbox } from './sandbox-lookup'
+import { loginForSandbox, sessionForSandbox } from './sandbox-lookup'
 
 /** The paths and the upstream: `forward-openai.ts`, shared with the sandbox host. */
 export {
@@ -56,6 +61,38 @@ const defaultDeps = (): OpenAiEgressDeps => ({
   openDb: (env, cfg) => openDatabase({ ...cfg, HYPERDRIVE: env.HYPERDRIVE }),
   now: () => new Date(),
 })
+
+/**
+ * The session a request from `containerId` belongs to, if it is a Codex session on a personal
+ * account whose turn holds the credential's claim right now; else the refusal. The claim lives on
+ * the credential (`runtimes/codex/credentials.ts`), so a plan is used by one session at a time.
+ */
+export async function claimedCodexSession(
+  db: Parameters<typeof sessionForSandbox>[0],
+  containerId: string,
+  now: Date
+): Promise<{ session: SessionRow; credentialId: string } | Response> {
+  const session = await sessionForSandbox(db, containerId)
+  if (!session)
+    return openAiError(403, 'permission_error', 'This sandbox is not a live Launch session')
+  if (
+    session.runtime !== 'codex' ||
+    session.credentialSource !== 'user' ||
+    !session.agentCredentialId
+  ) {
+    return openAiError(403, 'permission_error', 'This Launch session does not use a ChatGPT plan')
+  }
+  const credential = await getById(db, session.tenantId, session.agentCredentialId)
+  const held =
+    credential &&
+    credential.claimedBySessionId === session.id &&
+    credential.claimExpiresAt !== null &&
+    credential.claimExpiresAt.getTime() > now.getTime()
+  if (!credential || !held) {
+    return openAiError(403, 'permission_error', 'No turn of this session is using the ChatGPT plan')
+  }
+  return { session, credentialId: credential.id }
+}
 
 /** The error code a refresh refusal carries — `{ error: { code } }`, `{ error: "…" }` or `{ code }`. */
 export function refreshErrorCode(body: unknown): string | null {

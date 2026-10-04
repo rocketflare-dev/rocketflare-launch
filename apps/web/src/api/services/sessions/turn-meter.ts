@@ -1,6 +1,9 @@
 /**
  * Metering a turn from the CLI's own output — the `host` egress mode (`egress/host.ts`), where
- * the sandbox host's handlers key the requests but cannot reach Launch's database to meter them.
+ * the sandbox host's handlers key the requests but cannot reach Launch's database to meter them,
+ * and, in either mode, a Codex turn on a person's ChatGPT plan, whose model calls go to
+ * `chatgpt.com` directly with no handler to meter them (`egress/registry.ts`; `selfMetered` in
+ * `turn.ts` decides).
  * Same ledger as the proxies: the same pricing (`@launch/shared/ai/pricing`, under the runtime's
  * provider) and the same write (`recordSessionUsage`: one `ai_usage` row and the session's running
  * totals in ONE transaction, feature `session`).

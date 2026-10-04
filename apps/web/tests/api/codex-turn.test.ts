@@ -8,8 +8,12 @@
  *   written for the turn and removed after it, resealed only when Codex rotated it and only when it
  *   is not older than what is stored, a second concurrent turn refused, and the claim released
  *   whatever happened — success, failure, a rollout, a container that no longer answers.
+ * - metering, in the `proxied` mode the fakes run: a plan's model calls go to `chatgpt.com`
+ *   DIRECTLY (ChatGPT blocks the Workers runtime), so its turn is metered from Codex's own
+ *   `turn.completed` delta — one `subscription` row, no cost, no budget; a turn on Launch's key is
+ *   metered by the `api.openai.com` proxy alone (`codex-egress.test.ts`), never by the turn too.
  */
-import { DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
+import { DEFAULT_SESSION_POLICY, usdToMicrocents } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { createSessionCredentialPort } from '@/api/services/sessions/credentials/lease'
@@ -30,7 +34,7 @@ import {
 } from '@/api/services/sessions/runtimes/codex/config'
 import { type RunTurnOptions, runTurn } from '@/api/services/sessions/turn'
 import { loadConfig } from '@/config'
-import { agentCredentials, type SessionRow, sessions } from '@/db/schema'
+import { agentCredentials, aiUsage, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud } from '../helpers/fake-cloud'
 import { codexAuthJsonText, codexExecJson } from '../helpers/fake-openai'
@@ -68,6 +72,12 @@ async function send(row: SessionRow, message: string) {
 
 const turnEnds = async (row: SessionRow) =>
   (await listSessionEvents(db, row.tenantId, row.id)).filter(e => e.type === 'turn.end')
+
+const usageRows = (row: SessionRow) =>
+  db
+    .select()
+    .from(aiUsage)
+    .where(and(eq(aiUsage.tenantId, row.tenantId), eq(aiUsage.sessionId, row.id)))
 
 describe('a Codex turn on Launch’s account', () => {
   it('writes $CODEX_HOME, runs exec with the placeholder key, stores the thread, and resumes it next turn', async () => {
@@ -135,6 +145,26 @@ describe('a Codex turn on Launch’s account', () => {
       usage: { tokensIn: 1500 - 1000, cacheRead: 1000, tokensOut: 30 },
     })
     expect((await reload(row)).runtimeState).toMatchObject({ usage: { inputTokens: 2500 } })
+  })
+
+  it('proxied: the turn records no usage of its own — the api.openai.com proxy meters each call', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, {
+      status: 'ready',
+      runtime: 'codex',
+      policy: CODEX_POLICY,
+      pendingMessage: 'go',
+    })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(
+        /codex exec/,
+        codexExecJson({ threadId: THREAD, usage: { input: 1000, cached: 400, output: 50 } })
+      )
+    )
+    expect((await runTurn(db, ports, row, FAST)).status).toBe('completed')
+    // The fake container made no model call, so the proxy recorded nothing; nor did the turn.
+    expect(await usageRows(row)).toEqual([])
+    expect(Number((await reload(row)).costMicrocents)).toBe(0)
   })
 
   it('a rollout that is gone forgets the thread instead of resuming it', async () => {
@@ -223,6 +253,52 @@ const credentialRow = async (tenantId: string, id: string) => {
 }
 
 describe('a Codex turn on a person’s ChatGPT plan', () => {
+  it('proxied: the turn is metered from Codex’s own turn.completed delta — one subscription row per turn, no cost, no budget', async () => {
+    const { row, ports } = await planSession()
+    // Over the session's money cap: a plan's turn is not stopped for Launch's budget.
+    await db
+      .update(sessions)
+      .set({ costMicrocents: usdToMicrocents(CODEX_POLICY.maxSessionUsd) + 1 })
+      .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+    const sandbox = ports.sandbox(row.id) as FakeSandbox
+    sandbox
+      .onProcess(
+        / resume /,
+        codexExecJson({ threadId: THREAD, usage: { input: 2500, cached: 1400, output: 80 } })
+      )
+      .onProcess(
+        /codex exec/,
+        codexExecJson({ threadId: THREAD, usage: { input: 1000, cached: 400, output: 50 } })
+      )
+    expect((await runTurn(db, ports, await reload(row), FAST)).status).toBe('completed')
+
+    const first = await usageRows(row)
+    expect(first).toHaveLength(1)
+    expect(first[0]).toMatchObject({
+      provider: 'openai',
+      model: 'gpt-6.1-sol',
+      feature: 'session',
+      billing: 'subscription',
+      costMicrocents: null,
+      inputTokens: 600,
+      cacheReadTokens: 400,
+      outputTokens: 50,
+    })
+    const events = await listSessionEvents(db, row.tenantId, row.id)
+    expect(events.some(e => e.type === 'budget.reached')).toBe(false)
+    expect(Number((await reload(row)).costMicrocents)).toBe(
+      usdToMicrocents(CODEX_POLICY.maxSessionUsd) + 1
+    )
+
+    // The next turn records only its own delta from the thread's running total.
+    await send(row, 'again')
+    expect((await runTurn(db, ports, await reload(row), FAST)).status).toBe('completed')
+    const both = await usageRows(row)
+    expect(both).toHaveLength(2)
+    expect(both.map(u => u.inputTokens).sort((a, b) => Number(a) - Number(b))).toEqual([500, 600])
+    expect(both.every(u => u.billing === 'subscription' && u.costMicrocents === null)).toBe(true)
+  })
+
   it('auth.json is in $CODEX_HOME for the turn and removed after it; no key in the env; unchanged → no reseal; claim released', async () => {
     const { row, credential, secret, ports } = await planSession()
     const sandbox = ports.sandbox(row.id) as FakeSandbox

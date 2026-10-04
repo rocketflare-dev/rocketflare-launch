@@ -1,5 +1,5 @@
 /**
- * The OpenAI egress FORWARDING CORE (§18.22-B) — what Launch's three OpenAI handlers do to a
+ * The OpenAI egress FORWARDING CORE (§18.22-B) — what Launch's two OpenAI handlers do to a
  * request that is not about who is asking or what it costs, with nothing of Launch's database or
  * config, so the sandbox host Worker (`src/sandbox-host/`) bundles it too and the two sides cannot
  * drift (the same split as `forward-model.ts` for Anthropic and `forward-git.ts` for git):
@@ -8,11 +8,11 @@
  *   streamed HTTP request (spike S-B1). A handler cannot meter or model-check a WebSocket, so every
  *   upgrade is answered `426 Upgrade Required` ({@link refuseWebSocket}) — Codex then uses SSE.
  * - **The paths**: Launch's key (`api.openai.com`) — `POST /v1/responses` (+ `/compact`) and `GET
- *   /v1/models` ({@link openAiRoute}); a ChatGPT plan (`chatgpt.com`) — `POST
- *   /backend-api/codex/responses` (+ `/compact`) and `GET /backend-api/codex/models`
- *   ({@link chatGptRoute}); the sign-in host (`auth.openai.com`) — the device flow for a login
- *   sandbox ({@link CODEX_LOGIN_AUTH_PATHS}) and `POST /oauth/token` with `grant_type:
- *   refresh_token` for a session ({@link readCodexRefresh}).
+ *   /v1/models` ({@link openAiRoute}); the sign-in host (`auth.openai.com`) — the device flow for
+ *   a login sandbox ({@link CODEX_LOGIN_AUTH_PATHS}) and `POST /oauth/token` with `grant_type:
+ *   refresh_token` for a session on a ChatGPT plan ({@link readCodexRefresh}). A plan's model
+ *   calls (`chatgpt.com`) are not proxied at all: ChatGPT blocks requests from the Workers
+ *   runtime, so the container reaches it directly (`registry.ts`).
  * - **The model allow-list** is the session policy's model, read out of the request body — the
  *   same rule as Anthropic's (`isAllowedModel`). A body Launch cannot read (compressed: Codex's
  *   `enable_request_compression`, switched off in its `config.toml`) is a 415, never forwarded
@@ -23,7 +23,7 @@
  *
  * The `forward*` functions are whole handlers over a grant — what the sandbox host runs, unmetered
  * (its turns are metered from Codex's own output, `turn-meter.ts`). Launch's own handlers
- * (`openai.ts`, `chatgpt.ts`, `openai-auth.ts`) call the same pieces with their database checks,
+ * (`openai.ts`, `openai-auth.ts`) call the same pieces with their database checks,
  * the budget and the meter in between.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
@@ -42,13 +42,6 @@ export const OPENAI_UPSTREAM_ORIGIN = 'https://api.openai.com'
 export const OPENAI_MODEL_PATHS = ['/v1/responses', '/v1/responses/compact'] as const
 /** Codex's model discovery: keyed, not metered. */
 export const OPENAI_MODELS_PATH = '/v1/models'
-
-export const CHATGPT_UPSTREAM_ORIGIN = 'https://chatgpt.com'
-export const CHATGPT_MODEL_PATHS = [
-  '/backend-api/codex/responses',
-  '/backend-api/codex/responses/compact',
-] as const
-export const CHATGPT_MODELS_PATH = '/backend-api/codex/models'
 
 export const OPENAI_AUTH_UPSTREAM_ORIGIN = 'https://auth.openai.com'
 /** What a Codex login sandbox may call: the device-code flow and its exchange. */
@@ -192,50 +185,6 @@ export async function forwardOpenAi(req: Request, opts: ForwardOpenAiOptions): P
     return await (opts.upstream ?? globalUpstream).fetch(openAiKeyedRequest(req, call, opts.key))
   } catch {
     return openAiError(502, 'api_error', 'Launch could not reach the OpenAI API')
-  }
-}
-
-// ---- chatgpt.com (a person's plan) ---------------------------------------------------------------
-
-/** `chatgpt.com`: which allowed request this is, or the 403 (analytics and everything else). */
-export function chatGptRoute(req: Request): ModelRoute | Response {
-  const url = new URL(req.url)
-  if (req.method === 'GET' && url.pathname === CHATGPT_MODELS_PATH) return 'models'
-  if (req.method === 'POST' && (CHATGPT_MODEL_PATHS as readonly string[]).includes(url.pathname)) {
-    return 'call'
-  }
-  return openAiError(403, 'permission_error', `Launch sessions may not call ${url.pathname}`)
-}
-
-/** The upstream request on the plan: Codex's own Bearer and `ChatGPT-Account-ID`, as it sent them. */
-export function chatGptRequest(req: Request, call: ResponsesCall | null): Request {
-  return upstreamRequest(
-    CHATGPT_UPSTREAM_ORIGIN,
-    req,
-    call,
-    forwardHeaders(req, { dropAuth: false })
-  )
-}
-
-/** The sandbox host's `chatgpt.com` for a Codex session on a ChatGPT plan — unmetered. */
-export async function forwardChatGpt(
-  req: Request,
-  opts: { model: string; upstream?: UpstreamFetch }
-): Promise<Response> {
-  const upgrade = refuseWebSocket(req)
-  if (upgrade) return upgrade
-  const route = chatGptRoute(req)
-  if (route instanceof Response) return route
-  let call: ResponsesCall | null = null
-  if (route === 'call') {
-    const read = await readResponsesCall(req, opts.model)
-    if (read instanceof Response) return read
-    call = read
-  }
-  try {
-    return await (opts.upstream ?? globalUpstream).fetch(chatGptRequest(req, call))
-  } catch {
-    return openAiError(502, 'api_error', 'Launch could not reach ChatGPT')
   }
 }
 

@@ -19,7 +19,7 @@
  *   | Claude Code × platform  | `anthropic` — Launch's key (`resolveModelKey`), `api_key`     |
  *   | Claude Code × user      | `anthropic` — the creator's subscription token, `oauth` (`usableClaudeCredential`, the proxy's own rule) |
  *   | Codex × platform        | `openai` — Launch's OpenAI key (`resolveOpenAiKey`)           |
- *   | Codex × user            | `chatgpt` — the model only; revoked again by {@link HostEgress.endTurn} |
+ *   | Codex × user            | `chatgptRefresh` — the token refresh only; revoked again by {@link HostEgress.endTurn} |
  *
  *   It returns NO environment: each runtime's own `turnEnv` already gives the process its
  *   placeholder (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, or none on a
@@ -80,7 +80,9 @@ export class HostEgress implements SessionEgressPort {
     const model = resolveSessionPolicy(session.policy).model
     const user = session.credentialSource === 'user'
     if (session.runtime === 'codex') {
-      if (user) return { chatgpt: { model } }
+      // `chatgpt.com` is reached directly (ChatGPT blocks the Workers runtime): the host passes
+      // only the plan's token refresh on `auth.openai.com`, and only while a turn holds it.
+      if (user) return { chatgptRefresh: true }
       const key = await resolveOpenAiKey(this.db, this.cfg)
       if (!key) throw new ModelKeyMissingError('openai')
       return { openai: { key: key.apiKey, model } }
@@ -108,10 +110,10 @@ export class HostEgress implements SessionEgressPort {
     return {}
   }
 
-  /** After a turn: a ChatGPT plan is reachable only while a turn holds it, as in the proxy. */
+  /** After a turn: a ChatGPT plan's refresh passes only while a turn holds it, as in the proxy. */
   async endTurn(sandbox: SandboxPort, session: SessionRow): Promise<void> {
     if (session.runtime === 'codex' && session.credentialSource === 'user') {
-      await this.grant(sandbox, { chatgpt: null })
+      await this.grant(sandbox, { chatgptRefresh: null })
     }
   }
 

@@ -5,13 +5,15 @@
  *
  * - `config.toml` — never ask (`approval_policy = "never"`: nobody could answer in `exec` mode),
  *   no Codex sandbox inside Launch's (`danger-full-access`), credentials in a FILE (the lease's
- *   `auth.json`, never a keyring), no update check, and nothing that phones home or calls a model
- *   the egress would refuse: analytics, feedback and OTEL metrics off (ChatGPT mode otherwise calls
- *   `chatgpt.com/backend-api/codex/analytics-events` and `ab.chatgpt.com`, spike S-B1), memories off
- *   (their extraction calls other models), hosted web search off (it runs at OpenAI, outside the
- *   egress, and bills extra), and request compression off — ChatGPT mode zstd-compresses its
- *   request bodies by default (`enable_request_compression`), and the egress must read the model
- *   out of every body.
+ *   `auth.json`, never a keyring), no update check, and nothing that phones home or calls another
+ *   model: analytics, feedback and OTEL metrics off (ChatGPT mode otherwise calls
+ *   `chatgpt.com/backend-api/codex/analytics-events` and `ab.chatgpt.com`, spike S-B1) — on a
+ *   ChatGPT plan this file is now the ONLY thing keeping them off, since `chatgpt.com` is reached
+ *   directly with no path allow-list (`egress/registry.ts`) — memories off (their extraction calls
+ *   other models), hosted web search off (it runs at OpenAI, outside the egress, and bills extra),
+ *   and request compression off — ChatGPT mode zstd-compresses its request bodies by default
+ *   (`enable_request_compression`), and Launch's `api.openai.com` egress must read the model out
+ *   of every body.
  * - `AGENTS.md` — the session system note. Codex reads `$CODEX_HOME/AGENTS.md` first, then the
  *   repository's own (spike S-B1), so the app's AGENTS.md still applies.
  * - `rules/launch.rules` — an execpolicy that forbids `git push` and GitHub CLI writes. A guardrail

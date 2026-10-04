@@ -19,9 +19,10 @@
  * - **Codex on Launch's key** (`api.openai.com`, the `openai` part): `forwardOpenAi` — 426 for a
  *   WebSocket, `POST /v1/responses` (+ `/compact`) on the grant's model and `GET /v1/models`, the
  *   sandbox's placeholder dropped and the key set.
- * - **Codex on a ChatGPT plan** (`chatgpt.com` and `auth.openai.com`, the `chatgpt` part, granted
- *   for one turn): `forwardChatGpt` — 426, the Responses paths on the grant's model and the model
- *   list, Codex's own Bearer passed through; `forwardCodexRefresh` — the token refresh only.
+ * - **Codex on a ChatGPT plan** (`auth.openai.com`, the `chatgptRefresh` part, granted for one
+ *   turn): `forwardCodexRefresh` — the token refresh only. The plan's model calls go to
+ *   `chatgpt.com` DIRECTLY, with no handler here or in Launch: ChatGPT blocks requests from the
+ *   Workers runtime (`egress/registry.ts`), and the container holds the plan's `auth.json` anyway.
  * - **A sign-in** (the `login` part): Claude's `POST platform.claude.com/v1/oauth/token` and `GET
  *   api.anthropic.com/api/oauth/profile` (`forwardClaudeSignIn`), or Codex's device flow on
  *   `auth.openai.com` (`forwardCodexSignIn`) — passed through untouched, and nothing else.
@@ -48,7 +49,6 @@ import {
   type UpstreamFetch,
 } from '../api/services/sessions/egress/forward-model'
 import {
-  forwardChatGpt,
   forwardCodexRefresh,
   forwardCodexSignIn,
   forwardOpenAi,
@@ -175,22 +175,6 @@ export async function hostedOpenAi(
   })
 }
 
-/** `chatgpt.com`: Codex on a ChatGPT plan, during a turn — the Responses API on the grant's model. */
-export async function hostedChatGpt(
-  req: Request,
-  lookup: GrantLookup,
-  ctx: EgressContext,
-  overrides: Partial<Pick<HostedEgressDeps, 'fetch'>> = {}
-): Promise<Response> {
-  const upgrade = refuseWebSocket(req)
-  if (upgrade) return upgrade
-  const chatgpt = (await grantFor(lookup, ctx))?.chatgpt
-  if (!chatgpt) {
-    return openAiError(403, 'permission_error', 'No turn of this session is using the ChatGPT plan')
-  }
-  return forwardChatGpt(req, { model: chatgpt.model, upstream: upstreamOf(overrides) })
-}
-
 /**
  * `auth.openai.com`: a Codex sign-in's device flow, or — a session on a ChatGPT plan, during a
  * turn — its token refresh. Nothing else.
@@ -215,6 +199,6 @@ export async function hostedOpenAiAuth(
     }
     return forwardCodexSignIn(req, { upstream })
   }
-  if (grant?.chatgpt) return forwardCodexRefresh(req, { upstream })
+  if (grant?.chatgptRefresh) return forwardCodexRefresh(req, { upstream })
   return openAiError(403, 'permission_error', NO_GRANT)
 }

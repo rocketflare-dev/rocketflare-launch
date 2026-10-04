@@ -25,7 +25,6 @@ import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
 import type { EgressGrant } from '@/api/services/sessions/sandbox-host/protocol'
 import {
   hostedAnthropic,
-  hostedChatGpt,
   hostedClaudeSignIn,
   hostedGitHub,
   hostedOpenAi,
@@ -541,60 +540,13 @@ describe('the sandbox host runs everything Launch’s egress runs', () => {
 
   it('Codex on Launch’s key needs the openai part: a Claude session’s grant is refused', async () => {
     const up = recordingUpstream()
-    for (const g of [grant(), oauthGrant, { chatgpt: { model: CODEX_MODEL } }, null]) {
+    for (const g of [grant(), oauthGrant, { chatgptRefresh: true as const }, null]) {
       const res = await hostedOpenAi(responses({ model: CODEX_MODEL }), lookupOf(g), ctx, {
         fetch: up.fetch,
       })
       expect(res.status).toBe(403)
     }
     expect(up.seen).toHaveLength(0)
-  })
-
-  it('Codex on a ChatGPT plan: the Responses path passes with Codex’s own token; analytics and everything else are refused', async () => {
-    const up = recordingUpstream()
-    const g: EgressGrant = { chatgpt: { model: CODEX_MODEL } }
-    const own = { authorization: 'Bearer plan-access-token', 'chatgpt-account-id': 'acct-1' }
-    const ok = await hostedChatGpt(
-      responses({ model: CODEX_MODEL }, own, 'https://chatgpt.com/backend-api/codex/responses'),
-      lookupOf(g),
-      ctx,
-      { fetch: up.fetch }
-    )
-    expect(ok.status).toBe(200)
-    expect(up.seen[0]?.url).toBe('https://chatgpt.com/backend-api/codex/responses')
-    expect(up.seen[0]?.headers.get('authorization')).toBe('Bearer plan-access-token')
-    expect(up.seen[0]?.headers.get('chatgpt-account-id')).toBe('acct-1')
-
-    for (const url of [
-      'https://chatgpt.com/backend-api/codex/analytics-events/events',
-      'https://chatgpt.com/backend-api/conversation',
-    ]) {
-      const res = await hostedChatGpt(
-        responses({ model: CODEX_MODEL }, own, url),
-        lookupOf(g),
-        ctx,
-        {
-          fetch: up.fetch,
-        }
-      )
-      expect(res.status).toBe(403)
-    }
-    const otherModel = await hostedChatGpt(
-      responses({ model: 'gpt-4o' }, own, 'https://chatgpt.com/backend-api/codex/responses'),
-      lookupOf(g),
-      ctx,
-      { fetch: up.fetch }
-    )
-    expect(otherModel.status).toBe(403)
-    // Outside a turn (the part revoked) — or a Launch-key session — nothing passes.
-    const outside = await hostedChatGpt(
-      responses({ model: CODEX_MODEL }, own, 'https://chatgpt.com/backend-api/codex/responses'),
-      lookupOf({ openai: { key: OPENAI_KEY, model: CODEX_MODEL } }),
-      ctx,
-      { fetch: up.fetch }
-    )
-    expect(outside.status).toBe(403)
-    expect(up.seen).toHaveLength(1)
   })
 
   it('auth.openai.com: a session on a plan may only refresh; a Codex sign-in only its device flow', async () => {
@@ -605,7 +557,7 @@ describe('the sandbox host runs everything Launch’s egress runs', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
-    const plan: EgressGrant = { chatgpt: { model: CODEX_MODEL } }
+    const plan: EgressGrant = { chatgptRefresh: true }
     const refresh = await hostedOpenAiAuth(
       auth('/oauth/token', { grant_type: 'refresh_token', refresh_token: 'rt' }),
       lookupOf(plan),
@@ -716,7 +668,7 @@ describe('HostedSessionSandbox', () => {
     return { obj, mem }
   }
 
-  it('declares its OWN handlers for exactly Launch’s hosts, and none for the database (the registry is keyed by class name)', () => {
+  it('declares its OWN handlers for exactly Launch’s hosts, and none for the database or chatgpt.com (the registry is keyed by class name)', () => {
     // The same set as Launch's own `SessionSandbox` — the host runs everything Launch's egress runs.
     expect(Object.keys(HostedSessionSandbox.outboundByHost ?? {}).sort()).toEqual(
       Object.keys(SESSION_OUTBOUND_HANDLERS).sort()
@@ -725,10 +677,11 @@ describe('HostedSessionSandbox', () => {
       'api.anthropic.com',
       'api.openai.com',
       'auth.openai.com',
-      'chatgpt.com',
       'github.com',
       'platform.claude.com',
     ])
+    // ChatGPT blocks requests from the Workers runtime: a plan's container reaches it directly.
+    expect(HostedSessionSandbox.outboundByHost?.['chatgpt.com']).toBeUndefined()
   })
 
   it('merges each part of a grant, removes a part on null, and forgets it on clear, destroy and a stopped container', async () => {
@@ -742,10 +695,10 @@ describe('HostedSessionSandbox', () => {
     const later = { ...(git as NonNullable<typeof git>), token: `ghs_${'N'.repeat(36)}` }
     await obj.setEgressGrant({ git: later })
     expect(await obj.getEgressGrant()).toEqual({ git: later, anthropic })
-    // A turn's ChatGPT part comes and goes; nothing else moves.
-    await obj.setEgressGrant({ chatgpt: { model: 'gpt-6.1-sol' } })
-    expect((await obj.getEgressGrant())?.chatgpt).toEqual({ model: 'gpt-6.1-sol' })
-    await obj.setEgressGrant({ chatgpt: null })
+    // A turn's ChatGPT refresh part comes and goes; nothing else moves.
+    await obj.setEgressGrant({ chatgptRefresh: true })
+    expect((await obj.getEgressGrant())?.chatgptRefresh).toBe(true)
+    await obj.setEgressGrant({ chatgptRefresh: null })
     expect(await obj.getEgressGrant()).toEqual({ git: later, anthropic })
 
     await obj.clearEgressGrant()

@@ -7,7 +7,10 @@
  * A LEAF: no database, no config, so the sandbox host Worker can bundle it.
  */
 
-/** The hosts Codex reaches. */
+/**
+ * The hosts Codex reaches — all allow-listed; `chatgpt.com` has no handler on either side (ChatGPT
+ * blocks the Workers runtime, so the container reaches it directly — `registry.ts`).
+ */
 export const OPENAI_EGRESS_HOSTS = ['api.openai.com', 'chatgpt.com', 'auth.openai.com'] as const
 
 /** An error in OpenAI's shape, so the CLI reports it the way it reports the API's. */

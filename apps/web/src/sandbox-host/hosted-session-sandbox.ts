@@ -9,8 +9,8 @@
  * - **Its outbound handlers work from a GRANT, not the database.** The host cannot reach Launch's
  *   database, so local Launch pushes what the handlers inject — the session's repo, branch and
  *   installation token; the turn's model credential (Anthropic key or subscription token, OpenAI
- *   key, or a ChatGPT plan's model) and the policy's model; a login sandbox's runtime — to THIS
- *   object before git, a turn or a sign-in needs it (`setEgressGrant` over the host's RPC, the `host` egress mode,
+ *   key, or a ChatGPT plan's token refresh) and the policy's model; a login sandbox's runtime — to
+ *   THIS object before git, a turn or a sign-in needs it (`setEgressGrant` over the host's RPC, the `host` egress mode,
  *   `services/sessions/egress/host.ts`). It is kept in this object's storage, never in the
  *   container, and cleared on `destroy()` and when the container stops. The handlers
  *   (`sandbox-host/egress.ts`) run the same forwarding cores as Launch's proxies. The registry
@@ -33,7 +33,6 @@ import {
 import {
   type GrantLookup,
   hostedAnthropic,
-  hostedChatGpt,
   hostedClaudeSignIn,
   hostedGitHub,
   hostedOpenAi,
@@ -90,12 +89,13 @@ const lookupIn = (env: unknown): GrantLookup => grantLookup(env as SandboxHostEn
 /**
  * The same hosts as Launch's `SESSION_OUTBOUND_HANDLERS` (`egress/registry.ts`) — the parity test
  * (`session-egress-forward.test.ts`) keeps the two key sets equal — each answered from the grant.
+ * `chatgpt.com` is deliberately absent from both: ChatGPT blocks requests from the Workers runtime,
+ * so a ChatGPT plan's container reaches it directly (`DIRECT_CODEX_HOSTS`).
  */
 HostedSessionSandbox.outboundByHost = {
   'api.anthropic.com': (req, env, ctx) => hostedAnthropic(req, lookupIn(env), ctx),
   'platform.claude.com': (req, env, ctx) => hostedClaudeSignIn(req, lookupIn(env), ctx),
   'github.com': (req, env, ctx) => hostedGitHub(req, lookupIn(env), ctx),
   'api.openai.com': (req, env, ctx) => hostedOpenAi(req, lookupIn(env), ctx),
-  'chatgpt.com': (req, env, ctx) => hostedChatGpt(req, lookupIn(env), ctx),
   'auth.openai.com': (req, env, ctx) => hostedOpenAiAuth(req, lookupIn(env), ctx),
 }

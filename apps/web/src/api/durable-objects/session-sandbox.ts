@@ -27,7 +27,10 @@
  * - `outboundByHost` is `SESSION_OUTBOUND_HANDLERS` (`egress/registry.ts`, §18.22): it hands
  *   `api.anthropic.com` to the model proxy (`egress/anthropic.ts`, slice 3c) and `github.com` to the
  *   git proxy (`egress/github.ts`, slice 3d) — in both modes — plus a Claude sign-in's
- *   `platform.claude.com` (§18.22-A) and Codex's three OpenAI hosts (§18.22-B). A login sandbox (`login-<id>`, `AgentLoginWorkflow`) is this class too. Under
+ *   `platform.claude.com` (§18.22-A) and Codex's `api.openai.com` and `auth.openai.com`
+ *   (§18.22-B; its `chatgpt.com` has no handler — ChatGPT blocks the Workers runtime, so the
+ *   container reaches it directly). A login sandbox (`login-<id>`, `AgentLoginWorkflow`) is this
+ *   class too. Under
  *   `allowlist` a host must ALSO be on the allow-list for its handler to run at all (S7: otherwise
  *   the proxy answers 520). The database has no handler: see `egress/forward-database.ts`. The handlers
  *   identify the session by `ctx.containerId` — this object's id — never by anything the sandbox

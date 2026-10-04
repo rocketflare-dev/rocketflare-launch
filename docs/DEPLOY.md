@@ -247,6 +247,13 @@ needs, beyond the bindings above:
   (for ChatGPT plans, device-code sign-in must be allowed on the person's account or workspace).
   **The image carries Codex from `session-6`** (a pinned `@openai/codex`, `ARG CODEX_VERSION`):
   the first deploy of it replaces every container, so drain first (below).
+  **A ChatGPT plan needs `SESSION_EGRESS = "open"`** (what the tomls say): ChatGPT blocks requests
+  sent from the Workers runtime, so Launch no longer proxies `chatgpt.com` — the container reaches
+  it directly with the person's own token. Under `allowlist` every HTTPS connection is intercepted
+  and an allowed host with no handler is re-fetched by the Worker, which ChatGPT refuses with a 403
+  HTML page ("workspace routing discovery failed"). A container started before the deploy that
+  dropped the `chatgpt.com` handler keeps its interception until it restarts — check with a NEW
+  session (or suspend and resume the old one).
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409
@@ -297,7 +304,7 @@ offers only the Worker's own containers (a stored `remote` is ignored, a PUT of 
 | Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`) — nothing else |
 | Container | the SAME `./containers/session/Dockerfile` and `standard-3` as Launch (a config test pins both), `max_instances = 3`; container application `launch-sandbox-dev-hostedsessionsandbox` |
 | Reachability | `workers_dev = false`, `preview_urls = false`, no routes: only a service binding in the account reaches it |
-| Secrets | none. The laptop's Launch sends each sandbox an egress grant over the binding (the `host` egress mode): the GitHub token before the clone and each push; before each turn the model credential for the session's runtime and account (Launch's Anthropic or OpenAI key, a person's Claude subscription token, or a ChatGPT plan's model); a sign-in's passthrough. `HostedSessionSandbox` keeps it in its Durable Object storage and its own outbound handlers (the same six hosts as Launch's) inject it — the containers hold no Launch credential |
+| Secrets | none. The laptop's Launch sends each sandbox an egress grant over the binding (the `host` egress mode): the GitHub token before the clone and each push; before each turn the model credential for the session's runtime and account (Launch's Anthropic or OpenAI key, a person's Claude subscription token, or a ChatGPT plan's token refresh — its `chatgpt.com` calls go direct); a sign-in's passthrough. `HostedSessionSandbox` keeps it in its Durable Object storage and its own outbound handlers (the same five hosts as Launch's) inject it — the containers hold no Launch credential |
 | Build check | `pnpm build:sandbox-host` (a dry run, part of `pnpm build`; it builds the image with the local Docker) |
 
 **Deploy** (by hand, from a machine with Docker and `wrangler login` on the Launch account):
@@ -323,7 +330,12 @@ pnpm --filter @launch/web deploy:sandbox-host           # = wrangler deploy -c w
 pnpm --filter @launch/web exec wrangler containers list # check the new version's application
 ```
 
-and restart `pnpm dev` (it re-checks that the host is deployed and declares the binding). **Costs:** a `standard-3` bills memory and disk while awake (~$0.076/hour)
+and restart `pnpm dev` (it re-checks that the host is deployed and declares the binding).
+**Now (ChatGPT plans go direct):** a host deployed before it still intercepts `chatgpt.com` and
+answers Launch's new `chatgptRefresh` grant with a 403 for both the plan's model calls and its
+token refresh, so Codex on a ChatGPT plan fails on the host until it is redeployed (the same
+command), and a remote container started before the redeploy keeps intercepting `chatgpt.com`
+until it restarts — start a new session to check. **Costs:** a `standard-3` bills memory and disk while awake (~$0.076/hour)
 and CPU when used; a session's container lives through its idle window plus the 45-minute warm keep,
 and the SDK's 90-minute sleep reaps one whose laptop went away. **Remove it:**
 `pnpm --filter @launch/web exec wrangler delete -c wrangler.sandbox-host.toml`, then

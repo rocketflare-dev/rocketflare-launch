@@ -272,7 +272,7 @@ export interface ModelUpstream {
  *
  * | mode      | model calls | git | metering and budget |
  * |-----------|-------------|-----|---------------------|
- * | `proxied` | the placeholder; Launch's egress handlers (`egress/registry.ts`) swap the real credential in, in Launch's Worker | `egress/github.ts` injects the session's token, only for its repo and branch | per request, in the proxies; over budget → 403 before the call |
+ * | `proxied` | the placeholder; Launch's egress handlers (`egress/registry.ts`) swap the real credential in, in Launch's Worker | `egress/github.ts` injects the session's token, only for its repo and branch | per request, in the proxies; over budget → 403 before the call — except a Codex turn on a ChatGPT plan, metered per turn from Codex's own usage (`chatgpt.com` is reached directly, `egress/registry.ts`) with no money budget |
  * | `host`    | the placeholder; the host's handlers swap in the credential Launch granted the sandbox for the turn (`egress/host.ts`) | the host's handler injects the token Launch granted it — same repo and branch rules | per turn, from the CLI's own usage (`turn-meter.ts`): checked before the turn, and a turn on Launch's account is killed when its running cost reaches the budget |
  *
  * `proxied` is every deployed Launch and `wrangler dev` on local Docker; `host` is development
@@ -291,7 +291,7 @@ export interface SessionEgressPort {
   turnEnv(sandbox: SandboxPort, session: SessionRow): Promise<Record<string, string>>
   /**
    * After a turn, whatever happened (absent = nothing): `host` revokes what was granted for the
-   * length of the turn only (a ChatGPT plan).
+   * length of the turn only (a ChatGPT plan's token refresh).
    */
   endTurn?(sandbox: SandboxPort, session: SessionRow): Promise<void>
   /**

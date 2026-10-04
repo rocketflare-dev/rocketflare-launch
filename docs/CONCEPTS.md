@@ -1645,20 +1645,22 @@ handler's own — with its expiry) before the clone, each turn and each checkpoi
 each turn the model credential for the session's runtime and account (`HostEgress.turnEnv`):
 `anthropic` (`{ auth: { kind: 'api_key' | 'oauth', value }, model }` — Launch's key, or the
 creator's Claude subscription token by the proxy's own `usableClaudeCredential` rule), `openai`
-(Launch's OpenAI key and the model) or `chatgpt` (the model only; granted for the turn and revoked
-after it by `endTurn`, as the proxy allows the plan only while a turn holds it); and `login` (the
+(Launch's OpenAI key and the model) or `chatgptRefresh` (`true`: the plan's token refresh on
+`auth.openai.com` only — its `chatgpt.com` calls go direct, §18.22-B; granted for the turn and
+revoked after it by `endTurn`, as the proxy allows the refresh only while a turn holds the plan);
+and `login` (the
 runtime) for a sign-in's sandbox before its CLI starts (`prepareLogin`). `turnEnv` returns NO
 environment: each runtime's own `turnEnv` carries its placeholder, and an extra
 `ANTHROPIC_API_KEY` would beat a subscription's `CLAUDE_CODE_OAUTH_TOKEN`. `HostedSessionSandbox`
 keeps the grant in its Durable Object storage (cleared on `destroy()` and `onStop`) and has its OWN
-outbound handlers for the same six hosts as Launch's (`sandbox-host/egress.ts`; a test keeps the
-key sets equal), which find the grant from `ctx.containerId` and run the SAME pure functions as
+outbound handlers for the same five hosts as Launch's (`sandbox-host/egress.ts`; a test keeps the
+key sets equal — neither has one for `chatgpt.com`, §18.22-B), which find the grant from `ctx.containerId` and run the SAME pure functions as
 Launch's handlers: `egress/forward-git.ts` (one repo, a push only to `session/<short>` and never a
 delete, a fresh token's 401/404 retried), `egress/forward-model.ts` (the Messages API on the
 policy's model; the OAuth Bearer swap with the beta header merged; `GET /api/claude_code/*` a 404
 on a subscription; a Claude sign-in's two passthroughs) and `egress/forward-openai.ts` (426 for a
-WebSocket, the Responses paths on the policy's model, 415 for a compressed body, the key swap, the
-ChatGPT allow-list, a session's refresh-only and a sign-in's device flow). No part for the host →
+WebSocket, the Responses paths on the policy's model, 415 for a compressed body, the key swap, a
+ChatGPT plan's refresh-only and a sign-in's device flow). No part for the host →
 the same 403 as the proxies. The container holds no Launch credential in EITHER mode — only the
 placeholder, and no git credential or helper (a person's ChatGPT `auth.json` is in it for a turn in
 both, §18.22-B). The turn runner, the checkpoint and the login Workflow are the same code in both —
@@ -1904,6 +1906,12 @@ running sum saw, so a killed turn is still paid for, is written through the prox
 `recordSessionUsage`: the same pricing under the runtime's provider (`anthropic` / `openai`), one
 transaction per row. A personal account's turn has no headroom (no money budget) and is recorded
 `billing: 'subscription'` with a null cost, as the proxies record it.
+**A Codex turn on a ChatGPT plan meters itself the same way in the `proxied` mode too**
+(`selfMetered` in `turn.ts`): its model calls go to `chatgpt.com` directly — ChatGPT blocks
+requests from the Workers runtime, §18.22-B — so no proxy sees them, and the turn records Codex's
+`turn.completed` delta as one `billing: 'subscription'` row per model, null cost, no budget check.
+Every other proxied turn is metered by its proxy alone (the turn records nothing of its own, so
+nothing is counted twice).
 
 **Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); the liveness probe is proven with the `FakeSandbox` only (`die()`: a stream that
@@ -2970,12 +2978,12 @@ session header for a non-default agent or billing.
 
 **Egress** (`egress/registry.ts`): `SESSION_OUTBOUND_HANDLERS` is the one table of hosts Launch
 handles a container's traffic for: `api.anthropic.com` and `github.com` (P3), `platform.claude.com`
-(a Claude sign-in's token exchange, login sandboxes only — 18.22-A) and Codex's `api.openai.com`,
-`chatgpt.com`, `auth.openai.com` (`CODEX_OUTBOUND_HANDLERS`, 18.22-B). Codex's three are also on
-`SESSION_BASE_ALLOWED_HOSTS` — a host on the allow-list with no handler would pass straight through
-— and each handler refuses a container that is not a session (or login) of the right runtime and
-account. `platform.claude.com` is not on the base allow-list: only a Claude login sandbox gets it
-(its driver's `hosts`). The sandbox host's `HostedSessionSandbox` handles the SAME six hosts from
+(a Claude sign-in's token exchange, login sandboxes only — 18.22-A) and Codex's `api.openai.com`
+and `auth.openai.com` (`CODEX_OUTBOUND_HANDLERS`, 18.22-B); each handler refuses a container that
+is not a session (or login) of the right runtime and account. Codex's third host, `chatgpt.com`,
+is on `SESSION_BASE_ALLOWED_HOSTS` with NO handler on purpose (`DIRECT_CODEX_HOSTS`, 18.22-B): the
+container reaches it directly. `platform.claude.com` is not on the base allow-list: only a Claude login sandbox gets it
+(its driver's `hosts`). The sandbox host's `HostedSessionSandbox` handles the SAME five hosts from
 the sandbox's egress grant (§18.10), through the same forwarding functions — every runtime, either
 account, and sign-ins.
 
@@ -3043,8 +3051,9 @@ valid for a year with no refresh, so a revoked one is noticed only at the next m
 Coding agents card — and, for ChatGPT plans, sets its "Who pays" to the person's own account or
 Either. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image `session-6`); the default model is
 Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in `ai/pricing.ts`), chosen on the same
-card (`runtimes.codex.model`). Codex's three hosts are
-registered with their real handlers and are on the allow-list (the egress paragraph above).
+card (`runtimes.codex.model`). Codex's three hosts are on the allow-list; `api.openai.com` and
+`auth.openai.com` have their handlers, `chatgpt.com` deliberately none (the egress paragraph
+above, and the ChatGPT plan below).
 
 - **A turn** (`command.ts`): `codex exec --json -s danger-full-access --skip-git-repo-check -m
   <model> '<message>' < /dev/null`; after the first, `… -m <model> resume <thread> '<message>'` —
@@ -3083,10 +3092,25 @@ registered with their real handlers and are on the allow-list (the egress paragr
   holding it: "in use by another session"), writes `auth.json`, and on release — success, failure,
   cancel, a rollout, a container that no longer answers — reads it back, reseals it only if Codex
   rotated the tokens and it is not older than what is stored, removes it and releases the claim.
-  `chatgpt.com` (`egress/chatgpt.ts`) passes Codex's own Bearer and `ChatGPT-Account-ID` through to
-  `/backend-api/codex/responses` (+ `/compact`, policy model only) and `/models`, only while the
-  session's turn holds the claim, refuses everything else (analytics included), and meters as
-  `subscription`. `auth.openai.com` (`egress/openai-auth.ts`) lets such a session only REFRESH
+  **`chatgpt.com` is reached DIRECTLY, not proxied** (no handler in `SESSION_OUTBOUND_HANDLERS` nor
+  on the sandbox host; `DIRECT_CODEX_HOSTS`). ChatGPT refuses requests sent from the Workers
+  runtime: the same `GET /backend-api/codex/models` with Codex's originator and user-agent gets a
+  normal 401 JSON from curl or Node and a 403 HTML block page from workerd — `wrangler dev`
+  locally included — so a handler that re-fetched it failed every turn ("workspace routing
+  discovery failed", Codex exits 1). `auth.openai.com` and `api.openai.com` answer workerd
+  normally, so they stay proxied. Going direct gives up no secret: the container already holds the
+  person's `auth.json` for the turn. What it gives up is the path allow-list (Codex's
+  `config.toml` turning analytics, feedback and OTEL off is now the only thing keeping those
+  calls from being made), the policy-model check on each call (Codex runs `-m <model>` with the
+  policy's model, but nothing stops another), the "only while a turn holds the claim" check on
+  model calls (the `auth.json` is removed after the turn, so a container outside a turn has no
+  token to send), and per-request metering — the turn meters itself from Codex's
+  `turn.completed` delta instead (`selfMetered`, §18.11), as `subscription` with no cost. The
+  one-session-at-a-time claim is the lease's, not the proxy's, and is unchanged. It works only
+  under `SESSION_EGRESS=open` (the tomls): any allow-list makes `@cloudflare/containers` 0.3.7
+  intercept EVERY HTTPS connection, and its `ContainerProxy` re-fetches an allowed host with no
+  handler from the Worker — which ChatGPT blocks — with no runtime API to exempt one host.
+  `auth.openai.com` (`egress/openai-auth.ts`) lets such a session only REFRESH
   (`POST /oauth/token`, `grant_type: refresh_token`); a 200's rotated tokens are resealed at once
   (compare-and-set), so a container that dies mid-turn cannot take the only valid refresh token
   with it; `refresh_token_expired|reused|invalidated`, a 400 `invalid_grant` or a 401 mark the plan
@@ -3100,9 +3124,9 @@ registered with their real handlers and are on the allow-list (the egress paragr
   sealed with the plan and an account FINGERPRINT as metadata (the id token decoded, never
   verified), and the scratch directory deleted. A login sandbox reaches only the device flow on
   `auth.openai.com`.
-- **The sandbox host** runs Codex on either account: `openai` / `chatgpt` grants
-  (`egress/host.ts`) and its own handlers over `forward-openai.ts` (`sandbox-host/egress.ts`); the
-  turn is metered from `turn.completed` (§18.11). The refresh is passed through without the
+- **The sandbox host** runs Codex on either account: `openai` / `chatgptRefresh` grants
+  (`egress/host.ts`) and its own handlers over `forward-openai.ts` (`sandbox-host/egress.ts`), no
+  `chatgpt.com` handler there either; the turn is metered from `turn.completed` (§18.11). The refresh is passed through without the
   immediate reseal (§18.10's known gaps).
 
 **Known gaps (Codex):** nothing here has run against a real Codex binary — the JSONL, the prompt and
@@ -3114,7 +3138,11 @@ of OpenAI's rate card (OpenAI's own page refused automated reads), and long-cont
 272k input tokens) is not modelled. A turn that fails after Codex counted tokens folds them into
 the NEXT turn's usage line (the egress's `ai_usage` rows are exact either way). The `auth.json`,
 refresh token included, is in the container for the length of a turn. Codex's hosted web search is
-off rather than metered.
+off rather than metered. **ChatGPT plans talk to `chatgpt.com` unrestricted**, with the person's
+own token: no path or model allow-list, and it needs `SESSION_EGRESS=open` — under `allowlist` the
+container interception re-fetches it from the Worker and ChatGPT blocks it (no exemption exists in
+the SDK). That ChatGPT blocks deployed Workers as well as `wrangler dev` is inferred from the
+local experiment, not observed on a deployed Worker.
 
 **Known gaps:**
 

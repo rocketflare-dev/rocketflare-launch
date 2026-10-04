@@ -665,8 +665,8 @@ async function executeTurn(
     run = await streamTurn(db, sandbox, { ...row, claudeSessionId: null }, writer, params)
   }
 
-  // The turn's cost is what was metered while it ran — by the model proxy, or (`host`) by the
-  // turn itself as it ended: either way the row's running total moved.
+  // The turn's cost is what was metered while it ran — by the model proxy, or (`host`, and a
+  // ChatGPT plan's Codex turn) by the turn itself as it ended: either way the row's total moved.
   const after = await readRow(db, row)
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
   let executed: ExecutedTurn
@@ -990,7 +990,8 @@ async function streamTurn(
   // `host` (a remote sandbox): the host is granted the turn's model credential and a fresh token
   // (the process keeps the runtime's placeholders), and the turn meters itself against what the
   // budget has left (`turn-meter.ts`) — a personal account has no money budget, so it is only
-  // recorded. `proxied`: none of it.
+  // recorded. `proxied`: none of it, except that a Codex turn on a ChatGPT plan meters itself too
+  // ({@link selfMetered}).
   try {
     return await streamGrantedTurn(db, sandbox, row, writer, p, out, runtime)
   } finally {
@@ -1000,6 +1001,21 @@ async function streamTurn(
         p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not revoke the turn grant')
       )
   }
+}
+
+/**
+ * Does the turn meter ITSELF from the CLI's own output (`turn-meter.ts`)? Under `host`, always —
+ * the host's handlers cannot reach the database. Under `proxied`, a Codex turn on a person's
+ * ChatGPT plan: its model calls go to `chatgpt.com` directly (ChatGPT blocks the Workers runtime,
+ * `egress/registry.ts`), so no proxy sees them. Every other proxied turn is metered per request by
+ * its proxy, and metering it here as well would count it twice.
+ */
+export function selfMetered(
+  mode: SessionEgressPort['mode'],
+  row: Pick<SessionRow, 'runtime' | 'credentialSource'>
+): boolean {
+  if (mode === 'host') return true
+  return row.runtime === 'codex' && row.credentialSource === 'user'
 }
 
 /** The turn once the egress may be granted: grant, lease, run. */
@@ -1023,7 +1039,7 @@ async function streamGrantedTurn(
   try {
     await p.egress.prepareGit(sandbox, row)
     egressEnv = await p.egress.turnEnv(sandbox, row)
-    if (p.egress.mode === 'host') {
+    if (selfMetered(p.egress.mode, row)) {
       const subscription = row.credentialSource === 'user'
       meter = createTurnMeter(p.policy.model, {
         provider: runtime.provider,

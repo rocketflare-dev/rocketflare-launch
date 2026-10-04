@@ -420,9 +420,10 @@ describe('the egress side of a login sandbox', () => {
     expect(await loginForSandbox(db, sandbox.id)).toBeNull()
   })
 
-  it('Codex’s hosts have their handlers (§18.22-B); the OpenAI refusal is OpenAI-shaped', async () => {
+  it('Codex’s proxied hosts have their handlers (§18.22-B), chatgpt.com none; the OpenAI refusal is OpenAI-shaped', async () => {
+    // chatgpt.com is reached directly: ChatGPT blocks requests from the Workers runtime.
     expect(Object.keys(CODEX_OUTBOUND_HANDLERS).sort()).toEqual(
-      ['api.openai.com', 'auth.openai.com', 'chatgpt.com'].sort()
+      ['api.openai.com', 'auth.openai.com'].sort()
     )
     const res = openAiError(403, 'permission_error', 'no')
     expect(res.status).toBe(403)
