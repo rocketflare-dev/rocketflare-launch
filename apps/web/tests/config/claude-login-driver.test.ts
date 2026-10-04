@@ -211,8 +211,12 @@ describe('the driver over a FakeSandbox', () => {
     expect(expires).toBeGreaterThanOrEqual(before + CLAUDE_TOKEN_LIFETIME_MS)
     expect(expires).toBeLessThanOrEqual(Date.now() + CLAUDE_TOKEN_LIFETIME_MS)
     expect(JSON.stringify(captured.metadata)).not.toContain('sk-ant')
-    // A retried capture must find what the first attempt found.
-    expect(await claudeLoginDriver.capture(ctx)).toEqual(captured)
+    // A retried capture must find what the first attempt found (its year is counted from its own
+    // clock read, so compare that within a second rather than to the millisecond).
+    const { expiresAt: again, ...retried } = await claudeLoginDriver.capture(ctx)
+    const { expiresAt: _first, ...first } = captured
+    expect(retried).toEqual(first)
+    expect(Math.abs((again?.getTime() ?? 0) - expires)).toBeLessThan(1000)
     await claudeLoginDriver.discard(ctx)
     expect([...sandbox.files.keys()].filter(p => p.startsWith(dir))).toEqual([])
     expect(sandbox.commands.at(-1)).toBe(`rm -rf ${dir}`)

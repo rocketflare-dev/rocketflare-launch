@@ -16,7 +16,7 @@
 name = "launch-sandbox-dev"
 main = "src/sandbox-host/worker.ts"
 compatibility_date = "2026-06-01"          # = wrangler.toml (the SDK runs the same code on both)
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]  # the same runtime as Launch's own (sandbox-host.test.ts)
 
 # No public URL: only a service binding in this account reaches the RPC surface.
 workers_dev = false
