@@ -62,6 +62,7 @@ import { resolveChat } from '../ai/resolve'
 import type { AiEnv, ChatClient } from '../ai/types'
 import type { ScanShipConfigInput } from '../grants/detect'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
+import { upgradePrOpened } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
 import { recordSessionUsage } from './egress/anthropic'
 import { shipGateCommands } from './gate'
@@ -584,6 +585,9 @@ export async function openShipPullRequest(
       },
     },
   })
+
+  // P6 6c: a kit upgrade's PR is the upgrade's (`pr_open`).
+  await upgradePrOpened(db, shipped, { number: pr.number, url: pr.url })
 
   // The shared config the PR's plugins need and the app does not hold (never fails the ship).
   if (deps.scanConfig) {

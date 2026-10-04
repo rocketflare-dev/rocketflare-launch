@@ -29,6 +29,7 @@
  */
 import {
   ACTIVE_SESSION_STATUSES,
+  CODING_SESSION_KINDS,
   type CreateSessionRequest,
   type DrainResponse,
   newPreviewToken,
@@ -69,7 +70,7 @@ export async function sessionsPaused(db: Database): Promise<boolean> {
 
 // ---- concurrency -------------------------------------------------------------------------------
 
-/** How many of the app's sessions hold resources right now (`kind = session` only). */
+/** How many of the app's coding sessions hold resources right now (`CODING_SESSION_KINDS`). */
 export async function activeSessionCount(
   db: Database,
   tenantId: string,
@@ -82,7 +83,7 @@ export async function activeSessionCount(
       and(
         eq(sessions.tenantId, tenantId),
         eq(sessions.appId, appId),
-        eq(sessions.kind, 'session'),
+        inArray(sessions.kind, [...CODING_SESSION_KINDS]),
         inArray(sessions.status, [...ACTIVE_SESSION_STATUSES])
       )
     )
@@ -161,6 +162,11 @@ export interface CreateSessionInput {
    */
   firstMessage?: string | null
   /**
+   * P6 6c: a kit upgrade's session — kind `upgrade`, the `app_upgrades` row it is doing, and
+   * whether its first turn ships by itself (`upgrades.ts`). Absent: an ordinary `session`.
+   */
+  upgrade?: { upgradeId: string; autoShip: boolean } | null
+  /**
    * The Worker's config: with it, the `session_sandbox_host` setting is resolved (and refused when
    * unavailable) and frozen on the row; absent (a fixture) = this Worker's own containers. Which
    * runtimes run, and on whose account, is the session policy's `runtimes`.
@@ -229,7 +235,9 @@ export async function createSession(
           tenantId,
           appId: app.id,
           createdByUserId: input.userId,
-          kind: 'session',
+          kind: input.upgrade ? 'upgrade' : 'session',
+          upgradeId: input.upgrade?.upgradeId ?? null,
+          autoShip: input.upgrade?.autoShip ?? false,
           shortId,
           previewToken: newPreviewToken(),
           title: input.request.title ?? null,
@@ -266,6 +274,7 @@ export async function createSession(
         branch: row.branch,
         baseRef: row.baseRef,
         title: row.title,
+        ...(row.kind !== 'session' ? { kind: row.kind, upgradeId: row.upgradeId } : {}),
         // §18.22: only when not the default, so a Claude-on-Launch audit row reads as it always did.
         ...(row.runtime !== 'claude_code' ? { runtime: row.runtime } : {}),
         ...(row.credentialSource !== 'platform' ? { credentialSource: row.credentialSource } : {}),
@@ -427,7 +436,7 @@ export async function listAppSessions(
       and(
         eq(sessions.tenantId, tenantId),
         eq(sessions.appId, appId),
-        eq(sessions.kind, 'session'),
+        inArray(sessions.kind, [...CODING_SESSION_KINDS]),
         filter.scope === 'active'
           ? inArray(sessions.status, [...ACTIVE_SESSION_STATUSES])
           : undefined,

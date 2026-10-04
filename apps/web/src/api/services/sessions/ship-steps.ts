@@ -49,6 +49,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { apps, type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
 import { scanShipConfig } from '../grants/detect'
 import { reviewPolicyFor } from '../launch/ship-settings'
+import { upgradeNeedsAttention } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
 import { BackgroundCommandAbortedError, BackgroundCommandLostError } from './background-command'
 import { checkContainer } from './boot-marker'
@@ -747,6 +748,8 @@ export async function shipSettleStep(
   const message = settleMessage(input.reason, input.attempts, input.detail)
   if (message) {
     await emitterFor(scope)({ type: 'error', turn: session.turnCount, data: { message } })
+    // P6 6c: an auto-shipped kit upgrade that opened no PR is its owner's to finish.
+    await upgradeNeedsAttention(scope.db, session, message, scope.realtime)
   }
   const row = await transition(scope, ['shipping'], 'ready', {
     lastActivityAt: scope.now(),

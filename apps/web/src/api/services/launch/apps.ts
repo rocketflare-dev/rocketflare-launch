@@ -19,6 +19,7 @@ import type {
   UpdateAppRequest,
 } from '@launch/shared/launch-apps'
 import { resolveAppShipSettings } from '@launch/shared/launch-apps'
+import type { KitStatus } from '@launch/shared/launch-upgrades'
 import { and, asc, desc, eq, gte, inArray } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import {
@@ -35,6 +36,7 @@ import { isAppOwner } from '../oidc/policy'
 import { type AuditActor, recordAudit } from './audit'
 import { shipReviewSetByFor } from './ship-settings'
 import { thumbnailOf } from './thumbnails/thumbnails'
+import { kitStatuses } from './upgrades'
 
 /** Staging before production, everywhere an app's environments are listed. */
 const ENVIRONMENT_ORDER: Record<AppEnvironmentName, number> = { staging: 0, production: 1 }
@@ -74,7 +76,8 @@ export function toEnvironment(row: AppEnvironmentRow): AppEnvironment {
 function toSummary(
   app: AppRow,
   ownerGroup: AppOwnerGroup | null,
-  environments: AppEnvironmentRow[]
+  environments: AppEnvironmentRow[],
+  kit: KitStatus | null
 ): AppSummary {
   return {
     id: app.id,
@@ -91,6 +94,7 @@ function toSummary(
     environments: [...environments].sort(byEnvironmentOrder).map(toEnvironmentSummary),
     createdAt: app.createdAt,
     thumbnail: thumbnailOf(app.id, environments),
+    kit,
   }
 }
 
@@ -122,12 +126,21 @@ export async function listApps(db: Database, tenantId: string): Promise<AppSumma
     .leftJoin(groups, and(eq(groups.id, apps.ownerGroupId), eq(groups.tenantId, tenantId)))
     .where(eq(apps.tenantId, tenantId))
     .orderBy(asc(apps.displayName), asc(apps.slug))
-  const envs = await environmentsOf(
-    db,
-    tenantId,
-    rows.map(r => r.app.id)
+  const [envs, kits] = await Promise.all([
+    environmentsOf(
+      db,
+      tenantId,
+      rows.map(r => r.app.id)
+    ),
+    kitStatuses(
+      db,
+      tenantId,
+      rows.map(r => r.app)
+    ),
+  ])
+  return rows.map(r =>
+    toSummary(r.app, ownerGroupOf(r), envs.get(r.app.id) ?? [], kits.get(r.app.id) ?? null)
   )
-  return rows.map(r => toSummary(r.app, ownerGroupOf(r), envs.get(r.app.id) ?? []))
 }
 
 /** One app by slug, with its environments in full. 404 when it is not this tenant's. */
@@ -166,8 +179,9 @@ export async function getAppDetail(
   if (!row) throw new NotFoundError('App not found', 'app_not_found')
   const envs = (await environmentsOf(db, tenantId, [row.app.id])).get(row.app.id) ?? []
   const sorted = [...envs].sort(byEnvironmentOrder)
+  const kit = (await kitStatuses(db, tenantId, [row.app])).get(row.app.id) ?? null
   return {
-    ...toSummary(row.app, ownerGroupOf(row), sorted),
+    ...toSummary(row.app, ownerGroupOf(row), sorted, kit),
     templateContractVersion: row.app.templateContractVersion,
     defaultBranch: row.app.defaultBranch,
     environments: sorted.map(toEnvironment),

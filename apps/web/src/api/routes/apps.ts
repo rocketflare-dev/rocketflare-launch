@@ -10,7 +10,8 @@
  * (`app-sessions.ts`, an app's coding sessions), P4 a fourth (`app-releases.ts`) and P5 two more
  * (`app-config.ts`, `app-config-scan.ts` — shared config and grants); see below.
  *
- * App thumbnails add a seventh (`app-thumbnail.ts`): the picture and "Refresh thumbnail".
+ * App thumbnails add a seventh (`app-thumbnail.ts`): the picture and "Refresh thumbnail". P6 6c
+ * an eighth (`app-upgrades.ts`): `POST /:id/upgrade` — a kit upgrade session — and its history.
  *
  * Issue #5 adds `PUT /:id/ship-settings` (the app's owners and admins) and
  * `GET|POST /:id/branch-protection` (members read; admins apply Launch's ruleset).
@@ -64,6 +65,7 @@ import { appPipelineRouter } from './app-pipeline'
 import { appReleasesRouter } from './app-releases'
 import { appSessionsRouter } from './app-sessions'
 import { appThumbnailRouter } from './app-thumbnail'
+import { appUpgradesRouter } from './app-upgrades'
 
 export const appsRouter = createRouter()
 
@@ -82,6 +84,8 @@ appsRouter.route('/', appConfigRouter)
 appsRouter.route('/', appConfigScanRouter)
 // App thumbnails: `GET /:id/thumbnail`, `POST /:id/thumbnail/refresh`.
 appsRouter.route('/', appThumbnailRouter)
+// P6 6c: `POST /:id/upgrade` (a kit upgrade session) and `GET /:id/upgrades`.
+appsRouter.route('/', appUpgradesRouter)
 
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')

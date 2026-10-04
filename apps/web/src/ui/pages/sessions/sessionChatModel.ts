@@ -10,9 +10,10 @@
  * - consecutive tool calls fold into ONE `tools` item — a turn that reads nine files is one quiet
  *   block of one-liners between two bubbles, not nine rows shouting over the answer;
  * - the lifecycle rows a person needs to know about become `notice`s (a failed or cut-off turn,
- *   the budget, the ship gate, the PR, a turn on a different model from the one before it); the
- *   ones they do not (`turn.start`, `step`, `status`, `preview.ready`) render nothing here — boot
- *   has its own panel and the preview its own pane;
+ *   the budget, the ship gate, the PR, a turn on a different model from the one before it, and a
+ *   kit upgrade's auto-ship decision — a `status` row with an `upgrade.*` reason); the ones they do
+ *   not (`turn.start`, `step`, any other `status`, `preview.ready`) render nothing here — boot has
+ *   its own panel and the preview its own pane;
  * - `turn.end` becomes a footnote (how long, what it cost).
  *
  * Plus the selectors the page needs from the same rows, so nothing re-derives them:
@@ -59,6 +60,10 @@ import {
   sessionTurnStartDataSchema,
   sessionUserMessageDataSchema,
 } from '@launch/shared/launch-sessions'
+import {
+  UPGRADE_SESSION_REASONS,
+  upgradeSessionStatusDataSchema,
+} from '@launch/shared/launch-upgrades'
 import type { z } from 'zod'
 import {
   buildTimeline,
@@ -197,6 +202,17 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
       const notice = landingNotice(event)
       return notice ? { kind: 'notice', ...base, ...notice } : null
     }
+    case 'status': {
+      // P6 6c: what Launch decided after a kit upgrade's first turn. Every other status: nothing.
+      const parsed = upgradeSessionStatusDataSchema.safeParse(event.data)
+      if (!parsed.success) return null
+      return {
+        kind: 'notice',
+        ...base,
+        tone: parsed.data.reason === UPGRADE_SESSION_REASONS.autoShip ? 'info' : 'warning',
+        text: parsed.data.message,
+      }
+    }
     case 'error': {
       const parsed = agentErrorEventDataSchema.safeParse(event.data)
       return {
@@ -207,7 +223,7 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
       }
     }
     default:
-      // turn.start, step, status, preview.ready: someone else's panel, or nothing to say.
+      // turn.start, step, preview.ready: someone else's panel, or nothing to say.
       return null
   }
 }

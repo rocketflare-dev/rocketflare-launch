@@ -97,6 +97,8 @@ describe('runTurn: a turn that finishes', () => {
       sessionId: row.id,
       turn: 1,
       costMicrocents: 0,
+      // The end of the final answer — what a kit upgrade's auto-ship reads (P6 6c).
+      result: { subtype: 'success', isError: false, tail: 'Changed the heading.' },
     })
 
     const events = await eventsOf(row)

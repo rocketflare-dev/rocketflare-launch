@@ -21,21 +21,38 @@ import {
   previewLabel,
   previewUrl,
   resolveSessionPolicy,
+  type SessionKind,
   type SessionLanding,
   type SessionStatus,
   type ShipLandingStage,
   sessionLandingSchema,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
+import { UPGRADE_SESSION_REASONS } from '@launch/shared/launch-upgrades'
 import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
-import { apps, type SessionRow, type SessionWorkspaceBackup, sessions } from '../../../db/schema'
+import {
+  apps,
+  type SessionRow,
+  type SessionWorkspaceBackup,
+  sessionEvents,
+  sessions,
+} from '../../../db/schema'
 import { decryptToken, encryptToken } from '../../auth/oauth-encryption'
 import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
 import { cancelMergeApproval } from '../approvals/kinds/session-merge'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
+import { MANIFEST_PATHS, parseManifest } from '../launch/rocketflare-manifest'
+import {
+  type AutoShipVerdict,
+  autoShipVerdict,
+  needsAttentionMessage,
+  settleUpgradeAtCleanup,
+  upgradeAwaitingAutoShip,
+  upgradeNeedsAttention,
+} from '../launch/upgrades'
 import type { Realtime } from '../realtime'
 import { createR2Storage } from '../storage'
 import { getSessionRow } from './access'
@@ -456,7 +473,7 @@ export function checkoutScript(input: {
 // ---- claim -------------------------------------------------------------------------------------
 
 export type ClaimResult =
-  | { start: 'boot'; kind: 'session' | 'prepare' }
+  | { start: 'boot'; kind: SessionKind }
   | { start: 'loop' }
   /** A live session whose instance was lost: `salvage` first, then the loop. */
   | { start: 'salvage' }
@@ -1562,10 +1579,9 @@ export async function turnStep(
 ): Promise<TurnStepResult> {
   const session = await loadSession(scope)
   let result: TurnStepResult
+  let outcome: TurnOutcome
   try {
-    const outcome = await scope.hooks.runTurn(
-      hookContext(scope, session, session.turnCount, bootId)
-    )
+    outcome = await scope.hooks.runTurn(hookContext(scope, session, session.turnCount, bootId))
     result = {
       status: outcome.status,
       ...(outcome.status === 'interrupted' ? { reason: outcome.reason } : {}),
@@ -1579,9 +1595,13 @@ export async function turnStep(
       suspendedAt: scope.now(),
       cancelRequestedAt: null,
     })
+    await autoShipAfterTurn(scope, { status: 'interrupted', turn }, undefined)
     return { status: 'interrupted', reason: 'rollout' }
   }
-  if (!turnNeedsCheckpoint(result)) return result
+  if (!turnNeedsCheckpoint(result)) {
+    await autoShipAfterTurn(scope, outcome, undefined)
+    return result
+  }
   const after = await loadSession(scope)
   const changed = await workspaceChanged(sandboxFor(scope, after), after.headSha)
   const endedAt = scope.now()
@@ -1589,7 +1609,150 @@ export async function turnStep(
   const { maxDeferMs } = checkpointClocks(limitsOf(scope))
   const checkpointNow =
     changed && since !== null && endedAt.getTime() - Date.parse(since) >= maxDeferMs
+  await autoShipAfterTurn(scope, outcome, changed)
   return { ...result, changed, endedAt: endedAt.toISOString(), checkpointNow }
+}
+
+// ---- auto-ship (P6 6c: a kit upgrade's first turn) -------------------------------------------------
+
+/** The tool Claude Code asks a person a question with — an upgrade turn that called it stopped to ask. */
+export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion'
+
+/**
+ * After a turn of a session with `auto_ship` (a kit upgrade's): decide, ONCE, whether to ship it.
+ * Nothing is decided while the first message still waits (a budget stop, a container lost before
+ * the turn ran — it runs later, and is decided then) or for a turn that never ran (`skipped`).
+ * Otherwise `auto_ship` is cleared whichever way it goes, by a compare-and-set, so a retried step
+ * or a later turn never decides again:
+ *
+ * - clean (`autoShipVerdict`: a `success` result ending `LAUNCH-UPGRADE: DONE`, no question asked,
+ *   the workspace changed and the checkout's `.rocketflare.json` at the target) → `requested_action
+ *   = ship` on the `ready` row, which the loop's next `inspect` starts at once;
+ * - anything else → the upgrade `needs_attention`, with the reason in a `status` event the chat
+ *   shows; the owner carries on in the session.
+ *
+ * Never throws: a check that fails is a reason, not a failed turn.
+ */
+async function autoShipAfterTurn(
+  scope: StepScope,
+  outcome: TurnOutcome | { status: 'interrupted'; turn: number },
+  changed: boolean | undefined
+): Promise<void> {
+  if (outcome.status === 'skipped') return
+  const row = await loadSession(scope)
+  if (!row.autoShip || row.pendingMessage !== null) return
+  let verdict: AutoShipVerdict
+  let upgrade: Awaited<ReturnType<typeof upgradeAwaitingAutoShip>> = null
+  try {
+    upgrade = await upgradeAwaitingAutoShip(scope.db, row)
+    if (!upgrade) {
+      verdict = { ship: false, reason: 'The upgrade is no longer waiting to ship.' }
+    } else {
+      const turn = 'turn' in outcome ? outcome.turn : row.turnCount
+      const completed = outcome.status === 'completed'
+      verdict = autoShipVerdict(
+        {
+          status: outcome.status,
+          ...('result' in outcome && outcome.result ? { result: outcome.result } : {}),
+          ...(changed !== undefined ? { changed } : {}),
+          askedQuestion: completed ? await turnAskedQuestion(scope, row, turn) : false,
+          manifestVersion: completed && changed ? await checkoutKitVersion(scope, row) : null,
+        },
+        upgrade.toVersion
+      )
+    }
+  } catch (err) {
+    scope.logger.warn({ err, sessionId: row.id }, 'session: could not check the upgrade turn')
+    verdict = { ship: false, reason: 'Launch could not check the upgrade.' }
+  }
+  const tenantId = scope.params.tenantId
+  const [decided] = await scope.db
+    .update(sessions)
+    .set({
+      autoShip: false,
+      ...(verdict.ship ? { requestedAction: 'ship' as const, lastActivityAt: scope.now() } : {}),
+    })
+    .where(
+      and(
+        eq(sessions.tenantId, tenantId),
+        eq(sessions.id, row.id),
+        eq(sessions.autoShip, true),
+        // A ship is asked of a `ready` session only (`ACTION_FROM`); anything else is not clean.
+        verdict.ship ? eq(sessions.status, 'ready') : undefined
+      )
+    )
+    .returning()
+  if (!decided && verdict.ship) {
+    verdict = { ship: false, reason: 'The session was no longer ready to ship.' }
+    const [cleared] = await scope.db
+      .update(sessions)
+      .set({ autoShip: false })
+      .where(
+        and(eq(sessions.tenantId, tenantId), eq(sessions.id, row.id), eq(sessions.autoShip, true))
+      )
+      .returning()
+    if (!cleared) return
+  } else if (!decided) {
+    return
+  }
+  const emit = emitterFor(scope)
+  if (verdict.ship) {
+    await emit({
+      type: 'status',
+      turn: row.turnCount,
+      data: {
+        status: 'ready',
+        reason: UPGRADE_SESSION_REASONS.autoShip,
+        message: 'The upgrade finished cleanly, so Launch is shipping it.',
+      },
+    })
+    nudgeSession(scope.realtime, row)
+    return
+  }
+  const message = needsAttentionMessage(verdict.reason)
+  if (upgrade) await upgradeNeedsAttention(scope.db, row, verdict.reason, scope.realtime)
+  await emit({
+    type: 'status',
+    turn: row.turnCount,
+    data: { status: row.status, reason: UPGRADE_SESSION_REASONS.needsAttention, message },
+  })
+  nudgeSession(scope.realtime, row)
+}
+
+/** Did turn `turn` call `AskUserQuestion` (a `tool.start` naming it)? */
+async function turnAskedQuestion(
+  scope: StepScope,
+  row: SessionRow,
+  turn: number
+): Promise<boolean> {
+  const [hit] = await scope.db
+    .select({ id: sessionEvents.id })
+    .from(sessionEvents)
+    .where(
+      and(
+        eq(sessionEvents.tenantId, row.tenantId),
+        eq(sessionEvents.sessionId, row.id),
+        eq(sessionEvents.turn, turn),
+        eq(sessionEvents.type, 'tool.start'),
+        sql`${sessionEvents.data}->>'name' = ${ASK_USER_QUESTION_TOOL}`
+      )
+    )
+    .limit(1)
+  return hit !== undefined
+}
+
+/** `.rocketflare.json`'s `kit.version` in the session's checkout, or null when it cannot be read. */
+async function checkoutKitVersion(scope: StepScope, row: SessionRow): Promise<string | null> {
+  const result = await sandboxFor(scope, row).exec(
+    `cat ${SESSION_WORKSPACE}/${MANIFEST_PATHS[0]}`,
+    { timeoutMs: 30_000 }
+  )
+  if (result.exitCode !== 0) return null
+  try {
+    return parseManifest(result.stdout).kitVersion
+  } catch {
+    return null
+  }
 }
 
 /** A turn that ran with the container still up: its workspace is worth checking (and saving). */
@@ -1626,6 +1789,8 @@ export async function turnSettleStep(scope: StepScope, message: string): Promise
     lastActivityAt: scope.now(),
     cancelRequestedAt: null,
   })
+  // A kit upgrade's first turn that died this way did not end cleanly: hand it to its owner.
+  await autoShipAfterTurn(scope, { status: 'interrupted', turn }, undefined)
 }
 
 /**
@@ -1781,7 +1946,7 @@ export async function backupWorkspace(
   session: SessionRow,
   sandbox: SandboxPort
 ): Promise<boolean> {
-  if (session.kind !== 'session' || workspaceBackupMode(scope.cfg) === 'off') return false
+  if (session.kind === 'prepare' || workspaceBackupMode(scope.cfg) === 'off') return false
   try {
     const head = await sandbox.exec(`git -C ${SESSION_WORKSPACE} rev-parse HEAD`, {
       timeoutMs: 30_000,
@@ -2007,7 +2172,7 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
       .deleteBackup(session.workspaceBackup)
       .catch(err => scope.logger.warn({ err }, 'session: could not delete the workspace backup'))
   }
-  if (session.db && session.kind === 'session') {
+  if (session.db && session.kind !== 'prepare') {
     const app = await loadAppRef(scope, session.appId)
     const db = session.db
     const port = scope.ports.sessionDb(scope.db)
@@ -2047,6 +2212,8 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
     )
     .returning()
   const status = row?.status ?? session.status
+  // P6 6c: the upgrade this session was doing follows it (a PR → `pr_open`, failed, cancelled).
+  await settleUpgradeAtCleanup(scope.db, row ?? session, scope.realtime)
   if (session.endedAt === null) {
     await recordAudit(scope.db, {
       ...SYSTEM_ACTOR,

@@ -13,7 +13,10 @@
  * 5. audit `pr.merged` for any PR not recorded yet, then `release.created`;
  * 6. scan the declared config AT THE TAG (Launch P5, `grants/detect.scanAppConfig`) — a plugin the
  *    release brings in asks for its shared config now, before the deploy needs it. A scan failure
- *    is recorded on the scan row and never fails the Release.
+ *    is recorded on the scan row and never fails the Release;
+ * 7. re-read `.rocketflare.json` AT THE TAG (P6 6c, `upgrades.recordKitVersionAtRelease`): the kit
+ *    version it records becomes `apps.template_version` (audit `app.kit_version_changed`), and an
+ *    open upgrade it reaches is `released`. A failure is logged and never fails the Release.
  *
  * **Idempotent by the tag.** A Release that died after committing the bump and before tagging is
  * recognised on the next click — the head commit is our bump commit and its tag does not exist —
@@ -54,6 +57,7 @@ import {
   getRepoFile,
   isGitHubNotFound,
 } from '../github-app'
+import { recordKitVersionAtRelease } from '../upgrades'
 import { withRepoToken } from './github'
 import { recordedPrNumbers, recordPrMerged } from './pr-audit'
 import { releasePullRequests } from './prs'
@@ -367,6 +371,11 @@ export async function createRelease(
     sha: inserted.sha,
     trigger: 'release',
   }).catch(() => {})
+  // P6 6c: the kit the tag carries becomes the app's recorded one; an upgrade it completes is
+  // `released`. Never fails the Release — the next one reads the file again.
+  await recordKitVersionAtRelease(deps, { tenantId, app, tag: inserted.tag }).catch(err =>
+    deps.logger.warn({ err, appId: app.id }, 'release: could not read the kit version at the tag')
+  )
   return inserted
 }
 

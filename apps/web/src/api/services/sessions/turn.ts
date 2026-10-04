@@ -349,6 +349,21 @@ export function containerGone(outcome: { status: string; reason?: string }): boo
   )
 }
 
+/** Longest end of the final answer a {@link TurnResultSummary} carries. */
+export const TURN_RESULT_TAIL_MAX = 500
+
+/**
+ * How the agent's `result` line ended the turn: its `subtype` (`success`, `error_max_turns`,
+ * `error_during_execution`…), whether it flagged an error, and the END of its final answer
+ * (redacted, at most {@link TURN_RESULT_TAIL_MAX} characters) — what an upgrade session's auto-ship
+ * reads its `LAUNCH-UPGRADE:` line from (`launch/upgrades.ts`). Absent when no `result` line came.
+ */
+export interface TurnResultSummary {
+  subtype: string
+  isError: boolean
+  tail: string | null
+}
+
 /** What the Workflow learns. Ids, counts and flags only — it is a step result. */
 export type TurnOutcome =
   | { status: 'skipped'; sessionId: string }
@@ -359,6 +374,7 @@ export type TurnOutcome =
       sessionId: string
       turn: number
       costMicrocents: number
+      result?: TurnResultSummary
     }
   | {
       status: 'interrupted'
@@ -366,7 +382,21 @@ export type TurnOutcome =
       turn: number
       reason: TurnInterruptReason
       costMicrocents: number
+      result?: TurnResultSummary
     }
+
+/** The {@link TurnResultSummary} of a `result` line, or undefined without one. */
+export function turnResultSummary(
+  result: ClaudeTurnResult | null | undefined
+): TurnResultSummary | undefined {
+  if (!result) return undefined
+  const text = result.text?.trimEnd() ?? null
+  return {
+    subtype: result.subtype,
+    isError: result.isError,
+    tail: text === null ? null : text.slice(-TURN_RESULT_TAIL_MAX),
+  }
+}
 
 const realSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -624,6 +654,7 @@ export async function runTurn(
     { turn, message: prompt, policy: turnPolicy, attachments },
     opts
   )
+  const summary = turnResultSummary(run.result)
   const outcome: TurnOutcome =
     run.status === 'interrupted'
       ? {
@@ -632,8 +663,15 @@ export async function runTurn(
           turn,
           reason: run.reason,
           costMicrocents: run.costMicrocents,
+          ...(summary ? { result: summary } : {}),
         }
-      : { status: run.status, sessionId, turn, costMicrocents: run.costMicrocents }
+      : {
+          status: run.status,
+          sessionId,
+          turn,
+          costMicrocents: run.costMicrocents,
+          ...(summary ? { result: summary } : {}),
+        }
 
   const gone = containerGone(run)
   await db
