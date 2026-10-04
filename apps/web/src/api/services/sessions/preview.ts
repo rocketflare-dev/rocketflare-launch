@@ -8,7 +8,10 @@
  * - **A grant** is minted by `POST /api/sessions/:id/preview-grant` after the access check, lives
  *   60 s, and is exchanged ONCE by the iframe at `https://<preview host>/__launch/grant?g=…` for
  *   the cookie. It names the session, the user and the exact preview host, so a grant replayed on
- *   another session's host (or another port of the same session) is refused.
+ *   another session's host (or another port of the same session) is refused. `previewGrantUrl`
+ *   builds that URL, with an optional `to=` — the page the frame lands on after the exchange
+ *   (`safePreviewPath`; the gateway re-checks it and falls back to `/`). `to=` is not signed: it
+ *   can only name a page on the same preview host, which the grant already lets its holder open.
  * - **A cookie** (`__Host-launch-preview`, host-only) carries the same three facts and lives
  *   `PREVIEW_COOKIE_TTL_S`; the gateway verifies it on every request.
  *
@@ -16,11 +19,14 @@
  * so a cookie can never be presented as a grant or the other way round. Verification is
  * constant-time (`crypto.subtle.verify`) and a malformed token is simply `null`.
  */
+import { previewLabel, previewUrl, safePreviewPath } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../config'
 import { requireEncryptionKey } from '../../auth/oauth-encryption'
 
 /** Where the iframe exchanges its grant on the preview host. Namespaced so it never shadows an app route. */
 export const PREVIEW_GRANT_PATH = '/__launch/grant'
+/** The grant URL's parameter naming the page to land on after the exchange. */
+export const PREVIEW_GRANT_TO_PARAM = 'to'
 /** The container port the preview iframe shows: the app's Vite dev UI (`:3000` is the SDK's, S7). */
 export const PREVIEW_UI_PORT = 5173
 
@@ -191,4 +197,34 @@ export function verifyCookie(
   expect: { host: string; now?: Date }
 ): Promise<PreviewClaims | null> {
   return verify(cfg, token, 'c', { host: expect.host, now: expect.now ?? new Date() })
+}
+
+/**
+ * The URL the iframe (or a new tab) loads to open `session`'s UI preview as `userId`: a fresh
+ * grant for its `:5173` host, plus `to=<path>` when `path` is a page on it (anything else is
+ * dropped — the frame lands on `/`). The caller answers a missing `SESSION_PREVIEW_URL` itself
+ * (the route's 503); here it is a programming error.
+ */
+export async function previewGrantUrl(
+  cfg: AppConfig,
+  session: { id: string; shortId: string; previewToken: string },
+  userId: string,
+  options: { path?: string | null; now?: Date } = {}
+): Promise<{ url: string; expiresAt: Date }> {
+  if (!cfg.SESSION_PREVIEW_URL) throw new Error('SESSION_PREVIEW_URL is not set')
+  const origin = previewUrl(
+    cfg.SESSION_PREVIEW_URL,
+    previewLabel(PREVIEW_UI_PORT, session.shortId, session.previewToken)
+  )
+  const { token, expiresAt } = await mintGrant(cfg, {
+    sessionId: session.id,
+    userId,
+    host: new URL(origin).host,
+    now: options.now,
+  })
+  const url = new URL(PREVIEW_GRANT_PATH, origin)
+  url.searchParams.set('g', token)
+  const to = safePreviewPath(options.path)
+  if (to && to !== '/') url.searchParams.set(PREVIEW_GRANT_TO_PARAM, to)
+  return { url: url.toString(), expiresAt }
 }

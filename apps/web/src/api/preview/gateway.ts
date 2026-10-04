@@ -16,8 +16,10 @@
  * 2. The iframe loads `https://<preview host>/__launch/grant?g=…`: a genuine, unexpired grant for
  *    THIS host and THIS session sets the host-only cookie `__Host-launch-preview` (HttpOnly,
  *    Secure, SameSite=None, Partitioned; in development `launch-preview`, Lax, not Secure — a
- *    `__Host-` cookie needs Secure, which `http://*.localhost` cannot give) and 302s to `/`.
- *    Anything else is a 401.
+ *    `__Host-` cookie needs Secure, which `http://*.localhost` cannot give) and 302s to `/` — or
+ *    to `to=`, when that is a page on this host (`safePreviewPath`: one leading `/`, no `//`, no
+ *    backslash, no control character, nothing that parses to another origin; anything else is
+ *    `/`, never an error). Anything else is a 401.
  * 3. Every later request needs that cookie, signed for this host and naming this session: no
  *    cookie, a forged one, or another session's → 401. An ended session → 410 (before the cookie:
  *    the host itself is a secret, and the page should say "ended", not "sign in").
@@ -27,7 +29,14 @@
  *    control server and must never be.
  * 5. The response loses any `X-Frame-Options` and gets `frame-ancestors <APP_URL>` — its own CSP
  *    kept, with that one directive replaced. A WebSocket upgrade (Vite HMR) is passed through
- *    untouched: a 101's headers are immutable and re-wrapping it drops the socket.
+ *    untouched: a 101's headers are immutable and re-wrapping it drops the socket. A 200 HTML page
+ *    gets the preview bridge's `<script>` (`bridge.ts`), and loses `Content-Length`.
+ *
+ * **`/__launch/bridge.js` needs no cookie**, like the grant: it is answered after the host lookup
+ * (an unknown host is still a 404, an ended session a 410) and before the cookie check. It holds
+ * nothing but `APP_URL`'s origin — which every proxied response already names in its
+ * `frame-ancestors` — never reaches the sandbox and does not count as activity. Requiring the cookie
+ * would add a way for the script to fail and protect nothing.
  *
  * **The status cache**: the session a host names is read once per `PREVIEW_STATUS_CACHE_MS` (15 s)
  * per isolate, because a Vite page is a hundred module requests. An ended session is therefore
@@ -51,6 +60,7 @@ import {
   type PreviewHost,
   parsePreviewHost,
   type SessionStatus,
+  safePreviewPath,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import type { SessionSandboxHost } from '@launch/shared/launch-setup'
@@ -63,11 +73,13 @@ import {
   mintCookie,
   PREVIEW_COOKIE_TTL_S,
   PREVIEW_GRANT_PATH,
+  PREVIEW_GRANT_TO_PARAM,
   PREVIEW_UI_PORT,
   verifyCookie,
   verifyGrant,
 } from '../services/sessions/preview'
 import type { AppBindings } from '../types'
+import { bridgeResponse, injectBridge, PREVIEW_BRIDGE_PATH, shouldInjectBridge } from './bridge'
 
 /** The cookie a grant is exchanged for; host-only by construction (`__Host-`). */
 export const PREVIEW_COOKIE = '__Host-launch-preview'
@@ -316,7 +328,8 @@ async function exchangeGrant(
   host: string,
   now: Date
 ): Promise<Response> {
-  const grant = new URL(req.url).searchParams.get('g')
+  const params = new URL(req.url).searchParams
+  const grant = params.get('g')
   const claims = await verifyGrant(cfg, grant, { host, now })
   if (!claims || claims.sid !== view.id) {
     return envelope(
@@ -329,7 +342,7 @@ async function exchangeGrant(
   return new Response(null, {
     status: 302,
     headers: {
-      Location: '/',
+      Location: safePreviewPath(params.get(PREVIEW_GRANT_TO_PARAM)) ?? '/',
       'Set-Cookie': setCookieHeader(cfg, token),
       'Cache-Control': 'no-store',
       // The grant is in this URL; never hand it to the app as a Referer.
@@ -379,7 +392,15 @@ async function proxy(
     'Content-Security-Policy',
     frameAncestors(out.get('Content-Security-Policy'), new URL(cfg.APP_URL).origin)
   )
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out })
+  const inject = shouldInjectBridge(req, res)
+  // The rewrite changes the length; the runtime chunks the rewritten body instead.
+  if (inject) out.delete('Content-Length')
+  const page = new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: out,
+  })
+  return inject ? injectBridge(page) : page
 }
 
 export async function handlePreview(
@@ -400,8 +421,12 @@ export async function handlePreview(
     return envelope(410, 'This session has ended', 'session_ended')
   }
 
-  if (new URL(request.url).pathname === PREVIEW_GRANT_PATH) {
+  const pathname = new URL(request.url).pathname
+  if (pathname === PREVIEW_GRANT_PATH) {
     return exchangeGrant(request, cfg, view, requestHost, now)
+  }
+  if (pathname === PREVIEW_BRIDGE_PATH && (request.method === 'GET' || request.method === 'HEAD')) {
+    return bridgeResponse(new URL(cfg.APP_URL).origin)
   }
 
   const claims = await verifyCookie(

@@ -2,11 +2,14 @@
  * The preview gateway (Launch P3 slice 3d, plan §1.6): the grant → cookie exchange, the cookie on
  * every request, the proxy into the sandbox, and the headers that let Launch frame it — driven
  * through `handlePreview` with a `FakeSandbox` behind the ports, and through the real
- * `POST /api/sessions/:id/preview-grant` route.
+ * `POST /api/sessions/:id/preview-grant` route. Plus the preview bridge (plan §4): the grant's
+ * `to=`, `/__launch/bridge.js`, and its tag in HTML pages — injected by the fake `HTMLRewriter`
+ * (`tests/mocks/html-rewriter.ts`), so this proves which pages and where, not lol-html itself.
  */
 import { previewLabel, previewUrl } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { bridgeScript, PREVIEW_BRIDGE_TAG } from '@/api/preview/bridge'
 import {
   bumpPreviewActivity,
   clearPreviewStatusCache,
@@ -444,6 +447,234 @@ describe('the preview is the person’s activity', () => {
   })
 })
 
+describe('the preview bridge', () => {
+  /** A sandbox whose :5173 answers `respond(req)` for every request. */
+  async function serving(respond: (req: Request) => Response) {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'ready' })
+    const ports = createFakeSessionPorts().script(sandbox => sandbox.onPort(5173, respond))
+    return { f, row, ports, host: hostOf(row), cookie: await cookieFor(row, f.user.id) }
+  }
+
+  const html = (body: string, headers: Record<string, string> = {}, status = 200) =>
+    new Response(body, {
+      status,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': String(new TextEncoder().encode(body).length),
+        ...headers,
+      },
+    })
+
+  it.each([
+    ['/orders', '/orders'],
+    ['/orders?tab=open&page=2', '/orders?tab=open&page=2'],
+    ['/orders#line-3', '/orders#line-3'],
+    ['/a/b/../c', '/a/c'],
+    ['/caf%C3%A9', '/caf%C3%A9'],
+    ['/', '/'],
+    [null, '/'],
+    ['', '/'],
+    ['orders', '/'],
+    ['//evil.example', '/'],
+    ['///evil.example', '/'],
+    ['/\\evil.example', '/'],
+    ['\\\\evil.example', '/'],
+    ['/a\\b', '/'],
+    ['https://evil.example/x', '/'],
+    ['javascript:alert(1)', '/'],
+    ['/a\tb', '/'],
+    ['/\t/evil.example', '/'],
+    ['/a\r\nSet-Cookie: x=1', '/'],
+    ['/a\u0000b', '/'],
+    ['/__launch/grant?g=x', '/'],
+    ['/__launch/bridge.js', '/'],
+    [`/${'a'.repeat(2048)}`, '/'],
+  ])('a grant with to=%j lands on %s', async (to, location) => {
+    const { f, row, ports, host } = await seeded()
+    const cfg = loadConfig(previewEnv())
+    const { token } = await mintGrant(cfg, { sessionId: row.id, userId: f.user.id, host })
+    const url = new URL(`http://${host}/__launch/grant`)
+    url.searchParams.set('g', token)
+    if (to !== null) url.searchParams.set('to', to)
+    const res = await gateway(previewEnv(), ports, url.toString())
+    expect(res.status).toBe(302)
+    expect(res.headers.get('Location')).toBe(location)
+    expect(res.headers.get('Set-Cookie')).toMatch(/^launch-preview=/)
+  })
+
+  it('serves bridge.js without a cookie, posting only to APP_URL’s origin, never into the sandbox', async () => {
+    const { row, ports, host } = await seeded()
+    const res = await gateway(previewEnv(), ports, `http://${host}/__launch/bridge.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('text/javascript; charset=utf-8')
+    expect(res.headers.get('Cache-Control')).toBe('private, max-age=300')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    const script = await res.text()
+    expect(script).toContain('var target = "http://localhost:3001";')
+    expect(script).toContain('"launch.preview.location"')
+    expect(script).toContain('location.pathname + location.search + location.hash')
+    for (const hook of ['pushState', 'replaceState', 'popstate', 'hashchange']) {
+      expect(script).toContain(hook)
+    }
+    expect(script).not.toContain("'*'")
+    expect(script).not.toContain('"*"')
+    expect(ports.sandboxes.get(row.id)?.fetches ?? []).toHaveLength(0)
+
+    // Its target follows APP_URL.
+    const env = createTestEnv({
+      SESSION_PREVIEW_URL: TEMPLATE,
+      APP_URL: 'https://launch.example.com/app',
+    } as Partial<TestEnv>)
+    clearPreviewStatusCache()
+    const other = await gateway(env, ports, `http://${host}/__launch/bridge.js`)
+    expect(await other.text()).toContain('var target = "https://launch.example.com";')
+  })
+
+  it('the script posts the page’s path on load and after each history change, once per change', () => {
+    const posted: Array<[unknown, string]> = []
+    const listeners = new Map<string, () => void>()
+    const location = { pathname: '/', search: '', hash: '' }
+    const go = (url: string) => {
+      const next = new URL(url, 'http://preview.test')
+      Object.assign(location, { pathname: next.pathname, search: next.search, hash: next.hash })
+    }
+    const history = {
+      pushState: (_state: unknown, _title: string, url: string) => go(url),
+      replaceState: (_state: unknown, _title: string, url: string) => go(url),
+    }
+    const win: Record<string, unknown> = {
+      parent: { postMessage: (message: unknown, target: string) => posted.push([message, target]) },
+      addEventListener: (type: string, fn: () => void) => listeners.set(type, fn),
+    }
+    new Function('window', 'location', 'history', bridgeScript('http://localhost:3001'))(
+      win,
+      location,
+      history
+    )
+    const paths = () => posted.map(([m]) => (m as { path: string }).path)
+    expect(posted[0]).toEqual([
+      { type: 'launch.preview.location', path: '/' },
+      'http://localhost:3001',
+    ])
+    history.pushState(null, '', '/orders?tab=open')
+    history.replaceState(null, '', '/orders?tab=open#x')
+    go('/back')
+    listeners.get('popstate')?.()
+    listeners.get('hashchange')?.()
+    expect(paths()).toEqual(['/', '/orders?tab=open', '/orders?tab=open#x', '/back'])
+    expect(posted.every(([, target]) => target === 'http://localhost:3001')).toBe(true)
+
+    // Not framed (a new tab): it posts nothing.
+    const alone: Array<unknown> = []
+    const top: Record<string, unknown> = { addEventListener: () => {} }
+    top.parent = top
+    top.postMessage = (m: unknown) => alone.push(m)
+    new Function('window', 'location', 'history', bridgeScript('http://localhost:3001'))(
+      top,
+      location,
+      { ...history }
+    )
+    expect(alone).toEqual([])
+  })
+
+  it('bridge.js is still behind the host: an unknown host is a 404, an ended session a 410', async () => {
+    const { f, ports } = await seeded()
+    const unknown = await gateway(
+      previewEnv(),
+      ports,
+      `http://${hostOf({ shortId: 'zzzzzzzzzzzz', previewToken: 'zzzzzzzzzz' })}/__launch/bridge.js`
+    )
+    expect(unknown.status).toBe(404)
+    const ended = await insertSession(db, f, { status: 'ended', endedAt: new Date() })
+    expect(
+      (await gateway(previewEnv(), ports, `http://${hostOf(ended)}/__launch/bridge.js`)).status
+    ).toBe(410)
+  })
+
+  it('injects the tag first in <head> of an HTML page, and drops its Content-Length', async () => {
+    const page =
+      '<!doctype html><html><head lang="en"><meta charset="utf-8"><script type="module" src="/src/main.tsx"></script></head><body><div id="root"></div></body></html>'
+    const { ports, host, cookie } = await serving(() => html(page))
+    const res = await gateway(previewEnv(), ports, `http://${host}/orders`, { headers: cookie })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(res.headers.get('Content-Type')).toBe('text/html; charset=utf-8')
+    const body = await res.text()
+    expect(body).toBe(page.replace('<head lang="en">', `<head lang="en">${PREVIEW_BRIDGE_TAG}`))
+    expect(body.split(PREVIEW_BRIDGE_TAG)).toHaveLength(2)
+  })
+
+  it('with no <head>, first in <body>; with neither, at the end', async () => {
+    const bodyOnly = '<html><body class="x"><p>hi</p></body></html>'
+    const one = await serving(() => html(bodyOnly))
+    const res = await gateway(previewEnv(), one.ports, `http://${one.host}/`, {
+      headers: one.cookie,
+    })
+    expect(await res.text()).toBe(
+      bodyOnly.replace('<body class="x">', `<body class="x">${PREVIEW_BRIDGE_TAG}`)
+    )
+
+    const two = await serving(() => html('<p>fragment</p>'))
+    const fragment = await gateway(previewEnv(), two.ports, `http://${two.host}/`, {
+      headers: two.cookie,
+    })
+    expect(await fragment.text()).toBe(`<p>fragment</p>${PREVIEW_BRIDGE_TAG}`)
+  })
+
+  it('leaves everything that is not a 200 HTML page to a GET, unencoded, untouched', async () => {
+    const page = '<html><head></head><body></body></html>'
+    const cases: Array<{ name: string; res: () => Response; init?: RequestInit }> = [
+      {
+        name: 'a module',
+        res: () =>
+          new Response('export const x = 1', {
+            headers: { 'content-type': 'text/javascript', 'content-length': '18' },
+          }),
+      },
+      { name: 'a 404 page', res: () => html(page, {}, 404) },
+      { name: 'a gzip-encoded page', res: () => html(page, { 'content-encoding': 'gzip' }) },
+      {
+        name: 'an event stream',
+        res: () =>
+          new Response('data: x\n\n', { headers: { 'content-type': 'text/event-stream' } }),
+      },
+      { name: 'a POST’s page', res: () => html(page), init: { method: 'POST', body: 'a=1' } },
+    ]
+    for (const c of cases) {
+      const { ports, host, cookie } = await serving(c.res)
+      const res = await gateway(previewEnv(), ports, `http://${host}/x`, {
+        ...c.init,
+        headers: cookie,
+      })
+      const body = await res.text()
+      expect(body, c.name).not.toContain(PREVIEW_BRIDGE_TAG)
+    }
+    const kept = await serving(
+      () =>
+        new Response('export const x = 1', {
+          headers: { 'content-type': 'text/javascript', 'content-length': '18' },
+        })
+    )
+    const js = await gateway(previewEnv(), kept.ports, `http://${kept.host}/src/x.ts`, {
+      headers: kept.cookie,
+    })
+    expect(js.headers.get('Content-Length')).toBe('18')
+  })
+
+  it('keeps an app CSP that allows its own scripts, and still only replaces frame-ancestors', async () => {
+    const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+    const { ports, host, cookie } = await serving(() =>
+      html('<html><head></head></html>', { 'content-security-policy': csp })
+    )
+    const res = await gateway(previewEnv(), ports, `http://${host}/`, { headers: cookie })
+    expect(res.headers.get('Content-Security-Policy')).toBe(
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:3001"
+    )
+    expect(await res.text()).toContain(PREVIEW_BRIDGE_TAG)
+  })
+})
+
 describe('POST /api/sessions/:id/preview-grant', () => {
   const post = (id: string, headers: Record<string, string>, env = previewEnv()) =>
     request(
@@ -471,6 +702,49 @@ describe('POST /api/sessions/:id/preview-grant', () => {
     const hidden = await post(row.id, cookie)
     expect(hidden.status).toBe(404)
     expect(await json(hidden)).toMatchObject({ code: 'session_not_found' })
+  })
+
+  it('carries a page path into the grant’s to=, which the exchange lands on; a bad one is a 400', async () => {
+    const { f, row, ports } = await seeded()
+    const withPath = (path: unknown) =>
+      request(
+        `/api/sessions/${row.id}/preview-grant`,
+        {
+          method: 'POST',
+          headers: { ...f.cookie, 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        },
+        { env: previewEnv() }
+      )
+    const res = await withPath('/orders?tab=open#top')
+    expect(res.status).toBe(200)
+    const { url } = await json<{ url: string }>(res)
+    expect(new URL(url).searchParams.get('to')).toBe('/orders?tab=open#top')
+    const exchanged = await gateway(previewEnv(), ports, url)
+    expect(exchanged.status).toBe(302)
+    expect(exchanged.headers.get('Location')).toBe('/orders?tab=open#top')
+
+    // An empty body with a JSON content type — what the UI sent before `path` — is still `{}`.
+    const empty = await request(
+      `/api/sessions/${row.id}/preview-grant`,
+      {
+        method: 'POST',
+        headers: { ...f.cookie, 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' },
+      },
+      { env: previewEnv() }
+    )
+    expect(empty.status).toBe(200)
+    expect(new URL((await json<{ url: string }>(empty)).url).searchParams.has('to')).toBe(false)
+
+    // `/` is the default: no `to=` at all.
+    const root = await json<{ url: string }>(await withPath('/'))
+    expect(new URL(root.url).searchParams.has('to')).toBe(false)
+
+    for (const bad of ['//evil.example', 'https://evil.example', '/a\\b', '/__launch/grant', 42]) {
+      const refused = await withPath(bad)
+      expect(refused.status, String(bad)).toBe(400)
+      expect(await json(refused)).toMatchObject({ code: 'validation_failed' })
+    }
   })
 
   it('503 without SESSION_PREVIEW_URL; 409 once the session has ended', async () => {
