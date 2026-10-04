@@ -12,6 +12,7 @@
  */
 import { CodeBracketIcon } from '@heroicons/react/24/outline'
 import type { AppDetail } from '@launch/shared/launch-apps'
+import { requiresUpgradeLabel } from '@launch/shared/launch-upgrades'
 import { useState } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router-dom'
 import { useRefreshAppThumbnail } from '@/ui/hooks/useApps'
@@ -117,6 +118,9 @@ function General({ app, canManage }: { app: AppDetail; canManage: boolean }) {
               {app.template} {app.templateVersion ?? ''}
               {app.templateContractVersion ? ` · contract v${app.templateContractVersion}` : ''}
             </span>
+            {app.kit && requiresUpgradeLabel(app.kit) && (
+              <span className="text-xs"> · {requiresUpgradeLabel(app.kit)}</span>
+            )}
           </AboutRow>
           <AboutRow label="Registered">
             {app.source === 'imported' ? 'Imported' : 'Created'} {formatDate(app.createdAt)}

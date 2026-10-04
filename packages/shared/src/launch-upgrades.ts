@@ -147,8 +147,25 @@ export const kitStatusSchema = z.object({
   target: z.string().nullable(),
   behind: z.boolean(),
   openUpgrade: appUpgradeSchema.nullable().default(null),
+  /** The target release's porting note in the kit repo (`docs/upgrades/<tag>.md` at the tag). */
+  notesUrl: z.string().nullable().default(null),
 })
 export type KitStatus = z.infer<typeof kitStatusSchema>
+
+/** The kit's porting note for `tag` — `docs/upgrades/<version>.md` at the tag, on GitHub. Pure. */
+export function kitUpgradeNotesUrl(repo: string, tag: string): string | null {
+  const version = kitVersionOf(tag)
+  if (!version || !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo)) return null
+  return `https://github.com/${repo}/blob/${encodeURIComponent(tag)}/docs/upgrades/${version}.md`
+}
+
+/**
+ * "Requires upgrade → 0.16.1" — the one phrase the catalogue, the app page and the CLI show for an
+ * app behind the pin; null when it is not. Pure.
+ */
+export function requiresUpgradeLabel(kit: Pick<KitStatus, 'behind' | 'target'>): string | null {
+  return kit.behind && kit.target ? `Requires upgrade → ${kit.target}` : null
+}
 
 /** `POST /api/apps/:id/upgrade` → 202: the upgrade and the session doing it. */
 export const startUpgradeResponseSchema = z.object({

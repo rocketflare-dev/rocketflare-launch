@@ -22,6 +22,7 @@ import {
   Squares2X2Icon,
 } from '@heroicons/react/24/outline'
 import type { AppCatalogueItem, HealthStatus } from '@launch/shared/launch-apps'
+import { requiresUpgradeLabel } from '@launch/shared/launch-upgrades'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -94,6 +95,7 @@ function Meta({ app }: { app: AppCatalogueItem }) {
       <span className="font-mono">
         {app.templateVersion ? `kit ${app.templateVersion}` : 'kit unknown'}
       </span>
+      {app.kit && requiresUpgradeLabel(app.kit) && <span>{requiresUpgradeLabel(app.kit)}</span>}
     </div>
   )
 }
@@ -214,7 +216,12 @@ function AppTable({ apps }: { apps: AppCatalogueItem[] }) {
                 <td className={app.ownerGroup ? 'text-secondary' : 'text-muted italic'}>
                   {app.ownerGroup?.name ?? 'No team'}
                 </td>
-                <td className="font-mono text-xs text-secondary">{app.templateVersion ?? '—'}</td>
+                <td className="text-xs text-secondary">
+                  <span className="font-mono">{app.templateVersion ?? '—'}</span>
+                  {app.kit && requiresUpgradeLabel(app.kit) && (
+                    <span className="block">{requiresUpgradeLabel(app.kit)}</span>
+                  )}
+                </td>
                 <td>
                   <EnvCell app={app} name="staging" />
                 </td>

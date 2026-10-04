@@ -26,6 +26,7 @@ import {
   type AppUpgrade,
   type AppUpgradeStatus,
   type KitStatus,
+  kitUpgradeNotesUrl,
   kitVersionBehind,
   kitVersionOf,
   kitVersionReached,
@@ -78,23 +79,34 @@ export function toAppUpgrade(row: AppUpgradeRow): AppUpgrade {
   }
 }
 
-/** The version the template pin names (its tag, as `X.Y.Z`), or null for a commit pin. */
-export async function kitTarget(db: Database): Promise<string | null> {
+/** What the template pin targets: its tag as `X.Y.Z` (null for a commit pin) and the notes URL. */
+export interface KitTarget {
+  version: string | null
+  notesUrl: string | null
+}
+
+/** The version the template pin names, read once per request (`kit-pin.ts`). */
+export async function kitTarget(db: Database): Promise<KitTarget> {
   const { pin } = await templatePinStatus(db)
-  return kitVersionOf(pin.tag ?? null)
+  const version = kitVersionOf(pin.tag ?? null)
+  return {
+    version,
+    notesUrl: version && pin.tag ? kitUpgradeNotesUrl(pin.repo, pin.tag) : null,
+  }
 }
 
 /** The kit status an app summary carries. Pure. */
 export function kitStatusOf(
   app: Pick<AppRow, 'templateVersion'>,
-  target: string | null,
+  target: KitTarget,
   open: AppUpgradeRow | null
 ): KitStatus {
   return {
     current: app.templateVersion,
-    target,
-    behind: kitVersionBehind(app.templateVersion, target),
+    target: target.version,
+    behind: kitVersionBehind(app.templateVersion, target.version),
     openUpgrade: open ? toAppUpgrade(open) : null,
+    notesUrl: target.notesUrl,
   }
 }
 

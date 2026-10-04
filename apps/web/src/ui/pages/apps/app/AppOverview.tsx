@@ -11,6 +11,7 @@
  *   ("→ v1.4.2 · uploading · started 48 seconds ago", "→ v1.4.2 · Waiting for approval from Bob ·
  *   Copy link") — read from each environment's latest deploy (`useDeployProgress`) and the
  *   promotion view (`useAppPromotion`). Health is the dot only, kept apart from the deploy result;
+ * - **the kit** (P6 6c, `UpgradeCard`) — only while the app requires an upgrade or one is open;
  * - **active sessions**, with "All sessions →".
  *
  * A release in flight's line carries Details and a ⋯ with Cancel release (app page P2); a stuck
@@ -68,6 +69,7 @@ import { type AppPageContext, useAppPage } from './context'
 import { NeedsYou } from './NeedsYou'
 import { NewReleaseModal } from './NewReleaseModal'
 import { useReleaseMenu } from './ReleaseActions'
+import { showUpgradeCard, UpgradeCard } from './UpgradeCard'
 
 /** A new app waiting on an admin's approval (P4 `app.create`): say so, and link to the request. */
 function AwaitingCreateApproval({ approvalId }: { approvalId: string }) {
@@ -525,6 +527,10 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
           </ul>
         )}
       </section>
+
+      {hasRepo && app.status !== 'archived' && showUpgradeCard(app.kit) && (
+        <UpgradeCard kit={app.kit} />
+      )}
 
       {hasRepo && app.status !== 'archived' && <ActiveSessions appId={app.id} slug={app.slug} />}
     </div>

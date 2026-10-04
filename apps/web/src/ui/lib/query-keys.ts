@@ -198,6 +198,12 @@ const CORE_QUERY_KEYS = {
     deployProgress: (appId: string) => ['apps', 'deploy-progress', appId] as const,
     /** Issue #5: whether the default branch is protected the way Launch's merge needs. */
     branchProtection: (appId: string) => ['apps', 'branch-protection', appId] as const,
+    /**
+     * P6 6c: the app's kit upgrades (`GET /api/apps/:id/upgrades`). Under `apps`, so the
+     * server's `entity.changed { entity: 'apps' }` nudge on an upgrade's move refreshes it with
+     * the detail's kit status.
+     */
+    upgrades: (appId: string) => ['apps', 'upgrades', appId] as const,
   },
   /**
    * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is

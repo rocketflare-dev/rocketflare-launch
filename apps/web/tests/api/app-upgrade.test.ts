@@ -105,6 +105,8 @@ describe('Requires upgrade — computed on read against the pin', () => {
       target: '0.16.1',
       behind: true,
       openUpgrade: null,
+      notesUrl:
+        'https://github.com/rocketflare-dev/rocketflare/blob/0.16.1/docs/upgrades/0.16.1.md',
     })
     const list = await request('/api/apps', { headers: f.cookie }, { env })
     const item = appListResponseSchema.parse(await json(list)).items.find(a => a.id === f.app.id)

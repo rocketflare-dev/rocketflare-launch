@@ -68,7 +68,7 @@ export function RetryReleaseButton({
 }
 
 /** Whether this reader may start a session on the app (the layout's "Change it" rule). */
-function useCanStartSession(): boolean {
+export function useCanStartSession(): boolean {
   const { app, hasRepo, stage } = useAppPage()
   const { can } = usePermissions()
   return hasRepo && can('create', 'Session') && !stage.holding && app.status !== 'archived'
