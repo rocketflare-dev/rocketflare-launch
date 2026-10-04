@@ -66,6 +66,7 @@ const app = (overrides: Partial<AppCatalogueItem> = {}): AppCatalogueItem => ({
   createdAt: new Date(),
   latestDeploy: deploy(),
   thumbnail: null,
+  kit: null,
   ...overrides,
 })
 

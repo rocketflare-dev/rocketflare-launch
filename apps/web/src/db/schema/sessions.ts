@@ -44,7 +44,9 @@ import {
 import { SESSION_SANDBOX_HOSTS } from '@launch/shared/launch-setup'
 import { relations, sql } from 'drizzle-orm'
 import {
+  type AnyPgColumn,
   bigint,
+  boolean,
   index,
   integer,
   jsonb,
@@ -58,6 +60,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { tenantRef, timestamps } from './_helpers'
 import { agentCredentials } from './agent-credentials'
+import { appUpgrades } from './app-upgrades'
 import { apps } from './apps'
 import { tenantIsolation } from './rls'
 import { tenants } from './tenants'
@@ -190,6 +193,18 @@ export const sessions = pgTable(
     imageVersion: text('image_version'),
     /** `launch_settings.session_policy` with defaults, frozen at create. */
     policy: jsonb('policy').$type<SessionPolicy>().notNull(),
+
+    // ---- kit upgrades (P6 6c)
+    /** The `app_upgrades` row a session of kind `upgrade` is doing. */
+    upgradeId: uuid('upgrade_id').references((): AnyPgColumn => appUpgrades.id, {
+      onDelete: 'set null',
+    }),
+    /**
+     * Ship on its own after the first turn when that turn ended cleanly (`upgrades.ts`
+     * `afterUpgradeTurn`). Consumed by that decision: cleared whichever way it went, so the
+     * owner's later turns never ship by themselves.
+     */
+    autoShip: boolean('auto_ship').notNull().default(false),
 
     // ---- turns and requests (routes write these; the Workflow consumes them)
     turnCount: integer('turn_count').notNull().default(0),

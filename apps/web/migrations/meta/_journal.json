@@ -281,6 +281,13 @@
       "when": 1791110520514,
       "tag": "0039_launch-session-pending-attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791122125414,
+      "tag": "0040_launch-kit-upgrades",
+      "breakpoints": true
     }
   ]
 }

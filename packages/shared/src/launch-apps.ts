@@ -7,6 +7,7 @@
  * catalogue, detail, health, OIDC client registration) beside what is here.
  */
 import { z } from 'zod'
+import { kitStatusSchema } from './launch-upgrades'
 
 /** `requested → provisioning → live → archived`, or `failed` (spec/06). */
 export const APP_STATUSES = ['requested', 'provisioning', 'live', 'archived', 'failed'] as const
@@ -273,6 +274,11 @@ export const appSummarySchema = z.object({
   createdAt: z.coerce.date(),
   /** Live's screenshot, else Staging's, else null. Defaulted so an older answer parses. */
   thumbnail: appThumbnailSchema.nullable().default(null),
+  /**
+   * P6 6c: the app's kit against the template pin, computed on read — `behind` is "Requires
+   * upgrade". Defaulted so an older answer parses.
+   */
+  kit: kitStatusSchema.nullable().default(null),
 })
 export type AppSummary = z.infer<typeof appSummarySchema>
 

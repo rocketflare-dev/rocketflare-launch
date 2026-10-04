@@ -42,10 +42,21 @@ import { healthStatusSchema, sessionShipModeSchema } from './launch-apps'
 
 // ---- enums -------------------------------------------------------------------------------------
 
-/** `session` is a person's chat; `prepare` is the one-off run that migrates and seeds `dev`. */
-export const SESSION_KINDS = ['session', 'prepare'] as const
+/**
+ * `session` is a person's chat; `prepare` is the one-off run that migrates and seeds `dev`;
+ * `upgrade` (P6 6c) is a coding session started to upgrade the app's kit — a `session` in every
+ * respect, plus its `upgrade_id` and the first turn's auto-ship. Append-only (a pg enum).
+ */
+export const SESSION_KINDS = ['session', 'prepare', 'upgrade'] as const
 export const sessionKindSchema = z.enum(SESSION_KINDS)
 export type SessionKind = z.infer<typeof sessionKindSchema>
+
+/**
+ * The kinds that are a coding session a person works in — a branch, a sandbox, a chat — as
+ * opposed to `prepare`. What the concurrency count, the app's session list and the cleanup of a
+ * session's branch select by.
+ */
+export const CODING_SESSION_KINDS = ['session', 'upgrade'] as const satisfies readonly SessionKind[]
 
 /**
  * Mirrors the `session_status` pg enum — append-only. The lifecycle (plan §1.2, §1.8):
