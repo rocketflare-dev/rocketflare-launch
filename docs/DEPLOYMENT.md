@@ -205,6 +205,7 @@ email DNS record's presence when verification stalls.
 | `--dry-run` | `secrets`: list what would be put, generated or skipped (names only) and put nothing |
 | `--skip-email` | no Resend: `email create`/`verify` are skipped and magic links only reach the Worker log (`pnpm --filter @launch/web exec wrangler tail -c wrangler.deploy.toml`) |
 | `--drained` | `deploy`: you've drained coding sessions, so go ahead with a new session image (§ 6) |
+| `--interrupt-turns` | `deploy`: go ahead although sessions are mid-turn; each running turn fails, the sessions survive (§ 6) |
 | `--adopt` | `neon`: use an existing project named `LAUNCH_NAME` that the state doesn't record (you lost `.launch/`) |
 | `--rotate` | regenerate `OAUTH_ENCRYPTION_KEY` (then rerun `setup --rotate`), the Neon password, the Resend sending key. `github-app --rotate` creates a new app. **Not for routine reruns** |
 | `--debug` | print sanitised vendor payloads to stderr |
@@ -222,6 +223,7 @@ email DNS record's presence when verification stalls.
 | `route`: `*.<domain>` is a DNS-only record | turn its proxy on in the dashboard, or delete it; rerun `route` |
 | `deploy`: a plan or permission error on containers | Workers Paid, and the token's Containers: Edit scope |
 | `deploy`: the session image changed and sessions hold a container | drain first (§ 6), then `pnpm provision deploy --drained` |
+| `deploy`: n session(s) are booting or mid-turn | wait for the turns to finish (Admin → Sessions), or `--interrupt-turns` (§ 6) |
 | `deploy` / `email verify`: `fetch failed` on the new host | usually this machine cached "no such host" from before the custom domain existed. The probes retry through public DNS (`curl --resolve`); if that fails too the error says so. Flush the cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) and rerun the phase |
 | `deploy`: `/api/ready` not ready | the Worker can't reach Neon. `pnpm provision neon --rotate` resets the Neon password and re-puts the Worker's `DATABASE_URL`. **Not** `secrets --rotate`, which also replaces `OAUTH_ENCRYPTION_KEY` |
 | `secrets`: the Worker holds `OAUTH_ENCRYPTION_KEY` but the file has none | restore the key from your backup of the file (§ 7). `--rotate` only if it's truly lost |
@@ -295,6 +297,12 @@ container, it **refuses** and tells you to drain:
 2. Wait until Admin → Sessions shows no `ready`, `working` or `booting` session.
 3. **The agent**: `pnpm provision deploy --drained`, then `pnpm provision all` to finish the rest.
 4. **You**: **Undrain**. People resume their own sessions.
+
+**Running turns.** EVERY deploy, image or not, replaces Launch's Worker and Durable Objects, and
+that cuts the stream to Claude Code in a session's container: the turn fails ("Launch lost the
+connection to Claude Code in the sandbox"), while the session and its container carry on and the
+person just resends. So `deploy` also **refuses** while any session is `booting` or `working`. Wait
+for those turns to finish, or pass `--interrupt-turns` to deploy anyway (tell the people first).
 
 ## 7. Backups and key loss
 

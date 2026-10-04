@@ -279,6 +279,10 @@ needs, beyond the bindings above:
   HTML page ("workspace routing discovery failed"). A container started before the deploy that
   dropped the `chatgpt.com` handler keeps its interception until it restarts — check with a NEW
   session (or suspend and resume the old one).
+- **Any deploy cuts a running turn.** Replacing the Worker and its Durable Objects drops the stream
+  to Claude Code in the container: the turn fails ("lost the connection"), the session and its
+  container survive, the person resends. `pnpm provision deploy` refuses while a session is
+  `booting`/`working` unless `--interrupt-turns` (`docs/DEPLOYMENT.md` § 6).
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
   1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409

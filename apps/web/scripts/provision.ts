@@ -19,7 +19,7 @@
  *   migrate                   the migrations against the instance database
  *   route (alias urls)        the proxied wildcard `AAAA * → 100::` (only if no `*` record exists)
  *   render                    apps/web/wrangler.deploy.toml
- *   deploy                    render → (drain check) → build → wrangler deploy → /api/health, /api/ready
+ *   deploy                    render → (drain + mid-turn check) → build → wrangler deploy → /api/health, /api/ready
  *   secrets [--dry-run]       OAUTH_ENCRYPTION_KEY (file, else generated + written back first),
  *                             BOOTSTRAP_ADMIN_EMAILS, DATABASE_URL, every optional secret set
  *   setup                     the Setup page's settings + sealed credentials, audited, in the DB
@@ -124,6 +124,7 @@ interface Flags {
   rotate: boolean
   dryRun: boolean
   drained: boolean
+  interruptTurns: boolean
   adopt: boolean
   debug: boolean
   help: boolean
@@ -154,6 +155,7 @@ flags
   --rotate              regenerate OAUTH_ENCRYPTION_KEY (re-seals Setup credentials), the Neon password,
                         the Resend sending key; github-app: create a new app
   --drained             deploy: sessions are drained (Admin → Sessions → Drain), go ahead with a new image
+  --interrupt-turns     deploy: go ahead although sessions are mid-turn (each turn fails; sessions survive)
   --adopt               neon: use an existing project with the instance's name the state does not record
   --skip-email          no Resend: skip email create/verify (magic links are only logged)
   --debug               print sanitised vendor payloads to stderr
@@ -168,6 +170,7 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
     rotate: false,
     dryRun: false,
     drained: false,
+    interruptTurns: false,
     adopt: false,
     debug: false,
     help: false,
@@ -187,6 +190,9 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
         break
       case '--dry-run':
         flags.dryRun = true
+        break
+      case '--interrupt-turns':
+        flags.interruptTurns = true
         break
       case '--drained':
         flags.drained = true
@@ -965,12 +971,20 @@ function containersHash(rendered: string): string {
 }
 
 /** Sessions holding a container (what the drain suspends) — counted straight from the database. */
-async function liveSessionCount(url: string): Promise<number> {
+const LIVE_SESSIONS_SQL =
+  "SELECT count(*) AS n FROM sessions WHERE status IN ('requested','booting','ready','working','blocked') OR (status = 'suspended' AND container_kept_at IS NOT NULL)"
+/**
+ * Sessions mid-turn or mid-boot. ANY deploy replaces Launch's Worker and Durable Objects, which
+ * cuts the stream to Claude Code in the container: the turn fails ("lost the connection"), the
+ * session and its container survive and the person resends. An image change replaces the container
+ * too, which is what the drain is for.
+ */
+const MID_TURN_SQL = "SELECT count(*) AS n FROM sessions WHERE status IN ('booting','working')"
+
+async function liveSessionCount(url: string, query = LIVE_SESSIONS_SQL): Promise<number> {
   const sql = openScriptSql(url, process.env, { connectTimeout: 20 })
   try {
-    const [row] = await sql.query<{ n: string }>(
-      "SELECT count(*) AS n FROM sessions WHERE status IN ('requested','booting','ready','working','blocked') OR (status = 'suspended' AND container_kept_at IS NOT NULL)"
-    )
+    const [row] = await sql.query<{ n: string }>(query)
     return Number(row?.n ?? 0)
   } catch {
     return 0
@@ -1006,6 +1020,14 @@ async function deployPhase(flags: Flags): Promise<void> {
         2
       )
     log(`  session image changed; no live sessions hold a container — no drain needed`)
+  }
+  if (!flags.drained && !flags.interruptTurns) {
+    const busy = await liveSessionCount(info.url, MID_TURN_SQL)
+    if (busy > 0)
+      throw new ProvisionError(
+        `${busy} session(s) are booting or mid-turn — a deploy restarts Launch's Worker and cuts their turn (the session survives; the person resends the message). Wait for them to finish (Admin → Sessions at ${instance.appUrl}/admin), or rerun with --interrupt-turns`,
+        2
+      )
   }
 
   const version = releaseVersion()

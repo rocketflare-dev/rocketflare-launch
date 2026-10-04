@@ -151,7 +151,9 @@ means the key is missing from the file (restore it from backup, don't `--rotate`
    before `deploy` on an update, since the others find what exists). If `deploy` refuses because
    sessions hold a container, the drain is the user's: **Admin → Sessions → Drain**, wait until no
    session is `ready`/`working`/`booting`, then `pnpm provision deploy --drained`, then finish
-   `secrets` → `setup` → `email verify`, then **Undrain**.
+   `secrets` → `setup` → `email verify`, then **Undrain**. Any deploy, image or not, also refuses
+   while a session is `booting`/`working` (it would cut that turn): tell the user, wait, and only
+   pass `--interrupt-turns` when they say so.
 4. Check `curl -s https://<LAUNCH_HOST>/api/health` shows the new version, and tell them what
    changed (the `## Unreleased` / version section of `CHANGELOG.md`).
 

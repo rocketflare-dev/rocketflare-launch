@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`pnpm provision deploy` refuses while a coding session is mid-turn.** Any deploy replaces
+  Launch's Worker and cuts the turn's stream to Claude Code (the session survives). Wait for the
+  turns, or pass `--interrupt-turns`.
 - **The session preview shows on a deployed Launch.** Launch's CSP had no `frame-src`, so the
   browser refused to frame `<port>-<id>-<token>.<domain>` (the "sad page" in the preview pane);
   local dev never saw it because Vite serves the UI without these headers. `frame-src` is now
