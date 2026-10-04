@@ -34,6 +34,7 @@ import {
   SESSION_ACTIONS,
   SESSION_KINDS,
   SESSION_STATUSES,
+  type SessionAttachment,
   type SessionDb,
   type SessionEventType,
   type SessionLanding,
@@ -199,6 +200,11 @@ export const sessions = pgTable(
      * claim moves it onto `policy.model` (the proxy's allow-list follows). Cleared with the message.
      */
     pendingModel: text('pending_model'),
+    /**
+     * The waiting message's images (`sessions/<id>/attachments/<aid>` in `FILES`), in order; null
+     * when it has none. The turn copies them into the container. Cleared with the message.
+     */
+    pendingAttachments: jsonb('pending_attachments').$type<SessionAttachment[]>(),
     requestedAction: text('requested_action', { enum: SESSION_ACTIONS }),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
 

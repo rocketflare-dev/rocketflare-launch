@@ -13,7 +13,11 @@
  *   the message cannot be split by a race. The turn's watcher kills the process within 2 s plus
  *   the 5 s kill grace, the turn ends `turn.interrupted { cancelled }` with the message untouched,
  *   and it runs next with `--resume`.
- * - `withdrawQueued`: drops the waiting message (and its sender and model) — the only way to take
+ * - A message may carry images (`attachments`, the ids `POST /:id/attachments` returned, already
+ *   resolved under the session's R2 prefix by the route): stored as `pending_attachments` beside
+ *   the text, which may then be empty — `pending_message` is `''`, never null, for an image-only
+ *   message, because NULL is what "nothing waits" means. Cleared everywhere the text is.
+ * - `withdrawQueued`: drops the waiting message (and its sender, model and images) — the only way to take
  *   one back while a turn runs; 409 `nothing_queued` when the slot is empty.
  * - A message may switch the model (`model`): one the session's runtime offers
  *   (`AGENT_RUNTIME_MODELS`) and the pricing table can price, else 400 `model_not_offered`. A
@@ -38,6 +42,7 @@ import {
   resolveSessionPolicy,
   SESSION_WAKE_EVENT,
   type Session,
+  type SessionAttachment,
   type SessionStatus,
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
@@ -154,6 +159,8 @@ export interface TurnRequest {
   model?: string
   /** While a turn runs: wait for it (`queue`, the default) or stop it (`interrupt`). */
   mode?: 'queue' | 'interrupt'
+  /** Its images, already found under the session's prefix (`resolveSessionAttachments`). */
+  attachments?: readonly SessionAttachment[]
 }
 
 /** Store the next message (see the header) from `userId`. Returns the updated row. */
@@ -176,6 +183,7 @@ export async function requestTurn(
       pendingMessage: request.message,
       pendingMessageUserId: userId,
       pendingModel,
+      pendingAttachments: request.attachments?.length ? [...request.attachments] : null,
       // Interrupt: the stop is asked for in the SAME write as the message, and only of a turn
       // that is still running (read from the row, not from what the route saw).
       ...(request.mode === 'interrupt'
@@ -235,7 +243,13 @@ export async function requestCancel(
   if (running) return { row: running, cancelled: 'running' }
   const [withdrawn] = await db
     .update(sessions)
-    .set({ pendingMessage: null, pendingMessageUserId: null, pendingModel: null, updatedAt: now })
+    .set({
+      pendingMessage: null,
+      pendingMessageUserId: null,
+      pendingModel: null,
+      pendingAttachments: null,
+      updatedAt: now,
+    })
     .where(and(scope, isNotNull(sessions.pendingMessage)))
     .returning()
   if (withdrawn) return { row: withdrawn, cancelled: 'withdrawn' }
@@ -250,7 +264,13 @@ export async function withdrawQueued(
 ): Promise<SessionRow> {
   const [withdrawn] = await db
     .update(sessions)
-    .set({ pendingMessage: null, pendingMessageUserId: null, pendingModel: null, updatedAt: now })
+    .set({
+      pendingMessage: null,
+      pendingMessageUserId: null,
+      pendingModel: null,
+      pendingAttachments: null,
+      updatedAt: now,
+    })
     .where(
       and(
         eq(sessions.tenantId, row.tenantId),
@@ -287,6 +307,7 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     requestedAction: row.requestedAction,
     pendingMessage: row.pendingMessage !== null,
     queuedMessage: row.pendingMessage,
+    queuedAttachments: row.pendingAttachments ?? [],
     cancelRequested: row.cancelRequestedAt !== null,
     imageVersion: row.imageVersion,
     policy: resolveSessionPolicy(row.policy),

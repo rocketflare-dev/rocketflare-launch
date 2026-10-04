@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Show a coding session a picture.** Paste an image into the composer, drop one on it, or pick
+  one with the paperclip: it uploads at once (shrunk to 1568 px on its long edge first) and shows
+  as a chip with a spinner and ×; Send carries up to five, with or without words. Claude Code reads
+  them as images (the message goes in on stdin as stream-json); Codex gets them with `-i`. The
+  transcript shows each message's images as thumbnails that open full size. Images live in R2
+  under the session (`POST /api/sessions/:id/attachments`, `GET …/attachments/:aid`), checked by
+  their bytes, 5 MB each (`docs/CONCEPTS.md` §18.11).
 - **Write to a coding session while it works: queue the message, or send it now.** The composer
   stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
   the turn and runs the message next, resuming the conversation, with one line telling Claude its

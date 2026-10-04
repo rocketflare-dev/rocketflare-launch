@@ -935,6 +935,113 @@ describe('SessionPage', () => {
     expect(screen.getByRole('button', { name: 'Queue' })).toBeEnabled()
   })
 
+  it('a pasted image uploads at once as a chip; Send names it, and an image alone is a message', async () => {
+    const IMAGE = '0b7f6a52-3f1c-4a8e-9d0e-5a4b3c2d1e0f'
+    let release: () => void = () => {}
+    const uploaded = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf(),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/attachments`]: async () => {
+        await uploaded
+        return { id: IMAGE, contentType: 'image/png', bytes: 3 }
+      },
+      [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true }),
+    })
+    const box = await screen.findByLabelText('Message the coding agent')
+    const send = screen.getByRole('button', { name: 'Send' })
+    expect(send).toBeDisabled()
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e])], 'shot.png', { type: 'image/png' })
+    fireEvent.paste(box, { clipboardData: { files: [file], types: ['Files'] } })
+
+    const chip = await screen.findByTestId('composer-attachment')
+    expect(chip).toHaveAttribute('data-status', 'uploading')
+    // Still uploading: Send waits.
+    expect(send).toBeDisabled()
+    expect(screen.getByText('Attaching images…')).toBeInTheDocument()
+    await act(async () => release())
+    await waitFor(() => expect(chip).toHaveAttribute('data-status', 'ready'))
+    expect(send).toBeEnabled()
+
+    fireEvent.click(send)
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({
+        message: '',
+        attachments: [IMAGE],
+      })
+    )
+    // The chips are the message's now; the optimistic bubble shows the image.
+    await waitFor(() => expect(screen.queryByTestId('composer-attachment')).not.toBeInTheDocument())
+    const images = screen.getByTestId('message-images')
+    expect(within(images).getByRole('img')).toHaveAttribute('src', `${BASE}/attachments/${IMAGE}`)
+  })
+
+  it('a refused image stays as a failed chip, and Send waits until it is removed', async () => {
+    renderPage({
+      [BASE]: detailOf(),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/attachments`]: () =>
+        errorResponse(415, 'Attach a PNG, JPEG, GIF or WebP image', 'unsupported_media_type'),
+    })
+    const box = await screen.findByLabelText('Message the coding agent')
+    fireEvent.change(box, { target: { value: 'Look at this' } })
+    const file = new File(['<html>'], 'fake.png', { type: 'image/png' })
+    fireEvent.change(screen.getByTestId('composer-file-input'), { target: { files: [file] } })
+    const chip = await screen.findByTestId('composer-attachment')
+    await waitFor(() => expect(chip).toHaveAttribute('data-status', 'error'))
+    expect(chip).toHaveAttribute('title', 'Attach a PNG, JPEG, GIF or WebP image')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.click(within(chip).getByRole('button', { name: /Remove/ }))
+    expect(screen.queryByTestId('composer-attachment')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled()
+
+    // Not an image at all: no chip, a sentence instead.
+    const text = new File(['hi'], 'notes.txt', { type: 'text/plain' })
+    fireEvent.change(screen.getByTestId('composer-file-input'), { target: { files: [text] } })
+    expect(screen.queryByTestId('composer-attachment')).not.toBeInTheDocument()
+  })
+
+  it('shows a message’s images in its bubble, each opening full size in a new tab', async () => {
+    const IMAGE = '0b7f6a52-3f1c-4a8e-9d0e-5a4b3c2d1e0f'
+    renderPage({
+      [BASE]: detailOf(),
+      [`${BASE}/events`]: eventsRoute([
+        sessionEvent(1, 'user.message', {
+          text: 'What is off here?',
+          userId: IDS.user,
+          attachments: [{ id: IMAGE, contentType: 'image/png' }],
+        }),
+      ]),
+    })
+    await screen.findByText('What is off here?')
+    const link = within(screen.getByTestId('message-images')).getByRole('link')
+    expect(link).toHaveAttribute('href', `${BASE}/attachments/${IMAGE}`)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(within(link).getByRole('img')).toHaveAttribute('src', `${BASE}/attachments/${IMAGE}`)
+  })
+
+  it('a queued image-only message shows its images; Withdraw puts them back as chips', async () => {
+    const IMAGE = '0b7f6a52-3f1c-4a8e-9d0e-5a4b3c2d1e0f'
+    renderPage({
+      [BASE]: detailOf({
+        status: 'working',
+        pendingMessage: true,
+        queuedMessage: '',
+        queuedAttachments: [{ id: IMAGE, contentType: 'image/png' }],
+      }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+      [`POST ${BASE}/queued/withdraw`]: () => detailOf({ status: 'working' }),
+    })
+    const queued = await screen.findByTestId('queued-message')
+    expect(within(queued).getByRole('img')).toHaveAttribute('src', `${BASE}/attachments/${IMAGE}`)
+    fireEvent.click(within(queued).getByRole('button', { name: 'Withdraw' }))
+    const chip = await screen.findByTestId('composer-attachment')
+    expect(chip).toHaveAttribute('data-status', 'ready')
+    expect(screen.getByRole('button', { name: 'Queue' })).toBeEnabled()
+  })
+
   it('cancels the running turn with Stop', async () => {
     const { fetchMock } = renderPage({
       [BASE]: detailOf({ status: 'working' }),

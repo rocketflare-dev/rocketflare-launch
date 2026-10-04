@@ -180,9 +180,47 @@ export const sessionUsageSchema = z.object({
 })
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
 
+/** The image types a message may carry — what Claude and Codex both read. */
+export const SESSION_ATTACHMENT_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+] as const
+export const sessionAttachmentMimeTypeSchema = z.enum(SESSION_ATTACHMENT_MIME_TYPES)
+export type SessionAttachmentMimeType = z.infer<typeof sessionAttachmentMimeTypeSchema>
+
+export function isSessionAttachmentMimeType(value: string): value is SessionAttachmentMimeType {
+  return (SESSION_ATTACHMENT_MIME_TYPES as readonly string[]).includes(value)
+}
+
+/** One image's cap: Anthropic's per-image limit. */
+export const SESSION_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024
+/** Images per message. */
+export const SESSION_ATTACHMENTS_MAX = 5
+/**
+ * The longest edge the composer downscales an image to before it uploads it: past this Anthropic
+ * resizes it anyway, so the extra pixels only cost upload time and tokens.
+ */
+export const SESSION_ATTACHMENT_MAX_EDGE = 1568
+
+/** An image a message carries, by id — its bytes are `GET /api/sessions/:id/attachments/:aid`. */
+export const sessionAttachmentSchema = z.object({
+  id: z.string().uuid(),
+  contentType: sessionAttachmentMimeTypeSchema,
+})
+export type SessionAttachment = z.infer<typeof sessionAttachmentSchema>
+
+/** Where an image's bytes are read (same origin, the session cookie): `GET` streams it. */
+export function sessionAttachmentPath(sessionId: string, attachmentId: string): string {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`
+}
+
 export const sessionUserMessageDataSchema = z.object({
   text: z.string(),
   userId: z.string().uuid().nullable(),
+  /** The images sent with it, in order (absent on rows written before images, and with none). */
+  attachments: z.array(sessionAttachmentSchema).optional(),
 })
 export const sessionTurnStartDataSchema = z.object({
   turn: z.number().int().positive(),
@@ -776,20 +814,31 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>
 export const SESSION_MESSAGE_MAX = 20_000
 
 /** `POST /api/sessions/:id/turns`. */
-export const sessionTurnRequestSchema = z.object({
-  message: z.string().trim().min(1).max(SESSION_MESSAGE_MAX),
-  /**
-   * Switch the session to this model from this turn on — one of `AGENT_RUNTIME_MODELS[runtime]`
-   * that is priced, else 400 `model_not_offered`. Absent: the session's current model.
-   */
-  model: z.string().trim().min(1).max(100).optional(),
-  /**
-   * While a turn runs: `queue` (the default) runs this message when the turn ends; `interrupt`
-   * also stops the turn — the same write asks for the cancel — so this message runs next, resuming
-   * the conversation. Either way one message waits at most (409 `turn_in_progress`).
-   */
-  mode: z.enum(['queue', 'interrupt']).default('queue'),
-})
+export const sessionTurnRequestSchema = z
+  .object({
+    /** May be empty when the message carries images. */
+    message: z.string().trim().max(SESSION_MESSAGE_MAX).default(''),
+    /**
+     * Switch the session to this model from this turn on — one of `AGENT_RUNTIME_MODELS[runtime]`
+     * that is priced, else 400 `model_not_offered`. Absent: the session's current model.
+     */
+    model: z.string().trim().min(1).max(100).optional(),
+    /**
+     * While a turn runs: `queue` (the default) runs this message when the turn ends; `interrupt`
+     * also stops the turn — the same write asks for the cancel — so this message runs next, resuming
+     * the conversation. Either way one message waits at most (409 `turn_in_progress`).
+     */
+    mode: z.enum(['queue', 'interrupt']).default('queue'),
+    /**
+     * Images uploaded first (`POST /:id/attachments`), by id, in order — each must be this
+     * session's (400 `attachment_not_found` otherwise).
+     */
+    attachments: z.array(z.string().uuid()).max(SESSION_ATTACHMENTS_MAX).default([]),
+  })
+  .refine(body => body.message.length > 0 || body.attachments.length > 0, {
+    path: ['message'],
+    message: 'Write a message or attach an image',
+  })
 export type SessionTurnRequest = z.infer<typeof sessionTurnRequestSchema>
 /** What a client sends (`mode` may be left out). */
 export type SessionTurnRequestInput = z.input<typeof sessionTurnRequestSchema>
@@ -857,6 +906,8 @@ export const sessionSchema = sessionSummarySchema.extend({
    * sandbox — so a reload can show it. Withdrawn with `POST /:id/queued/withdraw`.
    */
   queuedMessage: z.string().nullable().default(null),
+  /** The waiting message's images (empty when none) — an image-only message has `queuedMessage: ''`. */
+  queuedAttachments: z.array(sessionAttachmentSchema).default([]),
   cancelRequested: z.boolean(),
   imageVersion: z.string().nullable(),
   policy: sessionPolicySchema,
@@ -913,6 +964,16 @@ export type SessionEventsResponse = z.infer<typeof sessionEventsResponseSchema>
 
 /** `POST /api/sessions/:id/cancel`. */
 export const sessionCancelResponseSchema = z.object({ cancelRequested: z.literal(true) })
+
+/**
+ * `POST /api/sessions/:id/attachments` (multipart, one `file` part) — an image for the next
+ * message: PNG, JPEG, GIF or WebP, checked by its bytes as well as its declared type, at most
+ * {@link SESSION_ATTACHMENT_MAX_BYTES}. Send its `id` in the turn's `attachments`.
+ */
+export const sessionAttachmentUploadResponseSchema = sessionAttachmentSchema.extend({
+  bytes: z.number().int().positive(),
+})
+export type SessionAttachmentUploadResponse = z.infer<typeof sessionAttachmentUploadResponseSchema>
 
 /**
  * `POST /api/sessions/:id/queued/withdraw` — no body; answers `sessionDetailResponseSchema` (the

@@ -175,6 +175,8 @@ export interface SandboxHostRpc {
     opts?: SandboxWaitForPortOptions
   ): Promise<HostResult<null>>
   writeFile(name: string, path: string, content: string): Promise<HostResult<null>>
+  /** Raw bytes (an image); a host deployed before it answers "no such method" — redeploy it. */
+  writeFileBytes(name: string, path: string, bytes: Uint8Array): Promise<HostResult<null>>
   readFile(name: string, path: string): Promise<HostResult<string | null>>
   setAllowedHosts(name: string, hosts: string[]): Promise<HostResult<null>>
   destroy(name: string): Promise<HostResult<null>>

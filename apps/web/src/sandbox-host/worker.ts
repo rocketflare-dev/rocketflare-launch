@@ -125,6 +125,10 @@ export default class SandboxHost
     return hostCall(() => done(this.sandbox(name).writeFile(path, content)))
   }
 
+  writeFileBytes(name: string, path: string, bytes: Uint8Array) {
+    return hostCall(() => done(this.sandbox(name).writeFileBytes(path, bytes)))
+  }
+
   readFile(name: string, path: string) {
     return hostCall(() => this.sandbox(name).readFile(path))
   }

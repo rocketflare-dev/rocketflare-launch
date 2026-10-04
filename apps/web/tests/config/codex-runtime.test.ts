@@ -89,6 +89,30 @@ describe('the command', () => {
     expect(cmd.indexOf('-s danger-full-access')).toBeLessThan(cmd.indexOf('resume'))
   })
 
+  it('images: `-i <path>` each, among the global flags before `resume`, each followed by a flag', () => {
+    const attachments = [
+      { path: '/workspace/.launch/attachments/a.png', contentType: 'image/png' },
+      { path: '/workspace/.launch/attachments/b.jpg', contentType: 'image/jpeg' },
+    ]
+    const cmd = buildCodexCommand({
+      message: 'what is wrong here',
+      model: 'gpt-6.1-sol',
+      resumeId: THREAD,
+      attachments,
+    })
+    expect(cmd).toBe(
+      `codex exec --json -s danger-full-access --skip-git-repo-check -i /workspace/.launch/attachments/a.png -i /workspace/.launch/attachments/b.jpg -m gpt-6.1-sol resume ${THREAD} 'what is wrong here' < /dev/null`
+    )
+    expect(cmd.lastIndexOf('-i ')).toBeLessThan(cmd.indexOf('resume'))
+    expect(() =>
+      buildCodexCommand({
+        message: 'x',
+        model: 'm',
+        attachments: [{ path: '/tmp/a b.png; rm -rf /', contentType: 'image/png' }],
+      })
+    ).toThrow(/image path/)
+  })
+
   it('refuses a model or thread id that is not a plain token; a message that looks like a flag is not one', () => {
     expect(() => buildCodexCommand({ message: 'x', model: 'gpt; rm -rf /' })).toThrow(/model/)
     expect(() =>

@@ -84,7 +84,13 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `tests/config/session-chat-model.test.ts`). A landing still moving keeps the row polled at
   `SESSION_LANDING_POLL_MS`, `shipped` included (`sessionOwesAnswer`); one in `approval` waits on a
   person and is not polled. The app page's `ShipSettingsCard` reads `useBranchProtection` (never
-  polled) and saves through `useUpdateShipSettings` (`useApps`).
+  polled) and saves through `useUpdateShipSettings` (`useApps`). The next message's images are
+  `SessionPage`'s (`pages/sessions/useComposerAttachments.ts`, handed to the composer — paste, drop,
+  paperclip — and to anything else that adds one): each is shrunk by `lib/images.ts`
+  (`downscaleImage`, 1568 px long edge; the policy pure) and uploaded at once through the plain
+  `uploadSessionAttachment` (`useSessions`, `api.upload`); a chip is `uploading` / `ready` /
+  `error`, and Send waits on the first and the last. `ChatBubble` takes a `media` slot (the
+  message's thumbnails, `sessionAttachmentPath`, same-origin cookie).
   Launch P4 (approvals and shipping): `useApprovals` (`useApprovalCount` — the nav badge, never
   polled; `useApprovals(filters)` for the inbox; `useApproval(id)` polling `APPROVAL_APPLY_POLL_MS`
   only while `approvalOwesAnswer` — approved, `applyAfter` not yet landed nor failed; a `pending`

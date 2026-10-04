@@ -18,12 +18,20 @@
  *   turn having started (withdrawn in another tab).
  * - **Auto-scroll follows the run timeline's rule** (`useStickToBottom`): only when the reader is
  *   at the bottom AND a new item arrived; otherwise a "Jump to latest" pill.
+ * - **A message's images** show as thumbnails inside its bubble (`GET /:id/attachments/:aid`,
+ *   same origin, the session cookie); one opens full size in a new tab. The queued and the
+ *   optimistic bubbles show theirs too, and Withdraw puts them back as chips.
  * - **Over budget is a banner above the composer, not an error**: the person who may extend it gets
  *   the button; anyone else reads who can.
  */
 import { ArrowDownIcon, SparklesIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
-import type { Session, SessionEvent } from '@launch/shared/launch-sessions'
+import {
+  type Session,
+  type SessionAttachment,
+  type SessionEvent,
+  sessionAttachmentPath,
+} from '@launch/shared/launch-sessions'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChatBubble } from '@/ui/components/ai/ChatBubble'
@@ -39,6 +47,7 @@ import { ApiError } from '@/ui/lib/api-client'
 import { formatDuration } from '@/ui/lib/format'
 import { useStickToBottom } from '@/ui/pages/agents/run/timeline/useStickToBottom'
 import { buildSessionChat, type ChatItem, type NoticeTone } from '../sessionChatModel'
+import type { ComposerAttachments } from '../useComposerAttachments'
 import type { BudgetAccess } from './budgetAccess'
 import { SessionComposer, type SessionComposerHandle } from './SessionComposer'
 import { ToolBlock } from './ToolBlock'
@@ -57,10 +66,75 @@ const NOTICE_CLASS: Record<NoticeTone, string> = {
   error: 'text-error',
 }
 
-const TranscriptItem = memo(function TranscriptItem({ item }: { item: ChatItem }) {
+/** A message's images as thumbnails; each opens full size in a new tab. */
+function MessageImages({
+  sessionId,
+  attachments,
+}: {
+  sessionId: string
+  attachments: readonly SessionAttachment[]
+}) {
+  if (attachments.length === 0) return null
+  return (
+    <ul className="mb-1 flex flex-wrap justify-end gap-1.5" data-testid="message-images">
+      {attachments.map((attachment, index) => {
+        const url = sessionAttachmentPath(sessionId, attachment.id)
+        return (
+          <li key={attachment.id}>
+            <a href={url} target="_blank" rel="noopener noreferrer" title="Open full size">
+              <img
+                src={url}
+                alt={`Attachment ${index + 1}`}
+                className="h-20 max-w-[10rem] rounded-md bg-base-100 object-cover"
+                loading="lazy"
+              />
+            </a>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/** The person's bubble: their words, with any images above them. */
+function UserBubble({
+  sessionId,
+  text,
+  attachments,
+  at,
+}: {
+  sessionId: string
+  text: string
+  attachments: readonly SessionAttachment[]
+  at?: Date
+}) {
+  return (
+    <ChatBubble
+      speaker="user"
+      content={text}
+      time={at}
+      media={<MessageImages sessionId={sessionId} attachments={attachments} />}
+    />
+  )
+}
+
+const TranscriptItem = memo(function TranscriptItem({
+  item,
+  sessionId,
+}: {
+  item: ChatItem
+  sessionId: string
+}) {
   switch (item.kind) {
     case 'user':
-      return <ChatBubble speaker="user" content={item.text} time={item.at} />
+      return (
+        <UserBubble
+          sessionId={sessionId}
+          text={item.text}
+          attachments={item.attachments}
+          at={item.at}
+        />
+      )
     case 'assistant':
       return <ChatBubble speaker="assistant" content={item.text} time={item.at} />
     case 'tools':
@@ -173,6 +247,7 @@ function BudgetBanner({
 
 interface PendingMessage {
   text: string
+  attachments: SessionAttachment[]
   /** The newest row when it was sent: a `user.message` after this, with this text, is its copy. */
   afterSeq: number
   /** The session's turn count when it was sent: a higher one means its turn has started. */
@@ -180,12 +255,16 @@ interface PendingMessage {
 }
 
 function QueuedMessage({
+  sessionId,
   text,
+  attachments,
   stopping,
   onWithdraw,
   withdrawing,
 }: {
+  sessionId: string
   text: string
+  attachments: readonly SessionAttachment[]
   stopping: boolean
   onWithdraw: (() => void) | null
   withdrawing: boolean
@@ -193,7 +272,8 @@ function QueuedMessage({
   return (
     <div className="chat chat-end" data-testid="queued-message">
       <div className="chat-bubble max-w-[80%] bg-base-200 text-secondary">
-        <span className="whitespace-pre-wrap break-words">{text}</span>
+        <MessageImages sessionId={sessionId} attachments={attachments} />
+        {text && <span className="whitespace-pre-wrap break-words">{text}</span>}
       </div>
       <div className="chat-footer mt-0.5 flex items-center gap-1.5 text-xs text-muted">
         {stopping ? 'Runs as soon as Claude stops' : 'Runs when this turn ends'}
@@ -218,12 +298,15 @@ export function SessionChat({
   isLoading,
   budget,
   onExtend,
+  attachments,
 }: {
   session: Session
   events: readonly SessionEvent[]
   isLoading: boolean
   budget: BudgetAccess
   onExtend: () => void
+  /** The next message's images (`SessionPage` owns them: the preview adds screenshots). */
+  attachments: ComposerAttachments
 }) {
   const items = useMemo(() => buildSessionChat(events), [events])
   const [draft, setDraft] = useState('')
@@ -269,15 +352,23 @@ export function SessionChat({
 
   const onSend = (text: string, mode: 'queue' | 'interrupt') => {
     setSendError(null)
-    setPending({ text, afterSeq: lastSeq, turnCount: session.turnCount })
+    const images = attachments.items.flatMap(item =>
+      item.status === 'ready' && item.id && item.contentType
+        ? [{ id: item.id, contentType: item.contentType }]
+        : []
+    )
+    setPending({ text, attachments: images, afterSeq: lastSeq, turnCount: session.turnCount })
     setDraft('')
     send.mutate(
       {
         message: text,
         ...(model === session.policy.model ? {} : { model }),
         ...(mode === 'interrupt' ? { mode } : {}),
+        ...(images.length ? { attachments: images.map(image => image.id) } : {}),
       },
       {
+        // The chips are the message's now; a refused send keeps them, like the text.
+        onSuccess: () => attachments.clear(),
         onError: error => {
           setPending(null)
           setDraft(current => (current ? current : text))
@@ -296,21 +387,27 @@ export function SessionChat({
   }
 
   // Behind a running turn: the row's waiting message, or the one being sent right now.
+  const rowQueued =
+    session.queuedMessage !== null
+      ? { text: session.queuedMessage, attachments: session.queuedAttachments }
+      : null
   const queued = running
-    ? (session.queuedMessage ??
-      (pending && pending.turnCount === session.turnCount ? pending.text : null))
+    ? (rowQueued ?? (pending && pending.turnCount === session.turnCount ? pending : null))
     : null
   // Otherwise a waiting message is the next user bubble — the one just sent, or (after a reload)
   // the row's, waiting for the sandbox.
-  const waiting =
-    queued === null ? (pending?.text ?? (running ? null : session.queuedMessage)) : null
+  const waiting = queued === null ? (pending ?? (running ? null : rowQueued)) : null
 
   const onWithdraw = () => {
-    const text = queued
+    const taken = queued
     withdraw.mutate(undefined, {
       onSuccess: () => {
         setPending(null)
-        if (text) setDraft(current => (current.trim() ? current : text))
+        if (taken?.text) setDraft(current => (current.trim() ? current : taken.text))
+        // Its images come back as chips, unless the person has started on new ones.
+        if (taken?.attachments.length && attachments.items.length === 0) {
+          attachments.addExisting(taken.attachments)
+        }
         composer.current?.focus()
       },
     })
@@ -360,12 +457,16 @@ export function SessionChat({
             <ol className="space-y-3">
               {items.map(item => (
                 <li key={item.id}>
-                  <TranscriptItem item={item} />
+                  <TranscriptItem item={item} sessionId={session.id} />
                 </li>
               ))}
               {waiting !== null && (
                 <li>
-                  <ChatBubble speaker="user" content={waiting} />
+                  <UserBubble
+                    sessionId={session.id}
+                    text={waiting.text}
+                    attachments={waiting.attachments}
+                  />
                 </li>
               )}
               {showWorking && (
@@ -385,7 +486,9 @@ export function SessionChat({
               {queued !== null && (
                 <li>
                   <QueuedMessage
-                    text={queued}
+                    sessionId={session.id}
+                    text={queued.text}
+                    attachments={queued.attachments}
                     stopping={session.cancelRequested}
                     // Only once the row holds it: before that there is nothing to take back.
                     onWithdraw={session.queuedMessage !== null ? onWithdraw : null}
@@ -428,6 +531,7 @@ export function SessionChat({
         sending={send.isPending}
         cancelling={cancel.isPending}
         error={sendError}
+        attachments={attachments}
       />
     </div>
   )

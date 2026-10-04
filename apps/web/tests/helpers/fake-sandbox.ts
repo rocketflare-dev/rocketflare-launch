@@ -55,7 +55,8 @@
  *
  * Inspect: `commands` (every `exec` and `startProcess` command, in order), `execs` (`{ command,
  * opts, result }`), `backgroundRuns` (`{ name, command, opts, pid, runId, exitCode, killed }`), `processes` (`{ id, command, opts, killed,
- * exitCode }`), `killed` (process ids, in order), `files` (path → text), `ports`, `allowedHosts`,
+ * exitCode }`), `killed` (process ids, in order), `files` (path → text), `binaryFiles` (path →
+ * bytes, `writeFileBytes`), `ports`, `allowedHosts`,
  * `started` / `startCount`, `destroyed` / `destroyCount`, `fetches` (`{ port, url, method }`).
  */
 import {
@@ -161,6 +162,7 @@ type Method =
   | 'kill'
   | 'waitForPort'
   | 'writeFile'
+  | 'writeFileBytes'
   | 'readFile'
   | 'setAllowedHosts'
   | 'fetch'
@@ -181,6 +183,8 @@ export class FakeSandbox implements SandboxPort {
   readonly commands: string[] = []
   readonly killed: string[] = []
   readonly files = new Map<string, string>()
+  /** What `writeFileBytes` wrote (an image), path → bytes. */
+  readonly binaryFiles = new Map<string, Uint8Array>()
   readonly ports = new Map<number, PortHandler | null>()
   readonly fetches: { port: number; url: string; method: string }[] = []
   allowedHosts: string[] = [...SESSION_BASE_ALLOWED_HOSTS]
@@ -286,6 +290,7 @@ export class FakeSandbox implements SandboxPort {
     this.recreations++
     this.liveRuns.clear()
     this.files.clear()
+    this.binaryFiles.clear()
     this.ports.clear()
     for (const p of this.processes) {
       if (p.exitCode === null) {
@@ -301,6 +306,7 @@ export class FakeSandbox implements SandboxPort {
     this.deaths++
     this.liveRuns.clear()
     this.files.clear()
+    this.binaryFiles.clear()
     this.ports.clear()
     for (const p of this.processes) {
       if (p.exitCode === null) {
@@ -340,6 +346,7 @@ export class FakeSandbox implements SandboxPort {
     this.interruptions++
     this.liveRuns.clear()
     this.files.clear()
+    this.binaryFiles.clear()
     this.ports.clear()
     for (const p of this.processes) if (p.exitCode === null) p.exitCode = -1
     for (const wake of this.killWaiters.values()) wake()
@@ -465,6 +472,11 @@ export class FakeSandbox implements SandboxPort {
       this.fileWaiters.delete(path)
       for (const wake of waiters) wake()
     }
+  }
+
+  async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    await this.guard('writeFileBytes')
+    this.binaryFiles.set(path, bytes)
   }
 
   async readFile(path: string): Promise<string | null> {
@@ -637,6 +649,7 @@ export class FakeSandbox implements SandboxPort {
     this.destroyCount++
     this.liveRuns.clear()
     this.files.clear()
+    this.binaryFiles.clear()
     this.ports.clear()
     for (const p of this.processes) {
       if (p.exitCode === null) {

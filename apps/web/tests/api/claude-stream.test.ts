@@ -8,13 +8,17 @@
  * turn 2 — a `--resume` of the same session — `system:init → assistant ("alpha") → result:success`,
  * with S7's metered usage on the `result` line.
  */
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { SESSION_EVENT_DATA } from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import {
   buildClaudeCommand,
+  buildClaudeTurnInputScript,
   CLAUDE_EVENT_STRING_MAX,
+  CLAUDE_TURN_INPUT,
   claudeTurnEnv,
   createClaudeStreamParser,
   mapClaudeLine,
@@ -202,6 +206,68 @@ describe('the turn command', () => {
     expect(() =>
       buildClaudeCommand({ message: 'x', model: 'm', resumeSessionId: '$(id)' })
     ).toThrow()
+  })
+
+  it('with images: the stream-json input on stdin, no message in argv, every other flag as before', () => {
+    const cmd = buildClaudeCommand({
+      message: 'What is wrong here?',
+      model: 'claude-sonnet-5',
+      resumeSessionId: S7_SESSION,
+      systemNote: 'note',
+      attachments: [{ path: '/workspace/.launch/attachments/a.png', contentType: 'image/png' }],
+    })
+    expect(cmd).toBe(
+      `claude -p --input-format stream-json --resume ${S7_SESSION} --output-format stream-json --verbose --permission-mode bypassPermissions --model claude-sonnet-5 --disallowedTools "Bash(git push:*)" --append-system-prompt 'note' < ${CLAUDE_TURN_INPUT}`
+    )
+    expect(cmd).not.toContain('What is wrong')
+  })
+
+  it('the input script writes ONE stream-json user line: the images as base64 blocks, then the text', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-input-'))
+    // Large enough that GNU base64 wraps it (76 columns): the script must unwrap it.
+    const png = Buffer.from(Array.from({ length: 300 }, (_, i) => i % 256))
+    const gif = Buffer.from('GIF89a-tiny')
+    writeFileSync(path.join(dir, 'a.png'), png)
+    writeFileSync(path.join(dir, 'b.gif'), gif)
+    const target = path.join(dir, 'out', 'turn-input.jsonl')
+    const message = `It's "broken" — $(id) \\ \n stays text`
+    const script = buildClaudeTurnInputScript(
+      {
+        message,
+        attachments: [
+          { path: path.join(dir, 'a.png'), contentType: 'image/png' },
+          { path: path.join(dir, 'b.gif'), contentType: 'image/gif' },
+        ],
+      },
+      target
+    )
+    execFileSync('sh', ['-c', script])
+    const written = readFileSync(target, 'utf8')
+    expect(written.endsWith('\n')).toBe(true)
+    expect(written.trim().split('\n')).toHaveLength(1)
+    expect(JSON.parse(written)).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') },
+          },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/gif', data: gif.toString('base64') },
+          },
+          { type: 'text', text: message },
+        ],
+      },
+    })
+    expect(() =>
+      buildClaudeTurnInputScript({
+        message: 'x',
+        attachments: [{ path: '/tmp/a.png; rm -rf /', contentType: 'image/png' }],
+      })
+    ).toThrow(/invalid attachment/)
   })
 
   it('runs with the placeholder key and the policy model for background calls', () => {

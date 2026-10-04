@@ -102,6 +102,19 @@ describe('RemoteSandbox over the sandbox host', () => {
     ])
   })
 
+  it('writeFileBytes crosses as bytes and reaches the SDK as base64, its directory made first', async () => {
+    const { ns, sandbox } = sandboxOver()
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255])
+    await sandbox.writeFileBytes('/workspace/.launch/attachments/a.png', bytes)
+    expect(ns.calls.map(c => c.method)).toEqual(['mkdir', 'writeFile'])
+    expect(ns.calls[0]?.args).toEqual(['/workspace/.launch/attachments', { recursive: true }])
+    expect(ns.calls[1]?.args).toEqual([
+      '/workspace/.launch/attachments/a.png',
+      btoa(String.fromCharCode(...bytes)),
+      { encoding: 'base64' },
+    ])
+  })
+
   it('an interrupted container is still a SandboxInterruptedError on Launch’s side', async () => {
     const { ns, sandbox } = sandboxOver()
     ns.handlers.exec = () => {

@@ -2,7 +2,7 @@
  * Coding sessions (Launch P3, spec/07): one session (`GET /api/sessions/:id`), an app's sessions
  * (`GET /api/apps/:id/sessions`), the live sessions across the deployment for the operator
  * (`GET /api/admin/sessions`), and every act on one — start, send a message, cancel the turn, ship,
- * end, resume, extend the budget, mint a preview grant, drain.
+ * end, resume, extend the budget, mint a preview grant, upload a message's image, drain.
  *
  * **Routes START work; the Workflow does it.** Every mutation here answers 202 with the row as it
  * is now (`sessionDetailResponseSchema`) and writes it into the cache, so the page moves the moment
@@ -36,6 +36,7 @@ import {
   type SessionSummary,
   type SessionTurnRequestInput,
   type ShipLandingStage,
+  sessionAttachmentUploadResponseSchema,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
@@ -281,6 +282,20 @@ export function usePendingBudgetApproval(sessionId: string, enabled: boolean) {
  */
 export function useWithdrawQueued(id: string) {
   return useSessionAction(id, 'queued/withdraw', { toast: false })
+}
+
+/**
+ * `POST /:id/attachments` — one image for the next message (multipart). A plain function, not a
+ * hook: the composer runs several at once and owns their state (`useComposerAttachments`). No
+ * toast — a refusal (415, 413) is shown on the image's own chip.
+ */
+export function uploadSessionAttachment(id: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return api.upload(`${sessionPath(id)}/attachments`, form, {
+    schema: sessionAttachmentUploadResponseSchema,
+    showErrorToast: false,
+  })
 }
 
 /** `POST /:id/cancel` — the turn polls `cancel_requested_at` and stops within a couple of seconds. */

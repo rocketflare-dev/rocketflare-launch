@@ -122,6 +122,10 @@ export class RemoteSandbox implements SandboxPort {
     await unwrap(this.host.writeFile(this.name, path, content))
   }
 
+  async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    await unwrap(this.host.writeFileBytes(this.name, path, bytes))
+  }
+
   readFile(path: string): Promise<string | null> {
     return unwrap(this.host.readFile(this.name, path))
   }

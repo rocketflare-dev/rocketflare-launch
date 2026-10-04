@@ -30,6 +30,7 @@ import { SessionChat } from './components/SessionChat'
 import { SessionHeader } from './components/SessionHeader'
 import { ShipPanel, shipConfigNeeds } from './components/ShipPanel'
 import { bootSteps, latestPreviewChangeSeq, shipGates } from './sessionChatModel'
+import { useComposerAttachments } from './useComposerAttachments'
 
 export default function SessionPage() {
   const { slug = '', id = '' } = useParams<{ slug: string; id: string }>()
@@ -39,6 +40,8 @@ export default function SessionPage() {
   const stream = useSessionStream(session)
   const resume = useResumeSession(id)
   const [extendOpen, setExtendOpen] = useState(false)
+  // The next message's images: the composer adds them, and so does the preview's screenshot.
+  const attachments = useComposerAttachments(id)
   // P4: the creator's open `session.budget` request, so a reload still links to it. Only asked
   // for by someone who may act on a session that can still run.
   const pendingBudget = usePendingBudgetApproval(
@@ -128,6 +131,7 @@ export default function SessionPage() {
             isLoading={stream.isLoading}
             budget={budget}
             onExtend={() => setExtendOpen(true)}
+            attachments={attachments}
           />
         </section>
         <div className="flex min-h-0 flex-col gap-4">

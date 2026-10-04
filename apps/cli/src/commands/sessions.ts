@@ -220,7 +220,10 @@ export function formatSessionEvent(event: SessionEvent): string | null {
   switch (event.type) {
     case 'user.message': {
       const parsed = sessionUserMessageDataSchema.safeParse(event.data)
-      return parsed.success ? chalk.cyan(`> ${parsed.data.text}`) : null
+      if (!parsed.success) return null
+      const images = parsed.data.attachments?.length ?? 0
+      const note = images ? chalk.dim(` [${images} image${images === 1 ? '' : 's'}]`) : ''
+      return chalk.cyan(`> ${parsed.data.text}`) + note
     }
     case 'text':
       return typeof data.text === 'string' ? data.text : null

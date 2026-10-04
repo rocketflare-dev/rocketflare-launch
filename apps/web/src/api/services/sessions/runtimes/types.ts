@@ -7,7 +7,8 @@
  *
  * | member            | what it is                                                       |
  * |-------------------|------------------------------------------------------------------|
- * | `buildCommand`    | the shell command for one turn (the message, the model, the resume id, the system note) |
+ * | `buildCommand`    | the shell command for one turn (the message, the model, the resume id, the system note, the images) |
+ * | `turnInputCommand`| a command run before the turn that writes what its command reads (Claude: the images' stream-json input) |
  * | `turnEnv`         | the turn process's NON-secret environment (placeholders only)    |
  * | `createParser`    | the CLI's stdout → `session_events` rows, the resume id, the result |
  * | `resumeRefused`   | "the CLI would not resume that conversation" — the turn retries once without it |
@@ -38,6 +39,12 @@ import type { SandboxPort } from '../sandbox-port'
 
 // ---- one turn ------------------------------------------------------------------------------------
 
+/** An image the message carries, already in the container (`attachments.ts`'s `stageAttachments`). */
+export interface RuntimeAttachment {
+  path: string
+  contentType: string
+}
+
 export interface RuntimeCommandInput {
   /** The person's message (or Launch's prompt), verbatim — the runtime quotes it. */
   message: string
@@ -47,6 +54,8 @@ export interface RuntimeCommandInput {
   resumeId?: string | null
   /** The `session-system-note` prompt, filled in. */
   systemNote?: string | null
+  /** The message's images, in order (none: the command is the text-only one). */
+  attachments?: readonly RuntimeAttachment[]
 }
 
 /** A turn's final verdict, as every runtime reports it (Claude's `result` line is the shape). */
@@ -221,6 +230,11 @@ export interface AgentRuntime {
   /** Whose API the platform key is for (`ai_usage.provider`). */
   provider: AiProvider
   buildCommand(input: RuntimeCommandInput): string
+  /**
+   * Run with `exec` before the turn's process starts, when the command reads something it does
+   * not carry itself; null (or absent) when it needs nothing. Must exit 0.
+   */
+  turnInputCommand?(input: RuntimeCommandInput): string | null
   turnEnv(input: { model: string; source: SessionCredentialSource }): Record<string, string>
   createParser(turn: number, ctx?: RuntimeParserContext): RuntimeStreamParser
   resumeRefused(run: RuntimeRunSummary): boolean

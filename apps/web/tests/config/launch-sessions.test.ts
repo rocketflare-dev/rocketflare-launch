@@ -45,6 +45,7 @@ import {
   previewLabel,
   previewUrl,
   resolveSessionPolicy,
+  SESSION_ATTACHMENTS_MAX,
   SESSION_EVENT_DATA,
   SESSION_EVENT_TYPES,
   SESSION_MESSAGE_MAX,
@@ -134,14 +135,29 @@ describe('policy and money', () => {
 })
 
 describe('requests', () => {
-  it('a turn is 1..20 000 characters, trimmed', () => {
+  it('a turn is 1..20 000 characters, trimmed — or images with no words at all', () => {
     expect(sessionTurnRequestSchema.parse({ message: '  hi  ' })).toEqual({
       message: 'hi',
       mode: 'queue',
+      attachments: [],
     })
     expect(
       sessionTurnRequestSchema.parse({ message: 'hi', mode: 'interrupt', model: 'claude-opus-5-5' })
-    ).toEqual({ message: 'hi', mode: 'interrupt', model: 'claude-opus-5-5' })
+    ).toEqual({ message: 'hi', mode: 'interrupt', model: 'claude-opus-5-5', attachments: [] })
+    const image = crypto.randomUUID()
+    expect(sessionTurnRequestSchema.parse({ attachments: [image] })).toEqual({
+      message: '',
+      mode: 'queue',
+      attachments: [image],
+    })
+    expect(sessionTurnRequestSchema.safeParse({}).success).toBe(false)
+    expect(sessionTurnRequestSchema.safeParse({ attachments: ['not-a-uuid'] }).success).toBe(false)
+    expect(
+      sessionTurnRequestSchema.safeParse({
+        message: 'x',
+        attachments: Array.from({ length: SESSION_ATTACHMENTS_MAX + 1 }, () => crypto.randomUUID()),
+      }).success
+    ).toBe(false)
     expect(sessionTurnRequestSchema.safeParse({ message: 'hi', mode: 'now' }).success).toBe(false)
     expect(sessionTurnRequestSchema.safeParse({ message: '   ' }).success).toBe(false)
     expect(

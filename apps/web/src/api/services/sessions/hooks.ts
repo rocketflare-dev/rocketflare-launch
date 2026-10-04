@@ -59,7 +59,10 @@ export interface SessionStepContext {
   ports: SessionPorts
   /** This session's container (`ports.sandbox(session.id)`). */
   sandbox: SandboxPort
-  /** R2 (`createR2Storage(env.FILES)`) — where transcripts are checkpointed; null without `FILES`. */
+  /**
+   * R2 (`createR2Storage(env.FILES)`) — where transcripts are checkpointed and a message's images
+   * wait; null without `FILES`.
+   */
   storage: StorageService | null
   /** `{ tenantId, sessionId }` — what the slices' functions take to re-read the row themselves. */
   ref: { tenantId: string; sessionId: string }
@@ -146,6 +149,7 @@ export const defaultSessionStepHooks: SessionStepHooks = {
     runTurn(ctx.db, ctx.ports, ctx.session, {
       realtime: ctx.realtime,
       logger: ctx.logger,
+      storage: ctx.storage,
       ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
     }),
   checkpoint: (ctx, reason) =>

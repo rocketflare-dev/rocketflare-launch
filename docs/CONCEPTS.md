@@ -1929,6 +1929,33 @@ every call — switch together and the old model is refused from then on. Every 
 the message drops `pending_model` with it. The composer's footer picker sends `model` only when
 it differs, and the transcript says "Switched to …" where a `turn.start` names a model other than
 the turn before's.
+**Images in a message** (`services/sessions/attachments.ts`, `routes/session-attachments.ts`):
+the composer uploads each pasted, dropped or picked image at once — shrunk in the browser to a
+1568 px long edge first (`ui/lib/images.ts`; Anthropic resizes past that anyway; PNG stays PNG) —
+with `POST /:id/attachments` (multipart; PNG, JPEG, GIF or WebP, the type checked by the bytes'
+magic number as well as the declared one, at most 5 MB; the same right as `/turns`, and only
+while the session can take a message; exempt from the 1 MB JSON cap through
+`UPLOAD_PATH_PATTERNS`). There is NO table: an image is the R2 object
+`sessions/<sessionId>/attachments/<uuid>` in `FILES`, its type in `httpMetadata`, reached only
+through the session's own visibility check, and an id is only ever looked up under ITS session's
+prefix. `POST /:id/turns { attachments: [id…] }` (at most 5) checks each exists there (400
+`attachment_not_found`) and stores them as `pending_attachments` beside the text, which may then
+be empty — `pending_message = ''`, never NULL, because NULL means nothing waits; every write that
+drops the message drops them too, withdraw included, and the detail shows them as
+`queuedAttachments`. `GET /:id/attachments/:aid` streams one back (`nosniff`, `private`), for
+the transcript's thumbnails (`user.message`'s data names them, `{id, contentType}`) — readable by
+whoever may read the session, issue #5's reviewer included. The turn copies each image from R2
+into the container at `/workspace/.launch/attachments/<id>.<ext>` (`writeFileBytes`, the SDK's
+base64 `writeFile`) — outside the checkout, so never committed — once, before the resume retry,
+which reuses them; an image that cannot be loaded fails the turn with a sentence. An image-only
+message reaches the agent as "See the attached image." (the transcript keeps it empty). **Claude
+Code takes them on stdin**: the turn first `exec`s a script that assembles ONE stream-json `user`
+line in the container — an `image` block per file (`base64 < file`, so the bytes cross the RPC
+once) then the `text` block, the interrupt line applied as for any message — into
+`/workspace/.launch/turn-input.jsonl`, and the command becomes `claude -p --input-format
+stream-json [--resume <id>] … < /workspace/.launch/turn-input.jsonl`, with no message in argv
+(spike S8: it exits at EOF and prints the same stream-json). Without images the command is
+unchanged. **Codex** gets `-i <path>` per image among its global flags, before `resume`.
 **The model proxy** (`egress/anthropic.ts`): the sandbox holds only `launch-session-placeholder`.
 The handler finds the session from the platform's `ctx.containerId` (never from the request),
 allows only `POST /v1/messages` and `/count_tokens` on the policy's model, checks the budget (an
@@ -1962,7 +1989,16 @@ nothing is counted twice).
 
 **Known gaps:** that Claude Code resumes cleanly after Send now's SIGTERM mid-tool, and accepts a
 new `--model` on `--resume`, is proven with fakes only — not yet in a real sandbox
-(`spikes/s8-claude-image-input/RESULT.md`); a response the sandbox abandons mid-stream is never metered (the meter records at
+(`spikes/s8-claude-image-input/RESULT.md`); so is an image turn in a real sandbox through the model
+proxy with `--resume` (the stdin form was checked locally only), and Codex's `-i` before `resume`
+is untested against the CLI. Nothing deletes a session's R2 objects — its images, like its
+transcript (`sessions/<id>/claude.jsonl`), outlive it (which keeps an ended session's thumbnails
+working), and the tenant purge covers only `tenants/<id>/`; an image removed from the composer
+mid-upload is stored and never named. The model proxy reads each request body whole (`req.text()`
+and a `JSON.parse`, to check the model) with no size cap of its own: an image rides in every later
+request of the conversation, so five 5 MB images (≈ 33 MB of base64) would cost the handler's
+isolate roughly three copies of the body, near its 128 MB, and exceed Anthropic's 32 MB request
+limit anyway — the composer's 1568 px downscale keeps a typical image well under 1 MB; a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); the liveness probe is proven with the `FakeSandbox` only (`die()`: a stream that
 goes quiet, then an empty container) — that a probe into a dead container deployed boots an empty
 one (or times out) rather than hanging past its 20 s bound is from session d9124cbb's checkpoint,
