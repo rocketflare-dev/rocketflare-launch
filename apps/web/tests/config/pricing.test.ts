@@ -38,6 +38,24 @@ describe('priceFor', () => {
     expect(priceFor('anthropic', 'claude-sonnet-5')).toMatchObject({ input: 2, output: 10 })
   })
 
+  it('prices each Codex model apart: no prefix shadows another', () => {
+    expect(priceFor('openai', 'gpt-6.1-sol-2026-09-30')?.cacheRead).toBe(0.1)
+    expect(priceFor('openai', 'gpt-6-astra')).toEqual({
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+    })
+    expect(priceFor('openai', 'gpt-6-luna')).toEqual({
+      input: 0.1,
+      output: 0.5,
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
+    })
+    // An older Codex model the table does not carry stays unpriced, not priced as a sibling.
+    expect(priceFor('openai', 'gpt-6-sol')).toBeNull()
+  })
+
   it('knows nothing about a self-hosted or unlisted model', () => {
     expect(priceFor('openai_compatible', 'llama-on-my-laptop')).toBeNull()
     expect(priceFor('anthropic', 'claude-9-imaginary')).toBeNull()

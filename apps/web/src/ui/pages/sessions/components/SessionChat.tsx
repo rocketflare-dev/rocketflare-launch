@@ -40,7 +40,7 @@ import { formatDuration } from '@/ui/lib/format'
 import { useStickToBottom } from '@/ui/pages/agents/run/timeline/useStickToBottom'
 import { buildSessionChat, type ChatItem, type NoticeTone } from '../sessionChatModel'
 import type { BudgetAccess } from './budgetAccess'
-import { SessionComposer, type SessionComposerHandle } from './SessionComposer'
+import { agentName, SessionComposer, type SessionComposerHandle } from './SessionComposer'
 import { ToolBlock } from './ToolBlock'
 
 /** First-message ideas for an empty session — a click puts one in the box, never sends it. */
@@ -109,7 +109,7 @@ function EmptyTranscript({
         <p className="mt-1 text-sm text-secondary">
           {booting
             ? 'Your sandbox is starting. Write your first message now — it runs as soon as the app is up.'
-            : 'Describe it in plain words. Claude edits the code, and the preview on the right updates after each turn.'}
+            : `Describe it in plain words. ${agentName(session.runtime)} edits the code, and the preview on the right updates after each turn.`}
         </p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">
@@ -181,11 +181,14 @@ interface PendingMessage {
 
 function QueuedMessage({
   text,
+  agent,
   stopping,
   onWithdraw,
   withdrawing,
 }: {
   text: string
+  /** Who is running the turn ("Claude", "Codex"). */
+  agent: string
   stopping: boolean
   onWithdraw: (() => void) | null
   withdrawing: boolean
@@ -196,7 +199,7 @@ function QueuedMessage({
         <span className="whitespace-pre-wrap break-words">{text}</span>
       </div>
       <div className="chat-footer mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-        {stopping ? 'Runs as soon as Claude stops' : 'Runs when this turn ends'}
+        {stopping ? `Runs as soon as ${agent} stops` : 'Runs when this turn ends'}
         {onWithdraw && (
           <button
             type="button"
@@ -386,6 +389,7 @@ export function SessionChat({
                 <li>
                   <QueuedMessage
                     text={queued}
+                    agent={agentName(session.runtime)}
                     stopping={session.cancelRequested}
                     // Only once the row holds it: before that there is nothing to take back.
                     onWithdraw={session.queuedMessage !== null ? onWithdraw : null}

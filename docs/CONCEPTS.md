@@ -1920,7 +1920,8 @@ a Send now waits for the watcher's 2 s poll plus the 5 s kill grace (`TURN_KILL_
 before the next turn starts — acceptable for v1.
 **The model, per message**: the session's model is `policy.model`, frozen at create
 (`DEFAULT_SESSION_POLICY` is `claude-sonnet-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
-Sonnet 5, Opus 5.5, Fable 5.1, Haiku 4.5 — every one priced). `POST /:id/turns { model }` switches
+Sonnet 5, Opus 5.5, Fable 5.1, Haiku 4.5 — and Codex `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`;
+every one priced). `POST /:id/turns { model }` switches
 it from that message on: a model the runtime does not offer, or one without a price, is 400
 `model_not_offered`; a different one is stored as `pending_model` beside `pending_message`, and the
 turn's claim moves it onto `policy.model` IN the compare-and-set to `working` (`jsonb_set`, read
@@ -3138,7 +3139,9 @@ valid for a year with no refresh, so a revoked one is noticed only at the next m
 Coding agents card — and, for ChatGPT plans, sets its "Who pays" to the person's own account or
 Either. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image `session-6`); the default model is
 Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in `ai/pricing.ts`), chosen on the same
-card (`runtimes.codex.model`). Codex's three hosts are on the allow-list; `api.openai.com` and
+card (`runtimes.codex.model`); a session also offers `gpt-6-astra` and `gpt-6-luna` per message —
+the current models Codex 0.160's bundled `models.json` lists (the 5.x ones carry an `upgrade` to a
+6.x model, and are left out). Codex's three hosts are on the allow-list; `api.openai.com` and
 `auth.openai.com` have their handlers, `chatgpt.com` deliberately none (the egress paragraph
 above, and the ChatGPT plan below).
 
@@ -3220,8 +3223,8 @@ above, and the ChatGPT plan below).
 the rules are fixtures hand-written from the 0.160 source (`tests/fixtures/codex/`), and spike S-B1
 could not run Codex with its sandbox-bypass flags; the WebSocket → SSE fallback, `CODEX_API_KEY`
 honoured through the egress, `enable_request_compression = false` and the rollout restore by file
-name are read from the source, not observed. `gpt-6.1-sol`'s price comes from third-party listings
-of OpenAI's rate card (OpenAI's own page refused automated reads), and long-context pricing (over
+name are read from the source, not observed. The Codex models' prices are OpenAI's
+Standard-tier rates (developers.openai.com/api/docs/pricing, 2026-10-04), and long-context pricing (over
 272k input tokens) is not modelled. A turn that fails after Codex counted tokens folds them into
 the NEXT turn's usage line (the egress's `ai_usage` rows are exact either way). The `auth.json`,
 refresh token included, is in the container for the length of a turn. Codex's hosted web search is

@@ -23,6 +23,7 @@ import {
   openSecret,
   resealIfVersion,
 } from '@/api/services/sessions/credentials/store'
+import { handleOpenAi } from '@/api/services/sessions/egress/openai'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
 import { parseCodexAuthJson } from '@/api/services/sessions/runtimes/codex/auth-json'
@@ -37,7 +38,7 @@ import { loadConfig } from '@/config'
 import { agentCredentials, aiUsage, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud } from '../helpers/fake-cloud'
-import { codexAuthJsonText, codexExecJson } from '../helpers/fake-openai'
+import { codexAuthJsonText, codexExecJson, createFakeOpenAi } from '../helpers/fake-openai'
 import type { FakeSandbox } from '../helpers/fake-sandbox'
 import {
   createFakeSessionPorts,
@@ -145,6 +146,73 @@ describe('a Codex turn on Launch’s account', () => {
       usage: { tokensIn: 1500 - 1000, cacheRead: 1000, tokensOut: 30 },
     })
     expect((await reload(row)).runtimeState).toMatchObject({ usage: { inputTokens: 2500 } })
+  })
+
+  it('a message that switches the model: -m, config.toml and turn.start name it (on resume too), and the proxy refuses the old one', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const sandboxId = `fake-sandbox-${crypto.randomUUID()}`
+    const row = await insertSession(db, f, {
+      status: 'ready',
+      runtime: 'codex',
+      sandboxId,
+      policy: CODEX_POLICY,
+      pendingMessage: 'Change the heading',
+      pendingModel: 'gpt-6-astra',
+    })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/codex exec/, codexExecJson({ threadId: THREAD }))
+    )
+    expect((await runTurn(db, ports, row, FAST)).status).toBe('completed')
+    const sandbox = ports.sandbox(row.id) as FakeSandbox
+    const after = await reload(row)
+    expect(after.pendingModel).toBeNull()
+    expect(after.policy.model).toBe('gpt-6-astra')
+    expect(sandbox.processes[0]?.command).toContain('-m gpt-6-astra')
+    expect(sandbox.files.get(CODEX_CONFIG_PATH)).toContain('model = "gpt-6-astra"')
+
+    // The api.openai.com proxy re-reads the policy on every call: the new model passes, the old
+    // one is refused before any upstream call.
+    const openai = createFakeOpenAi({ model: 'gpt-6-astra' })
+    const env = createTestEnv({
+      OPENAI_API_KEY: ['sk', 'proj', 'switch-test-0000000000'].join('-'),
+    })
+    const call = (model: string) =>
+      handleOpenAi(
+        new Request('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${MODEL_KEY_PLACEHOLDER}`,
+          },
+          body: JSON.stringify({ model, stream: true }),
+        }),
+        env,
+        { containerId: sandboxId },
+        openai
+      )
+    const old = await call('gpt-6.1-sol')
+    expect(old.status).toBe(403)
+    await old.text()
+    expect(openai.requests).toHaveLength(0)
+    const current = await call('gpt-6-astra')
+    expect(current.status).toBe(200)
+    await current.text()
+    expect(openai.requests).toHaveLength(1)
+
+    // The next turn, asking for nothing, resumes the thread on the switched model: `-m` before
+    // `resume`, every turn.
+    await send(row, 'And the footer')
+    expect((await runTurn(db, ports, await reload(row), FAST)).status).toBe('completed')
+    expect(sandbox.processes[1]?.command).toContain(
+      `-m gpt-6-astra resume ${THREAD} 'And the footer'`
+    )
+    const starts = (await listSessionEvents(db, row.tenantId, row.id)).filter(
+      e => e.type === 'turn.start'
+    )
+    expect(starts.map(e => e.data)).toEqual([
+      { turn: 1, model: 'gpt-6-astra' },
+      { turn: 2, model: 'gpt-6-astra' },
+    ])
   })
 
   it('proxied: the turn records no usage of its own — the api.openai.com proxy meters each call', async () => {
@@ -297,6 +365,33 @@ describe('a Codex turn on a person’s ChatGPT plan', () => {
     expect(both).toHaveLength(2)
     expect(both.map(u => u.inputTokens).sort((a, b) => Number(a) - Number(b))).toEqual([500, 600])
     expect(both.every(u => u.billing === 'subscription' && u.costMicrocents === null)).toBe(true)
+  })
+
+  it('a switched model: the self-metered row names the turn’s model, and the resume passes -m', async () => {
+    const { row, ports } = await planSession()
+    const sandbox = ports.sandbox(row.id) as FakeSandbox
+    sandbox
+      .onProcess(
+        / resume /,
+        codexExecJson({ threadId: THREAD, usage: { input: 2500, cached: 1400, output: 80 } })
+      )
+      .onProcess(
+        /codex exec/,
+        codexExecJson({ threadId: THREAD, usage: { input: 1000, cached: 400, output: 50 } })
+      )
+    expect((await runTurn(db, ports, await reload(row), FAST)).status).toBe('completed')
+    await db
+      .update(sessions)
+      .set({ status: 'ready', pendingMessage: 'again', pendingModel: 'gpt-6-luna' })
+      .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+    expect((await runTurn(db, ports, await reload(row), FAST)).status).toBe('completed')
+
+    expect(sandbox.processes[1]?.command).toContain(`-m gpt-6-luna resume ${THREAD} 'again'`)
+    const rows = await usageRows(row)
+    expect(rows.map(u => [u.model, Number(u.inputTokens)]).sort()).toEqual([
+      ['gpt-6-luna', 500],
+      ['gpt-6.1-sol', 600],
+    ])
   })
 
   it('auth.json is in $CODEX_HOME for the turn and removed after it; no key in the env; unchanged → no reseal; claim released', async () => {

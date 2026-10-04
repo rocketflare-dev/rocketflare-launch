@@ -50,10 +50,14 @@ export const MODEL_PRICES: Partial<Record<AiProvider, Record<string, ModelPrice>
     'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   },
   openai: {
-    // Codex sessions (§18.22-B): the model Codex 0.160 ships as its default (`models.json`
-    // priority 1). Standard tier, prompts up to 272k input tokens; longer prompts bill at 2× input
-    // and 1.5× output, which this table does not model. Other Codex models are left unpriced.
+    // Codex sessions (§18.22-B): the current models Codex 0.160's bundled `models.json` lists
+    // (`visibility: list`, no `upgrade`) and learn.chatgpt.com/docs/models names as current — 6.1
+    // Sol (its default, priority 1), Astra and Luna. From developers.openai.com/api/docs/pricing,
+    // 2026-10-04: Standard tier, prompts up to 272k input tokens; longer prompts bill at 2× input
+    // and 1.5× output, which this table does not model. Distinct prefixes, so none shadows another.
     'gpt-6.1-sol': { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+    'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    'gpt-6-luna': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
     'gpt-4.1-mini': { input: 0.4, output: 1.6, cacheRead: 0.1 },
     'gpt-4.1-nano': { input: 0.1, output: 0.4, cacheRead: 0.025 },
     'gpt-4.1': { input: 2, output: 8, cacheRead: 0.5 },
