@@ -460,8 +460,20 @@ Account-scoped names carry `-staging`. Neon uses one project with a branch and r
 environment; under `postgres` Hyperdrive points at the direct host, under `neon` the Worker's
 `DATABASE_URL` secret holds the pooled one (D35). Tagging `X.Y.Z` (which must equal the root
 version) deploys staging; publishing the Release deploys production. `ci.yml` (→ `gate.yml`) is the
-single gate, which `deploy.yml` calls. `pnpm provision <phase>` / `/launch-provision` automates
-accounts → resources → secrets → deploy over REST. Reference: `docs/DEPLOY.md`, `SETUP.md` Part 3.
+single gate, which `deploy.yml` calls.
+
+**Deploying an instance.** Your own Launch is deployed from ONE git-ignored root file,
+`launch.deploy.env` (answers, account tokens, the GitHub App id, the generated
+`OAUTH_ENCRYPTION_KEY`), by `pnpm provision all` or the user-invoked `/launch-deploy` skill, which
+runs the same phases one at a time and pauses before each paid one: `check` (read-only, names only)
+→ `github-app` (a manifest flow: the user clicks Create, then Install) → `email create` → `neon` →
+`cloudflare` → `migrate` → `route` (the proxied wildcard) → `render` → `deploy` (drain guard on a
+session-image change) → `secrets` → `setup` (the Setup page's settings and credentials, sealed with
+the instance key and audited) → `email verify`. The committed tomls stay templates: the ids live in
+`.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
+`wrangler.toml`. Idempotent, so rerunning `all` is how an instance is updated; a second instance
+(staging) is a second file via `LAUNCH_DEPLOY_FILE`. Runbook: `docs/DEPLOYMENT.md`. Reference:
+`docs/DEPLOY.md`; the committed-toml procedure: `SETUP.md` Part 3.
 
 **External deployer (opt-in).** A Cloudflare token that can deploy a Worker can bind any resource in
 the account into it, so a CI job holding one can reach other apps' data. With the repository
@@ -471,8 +483,14 @@ bindings, stores an undeployed version, issues short-lived migration credentials
 (`scripts/deployer.mjs`; the v1 contract is `docs/DEPLOYER.md`). Unset, the default path is unchanged.
 
 **Known gaps:** no release helper; no per-PR previews; no CLI publishing;
-provisioning HTTP calls have not been run end-to-end against live accounts; no automated
-Workers-plan check. The kit ships no deployer, only the client and the contract; the job waits for
+the instance phases have not yet been run end-to-end against live accounts; **CI deploy of an
+instance is not wired** (`deploy.yml` deploys the committed templates; `pnpm provision github`
+only creates the GitHub Environment); **Workers Paid is not checked** before `deploy`, nor are the
+token's Containers and Workers AI scopes (no read-only probe), so the first deploy is where they
+fail; **staging is a second instance file** (`LAUNCH_DEPLOY_FILE`, its own `LAUNCH_NAME` and
+domain), not a branch of the first instance's database; `apps/web/wrangler.deploy.toml` is one
+file shared by every instance's runs; no phase writes a plugin's blocks into the committed tomls;
+nothing is deprovisioned (teardown is by hand); an instance is always on the `neon` driver. The kit ships no deployer, only the client and the contract; the job waits for
 approval on a runner (fine for minutes, wasteful for hours — there is no re-dispatch).
 
 ## 11. CLI
@@ -622,9 +640,10 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 - **Lifecycle** (`scripts/plugin.mjs`): `add` (plan, then `--apply`), `upgrade`, `remove`
   (`--archive`), `list`, `check`, `export`. Every plan step is **declarative, agent (with its
   assertion) or human** — a printed instruction is not a mechanism. The host generates the
-  migration (`db:generate --name plugin-<id>-<version>`). `pnpm provision cloudflare <env>` writes
-  a plugin's bindings (`kv|queue|r2|workflow|durable_object`), crons, prefixes and vars into BOTH
-  tomls. DO migration tags `plugin-<id>-vN` are append-only.
+  migration (`db:generate --name plugin-<id>-<version>`). For a deployed instance `pnpm provision
+  cloudflare` creates a plugin's `kv|queue|r2` resources and `pnpm provision render` writes its
+  bindings (`kv|queue|r2|workflow|durable_object`), crons, prefixes and vars into the rendered
+  `wrangler.deploy.toml`; no phase edits the committed tomls. DO migration tags `plugin-<id>-vN` are append-only.
 - **`plugin check` is an exhaustive oracle**: manifest fields, `minKit`, ledger diff, barrel lines,
   `*.rej`, migration tag, host dependencies, worker exports, a tenant-isolation test for tenant
   tables, `onTenantDeleted` for DOs, table collisions, declared skills. Each finding names file, line and exact edit.

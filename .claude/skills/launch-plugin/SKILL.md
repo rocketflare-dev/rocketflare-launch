@@ -87,23 +87,23 @@ ask. Each appears only when the plugin declares the thing it is about.
 
 Nothing about the barrel lines, the bindings, the crons, the route prefixes, the `[vars]` keys or a
 Durable Object's `[[migrations]]` tag is here any more: those are **declarative**, written by
-`plugin add` and `pnpm provision cloudflare <env>`, and a step that has become declarative is
+`plugin add`, and rendered into a deployed instance's config by `pnpm provision render`, and a step that has become declarative is
 removed rather than reworded.
 
 | What | Kind | How | Expect | What you change |
 |---|---|---|---|---|
 | **The migration** (`schema.tables` declared) | agent | `pnpm db:generate --name plugin-<id>-<version>`, **read the SQL**, then `pnpm db:migrate` | `CREATE TABLE` for each declared table, at YOUR migration index, in YOUR journal | Nothing by hand. Never copy a migration from the plugin repo — a foreign snapshot teaches drizzle a current state that never heard of your tables, and your next `db:generate` drops them |
 | **An install fragment** (`migrations/` in the repo) | agent | `pnpm db:generate --custom --name plugin-<id>-install`, then paste the named file into it | an empty custom migration to fill | The data half only (backfills, extensions, triggers) — DDL still comes from the schema |
-| **Bindings, crons, route prefixes, non-secret `[vars]`** | agent | `pnpm provision cloudflare <env>` per environment | `plugins: <id> → <BINDING>=<app>-<id>-<name>[-staging]`, then `<toml>: plugin declarations written` for BOTH tomls | Nothing by hand. You never type a resource id into a toml and never edit one while a phase runs (`/launch-provision`) |
+| **Bindings, crons, route prefixes, non-secret `[vars]`** | agent | on a deployed instance: `pnpm provision cloudflare && pnpm provision render` (then deploy, or `pnpm provision all`) | the plugin's resources in `.launch/state.json`, its declarations in `apps/web/wrangler.deploy.toml`; `render` reports no placeholders | Nothing by hand. You never type a resource id into a toml (`/launch-deploy`, `docs/DEPLOYMENT.md`) |
 | **A `vars` entry marked `secret`** — the KEY | agent | add `KEY=` to `apps/web/.dev.vars.example` | the key in that file and in NEITHER toml | One line. A secret is never a `[vars]` key — not even in staging |
-| **A `vars` entry marked `secret`** — the VALUE | **human** | `pnpm provision secrets <env>` | the key listed by `wrangler secret list` for that environment | Nothing you can derive: ask for the credential |
+| **A `vars` entry marked `secret`** — the VALUE | **human** | the value in `launch.deploy.env`, then `pnpm provision secrets` | the key listed by `wrangler secret list -c wrangler.deploy.toml` | Nothing you can derive: ask for the credential |
 | **The gate** | agent | `pnpm lint && pnpm typecheck && pnpm test && pnpm build` | exit 0 | Nothing. A failure here is the install, not the kit — read it before committing |
 
 **`workerExports` is no longer a row here.** A Durable Object or Workflow class reaches
 `apps/web/src/worker.ts` through the sixth barrel, `apps/web/src/plugins/worker-exports.ts`, which
-`plugin add` writes — and `pnpm provision cloudflare <env>` writes the matching
+`plugin add` writes — and `pnpm provision render` writes the matching
 `[[workflows]]` / `[[durable_objects.bindings]]` blocks and the `plugin-<id>-v1` `[[migrations]]`
-tag into both tomls. Removing such a plugin DOES have a human step: a `deleted_classes` migration
+tag into the instance's rendered `wrangler.deploy.toml`. Removing such a plugin DOES have a human step: a `deleted_classes` migration
 deletes the namespace and everything stored in it.
 
 Then commit: one commit, message `Install plugin <id>@<version>`, so the next upgrade reads against it.
@@ -210,8 +210,8 @@ first; `pnpm plugin check` fails a missing requirement.
 ## 7. Hand back
 
 End the turn with `AskUserQuestion`, not a paragraph. After an install: **run it** (`pnpm dev` and
-open the plugin's page), **provision its resources** (`/launch-provision`, if it declared bindings —
-they type that one themselves), **install another**, or **stop**.
+open the plugin's page), **provision its resources** (`/launch-deploy` on a deployed instance, if it
+declared bindings — they type that one themselves), **install another**, or **stop**.
 
 ## Rules
 
@@ -221,8 +221,8 @@ they type that one themselves), **install another**, or **stop**.
   generates its own once the schema barrel line exists.
 - **Never edit `launch.plugins.json`, `launch.plugins.local.json` or any of the six barrels by hand.**
   The script writes them, and `pnpm plugin check` is what proves the two halves agree.
-- **Never write a resource id into a wrangler toml.** A declared binding is `pnpm provision
-  cloudflare <env>`'s job, per environment, into both files.
+- **Never write a resource id into a wrangler toml.** A declared binding is created by `pnpm
+  provision cloudflare` (ids into `.launch/state.json`) and rendered by `pnpm provision render`.
 - **Never `kit.` for a plugin's AG-UI CUSTOM events** — that namespace is the kit's, and a
   third-party client is entitled to ignore it. Use `<id>.`.
 - **Expand and contract; never rename.** Add a column or a table, migrate, then remove the old one

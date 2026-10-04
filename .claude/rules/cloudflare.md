@@ -15,7 +15,9 @@ paths:
 One Worker, one deploy target. The Hono app, the `NotificationsHub` Durable Object, the
 `AgentRunWorkflow` and the queue/cron handlers all ship in `apps/web/src/worker.ts`. Reference: docs/DEPLOY.md. Everything here lives in `apps/web/`; wrangler is a devDependency of
 that package, so run it as `pnpm --filter @launch/web exec wrangler …` (never `pnpm exec wrangler` at the
-workspace root) or through the root scripts (`pnpm deploy[:staging]`, `pnpm provision`, `pnpm types`).
+workspace root) or through the root scripts (`pnpm deploy[:staging]` for the committed tomls, `pnpm provision` for a
+deployed instance — every wrangler call it makes uses `-c wrangler.deploy.toml`, `docs/DEPLOYMENT.md` —
+and `pnpm types`).
 
 ## Bindings
 
@@ -98,7 +100,7 @@ sends preview hosts to `api/preview/gateway.ts` before the Hono app, and the app
 (`api/utils/routes/api-prefixes.ts` — add a top-level server prefix there). No test of the Hono app
 can see the asset router, so `wrangler-parity.test.ts` asserts `true` in both tomls and that every
 prefix is still `isApiPath`; `REQUIRE_PROVISIONED=1` additionally forbids `<PLACEHOLDER>` values
-(CI sets it before deploy). `pnpm provision cloudflare` leaves `true` alone when a plugin declares
+(CI sets it before deploy). `pnpm provision render` leaves `true` alone when a plugin declares
 `apiPrefixes`.
 
 **Containers (Launch P3).** `[[containers]]` (class `SessionSandbox`, `image =
@@ -193,7 +195,8 @@ turn was investigated and rejected (`docs/CONCEPTS.md` §9 Known gaps): steps do
   them by hand (below). **A plugin declares the EXPRESSION in its `plugin.json` and the TASK through
   `ServerPlugin.scheduledTasks`; the two tomls are the host's.** A task keyed on an expression no
   toml carries simply never runs, and nothing anywhere says so — which is why installing a plugin
-  with `crons[]` prints a numbered step, and `pnpm provision cloudflare <env>` writes it
+  with `crons[]` prints a numbered step, and `pnpm provision render` writes it into a deployed
+  instance's `wrangler.deploy.toml`
 - `AgentRunWorkflow` (`apps/web/src/api/workflows/agent-run.ts`): `run(event, step)` → `step.do('claim')` →
   `step.do('execute#N', { retries, timeout })` → `step.do('finish')`, with a round loop in between
   (below); each step wraps its body in
@@ -267,11 +270,13 @@ is the thing to look at, not the absolute.**
 
 ## Plugins and the tomls (D31)
 
-**A plugin never edits a wrangler toml; `pnpm provision cloudflare <env>` does it for you, from the
-plugin's own `plugin.json`.** Four declarations, and the phase writes the first four rows into BOTH
-tomls before it creates anything — the ordinary parity test compares binding names, `[vars]` keys,
-crons and `run_worker_first` across the two files on every `pnpm test`, so patching only one would
-leave the gate red until somebody remembered the other.
+**A plugin never edits a wrangler toml; provisioning does it for you, from the plugin's own
+`plugin.json`.** For a deployed instance (`docs/DEPLOYMENT.md`) `pnpm provision cloudflare` creates
+the `kv`/`queue`/`r2` resources (ids into `.launch/state.json`) and `pnpm provision render` (and
+`deploy`) writes every declaration below into the RENDERED `apps/web/wrangler.deploy.toml`, with
+account-scoped names prefixed from `LAUNCH_NAME`. The committed tomls stay templates and are not
+patched by any phase — where the table says "BOTH tomls", the instance's rendered file is what gets
+the block today.
 
 | Declared | What provisioning does | Still an agent step |
 |---|---|---|
@@ -280,7 +285,7 @@ leave the gate red until somebody remembered the other.
 | `bindings[]` — `{ type: "durable_object", binding, className, storage }` | inserts `[[durable_objects.bindings]]` in BOTH tomls (`name = "<BINDING>"`, `class_name`) **plus one `[[migrations]]` entry tagged `plugin-<id>-v1`**, `new_sqlite_classes` or `new_classes` per `storage` | `pnpm types`; on REMOVAL, the `deleted_classes` migration is a **human** step — it destroys the namespace and everything in it |
 | `crons[]` | appends to `[triggers] crons` in BOTH tomls, idempotently | the task itself arrives through `ServerPlugin.scheduledTasks`, keyed on the same expression |
 | `apiPrefixes[]` | appends `p` and `p/*` to `[assets] run_worker_first` in BOTH tomls | the Vite dev proxy. The prefix is also unioned into `API_PREFIXES` from the server barrel, and `wrangler-parity.test.ts` asserts both tomls MIRROR that list — so a drift between the MANIFEST and the barrel fails the gate rather than silently serving the app shell for an `<object>` embed or an `<a download>` |
-| `vars[]` — `{ key, example?, secret? }` | a non-secret key is appended to `[vars]` in BOTH tomls with its `example` as the value (an existing key is never rewritten — its value is the operator's); a `"secret": true` one is offered by `pnpm provision secrets <env>` from an exported variable or `.provision.env` | the `.dev.vars.example` line for a secret, and the local value. The key itself is validated by `SharedPlugin.config`, merged into the Worker's config schema |
+| `vars[]` — `{ key, example?, secret? }` | a non-secret key is appended to `[vars]` in BOTH tomls with its `example` as the value (an existing key is never rewritten — its value is the operator's); a `"secret": true` one is offered by `pnpm provision secrets` from an exported variable or `launch.deploy.env` | the `.dev.vars.example` line for a secret, and the local value. The key itself is validated by `SharedPlugin.config`, merged into the Worker's config schema |
 
 The account-scoping rule is unchanged and applies to a plugin's resources exactly as to the kit's: a
 queue, R2 bucket, Workflow name or Analytics Engine dataset is unique per Cloudflare ACCOUNT, so
@@ -382,13 +387,15 @@ commented TOML the kit ships and re-serialising through a TOML library drops eve
 `scripts/provision/patch-toml.ts` (anchored regexes, every other byte preserved, idempotent, a
 different existing id refused unless `--force`) is the one writer of ids, `APP_URL`, `EMAIL_FROM`,
 the `routes` line and the database driver (`DATABASE_DRIVER` plus the `[[hyperdrive]]` block, added
-under `postgres` and removed under `neon`, in BOTH tomls — `pnpm provision cloudflare <env> --driver
-neon|postgres`, D35) — `cf-provision.sh --apply` calls it; nobody hand-types an id. (The only other
+under `postgres` and removed under `neon`, in the committed toml it is given — `DATABASE_DRIVER=… cf-provision.sh <env> --apply`, D35) —
+and `render-toml.ts` builds a deployed instance's `wrangler.deploy.toml` on top of it; nobody
+hand-types an id. (The only other
 programmatic toml writer is `toggleAiBlock` above, same byte-preserving rule.) Worker secrets go in
 over stdin (`wrangler secret put NAME` reads stdin when it is not a TTY — never `--body`, never
-`secret bulk`), including a `neon` Worker's `DATABASE_URL` (the pooled Neon URI, put by `secrets`
-and `deploy`; `--rotate` re-puts it where `postgres` updates the Hyperdrive config); the vendor tokens are read from the environment first, then `apps/web/.provision.env`
-(git-ignored, 0600, written by `pnpm provision tokens` — TTY only, hidden input, verified per vendor —
-never `.dev.vars`, which `wrangler dev` loads into the Worker); every printed line passes the
+`secret bulk`), including a `neon` Worker's `DATABASE_URL` (the pooled Neon URI, put by `deploy` and
+`secrets`; `neon --rotate` re-puts it with a new password); the instance's answers and vendor tokens
+are read from the environment first, then the root `launch.deploy.env` (git-ignored, 0600; filled
+by hand or by `pnpm provision tokens` — TTY only, hidden input, verified per vendor — never
+`.dev.vars`, which `wrangler dev` loads into the Worker); every printed line passes the
 ONE `redact()` in `scripts/provision/redact.ts` (connection strings, `re_*`, `napi_*`, bearer tokens,
 40+ hex — the 32-hex resource ids stay readable on purpose).

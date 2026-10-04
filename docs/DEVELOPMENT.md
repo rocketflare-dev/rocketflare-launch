@@ -25,8 +25,9 @@ releases, and a kit change Launch wants is ported by hand. Plugins still install
 
 **Ask your coding agent.** Open the repository in Claude Code and type **`/launch-setup`** — it
 checks the toolchain, starts Postgres, migrates, seeds and leaves you signed in, showing one
-verification line per step. **`/launch-provision`** deploys it (you type that one yourself: it
-creates paid resources and prompts for vendor tokens). **`/launch-plugin`** installs a capability as
+verification line per step. **`/launch-deploy`** deploys your own instance from one git-ignored
+file, `launch.deploy.env` (you type that one yourself: it creates paid resources;
+[`docs/DEPLOYMENT.md`](DEPLOYMENT.md) is the runbook). **`/launch-plugin`** installs a capability as
 a plugin — a git repository copied into the app, with the plan shown before anything is written.
 
 **By hand**, if you would rather see each step (macOS or Linux; Windows through WSL2):
@@ -136,10 +137,10 @@ launch/          workspace root: package.json (scripts delegate via pnpm -r / --
 Everything runs from the root: `pnpm bootstrap` (= `bash scripts/bootstrap.sh` once Node and pnpm
 exist; `--offline` / `--online` toggle the `[ai]` block), `pnpm preflight` (the read-only check),
 `pnpm dev`, `pnpm seed` / `pnpm seed --demo`, `pnpm test`, `pnpm cli …`, `pnpm web <script>` (any
-`apps/web` script), `pnpm db:*`, `pnpm deploy[:staging]`, `pnpm provision tokens` (hidden prompts → `apps/web/.provision.env`)
-then `pnpm provision all` (the deploy orchestrator: Neon, Cloudflare, GitHub, secrets, Resend —
-`pnpm provision --help` lists the phases;
-`pnpm web provision:cloudflare <env> --apply` is its Cloudflare-resources half). `wrangler` is a
+`apps/web` script), `pnpm db:*`, `pnpm deploy[:staging]`, `pnpm provision check` then `pnpm provision all`
+(deploy an instance from `launch.deploy.env`: GitHub App, Neon, Cloudflare, DNS, deploy, secrets,
+Setup, Resend — `docs/DEPLOYMENT.md`; `pnpm provision --help` lists the phases;
+`pnpm web provision:cloudflare <env> --apply` creates resources for the committed tomls instead). `wrangler` is a
 devDependency of `apps/web`, so it is `pnpm --filter @launch/web exec wrangler …`, never `pnpm exec
 wrangler` at the root. Root `scripts/` holds the first-run tooling (`bootstrap.sh` /
 `bootstrap.mjs`), the plugin tooling (`plugin.mjs`, `plugin-api-doc.mjs`), `deployer.mjs` and their
@@ -160,11 +161,12 @@ there list every known gap.
 | [`SETUP.md`](../SETUP.md) | getting a clone running, the CLI's first login, configuring OAuth/email/AI providers (or a local OpenAI-compatible mock)/tracing, deploying to Cloudflare |
 | [`docs/CONCEPTS.md`](CONCEPTS.md) | before assuming a capability exists or building a new one — one section per subsystem with its invariant and known gaps |
 | [`docs/ADAPTING.md`](ADAPTING.md) | adding a feature: where each layer goes, optional add-ons, the single-tenant recipe |
+| [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) | the runbook: deploy, update, back up, roll back and tear down your own instance from `launch.deploy.env` (`/launch-deploy`) |
 | [`docs/DEPLOY.md`](DEPLOY.md) | Cloudflare topology, the two tomls, resources, release dance, rollback, bundle size |
 | [`docs/DEPLOYER.md`](DEPLOYER.md) | you are building a service that deploys kit apps from CI (the versioned v1 protocol behind `DEPLOYER_URL`) |
 | [`docs/RLS.md`](RLS.md) | tenant isolation posture and how to turn row-level security on |
 | `.claude/rules/*.md` | layer conventions (api, database, ui, cli, testing, code-quality, cloudflare) — auto-loaded by path |
-| `.claude/skills/` | the slash commands a coding agent drives: `/launch-setup` (first run), `/launch-preflight` (read-only diagnosis), `/launch-how-do-i` (coaching for a new feature — asks, plans, writes `docs/features/<slug>.md`, never the code), `/launch-plugin` (install, upgrade, remove or audit a plugin), `/launch-traces` (debug a run or chat turn from its span tree; pick or switch a tracing backend), `/launch-evals` (write, run and interpret evals; compare models or prompts; turn thumbs-down into cases) — an agent may run those when you ask in plain words — and `/launch-provision` (deploy to Cloudflare + Neon + Resend), which only you can start: it creates paid resources and prompts for tokens |
+| `.claude/skills/` | the slash commands a coding agent drives: `/launch-setup` (first run), `/launch-preflight` (read-only diagnosis), `/launch-how-do-i` (coaching for a new feature — asks, plans, writes `docs/features/<slug>.md`, never the code), `/launch-plugin` (install, upgrade, remove or audit a plugin), `/launch-traces` (debug a run or chat turn from its span tree; pick or switch a tracing backend), `/launch-evals` (write, run and interpret evals; compare models or prompts; turn thumbs-down into cases) — an agent may run those when you ask in plain words — and `/launch-deploy` (deploy or update your own instance from `launch.deploy.env` — `docs/DEPLOYMENT.md`), which only you can start: it creates paid resources |
 
 ## Provenance
 

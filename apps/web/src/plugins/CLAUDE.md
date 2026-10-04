@@ -57,15 +57,16 @@ in the host. Each half is checked where it is written; only the merge is cast.
   a file that re-exports its classes and nothing else — and lists their names in `workerExports`.
   `plugin add` writes the barrel line; `plugin check` asserts the file exports every declared name.
   The `[[durable_objects.bindings]]`, `[[workflows]]` and `[[migrations]]` blocks stay the HOST's
-  and are written by `pnpm provision cloudflare <env>` from the same manifest.
+  and are rendered into a deployed instance's `wrangler.deploy.toml` by `pnpm provision render`
+  from the same manifest.
 - **It ships no migration.** The HOST generates it once the schema barrel line exists:
   `pnpm db:generate --name plugin-<id>-<version>`, read the SQL, `pnpm db:migrate`. A plugin's own
   `migrations/` holds plain-SQL DATA fragments (backfills), never DDL — a kit or plugin migration
   copied in replaces drizzle's notion of current state with one that has never heard of the app's
   own tables.
 - **It edits no toml and no `package.json`.** A binding, cron or `[vars]` key it declares in
-  `plugin.json` is written into BOTH tomls by `pnpm provision cloudflare <env>`
-  (`.claude/rules/cloudflare.md`) — including a `workflow` or `durable_object` block and, for a
+  `plugin.json` is rendered into a deployed instance's `wrangler.deploy.toml` by
+  `pnpm provision render` (`.claude/rules/cloudflare.md`) — including a `workflow` or `durable_object` block and, for a
   Durable Object, its `plugin-<id>-v1` `[[migrations]]` tag. The host owns every byte of its own
   files; the plugin only declares.
 - **It declares compatibility as a FLOOR and a MEASUREMENT, never a prediction.** `minKit` is one

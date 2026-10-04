@@ -69,10 +69,11 @@ It is set in two layers:
   toml, so `db:migrate:ci` is postgres.js unless CI sets the var. Script and fixture handles
   (`getScriptDatabase`) use the Pool for everything under `neon` (`poolOnly`).
 - **Tomls and provisioning** — `DATABASE_DRIVER = "neon"`, no `[[hyperdrive]]` block. The parity
-  test wants the block in both files or neither, and none in a `neon` file. `pnpm provision
-  cloudflare <env> --driver neon|postgres` rewrites both tomls; `secrets`/`deploy` put the pooled
-  URI under `neon`; `--rotate` re-puts it (`syncWorkerDatabaseUrl`) where `postgres` updates
-  Hyperdrive.
+  test wants the block in both files or neither, and none in a `neon` file. A deployed
+  instance is always `neon` (`pnpm provision render` sets it; `docs/DEPLOYMENT.md`): `deploy` puts
+  the pooled URI as `DATABASE_URL` on first deploy and `neon --rotate` re-puts it with a new
+  password. Hyperdrive (`postgres`) is the committed-toml path only (`cf-provision.sh`,
+  `docs/DEPLOY.md` § Database driver).
 - **Local** — `pnpm dev:db:up --neon|--postgres` (per-checkout proxy port from :4444, writes
   `DATABASE_DRIVER` + `NEON_LOCAL_PROXY`); the bootstrap writes `DATABASE_DRIVER=postgres` when
   absent, `neon` for a `*.neon.tech` `--db-url`, and takes `--driver`.

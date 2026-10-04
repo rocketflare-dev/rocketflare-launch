@@ -74,7 +74,8 @@ jobs:
       # the regenerated file.
       - run: pnpm typecheck
       # A plugin declares its bindings rather than editing a toml (§16, decision 12), so installing
-      # one must not move this file either — `pnpm provision cloudflare <env>` is what writes them.
+      # one must not move this file either — `pnpm provision render` writes them into a deployed
+      # instance's wrangler.deploy.toml.
       - name: apps/web/worker-configuration.d.ts is up to date
         run: git diff --exit-code -- apps/web/worker-configuration.d.ts
 

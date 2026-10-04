@@ -2,8 +2,8 @@
  * `pnpm provision tokens` — the one interactive way in for the four vendor tokens. Needs a real
  * terminal (`process.stdin.isTTY`): a coding agent's shell has none, which is the point — a token
  * is typed by the person, hidden (`readline` over a muted output, like `read -s`), verified against
- * the vendor at once, and written to `apps/web/.provision.env` (mode 0600). Nothing typed here is
- * ever printed; `Verify:` names the tokens, never their values.
+ * the vendor at once, and written to the instance file, `launch.deploy.env` (mode 0600). Nothing
+ * typed here is ever printed; `Verify:` names the tokens, never their values.
  *
  * Checks: Cloudflare — `wrangler whoami` with the candidate token in the child environment (a bad
  * token exits 1: `/user/tokens/verify` fails), then the account id must appear in that output or

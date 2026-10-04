@@ -114,8 +114,8 @@ Field notes, in the order they bite:
     why it is required rather than defaulted — and it declares no `name` at all, because it has no
     account-scoped resource.
 - **`vars[]`** is `{ key, example?, secret? }`. `secret: true` is a Worker secret
-  (`.dev.vars.example` + `pnpm provision secrets <env>`); anything else is a `[vars]` key written
-  into BOTH tomls, because the parity test compares the keys.
+  (`.dev.vars.example` + `launch.deploy.env` → `pnpm provision secrets`); anything else is a
+  `[vars]` key, rendered into the instance's `wrangler.deploy.toml` by `pnpm provision render`.
 - **`workerExports`** are the Durable Object / Workflow class names the plugin's
   `apps/web/src/plugins/<id>/worker-exports.ts` re-exports. **Nobody adds a line by hand**: that
   file is the sixth barrel's half, `plugin add` writes the barrel line, and `plugin check` fails if

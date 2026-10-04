@@ -3,6 +3,11 @@
 # resources are detected by name and reused rather than duplicated. Prints the ids to paste into
 # the matching wrangler toml, or patches them in itself with `--apply`.
 #
+# This is the COMMITTED-TOML path: the kit's two environments (wrangler.staging.toml /
+# wrangler.toml) that `deploy.yml` and `pnpm deploy[:staging]` ship. A deployed INSTANCE
+# (docs/DEPLOYMENT.md, `pnpm provision`) does not use this script: its `cloudflare` phase creates
+# the resources over REST into `.launch/state.json` and the committed tomls stay templates.
+#
 #   NEON_DATABASE_URL='postgresql://…' pnpm web provision:cloudflare <staging|production> [app-name] [--apply]   # from the repo root
 #   NEON_DATABASE_URL='postgresql://…' bash apps/web/scripts/cf-provision.sh <staging|production> [--apply]
 #
@@ -12,7 +17,7 @@
 #                         (byte-preserving; a DIFFERENT existing id is refused unless --force)
 #   --force               with --apply: overwrite a different existing id
 #
-# The orchestrator `pnpm provision cloudflare <env>` (scripts/provision.ts) calls this with --apply.
+# Nothing calls it any more; run it by hand (or from CI) for the committed tomls.
 #
 # Working directory: this file lives in apps/web/scripts inside the pnpm workspace. The package
 # script runs it with apps/web as cwd, and the script ALSO `cd`s to apps/web itself (resolved from
@@ -25,9 +30,9 @@
 # under DATABASE_DRIVER=postgres — NEON_DATABASE_URL, the DIRECT (non `-pooler`) host of that
 # environment's Postgres. Hyperdrive pools itself; see docs/DEPLOY.md → Database driver.
 #
-# DATABASE_DRIVER (D35) comes from the environment (`pnpm provision cloudflare <env> --driver …`
-# passes it), else the toml's `[vars] DATABASE_DRIVER`, missing meaning postgres:
-#   neon       no Hyperdrive — the Worker reads the DATABASE_URL secret (`pnpm provision secrets`);
+# DATABASE_DRIVER (D35) comes from the environment (`DATABASE_DRIVER=neon|postgres bash …`), else
+# the toml's `[vars] DATABASE_DRIVER`, missing meaning postgres:
+#   neon       no Hyperdrive — the Worker reads the DATABASE_URL secret (`wrangler secret put`);
 #              with --apply the toml gets DATABASE_DRIVER = "neon" and loses any [[hyperdrive]] block
 #   postgres   the Hyperdrive config below; with --apply the toml gets DATABASE_DRIVER = "postgres"
 #              and the [[hyperdrive]] block (localConnectionString from .dev.vars DATABASE_URL)
@@ -40,21 +45,20 @@
 #
 # PLUGIN_RESOURCES (D31, Decision 12) appends to that list: a JSON array of
 # `{ "type": "kv"|"queue"|"r2", "name": "<already env-suffixed>", "binding": "APPROVALS_CACHE" }`,
-# built by `pnpm provision cloudflare <env>` from each installed plugin’s `plugin.json` through
-# scripts/provision/plugin-resources.ts (which owns the `<app>-<id>-<name>[-staging]` naming rule,
+# built from each installed plugin’s `plugin.json` through scripts/provision/plugin-resources.ts (which owns the `<app>-<id>-<name>[-staging]` naming rule,
 # and the `<APP>_<ID>_<NAME>[_STAGING]` one for KV). It travels in the ENVIRONMENT rather than in
 # argv or a temp file: nothing in it is secret, nothing is left on disk, and the redaction rule
 # below is unchanged — the connection string is still the one thing that never reaches a log.
 # It only ever carries the types an account has to CREATE — kv, queue, r2. A plugin's `workflow` and
-# `durable_object` bindings are written into both tomls by `pnpm provision cloudflare <env>` and
-# registered by `wrangler deploy` from there, so nothing about them reaches this script.
+# `durable_object` bindings are blocks in the toml (rendered for an instance by `pnpm provision
+# render`) and registered by `wrangler deploy` from there, so nothing about them reaches this script.
 # An unsupported type (`d1`, `vectorize`, `analytics_engine`…) is a loud refusal naming the type,
 # never a silent skip: a binding that is quietly not created is a Worker that deploys and 503s.
 #
 # Workflows, Durable Objects and the Workers AI binding need no create step: `wrangler deploy`
 # registers them. Workflow names are ACCOUNT-scoped, so the staging toml MUST use
 # `<app>-agent-run-staging` — and the same rule applies to a PLUGIN's workflow, whose name
-# `pnpm provision cloudflare <env>` derives as `<app>-<id>-<name>[-staging]`.
+# plugin-resources.ts derives as `<app>-<id>-<name>[-staging]`.
 #
 # Nothing here writes to git. The secret connection string is passed to wrangler only (it is an
 # argument of that one `wrangler hyperdrive create` process) and is redacted from every echoed line.

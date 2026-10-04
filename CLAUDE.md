@@ -13,8 +13,10 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
 > **Setup**: asked for setup help → run `/launch-setup` (it drives `scripts/bootstrap.sh --no-dev`, then
 > starts the server): show each `✔ n/10` line, stop on failure. By hand: `SETUP.md` Part 1.
 > `/launch-setup`, `/launch-preflight`, `/launch-traces`, `/launch-evals`, `/launch-how-do-i` and
-> `/launch-plugin` you may run yourself; **`/launch-provision` is user-invoked only** (it creates paid resources and prompts for
-> tokens on a TTY) — asked to deploy, tell the user to run `/launch-provision`.
+> `/launch-plugin` you may run yourself; **`/launch-deploy` is user-invoked only** (it creates paid resources) — asked to
+> deploy, point the user at `docs/DEPLOYMENT.md` and tell them to type `/launch-deploy`. An instance is one git-ignored
+> root file, `launch.deploy.env` (values never read by an agent: `pnpm provision check` reports names only), its ids in
+> `.launch/`, and `apps/web/wrangler.deploy.toml` rendered from the committed template.
 > **Plugins** (D31, `docs/CONCEPTS.md` §16): a plugin is a git repository copied in, wired through six
 > barrels — `pnpm plugin add|upgrade|remove|list|check`, driven by `/launch-plugin`, which always shows the
 > plan before `--apply`. It imports the host only through the DECLARED entries (`docs/plugin-api.md`,
@@ -67,7 +69,8 @@ pnpm test:neon · pnpm dev:db:up --neon|--postgres  # D35: the suite / local dev
 pnpm eval [suite] [--model x] [--compare] · pnpm eval:baseline · pnpm eval:view  # real-model evals (D33, docs/EVALS.md)
 pnpm lint · pnpm typecheck · pnpm build  # workspace-wide
 pnpm web <script>  # any apps/web script (test:api, db:check…)
-pnpm db:generate · pnpm db:studio · pnpm deploy[:staging] · pnpm provision all  # (or one phase: --help)
+pnpm db:generate · pnpm db:studio · pnpm deploy[:staging]  # deploy = the committed tomls (CI path)
+pnpm provision check · pnpm provision all  # an instance from launch.deploy.env (docs/DEPLOYMENT.md; one phase: --help)
 pnpm plugin list · pnpm plugin check · pnpm plugin upgrade analytics [--apply]  # installed plugins (/launch-plugin)
 ```
 
@@ -105,7 +108,7 @@ scripts/           bootstrap.sh → bootstrap.mjs (10 steps), plugin.mjs (`pnpm 
 launch.plugins.json  the installed plugins (source repo, version, commit), `kitVersion` (the kit
                    plugin-API level a plugin's `minKit` is checked against) and the app's names
 spec/ · spikes/    the product spec and the feasibility spikes behind it
-.claude/skills/    launch-setup · launch-preflight · launch-provision (+ reference.md) ·
+.claude/skills/    launch-setup · launch-preflight · launch-deploy (+ reference.md) ·
                    launch-how-do-i (+ example-orders.md) ·
                    launch-plugin (+ reference.md — install/upgrade/remove a plugin, D31) ·
                    launch-traces (debug a run from its span tree; pick a tracing backend, D32) ·
@@ -140,7 +143,8 @@ consulted only for a flag marked `environmentGated`; the rollout state itself li
 `OIDC_CLIENT_SECRET`).
 
 Rules (auto-loaded by path): `.claude/rules/api.md` · database.md · ui.md · cli.md · testing.md ·
-code-quality.md · cloudflare.md. Runbooks: `docs/DEPLOY.md` · `docs/RLS.md`
+code-quality.md · cloudflare.md. Runbooks: `docs/DEPLOYMENT.md` (deploy an instance) · `docs/DEPLOY.md` (topology reference) ·
+`docs/RLS.md`
 
 ## Non-Negotiables
 

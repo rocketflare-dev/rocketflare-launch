@@ -67,10 +67,12 @@ leave a stale document sitting beside a current one.
 
 - Secrets exist in `apps/web/.dev.vars` (git-ignored) locally and `wrangler secret put` in deployed envs.
   `[vars]` and `apps/web/.env.test` hold non-secrets and dummy values only. The CLI keeps its API key
-  in `~/.launch/config.json` (0600) — never in the repo, never printed in full. The provisioning
-  tokens (Cloudflare, Neon, Resend full-access) live in `apps/web/.provision.env` (git-ignored, 0600,
-  written by `pnpm provision tokens`; an exported variable overrides it) — never in `.dev.vars`, never
-  printed: `redact()` masks the exact values
+  in `~/.launch/config.json` (0600) — never in the repo, never printed in full. A deployed
+  instance's answers and account tokens (Cloudflare, Neon, Resend full-access) and its generated
+  `OAUTH_ENCRYPTION_KEY` live in the root `launch.deploy.env` (git-ignored, 0600; an exported
+  variable overrides it; `docs/DEPLOYMENT.md`), its ids and GitHub App key in `.launch/` — never in
+  `.dev.vars`, never printed: `redact()` masks the exact values, and an agent never reads the file
+  (`pnpm provision check` reports names only)
 - **`.dev.vars` comments are not a safe place for alternate credentials.** A commented-out
   connection string is still a credential on disk read by every tool that opens the file. Keep
   other environments' strings in your password manager, not in the file
@@ -79,4 +81,5 @@ leave a stale document sitting beside a current one.
   never a rule) — a real credential is never allowlisted
 - Never log a connection string, token or key; `apps/web/scripts/cf-provision.sh` redacts them for that
   reason; the CLI prints key prefixes only
-- Resource ids (Hyperdrive, KV) are not secrets and are committed in the tomls
+- Resource ids (Hyperdrive, KV) are not secrets: the committed tomls carry placeholders, and an
+  instance's ids live in `.launch/state.json` (git-ignored because it names one instance)

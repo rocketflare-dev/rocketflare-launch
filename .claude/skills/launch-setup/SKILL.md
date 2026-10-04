@@ -108,7 +108,7 @@ open "want me to do anything else?". Offer these, in this order, with the first 
 | **Show me around** | Walk the seeded app: **Chat** (streams a reply — Workers AI needs the `wrangler login`, else a key), **Agents** (run `summarize-text`, watch the timeline fill), **Knowledge** (upload a document, then search it), **Analytics** (the seeded Organisation Overview). Drive it with them; one screen at a time |
 | **Check it really works** | `pnpm test:db:up && pnpm test` (ephemeral Postgres on :5499) — which runs the analytics plugin's own tests too, including the two-tenant cube isolation one — then the SETUP.md 1.6 analytics check, `pnpm cli analytics check-facts` |
 | **Add a capability** | `/launch-plugin` — install a plugin (a git repository copied in, with a plan you read first), or audit what is installed with `pnpm plugin list` / `pnpm plugin check` |
-| **Deploy it** | `/launch-provision` — **user-invoked only**: tell them to type it, and that it needs the three accounts (Cloudflare on Workers Paid, Neon, Resend) and `pnpm provision tokens` in their own terminal first |
+| **Deploy it** | `/launch-deploy` — **user-invoked only**: tell them to type it, and point them at `docs/DEPLOYMENT.md` (Cloudflare on Workers Paid with their domain as a zone, a GitHub org, Neon, Resend, Docker that builds amd64; one file, `launch.deploy.env`) |
 
 Leave the dev stack running unless they ask you to stop it (`pnpm dev:stop`). If they pick
 something not on the list, just do that — the list is a starting point, not a gate.

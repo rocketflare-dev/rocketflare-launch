@@ -169,7 +169,8 @@ and `services/fact-tables/CLAUDE.md`. Three things a KIT route author still has 
   feeds `API_PREFIXES` (the SPA catch-all's JSON-404 guard and the parity test), but the Vite dev
   proxy is a file a plugin never touches — and so is `[assets] run_worker_first`, which Launch's
   tomls set to `true` (P3's session previews), so nothing needs adding there while it stays so.
-  `pnpm plugin add` prints them; `pnpm provision cloudflare <env>` writes the toml half.
+  `pnpm plugin add` prints them; `pnpm provision render` writes the toml half into a deployed
+  instance's `wrangler.deploy.toml`.
 - **A registry a plugin composes into is a FUNCTION, not a const.** `visibilityResources()` is the
   kit's worked example: it reads the plugin barrel, a plugin's visibility resource imports this
   module, and evaluated at module scope one side finds `serverPlugins` `undefined` — which fails at

@@ -69,12 +69,12 @@ A pnpm workspace; `CLAUDE.md` is the map and every significant directory has its
 - 📂 `packages/shared/` — `@launch/shared`: the zod contracts the API validates with and the UI
   and CLI parse with (private, consumed as TypeScript source)
 - 📂 `docs/` — `CONCEPTS.md` (how each subsystem works, the decision record, and its known gaps),
-  `ADAPTING.md`, `DEPLOY.md`, `RLS.md`
+  `ADAPTING.md`, `DEPLOYMENT.md` (deploy your own instance), `DEPLOY.md`, `RLS.md`
 - 📂 `scripts/` — first-run tooling (`bootstrap.sh` / `bootstrap.mjs`), the plugin tooling
   (`plugin.mjs`, `plugin-api-doc.mjs`), `deployer.mjs` and `lib/`
 - 📂 `.claude/rules/` — layer conventions (api, database, ui, cli, testing, code-quality,
   cloudflare), loaded by path when you or a coding agent touch that layer; `.claude/skills/` — the
-  `/launch-setup`, `/launch-preflight`, `/launch-provision`, `/launch-plugin` and the other `launch-*`
+  `/launch-setup`, `/launch-preflight`, `/launch-deploy`, `/launch-plugin` and the other `launch-*`
   slash commands
 
 ### <a name="what-a-change-must-include"></a> What a change must include

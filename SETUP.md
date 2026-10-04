@@ -159,8 +159,8 @@ prints `✔ n plugin(s) check out` and exits 0, and the bootstrap step reports
 `installed: analytics@3.4.1`.
 
 A plugin ships **no migration and no toml edit**: the host runs `pnpm db:generate`, and a binding,
-cron or `[vars]` key it declares is written into both tomls by `pnpm provision cloudflare <env>`
-(Part 3). `/launch-plugin` drives all of it and always shows the plan before anything is written.
+cron or `[vars]` key it declares is rendered into a deployed instance's `wrangler.deploy.toml` by
+`pnpm provision render` (Part 3, `docs/DEPLOYMENT.md`). `/launch-plugin` drives all of it and always shows the plan before anything is written.
 
 ### 1.5 Seed
 ```bash
@@ -338,11 +338,12 @@ None of these block local development. Each states what happens when it is absen
 3. `EMAIL_FROM` in `[vars]` (both tomls) and `apps/web/.dev.vars`: a verified sender,
    `App <noreply@mail.example.com>`
 
-Scripted (Part 3): with a full-access `RESEND_API_KEY`, `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` in `apps/web/.provision.env` (or exported), `pnpm provision email create --domain mail.example.com` creates the
-Resend domain, writes its DNS records into the Cloudflare zone and sets `EMAIL_FROM` in both tomls;
-`pnpm provision email verify <env>` polls verification and mints a per-environment sending key into
-the Worker's `RESEND_API_KEY`; `email status` shows which records are present.
+Scripted for a deployed instance (Part 3, `docs/DEPLOYMENT.md`): with a full-access
+`RESEND_API_KEY` and `CLOUDFLARE_API_TOKEN` in `launch.deploy.env`, `pnpm provision email create`
+creates the Resend domain `EMAIL_DOMAIN` (default `notifications.<LAUNCH_DOMAIN>`) and writes its DNS
+records into the Cloudflare zone; `render` sets `EMAIL_FROM`; `pnpm provision email verify` polls
+verification and mints the Worker's own sending key into its `RESEND_API_KEY`; `email status` shows
+which records are present.
 
 Absent: magic links, invitations and admin notifications are logged, never sent. Verify: request a
 magic link — it arrives by email.
@@ -623,86 +624,30 @@ themes and logo are still the kit's.
 
 ## Part 3 — Cloudflare deploy `[config]`
 
-Two environments, two standalone tomls (`apps/web/wrangler.staging.toml`, `apps/web/wrangler.toml`),
-one Neon project with a branch per environment, one GitHub Actions release flow. Only `apps/web` is
-deployed; the CLI is built by CI but not published (publishing it is an app decision —
-[`docs/DEPLOY.md`](docs/DEPLOY.md)). Reference: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+**Deploying your own Launch is [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — the runbook, from a
+fresh clone: fill one git-ignored file at the repo root (`launch.deploy.env`, from
+`launch.deploy.env.example`), then type **`/launch-deploy`** in Claude Code or run
+`pnpm provision all`. It creates the GitHub App, the Neon project, the Cloudflare resources, the
+DNS, deploys, puts every Worker secret and writes the Setup page's credentials, pausing before each
+paid step under the skill. An instance never touches the committed tomls: its ids live in
+`.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
+`wrangler.toml`. Updating it is a rerun. `pnpm provision --help` lists the phases.
 
-**Before anything — three accounts you create yourself:**
-
-1. **Cloudflare** on **Workers Paid** (Workflows, `[limits]`, and Hyperdrive if you deploy on
-   `postgres`), **with your domain on the
-   account** — registered there (https://dash.cloudflare.com/?to=/:account/domains/register) or added
-   as a site with its nameservers moved (https://dash.cloudflare.com/?to=/:account/add-site). The
-   app hosts (`routes`) and the Resend DNS records are created in that zone; `pnpm provision
-   preflight` refuses a host or sending domain whose zone is not on the account. No domain yet →
-   `--staging-host workers.dev --production-host workers.dev --skip-email`.
-2. **Neon** — the free tier is fine for the two branches. (Deploying on another Postgres instead
-   means `DATABASE_DRIVER = "postgres"` and Hyperdrive — `docs/DEPLOY.md` § Database driver; the
-   provisioning below assumes Neon.)
-3. **Resend** — the free tier is fine; it verifies the domain from (1). `--skip-email` skips it
-   (magic links are logged in `wrangler tail`).
-
-**Recommended: `/launch-provision`** in Claude Code, or `pnpm provision all` by hand
-(`apps/web/scripts/provision.ts`; `pnpm provision --help` lists every phase and flag). It is REST
-over `fetch` plus `wrangler` and `gh` — no vendor CLIs — idempotent (find-or-create), and every
-phase ends in one `Verify:` line. The four tokens go in `apps/web/.provision.env` (git-ignored,
-mode 0600): run **`pnpm provision tokens`** in your own terminal — it shows where to mint each one,
-prompts with hidden input, verifies each against its vendor and writes the file — or copy
-`apps/web/.provision.env.example` and fill it in. An exported variable of the same name overrides
-the file (that is how CI runs it); never paste a token into a chat, and never put these in
-`.dev.vars` (`wrangler dev` would load them into the Worker, and its `RESEND_API_KEY` is the app's
-sending key, not this full-access one).
-
-**The deployed driver** comes from the tomls' `DATABASE_DRIVER` — `neon` in a fresh copy: no
-Hyperdrive, and the Worker holds the pooled Neon URI as its `DATABASE_URL` secret. Pass
-`--driver postgres` to `pnpm provision cloudflare <env>` (or `all`) for Hyperdrive instead — any
-Postgres, a read cache, one Hyperdrive config per environment. Either writes BOTH tomls.
-`docs/DEPLOY.md` § Database driver has the table and the switch:
-
-| Variable | Mint at | Scope |
-|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | https://dash.cloudflare.com/profile/api-tokens | Account: Workers Scripts, Workers KV Storage, Queues, Workflows, Durable Objects, R2 (+ Hyperdrive under `postgres`) — Edit; Workers AI, Account Analytics — Read. Zone: DNS — Edit on the zone holding your hosts and the sending domain |
-| `CLOUDFLARE_ACCOUNT_ID` | Workers & Pages → Overview (right-hand column / the URL) | the 32-hex account id |
-| `NEON_API_KEY` | https://console.neon.tech/app/settings/api-keys | personal or organisation key; creates the project and branches |
-| `RESEND_API_KEY` | https://resend.com/api-keys | Full access (creates the domain, mints a `sending_access` key per environment); or `--skip-email` |
-
-Then `gh auth login` and `pnpm web exec wrangler login` in your own terminal (browser steps), and:
-
-```bash
-pnpm provision tokens [--skip-email]   # once, in your terminal: hidden prompts → apps/web/.provision.env (0600)
-pnpm provision preflight --domain mail.example.com --staging-host workers.dev --production-host app.example.com --admin-email you@example.com
-pnpm provision all [--deploy staging|both] [--skip-email] [--rotate]   # 10–20 minutes; stops at the first failed Verify
-```
-
-| Phase | Creates / does | Verify line |
-|---|---|---|
-| `tokens` | (a terminal, not an agent) prompts for the four tokens with hidden input, verifies each, writes `apps/web/.provision.env` (0600) | `tokens ok — set: CLOUDFLARE_API_TOKEN, … → apps/web/.provision.env (0600)` |
-| `preflight` | checks tools, tokens (environment, then the file) and accounts; resolves every custom host and the sending domain to a zone on the Cloudflare account (DNS readable by the token) — a missing zone fails with the registrar / add-site links; caches the four answers and the zone ids in `apps/web/.provision.json` (git-ignored, non-secret) | `preflight ok — app=… account=… neon=… resend=… zone=<zone> (<id>)` |
-| `email create` | Resend domain, its DNS records in the Cloudflare zone, `EMAIL_FROM` in both tomls | `email create ok — domain=… zone=… records=… EMAIL_FROM="…"` |
-| `neon` | Neon project (pg 17) + `staging` branch from the default branch, direct hosts, a password per branch | `neon ok — production=<host> staging=<host> (SELECT 1 on both)` |
-| `cloudflare <env> [--driver d]` | `cf-provision.sh <env> --apply`: KV, Queue, R2 (+ Hyperdrive under `postgres`); ids patched into the toml; `--driver` rewrites `DATABASE_DRIVER` and the `[[hyperdrive]]` block in both tomls | `cloudflare <env> ok — <toml> patched; REQUIRE_PROVISIONED=1 parity test passed for both tomls` (once both are done) |
-| `migrate <env>` | `pnpm db:migrate:ci` against that branch; applied count == journal entries | `migrate <env> ok — n/n migrations applied on <host>` |
-| `github <env>` | GitHub Environment + `DATABASE_URL`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` secrets (stdin) | `github <env> ok — environment <env> on <repo> has …` |
-| `urls` | `APP_URL` + `routes` (custom host) or the `workers.dev` host in both tomls; parity test | `urls ok — staging=… production=…; parity test passed` |
-| `deploy <env>` | `pnpm deploy[:staging]` (under `neon` it puts the Worker's `DATABASE_URL` right after the first deploy), then `/api/health` and `/api/ready` | `deploy <env> ok — <url>/api/health ok (version …), /api/ready ok, deployments listed` |
-| `secrets <env>` | `OAUTH_ENCRYPTION_KEY` (generated) + every optional secret exported or in `apps/web/.provision.env`, over stdin; under `neon` also `DATABASE_URL` (the pooled Neon URI; `--rotate` re-puts it) | `secrets <env> ok — wrangler secret list shows n secret(s): …` |
-| `email verify <env>` | Resend verification (polls ≤ 10 min), a per-environment sending key into `RESEND_API_KEY` | `email verify <env> ok — domain=… verified, RESEND_API_KEY set, …/auth/methods reports magic link` |
-| `all` | every phase in order (`--deploy staging` by default), then a close-out checklist | `all ok — n phases passed; deployed …` |
-
-Close-out: sign in with the admin's magic link — with `SIGNUP_MODE=invite_only` the first login lands
-on `/pending` (multi mode: create the first organisation at `/admin`; single mode: the bootstrap
-login already made it, with you as owner — finish Settings → Platform → Setup) — add OAuth redirect
-URIs, commit the two tomls (ids and URLs are not secrets), push, `pnpm cli login --server <APP_URL>`.
-Known limits: `.claude/skills/launch-provision/reference.md`. The manual sequence below is the reference for
-what each phase does.
+**The rest of this part is the committed-toml path** — the kit's two-environment shape
+(`apps/web/wrangler.staging.toml` + `apps/web/wrangler.toml`, a Neon branch per environment) and
+the GitHub Actions release dance in `deploy.yml`. It is the manual reference behind that shape and
+what CI deploys; it is **not** how an instance from `launch.deploy.env` is deployed, and the two
+don't mix (`docs/DEPLOYMENT.md` § 9 says what CI for an instance still lacks). Only `apps/web` is
+deployed; the CLI is built by CI but not published. Reference: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+You need Cloudflare on **Workers Paid** with your domain as a zone, Neon, and (for email) Resend —
+`docs/DEPLOYMENT.md` § 0 has the detail.
 
 ### 3.1 Accounts and access
 1. Cloudflare account on **Workers Paid** (Workflows and `[limits]` need it, and Hyperdrive under
    `postgres` — Hyperdrive's plan availability has changed over time; the Hyperdrive create step
-   reports if the plan refuses it) **with your domain as a zone on it** (registered there, or its nameservers moved — the two
-   links at the top of Part 3): the custom-domain `routes` and the email DNS records live in that
-   zone. Without one, both hosts are `workers.dev` and email is `--skip-email`. `pnpm web exec
+   reports if the plan refuses it) **with your domain as a zone on it** (registered there, or its nameservers moved —
+   `docs/DEPLOYMENT.md` § 0): the custom-domain `routes` and the email DNS records live in that
+   zone. Without one, both hosts are `workers.dev` and email is skipped. `pnpm web exec
    wrangler login`.
    Verify: `pnpm web exec wrangler whoami` prints the account, and the dashboard lists the domain
    as an active zone.
@@ -728,7 +673,8 @@ staging --apply` from the root works too). It creates (or finds, by name) the re
 namespace `<APP>_RATE_LIMIT[_STAGING]`, the Queue `<app>-jobs[-staging]`, the R2 bucket
 `<app>-files[-staging]` (the last two are name-referenced — nothing to paste) and, under
 `postgres` only, the Hyperdrive config `<app>-<env>`. Switching the driver (the var and the
-`[[hyperdrive]]` block, in both tomls) is `pnpm provision cloudflare <env> --driver neon|postgres`.
+`[[hyperdrive]]` block, in the toml it is given) is `DATABASE_DRIVER=neon|postgres` in the
+environment of `pnpm web provision:cloudflare <env> --apply`; run it for both environments.
 `--apply` writes the KV (and Hyperdrive) ids into the toml through
 `scripts/provision/patch-toml.ts` (byte-preserving; a DIFFERENT existing id is refused unless
 `--force`); without it the script prints the ids and a `sed` line to run yourself. The Workflow
@@ -759,7 +705,7 @@ Verify: the run is green; `pnpm web exec wrangler deployments list -c wrangler.s
 ### 3.5 Worker secrets
 **Under `neon`, first** put the Worker's database connection — the branch's **pooled** URI:
 `printf '%s' "$POOLED_URL" | pnpm web exec wrangler secret put DATABASE_URL -c wrangler.staging.toml`
-(`pnpm provision secrets <env>` does it from the Neon API). Then, for every other non-`[vars]` name
+(`pnpm provision` does this for an instance; here it is by hand). Then, for every other non-`[vars]` name
 in `apps/web/.dev.vars.example` (skip `DATABASE_DRIVER` and `NEON_LOCAL_PROXY` — local only —
 `DATABASE_URL` under `postgres`, which uses Hyperdrive, and `APP_DATABASE_URL` unless enabling RLS; the `OIDC_*` names other than
 `OIDC_CLIENT_SECRET`, and `AUTH_OIDC_ONLY`, are `[vars]` — Part 2.3b):
@@ -771,8 +717,8 @@ printf '%s' "$OAUTH_ENCRYPTION_KEY" | pnpm web exec wrangler secret put OAUTH_EN
 ```
 `wrangler secret put NAME` reads the value from stdin when stdin is not a terminal — pipe it with
 `printf '%s' "$V"`, never `--body` or an argument, so the value stays out of argv and shell history
-(interactively it prompts). `pnpm provision secrets <env>` does exactly this for every name exported
-in the shell. Repeat without `-c` for production after its first deploy. Use different keys per
+(interactively it prompts). `pnpm provision secrets` does exactly this for an instance, from
+`launch.deploy.env`. Repeat without `-c` for production after its first deploy. Use different keys per
 environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, the two `LANGFUSE_*` keys and `OTEL_EXPORTER_OTLP_HEADERS` are optional
 (Part 2.5/2.6): skip them and the features degrade as described there. `OPENAI_API_KEY` is optional
 too: what Codex sessions on Launch's account spend (`docs/CONCEPTS.md` §18.22). Which coding agents

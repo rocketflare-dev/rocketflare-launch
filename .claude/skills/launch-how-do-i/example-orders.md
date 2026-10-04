@@ -121,8 +121,8 @@ does not exist.
   never rename.** drizzle-kit's rename prompt has no non-interactive answer, so a release that
   renames a column is a release nobody can apply unattended.
 - **The plugin ships no migration and edits no toml.** The host runs `pnpm db:generate --name
-  plugin-orders-<version>`; a declared binding, cron or `[vars]` key is written into both tomls by
-  `pnpm provision cloudflare <env>`.
+  plugin-orders-<version>`; a declared binding, cron or `[vars]` key is rendered into a deployed
+  instance's `wrangler.deploy.toml` by `pnpm provision render` (`docs/DEPLOYMENT.md`).
 
 ## Sizing (step 4)
 

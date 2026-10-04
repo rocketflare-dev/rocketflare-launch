@@ -152,7 +152,7 @@ This is done **once per Launch deployment**, by whoever runs the deployment.
    For local development add `http://localhost:3001/api/hooks/connectors/m365/callback`.
 3. **Credential.**
    - *Phase 1:* a client secret (at most 24 months) in `M365_CLIENT_ID` / `M365_CLIENT_SECRET` via
-     `pnpm provision secrets <env>`. Diary the expiry.
+     `launch.deploy.env` and `pnpm provision secrets`. Diary the expiry.
    - *Follow-up:* a certificate. The JWT client assertion (current docs: PS256 with an `x5t#S256`
      header; RS256 with `x5t` is the legacy form) is signed in WebCrypto
      (`importKey('pkcs8', …, RSA-PSS)`), with the PEM kept as a Worker secret. There's nothing to

@@ -89,8 +89,10 @@ run_worker_first = true
 
 # Postgres (D35). Under DATABASE_DRIVER = "neon" there is NO [[hyperdrive]] block — wrangler refuses
 # to deploy one whose id does not exist — and the Worker reads the DATABASE_URL secret instead.
-# `pnpm provision cloudflare staging --driver postgres` switches: it creates the Hyperdrive config, adds
-# the block below to BOTH files and sets DATABASE_DRIVER = "postgres". The block it writes:
+# `DATABASE_DRIVER=postgres NEON_DATABASE_URL=… pnpm web provision:cloudflare staging --apply` switches
+# this file: it creates the Hyperdrive config, adds the block below and sets DATABASE_DRIVER =
+# "postgres" (run it for both files). A deployed instance (docs/DEPLOYMENT.md) is always "neon".
+# The block it writes:
 #   [[hyperdrive]]
 #   binding = "HYPERDRIVE"
 #   id = "<id>"
@@ -101,9 +103,10 @@ run_worker_first = true
 binding = "RATE_LIMIT_KV"
 id = "<KV_RATE_LIMIT_STAGING_ID>"
 
-# Plugin bindings (D31) are appended to the sections above by `pnpm provision cloudflare <env>`,
-# which reads each installed plugin’s plugin.json (bindings, crons, apiPrefixes, vars) and writes
-# the same declarations into BOTH tomls. Never hand-edit one of a plugin’s blocks in one file only.
+# Plugin bindings (D31): a deployed instance gets them in its RENDERED wrangler.deploy.toml from
+# `pnpm provision render`, which reads each installed plugin’s plugin.json (bindings, crons,
+# apiPrefixes, vars). This file is the template it renders from; a plugin block added here by hand
+# goes in BOTH tomls (the parity test compares them).
 
 # Cron triggers — dispatched by src/api/scheduled.ts keyed on event.cron.
 [triggers]

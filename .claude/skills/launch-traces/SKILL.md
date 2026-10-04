@@ -87,7 +87,7 @@ span under the root.
 Tell the user plainly which of these they are on (`pnpm preflight` prints a `· tracing` line) and
 what switching costs. All keys are in `apps/web/.dev.vars` locally; deployed, the non-secret ones go
 in `[vars]` of **both** tomls (parity test) and the secrets through `wrangler secret put` or
-`pnpm provision secrets <env>`.
+`pnpm provision secrets` (from `launch.deploy.env`, `docs/DEPLOYMENT.md`).
 
 | Backend | Set | Notes |
 |---|---|---|

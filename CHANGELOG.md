@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Deploy your own Launch from one file: `launch.deploy.env` → `/launch-deploy` (or
+  `pnpm provision all`).** A fresh clone fills one git-ignored file at the repo root (copy
+  `launch.deploy.env.example`: the domain, the admin, the GitHub org, three account tokens), and the
+  scripts do the rest: the GitHub App from a manifest (you click Create, then Install), Neon, the
+  Cloudflare resources, migrations, the apps wildcard, the deploy, every Worker secret (the
+  generated `OAUTH_ENCRYPTION_KEY` is written back to the file, so **back it up**), the Setup page's
+  credentials sealed into the instance, and email. The committed tomls stay templates; an instance's
+  ids live in `.launch/` and every wrangler call uses the rendered `apps/web/wrangler.deploy.toml`.
+  Rerun it to update; a second instance is a second file (`LAUNCH_DEPLOY_FILE`). The runbook is the
+  new `docs/DEPLOYMENT.md`. **`/launch-provision` is gone**, replaced by `/launch-deploy`;
+  `apps/web/.provision.env` is no longer read (`pnpm provision check` says to move it), the
+  `--driver`, `--deploy` and per-environment arguments are gone, and CI deploy of an instance is not
+  wired yet.
 - **A ChatGPT plan is no longer stuck "in use" after a turn dies.** A claim only blocks while its
   session is mid-turn; a turn killed before it could release (a deploy, a crash, a dev reload) no
   longer makes the next session wait out the two-hour expiry.

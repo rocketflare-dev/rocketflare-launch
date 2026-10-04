@@ -14,6 +14,11 @@ control of credentials, sign-in, approvals and audit.
 > tested locally; not yet deployed** (September 2026).
 > Results: [spikes/SUMMARY.md](spikes/SUMMARY.md).
 
+**Run it.** Locally: `pnpm install`, then `/launch-setup` in Claude Code (or `SETUP.md` Part 1).
+**Deploy your own** on your Cloudflare account and domain: copy `launch.deploy.env.example` to
+`launch.deploy.env`, fill it in, then `/launch-deploy` (or `pnpm provision all`). The runbook is
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ## Why
 
 Rocketflare already makes one app fast to build: multi-tenant auth, Postgres, queues, AI and

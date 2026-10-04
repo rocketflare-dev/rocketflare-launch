@@ -10,7 +10,7 @@
  * handed to a debug printer; the values are still returned to the caller that asked for them.
  *
  * `registerSecrets()` adds EXACT values to the mask list — the tokens `config.ts` resolves from
- * the environment or `apps/web/.provision.env` — because a Cloudflare API token (40 chars of
+ * the environment or `launch.deploy.env` — because a Cloudflare API token (40 chars of
  * base62) matches none of the shape patterns below unless it follows the header we set ourselves.
  */
 
