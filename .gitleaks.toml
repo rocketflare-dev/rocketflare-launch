@@ -20,4 +20,6 @@ regexes = [
   '''^dGhlIHNhbXBsZSBub25jZQ==$''',
   # A doc comment in services/launch/github-app.ts that NAMES the PKCS#1 header — no key follows it.
   '''^-----BEGIN RSA PRIVATE KEY-----`\)\. WebCrypto and `jose` import''',
+  # provision-setup.test.ts' made-up GitHub App key: a PEM header around the literal `MIIfake`.
+  '''-----BEGIN RSA PRIVATE KEY-----\\nMIIfake\\n-----END RSA PRIVATE KEY-----''',
 ]
