@@ -9,6 +9,11 @@
   column (Claude Code or Codex, with the model it runs now), since the agent is fixed when the
   session starts; `sessionSummarySchema` (and `launch sessions ls --json`) carry `runtime`,
   `credentialSource` and `model`.
+- **Codex sessions offer GPT-6 Astra and GPT-6 Luna beside GPT-6.1 Sol.** The current models Codex
+  0.160 lists, priced from OpenAI's published Standard-tier rates, so the composer's model picker
+  now shows for Codex sessions too; a switch passes `-m` on the resumed turn and the
+  `api.openai.com` egress allows only the new model. A Codex session's composer and queued message
+  now say "Codex" where they said "Claude".
 - **Write to a coding session while it works: queue the message, or send it now.** The composer
   stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
   the turn and runs the message next, resuming the conversation, with one line telling Claude its

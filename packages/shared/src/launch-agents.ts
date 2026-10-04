@@ -48,7 +48,7 @@ export const AGENT_RUNTIME_PROVIDERS: Record<AgentRuntimeId, 'anthropic' | 'open
  */
 export const AGENT_RUNTIME_MODELS: Record<AgentRuntimeId, readonly string[]> = {
   claude_code: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
-  codex: ['gpt-6.1-sol'],
+  codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'],
 }
 
 /** A model a runtime may be set to: one the pricing table can put a price on. */

@@ -805,7 +805,7 @@ describe('SessionPage', () => {
     )
   })
 
-  it('keeps an older model the session runs on, and hides the picker when there is no choice', async () => {
+  it('keeps an older model the session runs on, and offers a Codex session Codex’s models', async () => {
     renderPage({
       [BASE]: detailOf({ policy: { ...DEFAULT_SESSION_POLICY, model: 'claude-sonnet-4-5' } }),
       [`${BASE}/events`]: eventsRoute(DONE_TURN),
@@ -821,8 +821,13 @@ describe('SessionPage', () => {
       }),
       [`${BASE}/events`]: eventsRoute(DONE_TURN),
     })
-    await screen.findByLabelText('Message the coding agent')
-    expect(screen.queryByLabelText('Model for the next message')).not.toBeInTheDocument()
+    const codexPicker = await screen.findByLabelText('Model for the next message')
+    expect(codexPicker).toHaveValue('gpt-6.1-sol')
+    expect(
+      within(codexPicker)
+        .getAllByRole('option')
+        .map(o => o.textContent)
+    ).toEqual(['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'])
   })
 
   it('says when a turn ran on a different model from the one before it', async () => {
@@ -908,6 +913,25 @@ describe('SessionPage', () => {
       'Runs as soon as Claude stops'
     )
     expect(screen.getByTestId('turn-working')).toHaveTextContent('Stopping…')
+  })
+
+  it('a Codex session names Codex, not Claude, while a turn runs and a message waits', async () => {
+    renderPage({
+      [BASE]: detailOf({
+        runtime: 'codex',
+        policy: { ...DEFAULT_SESSION_POLICY, model: 'gpt-6.1-sol' },
+        status: 'working',
+        pendingMessage: true,
+        queuedMessage: 'Use a serif font',
+        cancelRequested: true,
+      }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+    })
+    const box = await screen.findByLabelText('Message the coding agent')
+    expect(box).toHaveAttribute('placeholder', 'Codex is working — write the next message')
+    expect(await screen.findByTestId('queued-message')).toHaveTextContent(
+      'Runs as soon as Codex stops'
+    )
   })
 
   it('shows a queued message after a reload, and Withdraw puts it back in the box', async () => {

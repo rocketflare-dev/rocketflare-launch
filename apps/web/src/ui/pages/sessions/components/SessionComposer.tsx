@@ -82,6 +82,11 @@ export function composerBlockedReason(
 
 const MAX_HEIGHT_PX = 240
 
+/** What the transcript calls the agent running a session's turns. */
+export function agentName(runtime: Session['runtime']): string {
+  return runtime === 'codex' ? 'Codex' : 'Claude'
+}
+
 /**
  * The models the picker offers: the runtime's list, with the session's current model first when
  * the list no longer names it (a session started on an older model keeps it until switched). Pure.
@@ -172,7 +177,9 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
             rows={1}
             className="flex-1 resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-muted"
             placeholder={
-              running ? 'Claude is working — write the next message' : 'Describe a change…'
+              running
+                ? `${agentName(session.runtime)} is working — write the next message`
+                : 'Describe a change…'
             }
             value={value}
             onChange={event => onChange(event.target.value)}
