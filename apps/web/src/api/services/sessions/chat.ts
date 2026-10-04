@@ -309,6 +309,7 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     shipSummary: row.shipSummary ?? null,
     runtime: row.runtime ?? 'claude_code',
     credentialSource: row.credentialSource ?? 'platform',
+    model: resolveSessionPolicy(row.policy).model,
     credentialOwnerUserId: row.credentialSource === 'user' ? row.createdByUserId : null,
   }
 }

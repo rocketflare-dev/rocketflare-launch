@@ -106,7 +106,7 @@ describe('POST /api/sessions/:id/turns', () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const row = await insertSession(db, f, { status: 'ready' })
     const env = await envWithInstance(row)
-    for (const model of ['claude-opus-4-1', 'gpt-6.1-sol', 'claude-sonnet-5-evil']) {
+    for (const model of ['claude-opus-4-1', 'gpt-6.1-sol', 'claude-opus-5-5-evil']) {
       const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
         message: 'x',
         model,
@@ -118,14 +118,14 @@ describe('POST /api/sessions/:id/turns', () => {
 
     const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
       message: 'Think harder',
-      model: 'claude-opus-5-5',
+      model: 'claude-sonnet-5',
     })
     expect(res.status).toBe(202)
     expect(await reload(row)).toMatchObject({
       pendingMessage: 'Think harder',
-      pendingModel: 'claude-opus-5-5',
+      pendingModel: 'claude-sonnet-5',
       // Not switched yet: the turn's claim does that.
-      policy: expect.objectContaining({ model: 'claude-sonnet-5' }),
+      policy: expect.objectContaining({ model: 'claude-opus-5-5' }),
     })
 
     // Asking for the model the session already runs is no switch at all.
@@ -135,7 +135,7 @@ describe('POST /api/sessions/:id/turns', () => {
       (
         await post(`/api/sessions/${same.id}/turns`, f.cookie, sameEnv, {
           message: 'x',
-          model: 'claude-sonnet-5',
+          model: 'claude-opus-5-5',
         })
       ).status
     ).toBe(202)
@@ -191,7 +191,7 @@ describe('POST /api/sessions/:id/turns', () => {
     const res = await post(`/api/sessions/${working.id}/turns`, f.cookie, env, {
       message: 'Stop, do this instead',
       mode: 'interrupt',
-      model: 'claude-opus-5-5',
+      model: 'claude-sonnet-5',
     })
     expect(res.status).toBe(202)
     expect(sessionDetailResponseSchema.parse(await json(res)).session).toMatchObject({
@@ -202,7 +202,7 @@ describe('POST /api/sessions/:id/turns', () => {
     expect(after).toMatchObject({
       status: 'working',
       pendingMessage: 'Stop, do this instead',
-      pendingModel: 'claude-opus-5-5',
+      pendingModel: 'claude-sonnet-5',
       pendingMessageUserId: f.user.id,
     })
     expect(after.cancelRequestedAt).not.toBeNull()
@@ -307,7 +307,7 @@ describe('POST /api/sessions/:id/queued/withdraw', () => {
       status: 'working',
       pendingMessage: 'later',
       pendingMessageUserId: f.user.id,
-      pendingModel: 'claude-opus-5-5',
+      pendingModel: 'claude-sonnet-5',
     })
     const res = await post(`/api/sessions/${row.id}/queued/withdraw`, f.cookie, createTestEnv())
     expect(res.status).toBe(200)

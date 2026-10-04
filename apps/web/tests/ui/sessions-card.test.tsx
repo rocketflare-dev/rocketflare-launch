@@ -69,6 +69,26 @@ describe('SessionsCard', () => {
     expect(screen.getByText('Working')).toHaveAttribute('data-session-status', 'working')
   })
 
+  it('names each session’s agent and model, since neither the agent nor its row changes', async () => {
+    renderCard({
+      [`/api/apps/${APP_ID}/sessions`]: {
+        items: [
+          summaryRow({ runtime: 'codex', model: 'gpt-6.1-sol' }),
+          summaryRow({
+            id: '5e551000-0000-4000-8000-000000000002',
+            runtime: 'claude_code',
+            model: 'claude-opus-5-5',
+          }),
+        ],
+      },
+    })
+    const rows = await screen.findAllByRole('row')
+    expect(within(rows[1]).getByText('Codex')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('gpt-6.1-sol')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('Claude Code')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('claude-opus-5-5')).toBeInTheDocument()
+  })
+
   it('asks for finished sessions only when the toggle is on', async () => {
     const fetchMock = renderCard({ [`/api/apps/${APP_ID}/sessions`]: { items: [] } })
     expect(await screen.findByText('No sessions running')).toBeInTheDocument()

@@ -787,20 +787,20 @@ describe('SessionPage', () => {
       [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true }),
     })
     const picker = await screen.findByLabelText('Model for the next message')
-    expect(picker).toHaveValue('claude-sonnet-5')
+    expect(picker).toHaveValue('claude-opus-5-5')
     expect(
       within(picker)
         .getAllByRole('option')
         .map(o => o.textContent)
-    ).toEqual(['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'])
-    fireEvent.change(picker, { target: { value: 'claude-opus-5-5' } })
+    ).toEqual(['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'])
+    fireEvent.change(picker, { target: { value: 'claude-sonnet-5' } })
     const box = screen.getByLabelText('Message the coding agent')
     fireEvent.change(box, { target: { value: 'Think it through' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() =>
       expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({
         message: 'Think it through',
-        model: 'claude-opus-5-5',
+        model: 'claude-sonnet-5',
       })
     )
   })
@@ -830,16 +830,16 @@ describe('SessionPage', () => {
       [BASE]: detailOf({ turnCount: 2 }),
       [`${BASE}/events`]: eventsRoute([
         sessionEvent(1, 'user.message', { text: 'First', userId: IDS.user }),
-        sessionEvent(2, 'turn.start', { turn: 1, model: 'claude-sonnet-5' }),
+        sessionEvent(2, 'turn.start', { turn: 1, model: 'claude-opus-5-5' }),
         sessionEvent(3, 'turn.end', { turn: 1 }),
         sessionEvent(4, 'user.message', { text: 'Second', userId: IDS.user }),
-        sessionEvent(5, 'turn.start', { turn: 2, model: 'claude-sonnet-5' }),
+        sessionEvent(5, 'turn.start', { turn: 2, model: 'claude-opus-5-5' }),
         sessionEvent(6, 'turn.end', { turn: 2 }),
         sessionEvent(7, 'user.message', { text: 'Third', userId: IDS.user }),
-        sessionEvent(8, 'turn.start', { turn: 3, model: 'claude-opus-5-5' }),
+        sessionEvent(8, 'turn.start', { turn: 3, model: 'claude-sonnet-5' }),
       ]),
     })
-    expect(await screen.findByText('Switched to claude-opus-5-5')).toBeInTheDocument()
+    expect(await screen.findByText('Switched to claude-sonnet-5')).toBeInTheDocument()
     expect(screen.getAllByText(/^Switched to/)).toHaveLength(1)
   })
 

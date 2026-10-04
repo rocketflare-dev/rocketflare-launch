@@ -238,7 +238,7 @@ async function start(opts: HarnessOptions = {}): Promise<Harness> {
               'content-type': 'application/json',
             },
             body: JSON.stringify({
-              model: 'claude-sonnet-5-20260801',
+              model: 'claude-opus-5-5-20260801',
               stream: true,
               max_tokens: 1024,
               messages: [{ role: 'user', content: 'Change the heading' }],
@@ -520,7 +520,7 @@ describe('a coding session, end to end', () => {
           new Request('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: { 'x-api-key': MODEL_KEY_PLACEHOLDER },
-            body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 10, messages: [] }),
+            body: JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 10, messages: [] }),
           }),
           h.env,
           { containerId: h.sandbox().id },

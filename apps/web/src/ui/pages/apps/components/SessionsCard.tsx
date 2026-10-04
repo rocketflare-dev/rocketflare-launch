@@ -9,8 +9,8 @@
  *   and a paused deployment (drained for a deploy) are information, a missing budget or backend
  *   is a sentence naming who can fix it.
  * - **The list** is `?scope=active` by default, with a toggle to include finished ones. Each row
- *   is a real `<Link>` to the session page (middle-click works), with its status, turns, cost and
- *   PR. Members see their own sessions; the app's owners and admins see everyone's — the route
+ *   is a real `<Link>` to the session page (middle-click works), with its agent and model (the
+ *   agent is fixed at create, so this is where you tell them apart), status, turns, cost and PR. Members see their own sessions; the app's owners and admins see everyone's — the route
  *   decides, the card just renders what it gets.
  * - Freshness is the `['session']` nudge, plus a poll only while a listed session is moving.
  * - §18.22: when the deployment offers a CHOICE — more than one coding agent, or a runtime that may
@@ -24,6 +24,7 @@ import {
   PlayIcon,
 } from '@heroicons/react/24/outline'
 import {
+  AGENT_RUNTIME_LABELS,
   type AgentAccountsResponse,
   type AgentRuntimeId,
   agentPickerVisible,
@@ -185,6 +186,12 @@ function SessionRow({ appSlug, session }: { appSlug: string; session: SessionSum
           <span className="block truncate font-mono text-xs text-muted">{session.branch}</span>
         )}
       </td>
+      <td className="text-sm whitespace-nowrap">
+        {AGENT_RUNTIME_LABELS[session.runtime]}
+        {session.model && (
+          <span className="block font-mono text-xs text-muted">{session.model}</span>
+        )}
+      </td>
       <td>
         <SessionStatusBadge status={session.status} />
       </td>
@@ -304,6 +311,7 @@ export function SessionsCard({
             <thead>
               <tr>
                 <th>Session</th>
+                <th>Agent</th>
                 <th>Status</th>
                 <th>Turns</th>
                 <th>Cost</th>

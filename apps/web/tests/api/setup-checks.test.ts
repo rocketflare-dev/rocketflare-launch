@@ -506,7 +506,7 @@ describe('checkAnthropic (P3)', () => {
     })
 
   it('accepts a key that lists the session model (matched by prefix — ids carry dates)', async () => {
-    const fake = models(['claude-sonnet-5-20260801', 'claude-haiku-4-5-20251001'])
+    const fake = models(['claude-opus-5-5-20260801', 'claude-haiku-4-5-20251001'])
     const out = await checkAnthropic({ apiKey: KEY }, settings, { fetch: fake.fetch })
     expect(byId(out.checks)).toEqual({ key: 'ok', model: 'ok' })
     expect(out.metadata).toMatchObject({ models: 2 })

@@ -7,7 +7,11 @@
  * `pending_message`'s text (only whether one is waiting — the detail carries it, `queuedMessage`),
  * `sandbox_id`, `db`.
  */
-import type { AdminSession, SessionSummary } from '@launch/shared/launch-sessions'
+import {
+  type AdminSession,
+  resolveSessionPolicy,
+  type SessionSummary,
+} from '@launch/shared/launch-sessions'
 import type { SessionRow } from '../../../db/schema'
 
 export function toSessionSummary(row: SessionRow): SessionSummary {
@@ -26,6 +30,9 @@ export function toSessionSummary(row: SessionRow): SessionSummary {
     prUrl: row.prUrl,
     lastActivityAt: row.lastActivityAt,
     createdAt: row.createdAt,
+    runtime: row.runtime ?? 'claude_code',
+    credentialSource: row.credentialSource ?? 'platform',
+    model: resolveSessionPolicy(row.policy).model,
   }
 }
 

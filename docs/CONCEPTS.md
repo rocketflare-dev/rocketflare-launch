@@ -1919,8 +1919,8 @@ flag), which the page draws as a muted "Runs when this turn ends" bubble with Wi
 a Send now waits for the watcher's 2 s poll plus the 5 s kill grace (`TURN_KILL_GRACE_SECONDS`)
 before the next turn starts — acceptable for v1.
 **The model, per message**: the session's model is `policy.model`, frozen at create
-(`DEFAULT_SESSION_POLICY` is `claude-sonnet-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
-Sonnet 5, Opus 5.5, Fable 5.1, Haiku 4.5 — every one priced). `POST /:id/turns { model }` switches
+(`DEFAULT_SESSION_POLICY` is `claude-opus-5-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
+Opus 5.5, Sonnet 5, Fable 5.1, Haiku 4.5 — every one priced). `POST /:id/turns { model }` switches
 it from that message on: a model the runtime does not offer, or one without a price, is 400
 `model_not_offered`; a different one is stored as `pending_model` beside `pending_message`, and the
 turn's claim moves it onto `policy.model` IN the compare-and-set to `working` (`jsonb_set`, read

@@ -607,7 +607,7 @@ export const sessionPolicySchema = z.object({
 export type SessionPolicy = z.infer<typeof sessionPolicySchema>
 
 export const DEFAULT_SESSION_POLICY: SessionPolicy = {
-  model: 'claude-sonnet-5',
+  model: 'claude-opus-5-5',
   maxSessionUsd: 10,
   appMonthlyUsd: 200,
   maxConcurrentPerApp: 3,
@@ -841,6 +841,12 @@ export const sessionSummarySchema = z.object({
   prUrl: z.string().nullable(),
   lastActivityAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
+  /** §18.22: the coding agent this session runs — fixed at create, so the list names it. */
+  runtime: agentRuntimeSchema.default(DEFAULT_AGENT_RUNTIME),
+  /** §18.22: `platform` (Launch's key) or `user` (a personal account) — fixed at create. */
+  credentialSource: sessionCredentialSourceSchema.default('platform'),
+  /** The model the session runs now (`policy.model`); null from a server that predates it. */
+  model: z.string().nullable().default(null),
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 
@@ -875,10 +881,6 @@ export const sessionSchema = sessionSummarySchema.extend({
   landing: sessionLandingSchema.nullable().default(null),
   /** Issue #5: the PR's title and body as Launch wrote them; null before the first ship. */
   shipSummary: sessionShipSummarySchema.nullable().default(null),
-  /** §18.22: the coding agent this session runs. */
-  runtime: agentRuntimeSchema.default(DEFAULT_AGENT_RUNTIME),
-  /** §18.22: `platform` (Launch's key) or `user` (a personal account) — fixed at create. */
-  credentialSource: sessionCredentialSourceSchema.default('platform'),
   /**
    * §18.22: whose personal account a `user` session bills — the only person who may send it turns
    * or ship it (409 `session_credential_owner_only` for anyone else). Null for `platform`.

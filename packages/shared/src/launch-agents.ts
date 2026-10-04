@@ -47,7 +47,7 @@ export const AGENT_RUNTIME_PROVIDERS: Record<AgentRuntimeId, 'anthropic' | 'open
  * could never be held to one. A stored model outside the list still works while it is priced.
  */
 export const AGENT_RUNTIME_MODELS: Record<AgentRuntimeId, readonly string[]> = {
-  claude_code: ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
+  claude_code: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   codex: ['gpt-6.1-sol'],
 }
 

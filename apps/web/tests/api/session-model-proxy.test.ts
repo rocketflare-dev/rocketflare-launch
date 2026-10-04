@@ -30,7 +30,7 @@ import { createTestEnv } from '../mocks/bindings'
 
 const db = setupTestDatabase()
 const ENV_KEY = 'sk-ant-api03-env-key-for-tests-0000000000'
-const MODEL = 'claude-sonnet-5'
+const MODEL = 'claude-opus-5-5'
 
 function modelRequest(
   body: Record<string, unknown> | string | null,
@@ -111,7 +111,7 @@ describe('the model proxy: who and what may pass', () => {
     const anthropic = createFakeAnthropic()
     const env = createTestEnv({ ANTHROPIC_API_KEY: ENV_KEY })
     const { sandboxId } = await liveSession()
-    for (const body of [{ model: 'claude-opus-4-1' }, { model: 'claude-sonnet-5-evil' }, {}, 'x']) {
+    for (const body of [{ model: 'claude-opus-4-1' }, { model: 'claude-opus-5-5-evil' }, {}, 'x']) {
       const res = await handleAnthropic(
         modelRequest(body),
         env,
@@ -121,9 +121,9 @@ describe('the model proxy: who and what may pass', () => {
       expect(res.status).toBe(403)
     }
     expect(anthropic.requests).toHaveLength(0)
-    expect(isAllowedModel('claude-sonnet-5-20260801', MODEL)).toBe(true)
-    expect(isAllowedModel('CLAUDE-SONNET-5', MODEL)).toBe(true)
-    expect(isAllowedModel('claude-sonnet-5x', MODEL)).toBe(false)
+    expect(isAllowedModel('claude-opus-5-5-20260801', MODEL)).toBe(true)
+    expect(isAllowedModel('CLAUDE-OPUS-5-5', MODEL)).toBe(true)
+    expect(isAllowedModel('claude-opus-5-5x', MODEL)).toBe(false)
   })
 
   it('over the session budget: 403 permission_error and NO upstream call', async () => {

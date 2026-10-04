@@ -43,7 +43,7 @@ import {
 import { createTestEnv } from '../mocks/bindings'
 
 const db = setupTestDatabase()
-const MODEL = 'claude-sonnet-5'
+const MODEL = 'claude-opus-5-5'
 const TOKEN = 'sk-ant-oat01-SUBSCRIPTION-proxy-sentinel-token-never-echoed'
 const ENV_KEY = 'sk-ant-api03-env-key-for-subscription-tests-000'
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 1))

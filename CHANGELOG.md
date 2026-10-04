@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Coding sessions default to Opus 5.5.** A new Claude Code session starts on `claude-opus-5-5`
+  (it heads the Setup page's model list too); a deployment whose stored session policy names a model
+  keeps it until changed on Setup → Coding agents. The composer's picker still switches per message.
+- **The sessions list names each session's agent and model.** An app's Sessions tab has an Agent
+  column (Claude Code or Codex, with the model it runs now), since the agent is fixed when the
+  session starts; `sessionSummarySchema` (and `launch sessions ls --json`) carry `runtime`,
+  `credentialSource` and `model`.
 - **Write to a coding session while it works: queue the message, or send it now.** The composer
   stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
   the turn and runs the message next, resuming the conversation, with one line telling Claude its
