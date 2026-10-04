@@ -6,7 +6,10 @@
 name = "launch"
 main = "src/worker.ts"
 compatibility_date = "2026-06-01"
-compatibility_flags = ["nodejs_compat"]
+# global_fetch_strictly_public: Launch fetches its apps on its OWN zone (`<slug>.<domain>/api/health`,
+# deploy and thumbnail checks). Without it a same-zone fetch skips the app's Worker and goes to the
+# origin (the wildcard's 100:: placeholder), so every health probe failed while the app was up.
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 # Custom domain (wrangler creates the DNS record on deploy). Uncomment once the zone exists.
 # routes = [{ pattern = "launch.clewro.com", custom_domain = true }]

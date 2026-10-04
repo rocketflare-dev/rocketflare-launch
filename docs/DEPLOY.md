@@ -119,7 +119,7 @@ hidden gap. `apps/web/tests/config/wrangler-parity.test.ts` enforces the table b
 
 | Must be **identical** | Why |
 |---|---|
-| `main`, `compatibility_date`, `compatibility_flags = ["nodejs_compat"]` | same runtime semantics |
+| `main`, `compatibility_date`, `compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]` | same runtime semantics; the second lets Launch reach the apps on its own zone (health, deploy checks) through their Workers instead of the origin |
 | every `binding` name, every DO `class_name`, `[[migrations]]` | application code never branches on environment |
 | `[limits]` (present in both or neither) | Workflows bound CPU per step by it — see below |
 | `[triggers].crons` | the dispatcher table in `scheduled.ts` is one file |

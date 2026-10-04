@@ -194,6 +194,8 @@ describe('wrangler parity: must match', () => {
     expect(names(prod, 'kv_namespaces', 'binding')).toContain('RATE_LIMIT_KV')
     expect(get(prod, 'assets.binding')).toBe('ASSETS')
     expect(prod.compatibility_flags).toContain('nodejs_compat')
+    // Launch probes its apps on its own zone: without this a same-zone fetch skips their Workers
+    expect(prod.compatibility_flags).toContain('global_fetch_strictly_public')
   })
 
   it("both files bind Launch P2's create and teardown Workflows under account-scoped names", () => {

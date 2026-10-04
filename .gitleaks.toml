@@ -20,6 +20,11 @@ regexes = [
   '''^dGhlIHNhbXBsZSBub25jZQ==$''',
   # A doc comment in services/launch/github-app.ts that NAMES the PKCS#1 header — no key follows it.
   '''^-----BEGIN RSA PRIVATE KEY-----`\)\. WebCrypto and `jose` import''',
+  # Session redaction fixtures (session-land{,-e2e}.test.ts): made-up GitHub tokens, never real.
+  '''^ghp_abcdefghijklmnopqrstuvwxyz0123456789$''',
+  '''^ghp_e2eSECRETabcdefghijklmnopqrstuvwxyz''',
+  # claude-login-driver.test.ts: Anthropic's public `anthropic-beta` flag names, not a key.
+  '''^interleaved-thinking-2025-05-14$''',
   # provision-setup.test.ts' made-up GitHub App key: a PEM header around the literal `MIIfake`.
   '''-----BEGIN RSA PRIVATE KEY-----\\nMIIfake\\n-----END RSA PRIVATE KEY-----''',
 ]

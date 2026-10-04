@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **App health checks work when Launch and its apps share a zone.** Launch's Worker now has
+  `global_fetch_strictly_public`. Without it, a fetch to `<slug>.<domain>` from a Worker on the same
+  zone went to the origin, not the app's Worker, so every probe failed while the app was up.
 - **`pnpm provision setup` runs each Setup credential's check**, as the Setup page does on save.
   Before, it only sealed the values, so the Cloudflare zone id was never recorded and creating an
   app failed at "Create the Workers" until someone pressed Check.
