@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Write to a coding session while it works: queue the message, or send it now.** The composer
+  stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
+  the turn and runs the message next, resuming the conversation, with one line telling Claude its
+  last turn was cut off (the `session-interrupted` prompt, editable in Settings). One message
+  waits at most; it shows as a muted bubble with Withdraw (`POST /api/sessions/:id/queued/withdraw`)
+  and survives a reload (the session's new `queuedMessage`). A stop takes up to about 7 s: the
+  turn checks for it every 2 s, then gives Claude Code 5 s to exit (`docs/CONCEPTS.md` §18.11).
 - **Coding sessions offer the current Claude models, and the model can change per message.**
   Claude Code sessions now pick from Sonnet 5 (the new default), Opus 5.5, Fable 5.1 and Haiku 4.5,
   all priced from Anthropic's published rates (the 4.x prices stay, so older usage rows and

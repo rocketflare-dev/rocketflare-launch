@@ -33,7 +33,7 @@ import {
   type SessionListQuery,
   type SessionStatus,
   type SessionSummary,
-  type SessionTurnRequest,
+  type SessionTurnRequestInput,
   type ShipLandingStage,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
@@ -119,9 +119,22 @@ export function sessionListPollInterval(
   return items?.some(s => sessionIsMoving(s.status)) ? SESSION_POLL_MS : false
 }
 
-/** A turn is queued or running: the composer offers Cancel instead of Send. Pure. */
+/** A turn is queued or running: nothing else (a ship) may start, and Stop is offered. Pure. */
 export function turnInProgress(session: Pick<Session, 'status' | 'pendingMessage'>): boolean {
   return session.status === 'working' || session.pendingMessage
+}
+
+/**
+ * What the composer's send does now. Pure:
+ * - `full` — a message already waits (one at most): nothing more until it starts or is withdrawn;
+ * - `queue` — a turn is running: the message waits for it (Enter, Queue) or stops it (Send now);
+ * - `send` — the message runs as soon as the session can.
+ */
+export function composerSendMode(
+  session: Pick<Session, 'status' | 'pendingMessage'>
+): 'send' | 'queue' | 'full' {
+  if (session.pendingMessage) return 'full'
+  return session.status === 'working' ? 'queue' : 'send'
 }
 
 /**
@@ -205,7 +218,7 @@ function useSessionAction<TBody = void>(
  * when the person picked another one than the session's (the caller decides).
  */
 export function useSendTurn(id: string) {
-  return useSessionAction<SessionTurnRequest>(id, 'turns', { toast: false })
+  return useSessionAction<SessionTurnRequestInput>(id, 'turns', { toast: false })
 }
 
 export function useShipSession(id: string) {
@@ -259,6 +272,14 @@ export function usePendingBudgetApproval(sessionId: string, enabled: boolean) {
       item => item.context.kind === 'session.budget' && item.context.sessionId === sessionId
     ) ?? null
   )
+}
+
+/**
+ * `POST /:id/queued/withdraw` — take the waiting message back (while a turn runs too). No toast:
+ * a 409 `nothing_queued` means it already started, which the transcript shows.
+ */
+export function useWithdrawQueued(id: string) {
+  return useSessionAction(id, 'queued/withdraw', { toast: false })
 }
 
 /** `POST /:id/cancel` — the turn polls `cancel_requested_at` and stops within a couple of seconds. */

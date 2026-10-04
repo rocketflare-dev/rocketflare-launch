@@ -1901,6 +1901,23 @@ The page reads the rows (`GET /:id/events?afterSeq=`, paged by `nextSeq`) and us
 `launch.session.event` CUSTOM event, `SESSION_CUSTOM_EVENTS` in `@launch/shared/launch-sessions`)
 only as a cadence.
 
+**Messages while a turn runs** (`POST /:id/turns { mode }`): one message may wait (the
+`pending_message` slot, 409 `turn_in_progress` when it is full). Behind a `working` turn it is
+QUEUED (`mode: 'queue'`, the default) — the loop's next `inspect` runs it when the turn ends — or
+it INTERRUPTS (`mode: 'interrupt'`, the composer's Send now): the SAME compare-and-set that
+stores the message sets `cancel_requested_at` when the row is still `working`, so the stop and the
+message cannot be split. The turn ends `turn.interrupted { cancelled }`, an end path that never
+touches `pending_message`, and the message runs next with `--resume`; a turn whose previous turn
+ended that way gets the `session-interrupted` prompt (one line: the last turn was cut off, this
+is the new instruction) before the message in the command, never in `user.message`. Queuing
+behind a running turn does not move `last_activity_at` (the turn's heartbeat), and the route
+reconciles instead of waking — as `/cancel` does, so a stale heartbeat is salvaged at once.
+`POST /:id/queued/withdraw` takes the waiting message (its sender and `pending_model`) back while
+a turn runs, which `/cancel` cannot — it stops the turn and keeps the message; 409
+`nothing_queued`. The detail carries the text as `queuedMessage` (beside the `pendingMessage`
+flag), which the page draws as a muted "Runs when this turn ends" bubble with Withdraw. **Latency**:
+a Send now waits for the watcher's 2 s poll plus the 5 s kill grace (`TURN_KILL_GRACE_SECONDS`)
+before the next turn starts — acceptable for v1.
 **The model, per message**: the session's model is `policy.model`, frozen at create
 (`DEFAULT_SESSION_POLICY` is `claude-sonnet-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
 Sonnet 5, Opus 5.5, Fable 5.1, Haiku 4.5 — every one priced). `POST /:id/turns { model }` switches
@@ -1943,7 +1960,9 @@ requests from the Workers runtime, §18.22-B — so no proxy sees them, and the 
 Every other proxied turn is metered by its proxy alone (the turn records nothing of its own, so
 nothing is counted twice).
 
-**Known gaps:** a response the sandbox abandons mid-stream is never metered (the meter records at
+**Known gaps:** that Claude Code resumes cleanly after Send now's SIGTERM mid-tool, and accepts a
+new `--model` on `--resume`, is proven with fakes only — not yet in a real sandbox
+(`spikes/s8-claude-image-input/RESULT.md`); a response the sandbox abandons mid-stream is never metered (the meter records at
 the body's end); the liveness probe is proven with the `FakeSandbox` only (`die()`: a stream that
 goes quiet, then an empty container) — that a probe into a dead container deployed boots an empty
 one (or times out) rather than hanging past its 20 s bound is from session d9124cbb's checkpoint,

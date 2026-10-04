@@ -70,6 +70,7 @@ describe('/api/ai/agent-models', () => {
       'chat-compaction',
       'evals-judge',
       'research-topic',
+      'session-interrupted',
       'session-ship-fix',
       'session-ship-summary',
       'session-system-note',

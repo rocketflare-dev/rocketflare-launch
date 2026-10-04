@@ -45,7 +45,9 @@
  *    reached → `rejected`, an `error` event, and the message is dropped.
  * 3. A compare-and-set to `working` (turn_count + 1, pending_message cleared, cancel cleared — and
  *    `pending_model`, when the message asked for one, moved onto `policy.model`), then
- *    `user.message` and `turn.start` (naming the model the turn runs on).
+ *    `user.message` and `turn.start` (naming the model the turn runs on). When the turn before
+ *    was stopped (`turn.interrupted { cancelled }` — Stop, or a message sent with `interrupt`),
+ *    the command's message starts with the `session-interrupted` line; `user.message` does not.
  * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`: each
  *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
  *    `system.init`'s session id is stored at once (the next turn `--resume`s it). **A resume that
@@ -93,6 +95,7 @@ import {
   SESSION_REALTIME_ENTITY,
   type SessionPolicy,
   sessionShipCiDataSchema,
+  sessionTurnInterruptedDataSchema,
 } from '@launch/shared/launch-sessions'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
@@ -558,6 +561,12 @@ export async function runTurn(
   if (!claimed) return { status: 'skipped', sessionId }
   const turn = claimed.turnCount
   const turnPolicy = resolveSessionPolicy(claimed.policy)
+  // After a Stop (or Send now) the agent is told its last turn was cut off, so it takes this
+  // message as the new instruction rather than finishing the old one. The transcript keeps the
+  // person's own words.
+  const prompt = (await previousTurnStopped(db, claimed))
+    ? `${await resolvePrompt(db, claimed.tenantId, 'session-interrupted', {})}\n\n${message}`
+    : message
 
   writer.append(
     {
@@ -576,7 +585,7 @@ export async function runTurn(
     ports,
     claimed,
     writer,
-    { turn, message, policy: turnPolicy },
+    { turn, message: prompt, policy: turnPolicy },
     opts
   )
   const outcome: TurnOutcome =
@@ -609,6 +618,24 @@ export async function runTurn(
     )
   changed()
   return outcome
+}
+
+/** Whether the session's last turn ended `turn.interrupted { cancelled }` — a Stop or a Send now. */
+async function previousTurnStopped(db: Database, row: SessionRow): Promise<boolean> {
+  const [last] = await db
+    .select({ type: sessionEvents.type, data: sessionEvents.data })
+    .from(sessionEvents)
+    .where(
+      and(
+        eq(sessionEvents.tenantId, row.tenantId),
+        eq(sessionEvents.sessionId, row.id),
+        inArray(sessionEvents.type, ['turn.end', 'turn.failed', 'turn.interrupted'])
+      )
+    )
+    .orderBy(desc(sessionEvents.seq))
+    .limit(1)
+  if (last?.type !== 'turn.interrupted') return false
+  return sessionTurnInterruptedDataSchema.safeParse(last.data).data?.reason === 'cancelled'
 }
 
 /** What one executed turn came to — before any status is written. */

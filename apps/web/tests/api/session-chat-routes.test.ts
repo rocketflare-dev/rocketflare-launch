@@ -81,7 +81,7 @@ describe('POST /api/sessions/:id/turns', () => {
     expect((await reload(row)).pendingMessage).toBe('Hi')
   })
 
-  it('409s: working → turn_in_progress, blocked → session_budget_exhausted, over → session_not_active', async () => {
+  it('409s: a message already waiting → turn_in_progress, blocked → session_budget_exhausted, over → session_not_active', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const cases = [
       ['working', 'turn_in_progress'],
@@ -90,7 +90,10 @@ describe('POST /api/sessions/:id/turns', () => {
       ['ended', 'session_not_active'],
     ] as const
     for (const [status, code] of cases) {
-      const row = await insertSession(db, f, { status })
+      const row = await insertSession(db, f, {
+        status,
+        ...(status === 'working' ? { pendingMessage: 'first' } : {}),
+      })
       const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, createTestEnv(), {
         message: 'x',
       })
@@ -139,6 +142,82 @@ describe('POST /api/sessions/:id/turns', () => {
     expect((await reload(same)).pendingModel).toBeNull()
   })
 
+  it('while a turn runs a message is queued behind it: stored, no cancel, the turn not woken; the detail carries its text', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'working', lastActivityAt: new Date() })
+    const env = await envWithInstance(row)
+    const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
+      message: 'Then the footer',
+    })
+    expect(res.status).toBe(202)
+    const body = sessionDetailResponseSchema.parse(await json(res))
+    expect(body.session).toMatchObject({
+      status: 'working',
+      pendingMessage: true,
+      queuedMessage: 'Then the footer',
+      cancelRequested: false,
+    })
+    expect(await reload(row)).toMatchObject({
+      status: 'working',
+      pendingMessage: 'Then the footer',
+      cancelRequestedAt: null,
+    })
+    // Mid-turn the step is not waiting on an event: nothing is sent (the loop's next inspect runs it).
+    expect(workflowOf(env).events).toEqual([])
+
+    // One message waits at most, whatever the mode.
+    for (const mode of ['queue', 'interrupt'] as const) {
+      const again = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
+        message: 'and more',
+        mode,
+      })
+      expect(again.status, mode).toBe(409)
+      expect(await json(again)).toMatchObject({ code: 'turn_in_progress' })
+    }
+    expect(await reload(row)).toMatchObject({
+      pendingMessage: 'Then the footer',
+      cancelRequestedAt: null,
+    })
+  })
+
+  it('interrupt: the message and the stop are one write; on a session not running it simply queues', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const working = await insertSession(db, f, {
+      status: 'working',
+      lastActivityAt: new Date(),
+      pendingModel: null,
+    })
+    const env = await envWithInstance(working)
+    const res = await post(`/api/sessions/${working.id}/turns`, f.cookie, env, {
+      message: 'Stop, do this instead',
+      mode: 'interrupt',
+      model: 'claude-opus-5-5',
+    })
+    expect(res.status).toBe(202)
+    expect(sessionDetailResponseSchema.parse(await json(res)).session).toMatchObject({
+      cancelRequested: true,
+      queuedMessage: 'Stop, do this instead',
+    })
+    const after = await reload(working)
+    expect(after).toMatchObject({
+      status: 'working',
+      pendingMessage: 'Stop, do this instead',
+      pendingModel: 'claude-opus-5-5',
+      pendingMessageUserId: f.user.id,
+    })
+    expect(after.cancelRequestedAt).not.toBeNull()
+
+    const ready = await insertSession(db, f, { status: 'ready' })
+    const readyEnv = await envWithInstance(ready)
+    const queued = await post(`/api/sessions/${ready.id}/turns`, f.cookie, readyEnv, {
+      message: 'Go',
+      mode: 'interrupt',
+    })
+    expect(queued.status).toBe(202)
+    expect(await reload(ready)).toMatchObject({ pendingMessage: 'Go', cancelRequestedAt: null })
+    expect(workflowOf(readyEnv).events).toHaveLength(1)
+  })
+
   it('a message to a suspended session also asks for a resume; a lost wake still stores it', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const row = await insertSession(db, f, { status: 'suspended' })
@@ -184,7 +263,7 @@ describe('POST /api/sessions/:id/turns', () => {
       await createTestSession(db, colleague.id, f.tenant.id)
     )
     for (const cookie of [otherCookie, colleagueCookie]) {
-      for (const path of ['turns', 'cancel', 'budget']) {
+      for (const path of ['turns', 'cancel', 'budget', 'queued/withdraw']) {
         const res = await post(`/api/sessions/${row.id}/${path}`, cookie, createTestEnv(), {
           message: 'x',
           extraUsd: 5,
@@ -218,6 +297,37 @@ describe('POST /api/sessions/:id/cancel', () => {
     const none = await post(`/api/sessions/${idle.id}/cancel`, f.cookie, createTestEnv())
     expect(none.status).toBe(409)
     expect(await json(none)).toMatchObject({ code: 'no_turn_in_progress' })
+  })
+})
+
+describe('POST /api/sessions/:id/queued/withdraw', () => {
+  it('takes the waiting message back while a turn runs — the turn keeps going; nothing waiting → 409 nothing_queued', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, {
+      status: 'working',
+      pendingMessage: 'later',
+      pendingMessageUserId: f.user.id,
+      pendingModel: 'claude-opus-5-5',
+    })
+    const res = await post(`/api/sessions/${row.id}/queued/withdraw`, f.cookie, createTestEnv())
+    expect(res.status).toBe(200)
+    expect(sessionDetailResponseSchema.parse(await json(res)).session).toMatchObject({
+      status: 'working',
+      pendingMessage: false,
+      queuedMessage: null,
+      cancelRequested: false,
+    })
+    expect(await reload(row)).toMatchObject({
+      status: 'working',
+      pendingMessage: null,
+      pendingMessageUserId: null,
+      pendingModel: null,
+      cancelRequestedAt: null,
+    })
+
+    const again = await post(`/api/sessions/${row.id}/queued/withdraw`, f.cookie, createTestEnv())
+    expect(again.status).toBe(409)
+    expect(await json(again)).toMatchObject({ code: 'nothing_queued' })
   })
 })
 

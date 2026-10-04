@@ -3,9 +3,12 @@
  * is a new line** (⌘/Ctrl+Enter sends too, for people whose fingers expect it), the box grows with
  * its text up to a cap, and focus stays in it after a send so the next thought can start at once.
  *
- * While a turn is queued or running the Send button becomes **Stop** (`POST /:id/cancel`); once a
- * stop is requested it reads "Stopping…" and waits for the turn to end — the Workflow polls for
- * it every couple of seconds.
+ * While a turn RUNS the box stays open: **Enter (or Queue) queues** the message — it runs when the
+ * turn ends — and **Send now** stops the turn and sends it (`mode: 'interrupt'`, one write on the
+ * server); **Stop** stays beside them (`POST /:id/cancel`), and once a stop is requested it reads
+ * "Stopping…" and waits for the turn to end — the Workflow polls for it every couple of seconds.
+ * One message waits at most: while one does, the send controls are off with a one-line hint (the
+ * waiting bubble above has Withdraw).
  *
  * When the session cannot take a message the composer says WHY in one sentence instead of sitting
  * there disabled (asleep → resume; over budget → the banner above; ended → there is nothing to
@@ -23,7 +26,7 @@ import { shortModelName } from '@launch/shared/ai/config'
 import { AGENT_RUNTIME_MODELS } from '@launch/shared/launch-agents'
 import { SESSION_MESSAGE_MAX, type Session } from '@launch/shared/launch-sessions'
 import { forwardRef, type KeyboardEvent, useImperativeHandle, useLayoutEffect, useRef } from 'react'
-import { turnInProgress } from '@/ui/hooks/useSessions'
+import { composerSendMode, turnInProgress } from '@/ui/hooks/useSessions'
 
 export interface SessionComposerHandle {
   focus: () => void
@@ -33,7 +36,8 @@ interface SessionComposerProps {
   session: Session
   value: string
   onChange: (value: string) => void
-  onSend: (text: string) => void
+  /** `queue` behind a running turn (or simply send); `interrupt` stops the running turn first. */
+  onSend: (text: string, mode: 'queue' | 'interrupt') => void
   onCancel: () => void
   /** The model the next message runs on, and a new pick. */
   model: string
@@ -119,13 +123,15 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
 
     const blocked = composerBlockedReason(session)
     const busy = turnInProgress(session)
+    const mode = composerSendMode(session)
+    const running = session.status === 'working'
     const stopping = session.cancelRequested || cancelling
     const trimmed = value.trim()
     const tooLong = trimmed.length > SESSION_MESSAGE_MAX
-    const canSend = !blocked && !busy && !sending && trimmed.length > 0 && !tooLong
+    const canSend = !blocked && mode !== 'full' && !sending && trimmed.length > 0 && !tooLong
 
-    const submit = () => {
-      if (canSend) onSend(trimmed)
+    const submit = (how: 'queue' | 'interrupt' = 'queue') => {
+      if (canSend) onSend(trimmed, how)
     }
 
     const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -166,13 +172,34 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
             rows={1}
             className="flex-1 resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-muted"
             placeholder={
-              busy ? 'Claude is working — you can write the next message' : 'Describe a change…'
+              running ? 'Claude is working — write the next message' : 'Describe a change…'
             }
             value={value}
             onChange={event => onChange(event.target.value)}
             onKeyDown={onKeyDown}
             aria-describedby="session-composer-hint"
           />
+          {running && (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => submit('interrupt')}
+                disabled={!canSend || stopping}
+                title="Stop this turn and send the message now"
+              >
+                Send now
+              </button>
+              <button
+                type="submit"
+                className="btn btn-sm btn-primary"
+                disabled={!canSend}
+                title="Run it when this turn ends (Enter)"
+              >
+                {sending ? <span className="loading loading-spinner loading-xs" /> : 'Queue'}
+              </button>
+            </>
+          )}
           {busy ? (
             <button
               type="button"
@@ -211,8 +238,13 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
           <span>
             {stopping ? (
               'Stopping after the current step…'
-            ) : busy ? (
-              'Working… press Stop to interrupt.'
+            ) : mode === 'full' ? (
+              'A message is already waiting — withdraw it to change it.'
+            ) : running ? (
+              <>
+                <kbd className="kbd kbd-xs">Enter</kbd> queues it for when this turn ends · Send now
+                stops the turn first
+              </>
             ) : (
               <>
                 <kbd className="kbd kbd-xs">Enter</kbd> to send ·{' '}

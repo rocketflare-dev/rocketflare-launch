@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { mergeSessionEvents } from '@/ui/hooks/useSessionStream'
 import {
+  composerSendMode,
   SESSION_LANDING_POLL_MS,
   SESSION_POLL_MS,
   sessionHasSandbox,
@@ -255,6 +256,11 @@ describe('polling decisions', () => {
   it('knows when a turn is in progress and when there is a sandbox to preview', () => {
     expect(turnInProgress({ status: 'ready', pendingMessage: true })).toBe(true)
     expect(turnInProgress({ status: 'ready', pendingMessage: false })).toBe(false)
+    // The composer: a running turn takes ONE message behind it; a waiting one fills the slot.
+    expect(composerSendMode({ status: 'ready', pendingMessage: false })).toBe('send')
+    expect(composerSendMode({ status: 'working', pendingMessage: false })).toBe('queue')
+    expect(composerSendMode({ status: 'working', pendingMessage: true })).toBe('full')
+    expect(composerSendMode({ status: 'booting', pendingMessage: true })).toBe('full')
     expect(sessionHasSandbox('shipping')).toBe(true)
     expect(sessionHasSandbox('suspended')).toBe(false)
   })

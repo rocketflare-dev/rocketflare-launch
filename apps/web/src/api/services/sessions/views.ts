@@ -4,7 +4,8 @@
  * `toSessionDetail` (`chat.ts`, slice 3c), which every route answering with one session uses.
  *
  * What is never here, by construction: `preview_token`, `db_uri_sealed`, `github_token_sealed`,
- * `pending_message`'s text (only whether one is waiting), `sandbox_id`, `db`.
+ * `pending_message`'s text (only whether one is waiting — the detail carries it, `queuedMessage`),
+ * `sandbox_id`, `db`.
  */
 import type { AdminSession, SessionSummary } from '@launch/shared/launch-sessions'
 import type { SessionRow } from '../../../db/schema'

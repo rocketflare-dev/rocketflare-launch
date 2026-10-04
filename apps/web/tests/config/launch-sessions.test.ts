@@ -135,7 +135,14 @@ describe('policy and money', () => {
 
 describe('requests', () => {
   it('a turn is 1..20 000 characters, trimmed', () => {
-    expect(sessionTurnRequestSchema.parse({ message: '  hi  ' })).toEqual({ message: 'hi' })
+    expect(sessionTurnRequestSchema.parse({ message: '  hi  ' })).toEqual({
+      message: 'hi',
+      mode: 'queue',
+    })
+    expect(
+      sessionTurnRequestSchema.parse({ message: 'hi', mode: 'interrupt', model: 'claude-opus-5-5' })
+    ).toEqual({ message: 'hi', mode: 'interrupt', model: 'claude-opus-5-5' })
+    expect(sessionTurnRequestSchema.safeParse({ message: 'hi', mode: 'now' }).success).toBe(false)
     expect(sessionTurnRequestSchema.safeParse({ message: '   ' }).success).toBe(false)
     expect(
       sessionTurnRequestSchema.safeParse({ message: 'x'.repeat(SESSION_MESSAGE_MAX + 1) }).success

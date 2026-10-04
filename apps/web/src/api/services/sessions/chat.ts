@@ -4,10 +4,17 @@
  * row — the row is the truth and the wake carries nothing.
  *
  * - `requestTurn`: stores `pending_message` with a compare-and-set that also IS the 409 — one
- *   message may wait at a time, and none while a turn is `working` (`turn_in_progress`); a
- *   `blocked` session is `session_budget_exhausted`. A message to a `suspended` session also asks
- *   for a `resume`, so the Workflow boots again and then runs it; one sent while the session is
- *   still booting waits for `ready`.
+ *   message may wait at a time (`turn_in_progress` when the slot is full); a `blocked` session is
+ *   `session_budget_exhausted`. A message to a `suspended` session also asks for a `resume`, so
+ *   the Workflow boots again and then runs it; one sent while the session is still booting waits
+ *   for `ready`. **While a turn is `working`** the message is QUEUED (`mode: 'queue'`, it runs when
+ *   the turn ends — the loop's next `inspect` finds it) or INTERRUPTS (`mode: 'interrupt'`): the
+ *   same UPDATE also sets `cancel_requested_at` when the row is still `working`, so the stop and
+ *   the message cannot be split by a race. The turn's watcher kills the process within 2 s plus
+ *   the 5 s kill grace, the turn ends `turn.interrupted { cancelled }` with the message untouched,
+ *   and it runs next with `--resume`.
+ * - `withdrawQueued`: drops the waiting message (and its sender and model) — the only way to take
+ *   one back while a turn runs; 409 `nothing_queued` when the slot is empty.
  * - A message may switch the model (`model`): one the session's runtime offers
  *   (`AGENT_RUNTIME_MODELS`) and the pricing table can price, else 400 `model_not_offered`. A
  *   different one is stored as `pending_model` beside the message; the turn's claim moves it onto
@@ -33,7 +40,7 @@ import {
   type Session,
   type SessionStatus,
 } from '@launch/shared/launch-sessions'
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type SessionRow, sessions } from '../../../db/schema'
 import type { AppBindings } from '../../types'
@@ -56,6 +63,7 @@ export const TURN_ACCEPTING_STATUSES = [
   'booting',
   'ready',
   'suspended',
+  'working',
 ] as const satisfies readonly SessionStatus[]
 
 /** The Workflow binding, or 503 `sessions_not_configured` — checked BEFORE any write. */
@@ -94,8 +102,11 @@ function turnConflict(row: SessionRow): ConflictError {
       'session_budget_exhausted'
     )
   }
-  if (row.status === 'working' || row.pendingMessage) {
-    return new ConflictError('A turn is already in progress', 'turn_in_progress')
+  if (row.pendingMessage !== null) {
+    return new ConflictError(
+      'A message is already waiting to run. Withdraw it, or wait for it to start.',
+      'turn_in_progress'
+    )
   }
   return new ConflictError(`This session is ${row.status}`, 'session_not_active')
 }
@@ -141,6 +152,8 @@ export interface TurnRequest {
   message: string
   /** Switch the session to this model from this turn on (see the header). */
   model?: string
+  /** While a turn runs: wait for it (`queue`, the default) or stop it (`interrupt`). */
+  mode?: 'queue' | 'interrupt'
 }
 
 /** Store the next message (see the header) from `userId`. Returns the updated row. */
@@ -163,11 +176,22 @@ export async function requestTurn(
       pendingMessage: request.message,
       pendingMessageUserId: userId,
       pendingModel,
+      // Interrupt: the stop is asked for in the SAME write as the message, and only of a turn
+      // that is still running (read from the row, not from what the route saw).
+      ...(request.mode === 'interrupt'
+        ? {
+            cancelRequestedAt: sql`case when ${sessions.status} = 'working'
+              then ${now.toISOString()}::timestamptz else ${sessions.cancelRequestedAt} end`,
+          }
+        : {}),
       // A suspended session has no sandbox: ask for the resume that will run it.
       ...(row.status === 'suspended' && !row.requestedAction
         ? { requestedAction: 'resume' as const }
         : {}),
-      lastActivityAt: now,
+      // A running turn's `last_activity_at` is its HEARTBEAT (`reconcile.ts`): a message queued
+      // behind it must not make a dead turn look alive.
+      lastActivityAt: sql`case when ${sessions.status} = 'working'
+        then ${sessions.lastActivityAt} else ${now.toISOString()}::timestamptz end`,
       updatedAt: now,
     })
     .where(
@@ -218,6 +242,28 @@ export async function requestCancel(
   throw new ConflictError('There is no turn to cancel', 'no_turn_in_progress')
 }
 
+/** Take back the waiting message (see the header). Returns the updated row. */
+export async function withdrawQueued(
+  db: Database,
+  row: SessionRow,
+  now: Date = new Date()
+): Promise<SessionRow> {
+  const [withdrawn] = await db
+    .update(sessions)
+    .set({ pendingMessage: null, pendingMessageUserId: null, pendingModel: null, updatedAt: now })
+    .where(
+      and(
+        eq(sessions.tenantId, row.tenantId),
+        eq(sessions.id, row.id),
+        isNotNull(sessions.pendingMessage)
+      )
+    )
+    .returning()
+  if (!withdrawn)
+    throw new ConflictError('There is no waiting message to withdraw', 'nothing_queued')
+  return withdrawn
+}
+
 /** The row as `sessionSchema`. */
 export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Session {
   return {
@@ -240,6 +286,7 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     headSha: row.headSha,
     requestedAction: row.requestedAction,
     pendingMessage: row.pendingMessage !== null,
+    queuedMessage: row.pendingMessage,
     cancelRequested: row.cancelRequestedAt !== null,
     imageVersion: row.imageVersion,
     policy: resolveSessionPolicy(row.policy),

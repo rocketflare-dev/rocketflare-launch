@@ -852,12 +852,87 @@ describe('SessionPage', () => {
     const box = await screen.findByLabelText('Message the coding agent')
     fireEvent.change(box, { target: { value: 'And the footer too' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(await screen.findByText(/still working on the last message/)).toHaveAttribute(
-      'role',
-      'status'
-    )
+    expect(await screen.findByText(/already waiting to run/)).toHaveAttribute('role', 'status')
     expect(box).toHaveValue('And the footer too')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('while a turn runs, Enter queues the message: a muted bubble that runs when the turn ends', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf({ status: 'working' }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+      [`POST ${BASE}/turns`]: () =>
+        detailOf({ status: 'working', pendingMessage: true, queuedMessage: 'Then the footer' }),
+    })
+    const box = await screen.findByLabelText('Message the coding agent')
+    expect(box).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Stop this turn' })).toBeInTheDocument()
+    fireEvent.change(box, { target: { value: 'Then the footer' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({ message: 'Then the footer' })
+    )
+    const queued = await screen.findByTestId('queued-message')
+    expect(queued).toHaveTextContent('Then the footer')
+    expect(queued).toHaveTextContent('Runs when this turn ends')
+    // Still the one working bubble: the queued message is not a turn of its own yet.
+    expect(screen.getAllByTestId('turn-working')).toHaveLength(1)
+    // One waits at most: the send controls are off, with the reason.
+    expect(await screen.findByRole('button', { name: 'Queue' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled()
+    expect(screen.getByText(/already waiting — withdraw it/)).toBeInTheDocument()
+  })
+
+  it('Send now interrupts the running turn with the message', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf({ status: 'working' }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+      [`POST ${BASE}/turns`]: () =>
+        detailOf({
+          status: 'working',
+          pendingMessage: true,
+          queuedMessage: 'Use a serif font',
+          cancelRequested: true,
+        }),
+    })
+    const box = await screen.findByLabelText('Message the coding agent')
+    fireEvent.change(box, { target: { value: 'Use a serif font' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({
+        message: 'Use a serif font',
+        mode: 'interrupt',
+      })
+    )
+    expect(await screen.findByTestId('queued-message')).toHaveTextContent(
+      'Runs as soon as Claude stops'
+    )
+    expect(screen.getByTestId('turn-working')).toHaveTextContent('Stopping…')
+  })
+
+  it('shows a queued message after a reload, and Withdraw puts it back in the box', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf({
+        status: 'working',
+        pendingMessage: true,
+        queuedMessage: 'Later, the footer',
+      }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+      [`POST ${BASE}/queued/withdraw`]: () => detailOf({ status: 'working' }),
+    })
+    const queued = await screen.findByTestId('queued-message')
+    expect(queued).toHaveTextContent('Later, the footer')
+    fireEvent.click(within(queued).getByRole('button', { name: 'Withdraw' }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, i]) => String(u).endsWith('/queued/withdraw') && i?.method === 'POST'
+        )
+      ).toBe(true)
+    )
+    await waitFor(() => expect(screen.queryByTestId('queued-message')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Message the coding agent')).toHaveValue('Later, the footer')
+    expect(screen.getByRole('button', { name: 'Queue' })).toBeEnabled()
   })
 
   it('cancels the running turn with Stop', async () => {

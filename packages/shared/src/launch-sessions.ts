@@ -782,8 +782,16 @@ export const sessionTurnRequestSchema = z.object({
    * that is priced, else 400 `model_not_offered`. Absent: the session's current model.
    */
   model: z.string().trim().min(1).max(100).optional(),
+  /**
+   * While a turn runs: `queue` (the default) runs this message when the turn ends; `interrupt`
+   * also stops the turn — the same write asks for the cancel — so this message runs next, resuming
+   * the conversation. Either way one message waits at most (409 `turn_in_progress`).
+   */
+  mode: z.enum(['queue', 'interrupt']).default('queue'),
 })
 export type SessionTurnRequest = z.infer<typeof sessionTurnRequestSchema>
+/** What a client sends (`mode` may be left out). */
+export type SessionTurnRequestInput = z.input<typeof sessionTurnRequestSchema>
 
 /** `POST /api/sessions/:id/budget` — owners and admins; audited `session.budget.extended`. */
 export const extendBudgetSchema = z.object({
@@ -843,6 +851,11 @@ export const sessionSchema = sessionSummarySchema.extend({
   requestedAction: sessionActionSchema.nullable(),
   /** A turn is waiting for the Workflow to pick it up. */
   pendingMessage: z.boolean(),
+  /**
+   * The waiting message's text (null when none) — queued behind a running turn, or waiting for the
+   * sandbox — so a reload can show it. Withdrawn with `POST /:id/queued/withdraw`.
+   */
+  queuedMessage: z.string().nullable().default(null),
   cancelRequested: z.boolean(),
   imageVersion: z.string().nullable(),
   policy: sessionPolicySchema,
@@ -899,6 +912,11 @@ export type SessionEventsResponse = z.infer<typeof sessionEventsResponseSchema>
 
 /** `POST /api/sessions/:id/cancel`. */
 export const sessionCancelResponseSchema = z.object({ cancelRequested: z.literal(true) })
+
+/**
+ * `POST /api/sessions/:id/queued/withdraw` — no body; answers `sessionDetailResponseSchema` (the
+ * row with its waiting message gone), or 409 `nothing_queued`.
+ */
 
 /** `POST /api/sessions/:id/preview-grant` — load `url` in the iframe within `expiresAt`. */
 export const previewGrantResponseSchema = z.object({

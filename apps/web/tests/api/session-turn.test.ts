@@ -17,6 +17,7 @@ import {
   CONTAINER_LOST_MESSAGE,
   SESSION_BOOT_MARKER,
 } from '@/api/services/sessions/boot-marker'
+import { requestTurn } from '@/api/services/sessions/chat'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
@@ -319,6 +320,65 @@ describe('runTurn: a turn that does not finish', () => {
     })
     expect(events.map(e => e.type)).not.toContain('turn.end')
     expect(await reload(row)).toMatchObject({ status: 'ready', cancelRequestedAt: null })
+  })
+
+  it('Send now: the interrupt stops the turn, the message survives it and runs next with --resume, told the last turn was cut off', async () => {
+    const { row } = await readySession({ claudeSessionId: 'claude-sess-7' })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(
+          /Change the Home heading/,
+          claudeStreamJson({ sessionId: 'claude-sess-7', text: 'Working on it', hang: true })
+        )
+        .onProcess(
+          /Use a serif font/,
+          claudeStreamJson({ sessionId: 'claude-sess-7', text: 'Done.' })
+        )
+    )
+    // The person presses Send now once the turn is running: the route's own write.
+    const sb = ports.sandbox(row.id)
+    const start = sb.startProcess.bind(sb)
+    sb.startProcess = async (command, opts) => {
+      const proc = await start(command, opts)
+      if (command.includes('Change the Home heading')) {
+        await requestTurn(db, await reload(row), { message: 'Use a serif font', mode: 'interrupt' })
+      }
+      return proc
+    }
+
+    const first = await runTurn(db, ports, row, FAST)
+    expect(first).toMatchObject({ status: 'interrupted', reason: 'cancelled', turn: 1 })
+    // The cancel path leaves the waiting message alone: the loop's next inspect runs it.
+    expect(await reload(row)).toMatchObject({
+      status: 'ready',
+      cancelRequestedAt: null,
+      pendingMessage: 'Use a serif font',
+    })
+
+    const second = await runTurn(db, ports, row, FAST)
+    expect(second).toMatchObject({ status: 'completed', turn: 2 })
+    const sandbox = ports.sandboxes.get(row.id)
+    const [cut, next] = sandbox?.processes.map(p => p.command) ?? []
+    expect(cut).not.toContain('interrupted your previous turn')
+    expect(next).toContain('--resume claude-sess-7')
+    expect(next).toContain('The person interrupted your previous turn before it finished.')
+    expect(next).toContain('Use a serif font')
+    // The transcript keeps the person's own words.
+    const events = await eventsOf(row)
+    const said = events.filter(e => e.type === 'user.message').map(e => e.data)
+    expect(said).toEqual([
+      { text: 'Change the Home heading', userId: row.createdByUserId },
+      { text: 'Use a serif font', userId: row.createdByUserId },
+    ])
+    expect(events.map(e => e.type)).toContain('turn.interrupted')
+
+    // A turn after one that finished is not prefixed.
+    await db
+      .update(sessions)
+      .set({ pendingMessage: 'Use a serif font again' })
+      .where(eq(sessions.id, row.id))
+    await runTurn(db, ports, row, FAST)
+    expect(sandbox?.processes[2]?.command).not.toContain('interrupted your previous turn')
   })
 
   it('a cancel whose exit Launch never sees is escalated by pid (SIGTERM → grace → SIGKILL)', async () => {

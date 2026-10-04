@@ -152,6 +152,8 @@ Reply with ONE JSON object and nothing else:
 Describe only what the requests and the diff stat support; never invent behaviour, files or tests.
 Keep the body short: a sentence or two on the change, then a short list of what to look at.`
 
+const SESSION_INTERRUPTED_DEFAULT = `The person interrupted your previous turn before it finished. What follows is their new instruction: act on it, and do not carry on with the interrupted work unless it asks you to.`
+
 export const CORE_PROMPT_REGISTRY = {
   chat: {
     key: 'chat',
@@ -207,6 +209,14 @@ export const CORE_PROMPT_REGISTRY = {
       "The message of a ship's FIX turn (issue #1): Launch ran the gate itself and one step failed — this hands Claude Code that step's command and the tail of its output, to fix and nothing else. Launch re-runs the gate after it; the model never decides whether the gate passed.",
     variables: ['appName', 'userName', 'stepLabel', 'command', 'output', 'attempt', 'maxAttempts'],
     defaultText: SESSION_SHIP_FIX_DEFAULT,
+  },
+  'session-interrupted': {
+    key: 'session-interrupted',
+    title: 'Coding session: after an interrupt',
+    description:
+      "One line put before the person's message when the turn before it was stopped (Send now, or Stop and then a new message): its work was cut off, and this message is what to do now. Only the agent sees it; the transcript shows the person's own words.",
+    variables: [],
+    defaultText: SESSION_INTERRUPTED_DEFAULT,
   },
   'session-ship-summary': {
     key: 'session-ship-summary',

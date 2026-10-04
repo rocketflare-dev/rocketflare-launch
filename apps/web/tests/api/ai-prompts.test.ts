@@ -41,6 +41,7 @@ describe('/api/ai/prompts', () => {
       'evals-judge',
       'session-system-note',
       'session-ship-fix',
+      'session-interrupted',
       'session-ship-summary',
     ])
     expect(list.items[0]).toMatchObject({

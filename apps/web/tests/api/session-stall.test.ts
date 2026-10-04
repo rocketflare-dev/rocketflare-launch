@@ -784,6 +784,28 @@ describe('reconcile (a Workflow that died under a running turn) and the salvage'
       expect((await reload(row)).cancelRequestedAt).toBeNull()
     })
 
+    it('Send now (POST /turns, interrupt) with a stale heartbeat reconciles as /cancel does: terminated, restarted, the message kept for after the salvage', async () => {
+      const h = await harness()
+      const row = await working(h, 1)
+      const wf = workflowOf(h)
+      wf.setStatus(row.id, { status: 'running' })
+      const res = await request(
+        `/api/sessions/${row.id}/turns`,
+        { method: 'POST', headers: h.f.cookie },
+        { env: h.env, json: { message: 'Try it this way', mode: 'interrupt' } }
+      )
+      expect(res.status).toBe(202)
+      expect(wf.terminated).toEqual([row.id])
+      expect(wf.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+      const after = await reload(row)
+      expect(after).toMatchObject({
+        status: 'working',
+        instanceId: `${row.id}-r1`,
+        pendingMessage: 'Try it this way',
+      })
+      expect(after.cancelRequestedAt).toBeInstanceOf(Date)
+    })
+
     it('POST /cancel with a fresh heartbeat is unchanged: the live turn step reads it', async () => {
       const h = await harness()
       const row = await working(h, 0, { lastActivityAt: secondsAgo(5) })

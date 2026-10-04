@@ -11,6 +11,11 @@
  *   text back in the box.
  * - **A turn in progress is visible**: a "working" bubble with the dots at the end of the
  *   transcript, which also says "stopping" once a cancel is requested.
+ * - **A message queued behind a running turn** is a muted bubble after it — "Runs when this turn
+ *   ends" (or "as soon as Claude stops" after Send now) — with Withdraw, which puts the text back
+ *   in the box. It is the row's `queuedMessage`, so it survives a reload; the local optimistic
+ *   copy only bridges the send, and is dropped when the row says the message is gone without its
+ *   turn having started (withdrawn in another tab).
  * - **Auto-scroll follows the run timeline's rule** (`useStickToBottom`): only when the reader is
  *   at the bottom AND a new item arrived; otherwise a "Jump to latest" pill.
  * - **Over budget is a banner above the composer, not an error**: the person who may extend it gets
@@ -24,7 +29,12 @@ import { Link } from 'react-router-dom'
 import { ChatBubble } from '@/ui/components/ai/ChatBubble'
 import { formatCost } from '@/ui/components/ai/StatRows'
 import { SkeletonRows } from '@/ui/components/shared'
-import { turnInProgress, useCancelTurn, useSendTurn } from '@/ui/hooks/useSessions'
+import {
+  turnInProgress,
+  useCancelTurn,
+  useSendTurn,
+  useWithdrawQueued,
+} from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDuration } from '@/ui/lib/format'
 import { useStickToBottom } from '@/ui/pages/agents/run/timeline/useStickToBottom'
@@ -165,6 +175,41 @@ interface PendingMessage {
   text: string
   /** The newest row when it was sent: a `user.message` after this, with this text, is its copy. */
   afterSeq: number
+  /** The session's turn count when it was sent: a higher one means its turn has started. */
+  turnCount: number
+}
+
+function QueuedMessage({
+  text,
+  stopping,
+  onWithdraw,
+  withdrawing,
+}: {
+  text: string
+  stopping: boolean
+  onWithdraw: (() => void) | null
+  withdrawing: boolean
+}) {
+  return (
+    <div className="chat chat-end" data-testid="queued-message">
+      <div className="chat-bubble max-w-[80%] bg-base-200 text-secondary">
+        <span className="whitespace-pre-wrap break-words">{text}</span>
+      </div>
+      <div className="chat-footer mt-0.5 flex items-center gap-1.5 text-xs text-muted">
+        {stopping ? 'Runs as soon as Claude stops' : 'Runs when this turn ends'}
+        {onWithdraw && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={onWithdraw}
+            disabled={withdrawing}
+          >
+            Withdraw
+          </button>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export function SessionChat({
@@ -193,6 +238,7 @@ export function SessionChat({
   const composer = useRef<SessionComposerHandle>(null)
   const send = useSendTurn(session.id)
   const cancel = useCancelTurn(session.id)
+  const withdraw = useWithdrawQueued(session.id)
 
   const lastSeq = events.at(-1)?.seq ?? 0
   // The durable copy of the optimistic bubble has arrived.
@@ -207,42 +253,90 @@ export function SessionChat({
     if (durable) setPending(null)
   }, [events, pending])
 
-  const onSend = (text: string) => {
+  const running = session.status === 'working'
+  // The row says nothing waits, and no turn started since the send: it was withdrawn elsewhere.
+  useEffect(() => {
+    if (
+      pending &&
+      !send.isPending &&
+      running &&
+      session.queuedMessage === null &&
+      session.turnCount === pending.turnCount
+    ) {
+      setPending(null)
+    }
+  }, [pending, send.isPending, running, session.queuedMessage, session.turnCount])
+
+  const onSend = (text: string, mode: 'queue' | 'interrupt') => {
     setSendError(null)
-    setPending({ text, afterSeq: lastSeq })
+    setPending({ text, afterSeq: lastSeq, turnCount: session.turnCount })
     setDraft('')
-    send.mutate(model === session.policy.model ? { message: text } : { message: text, model }, {
-      onError: error => {
-        setPending(null)
-        setDraft(current => (current ? current : text))
-        const conflict = error instanceof ApiError && error.status === 409
-        setSendError({
-          tone: conflict && error.code === 'turn_in_progress' ? 'info' : 'error',
-          message:
-            conflict && error.code === 'turn_in_progress'
-              ? 'Claude is still working on the last message — send this one when it finishes.'
-              : error.message,
-        })
+    send.mutate(
+      {
+        message: text,
+        ...(model === session.policy.model ? {} : { model }),
+        ...(mode === 'interrupt' ? { mode } : {}),
       },
-    })
+      {
+        onError: error => {
+          setPending(null)
+          setDraft(current => (current ? current : text))
+          const conflict = error instanceof ApiError && error.status === 409
+          setSendError({
+            tone: conflict && error.code === 'turn_in_progress' ? 'info' : 'error',
+            message:
+              conflict && error.code === 'turn_in_progress'
+                ? 'A message is already waiting to run — withdraw it to send this one instead.'
+                : error.message,
+          })
+        },
+      }
+    )
     composer.current?.focus()
   }
 
+  // Behind a running turn: the row's waiting message, or the one being sent right now.
+  const queued = running
+    ? (session.queuedMessage ??
+      (pending && pending.turnCount === session.turnCount ? pending.text : null))
+    : null
+  // Otherwise a waiting message is the next user bubble — the one just sent, or (after a reload)
+  // the row's, waiting for the sandbox.
+  const waiting =
+    queued === null ? (pending?.text ?? (running ? null : session.queuedMessage)) : null
+
+  const onWithdraw = () => {
+    const text = queued
+    withdraw.mutate(undefined, {
+      onSuccess: () => {
+        setPending(null)
+        if (text) setDraft(current => (current.trim() ? current : text))
+        composer.current?.focus()
+      },
+    })
+  }
+
   const busy = turnInProgress(session)
-  const showWorking = busy || pending !== null
-  const lastId = pending
-    ? `pending-${pending.afterSeq}`
-    : showWorking
-      ? `working-${items.at(-1)?.id ?? ''}`
-      : items.at(-1)?.id
-  const stick = useStickToBottom(lastId, items.length + (showWorking ? 1 : 0))
+  const showWorking = busy || waiting !== null
+  const lastId =
+    queued !== null
+      ? `queued-${session.turnCount}`
+      : waiting !== null
+        ? `pending-${pending?.afterSeq ?? 'row'}`
+        : showWorking
+          ? `working-${items.at(-1)?.id ?? ''}`
+          : items.at(-1)?.id
+  const stick = useStickToBottom(
+    lastId,
+    items.length + (showWorking ? 1 : 0) + (queued !== null ? 1 : 0)
+  )
 
   // Focus the box when the page opens on a session that can take a message.
   useEffect(() => {
     composer.current?.focus()
   }, [])
 
-  const empty = !isLoading && items.length === 0 && !pending
+  const empty = !isLoading && items.length === 0 && waiting === null && queued === null
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
@@ -269,9 +363,9 @@ export function SessionChat({
                   <TranscriptItem item={item} />
                 </li>
               ))}
-              {pending && (
+              {waiting !== null && (
                 <li>
-                  <ChatBubble speaker="user" content={pending.text} />
+                  <ChatBubble speaker="user" content={waiting} />
                 </li>
               )}
               {showWorking && (
@@ -286,6 +380,17 @@ export function SessionChat({
                           ? 'Waiting for the sandbox to start…'
                           : 'Starting the turn…'}
                   </p>
+                </li>
+              )}
+              {queued !== null && (
+                <li>
+                  <QueuedMessage
+                    text={queued}
+                    stopping={session.cancelRequested}
+                    // Only once the row holds it: before that there is nothing to take back.
+                    onWithdraw={session.queuedMessage !== null ? onWithdraw : null}
+                    withdrawing={withdraw.isPending}
+                  />
                 </li>
               )}
             </ol>

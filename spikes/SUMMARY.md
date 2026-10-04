@@ -15,6 +15,7 @@ sweeps all four services.
 | [S5](s5-deploy-via-launch/RESULT.md) | Deploying through Launch, on non-Enterprise GitHub | **yes** | 14 of 14 checks: GitHub OIDC, approval, check → undeployed version → short-lived `migrator` credentials → migrate → activate. Unapproved runs and foreign bindings stopped **before any migration**. **No GitHub Enterprise needed** |
 | [S6](s6-oidc-issuer/RESULT.md) | OIDC issuer: OpenAuth or `jose` | **`jose`** | OpenAuth has no `id_token` or OIDC discovery. A ~200-line `jose` issuer passed `openid-client`, 15 of 15 checks, including SSO, the access policy, replay and PKCE |
 | [S7](s7-sandbox/RESULT.md) | Session sandbox: cold start, preview, egress, model key, chat | yes-with-workaround | **24 s** to a live preview, gated by Launch, with a Neon branch per session (from a prepared `dev`). A **streamed, resumable Claude Code chat** works, with **no model key in the sandbox** (an outbound handler injects and meters it). The allowlist needs `interceptHttps = true` and can't carry Postgres TCP. Port 3000 is reserved, and deploys interrupt live sessions |
+| [S8](s8-claude-image-input/RESULT.md) | Claude Code: an image in the message; resume after an interrupt, on another model | partly (2026-10-04, local) | `--input-format stream-json` takes image blocks and exits at EOF. Resume after a SIGTERM and `--model` on `--resume` still need a real sandbox |
 
 ## What the kit (Rocketflare) needs, from the spikes
 

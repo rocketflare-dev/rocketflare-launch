@@ -7,8 +7,11 @@
  * - `POST /:id/turns` `sessionTurnRequestSchema` → 202 `sessionDetailResponseSchema`: stores
  *   `pending_message` (and `pending_model` when `model` switches it — 400 `model_not_offered` for
  *   one the runtime does not offer) and wakes the Workflow (`wakeOrRestart` — a lost instance is
- *   restarted); 409 `turn_in_progress` while
- *   one is pending or `working`, 409 `session_budget_exhausted` when `blocked`, 409
+ *   restarted). While a turn is `working` the message waits behind it (`mode: 'queue'`) or stops
+ *   it (`mode: 'interrupt'`: `cancel_requested_at` in the same write) — and then, as for
+ *   `/cancel`, the turn is reconciled instead of woken (its step is mid-turn; a stale heartbeat
+ *   means it is gone, and the salvage closes the turn so the message runs next). 409
+ *   `turn_in_progress` while a message already waits, 409 `session_budget_exhausted` when `blocked`, 409
  *   `session_not_active` once it is shipping or over; 409 `session_credential_owner_only` from
  *   anyone but the owner of a session on a personal account (§18.22); 503
  *   `sessions_not_configured` without the Workflow binding, before any write.
@@ -18,6 +21,9 @@
  *   nothing would ever read the cancel) is reconciled AT ONCE: the dead instance is terminated and
  *   a fresh one's `salvage` step stops the process, saves the work and closes the turn
  *   (`reconcile.ts`) — the route itself runs nothing in the sandbox.
+ * - `POST /:id/queued/withdraw` → `sessionDetailResponseSchema`: takes the waiting message back
+ *   (`pending_message`, its sender and `pending_model`) — while a turn runs too, which `/cancel`
+ *   cannot (it stops the turn); 409 `nothing_queued` when nothing waits. Same check as `/turns`.
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
  * - `GET /:id/events[?afterSeq=]` → `sessionEventsResponseSchema`.
@@ -47,10 +53,12 @@ import { nudge, realtimeEvent } from '../services/realtime'
 import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
 import { requestBudgetExtension } from '../services/sessions/budget-request'
 import {
+  assertCredentialOwner,
   requestCancel,
   requestTurn,
   requireSessionWorkflow,
   toSessionDetail,
+  withdrawQueued,
 } from '../services/sessions/chat'
 import { listSessionEvents, toSessionEvent } from '../services/sessions/event-log'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
@@ -88,15 +96,35 @@ function changed(c: AppContext, tenantId: string, sessionId: string) {
 
 sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema), async c => {
   guardPermission(c, 'update', 'Session')
-  const { db, tenantId, logger, user, row } = await visibleSession(c)
+  const { db, tenantId, logger, realtime, user, row } = await visibleSession(c)
   const workflow = requireSessionWorkflow(c.env)
-  const { message, model } = c.req.valid('json')
+  const { message, model, mode } = c.req.valid('json')
   // §18.22: the sender is recorded, and a personal-account session takes only its owner's turns.
-  const updated = await requestTurn(db, row, { message, model }, new Date(), user.id)
+  const updated = await requestTurn(db, row, { message, model, mode }, new Date(), user.id)
+  if (updated.status === 'working') {
+    // Behind a running turn: its step reads the cancel (an interrupt) within 2 s, and the loop's
+    // next inspect runs the message. A stale heartbeat means that step is gone — reconcile now,
+    // exactly as `/cancel` does, rather than wake (and maybe restart) an instance mid-turn.
+    await reconcileSessionSafely(db, c.env, updated, { logger, realtime })
+    changed(c, tenantId, updated.id)
+    return c.json<SessionDetailResponse>({ session: toSessionDetail(updated, true) }, 202)
+  }
   // A lost instance (a `wrangler dev` reload, retention) is restarted from the row.
   const woken = await wakeOrRestart(db, workflow, updated, logger)
   changed(c, tenantId, woken.id)
   return c.json<SessionDetailResponse>({ session: toSessionDetail(woken, true) }, 202)
+})
+
+// ---- POST /api/sessions/:id/queued/withdraw ------------------------------------------------------
+
+sessionChatRouter.post('/:id/queued/withdraw', async c => {
+  guardPermission(c, 'update', 'Session')
+  const { db, tenantId, user, row } = await visibleSession(c)
+  // The same check as `/turns`: on a personal account only its owner's messages wait.
+  assertCredentialOwner(row, user.id)
+  const updated = await withdrawQueued(db, row)
+  changed(c, tenantId, row.id)
+  return c.json<SessionDetailResponse>({ session: toSessionDetail(updated, true) })
 })
 
 // ---- POST /api/sessions/:id/cancel ---------------------------------------------------------------
