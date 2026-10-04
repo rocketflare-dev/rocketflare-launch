@@ -524,6 +524,176 @@ describe('reconcile (a Workflow that died under a quiet session)', () => {
   })
 })
 
+describe('reconcile (an idle session owing work its Workflow never started)', () => {
+  const secondsAgo = (n: number) => new Date(Date.now() - n * 1000)
+  const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+
+  /** A booted, idle session whose last request was `quietFor` seconds ago. */
+  async function idle(h: Harness, quietFor: number, set: Partial<SessionRow> = {}) {
+    await patch(h.row, {
+      status: 'ready',
+      instanceId: h.row.id,
+      baseSha: BASE_SHA,
+      sandboxId: h.sandbox().id,
+      lastActivityAt: secondsAgo(quietFor),
+      ...set,
+    })
+    return reload(h.row)
+  }
+  const reconciledAudit = async (row: SessionRow) =>
+    (
+      await db
+        .select({ action: auditEvents.action, summary: auditEvents.summary })
+        .from(auditEvents)
+        .where(and(eq(auditEvents.tenantId, row.tenantId), eq(auditEvents.targetId, row.id)))
+    ).filter(a => a.action === 'session.reconciled')
+
+  it('ready + End under a "running" instance quiet past 75 s (a reload): terminated, a fresh instance ends it', async () => {
+    const h = await harness()
+    const row = await idle(h, 90, { requestedAction: 'end' })
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'running' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toEqual({
+      outcome: 'settled',
+      status: 'ready',
+      instanceStatus: 'running',
+      restartedAs: `${row.id}-r1`,
+    })
+    expect(wf.terminated).toEqual([row.id])
+    expect(wf.created.map(c => c.id)).toEqual([`${row.id}-r1`])
+    // Nothing settled here: the end stays asked for the fresh instance (whose salvage saves first).
+    expect(await reload(row)).toMatchObject({
+      status: 'ready',
+      requestedAction: 'end',
+      instanceId: `${row.id}-r1`,
+      error: null,
+    })
+    const [audit] = await reconciledAudit(row)
+    expect(audit?.summary).toMatchObject({ after: { owed: 'end', instanceStatus: 'running' } })
+
+    const run = await drive(h, noWait)
+    expect(run.names.slice(0, 2)).toEqual(['claim', 'salvage'])
+    expect(run.names).toContain('cleanup')
+    expect(await reload(row)).toMatchObject({ status: 'ended', requestedAction: null })
+  })
+
+  it('ready + End with the instance lost: restarted, the status unchanged', async () => {
+    const h = await harness()
+    const row = await idle(h, 90, { requestedAction: 'end' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'ready',
+      instanceStatus: 'not found',
+      restartedAs: `${row.id}-r1`,
+    })
+    expect(workflowOf(h).terminated).toEqual([])
+    expect(await reload(row)).toMatchObject({ status: 'ready', requestedAction: 'end' })
+  })
+
+  it('ready + End inside the window is left alone — the instance the End just woke is not killed', async () => {
+    const h = await harness()
+    const row = await idle(h, 30, { requestedAction: 'end' })
+    workflowOf(h).setStatus(row.id, { status: 'running' })
+    expect(await reconcileSession(db, h.env, row)).toEqual({ outcome: 'skipped' })
+    expect(workflowOf(h).statusCalls).toEqual([])
+  })
+
+  it('POST /end on a ready session quiet for an hour starts the window: its immediate reconcile terminates nothing', async () => {
+    const h = await harness()
+    const row = await idle(h, 3600)
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'waiting' })
+    const res = await request(
+      `/api/sessions/${row.id}/end`,
+      { method: 'POST', headers: h.f.cookie },
+      { env: h.env }
+    )
+    expect(res.status).toBe(202)
+    expect(wf.terminated).toEqual([])
+    expect(wf.created).toEqual([])
+    const after = await reload(row)
+    expect(after).toMatchObject({ status: 'ready', requestedAction: 'end' })
+    expect(after.lastActivityAt?.getTime()).toBeGreaterThan(Date.now() - 10_000)
+  })
+
+  it('ready + a pending message with the Workflow dead: restarted, the status and message kept', async () => {
+    const h = await harness()
+    const row = await idle(h, 120, { pendingMessage: 'add a footer' })
+    workflowOf(h).setStatus(row.id, { status: 'errored' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'ready',
+      restartedAs: `${row.id}-r1`,
+    })
+    expect(await reload(row)).toMatchObject({
+      status: 'ready',
+      pendingMessage: 'add a footer',
+      error: null,
+    })
+  })
+
+  it('suspended + Resume with the Workflow dead: restarted', async () => {
+    const h = await harness()
+    const row = await idle(h, 120, { status: 'suspended', requestedAction: 'resume' })
+    workflowOf(h).setStatus(row.id, { status: 'terminated' })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'suspended',
+      restartedAs: `${row.id}-r1`,
+    })
+    expect(await reload(row)).toMatchObject({ status: 'suspended', requestedAction: 'resume' })
+  })
+
+  it('nothing owed — ready with no request, or a message to a blocked session — costs nothing', async () => {
+    const h = await harness()
+    const ready = await idle(h, 3600)
+    expect(await reconcileSession(db, h.env, ready)).toEqual({ outcome: 'skipped' })
+    const blocked = await idle(h, 3600, { status: 'blocked', pendingMessage: 'go on' })
+    expect(await reconcileSession(db, h.env, blocked)).toEqual({ outcome: 'skipped' })
+    expect(workflowOf(h).statusCalls).toEqual([])
+  })
+
+  it('a queued (fresh) instance is left alone', async () => {
+    const h = await harness()
+    const row = await idle(h, 120, { requestedAction: 'end' })
+    workflowOf(h).setStatus(row.id, { status: 'queued' })
+    expect(await reconcileSession(db, h.env, row)).toEqual({
+      outcome: 'alive',
+      instanceStatus: 'queued',
+    })
+    expect(workflowOf(h).terminated).toEqual([])
+  })
+
+  it('GET /api/sessions/:id reaches it: reading the stuck session unsticks it', async () => {
+    const h = await harness()
+    const row = await idle(h, 90, { requestedAction: 'end' })
+    workflowOf(h).setStatus(row.id, { status: 'running' })
+    const res = await request(`/api/sessions/${row.id}`, { headers: h.f.cookie }, { env: h.env })
+    expect(res.status).toBe(200)
+    expect(workflowOf(h).terminated).toEqual([row.id])
+    expect((await reload(row)).instanceId).toBe(`${row.id}-r1`)
+  })
+
+  it('the cron sweep selects an idle session owing work, and not one inside its window', async () => {
+    const h = await harness()
+    const owed = await idle(h, 90, { requestedAction: 'end' })
+    workflowOf(h).setStatus(owed.id, { status: 'running' })
+    const fresh = await insertSession(db, h.f, {
+      status: 'ready',
+      pendingMessage: 'hello',
+      lastActivityAt: secondsAgo(20),
+    })
+    const settled = await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })
+    expect(settled).toBe(1)
+    expect(workflowOf(h).created.map(c => c.id)).toEqual([`${owed.id}-r1`])
+    expect((await reload(fresh)).instanceId).toBe(fresh.instanceId)
+  })
+})
+
 describe('reconcile (a Workflow that died under a running turn) and the salvage', () => {
   const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
   const secondsAgo = (n: number) => new Date(Date.now() - n * 1000)

@@ -4,8 +4,9 @@
  * recording anything: a `wrangler dev` reload kills the running step and the local engine keeps
  * reporting the instance `running` while nothing runs (measured: until something pokes the engine
  * again, minutes later), the platform can lose an instance, a step can wedge on an RPC. The row
- * then says `booting` (or `working`) for ever and the page spins. On read (`GET /api/sessions/:id`), on an end
- * request (`POST /:id/end`) and from the five-minute cron (`sessions.expire`), this asks:
+ * then says `booting` (or `working`) for ever and the page spins — or an idle row's request (an
+ * End, a message) waits for ever on a wake that went nowhere. On read (`GET /api/sessions/:id`),
+ * on an end request (`POST /:id/end`) and from the five-minute cron (`sessions.expire`), this asks:
  *
  * 1. **Only a quiet session.** `requested` / `booting` / `working` / `ending` with no heartbeat
  *    for {@link SESSION_STALL_MS} (a boot step writes `last_activity_at` every 30 s while it runs —
@@ -38,6 +39,26 @@
  *    branch, give back a prepare claim), and a live one through `salvage` — so no route ever runs
  *    the vendor or sandbox work itself.
  *
+ * **An idle session that owes work.** A `ready` / `suspended` / `blocked` row runs nothing and
+ * writes no heartbeat, so the steps above never look at it — but it can owe its Workflow work a
+ * wake never delivered: End after a `wrangler dev` reload sent its wake to an instance that is
+ * `running` in name only, and the row sat `ready` with `requested_action = 'end'` for ever (the
+ * page said "ending"). Owed = what `inspectStep` would act on from the row (`owedWorkOf`): an end
+ * from any idle status, a ship or a pending message on `ready`, a resume on `suspended` — never a
+ * message to a `blocked` session or a resume held by a drain, which a healthy instance waits over.
+ * Every request that creates owed work moves `last_activity_at` to now (`requestAction`,
+ * `requestTurn`, the End and Ship routes), so its window, {@link SESSION_END_STALL_MS}, runs from
+ * the request — and the End route's immediate reconcile never touches the instance it just woke.
+ * Past the window, the same claim and the same question: `queued` is a fresh instance not yet
+ * started (left alone); any other live status is alive in name only and is terminated (best
+ * effort); and then — dead or terminated — the status is NOT changed and the session is NOT
+ * failed: a FRESH instance runs the owed work from the row. Its `claim` salvages a `ready` /
+ * `blocked` container (checkpoint, keep, `→ suspended` with the end still asked, else a resume),
+ * so an End does not lose unsaved work to a straight `cleanup`; the loop's `inspect` then ends,
+ * resumes, or (once resumed) runs the pending message. **A ship is the exception**: the salvage
+ * replaces `requested_action = 'ship'` with the `resume` it needs, so the session comes back
+ * `ready` with no ship asked — the person ships again. Audited `session.reconciled` with `owed`.
+ *
  * **Why the salvage is a step and not done here**: stopping a process, committing and pushing take
  * seconds to minutes in the container, and this runs on a request path (a read, End, Stop) or the
  * cron. Routes enqueue, never run: the fresh instance is the queue.
@@ -59,7 +80,7 @@ import { isMissingInstanceError } from '../agents/runs'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import type { Realtime } from '../realtime'
 import { createSessionEmitter, nudgeSession } from './events'
-import { restartSessionInstance } from './lifecycle'
+import { restartSessionInstance, sessionsPaused } from './lifecycle'
 
 /** How long a booting session may go without a heartbeat before its instance is asked. */
 export const SESSION_STALL_MS = 3 * 60_000
@@ -67,7 +88,10 @@ export const SESSION_STALL_MS = 3 * 60_000
 export const SESSION_ENDING_STALL_MS = 15 * 60_000
 /** A settled session's cleanup gets this long to run before a leftover is suspected. */
 export const SESSION_CLEANUP_GRACE_MS = 2 * 60_000
-/** On an end request the window is shorter: two missed heartbeats say the boot step is gone. */
+/**
+ * On an end request the window is shorter: two missed heartbeats say the boot step is gone. Also
+ * the window of an idle session's owed work (an end, ship, message or resume nobody started).
+ */
 export const SESSION_END_STALL_MS = 75_000
 /**
  * A `working` session with a Stop pending (`cancel_requested_at`): three missed turn heartbeats
@@ -77,6 +101,34 @@ export const SESSION_CANCEL_STALL_MS = 30_000
 
 const LIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'waitingForPause', 'paused'])
 const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'working', 'ending']
+/** Where a session waits on its Workflow with nothing running — and may owe it work. */
+const IDLE_STATUSES: readonly SessionStatus[] = ['ready', 'suspended', 'blocked']
+
+/** What an idle session asked its Workflow for that has not started (see the header). */
+type OwedWork = 'end' | 'ship' | 'turn' | 'resume'
+
+/**
+ * The work an idle row owes its Workflow — exactly what `inspectStep` (`steps.ts`) would act on
+ * from it, and nothing it would wait over: an end from any idle status, a ship or a message on
+ * `ready`, a resume on `suspended` (a message to a suspended session asks for that resume —
+ * `requestTurn`). A message to a `blocked` session waits for its budget, and a resume or message
+ * waits out a drain: neither is owed, so a healthy waiting instance is never taken for a dead one.
+ */
+function owedWorkOf(session: SessionRow): OwedWork | null {
+  if (!IDLE_STATUSES.includes(session.status)) return null
+  if (session.requestedAction === 'end') return 'end'
+  if (session.status === 'ready' && session.requestedAction === 'ship') return 'ship'
+  if (session.status === 'ready' && session.pendingMessage !== null) return 'turn'
+  if (session.status === 'suspended' && session.requestedAction === 'resume') return 'resume'
+  return null
+}
+
+const OWED_LABEL: Record<OwedWork, string> = {
+  end: 'the end you asked for',
+  ship: 'the ship you asked for',
+  turn: 'the message you sent',
+  resume: 'the resume you asked for',
+}
 
 export interface ReconcileLogger {
   warn(obj: object, msg: string): void
@@ -219,6 +271,10 @@ export async function reconcileSession(
     return { outcome: 'settled', status: session.status, instanceStatus: 'n/a', restartedAs }
   }
 
+  // ---- an idle session whose request never reached a running Workflow
+  const owed = owedWorkOf(session)
+  if (owed) return reconcileIdleOwed(db, workflow, session, owed, quietSince, now, options)
+
   // ---- a quiet boot, turn or end
   if (!QUIET_STATUSES.includes(session.status)) return SKIPPED
   const stopPending = session.status === 'working' && session.cancelRequestedAt !== null
@@ -347,6 +403,68 @@ export async function reconcileSession(
   return { outcome: 'settled', status: settledStatus, instanceStatus: status, restartedAs }
 }
 
+/**
+ * An idle session (`ready` · `suspended` · `blocked`) that owes its Workflow work nobody started
+ * for {@link SESSION_END_STALL_MS} (see the header). Nothing is settled here — the status is left
+ * as it is and a fresh instance runs the work from the row: its `claim` salvages a `ready` /
+ * `blocked` container first (checkpoint, keep — an end stays asked), and the loop's `inspect` then
+ * ends, resumes or runs the message.
+ */
+async function reconcileIdleOwed(
+  db: Database,
+  workflow: SessionWorkflowBinding,
+  session: SessionRow,
+  owed: OwedWork,
+  quietSince: Date,
+  now: Date,
+  options: ReconcileSessionOptions
+): Promise<SessionReconcileResult> {
+  const cutoff = new Date(now.getTime() - SESSION_END_STALL_MS)
+  if (quietSince > cutoff) return SKIPPED
+  // A drain holds every resume and message (`inspect` suspends instead): only an end is owed.
+  if (owed !== 'end' && (await sessionsPaused(db))) return SKIPPED
+  if (!(await claimTurn(db, session, cutoff, now))) return SKIPPED
+
+  const instanceId = session.instanceId ?? session.id
+  const status = await instanceStatus(workflow, instanceId, options.logger)
+  if (status === null) return SKIPPED
+  // A `queued` instance is a fresh one (a restart) that has not run its `claim` yet.
+  if (status === 'queued') return { outcome: 'alive', instanceStatus: status }
+  let label: string
+  if (LIVE_STATUSES.has(status)) {
+    label = `its Workflow was ${status}, but ${OWED_LABEL[owed]} had not started after ${quietFor(SESSION_END_STALL_MS)}`
+    try {
+      await (await workflow.get(instanceId)).terminate()
+    } catch {
+      // Gone already: the fresh instance is what matters.
+    }
+  } else {
+    label = `its Workflow ${status === 'not found' ? 'was lost' : `ended ${status}`}`
+  }
+  const [current] = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
+  const restartedAs = current ? await restart(db, workflow, current, options.logger) : null
+  await recordAudit(db, {
+    ...SYSTEM_ACTOR,
+    tenantId: session.tenantId,
+    action: 'session.reconciled',
+    targetType: 'session',
+    targetId: session.id,
+    appId: session.appId,
+    summary: {
+      after: { status: session.status, owed, instanceId, instanceStatus: status, restartedAs },
+    },
+  })
+  if (current) nudgeSession(options.realtime, current)
+  options.logger?.warn(
+    { sessionId: session.id, instanceId, instanceStatus: status, owed, label, restartedAs },
+    'session reconcile: an idle session owed its Workflow work that never started; restarted it'
+  )
+  return { outcome: 'settled', status: session.status, instanceStatus: status, restartedAs }
+}
+
 /** {@link reconcileSession} for a route or a cron: any error is logged and nothing changes. */
 export async function reconcileSessionSafely(
   db: Database,
@@ -363,8 +481,8 @@ export async function reconcileSessionSafely(
 }
 
 /**
- * The cron's sweep (`sessions.expire`): every quiet boot, turn or end, and every settled session never
- * cleaned up, across organisations — each reconciled inside its own tenant.
+ * The cron's sweep (`sessions.expire`): every quiet boot, turn or end, every idle session owing
+ * work nobody started, and every settled session never cleaned up, across organisations — each reconciled inside its own tenant.
  */
 export async function reconcileStaleSessions(
   db: Database,
@@ -374,6 +492,7 @@ export async function reconcileStaleSessions(
   const now = options.now ?? new Date()
   const cutoff = new Date(now.getTime() - Math.min(SESSION_STALL_MS, SESSION_CLEANUP_GRACE_MS))
   const stopCutoff = new Date(now.getTime() - SESSION_CANCEL_STALL_MS)
+  const owedCutoff = new Date(now.getTime() - SESSION_END_STALL_MS)
   const quietSince = sql`coalesce(${sessions.lastActivityAt}, ${sessions.updatedAt})`
   const candidates = await db
     .select()
@@ -396,6 +515,21 @@ export async function reconcileStaleSessions(
             eq(sessions.status, 'working'),
             isNotNull(sessions.cancelRequestedAt),
             sql`${quietSince} < ${stopCutoff.toISOString()}::timestamptz`
+          ),
+          // An idle session owing work nobody started (`owedWorkOf`; see the header).
+          and(
+            or(
+              and(
+                inArray(sessions.status, [...IDLE_STATUSES]),
+                eq(sessions.requestedAction, 'end')
+              ),
+              and(
+                eq(sessions.status, 'ready'),
+                or(eq(sessions.requestedAction, 'ship'), isNotNull(sessions.pendingMessage))
+              ),
+              and(eq(sessions.status, 'suspended'), eq(sessions.requestedAction, 'resume'))
+            ),
+            sql`${quietSince} < ${owedCutoff.toISOString()}::timestamptz`
           )
         ),
         options.tenantIds ? inArray(sessions.tenantId, [...options.tenantIds]) : undefined

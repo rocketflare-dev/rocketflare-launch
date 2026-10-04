@@ -41,6 +41,7 @@ import {
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 import type { Database } from '../../db/client'
 import { type SessionRow, sessions } from '../../db/schema'
 import { guardPermission } from '../middleware/permissions'
@@ -84,7 +85,7 @@ async function requestAction(
   db: Database,
   row: SessionRow,
   from: readonly SessionRow['status'][],
-  set: Partial<typeof sessions.$inferInsert>,
+  set: PgUpdateSetSource<typeof sessions>,
   extra = true,
   notMerging = false
 ) {
@@ -132,6 +133,8 @@ sessionShipRouter.post('/:id/ship', async c => {
     row.requestedAction === null
       ? await requestAction(db, row, ['ready'], {
           requestedAction: 'ship',
+          // The owed-work window (`reconcile.ts`) runs from the request.
+          lastActivityAt: new Date(),
           updatedAt: new Date(),
         })
       : null
@@ -183,6 +186,11 @@ sessionShipRouter.post('/:id/end', async c => {
       // once it has.
       cancelRequestedAt:
         row.status === 'working' || row.status === 'shipping' ? now : row.cancelRequestedAt,
+      // An idle session's owed-work window (`reconcile.ts`) runs from the request — so the
+      // reconcile below never takes the instance this End just woke for a dead one. A running
+      // step's `last_activity_at` is its HEARTBEAT: left alone, so a dead one still looks dead.
+      lastActivityAt: sql`case when ${sessions.status} in ('ready', 'suspended', 'blocked')
+        then ${now.toISOString()}::timestamptz else ${sessions.lastActivityAt} end`,
       updatedAt: now,
     },
     false,
