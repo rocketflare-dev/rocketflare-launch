@@ -489,8 +489,8 @@ A `CUSTOM kit.notice` renders
 - **Coding-agent accounts are onboarding, so they are on Home** (§18.22,
   `home/CodingAgentsSection.tsx` over the pure `agent-accounts/agentAccountsModel.ts`
   `agentOnboarding`): nothing usable connected → "Connect your coding agent" first on the page, one
-  row per account the policy allows with its Connect button; one connected → one quiet line above
-  the apps; no runtime allows personal accounts → nothing. The sign-in modal and the per-runtime
+  row per account the policy allows with its Connect button; one connected → one quiet line, still
+  first; no runtime allows personal accounts → nothing. The sign-in modal and the per-runtime
   bodies are `agent-accounts/useAgentConnect.tsx` and `agent-accounts/logins/`. Profile no longer
   carries them.
 - **`/` is an overview built from small section components** (`pages/home/`), each behind the same

@@ -2961,8 +2961,8 @@ after which the step — or the `*/5` sweep, `logins/sweep.ts`, which also relea
 says `expired`. The UI: connecting is part of onboarding, so it is on HOME, not in Profile
 (`ui/pages/home/CodingAgentsSection.tsx`, decided by the pure `agentOnboarding`): while nothing
 usable is connected, "Connect your coding agent" leads the page — one row per account the policy
-allows, saying whether connecting is required or an alternative to the organisation's key; once one
-works, one quiet line above the apps (state, Reconnect, Disconnect, Connect the other); absent when
+allows (with the agent's own mark, `components/icons/AgentIcons.tsx`), saying whether connecting is required or an alternative to the organisation's key; once one
+works, one quiet line, still first (state, Reconnect, Disconnect, Connect the other); absent when
 no runtime allows personal accounts. A polling modal whose body is the runtime's component
 (`ui/pages/agent-accounts/logins/`), the
 session card's agent / "Bill to" picker (only when there is a choice), and one muted line in the

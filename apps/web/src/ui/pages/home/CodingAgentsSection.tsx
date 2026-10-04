@@ -6,13 +6,14 @@
  *   agent", one row per account the organisation allows (what it gives you, and Connect). The
  *   sentence above the rows says whether connecting is the only way to start a session or an
  *   alternative to the organisation's key.
- * - **One connected** → `CodingAgentsLine`, one quiet line just above the apps: each account's
+ * - **One connected** → `CodingAgentsLine`, one quiet line, still first on Home: each account's
  *   state, Reconnect where it needs it, Connect for the other, Disconnect.
  * - **Not offered** (the default deployment: no runtime lets a person pay) → nothing at all.
  *
  * Home reads the one `useAgentAccounts` query and places whichever applies.
  */
 import type { AgentAccountsResponse } from '@launch/shared/launch-agents'
+import { AGENT_ICONS } from '@/ui/components/icons/AgentIcons'
 import { showToast } from '@/ui/components/shared'
 import { useDisconnectAgentAccount } from '@/ui/hooks/useAgentAccounts'
 import {
@@ -51,35 +52,39 @@ export function CodingAgentsOnboarding({
             : `Your coding sessions can run on your own AI subscription instead of the organisation’s key.`}
         </p>
         <ul className="divide-y divide-[color:var(--border-subtle)] border-t border-[color:var(--border-subtle)]">
-          {onboarding.rows.map(row => (
-            <li
-              key={row.option.runtime}
-              className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-medium">{row.option.label}</div>
-                <div className="text-sm text-muted">
-                  {row.reconnect ? (
-                    <span className="text-warning">
-                      Your {row.option.accountLabel}: {row.status.text.toLowerCase()}.
-                    </span>
-                  ) : (
-                    AGENT_ACCOUNT_PITCH[row.option.runtime]
-                  )}
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={starting}
-                onClick={() => connect(row.option.runtime)}
+          {onboarding.rows.map(row => {
+            const Icon = AGENT_ICONS[row.option.runtime]
+            return (
+              <li
+                key={row.option.runtime}
+                className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4"
               >
-                {inFlight(row.option.runtime)
-                  ? 'Continue sign-in'
-                  : `${row.reconnect ? 'Reconnect' : 'Connect'} ${row.option.accountLabel}`}
-              </button>
-            </li>
-          ))}
+                <Icon className="w-8 h-8 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">{row.option.label}</div>
+                  <div className="text-sm text-muted">
+                    {row.reconnect ? (
+                      <span className="text-warning">
+                        Your {row.option.accountLabel}: {row.status.text.toLowerCase()}.
+                      </span>
+                    ) : (
+                      AGENT_ACCOUNT_PITCH[row.option.runtime]
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={starting}
+                  onClick={() => connect(row.option.runtime)}
+                >
+                  {inFlight(row.option.runtime)
+                    ? 'Continue sign-in'
+                    : `${row.reconnect ? 'Reconnect' : 'Connect'} ${row.option.accountLabel}`}
+                </button>
+              </li>
+            )
+          })}
         </ul>
         <StartError message={startError} />
       </div>
@@ -101,20 +106,23 @@ function AccountItem({
 }) {
   const disconnect = useDisconnectAgentAccount()
   const { option, credential, status } = row
+  const Icon = AGENT_ICONS[option.runtime]
   if (!credential) {
     return (
       <button
         type="button"
-        className="link link-hover text-sm"
+        className="link link-hover text-sm inline-flex items-center gap-1.5"
         disabled={starting}
         onClick={onConnect}
       >
+        <Icon className="w-4 h-4" />
         {connectLabel}
       </button>
     )
   }
   return (
-    <span className="inline-flex flex-wrap items-baseline gap-x-2 text-sm">
+    <span className="inline-flex flex-wrap items-center gap-x-2 text-sm">
+      <Icon className="w-4 h-4" />
       <span>
         {option.accountLabel}
         <span className={status.tone === 'warning' ? 'text-warning' : 'text-muted'}>

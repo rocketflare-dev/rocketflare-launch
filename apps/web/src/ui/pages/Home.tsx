@@ -2,11 +2,11 @@
  * Home: an overview of what this organisation runs and what is waiting on the reader — the
  * approvals they can decide, then the apps with their Live and Staging versions and one word where
  * something needs a look. Connecting your own coding-agent account (§18.22) is part of onboarding,
- * so it leads the page until one is connected, then becomes one quiet line just above the apps
+ * so it leads the page until one is connected, then shrinks to one quiet line, still first
  * (`home/CodingAgentsSection.tsx`); on a deployment that offers no personal accounts it is absent.
  * Each block is its own small section component (`pages/home/`), each behind the same guard as the
- * page it summarises, so a richer widget is one more section rather than a rewrite. It spans the whole main area. No hero, no stat tiles (docs/DESIGN.md); the full
- * lists are one link away.
+ * page it summarises, so a richer widget is one more section rather than a rewrite. It spans the
+ * whole main area. No hero, no stat tiles (docs/DESIGN.md); the full lists are one link away.
  *
  * Lazy in `App.tsx` like every other page: its sections reuse the app page's and the inbox's
  * models, which the eager shell should not carry.
@@ -68,10 +68,10 @@ export default function Home() {
       {agentAccounts.data && onboarding.state === 'connect' && (
         <CodingAgentsOnboarding data={agentAccounts.data} onboarding={onboarding} />
       )}
-      {canAccess(APPROVALS_GUARD) && <ApprovalsWaitingSection />}
       {agentAccounts.data && onboarding.state === 'connected' && (
         <CodingAgentsLine data={agentAccounts.data} onboarding={onboarding} />
       )}
+      {canAccess(APPROVALS_GUARD) && <ApprovalsWaitingSection />}
       {canAccess(APPS_GUARD) && <AppsSection />}
       <PluginLinks links={PLUGIN_LINKS.filter(link => canAccess(link.guard))} />
     </div>
