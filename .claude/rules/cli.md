@@ -117,6 +117,15 @@ staging,production] [--expires]` (both environments by default; prints each appr
 `revoke <app> <grant>` (id, 8-char prefix, or resource slug with `--env`). `api.ts` accepts `PUT`
 for the values write.
 
+Kit upgrades (Launch P6 6c, one app): `apps show <app>` (the app by slug — status, repository,
+`kitLine`: the kit it is on against the template pin, "Requires upgrade → X.Y.Z" when behind, the
+upgrade in flight with its PR — and each environment) and `apps upgrade <app>` (`POST
+/api/apps/:id/upgrade`, owners and admins: prints the upgrade and the session's page to watch;
+every refusal — `upgrade_not_behind`, `upgrade_open`, `upgrade_no_pin_tag`, `session_limit`… — is
+the server's sentence, exit 1; 403 exits 3). It deliberately suggests no `sessions say`: a message
+queued behind the upgrade's first turn would postpone auto-ship's decision to that message's turn.
+Both print the raw body with `--json`.
+
 ## Output
 
 - Human output goes to stdout via `chalk`; diagnostics and progress to stderr. `--json` on **every

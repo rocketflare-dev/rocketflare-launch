@@ -6,6 +6,7 @@
  */
 import { Command, InvalidArgumentError } from 'commander'
 import { registerApprovalsCommands } from './commands/approvals'
+import { registerAppsCommands } from './commands/apps'
 import { registerAuditCommands } from './commands/audit'
 import { runConfigGet, runConfigPath, runConfigSet } from './commands/config'
 import { runEvalsPromote } from './commands/evals'
@@ -251,6 +252,10 @@ registerAuditCommands(program, action)
 
 registerSharedCommands(program, action)
 registerGrantsCommands(program, action)
+
+// ---- Launch P6 6c: an app and its kit upgrade ------------------------------------------------
+
+registerAppsCommands(program, action)
 
 // ---- config --------------------------------------------------------------------------------
 
