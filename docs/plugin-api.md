@@ -920,7 +920,7 @@ The harness: a real database, the real Hono app, real bindings-shaped stubs, the
 - `function requestBody(fetchMock: ReturnType<typeof vi.fn<FetchLike>>, key: string)`
   Body of the JSON request made to `"METHOD /path"`, or undefined if never called.
 - `interface RequestOptions`
-- `type RouteTable = Record< string, Response \| unknown \| ((init: RequestInit \| undefined, url: URL) => Response \| unknown) >`
+- `type RouteTable = Record< string, \| Response \| unknown \| ((init: RequestInit \| undefined, url: URL) => Response \| unknown \| Promise<Response \| unknown>) >`
   `{ 'GET /api/members': handler }`; the method defaults to GET when omitted from the key.
 - `function rulesFor( role: MembershipRole \| null, isGlobalAdmin = false, features: string[] = [] )`
   Packed rules EXACTLY as the server emits them for this role (same matrix, same packer).
@@ -1480,7 +1480,7 @@ nothing in the comparison that can throw.
 @testkit/integration :: function :: request :: async function request( path: string, init: RequestInit = {}, options: RequestOptions = {} ): Promise<Response>
 @testkit/integration :: function :: requestBody :: function requestBody(fetchMock: ReturnType<typeof vi.fn<FetchLike>>, key: string)
 @testkit/integration :: interface :: RequestOptions :: interface RequestOptions
-@testkit/integration :: type :: RouteTable :: type RouteTable = Record< string, Response | unknown | ((init: RequestInit | undefined, url: URL) => Response | unknown) >
+@testkit/integration :: type :: RouteTable :: type RouteTable = Record< string, | Response | unknown | ((init: RequestInit | undefined, url: URL) => Response | unknown | Promise<Response | unknown>) >
 @testkit/integration :: function :: rulesFor :: function rulesFor( role: MembershipRole | null, isGlobalAdmin = false, features: string[] = [] )
 @testkit/integration :: const :: SCHEDULED_TASKS :: const SCHEDULED_TASKS: Record<string, ScheduledTask[]>
 @testkit/integration :: interface :: ScheduledTask :: interface ScheduledTask
