@@ -30,9 +30,9 @@ export function upgradePrompt(input: UpgradePromptInput): string {
   return [
     `Upgrade this app's Rocketflare kit${from ? ` from ${from}` : ''} to ${to}. Nobody is watching this turn: Launch ships the result on its own when you finish cleanly, and hands it to the app's owner when you stop.`,
     '',
-    `Run \`/rf-upgrade --to ${to}\` and follow the skill, one kit release at a time, with one commit per release (\`git commit\` only, message \`Upgrade to kit <version>\`). Never push and never open a pull request: Launch pushes the branch and opens the pull request when it ships.`,
+    `Run \`/rf-upgrade --to ${to}\` as ONE apply straight to ${to} (\`pnpm kit:upgrade --to ${to} --apply\`), not one release at a time, then follow the "How to apply" steps of every porting note in the range. Leave every change in the working tree: do not \`git add\`, \`git commit\`, push or open a pull request. This session is isolated; when you finish, Launch runs the gate, commits, pushes and opens the pull request itself.`,
     '',
-    'Rules for this unattended run, on top of the skill’s own:',
+    'Rules for this unattended run, on top of the skill’s own (they replace its commit step):',
     '- Never pass `--force`, and never `--apply-deletes`. Never apply one of the kit’s deletions.',
     '- Never recreate a file under a surface this app removed (`skipped-surface-absent`).',
     '- Never edit `.rocketflare.json` by hand; the upgrade script writes it, last, only after a clean apply.',
@@ -40,8 +40,8 @@ export function upgradePrompt(input: UpgradePromptInput): string {
     '- Do not upgrade the installed plugins here, and do not run the full gate (`pnpm gate`): Launch runs the gate itself when it ships. Targeted checks of the files you touched are fine.',
     '- Do not ask a question and do not end with `AskUserQuestion`: there is nobody to answer. Where the skill would ask, stop instead.',
     '',
-    `Stop and explain — what happened, what the choices are, and what you would do — whenever one of these comes up: \`pnpm kit:upgrade\` exits 6 (a plugin does not support ${to}); more than one release is in range and the notes call for a decision; a reject (exit 4) you cannot resolve with confidence; a kit deletion; a manual step that needs a person; or anything that would need one of the things above.`,
+    `Stop and explain — what happened, what the choices are, and what you would do — whenever one of these comes up: \`pnpm kit:upgrade\` exits 6 (a plugin does not support ${to}); a porting note calls for a decision; a reject (exit 4) you cannot resolve with confidence; a kit deletion; a manual step that needs a person; or anything that would need one of the things above.`,
     '',
-    `End your final message with exactly one line on its own: \`${UPGRADE_RESULT_MARKER} DONE\` when every release up to ${to} is applied and committed and \`.rocketflare.json\` says ${to}; otherwise \`${UPGRADE_RESULT_MARKER} STOPPED\`.`,
+    `End your final message with exactly one line on its own: \`${UPGRADE_RESULT_MARKER} DONE\` when the upgrade to ${to} is applied, its porting notes are followed and \`.rocketflare.json\` says ${to}; otherwise \`${UPGRADE_RESULT_MARKER} STOPPED\`.`,
   ].join('\n')
 }

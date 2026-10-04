@@ -113,7 +113,11 @@ describe('the upgrade prompt', () => {
     expect(text).toMatch(/exit 4/)
     expect(text).toContain('LAUNCH-UPGRADE: DONE')
     expect(text).toContain('LAUNCH-UPGRADE: STOPPED')
-    expect(text).toMatch(/Never push/)
+    // One apply to the target, nothing committed: Launch gates, commits and pushes when it ships.
+    expect(text).toContain('pnpm kit:upgrade --to 0.16.1 --apply')
+    expect(text).toMatch(/not one release at a time/)
+    expect(text).toMatch(/do not `git add`, `git commit`, push or open a pull request/)
+    expect(text).not.toMatch(/one commit per release/)
     expect(upgradeTitle({ from: '0.16.0', to: '0.16.1' })).toBe('Upgrade kit 0.16.0 → 0.16.1')
     expect(upgradeTitle({ from: null, to: '0.16.1' })).toBe('Upgrade kit to 0.16.1')
   })

@@ -67,7 +67,7 @@ const { privateKey: APP_PEM } = generateKeyPairSync('rsa', {
   privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
 })
 
-const DONE_TEXT = `Applied kit ${TO}: 41 files, no rejects, committed as "Upgrade to kit ${TO}".\n\nLAUNCH-UPGRADE: DONE`
+const DONE_TEXT = `Applied kit ${TO}: 41 files, no rejects, left in the working tree for Launch to ship.\n\nLAUNCH-UPGRADE: DONE`
 
 interface HarnessOptions {
   /** The upgrade turn's Claude Code output. */
