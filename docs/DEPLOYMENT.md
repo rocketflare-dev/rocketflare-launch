@@ -220,6 +220,7 @@ email DNS record's presence when verification stalls.
 | `route`: `*.<domain>` is a DNS-only record | turn its proxy on in the dashboard, or delete it; rerun `route` |
 | `deploy`: a plan or permission error on containers | Workers Paid, and the token's Containers: Edit scope |
 | `deploy`: the session image changed and sessions hold a container | drain first (§ 6), then `pnpm provision deploy --drained` |
+| `deploy` / `email verify`: `fetch failed` on the new host | usually this machine cached "no such host" from before the custom domain existed. The probes retry through public DNS (`curl --resolve`); if that fails too the error says so. Flush the cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) and rerun the phase |
 | `deploy`: `/api/ready` not ready | the Worker can't reach Neon. `pnpm provision neon --rotate` resets the Neon password and re-puts the Worker's `DATABASE_URL`. **Not** `secrets --rotate`, which also replaces `OAUTH_ENCRYPTION_KEY` |
 | `secrets`: the Worker holds `OAUTH_ENCRYPTION_KEY` but the file has none | restore the key from your backup of the file (§ 7). `--rotate` only if it's truly lost |
 | `email verify`: DNS still propagating after 10 minutes | wait, then `pnpm provision email verify`; `pnpm provision email status` shows each record |

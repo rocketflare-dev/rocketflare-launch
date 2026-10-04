@@ -276,12 +276,48 @@ async function fetchJson(url: string, attempts = 6): Promise<any> {
       if (res.status === 503) return { ...(body as object), __status: 503 }
     } catch (err) {
       last = err instanceof Error ? err.message : err
+      // A host that did not exist a minute ago is often a cached NXDOMAIN on THIS machine
+      // (macOS keeps it a while): ask public DNS, and if it resolves there, go through that IP.
+      const viaPublic = await fetchJsonViaPublicDns(url)
+      if (viaPublic) return viaPublic
     }
     if (i < attempts) await sleep(5000)
   }
+  const host = new URL(url).hostname
+  const hint =
+    typeof last === 'string' && (await publicIp(host))
+      ? ` — ${host} resolves on public DNS but not here: flush this machine's DNS cache (macOS: \`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder\`) and rerun`
+      : ''
   throw new ProvisionError(
-    `${url}: ${redact(typeof last === 'string' ? last : JSON.stringify(last))}`
+    `${url}: ${redact(typeof last === 'string' ? last : JSON.stringify(last))}${hint}`
   )
+}
+
+/** The host's first A record from Cloudflare's DNS-over-HTTPS resolver, or undefined. */
+async function publicIp(host: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${host}&type=A`, {
+      headers: { Accept: 'application/dns-json' },
+    })
+    const json: any = await res.json()
+    return (json.Answer ?? []).find((a: any) => a.type === 1)?.data
+  } catch {
+    return undefined
+  }
+}
+
+/** `curl --resolve` through the public-DNS IP (Node's fetch cannot pin an address). */
+async function fetchJsonViaPublicDns(url: string): Promise<any> {
+  const u = new URL(url)
+  const ip = await publicIp(u.hostname)
+  if (!ip) return undefined
+  const out = capture('curl', ['-sf', '-m', '15', '--resolve', `${u.hostname}:443:${ip}`, url])
+  if (!out) return undefined
+  try {
+    return JSON.parse(out)
+  } catch {
+    return undefined
+  }
 }
 
 // ---- check --------------------------------------------------------------------------------
@@ -554,11 +590,11 @@ async function emailCreate(): Promise<void> {
   log(
     `resend domain: ${domain.name} ${created ? 'created' : 'exists'} (status ${domain.status}, region ${domain.region ?? '?'})`
   )
-  const records = resendRecordsToDns(domain.records ?? [], domain.name)
-  if (!records.length) throw new ProvisionError('Resend returned no DNS records for the domain')
   const cf = cfClient()
   const account = await resolveAccount(cf, true)
   const zone = await requireZone(cf, domain.name, account.id)
+  const records = resendRecordsToDns(domain.records ?? [], domain.name, zone.name)
+  if (!records.length) throw new ProvisionError('Resend returned no DNS records for the domain')
   const counts = { exists: 0, created: 0, updated: 0 }
   for (const rec of records) {
     const outcome = await cf.upsertRecord(zone.id, rec)
@@ -580,7 +616,7 @@ async function emailStatus(): Promise<void> {
   const account = await resolveAccount(cf, true)
   const zone = await requireZone(cf, domain.name, account.id).catch(() => undefined)
   if (!zone) warn(missingZoneHint(apexOf(domain.name)))
-  const records = resendRecordsToDns(domain.records ?? [], domain.name)
+  const records = resendRecordsToDns(domain.records ?? [], domain.name, zone?.name)
   let present = 0
   for (const [i, rec] of records.entries()) {
     const found = zone ? (await cf.listRecords(zone.id, rec.name, rec.type)).length > 0 : false

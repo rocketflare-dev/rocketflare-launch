@@ -105,6 +105,15 @@ describe('qualifyRecordName', () => {
     expect(qualifyRecordName(DOMAIN, DOMAIN)).toBe(DOMAIN)
     expect(qualifyRecordName('send.', DOMAIN)).toBe(`send.${DOMAIN}`)
   })
+  it("qualifies a subdomain's zone-relative names against the zone, never doubled", () => {
+    const sub = 'notifications.example.dev'
+    expect(qualifyRecordName('send.notifications', sub, 'example.dev')).toBe(`send.${sub}`)
+    expect(qualifyRecordName('resend._domainkey.notifications', sub, 'example.dev')).toBe(
+      `resend._domainkey.${sub}`
+    )
+    expect(qualifyRecordName('send', sub, 'example.dev')).toBe(`send.${sub}`)
+    expect(qualifyRecordName(`send.${sub}`, sub, 'example.dev')).toBe(`send.${sub}`)
+  })
 })
 
 describe('zoneCandidates', () => {

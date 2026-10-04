@@ -16,7 +16,9 @@
  *
  * Record NAMES are mixed: `send` and `<hash>._domainkey` are relative to the domain while the
  * Tracking record already comes back fully qualified (`links.example.com`), so
- * `resendRecordsToDns` qualifies only what is not already under the domain
+ * `resendRecordsToDns` qualifies only what is not already under the domain. For a SUBDOMAIN
+ * (`notifications.example.com` in zone `example.com`) Resend names them relative to the ZONE
+ * instead (`send.notifications`), so those are qualified against the zone
  * (https://resend.com/docs/dashboard/domains/cloudflare: "omit your domain from the record …
  * DKIM: Proxy status DNS only").
  */
@@ -112,20 +114,31 @@ export class ResendClient {
 
 // ---- pure helpers (unit-tested) -------------------------------------------------------------
 
-/** `send` + `mail.example.com` → `send.mail.example.com`; an already-qualified name is kept. */
-export function qualifyRecordName(name: string, domain: string): string {
+/**
+ * `send` + `mail.example.com` → `send.mail.example.com`; an already-qualified name is kept. With
+ * the zone, a zone-relative name (`send.mail` for `mail.example.com` in `example.com`) is qualified
+ * against the zone, not doubled into `send.mail.mail.example.com`.
+ */
+export function qualifyRecordName(name: string, domain: string, zone = domain): string {
   const n = name.trim().replace(/\.$/, '')
   if (n === '' || n === '@' || n === domain) return domain
+  const sub =
+    zone !== domain && domain.endsWith(`.${zone}`) ? domain.slice(0, -zone.length - 1) : ''
+  if (sub && (n === sub || n.endsWith(`.${sub}`))) return `${n}.${zone}`
   if (n.endsWith(`.${domain}`)) return n
   return `${n}.${domain}`
 }
 
 /** Resend's `records[]` → Cloudflare `dns_records` bodies: FQDN names, `ttl: 1` (auto), never proxied. */
-export function resendRecordsToDns(records: ResendRecord[], domain: string): DnsRecordInput[] {
+export function resendRecordsToDns(
+  records: ResendRecord[],
+  domain: string,
+  zone = domain
+): DnsRecordInput[] {
   return records.map(r => {
     const out: DnsRecordInput = {
       type: r.type.toUpperCase(),
-      name: qualifyRecordName(r.name, domain),
+      name: qualifyRecordName(r.name, domain, zone),
       content: r.value,
       ttl: 1,
       proxied: false, // DKIM CNAME/TXT and MX must resolve to Resend's values, not Cloudflare's edge
