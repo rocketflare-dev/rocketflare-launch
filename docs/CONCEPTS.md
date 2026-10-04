@@ -2947,7 +2947,9 @@ every session (`pending_message_user_id` → `user.message.userId`), which also 
 touches the table): one per (tenant, person, runtime), `secret_sealed` (`encryptToken`), never in a
 response (`agentCredentialSchema` is value-free), `version` for a compare-and-set reseal (a
 rotated refresh token), a claim (`claimed_by_session_id`, `claim_expires_at`) so one credential is
-never used by two turns at once, `needs_login` when the provider refuses it. Leaving the
+never used by two turns at once — it blocks only while its holder is mid-turn (`working` or
+`shipping`, `CLAIM_HOLDING_SESSION_STATUSES`), so a turn killed before its release (a deploy, a
+crash, a dev reload) leaves nothing to wait out — `needs_login` when the provider refuses it. Leaving the
 organisation deletes it (the composite FK to `tenant_users`). Usage on a personal account is
 `ai_usage.billing = 'subscription'`: tokens recorded, cost null and never estimated by the summary,
 the session's cost total unmoved (`recordSessionUsage(..., { billing })`).

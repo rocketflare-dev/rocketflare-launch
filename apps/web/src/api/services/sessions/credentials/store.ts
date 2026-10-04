@@ -18,14 +18,22 @@ import type {
   AgentCredentialMetadata,
   AgentRuntimeId,
 } from '@launch/shared/launch-agents'
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, lt, notExists, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
-import { type AgentCredentialRow, agentCredentials } from '../../../../db/schema'
+import { type AgentCredentialRow, agentCredentials, sessions } from '../../../../db/schema'
 import { decryptToken, encryptToken } from '../../../auth/oauth-encryption'
 
 /** How long one turn may hold a claim before the sweep may take it back. */
 export const AGENT_CREDENTIAL_CLAIM_MS = 2 * 60 * 60_000
+
+/**
+ * The session statuses in which a turn runs (a chat turn, or a ship's fix turn). A claim only
+ * blocks while its holder is in one: a turn killed before its `finally` (a deploy, a crash, a
+ * `wrangler dev` reload — seen live) leaves the claim behind with its holder idle, and the next
+ * turn takes it over instead of waiting out the expiry.
+ */
+export const CLAIM_HOLDING_SESSION_STATUSES = ['working', 'shipping'] as const
 
 /** A row as the API may speak of it. */
 export function toPublicCredential(
@@ -248,7 +256,20 @@ export async function claim(
         or(
           isNull(agentCredentials.claimedBySessionId),
           eq(agentCredentials.claimedBySessionId, input.sessionId),
-          lt(agentCredentials.claimExpiresAt, now)
+          lt(agentCredentials.claimExpiresAt, now),
+          // The holder is not in a turn: its claim outlived the turn that took it.
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(sessions)
+              .where(
+                and(
+                  eq(sessions.tenantId, input.tenantId),
+                  eq(sessions.id, agentCredentials.claimedBySessionId),
+                  inArray(sessions.status, [...CLAIM_HOLDING_SESSION_STATUSES])
+                )
+              )
+          )
         )
       )
     )

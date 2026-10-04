@@ -497,10 +497,18 @@ describe('runTurn in the host mode — every runtime on either account', () => {
 
   it('a ChatGPT plan’s refresh part is revoked even when the lease is refused (another session holds it)', async () => {
     const plan = await planSession()
+    // Held by another session MID-TURN (an idle holder's claim would be taken over).
+    const holder = await insertSession(db, plan.f, {
+      status: 'working',
+      runtime: 'codex',
+      policy: CODEX_POLICY,
+      credentialSource: 'user',
+      agentCredentialId: plan.credential.id,
+    })
     await claim(db, {
       tenantId: plan.row.tenantId,
       id: plan.credential.id,
-      sessionId: crypto.randomUUID(),
+      sessionId: holder.id,
       now: new Date(),
     })
     const { sink, grants } = grantSink()

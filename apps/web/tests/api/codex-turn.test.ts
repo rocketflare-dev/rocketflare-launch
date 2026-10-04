@@ -376,8 +376,16 @@ describe('a Codex turn on a person’s ChatGPT plan', () => {
   })
 
   it('a second session’s turn while the plan is in use is refused (busy) and never starts Codex', async () => {
-    const { row, credential, ports } = await planSession()
-    await claim(db, { tenantId: row.tenantId, id: credential.id, sessionId: crypto.randomUUID() })
+    const { f, row, credential, ports } = await planSession()
+    // The holder is another session MID-TURN; an idle holder's claim would be taken over.
+    const holder = await insertSession(db, f, {
+      status: 'working',
+      runtime: 'codex',
+      policy: CODEX_POLICY,
+      credentialSource: 'user',
+      agentCredentialId: credential.id,
+    })
+    await claim(db, { tenantId: row.tenantId, id: credential.id, sessionId: holder.id })
     expect((await runTurn(db, ports, row, FAST)).status).toBe('failed')
     const events = await listSessionEvents(db, row.tenantId, row.id)
     expect(events.find(e => e.type === 'turn.failed')?.data).toMatchObject({

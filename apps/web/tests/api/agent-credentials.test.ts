@@ -1,8 +1,8 @@
 /**
  * The personal-credential store (§18.22, `services/sessions/credentials/store.ts`) against real
  * Postgres: sealed at rest, never in a public shape, a reconnect replaces, rotation is a
- * compare-and-set on `version`, use is a claim (one session at a time, a stale claim reclaimable
- * and swept), tenant B never reads tenant A's, and losing the membership loses the credential.
+ * compare-and-set on `version`, use is a claim (one session's TURN at a time — a claim whose holder
+ * is not mid-turn, or that has expired, is taken over — and stale claims are swept), tenant B never reads tenant A's, and losing the membership loses the credential.
  */
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
@@ -24,7 +24,13 @@ import { loadConfig } from '@/config'
 import { agentCredentials, tenantUsers } from '@/db/schema'
 import { createTestTenantWithUser } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
-import { AGENT_SECRET_SENTINEL, seedAgentCredential } from '../helpers/sessions'
+import { createFakeCloud } from '../helpers/fake-cloud'
+import {
+  AGENT_SECRET_SENTINEL,
+  insertSession,
+  seedAgentCredential,
+  seedSessionApp,
+} from '../helpers/sessions'
 import { createTestEnv } from '../mocks/bindings'
 
 const db = setupTestDatabase()
@@ -96,11 +102,19 @@ describe('rotation is a compare-and-set', () => {
 })
 
 describe('use is a claim', () => {
-  it('one session holds it; a second is refused; the holder may re-claim; release frees it', async () => {
-    const f = await createTestTenantWithUser(db, 'member')
+  /** A tenant with an app, a Codex credential, and sessions to hold it. */
+  async function claimFixture() {
+    const f = await seedSessionApp(db, createFakeCloud())
     const { row } = await seedAgentCredential(db, f, { runtime: 'codex' })
-    const a = crypto.randomUUID()
-    const b = crypto.randomUUID()
+    const session = (status: 'working' | 'ready' | 'shipping') =>
+      insertSession(db, f, { status, runtime: 'codex', credentialSource: 'user' }).then(s => s.id)
+    return { f, row, session }
+  }
+
+  it('one session’s turn holds it; a second is refused; the holder may re-claim; release frees it', async () => {
+    const { f, row, session } = await claimFixture()
+    const a = await session('working')
+    const b = await session('working')
     expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: a })).not.toBeNull()
     expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: b })).toBeNull()
     expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: a })).not.toBeNull()
@@ -111,6 +125,35 @@ describe('use is a claim', () => {
     expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: b })).toBeNull()
     await release(db, { tenantId: f.tenant.id, id: row.id, sessionId: a })
     expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: b })).not.toBeNull()
+  })
+
+  it('a ship’s fix turn holds it too', async () => {
+    const { f, row, session } = await claimFixture()
+    const shipping = await session('shipping')
+    expect(
+      await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: shipping })
+    ).not.toBeNull()
+    expect(
+      await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: await session('working') })
+    ).toBeNull()
+  })
+
+  // Seen live: a `wrangler dev` reload killed a turn before its `finally`, and the claim it left
+  // made the next session's turn wait two hours for the expiry.
+  it('a claim whose holder is no longer mid-turn (or gone) is taken over at once', async () => {
+    const { f, row, session } = await claimFixture()
+    const idle = await session('ready')
+    await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: idle })
+    const next = await session('working')
+    expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: next })).not.toBeNull()
+    expect((await getById(db, f.tenant.id, row.id))?.claimedBySessionId).toBe(next)
+    await db
+      .update(agentCredentials)
+      .set({ claimedBySessionId: null })
+      .where(eq(agentCredentials.id, row.id))
+    // A holder id with no session row at all (deleted) blocks nothing either.
+    await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: crypto.randomUUID() })
+    expect(await claim(db, { tenantId: f.tenant.id, id: row.id, sessionId: next })).not.toBeNull()
   })
 
   it('a stale claim is reclaimable, and the sweep clears it', async () => {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A ChatGPT plan is no longer stuck "in use" after a turn dies.** A claim only blocks while its
+  session is mid-turn; a turn killed before it could release (a deploy, a crash, a dev reload) no
+  longer makes the next session wait out the two-hour expiry.
 - **Codex on a ChatGPT plan works again: `chatgpt.com` is no longer proxied** (`docs/CONCEPTS.md`
   §18.22-B). ChatGPT answers requests sent from the Workers runtime with a 403 block page, so every
   turn failed at model discovery ("workspace routing discovery failed"). The container now reaches
