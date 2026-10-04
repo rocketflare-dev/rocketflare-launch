@@ -58,8 +58,8 @@ amd64. Pick one:
   Or install the amd64 emulators into the running VM with
   `docker run --privileged --rm tonistiigi/binfmt --install amd64`.
 
-`pnpm provision check` fails with the same three remedies when no builder lists `linux/amd64`, and
-warns below 12 GB. The first image push from an ARM Mac takes about 5 minutes; later pushes are
+`pnpm provision check` fails with the same three remedies when no builder lists `linux/amd64` and an amd64 container will not run, and
+warns below 11 GB (a 12 GB colima VM reports about 11.6). The first image push from an ARM Mac takes about 5 minutes; later pushes are
 cached.
 
 **Look at your zone first.** Launch serves a Worker route `*.<domain>/*`, so every subdomain that

@@ -301,17 +301,29 @@ function checkDocker(problems: string[]): void {
     problems.push('Docker is not running')
     return
   }
+  // A builder that lists linux/amd64 is enough; otherwise RUN an amd64 container — Rosetta
+  // (colima `--vz-rosetta`, Docker Desktop) emulates amd64 without any builder listing it.
   const amd64 =
-    server === 'linux/amd64' || /linux\/amd64/.test(capture('docker', ['buildx', 'ls']) ?? '')
+    server === 'linux/amd64' ||
+    /linux\/amd64/.test(capture('docker', ['buildx', 'ls']) ?? '') ||
+    capture('docker', [
+      'run',
+      '--rm',
+      '--platform',
+      'linux/amd64',
+      'alpine:3.20',
+      'uname',
+      '-m',
+    ]) === 'x86_64'
   if (!amd64) {
     line(
       'fail',
-      `docker: ${server}, and no buildx builder lists linux/amd64 — enable amd64 emulation (Docker Desktop: Settings → General → Rosetta; colima: \`colima start --vz-rosetta\`; or \`docker run --privileged --rm tonistiigi/binfmt --install amd64\`)`
+      `docker: ${server}, and an amd64 container does not run — enable amd64 emulation (Docker Desktop: Settings → General → Rosetta; colima: \`colima start --vz-rosetta\`; or \`docker run --privileged --rm tonistiigi/binfmt --install amd64\`)`
     )
     problems.push('Docker cannot build linux/amd64')
   } else line('ok', `docker: ${server}, builds linux/amd64`)
   const mem = Number(capture('docker', ['info', '--format', '{{.MemTotal}}']) ?? 0)
-  if (mem && mem < 12 * 1024 ** 3)
+  if (mem && mem < 11 * 1024 ** 3)
     line(
       'warn',
       `docker: ${(mem / 1024 ** 3).toFixed(1)} GB memory — the session image build wants 12 GB or more`
@@ -977,7 +989,7 @@ async function deployPhase(flags: Flags): Promise<void> {
   const ready = await fetchJson(`${instance.appUrl}/api/ready`, 12)
   if (ready?.__status === 503 || ready?.status !== 'ready')
     throw new ProvisionError(
-      `${instance.appUrl}/api/ready → ${JSON.stringify(ready)} — the Worker cannot reach Neon: check its DATABASE_URL secret (\`pnpm provision secrets --rotate\` re-puts it)`
+      `${instance.appUrl}/api/ready → ${JSON.stringify(ready)} — the Worker cannot reach Neon: check its DATABASE_URL secret (\`pnpm provision neon --rotate\` resets the password and re-puts it — never \`secrets --rotate\`, which also replaces OAUTH_ENCRYPTION_KEY)`
     )
   verifyLine(
     `deploy ok — ${instance.appUrl}/api/health ok (version ${health.version}), /api/ready ok`

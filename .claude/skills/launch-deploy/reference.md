@@ -68,7 +68,7 @@ to the instance file. Never run it from the agent's shell.
 | containers / plan error from `wrangler deploy` | Workers Paid, or the token's Containers: Edit |
 | `the session image or [[containers]] changed … Drain first` | SKILL.md § Updating, step 3 |
 | `/api/health →` after 2 minutes | the custom domain's certificate isn't issued yet (rerun `deploy`), or the Worker fails at startup (`wrangler tail -c wrangler.deploy.toml`) |
-| `/api/ready → …` | the Worker can't reach Neon → `pnpm provision neon --rotate` re-puts `DATABASE_URL` with a new password. (The message says `secrets --rotate`, but that also regenerates `OAUTH_ENCRYPTION_KEY`: avoid it) |
+| `/api/ready → …` | the Worker can't reach Neon → `pnpm provision neon --rotate` re-puts `DATABASE_URL` with a new password. Never `secrets --rotate`: it also regenerates `OAUTH_ENCRYPTION_KEY` |
 | `REFUSED: the Worker already holds OAUTH_ENCRYPTION_KEY but the instance file has none` | restore the key from the user's backup; `--rotate` only if it's truly lost (then `setup --rotate`) |
 | `no Cloudflare account id yet` (setup) | run `cloudflare` (or `check`) first |
 | `DNS still propagating` | wait; `pnpm provision email status`; rerun `email verify` |
