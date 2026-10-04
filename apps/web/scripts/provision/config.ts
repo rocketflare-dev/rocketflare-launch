@@ -1,8 +1,13 @@
 /**
- * Shared plumbing for `scripts/provision.ts`: paths, the git-ignored answer cache
- * (`apps/web/.provision.json` — NON-secret ids and answers only), token discovery
- * (`process.env` first, then the git-ignored `apps/web/.provision.env`), the redacting logger and
- * a child-process runner whose output is redacted before it is echoed. Nothing here reads
+ * Shared plumbing for `scripts/provision.ts`: paths, the instance file (`launch.deploy.env` at the
+ * repo root — answers, tokens and the generated `OAUTH_ENCRYPTION_KEY`; `process.env` wins over it,
+ * which is how CI or a one-off run overrides a value), the git-ignored instance state
+ * (`.launch/state.json` — the NON-secret ids provisioning created and the facts it discovered), the
+ * redacting logger and a child-process runner whose output is redacted before it is echoed.
+ *
+ * `LAUNCH_DEPLOY_FILE` points at another instance's file (relative to where `pnpm` was started):
+ * `launch.staging.deploy.env` keeps its state in `.launch/state.staging.json` and its GitHub App
+ * key in `.launch/github-app.staging.pem`, so two instances never share an id. Nothing here reads
  * `.dev.vars` — that file is loaded into the Worker by `wrangler dev`, so account-level tokens
  * must never live there.
  */
@@ -11,89 +16,131 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  DEPLOY_FILE_BASENAME,
+  LEGACY_PROVISION_ENV_BASENAME,
   missingTokenHint,
-  PROVISION_ENV_BASENAME,
   parseEnvFile,
   REDACT_EXEMPT_KEYS,
   type ResolvedToken,
   resolveToken,
   secretValuesOf,
+  upsertEnvFile,
 } from './env-file'
+import { type Instance, instanceTagOf, REQUIRED_TOKEN_KEYS, readInstance } from './instance'
 import { redact, registerSecrets } from './redact'
+import {
+  CLOUDFLARE_TOKEN_SCOPES,
+  cloudflareTokenTemplateUrl,
+  MANUAL_SCOPES,
+} from './token-template'
 
 /** apps/web — resolved from this file, never from `process.cwd()`. */
 export const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 export const ROOT_DIR = path.resolve(WEB_DIR, '../..')
-export const CACHE_FILE = path.join(WEB_DIR, '.provision.json')
-/** `PROVISION_ENV_FILE` relocates the token file (tests, a one-off run); default apps/web/.provision.env. */
-export const TOKEN_FILE =
-  process.env.PROVISION_ENV_FILE?.trim() || path.join(WEB_DIR, PROVISION_ENV_BASENAME)
-export const TOKEN_FILE_EXAMPLE = path.join(WEB_DIR, `${PROVISION_ENV_BASENAME}.example`)
-/** How the token file is shown in messages: the default path relative to the repo, else the override verbatim. */
-export const TOKEN_FILE_LABEL =
-  process.env.PROVISION_ENV_FILE?.trim() || `apps/web/${PROVISION_ENV_BASENAME}`
 
-export type EnvName = 'staging' | 'production'
-export const ENV_NAMES: EnvName[] = ['staging', 'production']
+/**
+ * `LAUNCH_DEPLOY_FILE` relative to where the person ran `pnpm` (`INIT_CWD`, which pnpm sets — the
+ * script itself runs in apps/web), else `<root>/launch.deploy.env`.
+ */
+export function resolveDeployFile(
+  override: string | undefined,
+  cwd: string,
+  root: string = ROOT_DIR
+): string {
+  const v = override?.trim()
+  if (!v) return path.join(root, DEPLOY_FILE_BASENAME)
+  return path.resolve(cwd, v)
+}
 
-export const tomlFor = (env: EnvName): string =>
-  path.join(WEB_DIR, env === 'staging' ? 'wrangler.staging.toml' : 'wrangler.toml')
-export const tomlBasename = (env: EnvName): string => path.basename(tomlFor(env))
-/** `-c wrangler.staging.toml` for staging, nothing for production (wrangler's default file). */
-export const wranglerConfigArgs = (env: EnvName): string[] =>
-  env === 'staging' ? ['-c', 'wrangler.staging.toml'] : []
+export const DEPLOY_FILE = resolveDeployFile(
+  process.env.LAUNCH_DEPLOY_FILE,
+  process.env.INIT_CWD || ROOT_DIR
+)
+/** The token reader's name for the same file (`tokens.ts` writes it). */
+export const TOKEN_FILE = DEPLOY_FILE
+export const TOKEN_FILE_EXAMPLE = path.join(ROOT_DIR, `${DEPLOY_FILE_BASENAME}.example`)
+/** How the file is shown in messages: relative to the repo when it is inside it. */
+export const TOKEN_FILE_LABEL = (() => {
+  const rel = path.relative(ROOT_DIR, DEPLOY_FILE)
+  return rel && !rel.startsWith('..') ? rel : DEPLOY_FILE
+})()
+/** The pre-instance token file; never read, only detected so `check` can say "move it". */
+export const LEGACY_TOKEN_FILE = path.join(WEB_DIR, LEGACY_PROVISION_ENV_BASENAME)
+
+export const INSTANCE_TAG = instanceTagOf(DEPLOY_FILE)
+export const STATE_DIR = path.join(ROOT_DIR, '.launch')
+export const STATE_FILE = path.join(
+  STATE_DIR,
+  INSTANCE_TAG ? `state.${INSTANCE_TAG}.json` : 'state.json'
+)
+export const STATE_FILE_LABEL = path.relative(ROOT_DIR, STATE_FILE)
+/** Where `github-app` writes the PEM, relative to the repo root (the value it puts in the file). */
+export const DEFAULT_GITHUB_APP_PEM = path.join(
+  '.launch',
+  INSTANCE_TAG ? `github-app.${INSTANCE_TAG}.pem` : 'github-app.pem'
+)
+
+/** The committed template every instance is rendered from, and the rendered (git-ignored) file. */
+export const TEMPLATE_TOML = path.join(WEB_DIR, 'wrangler.toml')
+export const DEPLOY_TOML_BASENAME = 'wrangler.deploy.toml'
+export const DEPLOY_TOML = path.join(WEB_DIR, DEPLOY_TOML_BASENAME)
+
+/**
+ * Every wrangler call for the instance targets the RENDERED config (`render` writes it next to
+ * the template, so `main`, `assets` and the container `image` resolve as they do there).
+ */
+export const wranglerConfigArgs = (): string[] => ['-c', DEPLOY_TOML_BASENAME]
 
 // ---- tokens -------------------------------------------------------------------------------
 
 export const TOKEN_HELP: Record<string, { url: string; scopes: string }> = {
   CLOUDFLARE_API_TOKEN: {
-    url: 'https://dash.cloudflare.com/profile/api-tokens',
-    scopes:
-      'Account: Workers Scripts, Workers KV Storage, Queues, Workflows, Durable Objects, Hyperdrive, R2 — Edit; Workers AI, Account Analytics — Read. Zone: DNS — Edit (the zone holding your hosts and the sending domain)',
+    url: cloudflareTokenTemplateUrl(),
+    scopes: `an ACCOUNT-owned token (Manage Account → API Tokens) with ${CLOUDFLARE_TOKEN_SCOPES.join('; ')} — the link pre-fills all but ${MANUAL_SCOPES.join(' and ')}`,
   },
   CLOUDFLARE_ACCOUNT_ID: {
     url: 'https://dash.cloudflare.com/?to=/:account/workers-and-pages (the id is in the right-hand column / the URL)',
-    scopes: 'the 32-hex account id',
+    scopes: 'the 32-hex account id — optional when the token sees exactly one account',
   },
   NEON_API_KEY: {
     url: 'https://console.neon.tech/app/settings/api-keys',
-    scopes: 'a personal or organisation API key (creates projects and branches)',
+    scopes:
+      "an ORGANIZATION API key (Launch creates every app's Neon project with it; a personal key needs NEON_ORG_ID)",
   },
   RESEND_API_KEY: {
     url: 'https://resend.com/api-keys',
-    scopes: 'Full access (creates the domain and mints the per-environment sending key)',
+    scopes: "Full access (creates the domain, mints the Worker's sending key and every app's)",
   },
 }
 
-export const REQUIRED_TOKENS = [
-  'CLOUDFLARE_API_TOKEN',
-  'CLOUDFLARE_ACCOUNT_ID',
-  'NEON_API_KEY',
-  'RESEND_API_KEY',
-] as const
+/** The three account tokens; `--skip-email` drops Resend. */
+export const REQUIRED_TOKENS = REQUIRED_TOKEN_KEYS
 
-/** Optional Worker secrets copied from the environment by `pnpm provision secrets`. */
+/** Optional Worker secrets copied from the instance file (or the environment) by `secrets`. */
 export const OPTIONAL_WORKER_SECRETS = [
-  'BOOTSTRAP_ADMIN_EMAILS',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'MICROSOFT_CLIENT_ID',
   'MICROSOFT_CLIENT_SECRET',
   'OIDC_CLIENT_SECRET',
   'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
   'EMBEDDINGS_API_KEY',
   'LANGFUSE_PUBLIC_KEY',
   'LANGFUSE_SECRET_KEY',
   'OTEL_EXPORTER_OTLP_HEADERS',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
 ] as const
 
 let tokenFileMemo: Record<string, string> | undefined
 
 /**
- * The token file, parsed once per process (call `reloadTokenFile()` after writing it). A file
- * that is readable by the group or the world gets ONE warning and is still used. Every value it
- * yields is registered with `redact()` so it can never be echoed, whatever its shape — except the
- * identifiers in `REDACT_EXEMPT_KEYS` (account id, admin email), which preflight prints.
+ * The instance file, parsed once per process (`reloadTokenFile()` after writing it). A file that
+ * is readable by the group or the world gets ONE warning and is still used. Every value it yields
+ * is registered with `redact()` so it can never be echoed, whatever its shape — except the answers
+ * and identifiers in `REDACT_EXEMPT_KEYS` (domain, host, account id, admin email…), which `check`
+ * prints.
  */
 export function readTokenFile(): Record<string, string> {
   if (tokenFileMemo) return tokenFileMemo
@@ -115,7 +162,7 @@ export function reloadTokenFile(): void {
   tokenFileMemo = undefined
 }
 
-/** Where a token comes from: the process environment (CI) beats the file; empty counts as unset. */
+/** Where a value comes from: the process environment (CI) beats the file; empty counts as unset. */
 export function tokenSource(name: string): ResolvedToken | undefined {
   const resolved = resolveToken(name, process.env, readTokenFile())
   if (resolved && !REDACT_EXEMPT_KEYS.has(name)) registerSecrets([resolved.value])
@@ -126,15 +173,59 @@ export function token(name: string): string | undefined {
   return tokenSource(name)?.value
 }
 
-/** The standard "missing token" sentence: `pnpm provision tokens`, the file, or an export. */
+/** The standard "missing token" sentence: the instance file, `pnpm provision tokens`, or an export. */
 export function tokenHint(name: string): string {
-  return missingTokenHint(name, TOKEN_HELP[name])
+  return missingTokenHint(name, TOKEN_HELP[name], TOKEN_FILE_LABEL)
 }
 
 export function requireToken(name: string): string {
   const v = token(name)
   if (!v) throw new ProvisionError(tokenHint(name), 2)
   return v
+}
+
+/**
+ * Set `KEY=value` lines in the instance file — how a GENERATED value (the OAuth encryption key,
+ * the GitHub App id) gets into the one place the operator backs up. Comments and every other line
+ * are preserved; a missing file is seeded from the example so its guidance comes along. Written to
+ * a temporary file and renamed over the original, mode 0600, so an interrupted write can never
+ * leave the file — and the key in it — half written.
+ */
+export function writeDeployFileValues(updates: Record<string, string>): void {
+  const current = fs.existsSync(DEPLOY_FILE)
+    ? fs.readFileSync(DEPLOY_FILE, 'utf8')
+    : fs.existsSync(TOKEN_FILE_EXAMPLE)
+      ? fs.readFileSync(TOKEN_FILE_EXAMPLE, 'utf8')
+      : ''
+  const next = upsertEnvFile(current, updates)
+  const tmp = `${DEPLOY_FILE}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, next, { mode: 0o600 })
+  fs.chmodSync(tmp, 0o600)
+  fs.renameSync(tmp, DEPLOY_FILE)
+  for (const [k, v] of Object.entries(updates)) if (!REDACT_EXEMPT_KEYS.has(k)) registerSecrets([v])
+  reloadTokenFile()
+}
+
+export function writeDeployFileValue(key: string, value: string): void {
+  writeDeployFileValues({ [key]: value })
+}
+
+// ---- the instance -------------------------------------------------------------------------
+
+/** The validated answers; exit 2 naming every missing or wrong key (never a secret value). */
+export function requireInstance(): Instance {
+  const { instance, missing, invalid } = readInstance(token)
+  if (instance) return instance
+  const lines = [...missing.map(k => `${k} is not set`), ...invalid]
+  throw new ProvisionError(
+    `${TOKEN_FILE_LABEL}: ${lines.join('; ')}${fs.existsSync(DEPLOY_FILE) ? '' : ` — the file does not exist: cp ${DEPLOY_FILE_BASENAME}.example ${TOKEN_FILE_LABEL} and fill it in`}`,
+    2
+  )
+}
+
+/** The Cloudflare account: the file's `CLOUDFLARE_ACCOUNT_ID`, else the one `check` discovered. */
+export function accountId(): string | undefined {
+  return token('CLOUDFLARE_ACCOUNT_ID') ?? readState().cloudflare?.accountId
 }
 
 // ---- errors -------------------------------------------------------------------------------
@@ -148,51 +239,58 @@ export class ProvisionError extends Error {
   }
 }
 
-// ---- cache --------------------------------------------------------------------------------
+// ---- state --------------------------------------------------------------------------------
 
-export interface ProvisionCache {
-  appName?: string
-  region?: string
-  sendingDomain?: string
-  /** Per environment: a hostname, or the literal `workers.dev`. */
-  hosts?: Partial<Record<EnvName, string>>
-  adminEmails?: string
-  neon?: {
-    projectId?: string
-    branches?: Partial<Record<EnvName, string>>
-    hosts?: Partial<Record<EnvName, string>>
-    database?: string
-    role?: string
-  }
-  resend?: { domainId?: string; domainName?: string; region?: string }
+/**
+ * What provisioning created and discovered for ONE instance — ids and facts, never a secret. The
+ * committed tomls never hold any of it; `render` reads it to write `wrangler.deploy.toml`.
+ */
+export interface InstanceState {
+  /** The answers the resources below were created for, so a changed name is noticed. */
+  instance?: { name?: string; domain?: string; host?: string }
   cloudflare?: {
-    /** The first zone preflight resolved (kept for older caches); `zones` is the full map. */
+    accountId?: string
+    accountName?: string
     zoneId?: string
     zoneName?: string
-    /** zone name → zone id, one entry per zone a host or the sending domain resolved to. */
+    /** binding → KV namespace id (`RATE_LIMIT_KV` and any plugin's). */
+    kv?: Record<string, string>
+    /** zone name → zone id, one per zone a host or the sending domain resolved to. */
     zones?: Record<string, string>
-    workersSubdomain?: string
   }
+  neon?: {
+    projectId?: string
+    orgId?: string
+    branchId?: string
+    host?: string
+    database?: string
+    role?: string
+    region?: string
+  }
+  resend?: { domainId?: string; domainName?: string; region?: string }
+  githubApp?: { slug?: string; htmlUrl?: string; owner?: string }
+  deploy?: { containersHash?: string; version?: string; at?: string }
 }
 
-const SECRET_SHAPE = /postgres(ql)?:\/\/|\bre_|\bnapi_|[0-9a-f]{40,}/i
+const SECRET_SHAPE = /postgres(ql)?:\/\/|\bre_|\bnapi_|PRIVATE KEY|[0-9a-f]{40,}/i
 
-export function readCache(): ProvisionCache {
-  if (!fs.existsSync(CACHE_FILE)) return {}
+export function readState(): InstanceState {
+  if (!fs.existsSync(STATE_FILE)) return {}
   try {
-    return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')) as ProvisionCache
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) as InstanceState
   } catch {
     return {}
   }
 }
 
-export function writeCache(patch: ProvisionCache): ProvisionCache {
-  const merged = deepMerge(readCache(), patch)
+export function writeState(patch: InstanceState): InstanceState {
+  const merged = deepMerge(readState(), patch as Record<string, any>)
   const json = JSON.stringify(merged, null, 2)
-  // Belt and braces: the cache holds ids and answers only. Refuse to persist anything secret-shaped.
+  // Belt and braces: the state holds ids and facts only. Refuse to persist anything secret-shaped.
   if (SECRET_SHAPE.test(json))
-    throw new ProvisionError('refusing to write a secret-shaped value to .provision.json')
-  fs.writeFileSync(CACHE_FILE, `${json}\n`)
+    throw new ProvisionError(`refusing to write a secret-shaped value to ${STATE_FILE_LABEL}`)
+  fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(STATE_FILE, `${json}\n`)
   return merged
 }
 
@@ -282,7 +380,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
   })
 }
 
-/** Synchronous capture for cheap lookups (`git config user.email`, `node -v`). */
+/** Synchronous capture for cheap lookups (`git config user.email`, `docker info`). */
 export function capture(cmd: string, args: string[], cwd = WEB_DIR): string | undefined {
   const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', env: process.env })
   if (r.status !== 0) return undefined
@@ -296,21 +394,11 @@ export function wrangler(args: string[], opts: RunOptions = {}): Promise<RunResu
     cwd: WEB_DIR,
     env: {
       CLOUDFLARE_API_TOKEN: token('CLOUDFLARE_API_TOKEN'),
-      CLOUDFLARE_ACCOUNT_ID: token('CLOUDFLARE_ACCOUNT_ID'),
+      CLOUDFLARE_ACCOUNT_ID: accountId(),
       ...opts.env,
     },
   })
 }
-
-/** The worker `name` from wrangler.toml (production) — never a literal (`/adapt` may have renamed it). */
-export function readAppName(): string {
-  const text = fs.readFileSync(tomlFor('production'), 'utf8')
-  const m = /^name\s*=\s*"([^"]+)"/m.exec(text)
-  if (!m) throw new ProvisionError('could not read `name` from apps/web/wrangler.toml')
-  return m[1]
-}
-
-export const toUpperName = (app: string): string => app.toUpperCase().replace(/-/g, '_')
 
 /** `https://app.example.com` → `example.com` (last two labels; a public-suffix table is not worth a dependency). */
 export function apexOf(hostOrUrl: string): string {

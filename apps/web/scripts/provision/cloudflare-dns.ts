@@ -111,6 +111,108 @@ export class CloudflareClient {
     return 'created'
   }
 
+  // ---- the instance flow (`check`, `cloudflare`, `route`) ----------------------------------
+
+  /** The accounts the token can see (an account-owned token sees its one account). */
+  listAccounts() {
+    return this.request<{ id: string; name: string }[]>('GET', '/accounts?per_page=50')
+  }
+
+  /** `/accounts/{id}/tokens/verify` — what Launch's own Setup check calls; refuses a user token. */
+  verifyAccountToken(accountId: string) {
+    return this.request<{ id: string; status: string }>(
+      'GET',
+      `/accounts/${accountId}/tokens/verify`
+    )
+  }
+
+  /** The zone named exactly `name`, with the account it belongs to. */
+  async findZoneWithAccount(name: string) {
+    const zones = await this.request<
+      { id: string; name: string; status: string; account?: { id: string; name?: string } }[]
+    >('GET', `/zones?name=${encodeURIComponent(name)}&per_page=50`)
+    return zones.find(z => z.name === name)
+  }
+
+  /** Every DNS record in the zone (paged by 500 — the zone audit reads them all). */
+  async listAllRecords(zoneId: string): Promise<DnsRecord[]> {
+    const out: DnsRecord[] = []
+    for (let page = 1; page <= 20; page++) {
+      const batch = await this.request<DnsRecord[]>(
+        'GET',
+        `/zones/${zoneId}/dns_records?per_page=500&page=${page}`
+      )
+      out.push(...batch)
+      if (batch.length < 500) break
+    }
+    return out
+  }
+
+  /** Worker custom domains attached in the zone (`GET /accounts/{a}/workers/domains?zone_id=`). */
+  listWorkerDomains(accountId: string, zoneId: string) {
+    return this.request<{ hostname: string; service: string }[]>(
+      'GET',
+      `/accounts/${accountId}/workers/domains?zone_id=${zoneId}`
+    )
+  }
+
+  listWorkerRoutes(zoneId: string) {
+    return this.request<{ id: string; pattern: string; script?: string }[]>(
+      'GET',
+      `/zones/${zoneId}/workers/routes`
+    )
+  }
+
+  /** Create one record exactly as given (the wildcard — `upsertRecord` is for Resend's). */
+  createRecord(zoneId: string, rec: DnsRecordInput & { proxied?: boolean; comment?: string }) {
+    return this.request<DnsRecord>('POST', `/zones/${zoneId}/dns_records`, rec)
+  }
+
+  // ---- account resources, find-or-create by name (the `cloudflare` phase) ------------------
+
+  /** KV namespace titled `title` (or wrangler's older `<worker>-<title>`), else created. */
+  async ensureKv(accountId: string, title: string): Promise<{ id: string; created: boolean }> {
+    for (let page = 1; page <= 50; page++) {
+      const list = await this.request<{ id: string; title: string }[]>(
+        'GET',
+        `/accounts/${accountId}/storage/kv/namespaces?per_page=100&page=${page}`
+      )
+      const hit = list.find(n => n.title === title) ?? list.find(n => n.title.endsWith(`-${title}`))
+      if (hit) return { id: hit.id, created: false }
+      if (list.length < 100) break
+    }
+    const made = await this.request<{ id: string }>(
+      'POST',
+      `/accounts/${accountId}/storage/kv/namespaces`,
+      { title }
+    )
+    return { id: made.id, created: true }
+  }
+
+  async ensureQueue(accountId: string, name: string): Promise<{ created: boolean }> {
+    for (let page = 1; page <= 50; page++) {
+      const list = await this.request<{ queue_name: string }[]>(
+        'GET',
+        `/accounts/${accountId}/queues?per_page=100&page=${page}`
+      )
+      if (list.some(q => q.queue_name === name)) return { created: false }
+      if (list.length < 100) break
+    }
+    await this.request('POST', `/accounts/${accountId}/queues`, { queue_name: name })
+    return { created: true }
+  }
+
+  async ensureR2Bucket(accountId: string, name: string): Promise<{ created: boolean }> {
+    try {
+      await this.request('GET', `/accounts/${accountId}/r2/buckets/${name}`)
+      return { created: false }
+    } catch (err) {
+      if (!/→ 404/.test(err instanceof Error ? err.message : '')) throw err
+    }
+    await this.request('POST', `/accounts/${accountId}/r2/buckets`, { name })
+    return { created: true }
+  }
+
   async workersSubdomain(accountId: string): Promise<string> {
     const r = await this.request<{ subdomain?: string }>(
       'GET',
@@ -148,6 +250,36 @@ export function hostsNeedingZone(
   for (const host of Object.values(answers.hosts)) add(host)
   if (!skipEmail) add(answers.domain)
   return out
+}
+
+/** What `route` creates when the zone has no `*` record at all (spike S2, as Setup's check does). */
+export const WILDCARD_RECORD = { type: 'AAAA', name: '*', content: '100::', proxied: true } as const
+
+/**
+ * The zone audit: every PROXIED hostname in the zone that Launch's `*.<domain>/*` route would
+ * capture — a subdomain (the apex is not matched by `*.`), not the wildcard itself, not Launch's
+ * own host, and not served by a Worker custom domain (a custom domain wins over a route). Each one
+ * is a site that stops reaching its origin the moment the instance deploys.
+ */
+export function zoneAuditFindings(input: {
+  domain: string
+  host: string
+  records: ReadonlyArray<{ name: string; type: string; proxied?: boolean }>
+  customDomains: ReadonlyArray<{ hostname: string; service?: string }>
+}): { captured: string[]; hostTaken?: string } {
+  const domain = input.domain.toLowerCase()
+  const covered = new Set(input.customDomains.map(d => d.hostname.toLowerCase()))
+  const captured = new Set<string>()
+  let hostTaken: string | undefined
+  for (const r of input.records) {
+    const name = r.name.toLowerCase()
+    if (name === input.host.toLowerCase() && !covered.has(name)) hostTaken = `${r.type} ${name}`
+    if (!r.proxied) continue
+    if (name === domain || name === `*.${domain}` || !name.endsWith(`.${domain}`)) continue
+    if (name === input.host.toLowerCase() || covered.has(name)) continue
+    captured.add(name)
+  }
+  return { captured: [...captured].sort(), ...(hostTaken ? { hostTaken } : {}) }
 }
 
 /** The one sentence a person sees when a host or sending domain is not a zone in the account. */

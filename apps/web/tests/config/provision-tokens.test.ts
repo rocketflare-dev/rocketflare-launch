@@ -1,5 +1,5 @@
 /**
- * `scripts/provision/env-file.ts` — the pure half of `apps/web/.provision.env` handling (config
+ * `scripts/provision/env-file.ts` — the pure half of `launch.deploy.env` handling (config
  * project, no filesystem): parsing with `.dev.vars` conventions, comment-preserving upsert, the
  * mask, the env-beats-file resolver, the missing-token hint, and that a registered token value can
  * never come out of `redact()`. Fixture values are obviously fake.
@@ -115,7 +115,7 @@ describe('missingTokenHint', () => {
   it('names the three ways in and the minting URL', () => {
     const hint = missingTokenHint('NEON_API_KEY', { url: 'https://example.test/keys', scopes: 'x' })
     expect(hint).toContain('pnpm provision tokens')
-    expect(hint).toContain('apps/web/.provision.env.example')
+    expect(hint).toContain('launch.deploy.env.example')
     expect(hint).toContain('export the variable')
     expect(hint).toContain('https://example.test/keys')
     expect(missingTokenHint('CLOUDFLARE_ACCOUNT_ID')).not.toContain('Mint:')
@@ -138,7 +138,10 @@ describe('registered token values never survive redact()', () => {
     expect(values).not.toContain(parsed.CLOUDFLARE_ACCOUNT_ID)
     expect(values).not.toContain('me@example.com')
     expect(values).toContain(parsed.NEON_API_KEY)
-    expect([...REDACT_EXEMPT_KEYS]).toEqual(['CLOUDFLARE_ACCOUNT_ID', 'BOOTSTRAP_ADMIN_EMAILS'])
+    expect(REDACT_EXEMPT_KEYS.has('CLOUDFLARE_ACCOUNT_ID')).toBe(true)
+    expect(REDACT_EXEMPT_KEYS.has('LAUNCH_DOMAIN')).toBe(true)
+    // No token, key or secret is ever exempt.
+    for (const k of [...REDACT_EXEMPT_KEYS]) expect(k).not.toMatch(/TOKEN|_KEY$|SECRET|PASSWORD/)
     registerSecrets(values)
     expect(redact(`account ${parsed.CLOUDFLARE_ACCOUNT_ID}`)).toContain(
       parsed.CLOUDFLARE_ACCOUNT_ID

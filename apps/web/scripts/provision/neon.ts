@@ -57,6 +57,14 @@ export interface NeonOperation {
   error?: string
 }
 
+export interface NeonProjectInfo {
+  id: string
+  name: string
+  region_id: string
+  pg_version?: number
+  org_id?: string
+}
+
 type Fetch = typeof fetch
 
 export class NeonClient {
@@ -96,24 +104,42 @@ export class NeonClient {
     return this.request<{ id: string; email: string; name?: string }>('GET', '/users/me')
   }
 
-  async findProject(name: string) {
+  /** The project named exactly `name` (in `orgId` when given — a personal key in several orgs). */
+  async findProject(name: string, orgId?: string) {
+    const org = orgId ? `&org_id=${encodeURIComponent(orgId)}` : ''
     const { projects } = await this.request<{ projects: any[] }>(
       'GET',
-      `/projects?search=${encodeURIComponent(name)}&limit=400`
+      `/projects?search=${encodeURIComponent(name)}&limit=400${org}`
     )
-    return projects.find(p => p.name === name) as
-      | { id: string; name: string; region_id: string; pg_version: number }
-      | undefined
+    return projects.find(p => p.name === name) as NeonProjectInfo | undefined
   }
 
-  async createProject(name: string, regionId: string) {
+  async getProject(id: string) {
+    const { project } = await this.request<{ project: NeonProjectInfo }>('GET', `/projects/${id}`)
+    return project
+  }
+
+  /** One project, to prove the key works — `/users/me` refuses an organization key. */
+  listProjectsSample(orgId?: string) {
+    const org = orgId ? `&org_id=${encodeURIComponent(orgId)}` : ''
+    return this.request<{ projects: NeonProjectInfo[] }>('GET', `/projects?limit=1${org}`)
+  }
+
+  async createProject(name: string, regionId: string, orgId?: string) {
     const res = await this.request<{ project: any; branch: any; operations: NeonOperation[] }>(
       'POST',
       '/projects',
-      { project: { name, region_id: regionId, pg_version: NEON_PG_VERSION } }
+      {
+        project: {
+          name,
+          region_id: regionId,
+          pg_version: NEON_PG_VERSION,
+          ...(orgId ? { org_id: orgId } : {}),
+        },
+      }
     )
     await this.waitForOperations(res.project.id, res.operations)
-    return res.project as { id: string; name: string; region_id: string }
+    return res.project as NeonProjectInfo
   }
 
   async listBranches(projectId: string) {

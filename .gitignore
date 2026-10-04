@@ -39,10 +39,16 @@ coverage/
 # `pnpm dev` writes this when the remote sandbox host is reachable (wrangler.toml + a dev-only binding)
 apps/web/wrangler.dev-remote.toml
 
-# Provisioning answer cache (ids and hostnames only — no secrets; scripts/provision.ts)
+# A deployed instance (`pnpm provision`, docs/DEPLOYMENT.md): its answers and secrets
+# (`launch.deploy.env`, a second instance's `launch.<x>.deploy.env`; the `.example` IS committed),
+# the ids provisioning created and the GitHub App key (`.launch/`), and the wrangler config rendered
+# from wrangler.toml for it. None of it belongs in git; back the first two up.
+launch.deploy.env
+launch.*.deploy.env
+.launch/
+apps/web/wrangler.deploy.toml
+# The pre-instance locations (no longer read; `pnpm provision check` says to move the file).
 apps/web/.provision.json
-# Provisioning tokens — the four vendor tokens (+ optional Worker secrets) read by scripts/provision.ts;
-# written 0600 by `pnpm provision tokens`. `.provision.env.example` (blank values) IS committed.
 apps/web/.provision.env
 
 # Plugins installed into THIS checkout only (D31): `pnpm plugin add --local`.

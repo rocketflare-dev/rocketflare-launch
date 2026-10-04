@@ -817,14 +817,14 @@ describe('the install plan', () => {
     expect(text).toContain('CREATE TABLE orders_orders, orders_lines')
     // The platform half is one command per environment (decision 12), not a hand edit of two
     // tomls — `pnpm provision cloudflare <env>` reads the same declarations off the surface.
-    expect(text).toContain('pnpm provision cloudflare staging')
+    expect(text).toContain('pnpm provision cloudflare && pnpm provision render')
     expect(text).toContain('kv binding ORDERS_KV')
     expect(text).toContain('cron "0 3 * * *"')
     expect(text).toContain('route prefix /orders-webhook')
     expect(text).toContain('[vars] ORDERS_MODE')
     // A secret is TWO steps, because the key and the value are different kinds of work.
     expect(text).toContain('add `ORDERS_TOKEN=` to apps/web/.dev.vars.example')
-    expect(text).toContain('pnpm provision secrets <env>')
+    expect(text).toContain('pnpm provision secrets')
     expect(text).not.toMatch(/\[vars\] ORDERS_TOKEN/)
     // NOT a step any more: `workerExports` became the sixth barrel, so the class reaches
     // `src/worker.ts` through a line `plugin add` writes rather than one a person is told to write.

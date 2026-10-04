@@ -1,87 +1,93 @@
 /**
- * `pnpm provision <phase> [env] [flags]` — take a copy that runs locally to "deployed on
- * Cloudflare with Neon Postgres and Resend email". Driven by the `/provision` skill
- * (.claude/skills/launch-provision/SKILL.md); the manual equivalent is SETUP.md Part 3.
+ * `pnpm provision <phase> [flags]` — stand up (and later update) ONE Launch instance on your own
+ * Cloudflare account and domain, from one git-ignored file at the repo root: `launch.deploy.env`
+ * (copy `launch.deploy.env.example`; `LAUNCH_DEPLOY_FILE=` selects another instance's file). The
+ * runbook is docs/DEPLOYMENT.md; the `/launch-deploy` skill drives it.
+ *
+ * The committed `apps/web/wrangler{,.staging}.toml` stay neutral templates. What provisioning
+ * creates is recorded in `.launch/state.json` (ids, never a secret), and every wrangler call
+ * targets `apps/web/wrangler.deploy.toml`, RENDERED from the template, the file and the state.
  *
  * Phases (each idempotent find-or-create, each ending in ONE `Verify:` line):
- *   tokens [--skip-email]           TTY only: prompt (hidden) for the four vendor tokens, verify each
- *                                   against its vendor, write apps/web/.provision.env (0600)
- *   preflight                       tokens, tools, accounts, the four answers (cached), and the Cloudflare
- *                                   zone behind every custom host / the sending domain (DNS readable)
- *   email create|status|verify [env] Resend domain → DNS records in the Cloudflare zone → EMAIL_FROM;
- *                                   verify + mint the per-env sending key into RESEND_API_KEY
- *   neon                            project + `staging` branch, direct hosts, SELECT 1 per branch
- *   cloudflare <env> [--driver d]   scripts/cf-provision.sh <env> --apply (KV/Queue/R2 → toml ids; Hyperdrive
- *                                   only under DATABASE_DRIVER=postgres). `--driver` switches BOTH tomls (D35)
- *   migrate <env>                   DATABASE_URL=<branch> pnpm db:migrate:ci, count == journal entries
- *   github <env>                    GitHub Environment + DATABASE_URL / CLOUDFLARE_* secrets (stdin)
- *   urls                            APP_URL + routes (custom host) or workers.dev per toml
- *   deploy <env>                    pnpm deploy[:staging] locally, then /api/health and /api/ready
- *   secrets <env>                   OAUTH_ENCRYPTION_KEY (generated) + every optional secret in env;
- *                                   under DATABASE_DRIVER=neon also DATABASE_URL (the POOLED Neon URI)
- *   all [--deploy staging|both] [--skip-email] [--rotate]   0 → 9 in order, stops at the first failure
+ *   check (alias preflight)   names present (names only), tools (Docker builds linux/amd64), the
+ *                             account token, the zone in its account, the zone audit, Neon, Resend,
+ *                             the GitHub App. Read-only: writes nothing, creates nothing
+ *   github-app                the GitHub App from a manifest (two clicks) → GITHUB_APP_ID + key
+ *   email create|status|verify   Resend domain → DNS records in the zone; verify + the sending key
+ *   neon                      the instance's Neon project (default branch), SELECT 1
+ *   cloudflare                KV / Queue / R2 by the instance's names → ids into the state
+ *   migrate                   the migrations against the instance database
+ *   route (alias urls)        the proxied wildcard `AAAA * → 100::` (only if no `*` record exists)
+ *   render                    apps/web/wrangler.deploy.toml
+ *   deploy                    render → (drain check) → build → wrangler deploy → /api/health, /api/ready
+ *   secrets [--dry-run]       OAUTH_ENCRYPTION_KEY (file, else generated + written back first),
+ *                             BOOTSTRAP_ADMIN_EMAILS, DATABASE_URL, every optional secret set
+ *   setup                     the Setup page's settings + sealed credentials, audited, in the DB
+ *   all                       every phase above in order (github-app only when missing)
+ *   tokens                    TTY only: prompt (hidden) for the tokens → the instance file
+ *   github [name]             CI later: a GitHub Environment + DATABASE_URL / CLOUDFLARE_* secrets
+ *                             (not part of `all`)
  *
- * Tokens (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NEON_API_KEY, RESEND_API_KEY; optional
- * BOOTSTRAP_ADMIN_EMAILS, GOOGLE_*, MICROSOFT_*, ANTHROPIC_API_KEY, EMBEDDINGS_API_KEY, LANGFUSE_*, OTEL_EXPORTER_OTLP_HEADERS)
- * come from `process.env` first (CI), then the git-ignored `apps/web/.provision.env` (mode 0600,
- * written by `pnpm provision tokens` or copied from `.provision.env.example`) — never `.dev.vars`,
- * which `wrangler dev` loads into the Worker. Nothing else secret is written to disk:
- * `.provision.json` caches ids and answers, every printed line passes `redact()` (which also
- * masks the exact token values), connection strings reach child processes through their
- * environment or stdin only. The one exception is
- * inherited from cf-provision.sh: under `postgres` the Neon URL is briefly an argument to
- * `wrangler hyperdrive create --connection-string=…` (a process-local argv, redacted in output).
- * Under `neon` it goes to the Worker as the `DATABASE_URL` secret, over stdin like every secret.
- *
- * The database driver (D35): `--driver neon|postgres`, else what the toml's `[vars]
- * DATABASE_DRIVER` says (missing = postgres). `neon` → no Hyperdrive, the Worker holds the pooled
- * URI; `postgres` → Hyperdrive, any Postgres. `cloudflare <env> --driver x` writes the choice into
- * BOTH tomls (the parity test wants a [[hyperdrive]] block in both or neither).
- *
- * Vendor REST calls (no vendor CLIs): scripts/provision/{neon,resend,cloudflare-dns}.ts carry the
+ * Secrets: every printed line passes `redact()` (which also masks the exact values read from the
+ * file), connection strings reach child processes through their environment or stdin only, Worker
+ * secrets go over stdin. Vendor REST calls (no vendor CLIs): scripts/provision/*.ts carry the
  * verified API facts. wrangler runs as `pnpm exec wrangler` INSIDE apps/web.
  */
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import readline from 'node:readline/promises'
 import { readManifest } from '../../../scripts/lib/manifest.mjs'
+import { checkGitHubApp } from '../src/api/services/launch/setup'
+import { loadConfig } from '../src/config'
+import { closeAllDatabases, getScriptDatabase } from '../src/db/client'
 import { openScriptSql } from './lib/sql'
 import {
   CloudflareClient,
-  hostsNeedingZone,
   missingZoneHint,
-  WORKERS_DEV,
+  WILDCARD_RECORD,
+  zoneAuditFindings,
 } from './provision/cloudflare-dns'
 import {
+  accountId,
   apexOf,
   capture,
-  ENV_NAMES,
-  type EnvName,
+  DEPLOY_FILE,
+  DEPLOY_TOML,
+  DEPLOY_TOML_BASENAME,
   heading,
+  LEGACY_TOKEN_FILE,
   log,
   OPTIONAL_WORKER_SECRETS,
   ProvisionError,
   REQUIRED_TOKENS,
   ROOT_DIR,
-  readAppName,
-  readCache,
+  readState,
+  requireInstance,
   requireToken,
   run,
+  STATE_FILE_LABEL,
   sleep,
+  TEMPLATE_TOML,
   TOKEN_FILE_LABEL,
   TOKEN_HELP,
   token,
   tokenSource,
-  tomlBasename,
-  tomlFor,
-  toUpperName,
   verifyLine,
   WEB_DIR,
   warn,
   wrangler,
   wranglerConfigArgs,
-  writeCache,
+  writeDeployFileValue,
+  writeState,
 } from './provision/config'
+import { githubAppPhase, readGitHubAppKey } from './provision/github-app'
+import {
+  GITHUB_APP_KEYS,
+  type Instance,
+  instanceResourceNames,
+  REQUIRED_INSTANCE_KEYS,
+  readInstance,
+} from './provision/instance'
 import {
   buildConnectionUrl,
   NeonClient,
@@ -90,153 +96,107 @@ import {
   pickRole,
   toPooledNeonUrl,
 } from './provision/neon'
-import {
-  type DatabaseDriver,
-  DEFAULT_LOCAL_CONNECTION_STRING,
-  hyperdrivePlaceholder,
-  patchTomlFile,
-  readDatabaseDriver,
-  readTomlString,
-  tomlPlaceholders,
-} from './provision/patch-toml'
+import { readTomlString } from './provision/patch-toml'
 import {
   type PluginResources,
-  pluginBindingBlocks,
   pluginDeclarations,
-  pluginMigrationBlocks,
   pluginResourceList,
   readPluginResources,
 } from './provision/plugin-resources'
 import { redact } from './provision/redact'
+import { renderDeployToml, renderedPlaceholders } from './provision/render-toml'
 import { emailFromFor, ResendClient, resendRecordsToDns, zoneCandidates } from './provision/resend'
-import { generateHexKey, listWorkerSecrets, putWorkerSecret } from './provision/secrets'
+import {
+  describeSecretPlan,
+  generateHexKey,
+  listWorkerSecrets,
+  planSecrets,
+  putWorkerSecret,
+} from './provision/secrets'
+import { writeInstanceSetup } from './provision/setup-db'
+import { MANUAL_SCOPES } from './provision/token-template'
 import { tokensPhase } from './provision/tokens'
 
 // ---- arguments ----------------------------------------------------------------------------
 
 interface Flags {
-  deploy: 'staging' | 'both'
   skipEmail: boolean
   rotate: boolean
-  force: boolean
+  dryRun: boolean
+  drained: boolean
+  adopt: boolean
   debug: boolean
   help: boolean
-  region?: string
-  domain?: string
-  emailRegion?: string
-  stagingHost?: string
-  productionHost?: string
-  adminEmail?: string
-  /** D35: `neon | postgres`; unset → what the toml says. */
-  driver?: DatabaseDriver
 }
 
-const USAGE = `usage: pnpm provision <phase> [env] [flags]
+const USAGE = `usage: pnpm provision <phase> [flags]          (instance file: ${TOKEN_FILE_LABEL})
 
-phases
-  tokens                             prompt for the four vendor tokens (hidden input, verified) → apps/web/.provision.env
-  preflight                          check tools, tokens, accounts and the Cloudflare zone; record the answers
-  email create | status | verify [env]   Resend domain + DNS records; verify and mint the sending key
-  neon                               Neon project + staging branch (direct hosts, SELECT 1)
-  cloudflare <staging|production>    KV, Queue, R2 (+ Hyperdrive under postgres) → ids patched into the toml
-  migrate <staging|production>       run the migrations against that branch
-  github <staging|production>        GitHub Environment + DATABASE_URL / CLOUDFLARE_* secrets
-  urls                               APP_URL + routes (custom host) or workers.dev in both tomls
-  deploy <staging|production>        pnpm deploy[:staging], then /api/health and /api/ready
-  secrets <staging|production>       OAUTH_ENCRYPTION_KEY + every optional secret in env or .provision.env
-                                     (+ DATABASE_URL, the pooled Neon URI, under DATABASE_DRIVER=neon)
-  all                                every phase in order; stops at the first failed Verify
+phases (\`all\` runs them in this order)
+  check                 read-only: names present, tools (Docker linux/amd64), the account token, the zone
+                        and its audit, Neon, Resend, the GitHub App. Alias: preflight
+  github-app            create the GitHub App from a manifest (you click Create, then Install)
+  email create | status | verify   Resend domain + DNS records; verify and set the sending key
+  neon                  the instance's Neon project, SELECT 1
+  cloudflare            KV, Queue, R2 by the instance's names → ids in ${STATE_FILE_LABEL}
+  migrate               run the migrations against the instance database
+  route                 the proxied wildcard DNS record *.<domain> (only if none exists). Alias: urls
+  render                write apps/web/${DEPLOY_TOML_BASENAME} from wrangler.toml + the file + the state
+  deploy                render, build, wrangler deploy, then /api/health and /api/ready
+  secrets               OAUTH_ENCRYPTION_KEY + BOOTSTRAP_ADMIN_EMAILS + DATABASE_URL + every optional
+                        secret set in the file (--dry-run: names only, nothing put)
+  setup                 Setup's settings and sealed credentials into the instance database (audited)
+  all                   every phase in order; stops at the first failed Verify; rerun to UPDATE
+  tokens                prompt for the tokens (hidden input, verified) → the instance file
+  github [environment]  CI later: a GitHub Environment (default production) + DATABASE_URL / CLOUDFLARE_*
 
 flags
-  --deploy staging|both              which environments \`all\` deploys (default staging)
-  --skip-email                       no Resend: skip email create/verify (magic links are logged); tokens skips the Resend prompt
-  --driver neon|postgres             database driver (D35): neon = Neon over HTTPS, no Hyperdrive (the
-                                     DATABASE_URL Worker secret); postgres = Hyperdrive, any Postgres.
-                                     Default: the toml's DATABASE_DRIVER (missing = postgres). On
-                                     \`cloudflare <env>\` it rewrites BOTH tomls to the chosen driver
-  --rotate                           regenerate OAUTH_ENCRYPTION_KEY / Neon passwords / RESEND key
-  --region <neon region>             e.g. aws-us-east-1 (default)
-  --domain <sending domain>          e.g. mail.example.com
-  --email-region <resend region>     us-east-1 (default) | eu-west-1 | sa-east-1 | ap-northeast-1
-  --staging-host <host|workers.dev>  custom host for staging, or the literal workers.dev
-  --production-host <host|workers.dev>
-  --admin-email <email>              BOOTSTRAP_ADMIN_EMAILS (default: git config user.email)
-  --force                            overwrite a different existing id in a toml
-  --debug                            print sanitised vendor payloads to stderr
+  --dry-run             secrets: list what would be put, generated or skipped (names only)
+  --rotate              regenerate OAUTH_ENCRYPTION_KEY (re-seals Setup credentials), the Neon password,
+                        the Resend sending key; github-app: create a new app
+  --drained             deploy: sessions are drained (Admin → Sessions → Drain), go ahead with a new image
+  --adopt               neon: use an existing project with the instance's name the state does not record
+  --skip-email          no Resend: skip email create/verify (magic links are only logged)
+  --debug               print sanitised vendor payloads to stderr
   --help
 
-tokens: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NEON_API_KEY, RESEND_API_KEY — an exported variable
-wins (CI), else apps/web/.provision.env (git-ignored, 0600; \`pnpm provision tokens\` writes it, or copy
-.provision.env.example). Never pasted into a chat, never printed. Optional Worker secrets copied by
-\`secrets\` from the same two places: ${OPTIONAL_WORKER_SECRETS.join(', ')}.
-Answers and ids are cached in apps/web/.provision.json (git-ignored, non-secret).`
+The instance file holds every answer and token (names in launch.deploy.env.example); an exported
+variable of the same name wins (CI). Values are never printed. Ids are kept in ${STATE_FILE_LABEL}.`
 
 function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
   const flags: Flags = {
-    deploy: 'staging',
     skipEmail: false,
     rotate: false,
-    force: false,
+    dryRun: false,
+    drained: false,
+    adopt: false,
     debug: false,
     help: false,
   }
   const positional: string[] = []
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    const value = () => {
-      const v = argv[++i]
-      if (v === undefined || v.startsWith('--')) throw new ProvisionError(`${a} needs a value`, 2)
-      return v
-    }
+  for (const a of argv) {
     switch (a) {
       case '--help':
       case '-h':
         flags.help = true
         break
-      case '--deploy': {
-        const v = value()
-        if (v !== 'staging' && v !== 'both')
-          throw new ProvisionError('--deploy must be staging or both', 2)
-        flags.deploy = v
-        break
-      }
       case '--skip-email':
         flags.skipEmail = true
         break
       case '--rotate':
         flags.rotate = true
         break
-      case '--force':
-        flags.force = true
+      case '--dry-run':
+        flags.dryRun = true
+        break
+      case '--drained':
+        flags.drained = true
+        break
+      case '--adopt':
+        flags.adopt = true
         break
       case '--debug':
         flags.debug = true
         break
-      case '--region':
-        flags.region = value()
-        break
-      case '--domain':
-        flags.domain = value()
-        break
-      case '--email-region':
-        flags.emailRegion = value()
-        break
-      case '--staging-host':
-        flags.stagingHost = value()
-        break
-      case '--production-host':
-        flags.productionHost = value()
-        break
-      case '--admin-email':
-        flags.adminEmail = value()
-        break
-      case '--driver': {
-        const v = value()
-        if (v !== 'neon' && v !== 'postgres')
-          throw new ProvisionError('--driver must be neon or postgres', 2)
-        flags.driver = v
-        break
-      }
       default:
         if (a.startsWith('--')) throw new ProvisionError(`unknown flag ${a}\n${USAGE}`, 2)
         positional.push(a)
@@ -245,213 +205,38 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
   return { positional, flags }
 }
 
-function parseEnv(s: string | undefined, phase: string): EnvName {
-  if (s === 'staging' || s === 'production') return s
-  throw new ProvisionError(
-    `${phase} needs an environment: pnpm provision ${phase} <staging|production>`,
-    2
-  )
+// ---- shared helpers -----------------------------------------------------------------------
+
+function cfClient(): CloudflareClient {
+  return new CloudflareClient(requireToken('CLOUDFLARE_API_TOKEN'))
 }
-
-// ---- answers ------------------------------------------------------------------------------
-
-interface Answers {
-  region: string
-  domain: string | undefined
-  hosts: Record<EnvName, string>
-  adminEmails: string
-  emailRegion: string
-}
-
-async function ask(question: string, fallback: string): Promise<string> {
-  if (!process.stdin.isTTY) return fallback
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    const a = (await rl.question(`${question} [${fallback}]: `)).trim()
-    return a || fallback
-  } finally {
-    rl.close()
-  }
-}
-
-/** flags → cache → (TTY) prompt → default. In a non-TTY the domain and hosts must come from a flag or the cache. */
-async function collectAnswers(flags: Flags): Promise<Answers> {
-  const cache = readCache()
-  const tty = process.stdin.isTTY
-  const missing: string[] = []
-
-  const region = flags.region ?? cache.region ?? (await ask('Neon region', 'aws-us-east-1'))
-  const emailRegion = flags.emailRegion ?? cache.resend?.region ?? 'us-east-1'
-
-  const prodUrl = readTomlString(fs.readFileSync(tomlFor('production'), 'utf8'), 'APP_URL') ?? ''
-  const defaultDomain = `mail.${apexOf(prodUrl || 'example.com')}`
-  let domain: string | undefined = flags.domain ?? cache.sendingDomain
-  if (!domain && !flags.skipEmail) {
-    if (tty) domain = await ask('Sending domain for Resend', defaultDomain)
-    else missing.push(`--domain <sending domain>   (e.g. ${defaultDomain})`)
-  }
-
-  const hosts = {} as Record<EnvName, string>
-  for (const env of ENV_NAMES) {
-    const flag = env === 'staging' ? flags.stagingHost : flags.productionHost
-    let h = flag ?? cache.hosts?.[env]
-    if (!h) {
-      if (tty)
-        h = await ask(
-          `${env} host (a hostname in your Cloudflare zone, or workers.dev)`,
-          'workers.dev'
-        )
-      else missing.push(`--${env}-host <host|workers.dev>`)
-    }
-    hosts[env] = (h ?? '')
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .replace(/\/$/, '')
-  }
-
-  const gitEmail = capture('git', ['config', 'user.email'], ROOT_DIR) ?? ''
-  const adminEmails =
-    flags.adminEmail ??
-    cache.adminEmails ??
-    token('BOOTSTRAP_ADMIN_EMAILS') ??
-    (await ask('Admin email (BOOTSTRAP_ADMIN_EMAILS)', gitEmail))
-
-  if (missing.length) {
-    throw new ProvisionError(
-      `no TTY to ask questions — pass the answers as flags:\n  ${missing.join('\n  ')}\n(they are cached in apps/web/.provision.json after the first run)`,
-      2
-    )
-  }
-  for (const env of ENV_NAMES) {
-    if (hosts[env] !== 'workers.dev' && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(hosts[env]))
-      throw new ProvisionError(
-        `--${env}-host must be a hostname or the literal workers.dev (got "${hosts[env]}")`,
-        2
-      )
-  }
-  if (domain && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain))
-    throw new ProvisionError(`--domain "${domain}" is not a domain`, 2)
-
-  writeCache({ region, sendingDomain: domain, hosts, adminEmails, resend: { region: emailRegion } })
-  return { region, domain, hosts, adminEmails, emailRegion }
-}
-
-// ---- tokens -------------------------------------------------------------------------------
-
-/**
- * The four vendor tokens, from the environment or `apps/web/.provision.env`. A missing one is an
- * exit 2 that says how to get it — `pnpm provision tokens` first (it needs the user's own
- * terminal), the example file, or an export — so `all` never tells the user to "re-run preflight".
- */
-function requireTokens(flags: Flags, phase: string): void {
-  const required = REQUIRED_TOKENS.filter(t => !(flags.skipEmail && t === 'RESEND_API_KEY'))
-  const missing = required.filter(t => !token(t))
-  if (!missing.length) return
-  console.error(
-    `\n${phase}: ${missing.length} token(s) missing. Run \`pnpm provision tokens\` in your own terminal (it prompts with hidden input and writes ${TOKEN_FILE_LABEL}), or copy apps/web/.provision.env.example to ${TOKEN_FILE_LABEL} and fill it in, or export the variables (CI):`
-  )
-  for (const m of missing)
-    console.error(`  ${m}\n    mint: ${TOKEN_HELP[m].url}\n    scope: ${TOKEN_HELP[m].scopes}`)
-  throw new ProvisionError(
-    `${phase}: ${missing.join(', ')} missing — run \`pnpm provision tokens\` first`,
-    2
-  )
-}
-
-// ---- 0. preflight -------------------------------------------------------------------------
-
-async function preflight(flags: Flags): Promise<void> {
-  heading('preflight')
-  const app = readAppName()
-  const appUpper = toUpperName(app)
-  writeCache({ appName: app })
-  log(`app: ${app} (${appUpper}_RATE_LIMIT, ${app}-jobs, ${app}-files, ${app}-agent-run)`)
-
-  const major = Number(process.versions.node.split('.')[0])
-  if (major < 24)
-    throw new ProvisionError(
-      `node ${process.versions.node} — the kit needs Node 24 (nvm install reads .nvmrc)`
-    )
-  log(`node: v${process.versions.node}`)
-
-  const remote = capture('git', ['remote', 'get-url', 'origin'], ROOT_DIR)
-  if (!remote)
-    throw new ProvisionError('git remote `origin` is not set — push the repo to GitHub first')
-  log(`git remote: ${remote}`)
-  if (capture('gh', ['auth', 'status']) === undefined)
-    throw new ProvisionError(
-      'gh is not authenticated — run `gh auth login` yourself, then re-run preflight'
-    )
-  log('gh: authenticated')
-
-  requireTokens(flags, 'preflight')
-  log(
-    `tokens: ${REQUIRED_TOKENS.filter(t => tokenSource(t))
-      .map(t => `${t} (${tokenSource(t)?.source})`)
-      .join(', ')}`
-  )
-
-  const who = await wrangler(['whoami'], { echo: false })
-  const accountId = token('CLOUDFLARE_ACCOUNT_ID') as string
-  const accountLine = who.stdout.split('\n').find(l => l.includes(accountId))
-  const accountName =
-    accountLine
-      ?.split('│')
-      .map(s => s.trim())
-      .filter(Boolean)[0] ?? accountId
-  if (!accountLine)
-    warn(
-      `wrangler whoami does not list account ${accountId} — the token may belong to another account`
-    )
-  log(`cloudflare: ${accountName} (${accountId})`)
-
-  const neon = new NeonClient(token('NEON_API_KEY') as string, fetch, flags.debug)
-  const me = await neon.me()
-  log(`neon: ${me.email}`)
-
-  let resendSummary = 'skipped'
-  if (!flags.skipEmail) {
-    const resend = new ResendClient(token('RESEND_API_KEY') as string)
-    const domains = await resend.listDomains()
-    resendSummary = `${domains.length} domain(s)`
-    log(`resend: ${resendSummary}`)
-  }
-
-  const answers = await collectAnswers(flags)
-  log(
-    `answers: region=${answers.region} domain=${answers.domain ?? '-'} staging=${answers.hosts.staging} production=${answers.hosts.production} admin=${answers.adminEmails}`
-  )
-
-  // Every custom host and the sending domain must be a zone in THIS account, and the token must be
-  // able to read its DNS — otherwise `email create` / `urls` / the first deploy fail much later.
-  const needed = hostsNeedingZone(answers, flags.skipEmail)
-  let zoneSummary = `none (${WORKERS_DEV} hosts, email skipped)`
-  if (needed.length) {
-    const cf = cfClient()
-    const zones = new Map<string, { zone: Zone; names: string[] }>()
-    for (const name of needed) {
-      const zone = await requireZone(cf, name)
-      const entry = zones.get(zone.id) ?? { zone, names: [] }
-      if (!entry.names.length) await cf.assertDnsRead(zone)
-      entry.names.push(name)
-      zones.set(zone.id, entry)
-    }
-    for (const { zone, names } of zones.values())
-      log(`zone: ${zone.name} (${zone.id}) — DNS readable; for ${names.join(', ')}`)
-    zoneSummary = [...zones.values()].map(({ zone }) => `${zone.name} (${zone.id})`).join(', ')
-  }
-  verifyLine(
-    `preflight ok — app=${app} account=${accountName} neon=${me.email} resend=${resendSummary} zone=${zoneSummary}`
-  )
-}
-
-// ---- 1 / 9. email -------------------------------------------------------------------------
-
 function resendClient(): ResendClient {
   return new ResendClient(requireToken('RESEND_API_KEY'))
 }
-function cfClient(): CloudflareClient {
-  return new CloudflareClient(requireToken('CLOUDFLARE_API_TOKEN'))
+
+/**
+ * The account the instance lives in: the file's `CLOUDFLARE_ACCOUNT_ID`, the state, else the ONE
+ * account the token sees (several → name them and stop). `persist` records a discovery.
+ */
+async function resolveAccount(cf: CloudflareClient, persist: boolean) {
+  const known = accountId()
+  const accounts = await cf.listAccounts().catch(() => [] as { id: string; name: string }[])
+  if (known) {
+    const name = accounts.find(a => a.id === known)?.name ?? readState().cloudflare?.accountName
+    if (persist) writeState({ cloudflare: { accountId: known, accountName: name } })
+    return { id: known, name: name ?? known }
+  }
+  if (accounts.length === 1) {
+    const [only] = accounts
+    if (persist) writeState({ cloudflare: { accountId: only.id, accountName: only.name } })
+    return { id: only.id, name: only.name }
+  }
+  throw new ProvisionError(
+    accounts.length
+      ? `the token sees ${accounts.length} accounts (${accounts.map(a => `${a.name} ${a.id}`).join(', ')}) — set CLOUDFLARE_ACCOUNT_ID in ${TOKEN_FILE_LABEL}`
+      : `the token sees no account — set CLOUDFLARE_ACCOUNT_ID in ${TOKEN_FILE_LABEL}, and give the token Account Settings: Read`,
+    2
+  )
 }
 
 interface Zone {
@@ -459,69 +244,309 @@ interface Zone {
   name: string
 }
 
-/**
- * The zone a host or sending domain lives in: the cache first (an EXACT match on the
- * `zoneCandidates` walk — `notexample.com` never matches `example.com`), then `GET /zones?name=`
- * per candidate; a hit is cached under its real name so `email create` / `urls` never look again.
- */
-async function lookupZone(cf: CloudflareClient, name: string): Promise<Zone | undefined> {
-  const cached = readCache().cloudflare
-  const known: Record<string, string> = { ...(cached?.zones ?? {}) }
-  if (cached?.zoneId && cached.zoneName) known[cached.zoneName] ??= cached.zoneId
-  const candidates = zoneCandidates(name)
-  for (const c of candidates) if (known[c]) return { id: known[c], name: c }
-  const zone = await cf.findZoneFor(candidates)
-  if (!zone) return undefined
-  writeCache({
-    cloudflare: {
-      zoneId: cached?.zoneId ?? zone.id,
-      zoneName: cached?.zoneName ?? zone.name,
-      zones: { [zone.name]: zone.id },
-    },
-  })
-  return { id: zone.id, name: zone.name }
-}
-
-/** `lookupZone`, failing with the one hint for a domain that is not on the account. */
-async function requireZone(cf: CloudflareClient, name: string): Promise<Zone> {
-  const zone = await lookupZone(cf, name)
-  if (zone) return zone
+/** The zone `name` lives in, which must belong to `account` (routes only reach that account's Workers). */
+async function requireZone(cf: CloudflareClient, name: string, account: string): Promise<Zone> {
+  for (const candidate of zoneCandidates(name)) {
+    const zone = await cf.findZoneWithAccount(candidate)
+    if (!zone) continue
+    if (zone.account?.id && zone.account.id !== account)
+      throw new ProvisionError(
+        `zone ${zone.name} is in account ${zone.account.id}, not ${account} — a Worker route can only point at a Worker in the zone's own account`
+      )
+    return { id: zone.id, name: zone.name }
+  }
   if (!(await cf.hasAnyZone()))
-    warn(
-      'the token sees no zones at all — if the domain IS on this account, CLOUDFLARE_API_TOKEN is missing its Zone scope (Zone: DNS — Edit)'
-    )
+    warn('the token sees no zones at all — it is missing Zone: Zone Read / DNS Edit on the zone')
   throw new ProvisionError(missingZoneHint(apexOf(name)))
 }
 
-async function findOrCreateDomain(flags: Flags) {
-  const answers = await collectAnswers(flags)
-  const domainName = answers.domain
-  if (!domainName) throw new ProvisionError('no sending domain — pass --domain', 2)
+function installedPluginResources(): PluginResources[] {
+  const { manifest } = readManifest(ROOT_DIR)
+  return readPluginResources(ROOT_DIR, manifest?.surfaces ?? [])
+}
+
+async function fetchJson(url: string, attempts = 6): Promise<any> {
+  let last: any
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } })
+      const body = await res.json().catch(() => ({}))
+      last = { status: res.status, body }
+      if (res.ok) return body
+      if (res.status === 503) return { ...(body as object), __status: 503 }
+    } catch (err) {
+      last = err instanceof Error ? err.message : err
+    }
+    if (i < attempts) await sleep(5000)
+  }
+  throw new ProvisionError(
+    `${url}: ${redact(typeof last === 'string' ? last : JSON.stringify(last))}`
+  )
+}
+
+// ---- check --------------------------------------------------------------------------------
+
+type Mark = 'ok' | 'warn' | 'fail' | 'info'
+const line = (mark: Mark, text: string) =>
+  log(`  ${{ ok: 'ok  ', warn: 'WARN', fail: 'FAIL', info: '  · ' }[mark]} ${text}`)
+
+/** Docker must be up and able to build the linux/amd64 session image `wrangler deploy` pushes. */
+function checkDocker(problems: string[]): void {
+  const server = capture('docker', ['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}'])
+  if (!server) {
+    line(
+      'fail',
+      'docker: not running (or not installed) — start Docker Desktop; deploy builds the session image'
+    )
+    problems.push('Docker is not running')
+    return
+  }
+  const amd64 =
+    server === 'linux/amd64' || /linux\/amd64/.test(capture('docker', ['buildx', 'ls']) ?? '')
+  if (!amd64) {
+    line(
+      'fail',
+      `docker: ${server}, and no buildx builder lists linux/amd64 — enable amd64 emulation (Docker Desktop: Settings → General → Rosetta; colima: \`colima start --vz-rosetta\`; or \`docker run --privileged --rm tonistiigi/binfmt --install amd64\`)`
+    )
+    problems.push('Docker cannot build linux/amd64')
+  } else line('ok', `docker: ${server}, builds linux/amd64`)
+  const mem = Number(capture('docker', ['info', '--format', '{{.MemTotal}}']) ?? 0)
+  if (mem && mem < 12 * 1024 ** 3)
+    line(
+      'warn',
+      `docker: ${(mem / 1024 ** 3).toFixed(1)} GB memory — the session image build wants 12 GB or more`
+    )
+}
+
+async function checkPhase(flags: Flags): Promise<void> {
+  heading(`check — ${TOKEN_FILE_LABEL}`)
+  const problems: string[] = []
+
+  // 1. the file and the names in it (names only — a value is never shown)
+  if (!fs.existsSync(DEPLOY_FILE)) {
+    line(
+      'fail',
+      `${TOKEN_FILE_LABEL} does not exist — cp launch.deploy.env.example ${TOKEN_FILE_LABEL}, then fill it in`
+    )
+    problems.push(`${TOKEN_FILE_LABEL} missing`)
+  }
+  if (fs.existsSync(LEGACY_TOKEN_FILE)) {
+    line(
+      'fail',
+      `apps/web/.provision.env is no longer read — move its values into ${TOKEN_FILE_LABEL} and delete it`
+    )
+    problems.push('apps/web/.provision.env must be moved')
+  }
+  const reading = readInstance(token)
+  const tokens = REQUIRED_TOKENS.filter(t => !(flags.skipEmail && t === 'RESEND_API_KEY'))
+  log('  names:')
+  for (const k of [...REQUIRED_INSTANCE_KEYS, ...tokens])
+    line(
+      token(k) ? 'ok' : 'fail',
+      `${k}${token(k) ? ` (${tokenSource(k)?.source})` : ' — MISSING'}`
+    )
+  for (const k of GITHUB_APP_KEYS)
+    line(
+      token(k) ? 'ok' : 'info',
+      `${k}${token(k) ? '' : ' — not yet (pnpm provision github-app writes it)'}`
+    )
+  line(
+    token('OAUTH_ENCRYPTION_KEY') ? 'ok' : 'info',
+    `OAUTH_ENCRYPTION_KEY${token('OAUTH_ENCRYPTION_KEY') ? '' : ' — not yet (secrets generates it and writes it back)'}`
+  )
+  const optional = OPTIONAL_WORKER_SECRETS.filter(n => token(n))
+  line('info', `optional Worker secrets set: ${optional.join(', ') || 'none'}`)
+  const missingNames = [...reading.missing, ...tokens.filter(t => !token(t))]
+  for (const msg of reading.invalid) line('fail', msg)
+  if (missingNames.length) problems.push(`missing: ${missingNames.join(', ')}`)
+  if (reading.invalid.length) problems.push(`${reading.invalid.length} invalid answer(s)`)
+
+  // 2. tools
+  log('  tools:')
+  const major = Number(process.versions.node.split('.')[0])
+  if (major < 24) {
+    line('fail', `node ${process.versions.node} — Launch needs Node 24 (nvm install reads .nvmrc)`)
+    problems.push('Node 24')
+  } else line('ok', `node v${process.versions.node}`)
+  const wranglerVersion = capture('pnpm', ['exec', 'wrangler', '--version'])
+  if (!wranglerVersion) {
+    line('fail', 'wrangler: not runnable — run pnpm install')
+    problems.push('wrangler')
+  } else line('ok', `wrangler ${wranglerVersion.split('\n').pop()}`)
+  checkDocker(problems)
+
+  if (problems.length) {
+    for (const m of missingNames)
+      if (TOKEN_HELP[m]) log(`  ${m} — mint at ${TOKEN_HELP[m].url}\n    (${TOKEN_HELP[m].scopes})`)
+    throw new ProvisionError(
+      `check: ${problems.join('; ')} — nothing was contacted or changed; fix these and rerun`,
+      2
+    )
+  }
+  const instance = reading.instance as Instance
+  log(
+    `  instance: ${instance.appUrl} (worker ${instance.name}, zone ${instance.domain}, mail ${instance.emailDomain}, org ${instance.githubOrg}, neon ${instance.neonRegion})`
+  )
+
+  // 3. Cloudflare — the account token, the zone, the audit
+  log('  cloudflare:')
+  const cf = cfClient()
+  const account = await resolveAccount(cf, false)
+  line('ok', `account ${account.name} (${account.id})`)
+  try {
+    const verify = await cf.verifyAccountToken(account.id)
+    if (verify.status !== 'active') throw new ProvisionError(`the token is ${verify.status}`)
+    line('ok', `account-owned token ${verify.id} is active`)
+  } catch (err) {
+    line(
+      'fail',
+      `the token does not verify as an ACCOUNT-owned token of ${account.id} (${err instanceof Error ? err.message : String(err)}). Launch's Setup check requires one: create it under Manage Account → API Tokens (${TOKEN_HELP.CLOUDFLARE_API_TOKEN.url})`
+    )
+    problems.push('Cloudflare token is not an active account-owned token')
+  }
+  let zone: Zone | undefined
+  try {
+    zone = await requireZone(cf, instance.domain, account.id)
+    await cf.assertDnsRead(zone)
+    line('ok', `zone ${zone.name} (${zone.id}) in this account, DNS readable`)
+  } catch (err) {
+    line('fail', err instanceof Error ? err.message : String(err))
+    problems.push('zone')
+  }
+  if (zone) {
+    const records = await cf.listAllRecords(zone.id)
+    const customDomains = await cf.listWorkerDomains(account.id, zone.id).catch(() => [])
+    const audit = zoneAuditFindings({
+      domain: instance.domain,
+      host: instance.host,
+      records,
+      customDomains,
+    })
+    if (audit.captured.length)
+      line(
+        'warn',
+        `zone audit: ${audit.captured.length} proxied host(s) not served by a Worker custom domain — Launch's *.${instance.domain}/* route would capture them: ${audit.captured.join(', ')}. Move each to a Worker custom domain (or accept that it now reaches Launch) before deploying`
+      )
+    else line('ok', `zone audit: no proxied host would be captured by *.${instance.domain}/*`)
+    if (audit.hostTaken)
+      line(
+        'warn',
+        `${instance.host} already has a DNS record (${audit.hostTaken}) — the custom domain deploy creates its own; delete that record first`
+      )
+    const wildcard = records.filter(r => r.name === `*.${instance.domain}`)
+    line(
+      wildcard.some(r => r.proxied) ? 'ok' : wildcard.length ? 'warn' : 'info',
+      wildcard.length
+        ? `wildcard *.${instance.domain}: ${wildcard.map(r => `${r.type}${r.proxied ? ' proxied' : ' DNS-only — turn its proxy on'}`).join(', ')}`
+        : `wildcard *.${instance.domain}: none yet (route creates AAAA * → 100::, proxied)`
+    )
+    try {
+      const routes = await cf.listWorkerRoutes(zone.id)
+      line('ok', `Workers routes readable (${routes.length} in the zone)`)
+    } catch (err) {
+      line(
+        'fail',
+        `Workers routes not readable — the token needs Zone: Workers Routes Edit (${err instanceof Error ? err.message : String(err)})`
+      )
+      problems.push('Workers Routes scope')
+    }
+  }
+  line(
+    'info',
+    `Workers Paid (containers) and ${MANUAL_SCOPES.join(' / ')} cannot be proven without creating something; the first deploy fails loudly if either is missing`
+  )
+
+  // 4. Neon, Resend, GitHub
+  log('  neon:')
+  try {
+    const neon = new NeonClient(requireToken('NEON_API_KEY'), fetch, flags.debug)
+    const { projects } = await neon.listProjectsSample(instance.neonOrgId)
+    line(
+      'ok',
+      `API key works (${projects.length ? `org ${projects[0].org_id ?? 'personal'}` : 'no projects yet'})`
+    )
+    const state = readState().neon
+    if (state?.projectId) line('info', `instance project ${state.projectId} (${state.host ?? '?'})`)
+  } catch (err) {
+    line('fail', err instanceof Error ? err.message : String(err))
+    problems.push('Neon key')
+  }
+  if (!flags.skipEmail) {
+    log('  resend:')
+    try {
+      const resend = resendClient()
+      await resend.request('GET', '/api-keys')
+      const domains = await resend.listDomains()
+      const mine = domains.find(d => d.name === instance.emailDomain)
+      line('ok', `full-access key (${domains.length} domain(s))`)
+      line(
+        'info',
+        `${instance.emailDomain}: ${mine ? mine.status : 'not created yet (email create)'}`
+      )
+    } catch (err) {
+      line(
+        'fail',
+        `${err instanceof Error ? err.message : String(err)} — Launch needs a FULL-ACCESS Resend key`
+      )
+      problems.push('Resend key')
+    }
+  }
+  log('  github:')
+  const appId = token('GITHUB_APP_ID')
+  if (!appId) line('info', 'no GitHub App yet — `pnpm provision github-app` (all runs it)')
+  else {
+    try {
+      const privateKey = readGitHubAppKey()
+      if (!privateKey) throw new ProvisionError('GITHUB_APP_PRIVATE_KEY_FILE is not set')
+      const outcome = await checkGitHubApp(
+        { appId, privateKey },
+        { github_org: instance.githubOrg }
+      )
+      for (const c of outcome.checks)
+        line(
+          c.status === 'ok' ? 'ok' : c.status === 'warning' ? 'warn' : 'fail',
+          `${c.label}${c.detail ? ` — ${c.detail}` : ''}`
+        )
+      if (outcome.checks.some(c => c.status === 'failed')) problems.push('GitHub App')
+    } catch (err) {
+      line('fail', err instanceof Error ? err.message : String(err))
+      problems.push('GitHub App')
+    }
+  }
+
+  if (problems.length) throw new ProvisionError(`check: ${problems.join('; ')}`, 1)
+  verifyLine(
+    `check ok — ${instance.appUrl}: names present, Docker builds linux/amd64, account ${account.name}, zone ${instance.domain}, Neon, ${flags.skipEmail ? 'email skipped' : 'Resend'}, GitHub App ${appId ? 'ok' : 'pending'}`
+  )
+}
+
+// ---- email --------------------------------------------------------------------------------
+
+async function findOrCreateDomain(instance: Instance) {
   const resend = resendClient()
-  let domain = (await resend.listDomains()).find(d => d.name === domainName)
+  let domain = (await resend.listDomains()).find(d => d.name === instance.emailDomain)
   let created = false
   if (!domain) {
-    domain = await resend.createDomain(domainName, answers.emailRegion)
+    domain = await resend.createDomain(instance.emailDomain, instance.emailRegion)
     created = true
   }
   const full = await resend.getDomain(domain.id)
-  writeCache({ resend: { domainId: full.id, domainName: full.name, region: full.region } })
+  writeState({ resend: { domainId: full.id, domainName: full.name, region: full.region } })
   return { domain: full, created }
 }
 
-async function emailCreate(flags: Flags): Promise<void> {
+async function emailCreate(): Promise<void> {
   heading('email create')
-  const { domain, created } = await findOrCreateDomain(flags)
+  const instance = requireInstance()
+  const { domain, created } = await findOrCreateDomain(instance)
   log(
     `resend domain: ${domain.name} ${created ? 'created' : 'exists'} (status ${domain.status}, region ${domain.region ?? '?'})`
   )
   const records = resendRecordsToDns(domain.records ?? [], domain.name)
   if (!records.length) throw new ProvisionError('Resend returned no DNS records for the domain')
-
   const cf = cfClient()
-  const zone = await requireZone(cf, domain.name)
-  log(`cloudflare zone: ${zone.name} (${zone.id})`)
-
+  const account = await resolveAccount(cf, true)
+  const zone = await requireZone(cf, domain.name, account.id)
   const counts = { exists: 0, created: 0, updated: 0 }
   for (const rec of records) {
     const outcome = await cf.upsertRecord(zone.id, rec)
@@ -530,24 +555,18 @@ async function emailCreate(flags: Flags): Promise<void> {
       `  ${outcome.padEnd(7)} ${rec.type.padEnd(5)} ${rec.name}${rec.priority !== undefined ? ` (priority ${rec.priority})` : ''}`
     )
   }
-
-  const app = readAppName()
-  const appName = readTomlString(fs.readFileSync(tomlFor('production'), 'utf8'), 'APP_NAME') ?? app
-  const emailFrom = emailFromFor(appName, domain.name)
-  for (const env of ENV_NAMES) {
-    const changed = patchTomlFile(tomlFor(env), { emailFrom })
-    log(`${tomlBasename(env)}: EMAIL_FROM ${changed ? 'set' : 'unchanged'}`)
-  }
   verifyLine(
-    `email create ok — domain=${domain.name} zone=${zone.name} records=${records.length} (created ${counts.created}, updated ${counts.updated}, existing ${counts.exists}) EMAIL_FROM="${emailFrom}"`
+    `email create ok — domain=${domain.name} zone=${zone.name} records=${records.length} (created ${counts.created}, updated ${counts.updated}, existing ${counts.exists})`
   )
 }
 
-async function emailStatus(flags: Flags): Promise<void> {
+async function emailStatus(): Promise<void> {
   heading('email status')
-  const { domain } = await findOrCreateDomain(flags)
+  const instance = requireInstance()
+  const { domain } = await findOrCreateDomain(instance)
   const cf = cfClient()
-  const zone = await lookupZone(cf, domain.name)
+  const account = await resolveAccount(cf, true)
+  const zone = await requireZone(cf, domain.name, account.id).catch(() => undefined)
   if (!zone) warn(missingZoneHint(apexOf(domain.name)))
   const records = resendRecordsToDns(domain.records ?? [], domain.name)
   let present = 0
@@ -563,9 +582,10 @@ async function emailStatus(flags: Flags): Promise<void> {
   )
 }
 
-async function emailVerify(env: EnvName, flags: Flags): Promise<void> {
-  heading(`email verify ${env}`)
-  const { domain } = await findOrCreateDomain(flags)
+async function emailVerify(flags: Flags): Promise<void> {
+  heading('email verify')
+  const instance = requireInstance()
+  const { domain } = await findOrCreateDomain(instance)
   const resend = resendClient()
   let status = domain.status
   if (status !== 'verified') {
@@ -583,103 +603,48 @@ async function emailVerify(env: EnvName, flags: Flags): Promise<void> {
     }
     if (status !== 'verified')
       throw new ProvisionError(
-        `DNS still propagating — Resend reports "${status}" after 10 min; re-run \`pnpm provision email verify ${env}\` later`
+        `DNS still propagating — Resend reports "${status}" after 10 min; rerun \`pnpm provision email verify\` later`
       )
   }
   log(`resend domain: ${domain.name} verified`)
-
-  const existing = await listWorkerSecrets(env)
+  await ensureRendered()
+  const existing = await listWorkerSecrets()
   if (existing.includes('RESEND_API_KEY') && !flags.rotate) {
     log('RESEND_API_KEY already set on the Worker (pass --rotate to mint a new key)')
   } else {
-    const key = await resend.createSendingKey(`${readAppName()}-${env}`, domain.id)
-    await putWorkerSecret(env, 'RESEND_API_KEY', key.token)
+    const key = await resend.createSendingKey(instance.name, domain.id)
+    await putWorkerSecret('RESEND_API_KEY', key.token)
     log(
-      `RESEND_API_KEY: minted sending key "${readAppName()}-${env}" (id ${key.id}) and set on the ${env} Worker`
+      `RESEND_API_KEY: minted sending key "${instance.name}" (id ${key.id}) and set on the Worker`
     )
   }
-
-  const appUrl = readTomlString(fs.readFileSync(tomlFor(env), 'utf8'), 'APP_URL') ?? ''
-  const methods = await fetchJson(`${appUrl}/auth/methods`)
-  const magic = methods?.magicLink === true
-  if (!magic)
+  const methods = await fetchJson(`${instance.appUrl}/auth/methods`)
+  if (methods?.magicLink !== true)
     throw new ProvisionError(
-      `${appUrl}/auth/methods does not report magicLink — is the Worker deployed?`
+      `${instance.appUrl}/auth/methods does not report magicLink — is the Worker deployed?`
     )
   verifyLine(
-    `email verify ${env} ok — domain=${domain.name} verified, RESEND_API_KEY set, ${appUrl}/auth/methods reports magic link`
+    `email verify ok — domain=${domain.name} verified, RESEND_API_KEY set, ${instance.appUrl}/auth/methods reports magic link`
   )
 }
 
-// ---- database driver (D35) ----------------------------------------------------------------
+// ---- neon ---------------------------------------------------------------------------------
 
-/** `--driver`, else the environment's toml (`[vars] DATABASE_DRIVER`, missing = postgres). */
-function driverFor(env: EnvName, flags: Flags): DatabaseDriver {
-  return flags.driver ?? readDatabaseDriver(fs.readFileSync(tomlFor(env), 'utf8'))
-}
-
-/**
- * Write the driver into BOTH tomls. Both, because the parity test wants a `[[hyperdrive]]` block in
- * both files or neither — the same reason plugin declarations go into both (below). A `postgres`
- * switch adds the block with each environment's `<HYPERDRIVE[_STAGING]_ID>` placeholder, which
- * `cf-provision.sh --apply` then fills for the environment being provisioned; `neon` removes it.
- */
-function applyDriver(driver: DatabaseDriver): void {
-  const devVars = path.join(WEB_DIR, '.dev.vars')
-  const local =
-    (fs.existsSync(devVars) &&
-      /^DATABASE_URL=(.+)$/m.exec(fs.readFileSync(devVars, 'utf8'))?.[1]?.trim()) ||
-    DEFAULT_LOCAL_CONNECTION_STRING
-  for (const env of ENV_NAMES) {
-    const changed = patchTomlFile(tomlFor(env), {
-      databaseDriver: driver,
-      hyperdriveBlock: { id: hyperdrivePlaceholder(env), localConnectionString: local },
-    })
-    log(`${tomlBasename(env)}: DATABASE_DRIVER = "${driver}" ${changed ? 'written' : 'unchanged'}`)
-  }
-}
-
-/**
- * Put the `DATABASE_URL` Worker secret a `neon` Worker reads — the POOLED form of the branch URL
- * (many short-lived Worker connections share Neon's pooler; DDL and CI keep the direct host). Over
- * stdin, never printed. `force` re-puts an existing one (a rotated password).
- */
-async function ensureWorkerDatabaseUrl(
-  env: EnvName,
-  url: string,
-  opts: { force: boolean; say?: (s: string) => void }
-): Promise<boolean> {
-  const say = opts.say ?? log
-  const existing = await listWorkerSecrets(env)
-  if (existing.includes('DATABASE_URL') && !opts.force) {
-    say(`  ${env}: DATABASE_URL already set on the Worker (pass --rotate to re-put it)`)
-    return false
-  }
-  await putWorkerSecret(env, 'DATABASE_URL', toPooledNeonUrl(url))
-  say(`  ${env}: DATABASE_URL (pooled Neon URI) set on the Worker`)
-  return true
-}
-
-// ---- 2. neon ------------------------------------------------------------------------------
-
-interface NeonBranchInfo {
+interface NeonInfo {
+  projectId: string
   branchId: string
   host: string
-  /** In memory only. */
+  /** In memory only — the DIRECT host, for DDL and the setup write. */
   url: string
 }
 
-let neonMemo: Promise<Record<EnvName, NeonBranchInfo>> | undefined
+let neonMemo: Promise<NeonInfo> | undefined
 
-/**
- * Resolved ONCE per process: `cloudflare`, `migrate` and `github` all need the URLs, and a
- * `--rotate` must reset each password exactly once (only `neonPhase` passes `rotate`), or the
- * Hyperdrive created a moment earlier would hold a stale password.
- */
+/** Resolved ONCE per process: `migrate`, `deploy`, `secrets` and `setup` all need the URL. */
 function resolveNeon(
   flags: Flags,
   opts: { quiet?: boolean; rotate?: boolean } = {}
-): Promise<Record<EnvName, NeonBranchInfo>> {
+): Promise<NeonInfo> {
   neonMemo ??= resolveNeonUncached(flags, opts)
   return neonMemo
 }
@@ -687,125 +652,86 @@ function resolveNeon(
 async function resolveNeonUncached(
   flags: Flags,
   opts: { quiet?: boolean; rotate?: boolean }
-): Promise<Record<EnvName, NeonBranchInfo>> {
+): Promise<NeonInfo> {
   const say = opts.quiet ? () => {} : log
-  const rotate = opts.rotate ?? false
+  const instance = requireInstance()
   const neon = new NeonClient(requireToken('NEON_API_KEY'), fetch, flags.debug)
-  const answers = await collectAnswers(flags)
-  const app = readAppName()
-  const cache = readCache()
+  const state = readState().neon
 
-  const found = await neon.findProject(app)
-  let createdProject = false
-  let project: { id: string; name: string; region_id: string }
-  if (found) project = found
-  else {
-    say(`neon project: creating "${app}" in ${answers.region} (pg 17)…`)
-    project = await neon.createProject(app, answers.region)
-    createdProject = true
+  let project: { id: string; name: string; region_id: string; org_id?: string } | undefined
+  let created = false
+  if (state?.projectId) {
+    project = await neon.getProject(state.projectId).catch(() => undefined)
+    if (!project)
+      throw new ProvisionError(
+        `${STATE_FILE_LABEL} records Neon project ${state.projectId}, which this key cannot see — was it deleted, or is NEON_API_KEY for another org?`
+      )
+  } else {
+    const found = await neon.findProject(instance.name, instance.neonOrgId)
+    if (found && !flags.adopt)
+      throw new ProvisionError(
+        `a Neon project named "${instance.name}" (${found.id}) exists but ${STATE_FILE_LABEL} does not record it. If it IS this instance's (the state was lost), rerun with --adopt; otherwise choose another LAUNCH_NAME`,
+        2
+      )
+    if (found) project = found
+    else {
+      say(`neon project: creating "${instance.name}" in ${instance.neonRegion} (pg 17)…`)
+      project = await neon.createProject(instance.name, instance.neonRegion, instance.neonOrgId)
+      created = true
+    }
   }
   say(
-    `neon project: ${project.name} (${project.id}) ${createdProject ? 'created' : 'exists'} region=${project.region_id}`
+    `neon project: ${project.name} (${project.id}) ${created ? 'created' : 'exists'} region=${project.region_id}`
   )
 
   const branches = await neon.listBranches(project.id)
   const main = branches.find(b => b.default || b.primary) ?? branches[0]
   if (!main) throw new ProvisionError('the Neon project has no default branch')
-  let stagingBranch = branches.find(b => b.name === 'staging')
-  let createdStaging = false
-  if (!stagingBranch) {
-    say('neon branch: creating "staging" from the default branch…')
-    stagingBranch = await neon.createBranch(project.id, 'staging', main.id)
-    createdStaging = true
-  }
-  say(
-    `neon branches: production=${main.name} (${main.id}) staging=${stagingBranch.name} (${stagingBranch.id}) ${createdStaging ? 'created' : 'exists'}`
-  )
-
-  const out = {} as Record<EnvName, NeonBranchInfo>
-  const hosts: Partial<Record<EnvName, string>> = {}
-  const rotated: EnvName[] = []
-  let dbName = cache.neon?.database
-  let roleName = cache.neon?.role
-  for (const [env, branch, fresh] of [
-    ['production', main, createdProject],
-    ['staging', stagingBranch, createdStaging || createdProject],
-  ] as const) {
-    const endpoint = pickEndpoint(await neon.listEndpoints(project.id, branch.id))
-    const db = pickDatabase(await neon.listDatabases(project.id, branch.id))
-    const role = pickRole(await neon.listRoles(project.id, branch.id), db.owner_name)
-    dbName = db.name
-    roleName = role
-    let password: string | undefined
-    if (fresh || rotate) {
-      password = await neon.resetPassword(project.id, branch.id, role)
-      say(`  ${env}: password ${rotate && !fresh ? 'rotated' : 'set'} for role ${role}`)
-      rotated.push(env)
-    } else {
-      password = await neon.revealPassword(project.id, branch.id, role)
-      if (!password) {
-        warn(
-          `Neon does not store passwords for this project — resetting the ${role} password on ${env}`
-        )
-        password = await neon.resetPassword(project.id, branch.id, role)
-      }
+  const endpoint = pickEndpoint(await neon.listEndpoints(project.id, main.id))
+  const db = pickDatabase(await neon.listDatabases(project.id, main.id))
+  const role = pickRole(await neon.listRoles(project.id, main.id), db.owner_name)
+  let password: string | undefined
+  const rotated = !created && (opts.rotate ?? false)
+  if (created || rotated) {
+    password = await neon.resetPassword(project.id, main.id, role)
+    say(`  password ${rotated ? 'rotated' : 'set'} for role ${role}`)
+  } else {
+    password = await neon.revealPassword(project.id, main.id, role)
+    if (!password) {
+      warn(`Neon does not store passwords for this project — resetting the ${role} password`)
+      password = await neon.resetPassword(project.id, main.id, role)
     }
-    const url = buildConnectionUrl({ role, password, host: endpoint.host, database: db.name })
-    await waitForSelectOne(url, env)
-    hosts[env] = endpoint.host
-    out[env] = { branchId: branch.id, host: endpoint.host, url }
-    say(`  ${env}: host=${endpoint.host} db=${db.name} role=${role} SELECT 1 ok`)
   }
-  writeCache({
+  const url = buildConnectionUrl({ role, password, host: endpoint.host, database: db.name })
+  await waitForSelectOne(url)
+  say(
+    `  branch ${main.name} (${main.id}): host=${endpoint.host} db=${db.name} role=${role} SELECT 1 ok`
+  )
+  writeState({
     neon: {
       projectId: project.id,
-      branches: { production: main.id, staging: stagingBranch.id },
-      hosts,
-      database: dbName,
-      role: roleName,
+      orgId: project.org_id,
+      branchId: main.id,
+      host: endpoint.host,
+      database: db.name,
+      role,
+      region: project.region_id,
     },
   })
-  for (const env of rotated) {
-    if (driverFor(env, flags) === 'neon') await syncWorkerDatabaseUrl(env, out[env].url, say)
-    else await syncHyperdrivePassword(env, out[env].url, say)
+  if (
+    rotated &&
+    fs.existsSync(DEPLOY_TOML) &&
+    (await listWorkerSecrets()).includes('DATABASE_URL')
+  ) {
+    await putWorkerSecret('DATABASE_URL', toPooledNeonUrl(url))
+    say('  DATABASE_URL re-put on the Worker with the rotated password')
   }
-  return out
-}
-
-/**
- * The `neon` twin of `syncHyperdrivePassword`: after a password reset, a Worker that ALREADY holds
- * `DATABASE_URL` must get the new one, or it keeps the dead password until someone notices 500s.
- * A Worker without it (never deployed, or not yet through `secrets`) is left for `secrets <env>`.
- */
-async function syncWorkerDatabaseUrl(env: EnvName, url: string, say: (s: string) => void) {
-  if (!(await listWorkerSecrets(env)).includes('DATABASE_URL')) return
-  await ensureWorkerDatabaseUrl(env, url, { force: true, say })
-}
-
-/** After a password reset an EXISTING Hyperdrive config (reused by name) must learn the new credential. */
-async function syncHyperdrivePassword(env: EnvName, url: string, say: (s: string) => void) {
-  const id = hyperdriveIdFor(env)
-  if (!id) return
-  // Same caveat as cf-provision.sh: the URL is an argv of this one wrangler process; output is redacted.
-  await wrangler(
-    ['hyperdrive', 'update', id, `--connection-string=${url}`, ...wranglerConfigArgs(env)],
-    { echo: false }
-  )
-  say(`  ${env}: Hyperdrive ${id} updated with the rotated password`)
-}
-
-function hyperdriveIdFor(env: EnvName): string | undefined {
-  const m = /binding = "HYPERDRIVE"\n(?:[^\n]*\n)*?id = "([0-9a-f]{32})"/.exec(
-    fs.readFileSync(tomlFor(env), 'utf8')
-  )
-  return m?.[1]
+  return { projectId: project.id, branchId: main.id, host: endpoint.host, url }
 }
 
 /** Neon computes scale to zero; the first connection can take a few seconds to wake one. */
-async function waitForSelectOne(url: string, label: string, attempts = 10): Promise<void> {
+async function waitForSelectOne(url: string, attempts = 10): Promise<void> {
   for (let i = 1; i <= attempts; i++) {
-    // The operator's own DATABASE_DRIVER decides the transport: postgres.js over TCP, or a Neon
-    // WebSocket pool from a sandbox with no TCP out (scripts/lib/sql.ts).
     const sql = openScriptSql(url, process.env, { connectTimeout: 20 })
     try {
       await sql.query('SELECT 1')
@@ -813,9 +739,9 @@ async function waitForSelectOne(url: string, label: string, attempts = 10): Prom
     } catch (err) {
       if (i === attempts)
         throw new ProvisionError(
-          `${label}: SELECT 1 failed after ${attempts} attempts: ${redact(String(err))}`
+          `SELECT 1 failed after ${attempts} attempts: ${redact(String(err))}`
         )
-      if (i === 1) log(`  ${label}: waiting for the compute to wake…`)
+      if (i === 1) log('  waiting for the compute to wake…')
       await sleep(4000)
     } finally {
       await sql.end()
@@ -827,117 +753,54 @@ async function neonPhase(flags: Flags): Promise<void> {
   heading('neon')
   const info = await resolveNeon(flags, { rotate: flags.rotate })
   verifyLine(
-    `neon ok — production=${info.production.host} staging=${info.staging.host} (SELECT 1 on both)`
+    `neon ok — project ${info.projectId}, branch ${info.branchId}, host ${info.host} (SELECT 1)`
   )
 }
 
-// ---- 3. cloudflare ------------------------------------------------------------------------
+// ---- cloudflare ---------------------------------------------------------------------------
 
-function bothProvisioned(): boolean {
-  return ENV_NAMES.every(
-    env => tomlPlaceholders(fs.readFileSync(tomlFor(env), 'utf8')).length === 0
-  )
-}
-
-async function parityTest(provisioned: boolean): Promise<void> {
-  await run('pnpm', ['test:config'], {
-    cwd: WEB_DIR,
-    env: provisioned ? { REQUIRE_PROVISIONED: '1' } : {},
-  })
-}
-
-/**
- * What every installed plugin declares that this account has to know about (D31, Decision 12).
- * Read once per phase; a checkout with no plugins returns `[]` and every branch below is a no-op,
- * which is why none of them is conditional on "is this the kit".
- */
-function installedPluginResources(): PluginResources[] {
-  const { manifest } = readManifest(ROOT_DIR)
-  return readPluginResources(ROOT_DIR, manifest?.surfaces ?? [])
-}
-
-/**
- * Write a plugin's DECLARATIONS into BOTH tomls before anything is created.
- *
- * Both, and before, for one reason each. Both, because the parity test compares binding names,
- * `[vars]` KEYS, crons and `run_worker_first` across the two files on every `pnpm test` — patching
- * only the environment being provisioned would leave the ordinary gate red until somebody
- * remembered to run the other one. Before, because `cf-provision.sh --apply` patches an id INTO an
- * existing block: the block has to be there first, carrying the `<PLACEHOLDER>` that
- * `REQUIRE_PROVISIONED=1` then refuses until both environments are done — exactly how the kit's own
- * `<HYPERDRIVE_ID>` behaves.
- */
-function applyPluginDeclarations(app: string, plugins: PluginResources[]): void {
-  if (plugins.length === 0) return
-  const { crons, apiPrefixes, vars } = pluginDeclarations(plugins)
-  for (const env of ENV_NAMES) {
-    const changed = patchTomlFile(tomlFor(env), {
-      bindings: pluginBindingBlocks(app, plugins, env),
-      // A Durable Object class needs a `[[migrations]]` entry or `wrangler deploy` refuses the
-      // whole script, so the tag goes in with the block. Append-only and never renumbered: it is
-      // the record of what this Worker has already told Cloudflare.
-      migrations: pluginMigrationBlocks(plugins),
-      crons,
-      workerFirstPrefixes: apiPrefixes,
-      // A secret is a Worker secret (`provision secrets <env>`), never a [vars] key.
-      vars: vars.filter(v => !v.secret).map(v => ({ key: v.key, value: v.example ?? '' })),
-    })
-    log(`${tomlBasename(env)}: plugin declarations ${changed ? 'written' : 'unchanged'}`)
-  }
-}
-
-async function cloudflarePhase(env: EnvName, flags: Flags): Promise<void> {
-  heading(`cloudflare ${env}`)
-  const driver = driverFor(env, flags)
-  if (flags.driver) applyDriver(flags.driver)
-  const info = await resolveNeon(flags, { quiet: true })
-  const app = readAppName()
+async function cloudflarePhase(): Promise<void> {
+  heading('cloudflare')
+  const instance = requireInstance()
+  const cf = cfClient()
+  const account = await resolveAccount(cf, true)
+  const previous = readState().instance?.name
+  if (previous && previous !== instance.name)
+    warn(
+      `LAUNCH_NAME changed from "${previous}" to "${instance.name}": resources are created under the new name; the old ones are left as they are`
+    )
+  const names = instanceResourceNames(instance.name)
   const plugins = installedPluginResources()
-  const resources = pluginResourceList(app, plugins, env)
-  if (resources.length)
-    log(
-      `plugins: ${plugins.map(p => p.id).join(', ')} → ${resources.map(r => `${r.binding}=${r.name}`).join(', ')}`
-    )
-  applyPluginDeclarations(app, plugins)
-  // The URL travels in the child's environment; under postgres cf-provision.sh hands it to
-  // `wrangler hyperdrive create --connection-string=` (an argv of that one process) and redacts its
-  // output; under neon it is not passed at all (the Worker gets it from `secrets <env>`).
-  // PLUGIN_RESOURCES travels the same way and holds nothing secret — names and binding names only.
-  await run(
-    'bash',
-    ['scripts/cf-provision.sh', env, '--apply', ...(flags.force ? ['--force'] : [])],
-    {
-      cwd: WEB_DIR,
-      env: {
-        DATABASE_DRIVER: driver,
-        ...(driver === 'postgres' ? { NEON_DATABASE_URL: info[env].url } : {}),
-        CLOUDFLARE_API_TOKEN: token('CLOUDFLARE_API_TOKEN'),
-        CLOUDFLARE_ACCOUNT_ID: token('CLOUDFLARE_ACCOUNT_ID'),
-        ...(resources.length ? { PLUGIN_RESOURCES: JSON.stringify(resources) } : {}),
-      },
-    }
-  )
-  const left = tomlPlaceholders(fs.readFileSync(tomlFor(env), 'utf8'))
-  if (left.length) throw new ProvisionError(`${tomlBasename(env)} still has ${left.join(', ')}`)
-  await run(
-    'git',
-    ['diff', '--stat', '--', 'apps/web/wrangler.toml', 'apps/web/wrangler.staging.toml'],
-    { cwd: ROOT_DIR }
-  )
-  if (bothProvisioned()) {
-    await parityTest(true)
-    verifyLine(
-      `cloudflare ${env} ok — ${tomlBasename(env)} patched (DATABASE_DRIVER=${driver}); REQUIRE_PROVISIONED=1 parity test passed for both tomls`
-    )
-  } else {
-    const other = env === 'staging' ? 'production' : 'staging'
-    verifyLine(
-      `cloudflare ${env} ok — ${tomlBasename(env)} patched (DATABASE_DRIVER=${driver}); run \`pnpm provision cloudflare ${other}\` and the provisioned parity test runs then`
-    )
+  const list = [
+    { type: 'kv', name: names.kv, binding: 'RATE_LIMIT_KV' },
+    { type: 'queue', name: names.queue, binding: 'JOBS_QUEUE' },
+    { type: 'r2', name: names.bucket, binding: 'FILES' },
+    ...pluginResourceList(instance.name, plugins, 'production'),
+  ]
+  const kv: Record<string, string> = {}
+  for (const r of list) {
+    if (r.type === 'kv') {
+      const { id, created } = await cf.ensureKv(account.id, r.name)
+      kv[r.binding] = id
+      log(`  kv     ${r.name.padEnd(36)} ${created ? 'created' : 'exists '} id=${id}`)
+    } else if (r.type === 'queue') {
+      const { created } = await cf.ensureQueue(account.id, r.name)
+      log(`  queue  ${r.name.padEnd(36)} ${created ? 'created' : 'exists'}`)
+    } else if (r.type === 'r2') {
+      const { created } = await cf.ensureR2Bucket(account.id, r.name)
+      log(`  r2     ${r.name.padEnd(36)} ${created ? 'created' : 'exists'}`)
+    } else throw new ProvisionError(`unsupported resource type ${r.type} (${r.binding})`)
   }
+  writeState({
+    instance: { name: instance.name, domain: instance.domain, host: instance.host },
+    cloudflare: { kv },
+  })
+  verifyLine(
+    `cloudflare ok — account ${account.name}: ${list.map(r => r.name).join(', ')}; ids in ${STATE_FILE_LABEL} (workflows, Durable Objects and the container are registered by deploy)`
+  )
 }
 
-// ---- 4. migrate ---------------------------------------------------------------------------
+// ---- migrate ------------------------------------------------------------------------------
 
 function journalCount(): number {
   const journal = JSON.parse(
@@ -946,11 +809,11 @@ function journalCount(): number {
   return (journal.entries ?? []).length
 }
 
-async function migratePhase(env: EnvName, flags: Flags): Promise<void> {
-  heading(`migrate ${env}`)
+async function migratePhase(flags: Flags): Promise<void> {
+  heading('migrate')
   const info = await resolveNeon(flags, { quiet: true })
-  await run('pnpm', ['db:migrate:ci'], { cwd: WEB_DIR, env: { DATABASE_URL: info[env].url } })
-  const sql = openScriptSql(info[env].url, process.env, { connectTimeout: 20 })
+  await run('pnpm', ['db:migrate:ci'], { cwd: WEB_DIR, env: { DATABASE_URL: info.url } })
+  const sql = openScriptSql(info.url, process.env, { connectTimeout: 20 })
   let applied = 0
   try {
     const [row] = await sql.query<{ n: string }>(
@@ -962,13 +825,305 @@ async function migratePhase(env: EnvName, flags: Flags): Promise<void> {
   }
   const expected = journalCount()
   if (applied !== expected)
-    throw new ProvisionError(
-      `migrate ${env}: ${applied} applied but the journal has ${expected} entries`
-    )
-  verifyLine(`migrate ${env} ok — ${applied}/${expected} migrations applied on ${info[env].host}`)
+    throw new ProvisionError(`migrate: ${applied} applied but the journal has ${expected} entries`)
+  verifyLine(`migrate ok — ${applied}/${expected} migrations applied on ${info.host}`)
 }
 
-// ---- 5. github ----------------------------------------------------------------------------
+// ---- route --------------------------------------------------------------------------------
+
+async function routePhase(): Promise<void> {
+  heading('route')
+  const instance = requireInstance()
+  const cf = cfClient()
+  const account = await resolveAccount(cf, true)
+  const zone = await requireZone(cf, instance.domain, account.id)
+  writeState({
+    cloudflare: { zoneId: zone.id, zoneName: zone.name, zones: { [zone.name]: zone.id } },
+  })
+  const wildcard = `*.${instance.domain}`
+  const records = await cf.listRecords(zone.id, wildcard)
+  const proxied = records.find(r => r.proxied)
+  let outcome: string
+  if (proxied) outcome = `exists (${proxied.type}, proxied)`
+  else if (records[0])
+    throw new ProvisionError(
+      `${wildcard} is a DNS-only ${records[0].type} record, so requests never reach the Worker route. Launch does not change a record it did not create: turn its proxy on (orange cloud) in the zone's DNS, or delete it and rerun \`pnpm provision route\``
+    )
+  else {
+    await cf.createRecord(zone.id, {
+      ...WILDCARD_RECORD,
+      ttl: 1,
+      comment: 'Launch: apps wildcard — Worker routes answer, not an origin',
+    })
+    outcome = 'created AAAA * → 100:: (proxied)'
+  }
+  log(`  ${wildcard}: ${outcome}`)
+  verifyLine(
+    `route ok — zone ${zone.name}: ${wildcard} ${outcome}; deploy adds the custom domain ${instance.host} and the route ${wildcard}/*`
+  )
+}
+
+// ---- render -------------------------------------------------------------------------------
+
+function renderToFile(): { placeholders: string[]; text: string } {
+  const instance = requireInstance()
+  const template = fs.readFileSync(TEMPLATE_TOML, 'utf8')
+  const appName = readTomlString(template, 'APP_NAME') ?? 'Launch'
+  const text = renderDeployToml(template, {
+    name: instance.name,
+    domain: instance.domain,
+    host: instance.host,
+    emailFrom: emailFromFor(appName, instance.emailDomain),
+    kvIds: readState().cloudflare?.kv ?? {},
+    plugins: installedPluginResources(),
+  })
+  fs.writeFileSync(DEPLOY_TOML, text)
+  return { placeholders: renderedPlaceholders(text), text }
+}
+
+async function ensureRendered(): Promise<void> {
+  if (!fs.existsSync(DEPLOY_TOML)) renderToFile()
+}
+
+async function renderPhase(): Promise<void> {
+  heading('render')
+  const instance = requireInstance()
+  const { placeholders } = renderToFile()
+  verifyLine(
+    `render ok — apps/web/${DEPLOY_TOML_BASENAME}: worker ${instance.name}, routes ${instance.host} + *.${instance.domain}/*${placeholders.length ? `; still placeholders ${placeholders.join(', ')} (run \`pnpm provision cloudflare\`)` : ', no placeholders'}`
+  )
+}
+
+// ---- deploy -------------------------------------------------------------------------------
+
+/**
+ * What decides whether a deploy replaces the running session containers: the image directory's
+ * files and the rendered `[[containers]]` block. Recorded after each deploy.
+ */
+function containersHash(rendered: string): string {
+  const hash = createHash('sha256')
+  const dir = path.join(WEB_DIR, 'containers/session')
+  const walk = (d: string): string[] =>
+    fs
+      .readdirSync(d, { withFileTypes: true })
+      .flatMap(e => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]))
+  for (const file of walk(dir).sort()) {
+    hash.update(path.relative(dir, file))
+    hash.update(fs.readFileSync(file))
+  }
+  const block = /\[\[containers\]\][\s\S]*?\n\n/.exec(rendered)?.[0] ?? ''
+  hash.update(block)
+  return hash.digest('hex').slice(0, 16)
+}
+
+/** Sessions holding a container (what the drain suspends) — counted straight from the database. */
+async function liveSessionCount(url: string): Promise<number> {
+  const sql = openScriptSql(url, process.env, { connectTimeout: 20 })
+  try {
+    const [row] = await sql.query<{ n: string }>(
+      "SELECT count(*) AS n FROM sessions WHERE status IN ('requested','booting','ready','working','blocked') OR (status = 'suspended' AND container_kept_at IS NOT NULL)"
+    )
+    return Number(row?.n ?? 0)
+  } catch {
+    return 0
+  } finally {
+    await sql.end()
+  }
+}
+
+function releaseVersion(): string {
+  const version = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8')).version
+  const sha = capture('git', ['rev-parse', '--short=7', 'HEAD'], ROOT_DIR)
+  const dirty = capture('git', ['status', '--porcelain'], ROOT_DIR)
+  return `${version}${sha ? `-${sha}` : ''}${dirty ? '-dirty' : ''}`
+}
+
+async function deployPhase(flags: Flags): Promise<void> {
+  heading('deploy')
+  const instance = requireInstance()
+  const { placeholders, text } = renderToFile()
+  if (placeholders.length)
+    throw new ProvisionError(
+      `apps/web/${DEPLOY_TOML_BASENAME} still has ${placeholders.join(', ')} — run \`pnpm provision cloudflare\` first`
+    )
+  const info = await resolveNeon(flags, { quiet: true })
+
+  const hash = containersHash(text)
+  const before = readState().deploy?.containersHash
+  if (before && before !== hash && !flags.drained) {
+    const live = await liveSessionCount(info.url)
+    if (live > 0)
+      throw new ProvisionError(
+        `the session image or [[containers]] changed since the last deploy and ${live} session(s) hold a container — a deploy replaces them mid-turn. Drain first: Admin → Sessions → Drain at ${instance.appUrl}/admin, wait until none is live, then rerun with --drained (and Undrain after)`,
+        2
+      )
+    log(`  session image changed; no live sessions hold a container — no drain needed`)
+  }
+
+  const version = releaseVersion()
+  await run('pnpm', ['build:ui'], { cwd: WEB_DIR })
+  await wrangler(['deploy', ...wranglerConfigArgs(), '--var', `RELEASE_VERSION:${version}`])
+  // A `neon` Worker fails `loadConfig` until it holds DATABASE_URL, and a secret can only be put on
+  // a Worker that exists — so the first deploy is followed straight away by the secret.
+  if (!(await listWorkerSecrets()).includes('DATABASE_URL')) {
+    await putWorkerSecret('DATABASE_URL', toPooledNeonUrl(info.url))
+    log('  DATABASE_URL (pooled Neon URI) set on the Worker')
+  }
+  writeState({ deploy: { containersHash: hash, version, at: new Date().toISOString() } })
+  // A new custom domain needs its certificate; give it two minutes.
+  const health = await fetchJson(`${instance.appUrl}/api/health`, 24)
+  if (health?.status !== 'ok')
+    throw new ProvisionError(`${instance.appUrl}/api/health → ${JSON.stringify(health)}`)
+  const ready = await fetchJson(`${instance.appUrl}/api/ready`, 12)
+  if (ready?.__status === 503 || ready?.status !== 'ready')
+    throw new ProvisionError(
+      `${instance.appUrl}/api/ready → ${JSON.stringify(ready)} — the Worker cannot reach Neon: check its DATABASE_URL secret (\`pnpm provision secrets --rotate\` re-puts it)`
+    )
+  verifyLine(
+    `deploy ok — ${instance.appUrl}/api/health ok (version ${health.version}), /api/ready ok`
+  )
+}
+
+// ---- secrets ------------------------------------------------------------------------------
+
+async function secretsPhase(flags: Flags): Promise<void> {
+  heading(`secrets${flags.dryRun ? ' --dry-run' : ''}`)
+  const instance = requireInstance()
+  await ensureRendered()
+  const existing = await listWorkerSecrets()
+  const pluginSecrets = pluginDeclarations(installedPluginResources())
+    .vars.filter(v => v.secret)
+    .map(v => v.key)
+  const names = new Set(
+    ['OAUTH_ENCRYPTION_KEY', ...OPTIONAL_WORKER_SECRETS, ...pluginSecrets].filter(n => token(n))
+  )
+  const plan = planSecrets({
+    available: names,
+    existing,
+    optional: OPTIONAL_WORKER_SECRETS,
+    pluginSecrets,
+    rotate: flags.rotate,
+    needsDatabaseUrl: true,
+  })
+  for (const l of describeSecretPlan(plan, existing)) log(l)
+  if (flags.dryRun) {
+    const doing = plan.actions.filter(a => a.action !== 'skip').map(a => a.name)
+    verifyLine(
+      `secrets --dry-run — would set ${doing.length}: ${doing.join(', ')}; nothing was put`
+    )
+    if (plan.refuse) process.exitCode = 2
+    return
+  }
+  if (plan.refuse) throw new ProvisionError(`secrets: ${plan.refuse}`, 2)
+
+  const set: string[] = []
+  for (const a of plan.actions) {
+    if (a.action === 'skip') continue
+    let value: string
+    if (a.action === 'generate') {
+      if (existing.includes(a.name))
+        warn(
+          'rotating OAUTH_ENCRYPTION_KEY: every sealed credential and OAuth token must be re-sealed — run `pnpm provision setup --rotate` next'
+        )
+      value = generateHexKey()
+      // Written back BEFORE the put: a key on the Worker that is in no file is a key nobody has.
+      writeDeployFileValue(a.name, value)
+      log(`  ${a.name}: generated and written to ${TOKEN_FILE_LABEL} — back that file up`)
+    } else if (a.name === 'BOOTSTRAP_ADMIN_EMAILS') value = instance.adminEmails.join(',')
+    else if (a.name === 'DATABASE_URL')
+      value = toPooledNeonUrl((await resolveNeon(flags, { quiet: true })).url)
+    else value = token(a.name) as string
+    await putWorkerSecret(a.name, value)
+    set.push(a.name)
+  }
+  const after = await listWorkerSecrets()
+  const missing = set.filter(n => !after.includes(n))
+  if (missing.length)
+    throw new ProvisionError(`secrets: not listed after put: ${missing.join(', ')}`)
+  verifyLine(
+    `secrets ok — set ${set.length}; wrangler secret list shows ${after.length}: ${after.sort().join(', ')}`
+  )
+}
+
+// ---- setup --------------------------------------------------------------------------------
+
+async function setupPhase(flags: Flags): Promise<void> {
+  heading('setup')
+  const instance = requireInstance()
+  const key = requireToken('OAUTH_ENCRYPTION_KEY')
+  const info = await resolveNeon(flags, { quiet: true })
+  const state = readState()
+  const template = fs.readFileSync(TEMPLATE_TOML, 'utf8')
+  const appName = readTomlString(template, 'APP_NAME') ?? 'Launch'
+  const cfg = loadConfig({
+    APP_ENV: 'production',
+    APP_URL: instance.appUrl,
+    APP_NAME: appName,
+    TENANCY_MODE: 'single',
+    OAUTH_ENCRYPTION_KEY: key,
+  } as unknown as Cloudflare.Env)
+  const account = accountId()
+  if (!account)
+    throw new ProvisionError(
+      'no Cloudflare account id yet — run `pnpm provision cloudflare` first',
+      2
+    )
+
+  const credentials: Parameters<typeof writeInstanceSetup>[2]['credentials'] = {
+    cloudflare_api_token: { apiToken: requireToken('CLOUDFLARE_API_TOKEN') },
+    neon_org_api_key: { apiKey: requireToken('NEON_API_KEY') },
+  }
+  if (!flags.skipEmail) credentials.resend_api_key = { apiKey: requireToken('RESEND_API_KEY') }
+  const appId = token('GITHUB_APP_ID')
+  const privateKey = readGitHubAppKey()
+  if (appId && privateKey) credentials.github_app = { appId, privateKey }
+  else
+    warn(
+      'no GitHub App in the instance file — github_app is not written (run `pnpm provision github-app`, then `setup` again)'
+    )
+  const anthropic = token('ANTHROPIC_API_KEY')
+  if (anthropic) credentials.anthropic_api_key = { apiKey: anthropic }
+  const openai = token('OPENAI_API_KEY')
+  if (openai) credentials.openai_api_key = { apiKey: openai }
+
+  const db = getScriptDatabase(info.url, process.env)
+  try {
+    const result = await writeInstanceSetup(db, cfg, {
+      settings: {
+        apps_domain: instance.domain,
+        cloudflare_account_id: account,
+        ...(state.neon?.orgId ? { neon_org_id: state.neon.orgId } : {}),
+        neon_region_id: instance.neonRegion,
+        notifications_domain: instance.emailDomain,
+        github_org: instance.githubOrg,
+      },
+      credentials,
+      tenantName: appName,
+      ownerEmail: instance.adminEmails[0] as string,
+      force: flags.rotate,
+    })
+    if (result.tenantCreated)
+      log(
+        `  organisation "${appName}" created with ${instance.adminEmails[0]} as its owner (they sign in to claim it)`
+      )
+    log(`  settings changed: ${result.settingsChanged.join(', ') || 'none'}`)
+    for (const [kind, outcome] of Object.entries(result.credentials))
+      log(`  ${kind.padEnd(22)} ${outcome}`)
+    verifyLine(
+      `setup ok — ${Object.keys(result.credentials).length} credential(s) sealed with the instance key (${Object.entries(
+        result.credentials
+      )
+        .map(([k, o]) => `${k} ${o}`)
+        .join(
+          ', '
+        )}), ${result.settingsChanged.length} setting(s) changed, audited in organisation ${result.tenantId}`
+    )
+  } finally {
+    await closeAllDatabases()
+  }
+}
+
+// ---- github (CI later) --------------------------------------------------------------------
 
 function repoSlug(): string {
   const remote = capture('git', ['remote', 'get-url', 'origin'], ROOT_DIR) ?? ''
@@ -977,263 +1132,65 @@ function repoSlug(): string {
   return `${m[1]}/${m[2]}`
 }
 
-async function githubPhase(env: EnvName, flags: Flags): Promise<void> {
-  heading(`github ${env}`)
+async function githubPhase(environment: string, flags: Flags): Promise<void> {
+  heading(`github ${environment}`)
   const info = await resolveNeon(flags, { quiet: true })
   const repo = repoSlug()
-  await run('gh', ['api', '-X', 'PUT', `repos/${repo}/environments/${env}`, '--silent'], {
+  await run('gh', ['api', '-X', 'PUT', `repos/${repo}/environments/${environment}`, '--silent'], {
     cwd: ROOT_DIR,
     echo: false,
   })
-  log(`github environment: ${repo} / ${env}`)
   const secrets: Record<string, string> = {
-    DATABASE_URL: info[env].url,
-    CLOUDFLARE_API_TOKEN: token('CLOUDFLARE_API_TOKEN') as string,
-    CLOUDFLARE_ACCOUNT_ID: token('CLOUDFLARE_ACCOUNT_ID') as string,
+    DATABASE_URL: info.url,
+    CLOUDFLARE_API_TOKEN: requireToken('CLOUDFLARE_API_TOKEN'),
+    CLOUDFLARE_ACCOUNT_ID: accountId() ?? '',
   }
   for (const [name, value] of Object.entries(secrets)) {
-    await run('gh', ['secret', 'set', name, '-e', env, '-R', repo], {
+    if (!value) continue
+    await run('gh', ['secret', 'set', name, '-e', environment, '-R', repo], {
       cwd: ROOT_DIR,
       stdin: value,
       echo: false,
     })
     log(`  set ${name}`)
   }
-  const list = await run('gh', ['secret', 'list', '-e', env, '-R', repo, '--json', 'name'], {
-    cwd: ROOT_DIR,
-    echo: false,
-  })
-  const names = (JSON.parse(list.stdout) as { name: string }[]).map(s => s.name)
-  const missing = Object.keys(secrets).filter(n => !names.includes(n))
-  if (missing.length)
-    throw new ProvisionError(`github ${env}: secrets missing after set: ${missing.join(', ')}`)
   verifyLine(
-    `github ${env} ok — environment ${env} on ${repo} has ${Object.keys(secrets).join(', ')}`
+    `github ${environment} ok — environment ${environment} on ${repo} has ${Object.keys(secrets).join(', ')}`
   )
 }
 
-// ---- 6. urls ------------------------------------------------------------------------------
+// ---- all ----------------------------------------------------------------------------------
 
-async function urlsPhase(flags: Flags): Promise<void> {
-  heading('urls')
-  const answers = await collectAnswers(flags)
-  const urls: Record<EnvName, string> = { staging: '', production: '' }
-  const zoneNote: Partial<Record<EnvName, string>> = {}
-  for (const env of ENV_NAMES) {
-    const host = answers.hosts[env]
-    const text = fs.readFileSync(tomlFor(env), 'utf8')
-    const workerName = readTomlString(text, 'name') ?? readAppName()
-    if (host === WORKERS_DEV) {
-      let sub = readCache().cloudflare?.workersSubdomain
-      if (!sub) {
-        sub = await cfClient().workersSubdomain(requireToken('CLOUDFLARE_ACCOUNT_ID'))
-        writeCache({ cloudflare: { workersSubdomain: sub } })
-      }
-      urls[env] = `https://${workerName}.${sub}.workers.dev`
-      patchTomlFile(tomlFor(env), {
-        appUrl: urls[env],
-        workersDevComment:
-          "workers_dev = true is wrangler's default while `routes` stays commented, so this Worker is\n" +
-          `served at ${urls[env]} (note added by \`pnpm provision urls\`).`,
-      })
-    } else {
-      // The custom domain route is created by `wrangler deploy` in this zone — prove it exists now.
-      const zone = await requireZone(cfClient(), host)
-      urls[env] = `https://${host}`
-      patchTomlFile(tomlFor(env), { appUrl: urls[env], routeHost: host })
-      zoneNote[env] = ` routes=[${host}] zone=${zone.name}`
-    }
-    log(`${tomlBasename(env)}: APP_URL=${urls[env]}${zoneNote[env] ?? ''}`)
-  }
-  const provisioned = bothProvisioned()
-  await parityTest(provisioned)
-  verifyLine(
-    `urls ok — staging=${urls.staging} production=${urls.production}; parity test passed${provisioned ? ' (provisioned)' : ''}`
-  )
-}
-
-// ---- 7. deploy ----------------------------------------------------------------------------
-
-async function fetchJson(url: string, attempts = 6): Promise<any> {
-  let last: any
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      const res = await fetch(url, { headers: { Accept: 'application/json' } })
-      const body = await res.json().catch(() => ({}))
-      last = { status: res.status, body }
-      if (res.ok) return body
-      if (res.status === 503) return { ...(body as object), __status: 503 }
-    } catch (err) {
-      last = err
-    }
-    if (i < attempts) await sleep(5000)
-  }
-  throw new ProvisionError(
-    `${url}: ${redact(typeof last === 'string' ? last : JSON.stringify(last))}`
-  )
-}
-
-async function deployPhase(env: EnvName, flags: Flags): Promise<void> {
-  heading(`deploy ${env}`)
-  const driver = driverFor(env, flags)
-  const appUrl = readTomlString(fs.readFileSync(tomlFor(env), 'utf8'), 'APP_URL')
-  if (!appUrl) throw new ProvisionError(`${tomlBasename(env)} has no APP_URL`)
-  await run('pnpm', [env === 'staging' ? 'deploy:staging' : 'deploy'], {
-    cwd: WEB_DIR,
-    env: {
-      CLOUDFLARE_API_TOKEN: token('CLOUDFLARE_API_TOKEN'),
-      CLOUDFLARE_ACCOUNT_ID: token('CLOUDFLARE_ACCOUNT_ID'),
-    },
-  })
-  const list = await wrangler(['deployments', 'list', '--json', ...wranglerConfigArgs(env)], {
-    echo: false,
-  })
-  const deployments = JSON.parse(list.stdout.slice(list.stdout.indexOf('['))) as any[]
-  log(`deployments: ${deployments.length} listed`)
-  // A `neon` Worker fails `loadConfig` until it holds DATABASE_URL, and a secret can only be put on
-  // a Worker that exists — so the first deploy is followed straight away by the secret, before the
-  // health checks below (which retry while the new version rolls out).
-  if (driver === 'neon') {
-    const info = await resolveNeon(flags, { quiet: true })
-    await ensureWorkerDatabaseUrl(env, info[env].url, { force: false })
-  }
-  const health = await fetchJson(`${appUrl}/api/health`)
-  if (health?.status !== 'ok')
-    throw new ProvisionError(`${appUrl}/api/health → ${JSON.stringify(health)}`)
-  const ready = await fetchJson(`${appUrl}/api/ready`)
-  if (ready?.__status === 503 || ready?.status !== 'ready')
-    throw new ProvisionError(
-      driver === 'neon'
-        ? `${appUrl}/api/ready → ${JSON.stringify(ready)} — the Worker cannot reach Neon (DATABASE_DRIVER=neon): check its DATABASE_URL secret is the POOLED Neon URI with sslmode=require and a live password (\`pnpm provision secrets ${env} --rotate\` re-puts it)`
-        : `${appUrl}/api/ready → ${JSON.stringify(ready)} — the Worker cannot reach Postgres through Hyperdrive (DATABASE_DRIVER=postgres): check the Hyperdrive config points at the DIRECT host with sslmode=require (pnpm provision cloudflare ${env} --force after fixing)`
-    )
-  verifyLine(
-    `deploy ${env} ok — ${appUrl}/api/health ok (version ${health.version}), /api/ready ok (DATABASE_DRIVER=${driver}), deployments listed`
-  )
-}
-
-// ---- 8. secrets ---------------------------------------------------------------------------
-
-async function secretsPhase(env: EnvName, flags: Flags): Promise<void> {
-  heading(`secrets ${env}`)
-  const existing = await listWorkerSecrets(env)
-  const set: string[] = []
-  const skipped: string[] = []
-  if (!existing.includes('OAUTH_ENCRYPTION_KEY') || flags.rotate) {
-    if (existing.includes('OAUTH_ENCRYPTION_KEY'))
-      warn(
-        'rotating OAUTH_ENCRYPTION_KEY invalidates every tenant AI credential and stored OAuth token — admins must re-enter them (docs/DEPLOY.md → Rollback)'
-      )
-    await putWorkerSecret(env, 'OAUTH_ENCRYPTION_KEY', generateHexKey())
-    set.push('OAUTH_ENCRYPTION_KEY')
-  } else log('OAUTH_ENCRYPTION_KEY already set (pass --rotate to regenerate)')
-
-  // D35: a `neon` Worker's database connection IS a secret (the pooled Neon URI); a `postgres`
-  // Worker reads the HYPERDRIVE binding and never holds DATABASE_URL.
-  if (driverFor(env, flags) === 'neon') {
-    const info = await resolveNeon(flags, { quiet: true })
-    if (await ensureWorkerDatabaseUrl(env, info[env].url, { force: flags.rotate }))
-      set.push('DATABASE_URL')
-  }
-
-  const answers = await collectAnswers(flags)
-  for (const name of OPTIONAL_WORKER_SECRETS) {
-    const value =
-      name === 'BOOTSTRAP_ADMIN_EMAILS' ? (token(name) ?? answers.adminEmails) : token(name)
-    if (!value) {
-      skipped.push(name)
-      continue
-    }
-    // Never DATABASE_URL here: it is not in OPTIONAL_WORKER_SECRETS, and it is set above only under
-    // DATABASE_DRIVER=neon (a postgres Worker reads HYPERDRIVE).
-    await putWorkerSecret(env, name, value)
-    set.push(name)
-  }
-
-  // Plugin vars marked `secret` (D31, Decision 12) are Worker secrets, not `[vars]` keys, so they
-  // are offered here from the same two places as the kit's own: an exported variable first, then
-  // apps/web/.provision.env. An unset one is SKIPPED rather than written blank — a plugin that
-  // needs it should 503 loudly at runtime, not read an empty string as a configured value.
-  for (const v of pluginDeclarations(installedPluginResources()).vars) {
-    if (!v.secret) continue
-    if (set.includes(v.key) || OPTIONAL_WORKER_SECRETS.includes(v.key as never)) continue
-    const value = token(v.key)
-    if (!value) {
-      skipped.push(v.key)
-      continue
-    }
-    await putWorkerSecret(env, v.key, value)
-    set.push(v.key)
-  }
-
-  const after = await listWorkerSecrets(env)
-  const missing = set.filter(n => !after.includes(n))
-  if (missing.length)
-    throw new ProvisionError(`secrets ${env}: not listed after put: ${missing.join(', ')}`)
-  log(
-    `set: ${set.length} (${set.join(', ') || '-'}), skipped (unset): ${skipped.length} (${skipped.join(', ') || '-'})`
-  )
-  verifyLine(
-    `secrets ${env} ok — wrangler secret list shows ${after.length} secret(s): ${after.sort().join(', ')}`
-  )
-}
-
-// ---- 10. all ------------------------------------------------------------------------------
-
-function closeOut(flags: Flags, deployed: EnvName[]): void {
-  const cache = readCache()
-  const urls = Object.fromEntries(
-    ENV_NAMES.map(env => [env, readTomlString(fs.readFileSync(tomlFor(env), 'utf8'), 'APP_URL')])
-  ) as Record<EnvName, string | undefined>
+function closeOut(flags: Flags): void {
+  const instance = requireInstance()
   console.log(`
-== close-out checklist ==
-1. Sign in: open ${urls[deployed[0]]}/login and request a magic link for ${cache.adminEmails ?? 'your admin email'}.
-   ${flags.skipEmail ? 'Email is skipped: copy the link from `pnpm web exec wrangler tail' + (deployed[0] === 'staging' ? ' -c wrangler.staging.toml' : '') + '`.' : 'It arrives from the verified Resend domain.'}
-   TENANCY_MODE=single (Launch's tomls): that first login creates the organisation with you as its owner —
-   finish Setup at ${urls[deployed[0]]}/settings/platform/setup. (Under multi with SIGNUP_MODE=invite_only it
-   lands on /pending instead: create the first organisation at ${urls[deployed[0]]}/admin.)
-2. OAuth (optional): add these redirect URIs to each provider, then \`pnpm provision secrets <env>\` with
-   GOOGLE_* / MICROSOFT_* exported:${ENV_NAMES.map(env => `\n     ${urls[env]}/auth/google/callback   ${urls[env]}/auth/microsoft/callback`).join('')}
-3. Commit the provisioned tomls (ids and URLs are not secrets):
-     git add apps/web/wrangler.toml apps/web/wrangler.staging.toml && git commit -m "chore: provision cloudflare" && git push
-4. CI deploys from now on: tag X.Y.Z → staging, publish the Release → production (docs/DEPLOY.md), or
-   right away: gh workflow run deploy.yml -f environment=staging
-5. CLI: pnpm cli login --server ${urls[deployed[0]]}
-${deployed.length === 1 ? `6. Production is provisioned and migrated but NOT deployed: \`pnpm provision deploy production\` then\n   \`pnpm provision secrets production\`${flags.skipEmail ? '' : ' and `pnpm provision email verify production`'}, or publish a Release.\n` : ''}`)
+== close-out
+1. Sign in: open ${instance.appUrl}/login and request a magic link for ${instance.adminEmails[0]}.
+   ${flags.skipEmail ? 'Email is skipped: copy the link from `pnpm --filter @launch/web exec wrangler tail -c wrangler.deploy.toml`.' : `It arrives from ${instance.emailDomain}.`}
+   You are the organisation's owner and the platform admin.
+2. Setup (${instance.appUrl}/settings/platform/setup): press Check on every card (Cloudflare, Neon,
+   Resend, GitHub App), run the Public URL check, pin the kit version, and turn on Coding agents.
+3. Back up ${TOKEN_FILE_LABEL} and .launch/ (password manager or encrypted storage): the file holds
+   OAUTH_ENCRYPTION_KEY, which unseals every credential; losing it means rotating them all.
+4. CLI: pnpm cli login --server ${instance.appUrl}
+5. To update the instance later: pull, then \`pnpm provision all\` again.`)
 }
 
 async function allPhase(flags: Flags): Promise<void> {
-  requireTokens(flags, 'all')
-  const deployed: EnvName[] = flags.deploy === 'both' ? ['staging', 'production'] : ['staging']
-  const steps: Array<[string, () => Promise<void>]> = [
-    ['preflight', () => preflight(flags)],
-    ...(flags.skipEmail
-      ? []
-      : [['email create', () => emailCreate(flags)] as [string, () => Promise<void>]]),
+  type Step = [string, () => Promise<void>]
+  const steps: Step[] = [
+    ['check', () => checkPhase(flags)],
+    ...(token('GITHUB_APP_ID') ? [] : ([['github-app', () => githubAppPhase(flags)]] as Step[])),
+    ...(flags.skipEmail ? [] : ([['email create', () => emailCreate()]] as Step[])),
     ['neon', () => neonPhase(flags)],
-    ...ENV_NAMES.map(
-      env =>
-        [`cloudflare ${env}`, () => cloudflarePhase(env, flags)] as [string, () => Promise<void>]
-    ),
-    ...ENV_NAMES.map(
-      env => [`migrate ${env}`, () => migratePhase(env, flags)] as [string, () => Promise<void>]
-    ),
-    ...ENV_NAMES.map(
-      env => [`github ${env}`, () => githubPhase(env, flags)] as [string, () => Promise<void>]
-    ),
-    ['urls', () => urlsPhase(flags)],
-    ...deployed.map(
-      env => [`deploy ${env}`, () => deployPhase(env, flags)] as [string, () => Promise<void>]
-    ),
-    ...deployed.map(
-      env => [`secrets ${env}`, () => secretsPhase(env, flags)] as [string, () => Promise<void>]
-    ),
-    ...(flags.skipEmail
-      ? []
-      : deployed.map(
-          env =>
-            [`email verify ${env}`, () => emailVerify(env, flags)] as [string, () => Promise<void>]
-        )),
+    ['cloudflare', () => cloudflarePhase()],
+    ['migrate', () => migratePhase(flags)],
+    ['route', () => routePhase()],
+    ['render', () => renderPhase()],
+    ['deploy', () => deployPhase(flags)],
+    ['secrets', () => secretsPhase({ ...flags, dryRun: false })],
+    ['setup', () => setupPhase(flags)],
+    ...(flags.skipEmail ? [] : ([['email verify', () => emailVerify(flags)]] as Step[])),
   ]
   for (const [name, fn] of steps) {
     try {
@@ -1241,50 +1198,62 @@ async function allPhase(flags: Flags): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new ProvisionError(
-        `phase "${name}" failed: ${msg}\n→ fix the cause and re-run \`pnpm provision ${name}\` (then \`pnpm provision all\` continues idempotently)`,
+        `phase "${name}" failed: ${msg}\n→ fix the cause and rerun \`pnpm provision ${name}\` (then \`pnpm provision all\` continues idempotently)`,
         err instanceof ProvisionError ? err.exitCode : 1
       )
     }
   }
-  closeOut(flags, deployed)
-  verifyLine(`all ok — ${steps.length} phases passed; deployed ${deployed.join(', ')}`)
+  closeOut(flags)
+  verifyLine(`all ok — ${steps.length} phases passed; ${requireInstance().appUrl} is live`)
 }
 
 // ---- main ---------------------------------------------------------------------------------
 
 async function main(argv: string[]): Promise<void> {
   const { positional, flags } = parseArgs(argv)
-  const [phase, a, b] = positional
+  const [phase, a] = positional
   if (flags.help || !phase) {
     console.log(USAGE)
     if (!phase && !flags.help) process.exitCode = 2
     return
   }
+  if (phase !== 'check' && phase !== 'preflight' && fs.existsSync(LEGACY_TOKEN_FILE))
+    warn(
+      `apps/web/.provision.env is no longer read — move its values into ${TOKEN_FILE_LABEL} and delete it`
+    )
   switch (phase) {
+    case 'check':
+    case 'preflight':
+      return checkPhase(flags)
+    case 'github-app':
+      return githubAppPhase(flags)
     case 'tokens':
       return tokensPhase(flags)
-    case 'preflight':
-      return preflight(flags)
     case 'email': {
-      if (a === 'create') return emailCreate(flags)
-      if (a === 'status') return emailStatus(flags)
-      if (a === 'verify') return emailVerify(parseEnv(b, 'email verify'), flags)
-      throw new ProvisionError('email needs create | status | verify <env>', 2)
+      if (a === 'create') return emailCreate()
+      if (a === 'status') return emailStatus()
+      if (a === 'verify') return emailVerify(flags)
+      throw new ProvisionError('email needs create | status | verify', 2)
     }
     case 'neon':
       return neonPhase(flags)
     case 'cloudflare':
-      return cloudflarePhase(parseEnv(a, phase), flags)
+      return cloudflarePhase()
     case 'migrate':
-      return migratePhase(parseEnv(a, phase), flags)
-    case 'github':
-      return githubPhase(parseEnv(a, phase), flags)
+      return migratePhase(flags)
+    case 'route':
     case 'urls':
-      return urlsPhase(flags)
+      return routePhase()
+    case 'render':
+      return renderPhase()
     case 'deploy':
-      return deployPhase(parseEnv(a, phase), flags)
+      return deployPhase(flags)
     case 'secrets':
-      return secretsPhase(parseEnv(a, phase), flags)
+      return secretsPhase(flags)
+    case 'setup':
+      return setupPhase(flags)
+    case 'github':
+      return githubPhase(a ?? 'production', flags)
     case 'all':
       return allPhase(flags)
     default:

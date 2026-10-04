@@ -337,7 +337,10 @@ function appendToArray(text: string, key: string, values: string[]): string {
   const m = re.exec(text)
   if (!m) throw new TomlPatchError(`no \`${key} = [...]\` array found`)
   const inner = m[1]
-  const present = new Set([...inner.matchAll(/"([^"]*)"/g)].map(x => x[1]))
+  // A value quoted inside a COMMENT is not an entry (the template's crons comment names the
+  // analytics plugin's expression), so comments are dropped before looking.
+  const entries = inner.replace(/#[^\n]*/g, '')
+  const present = new Set([...entries.matchAll(/"([^"]*)"/g)].map(x => x[1]))
   const missing = values.filter(v => !present.has(v))
   if (missing.length === 0) return text
   let replacement: string

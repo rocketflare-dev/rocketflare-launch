@@ -1074,10 +1074,10 @@ export function planSteps(m, { fragments = [], clashes = [] } = {}) {
       mkStep(
         'agent',
         'provision',
-        "Create and declare this plugin's platform resources, per environment",
-        'pnpm provision cloudflare staging && pnpm provision cloudflare production',
-        `${platform.join(', ')} written into BOTH tomls; ids patched per environment`,
-        'REQUIRE_PROVISIONED=1 pnpm --filter @launch/web test:config'
+        "Create this plugin's platform resources and render them into the instance's config",
+        'pnpm provision cloudflare && pnpm provision render   # then deploy (or: pnpm provision all)',
+        `${platform.join(', ')} in apps/web/wrangler.deploy.toml; ids in .launch/state.json`,
+        'pnpm provision render reports no placeholders'
       )
     )
   }
@@ -1098,7 +1098,7 @@ export function planSteps(m, { fragments = [], clashes = [] } = {}) {
         'human',
         `secret-value:${key}`,
         `Set a value for ${key}`,
-        'pnpm provision secrets <env>   # read from your shell or apps/web/.provision.env',
+        'pnpm provision secrets         # read from your shell or launch.deploy.env',
         `${key} in \`wrangler secret list\` for that environment`,
         'a person supplies the credential; nothing can derive it'
       )

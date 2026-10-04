@@ -1,6 +1,8 @@
 /**
- * Pure helpers for `apps/web/.provision.env` — the git-ignored `KEY=VALUE` file that holds the
- * provisioning tokens (and, optionally, the Worker secrets `pnpm provision secrets` copies).
+ * Pure helpers for `launch.deploy.env` — the git-ignored `KEY=VALUE` file at the repo root that
+ * describes ONE deployed instance: its answers (domain, host, name, admin, GitHub org), the vendor
+ * tokens that provision it, the optional Worker secrets `pnpm provision secrets` copies, and the
+ * generated `OAUTH_ENCRYPTION_KEY`.
  * Same line conventions as `.dev.vars`: `#` comments, blank lines, an optional `export ` prefix,
  * single or double quotes around a value. Nothing here touches the filesystem or `process.env`
  * (`config.ts` does the I/O), so the `config` test project exercises every branch.
@@ -9,16 +11,30 @@
  * is the fallback, an empty value in either counts as unset.
  */
 
-export const PROVISION_ENV_BASENAME = '.provision.env'
+export const DEPLOY_FILE_BASENAME = 'launch.deploy.env'
+/** Where the token file lived before instances (apps/web/); `check` says to move it. */
+export const LEGACY_PROVISION_ENV_BASENAME = '.provision.env'
 
 /**
- * Keys whose values are identifiers, not credentials: they are printed by preflight (the account
- * id is in every dashboard URL; the admin email is the answer it echoes back) and must not be
- * registered with `redact()`.
+ * Keys whose values are identifiers, not credentials: they are printed by `check` (the account
+ * id is in every dashboard URL; the domain, host and admin email are the answers it echoes back)
+ * and must not be registered with `redact()` — masking the domain would mask every URL.
  */
 export const REDACT_EXEMPT_KEYS: ReadonlySet<string> = new Set([
   'CLOUDFLARE_ACCOUNT_ID',
   'BOOTSTRAP_ADMIN_EMAILS',
+  'LAUNCH_DOMAIN',
+  'LAUNCH_HOST',
+  'LAUNCH_NAME',
+  'LAUNCH_ADMIN_EMAILS',
+  'LAUNCH_GITHUB_ORG',
+  'NEON_REGION',
+  'NEON_ORG_ID',
+  'EMAIL_DOMAIN',
+  'EMAIL_REGION',
+  'GITHUB_APP_ID',
+  'GITHUB_APP_NAME',
+  'GITHUB_APP_PRIVATE_KEY_FILE',
 ])
 
 /** The values of `record` worth masking — every key except the exempt identifiers. */
@@ -109,11 +125,15 @@ export function resolveToken(
 }
 
 /** The one sentence every "missing token" message ends with. */
-export function missingTokenHint(name: string, help?: { url: string; scopes: string }): string {
+export function missingTokenHint(
+  name: string,
+  help?: { url: string; scopes: string },
+  file = DEPLOY_FILE_BASENAME
+): string {
   return (
-    `${name} is not set — run \`pnpm provision tokens\` in your own terminal (it prompts, hidden input, ` +
-    `and writes apps/web/${PROVISION_ENV_BASENAME}), or copy apps/web/${PROVISION_ENV_BASENAME}.example to ` +
-    `apps/web/${PROVISION_ENV_BASENAME} and fill it in, or export the variable (CI)` +
+    `${name} is not set — fill it in ${file} (\`cp ${DEPLOY_FILE_BASENAME}.example ${DEPLOY_FILE_BASENAME}\` ` +
+    'at the repo root first), or run `pnpm provision tokens` in your own terminal (it prompts, hidden ' +
+    `input, and writes ${file}), or export the variable (CI)` +
     (help ? `. Mint: ${help.url} (${help.scopes})` : '')
   )
 }
