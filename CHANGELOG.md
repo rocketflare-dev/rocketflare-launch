@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A coding session no longer sits "Ending…" for ever after a dev-server reload.** An idle session
+  (ready, suspended or blocked) whose End, message, ship or resume never reached a running Workflow
+  — its wake went to an instance a `wrangler dev` reload had killed while it still reported
+  `running` — is now noticed 75 s after the request, on the next read of the session or by the
+  `*/5` cron: the dead instance is terminated and a fresh one carries out the request, without
+  failing the session. An owed ship is dropped on the way (the session resumes; ship again)
+  (`docs/CONCEPTS.md` §18).
 - **Write to a coding session while it works: queue the message, or send it now.** The composer
   stays open during a turn. Enter (or Queue) runs the message when the turn ends; Send now stops
   the turn and runs the message next, resuming the conversation, with one line telling Claude its

@@ -1556,7 +1556,16 @@ reload) is restarted as `<id>-rN` from the row.
   reconciles at once — a fresh heartbeat costs nothing (the live step reads the cancel within 2 s),
   a stale one terminates the dead instance and starts the salvaging one; the route runs nothing in
   the sandbox. The same path cleans up a session settled `failed` by hand whose branch was never
-  deleted. **A conversation that cannot come back is forgotten**: a cold resume whose
+  deleted. **An idle session that owes work** (`ready`/`suspended`/`blocked` with a request a wake
+  never delivered — End after a `wrangler dev` reload sent its wake to an instance "running" in
+  name only, and the page said "Ending…" for ever) is judged too: what `inspect` would act on from
+  the row — an end from any idle status, a ship or a pending message on `ready`, a resume on
+  `suspended` (not a message to a `blocked` session, nor a resume held by a drain) — still
+  unstarted 75 s (`SESSION_END_STALL_MS`) after the request, which moves `last_activity_at` to
+  now (End, Ship, Resume, a message). A `queued` instance is left alone; a live one is terminated;
+  the status is NOT changed and nothing fails — a fresh instance runs the owed work from the row
+  (`claim` salvages a `ready`/`blocked` container first, so an End still checkpoints). Reading the
+  session page (or the cron) is enough to unstick it. **A conversation that cannot come back is forgotten**: a cold resume whose
   `claude_session_id` has no transcript to restore (or one the container does not hold after the
   write) clears it with an `error` event ("The earlier conversation could not be restored; Claude
   starts fresh with the code as it is."), and a turn clears it too when the container says the
@@ -1578,7 +1587,9 @@ checkpointed, the container kept for a warm resume — which is proven with the 
 that a real kept container's dev server survives the reload, and that `claude` flushes its
 transcript on SIGTERM, need a real container. The salvaged turn itself is not continued: the person
 sends the message again. A container that answers but whose kill script fails is destroyed, so its
-unsaved edits are still lost then. A `shipping` session whose instance died mid-GATE is not
+unsaved edits are still lost then. An owed SHIP that the reconcile restarts is dropped: the salvage swaps
+`requested_action = 'ship'` for the `resume` it needs, so the session comes back `ready` and the
+person ships again. A `shipping` session whose instance died mid-GATE is not
 reconciled (no heartbeat is read for it) — a later wake's `claim` salvages it, and its gate branch
 (issue #1) is deleted by the session's cleanup or, after three hours, by `sessions.gate-sweep`. A
 LANDING whose instance died is found by `sessions.checks`' safety net (`nudgeLandingSessions`,
