@@ -8,10 +8,13 @@
  */
 
 import { EMBEDDABLE_MIME_TYPES, INLINE_MIME_TYPES } from '@launch/shared/files'
+import { previewFrameSource } from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import {
   CONTENT_SECURITY_POLICY,
   EMBEDDABLE_CONTENT_SECURITY_POLICY,
+  frameSrcDirective,
+  withFrameSrc,
 } from '@/api/middleware/security-headers'
 
 const directives = (policy: string) => policy.split('; ').map(d => d.trim())
@@ -28,6 +31,31 @@ describe('content security policies', () => {
     // Exactly one of each, so neither policy can be read two ways.
     expect(strict.filter(d => d.startsWith('frame-ancestors'))).toHaveLength(1)
     expect(embeddable.filter(d => d.startsWith('frame-ancestors'))).toHaveLength(1)
+  })
+})
+
+describe('frame-src: the session page frames its preview hosts, nothing else', () => {
+  it("names the preview template's hosts as a wildcard on the same scheme and port", () => {
+    expect(previewFrameSource('https://{label}.example.dev')).toBe('https://*.example.dev')
+    expect(previewFrameSource('http://{label}.localhost:3001')).toBe('http://*.localhost:3001')
+    expect(previewFrameSource('https://preview.example.dev/{label}')).toBeNull()
+  })
+  it('is self plus those hosts — never https: at large — and only self without a template', () => {
+    expect(frameSrcDirective('https://{label}.example.dev')).toBe(
+      "frame-src 'self' https://*.example.dev"
+    )
+    expect(frameSrcDirective(undefined)).toBe("frame-src 'self'")
+  })
+  it('is added to both policies without touching frame-ancestors', () => {
+    for (const base of [CONTENT_SECURITY_POLICY, EMBEDDABLE_CONTENT_SECURITY_POLICY]) {
+      const policy = directives(withFrameSrc(base, 'https://{label}.example.dev'))
+      expect(policy.filter(d => d.startsWith('frame-src'))).toEqual([
+        "frame-src 'self' https://*.example.dev",
+      ])
+      expect(policy.filter(d => d.startsWith('frame-ancestors'))).toEqual(
+        directives(base).filter(d => d.startsWith('frame-ancestors'))
+      )
+    }
   })
 })
 

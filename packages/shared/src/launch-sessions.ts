@@ -974,6 +974,16 @@ export function previewUrl(template: string, label: string): string {
   return template.replace('{label}', label).replace(/\/+$/, '')
 }
 
+/**
+ * The CSP source that lets Launch's page frame its session previews: every host of `template` —
+ * `https://{label}.clewro.com` → `https://*.clewro.com`, `http://{label}.localhost:3001` →
+ * `http://*.localhost:3001`. Null when the template has no leading `{label}` (nothing to frame).
+ */
+export function previewFrameSource(template: string): string | null {
+  const m = /^([a-z]+):\/\/\{label\}(\.[^/]+)/i.exec(template.trim())
+  return m ? `${(m[1] as string).toLowerCase()}://*${(m[2] as string).toLowerCase()}` : null
+}
+
 export interface PreviewHost {
   port: number
   shortId: string

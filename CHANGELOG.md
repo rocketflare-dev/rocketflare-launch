@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The session preview shows on a deployed Launch.** Launch's CSP had no `frame-src`, so the
+  browser refused to frame `<port>-<id>-<token>.<domain>` (the "sad page" in the preview pane);
+  local dev never saw it because Vite serves the UI without these headers. `frame-src` is now
+  `'self'` plus the hosts of `SESSION_PREVIEW_URL` (`https://*.<domain>`), nothing wider.
 - **App health checks work when Launch and its apps share a zone.** Launch's Worker now has
   `global_fetch_strictly_public`. Without it, a fetch to `<slug>.<domain>` from a Worker on the same
   zone went to the origin, not the app's Worker, so every probe failed while the app was up.

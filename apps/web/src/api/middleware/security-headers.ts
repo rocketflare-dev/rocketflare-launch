@@ -7,7 +7,12 @@
  * what lets the document viewer frame a PDF (D18). A 101
  * (WebSocket upgrade from the `NotificationsHub` DO, D8) is returned untouched: its headers are
  * immutable and re-wrapping a 101 `Response` drops the socket.
+ *
+ * `frame-src` is the one directive read from config: the session page frames its preview on
+ * `SESSION_PREVIEW_URL`'s hosts (another origin), which `default-src 'self'` would refuse — the
+ * browser's "sad page" in the preview pane. Only those hosts, never `https:` at large.
  */
+import { previewFrameSource } from '@launch/shared/launch-sessions'
 import { createMiddleware } from 'hono/factory'
 import type { AppEnv } from '../types'
 
@@ -25,6 +30,17 @@ const CSP_BASE = [
 
 /** The app shell and every JSON route: framable by nobody, including us. */
 export const CONTENT_SECURITY_POLICY = [...CSP_BASE, "frame-ancestors 'none'"].join('; ')
+
+/** `frame-src` for a deployment: ourselves, plus the session previews' hosts when it has them. */
+export function frameSrcDirective(previewTemplate: string | undefined): string {
+  const preview = previewTemplate ? previewFrameSource(previewTemplate) : null
+  return preview ? `frame-src 'self' ${preview}` : "frame-src 'self'"
+}
+
+/** A policy with the deployment's `frame-src` added (it never touches `frame-ancestors`). */
+export function withFrameSrc(policy: string, previewTemplate: string | undefined): string {
+  return `${policy}; ${frameSrcDirective(previewTemplate)}`
+}
 
 /**
  * The ONE relaxation, for a response a route has opted in with `c.set('embeddable', true)` — today
@@ -49,6 +65,9 @@ export const securityHeaders = createMiddleware<AppEnv>(async (c, next) => {
   c.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
   c.header(
     'Content-Security-Policy',
-    embeddable ? EMBEDDABLE_CONTENT_SECURITY_POLICY : CONTENT_SECURITY_POLICY
+    withFrameSrc(
+      embeddable ? EMBEDDABLE_CONTENT_SECURITY_POLICY : CONTENT_SECURITY_POLICY,
+      c.get('config')?.SESSION_PREVIEW_URL
+    )
   )
 })
