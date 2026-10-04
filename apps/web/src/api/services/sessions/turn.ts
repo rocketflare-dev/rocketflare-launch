@@ -43,8 +43,9 @@
  * 2. **Budget** (`budget.ts`): over → `blocked`, `budget.reached`, audit `session.budget.reached`;
  *    the message STAYS pending, so extending the budget (which un-blocks) runs it. `maxTurns`
  *    reached → `rejected`, an `error` event, and the message is dropped.
- * 3. A compare-and-set to `working` (turn_count + 1, pending_message cleared, cancel cleared), then
- *    `user.message` and `turn.start`.
+ * 3. A compare-and-set to `working` (turn_count + 1, pending_message cleared, cancel cleared — and
+ *    `pending_model`, when the message asked for one, moved onto `policy.model`), then
+ *    `user.message` and `turn.start` (naming the model the turn runs on).
  * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`: each
  *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
  *    `system.init`'s session id is stored at once (the next turn `--resume`s it). **A resume that
@@ -93,7 +94,7 @@ import {
   type SessionPolicy,
   sessionShipCiDataSchema,
 } from '@launch/shared/launch-sessions'
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { apps, type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
 import type { Logger } from '../../utils/core/logger'
@@ -488,7 +489,12 @@ export async function runTurn(
   if (current.credentialSource === 'user' && senderId !== current.createdByUserId) {
     const [dropped] = await db
       .update(sessions)
-      .set({ pendingMessage: null, pendingMessageUserId: null, updatedAt: new Date(now()) })
+      .set({
+        pendingMessage: null,
+        pendingMessageUserId: null,
+        pendingModel: null,
+        updatedAt: new Date(now()),
+      })
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, sessionId)))
       .returning({ id: sessions.id })
     if (dropped) {
@@ -506,7 +512,7 @@ export async function runTurn(
   if (current.turnCount >= policy.maxTurns) {
     const [dropped] = await db
       .update(sessions)
-      .set({ pendingMessage: null, updatedAt: new Date(now()) })
+      .set({ pendingMessage: null, pendingModel: null, updatedAt: new Date(now()) })
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, sessionId)))
       .returning({ id: sessions.id })
     if (dropped) {
@@ -529,6 +535,12 @@ export async function runTurn(
       turnCount: current.turnCount + 1,
       pendingMessage: null,
       pendingMessageUserId: null,
+      // The model the message asked for becomes the session's from this turn on — in the claim
+      // itself, read from the column, so the proxy's allow-list (it re-reads `policy`) and the
+      // command can never disagree about which model this turn runs.
+      policy: sql`case when ${sessions.pendingModel} is null then ${sessions.policy}
+        else jsonb_set(${sessions.policy}, '{model}', to_jsonb(${sessions.pendingModel})) end`,
+      pendingModel: null,
       cancelRequestedAt: null,
       lastActivityAt: new Date(now()),
       updatedAt: new Date(now()),
@@ -539,12 +551,13 @@ export async function runTurn(
         eq(sessions.id, sessionId),
         inArray(sessions.status, ['ready', 'blocked']),
         eq(sessions.turnCount, current.turnCount),
-        isNotNull(sessions.pendingMessage)
+        eq(sessions.pendingMessage, message)
       )
     )
     .returning()
   if (!claimed) return { status: 'skipped', sessionId }
   const turn = claimed.turnCount
+  const turnPolicy = resolveSessionPolicy(claimed.policy)
 
   writer.append(
     {
@@ -552,13 +565,20 @@ export async function runTurn(
       turn,
       data: { text: redactModelKeyText(message), userId: senderId },
     },
-    { type: 'turn.start', turn, data: { turn } }
+    { type: 'turn.start', turn, data: { turn, model: turnPolicy.model } }
   )
   await writer.flush()
   changed()
 
   // ---- 4–6. run, stream, watch, end -----------------------------------------------------------
-  const run = await executeTurn(db, ports, claimed, writer, { turn, message, policy }, opts)
+  const run = await executeTurn(
+    db,
+    ports,
+    claimed,
+    writer,
+    { turn, message, policy: turnPolicy },
+    opts
+  )
   const outcome: TurnOutcome =
     run.status === 'interrupted'
       ? {

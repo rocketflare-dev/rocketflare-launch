@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "pending_model" text;

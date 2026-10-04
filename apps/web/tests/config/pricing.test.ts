@@ -24,6 +24,20 @@ describe('priceFor', () => {
     expect(priceFor('openai', 'gpt-4.1')?.input).toBe(2)
   })
 
+  it('prices a 5.x minor version that costs differently apart from its family', () => {
+    // Opus 5.5 and Fable 5.1 have their own rates; a dated id still finds them.
+    expect(priceFor('anthropic', 'claude-opus-5-5-20260901')).toEqual({
+      input: 4,
+      output: 20,
+      cacheRead: 0.2,
+      cacheWrite: 5,
+    })
+    expect(priceFor('anthropic', 'claude-opus-5-20260501')?.input).toBe(5)
+    expect(priceFor('anthropic', 'claude-fable-5-1')?.cacheRead).toBe(0.25)
+    expect(priceFor('anthropic', 'claude-fable-5')?.cacheRead).toBe(1)
+    expect(priceFor('anthropic', 'claude-sonnet-5')).toMatchObject({ input: 2, output: 10 })
+  })
+
   it('knows nothing about a self-hosted or unlisted model', () => {
     expect(priceFor('openai_compatible', 'llama-on-my-laptop')).toBeNull()
     expect(priceFor('anthropic', 'claude-9-imaginary')).toBeNull()

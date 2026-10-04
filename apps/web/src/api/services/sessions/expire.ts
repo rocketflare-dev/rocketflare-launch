@@ -87,6 +87,7 @@ async function cleanUpInline(
       githubTokenSealed: null,
       requestedAction: null,
       pendingMessage: null,
+      pendingModel: null,
       containerKeptAt: null,
       workspaceBackup: null,
     })

@@ -363,7 +363,7 @@ describe('runTurn in the host mode', () => {
     expect(rows[0]).toMatchObject({
       feature: 'session',
       provider: 'anthropic',
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-5',
       inputTokens: 1000,
       outputTokens: 500,
     })

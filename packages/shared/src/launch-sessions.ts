@@ -183,7 +183,11 @@ export const sessionUserMessageDataSchema = z.object({
   text: z.string(),
   userId: z.string().uuid().nullable(),
 })
-export const sessionTurnStartDataSchema = z.object({ turn: z.number().int().positive() })
+export const sessionTurnStartDataSchema = z.object({
+  turn: z.number().int().positive(),
+  /** The model the turn runs on (the policy's, after any switch the message asked for). */
+  model: z.string().optional(),
+})
 export const sessionTurnEndDataSchema = z
   .object({
     turn: z.number().int().positive(),
@@ -602,7 +606,7 @@ export const sessionPolicySchema = z.object({
 export type SessionPolicy = z.infer<typeof sessionPolicySchema>
 
 export const DEFAULT_SESSION_POLICY: SessionPolicy = {
-  model: 'claude-sonnet-4-5',
+  model: 'claude-sonnet-5',
   maxSessionUsd: 10,
   appMonthlyUsd: 200,
   maxConcurrentPerApp: 3,
@@ -773,6 +777,11 @@ export const SESSION_MESSAGE_MAX = 20_000
 /** `POST /api/sessions/:id/turns`. */
 export const sessionTurnRequestSchema = z.object({
   message: z.string().trim().min(1).max(SESSION_MESSAGE_MAX),
+  /**
+   * Switch the session to this model from this turn on — one of `AGENT_RUNTIME_MODELS[runtime]`
+   * that is priced, else 400 `model_not_offered`. Absent: the session's current model.
+   */
+  model: z.string().trim().min(1).max(100).optional(),
 })
 export type SessionTurnRequest = z.infer<typeof sessionTurnRequestSchema>
 

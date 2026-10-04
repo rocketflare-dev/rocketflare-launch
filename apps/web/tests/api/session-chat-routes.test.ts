@@ -99,6 +99,46 @@ describe('POST /api/sessions/:id/turns', () => {
     }
   })
 
+  it('a model switch travels with the message as pending_model; one the runtime does not offer is 400 model_not_offered', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'ready' })
+    const env = await envWithInstance(row)
+    for (const model of ['claude-opus-4-1', 'gpt-6.1-sol', 'claude-sonnet-5-evil']) {
+      const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
+        message: 'x',
+        model,
+      })
+      expect(res.status, model).toBe(400)
+      expect(await json(res)).toMatchObject({ code: 'model_not_offered' })
+    }
+    expect(await reload(row)).toMatchObject({ pendingMessage: null, pendingModel: null })
+
+    const res = await post(`/api/sessions/${row.id}/turns`, f.cookie, env, {
+      message: 'Think harder',
+      model: 'claude-opus-5-5',
+    })
+    expect(res.status).toBe(202)
+    expect(await reload(row)).toMatchObject({
+      pendingMessage: 'Think harder',
+      pendingModel: 'claude-opus-5-5',
+      // Not switched yet: the turn's claim does that.
+      policy: expect.objectContaining({ model: 'claude-sonnet-5' }),
+    })
+
+    // Asking for the model the session already runs is no switch at all.
+    const same = await insertSession(db, f, { status: 'ready' })
+    const sameEnv = await envWithInstance(same)
+    expect(
+      (
+        await post(`/api/sessions/${same.id}/turns`, f.cookie, sameEnv, {
+          message: 'x',
+          model: 'claude-sonnet-5',
+        })
+      ).status
+    ).toBe(202)
+    expect((await reload(same)).pendingModel).toBeNull()
+  })
+
   it('a message to a suspended session also asks for a resume; a lost wake still stores it', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     const row = await insertSession(db, f, { status: 'suspended' })

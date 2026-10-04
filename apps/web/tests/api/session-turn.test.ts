@@ -130,7 +130,7 @@ describe('runTurn: a turn that finishes', () => {
     const sandbox = ports.sandboxes.get(row.id)
     const proc = sandbox?.processes[0]
     expect(proc?.command).toContain("claude -p 'Change the Home heading'")
-    expect(proc?.command).toContain('--model claude-sonnet-4-5')
+    expect(proc?.command).toContain('--model claude-sonnet-5')
     expect(proc?.command).not.toContain('--resume')
     // The session-system-note, filled in: where it is, and only targeted checks — never the gate.
     expect(proc?.command).toContain('--append-system-prompt')
@@ -158,7 +158,7 @@ describe('runTurn: a turn that finishes', () => {
         new Request('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'x-api-key': MODEL_KEY_PLACEHOLDER },
-          body: JSON.stringify({ model: 'claude-sonnet-4-5', stream: true }),
+          body: JSON.stringify({ model: 'claude-sonnet-5', stream: true }),
         }),
         env,
         { containerId: sandboxId },
@@ -187,6 +187,60 @@ describe('runTurn: a turn that finishes', () => {
     expect(ends.map(e => e.turn)).toEqual([1, 2])
     expect(ends[1]?.data).toMatchObject({ costMicrocents: cost })
     expect((await reload(row)).turnCount).toBe(2)
+  })
+
+  it('a message that switches the model: the claim moves it onto the policy, the command and turn.start name it, and the proxy refuses the old one', async () => {
+    const sandboxId = `fake-sandbox-${crypto.randomUUID()}`
+    const { row } = await readySession({ sandboxId, pendingModel: 'claude-opus-5-5' })
+    const ports = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson({ sessionId: 'claude-sess-m', text: 'Done.' }))
+    )
+    expect((await runTurn(db, ports, row, FAST)).status).toBe('completed')
+
+    const after = await reload(row)
+    expect(after.pendingModel).toBeNull()
+    expect(after.policy.model).toBe('claude-opus-5-5')
+    // The rest of the snapshot is untouched.
+    expect({ ...after.policy, model: row.policy.model }).toEqual(row.policy)
+    expect(ports.sandboxes.get(row.id)?.processes[0]?.command).toContain('--model claude-opus-5-5')
+    const start = (await eventsOf(row)).find(e => e.type === 'turn.start')
+    expect(start?.data).toEqual({ turn: 1, model: 'claude-opus-5-5' })
+
+    // The proxy re-reads the policy on every call: the new model passes, the old one is refused.
+    const anthropic = createFakeAnthropic()
+    const env = createTestEnv({ ANTHROPIC_API_KEY: 'sk-ant-api03-test-0000000000000000' })
+    const call = (model: string) =>
+      handleAnthropic(
+        new Request('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'x-api-key': MODEL_KEY_PLACEHOLDER },
+          body: JSON.stringify({ model, stream: true }),
+        }),
+        env,
+        { containerId: sandboxId },
+        anthropic
+      )
+    const old = await call(row.policy.model)
+    expect(old.status).toBe(403)
+    await old.text()
+    expect(anthropic.requests).toHaveLength(0)
+    const current = await call('claude-opus-5-5')
+    expect(current.status).toBe(200)
+    await current.text()
+    expect(anthropic.requests).toHaveLength(1)
+
+    // The next turn, asking for nothing, stays on the switched model.
+    await db
+      .update(sessions)
+      .set({ pendingMessage: 'And the subtitle' })
+      .where(eq(sessions.id, row.id))
+    await runTurn(db, ports, row, FAST)
+    expect(ports.sandboxes.get(row.id)?.processes[1]?.command).toContain('--model claude-opus-5-5')
+    const starts = (await eventsOf(row)).filter(e => e.type === 'turn.start')
+    expect(starts.map(e => e.data)).toEqual([
+      { turn: 1, model: 'claude-opus-5-5' },
+      { turn: 2, model: 'claude-opus-5-5' },
+    ])
   })
 
   it('writes a long burst in batches, in order', async () => {

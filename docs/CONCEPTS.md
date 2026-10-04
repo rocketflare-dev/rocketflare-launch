@@ -1862,7 +1862,7 @@ runs under bash in `background-command.test.ts` where `setsid` exists).
 
 A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `maxTurnMinutes`)
 checks the budget, claims `ready → working`, writes `user.message` (naming who sent it,
-`pending_message_user_id`) + `turn.start`, leases the session's credential (nothing on Launch's key,
+`pending_message_user_id`) + `turn.start` (naming the model it runs on), leases the session's credential (nothing on Launch's key,
 §18.22), and runs the session runtime's command — for Claude Code
 `claude -p … --resume <id> --output-format stream-json` — in the sandbox; `claude-stream.ts` maps
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
@@ -1901,6 +1901,17 @@ The page reads the rows (`GET /:id/events?afterSeq=`, paged by `nextSeq`) and us
 `launch.session.event` CUSTOM event, `SESSION_CUSTOM_EVENTS` in `@launch/shared/launch-sessions`)
 only as a cadence.
 
+**The model, per message**: the session's model is `policy.model`, frozen at create
+(`DEFAULT_SESSION_POLICY` is `claude-sonnet-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
+Sonnet 5, Opus 5.5, Fable 5.1, Haiku 4.5 — every one priced). `POST /:id/turns { model }` switches
+it from that message on: a model the runtime does not offer, or one without a price, is 400
+`model_not_offered`; a different one is stored as `pending_model` beside `pending_message`, and the
+turn's claim moves it onto `policy.model` IN the compare-and-set to `working` (`jsonb_set`, read
+from the column), so the command's `--model` and the proxy's allow-list — it re-reads the row on
+every call — switch together and the old model is refused from then on. Every write that drops
+the message drops `pending_model` with it. The composer's footer picker sends `model` only when
+it differs, and the transcript says "Switched to …" where a `turn.start` names a model other than
+the turn before's.
 **The model proxy** (`egress/anthropic.ts`): the sandbox holds only `launch-session-placeholder`.
 The handler finds the session from the platform's `ctx.containerId` (never from the request),
 allows only `POST /v1/messages` and `/count_tokens` on the policy's model, checks the budget (an

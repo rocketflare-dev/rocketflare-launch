@@ -186,6 +186,10 @@ export function SessionChat({
   const [sendError, setSendError] = useState<{ tone: 'info' | 'error'; message: string } | null>(
     null
   )
+  // The model the next message runs on: the session's, until the person picks another; a switch
+  // that took effect (the turn's claim moved `policy.model`) re-seeds it.
+  const [model, setModel] = useState(session.policy.model)
+  useEffect(() => setModel(session.policy.model), [session.policy.model])
   const composer = useRef<SessionComposerHandle>(null)
   const send = useSendTurn(session.id)
   const cancel = useCancelTurn(session.id)
@@ -207,23 +211,20 @@ export function SessionChat({
     setSendError(null)
     setPending({ text, afterSeq: lastSeq })
     setDraft('')
-    send.mutate(
-      { message: text },
-      {
-        onError: error => {
-          setPending(null)
-          setDraft(current => (current ? current : text))
-          const conflict = error instanceof ApiError && error.status === 409
-          setSendError({
-            tone: conflict && error.code === 'turn_in_progress' ? 'info' : 'error',
-            message:
-              conflict && error.code === 'turn_in_progress'
-                ? 'Claude is still working on the last message — send this one when it finishes.'
-                : error.message,
-          })
-        },
-      }
-    )
+    send.mutate(model === session.policy.model ? { message: text } : { message: text, model }, {
+      onError: error => {
+        setPending(null)
+        setDraft(current => (current ? current : text))
+        const conflict = error instanceof ApiError && error.status === 409
+        setSendError({
+          tone: conflict && error.code === 'turn_in_progress' ? 'info' : 'error',
+          message:
+            conflict && error.code === 'turn_in_progress'
+              ? 'Claude is still working on the last message — send this one when it finishes.'
+              : error.message,
+        })
+      },
+    })
     composer.current?.focus()
   }
 
@@ -317,6 +318,8 @@ export function SessionChat({
         }}
         onSend={onSend}
         onCancel={() => cancel.mutate()}
+        model={model}
+        onModelChange={setModel}
         sending={send.isPending}
         cancelling={cancel.isPending}
         error={sendError}

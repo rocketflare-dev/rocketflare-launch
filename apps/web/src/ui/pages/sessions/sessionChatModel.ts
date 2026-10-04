@@ -10,8 +10,9 @@
  * - consecutive tool calls fold into ONE `tools` item — a turn that reads nine files is one quiet
  *   block of one-liners between two bubbles, not nine rows shouting over the answer;
  * - the lifecycle rows a person needs to know about become `notice`s (a failed or cut-off turn,
- *   the budget, the ship gate, the PR); the ones they do not (`turn.start`, `step`, `status`,
- *   `preview.ready`) render nothing here — boot has its own panel and the preview its own pane;
+ *   the budget, the ship gate, the PR, a turn on a different model from the one before it); the
+ *   ones they do not (`turn.start`, `step`, `status`, `preview.ready`) render nothing here — boot
+ *   has its own panel and the preview its own pane;
  * - `turn.end` becomes a footnote (how long, what it cost).
  *
  * Plus the selectors the page needs from the same rows, so nothing re-derives them:
@@ -19,11 +20,13 @@
  * `shipGates` (the ship panel) and `landingTimeline` (issue #5: what follows the PR — CI, review,
  * merge, release, live on staging — folded from the `ship.*` rows and the session's `landing`).
  */
+
 import {
   type AgentStepEventData,
   agentErrorEventDataSchema,
   agentStepEventDataSchema,
 } from '@launch/shared/ai/agents'
+import { shortModelName } from '@launch/shared/ai/config'
 import {
   type SessionEvent,
   type SessionLanding,
@@ -52,6 +55,7 @@ import {
   sessionTurnEndDataSchema,
   sessionTurnFailedDataSchema,
   sessionTurnInterruptedDataSchema,
+  sessionTurnStartDataSchema,
   sessionUserMessageDataSchema,
 } from '@launch/shared/launch-sessions'
 import type { z } from 'zod'
@@ -192,6 +196,31 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
   }
 }
 
+/**
+ * A `turn.start` naming a model: the model, and a notice when an earlier turn ran on another one.
+ * Null when the row names none (rows written before the model was recorded).
+ */
+function modelSwitchItem(
+  event: SessionEvent,
+  previous: string | undefined
+): { model: string; item: ChatItem | null } | null {
+  const parsed = sessionTurnStartDataSchema.safeParse(event.data)
+  const model = parsed.success ? parsed.data.model : undefined
+  if (!model) return null
+  if (previous === undefined || previous === model) return { model, item: null }
+  return {
+    model,
+    item: {
+      kind: 'notice',
+      id: event.id,
+      seq: event.seq,
+      at: event.at,
+      tone: 'info',
+      text: `Switched to ${shortModelName(model)}`,
+    },
+  }
+}
+
 /** Rows → chat items, in `seq` order. Idempotent under duplicated rows (the timeline dedupes). */
 export function buildSessionChat(events: readonly SessionEvent[]): ChatItem[] {
   const unique = new Map<string, SessionEvent>()
@@ -208,8 +237,15 @@ export function buildSessionChat(events: readonly SessionEvent[]): ChatItem[] {
       units.push({ kind: 'tools', id: row.id, seq: row.seq, rows: [row] })
     }
   }
+  let model: string | undefined
   for (const event of ordered) {
     if (CHAT_TIMELINE_TYPES.has(event.type)) continue
+    if (event.type === 'turn.start') {
+      const switched = modelSwitchItem(event, model)
+      if (switched?.item) units.push(switched.item)
+      model = switched?.model ?? model
+      continue
+    }
     const item = lifecycleItem(event)
     if (item) units.push(item)
   }

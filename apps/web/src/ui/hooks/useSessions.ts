@@ -33,6 +33,7 @@ import {
   type SessionListQuery,
   type SessionStatus,
   type SessionSummary,
+  type SessionTurnRequest,
   type ShipLandingStage,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
@@ -200,10 +201,11 @@ function useSessionAction<TBody = void>(
 
 /**
  * `POST /:id/turns`. No toast: a 409 `turn_in_progress` (another tab sent one) or
- * `session_budget_exhausted` is rendered under the composer, and the text is kept.
+ * `session_budget_exhausted` is rendered under the composer, and the text is kept. `model` only
+ * when the person picked another one than the session's (the caller decides).
  */
 export function useSendTurn(id: string) {
-  return useSessionAction<{ message: string }>(id, 'turns', { toast: false })
+  return useSessionAction<SessionTurnRequest>(id, 'turns', { toast: false })
 }
 
 export function useShipSession(id: string) {

@@ -13,8 +13,14 @@
  * is information, not an error. While a ship lands (issue #5) the sentence names the stage — CI,
  * review, merging, on its way to staging, live; a reopened ship takes messages again (the ship
  * panel's "Ask Claude to fix it" posts through the same `POST /turns`).
+ *
+ * The footer's model picker chooses the model for the NEXT message — the runtime's offered list
+ * (`AGENT_RUNTIME_MODELS`), seeded from the session's current one. A different pick travels with
+ * the message (`model`) and becomes the session's model when that turn starts.
  */
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
+import { shortModelName } from '@launch/shared/ai/config'
+import { AGENT_RUNTIME_MODELS } from '@launch/shared/launch-agents'
 import { SESSION_MESSAGE_MAX, type Session } from '@launch/shared/launch-sessions'
 import { forwardRef, type KeyboardEvent, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 import { turnInProgress } from '@/ui/hooks/useSessions'
@@ -29,6 +35,9 @@ interface SessionComposerProps {
   onChange: (value: string) => void
   onSend: (text: string) => void
   onCancel: () => void
+  /** The model the next message runs on, and a new pick. */
+  model: string
+  onModelChange: (model: string) => void
   sending: boolean
   cancelling: boolean
   /** A refused send, rendered under the box. */
@@ -69,9 +78,31 @@ export function composerBlockedReason(
 
 const MAX_HEIGHT_PX = 240
 
+/**
+ * The models the picker offers: the runtime's list, with the session's current model first when
+ * the list no longer names it (a session started on an older model keeps it until switched). Pure.
+ */
+export function composerModelOptions(
+  session: Pick<Session, 'runtime' | 'policy'>
+): readonly string[] {
+  const offered = AGENT_RUNTIME_MODELS[session.runtime]
+  return offered.includes(session.policy.model) ? offered : [session.policy.model, ...offered]
+}
+
 export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposerProps>(
   function SessionComposer(
-    { session, value, onChange, onSend, onCancel, sending, cancelling, error },
+    {
+      session,
+      value,
+      onChange,
+      onSend,
+      onCancel,
+      model,
+      onModelChange,
+      sending,
+      cancelling,
+      error,
+    },
     ref
   ) {
     const textarea = useRef<HTMLTextAreaElement>(null)
@@ -115,6 +146,8 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     }
 
     const nearLimit = trimmed.length > SESSION_MESSAGE_MAX * 0.9
+    // One model is no choice: the picker shows only when there is something to pick.
+    const models = composerModelOptions(session)
     return (
       <form
         className="border-t border-[color:var(--border-subtle)] p-3"
@@ -188,11 +221,33 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
               </>
             )}
           </span>
-          {nearLimit && (
-            <span className={`tabular-nums ${tooLong ? 'text-error' : ''}`}>
-              {trimmed.length.toLocaleString()} / {SESSION_MESSAGE_MAX.toLocaleString()}
-            </span>
-          )}
+          <span className="flex items-center gap-2">
+            {nearLimit && (
+              <span className={`tabular-nums ${tooLong ? 'text-error' : ''}`}>
+                {trimmed.length.toLocaleString()} / {SESSION_MESSAGE_MAX.toLocaleString()}
+              </span>
+            )}
+            {models.length > 1 && (
+              <>
+                <label htmlFor="session-composer-model" className="sr-only">
+                  Model for the next message
+                </label>
+                <select
+                  id="session-composer-model"
+                  className="select select-xs select-ghost w-auto font-mono"
+                  value={model}
+                  onChange={event => onModelChange(event.target.value)}
+                  title="Model for the next message"
+                >
+                  {models.map(option => (
+                    <option key={option} value={option}>
+                      {shortModelName(option)}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </span>
         </div>
         {error && (
           <p

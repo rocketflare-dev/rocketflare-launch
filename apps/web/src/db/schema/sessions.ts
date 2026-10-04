@@ -194,6 +194,11 @@ export const sessions = pgTable(
     turnCount: integer('turn_count').notNull().default(0),
     /** The next user message, written by `POST /:id/turns`; the turn step turns it into `user.message`. */
     pendingMessage: text('pending_message'),
+    /**
+     * The model the waiting message asked for, when it differs from `policy.model`; the turn's
+     * claim moves it onto `policy.model` (the proxy's allow-list follows). Cleared with the message.
+     */
+    pendingModel: text('pending_model'),
     requestedAction: text('requested_action', { enum: SESSION_ACTIONS }),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
 

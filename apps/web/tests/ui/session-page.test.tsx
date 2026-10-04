@@ -11,6 +11,8 @@
  * - the composer: Enter sends (optimistically), Shift+Enter does not, a 409 is information and
  *   keeps the text, Stop cancels the running turn.
  */
+
+import { DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -776,6 +778,69 @@ describe('SessionPage', () => {
     expect(screen.getByText('Make the button blue')).toBeInTheDocument()
     expect(await screen.findByTestId('turn-working')).toHaveTextContent('Starting the turn…')
     expect(screen.getByRole('button', { name: 'Stop this turn' })).toBeInTheDocument()
+  })
+
+  it('picks the next message’s model in the footer, and sends it only when it differs', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf(),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true }),
+    })
+    const picker = await screen.findByLabelText('Model for the next message')
+    expect(picker).toHaveValue('claude-sonnet-5')
+    expect(
+      within(picker)
+        .getAllByRole('option')
+        .map(o => o.textContent)
+    ).toEqual(['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'])
+    fireEvent.change(picker, { target: { value: 'claude-opus-5-5' } })
+    const box = screen.getByLabelText('Message the coding agent')
+    fireEvent.change(box, { target: { value: 'Think it through' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({
+        message: 'Think it through',
+        model: 'claude-opus-5-5',
+      })
+    )
+  })
+
+  it('keeps an older model the session runs on, and hides the picker when there is no choice', async () => {
+    renderPage({
+      [BASE]: detailOf({ policy: { ...DEFAULT_SESSION_POLICY, model: 'claude-sonnet-4-5' } }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+    })
+    const picker = await screen.findByLabelText('Model for the next message')
+    expect(picker).toHaveValue('claude-sonnet-4-5')
+    expect(within(picker).getAllByRole('option')).toHaveLength(5)
+    cleanup()
+    renderPage({
+      [BASE]: detailOf({
+        runtime: 'codex',
+        policy: { ...DEFAULT_SESSION_POLICY, model: 'gpt-6.1-sol' },
+      }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+    })
+    await screen.findByLabelText('Message the coding agent')
+    expect(screen.queryByLabelText('Model for the next message')).not.toBeInTheDocument()
+  })
+
+  it('says when a turn ran on a different model from the one before it', async () => {
+    renderPage({
+      [BASE]: detailOf({ turnCount: 2 }),
+      [`${BASE}/events`]: eventsRoute([
+        sessionEvent(1, 'user.message', { text: 'First', userId: IDS.user }),
+        sessionEvent(2, 'turn.start', { turn: 1, model: 'claude-sonnet-5' }),
+        sessionEvent(3, 'turn.end', { turn: 1 }),
+        sessionEvent(4, 'user.message', { text: 'Second', userId: IDS.user }),
+        sessionEvent(5, 'turn.start', { turn: 2, model: 'claude-sonnet-5' }),
+        sessionEvent(6, 'turn.end', { turn: 2 }),
+        sessionEvent(7, 'user.message', { text: 'Third', userId: IDS.user }),
+        sessionEvent(8, 'turn.start', { turn: 3, model: 'claude-opus-5-5' }),
+      ]),
+    })
+    expect(await screen.findByText('Switched to claude-opus-5-5')).toBeInTheDocument()
+    expect(screen.getAllByText(/^Switched to/)).toHaveLength(1)
   })
 
   it('treats a 409 turn_in_progress as information and keeps the text', async () => {

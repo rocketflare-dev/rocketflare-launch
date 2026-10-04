@@ -8,6 +8,10 @@
  *   `blocked` session is `session_budget_exhausted`. A message to a `suspended` session also asks
  *   for a `resume`, so the Workflow boots again and then runs it; one sent while the session is
  *   still booting waits for `ready`.
+ * - A message may switch the model (`model`): one the session's runtime offers
+ *   (`AGENT_RUNTIME_MODELS`) and the pricing table can price, else 400 `model_not_offered`. A
+ *   different one is stored as `pending_model` beside the message; the turn's claim moves it onto
+ *   `policy.model`, the one model the proxy lets through.
  * - `requestCancel`: a `working` turn gets `cancel_requested_at` (the turn polls it and kills the
  *   process); a message still waiting is simply withdrawn. Nothing to cancel is 409
  *   `no_turn_in_progress`.
@@ -19,6 +23,11 @@
  *   (`assertCredentialOwner`, 409 `session_credential_owner_only`).
  */
 import {
+  AGENT_RUNTIME_LABELS,
+  AGENT_RUNTIME_MODELS,
+  isPricedRuntimeModel,
+} from '@launch/shared/launch-agents'
+import {
   resolveSessionPolicy,
   SESSION_WAKE_EVENT,
   type Session,
@@ -28,7 +37,12 @@ import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type SessionRow, sessions } from '../../../db/schema'
 import type { AppBindings } from '../../types'
-import { ConflictError, NotFoundError, ServiceUnavailableError } from '../../utils/core/errors'
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+} from '../../utils/core/errors'
 import { sessionSpend } from './budget'
 
 /** Any logger with `warn` — a route's (hono-pino) or a step's (pino). */
@@ -102,24 +116,53 @@ export function assertCredentialOwner(
   }
 }
 
+/**
+ * The model a message asked for, as `pending_model`: null when it asked for none or for the one
+ * the session already runs; 400 `model_not_offered` when the runtime does not offer it or it has
+ * no price (a session's budget is money, so an unpriced model could never be held to one).
+ */
+export function pendingModelFor(
+  row: Pick<SessionRow, 'runtime' | 'policy'>,
+  model: string | undefined
+): string | null {
+  if (model === undefined || model === resolveSessionPolicy(row.policy).model) return null
+  const runtime = row.runtime ?? 'claude_code'
+  if (!AGENT_RUNTIME_MODELS[runtime].includes(model) || !isPricedRuntimeModel(runtime, model)) {
+    throw new BadRequestError(
+      `${model} is not a model ${AGENT_RUNTIME_LABELS[runtime]} sessions offer`,
+      'model_not_offered'
+    )
+  }
+  return model
+}
+
+/** What `POST /:id/turns` asks for. */
+export interface TurnRequest {
+  message: string
+  /** Switch the session to this model from this turn on (see the header). */
+  model?: string
+}
+
 /** Store the next message (see the header) from `userId`. Returns the updated row. */
 export async function requestTurn(
   db: Database,
   row: SessionRow,
-  message: string,
+  request: TurnRequest,
   now: Date = new Date(),
   /** Who sent it (§18.22): recorded for the turn's `user.message`, and checked on a `user` session. */
   userId: string | null = null
 ): Promise<SessionRow> {
   if (userId !== null) assertCredentialOwner(row, userId)
+  const pendingModel = pendingModelFor(row, request.model)
   if (!(TURN_ACCEPTING_STATUSES as readonly SessionStatus[]).includes(row.status)) {
     throw turnConflict(row)
   }
   const [updated] = await db
     .update(sessions)
     .set({
-      pendingMessage: message,
+      pendingMessage: request.message,
       pendingMessageUserId: userId,
+      pendingModel,
       // A suspended session has no sandbox: ask for the resume that will run it.
       ...(row.status === 'suspended' && !row.requestedAction
         ? { requestedAction: 'resume' as const }
@@ -168,7 +211,7 @@ export async function requestCancel(
   if (running) return { row: running, cancelled: 'running' }
   const [withdrawn] = await db
     .update(sessions)
-    .set({ pendingMessage: null, updatedAt: now })
+    .set({ pendingMessage: null, pendingMessageUserId: null, pendingModel: null, updatedAt: now })
     .where(and(scope, isNotNull(sessions.pendingMessage)))
     .returning()
   if (withdrawn) return { row: withdrawn, cancelled: 'withdrawn' }

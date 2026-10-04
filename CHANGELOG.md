@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Coding sessions offer the current Claude models, and the model can change per message.**
+  Claude Code sessions now pick from Sonnet 5 (the new default), Opus 5.5, Fable 5.1 and Haiku 4.5,
+  all priced from Anthropic's published rates (the 4.x prices stay, so older usage rows and
+  sessions on an older model keep their cost). A picker in the composer's footer chooses the model
+  for the next message; the switch lands when that turn starts (`sessions.pending_model` →
+  `policy.model`, so the model proxy allows the new model and refuses the old one), the turn's
+  `turn.start` names it, and the transcript says "Switched to …". A model the runtime does not
+  offer is 400 `model_not_offered` (`docs/CONCEPTS.md` §18.11).
 - **`pnpm provision deploy` refuses while a coding session is mid-turn.** Any deploy replaces
   Launch's Worker and cuts the turn's stream to Claude Code (the session survives). Wait for the
   turns, or pass `--interrupt-turns`.

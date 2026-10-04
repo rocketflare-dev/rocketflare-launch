@@ -5,7 +5,9 @@
  * (`services/sessions/access.ts`): another person's session, or another tenant's, is a 404.
  *
  * - `POST /:id/turns` `sessionTurnRequestSchema` → 202 `sessionDetailResponseSchema`: stores
- *   `pending_message` and wakes the Workflow (`wakeOrRestart` — a lost instance is restarted); 409 `turn_in_progress` while
+ *   `pending_message` (and `pending_model` when `model` switches it — 400 `model_not_offered` for
+ *   one the runtime does not offer) and wakes the Workflow (`wakeOrRestart` — a lost instance is
+ *   restarted); 409 `turn_in_progress` while
  *   one is pending or `working`, 409 `session_budget_exhausted` when `blocked`, 409
  *   `session_not_active` once it is shipping or over; 409 `session_credential_owner_only` from
  *   anyone but the owner of a session on a personal account (§18.22); 503
@@ -88,9 +90,9 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, logger, user, row } = await visibleSession(c)
   const workflow = requireSessionWorkflow(c.env)
-  const { message } = c.req.valid('json')
+  const { message, model } = c.req.valid('json')
   // §18.22: the sender is recorded, and a personal-account session takes only its owner's turns.
-  const updated = await requestTurn(db, row, message, new Date(), user.id)
+  const updated = await requestTurn(db, row, { message, model }, new Date(), user.id)
   // A lost instance (a `wrangler dev` reload, retention) is restarted from the row.
   const woken = await wakeOrRestart(db, workflow, updated, logger)
   changed(c, tenantId, woken.id)

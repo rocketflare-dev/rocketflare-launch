@@ -1966,6 +1966,7 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
       githubTokenSealed: null,
       githubTokenExpiresAt: null,
       pendingMessage: null,
+      pendingModel: null,
       requestedAction: null,
       workspaceBackup: null,
       containerKeptAt: null,

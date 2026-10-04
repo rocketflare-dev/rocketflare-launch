@@ -105,7 +105,7 @@ describe('statuses', () => {
 describe('policy and money', () => {
   it('the defaults are the plan’s, and valid', () => {
     expect(sessionPolicySchema.parse(DEFAULT_SESSION_POLICY)).toEqual({
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-5',
       maxSessionUsd: 10,
       appMonthlyUsd: 200,
       maxConcurrentPerApp: 3,

@@ -18,7 +18,7 @@ import type { TokenUsage } from './chat'
 import type { AiProvider } from './config'
 
 /** When the rates below were last checked, ISO date. Update it when you edit a price. */
-export const PRICES_UPDATED = '2026-10-03'
+export const PRICES_UPDATED = '2026-10-04'
 
 /** USD per MILLION tokens. `cacheRead`/`cacheWrite` default to the input rate when absent. */
 export interface ModelPrice {
@@ -36,6 +36,15 @@ export interface ModelPrice {
  */
 export const MODEL_PRICES: Partial<Record<AiProvider, Record<string, ModelPrice>>> = {
   anthropic: {
+    // The 5.x family from platform.claude.com/docs/en/about-claude/pricing (`cacheWrite` is the
+    // 5-minute write). A minor version priced apart from its family gets its own, longer prefix:
+    // Opus 5.5's cache hit is 0.05x input and Fable 5.1's 0.025x.
+    'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+    'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+    'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+    'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    // Kept so older `ai_usage` rows and stored policies naming a 4.x model stay priced.
     'claude-opus-4': { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
     'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
     'claude-haiku-4': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
