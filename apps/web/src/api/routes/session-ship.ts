@@ -19,8 +19,9 @@
  *   `session_merging` — a merge is never stopped half-way.
  * - Issue #5: an eligible approver of a pending `session.merge` may use the two READ routes below
  *   (the preview grant, the PR), never ship or end (`access.ts`).
- * - `POST /:id/preview-grant` → `previewGrantResponseSchema`: a 60 s HMAC grant for the iframe
- *   (`services/sessions/preview.ts`, exchanged at the preview host by `api/preview/gateway.ts`).
+ * - `POST /:id/preview-grant {path?}` → `previewGrantResponseSchema`: a 60 s HMAC grant for the
+ *   iframe (`services/sessions/preview.ts`, exchanged at the preview host by
+ *   `api/preview/gateway.ts`); `path` (`safePreviewPath`, else a 400) is the page it lands on.
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
  * - `GET /:id/pr` → `sessionPrResponseSchema`, refreshing `pr_checks` from the repo host when older
  *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks.
@@ -31,9 +32,9 @@
  * `sessions_not_configured` before any row is written. The answer is `toSessionDetail` (`chat.ts`).
  */
 import {
+  type PreviewGrantRequest,
   type PreviewGrantResponse,
-  previewLabel,
-  previewUrl,
+  previewGrantRequestSchema,
   type SessionDetailResponse,
   type SessionPrResponse,
   TERMINAL_SESSION_STATUSES,
@@ -52,12 +53,12 @@ import {
 import { nudgeSession } from '../services/sessions/events'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { defaultSessionPorts } from '../services/sessions/ports'
-import { mintGrant, PREVIEW_GRANT_PATH, PREVIEW_UI_PORT } from '../services/sessions/preview'
+import { previewGrantUrl } from '../services/sessions/preview'
 import { reconcileSessionSafely, SESSION_END_STALL_MS } from '../services/sessions/reconcile'
 import { PR_CHECKS_MAX_AGE_MS, refreshChecks } from '../services/sessions/ship'
 import { landingOf } from '../services/sessions/steps'
 import type { AppContext } from '../types'
-import { ConflictError, ServiceUnavailableError } from '../utils/core/errors'
+import { ConflictError, ServiceUnavailableError, ValidationError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
 
@@ -213,7 +214,28 @@ sessionShipRouter.post('/:id/end', async c => {
   return c.json({ session: toSessionDetail(current, true) } satisfies SessionDetailResponse, 202)
 })
 
+/**
+ * The preview grant's optional body. Not `validate('json')`: that refuses an EMPTY body sent as
+ * `application/json` as malformed — which is what the UI's client sends for no body, and what
+ * every UI before `path` sent — so an empty body is `{}` here, and anything else must parse.
+ */
+async function previewGrantRequest(c: AppContext): Promise<PreviewGrantRequest> {
+  const text = await c.req.text()
+  let input: unknown = {}
+  if (text.trim()) {
+    try {
+      input = JSON.parse(text)
+    } catch {
+      throw new ValidationError([{ path: [], message: 'Malformed JSON' }], 'Invalid json')
+    }
+  }
+  const parsed = previewGrantRequestSchema.safeParse(input)
+  if (!parsed.success) throw new ValidationError(parsed.error.issues, 'Invalid json')
+  return parsed.data
+}
+
 sessionShipRouter.post('/:id/preview-grant', async c => {
+  const { path } = await previewGrantRequest(c)
   const { cfg, user, row } = await visible(c, 'read')
   if (!cfg.SESSION_PREVIEW_URL) {
     throw new ServiceUnavailableError(
@@ -224,16 +246,7 @@ sessionShipRouter.post('/:id/preview-grant', async c => {
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(row.status)) {
     throw new ConflictError('This session has ended', 'session_ended')
   }
-  const origin = previewUrl(
-    cfg.SESSION_PREVIEW_URL,
-    previewLabel(PREVIEW_UI_PORT, row.shortId, row.previewToken)
-  )
-  const { token, expiresAt } = await mintGrant(cfg, {
-    sessionId: row.id,
-    userId: user.id,
-    host: new URL(origin).host,
-  })
-  const url = `${origin}${PREVIEW_GRANT_PATH}?g=${encodeURIComponent(token)}`
+  const { url, expiresAt } = await previewGrantUrl(cfg, row, user.id, { path })
   return c.json({ url, expiresAt } satisfies PreviewGrantResponse)
 })
 

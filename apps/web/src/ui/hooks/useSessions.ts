@@ -28,6 +28,7 @@ import {
   extendBudgetResponseSchema,
   isActiveSessionStatus,
   MOVING_LANDING_STAGES,
+  type PreviewGrantRequest,
   previewGrantResponseSchema,
   type Session,
   type SessionListQuery,
@@ -275,15 +276,20 @@ export function useCancelTurn(id: string) {
 
 /**
  * `POST /:id/preview-grant` — a 60-second grant the iframe (or a new tab) loads once. A mutation,
- * not a query: every load needs a fresh one, and nothing about it belongs in the cache.
+ * not a query: every load needs a fresh one, and nothing about it belongs in the cache. `path`
+ * (the page the frame was on, as the preview bridge reported it) is where the grant lands.
  */
 export function usePreviewGrant(id: string) {
   return useMutation({
-    mutationFn: () =>
-      api.post(`${sessionPath(id)}/preview-grant`, undefined, {
-        schema: previewGrantResponseSchema,
-        showErrorToast: false,
-      }),
+    mutationFn: (path?: string | null) =>
+      api.post(
+        `${sessionPath(id)}/preview-grant`,
+        (path ? { path } : {}) satisfies PreviewGrantRequest,
+        {
+          schema: previewGrantResponseSchema,
+          showErrorToast: false,
+        }
+      ),
   })
 }
 

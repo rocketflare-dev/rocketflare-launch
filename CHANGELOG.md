@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A session's preview remembers which page you are on.** Launch injects a small script into the
+  preview's HTML pages that reports the page's path to the session screen (and only to it). The
+  address bar shows it, and Reload, a dev-server restart and "Open in new tab" all land on that page
+  instead of the app's home page. An app whose Content-Security-Policy does not allow its own
+  origin's scripts (`'self'`) blocks the script and falls back to the old behaviour
+  (`docs/CONCEPTS.md` §18.12).
+
 - **`pnpm provision deploy` refuses while a coding session is mid-turn.** Any deploy replaces
   Launch's Worker and cuts the turn's stream to Claude Code (the session survives). Wait for the
   turns, or pass `--interrupt-turns`.

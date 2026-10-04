@@ -15,6 +15,15 @@
  * (`latestPreviewChangeSeq`), moving past the one it was loaded at, when its HMR socket points at a
  * server that is gone — with a brief "Updated" mark. The Reload button forces a fresh load.
  *
+ * **The frame's page comes from the preview bridge.** The frame is another origin, so its location
+ * cannot be read; the gateway injects `/__launch/bridge.js` into every HTML page, which posts
+ * `{ type: 'launch.preview.location', path }` here on load and on every history change. A message
+ * counts only when it comes from THIS iframe's window and the preview's origin (the current
+ * `src`'s), and its path passes `safePreviewPath`. The path shows in the address pill, goes to
+ * `onPathChange`, and every later grant — a reload, `changeSeq`'s or the button's, and "Open in new
+ * tab" — lands on it (`to=`) instead of `/`. An app whose CSP blocks the script reports nothing:
+ * the pill shows the host alone and a reload goes to `/`.
+ *
  * With no sandbox there is nothing to frame, and the pane says why in one line with the one thing
  * to do: booting shows `BootProgress`, asleep offers Resume, shipped points at the PR.
  */
@@ -27,7 +36,11 @@ import {
   MoonIcon,
   NoSymbolIcon,
 } from '@heroicons/react/24/outline'
-import type { Session } from '@launch/shared/launch-sessions'
+import {
+  previewLocationMessageSchema,
+  type Session,
+  safePreviewPath,
+} from '@launch/shared/launch-sessions'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { EmptyState } from '@/ui/components/shared'
@@ -37,6 +50,16 @@ import { BootProgress } from './BootProgress'
 
 /** How long the "Updated" mark stays after an automatic reload. */
 const UPDATED_MARK_MS = 2500
+
+/** The preview's origin, which the bridge's messages must come from. Pure. */
+export function previewOriginOf(url: string | null): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}
 
 /** The preview's host, for the address pill. Pure. */
 export function previewHostOf(url: string | null): string | null {
@@ -108,6 +131,7 @@ export function PreviewFrame({
   onResume,
   resuming,
   appSlug,
+  onPathChange,
 }: {
   session: Session
   /** Where a failed session sends the person to start a new one. */
@@ -118,6 +142,8 @@ export function PreviewFrame({
   canManage: boolean
   onResume: () => void
   resuming: boolean
+  /** The page the frame is on (as the bridge reports it), or null before it has said. */
+  onPathChange?: (path: string | null) => void
 }) {
   const grant = usePreviewGrant(session.id)
   const tabGrant = usePreviewGrant(session.id)
@@ -125,6 +151,11 @@ export function PreviewFrame({
   const [nonce, setNonce] = useState(0)
   const [frameLoaded, setFrameLoaded] = useState(false)
   const [updated, setUpdated] = useState(false)
+  const [path, setPath] = useState<string | null>(null)
+  const pathRef = useRef<string | null>(null)
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const onPathChangeRef = useRef(onPathChange)
+  onPathChangeRef.current = onPathChange
   const loadedSeq = useRef<number | null>(null)
   const alive = sessionHasSandbox(session.status)
   const mint = grant.mutate
@@ -132,7 +163,8 @@ export function PreviewFrame({
   const load = useCallback(
     (reason: 'initial' | 'change' | 'manual', seq: number) => {
       loadedSeq.current = seq
-      mint(undefined, {
+      // A reload keeps the person's page (none yet on the first load, or after a resume).
+      mint(pathRef.current, {
         onSuccess: next => {
           setSrc(next.url)
           setNonce(n => n + 1)
@@ -155,8 +187,31 @@ export function PreviewFrame({
     if (!alive) {
       loadedSeq.current = null
       setSrc(null)
+      pathRef.current = null
+      setPath(null)
     }
   }, [alive])
+
+  // The bridge's reports: only from this frame's window, only from the preview's origin.
+  const previewOrigin = previewOriginOf(src)
+  useEffect(() => {
+    if (!previewOrigin) return
+    const onMessage = (event: MessageEvent) => {
+      const frame = frameRef.current
+      if (!frame || event.source !== frame.contentWindow || event.origin !== previewOrigin) return
+      const parsed = previewLocationMessageSchema.safeParse(event.data)
+      const next = parsed.success ? safePreviewPath(parsed.data.path) : null
+      if (!next) return
+      pathRef.current = next
+      setPath(next)
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [previewOrigin])
+
+  useEffect(() => {
+    onPathChangeRef.current?.(path)
+  }, [path])
 
   useEffect(() => {
     if (!updated) return
@@ -166,7 +221,7 @@ export function PreviewFrame({
 
   const openInTab = () => {
     const tab = window.open('', '_blank')
-    tabGrant.mutate(undefined, {
+    tabGrant.mutate(pathRef.current, {
       onSuccess: next => {
         if (!tab) return
         tab.opener = null
@@ -177,12 +232,17 @@ export function PreviewFrame({
   }
 
   const host = previewHostOf(src)
+  const address = host && path ? `${host}${path}` : host
   const toolbar = (
     <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] px-3 py-2">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md surface-inset px-2.5 py-1 text-xs text-secondary">
         <GlobeAltIcon className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate font-mono" title={host ?? undefined}>
-          {host ?? 'Preview'}
+        <span
+          className="truncate font-mono"
+          title={address ?? undefined}
+          data-testid="preview-address"
+        >
+          {address ?? 'Preview'}
         </span>
         {updated && (
           <span
@@ -320,6 +380,7 @@ export function PreviewFrame({
         <div className="relative min-h-0 flex-1">
           {src ? (
             <iframe
+              ref={frameRef}
               key={nonce}
               src={src}
               title="App preview"

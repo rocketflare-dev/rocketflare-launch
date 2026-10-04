@@ -14,7 +14,8 @@
  *   `/api/admin/sessions`;
  * - `SESSION_WAKE_EVENT`, golden-tested against Cloudflare's event-type rule;
  * - `SESSION_CUSTOM_EVENTS` — the `launch.session.event` AG-UI `CUSTOM` event of the read stream;
- * - the preview host grammar: `previewLabel()` / `parsePreviewHost()` / `previewUrl()`.
+ * - the preview host grammar: `previewLabel()` / `parsePreviewHost()` / `previewUrl()`, and the
+ *   preview's page paths (`safePreviewPath()`, the bridge's `previewLocationMessageSchema`).
  *
  * Money is microcents throughout (`@launch/shared/ai/pricing`: 100 000 000 per USD), as on
  * `ai_usage`; `usdToMicrocents` / `microcentsToUsd` convert at the edges. No credential, sealed
@@ -890,6 +891,62 @@ export type SessionEventsResponse = z.infer<typeof sessionEventsResponseSchema>
 
 /** `POST /api/sessions/:id/cancel`. */
 export const sessionCancelResponseSchema = z.object({ cancelRequested: z.literal(true) })
+
+/** The longest page path a preview grant carries (`to=`) or the bridge reports. */
+export const PREVIEW_PATH_MAX = 2048
+
+const PREVIEW_PATH_BASE = 'https://preview.invalid'
+
+/**
+ * A page on the preview to land on, normalised — or null when `value` could leave the preview's
+ * origin or is not a page: it must start with exactly one `/` and hold no backslash, no control
+ * character and nothing that parses to another origin; Launch's own `/__launch/…` paths are refused
+ * too. The route's contract and the gateway's `to=` both use it; the gateway falls back to `/`.
+ */
+export function safePreviewPath(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > PREVIEW_PATH_MAX) {
+    return null
+  }
+  if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if (code < 0x20 || code === 0x7f) return null
+  }
+  let url: URL
+  try {
+    url = new URL(value, PREVIEW_PATH_BASE)
+  } catch {
+    return null
+  }
+  if (url.origin !== PREVIEW_PATH_BASE) return null
+  const path = `${url.pathname}${url.search}${url.hash}`
+  if (path === '/__launch' || path.startsWith('/__launch/')) return null
+  return path
+}
+
+/**
+ * `POST /api/sessions/:id/preview-grant` — `path`, when given, is where the frame lands after the
+ * exchange (the page the person was on, so a reload keeps it). No body is the same as `{}`.
+ */
+export const previewGrantRequestSchema = z.object({
+  path: z
+    .string()
+    .max(PREVIEW_PATH_MAX)
+    .refine(v => safePreviewPath(v) !== null, 'Must be a page path on the preview, like /orders')
+    .optional(),
+})
+export type PreviewGrantRequest = z.infer<typeof previewGrantRequestSchema>
+
+/**
+ * What the preview bridge (`/__launch/bridge.js`, injected into every HTML page the gateway serves)
+ * posts to Launch's window on load and on every history change.
+ */
+export const PREVIEW_LOCATION_MESSAGE = 'launch.preview.location'
+export const previewLocationMessageSchema = z.object({
+  type: z.literal(PREVIEW_LOCATION_MESSAGE),
+  path: z.string().max(PREVIEW_PATH_MAX),
+})
+export type PreviewLocationMessage = z.infer<typeof previewLocationMessageSchema>
 
 /** `POST /api/sessions/:id/preview-grant` — load `url` in the iframe within `expiresAt`. */
 export const previewGrantResponseSchema = z.object({

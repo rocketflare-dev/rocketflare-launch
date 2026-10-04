@@ -1966,6 +1966,21 @@ session per isolate and only on a stamp older than a minute in the database, so 
 hundred module requests cost one write. Never for `working`: there the stamp is the turn's
 heartbeat, which the reconcile reads, and a preview must not hide a dead turn.
 
+**The preview bridge** (`api/preview/bridge.ts`) tells Launch which page the cross-origin frame is
+on. The gateway serves `/__launch/bridge.js` — like the grant, after the host lookup and before the
+cookie check: it holds only `APP_URL`'s origin and never reaches the sandbox — and injects
+`<script src="/__launch/bridge.js">` with HTMLRewriter first in the `<head>` (else `<body>`, else at
+the end) of every 200 `text/html` answer to a GET that is not `Content-Encoding`-ed, dropping its
+`Content-Length`; modules, assets, event streams and the HMR upgrade pass untouched. The script
+`postMessage`s `{ type: 'launch.preview.location', path }` (pathname + search + hash) to `APP_URL`'s
+origin — never `'*'` — on load, after `pushState` / `replaceState`, and on `popstate` /
+`hashchange`. `PreviewFrame` takes it only from its own iframe's window and the preview's origin,
+shows it in the address pill, hands it to `onPathChange`, and mints every reload's grant with it:
+`POST /:id/preview-grant {path?}` adds `to=<path>`, and the exchange 302s there instead of `/`.
+`to=` must be a page on the preview (`safePreviewPath`: one leading `/`, no `//`, no backslash or
+control character, nothing parsing to another origin, not `/__launch/…`); the route answers a bad
+one with a 400, the gateway with `/`.
+
 **Unclaimed hosts.** The `*.<domain>/*` route brings EVERY host under the preview zone to this
 Worker, not only previews (an app's custom domain wins, so its slug never arrives). After the
 preview check `worker.ts` asks `unclaimedHostOf` (`api/preview/unclaimed-host.ts`): a host under
@@ -1985,6 +2000,11 @@ with no custom domain is captured by it (`pnpm provision check`'s zone audit lis
 reusable within its 60 s (not single-use); Vite HMR over the WebSocket
 upgrade is untested, locally and deployed; an ended session is served for up to 15 s from the
 status cache; `SameSite=None` cookies inside the iframe are unproven on real browsers and hosts.
+The bridge is blocked by an app CSP whose `script-src` (or `script-src-elem`, or a `default-src`
+standing in for them) leaves out `'self'`, or that uses `'strict-dynamic'` (which ignores
+`'self'`) — the page works, the pill shows only the host and a reload lands on `/`; a compressed
+HTML answer is not injected either (Vite's dev server does not compress). The injection is
+proven against a fake `HTMLRewriter` in the suite, not yet through a real sandbox's Vite.
 A preview left open with nothing requesting (Vite's HMR socket idles silently) is idle; a
 running preview app that polls its API keeps its session live until `maxSessionHours`.
 

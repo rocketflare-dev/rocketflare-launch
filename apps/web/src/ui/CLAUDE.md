@@ -71,7 +71,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession`, `useSendTurn`,
   `useCancelTurn`, `useShipSession`, `useEndSession`, `useResumeSession`, `useExtendBudget` write
   the returned row into the cache; `usePreviewGrant` is a mutation — every iframe load mints a fresh
-  grant; `useSessionPr`, `useDrainSessions`/`useUndrainSessions`) and `useSessionStream(session)`:
+  grant, with the page the preview bridge last reported as `path`; `useSessionPr`, `useDrainSessions`/`useUndrainSessions`) and `useSessionStream(session)`:
   the ONLY writer of `['session-agui', id]`, holding the DURABLE `session_events` rows
   (`GET /events?afterSeq=`), topped up (merged, coalesced) when the read-stream
   (`lib/sessionAguiStream.ts`, a permissive cadence-only parser — it reads nothing but `id:`)
