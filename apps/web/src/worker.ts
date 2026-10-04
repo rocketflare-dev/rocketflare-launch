@@ -11,7 +11,9 @@
  * `fetch` looks at the HOST first (Launch P3, plan §1.6): a session preview host
  * (`<port>-<shortId>-<token>.<preview domain>`, `SESSION_PREVIEW_URL`) goes to the preview gateway
  * and never reaches the Hono app, so none of its middleware — `X-Frame-Options: DENY` above all —
- * touches a page Launch frames. Everything else is `app.fetch`, as before.
+ * touches a page Launch frames. Any other host under the preview domain that is not `APP_URL`'s is
+ * an unclaimed subdomain and gets the holding page (`api/preview/unclaimed-host.ts`, never in
+ * development). Everything else is `app.fetch`, as before.
  *
  * The third export line is the plugin seam (D31): Cloudflare resolves a binding's `class_name`
  * against the named exports of THIS module and nowhere else, so a plugin that ships a DO or a
@@ -22,6 +24,7 @@
  */
 import { app } from './api/index'
 import { handlePreview, previewHostOf } from './api/preview/gateway'
+import { handleUnclaimedHost, unclaimedHostOf } from './api/preview/unclaimed-host'
 import { queue } from './api/queue'
 import { scheduled } from './api/scheduled'
 import type { AppBindings } from './api/types'
@@ -40,6 +43,8 @@ export default {
   fetch(request, env, ctx) {
     const preview = previewHostOf(request, env)
     if (preview) return handlePreview(request, env, ctx, preview)
+    const unclaimed = unclaimedHostOf(request, env)
+    if (unclaimed) return handleUnclaimedHost(request, unclaimed)
     return app.fetch(request, env, ctx)
   },
   queue,

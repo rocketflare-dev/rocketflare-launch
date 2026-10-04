@@ -227,7 +227,14 @@ needs, beyond the bindings above:
   elsewhere) and `SESSION_PREVIEW_URL = "https://{label}.<domain>"`: `{label}` becomes
   `<port>-<shortId>-<token>`. The preview hosts need a Worker route `*.<domain>/*` to THIS Worker
   and a proxied wildcard DNS record (a more specific app route or custom domain still wins); a
-  wildcard is only allowed at the start of a route host (S7). **For an instance both are
+  wildcard is only allowed at the start of a route host (S7). Every OTHER host the route brings
+  in — not a preview, not `APP_URL`'s, not an app's custom domain (`bob.<domain>`, an archived
+  app's slug) — gets a holding page, never the Launch app: a `noindex` 404, never cached
+  (`Cache-Control` and `CDN-Cache-Control: no-store`, so an app or preview deployed there answers
+  at once): a rocket scene for a browser ("Nothing has launched here yet", a link to `APP_URL`),
+  plain text otherwise
+  (`api/preview/unclaimed-host.ts`, decided from config, no database; never in development).
+  **For an instance both are
   provisioned**: `pnpm provision route` creates the proxied `AAAA * → 100::` record when the zone
   has no `*` record, and `render` writes `SESSION_PREVIEW_URL = "https://{label}.<LAUNCH_DOMAIN>"`
   and the route `*.<LAUNCH_DOMAIN>/*` (zone route) beside `LAUNCH_HOST`'s custom domain, which

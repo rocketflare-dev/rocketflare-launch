@@ -65,7 +65,9 @@ cached.
 **Look at your zone first.** Launch serves a Worker route `*.<domain>/*`, so every subdomain that
 has no more specific route reaches Launch. A proxied host that you serve some other way (an
 origin server, Pages, a tunnel) would be captured. Hosts on a **Worker custom domain** are safe,
-because a custom domain wins over a route. `pnpm provision check` audits the zone and lists every
+because a custom domain wins over a route. A subdomain nothing serves (`bob.<domain>`, an archived
+app's slug) gets Launch's holding page, a 404 that says nothing has launched there and links to
+Launch, never Launch itself. `pnpm provision check` audits the zone and lists every
 proxied host that would be captured. Move each to a Worker custom domain, or accept it, before
 you deploy. In the example, `rocketflare.dev` and `www.rocketflare.dev` are custom domains of the
 `rocketflare-www` Worker, so the audit is clean. **The instance also needs `LAUNCH_HOST` free:** a

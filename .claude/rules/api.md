@@ -11,7 +11,9 @@ paths:
 Hono app assembled in `apps/web/src/api/index.ts` (exports `app` only). `apps/web/src/worker.ts` is the Worker entry:
 `export default { fetch, queue, scheduled }` plus the DO/Workflow class exports. Its `fetch` checks the
 HOST first (Launch P3): a session preview host (`previewHostOf`, `SESSION_PREVIEW_URL`) goes to
-`api/preview/gateway.ts` and never reaches the Hono app or its middleware. Keeping the classes
+`api/preview/gateway.ts` and never reaches the Hono app or its middleware; any other host under the
+preview zone that is not `APP_URL`'s (`unclaimedHostOf`, never in development) gets the uncached
+404 holding page of `api/preview/unclaimed-host.ts` instead of the app. Keeping the classes
 out of `api/index.ts` is what lets tests drive `app.request(req, env, ctx)` under Node.
 
 ## Middleware order (do not reorder casually — 04 §10)

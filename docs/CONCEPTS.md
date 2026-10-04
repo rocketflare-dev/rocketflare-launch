@@ -1966,7 +1966,23 @@ session per isolate and only on a stamp older than a minute in the database, so 
 hundred module requests cost one write. Never for `working`: there the stamp is the turn's
 heartbeat, which the reconcile reads, and a preview must not hide a dead turn.
 
-**Known gaps:** a grant is reusable within its 60 s (not single-use); Vite HMR over the WebSocket
+**Unclaimed hosts.** The `*.<domain>/*` route brings EVERY host under the preview zone to this
+Worker, not only previews (an app's custom domain wins, so its slug never arrives). After the
+preview check `worker.ts` asks `unclaimedHostOf` (`api/preview/unclaimed-host.ts`): a host under
+the zone — the suffix after `{label}.` in `SESSION_PREVIEW_URL`, any depth — that is not
+`APP_URL`'s gets a 404 instead of the Launch app. A browser (`GET`/`HEAD` accepting `text/html`)
+sees the launching page's scene (`scenePage`, shared with `placeholder-page.ts`) saying nothing
+has launched there, the escaped host and a link to `APP_URL`; no script at all (CSP
+`default-src 'none'; style-src 'unsafe-inline'`), no polling. Anything else gets
+`Nothing is launched at this address.` Both are never cached — `Cache-Control: no-store` and
+`CDN-Cache-Control: no-store`, so an app or preview deployed at that host answers at once — and
+`X-Robots-Tag: noindex`. Config only, no database; never in
+`development`; workers.dev, the zone apex and any other host still reach the app.
+
+**Known gaps:** the holding page cannot tell an archived app's slug from one never used, and says
+the same for both; a host the zone serves some other way (an origin, Pages) behind a proxied record
+with no custom domain is captured by it (`pnpm provision check`'s zone audit lists them); a grant is
+reusable within its 60 s (not single-use); Vite HMR over the WebSocket
 upgrade is untested, locally and deployed; an ended session is served for up to 15 s from the
 status cache; `SameSite=None` cookies inside the iframe are unproven on real browsers and hosts.
 A preview left open with nothing requesting (Vite's HMR socket idles silently) is idle; a

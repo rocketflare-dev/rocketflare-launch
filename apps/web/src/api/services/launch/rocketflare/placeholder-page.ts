@@ -10,6 +10,9 @@
  * Self-contained by design — inline CSS, SVG and script, no fonts, assets or third parties — and
  * the response's CSP says so. The display name is user input: it is HTML-escaped here and only
  * ever lands in text nodes; the script never reads it.
+ *
+ * The scene itself — sky, pad, rocket, card — is `scenePage`, which Launch's own Worker also
+ * serves as the holding page of a subdomain nothing is launched at (`api/preview/unclaimed-host.ts`).
  */
 
 const HTML_ESCAPES: Record<string, string> = {
@@ -31,7 +34,11 @@ export const LAUNCHING_PAGE_CSP =
 const CLOUDS =
   '<svg viewBox="0 0 1600 200" preserveAspectRatio="none"><use href="#c"/></svg>'.repeat(2)
 
-const CSS = `
+/**
+ * The scene both pages share: the sky, the clouds, the pad with its tower and sign, the idling
+ * rocket and the card the words sit on — light and dark, still under `prefers-reduced-motion`.
+ */
+const SCENE_CSS = `
 :root{--bg:#fffaf5;--ink:#211633;--muted:#6b5f7a;--primary:#c2410c;--violet:#7c3aed;--sky-top:#fbd9c2;--sky-mid:#fff0e3;--sky-bottom:#fffaf5;--sun:#ffb26b;--cloud:#fff;--star:transparent;--ground:#e9dccd;--steel:#8b7f99;--hull:#f5f0ff;--hull-shade:#d9ccfa;--glass:#bfe6ff;--flame-a:#ffd166;--flame-b:#ff7a45;--card:rgba(255,250,245,.84);--shadow:rgba(33,22,51,.16)}
 @media(prefers-color-scheme:dark){:root{--bg:#140f1f;--ink:#f6efff;--muted:#b9abcf;--primary:#ff7a45;--violet:#a78bfa;--sky-top:#07050d;--sky-mid:#1a1229;--sky-bottom:#2b1d40;--sun:#efe9ff;--cloud:#3b2c55;--star:#fff;--ground:#221833;--steel:#6f6385;--hull:#e9e1fb;--hull-shade:#b8a5ef;--glass:#7cc6f2;--card:rgba(20,15,31,.8);--shadow:rgba(0,0,0,.45)}}
 *{box-sizing:border-box}
@@ -51,19 +58,39 @@ body{min-height:100vh;background:var(--bg);color:var(--ink);font:16px/1.55 syste
 .arm{position:absolute;left:36px;bottom:205px;width:68px;height:7px;background:var(--steel);transform-origin:0 50%;transition:transform .6s ease-in}
 .sign{position:absolute;left:-14px;bottom:296px;max-width:240px;padding:.2rem .6rem;border-radius:.4rem;background:var(--primary);color:#fff;font-weight:700;font-size:.9rem;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 6px 16px var(--shadow)}
 .deck{position:absolute;left:24px;right:-12px;bottom:0;height:12px;border-radius:4px 4px 0 0;background:var(--steel);z-index:3}
-.launcher{position:absolute;left:80px;bottom:-66px;width:126px;cursor:pointer;z-index:2}
+.launcher{position:absolute;left:80px;bottom:-66px;width:126px;z-index:2}
 .launcher svg{display:block;width:126px;height:auto;filter:drop-shadow(0 14px 18px var(--shadow))}
 .wobble{transform-origin:50% 75%;animation:wobble 2.6s ease-in-out infinite}
-.hop.up{animation:hop .55s cubic-bezier(.3,1.6,.5,1)}
 .fl{transform-box:fill-box;transform-origin:50% 0;transform:scale(.38);transition:transform .5s}
 .flame{transform-box:fill-box;transform-origin:50% 0;animation:flicker .4s steps(2,jump-none) infinite alternate}
-.launcher:hover .flame{animation-duration:.12s}
-.launcher:hover .fl{transform:scale(.55)}
 .wave{transform-box:fill-box;transform-origin:0 100%;animation:wave 1.6s ease-in-out infinite}
 .steam,.smoke,.bit{position:absolute;border-radius:50%;pointer-events:none}
 .steam{bottom:10px;left:132px;width:26px;height:26px;background:var(--cloud);opacity:0;animation:vent 3.2s ease-out infinite}
 .steam:nth-of-type(2){left:156px;animation-delay:1.1s}
 .steam:nth-of-type(3){left:112px;animation-delay:2.2s}
+main{position:relative;z-index:5;max-width:31rem;margin:13vh 0 2rem 7vw;padding:1.75rem 2rem;border-radius:1.25rem;background:var(--card);box-shadow:0 20px 50px var(--shadow);backdrop-filter:blur(6px)}
+.kicker{margin:0;color:var(--violet);font-weight:700;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase}
+h1{margin:.3rem 0 .4rem;font-size:clamp(1.7rem,4vw,2.5rem);line-height:1.15;overflow-wrap:anywhere}
+h1 span{color:var(--primary)}
+.lede{margin:0;color:var(--muted)}
+@keyframes drift{to{transform:translateX(-50%)}}
+@keyframes twinkle{from{opacity:.4}to{opacity:1}}
+@keyframes pulse{50%{transform:scale(1.07);opacity:.75}}
+@keyframes wobble{0%,100%{transform:rotate(-1.4deg)}50%{transform:rotate(1.4deg)}}
+@keyframes shake{0%{transform:translate(-1.5px,0)}50%{transform:translate(1.5px,1px)}100%{transform:translate(-1px,-1px)}}
+@keyframes flicker{from{transform:scaleY(.82) scaleX(1.06);opacity:.9}to{transform:scaleY(1.14) scaleX(.94);opacity:1}}
+@keyframes wave{0%,100%{transform:rotate(-12deg)}50%{transform:rotate(28deg)}}
+@keyframes vent{0%{opacity:0;transform:translate(0,0) scale(.4)}20%{opacity:.85}100%{opacity:0;transform:translate(var(--dx,18px),-90px) scale(2.2)}}
+@media(max-width:760px){main{margin:1rem;padding:1.25rem 1.4rem}.pad{right:50%;margin-right:-115px;scale:.72;transform-origin:50% 100%}.sun{width:70px;height:70px;top:4%;right:6%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+`
+
+/** The launching page's own: the checklist, the quips, the click hop and the lift-off. */
+const LAUNCHING_CSS = `
+.launcher{cursor:pointer}
+.hop.up{animation:hop .55s cubic-bezier(.3,1.6,.5,1)}
+.launcher:hover .flame{animation-duration:.12s}
+.launcher:hover .fl{transform:scale(.55)}
 .smoke{bottom:-10px;left:120px;width:70px;height:70px;background:var(--cloud);opacity:0;z-index:4}
 .fx{position:absolute;left:143px;bottom:20px;width:0;height:0;z-index:5}
 .bit{width:8px;height:8px;left:0;top:0;background:var(--c);animation:burst var(--t,1.1s) cubic-bezier(.2,.7,.4,1) forwards}
@@ -79,11 +106,6 @@ body{min-height:100vh;background:var(--bg);color:var(--ink);font:16px/1.55 syste
 .go .smoke:nth-of-type(5){--dx:120px;animation-delay:.45s}
 .go .smoke:nth-of-type(6){--dx:-30px;animation-delay:.6s}
 .go .band{animation-duration:9s}
-main{position:relative;z-index:5;max-width:31rem;margin:13vh 0 2rem 7vw;padding:1.75rem 2rem;border-radius:1.25rem;background:var(--card);box-shadow:0 20px 50px var(--shadow);backdrop-filter:blur(6px)}
-.kicker{margin:0;color:var(--violet);font-weight:700;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase}
-h1{margin:.3rem 0 .4rem;font-size:clamp(1.7rem,4vw,2.5rem);line-height:1.15;overflow-wrap:anywhere}
-h1 span{color:var(--primary)}
-.lede{margin:0;color:var(--muted)}
 .checks{list-style:none;margin:1.1rem 0 .4rem;padding:0;font-size:.95rem}
 .checks li{padding:.12rem 0;color:var(--muted)}
 .checks li::before{content:"○";display:inline-block;width:1.5rem;color:var(--muted)}
@@ -92,21 +114,11 @@ h1 span{color:var(--primary)}
 .checks li.now::before{content:"●";color:var(--violet);animation:blink 1s ease-in-out infinite}
 .quip{margin:.5rem 0 0;font-style:italic;color:var(--violet);min-height:1.5em}
 .status{margin:.6rem 0 0;font-size:.85rem;color:var(--muted)}
-@keyframes drift{to{transform:translateX(-50%)}}
-@keyframes twinkle{from{opacity:.4}to{opacity:1}}
-@keyframes pulse{50%{transform:scale(1.07);opacity:.75}}
-@keyframes wobble{0%,100%{transform:rotate(-1.4deg)}50%{transform:rotate(1.4deg)}}
-@keyframes shake{0%{transform:translate(-1.5px,0)}50%{transform:translate(1.5px,1px)}100%{transform:translate(-1px,-1px)}}
 @keyframes hop{40%{transform:translateY(-34px)}}
-@keyframes flicker{from{transform:scaleY(.82) scaleX(1.06);opacity:.9}to{transform:scaleY(1.14) scaleX(.94);opacity:1}}
-@keyframes wave{0%,100%{transform:rotate(-12deg)}50%{transform:rotate(28deg)}}
-@keyframes vent{0%{opacity:0;transform:translate(0,0) scale(.4)}20%{opacity:.85}100%{opacity:0;transform:translate(var(--dx,18px),-90px) scale(2.2)}}
 @keyframes billow{0%{opacity:0;transform:translateX(0) scale(.3)}15%{opacity:.95}100%{opacity:0;transform:translate(var(--dx,60px),-40px) scale(3.4)}}
 @keyframes liftoff{0%{transform:translateY(0)}12%{transform:translateY(6px)}100%{transform:translateY(-150vh)}}
 @keyframes burst{0%{opacity:1;transform:translate(0,0) rotate(0) scale(1)}100%{opacity:0;transform:translate(var(--x),var(--y)) rotate(var(--r,180deg)) scale(.4)}}
 @keyframes blink{50%{opacity:.25}}
-@media(max-width:760px){main{margin:1rem;padding:1.25rem 1.4rem}.pad{right:50%;margin-right:-115px;scale:.72;transform-origin:50% 100%}.sun{width:70px;height:70px;top:4%;right:6%}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `
 
 // The script holds no data of the app's: it reads the page it is in and polls its own origin.
@@ -143,35 +155,66 @@ const ROCKET = `<svg viewBox="0 0 220 470" role="presentation">
 <path fill="var(--steel)" d="M78 306h64l-10 34H88z"/>
 </svg>`
 
-/** The whole page, with the app's display name escaped into its three text nodes. */
-export function launchingPage(displayName: string): string {
-  const name = escapeHtml(displayName.trim() || 'Your app')
+/** One page of the scene. Every string here is HTML already: the caller escapes what it puts in. */
+export interface ScenePage {
+  /** The `<title>`, escaped. */
+  title: string
+  /** The text on the tower's sign, escaped. */
+  sign: string
+  /** The card's inner HTML. */
+  main: string
+  /** CSS after the scene's own. */
+  css?: string
+  /** Markup on the pad after the rocket and its steam (the launching page's smoke and sparks). */
+  pad?: string
+  /** An inline script, last in the body; none means the page runs no script at all. */
+  script?: string
+}
+
+/**
+ * The scene as a whole document: sky, pad, rocket and the card. The launching page here and
+ * Launch's holding page for an unclaimed host (`api/preview/unclaimed-host.ts`) are both this.
+ */
+export function scenePage(page: ScenePage): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><meta name="color-scheme" content="light dark">
-<title>${name} is launching</title><style>${CSS}</style></head>
+<title>${page.title}</title><style>${SCENE_CSS}${page.css ?? ''}</style></head>
 <body>
 <div class="sky" aria-hidden="true">
 <div class="stars"></div><div class="sun"></div>
 <div class="band b1">${CLOUDS}</div><div class="band b2">${CLOUDS}</div><div class="band b3">${CLOUDS}</div>
 <svg width="0" height="0" style="position:absolute"><defs><g id="c" fill="var(--cloud)"><path d="M80 150c0-28 22-50 50-50 6 0 12 1 17 3 9-27 34-47 64-47 32 0 59 22 66 52 8-6 17-9 27-9 26 0 47 20 49 46 19 2 34 18 34 38v17H40v-12c0-19 17-36 40-38z"/><path d="M520 160c0-22 18-40 40-40 5 0 9 1 14 2 7-22 28-38 52-38 26 0 47 18 53 42 6-5 14-7 21-7 21 0 38 16 40 37 15 2 27 14 27 30v14H488v-10c0-16 14-29 32-30z"/><path d="M980 152c0-25 20-45 45-45 5 0 11 1 16 3 8-25 31-43 58-43 29 0 54 20 60 47 7-5 16-8 24-8 24 0 43 18 45 42 17 2 31 16 31 34v16H944v-11c0-17 15-33 36-35z"/><path d="M1380 165c0-19 15-34 34-34 4 0 8 0 12 2 6-19 24-33 45-33 22 0 40 15 45 36 5-4 11-6 18-6 18 0 33 14 34 32 13 1 23 12 23 26v12h-268v-9c0-14 12-25 27-26z"/></g></defs></svg>
 <div class="pad">
-<div class="tower"></div><div class="arm"></div><div class="sign">${name}</div>
+<div class="tower"></div><div class="arm"></div><div class="sign">${page.sign}</div>
 <div class="launcher" id="rocket"><div class="hop" id="hop"><div class="wobble">${ROCKET}</div></div></div>
 <span class="steam"></span><span class="steam" style="--dx:-14px"></span><span class="steam"></span>
-<span class="smoke"></span><span class="smoke"></span><span class="smoke"></span>
-<div class="deck"></div><div class="fx" id="fx"></div>
+${page.pad ?? ''}<div class="deck"></div>
 </div>
 <div class="ground"></div>
 </div>
 <main>
-<p class="kicker">Mission control</p>
+${page.main}
+</main>
+${page.script ? `<script>${page.script}</script>\n` : ''}</body></html>`
+}
+
+/** The whole page, with the app's display name escaped into its three text nodes. */
+export function launchingPage(displayName: string): string {
+  const name = escapeHtml(displayName.trim() || 'Your app')
+  return scenePage({
+    title: `${name} is launching`,
+    sign: name,
+    css: LAUNCHING_CSS,
+    // The smoke must stay the pad's 4th–6th spans: `.go .smoke:nth-of-type(n)` places each puff.
+    pad: `<span class="smoke"></span><span class="smoke"></span><span class="smoke"></span>
+<div class="fx" id="fx"></div>`,
+    main: `<p class="kicker">Mission control</p>
 <h1><span>${name}</span> is launching</h1>
 <p class="lede">It will be ready in a few minutes. Keep this page open: it opens the app by itself the moment it goes live.</p>
 <ol class="checks" aria-hidden="true"><li>Fuelling the database</li><li>Attaching storage</li><li>Writing the flight plan</li><li>Polishing the fins</li><li>Waiting for the first deploy</li></ol>
 <p class="quip" id="quip" aria-hidden="true">T-minus one deploy.</p>
-<p class="status" id="status" role="status" aria-live="polite">Still on the pad. This page checks again every few seconds.</p>
-</main>
-<script>${SCRIPT}</script>
-</body></html>`
+<p class="status" id="status" role="status" aria-live="polite">Still on the pad. This page checks again every few seconds.</p>`,
+    script: SCRIPT,
+  })
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A subdomain nothing is launched at no longer opens Launch.** The `*.<domain>/*` route that
+  brings session previews to Launch brought every other host too, so `bob.<domain>` showed the
+  Launch app. Now any host under the preview domain that is not a preview, not Launch's own and not
+  an app answers 404: a browser sees the rocket on its pad saying nothing has launched there, with
+  a link to Launch; anything else gets one line of text. Never cached, by the browser or
+  Cloudflare's edge, so an app or preview deployed at that host answers at once; `noindex`, no script
+  (`docs/CONCEPTS.md` §18.12, `docs/DEPLOY.md` § Coding sessions).
 - **Deploy your own Launch from one file: `launch.deploy.env` → `/launch-deploy` (or
   `pnpm provision all`).** A fresh clone fills one git-ignored file at the repo root (copy
   `launch.deploy.env.example`: the domain, the admin, the GitHub org, three account tokens), and the
