@@ -190,6 +190,8 @@ export const SESSION_RELEASE_STALL_MS =
     LAND_RELEASE_WAIT_SECONDS * 1000,
     LAND_STAGING_WAIT_SECONDS * 1000,
     LAND_HEALTH_WAIT_SECONDS * 1000,
+    // Issue #11: `land.main-ci-wait#K.R` sleeps a `land.ci` round.
+    LAND_CI_SLOW_SECONDS * 1000,
     LAND_RETRY_SECONDS * 1000,
     longestRetryDelayMs(LAND_PHASE_B_STEP),
     longestRetryDelayMs(CLEANUP_STEP)

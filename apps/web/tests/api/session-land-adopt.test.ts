@@ -12,6 +12,7 @@
  * left alone; a second pass writes nothing and starts nothing; the cron scoped to one tenant never
  * adopts another's session, and the CAS names the tenant.
  */
+import { generateKeyPairSync } from 'node:crypto'
 import type { SessionEvent, SessionLanding } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +21,7 @@ import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { createSessionEmitter } from '@/api/services/sessions/events'
 import { defaultSessionStepHooks } from '@/api/services/sessions/hooks'
 import { adoptHandMerge, LAND_ADOPT_MAX_AGE_HOURS } from '@/api/services/sessions/land-adopt'
+import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { appReleases, apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
@@ -55,9 +57,16 @@ let restore: () => void = () => {}
 const tenantIds: string[] = []
 const HOUR = 3_600_000
 const LIMITS = { endPollMs: 5, commandPollMs: 1, heartbeatMs: 60_000 }
+const { privateKey: APP_PEM } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+})
 
 beforeAll(() => {
   restore = cloud.install()
+  // Issue #11: the default branch's CI is green on every merge commit (`land.main-ci` reads it).
+  cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'completed', conclusion: 'success' }]
 })
 afterAll(async () => {
   restore()
@@ -170,7 +179,18 @@ async function runInstance(h: Harness, instanceId: string) {
   }
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
   workflow.overrides = {
-    ports: createFakeSessionPorts(),
+    // Issue #11: `land.main-ci` reads the merge commit's checks through the GitHub App.
+    ports: createFakeSessionPorts({
+      repoHost: d =>
+        new GitHubRepoHost(d, loadConfig(h.env), {
+          fetch: cloud.fetch,
+          github: {
+            auth: { appId: String(cloud.opts.appId), privateKey: APP_PEM },
+            installationId: cloud.opts.installationId,
+            org: cloud.opts.org,
+          },
+        }),
+    }),
     hooks: {
       ...defaultSessionStepHooks,
       runTurn: async () => {
@@ -245,7 +265,12 @@ describe('sessions.checks adopts a hand merge in a staging-mode app', () => {
     expect(run.names[0]).toBe('claim')
     expect(run.names).not.toContain('cleanup')
     expect(run.names).toEqual(
-      expect.arrayContaining(['land.release#0.0', 'land.staging#0.0', 'land.live#0'])
+      expect.arrayContaining([
+        'land.main-ci#0.0',
+        'land.release#0.0',
+        'land.staging#0.0',
+        'land.live#0',
+      ])
     )
 
     const [release, ...others] = await db
@@ -305,6 +330,7 @@ describe('sessions.checks adopts a hand merge in a staging-mode app', () => {
           prNumber: h.number,
           gateSha,
           gateTree: null,
+          mainCi: null,
           startedAt: started,
           stageAt: started,
           reviewMode: 'none',

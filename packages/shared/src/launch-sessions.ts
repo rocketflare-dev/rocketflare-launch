@@ -383,12 +383,16 @@ export const MOVING_LANDING_STAGES = [
   'deploying',
 ] as const satisfies readonly ShipLandingStage[]
 
-/** Why a landing stalled after the merge (decision §0.1: it never reopens). */
+/**
+ * Why a landing stalled after the merge (decision §0.1: it never reopens). `main_ci_failed` (issue
+ * #11): the squash commit's own `Gate` went red on the default branch, so no release was cut.
+ */
 export const SHIP_STALLED_REASONS = [
   'release_failed',
   'deploy_failed',
   'deploy_timeout',
   'unhealthy',
+  'main_ci_failed',
 ] as const
 export const shipStalledReasonSchema = z.enum(SHIP_STALLED_REASONS)
 export type ShipStalledReason = z.infer<typeof shipStalledReasonSchema>
@@ -419,6 +423,24 @@ export type LandingReviewMode = z.infer<typeof landingReviewModeSchema>
 /** CI watch (plan §1.4): give up after this long; "no check ever reported" after the grace refuses. */
 export const SHIP_CI_MAX_MINUTES = 120
 export const SHIP_CI_NONE_GRACE_MINUTES = 10
+/**
+ * Issue #11, `land.main-ci` (Phase B, before the release): how long Launch waits for the SQUASH
+ * commit's `Gate` on the default branch before cutting the release anyway (the tag's deploy then
+ * re-gates, as before issue #11), and how long a commit with no check at all (a repository whose
+ * CI does not run on a push to main) is given before the release goes ahead. Both from the landing
+ * reaching `releasing`.
+ */
+export const SHIP_MAIN_CI_MAX_MINUTES = 30
+export const SHIP_MAIN_CI_NONE_GRACE_MINUTES = 3
+
+/**
+ * Issue #11: what `land.main-ci` decided the release on — the squash commit's `Gate` green
+ * (`success`: the tag's deploy can skip its gate), no check reported within the grace (`none`), or
+ * still running past {@link SHIP_MAIN_CI_MAX_MINUTES} (`timeout`). A red one stalls instead.
+ */
+export const SHIP_MAIN_CI_VERDICTS = ['success', 'none', 'timeout'] as const
+export const shipMainCiVerdictSchema = z.enum(SHIP_MAIN_CI_VERDICTS)
+export type ShipMainCiVerdict = z.infer<typeof shipMainCiVerdictSchema>
 
 /** An ISO timestamp inside a jsonb column (a string both ways, so the row round-trips unchanged). */
 const isoTimestampSchema = z.string().datetime({ offset: true })
@@ -449,6 +471,14 @@ export const sessionLandingSchema = z.object({
   approvalId: z.string().uuid().nullable().default(null),
   mergeSha: z.string().nullable().default(null),
   mergedAt: isoTimestampSchema.nullable().default(null),
+  /**
+   * Issue #11: `land.main-ci`'s verdict on the merge commit's `Gate` (`sha`) and when it was
+   * reached — the release follows it. Null until then (and on a landing written before issue #11).
+   */
+  mainCi: z
+    .object({ verdict: shipMainCiVerdictSchema, sha: z.string(), at: isoTimestampSchema })
+    .nullable()
+    .default(null),
   releaseId: z.string().uuid().nullable().default(null),
   version: z.string().nullable().default(null),
   tag: z.string().nullable().default(null),

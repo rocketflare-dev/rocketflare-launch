@@ -95,6 +95,7 @@ export async function adoptHandMerge(
     approvalId: null,
     mergeSha: merge.mergeSha,
     mergedAt: new Date(merge.mergedAt).toISOString(),
+    mainCi: null,
     releaseId: null,
     version: null,
     tag: null,

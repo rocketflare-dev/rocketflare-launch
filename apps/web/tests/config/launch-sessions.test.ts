@@ -56,6 +56,9 @@ import {
   SHIP_CI_MAX_MINUTES,
   SHIP_CI_NONE_GRACE_MINUTES,
   SHIP_LANDING_STAGES,
+  SHIP_MAIN_CI_MAX_MINUTES,
+  SHIP_MAIN_CI_NONE_GRACE_MINUTES,
+  SHIP_MAIN_CI_VERDICTS,
   SHIP_REOPEN_REASONS,
   SHIP_STALLED_REASONS,
   SHIP_SUMMARY_BODY_MAX,
@@ -280,6 +283,7 @@ describe('issue #5: the landing', () => {
       'deploy_failed',
       'deploy_timeout',
       'unhealthy',
+      'main_ci_failed',
     ])
     expect(SHIP_REOPEN_REASONS).toEqual([
       'ci_failed',
@@ -296,6 +300,10 @@ describe('issue #5: the landing', () => {
     expect(LANDING_REVIEW_MODES).toEqual([...SHIP_REVIEW_MODES, 'policy'])
     expect(SHIP_CI_MAX_MINUTES).toBe(120)
     expect(SHIP_CI_NONE_GRACE_MINUTES).toBe(10)
+    // Issue #11: the merge commit's Gate before the release.
+    expect(SHIP_MAIN_CI_MAX_MINUTES).toBe(30)
+    expect(SHIP_MAIN_CI_NONE_GRACE_MINUTES).toBe(3)
+    expect(SHIP_MAIN_CI_VERDICTS).toEqual(['success', 'none', 'timeout'])
   })
 
   it('a minimal landing fills its nullable fields; a bad stage or timestamp is refused', () => {
@@ -312,6 +320,7 @@ describe('issue #5: the landing', () => {
       ...minimal,
       // Issue #9: a landing written before the gate's tree was recorded parses without one.
       gateTree: null,
+      mainCi: null,
       approvalId: null,
       mergeSha: null,
       mergedAt: null,

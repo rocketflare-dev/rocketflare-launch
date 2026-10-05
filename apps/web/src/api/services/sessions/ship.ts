@@ -537,6 +537,7 @@ export async function openShipPullRequest(
     approvalId: null,
     mergeSha: null,
     mergedAt: null,
+    mainCi: null,
     releaseId: null,
     version: null,
     tag: null,

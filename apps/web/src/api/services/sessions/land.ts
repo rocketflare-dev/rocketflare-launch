@@ -28,7 +28,11 @@
  * drain, the container is backed up and destroyed (`releaseLandingContainer`); a reopen then
  * suspends, and the next message resumes cold.
  *
- * **Phase B** — status `shipped`, after `cleanup` (`SessionWorkflow.release`): the
+ * **Phase B** — status `shipped`, after `cleanup` (`SessionWorkflow.release`): first
+ * `land.main-ci#K.R` (`landMainCiStep`, issue #11) waits for the SQUASH commit's own `Gate` on the
+ * default branch — green → release (the tag's deploy then skips its gate); red → stalled
+ * `main_ci_failed`, no release; nothing reported within `SHIP_MAIN_CI_NONE_GRACE_MINUTES`, or still
+ * running past `SHIP_MAIN_CI_MAX_MINUTES` → release anyway (the deploy re-gates); then the
  * `landRelease` / `landStaging` / `landHealth` hooks (`land-release.ts`, slice S3) through the
  * wrappers here (`landReleaseStep` …), then `land.live#K` (`landLiveStep`) or `land.stalled#K`
  * (`landStalledStep`). After the merge nothing reopens (decision §0.1): a failure stalls.
@@ -54,7 +58,10 @@ import {
   type SessionStatus,
   SHIP_CI_MAX_MINUTES,
   SHIP_CI_NONE_GRACE_MINUTES,
+  SHIP_MAIN_CI_MAX_MINUTES,
+  SHIP_MAIN_CI_NONE_GRACE_MINUTES,
   type ShipLandingStage,
+  type ShipMainCiVerdict,
   type ShipReopenReason,
   type ShipStalledReason,
   sessionShipSummarySchema,
@@ -936,6 +943,85 @@ async function phaseB(
   return { session, landing }
 }
 
+/**
+ * `land.main-ci#K.R`'s answer (issue #11): `ready` — cut the release now; `wait` — read again after
+ * `waitSeconds` (`land.main-ci-wait#K.R`); `stalled` — the merge commit's `Gate` is red.
+ */
+export type LandMainCiResult =
+  | { status: 'ready'; verdict: ShipMainCiVerdict | 'skipped' }
+  | { status: 'wait'; waitSeconds: number }
+  | { status: 'stalled'; reason: 'main_ci_failed'; error: string }
+
+/**
+ * `land.main-ci#K.R` (issue #11): the squash commit's checks on the default branch, read fresh —
+ * decided like `land.ci` on the required `Gate` (`requiredCheckState`) — before `land.release`
+ * cuts the release whose `release: X.Y.Z` bump is that commit's child. The kit's `deploy.yml`
+ * skips the tag's gate only when the bump's parent already has a COMPLETED green `CI` run, so a
+ * release cut while it still runs pays for a second gate. Green → `ready` (`success`); red →
+ * `stalled` `main_ci_failed` (the change is merged, nothing is released); nothing reported after
+ * {@link SHIP_MAIN_CI_NONE_GRACE_MINUTES} (no CI on a push to main) → `ready` (`none`); still
+ * pending after {@link SHIP_MAIN_CI_MAX_MINUTES} → `ready` (`timeout`: the deploy re-gates, as
+ * before issue #11); else wait a round (30 s for the first 10 minutes, then 2). Bounds are judged
+ * from `landing.stageAt` (reaching `releasing`), so a replayed step cannot reset them, and a
+ * GitHub that does not answer past the cap is a `timeout` too. A `ready` verdict is recorded on
+ * `landing.mainCi` (one compare-and-set), so a later round or a fresh instance goes straight on;
+ * a landing already past `releasing`, already holding a release, or with no merge SHA is `skipped`.
+ */
+export async function landMainCiStep(scope: StepScope): Promise<LandMainCiResult | LandDone> {
+  const found = await phaseB(scope)
+  if (!found) return { status: 'done' }
+  const { session, landing } = found
+  if (landing.stage !== 'releasing' || landing.releaseId || !landing.mergeSha) {
+    return { status: 'ready', verdict: 'skipped' }
+  }
+  if (landing.mainCi) return { status: 'ready', verdict: landing.mainCi.verdict }
+  await stamp(scope)
+  const sha = landing.mergeSha
+  const elapsedMs = sinceMs(scope, landing.stageAt)
+  const record = async (verdict: ShipMainCiVerdict): Promise<LandMainCiResult> => {
+    await casLanding(
+      scope,
+      { statuses: ['shipped'], stages: ['releasing'] },
+      { mainCi: { verdict, sha, at: scope.now().toISOString() } },
+      { lastActivityAt: scope.now() }
+    )
+    scope.logger.info({ sessionId: session.id, sha, verdict }, 'session landing: main CI read')
+    return { status: 'ready', verdict }
+  }
+
+  const repo = await sessionRepo(scope.db, session)
+  const host = scope.ports.repoHost(scope.db)
+  let checks: PrChecks
+  try {
+    checks = await host.getChecks(repo, { prNumber: landing.prNumber, headSha: sha })
+  } catch (err) {
+    // GitHub not answering must not hold the release past the cap: the deploy re-gates.
+    if (elapsedMs >= SHIP_MAIN_CI_MAX_MINUTES * 60_000) return record('timeout')
+    throw err
+  }
+  const state = requiredCheckState(checks.checks)
+  if (state === 'success') return record('success')
+  if (state === 'failure') {
+    const failed = await host.failedCheckLog(repo, { headSha: sha }).catch(err => {
+      scope.logger.warn({ err }, 'session landing: could not read the failed main check')
+      return null
+    })
+    const check = failed?.name ? ` (${failed.name})` : ''
+    return {
+      status: 'stalled',
+      reason: 'main_ci_failed',
+      error: `CI failed on the default branch${check} for the merge commit ${short(sha)}, so Launch did not cut a release`,
+    }
+  }
+  if (state === 'none' && elapsedMs >= SHIP_MAIN_CI_NONE_GRACE_MINUTES * 60_000) {
+    return record('none')
+  }
+  if (elapsedMs >= SHIP_MAIN_CI_MAX_MINUTES * 60_000) return record('timeout')
+  const waitSeconds =
+    elapsedMs < LAND_CI_FAST_WINDOW_MINUTES * 60_000 ? LAND_CI_FAST_SECONDS : LAND_CI_SLOW_SECONDS
+  return { status: 'wait', waitSeconds }
+}
+
 /** `land.release#K.R`: the `landRelease` hook (S3), or the release the landing already holds. */
 export async function landReleaseStep(scope: StepScope): Promise<LandReleaseResult | LandDone> {
   const found = await phaseB(scope)
@@ -1020,7 +1106,7 @@ export async function landLiveStep(
 }
 
 const STALLED_STAGING_STATUS: Record<
-  Exclude<ShipStalledReason, 'release_failed'>,
+  Exclude<ShipStalledReason, 'release_failed' | 'main_ci_failed'>,
   'failed' | 'timeout' | 'unhealthy'
 > = { deploy_failed: 'failed', deploy_timeout: 'timeout', unhealthy: 'unhealthy' }
 
@@ -1055,7 +1141,8 @@ export async function landStalledStep(
   )
   if (!row) return
   const emit = emitterFor(scope)
-  if (input.reason !== 'release_failed') {
+  // Nothing was released (`release_failed`, `main_ci_failed`): no staging row to speak of.
+  if (input.reason !== 'release_failed' && input.reason !== 'main_ci_failed') {
     await emit({
       type: 'ship.staging',
       turn: row.turnCount,

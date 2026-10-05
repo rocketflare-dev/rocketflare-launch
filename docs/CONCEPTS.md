@@ -2369,9 +2369,9 @@ message resumes); `landing := null`, a pending review cancelled, `ship.reopened 
 destroyed (`landing.containerReleased`) once the policy's `idleSuspendMinutes` pass in `ci` or in
 `approval`, or under a drain. **End** during `ci` / `approval` abandons the landing (`end#N`: the
 request cancelled, `landing := null`, the PR left open); during `merging` it is a 409
-`session_merging`. **Phase B** (`land.release#K.R`, `land.staging#K.R`, `land.health#K.R`, each
-with a `step.sleep` `…-wait#K.R` between rounds; bodies: the `landRelease` / `landStaging` /
-`landHealth` hooks, §18.17) ends in `land.live#K` (stage `live`, `stagingUrl`, the version,
+`session_merging`. **Phase B** (`land.main-ci#K.R`, `land.release#K.R`, `land.staging#K.R`,
+`land.health#K.R`, each with a `step.sleep` `…-wait#K.R` between rounds; bodies: `landMainCiStep`,
+then the `landRelease` / `landStaging` / `landHealth` hooks, §18.17) ends in `land.live#K` (stage `live`, `stagingUrl`, the version,
 `ship.staging {status:'live'}`, audit `session.landed`) or `land.stalled#K` (stage `stalled`, the
 reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
 `session.land_stalled`) — after the merge nothing reopens (decision §0.1). **The safety net**:
@@ -2641,6 +2641,24 @@ merges a session's PR — or after `sessions.checks` ADOPTS a person's merge of 
 `staging`-mode app (§18.13, within 24 h of the merge) — the session's Workflow (Phase B, status `shipped`) calls three hooks in
 `services/sessions/land-release.ts`, one idempotent read or action per step, every bound judged
 from timestamps on rows rather than counters in memory:
+- `land.main-ci` (issue #11, `landMainCiStep` in `land.ts`, before the release) reads the SQUASH
+  commit's checks on the default branch (`landing.mergeSha`), decided on `Gate` like `land.ci`
+  (`requiredCheckState`): the kit's `deploy.yml` skips a tag's gate only when the tagged commit is
+  a version-only bump over a parent with a COMPLETED green `CI` run, so a release cut while that run
+  is still going pays for a second gate. Green → release (`success`); red → stalled
+  `main_ci_failed` with the failing check's name (the change is merged, nothing released — after
+  the merge nothing reopens); nothing reported within `SHIP_MAIN_CI_NONE_GRACE_MINUTES` (3: a repo
+  whose CI does not run on a push to main) → release (`none`); still pending after
+  `SHIP_MAIN_CI_MAX_MINUTES` (30, beside `SHIP_CI_MAX_MINUTES`; GitHub not answering past it
+  counts) → release anyway (`timeout`: the deploy re-gates, as before). Rounds are `land.ci`'s
+  (30 s for 10 minutes, then 2), bounds from `landing.stageAt`; a release verdict is recorded on
+  `landing.mainCi` (`{verdict, sha, at}`), so a fresh instance goes straight on, and the release
+  claim's 15-minute wait below counts from its `at`. A landing already `deploying` (or holding a
+  release) skips it. No `[skip ci]` on the bump: GitHub would skip the TAG's push workflows too. A
+  release cut by a person (`POST /api/apps/:id/releases`, `launch releases`) does not wait.
+  **Gap:** the bump's parent is the default branch's head when the release is cut — another merge
+  landing between this one's green `Gate` and the bump makes that the parent, whose CI may still
+  run, and the deploy re-gates.
 - `land.release` cuts — or SHARES — the patch release that carries the merge. A release of the app
   that already lists the PR (`app_releases.prs @> [{"number": n}]`) is shared; otherwise it takes
   the app's **release claim** (`apps.release_claim_holder` = `session:<id>` | `user:<id>` +
@@ -2649,8 +2667,8 @@ from timestamps on rows rather than counters in memory:
   `createRelease({ bump: 'patch', userId: null, actor: SYSTEM, trigger: { sessionId } })`:
   `created_by_user_id` null, `release.created` carries `{ trigger: 'session.merge', sessionId }`,
   `prs[].sessionId` names each PR's session. Claim held elsewhere → wait 20 s, up to 15 minutes
-  from the landing reaching `releasing`. PRs merged close together share one release and one tag;
-  double tags are impossible three ways (the claim, unique `(app_id, tag)`, GitHub's 422). On
+  from `landing.mainCi.at` (else the landing reaching `releasing`). PRs merged close together
+  share one release and one tag; double tags are impossible three ways (the claim, unique `(app_id, tag)`, GitHub's 422). On
   success it records `releaseId`/`version`/`tag` on `sessions.landing` and moves `releasing →
   deploying` in one compare-and-set, emitting `ship.released {shared}` only when the CAS won.
   **`POST /api/apps/:id/releases` takes the same claim** and answers 409 `release_in_progress`

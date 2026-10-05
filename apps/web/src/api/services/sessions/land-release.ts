@@ -14,7 +14,8 @@
  *   the app already listing this PR (`app_releases.prs @> [{"number": n}]`) → share it. Otherwise
  *   take the app's release claim (`session:<id>`), re-check, and `createRelease({ bump: 'patch',
  *   userId: null, actor: SYSTEM, trigger: { sessionId } })`. Claim held by someone else → `wait`
- *   20 s, up to 15 minutes from `landing.stageAt`. GitHub refusing the bump or the tag (a
+ *   20 s, up to 15 minutes from `landing.mainCi.at` (issue #11: when `land.main-ci` let the release
+ *   go; `landing.stageAt` on a landing without one). GitHub refusing the bump or the tag (a
  *   protected branch Launch cannot bypass, a tag that exists) → `stalled` `release_failed`. On
  *   success it records `releaseId` / `version` / `tag` on the landing and moves `releasing →
  *   deploying` in ONE compare-and-set, then emits `ship.released` (only when the CAS won, so a
@@ -270,7 +271,8 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
   }
   if (outcome.claimed) return recordReleased(ctx, outcome.value.release, outcome.value.shared)
 
-  const waitedMs = ctx.now().getTime() - Date.parse(landing.stageAt)
+  // Issue #11: the claim's wait starts once `land.main-ci` let the release go, not at the merge.
+  const waitedMs = ctx.now().getTime() - Date.parse(landing.mainCi?.at ?? landing.stageAt)
   if (waitedMs >= LAND_RELEASE_CLAIM_MAX_MINUTES * 60_000) {
     return {
       status: 'stalled',

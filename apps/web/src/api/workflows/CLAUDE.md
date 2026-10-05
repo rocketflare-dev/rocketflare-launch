@@ -183,11 +183,15 @@ already `suspended` and the loop's dirty state cleared; a settled round's dirty 
 MERGED — `loop()` then returns `{ merged: n }`. A land step that throws past its retries is one
 more round (`land.wait#N`, `LAND_RETRY_SECONDS`), never a failed session. `run()` runs `cleanup`
 FIRST and then Phase B, `SessionWorkflow.release(run, step, k)` with `K` the merge's round:
+`land.main-ci#K.R` (issue #11, `landMainCiStep` in `land.ts`: the squash commit's `Gate` on the
+default branch — green, no check within `SHIP_MAIN_CI_NONE_GRACE_MINUTES`, or still running past
+`SHIP_MAIN_CI_MAX_MINUTES` → on, the verdict on `landing.mainCi`; red → `land.stalled#K`
+`main_ci_failed`, no release), then
 `land.release#K.R` / `land.staging#K.R` / `land.health#K.R` (the `landRelease` / `landStaging` /
 `landHealth` hooks through `land.ts`'s wrappers, `LAND_PHASE_B_STEP`), each followed while it
-answers `wait` by a `step.sleep` named `land.release-wait#K.R` / `land.staging-wait#K.R` /
-`land.health-wait#K.R`, ending in `land.live#K` or `land.stalled#K` (`MAX_LAND_PHASE_ROUNDS`
-caps each stage). `claim` answers `{ start: 'loop' }` for a Phase A landing (never `salvage`)
+answers `wait` by a `step.sleep` named `land.main-ci-wait#K.R` / `land.release-wait#K.R` /
+`land.staging-wait#K.R` / `land.health-wait#K.R`, ending in `land.live#K` or `land.stalled#K`
+(`MAX_LAND_PHASE_ROUNDS` caps each stage; out of `land.main-ci` rounds the release goes ahead). `claim` answers `{ start: 'loop' }` for a Phase A landing (never `salvage`)
 and `{ start: 'land', cleanup }` for a `shipped` one in `releasing` / `deploying` — `run()` then
 runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. That is also how a hand
 merge the `sessions.checks` cron ADOPTS runs (`../services/sessions/land-adopt.ts`: a `releasing`

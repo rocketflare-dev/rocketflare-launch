@@ -96,6 +96,8 @@ const tenantIds: string[] = []
 
 beforeAll(() => {
   restore = cloud.install()
+  // Issue #11: the default branch's CI is green on every merge commit (`land.main-ci` reads it).
+  cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'completed', conclusion: 'success' }]
 })
 afterAll(async () => {
   restore()
@@ -529,6 +531,7 @@ describe('Ship means live on staging, end to end', () => {
         'land.wait#3',
         'land.merge#4',
         'cleanup',
+        'land.main-ci#4.0',
         'land.release#4.0',
         'land.staging#4.0',
         'land.staging-wait#4.0',

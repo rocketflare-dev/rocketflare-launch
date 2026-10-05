@@ -358,6 +358,7 @@ describe('session.merge (issue #5)', () => {
       prNumber: 3,
       gateSha: GATE_SHA,
       gateTree: null,
+      mainCi: null,
       startedAt: now,
       stageAt: now,
       reviewMode: 'app_owners',
