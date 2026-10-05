@@ -10,8 +10,11 @@ import {
   type SetupOverview,
 } from '@launch/shared/launch-setup'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import CodingAgents from '@/ui/pages/platform/CodingAgents'
+import Kit from '@/ui/pages/platform/Kit'
+import PlatformLayout from '@/ui/pages/platform/PlatformLayout'
 import Setup from '@/ui/pages/platform/Setup'
 import {
   makeSession,
@@ -109,7 +112,12 @@ const overview: SetupOverview = {
     ],
     checkedAt: null,
   },
-  templatePin: { pin: DEFAULT_TEMPLATE_PIN, isDefault: true, default: DEFAULT_TEMPLATE_PIN },
+  templatePin: {
+    pin: DEFAULT_TEMPLATE_PIN,
+    isDefault: true,
+    default: DEFAULT_TEMPLATE_PIN,
+    latestCheck: null,
+  },
   sessionAgents: {
     runtimes: [
       {
@@ -166,12 +174,15 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = Set
     '/api/platform/setup': current,
     'PUT /api/platform/setup/template-pin': current,
     'DELETE /api/platform/setup/template-pin': current,
+    'POST /api/platform/setup/template-pin/check': current,
     '/api/platform/setup/template-pin/tags': {
       repo: 'rocketflare-dev/rocketflare',
       tags: [
+        { name: '0.17.1', commit: 'd'.repeat(40) },
+        { name: '0.16.0', commit: DEFAULT_TEMPLATE_PIN.commit },
         { name: '0.15.5', commit: 'c'.repeat(40) },
-        { name: '0.15.4', commit: DEFAULT_TEMPLATE_PIN.commit },
       ],
+      latest: '0.17.1',
     },
     'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
     'PUT /api/platform/setup/credentials/openai_api_key': checkResponse,
@@ -304,7 +315,36 @@ describe('Admin → Setup', () => {
   })
 })
 
-describe('Admin → Setup: the Kit version card', () => {
+describe('Platform → Kit: the tab', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('has its own tab holding the Kit version card, which Setup no longer shows', async () => {
+    stubFetch({ '/api/platform/setup': overview })
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/platform" element={<PlatformLayout />}>
+          <Route path="setup" element={<Setup />} />
+          <Route path="kit" element={<Kit />} />
+        </Route>
+      </Routes>,
+      {
+        route: '/settings/platform/kit',
+        session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
+      }
+    )
+    const tabs = await screen.findByRole('tablist')
+    const kitTab = within(tabs).getByRole('tab', { name: 'Kit' })
+    expect(kitTab).toHaveAttribute('href', '/settings/platform/kit')
+    expect(kitTab.className).toContain('tab-active')
+    expect(await screen.findByRole('region', { name: 'Kit version' })).toBeInTheDocument()
+
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'Setup' }))
+    expect(await screen.findByRole('navigation', { name: 'Setup steps' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Kit version' })).toBeNull()
+  })
+})
+
+describe('Platform → Kit: the Kit version card', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   const commitPinned: SetupOverview = {
@@ -313,11 +353,28 @@ describe('Admin → Setup: the Kit version card', () => {
       pin: { repo: 'rocketflare-dev/rocketflare', commit: 'abcdef1'.padEnd(40, '0') },
       isDefault: false,
       default: DEFAULT_TEMPLATE_PIN,
+      latestCheck: null,
     },
   }
 
+  const followCommit = 'e'.repeat(40)
+  const following = (latestCheck: SetupOverview['templatePin']['latestCheck']): SetupOverview => ({
+    ...overview,
+    templatePin: {
+      pin: {
+        repo: 'rocketflare-dev/rocketflare',
+        tag: '0.17.1',
+        commit: followCommit,
+        follow: 'latest',
+      },
+      isDefault: false,
+      default: DEFAULT_TEMPLATE_PIN,
+      latestCheck,
+    },
+  })
+
   it('shows the default release pin: repo, tag and short SHA, and no reset or warning', async () => {
-    render()
+    render(overview, Kit)
     const card = await screen.findByRole('region', { name: 'Kit version' })
     expect(within(card).getByText('Default')).toBeInTheDocument()
     expect(within(card).getByText('rocketflare-dev/rocketflare')).toBeInTheDocument()
@@ -325,33 +382,57 @@ describe('Admin → Setup: the Kit version card', () => {
     expect(within(card).getByText(DEFAULT_TEMPLATE_PIN.commit.slice(0, 7))).toBeInTheDocument()
     expect(within(card).queryByText(/Unreleased commit — for development/)).toBeNull()
     expect(within(card).queryByRole('button', { name: 'Reset to default' })).toBeNull()
+    expect(within(card).getByLabelText('A release tag')).toBeChecked()
   })
 
-  it('pins a release tag the server resolves', async () => {
-    const fetchMock = render()
+  it('pins a release tag typed into the combobox, even one the list does not have', async () => {
+    const fetchMock = render(overview, Kit)
     const card = await screen.findByRole('region', { name: 'Kit version' })
-    fireEvent.change(within(card).getByLabelText('Release tag'), { target: { value: '0.15.5' } })
+    const input = within(card).getByRole('combobox', { name: 'Release tag' })
+    fireEvent.change(input, { target: { value: '0.15.6' } })
     fireEvent.click(within(card).getByRole('button', { name: 'Pin tag' }))
     await waitFor(() =>
       expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toEqual({
         kind: 'tag',
-        tag: '0.15.5',
+        tag: '0.15.6',
       })
     )
   })
 
-  it('lists the repo’s tags on demand', async () => {
-    const fetchMock = render()
+  it('loads the tags only when the combobox opens, newest first, and pins the one picked', async () => {
+    const fetchMock = render(overview, Kit)
     const card = await screen.findByRole('region', { name: 'Kit version' })
-    expect(
-      fetchMock.mock.calls.some(([input]) => String(input).includes('/template-pin/tags'))
-    ).toBe(false)
-    fireEvent.click(within(card).getByRole('button', { name: 'List tags' }))
-    expect(await within(card).findByText(/0\.15\.5, 0\.15\.4/)).toBeInTheDocument()
+    const tagCalls = () =>
+      fetchMock.mock.calls.filter(([input]) => String(input).includes('/template-pin/tags'))
+    expect(tagCalls()).toHaveLength(0)
+    const input = within(card).getByRole('combobox', { name: 'Release tag' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    const listbox = await within(card).findByRole('listbox')
+    await waitFor(() =>
+      expect(
+        within(listbox)
+          .getAllByRole('option')
+          .map(o => o.textContent)
+      ).toEqual([
+        '0.17.1latest',
+        `0.16.0${DEFAULT_TEMPLATE_PIN.commit.slice(0, 7)}`,
+        '0.15.5ccccccc',
+      ])
+    )
+    expect(tagCalls()).toHaveLength(1)
+    fireEvent.click(within(listbox).getByRole('option', { name: /0\.16\.0/ }))
+    expect(input).toHaveValue('0.16.0')
+    fireEvent.click(within(card).getByRole('button', { name: 'Pin tag' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toEqual({
+        kind: 'tag',
+        tag: '0.16.0',
+      })
+    )
   })
 
   it('pins a commit — pasted, or the latest main — and refuses a malformed one before any request', async () => {
-    const fetchMock = render()
+    const fetchMock = render(overview, Kit)
     const card = await screen.findByRole('region', { name: 'Kit version' })
     fireEvent.click(within(card).getByLabelText('A commit (unreleased)'))
 
@@ -372,12 +453,13 @@ describe('Admin → Setup: the Kit version card', () => {
   })
 
   it('warns that a commit pin is for development, and resets to the default', async () => {
-    const fetchMock = render(commitPinned)
+    const fetchMock = render(commitPinned, Kit)
     const card = await screen.findByRole('region', { name: 'Kit version' })
     expect(within(card).getByText('Overridden')).toBeInTheDocument()
     expect(within(card).getByText('Unreleased commit')).toBeInTheDocument()
     expect(within(card).getByText('abcdef1')).toBeInTheDocument()
     expect(within(card).getByText(/Unreleased commit — for development/)).toBeInTheDocument()
+    expect(within(card).getByLabelText('A commit (unreleased)')).toBeChecked()
     fireEvent.click(within(card).getByRole('button', { name: 'Reset to default' }))
     await waitFor(() =>
       expect(
@@ -387,6 +469,58 @@ describe('Admin → Setup: the Kit version card', () => {
         )
       ).toBe(true)
     )
+  })
+
+  it('switches to Follow latest with one request the server resolves', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    fireEvent.click(within(card).getByLabelText('Follow latest'))
+    expect(within(card).queryByRole('button', { name: 'Check now' })).toBeNull()
+    fireEvent.click(within(card).getByRole('button', { name: 'Follow latest' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'PUT /api/platform/setup/template-pin')).toEqual({
+        kind: 'latest',
+      })
+    )
+  })
+
+  it('shows a Follow latest pin with when it was checked and what is latest, and checks now', async () => {
+    const checkedAt = new Date(Date.now() - 5 * 60 * 1000)
+    const fetchMock = render(
+      following({ repo: 'rocketflare-dev/rocketflare', checkedAt, latest: '0.17.1', error: null }),
+      Kit
+    )
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    expect(within(card).getByLabelText('Follow latest')).toBeChecked()
+    expect(within(card).getByText('Latest release, now 0.17.1')).toBeInTheDocument()
+    expect(within(card).getByText('5 minutes ago')).toBeInTheDocument()
+    expect(within(card).getByText('Latest').nextElementSibling).toHaveTextContent('0.17.1')
+    fireEvent.click(within(card).getByRole('button', { name: 'Check now' }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith('/api/platform/setup/template-pin/check') &&
+            init?.method === 'POST'
+        )
+      ).toBe(true)
+    )
+  })
+
+  it('says when the last Follow latest check failed', async () => {
+    render(
+      following({
+        repo: 'rocketflare-dev/rocketflare',
+        checkedAt: new Date(),
+        latest: '0.17.1',
+        error: 'GitHub could not answer: Server Error',
+      }),
+      Kit
+    )
+    const card = await screen.findByRole('region', { name: 'Kit version' })
+    expect(
+      within(card).getByText(/The last check failed: GitHub could not answer: Server Error/)
+    ).toBeInTheDocument()
   })
 })
 

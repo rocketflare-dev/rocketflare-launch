@@ -1313,23 +1313,46 @@ workflows (`kit.yml`, `plugin-ci.yml`, `notify-plugins.yml`) `kitOnly`, so the r
 on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). A
 `launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
 
-**Kit version (Setup).** A platform admin sets the pin on the Setup page's Kit version card
-(`/settings/platform/setup`, `KitVersionCard`): it shows the pin new apps get (repo, tag or
-"Unreleased commit", short SHA; Default or Overridden) and takes either a **release tag** (typed, or
-picked after "List tags" — `GET /api/platform/setup/template-pin/tags`) or a **commit** (a SHA on
-any branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
-(`templatePinRequestSchema`) resolves it SERVER-side through GitHub as the connected GitHub App (a
-`contents: read` installation token, revoked after; the kit repo is public, so it need not be
-installed there; no App → 409 `github_app_not_configured`): a tag through `GET …/git/ref/tags/{tag}`,
-an annotated tag dereferenced through `GET …/git/tags/{sha}`; a commit through
-`GET …/commits/{ref}`, which also proves it is in that repo. A ref the repo lacks is 422
+**Kit version (Platform → Kit).** A platform admin sets the pin on its own tab, Platform → Kit
+(`/settings/platform/kit`, `pages/platform/Kit.tsx` → `KitVersionCard`; Setup no longer carries it —
+it is not a setup step). The card shows the pin new apps get (repo, "Release X", "Latest release,
+now X" or "Unreleased commit", short SHA; Default or Overridden) and takes one of three modes:
+**Follow latest**, a **release tag** (a combobox — `components/Combobox.tsx`, ARIA combobox with a
+listbox popup, full keyboard — over `GET /api/platform/setup/template-pin/tags`, loaded when it
+opens, newest release first; a tag not listed can still be typed) or a **commit** (a SHA on any
+branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
+(`templatePinRequestSchema`: `tag` | `commit` | `latest`) resolves it SERVER-side through GitHub as
+the connected GitHub App (a `contents: read` installation token, revoked after; the kit repo is
+public, so it need not be installed there; no App → 409 `github_app_not_configured`): a tag through
+`GET …/git/ref/tags/{tag}`, an annotated tag dereferenced through `GET …/git/tags/{sha}`; a commit
+through `GET …/commits/{ref}`, which also proves it is in that repo. A ref the repo lacks is 422
 `kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). Moving the pin is also
 what "the kit bumped" means for the apps that already exist: every app whose `template_version` is
 below the pin's tag reads "Requires upgrade → X.Y.Z" at once (computed on read, §18.23); a commit
-pin flags nothing. "Reset to default" is
-`DELETE …/template-pin` (the row deleted, so the default moves with Launch again). Both audit
-`setting.changed` with the pin before and after. A commit pin shows "Unreleased commit — for
-development".
+pin flags nothing. "Reset to default" is `DELETE …/template-pin` (the row deleted, so the default
+moves with Launch again). All of them audit `setting.changed` with the pin before and after. A
+commit pin shows "Unreleased commit — for development".
+
+**Follow latest** (`template_pin.follow = 'latest'`, `isFollowLatestPin`): the pin tracks the kit's
+newest RELEASE — the highest `X.Y.Z` tag by semver (`latestKitTag`, a leading `v` allowed;
+pre-releases such as `0.18.0-rc.1` and any other tag never count; GitHub's "latest release" is not
+consulted, since a kit tag need not have a GitHub Release), read from `GET …/tags` (paged). Choosing
+it resolves that tag like a tag pin and stores `{ repo, tag, commit, follow: 'latest' }`; between
+moves it IS an ordinary release pin, so the scaffold and the upgrade check read `tag`/`commit`
+unchanged, and a row stored before `follow` existed parses as before. The five-minute cron's
+`kit.followLatest` task (`*/5`, no new cron; registered before `audit.seal`) refreshes it at most
+hourly — a failed lookup is retried on the next tick — and Check now
+(`POST …/template-pin/check`, 409 `template_pin_not_following` otherwise) runs the same
+`refreshFollowLatest`: when the newest release differs from the pinned tag it resolves the commit
+and replaces the row by compare-and-set on the value it read (`compareAndSetSetting` — a
+concurrent re-pin wins, and a second run writes nothing), audited `setting.changed` with
+`after.by` = `cron` (system actor, in the deployment's one organisation, `getSingleTenant`; none
+→ nothing moves) or `check_now` (the admin). Nothing else happens: apps are NOT upgraded — they
+show as behind and the existing upgrade path offers it. Every lookup is recorded as
+`launch_settings.template_pin_check` (`kitLatestCheckSchema`: `checkedAt`, `latest`, `error`),
+which the card shows as "Checked <relative time>" / "Latest: X" and, after a failure, the error; a
+GitHub failure is logged by the cron (never thrown out of `scheduled`) and 502
+`github_lookup_failed` from Check now.
 
 **A commit pin** (`templatePinSchema` with no `tag`): a kit commit that has no release, for
 testing a kit fix without cutting a release each time. The plan's `tag` is then `null`
@@ -1349,7 +1372,9 @@ fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
 kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.16.0; a config test fails when they drift);
-an app pinned to another kit still falls back to the registry for what differs. The Kit version card's GitHub lookups
+an app pinned to another kit still falls back to the registry for what differs. Follow latest
+reads at most 1000 tags (ten pages) and moves only on a newer TAG — a release tag force-moved to
+another commit is not noticed (the scaffold's tag-to-commit check refuses it). The Kit version card's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
 SHA that is not a branch tip, are unconfirmed; the catalogue still shows a commit-pinned app by

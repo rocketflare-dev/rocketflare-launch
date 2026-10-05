@@ -84,7 +84,7 @@ export function useCheckPublicUrl() {
   })
 }
 
-/** The kit repo's tags, for the Kit version card's picker — fetched only when the picker opens. */
+/** The kit repo's tags, newest release first, for the Kit card's picker — fetched when it opens. */
 export function useKitTags(repo: string, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.setup.kitTags(repo),
@@ -97,7 +97,10 @@ export function useKitTags(repo: string, enabled: boolean) {
   })
 }
 
-/** Pin new apps to a release tag or an unreleased commit; the server resolves it via GitHub. */
+/**
+ * Pin new apps to a release tag, an unreleased commit, or Follow latest; the server resolves it
+ * via GitHub.
+ */
 export function useSetTemplatePin() {
   const invalidate = useInvalidateSetup()
   return useMutation({
@@ -131,6 +134,18 @@ export function useUpdateSessionSandbox() {
     mutationFn: (body: SessionSandboxUpdate) =>
       api.put(`${BASE}/session-sandbox`, body, { schema: setupOverviewSchema }),
     onSuccess: () => invalidate(),
+  })
+}
+
+/** Follow latest's Check now: move the pin to the kit's newest release if there is a newer one. */
+export function useCheckLatestKit() {
+  const invalidate = useInvalidateSetup()
+  return useMutation({
+    mutationFn: () =>
+      api.post(`${BASE}/template-pin/check`, undefined, { schema: setupOverviewSchema }),
+    onSuccess: () => invalidate(),
+    // A failed lookup is recorded on the check: the card shows it either way.
+    onError: () => invalidate(),
   })
 }
 

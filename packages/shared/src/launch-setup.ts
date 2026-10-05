@@ -16,6 +16,7 @@ import {
   isPricedRuntimeModel,
   sessionCredentialModeSchema,
 } from './launch-agents'
+import { compareReleaseVersions, parseReleaseVersion } from './launch-releases'
 import { runtimePolicySchema } from './launch-sessions'
 
 /** One row each in `admin_credentials` (`kind` is unique). Mirrors the pg enum — append-only. */
@@ -137,8 +138,9 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  * `launch_settings` keys — non-secret platform configuration, one row each. The wizard's strings,
  * plus two that the pipeline reads with a CODE default and nobody has to set (P2):
  *
- * - `template_pin` — `{ repo, tag?, commit }`, the kit a new app is cut from (`DEFAULT_TEMPLATE_PIN`):
- *   a release tag, or an unreleased commit (no tag). Set on the Setup page's Kit version card.
+ * - `template_pin` — `{ repo, tag?, commit, follow? }`, the kit a new app is cut from
+ *   (`DEFAULT_TEMPLATE_PIN`): a release tag, an unreleased commit (no tag), or the newest release
+ *   (`follow: 'latest'`, kept current by the five-minute cron). Set on Platform → Kit.
  * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
  *
  * And P3's two (`@launch/shared/launch-sessions`):
@@ -153,10 +155,12 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *   sandbox host (`remote`, development only). The Platform → Coding agents tab's Session sandbox
  *   section; each session freezes it at create (`sessions.sandbox_host`).
  *
- * And one Launch writes itself:
+ * And two Launch writes itself:
  *
  * - `public_url_check` — the last "is `APP_URL` reachable from the internet" result
  *   (`publicUrlCheckSchema`), the cache `POST /api/apps` reads rather than probing every time.
+ * - `template_pin_check` — the last "what is the kit's newest release" lookup a Follow latest pin
+ *   made (`kitLatestCheckSchema`): when, what it found, and the error when GitHub failed.
  */
 export const LAUNCH_SETTING_KEYS = [
   ...SETUP_SETTING_KEYS,
@@ -166,6 +170,7 @@ export const LAUNCH_SETTING_KEYS = [
   'sessions_paused',
   'session_sandbox_host',
   'public_url_check',
+  'template_pin_check',
 ] as const
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
@@ -184,17 +189,71 @@ const kitRepoSchema = z
  * - a **commit pin** (no `tag`): an unreleased commit on a branch, for trying a kit fix before it
  *   is released. The job fetches exactly `commit` and checks HEAD is it.
  *
- * A row stored before commit pins existed (always with a tag) parses unchanged.
+ * `follow: 'latest'` makes a release pin FOLLOW the repo's newest release (`latestKitTag`): the
+ * five-minute cron (at most hourly) and the card's Check now move `tag`/`commit` when a newer release
+ * appears. Between moves it is an ordinary release pin — the scaffold and the upgrade check read
+ * `tag` and `commit` exactly as for a pinned tag; apps are never upgraded by the move, only shown
+ * as behind. A follow pin always has a tag.
+ *
+ * A row stored before commit pins (always with a tag) or before `follow` existed parses unchanged.
  */
-export const templatePinSchema = z.object({
-  repo: kitRepoSchema,
-  tag: z.string().trim().min(1).max(100).optional(),
-  commit: z
-    .string()
-    .trim()
-    .regex(/^[0-9a-f]{40}$/, 'A full 40-character commit SHA'),
-})
+export const templatePinSchema = z
+  .object({
+    repo: kitRepoSchema,
+    tag: z.string().trim().min(1).max(100).optional(),
+    commit: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-f]{40}$/, 'A full 40-character commit SHA'),
+    follow: z.literal('latest').nullish(),
+  })
+  .refine(pin => !pin.follow || Boolean(pin.tag), {
+    message: 'A pin that follows the latest release names its tag',
+    path: ['tag'],
+  })
 export type TemplatePin = z.infer<typeof templatePinSchema>
+
+/** Does this pin follow the kit's newest release (`follow: 'latest'`)? */
+export function isFollowLatestPin(pin: { follow?: string | null }): boolean {
+  return pin.follow === 'latest'
+}
+
+/**
+ * The kit's newest RELEASE among `names`: the highest `X.Y.Z` tag by semver (a leading `v`
+ * allowed). Pre-releases (`0.18.0-rc.1`) and any other tag are never "latest"; null when none is a
+ * release. GitHub's own "latest release" is not used — the kit cuts tags, and a tag with no GitHub
+ * Release must still count.
+ */
+export function latestKitTag(names: readonly string[]): string | null {
+  let best: string | null = null
+  for (const name of names) {
+    if (!parseReleaseVersion(name.replace(/^v/, ''))) continue
+    if (
+      best === null ||
+      compareReleaseVersions(name.replace(/^v/, ''), best.replace(/^v/, '')) > 0
+    ) {
+      best = name
+    }
+  }
+  return best
+}
+
+/** Tag names newest release first (semver, descending); anything else after them, in order. */
+export function sortKitTagsNewestFirst<T extends { name: string }>(tags: readonly T[]): T[] {
+  const version = (t: T) =>
+    parseReleaseVersion(t.name.replace(/^v/, '')) ? t.name.replace(/^v/, '') : null
+  return tags
+    .map((tag, index) => ({ tag, index }))
+    .sort((a, b) => {
+      const va = version(a.tag)
+      const vb = version(b.tag)
+      if (va && vb) return compareReleaseVersions(vb, va) || a.index - b.index
+      if (va) return -1
+      if (vb) return 1
+      return a.index - b.index
+    })
+    .map(({ tag }) => tag)
+}
 
 /** A pin with no release tag: an unreleased commit. */
 export function isCommitPin(pin: { tag?: string | null }): boolean {
@@ -227,6 +286,8 @@ export function templatePinRef(pin: { tag?: string | null; commit: string }): st
  *   dereferenced), 422 `kit_ref_not_found` when the repo has no such tag.
  * - `{ kind: 'commit', ref }` — an unreleased commit: a SHA (7–40 hex) or a branch name (`main`
  *   is "latest main"), resolved to the full SHA; 422 `kit_ref_not_found` when it is not in the repo.
+ * - `{ kind: 'latest' }` — Follow latest: the repo's newest release (`latestKitTag`) resolved like
+ *   a tag and stored with `follow: 'latest'`; 422 `kit_ref_not_found` when the repo has no release.
  */
 export const templatePinRequestSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -249,23 +310,44 @@ export const templatePinRequestSchema = z.discriminatedUnion('kind', [
       .max(100)
       .regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/, 'A commit SHA or a branch name'),
   }),
+  z.object({ kind: z.literal('latest'), repo: kitRepoSchema.optional() }),
 ])
 export type TemplatePinRequest = z.infer<typeof templatePinRequestSchema>
 
-/** The kit pin as the Setup page sees it: what new apps use, and whether it is the code default. */
+/**
+ * `launch_settings.template_pin_check` — the last newest-release lookup for a Follow latest pin
+ * (the cron's, Check now's, or choosing Follow latest). `latest` is the newest release found
+ * (kept from the previous lookup when this one failed); `error` is why GitHub could not answer,
+ * null on success. A failed lookup is retried on the next cron tick, a good one an hour later.
+ */
+export const kitLatestCheckSchema = z.object({
+  repo: z.string(),
+  checkedAt: z.coerce.date(),
+  latest: z.string().nullable(),
+  error: z.string().nullable(),
+})
+export type KitLatestCheck = z.infer<typeof kitLatestCheckSchema>
+
+/** The kit pin as Platform → Kit sees it: what new apps use, and whether it is the code default. */
 export const templatePinStatusSchema = z.object({
   pin: templatePinSchema,
   /** No `launch_settings.template_pin` row: `DEFAULT_TEMPLATE_PIN` applies. */
   isDefault: z.boolean(),
   default: templatePinSchema,
+  /** The last newest-release lookup (`template_pin_check`) — shown while the pin follows latest. */
+  latestCheck: kitLatestCheckSchema.nullable(),
 })
 export type TemplatePinStatus = z.infer<typeof templatePinStatusSchema>
 
-/** `GET /api/platform/setup/template-pin/tags[?repo=]` — the repo's recent tags, newest first. */
+/**
+ * `GET /api/platform/setup/template-pin/tags[?repo=]` — the repo's tags, newest release first
+ * (`sortKitTagsNewestFirst`), and which one Follow latest would pick (`latestKitTag`).
+ */
 export const kitTagsQuerySchema = z.object({ repo: kitRepoSchema.optional() })
 export const kitTagsResponseSchema = z.object({
   repo: z.string(),
   tags: z.array(z.object({ name: z.string(), commit: z.string() })),
+  latest: z.string().nullable(),
 })
 export type KitTagsResponse = z.infer<typeof kitTagsResponseSchema>
 

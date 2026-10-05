@@ -417,20 +417,23 @@ otherwise you join as, or are promoted to, owner. Absent: promote by hand once �
 with nobody to approve it (`SIGNUP_MODE=invite_only` default).
 
 **Where Setup lives.** The setup wizard (Launch's credentials, apps domain, GitHub App, Neon, Resend,
-public URL, template pin), the OIDC issuer's keys and the access-request queue are
-**Settings → Platform** (`/settings/platform/setup`, `/identity`, `/access-requests`; sidebar
+public URL), the kit pin, the OIDC issuer's keys and the access-request queue are
+**Settings → Platform** (`/settings/platform/setup`, `/kit`, `/identity`, `/access-requests`; sidebar
 "Setup"). In single mode every organisation owner and admin can open it; in multi mode only global
 admins. `/admin` (organisations, users, feature flags, live sessions) stays global-admin only;
 the old `/admin/setup` links redirect. Verify: `/settings/platform/setup` opens as the first admin.
 
-**Kit version.** The last card on Setup is the Rocketflare kit every new app is cut from: Launch's
-default release unless you change it. Pin a **release tag** (type it, or "List tags"), or — to try
-a kit fix before it is released — a **commit**: paste a SHA from any branch of the kit repo, or
-"Pin latest main". Launch looks either up in the kit repo through the GitHub App (connect it first)
-and stores the full commit; a commit pin is marked "Unreleased commit — for development". "Reset
-to default" goes back to Launch's pin. Apps already launched keep their kit; a re-scaffold uses the
-pin as it is then. Verify: the card shows the tag or `Unreleased commit` with the short SHA you
-pinned.
+**Kit version.** Settings → Platform → **Kit** is the Rocketflare kit every new app is cut from:
+Launch's default release unless you change it. Choose **Follow latest** (the kit's newest release —
+the highest `X.Y.Z` tag, never a pre-release; Launch re-checks it hourly and moves the pin when a
+newer one appears, without upgrading existing apps; "Check now" checks at once), pin a **release
+tag** (type it, or pick from the repo's tags, newest first), or — to try a kit fix before it is
+released — a **commit**: paste a SHA from any branch of the kit repo, or "Pin latest main". Launch
+looks each up in the kit repo through the GitHub App (connect it first) and stores the full commit;
+a commit pin is marked "Unreleased commit — for development". "Reset to default" goes back to
+Launch's pin. Apps already launched keep their kit; a re-scaffold uses the pin as it is then.
+Verify: the card shows the tag (or `Unreleased commit`) with the short SHA you pinned, and for
+Follow latest "Checked …" and "Latest".
 
 **The GitHub App's Administration permission also writes rulesets.** Setup already requires
 Repository › Administration: write (environments). From issue #5 Launch uses it for one more thing:

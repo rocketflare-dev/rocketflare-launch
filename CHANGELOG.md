@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The kit version has its own tab, and can follow the latest release.** Platform → Kit
+  (`/settings/platform/kit`) now holds the Kit version card; Setup no longer shows it. A third
+  mode, **Follow latest**, pins new apps to the kit's newest release — the highest `X.Y.Z` tag,
+  pre-releases never — and the five-minute cron re-checks it at most hourly (a failed lookup is
+  retried on the next tick), moving the pin when a newer release appears: compare-and-set,
+  audited `setting.changed` with `after.by: 'cron'`. Apps are not upgraded; they show as behind and
+  the usual upgrade is offered. The card shows "Checked …" and "Latest: X" and a **Check now**
+  button (`POST /api/platform/setup/template-pin/check`, 502 `github_lookup_failed` when GitHub
+  cannot answer). Contracts: `templatePinSchema` gains `follow: 'latest' | null` (absent on old
+  rows, which parse unchanged; no migration — `launch_settings.value` is jsonb),
+  `templatePinRequestSchema` gains `{ kind: 'latest' }`, `templatePinStatus.latestCheck` and the
+  tags response's `latest` are new, and the last lookup is stored as
+  `launch_settings.template_pin_check`. The release-tag field is now a real combobox
+  (`components/Combobox.tsx`: type to filter the repo's tags, newest first, arrow keys / Enter /
+  Escape / Home / End, ARIA combobox semantics); a tag not in the list can still be typed and the
+  server looks it up.
+
 - **Kit upgrade sessions can push CI workflow changes; ordinary sessions say why they can't.** A
   kit upgrade (0.17.0 edits `.github/workflows/ci.yml` and `deploy.yml`) failed at its save with
   GitHub's raw "refusing to allow a GitHub App to create or update workflow … without workflows
