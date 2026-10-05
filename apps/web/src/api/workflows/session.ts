@@ -44,8 +44,9 @@
  *            settle `ended` (or keep `shipped` /
  *            `failed`), audit `session.ended`
  *   Phase B  (issue #5, after a merge — or straight from `claim` for a merged landing whose
- *            instance was lost): land.release#K.R / land.staging#K.R / land.health#K.R, each with
- *            a `step.sleep` …-wait#K.R between its rounds → land.live#K | land.stalled#K
+ *            instance was lost): land.main-ci#K.R (issue #11: the squash commit's `Gate`) /
+ *            land.release#K.R / land.staging#K.R / land.health#K.R, each with a `step.sleep`
+ *            …-wait#K.R between its rounds → land.live#K | land.stalled#K
  *
  * - One DB client per step (`withStepDatabase`, as `agent-run.ts`) and nudges through
  *   `createStepRealtime().settle()` — no `waitUntil` in a step. The step bodies are
@@ -103,6 +104,7 @@ import {
   landCiStep,
   landHealthStep,
   landLiveStep,
+  landMainCiStep,
   landMergeStep,
   landReleaseStep,
   landReopenStep,
@@ -604,9 +606,11 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
   }
 
   /**
-   * Phase B (issue #5), after `cleanup`: the release that carries the merge, its staging deploy,
-   * staging's health — each a round of its hook (`land.release#K.R`, `land.staging#K.R`,
-   * `land.health#K.R`) with a `step.sleep` between (`…-wait#K.R`) — then `land.live#K`, or
+   * Phase B (issue #5), after `cleanup`: the merge commit's own `Gate` on the default branch
+   * (`land.main-ci#K.R`, issue #11: green or past its bound → on; red → stalled `main_ci_failed`),
+   * the release that carries the merge, its staging deploy, staging's health — each a round of its
+   * hook (`land.release#K.R`, `land.staging#K.R`, `land.health#K.R`) with a `step.sleep` between
+   * (`…-wait#K.R`) — then `land.live#K`, or
    * `land.stalled#K` with the hook's reason. `K` is the merge's loop round (0 under a fresh
    * instance). Nothing here reopens the session: after the merge a failure stalls (decision §0.1).
    */
@@ -632,6 +636,15 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       }
     }
 
+    // Issue #11: the squash commit's own `Gate` first, so the tag's deploy can skip its gate. The
+    // step bounds itself (`SHIP_MAIN_CI_MAX_MINUTES`); out of rounds, the release goes ahead too.
+    for (let r = 0; r < MAX_LAND_PHASE_ROUNDS; r++) {
+      const res = await attempt(`land.main-ci#${k}.${r}`, landMainCiStep)
+      if (res.status === 'done') return
+      if (res.status === 'ready') break
+      if (res.status === 'stalled') return stall(res.reason, res.error)
+      await sleep(`land.main-ci-wait#${k}.${r}`, res.waitSeconds)
+    }
     for (let r = 0; ; r++) {
       if (r >= MAX_LAND_PHASE_ROUNDS) {
         return stall('release_failed', 'Launch gave up waiting to cut the release')

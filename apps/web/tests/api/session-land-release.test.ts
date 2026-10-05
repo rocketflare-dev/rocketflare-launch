@@ -129,7 +129,7 @@ const minutesAgo = (n: number, from = new Date()) => new Date(from.getTime() - n
 async function mergedSession(
   f: Awaited<ReturnType<typeof fixture>>,
   title: string,
-  opts: { stageAt?: Date; merge?: boolean } = {}
+  opts: { stageAt?: Date; merge?: boolean; mainCiAt?: Date } = {}
 ): Promise<SessionRow> {
   const shipped = await shipSessionPr(db, cloud, f.app, {
     tenantId: f.tenantId,
@@ -149,6 +149,10 @@ async function mergedSession(
     reviewMode: 'none',
     mergeSha,
     mergedAt: stageAt,
+    // Issue #11: when `land.main-ci` let the release go (the Workflow's step before this hook).
+    mainCi: opts.mainCiAt
+      ? { verdict: 'success', sha: mergeSha ?? '', at: opts.mainCiAt.toISOString() }
+      : null,
   })
   const [row] = await db
     .update(sessions)
@@ -376,6 +380,19 @@ describe('landRelease', () => {
     expect(result).toMatchObject({ status: 'stalled', reason: 'release_failed' })
     if (result.status === 'stalled') expect(result.error).toMatch(/15 minutes/)
     expect(await landingOf(session)).toMatchObject({ stage: 'releasing' })
+  })
+
+  it('the claim’s 15 minutes start when land.main-ci let the release go, not at the merge (issue #11)', async () => {
+    const f = await fixture()
+    const session = await mergedSession(f, 'Waited on main', {
+      stageAt: minutesAgo(25),
+      mainCiAt: minutesAgo(2),
+    })
+    await holdClaim(f.app, 'session:00000000-0000-4000-8000-000000000000')
+    expect(await landRelease(stepCtx(session))).toEqual({
+      status: 'wait',
+      waitSeconds: LAND_RELEASE_WAIT_SECONDS,
+    })
   })
 
   it('takes over a stale claim', async () => {

@@ -33,7 +33,7 @@
  * the gate is visible; `PUT …/pulls/{n}/merge` (`contents: write`; squash by default — one commit
  * on the base with the head's files, the PR closed and merged, recorded in `merges` /
  * `mergeCount`; 409 when `sha` is not the head, 405 when closed or a required check is not green
- * on the head); check runs carry an `id` (= the Actions job's) and `app.slug` (default
+ * on the head; issue #11: `mergeCommitChecks`, when set, is every new merge commit's CI); check runs carry an `id` (= the Actions job's) and `app.slug` (default
  * `github-actions`); `GET …/actions/jobs/{id}/logs` (`actions: read`; `setJobLog(owner, repo, id,
  * log)`, 404 without one); `GET …/check-runs/{id}/annotations` (a run's `annotations`); rulesets —
  * `GET|POST …/rulesets`, `GET|PUT …/rulesets/{id}` (`administration`; `current_user_can_bypass`
@@ -285,6 +285,12 @@ export class FakeGitHub implements VendorHandler {
   onRelease: ((release: FakeGitHubRelease) => unknown | Promise<unknown>) | null = null
   /** Issue #5: every merge through the API, in order (`mergeCount` counts them). */
   readonly merges: FakeMerge[] = []
+  /**
+   * Issue #11: the check runs every NEW merge commit (an API squash, or `merge()`) reports at once —
+   * the default branch's CI on the push, as a landing's `land.main-ci` reads it. Null (the
+   * default): a merge commit reports nothing until a test sets its runs.
+   */
+  mergeCommitChecks: FakeCheckRun[] | null = null
   /** Issue #5: `owner/name` (lower-case) → the repo's rulesets. */
   readonly rulesets = new Map<string, FakeRuleset[]>()
   /** Issue #5: `owner/name` (lower-case) → classic protection on one branch. */
@@ -559,11 +565,17 @@ export class FakeGitHub implements VendorHandler {
       `Merge pull request #${number} from ${owner}/${pull.head}`
     )
     repo.refs.set(`heads/${pull.base}`, sha)
+    this.mergeCommitCi(owner, name, sha)
     pull.state = 'closed'
     pull.merged = true
     pull.mergedAt = at.toISOString()
     pull.mergeSha = sha
     return sha
+  }
+
+  /** Issue #11: a new merge commit's CI, from `mergeCommitChecks` (nothing when that is null). */
+  private mergeCommitCi(owner: string, name: string, sha: string): void {
+    if (this.mergeCommitChecks) this.setCheckRuns(owner, name, sha, this.mergeCommitChecks)
   }
 
   /** P4: close a pull request without merging it. */
@@ -1417,6 +1429,7 @@ export class FakeGitHub implements VendorHandler {
         message ? `${subject}\n\n${message}` : subject
       )
       repo.refs.set(`heads/${pull.base}`, sha)
+      this.mergeCommitCi(repo.owner, repo.name, sha)
       pull.headSha = headSha
       pull.state = 'closed'
       pull.merged = true

@@ -524,6 +524,7 @@ const REVIEW_CANCELLED_TEXT = 'The review was cancelled, so Launch didn’t merg
 /** Why a landing stalled after the merge, in one sentence (the change is merged either way). */
 export const STALLED_TEXT: Record<ShipStalledReason, string> = {
   release_failed: 'The change is merged, but Launch couldn’t cut a release for it.',
+  main_ci_failed: 'The change is merged, but CI failed on main, so Launch didn’t release it.',
   deploy_failed: 'The change is merged and released, but the staging deploy failed.',
   deploy_timeout: 'The change is merged and released, but staging didn’t pick it up in time.',
   unhealthy: 'The change is on staging, but staging isn’t passing its health check.',
@@ -673,6 +674,7 @@ const REOPEN_STEP: Record<ShipReopenReason, LandingStepKey> = {
 /** The step a stall failed at. */
 const STALLED_STEP: Record<ShipStalledReason, LandingStepKey> = {
   release_failed: 'released',
+  main_ci_failed: 'released',
   deploy_failed: 'staging',
   deploy_timeout: 'staging',
   unhealthy: 'staging',

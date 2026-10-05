@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A landing waits for the merge commit's `Gate` before it releases.** After Launch squash-merges
+  a session's PR, Phase B now reads the squash commit's own checks on the default branch
+  (`land.main-ci`, decided on `Gate` like `land.ci`) before it cuts the `release: X.Y.Z` bump and
+  tag, so the kit's `deploy.yml` finds a completed green `CI` run on the bump's parent and skips
+  the tag's gate. Green → release; red → the landing stalls `main_ci_failed` (the change is
+  merged, nothing is released — release it from the app page once main is green); still running
+  after 30 minutes (`SHIP_MAIN_CI_MAX_MINUTES`), or no check at all within 3
+  (`SHIP_MAIN_CI_NONE_GRACE_MINUTES`, a repo whose CI does not run on main) → release anyway, the
+  deploy re-gating as before. No `[skip ci]` on the bump. A release cut by a person (the app page,
+  `launch releases`) does not wait.
+
 - **A green ship attests its gate on GitHub, and a landing decides on `Gate`.** After the sandbox
   gate passes and the ship's commit is pushed, Launch's GitHub App posts a `launch/gate` check run
   on that commit (`success`, `external_id` `tree:<git tree sha>`, the steps, commands and durations

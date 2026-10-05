@@ -142,6 +142,8 @@ async function harness(): Promise<Harness> {
   const cfg = loadConfig(env)
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud, { prepared: true })
+  // Issue #11: the default branch's CI is green on every merge commit unless a test says otherwise.
+  cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'completed', conclusion: 'success' }]
   const row = await insertSession(db, f, { status: 'requested', title: null })
   const branch = sessionBranchName(row.shortId)
   const ports = createFakeSessionPorts({
@@ -272,6 +274,8 @@ async function drive(
     ) => Promise<unknown>
     /** A fresh instance's run (the row is already where it is). */
     fresh?: boolean
+    /** A `step.sleep` by name (issue #11: the merge commit's CI moving on during `land.main-ci-wait`). */
+    onSleep?: (h: Harness, name: string) => Promise<void> | void
   } = {}
 ) {
   let idle = 0
@@ -294,6 +298,7 @@ async function drive(
   // The fake's `sleep` records nothing; Phase B's waits are steps too, so name them.
   ;(fake.step as { sleep: unknown }).sleep = async (name: string) => {
     fake.names.push(name)
+    await opts.onSleep?.(h, name)
   }
   const realDo = fake.step.do.bind(fake.step) as (...args: unknown[]) => Promise<unknown>
   ;(fake.step as { do: unknown }).do = async (...args: unknown[]) => {
@@ -395,6 +400,7 @@ describe('landing: CI green', () => {
       'land.ci#3',
       'land.merge#3',
       'cleanup',
+      'land.main-ci#3.0',
       'land.release#3.0',
       'land.staging#3.0',
       'land.health#3.0',
@@ -899,6 +905,7 @@ describe('landing: End and a lost instance', () => {
         prNumber: 9,
         gateSha: 'f'.repeat(40),
         gateTree: null,
+        mainCi: null,
         startedAt: new Date().toISOString(),
         stageAt: new Date().toISOString(),
         reviewMode: 'none',
@@ -967,8 +974,9 @@ describe('landing: End and a lost instance', () => {
     const run = await drive(h, { fresh: true })
     expect(run.names.slice(0, 4)).toEqual(['claim', 'inspect#0', 'land.ci#0', 'land.merge#0'])
     expect(run.names).not.toContain('salvage')
-    expect(run.names.slice(-5)).toEqual([
+    expect(run.names.slice(-6)).toEqual([
       'cleanup',
+      'land.main-ci#0.0',
       'land.release#0.0',
       'land.staging#0.0',
       'land.health#0.0',
@@ -1001,6 +1009,7 @@ describe('landing: End and a lost instance', () => {
     expect(run.names).toEqual([
       'claim',
       'cleanup',
+      'land.main-ci#0.0',
       'land.release#0.0',
       'land.staging#0.0',
       'land.health#0.0',
@@ -1061,6 +1070,146 @@ describe('Phase B: a stall never reopens', () => {
       'land.health#3.2',
       'land.live#3',
     ])
+  })
+})
+
+describe('Phase B: the merge commit’s Gate before the release (issue #11)', () => {
+  const greenPr = async (h: Harness) => {
+    setGate(h, await gateShaOf(h), 'success')
+    return 'wake' as const
+  }
+  /** The squash commit on the default branch (`landing.mergeSha`). */
+  const mergeShaOf = async (h: Harness) => (await reload(h.row)).landing?.mergeSha ?? ''
+  const mainGate = async (h: Harness, state: 'in_progress' | 'success' | 'failure') =>
+    setGate(h, await mergeShaOf(h), state)
+
+  it('pending, then green: waits a round, then cuts the release', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'in_progress', conclusion: null }]
+    let releasedWhileRunning: boolean | null = null
+    const cut = h.hooks.landRelease
+    h.hooks.landRelease = async ctx => {
+      // The release is cut only once the squash commit's Gate is done.
+      const runs = h.cloud.github.checkRuns
+      const sha = await mergeShaOf(h)
+      releasedWhileRunning = [...runs.entries()].some(
+        ([key, list]) => key.endsWith(`@${sha}`) && list.some(r => r.status !== 'completed')
+      )
+      return cut(ctx)
+    }
+    const run = await drive(h, {
+      onLand: async h => greenPr(h),
+      onSleep: async (h, name) => {
+        if (name === 'land.main-ci-wait#3.0') await mainGate(h, 'success')
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names.slice(run.names.indexOf('cleanup'))).toEqual([
+      'cleanup',
+      'land.main-ci#3.0',
+      'land.main-ci-wait#3.0',
+      'land.main-ci#3.1',
+      'land.release#3.0',
+      'land.staging#3.0',
+      'land.health#3.0',
+      'land.live#3',
+    ])
+    expect(releasedWhileRunning).toBe(false)
+    expect(h.phaseB).toEqual(['release', 'staging', 'health'])
+    const row = await reload(h.row)
+    expect(row.landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'success', sha: row.landing?.mergeSha },
+    })
+  })
+
+  it('red: no release — stalled main_ci_failed, still shipped, never reopened', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = [
+      { name: 'Gate', status: 'completed', conclusion: 'failure' },
+    ]
+    const run = await drive(h, { onLand: async h => greenPr(h) })
+    expect(run.names.slice(run.names.indexOf('cleanup'))).toEqual([
+      'cleanup',
+      'land.main-ci#3.0',
+      'land.stalled#3',
+    ])
+    expect(h.phaseB).toEqual([])
+    const row = await reload(h.row)
+    expect(row.status).toBe('shipped')
+    expect(row.landing).toMatchObject({
+      stage: 'stalled',
+      stalledReason: 'main_ci_failed',
+      mainCi: null,
+      releaseId: null,
+      error: expect.stringContaining('CI failed on the default branch'),
+    })
+    expect(row.landing?.error).toContain(`/apps/${h.f.app.slug}`)
+    // Nothing was released: no staging row, no reopen.
+    expect(await eventData(h, 'ship.staging')).toEqual([])
+    expect(await eventData(h, 'ship.reopened')).toEqual([])
+    expect(await auditOf(h, 'session.land_stalled')).toHaveLength(1)
+  })
+
+  it('still running past the bound: releases anyway (the deploy re-gates)', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'in_progress', conclusion: null }]
+    const run = await drive(h, {
+      onLand: async h => greenPr(h),
+      onSleep: (h, name) => {
+        if (name.startsWith('land.main-ci-wait#')) h.clock.ms += 31 * MINUTE
+      },
+    })
+    expect(run.names.slice(run.names.indexOf('cleanup'), -3)).toEqual([
+      'cleanup',
+      'land.main-ci#3.0',
+      'land.main-ci-wait#3.0',
+      'land.main-ci#3.1',
+      'land.release#3.0',
+    ])
+    expect(h.phaseB).toEqual(['release', 'staging', 'health'])
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'timeout' },
+    })
+  })
+
+  it('no check at all on the merge commit: releases after the grace (CI that never runs on main)', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = null
+    const run = await drive(h, {
+      onLand: async h => greenPr(h),
+      onSleep: (h, name) => {
+        if (name.startsWith('land.main-ci-wait#')) h.clock.ms += 2 * MINUTE
+      },
+    })
+    // 2 minutes in, still inside the 3-minute grace: one more round; at 4, the release.
+    expect(run.names.slice(run.names.indexOf('cleanup'), -3)).toEqual([
+      'cleanup',
+      'land.main-ci#3.0',
+      'land.main-ci-wait#3.0',
+      'land.main-ci#3.1',
+      'land.main-ci-wait#3.1',
+      'land.main-ci#3.2',
+      'land.release#3.0',
+    ])
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'none' },
+    })
+  })
+
+  it('a red optional check beside a green Gate on main still releases', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = [
+      { name: 'Gate', status: 'completed', conclusion: 'success' },
+      { name: 'evals', status: 'completed', conclusion: 'failure' },
+    ]
+    await drive(h, { onLand: async h => greenPr(h) })
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'success' },
+    })
   })
 })
 
@@ -1320,6 +1469,8 @@ describe('reconcile: a ship or landing whose Workflow died (a `wrangler dev` rel
     const run = await drive(h, { fresh: true })
     expect(run.names).toEqual([
       'claim',
+      // A landing already `deploying`: the merge commit's CI is not read again.
+      'land.main-ci#0.0',
       'land.release#0.0',
       'land.staging#0.0',
       'land.health#0.0',
@@ -1368,6 +1519,7 @@ describe('tenant isolation', () => {
       prNumber: 1,
       gateSha,
       gateTree: null,
+      mainCi: null,
       startedAt: old.toISOString(),
       stageAt: old.toISOString(),
       reviewMode: 'none',
