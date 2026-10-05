@@ -15,7 +15,10 @@
  * `dns.wildcard.created` (target the zone) before the credential's own row. `GET /` never probes.
  *   DELETE /credentials/:kind         → audit credential.removed
  *   GET    /template-pin/tags[?repo]  the kit repo's tags (the Kit version card's picker)
- *   PUT    /template-pin              a tag or a commit, resolved through GitHub → setting.changed
+ *   PUT    /template-pin              a tag, a commit or Follow latest, resolved through GitHub
+ *                                     → setting.changed
+ *   POST   /template-pin/check        Follow latest's Check now: move to the newest release if
+ *                                     there is a newer one → setting.changed (`by: check_now`)
  *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the row deleted) → setting.changed
  *   PUT    /session-agents            coding agents: on/off, model, who pays — merged into
  *                                     `session_policy.runtimes` → setting.changed (§18.22)
@@ -52,7 +55,12 @@ import {
   putSetting,
   removeCredential,
 } from '../services/launch/credentials'
-import { listKitTags, resolveTemplatePinRequest } from '../services/launch/kit-pin'
+import {
+  listKitTags,
+  recordLatestCheck,
+  refreshFollowLatest,
+  resolveTemplatePinRequest,
+} from '../services/launch/kit-pin'
 import { runPublicUrlCheck } from '../services/launch/public-url'
 import { updateSessionAgents } from '../services/launch/session-agents'
 import {
@@ -255,7 +263,32 @@ setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), asy
   const pin = await resolveTemplatePinRequest(db, cfg, c.req.valid('json'))
   const before = await getSetting(db, 'template_pin')
   await putSetting(db, 'template_pin', pin, user.id)
+  // Follow latest just looked the newest release up: that is the card's "Checked" from now.
+  if (pin.follow === 'latest') {
+    await recordLatestCheck(db, { repo: pin.repo, latest: pin.tag ?? null, error: null })
+  }
   await auditPinChange(c, db, auditTenantId, before, pin)
+  return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
+})
+
+/**
+ * Check now: the cron's refresh, on demand. 409 `template_pin_not_following` unless the pin
+ * follows latest; a GitHub failure is 502 `github_lookup_failed` (recorded on the check, too).
+ */
+setupRouter.post('/template-pin/check', async c => {
+  const { db, cfg, tenantId } = withAuth(c)
+  const auditTenantId = await auditTenant(db, tenantId)
+  const result = await refreshFollowLatest(db, cfg, {
+    auditTenantId,
+    actor: auditActor(c),
+    by: 'check_now',
+  })
+  if (result.status === 'not_following') {
+    throw new ConflictError(
+      'The kit pin does not follow the latest release: choose Follow latest first',
+      'template_pin_not_following'
+    )
+  }
   return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 

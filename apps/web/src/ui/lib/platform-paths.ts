@@ -6,6 +6,7 @@
  */
 export const PLATFORM_SETTINGS_PATH = '/settings/platform'
 export const PLATFORM_SETUP_PATH = `${PLATFORM_SETTINGS_PATH}/setup`
+export const PLATFORM_KIT_PATH = `${PLATFORM_SETTINGS_PATH}/kit`
 export const PLATFORM_CODING_AGENTS_PATH = `${PLATFORM_SETTINGS_PATH}/coding-agents`
 export const PLATFORM_IDENTITY_PATH = `${PLATFORM_SETTINGS_PATH}/identity`
 export const PLATFORM_ACCESS_REQUESTS_PATH = `${PLATFORM_SETTINGS_PATH}/access-requests`

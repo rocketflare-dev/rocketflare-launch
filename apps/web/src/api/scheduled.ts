@@ -19,6 +19,7 @@ import { grantsSweep } from './services/grants/sweep'
 import { pruneInvitations } from './services/invitations'
 import { auditSeal } from './services/launch/audit-chain'
 import { healthPoll } from './services/launch/health'
+import { kitFollowLatest } from './services/launch/kit-pin'
 import { sessionsChecks } from './services/sessions/checks-cron'
 import { expireSessions } from './services/sessions/expire'
 import { sessionsGateSweep } from './services/sessions/gate-sweep'
@@ -109,7 +110,8 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   // P5: remind and expire grants, and flag secrets due for rotation — before the seal, so its
   // audit rows join this run's chain. Issue #1: delete ship-gate database branches a ship left
   // behind (`gate-*`, older than three hours). §18.22: expire personal-account sign-ins past their
-  // TTL and release credential claims a dead turn left.
+  // TTL and release credential claims a dead turn left. Kit: a Follow latest pin moved to the kit's
+  // newest release (at most hourly; a failed lookup retried next tick) — before the seal too.
   '*/5 * * * *': [
     healthPoll,
     expireSessions,
@@ -118,6 +120,7 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
     agentLoginsSweep,
     approvalsSweep,
     grantsSweep,
+    kitFollowLatest,
     auditSeal,
   ],
 }

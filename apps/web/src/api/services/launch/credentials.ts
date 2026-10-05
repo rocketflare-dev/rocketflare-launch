@@ -24,7 +24,7 @@ import {
   credentialPayloadSchemas,
   type LaunchSettingKey,
 } from '@launch/shared/launch-setup'
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { adminCredentials, launchSettings } from '../../../db/schema'
@@ -222,4 +222,29 @@ export async function putSetting(
       target: launchSettings.key,
       set: { value, updatedByUserId: userId, updatedAt: new Date() },
     })
+}
+
+/**
+ * Replace a platform setting only while it still holds `expected` (jsonb equality, so key order
+ * does not matter) — a writer that read the row and decided on it (the Follow latest cron) never
+ * overwrites a change made in between. True when this call wrote it.
+ */
+export async function compareAndSetSetting(
+  db: Database,
+  key: LaunchSettingKey,
+  expected: unknown,
+  value: unknown,
+  userId: string | null
+): Promise<boolean> {
+  const rows = await db
+    .update(launchSettings)
+    .set({ value, updatedByUserId: userId, updatedAt: new Date() })
+    .where(
+      and(
+        eq(launchSettings.key, key),
+        sql`${launchSettings.value} = ${JSON.stringify(expected)}::jsonb`
+      )
+    )
+    .returning({ key: launchSettings.key })
+  return rows.length > 0
 }

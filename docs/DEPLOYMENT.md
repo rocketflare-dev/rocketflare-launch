@@ -243,14 +243,15 @@ email DNS record's presence when verification stalls.
      (a GitHub App that failed because it wasn't installed yet is the usual one). Pressing Check
      here is also the proof that the Worker can unseal what `setup` sealed;
    - run the **Public URL** check (GitHub's runners call Launch back at it, and creating an app is
-     refused until it passes);
-   - **pin the kit version** apps are created from (Kit version card).
-3. **Settings → Platform → Coding agents**: turn on the coding agents sessions may run, and who
+     refused until it passes).
+3. **Settings → Platform → Kit**: pin the kit version apps are created from — a release, **Follow
+   latest** (the newest release, re-checked hourly) or, for development, a commit.
+4. **Settings → Platform → Coding agents**: turn on the coding agents sessions may run, and who
    pays. With nothing set, it's Claude Code on Launch's key only, which needs `ANTHROPIC_API_KEY`
    or the Anthropic credential.
-4. Google or Microsoft sign-in: add `https://launch.rocketflare.dev/auth/google/callback` (or
+5. Google or Microsoft sign-in: add `https://launch.rocketflare.dev/auth/google/callback` (or
    `/auth/microsoft/callback`) to that provider's redirect URIs (`SETUP.md` 2.2 / 2.3).
-5. Back up `launch.deploy.env` and `.launch/` now (§ 7).
+6. Back up `launch.deploy.env` and `.launch/` now (§ 7).
 
 ## 5. Smoke test (you, with the agent)
 

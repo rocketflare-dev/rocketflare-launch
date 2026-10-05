@@ -90,6 +90,7 @@ const SessionsAdmin = lazy(() => import('@/ui/pages/admin/SessionsAdmin'))
 const PlatformLayout = lazy(() => import('@/ui/pages/platform/PlatformLayout'))
 const AccessRequests = lazy(() => import('@/ui/pages/platform/AccessRequests'))
 const Setup = lazy(() => import('@/ui/pages/platform/Setup'))
+const Kit = lazy(() => import('@/ui/pages/platform/Kit'))
 const CodingAgents = lazy(() => import('@/ui/pages/platform/CodingAgents'))
 const Identity = lazy(() => import('@/ui/pages/platform/Identity'))
 
@@ -334,6 +335,7 @@ function ShellRoutes() {
           >
             <Route index element={<Navigate to={PLATFORM_SETUP_PATH} replace />} />
             <Route path="setup" element={<Setup />} />
+            <Route path="kit" element={<Kit />} />
             <Route path="coding-agents" element={<CodingAgents />} />
             <Route path="identity" element={<Identity />} />
             <Route path="access-requests" element={<AccessRequests />} />

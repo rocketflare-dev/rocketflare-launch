@@ -23,8 +23,11 @@ import {
   DEFAULT_APP_CREATE_ROLE,
   DEFAULT_TEMPLATE_PIN,
   isCommitPin,
+  isFollowLatestPin,
   LAUNCH_SETTING_KEYS,
+  latestKitTag,
   SETUP_SETTING_KEYS,
+  sortKitTagsNewestFirst,
   templatePinLabel,
   templatePinRef,
   templatePinRequestSchema,
@@ -269,6 +272,8 @@ describe('P2 settings', () => {
       'session_sandbox_host',
       // Written by Launch itself: the cached public-URL check (`services/launch/public-url.ts`).
       'public_url_check',
+      // …and the last Follow latest lookup (`services/launch/kit-pin.ts`).
+      'template_pin_check',
     ])
     expect(templatePinSchema.parse(DEFAULT_TEMPLATE_PIN)).toEqual({
       repo: 'rocketflare-dev/rocketflare',
@@ -295,7 +300,38 @@ describe('P2 settings', () => {
     expect(templatePinSchema.safeParse({ repo: 'a/b', tag: '', commit }).success).toBe(false)
   })
 
+  it('a pin may follow the latest release; rows stored before `follow` parse with none', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567'
+    const old = { repo: 'rocketflare-dev/rocketflare', tag: '0.15.0', commit }
+    expect(templatePinSchema.parse(old)).toEqual(old)
+    expect(isFollowLatestPin(templatePinSchema.parse(old))).toBe(false)
+    expect(isFollowLatestPin(templatePinSchema.parse({ ...old, follow: null }))).toBe(false)
+    const following = templatePinSchema.parse({ ...old, follow: 'latest' })
+    expect(isFollowLatestPin(following)).toBe(true)
+    // A follow pin always names its tag; nothing else is a follow mode.
+    expect(templatePinSchema.safeParse({ repo: 'a/b', commit, follow: 'latest' }).success).toBe(
+      false
+    )
+    expect(templatePinSchema.safeParse({ ...old, follow: 'main' }).success).toBe(false)
+  })
+
+  it('the latest release is the highest X.Y.Z tag; pre-releases and other tags never are', () => {
+    expect(latestKitTag(['0.15.10', '0.16.0-rc.1', '0.15.9', 'v0.9.0', 'nightly'])).toBe('0.15.10')
+    expect(latestKitTag(['0.17.1', '0.17.0', '1.0.0-beta'])).toBe('0.17.1')
+    expect(latestKitTag(['v1.2.0', '1.1.9'])).toBe('v1.2.0')
+    expect(latestKitTag(['nightly', '2.0.0-rc.1'])).toBeNull()
+    expect(
+      sortKitTagsNewestFirst([
+        { name: 'nightly' },
+        { name: '0.15.9' },
+        { name: '0.16.0-rc.1' },
+        { name: '0.15.10' },
+      ]).map(t => t.name)
+    ).toEqual(['0.15.10', '0.15.9', 'nightly', '0.16.0-rc.1'])
+  })
+
   it('the Kit version card asks for a tag or a commit (SHA or branch), never a full pin', () => {
+    expect(templatePinRequestSchema.parse({ kind: 'latest' })).toEqual({ kind: 'latest' })
     expect(templatePinRequestSchema.parse({ kind: 'tag', tag: '0.15.5' })).toEqual({
       kind: 'tag',
       tag: '0.15.5',

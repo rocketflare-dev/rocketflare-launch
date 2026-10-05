@@ -15,6 +15,23 @@
   at most once; the next turn is decided as before. An explicit `STOPPED`, or a turn that changed
   files and stopped, still goes straight to Needs attention.
 
+- **The kit version has its own tab, and can follow the latest release.** Platform → Kit
+  (`/settings/platform/kit`) now holds the Kit version card; Setup no longer shows it. A third
+  mode, **Follow latest**, pins new apps to the kit's newest release — the highest `X.Y.Z` tag,
+  pre-releases never — and the five-minute cron re-checks it at most hourly (a failed lookup is
+  retried on the next tick), moving the pin when a newer release appears: compare-and-set,
+  audited `setting.changed` with `after.by: 'cron'`. Apps are not upgraded; they show as behind and
+  the usual upgrade is offered. The card shows "Checked …" and "Latest: X" and a **Check now**
+  button (`POST /api/platform/setup/template-pin/check`, 502 `github_lookup_failed` when GitHub
+  cannot answer). Contracts: `templatePinSchema` gains `follow: 'latest' | null` (absent on old
+  rows, which parse unchanged; no migration — `launch_settings.value` is jsonb),
+  `templatePinRequestSchema` gains `{ kind: 'latest' }`, `templatePinStatus.latestCheck` and the
+  tags response's `latest` are new, and the last lookup is stored as
+  `launch_settings.template_pin_check`. The release-tag field is now a real combobox
+  (`components/Combobox.tsx`: type to filter the repo's tags, newest first, arrow keys / Enter /
+  Escape / Home / End, ARIA combobox semantics); a tag not in the list can still be typed and the
+  server looks it up.
+
 - **`pnpm plugin` keeps the host's dependencies in step with what a plugin declares** (kit 0.17.1,
   ported). `plugin add` writes the DECLARED range into `package.json` (not pnpm's `^<resolved>`)
   and re-keys the lockfile, and skips a dependency the host already holds inside that range;

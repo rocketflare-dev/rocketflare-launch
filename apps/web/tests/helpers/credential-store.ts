@@ -21,6 +21,8 @@
  * Values are kept unsealed (there is nothing to protect in memory); the payload is still parsed
  * by the real `credentialPayloadSchemas`, so a malformed seed fails as it would in Setup.
  */
+
+import { isDeepStrictEqual } from 'node:util'
 import {
   CREDENTIAL_KINDS,
   type CredentialKind,
@@ -124,6 +126,14 @@ export function mockCredentialsModule(
     putSetting: async (_db, key, value) => {
       if (value === null || value === undefined) store.settings.delete(key)
       else store.settings.set(key, value)
+    },
+    compareAndSetSetting: async (_db, key, expected, value) => {
+      if (!store.settings.has(key)) return false
+      // jsonb equality: a stored `undefined` member is absent, as it would be in Postgres.
+      const normal = (v: unknown) => JSON.parse(JSON.stringify(v)) as unknown
+      if (!isDeepStrictEqual(normal(store.settings.get(key)), normal(expected))) return false
+      store.settings.set(key, value)
+      return true
     },
   }
 }

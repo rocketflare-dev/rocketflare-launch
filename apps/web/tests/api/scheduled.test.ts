@@ -9,6 +9,7 @@ import { approvalsSweep } from '@/api/services/approvals/sweep'
 import { grantsSweep } from '@/api/services/grants/sweep'
 import { auditSeal } from '@/api/services/launch/audit-chain'
 import { healthPoll, healthPollTask } from '@/api/services/launch/health'
+import { kitFollowLatest } from '@/api/services/launch/kit-pin'
 import { sessionsChecks } from '@/api/services/sessions/checks-cron'
 import { expireSessions } from '@/api/services/sessions/expire'
 import { sessionsGateSweep } from '@/api/services/sessions/gate-sweep'
@@ -27,7 +28,7 @@ describe('scheduled dispatcher', () => {
   })
 
   it("registers Launch's health poll, the P3 session tasks (and issue #1's gate-branch sweep, §18.22's sign-in sweep), the P4 approval and audit tasks and the P5 grants sweep on the five-minute cron", () => {
-    // The grants sweep runs BEFORE the seal, so the audit rows it writes join the same run's chain.
+    // The grants sweep (and the Follow latest kit refresh) run BEFORE the seal, so the audit rows it writes join the same run's chain.
     expect(SCHEDULED_TASKS['*/5 * * * *']).toEqual([
       healthPoll,
       expireSessions,
@@ -36,6 +37,7 @@ describe('scheduled dispatcher', () => {
       agentLoginsSweep,
       approvalsSweep,
       grantsSweep,
+      kitFollowLatest,
       auditSeal,
     ])
     expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual([
@@ -46,6 +48,7 @@ describe('scheduled dispatcher', () => {
       'agent-logins.sweep',
       'approvals.sweep',
       'grants.sweep',
+      'kit.followLatest',
       'audit.seal',
     ])
   })

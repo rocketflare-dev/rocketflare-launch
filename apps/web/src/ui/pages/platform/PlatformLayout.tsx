@@ -1,6 +1,7 @@
 /**
- * `/settings/platform/*`: administering the Launch DEPLOYMENT — the setup wizard, the coding agents
- * sessions run, Launch as the company's OIDC issuer, and the sign-up review queue. Gated by `RequireGuard
+ * `/settings/platform/*`: administering the Launch DEPLOYMENT — the setup wizard, the kit new apps
+ * are cut from, the coding agents sessions run, Launch as the company's OIDC issuer, and the
+ * sign-up review queue. Gated by `RequireGuard
  * guard="platformAdmin"` on the route (`canAdministerPlatform`; server: `platformAdminMiddleware`
  * on `/api/platform/*`): a global admin, or in single mode the organisation's owner/admin — there
  * the one organisation IS the company running Launch, so its admins own the platform too.
@@ -18,6 +19,7 @@ import {
   PLATFORM_ACCESS_REQUESTS_PATH,
   PLATFORM_CODING_AGENTS_PATH,
   PLATFORM_IDENTITY_PATH,
+  PLATFORM_KIT_PATH,
   PLATFORM_SETUP_PATH,
 } from '@/ui/lib/platform-paths'
 
@@ -30,6 +32,8 @@ export default function PlatformLayout() {
   const tabs = [
     // Launch: the platform credentials and settings (spec/03) and the issuer's keys (spec/05).
     { to: PLATFORM_SETUP_PATH, label: 'Setup' },
+    // The kit new apps are cut from: a release, Follow latest, or an unreleased commit.
+    { to: PLATFORM_KIT_PATH, label: 'Kit' },
     // Sessions §18.22: which coding agents run, their models, who pays, and Launch's keys for them.
     { to: PLATFORM_CODING_AGENTS_PATH, label: 'Coding agents' },
     { to: PLATFORM_IDENTITY_PATH, label: 'Identity' },
