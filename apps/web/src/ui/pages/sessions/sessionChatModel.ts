@@ -209,7 +209,7 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
       return {
         kind: 'notice',
         ...base,
-        tone: parsed.data.reason === UPGRADE_SESSION_REASONS.autoShip ? 'info' : 'warning',
+        tone: parsed.data.reason === UPGRADE_SESSION_REASONS.needsAttention ? 'warning' : 'info',
         text: parsed.data.message,
       }
     }

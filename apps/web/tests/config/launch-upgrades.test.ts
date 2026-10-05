@@ -1,7 +1,8 @@
 /**
  * The pure parts of P6 6c's kit upgrades: the version comparison behind "Requires upgrade", the
  * `LAUNCH-UPGRADE:` line the auto-ship reads, the auto-ship verdict itself (every way a first turn
- * can fail to be clean), and the upgrade prompt's unattended rules.
+ * can fail to be clean), when Launch sends its one follow-up turn instead, and the upgrade
+ * prompt's unattended rules.
  */
 import {
   kitVersionBehind,
@@ -11,8 +12,16 @@ import {
   upgradeResultOf,
 } from '@launch/shared/launch-upgrades'
 import { describe, expect, it } from 'vitest'
-import { upgradePrompt, upgradeTitle } from '@/api/services/launch/rocketflare/upgrade-prompt'
-import { autoShipVerdict, type UpgradeTurnEvidence } from '@/api/services/launch/upgrades'
+import {
+  upgradeFollowUpPrompt,
+  upgradePrompt,
+  upgradeTitle,
+} from '@/api/services/launch/rocketflare/upgrade-prompt'
+import {
+  autoShipVerdict,
+  type UpgradeTurnEvidence,
+  upgradeFollowUpDue,
+} from '@/api/services/launch/upgrades'
 
 describe('kit versions', () => {
   it('reads X.Y.Z with or without a v, and nothing else', () => {
@@ -97,10 +106,74 @@ describe('autoShipVerdict — a first turn ended cleanly only with all the evide
   }
 })
 
+describe('upgradeFollowUpDue — a first turn that never ran the upgrade is sent back once', () => {
+  const forgot: UpgradeTurnEvidence = {
+    status: 'completed',
+    result: {
+      subtype: 'success',
+      isError: false,
+      tail: "I've launched the upgrade skill. Let me wait for it to complete.",
+    },
+    changed: false,
+    askedQuestion: false,
+    manifestVersion: null,
+  }
+
+  it('is due for a clean turn with no marker and an unchanged workspace', () => {
+    expect(upgradeFollowUpDue(forgot, false)).toBe(true)
+  })
+
+  it('is due at most once', () => {
+    expect(upgradeFollowUpDue(forgot, true)).toBe(false)
+  })
+
+  const notDue: [string, Partial<UpgradeTurnEvidence>][] = [
+    [
+      'an explicit STOPPED',
+      { result: { subtype: 'success', isError: false, tail: 'Rejects.\nLAUNCH-UPGRADE: STOPPED' } },
+    ],
+    ['DONE', { result: { subtype: 'success', isError: false, tail: 'LAUNCH-UPGRADE: DONE' } }],
+    ['a changed workspace (it stopped mid-way)', { changed: true }],
+    ['an unmeasured workspace', { changed: undefined }],
+    ['AskUserQuestion', { askedQuestion: true }],
+    ['a failed turn', { status: 'failed' }],
+    ['a turn with no result line', { result: undefined }],
+    ['out of turns', { result: { subtype: 'error_max_turns', isError: true, tail: null } }],
+  ]
+  for (const [name, over] of notDue) {
+    it(`is not due for ${name}`, () => {
+      expect(upgradeFollowUpDue({ ...forgot, ...over }, false)).toBe(false)
+    })
+  }
+
+  it('the follow-up says nothing runs in the background and names the command, skill and marker', () => {
+    const text = upgradeFollowUpPrompt({ to: '0.17.1' })
+    expect(text).toMatch(/^You ended the turn without running the upgrade\./)
+    expect(text).toContain('Nothing runs in the background.')
+    expect(text).toContain('`pnpm kit:upgrade --to 0.17.1 --apply`')
+    expect(text).toContain('`.claude/skills/rf-upgrade/SKILL.md`')
+    expect(text).toContain('LAUNCH-UPGRADE: DONE')
+    expect(text).toContain('LAUNCH-UPGRADE: STOPPED')
+  })
+})
+
 describe('the upgrade prompt', () => {
-  it('drives /rf-upgrade to the tag with the unattended rules and the marker', () => {
+  it('has the agent follow the rf-upgrade skill itself, with the unattended rules and the marker', () => {
     const text = upgradePrompt({ from: '0.16.0', to: '0.16.1' })
-    expect(text).toContain('/rf-upgrade --to 0.16.1')
+    // Not a slash command or the Skill tool: headless Claude Code took "Launching skill" for a
+    // background job and ended the turn. It reads the skill and does the work in this turn.
+    expect(text).not.toContain('/rf-upgrade --to')
+    expect(text).not.toMatch(/\bRun `\/rf-upgrade/)
+    expect(text).toContain(
+      'Read `.claude/skills/rf-upgrade/SKILL.md` and follow it yourself, in this turn'
+    )
+    expect(text).toMatch(/do not invoke it as a slash command or through the Skill tool/)
+    expect(text).toMatch(/Nothing runs in the background and nothing will complete on its own/)
+    expect(text).toMatch(
+      /Do not end the turn until the upgrade is applied and its porting notes are followed/
+    )
+    expect(text).toContain('with Bash')
+    expect(text).toMatch(/every reject/)
     for (const rule of [
       '--force',
       '--apply-deletes',

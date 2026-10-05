@@ -15,7 +15,7 @@
  * | the placeholder script | `placeholder-worker.ts` |
  * | Worker secrets, release, health, sign-in vars | the constants below |
  * | the config an app declares (P5) | `declared-config.ts` (`declaredConfig`) |
-| a kit upgrade session's first message (P6 6c) | `upgrade-prompt.ts` (`upgradePrompt`) |
+ * | a kit upgrade session's first and follow-up messages (P6 6c) | `upgrade-prompt.ts` |
  *
  * `devBootstrap` (spec/02) is not here yet.
  */
@@ -27,7 +27,7 @@ import { accountScopedNames, appResourceNames, KIT_BINDINGS } from './names'
 import { placeholderScript } from './placeholder-worker'
 import { SCAFFOLD_WORKFLOW_FILE, scaffoldFiles } from './scaffold-job'
 import { resources, writeConfig } from './toml'
-import { upgradePrompt, upgradeTitle } from './upgrade-prompt'
+import { upgradeFollowUpPrompt, upgradePrompt, upgradeTitle } from './upgrade-prompt'
 
 /** The adapter contract version an app records (spec/02, "Rocketflare adapter v1"). */
 export const ROCKETFLARE_CONTRACT_VERSION = '1'
@@ -167,8 +167,9 @@ export interface TemplateAdapter {
   auth: { issuer: string; clientId: string; clientSecret: string }
   /** The config keys the app's plugins and the kit declare, read through a file reader (P5). */
   declaredConfig: typeof declaredConfig
-  /** A kit upgrade session's first message and title (P6 6c, `launch/upgrades.ts`). */
+  /** A kit upgrade session's first message, its one follow-up and title (P6 6c). */
   upgradePrompt: typeof upgradePrompt
+  upgradeFollowUpPrompt: typeof upgradeFollowUpPrompt
   upgradeTitle: typeof upgradeTitle
 }
 
@@ -191,5 +192,6 @@ export const rocketflareAdapter: TemplateAdapter = {
   auth: { issuer: 'OIDC_ISSUER', clientId: 'OIDC_CLIENT_ID', clientSecret: 'OIDC_CLIENT_SECRET' },
   declaredConfig,
   upgradePrompt,
+  upgradeFollowUpPrompt,
   upgradeTitle,
 }

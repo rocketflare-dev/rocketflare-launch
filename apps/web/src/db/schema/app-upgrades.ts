@@ -24,6 +24,7 @@ import {
   integer,
   pgTable,
   text,
+  timestamp,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
@@ -60,6 +61,12 @@ export const appUpgrades = pgTable(
     prUrl: text('pr_url'),
     /** Why it needs attention, failed or was cancelled — a sentence for the app page. */
     error: text('error'),
+    /**
+     * When Launch sent the session its ONE follow-up turn (`upgradeFollowUpDue`: the first turn
+     * ended with no `LAUNCH-UPGRADE:` line and the checkout untouched); null while it has not. Set
+     * by a compare-and-set from null, so a retried step never sends a second.
+     */
+    followUpSentAt: timestamp('follow_up_sent_at', { withTimezone: true }),
     requestedByUserId: uuid('requested_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),

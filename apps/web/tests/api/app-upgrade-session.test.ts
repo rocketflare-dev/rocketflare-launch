@@ -14,6 +14,9 @@
  * - a turn that ends with a QUESTION (no marker), says `STOPPED`, called `AskUserQuestion`, ended
  *   out of turns, or left `.rocketflare.json` behind is NOT shipped: the upgrade `needs_attention`,
  *   the chat says why, and ending the session cancels the upgrade;
+ * - a turn that NEVER RAN the upgrade (no marker, the checkout untouched) is sent back ONCE by
+ *   Launch's own follow-up turn, and that second turn is decided as a first would be; a second
+ *   such turn, an explicit `STOPPED`, or a turn that changed files and stopped is not sent back;
  * - a red gate on the auto-ship hands the upgrade to its owner (`needs_attention`);
  * - the decision is made once: `auto_ship` is cleared either way, and an ordinary session never
  *   ships by itself whatever its agent says.
@@ -72,6 +75,10 @@ const DONE_TEXT = `Applied kit ${TO}: 41 files, no rejects, left in the working 
 interface HarnessOptions {
   /** The upgrade turn's Claude Code output. */
   turn?: FakeClaudeTurn
+  /** One output per turn, in order (the last repeats); overrides `turn`. */
+  turns?: readonly FakeClaudeTurn[]
+  /** Whether each turn's "upgrade script" changes the checkout (default: every turn does). */
+  changesTree?: readonly boolean[]
   /** What the "upgrade script" leaves `.rocketflare.json` at after the turn (default: the target). */
   manifestAfter?: string
   /** The gate's exit code for every step (default green). */
@@ -135,6 +142,8 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
   // The checkout as the turn leaves it: unchanged until the turn ran, then changed and at the
   // target (or wherever `manifestAfter` says); a checkpoint makes it clean again.
   const checkout = { changed: false, manifest: FROM }
+  let claudeRuns = 0
+  let hookTurns = 0
   const branch = sessionBranchName(row.shortId)
   const ports = createFakeSessionPorts({
     sessionDb: d =>
@@ -162,7 +171,10 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
         stdout: ' .rocketflare.json | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n',
       })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
-      .onProcess(/claude -p/, claudeStreamJson(opts.turn ?? { text: DONE_TEXT }))
+      .onProcess(/claude -p/, () => {
+        const turns = opts.turns ?? [opts.turn ?? { text: DONE_TEXT }]
+        return claudeStreamJson(turns[Math.min(claudeRuns++, turns.length - 1)] ?? {})
+      })
       .onBackground(/pnpm (gate )?(lint|typecheck|test)/, {
         exitCode: opts.gateExit ?? 0,
         log: opts.gateExit ? 'error: something broke\n' : 'ok\n',
@@ -178,9 +190,12 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
         flushMs: 5,
         ...(ctx.bootId ? { bootId: ctx.bootId } : {}),
       })
-      // The upgrade script: the apply changed the checkout and (last) stamped `.rocketflare.json`.
-      checkout.changed = true
-      checkout.manifest = opts.manifestAfter ?? TO
+      // The upgrade script: the apply changed the checkout and (last) stamped `.rocketflare.json`
+      // — unless this turn never ran it (`changesTree`).
+      if (opts.changesTree?.[hookTurns++] ?? true) {
+        checkout.changed = true
+        checkout.manifest = opts.manifestAfter ?? TO
+      }
       return outcome
     },
     checkpoint: async () => {
@@ -395,5 +410,106 @@ describe('an upgrade session: anything else needs its owner', () => {
     expect(run.names.some(n => n.startsWith('ship.'))).toBe(false)
     expect(await decisions(h)).toEqual([])
     expect((await sessionOf(h)).status).toBe('ended')
+  })
+})
+
+/** The final answer of the live session 8380ceb5: it "launched" the skill and ended the turn. */
+const FORGOT: FakeClaudeTurn = {
+  tools: [{ name: 'Skill', input: { skill: 'rf-upgrade', args: `--to ${TO} --apply` } }],
+  text: "I've launched the upgrade skill. Let me wait for it to complete.",
+}
+
+/** How many Claude Code turns the session ran. */
+function claudeTurns(h: Harness): number {
+  return h.sandbox().commands.filter(c => /claude -p/.test(c)).length
+}
+
+/** The `user.message` texts, in order. */
+async function userMessages(h: Harness): Promise<string[]> {
+  return (await listSessionEvents(db, h.row.tenantId, h.row.id, 0, 5000))
+    .filter(e => e.type === 'user.message')
+    .map(e => String((e.data as { text?: unknown }).text ?? ''))
+}
+
+describe('an upgrade session: a turn that never ran the upgrade is sent back once', () => {
+  it('no marker and an untouched checkout → one Launch follow-up turn; its DONE ships', async () => {
+    const h = await harness({ turns: [FORGOT, { text: DONE_TEXT }], changesTree: [false, true] })
+    const run = await drive(h)
+
+    expect(claudeTurns(h)).toBe(2)
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.waits).toEqual([])
+    expect(run.names).toContain('turn#0')
+    expect(run.names).toContain('turn#1')
+    expect((await decisions(h)).map(([reason]) => reason)).toEqual([
+      UPGRADE_SESSION_REASONS.followUp,
+      UPGRADE_SESSION_REASONS.autoShip,
+    ])
+    const messages = await userMessages(h)
+    expect(messages).toHaveLength(2)
+    expect(messages[1]).toMatch(/^You ended the turn without running the upgrade\./)
+    expect(messages[1]).toContain(`pnpm kit:upgrade --to ${TO} --apply`)
+    const upgrade = await upgradeOf(h)
+    expect(upgrade.status).toBe('pr_open')
+    expect(upgrade.followUpSentAt).toBeInstanceOf(Date)
+    expect(await upgradeAudit(h)).toEqual(['app.upgrade.pr_opened'])
+  })
+
+  it('the follow-up turn says STOPPED → needs_attention, no third turn', async () => {
+    const h = await harness({
+      turns: [FORGOT, { text: 'Two rejects need a person.\n\nLAUNCH-UPGRADE: STOPPED' }],
+      changesTree: [false, true],
+    })
+    const run = await drive(h)
+
+    expect(claudeTurns(h)).toBe(2)
+    expect(run.names.some(n => n.startsWith('ship.'))).toBe(false)
+    const reasons = await decisions(h)
+    expect(reasons.map(([reason]) => reason)).toEqual([
+      UPGRADE_SESSION_REASONS.followUp,
+      UPGRADE_SESSION_REASONS.needsAttention,
+    ])
+    expect(reasons[1]?.[1]).toMatch(/stopped to ask or explain/)
+    expect((await sessionOf(h)).autoShip).toBe(false)
+    expect(await upgradeAudit(h)).toEqual(['app.upgrade.needs_attention', 'app.upgrade.cancelled'])
+  })
+
+  it('no marker twice → needs_attention after the second; never a third turn', async () => {
+    const h = await harness({ turns: [FORGOT], changesTree: [false, false, false] })
+    const run = await drive(h)
+
+    expect(claudeTurns(h)).toBe(2)
+    expect(run.names.some(n => n.startsWith('ship.'))).toBe(false)
+    const reasons = await decisions(h)
+    expect(reasons.map(([reason]) => reason)).toEqual([
+      UPGRADE_SESSION_REASONS.followUp,
+      UPGRADE_SESSION_REASONS.needsAttention,
+    ])
+    expect(reasons[1]?.[1]).toMatch(/stopped to ask or explain/)
+    expect((await upgradeOf(h)).followUpSentAt).toBeInstanceOf(Date)
+  })
+
+  it('an explicit STOPPED with an untouched checkout is never sent back', async () => {
+    const h = await harness({
+      turn: { text: 'pnpm kit:upgrade exited 6.\n\nLAUNCH-UPGRADE: STOPPED' },
+      changesTree: [false],
+    })
+    await drive(h)
+
+    expect(claudeTurns(h)).toBe(1)
+    const reasons = await decisions(h)
+    expect(reasons.map(([reason]) => reason)).toEqual([UPGRADE_SESSION_REASONS.needsAttention])
+    expect((await upgradeOf(h)).followUpSentAt).toBeNull()
+  })
+
+  it('no marker but a changed checkout (it stopped mid-way) → needs_attention, no follow-up', async () => {
+    const h = await harness({ turn: FORGOT, changesTree: [true] })
+    await drive(h)
+
+    expect(claudeTurns(h)).toBe(1)
+    const reasons = await decisions(h)
+    expect(reasons.map(([reason]) => reason)).toEqual([UPGRADE_SESSION_REASONS.needsAttention])
+    expect(reasons[0]?.[1]).toMatch(/stopped to ask or explain/)
+    expect((await upgradeOf(h)).followUpSentAt).toBeNull()
   })
 })

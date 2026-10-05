@@ -141,6 +141,12 @@ export const appUpgradeSchema = z.object({
   prUrl: z.string().nullable(),
   /** Why it needs attention, failed or was cancelled — a sentence, never a vendor body. */
   error: z.string().nullable(),
+  /**
+   * When Launch sent the session its one follow-up turn — the first turn ended with no
+   * `LAUNCH-UPGRADE:` line and an untouched checkout, so it never ran the upgrade; null otherwise.
+   * At most one per upgrade.
+   */
+  followUpSentAt: z.coerce.date().nullable().default(null),
   requestedByUserId: z.string().uuid().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
@@ -214,17 +220,24 @@ export function upgradeResultOf(text: string | null | undefined): UpgradeResult 
 
 /**
  * The `status` session event an upgrade session's auto-ship writes (its data's `reason`), so the
- * chat says what Launch decided after the first turn: shipping it, or handing it to the owner.
+ * chat says what Launch decided after the first turn: shipping it, handing it to the owner, or —
+ * once, when the turn ended with no marker and the checkout untouched — sending it back to run the
+ * upgrade (`followUp`).
  */
 export const UPGRADE_SESSION_REASONS = {
   autoShip: 'upgrade.auto_ship',
   needsAttention: 'upgrade.needs_attention',
+  followUp: 'upgrade.follow_up',
 } as const
 
 export const upgradeSessionStatusDataSchema = z
   .object({
     status: z.string(),
-    reason: z.enum([UPGRADE_SESSION_REASONS.autoShip, UPGRADE_SESSION_REASONS.needsAttention]),
+    reason: z.enum([
+      UPGRADE_SESSION_REASONS.autoShip,
+      UPGRADE_SESSION_REASONS.needsAttention,
+      UPGRADE_SESSION_REASONS.followUp,
+    ]),
     message: z.string(),
   })
   .passthrough()

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A kit upgrade session no longer ends its turn without running the upgrade.** Told to "run
+  `/rf-upgrade`", headless Claude Code invoked the Skill tool, read its "Launching skill" as a
+  background job, said it would wait, and ended the turn: nothing changed, no `LAUNCH-UPGRADE:`
+  line, and the upgrade went to Needs attention with nobody able to nudge it. The prompt now has
+  the agent read `.claude/skills/rf-upgrade/SKILL.md` and follow it itself, running
+  `pnpm kit:upgrade --to <tag> --apply` with Bash and working through the plan, rejects and
+  porting notes in the same turn (every unattended rule unchanged). And when a first turn still
+  ends cleanly with no result line and an untouched checkout, Launch sends ONE follow-up turn of
+  its own ("You ended the turn without running the upgrade…"), recorded on the upgrade
+  (`app_upgrades.follow_up_sent_at`, migration 0042, `followUpSentAt` on the wire) so it happens
+  at most once; the next turn is decided as before. An explicit `STOPPED`, or a turn that changed
+  files and stopped, still goes straight to Needs attention.
+
 - **`pnpm plugin` keeps the host's dependencies in step with what a plugin declares** (kit 0.17.1,
   ported). `plugin add` writes the DECLARED range into `package.json` (not pnpm's `^<resolved>`)
   and re-keys the lockfile, and skips a dependency the host already holds inside that range;

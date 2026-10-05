@@ -1,0 +1,1 @@
+ALTER TABLE "app_upgrades" ADD COLUMN "follow_up_sent_at" timestamp with time zone;

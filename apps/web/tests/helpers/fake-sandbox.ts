@@ -16,7 +16,8 @@
  *   stdout: '', stderr: '' }` filled in); an unscripted command succeeds with no output. `match` is a
  *   RegExp or a substring.
  * - `onProcess(match, lines[] | { lines, exitCode?, hang?, ports?, waitForFile?, thenLines? })` —
- *   what a background process prints: `streamLogs` yields each line as one `stdout` chunk
+ *   what a background process prints (or `fn(command)`, the script for each start — a turn that
+ *   answers differently the second time): `streamLogs` yields each line as one `stdout` chunk
  *   (`line + '\n'`), then `exit` (`exitCode`, default 0). `hang: true` keeps it running after the
  *   lines until `kill` (exit 137) — a dev server, or a turn a test cancels. `ports` open when the
  *   process starts. `waitForFile` (§18.22) blocks after `lines` until that path is written, then
@@ -203,7 +204,10 @@ export class FakeSandbox implements SandboxPort {
   private backupsEnabled = true
 
   private readonly execScripts: { match: Match; script: ExecScript }[] = []
-  private readonly processScripts: { match: Match; script: ProcessScript }[] = []
+  private readonly processScripts: {
+    match: Match
+    script: ProcessScript | ((command: string) => ProcessScript)
+  }[] = []
   private readonly backgroundScripts: {
     match: Match
     script: BackgroundScript | BackgroundScriptFn
@@ -231,12 +235,15 @@ export class FakeSandbox implements SandboxPort {
     return this
   }
 
-  onProcess(match: Match, script: readonly string[] | ProcessScript): this {
+  onProcess(
+    match: Match,
+    script: readonly string[] | ProcessScript | ((command: string) => ProcessScript)
+  ): this {
     this.processScripts.push({
       match,
       script: Array.isArray(script)
         ? { lines: script as readonly string[] }
-        : (script as ProcessScript),
+        : (script as ProcessScript | ((command: string) => ProcessScript)),
     })
     return this
   }
@@ -384,7 +391,8 @@ export class FakeSandbox implements SandboxPort {
     await this.guard('startProcess')
     this.commands.push(command)
     if (command.startsWith(BACKGROUND_MARKER)) return this.startBackground(command, opts)
-    const script = this.processScripts.find(s => matches(s.match, command))?.script ?? { lines: [] }
+    const found = this.processScripts.find(s => matches(s.match, command))?.script
+    const script = typeof found === 'function' ? found(command) : (found ?? { lines: [] })
     const id = `proc-${this.nextPid++}`
     this.processes.push({ id, command, opts, script, killed: false, exitCode: null })
     for (const port of script.ports ?? []) this.openPort(port)

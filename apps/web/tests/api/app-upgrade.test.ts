@@ -153,7 +153,7 @@ describe('POST /api/apps/:id/upgrade', () => {
       pendingMessage: upgradePrompt({ from: '0.16.0', to: '0.16.1' }),
       pendingMessageUserId: f.user.id,
     })
-    expect(session?.pendingMessage).toContain('/rf-upgrade --to 0.16.1')
+    expect(session?.pendingMessage).toContain('pnpm kit:upgrade --to 0.16.1 --apply')
     expect(session?.pendingMessage).toContain('LAUNCH-UPGRADE: DONE')
     expect(stubs(env).sessionWorkflow?.created.map(c => c.id)).toEqual([body.sessionId])
 

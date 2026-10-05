@@ -10,7 +10,9 @@
  *   `upgradePrompt`, with `auto_ship` set. A refusal of the session itself (the limit, the budget,
  *   drained sessions…) passes through unchanged, and the row is removed: nothing started.
  * - **Moving it along from the session** — each called where the session writes the state it
- *   follows from: {@link decideAutoShip} after the first turn (`sessions/steps.ts` `turnStep`),
+ *   follows from: {@link autoShipVerdict} after the first turn (`sessions/steps.ts` `turnStep`) —
+ *   or, once, {@link sendUpgradeFollowUp} when that turn never ran the upgrade
+ *   ({@link upgradeFollowUpDue}: no `LAUNCH-UPGRADE:` line, the checkout untouched),
  *   {@link upgradeNeedsAttention} when a ship settles without a PR (`ship-steps.ts`),
  *   {@link upgradePrOpened} when the PR opens (`ship.ts`), and {@link settleUpgradeAtCleanup} when
  *   the session is cleaned up (failed → `failed`, ended without a PR → `cancelled`).
@@ -36,7 +38,7 @@ import {
   type UpgradeResult,
   upgradeResultOf,
 } from '@launch/shared/launch-upgrades'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import {
@@ -49,6 +51,7 @@ import {
 import type { AppBindings } from '../../types'
 import { ConflictError, isUniqueViolation } from '../../utils/core/errors'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
+import { requestTurn } from '../sessions/chat'
 import { createSession } from '../sessions/lifecycle'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from './audit'
 import { ensureAppGateVariable, type GateVariableWrite } from './gate-variable'
@@ -75,6 +78,7 @@ export function toAppUpgrade(row: AppUpgradeRow): AppUpgrade {
     prNumber: row.prNumber,
     prUrl: row.prUrl,
     error: row.error,
+    followUpSentAt: row.followUpSentAt,
     requestedByUserId: row.requestedByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -413,6 +417,63 @@ export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string
     )
   }
   return { ship: true }
+}
+
+/**
+ * Did the first turn end without ever running the upgrade — so Launch sends its ONE follow-up turn
+ * ({@link sendUpgradeFollowUp}) instead of deciding? Pure. All of these must hold:
+ *
+ * 1. no follow-up was sent yet (`followUpSent`): at most one per upgrade, the second turn is
+ *    decided by {@link autoShipVerdict} exactly as a first would be;
+ * 2. the turn completed with a `success` result, no error, and no `AskUserQuestion` — a turn that
+ *    failed, ran out or stopped to ask is not "forgot to start";
+ * 3. its final answer has NO `LAUNCH-UPGRADE:` line at all — an explicit `STOPPED` is the agent's
+ *    decision and is never sent back;
+ * 4. the workspace is measured UNCHANGED (`changed === false`, `git status` and HEAD against the
+ *    session's last checkpoint). A turn that changed files did some of the upgrade and stopped
+ *    mid-way: that is its owner's to read, not Launch's to push on.
+ */
+export function upgradeFollowUpDue(evidence: UpgradeTurnEvidence, followUpSent: boolean): boolean {
+  if (followUpSent) return false
+  if (evidence.status !== 'completed' || !evidence.result) return false
+  if (evidence.result.isError || evidence.result.subtype !== 'success') return false
+  if (evidence.askedQuestion) return false
+  if (upgradeResultOf(evidence.result.tail) !== null) return false
+  return evidence.changed === false
+}
+
+/**
+ * Send the upgrade session its ONE follow-up turn: in one transaction, claim it on the upgrade
+ * (`follow_up_sent_at`, a compare-and-set from null on a `running` row) and store the adapter's
+ * `upgradeFollowUpPrompt` as the session's next message (`requestTurn` with no sender — Launch's own
+ * turn, which a kit upgrade session takes). Returns the session row it updated, or null when the
+ * follow-up was already claimed or the upgrade moved on. Throws when the session takes no turn
+ * now (`requestTurn`'s 409) — the claim rolls back with it, and the caller decides as usual.
+ */
+export async function sendUpgradeFollowUp(
+  db: Database,
+  session: SessionRow,
+  upgrade: Pick<AppUpgradeRow, 'id' | 'toVersion'>,
+  now: Date = new Date()
+): Promise<SessionRow | null> {
+  return db.transaction(async raw => {
+    const tx = raw as unknown as Database
+    const [claimed] = await tx
+      .update(appUpgrades)
+      .set({ followUpSentAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(appUpgrades.tenantId, session.tenantId),
+          eq(appUpgrades.id, upgrade.id),
+          eq(appUpgrades.status, 'running'),
+          isNull(appUpgrades.followUpSentAt)
+        )
+      )
+      .returning({ id: appUpgrades.id })
+    if (!claimed) return null
+    const message = rocketflareAdapter.upgradeFollowUpPrompt({ to: upgrade.toVersion })
+    return requestTurn(tx, session, { message }, now)
+  })
 }
 
 /** The sentence the session and the app page show when an upgrade needs its owner. */

@@ -49,8 +49,11 @@ import {
   type AutoShipVerdict,
   autoShipVerdict,
   needsAttentionMessage,
+  sendUpgradeFollowUp,
   settleUpgradeAtCleanup,
+  type UpgradeTurnEvidence,
   upgradeAwaitingAutoShip,
+  upgradeFollowUpDue,
   upgradeNeedsAttention,
 } from '../launch/upgrades'
 import type { Realtime } from '../realtime'
@@ -1628,6 +1631,10 @@ export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion'
  * - clean (`autoShipVerdict`: a `success` result ending `LAUNCH-UPGRADE: DONE`, no question asked,
  *   the workspace changed and the checkout's `.rocketflare.json` at the target) → `requested_action
  *   = ship` on the `ready` row, which the loop's next `inspect` starts at once;
+ * - a turn that never ran the upgrade (`upgradeFollowUpDue`: a clean `success` with NO
+ *   `LAUNCH-UPGRADE:` line and the workspace measured unchanged) → ONCE per upgrade, Launch sends
+ *   it back with its own follow-up turn (`sendUpgradeFollowUp`, claimed by `follow_up_sent_at`)
+ *   and leaves `auto_ship` set, so that next turn is decided here exactly as this one would be;
  * - anything else → the upgrade `needs_attention`, with the reason in a `status` event the chat
  *   shows; the owner carries on in the session.
  *
@@ -1650,16 +1657,22 @@ async function autoShipAfterTurn(
     } else {
       const turn = 'turn' in outcome ? outcome.turn : row.turnCount
       const completed = outcome.status === 'completed'
-      verdict = autoShipVerdict(
-        {
-          status: outcome.status,
-          ...('result' in outcome && outcome.result ? { result: outcome.result } : {}),
-          ...(changed !== undefined ? { changed } : {}),
-          askedQuestion: completed ? await turnAskedQuestion(scope, row, turn) : false,
-          manifestVersion: completed && changed ? await checkoutKitVersion(scope, row) : null,
-        },
-        upgrade.toVersion
-      )
+      const evidence: UpgradeTurnEvidence = {
+        status: outcome.status,
+        ...('result' in outcome && outcome.result ? { result: outcome.result } : {}),
+        ...(changed !== undefined ? { changed } : {}),
+        askedQuestion: completed ? await turnAskedQuestion(scope, row, turn) : false,
+        manifestVersion: completed && changed ? await checkoutKitVersion(scope, row) : null,
+      }
+      // The turn never ran the upgrade (no marker, nothing changed): send it back ONCE, and leave
+      // `auto_ship` set so the next turn is decided here as this one would have been.
+      if (
+        upgradeFollowUpDue(evidence, upgrade.followUpSentAt !== null) &&
+        (await followUpUpgrade(scope, row, upgrade))
+      ) {
+        return
+      }
+      verdict = autoShipVerdict(evidence, upgrade.toVersion)
     }
   } catch (err) {
     scope.logger.warn({ err, sessionId: row.id }, 'session: could not check the upgrade turn')
@@ -1717,6 +1730,44 @@ async function autoShipAfterTurn(
     data: { status: row.status, reason: UPGRADE_SESSION_REASONS.needsAttention, message },
   })
   nudgeSession(scope.realtime, row)
+}
+
+/**
+ * Send an upgrade session that never ran the upgrade its one follow-up turn
+ * (`sendUpgradeFollowUp`) and say so in the chat. True when it was sent; false when it was not
+ * (already sent by an earlier attempt of this step, or the session takes no turn now) — the caller
+ * then decides as usual. Never throws.
+ */
+async function followUpUpgrade(
+  scope: StepScope,
+  row: SessionRow,
+  upgrade: NonNullable<Awaited<ReturnType<typeof upgradeAwaitingAutoShip>>>
+): Promise<boolean> {
+  let sent: SessionRow | null
+  try {
+    sent = await sendUpgradeFollowUp(scope.db, row, upgrade, scope.now())
+  } catch (err) {
+    scope.logger.warn({ err, sessionId: row.id }, 'session: could not send the upgrade follow-up')
+    return false
+  }
+  if (!sent) return false
+  // Sent: the message waits on the row, so a failed event must not undo the decision.
+  try {
+    await emitterFor(scope)({
+      type: 'status',
+      turn: row.turnCount,
+      data: {
+        status: sent.status,
+        reason: UPGRADE_SESSION_REASONS.followUp,
+        message:
+          'The upgrade turn ended without running the upgrade, so Launch sent it back to run it. This happens once.',
+      },
+    })
+  } catch (err) {
+    scope.logger.warn({ err, sessionId: row.id }, 'session: could not record the upgrade follow-up')
+  }
+  nudgeSession(scope.realtime, row)
+  return true
 }
 
 /** Did turn `turn` call `AskUserQuestion` (a `tool.start` naming it)? */

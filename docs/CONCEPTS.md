@@ -3560,8 +3560,12 @@ nothing started. An upgrade session is a coding session in every other respect: 
 `maxConcurrentPerApp` and the app's month, it is listed with the app's sessions, and its branch is
 deleted at cleanup (`CODING_SESSION_KINDS`).
 
-**The prompt** drives `/rf-upgrade --to <tag>` as ONE apply straight to the tag (not a release at a
-time) and **commits nothing**: the changes stay in the working tree, and Launch's ship gates,
+**The prompt** has the agent READ `.claude/skills/rf-upgrade/SKILL.md` and follow it itself, in the
+turn — never as a slash command or through the Skill tool (headless Claude Code took the Skill
+tool's "Launching skill" for a background job and ended the turn having run nothing) — running
+`pnpm kit:upgrade --to <tag> --apply` with Bash as ONE apply straight to the tag (not a release at a
+time), working through the plan, the rejects and the porting notes, and not ending the turn until
+it is applied or a stop condition is hit. It **commits nothing**: the changes stay in the working tree, and Launch's ship gates,
 commits and pushes them (the sandbox has no git identity and denies `git config`). It ends with
 `biome format --write .rocketflare.json`: before kit 0.16.3 the copy's own `upgrade.mjs` stamps that
 file in a layout its lint rejects (fixed upstream in 0.16.3), with the rules an
@@ -3588,6 +3592,19 @@ once — only on POSITIVE evidence, every piece of it:
 4. the checkout's `.rocketflare.json` says the target version (read in the sandbox) — the upgrade
    script writes it last, and only after a clean apply, so this is the checkout's word, not the
    agent's.
+
+**One follow-up when the turn never ran the upgrade** (`upgrades.ts` `upgradeFollowUpDue` /
+`sendUpgradeFollowUp`). Before deciding, a turn that completed with a clean `success`, no
+`AskUserQuestion`, NO `LAUNCH-UPGRADE:` line at all and the workspace measured UNCHANGED
+(`workspaceChanged` against the last checkpoint: `git status` clean and HEAD at `head_sha`) is sent
+back: in one transaction Launch claims `app_upgrades.follow_up_sent_at` (a compare-and-set from
+null on the `running` row) and stores the adapter's `upgradeFollowUpPrompt` as the session's next
+message (`requestTurn` with no sender — Launch's own turn, which a kit upgrade session takes), says
+so in the chat (`status`, `reason: upgrade.follow_up`) and leaves `auto_ship` set. The loop runs
+that turn, and it is decided exactly as above. At most one per upgrade: a second such turn, an
+explicit `STOPPED` (the agent's decision), or a turn that changed files and stopped mid-way (its
+owner's to read) is never sent back. The step stays `turn#N`; a retry after the claim committed
+runs the waiting message as that turn and finds the claim taken.
 
 **A turn that ends with a question cannot pass**: it has no `DONE` line (a question is either a
 plain answer or an `AskUserQuestion` call, and both fail rule 2), and an agent that says `DONE`
@@ -3639,7 +3656,7 @@ remote sandbox host the same list rides the git grant (`GitEgressGrant.readOnlyR
 `HostEgress.prepareGit`) and `hostedGitHub` passes it to the same `forwardGit`.
 
 **Known gaps:** nothing here has run on real infrastructure — the kit fetch through the proxy, a real
-`/rf-upgrade` in a sandbox, and how a headless `claude -p` treats `AskUserQuestion` (either way it
+`rf-upgrade` run in a sandbox, and how a headless `claude -p` treats `AskUserQuestion` (either way it
 is not a clean end) are proven against the `FakeSandbox`, the fake Anthropic stream and a recording
 upstream only (`tests/api/app-upgrade{,-session}.test.ts`, `upgrade-egress.test.ts`). The kit only:
 plugin upgrades, "Upgrade all" (`fleet_runs`, `fleet.tick`, the `queued` path, `wait_reason`) and
