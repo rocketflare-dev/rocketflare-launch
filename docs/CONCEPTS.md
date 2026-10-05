@@ -3425,7 +3425,9 @@ deleted at cleanup (`CODING_SESSION_KINDS`).
 
 **The prompt** drives `/rf-upgrade --to <tag>` as ONE apply straight to the tag (not a release at a
 time) and **commits nothing**: the changes stay in the working tree, and Launch's ship gates,
-commits and pushes them (the sandbox has no git identity and denies `git config`), with the rules an
+commits and pushes them (the sandbox has no git identity and denies `git config`). It ends with
+`biome format --write .rocketflare.json`: before kit 0.16.3 the copy's own `upgrade.mjs` stamps that
+file in a layout its lint rejects (fixed upstream in 0.16.3), with the rules an
 unattended run needs on top of the skill's: never `--force`, never `--apply-deletes` or a kit
 deletion, never recreate a file under an absent surface, never hand-edit `.rocketflare.json`, never
 a resource id in a toml, no plugin upgrades, no full gate (Launch runs it), and **no question** —

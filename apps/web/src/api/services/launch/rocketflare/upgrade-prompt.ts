@@ -30,7 +30,7 @@ export function upgradePrompt(input: UpgradePromptInput): string {
   return [
     `Upgrade this app's Rocketflare kit${from ? ` from ${from}` : ''} to ${to}. Nobody is watching this turn: Launch ships the result on its own when you finish cleanly, and hands it to the app's owner when you stop.`,
     '',
-    `Run \`/rf-upgrade --to ${to}\` as ONE apply straight to ${to} (\`pnpm kit:upgrade --to ${to} --apply\`), not one release at a time, then follow the "How to apply" steps of every porting note in the range. Leave every change in the working tree: do not \`git add\`, \`git commit\`, push or open a pull request. This session is isolated; when you finish, Launch runs the gate, commits, pushes and opens the pull request itself.`,
+    `Run \`/rf-upgrade --to ${to}\` as ONE apply straight to ${to} (\`pnpm kit:upgrade --to ${to} --apply\`), not one release at a time, then follow the "How to apply" steps of every porting note in the range, and finish with \`pnpm exec biome format --write .rocketflare.json\` (a copy's upgrade script before 0.16.3 stamps that file in a layout its own lint rejects). Leave every change in the working tree: do not \`git add\`, \`git commit\`, push or open a pull request. This session is isolated; when you finish, Launch runs the gate, commits, pushes and opens the pull request itself.`,
     '',
     'Rules for this unattended run, on top of the skill’s own (they replace its commit step):',
     '- Never pass `--force`, and never `--apply-deletes`. Never apply one of the kit’s deletions.',

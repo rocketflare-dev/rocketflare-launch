@@ -116,6 +116,7 @@ describe('the upgrade prompt', () => {
     // One apply to the target, nothing committed: Launch gates, commits and pushes when it ships.
     expect(text).toContain('pnpm kit:upgrade --to 0.16.1 --apply')
     expect(text).toMatch(/not one release at a time/)
+    expect(text).toContain('pnpm exec biome format --write .rocketflare.json')
     expect(text).toMatch(/do not `git add`, `git commit`, push or open a pull request/)
     expect(text).not.toMatch(/one commit per release/)
     expect(upgradeTitle({ from: '0.16.0', to: '0.16.1' })).toBe('Upgrade kit 0.16.0 → 0.16.1')

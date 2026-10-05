@@ -15,7 +15,8 @@
   below it: the catalogue, Settings and the app's Overview say "Requires upgrade → X.Y.Z". The
   Overview's Kit section (and `launch apps upgrade <app>`) starts a coding session that runs the
   kit's `/rf-upgrade` to the pinned tag in one apply — the session may fetch the public kit,
-  read-only, and commits nothing: Launch's ship gates, commits and pushes the result — and
+  read-only, and commits nothing: Launch's ship gates, commits and pushes the result; it formats
+  `.rocketflare.json` last, so the gate's lint no longer fails on it — and
   ships it on its own when the first turn ends cleanly (`LAUNCH-UPGRADE: DONE`, no question, the
   checkout's `.rocketflare.json` at the target); anything else waits for the owner in the session.
   Every Release now re-reads `.rocketflare.json` at its tag, so the app's recorded kit version
