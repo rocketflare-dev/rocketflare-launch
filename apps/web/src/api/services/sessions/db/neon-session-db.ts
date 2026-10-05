@@ -27,12 +27,24 @@
  *   an earlier Launch made through the API is REPAIRED: its `session_app` and `session_owner` are
  *   deleted through the API (only the API can drop an API role) and made again, and `dev` goes
  *   back to `none` so the next session prepares it afresh — `dev` is scratch, never data.
- * - **The kit's RLS role `rocketflare_app` is made here too**, NOLOGIN, with `session_owner` given
- *   it WITH ADMIN OPTION (so the kit's `db-roles`, if a turn runs it, may still alter it). Its
- *   migrations name it in `CREATE POLICY`, so it must exist before they run — and making it here
- *   means a sandbox never runs `db-roles` at all: each of the kit's scripts opens its own database
- *   WebSocket through the container's egress interception, and on real Cloudflare containers the
- *   third or so of those hangs (docs/plans/sandbox-session-issues.md). A branch inherits it.
+ * - **The app's RLS role is made here too** — the APP's name for it, `<snake>_app`
+ *   (`appRlsRoleFor`: the kit's `APP_ROLE` is `rocketflare_app`, and the kit's rename turns
+ *   `rocketflare_` into `<snake>_`, so `hello-world`'s is `hello_world_app`) — NOLOGIN, with
+ *   `session_owner` given it WITH ADMIN OPTION, so the kit's `db-roles` (which a turn's
+ *   `pnpm db:migrate` and the ship gate's test setup run) may `ALTER ROLE … SET
+ *   statement_timeout` it: Postgres 16+ lets a CREATEROLE role alter only a role it holds WITH
+ *   ADMIN. Its migrations name it in `CREATE POLICY`, so it must exist before they run — and
+ *   making it here means a prepare never needs `db-roles`: each of the kit's scripts opens its own
+ *   database WebSocket through the container's egress interception, and on real Cloudflare
+ *   containers the third or so of those hangs (docs/plans/sandbox-session-issues.md). A branch
+ *   inherits it. On a `dev` cut from staging the role already EXISTS, made by `migrator` (the
+ *   kit's `db-roles` during a deploy), and `neondb_owner` cannot grant it: `ensureAppRole` borrows
+ *   `migrator`'s ADMIN for the one GRANT (proven on Postgres 17 — see there).
+ *   Launch once used the kit's PRE-rename name `rocketflare_app`: it made a useless role of that,
+ *   the real one was never granted, and the gate's `db-roles` failed "permission denied to alter
+ *   role". `ensureDev` runs at every session's start, so a `dev` prepared then is repaired by the
+ *   next session, and `createGateBranch` repairs an older session's own branch before cutting a
+ *   gate branch from it.
  *
  * - **`dev` never holds production data.** It is cut from staging (scrubbed) or `schema-only` from
  *   `main`, and filled by a PREPARE run (the kit's migrate + seed into `session_app`), so every session starts from the
@@ -93,10 +105,24 @@ export const SESSION_DB_NAME = 'session_app'
  */
 const SESSION_ROLE_ATTRIBUTES = 'LOGIN CREATEROLE'
 /**
- * The kit's RLS role (`APP_ROLE` in the kit's `src/db/schema/rls.ts`): its migrations'
- * `CREATE POLICY … TO rocketflare_app` need it to exist. See the header.
+ * The app's RLS role (`APP_ROLE` in its `apps/web/src/db/schema/rls.ts`): its migrations'
+ * `CREATE POLICY … TO <role>` need it to exist, and its `db-roles` alters it. The kit ships
+ * `rocketflare_app`; the kit's `scripts/rename.mjs` (`deriveNames` + the `snake` class of
+ * `scripts/lib/rename-lib.mjs`) rewrites every `rocketflare_` to `<snake>_`, snake = the slug with
+ * `-` → `_`. Every app Launch scaffolds is renamed to its slug, so this is its role.
+ *
+ * DERIVED, not read from the repo: an IMPORTED app renamed to something other than its Launch slug
+ * (or one that renamed its role by hand) names a different role, which this does not grant — its
+ * `db-roles` then fails in a session as before, in Postgres' own words. Reading `rls.ts` through
+ * GitHub here would put a GitHub token into the database port for that one corner; it is a known
+ * gap instead (docs/CONCEPTS.md, the session database).
  */
-export const SESSION_APP_ROLE = 'rocketflare_app'
+export function appRlsRoleFor(slug: string): string {
+  const role = `${slug.replaceAll('-', '_')}_app`
+  // A slug is `[a-z][a-z0-9-]*`, at most 40 characters: this only guards that rule.
+  quoteIdent(role)
+  return role
+}
 /** The only extension the kit's migrations create. */
 const SESSION_EXTENSIONS = ['vector'] as const
 
@@ -237,7 +263,9 @@ export class NeonSessionDb implements SessionDbPort {
     // Recorded only after a scrub finished (this method's result is what records it).
     const scrubbed = app.sessionDb?.devBranchId === dev.id && app.sessionDb.devSource === 'staging'
     if (devSource === 'staging' && !scrubbed) await this.scrubDev(projectId, dev.id, owner)
-    const repaired = await this.ensureSessionRole(projectId, dev.id, owner)
+    // Every call (each session's `db` step) re-checks the app's RLS role, so a `dev` prepared
+    // before Launch granted the right one is repaired here, without a reset.
+    const repaired = await this.ensureSessionRole(projectId, dev.id, owner, appRlsRoleFor(app.slug))
     const kept = app.sessionDb?.devBranchId === dev.id && !repaired ? app.sessionDb : null
     return {
       devBranchId: dev.id,
@@ -349,7 +377,8 @@ export class NeonSessionDb implements SessionDbPort {
   private async ensureSessionRole(
     projectId: string,
     devBranchId: string,
-    owner: OwnerSession
+    owner: OwnerSession,
+    appRole: string
   ): Promise<boolean> {
     const neon = await this.neon()
     const readRole = async () =>
@@ -384,7 +413,7 @@ export class NeonSessionDb implements SessionDbPort {
         `CREATE ROLE ${quoteIdent(SESSION_DB_ROLE)} ${SESSION_ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(throwawayPassword())}`
       )
     }
-    await ensureAppRole(owner)
+    await ensureAppRole(owner, appRole)
     try {
       const database = await neon.createDatabase(projectId, devBranchId, {
         name: SESSION_DB_NAME,
@@ -456,10 +485,17 @@ export class NeonSessionDb implements SessionDbPort {
 
   /**
    * The ship gate's branch (issue #1): a child of the session's branch — so it starts from the
-   * session's schema and roles (`session_owner` holds ADMIN on `rocketflare_app` there too), and
-   * the kit's test setup migrates, truncates and seeds it — with its own read-write compute.
-   * `create_branch` is all that is waited for (`waitForBranch`); the first connection wakes the
-   * compute. A retried step finds the branch by name.
+   * session's schema and roles (`session_owner` holds ADMIN on the app's RLS role there too, which
+   * the kit's test setup — `db-roles` — alters), and the kit's test setup migrates, truncates and
+   * seeds it — with its own read-write compute. `create_branch` is all that is waited for
+   * (`waitForBranch`); the first connection wakes the compute. A retried step finds the branch by
+   * name.
+   *
+   * Before a NEW gate branch is cut, `ensureAppRole` runs on the session's own branch (as
+   * `neondb_owner`, a password minted for it and dropped): a session branched from a `dev`
+   * prepared while Launch granted the wrong role (`rocketflare_app`) is repaired, so its gate —
+   * and its later turns' `pnpm db:migrate` — pass `db-roles`. On a branch already right it is two
+   * catalogue reads.
    */
   async createGateBranch(app: SessionAppRef, parent: SessionDb, name: string): Promise<GateBranch> {
     if (!isGateBranch(name)) throw new Error(`Not a gate branch name: ${name}`)
@@ -469,6 +505,8 @@ export class NeonSessionDb implements SessionDbPort {
     let branch = (await this.branches(projectId)).find(b => b.name === name)
     let endpoint: { id: string; host: string } | undefined
     if (!branch) {
+      const owner = await ownerSession(neon, { redact: () => {} }, projectId, parent.branchId)
+      await ensureAppRole(owner, appRlsRoleFor(app.slug))
       const created = await neon.createBranch(projectId, {
         name,
         parentId: parent.branchId,
@@ -557,31 +595,102 @@ export class NeonSessionDb implements SessionDbPort {
 }
 
 /**
- * `rocketflare_app` on `dev`, NOLOGIN, held by `session_owner` WITH ADMIN OPTION — see the header.
- * On Postgres 16+ a CREATEROLE role may alter only a role it holds with ADMIN, and the kit's
- * `db-roles` sets the role's timeouts: without the grant, a turn's `pnpm db:migrate` would fail.
- * A role the kit's `db-roles` made (a `dev` prepared before Launch did this) is `session_owner`'s
- * already, and one this made but did not yet grant (a retried step) gets its grant now.
+ * The roles holding `$1` WITH ADMIN OPTION — its creator among them: Postgres 16+ records a
+ * creator's ADMIN as a membership row (grantor the bootstrap superuser, no INHERIT, no SET) —
+ * other than `$2` (`session_owner`) and `$3` (`neondb_owner`). `migrator`, the creator of an app's
+ * RLS role on every Launch project, first. (`neondb_owner`'s own creator row for `migrator` is
+ * exactly such an ADMIN-only row, which is why it may grant itself `migrator` but does not
+ * inherit its ADMIN until it does.)
  */
-async function ensureAppRole(owner: OwnerSession): Promise<void> {
+const APP_ROLE_ADMINS_SQL =
+  "SELECT h.rolname AS name FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles h ON h.oid = m.member WHERE g.rolname = $1 AND m.admin_option AND h.rolname NOT IN ($2, $3) ORDER BY h.rolname = 'migrator' DESC, h.rolname"
+
+/** Postgres refusing a role GRANT for want of ADMIN (vanilla PG17, and Neon's wording). */
+const isGrantRefused = (err: unknown) =>
+  err instanceof NeonApiError &&
+  /no possible grantors|permission denied to grant/i.test(err.message)
+
+/**
+ * The app's RLS role (`appRlsRoleFor`) on a branch (`dev`, or a session's own when a gate
+ * repairs it), NOLOGIN, held by `session_owner` WITH ADMIN OPTION — see the header. Safe to
+ * repeat: held already is two reads and nothing written.
+ *
+ * - **Missing** (a `dev` cut from `main` schema-only before the first migration): `neondb_owner`
+ *   creates it, so holds ADMIN on it, and grants it.
+ * - **Present, not held** — the case that broke: on a `dev` cut from staging the role was made by
+ *   `migrator` (the kit's `db-roles` in a deploy). Only a role with ADMIN on it may grant it, and
+ *   `neondb_owner` has none, so the direct GRANT is refused. But `neondb_owner` CREATED
+ *   `migrator` (`provision-neon.ts`), so holds ADMIN on `migrator`: it grants ITSELF `migrator`
+ *   (inheriting), the GRANT then goes through as `migrator` (recorded `grantor = migrator`), and
+ *   the self-membership is revoked at once — which leaves `session_owner`'s grant standing. No
+ *   credential of `migrator`'s is touched; every statement is one HTTP SQL call.
+ *
+ * Proven on a local Postgres 17.10 with the roles made as Neon's are — `neondb_owner` LOGIN
+ * CREATEROLE (no superuser), `migrator` and `session_owner` made by it, `hello_world_app` made by
+ * `migrator`: `session_owner`'s `ALTER ROLE hello_world_app SET statement_timeout = '30s'` fails
+ * "permission denied to alter role"; `neondb_owner`'s GRANT … WITH ADMIN OPTION fails "no possible
+ * grantors" (and `… GRANTED BY migrator` "permission denied to grant privileges as role"); `GRANT
+ * migrator TO neondb_owner`, the GRANT, `REVOKE migrator FROM neondb_owner` all succeed; the
+ * session_owner's membership stays (grantor `migrator`, admin `t`), and its ALTER ROLE then
+ * succeeds. Repeating it only NOTICEs. (`pg_has_role(…, 'USAGE WITH ADMIN OPTION')` answers TRUE
+ * for `neondb_owner` there even though the GRANT is refused — so the GRANT is TRIED, not
+ * predicted.) Unproven on a real Neon project: there `neondb_owner` is also a `neon_superuser`
+ * member, which may change the refusal's wording (matched loosely) or — if Neon lets
+ * `neondb_owner` grant directly — make the borrow unnecessary (then it never runs).
+ *
+ * No admin `neondb_owner` can borrow (a role made by some other role) is an error naming the role.
+ */
+async function ensureAppRole(owner: OwnerSession, appRole: string): Promise<void> {
+  const role = quoteIdent(appRole)
+  const grant = () =>
+    owner.sql(OWNER_DATABASE, `GRANT ${role} TO ${quoteIdent(SESSION_DB_ROLE)} WITH ADMIN OPTION`)
   const exists = await owner.sql(
     OWNER_DATABASE,
     'SELECT r.rolname AS name FROM pg_roles r WHERE r.rolname IN ($1)',
-    [SESSION_APP_ROLE]
+    [appRole]
   )
   if (exists.rows.length === 0) {
-    await owner.sql(OWNER_DATABASE, `CREATE ROLE ${quoteIdent(SESSION_APP_ROLE)} NOLOGIN`)
-  } else {
-    const held = await owner.sql(
-      OWNER_DATABASE,
-      'SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE g.rolname = $1 AND u.rolname = $2 AND m.admin_option',
-      [SESSION_APP_ROLE, SESSION_DB_ROLE]
-    )
-    if (held.rows.length > 0) return
+    await owner.sql(OWNER_DATABASE, `CREATE ROLE ${role} NOLOGIN`)
+    await grant()
+    return
   }
-  await owner.sql(
+  const held = await owner.sql(
     OWNER_DATABASE,
-    `GRANT ${quoteIdent(SESSION_APP_ROLE)} TO ${quoteIdent(SESSION_DB_ROLE)} WITH ADMIN OPTION`
+    'SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE g.rolname = $1 AND u.rolname = $2 AND m.admin_option',
+    [appRole, SESSION_DB_ROLE]
+  )
+  if (held.rows.length > 0) return
+  try {
+    await grant()
+    return
+  } catch (err) {
+    if (!isGrantRefused(err)) throw err
+  }
+  const admins = await owner.sql(OWNER_DATABASE, APP_ROLE_ADMINS_SQL, [
+    appRole,
+    SESSION_DB_ROLE,
+    OWNER_ROLE,
+  ])
+  for (const row of admins.rows) {
+    const admin = quoteIdent(String(row.name))
+    try {
+      await owner.sql(OWNER_DATABASE, `GRANT ${admin} TO ${quoteIdent(OWNER_ROLE)}`)
+    } catch (err) {
+      // `neondb_owner` holds no ADMIN on this one (not its creation): try the next.
+      if (isGrantRefused(err)) continue
+      throw err
+    }
+    try {
+      await grant()
+      return
+    } catch (err) {
+      if (!isGrantRefused(err)) throw err
+    } finally {
+      await owner.sql(OWNER_DATABASE, `REVOKE ${admin} FROM ${quoteIdent(OWNER_ROLE)}`)
+    }
+  }
+  throw new Error(
+    `Cannot give ${SESSION_DB_ROLE} the app's RLS role ${appRole} WITH ADMIN OPTION: ${OWNER_ROLE} holds no ADMIN on it, nor on any role that does`
   )
 }
 

@@ -72,7 +72,8 @@
  *   with its role), `grants`. P3: branches take `init_source` and `endpoints: []`, list their
  *   endpoints and can be DELETEd (not the default one, not one with children). Roles carry
  *   `superuser` (a `neon_superuser` member — the API's) and `createdBy`; HTTP SQL runs `CREATE
- *   ROLE`, `GRANT` (only by the role's creator, else "permission denied to grant role"), `CREATE
+ *   ROLE`, `GRANT` (only by a holder of ADMIN — the creator, or through a membership — else
+ *   "permission denied to grant role"), `REVOKE`, `CREATE
  *   EXTENSION` and the neon step's catalogue reads, one statement per call; roles and databases
  *   can be DELETEd; `addTable` / `addMigrations` / `sqlRole` / `grant` seed state directly.
  * - `cloud.resend` (`FakeResend`): `apiKeys` (id → `{name, token, permission, domain_id}`),

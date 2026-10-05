@@ -180,8 +180,8 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  *   Neon's API, and the migrator fails loudly if it cannot connect.
  * - `pnpm db:migrate` that is NOT skipped runs the kit's migrator ALONE
  *   (`pnpm web exec dotenv -e .dev.vars -- tsx scripts/migrate.ts`), without the kit's `db-roles`
- *   before and after it: the RLS role those make is on `dev` already (`NeonSessionDb`'s
- *   `ensureAppRole`), and its grants matter only under `TENANT_SCOPE_MODE=enforce`, which a
+ *   before and after it: the RLS role those make (the app's `<snake>_app`) is on `dev` already,
+ *   held by `session_owner` WITH ADMIN (`NeonSessionDb`'s `ensureAppRole`), and its grants matter only under `TENANT_SCOPE_MODE=enforce`, which a
  *   session never runs. Each of those scripts opens its OWN database WebSocket through the
  *   container's egress interception, and on real Cloudflare containers one of the later ones
  *   hung (docs/plans/sandbox-session-issues.md): a prepare now opens two (migrate, seed), a

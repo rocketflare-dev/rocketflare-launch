@@ -13,8 +13,10 @@
  * Roles are modelled as a real Neon project has them (checked on Postgres 17.11): one the API
  * creates — and `neondb_owner` — is made by `cloud_admin` and is a `neon_superuser` member; one a
  * role creates in SQL (`CREATE ROLE`, which needs CREATEROLE) is ordinary and records its
- * creator. `GRANT r TO m` succeeds only for the role that created `r` (it holds ADMIN), else
- * `permission denied to grant role "r"`, as PG16+ answers `neondb_owner` for an API role.
+ * creator. `GRANT r TO m` succeeds only for a role holding ADMIN on `r` — its creator, one granted
+ * it WITH ADMIN OPTION, or a member (inheriting) of such a role — else `permission denied to grant
+ * role "r"`, as PG16+ answers `neondb_owner` for an API role. `REVOKE r FROM m` drops a
+ * membership, and the catalogue read of `r`'s ADMIN holders (`ensureAppRole`'s borrow) answers.
  * `CREATE EXTENSION` needs a `neon_superuser` member unless it already exists (`IF NOT EXISTS`).
  * The HTTP SQL endpoint takes ONE statement and understands the few Launch sends (see
  * `execute`); anything else answers an empty SELECT. `DELETE …/roles/{r}` and
@@ -567,13 +569,33 @@ export class FakeNeon implements VendorHandler {
       const target = branch.roles.get(name)
       if (!target) return neonError(400, `role "${name}" does not exist`)
       if (!branch.roles.has(member)) return neonError(400, `role "${member}" does not exist`)
-      if (target.createdBy !== caller.name) {
+      if (!this.hasAdmin(branch, caller.name, name)) {
         return neonError(400, `permission denied to grant role "${name}"`)
       }
       branch.members.add(`${name}->${member}`)
       if (match[3]) branch.admins.add(`${name}->${member}`)
       this.grants.push({ projectId: project.id, role: name, member })
       return ok('GRANT')
+    }
+    // Revokes the membership whoever granted it (Postgres revokes the caller's own grant; a
+    // membership the fake models is one row).
+    match = /^REVOKE\s+("?\w+"?)\s+FROM\s+("?\w+"?)$/i.exec(query)
+    if (match) {
+      const key = `${bare(match[1])}->${bare(match[2])}`
+      branch.members.delete(key)
+      branch.admins.delete(key)
+      return ok('REVOKE')
+    }
+    // The roles holding `$1` WITH ADMIN OPTION (its creator among them), but `$2` and `$3`.
+    if (/JOIN\s+pg_roles\s+h\s+ON\s+h\.oid\s*=\s*m\.member/i.test(query)) {
+      const target = String(params[0])
+      const rows = [...branch.roles.values()]
+        .filter(r => r.name !== params[1] && r.name !== params[2])
+        .filter(r => this.holdsAdmin(branch, r.name, target))
+        .map(r => r.name)
+        .sort((a, b) => Number(b === 'migrator') - Number(a === 'migrator') || a.localeCompare(b))
+        .map(name => ({ name }))
+      return ok('SELECT', rows)
     }
     match = /^CREATE\s+EXTENSION\s+(IF\s+NOT\s+EXISTS\s+)?("?\w+"?)/i.exec(query)
     if (match) {
@@ -634,6 +656,32 @@ export class FakeNeon implements VendorHandler {
       return ok('SELECT', [{ n: String(branch.tables.get(database)?.size ?? 0) }])
     }
     return ok('SELECT')
+  }
+
+  /** `role` holds `target` WITH ADMIN directly: it created it (Postgres 16+), or was granted it. */
+  private holdsAdmin(branch: FakeNeonBranch, role: string, target: string): boolean {
+    return branch.roles.get(target)?.createdBy === role || branch.admins.has(`${target}->${role}`)
+  }
+
+  /**
+   * `role` may grant `target`: it holds ADMIN directly, or through a role it is a member of (a
+   * membership inherits, as Postgres' default). This is what `ensureAppRole`'s borrow relies on.
+   */
+  private hasAdmin(
+    branch: FakeNeonBranch,
+    role: string,
+    target: string,
+    seen = new Set<string>()
+  ): boolean {
+    if (this.holdsAdmin(branch, role, target)) return true
+    seen.add(role)
+    for (const key of branch.members) {
+      const [via, member] = key.split('->')
+      if (member === role && via && !seen.has(via) && this.hasAdmin(branch, via, target, seen)) {
+        return true
+      }
+    }
+    return false
   }
 
   /** Seed a table in `public` of a branch's database — a database with data in it. */

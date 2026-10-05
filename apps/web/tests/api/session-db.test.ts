@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'vitest'
 import { NeonClient } from '@/api/services/launch/neon'
 import { loadAppNeon } from '@/api/services/sessions/app-neon'
-import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import { appRlsRoleFor, NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import { gateBranchName } from '@/api/services/sessions/gate-branch'
 import { loadConfig } from '@/config'
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud } from '../helpers/fake-cloud'
@@ -75,50 +76,165 @@ describe('NeonSessionDb', () => {
     expect(cloud.neon.sql.filter(s => /^CREATE ROLE/i.test(s.query))).toHaveLength(2)
   })
 
-  it('makes the kit’s RLS role on dev, held by session_owner WITH ADMIN — so no sandbox runs db-roles', async () => {
-    const { cloud, f, port, app } = await setup()
-    await port.ensureDev(app)
-    const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
-    expect(dev?.roles.get('rocketflare_app')).toMatchObject({
-      superuser: false,
-      createdBy: 'neondb_owner',
-      canCreateRole: false,
-    })
-    // The kit's db-roles (a turn's `pnpm db:migrate`) alters it as session_owner: Postgres 16+
-    // allows that only WITH ADMIN OPTION.
-    expect(dev?.admins.has('rocketflare_app->session_owner')).toBe(true)
-    // A retried step makes and grants nothing twice.
-    await port.ensureDev(app)
-    const made = (re: RegExp) => cloud.neon.sql.filter(s => re.test(s.query)).length
-    expect(made(/^CREATE ROLE "?rocketflare_app/i)).toBe(1)
-    expect(made(/^GRANT "?rocketflare_app/i)).toBe(1)
-    // A session's branch inherits it.
-    await port.createBranch(
-      { ...app, sessionDb: await port.ensureDev(app) },
-      {
-        id: 'sess-1',
-        shortId: 'abc123',
-      }
-    )
-    expect(
-      cloud.neon.branchNamed(f.neonProjectId, 'session-abc123')?.roles.has('rocketflare_app')
-    ).toBe(true)
-  })
+  describe('the app’s RLS role', () => {
+    /** The statements one call made on one branch, in order. */
+    const since = (cloud: { neon: { sql: { branchId: string; query: string }[] } }, n: number) =>
+      cloud.neon.sql.slice(n)
 
-  it('leaves the RLS role alone when the kit’s db-roles already made it as session_owner', async () => {
-    const { cloud, f, port, app } = await setup()
-    await port.ensureDev(app)
-    const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
-    // A dev prepared before Launch made the role: the kit's db-roles made it, as session_owner.
-    dev?.roles.delete('rocketflare_app')
-    dev?.admins.clear()
-    cloud.neon.sqlRole(f.neonProjectId, dev?.id ?? '', 'rocketflare_app', {
-      createdBy: 'session_owner',
+    it('is the RENAMED kit role — `<snake>_app` — made on dev, held by session_owner WITH ADMIN', async () => {
+      const { cloud, f, port, app } = await setup()
+      const role = appRlsRoleFor(app.slug)
+      expect(role).toBe(`${app.slug.replaceAll('-', '_')}_app`)
+      await port.ensureDev(app)
+      const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+      expect(dev?.roles.get(role)).toMatchObject({
+        superuser: false,
+        createdBy: 'neondb_owner',
+        canCreateRole: false,
+        noLogin: true,
+      })
+      // The kit's db-roles (a turn's `pnpm db:migrate`, the gate's test setup) alters it as
+      // session_owner: Postgres 16+ allows that only WITH ADMIN OPTION.
+      expect(dev?.admins.has(`${role}->session_owner`)).toBe(true)
+      // The kit's PRE-rename name is never made: it is no role of this app's.
+      expect(dev?.roles.has('rocketflare_app')).toBe(false)
+      expect(cloud.neon.sql.some(s => /rocketflare_app/.test(s.query))).toBe(false)
+      // A retried step makes and grants nothing twice.
+      await port.ensureDev(app)
+      const made = (re: RegExp) => cloud.neon.sql.filter(s => re.test(s.query)).length
+      expect(made(new RegExp(`^CREATE ROLE "${role}"`))).toBe(1)
+      expect(made(new RegExp(`^GRANT "${role}"`))).toBe(1)
+      // A session's branch inherits it.
+      await port.createBranch(
+        { ...app, sessionDb: await port.ensureDev(app) },
+        { id: 'sess-1', shortId: 'abc123' }
+      )
+      const child = cloud.neon.branchNamed(f.neonProjectId, 'session-abc123')
+      expect(child?.admins.has(`${role}->session_owner`)).toBe(true)
     })
-    const before = cloud.neon.sql.length
-    await port.ensureDev(app)
-    const statements = cloud.neon.sql.slice(before).map(s => s.query)
-    expect(statements.some(q => /^(CREATE ROLE|GRANT) "?rocketflare_app/i.test(q))).toBe(false)
+
+    it('leaves it alone when the kit’s db-roles already made it as session_owner', async () => {
+      const { cloud, f, port, app } = await setup()
+      const role = appRlsRoleFor(app.slug)
+      await port.ensureDev(app)
+      const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+      // A dev prepared before Launch made the role: the kit's db-roles made it, as session_owner.
+      dev?.roles.delete(role)
+      dev?.admins.clear()
+      cloud.neon.sqlRole(f.neonProjectId, dev?.id ?? '', role, { createdBy: 'session_owner' })
+      const before = cloud.neon.sql.length
+      await port.ensureDev(app)
+      const statements = since(cloud, before).map(s => s.query)
+      expect(statements.some(q => /^(CREATE ROLE|GRANT|REVOKE) /i.test(q))).toBe(false)
+    })
+
+    it('on a dev cut from staging, grants migrator’s role by borrowing migrator’s ADMIN — and leaves no borrow behind', async () => {
+      const { cloud, f, port, app } = await setup({ withStaging: true })
+      const role = appRlsRoleFor(app.slug)
+      await port.ensureDev(app)
+      const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+      // Staging's role, as the kit's db-roles made it in a deploy: by migrator, kept as it is.
+      expect(dev?.roles.get(role)).toMatchObject({ createdBy: 'migrator', noLogin: true })
+      const grants = cloud.neon.sql
+        .filter(s => s.branchId === dev?.id && /^(GRANT|REVOKE) /i.test(s.query))
+        .map(s => ({ role: s.role, query: s.query }))
+      expect(grants).toEqual([
+        // neondb_owner holds no ADMIN on migrator's role: refused …
+        { role: 'neondb_owner', query: `GRANT "${role}" TO "session_owner" WITH ADMIN OPTION` },
+        // … so it takes migrator (whose creator it is) for one statement, and gives it back.
+        { role: 'neondb_owner', query: 'GRANT "migrator" TO "neondb_owner"' },
+        { role: 'neondb_owner', query: `GRANT "${role}" TO "session_owner" WITH ADMIN OPTION` },
+        { role: 'neondb_owner', query: 'REVOKE "migrator" FROM "neondb_owner"' },
+      ])
+      expect(dev?.admins.has(`${role}->session_owner`)).toBe(true)
+      expect(dev?.members.has('migrator->neondb_owner')).toBe(false)
+      // No credential of migrator's was minted for it (the scrub's one reset is all).
+      expect(dev?.roles.get('migrator')?.resets).toBe(1)
+      expect(cloud.neon.sql.some(s => s.role === 'migrator')).toBe(false)
+      // Held now: a rerun only reads.
+      const before = cloud.neon.sql.length
+      await port.ensureDev(app)
+      expect(since(cloud, before).some(s => /^(GRANT|REVOKE|CREATE ROLE) /i.test(s.query))).toBe(
+        false
+      )
+    })
+
+    it('repairs a dev prepared while Launch granted `rocketflare_app` — on the next session, still prepared', async () => {
+      const { cloud, f, port, app } = await setup({ withStaging: true })
+      const role = appRlsRoleFor(app.slug)
+      const first = await port.ensureDev(app)
+      const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+      // What the old code left: a useless `rocketflare_app` granted, the real role not.
+      dev?.admins.delete(`${role}->session_owner`)
+      dev?.members.delete(`${role}->session_owner`)
+      cloud.neon.sqlRole(f.neonProjectId, dev?.id ?? '', 'rocketflare_app', { noLogin: true })
+      dev?.members.add('rocketflare_app->session_owner')
+      dev?.admins.add('rocketflare_app->session_owner')
+      const prepared = {
+        ...first,
+        status: 'ready' as const,
+        preparedCommit: 'abc1234',
+        migrationsHash: 'h1',
+      }
+      // The next session's `db` step.
+      const again = await port.ensureDev({ ...app, sessionDb: prepared })
+      expect(dev?.admins.has(`${role}->session_owner`)).toBe(true)
+      // Not a reason to prepare again: dev's data is fine, only a grant was missing.
+      expect(again).toMatchObject({
+        status: 'ready',
+        preparedCommit: 'abc1234',
+        migrationsHash: 'h1',
+      })
+      // A session branched from it now inherits the grant.
+      const branch = await port.createBranch(
+        { ...app, sessionDb: again },
+        { id: 'sess-r', shortId: 'rep001' }
+      )
+      expect(
+        cloud.neon.projects
+          .get(f.neonProjectId)
+          ?.branches.get(branch.db.branchId)
+          ?.admins.has(`${role}->session_owner`)
+      ).toBe(true)
+    })
+
+    it('repairs an older session’s own branch before cutting its gate branch', async () => {
+      const { cloud, f, port, app } = await setup({ withStaging: true })
+      const role = appRlsRoleFor(app.slug)
+      const dev = await port.ensureDev(app)
+      const session = { id: 'sess-g', shortId: 'gat001' }
+      const own = await port.createBranch({ ...app, sessionDb: dev }, session)
+      // A session branched from a dev the old code prepared: no grant on its branch.
+      const sessionBranch = cloud.neon.projects.get(f.neonProjectId)?.branches.get(own.db.branchId)
+      sessionBranch?.admins.delete(`${role}->session_owner`)
+      sessionBranch?.members.delete(`${role}->session_owner`)
+      const name = gateBranchName(session.shortId, 1)
+      const gate = await port.createGateBranch({ ...app, sessionDb: dev }, own.db, name)
+      expect(sessionBranch?.admins.has(`${role}->session_owner`)).toBe(true)
+      const gateBranch = cloud.neon.projects.get(f.neonProjectId)?.branches.get(gate.branchId)
+      expect(gateBranch?.parent_id).toBe(own.db.branchId)
+      expect(gateBranch?.admins.has(`${role}->session_owner`)).toBe(true)
+      expect(gateBranch?.members.has('migrator->neondb_owner')).toBe(false)
+      // A retried step finds the gate branch and touches nothing.
+      const before = cloud.neon.sql.length
+      expect(await port.createGateBranch({ ...app, sessionDb: dev }, own.db, name)).toEqual(gate)
+      expect(cloud.neon.sql.length).toBe(before)
+    })
+
+    it('fails by name when no role neondb_owner may borrow holds ADMIN on it', async () => {
+      const { cloud, f, port, app } = await setup({ withStaging: true })
+      const role = appRlsRoleFor(app.slug)
+      await port.ensureDev(app)
+      const dev = cloud.neon.branchNamed(f.neonProjectId, 'dev')
+      // Made by a role Launch did not make (no ADMIN of neondb_owner's reaches it).
+      const stranger = dev?.roles.get(role)
+      if (stranger) stranger.createdBy = 'cloud_admin'
+      dev?.admins.delete(`${role}->session_owner`)
+      dev?.members.delete(`${role}->session_owner`)
+      await expect(port.ensureDev(app)).rejects.toThrow(
+        new RegExp(`session_owner the app's RLS role ${role} WITH ADMIN OPTION`)
+      )
+    })
   })
 
   it('repairs a dev whose session_owner an earlier Launch made through the API, and re-prepares it', async () => {
@@ -262,7 +378,7 @@ describe('NeonSessionDb', () => {
         expect(dev?.roles.get(role)?.password).not.toBe(stagingPasswords[role])
       }
       const rls = [...(dev?.roles.values() ?? [])].find(
-        r => r.noLogin && r.name !== 'rocketflare_app'
+        r => r.noLogin && r.name === appRlsRoleFor(app.slug)
       )
       expect(rls?.resets).toBe(0)
       // The usual dev set-up follows the scrub.

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Coding sessions grant the app's REAL RLS role.** A session's database gave `session_owner`
+  ADMIN on the kit's pre-rename role `rocketflare_app`, which no Launch-made app has — the kit's
+  rename makes it `<snake>_app` (`hello-world` → `hello_world_app`) — so the ship gate's test
+  setup (`db-roles`) failed "permission denied to alter role" on any app whose `dev` came from
+  staging. Launch now derives the app's role, and when staging's copy (made by `migrator`) is not
+  yet held, `neondb_owner` grants it by borrowing `migrator`'s ADMIN for one statement. A `dev`
+  prepared before is repaired at the next session's start (still prepared), and an older session's
+  own branch before its next gate branch is cut.
+
 - **Kit upgrades for one app.** Moving the template pin (Setup → Kit version) now flags every app
   below it: the catalogue, Settings and the app's Overview say "Requires upgrade → X.Y.Z". The
   Overview's Kit section (and `launch apps upgrade <app>`) starts a coding session that runs the

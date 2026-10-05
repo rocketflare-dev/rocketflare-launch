@@ -141,8 +141,9 @@ hangs the same way.
 
 **What changed (not yet run remotely):** fewer database connections from the sandbox.
 
-- Launch makes the kit's RLS role `rocketflare_app` on `dev` itself (NOLOGIN, held by
-  `session_owner` WITH ADMIN OPTION, so a turn's `pnpm db:migrate` can still alter it).
+- Launch makes the app's RLS role (`<snake>_app`, the kit's `rocketflare_app` renamed) on `dev`
+  itself (NOLOGIN, held by `session_owner` WITH ADMIN OPTION, so a turn's `pnpm db:migrate` can
+  still alter it).
 - The bootstrap preload always skips `db:check`, and runs `db:migrate` as the migrator alone,
   without `db-roles`.
 - A new session used to re-run the WHOLE bootstrap, seed included, on a branch of an

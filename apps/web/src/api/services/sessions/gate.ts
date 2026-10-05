@@ -38,7 +38,9 @@
  * ({@link gateTestTarget}, shown on the ship panel):
  *
  * - `DATABASE_URL` — `session_owner` on the gate branch (it owns `session_app`'s tables and holds
- *   ADMIN OPTION on `rocketflare_app`, which the kit's test setup alters), direct host;
+ *   ADMIN OPTION on the app's RLS role — `<snake>_app`, `appRlsRoleFor` — whose timeouts the kit's
+ *   test setup, `db-roles`, alters: Postgres 16+ refuses that without ADMIN, "permission denied
+ *   to alter role"; `createGateBranch` repairs a session branch that lacks it), direct host;
  * - `TEST_DATABASE_BRANCH` — the branch's name, which must match the kit's `GATE_BRANCH_RE`;
  * - `TEST_DATABASE_ENDPOINT` — the `ep-…` id IN that URL (the name is only a claim; the endpoint
  *   binds it to this URL).

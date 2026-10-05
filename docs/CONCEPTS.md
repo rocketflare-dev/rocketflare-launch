@@ -1420,9 +1420,14 @@ reload) is restarted as `<id>-rN` from the row.
   before any write with 503 `sessions_not_configured`, 409 `app_has_no_repo`, `sessions_paused`,
   `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
   then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
-- **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` and the kit's RLS
-  role `rocketflare_app` — NOLOGIN, held by `session_owner` WITH ADMIN — made in SQL by
-  `neondb_owner`; the first session PREPARES it — migrate + seed — then branches) →
+- **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` and the app's RLS
+  role — the kit's `rocketflare_app` as the kit's rename made it, `<snake>_app` (`appRlsRoleFor`:
+  `hello-world` → `hello_world_app`) — NOLOGIN, held by `session_owner` WITH ADMIN so the kit's
+  `db-roles` may `ALTER ROLE` it; made in SQL by `neondb_owner` when missing, and when staging's
+  copy (made by `migrator` in a deploy) is not yet held, granted by `neondb_owner` borrowing
+  `migrator`'s ADMIN for one statement — it created `migrator` — and revoking the borrow at once;
+  re-checked at EVERY session's start, so a `dev` an older Launch prepared is repaired without a
+  reset; the first session PREPARES it — migrate + seed — then branches) →
   `sandbox.start` → `repo` (clone, `session/<short>`,
   `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
   `/workspace/.launch/repo.lock` so overlapping attempts queue, and a failure reports git's last
@@ -1633,8 +1638,12 @@ the cause is not reproduced, so whether that is enough is unproven. The lighter 
 bootstrap swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
 `pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
 in full again (slower, and on real containers back to the connection count that hung); the RLS
-role's name is the kit's `APP_ROLE` copied as a constant (`SESSION_APP_ROLE`), so an app that
-renamed it runs a migrator whose policies name a missing role; the preload is proven under real Node with a stand-in
+role's name is DERIVED from the slug (`appRlsRoleFor`, the kit rename's rule), not read from the
+repo, so an imported app renamed to something other than its Launch slug (or one that renamed the
+role by hand) has a different role made and granted — its migrator's policies name a missing role
+and its `db-roles` fails "permission denied to alter role"; the grant's borrow of `migrator`'s
+ADMIN is proven on a local Postgres 17 with Neon's role layout, not yet on a real Neon project
+(where `neondb_owner` is also a `neon_superuser` member); the preload is proven under real Node with a stand-in
 bootstrap, not yet in a container. Workspace backups are proven against the `FakeSandbox` and the
 SDK's call shapes only: whether `binding` mode's restore (the whole archive through the Durable
 Object, base64, on the SDK's default HTTP transport) beats a clone and an install under `wrangler
@@ -2212,9 +2221,11 @@ string or a key removed), and — on the test step — `target`, the line the ki
 first (`test target: remote Neon branch gate-… (no Docker; the whole suite under neon)`, redacted
 the same way), which the ship panel shows under the Tests row. **The test step's database** is a throwaway Neon
 branch per attempt, `gate-<short>-<A>`, a CHILD of the session's branch (its schema, its roles:
-`session_owner` owns `session_app`'s tables and holds ADMIN on `rocketflare_app`) with its own
-compute, made by `ship.db` (`createGateBranch`, waiting for `create_branch` only; it first deletes
-any gate branch an earlier attempt of the session left). The command gets the kit's contract
+`session_owner` owns `session_app`'s tables and holds ADMIN on the app's RLS role, `<snake>_app`)
+with its own compute, made by `ship.db` (`createGateBranch`, waiting for `create_branch` only; it
+first deletes any gate branch an earlier attempt of the session left, and before cutting a new one
+re-checks that grant on the SESSION's branch — a session branched from a `dev` an older Launch
+prepared, when it granted the kit's pre-rename `rocketflare_app` instead, is repaired there). The command gets the kit's contract
 (0.15.7's, unchanged in 0.16.0, where `TEST_DATABASE_BRANCH` is also what tells `pnpm test` it is on
 a remote target) exactly — `DATABASE_URL` (`session_owner` on the gate branch, direct host, password reset when the
 run STARTS — a lazy env, so a retried step that re-attaches never resets it under the suite),
@@ -2350,7 +2361,7 @@ sandbox has (a service, a secret) cannot pass; after shipping there is no "keep 
 — a new session starts from the default branch unless the API is given `baseRef`. The ship gate
 (issue #1, #2) is proven against the FakeSandbox and the FakeCloud's Neon only: `pnpm gate test`
 on a REAL Neon gate branch — the kit's test setup as `session_owner` (its `ALTER ROLE` on
-`rocketflare_app`, the grants and the truncate, on a branch of a branch), the connection count against a
+the app's `<snake>_app`, the grants and the truncate, on a branch of a branch), the connection count against a
 small compute, the kit's scaled time limits on a fresh 0.16.0 scaffold, how long branch creation
 takes — has not run; nor has `pnpm gate --list --json` been read from a real checkout, nor a gate
 run inside a real sandbox (the memory the suite needs beside the dev server, a vitest that
