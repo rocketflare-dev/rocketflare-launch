@@ -475,25 +475,36 @@ describe('checkGitHubApp', () => {
     expect(missingGitHubPermissions({})).toHaveLength(10)
   })
 
-  it('needs READ on checks and statuses (P3: a session ships when its CI is green)', async () => {
-    const { checks: _c, ...withoutChecks } = FULL_GITHUB_PERMISSIONS
+  it('needs READ on statuses (P3: a session ships when its CI is green)', async () => {
+    const { statuses: _s, ...withoutStatuses } = FULL_GITHUB_PERMISSIONS
+    const fake = fakeVendorFetch(
+      happyVendors({ domain: DOMAIN, org: ORG, permissions: withoutStatuses })
+    )
+    const out = await checkGitHubApp(githubSecret, settings, { fetch: fake.fetch })
+    const perms = out.checks.find(c => c.id === 'permissions')
+    expect(perms).toMatchObject({ status: 'failed' })
+    expect(perms?.detail).toContain('Missing read on: statuses.')
+    expect(perms?.detail).not.toContain('Missing write')
+    // Read is enough for statuses; write is enough for anything.
+    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, statuses: 'write' })).toEqual([])
+    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, contents: 'read' })).toEqual([
+      'contents',
+    ])
+  })
+
+  it('needs WRITE on checks (issue #9: the launch/gate check run) — an older installation is told', async () => {
     const fake = fakeVendorFetch(
       happyVendors({
         domain: DOMAIN,
         org: ORG,
-        permissions: { ...withoutChecks, statuses: 'read' },
+        permissions: { ...FULL_GITHUB_PERMISSIONS, checks: 'read' },
       })
     )
     const out = await checkGitHubApp(githubSecret, settings, { fetch: fake.fetch })
     const perms = out.checks.find(c => c.id === 'permissions')
     expect(perms).toMatchObject({ status: 'failed' })
-    expect(perms?.detail).toContain('Missing read on: checks.')
-    expect(perms?.detail).not.toContain('Missing write')
-    // Read is enough for these two; write is enough for anything.
-    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, checks: 'write' })).toEqual([])
-    expect(missingGitHubPermissions({ ...FULL_GITHUB_PERMISSIONS, contents: 'read' })).toEqual([
-      'contents',
-    ])
+    expect(perms?.detail).toContain('Missing write on: checks.')
+    expect(perms?.detail).toContain('accept the new permissions on the installation')
   })
 })
 

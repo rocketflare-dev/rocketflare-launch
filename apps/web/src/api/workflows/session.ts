@@ -25,7 +25,8 @@
  *              the ship (issue #1, `services/sessions/ship-steps.ts`): ship.claim#N → ship.save#N →
  *                ship.kit#N (which commands the checkout's kit takes) → per attempt A: ship.gate#N.A.lint → ship.gate#N.A.typecheck → ship.db#N.A →
  *                ship.gate#N.A.test → ship.db-clean#N.A (always, after ship.db) → on red
- *                ship.fix#N.A → … → green: ship.commit#N → ship.summary#N → ship.pr#N → shipped
+ *                ship.fix#N.A → … → green: ship.commit#N → ship.attest#N (issue #9: the
+ *                `launch/gate` check run, only with a gate tree) → ship.summary#N → ship.pr#N → shipped
  *                (`pr` mode): leave the loop · `staging` mode (issue #5): still `shipping`, the
  *                landing in `ci` — the next inspect lands it · otherwise ship.settle#N (back to
  *                ready) · a lost container: suspended, the next inspect resumes
@@ -94,6 +95,7 @@ import { createStepRealtime } from '../services/agents/runtime'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
 import type { ShipGateCommand } from '../services/sessions/gate'
+import { shipAttestStep } from '../services/sessions/gate-attest'
 import { defaultSessionStepHooks, type SessionStepHooks } from '../services/sessions/hooks'
 import {
   LAND_RETRY_SECONDS,
@@ -701,10 +703,12 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (!kit.ok) reason = kit.stop === 'ended' ? 'ended' : 'unfixable'
       const commands = kit.ok ? kit.commands : []
       let green: number | null = null
+      let gateTree: string | undefined
       for (let attempt = first; kit.ok && attempt <= last; attempt++) {
         const gate = await this.gate(run, `${n}.${attempt}`, attempt, bootId, commands)
         if (gate.passed) {
           green = attempt
+          gateTree = gate.tree
           break
         }
         if (gate.stop === 'container_lost') return { status: 'lost' }
@@ -737,18 +741,28 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         const fixTurns = green - first
         const commit = await run(
           `ship.commit#${n}`,
-          shipping(s => shipCheckpointStep(s, bootId, 'to open the pull request')),
+          shipping(s => shipCheckpointStep(s, bootId, 'to open the pull request', gateTree)),
           SHIP_STEP
         )
         if (commit.lost) return { status: 'lost' }
         if (!commit.ok) {
-          reason = 'not_committed'
+          reason = commit.changed ? 'tree_changed' : 'not_committed'
         } else {
+          // Issue #9: the `launch/gate` check run on the pushed head (never fails the ship).
+          const tree = commit.tree
+          const attempt = green
+          if (tree) {
+            await run(
+              `ship.attest#${n}`,
+              shipping(s => shipAttestStep(s, { attempt, tree })),
+              SHIP_STEP
+            )
+          }
           const summary = await run(`ship.summary#${n}`, shipping(shipSummaryStep), SHIP_STEP)
           const ran = commands.map(c => c.command)
           const pr = await run(
             `ship.pr#${n}`,
-            shipping(s => shipPrStep(s, summary, fixTurns, ran)),
+            shipping(s => shipPrStep(s, summary, fixTurns, ran, tree)),
             SHIP_STEP
           )
           if (pr.shipped) return { status: 'shipped' }
@@ -782,7 +796,10 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     bootId: string | undefined,
     commands: readonly ShipGateCommand[]
   ): Promise<GateStepResult> {
-    for (const command of commands) {
+    let passed: GateStepResult = { passed: true, step: 'test' }
+    for (const [i, command] of commands.entries()) {
+      // Issue #9: the last command reads the tree the green gate ran on.
+      const last = i === commands.length - 1
       const name = `ship.gate#${tag}.${command.step}`
       const config = gateStepConfig(command.timeoutMs)
       let result: GateStepResult
@@ -798,7 +815,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           result = await run(
             name,
             shipping(s =>
-              shipGateStep(s, { step: command.step, attempt, branch, command }, bootId)
+              shipGateStep(s, { step: command.step, attempt, branch, command, last }, bootId)
             ),
             config
           )
@@ -808,12 +825,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       } else {
         result = await run(
           name,
-          shipping(s => shipGateStep(s, { step: command.step, attempt, command }, bootId)),
+          shipping(s => shipGateStep(s, { step: command.step, attempt, command, last }, bootId)),
           config
         )
       }
       if (!result.passed) return result
+      passed = result
     }
-    return { passed: true, step: 'test' }
+    return passed
   }
 }

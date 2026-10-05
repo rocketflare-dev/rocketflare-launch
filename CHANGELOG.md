@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A green ship attests its gate on GitHub, and a landing decides on `Gate`.** After the sandbox
+  gate passes and the ship's commit is pushed, Launch's GitHub App posts a `launch/gate` check run
+  on that commit (`success`, `external_id` `tree:<git tree sha>`, the steps, commands and durations
+  in its output) so the kit's CI can skip the gate it would only run again; a failure to post is a
+  note in the session, never a failed ship. `ship.commit` now refuses to commit when the workspace
+  is no longer the tree the gate ran on, and records that tree (`gateTree`) beside the gate SHA.
+  `land.ci` and `land.merge` follow the required `Gate` check when the repo has one: a red optional
+  check (an evals run) no longer stops a landing; a repo with no `Gate` check keeps the old rule
+  (every check). **Action needed:** the GitHub App now requires **Checks: read and
+  write** (was read) — an organisation owner must accept the new permission on the installation
+  (Setup's GitHub check reports it missing until then; ships still work, without the attestation).
+
 - **Coding sessions grant the app's REAL RLS role.** A session's database gave `session_owner`
   ADMIN on the kit's pre-rename role `rocketflare_app`, which no Launch-made app has — the kit's
   rename makes it `<snake>_app` (`hello-world` → `hello_world_app`) — so the ship gate's test

@@ -15,8 +15,10 @@
  *     ship.db-clean#N.A   ALWAYS after `ship.db` (a `finally`): the session's gate branches deleted
  *     ship.fix#N.A        red, and attempts left: ONE focused turn with the failing command and
  *                         the tail of its output (`session-ship-fix`)
- *   green: ship.commit#N → ship.summary#N (one cheap model call: the PR's title and body, and the
- *     diff stat) → ship.pr#N (`shipped` in `pr` mode; issue #5's `staging` mode stays `shipping`
+ *   green: ship.commit#N (refused unless the workspace is still the tree the gate's last step
+ *     read — issue #9) → ship.attest#N (the `launch/gate` check run on the pushed head,
+ *     `gate-attest.ts`; never fails the ship) → ship.summary#N (one cheap model call: the PR's
+ *     title and body, and the diff stat) → ship.pr#N (`shipped` in `pr` mode; issue #5's `staging` mode stays `shipping`
  *     with its landing in `ci`, and the loop's `land` rounds — `land.ts` — take it from there)
  *   otherwise: ship.settle#N (`shipping → ready`, with a sentence saying why no PR)
  *
@@ -53,7 +55,7 @@ import { upgradeNeedsAttention } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
 import { BackgroundCommandAbortedError, BackgroundCommandLostError } from './background-command'
 import { checkContainer } from './boot-marker'
-import { workspaceChanged } from './checkpoint'
+import { readHeadTree, readWorktreeTree, workspaceChanged } from './checkpoint'
 import { safeErrorMessage } from './events'
 import {
   GATE_KIT_PROBE,
@@ -221,25 +223,47 @@ async function lostContainer(
 export interface ShipCheckpointResult {
   ok: boolean
   lost?: boolean
+  /**
+   * Issue #9, `ship.commit` only: the workspace (before the commit) or the commit (after it) is
+   * not the tree the green gate ran on — nothing reaches a PR (`tree_changed`).
+   */
+  changed?: boolean
+  /** Issue #9, `ship.commit` with a gate tree: the committed `HEAD^{tree}` (= the gate's). */
+  tree?: string
 }
 
 /**
  * `ship.save#N` (before the gate) and `ship.commit#N` (after a green one): the checkpoint hook,
  * on the container the boot prepared. A failed checkpoint is an `error` event and `ok: false` —
  * the save's is not fatal (the gate still runs on the workspace), the commit's stops the ship.
+ *
+ * Issue #9: `ship.commit` takes `gateTree`, the tree the green gate's last step read, and FAILS
+ * CLOSED on it twice: the workspace is read again before the hook (anything that moved since the
+ * gate — a background process, a file the tests left — and nothing is committed), and the commit's
+ * `HEAD^{tree}` after it (what the checkpoint left out, e.g. a file over its size cap). Either is
+ * `changed: true`; a tree that cannot be read throws (the step retries, then the round settles
+ * `error`). A retried `ship.commit` re-reads a workspace that is now clean at the commit — the same
+ * tree. No `gateTree` (a gate recorded before issue #9) commits as before and attests nothing.
  */
 export async function shipCheckpointStep(
   scope: StepScope,
   bootId: string | undefined,
-  when: 'before the gate' | 'to open the pull request'
+  when: 'before the gate' | 'to open the pull request',
+  gateTree?: string
 ): Promise<ShipCheckpointResult> {
   const session = await loadSession(scope)
   if (session.status !== 'shipping') return { ok: false }
   const sandbox = sandboxFor(scope, session)
   if (await lostContainer(scope, sandbox, bootId)) return { ok: false, lost: true }
+  if (gateTree) {
+    const now = await readWorktreeTree(sandbox)
+    if (now !== gateTree) {
+      scope.logger.warn({ gateTree, now }, 'session ship: the workspace moved after the gate')
+      return { ok: false, changed: true }
+    }
+  }
   try {
     await scope.hooks.checkpoint(hookContext(scope, session, session.turnCount, bootId), 'ship')
-    return { ok: true }
   } catch (err) {
     scope.logger.warn({ err, when }, 'session ship: checkpoint failed')
     await emitterFor(scope)({
@@ -249,6 +273,13 @@ export async function shipCheckpointStep(
     })
     return { ok: false }
   }
+  if (!gateTree) return { ok: true }
+  const committed = await readHeadTree(sandbox)
+  if (committed !== gateTree) {
+    scope.logger.warn({ gateTree, committed }, 'session ship: the commit is not the gated tree')
+    return { ok: false, changed: true }
+  }
+  return { ok: true, tree: committed }
 }
 
 // ---- ship.kit ----------------------------------------------------------------------------------
@@ -312,6 +343,8 @@ export interface GateStepResult {
   /** On red: what the fix turn is given — the command and its REDACTED output tail. */
   command?: string
   output?: string
+  /** Issue #9: green, on the attempt's last step — the working tree's tree when it ended. */
+  tree?: string
 }
 
 /**
@@ -362,7 +395,14 @@ async function whileNotEnded<T>(
  */
 export async function shipGateStep(
   scope: StepScope,
-  input: { step: ShipGateStep; attempt: number; branch?: GateBranch; command?: ShipGateCommand },
+  input: {
+    step: ShipGateStep
+    attempt: number
+    branch?: GateBranch
+    command?: ShipGateCommand
+    /** Issue #9: the attempt's last command — a green one reads the tree it ran on. */
+    last?: boolean
+  },
   bootId?: string
 ): Promise<GateStepResult> {
   const gate = input.command ?? SHIP_GATE_COMMANDS[input.step]
@@ -430,6 +470,10 @@ export async function shipGateStep(
     }
   }
 
+  // Issue #9: what a green gate ran on — read BEFORE the event, so a read that throws retries the
+  // step (the command re-attached, finished) without writing its row twice.
+  const tree = result.passed && input.last ? await gateTreeOf(scope, sandbox, bootId) : undefined
+  if (tree === null) return { passed: false, step, stop: 'container_lost' }
   const output = [result.note, gateOutputTail(result.log, secrets)].filter(Boolean).join('\n')
   const target = gate.database ? gateTestTarget(result.log, secrets) : null
   await emitterFor(scope)({
@@ -442,12 +486,34 @@ export async function shipGateStep(
       command: gate.command,
       durationMs: Math.max(0, Date.now() - started),
       ...(target ? { target } : {}),
+      ...(tree ? { tree } : {}),
       ...(output ? { output } : {}),
     },
   })
   return result.passed
-    ? { passed: true, step }
+    ? { passed: true, step, ...(tree ? { tree } : {}) }
     : { passed: false, step, command: gate.command, output }
+}
+
+/**
+ * The working tree's tree after a green last step; null (and the session suspended) when the
+ * container went away under the read. Any other failure throws, so the step retries.
+ */
+async function gateTreeOf(
+  scope: StepScope,
+  sandbox: SandboxPort,
+  bootId: string | undefined
+): Promise<string | null> {
+  try {
+    return await readWorktreeTree(sandbox)
+  } catch (err) {
+    if (await lostContainer(scope, sandbox, bootId)) return null
+    if (err instanceof SandboxInterruptedError) {
+      await shipContainerLost(scope, sandbox)
+      return null
+    }
+    throw err
+  }
 }
 
 // ---- ship.db / ship.db-clean -------------------------------------------------------------------
@@ -655,7 +721,9 @@ export async function shipPrStep(
   summary: Pick<ShipSummaryResult, 'title' | 'body'> &
     Partial<Pick<ShipSummaryStepResult, 'source' | 'diffStat'>>,
   fixTurns: number,
-  gate?: readonly string[]
+  gate?: readonly string[],
+  /** Issue #9: `ship.commit`'s tree — recorded as the landing's and the summary's `gateTree`. */
+  gateTree?: string
 ): Promise<{ shipped: boolean; landing?: boolean }> {
   const session = await loadSession(scope)
   const landing = session.status === 'shipping' ? await shipLanding(scope, session) : undefined
@@ -673,6 +741,7 @@ export async function shipPrStep(
       body: summary.body,
       fixTurns,
       ...(gate?.length ? { gate } : {}),
+      ...(gateTree ? { gateTree } : {}),
       ...(summary.source ? { source: summary.source } : {}),
       ...(summary.diffStat !== undefined ? { diffStat: summary.diffStat } : {}),
       ...(landing ? { landing } : {}),
@@ -687,7 +756,8 @@ export async function shipPrStep(
 /**
  * Why a ship ended without a PR: the gate still red after every attempt · it cannot run on this
  * app · a fix turn did not run · the person ended the session · the final checkpoint failed · the
- * PR did not open · a step threw.
+ * workspace or the commit is not the tree the gate ran on (issue #9) · the PR did not open · a step
+ * threw.
  */
 export type ShipSettleReason =
   | 'exhausted'
@@ -695,6 +765,7 @@ export type ShipSettleReason =
   | 'fix_failed'
   | 'ended'
   | 'not_committed'
+  | 'tree_changed'
   | 'not_opened'
   | 'error'
 
@@ -714,6 +785,8 @@ function settleMessage(reason: ShipSettleReason, attempts: number, detail?: stri
       return 'The fix turn did not run to its end, so Launch stopped the ship without a pull request. Carry on in the chat, then ship again.'
     case 'not_committed':
       return 'The gate passed, but the work could not be saved to the branch, so no pull request was opened. Ship again.'
+    case 'tree_changed':
+      return 'The work changed after the gate passed, so what Launch would ship is not what the gate checked, and no pull request was opened. Ship again to gate the work as it is now.'
     case 'not_opened':
       return 'The gate passed, but the pull request could not be opened. Ship again.'
     case 'error':

@@ -2242,7 +2242,8 @@ remote Neon, 0.16.0). **Red, with attempts left** → `ship.fix#N.A`: ONE turn, 
 `session-ship-fix` prompt with the failing command and its tail ("fix this; do not run the tests
 or start a database — Launch re-runs the gate"), through the `shipFix` hook (3c's
 `createShipTurnRunner`, metered and cancellable like any turn), and the gate runs again whatever
-the turn says. **Green** → `ship.commit#N` (the final checkpoint) → `ship.summary#N`: the PR's
+the turn says. **Green** → `ship.commit#N` (the final checkpoint, FAIL-CLOSED on the gate's tree —
+below) → `ship.attest#N` (the `launch/gate` check run — below) → `ship.summary#N`: the PR's
 title and body from ONE model call, no tools, over the person's messages and the branch's diff
 stat (`summarizeShip`: `resolveChat` with the `session-ship-summary` prompt key — an agent-model
 assignment picks the model, else Anthropic's Haiku when the provider is Anthropic, else the
@@ -2258,11 +2259,33 @@ session, as before issue #5); in `staging` mode it STAYS `shipping` with the lan
 the review rule snapshotted from `reviewPolicyFor` (`reviewMode`) — and the loop's landing rounds
 take over (**Landing**, below). **`sessions.ship_summary`** keeps what Launch wrote: `{ title, body
 (without the "Opened by Launch…" footer), source: model | fallback, diffStat, prNumber, gateSha,
-at }`, overwritten on a re-ship and never reset by a reopen; the squash message, the
+gateTree, at }`, overwritten on a re-ship and never reset by a reopen; the squash message, the
 `session.merge` request's context and the promotion strip (§18.17) read it. A green gate makes no
-model call but the summary. **No PR** → `ship.settle#N`: an `error` event saying why
-(still red after every attempt, the gate cannot run on the app, the fix turn did not run, the save
-or the PR failed, a step threw), `shipping → ready`, and the fix turns' changes debounced like a
+model call but the summary. **The gate's tree, and the attestation** (issue #9; a result belongs to
+a git TREE — a squash or a release bump makes a new commit over the same tree): the green attempt's
+LAST gate step, once its command ends, reads the working tree's tree as the checkpoint would commit
+it (`worktreeTreeScript`: the checkpoint's scan and pathspec, `git add -A` into a COPY of the index,
+`git write-tree` — the checkout's index untouched) onto its `ship.gate` row (`tree`) and step
+result. `ship.commit` reads it AGAIN before it commits — anything that moved since the gate (a
+background process, a file the tests wrote) is refused, nothing committed — and checks the commit's
+`HEAD^{tree}` after it (what the checkpoint left out, a file over its cap); either mismatch settles
+the round `tree_changed` with no PR, and a tree that cannot be read throws (fail closed). The tree
+is recorded as `landing.gateTree` and `ship_summary.gateTree` beside `gateSha` (null on rows from
+before). `ship.attest#N` (`gate-attest.ts`) then posts ONE check run from Launch's GitHub App on
+the pushed head: name `launch/gate` (`LAUNCH_GATE_CHECK`), `completed` / `success`, `external_id`
+`tree:<HEAD^{tree}>`, `output.title` a short line, `output.summary` a markdown table of the steps
+run (step, command, duration), `output.text` JSON `{ tree, sessionId, attempt, steps: [{ step,
+command, durationMs }] }` — read back from the attempt's own `ship.gate` rows. It is what the
+kit's CI reads to skip the gate it would only run again; never posted for a red gate (the step is
+on the green path only). Idempotent: `createCheckRun` lists the head's runs first and answers one
+with the same name and `external_id`, so a retried step posts nothing new. **It never fails the
+ship**: any failure (an installation that has not accepted `checks: write`, GitHub down) is a log
+line and one `error` event saying the PR's CI runs the whole gate itself. The GitHub App needs
+`checks: write` for it (`REQUIRED_GITHUB_PERMISSIONS`; an installation made before issue #9 has
+`read`, and Setup's GitHub check names the gap until an owner accepts the new permission). **No
+PR** → `ship.settle#N`: an `error` event saying why (still red after every attempt, the gate
+cannot run on the app, the fix turn did not run, the save or the PR failed, the work changed after
+the gate, a step threw), `shipping → ready`, and the fix turns' changes debounced like a
 turn's. **A lost container suspends, never `ready`**: every ship step that touches the container
 reads the boot marker first, and one that came back empty — or died under a gate command or a fix
 turn — is `shipping → suspended` with a resume asked, an `error` event, the container destroyed,
@@ -2286,7 +2309,14 @@ after `cleanup`). Every landing write is a compare-and-set on the status AND `la
 (a jsonb merge). **The head is Launch's gate SHA, twice**: `ship.pr` records `landing.gateSha` =
 `head_sha` after `ship.commit`; CI is only ever read on it, `land.ci` refuses a PR whose head moved
 (`head_moved`), and the squash passes `sha: gateSha`, so GitHub answers 409 if it moved since.
-**`land.ci#N`** reads the PR and its checks fresh each round: green → `approval` (a review is
+**`land.ci#N`** reads the PR and its checks fresh each round and decides on the REQUIRED check
+`Gate` alone (`KIT_REQUIRED_CHECK`; issue #9, `requiredCheckState`), not the fold of every check
+(`pr_checks.state`, still what the panel shows): a green `Gate` beside a red optional check (an
+evals run) proceeds; a repo with no `Gate` check at all (an older kit whose CI job is named
+otherwise) falls back to the fold over its other checks (any red fails, all green passes, else
+pending); and Launch's own
+`launch/gate` never counts — neither as `Gate` nor as "something reported" (a repo whose only
+check is it is `none`). Green → `approval` (a review is
 required) or `merging`; red → reopen `ci_failed`, its `ship.ci` event carrying the failing check
 (`Gate` first) with the last 80 lines of its Actions job log (else its annotations), timestamps
 stripped and REDACTED like the gate's tail (`redactCheckLog`: connection strings, model keys,
@@ -2302,7 +2332,7 @@ effects wake it); rejected / expired / cancelled → reopen `review_rejected` / 
 with the reviewer's comment. Approving moves the stage `approval → merging` INSIDE the decision
 (`applyInTx`, on that request and head only) and wakes the session. **`land.merge#N`** reads first
 (a recorded merge, or a PR GitHub says is merged, wins — a retried or second instance finds it
-there), checks the head, CI and the approval again, then ONE squash: title `"<summary title>
+there), checks the head, `Gate` and the approval again, then ONE squash: title `"<summary title>
 (#n)"`, message the summary body + "Merged by Launch from session <short>[, approved by <name>]";
 409 → `head_moved`, 405/422 → `merge_refused` (audited `session.merge_refused`) unless the PR now
 reads merged (an earlier instance's squash that landed: recorded, not reopened), 30 minutes in
@@ -2372,7 +2402,15 @@ image with the 0.16.0 store (`session-5`, now `session-6` with Codex) is defined
 it; drain sessions first). A `shipping`
 session whose Workflow died is restarted by the reconcile (§18 Reconcile) — a landing resumes where
 it stood, a gate is salvaged and the person ships again (its gate branch swept after three hours).
-The summary's model is not traced (D32). **The landing** (issue #5) is proven with the FakeCloud's
+The summary's model is not traced (D32). **The attestation** (issue #9) is proven against the
+FakeSandbox and the FakeCloud's GitHub, and the tree read against real git and bash
+(`tests/config/gate-attest.test.ts`), not yet on a real repo or inside the session image; the tree
+is read after the attempt's LAST step only, so an earlier step that changed a file (a `typecheck`
+regenerating `worker-configuration.d.ts`) is attested by the later steps' run alone; a repo with
+no `Gate` check falls back to the fold, so there a red optional check still stops a landing, and a
+`Gate` that has not queued yet beside other checks that already finished green lets it merge on
+those (GitHub usually queues a workflow's jobs together); and the kit's CI ignores `launch/gate` until its `verified` job reads it.
+**The landing** (issue #5) is proven with the FakeCloud's
 GitHub — round by round with fake Phase B hooks (`tests/api/session-land.test.ts`), and end to end
 with every slice's real code from Ship to live on staging, the release's chain and the promotion
 strip (`tests/api/session-land-e2e.test.ts`) — not against GitHub: its job-log redirect, its

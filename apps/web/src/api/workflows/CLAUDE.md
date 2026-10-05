@@ -159,7 +159,10 @@ its order) → per attempt
 `A` (numbered across the session's ships, from `ship.claim`'s result): `ship.gate#N.A.lint` →
 `ship.gate#N.A.typecheck` → `ship.db#N.A` → `ship.gate#N.A.test` → `ship.db-clean#N.A` (in a
 `finally`, so the gate branch never outlives a red, a throw, an end or a lost container) → on red
-`ship.fix#N.A` (`turnStepConfig`: no retry) → … → green: `ship.commit#N` → `ship.summary#N` →
+`ship.fix#N.A` (`turnStepConfig`: no retry) → … → green: `ship.commit#N` (issue #9: refused —
+`tree_changed` — unless the workspace and then the commit are the tree the attempt's last gate step
+read) → `ship.attest#N` (the `launch/gate` check run on the pushed head, `gate-attest.ts`; never
+fails the round) → `ship.summary#N` →
 `ship.pr#N` (`shipped` in `pr` mode; in issue #5's `staging` mode the round returns `landing`
 and the session stays `shipping`); no PR: `ship.settle#N`. Every name carries the round and the attempt; the loop only
 branches on step RESULTS (a gate step's `{ passed, stop }`), so a replay takes the same path. A gate

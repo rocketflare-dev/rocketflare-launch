@@ -12,6 +12,8 @@
  * - Issue #5: `getPullRequest` reads the PR fresh; `mergePullRequest` squash-merges on the gate
  *   SHA and maps GitHub's 409 to `head_moved`, 405/422 to `refused`; `failedCheckLog` names the
  *   first failing check (`Gate` first) with the tail of its Actions job log, else its annotations.
+ * - Issue #9: `createCheckRun` posts Launch's `launch/gate` attestation — after reading the head's
+ *   runs, so a retried step finds the run its first try posted (same name and `external_id`).
  *
  * The API calls use their own short-lived tokens, narrowed to the one repo and to what the call
  * needs, and revoked when done — the sandbox's token is never reused Launch-side.
@@ -22,6 +24,7 @@ import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { ConflictError } from '../../../utils/core/errors'
 import {
+  createCheckRun,
   createPullRequest,
   findOpenPullRequest,
   GITHUB_TOKEN_PERMISSIONS,
@@ -44,6 +47,8 @@ import {
 } from '../../launch/github-app'
 import { type ImportGitHub, loadImportGitHub } from '../../launch/import'
 import type {
+  CreateCheckRunInput,
+  CreateCheckRunResult,
   FailedCheckLog,
   GitAuth,
   MergePullRequestResult,
@@ -237,6 +242,16 @@ export class GitHubRepoHost implements RepoHostPort {
         }
         throw err
       }
+    })
+  }
+
+  createCheckRun(repo: RepoRef, input: CreateCheckRunInput): Promise<CreateCheckRunResult> {
+    return this.withToken(repo, GITHUB_TOKEN_PERMISSIONS.checkRun, async token => {
+      const runs = await listCheckRuns(token, repo.owner, repo.repo, input.headSha, this.opts)
+      const earlier = runs.find(r => r.name === input.name && r.external_id === input.externalId)
+      if (earlier) return { id: earlier.id, created: false }
+      const run = await createCheckRun(token, repo.owner, repo.repo, input, this.opts)
+      return { id: run.id, created: true }
     })
   }
 

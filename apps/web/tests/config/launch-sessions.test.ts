@@ -310,6 +310,8 @@ describe('issue #5: the landing', () => {
     }
     expect(sessionLandingSchema.parse(minimal)).toEqual({
       ...minimal,
+      // Issue #9: a landing written before the gate's tree was recorded parses without one.
+      gateTree: null,
       approvalId: null,
       mergeSha: null,
       mergedAt: null,
@@ -346,7 +348,8 @@ describe('issue #5: the landing', () => {
       gateSha: null,
       at: AT,
     }
-    expect(sessionShipSummarySchema.parse(summary)).toEqual(summary)
+    // Issue #9: a summary from before `gateTree` parses with it null.
+    expect(sessionShipSummarySchema.parse(summary)).toEqual({ ...summary, gateTree: null })
     expect([SHIP_SUMMARY_TITLE_MAX, SHIP_SUMMARY_BODY_MAX, SHIP_SUMMARY_DIFFSTAT_MAX]).toEqual([
       200, 4000, 6000,
     ])

@@ -332,6 +332,7 @@ const SHIP = [
   'ship.gate#1.1.test',
   'ship.db-clean#1.1',
   'ship.commit#1',
+  'ship.attest#1',
   'ship.summary#1',
   'ship.pr#1',
 ]
@@ -492,6 +493,114 @@ describe('landing: CI green', () => {
   })
 })
 
+describe('landing: Gate decides (issue #9)', () => {
+  const runsOn = (
+    h: Harness,
+    sha: string,
+    runs: Parameters<FakeCloud['github']['setCheckRuns']>[3]
+  ) => h.cloud.github.setCheckRuns(h.f.repo.owner, h.f.repo.repo, sha, runs)
+
+  it('a green Gate beside a red optional check (evals) still merges; the panel keeps the fold', async () => {
+    const h = await harness()
+    const run = await drive(h, {
+      onLand: async (h, _wait, n) => {
+        if (n === 0) {
+          runsOn(h, await gateShaOf(h), [
+            { name: 'Gate', status: 'completed', conclusion: 'success' },
+            { name: 'evals', status: 'completed', conclusion: 'failure' },
+          ])
+        }
+        return 'wake'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names).toContain('land.merge#3')
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(1)
+    const ci = (await eventData(h, 'ship.ci')).map(d => sessionShipCiDataSchema.parse(d))
+    expect(ci.at(-1)).toMatchObject({ state: 'success', passed: 1, failed: 1 })
+    expect(await eventData(h, 'ship.reopened')).toEqual([])
+  })
+
+  it('a red Gate beside green optional checks reopens ci_failed, naming Gate', async () => {
+    const h = await harness()
+    await drive(h, {
+      onLand: async h => {
+        runsOn(h, await gateShaOf(h), [
+          { name: 'evals', status: 'completed', conclusion: 'success' },
+          { name: 'Gate', status: 'completed', conclusion: 'failure' },
+        ])
+        return 'wake'
+      },
+    })
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
+    expect(await eventData(h, 'ship.reopened')).toEqual([
+      expect.objectContaining({ reason: 'ci_failed', message: expect.stringContaining('(Gate)') }),
+    ])
+  })
+
+  it('no Gate at all (an older kit’s CI): the fold over the other checks decides — green merges', async () => {
+    const h = await harness()
+    const run = await drive(h, {
+      onLand: async (h, _wait, n) => {
+        if (n === 0) {
+          runsOn(h, await gateShaOf(h), [
+            { name: 'ci', status: 'completed', conclusion: 'success' },
+            { name: 'lint', status: 'completed', conclusion: 'success' },
+          ])
+        }
+        return 'wake'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names).toContain('land.merge#3')
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(1)
+  })
+
+  it('no Gate at all: one still running waits; it finishing green merges', async () => {
+    const h = await harness()
+    const run = await drive(h, {
+      onLand: async (h, _wait, n) => {
+        const sha = await gateShaOf(h)
+        if (n === 0) {
+          runsOn(h, sha, [
+            { name: 'lint', status: 'completed', conclusion: 'success' },
+            { name: 'ci', status: 'in_progress' },
+          ])
+        }
+        if (n === 1) {
+          expect((await reload(h.row)).landing?.stage).toBe('ci')
+          expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
+          runsOn(h, sha, [
+            { name: 'lint', status: 'completed', conclusion: 'success' },
+            { name: 'ci', status: 'completed', conclusion: 'success' },
+          ])
+        }
+        return 'wake'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names).toEqual(expect.arrayContaining(['land.ci#3', 'land.wait#3', 'land.merge#4']))
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(1)
+  })
+
+  it('no Gate at all: a red other check reopens ci_failed', async () => {
+    const h = await harness()
+    await drive(h, {
+      onLand: async h => {
+        runsOn(h, await gateShaOf(h), [
+          { name: 'lint', status: 'completed', conclusion: 'success' },
+          { name: 'ci', status: 'completed', conclusion: 'failure' },
+        ])
+        return 'wake'
+      },
+    })
+    expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
+    expect(await eventData(h, 'ship.reopened')).toEqual([
+      expect.objectContaining({ reason: 'ci_failed' }),
+    ])
+  })
+})
+
 describe('landing: reopen', () => {
   it('CI red: ready again (the container is the loop’s), with the failing check’s REDACTED tail', async () => {
     const h = await harness()
@@ -615,6 +724,8 @@ describe('landing: reopen', () => {
       },
     })
     expect((await eventData(h, 'ship.reopened'))[0]).toMatchObject({ reason: 'ci_none' })
+    // Issue #9: Launch's own `launch/gate` was on the head all along — and is not CI.
+    expect(h.cloud.github.createdCheckRuns.map(r => r.name)).toEqual(['launch/gate'])
     expect(run.names).not.toContain('land.merge#3')
     expect(h.cloud.github.mergeCount(h.f.repo.owner, h.f.repo.repo)).toBe(0)
   })
@@ -787,6 +898,7 @@ describe('landing: End and a lost instance', () => {
         stage: 'merging',
         prNumber: 9,
         gateSha: 'f'.repeat(40),
+        gateTree: null,
         startedAt: new Date().toISOString(),
         stageAt: new Date().toISOString(),
         reviewMode: 'none',
@@ -1255,6 +1367,7 @@ describe('tenant isolation', () => {
       stage: 'ci',
       prNumber: 1,
       gateSha,
+      gateTree: null,
       startedAt: old.toISOString(),
       stageAt: old.toISOString(),
       reviewMode: 'none',

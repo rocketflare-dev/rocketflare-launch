@@ -212,6 +212,32 @@ export interface RepoHostPort {
    * redaction) before it reaches an event. Tokens: `checks`/`statuses: read`, `actions: read`.
    */
   failedCheckLog(repo: RepoRef, input: { headSha: string }): Promise<FailedCheckLog | null>
+  /**
+   * Issue #9: post a COMPLETED check run on `input.headSha` from Launch's own GitHub App — the
+   * `launch/gate` attestation a green ship leaves on its pushed head. **Idempotent per
+   * `(name, headSha, externalId)`**: a run already there from an earlier try (a retried Workflow
+   * step) is answered (`created: false`) and nothing new is posted. Throws on any GitHub failure —
+   * the caller decides that an attestation never fails a ship. `local`: nothing to post on
+   * (`created: false`, `id: null`). Token: `checks: write`.
+   */
+  createCheckRun(repo: RepoRef, input: CreateCheckRunInput): Promise<CreateCheckRunResult>
+}
+
+/** Issue #9: what `RepoHostPort.createCheckRun` posts (always `status: completed`). */
+export interface CreateCheckRunInput {
+  name: string
+  headSha: string
+  /** The reporter's id for the run — `launch/gate`'s is `tree:<HEAD^{tree}>`. */
+  externalId: string
+  conclusion: 'success'
+  output: { title: string; summary: string; text: string }
+}
+
+export interface CreateCheckRunResult {
+  /** GitHub's id for the run; null where there is no GitHub (`local`). */
+  id: number | null
+  /** False when an earlier try's run was found instead (or there is nowhere to post). */
+  created: boolean
 }
 
 /** Issue #5: a pull request as the landing reads it (`RepoHostPort.getPullRequest`). */

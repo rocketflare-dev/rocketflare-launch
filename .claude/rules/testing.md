@@ -305,7 +305,9 @@ a fake `WebSocket` factory left set) is on you.
   `AbortSignal` as RPC does) (one `FakeSandbox` per name in
   `sandboxes`, `script(fn)` applied to each; an unprovided port throws by name). The FakeCloud
   covers the vendor half: Neon `init_source`, `endpoints: []`, branch endpoints and DELETE; GitHub
-  `pulls`, `setCheckRuns` / `setStatuses`. `tests/api/session-foundations.test.ts` shows each
+  `pulls`, `setCheckRuns` / `setStatuses`, and (issue #9) the `launch/gate` runs Launch POSTs in
+  `createdCheckRuns` — `scriptKitGate(sandbox, kit, list, trees)` answers both gate-tree reads with
+  `GATE_TREE` unless `trees` scripts one. `tests/api/session-foundations.test.ts` shows each
 - Producers: assert on `stubs(env).queue.messages` (RecordingQueue) — `body.type`, `body.payload` —
   and that the route did NOT do the work itself (no `[email:dev]` line, no provider fetch)
 - Uploads: `new FormData()` + `form.append('file', new File([bytes], 'a.png', { type: 'image/png' }))`

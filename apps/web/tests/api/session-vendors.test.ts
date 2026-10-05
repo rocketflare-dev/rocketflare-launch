@@ -446,6 +446,65 @@ describe('GitHub (issue #5): the RepoHostPort additions over the FakeCloud', () 
     expect(await local.failedCheckLog(repo(), { headSha: 'abc' })).toBeNull()
   })
 
+  it('issue #9: createCheckRun posts launch/gate once per (name, head, external_id); a retry finds it', async () => {
+    const { gateSha } = await openPr()
+    const run = {
+      name: 'launch/gate',
+      headSha: gateSha,
+      externalId: `tree:${'c'.repeat(40)}`,
+      conclusion: 'success' as const,
+      output: { title: 'Launch gate passed', summary: '| Step |', text: '{}' },
+    }
+    const first = await host().createCheckRun(repo(), run)
+    expect(first).toEqual({ id: expect.any(Number), created: true })
+    expect(await host().createCheckRun(repo(), run)).toEqual({ id: first.id, created: false })
+    // Another tree on the same head is another attestation.
+    const other = await host().createCheckRun(repo(), {
+      ...run,
+      externalId: `tree:${'d'.repeat(40)}`,
+    })
+    expect(other.created).toBe(true)
+    expect(cloud.github.createdCheckRuns.map(r => r.external_id)).toEqual([
+      run.externalId,
+      `tree:${'d'.repeat(40)}`,
+    ])
+    expect(cloud.github.createdCheckRuns[0]).toMatchObject({
+      status: 'completed',
+      conclusion: 'success',
+      head_sha: gateSha,
+      output: run.output,
+    })
+    // The fold still shows it (display); it is never `Gate`.
+    const checks = await host().getChecks(repo(), { prNumber: 1, headSha: gateSha })
+    expect(checks.checks.map(c => c.name)).toEqual(['launch/gate', 'launch/gate'])
+  })
+
+  it('issue #9: an installation without checks: write cannot mint the token — it throws, the caller decides', async () => {
+    const { gateSha } = await openPr()
+    Object.assign(cloud.github.opts, {
+      permissions: { ...cloud.github.permissions, checks: 'read' },
+    })
+    await expect(
+      host().createCheckRun(repo(), {
+        name: 'launch/gate',
+        headSha: gateSha,
+        externalId: `tree:${'c'.repeat(40)}`,
+        conclusion: 'success',
+        output: { title: 't', summary: 's', text: '{}' },
+      })
+    ).rejects.toThrow(/not granted/)
+    expect(cloud.github.createdCheckRuns).toEqual([])
+    expect(
+      await new LocalRepoHost(cfg).createCheckRun(repo(), {
+        name: 'launch/gate',
+        headSha: gateSha,
+        externalId: 'tree:x',
+        conclusion: 'success',
+        output: { title: 't', summary: 's', text: '{}' },
+      })
+    ).toEqual({ id: null, created: false })
+  })
+
   it('logTail drops Actions timestamps and trailing blank lines, and caps the characters', () => {
     expect(logTail('2026-10-01T10:00:00.1234567Z a\r\nb\n\n')).toBe('a\nb')
     expect(logTail('x'.repeat(20_000))).toHaveLength(16_000)

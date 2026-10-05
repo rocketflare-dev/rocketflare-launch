@@ -13,10 +13,13 @@
  * - Issue #5: `SESSION_BACKEND=local` always ships in `pr` mode, so nothing lands: there is no PR
  *   to read (`getPullRequest` → null), none to merge (`mergePullRequest` → `refused`), and no
  *   failing check (`failedCheckLog` → null).
+ * - Issue #9: there is no GitHub to attest the gate on (`createCheckRun` posts nothing).
  */
 import type { PrChecks } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
 import type {
+  CreateCheckRunInput,
+  CreateCheckRunResult,
   FailedCheckLog,
   GitAuth,
   MergePullRequestResult,
@@ -89,6 +92,10 @@ export class LocalRepoHost implements RepoHostPort {
       message:
         'A local session has no pull request to merge: SESSION_BACKEND=local ships in pr mode',
     }
+  }
+
+  async createCheckRun(_repo: RepoRef, _input: CreateCheckRunInput): Promise<CreateCheckRunResult> {
+    return { id: null, created: false }
   }
 
   async failedCheckLog(

@@ -540,13 +540,16 @@ export const REQUIRED_GITHUB_WRITE_PERMISSIONS = [
   'environments',
   'actions_variables',
   'deployments',
+  // Issue #9: a green ship posts the `launch/gate` check run on its head (and reads the runs).
+  'checks',
 ] as const
 
 /**
  * P3: what READ access coding sessions need on top — a session's PR is shipped when its CI is
- * green, which is the head commit's check runs (`checks`) plus its combined status (`statuses`).
+ * green, which is the head commit's check runs (`checks`, write since issue #9) plus its combined
+ * status (`statuses`).
  */
-export const REQUIRED_GITHUB_READ_PERMISSIONS = ['checks', 'statuses'] as const
+export const REQUIRED_GITHUB_READ_PERMISSIONS = ['statuses'] as const
 
 /** Every required permission with the level it needs. */
 export const REQUIRED_GITHUB_PERMISSIONS: Readonly<Record<string, 'read' | 'write'>> = {

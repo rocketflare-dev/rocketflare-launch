@@ -185,6 +185,7 @@ describe('the remote sandbox host: the grant carries the allowance', () => {
     getPullRequest: () => Promise.reject(new Error('not in this test')),
     mergePullRequest: () => Promise.reject(new Error('not in this test')),
     failedCheckLog: () => Promise.reject(new Error('not in this test')),
+    createCheckRun: () => Promise.reject(new Error('not in this test')),
   }
 
   async function grantFor(kind: 'upgrade' | 'session') {

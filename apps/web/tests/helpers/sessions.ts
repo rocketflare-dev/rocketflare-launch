@@ -36,6 +36,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { createOrgRepo } from '@/api/services/launch/github-app'
 import { NeonClient } from '@/api/services/launch/neon'
+import { HEAD_TREE_COMMAND } from '@/api/services/sessions/checkpoint'
 import { putSealed } from '@/api/services/sessions/credentials/store'
 import { GATE_KIT_PROBE, GATE_LIST_COMMAND } from '@/api/services/sessions/gate'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
@@ -63,7 +64,7 @@ import {
 import { createTestEnv } from '../mocks/bindings'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from './auth'
 import type { FakeCloud } from './fake-cloud'
-import { FakeSandbox } from './fake-sandbox'
+import { type ExecScript, FakeSandbox } from './fake-sandbox'
 import { seedApp, uniqueSlug } from './launch-apps'
 
 export interface SessionAppFixture {
@@ -290,6 +291,7 @@ const missingRepo: RepoHostPort = {
   getPullRequest: () => missing('repoHost'),
   mergePullRequest: () => missing('repoHost'),
   failedCheckLog: () => missing('repoHost'),
+  createCheckRun: () => missing('repoHost'),
 }
 
 /**
@@ -445,16 +447,32 @@ export const KIT_GATE_LIST_JSON = readFileSync(
 )
 
 /**
+ * Issue #9: the tree the scripted checkout reports for both reads — the working tree's
+ * (`worktreeTreeScript`, its temp index `launch-tree-index`) and the commit's (`HEAD^{tree}`) — so
+ * a green gate's tree and `ship.commit`'s agree unless a test says otherwise.
+ */
+export const GATE_TREE = 'c0ffee0123456789abcdef0123456789abcdef01'
+/** What matches the working-tree read (`worktreeTreeScript`'s temp index). */
+export const WORKTREE_TREE_MATCH = /launch-tree-index/
+
+/**
  * Script a checkout's kit for the ship gate's `ship.kit` probe (`gate.ts`): `gate` (0.16.0+,
  * answering `pnpm gate --list --json` with `list` — the pinned kit's by default), `legacy` (only
- * `test:ephemeral`) or `none` (older than 0.15.7).
+ * `test:ephemeral`) or `none` (older than 0.15.7). Issue #9: both tree reads answer
+ * {@link GATE_TREE}, unless `trees` scripts one (`worktree` / `head`) — e.g. a workspace that
+ * moves after the gate.
  */
 export function scriptKitGate(
   sandbox: FakeSandbox,
   kit: 'gate' | 'legacy' | 'none' = 'gate',
-  list: string = KIT_GATE_LIST_JSON
+  list: string = KIT_GATE_LIST_JSON,
+  trees: { worktree?: ExecScript; head?: ExecScript } = {}
 ): FakeSandbox {
+  if (trees.worktree) sandbox.onExec(WORKTREE_TREE_MATCH, trees.worktree)
+  if (trees.head) sandbox.onExec(HEAD_TREE_COMMAND, trees.head)
   return sandbox
     .onExec(GATE_KIT_PROBE, { stdout: kit })
     .onExec(GATE_LIST_COMMAND, { stdout: `${list}\n` })
+    .onExec(WORKTREE_TREE_MATCH, { stdout: `tree=${GATE_TREE}\n` })
+    .onExec(HEAD_TREE_COMMAND, { stdout: `${GATE_TREE}\n` })
 }

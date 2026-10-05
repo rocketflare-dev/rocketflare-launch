@@ -4,7 +4,11 @@
  *
  * **Phase A** — status `shipping`, inside the turn loop (`SessionWorkflow.land`), one round `N`:
  *
- *   land.ci#N       the PR and its CI on the GATE SHA, read fresh: green → `approval` (a review is
+ *   land.ci#N       the PR and its CI on the GATE SHA, read fresh — decided on the REQUIRED check
+ *                   `Gate` alone (issue #9, `requiredCheckState`: a red optional check such as an
+ *                   evals run does not stop it; no `Gate` at all falls back to the fold over the
+ *                   other checks; Launch's own `launch/gate` never counts; the fold of every
+ *                   check stays what the panel shows): green → `approval` (a review is
  *                   required) or `merging`; red → reopen `ci_failed` with the failing check's
  *                   redacted log tail; nothing after `SHIP_CI_NONE_GRACE_MINUTES` → `ci_none`; still
  *                   pending after `SHIP_CI_MAX_MINUTES` → `ci_timeout`; merged by hand → Phase B;
@@ -12,7 +16,7 @@
  *                   first 10 minutes, then 2 minutes).
  *   land.review#N   open the `session.merge` approval idempotently and read it: pending → wait;
  *                   approved (on this head) → merge; rejected / expired / cancelled → reopen.
- *   land.merge#N    read first (a recorded or GitHub-side merge wins), the head and CI again, the
+ *   land.merge#N    read first (a recorded or GitHub-side merge wins), the head and `Gate` again, the
  *                   approval again, then ONE squash on the gate SHA (a refused one reads the PR
  *                   again: an earlier instance's squash that just landed is recorded, not
  *                   reopened), then ONE compare-and-set `shipping → shipped`, stage `releasing`.
@@ -43,6 +47,7 @@ import {
 import {
   MOVING_LANDING_STAGES,
   type PrChecks,
+  requiredCheckState,
   resolveSessionPolicy,
   type SessionLanding,
   type SessionShipCiData,
@@ -416,6 +421,8 @@ function checksChanged(prev: PrChecks | null, next: PrChecks): boolean {
   if (!prev || prev.headSha !== next.headSha) return true
   return (
     prev.state !== next.state ||
+    // Issue #9: `Gate` reporting can leave the fold's counts as they were (`launch/gate` beside it).
+    requiredCheckState(prev.checks) !== requiredCheckState(next.checks) ||
     prev.passed !== next.passed ||
     prev.failed !== next.failed ||
     prev.pending !== next.pending
@@ -459,8 +466,10 @@ export async function landCiStep(
     .update(sessions)
     .set({ prChecks: checks })
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
+  // Issue #9: the landing acts on `Gate`, not on the fold of every check (`checks.state`).
+  const state = requiredCheckState(checks.checks)
   const ci: SessionShipCiData = {
-    state: checks.state,
+    state,
     headSha: landing.gateSha,
     passed: checks.passed,
     failed: checks.failed,
@@ -470,7 +479,7 @@ export async function landCiStep(
   const changed = checksChanged(session.prChecks ?? null, checks)
   const elapsedMs = sinceMs(scope, landing.stageAt)
 
-  if (checks.state === 'failure') {
+  if (state === 'failure') {
     const failed = await host.failedCheckLog(repo, { headSha: landing.gateSha }).catch(err => {
       scope.logger.warn({ err }, 'session landing: could not read the failed check')
       return null
@@ -491,7 +500,7 @@ export async function landCiStep(
   }
   if (changed) await emit({ type: 'ship.ci', turn: session.turnCount, data: ci })
 
-  if (checks.state === 'success') {
+  if (state === 'success') {
     const review = landing.reviewMode !== 'none'
     const now = scope.now().toISOString()
     const moved = await casLanding(
@@ -502,16 +511,16 @@ export async function landCiStep(
     if (!moved) return { next: 'none', verdict: 'success' }
     return review ? { next: 'review', verdict: 'success' } : { next: 'merge', verdict: 'success' }
   }
-  if (checks.state === 'none' && elapsedMs >= SHIP_CI_NONE_GRACE_MINUTES * 60_000) {
+  if (state === 'none' && elapsedMs >= SHIP_CI_NONE_GRACE_MINUTES * 60_000) {
     return { ...reopen('ci_none'), verdict: 'none' }
   }
-  if (checks.state === 'pending' && elapsedMs >= SHIP_CI_MAX_MINUTES * 60_000) {
+  if (state === 'pending' && elapsedMs >= SHIP_CI_MAX_MINUTES * 60_000) {
     return { ...reopen('ci_timeout'), verdict: 'pending' }
   }
   await releaseIfDue(scope, session, landing)
   const waitSeconds =
     elapsedMs < LAND_CI_FAST_WINDOW_MINUTES * 60_000 ? LAND_CI_FAST_SECONDS : LAND_CI_SLOW_SECONDS
-  return { next: 'wait', waitSeconds, verdict: checks.state }
+  return { next: 'wait', waitSeconds, verdict: state }
 }
 
 // ---- land.review -------------------------------------------------------------------------------
@@ -766,7 +775,7 @@ export async function landMergeStep(
     prNumber: landing.prNumber,
     headSha: landing.gateSha,
   })
-  if (checks.state !== 'success') {
+  if (requiredCheckState(checks.checks) !== 'success') {
     return {
       next: 'reopen',
       reason: 'ci_failed',

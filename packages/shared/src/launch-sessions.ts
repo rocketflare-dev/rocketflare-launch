@@ -38,7 +38,7 @@ import {
   sessionCredentialModeSchema,
   sessionCredentialSourceSchema,
 } from './launch-agents'
-import { healthStatusSchema, sessionShipModeSchema } from './launch-apps'
+import { healthStatusSchema, KIT_REQUIRED_CHECK, sessionShipModeSchema } from './launch-apps'
 
 // ---- enums -------------------------------------------------------------------------------------
 
@@ -306,6 +306,11 @@ export const sessionShipGateDataSchema = z
      */
     target: z.string().optional(),
     /**
+     * Issue #9: the attempt's LAST step only — the git tree of the working tree as it stood when
+     * the command ended (what the checkpoint would commit). `ship.commit` refuses any other tree.
+     */
+    tree: z.string().optional(),
+    /**
      * The tail of the step's output, for the ship panel — redacted: the test step's database URL
      * (and anything shaped like a connection string or a key) never survives into it.
      */
@@ -430,6 +435,12 @@ export const sessionLandingSchema = z.object({
   prNumber: z.number().int().positive(),
   /** `sessions.head_sha` after `ship.commit`: the only head Launch reads CI on and merges. */
   gateSha: z.string(),
+  /**
+   * Issue #9: the git TREE of that commit (`HEAD^{tree}`) — the content the green gate ran on,
+   * asserted equal at `ship.commit` and attested as the `launch/gate` check's `external_id`. Null on
+   * a landing written before issue #9 (or a ship whose gate recorded no tree).
+   */
+  gateTree: z.string().nullable().default(null),
   startedAt: isoTimestampSchema,
   /** When `stage` last changed — the safety-net cron wakes a landing quiet for three rounds. */
   stageAt: isoTimestampSchema,
@@ -470,6 +481,8 @@ export const sessionShipSummarySchema = z.object({
   diffStat: z.string().max(SHIP_SUMMARY_DIFFSTAT_MAX),
   prNumber: z.number().int().positive(),
   gateSha: z.string().nullable(),
+  /** Issue #9: `gateSha`'s tree — what the gate ran on (`sessionLandingSchema.gateTree`). */
+  gateTree: z.string().nullable().default(null),
   at: isoTimestampSchema,
 })
 export type SessionShipSummary = z.infer<typeof sessionShipSummarySchema>
@@ -788,6 +801,38 @@ export const prChecksSchema = z.object({
   ),
 })
 export type PrChecks = z.infer<typeof prChecksSchema>
+
+/**
+ * Issue #9: the check run Launch's GitHub App posts on a ship's pushed head after a GREEN sandbox
+ * gate — `external_id` `tree:<HEAD^{tree}>`, conclusion `success` — so the kit's CI can skip the
+ * gate it would only run again (the kit reads it; Launch never counts it as CI itself).
+ */
+export const LAUNCH_GATE_CHECK = 'launch/gate'
+
+/** `launch/gate`'s `external_id` for a tree: `tree:<40-hex sha>`. */
+export function launchGateExternalId(tree: string): string {
+  return `tree:${tree}`
+}
+
+/**
+ * Issue #9: the verdict a landing acts on — the REQUIRED check (`KIT_REQUIRED_CHECK`, `Gate`), not
+ * the fold of every check (`PrChecks.state`, which stays what the panel shows): a red optional
+ * check (an evals run) beside a green `Gate` does not stop a landing. Any `Gate` red → `failure`;
+ * any still running → `pending`; all green → `success`. No `Gate` at all (an app on an older kit
+ * whose CI job is named otherwise) → the fold over the other checks, as before issue #9: any red →
+ * `failure`, all green → `success`, else `pending`; nothing reported → `none` (the `ci_none` grace:
+ * a repo with no CI). Launch's own `launch/gate` is never CI here — it neither counts as `Gate`
+ * nor as "something reported".
+ */
+export function requiredCheckState(checks: PrChecks['checks']): PrCheckState {
+  const reported = checks.filter(c => c.name !== LAUNCH_GATE_CHECK)
+  if (reported.length === 0) return 'none'
+  const gate = reported.filter(c => c.name === KIT_REQUIRED_CHECK)
+  const decides = gate.length > 0 ? gate : reported
+  if (decides.some(c => c.state === 'failure')) return 'failure'
+  if (decides.some(c => c.state !== 'success')) return 'pending'
+  return 'success'
+}
 
 // ---- requests ----------------------------------------------------------------------------------
 

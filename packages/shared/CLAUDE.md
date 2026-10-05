@@ -114,7 +114,11 @@ ISO strings so the row round-trips), `sessionShipSummarySchema` (`sessions.ship_
 default null), the six events `ship.ci` · `ship.review` · `ship.merged` · `ship.released` ·
 `ship.staging` · `ship.reopened` (appended, each in `SESSION_EVENT_DATA`) and an optional `title` on
 `ship.pr`; `PR_CHECK_STATES` moved above the events (`ship.ci` carries one — a zod module reads
-its consts at evaluation, so order matters); `launch-approvals.ts` the built `session.merge`
+its consts at evaluation, so order matters); issue #9 adds `gateTree` (nullable, default null) to
+the landing and the ship summary, an optional `tree` on `ship.gate`, `LAUNCH_GATE_CHECK`
+(`launch/gate`) / `launchGateExternalId` and `requiredCheckState` (the landing's verdict: `Gate`
+alone, `launch/gate` never CI — it imports `KIT_REQUIRED_CHECK` from `launch-apps`);
+`launch-approvals.ts` the built `session.merge`
 (appended to both kind lists, `sessionMergeContextSchema`, `SESSION_MERGE_EXPIRY_HOURS` 48 and its
 owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
 'release_in_progress'`; app page P2 adds `notRetryable`, `stageChanged`, `runInProgress`,

@@ -48,6 +48,9 @@
  * - `GET …/compare/{base}...{head}` — the commits a release adds — and `GET …/commits/{sha}/pulls`,
  *   the pull requests a commit belongs to (a merge commit → the PR it merged; `merged_at`,
  *   `merge_commit_sha` and `user.login` on each).
+ *
+ * Issue #9 adds `POST …/check-runs` (`createCheckRun`, `checks: write`): the `launch/gate` check run
+ * a green ship posts on its pushed head, so the kit's CI can skip the gate Launch already ran.
  */
 import { importPKCS8, SignJWT } from 'jose'
 
@@ -836,7 +839,9 @@ export interface GitHubCheckRun {
    * Issue #5: the GitHub App that reported it. `github-actions` means the run IS an Actions job
    * (its id is the job id), so `getJobLogs(id)` reads its log; anything else has only annotations.
    */
-  app?: { slug: string } | null
+  app?: { slug: string; id?: number } | null
+  /** Issue #9: the reporter's own id for the run — `launch/gate`'s is `tree:<sha>`. */
+  external_id?: string | null
 }
 
 /** The check runs on `ref` (a sha or branch) — the first 100, which is every CI a PR has. */
@@ -853,6 +858,45 @@ export async function listCheckRuns(
     opts
   )
   return body.check_runs ?? []
+}
+
+/** Issue #9: what `createCheckRun` posts — always a completed run with its output. */
+export interface CreateCheckRunInput {
+  name: string
+  headSha: string
+  externalId: string
+  conclusion: 'success' | 'failure' | 'neutral'
+  output: { title: string; summary: string; text?: string }
+}
+
+/**
+ * Issue #9: `POST …/check-runs` — a COMPLETED check run on `headSha` from the App whose
+ * installation token this is (`checks: write`). Only a GitHub App may create one.
+ */
+export async function createCheckRun(
+  token: string,
+  owner: string,
+  repo: string,
+  input: CreateCheckRunInput,
+  opts: GitHubOptions = {}
+): Promise<GitHubCheckRun> {
+  return githubJson<GitHubCheckRun>(
+    `${repoPath(owner, repo)}/check-runs`,
+    {
+      method: 'POST',
+      token,
+      body: {
+        name: input.name,
+        head_sha: input.headSha,
+        external_id: input.externalId,
+        status: 'completed',
+        conclusion: input.conclusion,
+        completed_at: new Date((opts.now?.() ?? Date.now() / 1000) * 1000).toISOString(),
+        output: input.output,
+      },
+    },
+    opts
+  )
 }
 
 export interface GitHubCommitStatus {
@@ -1039,9 +1083,9 @@ export function listPullRequestsForCommit(
 // ---- Issue #5: merge, CI logs, rulesets (`docs/plans/i5-ship-to-staging.md`) --------------------
 
 /**
- * The narrowed installation-token permissions each issue #5 call needs (plan §1.13). The GitHub
- * App needs NO new permission for any of them (`REQUIRED_GITHUB_PERMISSIONS`, `setup.ts`): a token
- * is always minted for one repo and only these.
+ * The narrowed installation-token permissions each issue #5 call needs (plan §1.13). A token is
+ * always minted for one repo and only these, within `REQUIRED_GITHUB_PERMISSIONS` (`setup.ts`) —
+ * issue #9's `checkRun` is the one that raised it (`checks: read` → `write`).
  */
 export const GITHUB_TOKEN_PERMISSIONS = {
   /** The squash merge (and the re-read of the PR right before it). */
@@ -1054,6 +1098,8 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   tagRun: { actions: 'read' },
   /** The check runs, statuses and annotations on a head (`failedCheckLog`). */
   checks: { checks: 'read', statuses: 'read' },
+  /** Issue #9: posting Launch's `launch/gate` check run (and reading the head's runs first). */
+  checkRun: { checks: 'write' },
   /** Creating or updating Launch's ruleset. */
   rulesetsWrite: { administration: 'write' },
   /** The branch-protection diagnosis: rulesets and classic protection, read only. */

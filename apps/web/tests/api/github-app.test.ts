@@ -300,6 +300,7 @@ describe('issue #5 calls: merge, CI logs, rulesets, protection', () => {
       jobLogs: { actions: 'read' },
       tagRun: { actions: 'read' },
       checks: { checks: 'read', statuses: 'read' },
+      checkRun: { checks: 'write' },
       rulesetsWrite: { administration: 'write' },
       rulesetsRead: { administration: 'read' },
       // App page P2: Retry / Cancel of a release's run, and re-pushing a lost tag.

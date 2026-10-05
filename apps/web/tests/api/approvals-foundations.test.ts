@@ -316,6 +316,7 @@ describe('issue #5 foundations (S1): session.merge and the new columns', () => {
       diffStat: ' 1 file changed',
       prNumber: 4,
       gateSha: 'abc1234',
+      gateTree: null,
       at: '2026-10-01T10:00:00.000Z',
     }
     await db.update(sessions).set({ landing, shipSummary }).where(eq(sessions.id, row.id))

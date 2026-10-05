@@ -313,6 +313,87 @@ export async function workspaceChanged(
   }
 }
 
+// ---- the gate's tree (issue #9) ------------------------------------------------------------------
+
+/** The temp index the tree read stages into — never the checkout's own `.git/index`. */
+const TREE_INDEX_TEMPLATE = '/tmp/launch-tree-index.XXXXXX'
+
+/**
+ * Issue #9: the git tree of the WORKING TREE as a checkpoint would commit it, without committing:
+ * the checkpoint's own scan (the same exclude file and the same big-file pathspec), then
+ * `git add -A` into a COPY of the index and `git write-tree`. Prints `tree=<sha>`. Read at the end
+ * of a green gate's last step, and again by `ship.commit` before it commits — so the commit is
+ * refused when the workspace moved after the gate. Writes objects only (the checkout's index and
+ * HEAD are untouched).
+ */
+export function worktreeTreeScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): string {
+  return [
+    'set -e',
+    `(\n${checkpointScanScript(maxBytes)}\n) > /dev/null`,
+    `idx=$(mktemp ${TREE_INDEX_TEMPLATE})`,
+    `trap 'rm -f "$idx" "$idx.lock"' EXIT`,
+    // `-p`: the copy keeps the index's mtime. A fresh mtime would hide a "racily clean" entry —
+    // a same-size edit within the second of the last index write — and git would skip it.
+    'if [ -f .git/index ]; then cp -p .git/index "$idx"; else rm -f "$idx"; fi',
+    `GIT_INDEX_FILE="$idx" ${CHECKPOINT_ADD_COMMAND}`,
+    't=$(GIT_INDEX_FILE="$idx" git write-tree)',
+    'printf \'tree=%s\\n\' "$t"',
+  ].join('\n')
+}
+
+/** The committed tree: `HEAD^{tree}` (quoted — `^` and braces are shell syntax somewhere). */
+export const HEAD_TREE_COMMAND = "git rev-parse 'HEAD^{tree}'"
+
+const TREE_SHA_RE = /^[0-9a-f]{40}$/
+
+/** Run one of the tree reads; a failed, timed-out or unparseable one THROWS (fail closed). */
+async function readTree(
+  sandbox: SandboxPort,
+  command: string,
+  pick: (stdout: string) => string | undefined,
+  what: string,
+  opts: { repoDir?: string; timeoutMs?: number }
+): Promise<string> {
+  const result = await sandbox.exec(command, {
+    cwd: opts.repoDir ?? SESSION_REPO_DIR,
+    env: { GIT_TERMINAL_PROMPT: '0', HOME: SESSION_HOME },
+    timeoutMs: opts.timeoutMs ?? GIT_TIMEOUT_MS,
+  })
+  const tree = result.exitCode === 0 ? pick(result.stdout)?.trim() : undefined
+  if (!tree || !TREE_SHA_RE.test(tree)) {
+    throw new CheckpointError(what, outputTail(result, 600) || `exit ${result.exitCode}`)
+  }
+  return tree
+}
+
+/** The working tree's tree sha ({@link worktreeTreeScript}). Throws when it cannot be read. */
+export function readWorktreeTree(
+  sandbox: SandboxPort,
+  opts: { repoDir?: string; timeoutMs?: number; maxFileBytes?: number } = {}
+): Promise<string> {
+  return readTree(
+    sandbox,
+    worktreeTreeScript(opts.maxFileBytes),
+    out => /^tree=(\S+)$/m.exec(out)?.[1],
+    'tree',
+    opts
+  )
+}
+
+/** The checkout's `HEAD^{tree}`. Throws when it cannot be read. */
+export function readHeadTree(
+  sandbox: SandboxPort,
+  opts: { repoDir?: string; timeoutMs?: number } = {}
+): Promise<string> {
+  return readTree(
+    sandbox,
+    HEAD_TREE_COMMAND,
+    out => out.trim().split('\n').pop(),
+    'head-tree',
+    opts
+  )
+}
+
 /** Claude Code's transcript helpers live with its runtime (§18.22); re-exported where they always were. */
 export { claudeProjectDir, transcriptKeyFor } from './runtimes/claude-code/state'
 

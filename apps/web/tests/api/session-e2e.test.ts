@@ -428,6 +428,7 @@ describe('a coding session, end to end', () => {
       'ship.gate#3.1.test',
       'ship.db-clean#3.1',
       'ship.commit#3',
+      'ship.attest#3',
       'ship.summary#3',
       'ship.pr#3',
       'cleanup',

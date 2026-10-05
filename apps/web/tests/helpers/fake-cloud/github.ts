@@ -48,6 +48,11 @@
  * filters by `branch` (a branch or tag name) and `event`, and `GET …/actions/runs/{id}/jobs`
  * (`actions: read`) lists its jobs.
  *
+ * Issue #9: `POST …/check-runs` (`checks: write`; 422 for a sha with no commit) adds a run to the
+ * head's list (answered by `GET …/check-runs` with its `external_id`) and records it in
+ * `createdCheckRuns`. A token mint asking for more than the installation lists (`checks: write`
+ * on an installation with `checks: read`) is GitHub's 422.
+ *
  * App page P2 (stage-aware Retry): `POST …/actions/runs/{id}/rerun-failed-jobs` (`actions: write`;
  * a completed, unsuccessful run's next attempt — `run_attempt + 1`, its failed and cancelled jobs
  * queued again — recorded in `reruns`; 403 for a run still going or one that succeeded) and
@@ -169,6 +174,12 @@ export interface FakeCheckRun {
   app?: string
   /** Issue #5: what `GET …/check-runs/{id}/annotations` answers (default none). */
   annotations?: FakeCheckAnnotation[]
+  /** Issue #9: the reporter's own id (`launch/gate`'s `tree:<sha>`), answered as `external_id`. */
+  external_id?: string
+  /** Issue #9: what a `POST …/check-runs` sent as `output`. */
+  output?: { title?: string; summary?: string; text?: string }
+  /** Issue #9: the sha a `POST …/check-runs` named. */
+  head_sha?: string
 }
 
 /** Issue #5: one check-run annotation. */
@@ -242,9 +253,9 @@ const DEFAULT_PERMISSIONS = {
   environments: 'write',
   actions_variables: 'write',
   metadata: 'read',
-  // P3: sessions open PRs and read their CI.
+  // P3: sessions open PRs and read their CI (issue #9: and post the `launch/gate` check run).
   pull_requests: 'write',
-  checks: 'read',
+  checks: 'write',
   statuses: 'read',
 }
 
@@ -265,6 +276,8 @@ export class FakeGitHub implements VendorHandler {
   readonly pulls: FakeGitHubPull[] = []
   /** P3: `owner/name@sha` (lower-case repo) → the commit's check runs / statuses. */
   readonly checkRuns = new Map<string, FakeCheckRun[]>()
+  /** Issue #9: every check run Launch POSTed (`launch/gate`), in order. */
+  readonly createdCheckRuns: (FakeCheckRun & { owner: string; repo: string })[] = []
   readonly statuses = new Map<string, FakeCommitStatus[]>()
   /** P4: every release published, in order. */
   readonly releases: FakeGitHubRelease[] = []
@@ -933,6 +946,17 @@ export class FakeGitHub implements VendorHandler {
         )
       }
       const permissions = (body.permissions as Record<string, string> | undefined) ?? undefined
+      // Issue #9: as GitHub does, a token may not ask for MORE than the installation holds (an
+      // installation that has not accepted `checks: write` yet). A permission the fake's
+      // installation does not list at all stays lenient.
+      const rank: Record<string, number> = { read: 1, write: 2, admin: 3 }
+      const over = Object.entries(permissions ?? {}).filter(([p, level]) => {
+        const held = this.permissions[p]
+        return held !== undefined && (rank[level] ?? 0) > (rank[held] ?? 0)
+      })
+      if (over.length > 0) {
+        return ghError(422, 'The permissions requested are not granted to this installation.')
+      }
       const token = this.issueToken({ repositories, permissions })
       return json(
         {
@@ -1516,8 +1540,43 @@ export class FakeGitHub implements VendorHandler {
           html_url:
             r.html_url ?? `https://github.com/${repo.owner}/${repo.name}/runs/${r.id ?? i + 1}`,
           app: { slug: r.app ?? 'github-actions' },
+          external_id: r.external_id ?? null,
         })),
       })
+    }
+    // Issue #9: a Checks App's own run (`checks: write`) — completed, on a commit that exists.
+    if (rest === '/check-runs' && m === 'POST') {
+      const refused = writable('checks')
+      if (refused) return refused
+      const headSha = String(body.head_sha ?? '')
+      if (!this.commits.has(headSha)) {
+        return json({ message: 'Validation Failed', errors: ['No commit found for SHA'] }, 422)
+      }
+      const run: FakeCheckRun = {
+        id: this.ids.number(),
+        name: String(body.name ?? ''),
+        status: (body.status as FakeCheckRun['status']) ?? 'queued',
+        conclusion: (body.conclusion as string | undefined) ?? null,
+        app: 'company-launch',
+        head_sha: headSha,
+        ...(typeof body.external_id === 'string' ? { external_id: body.external_id } : {}),
+        ...(body.output ? { output: body.output as FakeCheckRun['output'] } : {}),
+      }
+      const key = this.ciKey(repo.owner, repo.name, headSha)
+      this.checkRuns.set(key, [...(this.checkRuns.get(key) ?? []), run])
+      this.createdCheckRuns.push({ owner: repo.owner, repo: repo.name, ...run })
+      return json(
+        {
+          id: run.id,
+          name: run.name,
+          status: run.status,
+          conclusion: run.conclusion,
+          external_id: run.external_id ?? null,
+          head_sha: headSha,
+          app: { slug: run.app },
+        },
+        201
+      )
     }
     match = rest.match(/^\/commits\/([^/]+)\/status$/)
     if (match && m === 'GET') {

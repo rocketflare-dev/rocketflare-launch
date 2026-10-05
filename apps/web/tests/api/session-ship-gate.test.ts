@@ -17,6 +17,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto'
 import {
+  LAUNCH_GATE_CHECK,
   SESSION_WAKE_EVENT,
   sessionBranchName,
   sessionShipGateDataSchema,
@@ -51,6 +52,7 @@ import type { FakeSandbox } from '../helpers/fake-sandbox'
 import {
   createFakeSessionPorts,
   type FakeSessionPorts,
+  GATE_TREE,
   insertSession,
   KIT_GATE_LIST_JSON,
   type SessionAppFixture,
@@ -119,6 +121,10 @@ async function harness(
     kit?: 'gate' | 'legacy' | 'none'
     /** What `pnpm gate --list --json` prints (default: the pinned kit's list). */
     gateList?: string
+    /** Issue #9: what the tree reads answer (default: both {@link GATE_TREE}). */
+    trees?: Parameters<typeof scriptKitGate>[3]
+    /** Issue #9: the checkpoint moves the session's head to the commit it pushed (the real one does). */
+    trackHead?: boolean
   } = {}
 ): Promise<Harness> {
   const env = createTestEnv()
@@ -170,7 +176,7 @@ async function harness(
       return { exitCode: outcome.exitCode ?? 0, log: banner + (outcome.log ?? `${step}: ok\n`) }
     }
   ports.script(sandbox =>
-    scriptKitGate(sandbox, opts.kit ?? 'gate', opts.gateList)
+    scriptKitGate(sandbox, opts.kit ?? 'gate', opts.gateList, opts.trees)
       .onExec(/git init/, { stdout: `base=${BASE_SHA}\nhead=${BASE_SHA}\n` })
       .onExec(/sha256sum/, { stdout: `migrations=${'a'.repeat(64)}\n` })
       .onExec(WORKSPACE_CHANGED_SCRIPT, { stdout: `${BASE_SHA}\nclean\n` })
@@ -193,16 +199,19 @@ async function harness(
     runTurn: async () => {
       throw new Error('no chat turn in this suite')
     },
-    checkpoint: async (_ctx, reason) => {
+    checkpoint: async (ctx, reason) => {
       checkpoints.push(reason)
       // The push lands the branch on GitHub, as the real checkpoint's would.
-      cloud.github.pushCommit(
+      const sha = cloud.github.pushCommit(
         f.repo.owner,
         f.repo.repo,
         { 'src/ui/pages/Home.tsx': `export default () => <b>Hello ${checkpoints.length}</b>\n` },
         `Launch session ${row.shortId}`,
         branch
       )
+      if (opts.trackHead) {
+        await db.update(sessions).set({ headSha: sha }).where(eq(sessions.id, ctx.session.id))
+      }
     },
     shipFix: async (ctx, input) => {
       fixes.push(input.message)
@@ -251,7 +260,12 @@ async function reload(row: SessionRow): Promise<SessionRow> {
  * Run the Workflow: the first wait asks for the ship; every later one ends the session (what a
  * person reading "no pull request" would do next, and how the run ends).
  */
-async function drive(h: Harness, first: () => Promise<void> | void = () => {}) {
+async function drive(
+  h: Harness,
+  first: () => Promise<void> | void = () => {},
+  /** Steps whose body runs TWICE — a retry after the first try's result was lost. */
+  retry?: RegExp
+) {
   let waits = 0
   const fake = createFakeWorkflowStep({
     onWait: async () => {
@@ -267,6 +281,10 @@ async function drive(h: Harness, first: () => Promise<void> | void = () => {}) {
   const results: unknown[] = []
   const realDo = fake.step.do.bind(fake.step) as (...args: unknown[]) => Promise<unknown>
   ;(fake.step as { do: unknown }).do = async (...args: unknown[]) => {
+    if (retry?.test(String(args[0]))) {
+      const fn = args[args.length - 1] as () => Promise<unknown>
+      await fn()
+    }
     const result = await realDo(...args)
     results.push(result)
     return result
@@ -338,6 +356,7 @@ describe('the ship gate: green', () => {
       'ship.gate#1.1.test',
       'ship.db-clean#1.1',
       'ship.commit#1',
+      'ship.attest#1',
       'ship.summary#1',
       'ship.pr#1',
       'cleanup',
@@ -463,6 +482,154 @@ describe('the ship gate: green', () => {
   })
 })
 
+describe('the gate attestation (issue #9)', () => {
+  const OTHER_TREE = 'd'.repeat(40)
+  const attestErrors = async (h: Harness) =>
+    (await errorsOf(h)).filter(m => m.includes(LAUNCH_GATE_CHECK))
+
+  it('a green gate posts exactly ONE launch/gate on the pushed head, keyed by its tree — a retried step posts nothing new', async () => {
+    const h = await harness({ trackHead: true })
+    // `ship.attest` runs its body twice: the second try finds the first's run.
+    const run = await drive(h, () => {}, /^ship\.attest#/)
+    expect(run.outcome.status).toBe('shipped')
+    const names = run.names
+    expect(names.indexOf('ship.attest#1')).toBe(names.indexOf('ship.commit#1') + 1)
+    expect(names.indexOf('ship.summary#1')).toBe(names.indexOf('ship.attest#1') + 1)
+
+    const row = await reload(h.row)
+    const created = h.cloud.github.createdCheckRuns
+    expect(created).toHaveLength(1)
+    const [check] = created
+    expect(check).toMatchObject({
+      owner: h.f.repo.owner,
+      repo: h.f.repo.repo,
+      name: 'launch/gate',
+      head_sha: row.headSha,
+      status: 'completed',
+      conclusion: 'success',
+      external_id: `tree:${GATE_TREE}`,
+      app: 'company-launch',
+    })
+    expect(check?.output?.title).toBe('Launch gate passed: lint, typecheck, tests')
+    expect(check?.output?.summary).toContain('| lint | `pnpm gate lint` |')
+    expect(check?.output?.summary).toContain('| test | `pnpm gate test` |')
+    const text = JSON.parse(check?.output?.text ?? '{}')
+    expect(text).toEqual({
+      tree: GATE_TREE,
+      sessionId: row.id,
+      attempt: 1,
+      steps: [
+        { step: 'lint', command: 'pnpm gate lint', durationMs: expect.any(Number) },
+        { step: 'typecheck', command: 'pnpm gate typecheck', durationMs: expect.any(Number) },
+        { step: 'test', command: 'pnpm gate test', durationMs: expect.any(Number) },
+      ],
+    })
+    // On the head commit's check runs exactly once, beside nothing else.
+    const onHead = h.cloud.github.checkRuns.get(
+      `${h.f.repo.owner}/${h.f.repo.repo}`.toLowerCase() + `@${row.headSha}`
+    )
+    expect(onHead?.filter(r => r.name === LAUNCH_GATE_CHECK)).toHaveLength(1)
+
+    // The tree is the gate's last step's, and it is recorded next to the gate SHA.
+    const gates = await gateEvents(h)
+    expect(gates.at(-1)).toMatchObject({ step: 'test', passed: true, tree: GATE_TREE })
+    expect(gates.slice(0, -1).every(g => g.tree === undefined)).toBe(true)
+    expect(row.landing).toMatchObject({ gateSha: row.headSha, gateTree: GATE_TREE })
+    expect(row.shipSummary).toMatchObject({ gateSha: row.headSha, gateTree: GATE_TREE })
+    expect(await attestErrors(h)).toEqual([])
+  })
+
+  it('a red gate posts none (and never reads a tree)', async () => {
+    const h = await harness({
+      trackHead: true,
+      gate: { test: () => ({ exitCode: 1, log: 'FAIL tests/home.test.ts' }) },
+    })
+    const run = await drive(h)
+    expect(run.names.some(n => n.startsWith('ship.attest#'))).toBe(false)
+    expect(run.names.some(n => n.startsWith('ship.commit#'))).toBe(false)
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(h.sandbox().commands.some(c => c.includes('launch-tree-index'))).toBe(false)
+    expect(h.cloud.github.pulls).toHaveLength(0)
+  })
+
+  it('a workspace that changed after the gate is refused: nothing committed, attested or opened', async () => {
+    let reads = 0
+    const h = await harness({
+      trackHead: true,
+      // The gate's read, then `ship.commit`'s: something wrote a file in between.
+      trees: { worktree: () => ({ stdout: `tree=${++reads === 1 ? GATE_TREE : OTHER_TREE}\n` }) },
+    })
+    const run = await drive(h)
+    expect(run.names).toContain('ship.commit#1')
+    expect(run.names).toContain('ship.settle#1')
+    expect(run.names.some(n => /^ship\.(attest|summary|pr)#/.test(n))).toBe(false)
+    // Saved before the gate only: the commit's checkpoint never ran (the end then saves the work).
+    expect(h.checkpoints).toEqual(['ship', 'end'])
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(h.cloud.github.pulls).toHaveLength(0)
+    expect(await errorsOf(h)).toContainEqual(
+      expect.stringContaining('The work changed after the gate passed')
+    )
+    const row = await reload(h.row)
+    expect(row.prNumber).toBeNull()
+    expect(row.landing).toBeNull()
+  })
+
+  it('a commit that is not the gated tree (the checkpoint left something out) opens nothing', async () => {
+    const h = await harness({
+      trackHead: true,
+      trees: { head: { stdout: `${OTHER_TREE}\n` } },
+    })
+    const run = await drive(h)
+    expect(h.checkpoints.filter(r => r === 'ship')).toEqual(['ship', 'ship'])
+    expect(run.names.some(n => /^ship\.(attest|summary|pr)#/.test(n))).toBe(false)
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(h.cloud.github.pulls).toHaveLength(0)
+    expect(await errorsOf(h)).toContainEqual(
+      expect.stringContaining('The work changed after the gate passed')
+    )
+  })
+
+  it('a tree that cannot be read fails closed: the round settles with the reason, no PR', async () => {
+    const h = await harness({
+      trackHead: true,
+      trees: { worktree: { exitCode: 128, stderr: 'fatal: not a git repository' } },
+    })
+    const run = await drive(h)
+    expect(run.names.some(n => /^ship\.(commit|attest|pr)#/.test(n))).toBe(false)
+    expect(h.cloud.github.pulls).toHaveLength(0)
+    expect(await errorsOf(h)).toContainEqual(expect.stringContaining('not a git repository'))
+  })
+
+  it('an installation without checks: write cannot attest — the ship still opens its PR, and says why once', async () => {
+    const h = await harness({ trackHead: true })
+    // Installed before issue #9: the new permission not accepted yet.
+    Object.assign(h.cloud.github.opts, {
+      permissions: { ...h.cloud.github.permissions, checks: 'read' },
+    })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names).toContain('ship.attest#1')
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(h.cloud.github.pulls).toHaveLength(1)
+    const errors = await attestErrors(h)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('The ship carries on')
+    expect(errors[0]).toContain('not granted')
+    // The tree is still recorded: the landing does not depend on the attestation.
+    expect((await reload(h.row)).landing).toMatchObject({ gateTree: GATE_TREE })
+  })
+
+  it('GitHub failing the POST does not fail the ship either', async () => {
+    const h = await harness({ trackHead: true })
+    h.cloud.failNext(/POST https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/check-runs$/, 502)
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(await attestErrors(h)).toHaveLength(1)
+  })
+})
+
 describe('the ship gate: red', () => {
   it('a red test gets ONE fix turn with the command and its redacted tail; the gate runs again and ships', async () => {
     const h = await harness({
@@ -498,6 +665,7 @@ describe('the ship gate: red', () => {
       'ship.gate#1.2.test',
       'ship.db-clean#1.2',
       'ship.commit#1',
+      'ship.attest#1',
       'ship.summary#1',
       'ship.pr#1',
       'cleanup',

@@ -156,6 +156,7 @@ async function storeSummary(tenantId: string, sessionId: string, body: string) {
         diffStat: ' 1 file changed',
         prNumber: 1,
         gateSha: null,
+        gateTree: null,
         at: new Date().toISOString(),
       },
     })

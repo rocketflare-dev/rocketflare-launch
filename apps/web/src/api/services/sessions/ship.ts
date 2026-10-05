@@ -5,7 +5,7 @@
  * The ship is a sequence of Workflow steps (`workflows/session.ts`, bodies in `ship-steps.ts`):
  * `ship.claim` → `ship.save` → per attempt `ship.gate` (lint, typecheck) → `ship.db` → `ship.gate`
  * (tests, on a throwaway Neon branch) → `ship.db-clean` → on red `ship.fix` → … → green: `ship.commit`
- * → `ship.summary` → `ship.pr`. LAUNCH runs the gate (`gate.ts`) and its exit codes alone decide;
+ * → `ship.attest` (issue #9, `gate-attest.ts`) → `ship.summary` → `ship.pr`. LAUNCH runs the gate (`gate.ts`) and its exit codes alone decide;
  * a green gate makes no model call to decide anything. What this file adds:
  *
  * - **The summary** (`summarizeShip`, the `shipSummary` hook): ONE cheap model call, no tools,
@@ -477,6 +477,8 @@ export async function openShipPullRequest(
     source?: ShipSummaryResult['source']
     diffStat?: string
     landing?: ShipLandingInput
+    /** Issue #9: the tree the gate ran on (= `head_sha`'s, asserted at `ship.commit`). */
+    gateTree?: string
   }
 ): Promise<ShipPrOutcome> {
   const now = deps.now ?? (() => new Date())
@@ -528,6 +530,7 @@ export async function openShipPullRequest(
     stage: mode === 'staging' ? 'ci' : 'pr',
     prNumber: pr.number,
     gateSha,
+    gateTree: input.gateTree ?? null,
     startedAt: at.toISOString(),
     stageAt: at.toISOString(),
     reviewMode: input.landing?.reviewMode ?? 'none',
@@ -549,6 +552,7 @@ export async function openShipPullRequest(
     diffStat: clipText(input.diffStat ?? '', SHIP_SUMMARY_DIFFSTAT_MAX),
     prNumber: pr.number,
     gateSha: session.headSha ?? null,
+    gateTree: input.gateTree ?? null,
     at: at.toISOString(),
   }
   const shipped = await transition(db, session, ['shipping'], {

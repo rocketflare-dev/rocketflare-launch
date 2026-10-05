@@ -84,6 +84,11 @@ export async function adoptHandMerge(
     stage: 'releasing',
     prNumber: merge.number,
     gateSha: input.landing?.gateSha ?? merge.headSha,
+    // A hand merge's head was gated only when it is still the landing's gate SHA.
+    gateTree:
+      input.landing && input.landing.gateSha === merge.headSha
+        ? (input.landing.gateTree ?? null)
+        : null,
     startedAt: input.landing?.startedAt ?? stamp,
     stageAt: stamp,
     reviewMode: 'none',

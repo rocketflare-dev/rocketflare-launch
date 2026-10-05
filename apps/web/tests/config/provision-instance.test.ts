@@ -211,7 +211,7 @@ describe('the GitHub App manifest', () => {
       environments: 'write',
       actions_variables: 'write',
       deployments: 'write',
-      checks: 'read',
+      checks: 'write',
       statuses: 'read',
     })
     expect(manifest.hook_attributes.active).toBe(false)

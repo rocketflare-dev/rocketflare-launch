@@ -304,6 +304,7 @@ describe('sessions.checks adopts a hand merge in a staging-mode app', () => {
           stage: 'pr',
           prNumber: h.number,
           gateSha,
+          gateTree: null,
           startedAt: started,
           stageAt: started,
           reviewMode: 'none',
