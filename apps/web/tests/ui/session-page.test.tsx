@@ -147,7 +147,9 @@ describe('SessionPage', () => {
     // The running command spins; the turn is visibly in progress.
     const running = screen.getByText('pnpm test').closest('[data-event-kind="tool"]') as HTMLElement
     expect(within(running).getByRole('img', { name: 'running' })).toBeInTheDocument()
-    expect(screen.getByTestId('turn-working')).toHaveTextContent('Working…')
+    // The open turn's clock, from its `turn.start`; it has spoken, so no "waiting" line.
+    expect(screen.getByTestId('turn-working')).toHaveTextContent(/Working · \d+(s|m \d+s)/)
+    expect(screen.queryByTestId('first-reply-wait')).not.toBeInTheDocument()
     // Busy: the composer offers Stop, not Send.
     expect(screen.getByRole('button', { name: 'Stop this turn' })).toBeInTheDocument()
   })
@@ -208,6 +210,161 @@ describe('SessionPage', () => {
       fetchMock.mock.calls.some(([u, i]) => String(u).endsWith('/ship') && i?.method === 'POST')
     ).toBe(true)
     expect(screen.getByTestId('composer-blocked')).toHaveTextContent(/Shipping/)
+  })
+
+  describe('while it ships: what is running now (a long test run never looks stuck)', () => {
+    /** The page's clock, pinned `ms` after a row's `at` (only `Date`: timers stay real). */
+    const clockAt = (seq: number, ms: number) => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(Date.UTC(2026, 8, 28, 10, 0, seq)).getTime() + ms)
+    }
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+    const plan = ['lint', 'typecheck', 'test']
+
+    it('the running step spins with its command and its time, the rest pending, then its verdict', async () => {
+      const log = [
+        ...DONE_TURN,
+        sessionEvent(
+          7,
+          'ship.gate',
+          { step: 'lint', passed: true, attempt: 1, durationMs: 4000 },
+          1
+        ),
+        sessionEvent(
+          8,
+          'ship.gate',
+          {
+            status: 'running',
+            attempt: 1,
+            step: 'typecheck',
+            command: 'pnpm gate typecheck',
+            plan,
+          },
+          1
+        ),
+        sessionEvent(
+          9,
+          'ship.gate',
+          { step: 'typecheck', passed: true, attempt: 1, command: 'pnpm gate typecheck' },
+          1
+        ),
+        sessionEvent(
+          10,
+          'ship.gate',
+          { status: 'running', attempt: 1, step: 'test', command: 'pnpm gate test', plan },
+          1
+        ),
+      ]
+      // The test step began at seq 10: pin the clock 3 min 12 s past it.
+      clockAt(10, 192_000)
+      let row = detailOf({ status: 'shipping' })
+      const { queryClient } = renderPage({
+        [BASE]: () => row,
+        [`${BASE}/events`]: eventsRoute(log),
+      })
+
+      const gates = within(await screen.findByRole('list', { name: 'Checks before shipping' }))
+      const running = await gates.findByText('Running tests')
+      const item = running.closest('[data-gate-running]') as HTMLElement
+      expect(within(item).getByText('pnpm gate test')).toBeInTheDocument()
+      expect(within(item).getByTestId('gate-elapsed')).toHaveTextContent('3 min 12 s')
+      expect(gates.getByText('Lint passed')).toBeInTheDocument()
+      expect(gates.getByText('Typecheck passed')).toBeInTheDocument()
+      // Nothing after the tests in this plan; the old "running the next check" line is gone.
+      expect(gates.queryByText(/Running the next check/)).not.toBeInTheDocument()
+      // The chat carries verdicts only, never the start rows.
+      expect(screen.queryByText(/Running tests/, { selector: 'p' })).not.toBeInTheDocument()
+
+      // The verdict arrives: it replaces the running row.
+      log.push(
+        sessionEvent(
+          11,
+          'ship.gate',
+          { step: 'test', passed: false, attempt: 1, command: 'pnpm gate test', output: 'boom' },
+          1
+        )
+      )
+      row = detailOf({ status: 'shipping', updatedAt: '2026-09-28T10:09:00.000Z' })
+      await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }))
+      expect(await gates.findByText('Tests failed')).toBeInTheDocument()
+      expect(gates.queryByText('Running tests')).not.toBeInTheDocument()
+    })
+
+    it('lists the steps still to come while an early one runs', async () => {
+      clockAt(7, 5_000)
+      renderPage({
+        [BASE]: detailOf({ status: 'shipping' }),
+        [`${BASE}/events`]: eventsRoute([
+          ...DONE_TURN,
+          sessionEvent(
+            7,
+            'ship.gate',
+            { status: 'running', attempt: 1, step: 'lint', command: 'pnpm gate lint', plan },
+            1
+          ),
+        ]),
+      })
+      const gates = within(await screen.findByRole('list', { name: 'Checks before shipping' }))
+      expect(await gates.findByText('Running lint')).toBeInTheDocument()
+      expect(gates.getByText('Attempt 1')).toBeInTheDocument()
+      expect(gates.getByTestId('gate-elapsed')).toHaveTextContent('5 s')
+      const pending = gates
+        .getAllByRole('listitem')
+        .filter(li => li.hasAttribute('data-gate-pending'))
+        .map(li => li.textContent)
+      expect(pending).toEqual(['Typecheck', 'Tests'])
+    })
+
+    it('a fix turn that has not answered yet: its time ticking, then "waiting for the first reply"', async () => {
+      const log = [
+        ...DONE_TURN,
+        sessionEvent(
+          7,
+          'ship.gate',
+          { step: 'test', passed: false, attempt: 1, command: 'pnpm gate test', output: 'boom' },
+          1
+        ),
+        sessionEvent(8, 'turn.start', { turn: 2 }, 2),
+      ]
+      clockAt(8, 130_000)
+      let row = detailOf({ status: 'shipping', turnCount: 2 })
+      const { queryClient } = renderPage({
+        [BASE]: () => row,
+        [`${BASE}/events`]: eventsRoute(log),
+      })
+
+      const fixing = await screen.findByTestId('gate-fixing')
+      expect(fixing).toHaveTextContent('Claude is fixing the failing tests')
+      expect(within(fixing).getByTestId('fix-elapsed')).toHaveTextContent('2 min 10 s')
+      expect(within(fixing).getByTestId('first-reply-wait')).toHaveTextContent(
+        'Waiting for Claude’s first reply'
+      )
+      // The chat shows the turn too, though the row says `shipping`, not `working`.
+      const working = screen.getByTestId('turn-working')
+      expect(working).toHaveTextContent('Working · 2m 10s')
+      expect(within(working).getByTestId('first-reply-wait')).toBeInTheDocument()
+
+      // Its first words: no more waiting line, the clock keeps going.
+      log.push(sessionEvent(9, 'text', { text: 'Looking at the failing test.' }, 2))
+      row = detailOf({ status: 'shipping', turnCount: 2, updatedAt: '2026-09-28T10:09:00.000Z' })
+      await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all }))
+      expect(await screen.findByText('Looking at the failing test.')).toBeInTheDocument()
+      expect(screen.queryByTestId('first-reply-wait')).not.toBeInTheDocument()
+      expect(screen.getByTestId('fix-elapsed')).toHaveTextContent('2 min 10 s')
+    })
+
+    it('a turn quiet for under 30 s says only its time', async () => {
+      clockAt(2, 12_000)
+      renderPage({
+        [BASE]: detailOf({ status: 'working', turnCount: 1 }),
+        [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 2)),
+      })
+      const working = await screen.findByTestId('turn-working')
+      await waitFor(() => expect(working).toHaveTextContent('Working · 12s'))
+      expect(screen.queryByTestId('first-reply-wait')).not.toBeInTheDocument()
+    })
   })
 
   it('shows a shipped session: the gate attempts, the PR and its checks', async () => {

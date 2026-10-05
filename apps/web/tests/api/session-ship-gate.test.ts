@@ -17,6 +17,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto'
 import {
+  isShipGateRunning,
   LAUNCH_GATE_CHECK,
   SESSION_WAKE_EVENT,
   sessionBranchName,
@@ -344,10 +345,18 @@ async function drive(
 
 const BOOT = ['claim', 'db', 'sandbox.start', 'repo', 'bootstrap', 'dev']
 const eventsOf = (h: Harness) => listSessionEvents(db, h.row.tenantId, h.row.id, 0, 5000)
+/** The gate's verdict rows (a step's start row is `runningEvents`'). */
 const gateEvents = async (h: Harness) =>
   (await eventsOf(h))
     .filter(e => e.type === 'ship.gate')
     .map(e => sessionShipGateDataSchema.parse(e.data))
+    .flatMap(d => (isShipGateRunning(d) ? [] : [d]))
+/** The steps' start rows (`status: 'running'`), in order. */
+const runningEvents = async (h: Harness) =>
+  (await eventsOf(h))
+    .filter(e => e.type === 'ship.gate')
+    .map(e => sessionShipGateDataSchema.parse(e.data))
+    .filter(isShipGateRunning)
 const errorsOf = async (h: Harness) =>
   (await eventsOf(h))
     .filter(e => e.type === 'error')
@@ -432,6 +441,37 @@ describe('the ship gate: green', () => {
       }),
     ])
     expect((await gateEvents(h))[0]).not.toHaveProperty('target')
+    // Each step said so as it STARTED (the plan on it), and `ship.db` before the test command.
+    const plan = ['lint', 'typecheck', 'test']
+    expect(await runningEvents(h)).toEqual([
+      { status: 'running', attempt: 1, step: 'lint', command: 'pnpm gate lint', plan },
+      { status: 'running', attempt: 1, step: 'typecheck', command: 'pnpm gate typecheck', plan },
+      {
+        status: 'running',
+        attempt: 1,
+        step: 'test',
+        command: 'pnpm gate test',
+        phase: 'database',
+        plan,
+      },
+      { status: 'running', attempt: 1, step: 'test', command: 'pnpm gate test', plan },
+    ])
+    // …each before its own verdict.
+    const gateOrder = (await eventsOf(h))
+      .filter(e => e.type === 'ship.gate')
+      .map(e => {
+        const d = e.data as { status?: string; step?: string; phase?: string }
+        return `${d.step}${d.phase ? `/${d.phase}` : ''}:${d.status ?? 'done'}`
+      })
+    expect(gateOrder).toEqual([
+      'lint:running',
+      'lint:done',
+      'typecheck:running',
+      'typecheck:done',
+      'test/database:running',
+      'test:running',
+      'test:done',
+    ])
     expect(h.fixes).toEqual([])
     expect(h.sandbox().processes.some(p => p.command.includes('claude'))).toBe(false)
     expect(h.summary.calls).toHaveLength(1)
@@ -536,6 +576,20 @@ describe('the gate attestation (issue #9)', () => {
   const OTHER_TREE = 'd'.repeat(40)
   const attestErrors = async (h: Harness) =>
     (await errorsOf(h)).filter(m => m.includes(LAUNCH_GATE_CHECK))
+
+  it('a retried gate step (and ship.db) writes no second running row', async () => {
+    const h = await harness()
+    // Every gate step's and the database step's body runs twice, as after a lost step result.
+    const run = await drive(h, () => {}, /^ship\.(gate|db)#/)
+    expect(run.outcome.status).toBe('shipped')
+    const running = await runningEvents(h)
+    expect(running.map(r => `${r.attempt}:${r.step}:${r.phase ?? ''}`)).toEqual([
+      '1:lint:',
+      '1:typecheck:',
+      '1:test:database',
+      '1:test:',
+    ])
+  })
 
   it('a green gate posts exactly ONE launch/gate on the pushed head, keyed by its tree — a retried step posts nothing new', async () => {
     const h = await harness({ trackHead: true })

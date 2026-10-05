@@ -36,7 +36,7 @@ import {
   launchGateExternalId,
   SHIP_GATE_STEP_LABELS,
   type ShipGateStep,
-  sessionShipGateDataSchema,
+  sessionShipGateResultDataSchema,
 } from '@launch/shared/launch-sessions'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import { sessionEvents } from '../../../db/schema'
@@ -121,7 +121,7 @@ export async function greenGateSteps(
     .orderBy(asc(sessionEvents.seq))
   const steps = new Map<ShipGateStep, AttestedGateStep>()
   for (const row of rows) {
-    const data = sessionShipGateDataSchema.safeParse(row.data)
+    const data = sessionShipGateResultDataSchema.safeParse(row.data)
     if (!data.success || !data.data.passed || !data.data.step || !data.data.command) continue
     steps.delete(data.data.step)
     steps.set(data.data.step, {

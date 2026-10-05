@@ -475,7 +475,10 @@ describe('a coding session, end to end', () => {
     expect(types).toEqual(
       expect.arrayContaining(['preview.ready', 'user.message', 'turn.end', 'ship.gate', 'ship.pr'])
     )
-    const gate = (await eventsOf(h)).find(e => e.type === 'ship.gate')
+    // The first verdict row (each step's `status: 'running'` start row comes before it).
+    const gate = (await eventsOf(h)).find(
+      e => e.type === 'ship.gate' && (e.data as { status?: string }).status !== 'running'
+    )
     expect(gate?.data).toMatchObject({ passed: true })
     cloud.github.setCheckRuns(h.f.repo.owner, h.f.repo.repo, branch, [
       { name: 'ci / gate', status: 'completed', conclusion: 'success' },

@@ -172,7 +172,8 @@ fails the round, and posts nothing when a gate step rewrote the tree `ship.tree`
 and the session stays `shipping`); no PR: `ship.settle#N`. Every name carries the round and the attempt; the loop only
 branches on step RESULTS (a gate step's `{ passed, stop }`), so a replay takes the same path. A gate
 step is `gateStepConfig` (one retry — `runInBackground` re-attaches — and the command's deadline
-plus 5 min). A thrown ship step is caught in the round and settles it (`error`); it never fails the
+plus 5 min). Each gate step (and `ship.db`) writes its `status: 'running'` `ship.gate` row
+first, once per `(attempt, step, phase)` (`gateStepStarted`), carrying the attempt's `plan`. A thrown ship step is caught in the round and settles it (`error`); it never fails the
 session. A lost container (`stop: 'container_lost'`, `lost`) leaves the round with the session
 already `suspended` and the loop's dirty state cleared; a settled round's dirty state is
 `ship.save`'s (saved → clean) plus what the fix turns changed (`ship.settle`'s result).

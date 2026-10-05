@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Shipping says what is running now, not only what finished.** Each gate step writes a
+  `ship.gate { status: 'running', attempt, step, command, plan? }` row as it starts (`ship.db` one
+  with `phase: 'database'` while it makes the test branch) — once per step, a retried step adds
+  none — and the ship panel shows it with a spinner, its command and its time ticking ("Running
+  tests · pnpm gate test · 3 min 12 s"), the steps still to come as pending, then the verdict in its
+  place. Before, a seven-minute test run showed nothing until it ended. `launch sessions ship
+  --wait` prints the running step too. A running row has no `passed`, so an older UI or CLI skips
+  it. A turn that has not answered yet — a ship's fix turn included, which the chat did not show at
+  all — shows its time since `turn.start`, and after 30 s "Waiting for Claude's first reply".
+  The gate command's live output is still only shown when it ends.
+
 - **A prebuild keeps its `node_modules`.** The prebuild's excludes were paths
   (`apps/web/.wrangler`, `node_modules/.vite`), and the Sandbox SDK also hands each to
   `mksquashfs` as `... <pattern>`, which with two or more parts drops the first directory whole —

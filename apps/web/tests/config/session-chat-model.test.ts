@@ -25,7 +25,11 @@ import {
   ciFixMessage,
   landingTimeline,
   latestPreviewChangeSeq,
+  openTurn,
   shipGateAttempts,
+  shipGatePending,
+  shipGateRunning,
+  shipGateRunningText,
   shipGates,
   shipGateText,
   shortPath,
@@ -211,6 +215,60 @@ describe('selectors', () => {
       // A row from before the gate had steps was the whole gate.
       [4, 1, true],
     ])
+  })
+
+  it('shipGateRunning: the started step until its verdict, never an older attempt’s', () => {
+    const plan = ['lint', 'typecheck', 'test']
+    const run = (seq: number, step: string, attempt = 1, phase?: string) =>
+      ev(seq, 'ship.gate', {
+        status: 'running',
+        attempt,
+        step,
+        command: `pnpm gate ${step}`,
+        plan,
+        ...(phase ? { phase } : {}),
+      })
+    const lint = run(1, 'lint')
+    expect(shipGateRunning([lint])).toMatchObject({
+      step: 'lint',
+      command: 'pnpm gate lint',
+      at: lint.at,
+    })
+    expect(shipGatePending(shipGateRunning([lint]))).toEqual(['typecheck', 'test'])
+    const lintDone = ev(2, 'ship.gate', { step: 'lint', passed: true, attempt: 1 })
+    // Its verdict replaces it; the running rows are not verdicts.
+    expect(shipGateRunning([lint, lintDone])).toBeNull()
+    expect(shipGates([lint, lintDone])).toHaveLength(1)
+    const db = run(3, 'test', 1, 'database')
+    expect(shipGateRunningText(shipGateRunning([lint, lintDone, db]) ?? { step: 'lint' })).toBe(
+      'Preparing the test database'
+    )
+    const test = run(4, 'test')
+    const now = shipGateRunning([lint, lintDone, db, test])
+    expect(now && shipGateRunningText(now)).toBe('Running tests')
+    expect(shipGatePending(now)).toEqual([])
+    // A ship that died under its tests: the next ship's rows supersede the stale start row.
+    expect(
+      shipGateRunning([test, ev(5, 'ship.gate', { step: 'lint', passed: true, attempt: 2 })])
+    ).toBeNull()
+    // The chat says only verdicts.
+    expect(buildSessionChat([lint]).filter(i => i.kind === 'notice')).toEqual([])
+  })
+
+  it('openTurn: the turn under way and its first output', () => {
+    const start = ev(1, 'turn.start', { turn: 1 }, 1)
+    expect(openTurn([start])).toEqual({ turn: 1, at: start.at, firstOutputAt: null })
+    const said = ev(2, 'text', { text: 'Looking' }, 1)
+    expect(openTurn([start, said])).toMatchObject({ firstOutputAt: said.at })
+    expect(openTurn([start, said, ev(3, 'turn.end', { turn: 1 }, 1)])).toBeNull()
+    // A later turn that has said nothing yet: the earlier one's output is not its.
+    const next = ev(4, 'turn.start', { turn: 2 }, 2)
+    expect(openTurn([start, said, ev(3, 'turn.end', { turn: 1 }, 1), next])).toEqual({
+      turn: 2,
+      at: next.at,
+      firstOutputAt: null,
+    })
+    expect(openTurn([])).toBeNull()
   })
 
   it('shipGates lists every attempt in order', () => {

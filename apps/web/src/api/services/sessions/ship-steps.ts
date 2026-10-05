@@ -29,7 +29,10 @@
  *   exactly one model call, the summary, and a failed summary falls back rather than blocks.
  * - **One `ship.gate` event per step** (`{ step, passed, attempt, command, durationMs, output }`,
  *   and the test step's `target` line), the output a redacted tail (`gateOutputTail`): the gate
- *   branch's URL never reaches an event, a step result, a log line or a prompt.
+ *   branch's URL never reaches an event, a step result, a log line or a prompt. Before it, ONE
+ *   `status: 'running'` row when the step starts (`ship.db`'s with `phase: 'database'`), so the
+ *   panel says what is running now; a retried step finds its own and writes none
+ *   (`gateStepStarted`).
  * - **A lost container suspends, never `ready`.** Every step that touches the container first
  *   reads the boot marker (`boot-marker.ts`); one that came back empty (or died under a gate
  *   command or a fix turn) is `shipping → suspended` with a resume requested, an `error` event,
@@ -45,6 +48,7 @@
 import { resolveAppShipSettings } from '@launch/shared/launch-apps'
 import {
   resolveSessionPolicy,
+  type SessionShipGateRunningData,
   SHIP_GATE_STEP_LABELS,
   type ShipGateStep,
 } from '@launch/shared/launch-sessions'
@@ -358,6 +362,48 @@ export async function shipKitStep(
 
 // ---- ship.gate ---------------------------------------------------------------------------------
 
+/**
+ * The step's `status: 'running'` row, written once per `(attempt, step, phase)`: a retried step
+ * (the command re-attached, or `ship.db` asked again) finds the row its first try wrote and adds
+ * none, so the panel's elapsed time still counts from when the step first began.
+ */
+export async function gateStepStarted(
+  scope: StepScope,
+  session: SessionRow,
+  data: Pick<SessionShipGateRunningData, 'attempt' | 'step' | 'command' | 'phase' | 'plan'>
+): Promise<void> {
+  const [existing] = await scope.db
+    .select({ id: sessionEvents.id })
+    .from(sessionEvents)
+    .where(
+      and(
+        eq(sessionEvents.tenantId, scope.params.tenantId),
+        eq(sessionEvents.sessionId, scope.params.sessionId),
+        eq(sessionEvents.type, 'ship.gate'),
+        sql`${sessionEvents.data}->>'status' = 'running'`,
+        sql`(${sessionEvents.data}->>'attempt')::int = ${data.attempt}`,
+        sql`${sessionEvents.data}->>'step' = ${data.step}`,
+        data.phase
+          ? sql`${sessionEvents.data}->>'phase' = ${data.phase}`
+          : sql`${sessionEvents.data}->>'phase' is null`
+      )
+    )
+    .limit(1)
+  if (existing) return
+  await emitterFor(scope)({
+    type: 'ship.gate',
+    turn: session.turnCount,
+    data: {
+      status: 'running',
+      attempt: data.attempt,
+      step: data.step,
+      command: data.command,
+      ...(data.phase ? { phase: data.phase } : {}),
+      ...(data.plan?.length ? { plan: [...data.plan] } : {}),
+    },
+  })
+}
+
 export interface GateStepResult {
   passed: boolean
   step: ShipGateStep
@@ -486,6 +532,8 @@ export async function shipGateStep(
     last?: boolean
     /** Issue #21: the tree the attempt started on (`ship.tree`), which the last step compares. */
     startTree?: string
+    /** The attempt's steps in order (`ship.kit`'s plan), carried on the running row. */
+    plan?: readonly ShipGateStep[]
   },
   bootId?: string
 ): Promise<GateStepResult> {
@@ -502,6 +550,12 @@ export async function shipGateStep(
   }
   const branch = input.branch
   if (gate.database && !branch) throw new Error(`The ${step} step has no gate branch to run on`)
+  await gateStepStarted(scope, session, {
+    attempt: input.attempt,
+    step,
+    command: gate.command,
+    ...(input.plan ? { plan: [...input.plan] } : {}),
+  })
 
   const dev = devEnvFor(scope.cfg, session)
   // The URL and its password, for the tail's redaction. A retry that re-attaches never mints them,
@@ -739,7 +793,8 @@ export async function shipDbStep(
   scope: StepScope,
   attempt: number,
   bootId?: string,
-  testCommand: string = SHIP_GATE_COMMANDS.test.command
+  testCommand: string = SHIP_GATE_COMMANDS.test.command,
+  plan?: readonly ShipGateStep[]
 ): Promise<ShipDbResult> {
   const session = await loadSession(scope)
   if (session.status !== 'shipping' || endRequested(session)) return { ok: false, stop: 'ended' }
@@ -753,6 +808,13 @@ export async function shipDbStep(
     await unfixable(scope, session, attempt, message, testCommand)
     return { ok: false, stop: 'unfixable' }
   }
+  await gateStepStarted(scope, session, {
+    attempt,
+    step: 'test',
+    command: testCommand,
+    phase: 'database',
+    ...(plan ? { plan: [...plan] } : {}),
+  })
   const app = await loadAppRef(scope, session.appId)
   const port = scope.ports.sessionDb(scope.db)
   const name = gateBranchName(session.shortId, attempt)

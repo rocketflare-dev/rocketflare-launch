@@ -35,6 +35,7 @@ import {
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import {
   isActiveSessionStatus,
+  isShipGateRunning,
   previewGrantResponseSchema,
   type Session,
   type SessionBootTimingData,
@@ -345,6 +346,14 @@ export function formatSessionEvent(event: SessionEvent): string | null {
       if (!parsed.success) return null
       // One row per step Launch ran (issue #1); a row without `step` is the whole gate (older).
       const what = parsed.data.step ? SHIP_GATE_STEP_LABELS[parsed.data.step].toLowerCase() : 'gate'
+      // The step's start: said as it begins, so a long test run is not a silent wait.
+      if (isShipGateRunning(parsed.data)) {
+        return parsed.data.phase === 'database'
+          ? chalk.dim(`  … preparing the test database (attempt ${parsed.data.attempt})`)
+          : chalk.dim(
+              `  … running ${what} (attempt ${parsed.data.attempt}): ${parsed.data.command}`
+            )
+      }
       return parsed.data.passed
         ? chalk.green(`✓ ${what} passed (attempt ${parsed.data.attempt})`)
         : chalk.yellow(`! ${what} failed (attempt ${parsed.data.attempt})`)

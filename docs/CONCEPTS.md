@@ -2544,7 +2544,21 @@ WebSocket bug), a Workflow step with one retry that RE-ATTACHES to the running c
 a redacted tail (`gateOutputTail`: the URL and its password, anything shaped like a connection
 string or a key removed), and — on the test step — `target`, the line the kit's `pnpm test` prints
 first (`test target: remote Neon branch gate-… (no Docker; the whole suite under neon)`, redacted
-the same way), which the ship panel shows under the Tests row. **The test step's database** is a throwaway Neon
+the same way), which the ship panel shows under the Tests row. **A step says when it starts**, too:
+one `ship.gate { status: 'running', attempt, step, command, phase?, plan? }` row written at the top
+of the step body (and by `ship.db` with `phase: 'database'`), never with a `passed` — a reader of
+verdicts alone (`sessionShipGateResultDataSchema`, the attestation, an older UI or CLI) fails to
+parse it and skips it. A retried step finds its own row (`gateStepStarted`, keyed by
+`(attempt, step, phase)`) and writes none, so the elapsed time counts from the first try. The ship
+panel shows that step (`shipGateRunning`: the newest attempt's start row with no verdict yet) with a
+spinner, its command and the time since its `at` ticking, the plan's later steps as pending, and
+swaps it for the verdict when it lands; `launch sessions ship --wait` prints `… running tests
+(attempt N): pnpm gate test`. A gate command's live output is NOT streamed: the background command's
+log is read only when it ends. **A fix turn (or any turn) shows its own clock**: the chat's working
+bubble and the panel's "Claude is fixing the failing tests" count from the open turn's `turn.start`
+(`openTurn` — a fix turn runs while the row says `shipping`, so the status alone never showed it),
+and after 30 s with no `text`/tool row add "Waiting for Claude's first reply" — a resumed
+conversation whose prompt cache expired can take minutes to answer at all. **The test step's database** is a throwaway Neon
 branch per attempt, `gate-<short>-<A>`, a CHILD of the session's branch (its schema, its roles:
 `session_owner` owns `session_app`'s tables and holds ADMIN on the app's RLS role, `<snake>_app`)
 with its own compute, made by `ship.db` (`createGateBranch`, waiting for `create_branch` only; it

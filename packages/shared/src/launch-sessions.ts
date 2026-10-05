@@ -333,10 +333,10 @@ export const SHIP_GATE_STEP_LABELS: Record<ShipGateStep, string> = {
 }
 
 /**
- * One `ship.gate` row: ONE step of one attempt (`step`), written when that step ends. A row with
- * no `step` is from before issue #1 — the whole gate as one run — and still renders.
+ * One finished `ship.gate` row: ONE step of one attempt (`step`), written when that step ends. A
+ * row with no `step` is from before issue #1 — the whole gate as one run — and still renders.
  */
-export const sessionShipGateDataSchema = z
+export const sessionShipGateResultDataSchema = z
   .object({
     passed: z.boolean(),
     attempt: z.number().int().positive(),
@@ -361,6 +361,51 @@ export const sessionShipGateDataSchema = z
     output: z.string().optional(),
   })
   .passthrough()
+export type SessionShipGateResultData = z.infer<typeof sessionShipGateResultDataSchema>
+
+/**
+ * What a running gate step is doing before its command: `database` — `ship.db` is making the
+ * test step's throwaway gate branch. Absent: the step's command itself is running.
+ */
+export const SHIP_GATE_RUNNING_PHASES = ['database'] as const
+export const shipGateRunningPhaseSchema = z.enum(SHIP_GATE_RUNNING_PHASES)
+export type ShipGateRunningPhase = z.infer<typeof shipGateRunningPhaseSchema>
+
+/**
+ * A `ship.gate` row written when a step STARTS (`status: 'running'`, and never a `passed`, so a
+ * reader from before it fails to parse it and skips it rather than showing a verdict). At most
+ * one per `(attempt, step, phase)` — a retried step finds its own row and writes none — and the
+ * step's finished row supersedes it. `at` is when the step began, the elapsed time's origin.
+ */
+export const sessionShipGateRunningDataSchema = z
+  .object({
+    status: z.literal('running'),
+    attempt: z.number().int().positive(),
+    step: shipGateStepSchema,
+    /** The command the step runs (`pnpm gate test`) — never with its environment. */
+    command: z.string(),
+    phase: shipGateRunningPhaseSchema.optional(),
+    /** The attempt's steps in order, as `ship.kit` planned them — what is still to come. */
+    plan: z.array(shipGateStepSchema).optional(),
+  })
+  .passthrough()
+export type SessionShipGateRunningData = z.infer<typeof sessionShipGateRunningDataSchema>
+
+/**
+ * A `ship.gate` row: a step's verdict (every row before the running signal) or its start. Tell
+ * them apart with {@link isShipGateRunning}.
+ */
+export const sessionShipGateDataSchema = z.union([
+  sessionShipGateResultDataSchema,
+  sessionShipGateRunningDataSchema,
+])
+export type SessionShipGateData = z.infer<typeof sessionShipGateDataSchema>
+
+/** True for a step's start row (`status: 'running'`), false for its verdict. */
+export function isShipGateRunning(data: SessionShipGateData): data is SessionShipGateRunningData {
+  return (data as { status?: unknown }).status === 'running' && !('passed' in data)
+}
+
 export const sessionShipPrDataSchema = z.object({
   number: z.number().int().positive(),
   url: z.string(),

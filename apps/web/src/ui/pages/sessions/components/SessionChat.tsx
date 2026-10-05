@@ -11,7 +11,9 @@
  *   row, not the route, so it can take a beat). A refused send takes the bubble back and puts the
  *   text back in the box.
  * - **A turn in progress is visible**: a "working" bubble with the dots at the end of the
- *   transcript, which also says "stopping" once a cancel is requested.
+ *   transcript — a ship's fix turn's too — with the time since its `turn.start` ticking, a quiet
+ *   "Waiting for Claude's first reply" once it has said nothing for 30 s (a resumed conversation
+ *   can take minutes to answer first), and "stopping" once a cancel is requested.
  * - **A message queued behind a running turn** is a muted bubble after it — "Runs when this turn
  *   ends" (or "as soon as Claude stops" after Send now) — with Withdraw, which puts the text back
  *   in the box. It is the row's `queuedMessage`, so it survives a reload; the local optimistic
@@ -54,11 +56,19 @@ import {
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDuration } from '@/ui/lib/format'
 import { useStickToBottom } from '@/ui/pages/agents/run/timeline/useStickToBottom'
-import { buildSessionChat, type ChatItem, type NoticeTone } from '../sessionChatModel'
+import {
+  buildSessionChat,
+  type ChatItem,
+  type NoticeTone,
+  type OpenTurn,
+  openTurn,
+} from '../sessionChatModel'
 import type { ComposerAttachments } from '../useComposerAttachments'
 import type { BudgetAccess } from './budgetAccess'
+import { FirstReplyWait } from './FirstReplyWait'
 import { agentName, SessionComposer, type SessionComposerHandle } from './SessionComposer'
 import { ToolBlock } from './ToolBlock'
+import { useElapsed } from './useElapsed'
 
 /** First-message ideas for an empty session — a click puts one in the box, never sends it. */
 export const STARTER_PROMPTS = [
@@ -75,6 +85,17 @@ const NOTICE_CLASS: Record<NoticeTone, string> = {
 }
 
 /** A message's images as thumbnails; each opens full size in a new tab. */
+/** The open turn's line under the working bubble: "Working · 2m 10s", and the quiet wait. */
+function WorkingClock({ turn, agent }: { turn: OpenTurn; agent: string }) {
+  const elapsed = useElapsed(turn.at)
+  return (
+    <div className="-mt-1 ml-2 text-xs text-muted" data-testid="turn-clock">
+      <p>Working · {elapsed < 1000 ? '0s' : formatDuration(elapsed)}</p>
+      <FirstReplyWait agent={agent} turn={turn} className="mt-0.5" />
+    </div>
+  )
+}
+
 function MessageImages({
   sessionId,
   attachments,
@@ -428,7 +449,10 @@ export function SessionChat({
     })
   }
 
-  const busy = turnInProgress(session)
+  // The turn under way — a ship's fix turn runs while the row says `shipping`, not `working`.
+  const turnOpen = useMemo(() => openTurn(events), [events])
+  const live = session.status === 'working' || session.status === 'shipping' ? turnOpen : null
+  const busy = turnInProgress(session) || live !== null
   const showWorking = busy || waiting !== null
   const lastId =
     queued !== null
@@ -491,15 +515,19 @@ export function SessionChat({
               {showWorking && (
                 <li data-testid="turn-working">
                   <ChatBubble speaker="assistant" content="" streaming />
-                  <p className="-mt-1 ml-2 text-xs text-muted">
-                    {session.cancelRequested
-                      ? 'Stopping…'
-                      : session.status === 'working'
-                        ? 'Working…'
-                        : session.status === 'booting' || session.status === 'requested'
-                          ? 'Waiting for the sandbox to start…'
-                          : 'Starting the turn…'}
-                  </p>
+                  {live && !session.cancelRequested ? (
+                    <WorkingClock turn={live} agent={agentName(session.runtime)} />
+                  ) : (
+                    <p className="-mt-1 ml-2 text-xs text-muted">
+                      {session.cancelRequested
+                        ? 'Stopping…'
+                        : session.status === 'working'
+                          ? 'Working…'
+                          : session.status === 'booting' || session.status === 'requested'
+                            ? 'Waiting for the sandbox to start…'
+                            : 'Starting the turn…'}
+                    </p>
+                  )}
                 </li>
               )}
               {queued !== null && (

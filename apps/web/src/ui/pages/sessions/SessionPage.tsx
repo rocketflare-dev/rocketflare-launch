@@ -35,7 +35,7 @@ import { PreviewFrame } from './components/PreviewFrame'
 import { SessionChat } from './components/SessionChat'
 import { SessionHeader } from './components/SessionHeader'
 import { ShipPanel, shipConfigNeeds } from './components/ShipPanel'
-import { bootSteps, latestPreviewChangeSeq, shipGates } from './sessionChatModel'
+import { bootSteps, latestPreviewChangeSeq, shipGateRunning, shipGates } from './sessionChatModel'
 import { useComposerAttachments } from './useComposerAttachments'
 
 export default function SessionPage() {
@@ -58,6 +58,7 @@ export default function SessionPage() {
   const events = stream.events
   const steps = useMemo(() => bootSteps(events), [events])
   const gates = useMemo(() => shipGates(events), [events])
+  const runningGate = useMemo(() => shipGateRunning(events), [events])
   // P5: the shared config ship's scan of the PR head found the app does not hold (names only).
   const configNeeds = useMemo(() => shipConfigNeeds(events), [events])
   const changeSeq = useMemo(
@@ -145,6 +146,7 @@ export default function SessionPage() {
             <ShipPanel
               session={session}
               gates={gates}
+              running={runningGate}
               events={events}
               configNeeds={configNeeds}
               appSlug={slug}

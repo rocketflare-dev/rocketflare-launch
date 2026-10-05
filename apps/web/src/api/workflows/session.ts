@@ -1093,6 +1093,8 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (!start.ok) return { passed: false, step: commands[0]?.step ?? 'test', stop: start.stop }
       startTree = start.tree
     }
+    // The attempt's plan, carried on each step's running row: what the panel lists as still to come.
+    const plan = commands.map(c => c.step)
     for (const [i, command] of commands.entries()) {
       // Issue #9: the last command reads the tree the green gate ran on.
       const last = i === commands.length - 1
@@ -1103,7 +1105,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         try {
           const db = await run(
             `ship.db#${tag}`,
-            shipping(s => shipDbStep(s, attempt, bootId, command.command)),
+            shipping(s => shipDbStep(s, attempt, bootId, command.command, plan)),
             BOOT_STEP
           )
           if (!db.ok) return { passed: false, step: command.step, stop: db.stop }
@@ -1113,7 +1115,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             shipping(s =>
               shipGateStep(
                 s,
-                { step: command.step, attempt, branch, command, last, startTree },
+                { step: command.step, attempt, branch, command, last, startTree, plan },
                 bootId
               )
             ),
@@ -1126,7 +1128,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         result = await run(
           name,
           shipping(s =>
-            shipGateStep(s, { step: command.step, attempt, command, last, startTree }, bootId)
+            shipGateStep(s, { step: command.step, attempt, command, last, startTree, plan }, bootId)
           ),
           config
         )

@@ -33,6 +33,7 @@ import {
 import { agentModelLabel } from '@launch/shared/launch-agents'
 import {
   type BootTimingPhase,
+  isShipGateRunning,
   type SessionAttachment,
   type SessionBootTimingData,
   type SessionEvent,
@@ -46,6 +47,7 @@ import {
   type SessionStatus,
   SHIP_CI_MAX_MINUTES,
   SHIP_GATE_STEP_LABELS,
+  type ShipGateRunningPhase,
   type ShipGateStep,
   type ShipLandingStage,
   type ShipReopenReason,
@@ -54,6 +56,7 @@ import {
   sessionBudgetReachedDataSchema,
   sessionShipCiDataSchema,
   sessionShipGateDataSchema,
+  sessionShipGateResultDataSchema,
   sessionShipMergedDataSchema,
   sessionShipPrDataSchema,
   sessionShipReleasedDataSchema,
@@ -205,7 +208,8 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
       }
     }
     case 'ship.gate': {
-      const parsed = sessionShipGateDataSchema.safeParse(event.data)
+      const parsed = sessionShipGateResultDataSchema.safeParse(event.data)
+      // A step's start (`status: 'running'`) is the ship panel's, not a line of the chat.
       if (!parsed.success) return null
       return {
         kind: 'notice',
@@ -542,13 +546,13 @@ export function shipGateAttempts(
     }))
 }
 
-/** Every ship-gate attempt, oldest first. Pure. */
+/** Every finished ship-gate step, oldest first (a step's running row is {@link shipGateRunning}'s). Pure. */
 export function shipGates(events: readonly SessionEvent[]): ShipGate[] {
   return [...events]
     .sort((a, b) => a.seq - b.seq)
     .flatMap(event => {
       if (event.type !== 'ship.gate') return []
-      const parsed = sessionShipGateDataSchema.safeParse(event.data)
+      const parsed = sessionShipGateResultDataSchema.safeParse(event.data)
       if (!parsed.success) return []
       return [
         {
@@ -564,6 +568,118 @@ export function shipGates(events: readonly SessionEvent[]): ShipGate[] {
         },
       ]
     })
+}
+
+/** The turn under way: its `turn.start`, and when it first said anything (null: nothing yet). */
+export interface OpenTurn {
+  turn: number
+  /** When the turn started — what the chat's elapsed time counts from. */
+  at: Date
+  /** The turn's first output (`text`, `tool.start`, `tool.end`), or null while it has none. */
+  firstOutputAt: Date | null
+}
+
+/** A turn that has said nothing this long reads as "waiting for its first reply". */
+export const FIRST_REPLY_QUIET_MS = 30_000
+
+const TURN_OUTPUT = new Set<SessionEvent['type']>(['text', 'tool.start', 'tool.end'])
+const TURN_DONE = new Set<SessionEvent['type']>(['turn.end', 'turn.failed', 'turn.interrupted'])
+
+/**
+ * The newest turn whose `turn.start` has no `turn.end` / `turn.failed` / `turn.interrupted` yet,
+ * or null — any turn, a ship's fix turn included (which runs while the session is `shipping`, so
+ * the row's status alone does not say a turn is running). Callers check the status too: a turn
+ * left open by a container that died is history once the session moved on. Pure.
+ */
+export function openTurn(events: readonly SessionEvent[]): OpenTurn | null {
+  let open: OpenTurn | null = null
+  let openSeq = -1
+  const done = new Set<number>()
+  const firstOutput = new Map<number, { seq: number; at: Date }>()
+  for (const event of events) {
+    if (event.type === 'turn.start' && event.seq > openSeq) {
+      openSeq = event.seq
+      open = { turn: event.turn, at: event.at, firstOutputAt: null }
+    } else if (TURN_DONE.has(event.type)) {
+      done.add(event.turn)
+    } else if (TURN_OUTPUT.has(event.type)) {
+      const seen = firstOutput.get(event.turn)
+      if (!seen || event.seq < seen.seq)
+        firstOutput.set(event.turn, { seq: event.seq, at: event.at })
+    }
+  }
+  if (!open || done.has(open.turn)) return null
+  const output = firstOutput.get(open.turn)
+  return { ...open, firstOutputAt: output && output.seq > openSeq ? output.at : null }
+}
+
+/** The gate step running now: its start row, not yet followed by its verdict. */
+export interface ShipGateRunning {
+  id: string
+  attempt: number
+  step: ShipGateStep
+  command: string
+  /** `database`: `ship.db` is making the test step's throwaway branch, before the command. */
+  phase?: ShipGateRunningPhase
+  /** The attempt's steps in order, when the server sent them. */
+  plan?: ShipGateStep[]
+  /** When the step began — what the elapsed time counts from. */
+  at: Date
+}
+
+/**
+ * The step running now, or null: the latest start row of the newest attempt whose step has no
+ * verdict yet. A start row of an older attempt (a ship whose container died under its tests) is
+ * history, never "running". Callers show it only while the session is `shipping`. Pure.
+ */
+export function shipGateRunning(events: readonly SessionEvent[]): ShipGateRunning | null {
+  let newest = 0
+  const finished = new Set<string>()
+  let running: ShipGateRunning | null = null
+  let runningSeq = -1
+  for (const event of events) {
+    if (event.type !== 'ship.gate') continue
+    const parsed = sessionShipGateDataSchema.safeParse(event.data)
+    if (!parsed.success) continue
+    const data = parsed.data
+    newest = Math.max(newest, data.attempt)
+    if (!isShipGateRunning(data)) {
+      finished.add(`${data.attempt}:${data.step ?? 'gate'}`)
+      continue
+    }
+    if (event.seq > runningSeq) {
+      runningSeq = event.seq
+      running = {
+        id: event.id,
+        attempt: data.attempt,
+        step: data.step,
+        command: data.command,
+        ...(data.phase ? { phase: data.phase } : {}),
+        ...(data.plan ? { plan: [...data.plan] } : {}),
+        at: event.at,
+      }
+    }
+  }
+  if (!running || running.attempt !== newest) return null
+  if (finished.has(`${running.attempt}:${running.step}`)) return null
+  // A step-less verdict was the whole gate.
+  if (finished.has(`${running.attempt}:gate`)) return null
+  return running
+}
+
+/** "Running tests" / "Preparing the test database" — the running step's headline. Pure. */
+export function shipGateRunningText(running: Pick<ShipGateRunning, 'step' | 'phase'>): string {
+  if (running.phase === 'database') return 'Preparing the test database'
+  return `Running ${SHIP_GATE_STEP_LABELS[running.step].toLowerCase()}`
+}
+
+/**
+ * The steps of the running attempt still to come, from its plan (none without one). Pure.
+ */
+export function shipGatePending(running: ShipGateRunning | null): ShipGateStep[] {
+  if (!running?.plan) return []
+  const at = running.plan.indexOf(running.step)
+  return at < 0 ? [] : running.plan.slice(at + 1)
 }
 
 // ---- landing: what follows the PR (issue #5) -----------------------------------------------

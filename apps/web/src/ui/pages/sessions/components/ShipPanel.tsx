@@ -10,6 +10,11 @@
  * 0.16.0: which Neon branch, under which driver), so a reader sees WHERE the tests ran. A gate's output tail sits behind a disclosure: it is the evidence, not the
  * headline.
  *
+ * What runs NOW is said too, so a long test run never looks stuck: the step's start row
+ * (`shipGateRunning`) is a spinner, its command and the time since it began, with the plan's later
+ * steps pending, until its verdict replaces it; between a red attempt and the next, the fix turn
+ * counts from its `turn.start` (`openTurn`) and, quiet for 30 s, says it waits for the first reply.
+ *
  * P5 (plan §1.14–§1.15): ship scans the PR head for declared config and reports the shared config
  * the app does not hold as a `ship.config_needs` row (`shipConfigNeeds`, the latest one). The panel
  * says so in one line, with a link to the app's Config page where it is requested — a session never
@@ -44,6 +49,7 @@ import {
   type SessionEvent,
   type SessionShipConfigNeedsData,
   SHIP_GATE_STEP_LABELS,
+  type ShipGateStep,
   sessionShipConfigNeedsDataSchema,
 } from '@launch/shared/launch-sessions'
 import { useMemo, useState } from 'react'
@@ -58,10 +64,18 @@ import {
   type LandingStepStatus,
   type LandingView,
   landingTimeline,
+  type OpenTurn,
+  openTurn,
   type ShipGate,
+  type ShipGateRunning,
   shipGateAttempts,
+  shipGatePending,
+  shipGateRunningText,
   versionLabel,
 } from '../sessionChatModel'
+import { FirstReplyWait } from './FirstReplyWait'
+import { agentName } from './SessionComposer'
+import { useElapsed } from './useElapsed'
 
 /** The fix message stays well under `SESSION_MESSAGE_MAX`: the turn also gets the failure itself. */
 const FIX_MESSAGE_MAX = 6000
@@ -113,6 +127,71 @@ export function gateDuration(ms: number | undefined): string | null {
 export function gateStepText(gate: Pick<ShipGate, 'passed' | 'step'>): string {
   if (!gate.step) return gate.passed ? 'Lint, typecheck and tests passed' : 'Something failed'
   return `${SHIP_GATE_STEP_LABELS[gate.step]} ${gate.passed ? 'passed' : 'failed'}`
+}
+
+/** The step running now: a spinner, what it is doing, its command and the time since it began. */
+function RunningStepRow({ running }: { running: ShipGateRunning }) {
+  const elapsed = useElapsed(running.at)
+  return (
+    <li data-gate-step={running.step} data-gate-running>
+      <div className="flex items-center gap-2">
+        <span className="loading loading-spinner loading-xs shrink-0 text-info" />
+        <span>{shipGateRunningText(running)}</span>
+        <span className="font-mono text-xs text-muted">{running.command}</span>
+        <span className="ml-auto shrink-0 text-xs text-muted" data-testid="gate-elapsed">
+          {gateDuration(elapsed)}
+        </span>
+      </div>
+    </li>
+  )
+}
+
+/** What a fix turn is fixing, by the step that went red: "the failing tests". Pure. */
+export function fixTarget(step: ShipGateStep | undefined): string {
+  switch (step) {
+    case 'lint':
+      return 'the lint errors'
+    case 'typecheck':
+      return 'the type errors'
+    case 'test':
+      return 'the failing tests'
+    default:
+      return 'it'
+  }
+}
+
+/** The fix turn between a red attempt and the next: who, what, and how long it has been at it. */
+function FixingRow({
+  agent,
+  step,
+  turn,
+}: {
+  agent: string
+  step: ShipGateStep | undefined
+  turn: OpenTurn | null
+}) {
+  return (
+    <li className="text-sm text-muted" data-testid="gate-fixing">
+      <div className="flex items-center gap-2">
+        <span className="loading loading-dots loading-xs" />
+        <span>
+          {agent} is fixing {fixTarget(step)}
+          {turn ? '' : '…'}
+        </span>
+        {turn && <TurnClock turn={turn} />}
+      </div>
+      {turn && <FirstReplyWait agent={agent} turn={turn} className="ml-6 mt-0.5" />}
+    </li>
+  )
+}
+
+function TurnClock({ turn }: { turn: OpenTurn }) {
+  const elapsed = useElapsed(turn.at)
+  return (
+    <span className="ml-auto shrink-0 text-xs" data-testid="fix-elapsed">
+      {gateDuration(elapsed)}
+    </span>
+  )
 }
 
 /** "3 of 4 checks passed · 1 running". Pure. */
@@ -355,12 +434,15 @@ function StallRetry({ session }: { session: Session }) {
 export function ShipPanel({
   session,
   gates,
+  running = null,
   events = [],
   configNeeds = null,
   appSlug,
 }: {
   session: Session
   gates: readonly ShipGate[]
+  /** The gate step running now (`shipGateRunning`) — shown only while the session ships. */
+  running?: ShipGateRunning | null
   /** The session's rows: the landing's steps are read from them. */
   events?: readonly SessionEvent[]
   configNeeds?: SessionShipConfigNeedsData | null
@@ -383,6 +465,17 @@ export function ShipPanel({
   const waiting =
     reviewing && approval.data?.status === 'pending' ? waitingOn(approval.data).who || null : null
   const heading = shipHeading(session, view)
+  const now = shipping ? running : null
+  const lastGate = gates.at(-1)
+  // The fix turn: the turn opened after the red verdict (an older open turn is not this one).
+  const turn = useMemo(() => openTurn(events), [events])
+  const fixTurn = turn && lastGate && turn.at >= lastGate.at ? turn : null
+  const pending = shipGatePending(now)
+  const attempts = shipGateAttempts(gates)
+  // The running step's attempt, before any of its steps has a verdict (attempt 2's lint).
+  if (now && !attempts.some(a => a.attempt === now.attempt)) {
+    attempts.push({ attempt: now.attempt, passed: false, steps: [] })
+  }
 
   return (
     <section className="surface-panel space-y-3" aria-labelledby="ship-panel-title">
@@ -413,13 +506,15 @@ export function ShipPanel({
         </p>
       )}
 
-      {gates.length > 0 && (
+      {attempts.length > 0 && (
         <ol className="space-y-2" aria-label="Checks before shipping">
-          {shipGateAttempts(gates).map(attempt => (
+          {attempts.map(attempt => (
             <li
               key={attempt.attempt}
               className="text-sm"
-              data-gate={attempt.passed ? 'passed' : 'failed'}
+              data-gate={
+                now?.attempt === attempt.attempt ? 'running' : attempt.passed ? 'passed' : 'failed'
+              }
             >
               <p className="text-xs font-medium uppercase tracking-wide text-muted">
                 Attempt {attempt.attempt}
@@ -460,16 +555,29 @@ export function ShipPanel({
                     )}
                   </li>
                 ))}
+                {now?.attempt === attempt.attempt && (
+                  <>
+                    <RunningStepRow running={now} />
+                    {pending.map(step => (
+                      <li
+                        key={step}
+                        className="flex items-center gap-2 text-muted"
+                        data-gate-step={step}
+                        data-gate-pending
+                      >
+                        <MinusCircleIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        {SHIP_GATE_STEP_LABELS[step]}
+                      </li>
+                    ))}
+                  </>
+                )}
               </ul>
             </li>
           ))}
-          {shipping && gates.at(-1)?.passed === false && (
-            <li className="flex items-center gap-2 text-sm text-muted">
-              <span className="loading loading-dots loading-xs" />
-              Claude is fixing it…
-            </li>
+          {shipping && !now && lastGate?.passed === false && (
+            <FixingRow agent={agentName(session.runtime)} step={lastGate.step} turn={fixTurn} />
           )}
-          {shipping && gates.at(-1)?.passed === true && gates.at(-1)?.step !== 'test' && (
+          {shipping && !now && gates.at(-1)?.passed === true && gates.at(-1)?.step !== 'test' && (
             <li className="flex items-center gap-2 text-sm text-muted">
               <span className="loading loading-dots loading-xs" />
               Running the next check…

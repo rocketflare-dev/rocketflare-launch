@@ -15,11 +15,14 @@
  */
 import { readFileSync } from 'node:fs'
 import {
+  isShipGateRunning,
   newSessionShortId,
   SHIP_GATE_ATTEMPTS,
   SHIP_GATE_STEP_LABELS,
   SHIP_GATE_STEPS,
   sessionShipGateDataSchema,
+  sessionShipGateResultDataSchema,
+  sessionShipGateRunningDataSchema,
 } from '@launch/shared/launch-sessions'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
@@ -391,5 +394,48 @@ describe('the output tail', () => {
     expect(tail.length).toBeLessThanOrEqual(GATE_OUTPUT_MAX_CHARS + 1)
     expect(tail).toContain('line 499')
     expect(tail).not.toContain('line 0 ')
+  })
+})
+
+describe('the ship.gate row: a verdict, or a step that has started', () => {
+  it('still reads every older verdict shape (step-less, per step, with target and tree)', () => {
+    for (const row of [
+      { passed: true, attempt: 1 },
+      { passed: false, attempt: 2, step: 'lint', command: 'pnpm gate lint', output: 'x' },
+      { passed: true, attempt: 3, step: 'test', durationMs: 5, target: 't', tree: 'a'.repeat(40) },
+    ]) {
+      const parsed = sessionShipGateDataSchema.parse(row)
+      expect(parsed).toMatchObject(row)
+      expect(isShipGateRunning(parsed)).toBe(false)
+    }
+  })
+
+  it('reads a running row, with its phase and plan, as running', () => {
+    const row = {
+      status: 'running',
+      attempt: 2,
+      step: 'test',
+      command: 'pnpm gate test',
+      phase: 'database',
+      plan: ['lint', 'typecheck', 'test'],
+    }
+    const parsed = sessionShipGateDataSchema.parse(row)
+    expect(parsed).toEqual(row)
+    expect(isShipGateRunning(parsed)).toBe(true)
+    expect(isShipGateRunning(sessionShipGateDataSchema.parse({ ...row, phase: undefined }))).toBe(
+      true
+    )
+  })
+
+  it('a running row carries no verdict, so a reader of verdicts alone skips it', () => {
+    const running = { status: 'running', attempt: 1, step: 'lint', command: 'pnpm gate lint' }
+    expect(sessionShipGateResultDataSchema.safeParse(running).success).toBe(false)
+    // …and a running row needs its step and command.
+    expect(
+      sessionShipGateRunningDataSchema.safeParse({ status: 'running', attempt: 1 }).success
+    ).toBe(false)
+    expect(sessionShipGateDataSchema.safeParse({ status: 'running', attempt: 1 }).success).toBe(
+      false
+    )
   })
 })

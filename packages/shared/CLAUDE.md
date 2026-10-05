@@ -116,7 +116,9 @@ default null), the six events `ship.ci` · `ship.review` · `ship.merged` · `sh
 `ship.staging` · `ship.reopened` (appended, each in `SESSION_EVENT_DATA`) and an optional `title` on
 `ship.pr`; `PR_CHECK_STATES` moved above the events (`ship.ci` carries one — a zod module reads
 its consts at evaluation, so order matters); issue #9 adds `gateTree` (nullable, default null) to
-the landing and the ship summary, an optional `tree` on `ship.gate`, `LAUNCH_GATE_CHECK`
+the landing and the ship summary, an optional `tree` on `ship.gate` (whose data is now a union:
+the verdict, `sessionShipGateResultDataSchema`, or a step's start, `status: 'running'` with no
+`passed` — `isShipGateRunning` tells them apart), `LAUNCH_GATE_CHECK`
 (`launch/gate`) / `launchGateExternalId` and `requiredCheckState` (the landing's verdict: `Gate`
 alone, `launch/gate` never CI — it imports `KIT_REQUIRED_CHECK` from `launch-apps`);
 `launch-approvals.ts` the built `session.merge`

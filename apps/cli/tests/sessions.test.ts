@@ -406,10 +406,14 @@ describe('sessions ship', () => {
           // An older server's one row for the whole gate, then issue #1's one row per step.
           log.push(event(2, 'ship.gate', { passed: true, attempt: 1 }, 2))
           log.push(event(3, 'ship.gate', { step: 'test', passed: false, attempt: 2 }, 2))
-          log.push(event(4, 'ship.gate', { step: 'test', passed: true, attempt: 3 }, 2))
+          // A step's start rows: said as it begins (the database, then the command).
+          const start = { status: 'running', attempt: 3, step: 'test', command: 'pnpm gate test' }
+          log.push(event(4, 'ship.gate', { ...start, phase: 'database' }, 2))
+          log.push(event(5, 'ship.gate', start, 2))
+          log.push(event(6, 'ship.gate', { step: 'test', passed: true, attempt: 3 }, 2))
           return jsonResponse({ session: session({ status: 'shipping' }) })
         }
-        log.push(event(5, 'ship.pr', { number: 12, url: prUrl }, 2))
+        log.push(event(7, 'ship.pr', { number: 12, url: prUrl }, 2))
         return jsonResponse({ session: session({ status: 'shipped', prNumber: 12, prUrl }) })
       },
       [`/api/sessions/${ID}/pr`]: () => {
@@ -426,7 +430,11 @@ describe('sessions ship', () => {
     const text = out.content()
     expect(text).toContain('gate passed (attempt 1)')
     expect(text).toContain('tests failed (attempt 2)')
+    expect(text).toContain('preparing the test database (attempt 3)')
+    expect(text).toContain('running tests (attempt 3): pnpm gate test')
     expect(text).toContain('tests passed (attempt 3)')
+    // A start row is never read as a verdict.
+    expect(text).not.toContain('tests failed (attempt 3)')
     expect(text).toContain(`PR #12 ${prUrl}`)
     expect(text).toContain('CI passed')
     expect(prReads).toBe(2)
