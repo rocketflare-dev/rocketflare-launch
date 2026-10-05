@@ -44,7 +44,9 @@
  * - `POST …/git/refs {ref: 'refs/tags/X.Y.Z', sha}` — the tag that starts `deploy.yml` staging
  *   (`contents: write`; 422 "Reference already exists" for a second one).
  * - `POST …/releases {tag_name}` — publishing the Release that starts production, and `GET
- *   …/releases/tags/{tag}` (null on 404), which is what makes publishing idempotent.
+ *   …/releases/tags/{tag}` (null on 404), which is what makes publishing idempotent. Issue #12
+ *   adds `GET …/releases` (drafts included) and `PATCH …/releases/{id}`: publishing the DRAFT the
+ *   kit's staging job attached its build-once bundle to, and writing Live's version into the notes.
  * - `GET …/compare/{base}...{head}` — the commits a release adds — and `GET …/commits/{sha}/pulls`,
  *   the pull requests a commit belongs to (a merge commit → the PR it merged; `merged_at`,
  *   `merge_commit_sha` and `user.login` on each).
@@ -960,6 +962,8 @@ export interface GitHubRelease {
   html_url: string
   target_commitish?: string
   published_at: string | null
+  /** Issue #12: the release's assets — the kit's `launch-bundle-<tag>.tgz` on a build-once tag. */
+  assets?: { id: number; name: string }[]
 }
 
 /**
@@ -1016,6 +1020,42 @@ export async function getReleaseByTag(
   }
   if (!res.ok) throw await failure(res, path)
   return (await res.json()) as GitHubRelease
+}
+
+/**
+ * Issue #12: the repository's releases, newest first — the first 100, drafts included (a token with
+ * `contents: write` sees them; `GET …/releases/tags/{tag}` answers 404 for a draft).
+ */
+export function listReleases(
+  token: string,
+  owner: string,
+  repo: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubRelease[]> {
+  return githubJson<GitHubRelease[]>(
+    `${repoPath(owner, repo)}/releases?per_page=100`,
+    { token },
+    opts
+  )
+}
+
+/**
+ * Issue #12: `PATCH …/releases/{id}` — publish a draft (`draft: false`, which fires `release:
+ * published` exactly once) or rewrite a release's notes. Never moves `tag_name`.
+ */
+export function updateRelease(
+  token: string,
+  owner: string,
+  repo: string,
+  id: number,
+  input: { draft?: boolean; name?: string; body?: string },
+  opts: GitHubOptions = {}
+): Promise<GitHubRelease> {
+  return githubJson<GitHubRelease>(
+    `${repoPath(owner, repo)}/releases/${id}`,
+    { method: 'PATCH', token, body: input },
+    opts
+  )
 }
 
 export interface GitHubCompareCommit {

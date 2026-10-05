@@ -95,6 +95,9 @@
  *   pulls, PRs with `author`/`merged`/`mergedAt`/`mergeSha`, and the hooks `openPull(owner, repo,
  *   {head, title, author?})`, `merge(owner, repo, number)` (→ the merge commit's sha),
  *   `closePull(owner, repo, number)` and `publish(owner, repo, tag)` (a Release published by hand).
+ *   Issue #12: `draft(owner, repo, tag, { bundle? })` (the kit's staging DRAFT carrying
+ *   `launch-bundle-<tag>.tgz`; `releaseFor` sees published releases only), `GET …/releases` and
+ *   `PATCH …/releases/{id}` (recorded in `releaseUpdates`; `draft: false` publishes → `onRelease`).
  *   The kit pin: `seedRepo(owner, repo, files?)` (a repo in ANY org — the public kit), `tag(owner,
  *   repo, tag, { ref?, annotated? })` (an annotated tag answers `type: 'tag'` and dereferences
  *   through `GET …/git/tags/{sha}`), `GET …/tags`, and `GET …/commits/{ref}` (branch, tag, full or

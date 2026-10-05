@@ -178,6 +178,17 @@ export default function ReleasePage() {
             .
           </p>
         )}
+        {release?.artifact?.matches === true && (
+          <p className="text-sm text-secondary" data-testid="artifact-match">
+            Live runs the build Staging ran.
+          </p>
+        )}
+        {release?.artifact?.matches === false && (
+          <p className="text-sm text-warning" data-testid="artifact-mismatch">
+            Live does not run the build Staging ran: production uploaded different files (a rebuild
+            from the tag, not the staging release bundle).
+          </p>
+        )}
       </div>
 
       <section aria-labelledby="release-deploys-title">

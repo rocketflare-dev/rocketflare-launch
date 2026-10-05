@@ -64,7 +64,8 @@ export function base64Size(b64: string): number {
   return Math.floor((b64.length * 3) / 4) - padding
 }
 
-function decodeBase64(b64: string, what: string): Uint8Array {
+/** `b64` decoded; a 400 `deploy_upload_invalid` naming `what` when it is not base64. */
+export function decodeBase64(b64: string, what: string): Uint8Array<ArrayBuffer> {
   try {
     const binary = atob(b64)
     const bytes = new Uint8Array(binary.length)

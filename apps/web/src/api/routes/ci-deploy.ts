@@ -92,6 +92,7 @@ async function proveJob(c: AppContext): Promise<GatewayContext> {
       logger: loggerFor(cfg, { component: 'approvals' }),
       realtime: { defer: makeDefer(c), env: c.env },
     },
+    defer: makeDefer(c),
   }
 }
 

@@ -554,6 +554,26 @@ paths; with `DEPLOYER_URL` unset the migrate / `wrangler deploy` steps run exact
 contract a deployer implements — endpoints, payload, OIDC claims to check, what `migratorUrl` must be
 able to do — is **`docs/DEPLOYER.md`** (protocol v1).
 
+### Build once: how Launch promotes an app it deploys (issue #12)
+
+For the apps Launch deploys (it IS their deployer, `/ci/deploy`), a build-once kit's staging run
+packs `launch-bundle-<tag>.tgz` and attaches it to a **draft** GitHub Release for the tag; the
+production job (`release: published`, or a rollback dispatch at the tag) deploys the published
+release's asset instead of rebuilding, and rebuilds when there is none. Promote's approval
+publishes **that draft** — `GET …/releases/tags/{tag}` 200 → nothing to do; else the tag's draft
+from `GET …/releases` (the one carrying the bundle first) gets `PATCH { draft: false, name, body }`;
+no draft (an older kit) → `POST …/releases` and production rebuilds. The notes carry the release
+commit's tree, each session PR's `launch/gate` check, Staging's Worker version id and artifact
+digest, and Live's Worker version id (written by a second PATCH once production activates).
+
+Every upload records Launch's artifact digest (`deploy_tickets.artifact_digest`, the kit's
+`bundleSha256` algorithm over the uploaded modules and assets); a production upload that differs
+from the staging deploy of the same version is logged and recorded (`deploy.uploaded`
+`digestMismatch`, the release page's "Live does not run the build Staging ran"), and refused (409
+`deploy_digest_mismatch`) only when the job declares `source: "bundle"` in its upload — an optional
+field, like `digest`, that no kit sends yet. Launch's own `deploy.yml` predates build once and
+always rebuilds.
+
 ### Plugins in CI (D31)
 
 Launch commits its installed plugins, so the ordinary gate already runs each one's own tests

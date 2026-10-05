@@ -66,11 +66,7 @@ import { cancelRelease } from '../services/launch/releases/cancel'
 import { releaseChain } from '../services/launch/releases/chain'
 import { withReleaseClaim } from '../services/launch/releases/claim'
 import { releaseCompare } from '../services/launch/releases/compare'
-import {
-  releaseViews,
-  stageEnvironments,
-  toReleaseView,
-} from '../services/launch/releases/failed-stage'
+import { releaseViews } from '../services/launch/releases/failed-stage'
 import { promoteRelease } from '../services/launch/releases/promote'
 import { appPromotion } from '../services/launch/releases/promotion'
 import { createRelease, getRelease, listReleases } from '../services/launch/releases/release'
@@ -87,7 +83,8 @@ export const appReleasesRouter = createRouter()
 
 /** A row as the wire carries it, its `failedStage` stamped. */
 async function toRelease(db: Database, row: AppReleaseRow): Promise<Release> {
-  return toReleaseView(row, await stageEnvironments(db, row.tenantId, row.appId))
+  const [view] = await releaseViews(db, row.tenantId, row.appId, [row])
+  return view as Release
 }
 
 /** The app, for any member who may read it. */
