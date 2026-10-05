@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`pnpm plugin` keeps the host's dependencies in step with what a plugin declares** (kit 0.17.1,
+  ported). `plugin add` writes the DECLARED range into `package.json` (not pnpm's `^<resolved>`)
+  and re-keys the lockfile, and skips a dependency the host already holds inside that range;
+  `plugin check` accepts a host range inside the declared one (`^2.3.0` for `^2.2.4`, an operator's
+  `2.2.5`) and still fails a wider or disjoint one. `plugin upgrade` now ends its plan with a
+  **Dependencies** block and, on `--apply`, installs what the release adds or re-ranges and removes
+  what it drops (kept when another plugin declares it or the host pins a range of its own); a
+  range another installed plugin cannot use is refused, exit 6, nothing written.
+  `plugin upgrade --json` prints the plan as one document.
+
 - **Kit upgrade sessions can push CI workflow changes; ordinary sessions say why they can't.** A
   kit upgrade (0.17.0 edits `.github/workflows/ci.yml` and `deploy.yml`) failed at its save with
   GitHub's raw "refusing to allow a GitHub App to create or update workflow … without workflows
