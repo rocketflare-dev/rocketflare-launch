@@ -177,15 +177,22 @@ export interface OpenPullRequestInput {
   body: string
 }
 
+/** What {@link RepoHostPort.gitAuth} may widen beyond the default push scope. */
+export interface GitAuthOptions {
+  /** Also `workflows: write` — a kit upgrade session's token (it edits the app's CI workflows). */
+  workflows?: boolean
+}
+
 export interface RepoHostPort {
   /** Where an intercepted git smart-HTTP request really goes: `https://github.com` or `SESSION_LOCAL_GIT_URL`. */
   gitUpstream(repo: RepoRef): string
   /**
    * A token for the one repo (`contents: write`, `pull_requests: write`, 1 hour) — or null when the
-   * host needs none (local). The caller seals it onto `github_token_sealed` and re-mints it when
-   * under 10 minutes remain.
+   * host needs none (local). `workflows: true` adds `workflows: write` (GitHub refuses a push that
+   * touches `.github/workflows/**` without it) — asked for by a kit upgrade session only. The
+   * caller seals it onto `github_token_sealed` and re-mints it when under 10 minutes remain.
    */
-  gitAuth(repo: RepoRef): Promise<GitAuth | null>
+  gitAuth(repo: RepoRef, opts?: GitAuthOptions): Promise<GitAuth | null>
   /** Open (or find the open) PR for `head`. Local: records `local://…` and a synthetic number. */
   openPullRequest(
     repo: RepoRef,

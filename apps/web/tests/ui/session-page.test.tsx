@@ -1108,6 +1108,39 @@ describe('SessionPage', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('a kit upgrade session has no composer: what Launch is doing, and what to do if it stops', async () => {
+    renderPage({
+      [BASE]: detailOf({
+        kind: 'upgrade',
+        status: 'working',
+        pendingMessage: true,
+        queuedMessage: 'Upgrade the kit',
+      }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/preview-grant`]: () => ({ ...grantRoute(), screenshots: true }),
+    })
+    const note = await screen.findByTestId('upgrade-session-note')
+    expect(note).toHaveTextContent(
+      "Launch is running this kit upgrade on its own; it can't take messages because it can change the app's CI workflows."
+    )
+    expect(note).toHaveTextContent(/If it stops: read the session's last answer, then ship it/)
+    expect(note).toHaveTextContent(/or end it and finish the upgrade on its branch outside Launch/)
+    expect(screen.queryByLabelText('Message the coding agent')).not.toBeInTheDocument()
+    // Launch's own waiting prompt cannot be taken back, and no screenshot goes into a message.
+    const queued = await screen.findByTestId('queued-message')
+    expect(within(queued).queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTitle('App preview')).toBeInTheDocument())
+    expect(
+      screen.queryByRole('button', { name: 'Screenshot the preview into the next message' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('an ordinary session keeps its composer and no upgrade note', async () => {
+    renderPage({ [BASE]: detailOf(), [`${BASE}/events`]: eventsRoute(DONE_TURN) })
+    expect(await screen.findByLabelText('Message the coding agent')).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-session-note')).not.toBeInTheDocument()
+  })
+
   it('cancels the running turn with Stop', async () => {
     const { fetchMock } = renderPage({
       [BASE]: detailOf({ status: 'working' }),

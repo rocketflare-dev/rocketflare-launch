@@ -32,6 +32,8 @@ export function upgradePrompt(input: UpgradePromptInput): string {
     '',
     `Run \`/rf-upgrade --to ${to}\` as ONE apply straight to ${to} (\`pnpm kit:upgrade --to ${to} --apply\`), not one release at a time, then follow the "How to apply" steps of every porting note in the range, and finish with \`pnpm exec biome format --write .rocketflare.json\` (a copy's upgrade script before 0.16.3 stamps that file in a layout its own lint rejects). Leave every change in the working tree: do not \`git add\`, \`git commit\`, push or open a pull request. This session is isolated; when you finish, Launch runs the gate, commits, pushes and opens the pull request itself.`,
     '',
+    `The porting notes are at \`.upgrade/work/${to}/notes/X.Y.Z.md\`, one per release in the range (also in \`.upgrade/work/${to}/plan.md\`); the app's \`docs/upgrades/\` gets a new note only after \`--apply\`, so read them there even when an older copy's upgrade script prints a \`docs/upgrades/\` path that does not exist yet.`,
+    '',
     'Rules for this unattended run, on top of the skill’s own (they replace its commit step):',
     '- Never pass `--force`, and never `--apply-deletes`. Never apply one of the kit’s deletions.',
     '- Never recreate a file under a surface this app removed (`skipped-surface-absent`).',

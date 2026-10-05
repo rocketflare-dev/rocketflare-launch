@@ -45,7 +45,9 @@ import { healthStatusSchema, KIT_REQUIRED_CHECK, sessionShipModeSchema } from '.
 /**
  * `session` is a person's chat; `prepare` is the one-off run that migrates and seeds `dev`;
  * `upgrade` (P6 6c) is a coding session started to upgrade the app's kit — a `session` in every
- * respect, plus its `upgrade_id` and the first turn's auto-ship. Append-only (a pg enum).
+ * respect, plus its `upgrade_id`, the first turn's auto-ship, a push token that may change
+ * `.github/workflows/**`, and therefore NO human input ({@link sessionTakesMessages}).
+ * Append-only (a pg enum).
  */
 export const SESSION_KINDS = ['session', 'prepare', 'upgrade'] as const
 export const sessionKindSchema = z.enum(SESSION_KINDS)
@@ -57,6 +59,24 @@ export type SessionKind = z.infer<typeof sessionKindSchema>
  * session's branch select by.
  */
 export const CODING_SESSION_KINDS = ['session', 'upgrade'] as const satisfies readonly SessionKind[]
+
+/**
+ * Whether a person may steer the session — send a message, attach an image, take a screenshot
+ * for one, withdraw what waits. Never a kit upgrade's: its push token carries `workflows: write`
+ * (it edits the app's CI workflows), so nobody may put words in front of it. Launch's own turns —
+ * the upgrade prompt, a ship's fix turns — still run. Every refusing route answers 403
+ * {@link UPGRADE_SESSION_READ_ONLY_CODE}.
+ */
+export function sessionTakesMessages(session: { kind: SessionKind }): boolean {
+  return session.kind !== 'upgrade'
+}
+
+/** The 403 code of a person's input to a kit upgrade session ({@link sessionTakesMessages}). */
+export const UPGRADE_SESSION_READ_ONLY_CODE = 'upgrade_session_read_only'
+
+/** That 403's message — what the CLI prints and the session page says instead of a composer. */
+export const UPGRADE_SESSION_READ_ONLY_MESSAGE =
+  "Launch is running this kit upgrade on its own; it can't take messages because it can change the app's CI workflows."
 
 /**
  * Mirrors the `session_status` pg enum — append-only. The lifecycle (plan §1.2, §1.8):

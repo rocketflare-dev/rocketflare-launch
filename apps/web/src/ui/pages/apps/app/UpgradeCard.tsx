@@ -18,6 +18,7 @@ import {
   type AppUpgrade,
   type KitStatus,
   requiresUpgradeLabel,
+  UPGRADE_STOPPED_NEXT_STEP,
 } from '@launch/shared/launch-upgrades'
 import { Link, useNavigate } from 'react-router-dom'
 import { showToast } from '@/ui/components/shared'
@@ -44,7 +45,7 @@ export function openUpgradeSentence(upgrade: AppUpgrade): string {
     case 'pr_open':
       return `The upgrade ${to} is in a pull request. Merge it and release to record the new kit.`
     case 'needs_attention':
-      return `The upgrade ${to} needs its owner. Finish it in the session, then ship it.`
+      return `The upgrade ${to} needs its owner. ${UPGRADE_STOPPED_NEXT_STEP}`
     default:
       return `Upgrade ${to}: ${APP_UPGRADE_STATUS_LABELS[upgrade.status].toLowerCase()}.`
   }

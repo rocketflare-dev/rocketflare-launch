@@ -22,6 +22,7 @@ import type {
   CreateCheckRunResult,
   FailedCheckLog,
   GitAuth,
+  GitAuthOptions,
   MergePullRequestResult,
   MergeShipPullRequestInput,
   OpenPullRequestInput,
@@ -53,7 +54,7 @@ export class LocalRepoHost implements RepoHostPort {
     return (this.cfg.SESSION_LOCAL_GIT_URL ?? 'http://localhost:9420').replace(/\/+$/, '')
   }
 
-  async gitAuth(_repo: RepoRef): Promise<GitAuth | null> {
+  async gitAuth(_repo: RepoRef, _opts?: GitAuthOptions): Promise<GitAuth | null> {
     return null
   }
 

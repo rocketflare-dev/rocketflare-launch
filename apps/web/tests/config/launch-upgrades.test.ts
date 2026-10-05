@@ -119,6 +119,10 @@ describe('the upgrade prompt', () => {
     expect(text).toContain('pnpm exec biome format --write .rocketflare.json')
     expect(text).toMatch(/do not `git add`, `git commit`, push or open a pull request/)
     expect(text).not.toMatch(/one commit per release/)
+    // Where the porting notes are before the apply (an older script prints the kit's path).
+    expect(text).toContain('`.upgrade/work/0.16.1/notes/X.Y.Z.md`')
+    expect(text).toContain('`.upgrade/work/0.16.1/plan.md`')
+    expect(text).toMatch(/`docs\/upgrades\/` gets a new note only after `--apply`/)
     expect(upgradeTitle({ from: '0.16.0', to: '0.16.1' })).toBe('Upgrade kit 0.16.0 → 0.16.1')
     expect(upgradeTitle({ from: null, to: '0.16.1' })).toBe('Upgrade kit to 0.16.1')
   })

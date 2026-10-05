@@ -32,6 +32,9 @@
  * - §18.22: the sender is recorded (`pending_message_user_id`) so the turn's `user.message` names
  *   who wrote it; a session on a personal account takes messages only from its owner
  *   (`assertCredentialOwner`, 409 `session_credential_owner_only`).
+ * - A kit upgrade session takes no PERSON's input at all (`assertTakesMessages`, 403
+ *   `upgrade_session_read_only`): its push token may change the app's CI workflows. `requestTurn`
+ *   refuses a message with a sender; the attachment, screenshot and withdraw routes refuse too.
  */
 import {
   AGENT_RUNTIME_LABELS,
@@ -44,6 +47,9 @@ import {
   type Session,
   type SessionAttachment,
   type SessionStatus,
+  sessionTakesMessages,
+  UPGRADE_SESSION_READ_ONLY_CODE,
+  UPGRADE_SESSION_READ_ONLY_MESSAGE,
 } from '@launch/shared/launch-sessions'
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
@@ -52,6 +58,7 @@ import type { AppBindings } from '../../types'
 import {
   BadRequestError,
   ConflictError,
+  ForbiddenError,
   NotFoundError,
   ServiceUnavailableError,
 } from '../../utils/core/errors'
@@ -133,6 +140,18 @@ export function assertCredentialOwner(
 }
 
 /**
+ * A person's input — a message, an image, a screenshot for one, withdrawing what waits — is
+ * refused on a kit upgrade session (`sessionTakesMessages`): 403 `upgrade_session_read_only`.
+ * Its token may push `.github/workflows/**`, so nobody may steer it. Launch's own turns (the
+ * upgrade prompt, a ship's fix turns) never come through here. Checked before anything else.
+ */
+export function assertTakesMessages(row: Pick<SessionRow, 'kind'>): void {
+  if (!sessionTakesMessages(row)) {
+    throw new ForbiddenError(UPGRADE_SESSION_READ_ONLY_MESSAGE, UPGRADE_SESSION_READ_ONLY_CODE)
+  }
+}
+
+/**
  * The model a message asked for, as `pending_model`: null when it asked for none or for the one
  * the session already runs; 400 `model_not_offered` when the runtime does not offer it or it has
  * no price (a session's budget is money, so an unpriced model could never be held to one).
@@ -172,7 +191,10 @@ export async function requestTurn(
   /** Who sent it (§18.22): recorded for the turn's `user.message`, and checked on a `user` session. */
   userId: string | null = null
 ): Promise<SessionRow> {
-  if (userId !== null) assertCredentialOwner(row, userId)
+  if (userId !== null) {
+    assertTakesMessages(row)
+    assertCredentialOwner(row, userId)
+  }
   const pendingModel = pendingModelFor(row, request.model)
   if (!(TURN_ACCEPTING_STATUSES as readonly SessionStatus[]).includes(row.status)) {
     throw turnConflict(row)

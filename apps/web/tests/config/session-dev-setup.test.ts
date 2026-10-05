@@ -19,7 +19,12 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEV_SETUP_GUARD_SCRIPT, parseDevSetupDrift } from '@/api/services/sessions/checkpoint'
+import {
+  DEV_SETUP_GUARD_SCRIPT,
+  parseDevSetupDrift,
+  parseWorkflowChanges,
+  workflowsGuardScript,
+} from '@/api/services/sessions/checkpoint'
 import {
   BOOTSTRAP_KEEP_ENV,
   DEV_SETUP_HEAL_SCRIPT,
@@ -383,5 +388,56 @@ describe('the session steps, against a FakeSandbox', () => {
     const err = await startDevServer(broken, dev).catch(e => e)
     expect(err.message).toContain('no apps/web/wrangler.toml')
     expect(broken.commands.some(c => c.includes('pnpm dev'))).toBe(false)
+  })
+})
+
+describe('the checkpoint’s workflows guard (an ordinary session)', () => {
+  const CI = '.github/workflows/ci.yml'
+  const guard = (dir: string, since: string | null) =>
+    parseWorkflowChanges(bash(dir, workflowsGuardScript(since)))
+
+  it('names a staged workflow change, and stays quiet for ordinary work', () => {
+    const r = repo({ [CI]: 'name: CI\n' })
+    r.put('apps/web/src/a.ts', 'export {}\n')
+    r.git('add', '-A')
+    expect(guard(r.dir, r.base)).toEqual([])
+    r.put(CI, 'name: CI\non: push\n')
+    r.put('.github/workflows/deploy.yml', 'name: Deploy\n')
+    r.git('add', '-A')
+    expect(guard(r.dir, r.base)).toEqual([
+      '.github/workflows/ci.yml',
+      '.github/workflows/deploy.yml',
+    ])
+    // Unstaged only: not what this save would carry.
+    r.git('reset', '-q')
+    expect(guard(r.dir, r.base)).toEqual([])
+  })
+
+  it('names a workflow change in a commit not yet pushed — even one a later commit reverted', () => {
+    const r = repo({ [CI]: 'name: CI\n' })
+    r.put(CI, 'name: CI changed\n')
+    r.commit('edit ci')
+    r.put(CI, 'name: CI\n')
+    const reverted = r.commit('revert ci')
+    // GitHub checks each pushed commit, so the round trip is still refused.
+    expect(guard(r.dir, r.base)).toEqual([CI])
+    // Already pushed (the row's head): nothing new.
+    expect(guard(r.dir, reverted)).toEqual([])
+  })
+
+  it('names a merge that brings a workflow change in; an unknown base checks the staged change alone', () => {
+    const r = repo({ [CI]: 'name: CI\n' })
+    const main = r.git('rev-parse', '--abbrev-ref', 'HEAD')
+    r.git('checkout', '-qb', 'session/x')
+    r.put('apps/web/src/a.ts', 'export {}\n')
+    const head = r.commit('work')
+    r.git('checkout', '-q', main)
+    r.put(CI, 'name: CI upstream\n')
+    r.commit('upstream ci')
+    r.git('checkout', '-q', 'session/x')
+    r.git('-c', 'user.email=t@t', 'merge', '-q', '--no-edit', main)
+    expect(guard(r.dir, head)).toEqual([CI])
+    expect(guard(r.dir, 'f'.repeat(40))).toEqual([])
+    expect(guard(r.dir, null)).toEqual([])
   })
 })

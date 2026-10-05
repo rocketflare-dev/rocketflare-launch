@@ -3,7 +3,8 @@
  *
  * - `gitUpstream` is `https://github.com`.
  * - `gitAuth` mints an installation token scoped to the ONE repo (`contents: write`,
- *   `pull_requests: write`, 1 hour) from the sealed `github_app` credential
+ *   `pull_requests: write`, plus `workflows: write` when asked — a kit upgrade session — 1 hour)
+ *   from the sealed `github_app` credential
  *   (`loadImportGitHub(db, cfg)`, `services/launch/import.ts`). The egress handler seals it onto
  *   the session row and re-mints under 10 minutes left; nothing else ever sees it.
  * - `openPullRequest` is `createPullRequest`; a 422 (one is already open from that head — a retried
@@ -51,6 +52,7 @@ import type {
   CreateCheckRunResult,
   FailedCheckLog,
   GitAuth,
+  GitAuthOptions,
   MergePullRequestResult,
   MergeShipPullRequestInput,
   OpenPullRequestInput,
@@ -172,8 +174,12 @@ export class GitHubRepoHost implements RepoHostPort {
     return 'https://github.com'
   }
 
-  async gitAuth(repo: RepoRef): Promise<GitAuth | null> {
-    const minted = await this.token(repo, { contents: 'write', pull_requests: 'write' })
+  async gitAuth(repo: RepoRef, opts: GitAuthOptions = {}): Promise<GitAuth | null> {
+    const minted = await this.token(repo, {
+      contents: 'write',
+      pull_requests: 'write',
+      ...(opts.workflows ? { workflows: 'write' as const } : {}),
+    })
     return { token: minted.token, expiresAt: new Date(minted.expires_at) }
   }
 

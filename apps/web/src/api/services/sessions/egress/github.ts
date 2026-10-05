@@ -115,17 +115,55 @@ export interface SessionGitToken extends GitToken {
   expiresAt: Date
 }
 
-/** A sealed token worth using: it has more than {@link TOKEN_REMINT_BEFORE_MS} left. */
+/**
+ * The scope marker sealed in front of a token minted with `workflows: write` (a kit upgrade
+ * session's). An ordinary session's token is sealed bare, as before; a token sealed before the
+ * marker existed therefore reads as "no workflows scope", which an upgrade session re-mints.
+ * Installation tokens are `ghs_…`, so the prefix can never be part of one.
+ */
+const WORKFLOWS_SCOPE_MARK = 'workflows:'
+
+/** Seal `token` with the scope it was minted with (see {@link WORKFLOWS_SCOPE_MARK}). */
+export function sealGitToken(
+  cfg: AppConfig,
+  token: string,
+  workflows: boolean
+): Promise<string | null> {
+  return encryptToken(cfg, workflows ? `${WORKFLOWS_SCOPE_MARK}${token}` : token)
+}
+
+/** The sealed token and whether it carries `workflows: write`, or null when it does not open. */
+async function unsealGitToken(
+  cfg: AppConfig,
+  sealed: string
+): Promise<{ token: string; workflows: boolean } | null> {
+  const plain = await decryptToken(cfg, sealed)
+  if (!plain) return null
+  return plain.startsWith(WORKFLOWS_SCOPE_MARK)
+    ? { token: plain.slice(WORKFLOWS_SCOPE_MARK.length), workflows: true }
+    : { token: plain, workflows: false }
+}
+
+/**
+ * A sealed token worth using: it has more than {@link TOKEN_REMINT_BEFORE_MS} left and, when the
+ * session needs `workflows: write` (a kit upgrade), it was minted with it — a token sealed
+ * without it (before the scope existed) is re-minted rather than reused for its remaining hour.
+ */
 async function usableSealed(
   cfg: AppConfig,
   row: Pick<SessionRow, 'githubTokenSealed' | 'githubTokenExpiresAt'>,
-  now: Date
+  now: Date,
+  workflows: boolean
 ): Promise<SessionGitToken | null> {
   const expiresAt = row.githubTokenExpiresAt?.getTime() ?? 0
   if (!row.githubTokenSealed || expiresAt - now.getTime() <= TOKEN_REMINT_BEFORE_MS) return null
-  const token = await decryptToken(cfg, row.githubTokenSealed)
-  if (!token) return null
-  return { token, fresh: isFreshToken(expiresAt, now.getTime()), expiresAt: new Date(expiresAt) }
+  const sealed = await unsealGitToken(cfg, row.githubTokenSealed)
+  if (!sealed || (workflows && !sealed.workflows)) return null
+  return {
+    token: sealed.token,
+    fresh: isFreshToken(expiresAt, now.getTime()),
+    expiresAt: new Date(expiresAt),
+  }
 }
 
 /**
@@ -134,6 +172,10 @@ async function usableSealed(
  * token the winner stored (see the header). Null when the host takes no credential. Also what the
  * `host` egress mode puts in a remote sandbox's egress grant (`egress/host.ts`): one token per
  * session, whichever path asks.
+ *
+ * A kit upgrade session (`kind = 'upgrade'`) asks for `workflows: write` too — a kit upgrade edits
+ * `.github/workflows/**`, which GitHub refuses to take from a token without it. An ordinary
+ * session never gets it; its checkpoint refuses such a change before pushing (`checkpoint.ts`).
  */
 export async function sessionGitToken(
   db: Database,
@@ -143,15 +185,16 @@ export async function sessionGitToken(
   repo: RepoRef,
   now: Date
 ): Promise<SessionGitToken | null> {
-  const sealed = await usableSealed(cfg, session, now)
+  const workflows = session.kind === 'upgrade'
+  const sealed = await usableSealed(cfg, session, now, workflows)
   if (sealed) return sealed
-  const auth = await host.gitAuth(repo)
+  const auth = await host.gitAuth(repo, { workflows })
   if (!auth) return null
   const readExpiry = session.githubTokenExpiresAt
   const landed = await db
     .update(sessions)
     .set({
-      githubTokenSealed: await encryptToken(cfg, auth.token),
+      githubTokenSealed: await sealGitToken(cfg, auth.token, workflows),
       githubTokenExpiresAt: auth.expiresAt,
     })
     .where(
@@ -174,7 +217,7 @@ export async function sessionGitToken(
       .from(sessions)
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
       .limit(1)
-    const winner = current ? await usableSealed(cfg, current, now) : null
+    const winner = current ? await usableSealed(cfg, current, now, workflows) : null
     if (winner) return winner
   }
   return { token: auth.token, fresh: true, expiresAt: auth.expiresAt }

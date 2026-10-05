@@ -1813,7 +1813,13 @@ turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -
 `.claude/settings.local.json` holds only deny rules (`git push`, `git remote`, `git config`),
 which bypass mode honours. Launch makes every push (`checkpoint.ts`) and opens the PR (`ship.ts`).
 The git handler allows smart-HTTP on the session's one repo, refuses a push to any ref but
-`session/<short>`, and injects a one-hour installation token sealed on the row (re-minted under
+`session/<short>`, and injects a one-hour installation token sealed on the row (`contents: write`,
+`pull_requests: write`; a kit upgrade session's — `kind = 'upgrade'`, and only that kind — also
+`workflows: write`, since a kit upgrade edits `.github/workflows/**` and GitHub refuses such a push
+from a token without it. The sealed value records that scope (`sealGitToken`: a `workflows:`
+marker in front of the token, inside the ciphertext; an ordinary session's is the bare token), so
+an upgrade session never reuses a token minted without it — one sealed before the scope existed
+is re-minted at once rather than kept for its remaining hour. Re-minted under
 10 minutes left, an expired one included — the usual case after an idle hour; sealed back in a
 compare-and-set on the expiry it read, so two requests re-minting at once converge on the one
 token the row keeps). **A fresh token is retried**: GitHub does not always accept an installation
@@ -2225,6 +2231,17 @@ the previous one. A push
 that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped connection —
 `TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
 retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
+**Workflow files** (`checkpoint.ts`, `workflowsGuardScript`): an ordinary session's token has no
+`workflows: write`, so after `git add` and before the commit the checkpoint lists what the push
+would carry under `.github/workflows/` — the staged change, plus every commit since the last
+pushed one (`head_sha`, else `base_sha`; `git log -m`, so a reverted round trip and a merge that
+brings a workflow change in count too, as they do for GitHub) — and, when any, refuses with
+`CheckpointError('workflows')` whose message is the sentence alone: "This change edits the app's CI
+workflows (.github/workflows/ci.yml). Coding sessions can't push workflow changes — an owner has to
+make that change, or run a kit upgrade. Nothing was saved: …". Nothing is committed or pushed, and
+the `error` event ("Could not save the session's work: …", or "… before the gate" in a ship) says
+it. GitHub's own refusal (`without \`workflows\` permission`), should a change get past the guard,
+is told in the same words. A kit upgrade session is not guarded: its token carries the scope.
 **Ship** (issue #1; the steps in `ship-steps.ts`, the kit contract in `gate.ts`, the PR in
 `ship.ts`): **Launch runs the gate, never Claude, and only its exit codes decide.** `ship.claim#N`
 (`ready → shipping`) → `ship.save#N` (a checkpoint, so the half hour the gate may take risks
@@ -3531,7 +3548,10 @@ before any write: `app_archived`, `app_has_no_repo`, `upgrade_no_pin_tag`, `upgr
 `upgrade_open` (with the open one's id and status). Then a `running` row and a coding session of
 kind **`upgrade`** (`session_kind` gained it; `sessions.upgrade_id`, `sessions.auto_ship`) whose
 first message is the adapter's **`upgradePrompt`** (`rocketflare/upgrade-prompt.ts`), run as its
-first turn the moment it is ready (§18.9). Every refusal a session start has (`session_limit`,
+first turn the moment it is ready (§18.9). The prompt also says where the porting notes are
+before the apply — `.upgrade/work/<to>/notes/X.Y.Z.md` (and `plan.md`); the app's
+`docs/upgrades/` gets its new note only after `--apply`, though an older copy's script prints
+that path. Every refusal a session start has (`session_limit`,
 `session_budget_exhausted`, `sessions_paused`…) passes through unchanged and removes the row —
 nothing started. An upgrade session is a coding session in every other respect: it counts against
 `maxConcurrentPerApp` and the app's month, it is listed with the app's sessions, and its branch is
@@ -3571,8 +3591,11 @@ plain answer or an `AskUserQuestion` call, and both fail rule 2), and an agent t
 anyway still fails rule 4 unless the apply finished. There is no reliable "ended asking" signal in
 Claude Code's stream to detect, so Launch requires the opposite instead. Anything else marks the
 upgrade **`needs_attention`** with the reason; a `status` session event (`reason:
-upgrade.needs_attention` / `upgrade.auto_ship`) puts Launch's decision in the chat, and the owner
-carries on and ships as usual. A ship that settles with no PR (a red gate, exhausted fix turns)
+upgrade.needs_attention` / `upgrade.auto_ship`) puts Launch's decision in the chat. **Nobody can
+message a kit upgrade session** (below), so the owner reads its last answer and either ships it as
+it stands (the gate, its fix turns, the PR to review) or ends it and finishes the upgrade on its
+branch outside Launch (`UPGRADE_STOPPED_NEXT_STEP`, what the session page, the app page and the
+event say). A ship that settles with no PR (a red gate, exhausted fix turns)
 marks a `running` upgrade `needs_attention` too. The ship itself is unchanged (§18.13): Launch's
 gate, then the PR. The gate's kit probe reads the CHECKOUT, so an upgrade from a kit too old for
 the gate is gated by the new kit it just applied.
@@ -3589,6 +3612,19 @@ token for the one repo), updates `template_version` / `template_commit` when the
 reaches as `released`. A missing or unreadable manifest changes nothing and a GitHub failure is
 logged — neither fails the Release. So an upgrade done outside Launch is recorded at its first
 Release too.
+
+**No human input** (`sessionTakesMessages`, `chat.ts` `assertTakesMessages`): an upgrade
+session's push token may change the app's CI workflows (§18.10), so nobody may steer it. Every
+route that adds a person's input refuses it with 403 `upgrade_session_read_only` and the shared
+sentence ("Launch is running this kit upgrade on its own; it can't take messages because it can
+change the app's CI workflows."), before any write: `POST /:id/turns` (queued or interrupting),
+`POST /:id/queued/withdraw` (the waiting message is Launch's prompt), `POST /:id/attachments` and
+`POST /:id/preview-screenshot`. The start route takes no body, so there is no "extra instructions"
+input either. Launch's own input still runs — the upgrade prompt, a ship's fix turns
+(`requestTurn` with no sender) — and Ship, End, Stop and the budget stay the owner's. The session
+page shows that sentence and what to do if it stops in the composer's place (no starter prompts,
+no Withdraw, no preview camera); `launch sessions say` prints it with a hint naming
+`sessions ship` / `sessions end`.
 
 **Fetching the kit** (§18.10's git proxy, `egress/forward-git.ts`): `pnpm kit:upgrade` clones
 `kit.repo` into `.upgrade/kit.git` over `github.com`, which a session could never reach. A session of

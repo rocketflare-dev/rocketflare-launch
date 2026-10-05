@@ -17,6 +17,7 @@ import {
   DEV_SETUP_GUARD_SCRIPT,
   PUSH_RETRY_DELAY_MS,
   SESSION_REPO_DIR,
+  workflowsGuardScript,
 } from '@/api/services/sessions/checkpoint'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { SESSION_HOME } from '@/api/services/sessions/rocketflare-dev'
@@ -33,7 +34,11 @@ const db = setupTestDatabase()
 const HEAD = 'c'.repeat(40)
 const CLAUDE_ID = '5f0c7d2e-1111-4222-8333-944455556666'
 
-async function setup(opts: { changes?: boolean; headSha?: string | null } = {}) {
+const BASE = 'b'.repeat(40)
+
+async function setup(
+  opts: { changes?: boolean; headSha?: string | null; kind?: 'session' | 'upgrade' } = {}
+) {
   const env = createTestEnv()
   const cfg = loadConfig(env)
   const f = await seedSessionApp(db, createFakeCloud())
@@ -42,6 +47,8 @@ async function setup(opts: { changes?: boolean; headSha?: string | null } = {}) 
     turnCount: 3,
     claudeSessionId: CLAUDE_ID,
     headSha: opts.headSha ?? null,
+    baseSha: BASE,
+    kind: opts.kind ?? 'session',
   })
   const sandbox = new FakeSandbox({ name: row.id })
     .onExec('git diff --cached --quiet', { exitCode: opts.changes === false ? 0 : 1 })
@@ -71,13 +78,14 @@ describe('checkpoint', () => {
       checkpointScanScript(),
       CHECKPOINT_ADD_COMMAND,
       DEV_SETUP_GUARD_SCRIPT,
+      workflowsGuardScript(BASE),
       'git diff --cached --quiet',
       'git commit --no-verify --quiet -F /tmp/launch-commit-message.txt',
       'git rev-parse HEAD',
       `git push --quiet origin HEAD:refs/heads/${sessionBranchName(row.shortId)}`,
     ])
     for (const e of sandbox.execs) expect(e.opts?.cwd).toBe(SESSION_REPO_DIR)
-    const commit = sandbox.execs[4]
+    const commit = sandbox.execs[5]
     expect(commit?.opts?.env).toMatchObject({
       GIT_AUTHOR_NAME: 'Launch',
       GIT_AUTHOR_EMAIL: 'launch@localhost',
@@ -185,6 +193,53 @@ describe('checkpoint', () => {
     expect(commands.some(c => c.startsWith('git push'))).toBe(false)
     const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
     expect(after?.headSha).toBeNull()
+  })
+
+  it('an ordinary session changing .github/workflows is refused before the commit, in words, and never pushes', async () => {
+    const { row, sandbox, deps, ref } = await setup({ headSha: HEAD })
+    sandbox.onExec(workflowsGuardScript(HEAD), { stdout: 'workflow\t.github/workflows/ci.yml\n' })
+    const err = await checkpoint(db, deps, ref).catch(e => e)
+    expect(err).toBeInstanceOf(CheckpointError)
+    expect(err.step).toBe('workflows')
+    // The message is the sentence alone (no "Checkpoint failed at …"): the person reads it.
+    expect(err.message).toBe(
+      "This change edits the app's CI workflows (.github/workflows/ci.yml). Coding sessions can't push workflow changes — an owner has to make that change, or run a kit upgrade. Nothing was saved: undo the change to that file (or ask Claude to), then the session saves again."
+    )
+    const commands = sandbox.execs.map(e => e.command)
+    expect(commands.some(c => c.startsWith('git commit'))).toBe(false)
+    expect(commands.some(c => c.startsWith('git push'))).toBe(false)
+    const [after] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(after?.headSha).toBe(HEAD)
+  })
+
+  it('a kit upgrade session is not guarded: its workflow change commits and pushes', async () => {
+    const { sandbox, deps, ref } = await setup({ kind: 'upgrade' })
+    sandbox.onExec('.github/workflows', { stdout: 'workflow\t.github/workflows/ci.yml\n' })
+    const result = await checkpoint(db, deps, ref)
+    expect(result).toMatchObject({ committed: true, pushed: true })
+    const commands = sandbox.execs.map(e => e.command)
+    expect(commands.some(c => c.includes('.github/workflows'))).toBe(false)
+    expect(commands.some(c => c.startsWith('git push'))).toBe(true)
+  })
+
+  it("GitHub's own workflows refusal (a change the guard did not see) is told in the same words", async () => {
+    const { sandbox, deps, ref } = await setup()
+    let pushes = 0
+    sandbox.onExec('git push', () => {
+      pushes += 1
+      return {
+        exitCode: 1,
+        stderr:
+          ' ! [remote rejected] HEAD -> session/waq6tezmnnf7 (refusing to allow a GitHub App to create or update workflow `.github/workflows/deploy.yml` without `workflows` permission)',
+      }
+    })
+    const err = await checkpoint(db, { ...deps, sleep: async () => {} }, ref).catch(e => e)
+    expect(err).toBeInstanceOf(CheckpointError)
+    expect(err.step).toBe('workflows')
+    expect(err.message).toMatch(
+      /^This change edits the app's CI workflows \(\.github\/workflows\/deploy\.yml\)/
+    )
+    expect(pushes).toBe(1)
   })
 
   it('a file over the size limit is not staged: the save goes on and an error event names it', async () => {

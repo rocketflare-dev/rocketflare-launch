@@ -23,6 +23,10 @@
  *   optimistic bubbles show theirs too, and Withdraw puts them back as chips.
  * - **Over budget is a banner above the composer, not an error**: the person who may extend it gets
  *   the button; anyone else reads who can.
+ * - **A kit upgrade session has no composer** (`sessionTakesMessages`): its push token may change
+ *   the app's CI workflows, so nobody steers it — the server refuses a message with 403
+ *   `upgrade_session_read_only`. In the composer's place, what Launch is doing and what the owner
+ *   does if it stops; no starter prompts, no Withdraw on Launch's own waiting prompt.
  */
 import { ArrowDownIcon, SparklesIcon } from '@heroicons/react/24/outline'
 import { approvalPath } from '@launch/shared/launch-approvals'
@@ -31,7 +35,10 @@ import {
   type SessionAttachment,
   type SessionEvent,
   sessionAttachmentPath,
+  sessionTakesMessages,
+  UPGRADE_SESSION_READ_ONLY_MESSAGE,
 } from '@launch/shared/launch-sessions'
+import { UPGRADE_STOPPED_NEXT_STEP } from '@launch/shared/launch-upgrades'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChatBubble } from '@/ui/components/ai/ChatBubble'
@@ -312,6 +319,7 @@ export function SessionChat({
   attachments: ComposerAttachments
 }) {
   const items = useMemo(() => buildSessionChat(events), [events])
+  const takesMessages = sessionTakesMessages(session)
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState<PendingMessage | null>(null)
   const [sendError, setSendError] = useState<{ tone: 'info' | 'error'; message: string } | null>(
@@ -448,6 +456,10 @@ export function SessionChat({
         >
           {isLoading ? (
             <SkeletonRows rows={5} />
+          ) : empty && !takesMessages ? (
+            <p className="px-2 py-10 text-center text-sm text-secondary">
+              Launch starts the kit upgrade as soon as the sandbox is up.
+            </p>
           ) : empty ? (
             <EmptyTranscript
               session={session}
@@ -495,7 +507,7 @@ export function SessionChat({
                     agent={agentName(session.runtime)}
                     stopping={session.cancelRequested}
                     // Only once the row holds it: before that there is nothing to take back.
-                    onWithdraw={session.queuedMessage !== null ? onWithdraw : null}
+                    onWithdraw={takesMessages && session.queuedMessage !== null ? onWithdraw : null}
                     withdrawing={withdraw.isPending}
                   />
                 </li>
@@ -520,23 +532,42 @@ export function SessionChat({
         <BudgetBanner session={session} budget={budget} onExtend={onExtend} />
       )}
 
-      <SessionComposer
-        ref={composer}
-        session={session}
-        value={draft}
-        onChange={value => {
-          setDraft(value)
-          if (sendError) setSendError(null)
-        }}
-        onSend={onSend}
-        onCancel={() => cancel.mutate()}
-        model={model}
-        onModelChange={setModel}
-        sending={send.isPending}
-        cancelling={cancel.isPending}
-        error={sendError}
-        attachments={attachments}
-      />
+      {takesMessages ? (
+        <SessionComposer
+          ref={composer}
+          session={session}
+          value={draft}
+          onChange={value => {
+            setDraft(value)
+            if (sendError) setSendError(null)
+          }}
+          onSend={onSend}
+          onCancel={() => cancel.mutate()}
+          model={model}
+          onModelChange={setModel}
+          sending={send.isPending}
+          cancelling={cancel.isPending}
+          error={sendError}
+          attachments={attachments}
+        />
+      ) : (
+        <UpgradeSessionNote />
+      )}
     </div>
   )
 }
+
+/** In a kit upgrade session's composer place: why there is no box, and what to do if it stops. */
+export function UpgradeSessionNote() {
+  return (
+    <div
+      className="space-y-1 border-t border-[color:var(--border-subtle)] px-4 py-3 text-sm"
+      data-testid="upgrade-session-note"
+    >
+      <p>{UPGRADE_SESSION_READ_ONLY_MESSAGE}</p>
+      <p className="text-secondary">If it stops: {lowerFirst(UPGRADE_STOPPED_NEXT_STEP)}</p>
+    </div>
+  )
+}
+
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)

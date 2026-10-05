@@ -15,6 +15,7 @@
  * above the preview once shipping has started, because from then on it is the news.
  */
 import { ChatBubbleLeftRightIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
+import { sessionTakesMessages } from '@launch/shared/launch-sessions'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
@@ -158,11 +159,17 @@ export default function SessionPage() {
               onResume={() => resume.mutate()}
               resuming={resume.isPending}
               appSlug={slug}
-              onScreenshot={request =>
-                attachments.addPending(
-                  request.path ? `Screenshot of ${request.path}` : 'Screenshot of the preview',
-                  () => takePreviewScreenshot(id, request)
-                )
+              // A screenshot is an image for the next message: a kit upgrade takes none.
+              onScreenshot={
+                sessionTakesMessages(session)
+                  ? request =>
+                      attachments.addPending(
+                        request.path
+                          ? `Screenshot of ${request.path}`
+                          : 'Screenshot of the preview',
+                        () => takePreviewScreenshot(id, request)
+                      )
+                  : undefined
               }
             />
           </div>

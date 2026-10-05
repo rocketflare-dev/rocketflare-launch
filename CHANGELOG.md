@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Kit upgrade sessions can push CI workflow changes; ordinary sessions say why they can't.** A
+  kit upgrade (0.17.0 edits `.github/workflows/ci.yml` and `deploy.yml`) failed at its save with
+  GitHub's raw "refusing to allow a GitHub App to create or update workflow … without workflows
+  permission": the session's push token was narrowed to `contents` and `pull_requests`. A session
+  of kind `upgrade` now gets `workflows: write` on its token too (the sealed token records its
+  scope, so one minted before this is re-minted, not reused). An ordinary session still does not:
+  a change under `.github/workflows/` is refused at the checkpoint before anything is committed or
+  pushed, with "This change edits the app's CI workflows (…). Coding sessions can't push workflow
+  changes — an owner has to make that change, or run a kit upgrade." No new GitHub App permission
+  (Workflows: write was already required).
+
+- **Nobody can steer a kit upgrade session.** Because its token can change the app's CI
+  workflows, every route that adds a person's input to an upgrade session — a message (queued or
+  interrupting), withdrawing the waiting prompt, an image, a preview screenshot — answers 403
+  `upgrade_session_read_only`. The session page shows no message box: it says Launch is running
+  the upgrade on its own and, if it stops, to read its last answer and ship it as it stands or end
+  it and finish the upgrade on its branch outside Launch (the app page and the stop event say the
+  same). `launch sessions say` prints the refusal with that hint. Launch's own turns (the upgrade
+  prompt, a ship's fix turns) and Ship / End / Stop are unchanged. The upgrade prompt also names
+  where the porting notes are before the apply (`.upgrade/work/<to>/notes/X.Y.Z.md`, `plan.md`).
+
 - **Launch tells an app's CI which GitHub App's gate to trust.** Launch now sets the repository
   Actions variable `LAUNCH_GATE_APP_ID` to its GitHub App id — when an app is launched
   (`github_env`), when an admin presses Apply on the Shipping card's branch protection (how an

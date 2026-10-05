@@ -46,6 +46,12 @@
  *   ship stops at its save. The session's dev setup lives in git-ignored files
  *   (`rocketflare-dev.ts`), so this only fires on a regression; the exclude file also carries
  *   {@link SESSION_DEV_EXCLUDES}.
+ * - **Never a workflow file from an ordinary session.** Its push token has no `workflows: write`
+ *   (only a kit upgrade's does, `egress/github.ts`), so after the dev-setup guard
+ *   {@link workflowsGuardScript} lists what the push would carry under `.github/workflows/` (staged,
+ *   or in a commit since `head_sha`, else `base_sha`); any → `CheckpointError('workflows', …)` with
+ *   {@link workflowsChangeMessage} as the WHOLE message, before the commit. GitHub's own refusal
+ *   ({@link WORKFLOWS_REJECTION_RE}) is told in the same words. An upgrade session skips it.
  *
  * A failing git command throws `CheckpointError` with the command's output tail (the sandbox holds
  * no secret, so there is none in it); a command that did not answer in time (`GIT_TIMEOUT_MS`)
@@ -210,12 +216,69 @@ export const TRANSIENT_PUSH_RE =
 export class CheckpointError extends Error {
   constructor(
     readonly step: string,
-    readonly output: string
+    readonly output: string,
+    /** `output` is already a sentence for the person: the message is it alone, without the step. */
+    plain = false
   ) {
-    super(`Checkpoint failed at ${step}: ${output}`)
+    super(plain ? output : `Checkpoint failed at ${step}: ${output}`)
     this.name = 'CheckpointError'
   }
 }
+
+// ---- the workflows guard -------------------------------------------------------------------------
+
+/** Where GitHub keeps an app's Actions workflows — a push touching it needs `workflows: write`. */
+export const WORKFLOWS_DIR = '.github/workflows'
+
+/**
+ * The workflows guard, run after `git add` and before the commit: prints `workflow\t<path>` for each
+ * file under {@link WORKFLOWS_DIR} that the push would carry — changed by a commit since `since`
+ * (the last pushed commit, else the base; `-m` names a merge's changes against each parent, so
+ * merging the default branch in counts too, as it does for GitHub) or staged now. `since` absent
+ * or not in the checkout (it always is: the checkout fetches the branch tip or the base) checks
+ * the staged change alone.
+ */
+export function workflowsGuardScript(since: string | null): string {
+  const lines = ['{']
+  if (since) {
+    lines.push(
+      `  if git cat-file -e ${q(`${since}^{commit}`)} 2>/dev/null; then git log -m --format= --name-only ${q(`${since}..HEAD`)} -- ${WORKFLOWS_DIR}; fi`
+    )
+  }
+  lines.push(
+    `  git diff --cached --name-only HEAD -- ${WORKFLOWS_DIR} 2>/dev/null || git diff --cached --name-only -- ${WORKFLOWS_DIR}`,
+    "} | sed '/^$/d' | sort -u | sed 's/^/workflow\t/'",
+    'exit 0'
+  )
+  return lines.join('\n')
+}
+
+/** The guard's `workflow` lines. */
+export function parseWorkflowChanges(stdout: string): string[] {
+  return [...stdout.matchAll(/^workflow\t(.+)$/gm)].map(m => m[1] ?? '')
+}
+
+/**
+ * The refusal an ordinary session reads when its change touches the app's CI workflows. Its push
+ * token has no `workflows: write` (only a kit upgrade session's does — `egress/github.ts`), so
+ * GitHub would refuse the push anyway; this says so before trying, in words.
+ */
+export function workflowsChangeMessage(files: readonly string[]): string {
+  const names = files.slice(0, 5).join(', ')
+  const more = files.length > 5 ? ` and ${files.length - 5} more` : ''
+  return `This change edits the app's CI workflows (${names}${more}). Coding sessions can't push workflow changes — an owner has to make that change, or run a kit upgrade. Nothing was saved: undo the change to ${files.length === 1 ? 'that file' : 'those files'} (or ask Claude to), then the session saves again.`
+}
+
+/** The workflow files GitHub's refusal names (`… update workflow .github/workflows/ci.yml …`). */
+function parseRejectedWorkflows(output: string): string[] {
+  const named = [...output.matchAll(/workflow [`'"]?(\.github\/workflows\/[^\s`'"]+)/g)].map(
+    m => m[1] ?? ''
+  )
+  return named.length > 0 ? [...new Set(named)] : [WORKFLOWS_DIR]
+}
+
+/** GitHub's own words when a push without `workflows: write` touches a workflow. */
+export const WORKFLOWS_REJECTION_RE = /without [`'"]?workflows?[`'"]? (permission|scope)/i
 
 export interface CheckpointDeps {
   cfg: AppConfig
@@ -500,6 +563,15 @@ export async function checkpoint(
   }
   const drift = parseDevSetupDrift((await git('guard', DEV_SETUP_GUARD_SCRIPT)).stdout)
   if (drift.length > 0) throw new CheckpointError('guard', devSetupDriftMessage(drift))
+  if (session.kind !== 'upgrade') {
+    const since = session.headSha ?? session.baseSha
+    const touched = parseWorkflowChanges(
+      (await git('workflows', workflowsGuardScript(since))).stdout
+    )
+    if (touched.length > 0) {
+      throw new CheckpointError('workflows', workflowsChangeMessage(touched), true)
+    }
+  }
   const staged = await git('diff', 'git diff --cached --quiet', [0, 1])
   let committed = false
   if (staged.exitCode === 1) {
@@ -526,6 +598,14 @@ export async function checkpoint(
     await deps.egress?.prepareGit(deps.sandbox, session)
     const first = await run('push', push)
     if (first.exitCode !== 0) {
+      if (WORKFLOWS_REJECTION_RE.test(outputTail(first))) {
+        // The guard above missed it (a commit it could not see): GitHub's refusal, in words.
+        throw new CheckpointError(
+          'workflows',
+          workflowsChangeMessage(parseRejectedWorkflows(outputTail(first))),
+          true
+        )
+      }
       if (!TRANSIENT_PUSH_RE.test(outputTail(first))) {
         throw new CheckpointError('push', outputTail(first))
       }

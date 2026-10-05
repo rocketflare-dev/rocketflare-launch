@@ -12,7 +12,8 @@
  *   most `SESSION_ATTACHMENT_MAX_BYTES` (413). The same right as `POST /:id/turns`: `update
  *   Session`, a session the caller drives (never a reviewer's read-only grant), its credential's
  *   owner on a personal account (409 `session_credential_owner_only`), and a session that can
- *   take a message (`TURN_ACCEPTING_STATUSES`, else 409 `session_not_active`). Exempt from the
+ *   take a message (`TURN_ACCEPTING_STATUSES`, else 409 `session_not_active`) — never a kit
+ *   upgrade's (403 `upgrade_session_read_only`, first). Exempt from the
  *   1 MB JSON cap (`UPLOAD_PATH_PATTERNS`); `uploadBodyLimit` is mounted here. 503
  *   `storage_not_configured` without `FILES`.
  * - `GET /:id/attachments/:aid` → the image, streamed: `Content-Type` as stored, `nosniff`,
@@ -23,7 +24,7 @@
  * - `POST /:id/preview-screenshot` `previewScreenshotRequestSchema` `{ path?, port?, width,
  *   height }` → 202 `{ attachmentId }`: reserves an image id and enqueues
  *   `session.preview_screenshot` on `JOBS_QUEUE` (`services/sessions/preview-screenshot.ts` does
- *   the capture); the client polls the image's `GET`. The upload's right, and a session whose
+ *   the capture); the client polls the image's `GET`. The upload's right (no kit upgrade's), and a session whose
  *   preview runs (`ready`, `working` — else 409 `preview_not_running`). 503
  *   `previews_not_configured` (no `SESSION_PREVIEW_URL`), `screenshots_not_configured` (no
  *   `BROWSER`) and `storage_not_configured` (no `FILES`) before the enqueue; a missing
@@ -47,7 +48,11 @@ import {
   sessionAttachmentKey,
   storeSessionAttachment,
 } from '../services/sessions/attachments'
-import { assertCredentialOwner, TURN_ACCEPTING_STATUSES } from '../services/sessions/chat'
+import {
+  assertCredentialOwner,
+  assertTakesMessages,
+  TURN_ACCEPTING_STATUSES,
+} from '../services/sessions/chat'
 import type { AppContext } from '../types'
 import {
   ApiError,
@@ -83,6 +88,7 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
 sessionAttachmentsRouter.post('/:id/attachments', uploadBodyLimit, async c => {
   const { user, row } = await visibleSession(c, 'update')
   // The same checks as `/turns`: an image is only ever half of a message.
+  assertTakesMessages(row)
   assertCredentialOwner(row, user.id)
   if (!(TURN_ACCEPTING_STATUSES as readonly string[]).includes(row.status)) {
     throw new ConflictError(`This session is ${row.status}`, 'session_not_active')
@@ -134,6 +140,8 @@ sessionAttachmentsRouter.post(
   validate('json', previewScreenshotRequestSchema),
   async c => {
     const { cfg, tenantId, user, row } = await visibleSession(c, 'update')
+    // A screenshot is an image for the next message: none on a kit upgrade.
+    assertTakesMessages(row)
     assertCredentialOwner(row, user.id)
     if (!cfg.SESSION_PREVIEW_URL) {
       throw new ServiceUnavailableError(

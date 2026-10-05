@@ -4,7 +4,12 @@
  * failed turn exits 1), `ship --wait` follows the gate to the PR and its CI, and `--json` prints
  * one parseable document.
  */
-import { DEFAULT_SESSION_POLICY, sessionEventSchema } from '@launch/shared/launch-sessions'
+import {
+  DEFAULT_SESSION_POLICY,
+  sessionEventSchema,
+  UPGRADE_SESSION_READ_ONLY_CODE,
+  UPGRADE_SESSION_READ_ONLY_MESSAGE,
+} from '@launch/shared/launch-sessions'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   formatSessionEvent,
@@ -268,6 +273,28 @@ describe('sessions say', () => {
       'user.message',
       'turn.failed',
     ])
+  })
+
+  it('a kit upgrade session refuses the message (403): its sentence, and what to do instead', async () => {
+    const { fetch } = mockFetch({
+      [`/api/sessions/${ID}/turns`]: () =>
+        jsonResponse(
+          {
+            error: UPGRADE_SESSION_READ_ONLY_MESSAGE,
+            statusCode: 403,
+            code: UPGRADE_SESSION_READ_ONLY_CODE,
+          },
+          403
+        ),
+    })
+    const { ctx } = await testContext({ store: await loggedInStore(), fetch })
+    const error = await captureError(runSessionsSay(ctx, ID, 'Skip the notes'))
+    expect(exitCodeFor(error)).toBe(EXIT_FORBIDDEN)
+    expect((error as Error).message).toBe(UPGRADE_SESSION_READ_ONLY_MESSAGE)
+    const hint = (error as { hint?: string }).hint ?? ''
+    expect(hint).toContain(`sessions ship ${ID}`)
+    expect(hint).toContain(`sessions end ${ID}`)
+    expect(hint).not.toMatch(/role/)
   })
 
   it('refuses an empty message before any request', async () => {

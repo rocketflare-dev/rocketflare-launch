@@ -54,9 +54,10 @@ import {
   sessionTurnFailedDataSchema,
   sessionTurnInterruptedDataSchema,
   sessionUserMessageDataSchema,
+  UPGRADE_SESSION_READ_ONLY_CODE,
 } from '@launch/shared/launch-sessions'
 import chalk from 'chalk'
-import type { ApiClient } from '../api'
+import { type ApiClient, CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import { formatDate, renderTable } from '../utils/output'
@@ -384,6 +385,21 @@ const SETTLED_FOR_TURN: readonly SessionStatus[] = [
   'failed',
 ]
 
+/**
+ * A kit upgrade session takes no messages (403 `upgrade_session_read_only`, the server's own
+ * sentence): the hint says what to do instead of the generic "your role does not allow that".
+ */
+function upgradeRefusal(ctx: CommandContext, id: string, err: unknown): unknown {
+  if (!(err instanceof CliApiError) || err.code !== UPGRADE_SESSION_READ_ONLY_CODE) return err
+  return new CliApiError({
+    status: err.status,
+    code: err.code,
+    body: err.body,
+    message: err.message,
+    hint: `If it stops, read its last answer, then \`${ctx.binName} sessions ship ${id}\` as it stands, or \`${ctx.binName} sessions end ${id}\` and finish the upgrade on its branch outside Launch.`,
+  })
+}
+
 export interface SessionsSayOptions extends SessionPollOptions {
   follow?: boolean
 }
@@ -400,10 +416,14 @@ export async function runSessionsSay(
 
   // Where the log is now, so --follow prints only what this turn writes.
   const start = options.follow ? (await readEventsAfter(client, id, 0)).nextSeq : 0
-  const { data, raw } = await client.request('POST', `${sessionPath(id)}/turns`, {
-    schema: sessionDetailResponseSchema,
-    body: { message: text },
-  })
+  const { data, raw } = await client
+    .request('POST', `${sessionPath(id)}/turns`, {
+      schema: sessionDetailResponseSchema,
+      body: { message: text },
+    })
+    .catch(err => {
+      throw upgradeRefusal(ctx, id, err)
+    })
   if (!options.follow) {
     ctx.out.data(raw, () => `${chalk.green('✓')} Sent. The session is ${data.session.status}.`)
     return

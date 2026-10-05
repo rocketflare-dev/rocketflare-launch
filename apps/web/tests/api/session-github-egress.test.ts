@@ -14,6 +14,7 @@ import {
   handleGitHub,
   parseGitRequest,
   receivePackCommands,
+  sealGitToken,
 } from '@/api/services/sessions/egress/github'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
 import { LocalRepoHost } from '@/api/services/sessions/repo/local-repo-host'
@@ -90,13 +91,13 @@ function upstream() {
   return { seen, fetch }
 }
 
-async function live() {
+async function live(kind: 'session' | 'upgrade' = 'session') {
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud)
   // seedSessionApp minted one to create the repo; count only what the proxy mints.
   cloud.github.tokens.clear()
   const sandboxId = `fake-sandbox-${crypto.randomUUID()}`
-  const row = await insertSession(db, f, { status: 'working', sandboxId })
+  const row = await insertSession(db, f, { status: 'working', sandboxId, kind })
   return { cloud, f, row, sandboxId }
 }
 
@@ -199,6 +200,70 @@ describe('handleGitHub', () => {
     await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
     expect(cloud.github.tokens.size).toBe(1)
     expect(up.seen[1]?.authorization).toBe(up.seen[0]?.authorization)
+  })
+
+  it('a kit upgrade session’s token also carries workflows: write (it edits .github/workflows)', async () => {
+    const { cloud, f, row, sandboxId } = await live('upgrade')
+    const up = upstream()
+    const deps = { repoHost: () => githubHost(cloud), fetch: up.fetch }
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-receive-pack`
+    expect(
+      (await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)).status
+    ).toBe(200)
+    const [minted] = [...cloud.github.tokens.values()]
+    expect(minted?.permissions).toEqual({
+      contents: 'write',
+      pull_requests: 'write',
+      workflows: 'write',
+    })
+    expect(up.seen[0]?.authorization).toBe(`Basic ${btoa(`x-access-token:${minted?.token}`)}`)
+    // Sealed with its scope, and reused while it lasts.
+    const [stored] = await db.select().from(sessions).where(eq(sessions.id, row.id))
+    expect(stored?.githubTokenSealed).not.toContain(minted?.token)
+    await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
+    expect(cloud.github.tokens.size).toBe(1)
+    expect(up.seen[1]?.authorization).toBe(up.seen[0]?.authorization)
+  })
+
+  it('an upgrade session re-mints a sealed token minted without workflows (before the scope existed)', async () => {
+    const { cloud, f, row, sandboxId } = await live('upgrade')
+    const up = upstream()
+    const deps = { repoHost: () => githubHost(cloud), fetch: up.fetch }
+    // What the proxy sealed before this fix: a bare token with most of its hour left.
+    const old = `ghs_${'O'.repeat(36)}`
+    await db
+      .update(sessions)
+      .set({
+        githubTokenSealed: await sealGitToken(cfg, old, false),
+        githubTokenExpiresAt: new Date(Date.now() + 50 * 60_000),
+      })
+      .where(eq(sessions.id, row.id))
+    const url = `https://github.com/${f.repo.owner}/${f.repo.repo}.git/info/refs?service=git-receive-pack`
+    await handleGitHub(new Request(url), env, { containerId: sandboxId }, deps)
+    expect(cloud.github.tokens.size).toBe(1)
+    const [minted] = [...cloud.github.tokens.values()]
+    expect(minted?.permissions).toMatchObject({ workflows: 'write' })
+    expect(up.seen[0]?.authorization).toBe(`Basic ${btoa(`x-access-token:${minted?.token}`)}`)
+
+    // An ordinary session keeps using the same bare token: its scope never needed workflows.
+    const other = await live()
+    await db
+      .update(sessions)
+      .set({
+        githubTokenSealed: await sealGitToken(cfg, old, false),
+        githubTokenExpiresAt: new Date(Date.now() + 50 * 60_000),
+      })
+      .where(eq(sessions.id, other.row.id))
+    const up2 = upstream()
+    const url2 = `https://github.com/${other.f.repo.owner}/${other.f.repo.repo}.git/info/refs?service=git-receive-pack`
+    await handleGitHub(
+      new Request(url2),
+      env,
+      { containerId: other.sandboxId },
+      { repoHost: () => githubHost(other.cloud), fetch: up2.fetch }
+    )
+    expect(other.cloud.github.tokens.size).toBe(0)
+    expect(up2.seen[0]?.authorization).toBe(`Basic ${btoa(`x-access-token:${old}`)}`)
   })
 
   it('re-mints the token when under 10 minutes remain', async () => {

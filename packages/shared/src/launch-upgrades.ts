@@ -30,8 +30,10 @@ export type UpgradeTargetKind = z.infer<typeof upgradeTargetKindSchema>
  *              ↘ needs_attention ↗          (and `failed` / `cancelled` from any open status)
  *
  * - `running` — the session is doing the upgrade (and, with auto-ship, shipping it);
- * - `needs_attention` — the session stopped short of a PR (a question, a red gate, a budget stop):
- *   the owner finishes it on the session page, and shipping it moves it on as usual;
+ * - `needs_attention` — the session stopped short of a PR (a question, a red gate, a budget stop).
+ *   Nobody can message a kit upgrade session (`sessionTakesMessages`), so the owner reads its last
+ *   answer and ships it as it stands — which moves it on as usual — or ends it and finishes the
+ *   upgrade on its branch outside Launch ({@link UPGRADE_STOPPED_NEXT_STEP});
  * - `pr_open` — the PR is open (or landing, in `staging` ship mode);
  * - `released` — a Release's `.rocketflare.json` says the kit is at (or past) the target;
  * - `failed` — the session failed; `cancelled` — it ended without a PR.
@@ -70,6 +72,14 @@ export const APP_UPGRADE_STATUS_LABELS: Record<AppUpgradeStatus, string> = {
   failed: 'Failed',
   cancelled: 'Cancelled',
 }
+
+/**
+ * What the owner does when a kit upgrade stops short of a pull request — the session page, the
+ * app page and the session's own event say it. A kit upgrade session takes no messages, so it is
+ * never "finish it in the chat": Ship (the gate, its fix turns, the PR to review) or End.
+ */
+export const UPGRADE_STOPPED_NEXT_STEP =
+  "Read the session's last answer, then ship it as it stands (Launch runs the gate and opens a pull request to review), or end it and finish the upgrade on its branch outside Launch."
 
 /** The refusals of `POST /api/apps/:id/upgrade` (all 409s). */
 export const UPGRADE_ERROR_CODES = {

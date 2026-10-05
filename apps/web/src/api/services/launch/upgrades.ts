@@ -32,6 +32,7 @@ import {
   kitVersionReached,
   OPEN_APP_UPGRADE_STATUSES,
   UPGRADE_ERROR_CODES,
+  UPGRADE_STOPPED_NEXT_STEP,
   type UpgradeResult,
   upgradeResultOf,
 } from '@launch/shared/launch-upgrades'
@@ -416,7 +417,7 @@ export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string
 
 /** The sentence the session and the app page show when an upgrade needs its owner. */
 export function needsAttentionMessage(reason: string): string {
-  return `Launch did not ship this upgrade: ${reason} Read the last answer, finish the upgrade here, then ship it.`
+  return `Launch did not ship this upgrade: ${reason} ${UPGRADE_STOPPED_NEXT_STEP}`
 }
 
 /**

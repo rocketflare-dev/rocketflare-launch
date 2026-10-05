@@ -16,7 +16,8 @@
  *   `turn_in_progress` while a message already waits, 409 `session_budget_exhausted` when `blocked`, 409
  *   `session_not_active` once it is shipping or over; 409 `session_credential_owner_only` from
  *   anyone but the owner of a session on a personal account (§18.22); 503
- *   `sessions_not_configured` without the Workflow binding, before any write.
+ *   `sessions_not_configured` without the Workflow binding, before any write. 403
+ *   `upgrade_session_read_only` on a kit upgrade session, first: nobody steers one.
  * - `POST /:id/cancel` → `sessionCancelResponseSchema` (`cancel_requested_at`; the turn polls it
  *   and kills the process — or a waiting message is withdrawn); 409 `no_turn_in_progress`. A
  *   running turn whose heartbeat is stale (`SESSION_CANCEL_STALL_MS`: its turn step is gone, so
@@ -25,7 +26,8 @@
  *   (`reconcile.ts`) — the route itself runs nothing in the sandbox.
  * - `POST /:id/queued/withdraw` → `sessionDetailResponseSchema`: takes the waiting message back
  *   (`pending_message`, its sender, `pending_model` and `pending_attachments`) — while a turn runs too, which `/cancel`
- *   cannot (it stops the turn); 409 `nothing_queued` when nothing waits. Same check as `/turns`.
+ *   cannot (it stops the turn); 409 `nothing_queued` when nothing waits. Same checks as `/turns`
+ *   (a kit upgrade's waiting message is Launch's prompt: 403 `upgrade_session_read_only`).
  * - `GET /:id/agui/stream[?afterSeq=]` — the AG-UI read stream over `session_events`
  *   (`services/sessions/session-stream.ts`, the four rules of `services/agents/run-stream.ts`).
  * - `GET /:id/events[?afterSeq=]` → `sessionEventsResponseSchema`.
@@ -57,6 +59,7 @@ import { requireSessionStorage, resolveSessionAttachments } from '../services/se
 import { requestBudgetExtension } from '../services/sessions/budget-request'
 import {
   assertCredentialOwner,
+  assertTakesMessages,
   requestCancel,
   requestTurn,
   requireSessionWorkflow,
@@ -100,6 +103,8 @@ function changed(c: AppContext, tenantId: string, sessionId: string) {
 sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema), async c => {
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, logger, realtime, user, row } = await visibleSession(c)
+  // A kit upgrade takes no person's message (403), before any lookup or write.
+  assertTakesMessages(row)
   const workflow = requireSessionWorkflow(c.env)
   const { message, model, mode, attachments: ids } = c.req.valid('json')
   // The images must be this session's: looked up under its own prefix, never trusted by id.
@@ -133,7 +138,9 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
 sessionChatRouter.post('/:id/queued/withdraw', async c => {
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, user, row } = await visibleSession(c)
-  // The same check as `/turns`: on a personal account only its owner's messages wait.
+  // The same checks as `/turns`: a kit upgrade's waiting message is Launch's own (403), and on a
+  // personal account only its owner's messages wait.
+  assertTakesMessages(row)
   assertCredentialOwner(row, user.id)
   const updated = await withdrawQueued(db, row)
   changed(c, tenantId, row.id)
