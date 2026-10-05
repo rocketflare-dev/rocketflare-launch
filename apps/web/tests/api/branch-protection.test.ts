@@ -12,8 +12,15 @@
  *   `Integration` bypass actor `always`. Audited `app.branch_protection.applied`. Classic
  *   protection is never written: it stays `blocks`. A plan without rulesets is 409.
  * - Under the ruleset the App's own direct push (the release bump) still lands.
+ * - Issue #10: the same GET reports the repo's `LAUNCH_GATE_APP_ID` variable (`missing | wrong |
+ *   ok`) and Apply sets it to the App id — only when it differs, and even on a plan without
+ *   rulesets.
  */
-import { appBranchProtectionSchema, KIT_REQUIRED_CHECK } from '@launch/shared/launch-apps'
+import {
+  appBranchProtectionSchema,
+  KIT_REQUIRED_CHECK,
+  LAUNCH_GATE_APP_ID_VARIABLE,
+} from '@launch/shared/launch-apps'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { commitFiles } from '@/api/services/launch/github-app'
@@ -95,8 +102,28 @@ async function state(seeded: DeployableApp, headers: Headers) {
   return appBranchProtectionSchema.parse(await res.json())
 }
 
+function gateVarOf(owner: string, repo: string) {
+  return cloud.github.repo(owner, repo)?.variables.get(LAUNCH_GATE_APP_ID_VARIABLE)
+}
+
+const gateVariableOk = () => ({
+  state: 'ok',
+  value: String(cloud.opts.appId),
+  expected: String(cloud.opts.appId),
+  detail: null,
+})
+
 function rulesetsOf(owner: string, repo: string) {
   return cloud.github.rulesets.get(`${owner}/${repo}`.toLowerCase()) ?? []
+}
+
+function variableWrites(owner: string, repo: string) {
+  return cloud.calls.filter(
+    c =>
+      c.vendor === 'github' &&
+      c.method !== 'GET' &&
+      c.path.toLowerCase().startsWith(`/repos/${owner}/${repo}/actions/variables`.toLowerCase())
+  )
 }
 
 async function applied(tenantId: string, appId: string) {
@@ -131,7 +158,7 @@ describe('GET /api/apps/:id/branch-protection', () => {
       requiredChecks: [KIT_REQUIRED_CHECK, 'lint'],
       bypassAppId: cloud.opts.appId,
     })
-    expect(await state(seeded, member)).toEqual({
+    expect(await state(seeded, member)).toMatchObject({
       state: 'ok',
       requiredChecks: [KIT_REQUIRED_CHECK, 'lint'],
       appCanBypass: true,
@@ -179,8 +206,34 @@ describe('GET /api/apps/:id/branch-protection', () => {
     const { seeded, member } = await fixture()
     store.credentials.clear()
     const body = await state(seeded, member)
-    expect(body).toMatchObject({ state: 'unknown', appCanBypass: false })
+    expect(body).toMatchObject({ state: 'unknown', appCanBypass: false, gateVariable: null })
     expect(body.detail).toMatch(/GitHub App/)
+  })
+
+  it('gateVariable: missing on a fresh repo, wrong when another id, ok when the App’s', async () => {
+    const { seeded, member, owner, repo } = await fixture()
+    const missing = (await state(seeded, member)).gateVariable
+    expect(missing).toMatchObject({
+      state: 'missing',
+      value: null,
+      expected: String(cloud.opts.appId),
+    })
+    expect(missing?.detail).toContain(LAUNCH_GATE_APP_ID_VARIABLE)
+
+    const variables = cloud.github.repo(owner, repo)?.variables
+    variables?.set(LAUNCH_GATE_APP_ID_VARIABLE, '999')
+    const wrong = (await state(seeded, member)).gateVariable
+    expect(wrong).toMatchObject({ state: 'wrong', value: '999' })
+    expect(wrong?.detail).toContain(String(cloud.opts.appId))
+
+    variables?.set(LAUNCH_GATE_APP_ID_VARIABLE, String(cloud.opts.appId))
+    expect((await state(seeded, member)).gateVariable).toEqual(gateVariableOk())
+  })
+
+  it('gateVariable is reported on a plan without rulesets too', async () => {
+    const { seeded, member, owner, repo } = await fixture()
+    cloud.github.disableRulesets(owner, repo)
+    expect((await state(seeded, member)).gateVariable?.state).toBe('missing')
   })
 
   it('401 without a session; another organisation’s app is 404', async () => {
@@ -206,7 +259,10 @@ describe('POST /api/apps/:id/branch-protection', () => {
       appCanBypass: true,
       rulesetId: ruleset?.id,
       detail: null,
+      gateVariable: gateVariableOk(),
     })
+    // Issue #10: the kit's `verified` job trusts launch/gate from this App id only.
+    expect(gateVarOf(owner, repo)).toBe(String(cloud.opts.appId))
     expect(ruleset).toMatchObject({
       name: 'launch',
       target: 'branch',
@@ -240,6 +296,7 @@ describe('POST /api/apps/:id/branch-protection', () => {
           requiredChecks: [KIT_REQUIRED_CHECK],
           bypassAppId: cloud.opts.appId,
           state: 'ok',
+          gateVariable: 'created',
         },
       },
     })
@@ -269,6 +326,22 @@ describe('POST /api/apps/:id/branch-protection', () => {
     expect(audits.map(a => (a.summary as { before: unknown }).before)).toContainEqual({
       rulesetId: first.id,
     })
+    // The variable already held the App id: the second Apply only read it.
+    const after = audits.map(a => (a.summary as { after: { gateVariable: string } }).after)
+    expect(after.map(a => a.gateVariable).sort()).toEqual(['created', 'unchanged'])
+  })
+
+  it('puts a wrong LAUNCH_GATE_APP_ID back to the App id, and writes nothing when it is right', async () => {
+    const { seeded, admin, owner, repo } = await fixture()
+    cloud.github.repo(owner, repo)?.variables.set(LAUNCH_GATE_APP_ID_VARIABLE, '42')
+    const body = appBranchProtectionSchema.parse(await (await apply(seeded, admin)).json())
+    expect(body.gateVariable).toEqual(gateVariableOk())
+    expect(gateVarOf(owner, repo)).toBe(String(cloud.opts.appId))
+
+    const writesBefore = variableWrites(owner, repo)
+    expect(writesBefore).toHaveLength(1)
+    expect((await apply(seeded, admin)).status).toBe(200)
+    expect(variableWrites(owner, repo)).toHaveLength(1)
   })
 
   it('never touches classic protection: the ruleset is added and the answer stays blocks', async () => {
@@ -296,6 +369,8 @@ describe('POST /api/apps/:id/branch-protection', () => {
     expect(res.status).toBe(409)
     expect(await json(res)).toMatchObject({ statusCode: 409, code: 'rulesets_unavailable' })
     expect(await applied(tenantId, seeded.app.id)).toEqual([])
+    // The variable is set first, so a plan without rulesets still has it.
+    expect(gateVarOf(owner, repo)).toBe(String(cloud.opts.appId))
   })
 
   it('is the admins’: a member is 403, another organisation 404, no session 401', async () => {
@@ -307,5 +382,6 @@ describe('POST /api/apps/:id/branch-protection', () => {
     const other = await fixture()
     expect((await apply(seeded, other.admin)).status).toBe(404)
     expect(rulesetsOf(owner, repo)).toEqual([])
+    expect(gateVarOf(owner, repo)).toBeUndefined()
   })
 })

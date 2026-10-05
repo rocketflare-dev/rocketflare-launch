@@ -404,6 +404,35 @@ describe('App page', () => {
       }
     )
 
+    it('offers Apply on a protected branch whose LAUNCH_GATE_APP_ID is missing (#10)', async () => {
+      const gateVariable = (state: string) => ({
+        state,
+        value: null,
+        expected: '123',
+        detail: null,
+      })
+      renderShipping(makeSession(), {
+        [PROTECTION]: protection('ok', { gateVariable: gateVariable('missing') }),
+      })
+      const form = await openSettings(await card())
+      expect(await within(form).findByText('Protected')).toBeInTheDocument()
+      expect(within(form).getByTestId('gate-variable')).toHaveTextContent(/runs every check again/)
+      expect(
+        within(form).getByRole('button', { name: 'Apply Launch’s protection' })
+      ).toBeInTheDocument()
+      cleanup()
+
+      renderShipping(makeSession(), {
+        [PROTECTION]: protection('ok', { gateVariable: gateVariable('ok') }),
+      })
+      const okForm = await openSettings(await card())
+      expect(await within(okForm).findByText('Protected')).toBeInTheDocument()
+      expect(within(okForm).queryByTestId('gate-variable')).not.toBeInTheDocument()
+      expect(
+        within(okForm).queryByRole('button', { name: 'Apply Launch’s protection' })
+      ).not.toBeInTheDocument()
+    })
+
     it('lets an administrator apply the protection; an app owner is told who can', async () => {
       const fetchMock = renderShipping(makeSession(), {
         [PROTECTION]: protection('none'),

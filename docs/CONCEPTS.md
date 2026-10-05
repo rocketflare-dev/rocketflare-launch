@@ -1011,6 +1011,27 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   and is audited `app.branch_protection.applied`; 409 `rulesets_unavailable` on a plan without
   them, 502 `branch_protection_github_failed` otherwise. No new App permission: `administration`
   is already required (environments).
+- **The gate variable** (issue #10, `services/launch/gate-variable.ts`): the repository Actions
+  variable `LAUNCH_GATE_APP_ID` (`LAUNCH_GATE_APP_ID_VARIABLE`) = Launch's GitHub App id (the
+  `github_app` credential's `appId`). The kit's `verified` CI job runs only when it is set, and
+  then trusts only a `launch/gate` check run (§18.13) posted by THAT app on the same tree, so the
+  full gate is skipped for a change Launch already gated; unset — or on a kit without the job —
+  CI runs the full gate as before (the variable is simply unused). `ensureGateVariable` reads it
+  and writes only when it differs (`created | updated | unchanged`). It is set at **`github_env`**
+  (new apps, §18.5), by **Apply** on the branch-protection card (`POST …/branch-protection`, FIRST,
+  so a plan without rulesets still gets it before the 409 — the way an imported app, whose import
+  only READS the repo, gets it; the audit row's `after.gateVariable`), and at the **start of a
+  kit upgrade** (`startAppUpgrade`, after the session exists — the upgrade may be the one bringing
+  in the `verified` job; best-effort, `app.upgrade.started`'s `after.gateVariable` is
+  `failed` when GitHub refused, never a failed start). The same `GET …/branch-protection` reports
+  it as `gateVariable` (`ok | missing | wrong | unknown`, with the value and the expected id; null
+  from an older server or with no repository) with tokens adding `actions_variables: read` /
+  `write` — already required (`DEPLOYER_URL`), so no new App permission. The card says when it is
+  missing or wrong and offers Apply on an otherwise protected branch. **Detaching**: Launch has no
+  detach flow that removes it — delete `LAUNCH_GATE_APP_ID` in the repo's Settings › Secrets and
+  variables › Actions and CI runs the full gate on every push again (teardown archives or deletes
+  the repo, so it needs nothing). Gaps: nothing re-checks it on a schedule (only the card's read
+  and the three writes above); an app imported and never Applied or upgraded runs the full gate.
 
 **Known gaps:** no Cloudflare verification of the recorded resource ids; the kit version is re-read
 at every Release (§18.23), but nothing else is re-synced from the repo after import (the tomls'
@@ -1057,6 +1078,7 @@ step that mints one puts it on the Worker itself.
   polls `/api/health` every 12 s and reloads into the app on its first 200. Preview it with
   `pnpm web preview:placeholder`) → `github_env`
   (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`,
+  issue #10's `LAUNCH_GATE_APP_ID` = the App id (written only when it differs, §18.4),
   then issue #5's `launch` ruleset on the default branch (§18.4, `services/launch/branch-protection.ts`),
   created or rewritten BY NAME so a retry never duplicates it, its id recorded as `rulesetId`; a
   plan without rulesets — GitHub's 403/404, a private repository outside GitHub Team — is recorded
@@ -2409,7 +2431,7 @@ is read after the attempt's LAST step only, so an earlier step that changed a fi
 regenerating `worker-configuration.d.ts`) is attested by the later steps' run alone; a repo with
 no `Gate` check falls back to the fold, so there a red optional check still stops a landing, and a
 `Gate` that has not queued yet beside other checks that already finished green lets it merge on
-those (GitHub usually queues a workflow's jobs together); and the kit's CI ignores `launch/gate` until its `verified` job reads it.
+those (GitHub usually queues a workflow's jobs together); and the kit's CI ignores `launch/gate` until its `verified` job reads it — which it does only on a repo whose `LAUNCH_GATE_APP_ID` variable names Launch's App (issue #10, §18.4 **The gate variable**).
 **The landing** (issue #5) is proven with the FakeCloud's
 GitHub — round by round with fake Phase B hooks (`tests/api/session-land.test.ts`), and end to end
 with every slice's real code from Ship to live on staging, the release's chain and the promotion

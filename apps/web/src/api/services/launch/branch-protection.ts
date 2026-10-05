@@ -19,6 +19,10 @@
  * A 403/404 on the rulesets API is a plan without them (a private repo outside GitHub Team):
  * `unavailable`, which the launch step records and moves past. No new App permission is needed —
  * `administration` already covers environments (`GITHUB_TOKEN_PERMISSIONS.rulesets{Read,Write}`).
+ *
+ * Issue #10: the same GET reports the repo's `LAUNCH_GATE_APP_ID` variable (`gateVariable`,
+ * `gate-variable.ts`) and the same Apply sets it — BEFORE the ruleset, so a plan without rulesets
+ * (409) still gets it — with `actions_variables` added to each token.
  */
 import { type AppBranchProtection, KIT_REQUIRED_CHECK } from '@launch/shared/launch-apps'
 import type { AppConfig } from '../../../config'
@@ -26,6 +30,7 @@ import type { Database } from '../../../db/client'
 import type { AppRow } from '../../../db/schema'
 import { ApiError, ConflictError } from '../../utils/core/errors'
 import { type AuditActor, recordAudit } from './audit'
+import { diagnoseGateVariable, ensureGateVariable } from './gate-variable'
 import {
   createRuleset,
   GITHUB_TOKEN_PERMISSIONS,
@@ -40,6 +45,9 @@ import {
 } from './github-app'
 import { loadImportGitHub } from './import'
 import { type RepoGitHubOptions, withRepoToken } from './releases/github'
+
+/** The rulesets half of the diagnosis; the routes add `gateVariable`. */
+export type RulesetDiagnosis = Omit<AppBranchProtection, 'gateVariable'>
 
 /** The one ruleset Launch owns on an app's repo, found again by this name. */
 export const LAUNCH_RULESET_NAME = 'launch'
@@ -186,7 +194,13 @@ const unknown = (detail: string): AppBranchProtection => ({
   appCanBypass: false,
   rulesetId: null,
   detail,
+  gateVariable: null,
 })
+
+const unknownRules = (detail: string): RulesetDiagnosis => {
+  const { gateVariable: _, ...rules } = unknown(detail)
+  return rules
+}
 
 /**
  * How the default branch is protected, read with a token for the App itself, so
@@ -198,7 +212,7 @@ export async function diagnoseBranchProtection(
   repo: string,
   branch: string,
   opts: GitHubOptions = {}
-): Promise<AppBranchProtection> {
+): Promise<RulesetDiagnosis> {
   let listed: GitHubRuleset[]
   try {
     listed = await listRulesets(token, owner, repo, opts)
@@ -212,7 +226,7 @@ export async function diagnoseBranchProtection(
         detail: `GitHub has no rulesets for ${owner}/${repo} (${err.message}). A private repository needs GitHub Team or above; nothing protects ${branch}.`,
       }
     }
-    return unknown(`GitHub could not list the rulesets: ${(err as Error).message}`)
+    return unknownRules(`GitHub could not list the rulesets: ${(err as Error).message}`)
   }
 
   const blockers: string[] = []
@@ -234,7 +248,7 @@ export async function diagnoseBranchProtection(
       }
     }
   } catch (err) {
-    return unknown(`GitHub could not read a ruleset: ${(err as Error).message}`)
+    return unknownRules(`GitHub could not read a ruleset: ${(err as Error).message}`)
   }
 
   try {
@@ -252,7 +266,7 @@ export async function diagnoseBranchProtection(
   } catch (err) {
     // A plan without classic protection answers like one without rulesets: there is none.
     if (!isRulesetsUnavailable(err)) {
-      return unknown(`GitHub could not read the branch protection: ${(err as Error).message}`)
+      return unknownRules(`GitHub could not read the branch protection: ${(err as Error).message}`)
     }
   }
 
@@ -279,8 +293,9 @@ export async function diagnoseBranchProtection(
 }
 
 /**
- * `GET /api/apps/:id/branch-protection`: the diagnosis, or `unknown` with the reason when GitHub
- * cannot be asked at all (no repository, no App, the App not installed on the owner).
+ * `GET /api/apps/:id/branch-protection`: the diagnosis (with the gate variable's), or `unknown`
+ * with the reason when GitHub cannot be asked at all (no repository, no App, the App not installed
+ * on the owner).
  */
 export async function getAppBranchProtection(
   db: Database,
@@ -290,13 +305,23 @@ export async function getAppBranchProtection(
 ): Promise<AppBranchProtection> {
   if (!app.repoOwner || !app.repoName) return unknown('This app has no repository.')
   try {
+    const github = opts.github ?? (await loadImportGitHub(db, cfg))
     return await withRepoToken(
       db,
       cfg,
       app,
-      GITHUB_TOKEN_PERMISSIONS.rulesetsRead,
-      (token, repo) => diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, opts),
-      opts
+      { ...GITHUB_TOKEN_PERMISSIONS.rulesetsRead, ...GITHUB_TOKEN_PERMISSIONS.gateVariableRead },
+      async (token, repo) => ({
+        ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, opts)),
+        gateVariable: await diagnoseGateVariable(
+          token,
+          repo.owner,
+          repo.repo,
+          github.auth.appId,
+          opts
+        ),
+      }),
+      { ...opts, github }
     )
   } catch (err) {
     return unknown((err as Error).message)
@@ -304,8 +329,9 @@ export async function getAppBranchProtection(
 }
 
 /**
- * `POST /api/apps/:id/branch-protection` (admins): apply Launch's ruleset, then answer the fresh
- * diagnosis — still `blocks` while classic protection remains, which Launch never removes. Audited
+ * `POST /api/apps/:id/branch-protection` (admins): set the `LAUNCH_GATE_APP_ID` variable (issue
+ * #10), apply Launch's ruleset, then answer the fresh diagnosis — still `blocks` while classic
+ * protection remains, which Launch never removes. Audited
  * `app.branch_protection.applied`. 409 `rulesets_unavailable` on a plan without rulesets, 502
  * `branch_protection_github_failed` for anything else GitHub refused.
  */
@@ -319,22 +345,21 @@ export async function applyAppBranchProtection(
 ): Promise<AppBranchProtection> {
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const appId = Number(github.auth.appId)
-  const { applied, protection } = await withRepoToken(
+  const { applied, protection, gateVariable } = await withRepoToken(
     db,
     cfg,
     app,
-    GITHUB_TOKEN_PERMISSIONS.rulesetsWrite,
+    { ...GITHUB_TOKEN_PERMISSIONS.rulesetsWrite, ...GITHUB_TOKEN_PERMISSIONS.gateVariableWrite },
     async (token, repo) => {
       try {
+        // First, so a plan without rulesets (the 409 below) still gets the variable.
+        const gateVariable = await ensureGateVariable(token, repo.owner, repo.repo, appId, opts)
         const applied = await applyLaunchRuleset(token, repo.owner, repo.repo, appId, opts)
-        const protection = await diagnoseBranchProtection(
-          token,
-          repo.owner,
-          repo.repo,
-          repo.branch,
-          opts
-        )
-        return { applied, protection }
+        const protection: AppBranchProtection = {
+          ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, opts)),
+          gateVariable: await diagnoseGateVariable(token, repo.owner, repo.repo, appId, opts),
+        }
+        return { applied, protection, gateVariable }
       } catch (err) {
         if (isRulesetsUnavailable(err)) {
           throw new ConflictError(
@@ -369,6 +394,7 @@ export async function applyAppBranchProtection(
         requiredChecks: [KIT_REQUIRED_CHECK],
         bypassAppId: appId,
         state: protection.state,
+        gateVariable,
       },
     },
   })

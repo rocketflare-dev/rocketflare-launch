@@ -746,6 +746,25 @@ export async function upsertRepoVariable(
   await githubVoid(base, { method: 'POST', token, body: { name, value } }, opts)
 }
 
+/** A repository Actions variable's value, or null when there is none. `actions_variables: read`. */
+export async function getRepoVariable(
+  token: string,
+  owner: string,
+  repo: string,
+  name: string,
+  opts: GitHubOptions = {}
+): Promise<string | null> {
+  const path = `${repoPath(owner, repo)}/actions/variables/${encodeURIComponent(name)}`
+  const res = await githubRequest(path, { token }, opts)
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  if (!res.ok) throw await failure(res, path)
+  const body = (await res.json()) as { value?: unknown }
+  return body.value == null ? '' : String(body.value)
+}
+
 /** Revoke the installation token making the call — a job ending its own access. */
 export function revokeInstallationToken(token: string, opts: GitHubOptions = {}): Promise<void> {
   return githubVoid('/installation/token', { method: 'DELETE', token }, opts)
@@ -1104,6 +1123,10 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   rulesetsWrite: { administration: 'write' },
   /** The branch-protection diagnosis: rulesets and classic protection, read only. */
   rulesetsRead: { administration: 'read' },
+  /** Issue #10: reading the repo's `LAUNCH_GATE_APP_ID` Actions variable. */
+  gateVariableRead: { actions_variables: 'read' },
+  /** Issue #10: setting it (`github_env`, Apply, the start of a kit upgrade). */
+  gateVariableWrite: { actions_variables: 'write' },
   /** App page P2: a release run's re-run of its failed jobs, or its cancel (and the reads around). */
   releaseRun: { actions: 'write', contents: 'read' },
   /** App page P2: re-pushing a release's tag (and reading its runs). */

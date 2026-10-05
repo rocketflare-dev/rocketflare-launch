@@ -1703,6 +1703,15 @@ export class FakeGitHub implements VendorHandler {
       return json({ id: this.ids.number(), name })
     }
     match = rest.match(/^\/actions\/variables\/([^/]+)$/)
+    if (match && m === 'GET') {
+      if (!this.can(token, 'actions_variables', 'read')) {
+        return ghError(403, 'Resource not accessible by integration')
+      }
+      const name = decodeURIComponent(match[1])
+      const value = repo.variables.get(name)
+      if (value === undefined) return ghError(404, 'Not Found')
+      return json({ name, value, created_at: null, updated_at: null })
+    }
     if (match && m === 'PATCH') {
       const refused = writable('actions_variables')
       if (refused) return refused

@@ -45,6 +45,7 @@ import { notify } from '../../notifications'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
 import { applyLaunchRuleset, isRulesetsUnavailable } from '../branch-protection'
 import { FINISHED_BEFORE_ACTIVATE, isDeployed } from '../deploy/tickets'
+import { ensureGateVariable, LAUNCH_GATE_APP_ID_VARIABLE } from '../gate-variable'
 import {
   commitFiles,
   commitFilesIfChanged,
@@ -788,14 +789,18 @@ export function githubEnvStep(d: PipelineDeps, params: AppLaunchParams) {
     const issuer = issuerOf(d.cfg)
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_URL', `${issuer}/ci`)
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_AUDIENCE', issuer)
+    // Issue #10: the kit's `verified` CI job trusts a `launch/gate` check run from this App id
+    // only. Written only when it differs, so a retry is a read.
+    const githubAppId = requireVendor(vendors, 'github').auth.appId
+    await ensureGateVariable(token, owner, repo.name, githubAppId)
     const done = {
       environments: ENVIRONMENTS.join(','),
-      variables: 'DEPLOYER_URL,DEPLOYER_AUDIENCE',
+      variables: `DEPLOYER_URL,DEPLOYER_AUDIENCE,${LAUNCH_GATE_APP_ID_VARIABLE}`,
     }
     // Issue #5 (plan §1.13): Launch's `launch` ruleset on the default branch — `Gate` required,
     // the App a bypass actor so the release bump still lands. Idempotent by name, so a retry
     // updates rather than duplicates; a plan without rulesets is recorded, never fatal.
-    const appId = Number(requireVendor(vendors, 'github').auth.appId)
+    const appId = Number(githubAppId)
     try {
       const { rulesetId } = await applyLaunchRuleset(token, owner, repo.name, appId)
       return { ...done, rulesetId: String(rulesetId), branchProtection: 'ok' }

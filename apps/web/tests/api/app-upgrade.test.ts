@@ -177,7 +177,42 @@ describe('POST /api/apps/:id/upgrade', () => {
       fromVersion: '0.16.0',
       toVersion: '0.16.1',
       sessionId: body.sessionId,
+      gateVariable: 'created',
     })
+    // Issue #10: the upgrade may bring in the kit's `verified` job, which reads this variable.
+    const repo = cloud.github.repo(f.app.repoOwner as string, f.app.repoName as string)
+    expect(repo?.variables.get('LAUNCH_GATE_APP_ID')).toBe(String(cloud.opts.appId))
+  })
+
+  it('puts a wrong LAUNCH_GATE_APP_ID right, and a GitHub refusal never fails the start', async () => {
+    const f = await fixture('0.16.0')
+    const repo = cloud.github.repo(f.app.repoOwner as string, f.app.repoName as string)
+    repo?.variables.set('LAUNCH_GATE_APP_ID', '1')
+    expect((await upgrade(f)).status).toBe(202)
+    expect(repo?.variables.get('LAUNCH_GATE_APP_ID')).toBe(String(cloud.opts.appId))
+
+    // An installation that may only read variables: the upgrade still starts, the audit says so.
+    const g = await fixture('0.16.0')
+    Object.assign(cloud.github.opts, {
+      permissions: { ...cloud.github.permissions, actions_variables: 'read' },
+    })
+    try {
+      const res = await upgrade(g)
+      expect(res.status, await res.clone().text()).toBe(202)
+    } finally {
+      Object.assign(cloud.github.opts, { permissions: undefined })
+    }
+    const [started] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.tenantId, g.tenant.id),
+          eq(auditEvents.appId, g.app.id),
+          eq(auditEvents.action, 'app.upgrade.started')
+        )
+      )
+    expect(started?.summary.after).toMatchObject({ gateVariable: 'failed' })
   })
 
   it('401 without a session', async () => {

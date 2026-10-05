@@ -455,6 +455,33 @@ export const BRANCH_PROTECTION_STATES = ['ok', 'none', 'blocks', 'unavailable', 
 export const branchProtectionStateSchema = z.enum(BRANCH_PROTECTION_STATES)
 export type BranchProtectionState = z.infer<typeof branchProtectionStateSchema>
 
+/**
+ * Issue #10: the repository Actions variable the kit's `verified` CI job reads — Launch's GitHub App
+ * numeric id. Set, the job trusts a `launch/gate` check run from THAT app on the same tree and the
+ * full gate is skipped; unset (or on a kit without the job), CI runs the full gate as before.
+ */
+export const LAUNCH_GATE_APP_ID_VARIABLE = 'LAUNCH_GATE_APP_ID'
+
+/**
+ * `ok` — the variable holds Launch's App id; `missing` — not set (CI runs the full gate every time);
+ * `wrong` — set to anything else (the `verified` job trusts another app, or none); `unknown` —
+ * GitHub could not be asked.
+ */
+export const GATE_VARIABLE_STATES = ['ok', 'missing', 'wrong', 'unknown'] as const
+export const gateVariableStateSchema = z.enum(GATE_VARIABLE_STATES)
+export type GateVariableState = z.infer<typeof gateVariableStateSchema>
+
+export const appGateVariableSchema = z.object({
+  state: gateVariableStateSchema,
+  /** What the repo holds now (an App id is public, so the value is shown), null when unset. */
+  value: z.string().nullable(),
+  /** Launch's App id, null when it is not known (no App in Setup). */
+  expected: z.string().nullable(),
+  /** A sentence for the admin when it is not `ok`. */
+  detail: z.string().nullable(),
+})
+export type AppGateVariable = z.infer<typeof appGateVariableSchema>
+
 export const appBranchProtectionSchema = z.object({
   state: branchProtectionStateSchema,
   /** The status checks the default branch requires (rulesets and classic protection). */
@@ -465,6 +492,11 @@ export const appBranchProtectionSchema = z.object({
   rulesetId: z.number().int().positive().nullable(),
   /** A sentence for the admin: what blocks, or why it is unknown. */
   detail: z.string().nullable(),
+  /**
+   * Issue #10: the repo's `LAUNCH_GATE_APP_ID` variable, which Apply also sets. Null from an older
+   * server, or when the repository could not be reached at all.
+   */
+  gateVariable: appGateVariableSchema.nullable().default(null),
 })
 export type AppBranchProtection = z.infer<typeof appBranchProtectionSchema>
 

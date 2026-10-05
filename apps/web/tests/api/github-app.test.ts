@@ -303,6 +303,9 @@ describe('issue #5 calls: merge, CI logs, rulesets, protection', () => {
       checkRun: { checks: 'write' },
       rulesetsWrite: { administration: 'write' },
       rulesetsRead: { administration: 'read' },
+      // Issue #10: the LAUNCH_GATE_APP_ID repository variable (already in the required set).
+      gateVariableRead: { actions_variables: 'read' },
+      gateVariableWrite: { actions_variables: 'write' },
       // App page P2: Retry / Cancel of a release's run, and re-pushing a lost tag.
       releaseRun: { actions: 'write', contents: 'read' },
       releaseTag: { contents: 'write', actions: 'read' },

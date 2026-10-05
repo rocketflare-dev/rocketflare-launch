@@ -283,6 +283,8 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     // GitHub: the scaffold files, then the config commit with no placeholders left.
     expect(repo?.environments.has('staging')).toBe(true)
     expect(repo?.variables.get('DEPLOYER_URL')).toBe('http://localhost:3001/ci')
+    // Issue #10: the kit's `verified` CI job trusts a launch/gate check run from this App only.
+    expect(repo?.variables.get('LAUNCH_GATE_APP_ID')).toBe(String(cloud.opts.appId))
     // Issue #5 (plan §1.13): `github_env` put Launch's ruleset on the default branch — `Gate`
     // required, the App a bypass actor — and recorded its id on the step's row.
     const rulesets = cloud.github.rulesets.get(`${cloud.opts.org}/${launch.slug}`.toLowerCase())

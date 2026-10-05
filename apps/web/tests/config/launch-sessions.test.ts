@@ -466,6 +466,16 @@ describe('issue #5: the contracts beside the session', () => {
         detail: null,
       }).state
     ).toBe('ok')
+    // Issue #10: an older server's answer has no gateVariable — it reads as null.
+    expect(
+      appBranchProtectionSchema.parse({
+        state: 'none',
+        requiredChecks: [],
+        appCanBypass: true,
+        rulesetId: null,
+        detail: null,
+      }).gateVariable
+    ).toBeNull()
   })
 
   it('an app detail without the ship fields (an older server) reads the defaults', () => {

@@ -16,6 +16,8 @@
  * - **Branch protection**, for owners and admins: `GET …/branch-protection` → one plain sentence
  *   per state, and for an administrator an Apply button where Launch can fix it (`none`, `blocks`
  *   once the blocking rule is gone). Never polled — GitHub is asked on each read.
+ * - Issue #10: when the repo's `LAUNCH_GATE_APP_ID` variable is missing or wrong, one more sentence
+ *   (CI re-runs checks Launch already ran), and Apply — which sets it — is offered for that too.
  */
 import { ShieldCheckIcon, ShieldExclamationIcon } from '@heroicons/react/24/outline'
 import type { GroupRef } from '@launch/shared/groups'
@@ -133,6 +135,21 @@ export function protectionSentence(protection: AppBranchProtection): {
   }
 }
 
+/**
+ * Issue #10: a sentence when the repo's gate variable needs Apply (`missing`, `wrong`), else null —
+ * `unknown` says nothing beyond what the protection state already says. Pure.
+ */
+export function gateVariableSentence(protection: AppBranchProtection): string | null {
+  switch (protection.gateVariable?.state) {
+    case 'missing':
+      return 'CI runs every check again on changes Launch has already checked, because the repository doesn’t know Launch’s GitHub App yet. Applying Launch’s protection fixes it.'
+    case 'wrong':
+      return 'CI runs every check again on changes Launch has already checked, because the repository names a different GitHub App as Launch. Applying Launch’s protection fixes it.'
+    default:
+      return null
+  }
+}
+
 /** The groups this reader may name: every group for `manage Group`, their own otherwise. */
 function useNameableGroups(enabled: boolean): GroupRef[] {
   const { can } = usePermissions()
@@ -192,6 +209,9 @@ function BranchProtection({ app, canApply }: { app: AppDetail; canApply: boolean
     )
   } else {
     const said = protectionSentence(protection.data)
+    const gate = gateVariableSentence(protection.data)
+    // Apply sets the variable too; on a plan without rulesets it would answer 409, so not there.
+    const offerApply = said.canApply || (gate !== null && protection.data.state === 'ok')
     const Icon = said.tone === 'ok' ? ShieldCheckIcon : ShieldExclamationIcon
     const iconClass =
       said.tone === 'ok' ? 'text-success' : said.tone === 'warning' ? 'text-warning' : 'text-muted'
@@ -206,7 +226,12 @@ function BranchProtection({ app, canApply }: { app: AppDetail; canApply: boolean
           {protection.data.detail && protection.data.state !== 'ok' && (
             <p className="text-xs text-muted">{protection.data.detail}</p>
           )}
-          {said.canApply &&
+          {gate && (
+            <p className="text-secondary" data-testid="gate-variable">
+              {gate}
+            </p>
+          )}
+          {offerApply &&
             (canApply ? (
               <button
                 type="button"

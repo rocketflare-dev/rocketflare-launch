@@ -50,6 +50,7 @@ import { ConflictError, isUniqueViolation } from '../../utils/core/errors'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
 import { createSession } from '../sessions/lifecycle'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from './audit'
+import { ensureAppGateVariable, type GateVariableWrite } from './gate-variable'
 import { getRepoFile } from './github-app'
 import { templatePinStatus } from './kit-pin'
 import { withRepoToken } from './releases/github'
@@ -250,6 +251,10 @@ export interface StartAppUpgradeInput {
  * `upgrade_not_behind`) and an app with an upgrade open (409 `upgrade_open`); then a `running`
  * row, the session (kind `upgrade`, auto-ship, the adapter's prompt as its first turn) and audit
  * `app.upgrade.started`.
+ *
+ * Issue #10: once the session exists, the repo's `LAUNCH_GATE_APP_ID` variable is set (when it
+ * differs) — the upgrade may be the one bringing in the kit's `verified` job, and its PR's CI reads
+ * it. Best-effort: a refusal is recorded in the audit row (`gateVariable: 'failed'`), never fatal.
  */
 export async function startAppUpgrade(
   db: Database,
@@ -330,6 +335,10 @@ export async function startAppUpgrade(
     .set({ sessionId: session.id })
     .where(and(eq(appUpgrades.tenantId, tenantId), eq(appUpgrades.id, upgrade.id)))
     .returning()
+  let gateVariable: GateVariableWrite | 'failed' | 'skipped' = 'skipped'
+  if (input.cfg) {
+    gateVariable = await ensureAppGateVariable(db, input.cfg, app).catch(() => 'failed' as const)
+  }
   await recordAudit(db, {
     ...input.actor,
     tenantId,
@@ -337,7 +346,9 @@ export async function startAppUpgrade(
     targetType: 'app_upgrade',
     targetId: upgrade.id,
     appId: app.id,
-    summary: { after: { fromVersion: from, toVersion: target, sessionId: session.id } },
+    summary: {
+      after: { fromVersion: from, toVersion: target, sessionId: session.id, gateVariable },
+    },
   })
   nudgeApp(input.realtime, tenantId, app.id)
   return { upgrade: linked ?? upgrade, session }

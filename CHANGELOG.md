@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Launch tells an app's CI which GitHub App's gate to trust.** Launch now sets the repository
+  Actions variable `LAUNCH_GATE_APP_ID` to its GitHub App id — when an app is launched
+  (`github_env`), when an admin presses Apply on the Shipping card's branch protection (how an
+  imported app gets it), and when a kit upgrade starts — writing only when the value differs. The
+  kit's `verified` CI job runs only with it set, and then skips the full gate for a tree Launch's
+  `launch/gate` check run already attested; a kit without that job ignores it. The
+  branch-protection diagnosis reports it (`gateVariable`: `ok`, `missing`, `wrong`, `unknown`)
+  and the card offers Apply when it is missing or wrong. No new GitHub App permission (Variables:
+  write was already required). To detach an app, delete the variable: CI runs the full gate again.
+
 - **A green ship attests its gate on GitHub, and a landing decides on `Gate`.** After the sandbox
   gate passes and the ship's commit is pushed, Launch's GitHub App posts a `launch/gate` check run
   on that commit (`success`, `external_id` `tree:<git tree sha>`, the steps, commands and durations
