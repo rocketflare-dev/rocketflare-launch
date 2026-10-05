@@ -646,8 +646,11 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   bindings (`kv|queue|r2|workflow|durable_object`), crons, prefixes and vars into the rendered
   `wrangler.deploy.toml`; no phase edits the committed tomls. DO migration tags `plugin-<id>-vN` are append-only.
 - **`plugin check` is an exhaustive oracle**: manifest fields, `minKit`, ledger diff, barrel lines,
-  `*.rej`, migration tag, host dependencies, worker exports, a tenant-isolation test for tenant
-  tables, `onTenantDeleted` for DOs, table collisions, declared skills. Each finding names file, line and exact edit.
+  `*.rej`, migration tag, host dependencies (present, at a range inside the declared one —
+  `add` writes the declared range, never pnpm's `^<resolved>`; `upgrade` installs what a release
+  adds or re-ranges and removes what it drops only when no other plugin declares it and the host
+  holds exactly the old range — a range a peer plugin cannot use is refused), worker exports, a
+  tenant-isolation test for tenant tables, `onTenantDeleted` for DOs, table collisions, declared skills. Each finding names file, line and exact edit.
   Structural checks read comment-free code. CI runs the same command.
 - **Agent tools**: `agentTools(ctx)` may be async and may return `[]`. That is how a tool reaches
   only the tenants that turned it on: the plugin reads its own settings row for `ctx.scope.tenantId`.
