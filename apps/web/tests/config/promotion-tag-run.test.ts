@@ -37,6 +37,7 @@ const release = (over: Partial<Release> = {}): Release => ({
   error: null,
   failedStage: null,
   rolledBackFrom: null,
+  artifact: null,
   createdAt: minutesAgo(3),
   updatedAt: minutesAgo(3),
   ...over,

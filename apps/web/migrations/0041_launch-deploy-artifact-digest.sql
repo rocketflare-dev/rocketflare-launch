@@ -1,0 +1,1 @@
+ALTER TABLE "deploy_tickets" ADD COLUMN "artifact_digest" text;

@@ -6,6 +6,7 @@
  */
 import {
   type Release,
+  type ReleaseArtifact,
   type ReleaseFailedStage,
   type ReleaseStageEnvironment,
   releaseFailedStage,
@@ -14,6 +15,7 @@ import {
 import { and, eq } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import { type AppEnvironmentRow, type AppReleaseRow, appEnvironments } from '../../../../db/schema'
+import { releaseArtifacts } from './artifact'
 
 export interface StageEnvironments {
   staging: AppEnvironmentRow | null
@@ -66,16 +68,17 @@ export function failedStageOf(
   )
 }
 
-/** `row` as `releaseSchema`, its `failedStage` stamped. */
+/** `row` as `releaseSchema`, its `failedStage` (and, when given, issue #12's `artifact`) stamped. */
 export function toReleaseView(
   row: AppReleaseRow,
   envs: StageEnvironments,
-  now: Date = new Date()
+  now: Date = new Date(),
+  artifact: ReleaseArtifact | null = null
 ): Release {
-  return releaseSchema.parse({ ...row, failedStage: failedStageOf(row, envs, now) })
+  return releaseSchema.parse({ ...row, failedStage: failedStageOf(row, envs, now), artifact })
 }
 
-/** Several rows of one app, the environments read once. */
+/** Several rows of one app, the environments and the deploy tickets read once. */
 export async function releaseViews(
   db: Database,
   tenantId: string,
@@ -84,6 +87,7 @@ export async function releaseViews(
 ): Promise<Release[]> {
   if (rows.length === 0) return []
   const envs = await stageEnvironments(db, tenantId, appId)
+  const artifacts = await releaseArtifacts(db, tenantId, rows)
   const now = new Date()
-  return rows.map(row => toReleaseView(row, envs, now))
+  return rows.map(row => toReleaseView(row, envs, now, artifacts.get(row.id) ?? null))
 }

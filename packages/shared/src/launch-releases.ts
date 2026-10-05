@@ -338,6 +338,30 @@ export type PromoteReleaseRequest = z.infer<typeof promoteReleaseSchema>
 
 // ---- responses ---------------------------------------------------------------------------------
 
+/**
+ * Issue #12 (build once): the asset the kit's staging job attaches to a tag's DRAFT release
+ * (`scripts/bundle.mjs attach`; the kit's `docs/DEPLOYER.md` "Build once"). Publishing that draft
+ * is what makes production deploy those bytes instead of rebuilding.
+ */
+export function releaseBundleAssetName(tag: string): string {
+  return `launch-bundle-${tag}.tgz`
+}
+
+/**
+ * Issue #12: what the two deploys of a release uploaded — each ticket's Worker version id and
+ * Launch's artifact digest (`deploy_tickets.artifact_digest`). `matches` is null until both
+ * digests are known; `false` says production did not receive the bytes staging ran (a rebuild —
+ * a tag with no release asset — or a tampered upload).
+ */
+export const releaseArtifactSchema = z.object({
+  stagingVersionId: z.string().nullable(),
+  stagingDigest: z.string().nullable(),
+  productionVersionId: z.string().nullable(),
+  productionDigest: z.string().nullable(),
+  matches: z.boolean().nullable(),
+})
+export type ReleaseArtifact = z.infer<typeof releaseArtifactSchema>
+
 export const releaseSchema = z.object({
   id: z.string().uuid(),
   appId: z.string().uuid(),
@@ -363,6 +387,11 @@ export const releaseSchema = z.object({
    * back from v1.4.2"); null for a release never rolled back to.
    */
   rolledBackFrom: z.string().nullable().default(null),
+  /**
+   * Issue #12: the staging and production uploads (`releaseArtifactSchema`); null when neither
+   * deploy has happened. Stamped by the server, like `failedStage`.
+   */
+  artifact: releaseArtifactSchema.nullable().default(null),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 })

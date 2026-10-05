@@ -36,6 +36,7 @@ const release = (overrides: Partial<Release> = {}): Release => ({
   error: null,
   failedStage: null,
   rolledBackFrom: null,
+  artifact: null,
   createdAt: at(30),
   updatedAt: at(20),
   ...overrides,

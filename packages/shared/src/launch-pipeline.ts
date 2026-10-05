@@ -502,6 +502,13 @@ export const deployTicketStateSchema = z.object({
 })
 export type DeployTicketState = z.infer<typeof deployTicketStateSchema>
 
+/**
+ * Issue #12 (build once): where a deploy job's Worker and UI came from (the kit's
+ * `scripts/bundle.mjs fetch` → `source=bundle|build`).
+ */
+export const DEPLOY_ARTIFACT_SOURCES = ['bundle', 'build'] as const
+export type DeployArtifactSource = (typeof DEPLOY_ARTIFACT_SOURCES)[number]
+
 /** `POST /ci/deploy/:id/upload` — the build, base64 inside one JSON body (`/ci` allows 64 MB). */
 export const deployUploadSchema = z.object({
   protocol: z.number().int(),
@@ -513,6 +520,22 @@ export const deployUploadSchema = z.object({
   modules: z.record(z.string(), z.string()),
   /** `/`-rooted asset path → base64; `{}` when the toml has no `[assets]`. */
   assets: z.record(z.string(), z.string()).default({}),
+  /**
+   * Optional (issue #12): the job's own `deployArtifactDigest` of `modules` + `assets`. Launch
+   * always computes it itself; a digest that is sent must equal Launch's (400
+   * `deploy_digest_invalid`). No kit sends it yet.
+   */
+  digest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, 'A lower-case sha256 hex digest')
+    .optional(),
+  /**
+   * Optional (issue #12): where the job's bytes came from — `bundle` when production unpacked the
+   * staging release asset, `build` when it rebuilt. A `bundle` upload whose digest differs from the
+   * staging deploy of the same version is refused (409 `deploy_digest_mismatch`); a `build` one, or
+   * one that says nothing (every kit today), is recorded and warned about.
+   */
+  source: z.enum(DEPLOY_ARTIFACT_SOURCES).optional(),
 })
 export type DeployUpload = z.infer<typeof deployUploadSchema>
 

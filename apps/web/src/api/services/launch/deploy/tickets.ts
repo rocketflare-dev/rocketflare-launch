@@ -298,6 +298,7 @@ export type TicketPatch = Partial<
     NewDeployTicketRow,
     | 'version'
     | 'cfVersionId'
+    | 'artifactDigest'
     | 'activatedAt'
     | 'bindings'
     | 'refused'

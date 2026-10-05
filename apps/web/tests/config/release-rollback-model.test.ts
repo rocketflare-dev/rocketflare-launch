@@ -158,6 +158,7 @@ describe('the Overview’s rollback lines', () => {
       error: null,
       failedStage: null,
       rolledBackFrom: null,
+      artifact: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     } satisfies Release

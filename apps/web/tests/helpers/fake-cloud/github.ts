@@ -28,6 +28,12 @@
  * commit on the base branch, the PR closed and merged), `closePull(owner, repo, number)`, and
  * `publish(owner, repo, tag)` (a Release published in GitHub by hand — the job-originated path).
  *
+ * Issue #12 (build once) adds drafts: `draft(owner, repo, tag, { bundle? })` is the kit's
+ * `release-bundle` job's DRAFT carrying `launch-bundle-<tag>.tgz` (fires nothing; `releaseFor` and
+ * `GET …/releases/tags/{tag}` see only published releases), `GET …/releases` (newest first, drafts
+ * only to a `contents: write` token) and `PATCH …/releases/{id}` (`contents: write`; recorded in
+ * `releaseUpdates`; `draft: false` on a draft publishes it and awaits `onRelease`).
+ *
  * Issue #5 (`docs/plans/i5-ship-to-staging.md` §3 S1) adds what a landing and the branch-protection
  * diagnosis call: an open PR's `head.sha` follows its branch (as GitHub's does), so a push after
  * the gate is visible; `PUT …/pulls/{n}/merge` (`contents: write`; squash by default — one commit
@@ -161,6 +167,8 @@ export interface FakeGitHubRelease {
   publishedAt: string | null
   /** `api` when Launch published it; `hook` when a test (a person in GitHub) did. */
   via: 'api' | 'hook'
+  /** Issue #12: asset names (`launch-bundle-<tag>.tgz` on a build-once draft). */
+  assets: string[]
 }
 
 export interface FakeCheckRun {
@@ -281,8 +289,13 @@ export class FakeGitHub implements VendorHandler {
   readonly statuses = new Map<string, FakeCommitStatus[]>()
   /** P4: every release published, in order. */
   readonly releases: FakeGitHubRelease[] = []
-  /** P4: called after each release published through the API (awaited) — `release: published`. */
+  /**
+   * P4: called after each release published through the API (awaited) — `release: published`:
+   * a POST of a non-draft, or (issue #12) a PATCH `draft: false` of a draft.
+   */
   onRelease: ((release: FakeGitHubRelease) => unknown | Promise<unknown>) | null = null
+  /** Issue #12: every `PATCH …/releases/{id}` body, in order. */
+  readonly releaseUpdates: { id: number; tag: string; body: Record<string, unknown> }[] = []
   /** Issue #5: every merge through the API, in order (`mergeCount` counts them). */
   readonly merges: FakeMerge[] = []
   /**
@@ -642,13 +655,34 @@ export class FakeGitHub implements VendorHandler {
   /** `owner/name@tag` → the annotated tag object's sha (a tag made with `tag({ annotated })`). */
   readonly tagObjects = new Map<string, string>()
 
-  /** P4: the release on `tag`, if one was published. */
+  /**
+   * Issue #12: a DRAFT release on an existing tag, as the kit's `release-bundle` job creates —
+   * carrying `launch-bundle-<tag>.tgz` unless `bundle: false`. Fires nothing (a draft is not
+   * published); `GET …/releases/tags/{tag}` still answers 404 until it is.
+   */
+  draft(
+    owner: string,
+    name: string,
+    tag: string,
+    opts: { bundle?: boolean; body?: string } = {}
+  ): FakeGitHubRelease {
+    const repo = this.repo(owner, name)
+    if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
+    const sha = repo.refs.get(`tags/${tag}`)
+    if (!sha) throw new Error(`FakeGitHub: no tag ${tag}`)
+    const release = this.newRelease(repo, { tag, sha, via: 'hook', body: opts.body, draft: true })
+    if (opts.bundle !== false) release.assets.push(`launch-bundle-${tag}.tgz`)
+    return release
+  }
+
+  /** P4: the PUBLISHED release on `tag`, if any (a draft is not one — issue #12). */
   releaseFor(owner: string, name: string, tag: string): FakeGitHubRelease | undefined {
     return this.releases.find(
       r =>
         r.owner.toLowerCase() === owner.toLowerCase() &&
         r.repo.toLowerCase() === name.toLowerCase() &&
-        r.tag === tag
+        r.tag === tag &&
+        !r.draft
     )
   }
 
@@ -787,7 +821,14 @@ export class FakeGitHub implements VendorHandler {
 
   private newRelease(
     repo: FakeRepo,
-    input: { tag: string; sha: string; name?: string; body?: string; via: 'api' | 'hook' }
+    input: {
+      tag: string
+      sha: string
+      name?: string
+      body?: string
+      via: 'api' | 'hook'
+      draft?: boolean
+    }
   ): FakeGitHubRelease {
     const release: FakeGitHubRelease = {
       id: this.ids.number(),
@@ -796,11 +837,12 @@ export class FakeGitHub implements VendorHandler {
       tag: input.tag,
       name: input.name ?? input.tag,
       body: input.body ?? '',
-      draft: false,
+      draft: input.draft ?? false,
       prerelease: false,
       sha: input.sha,
-      publishedAt: new Date().toISOString(),
+      publishedAt: input.draft ? null : new Date().toISOString(),
       via: input.via,
+      assets: [],
     }
     this.releases.push(release)
     return release
@@ -817,6 +859,7 @@ export class FakeGitHub implements VendorHandler {
       target_commitish: r.sha,
       html_url: `https://github.com/${r.owner}/${r.repo}/releases/tag/${r.tag}`,
       published_at: r.publishedAt,
+      assets: r.assets.map((name, i) => ({ id: r.id * 100 + i, name })),
     }
   }
 
@@ -1657,6 +1700,45 @@ export class FakeGitHub implements VendorHandler {
       })
       await this.onRelease?.(release)
       return json(this.releaseJson(release), 201)
+    }
+    // Issue #12: the list (newest first; drafts only to a token that may write contents, as
+    // GitHub answers) and PATCH — `draft: false` publishes a draft and fires `onRelease` once.
+    if (rest === '/releases' && m === 'GET') {
+      const drafts = this.can(token, 'contents', 'write')
+      const list = this.releases
+        .filter(
+          r =>
+            r.owner.toLowerCase() === repo.owner.toLowerCase() &&
+            r.repo.toLowerCase() === repo.name.toLowerCase() &&
+            (drafts || !r.draft)
+        )
+        .reverse()
+      return json(list.map(r => this.releaseJson(r)))
+    }
+    match = rest.match(/^\/releases\/(\d+)$/)
+    if (match && m === 'PATCH') {
+      const refused = writable('contents')
+      if (refused) return refused
+      const id = Number(match[1])
+      const release = this.releases.find(
+        r =>
+          r.id === id &&
+          r.owner.toLowerCase() === repo.owner.toLowerCase() &&
+          r.repo.toLowerCase() === repo.name.toLowerCase()
+      )
+      if (!release) return ghError(404, 'Not Found')
+      this.releaseUpdates.push({ id, tag: release.tag, body: { ...body } })
+      if (body.tag_name !== undefined) release.tag = String(body.tag_name)
+      if (body.name !== undefined) release.name = String(body.name)
+      if (body.body !== undefined) release.body = String(body.body)
+      const publishing = release.draft && body.draft === false
+      if (publishing) {
+        release.draft = false
+        release.publishedAt = new Date().toISOString()
+        release.via = 'api'
+        await this.onRelease?.(release)
+      }
+      return json(this.releaseJson(release))
     }
     match = rest.match(/^\/releases\/tags\/(.+)$/)
     if (match && m === 'GET') {

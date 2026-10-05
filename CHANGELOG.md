@@ -23,6 +23,19 @@
   deploy re-gating as before. No `[skip ci]` on the bump. A release cut by a person (the app page,
   `launch releases`) does not wait.
 
+- **Promote ships the build Staging ran (build once).** On an app whose kit attaches a
+  `launch-bundle-<tag>.tgz` to a draft GitHub Release from its staging run, approving a
+  production deploy now publishes that draft (`PATCH draft: false`) instead of creating a second
+  release, so production deploys the staging bytes; an already-published release is left alone and
+  an older kit (no draft) gets a new release as before (production rebuilds). The release notes
+  now carry the release's git tree, each session PR's `launch/gate` check, Staging's Worker
+  version id and artifact digest, and Live's Worker version id once production is live. Every
+  deploy upload records an artifact digest (migration `0041_launch-deploy-artifact-digest`); a
+  production upload that differs from Staging's for the same version is warned about and shown on
+  the release page ("Live does not run the build Staging ran") — refused only when the job says it
+  deployed the bundle (`source: "bundle"`, an optional upload field beside `digest`; nothing changes
+  for kits that send neither).
+
 - **A green ship attests its gate on GitHub, and a landing decides on `Gate`.** After the sandbox
   gate passes and the ship's commit is pushed, Launch's GitHub App posts a `launch/gate` check run
   on that commit (`success`, `external_id` `tree:<git tree sha>`, the steps, commands and durations

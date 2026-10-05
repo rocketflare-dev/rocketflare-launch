@@ -1383,6 +1383,20 @@ reset and returned once as `migratorUrl`, and `activate` deploys it at 100%, app
 workflows and resets the password again; `finish` revokes if still live — including after an
 upload that was never activated.
 
+**The artifact digest** (issue #12, `deploy/artifact-digest.ts`, migration 0041
+`deploy_tickets.artifact_digest`): every upload records Launch's own digest of what it received —
+each module at `worker/<rel>` and asset at `ui/<rel>`, sha256 of the decoded bytes, the
+`<sha256>  <path>` lines sorted in byte order, sha256 over them: the kit's release-bundle
+`bundleSha256` algorithm (equal to it when the file sets match; the deployer drops `.assetsignore`,
+which a bundle keeps). `deployUploadSchema` gained two OPTIONAL fields no kit sends yet: `digest`
+(must equal Launch's, else 400 `deploy_digest_invalid`) and `source` (`bundle|build`). A production
+upload is compared with the newest activated staging deploy of the same version: different →
+`deploy.uploaded` records `stagingDigest` + `digestMismatch: true` and the gateway logs a warning,
+but the upload proceeds (a rebuild — a tag with no release asset — legitimately differs); only an
+upload that declares `source: 'bundle'` is refused (409 `deploy_digest_mismatch`, the ticket
+`failed`). The release view's `artifact` (`releaseArtifactSchema`: both tickets' Worker version ids
+and digests, `matches`) shows it, and the release page says whether Live runs the build Staging ran.
+
 **Deploy progress** (`deploy/progress.ts`): the app overview's "Deploying" panel
 (`GET /api/apps/:id/deploys/latest`, each environment's newest ticket) and the catalogue's
 `latestDeploy` (the newest in-progress deploy, else the newest) show a deploy as it runs —
@@ -1402,7 +1416,9 @@ the poll can throw into the read. The overview and the catalogue poll every 5 s 
 in progress and not waiting on a person; when it settles the app's queries refresh once.
 
 **Known gaps:** a GitHub-only author (a person who dispatched or published by hand) is not a
-Launch user, so the approver ≠ author rule cannot exclude them; deploy progress sees a run only
+Launch user, so the approver ≠ author rule cannot exclude them; today's kits send neither `digest`
+nor `source`, so a production upload that differs from staging is only warned about and recorded,
+never refused; deploy progress sees a run only
 once it has claimed a ticket — a dispatched production run that dies in its gate before `start`
 shows `dispatched` until its pre-approval lapses (15 minutes), and an in-progress ticket nobody
 reads is never polled (no cron sweeps them); the Versions API does
@@ -2602,6 +2618,21 @@ release and be `up` (probed now if the last reading is stale), then opens `deplo
 approval** the kind (`approvals/kinds/deploy-production.ts`) writes a pre-approval bound to
 `refs/tags/X.Y.Z` in the decide transaction and publishes the GitHub Release after it
 (idempotent by `getReleaseByTag`); the production run's `start` claims it only if its ref matches.
+**Build once** (issue #12, `releases/publish.ts`; the kit's `docs/DEPLOYER.md` "Build once"): a
+build-once kit's staging run attaches `launch-bundle-<tag>.tgz` to a DRAFT release for the tag (a
+draft fires no `release: published`), so publishing is three steps — `GET …/releases/tags/{tag}`
+200 → already published, nothing written; else `GET …/releases?per_page=100` (drafts are visible
+to the `contents: write` token) and `PATCH …/releases/{id}` `{ draft: false, name, body }` on the
+tag's draft (the one carrying the bundle first; never `tag_name`), which fires `published` once
+and production deploys the bytes staging ran; no draft (an older kit) → `POST` as before and
+production rebuilds. `release.published` records `via: draft|created` and `bundle`. The notes
+carry the PRs, the release commit's tree, each session PR's `launch/gate` check (its landing's
+`gateSha`/`gateTree`, issue #9), Staging's Worker version id and artifact digest (§18.7), and a
+`Live Worker version` line: production's `activate` fills it in with a second, best-effort PATCH
+after the response (`prepareLiveVersion` reads everything from the database first; a failure is a
+log line — the release view's `artifact.productionVersionId` has it anyway). Launch's releases list
+is its own `app_releases`, never GitHub's, so a draft is invisible to it; Promote itself never
+touches GitHub Releases.
 A run published or dispatched by hand in GitHub opens its own approval (subject `deploy_ticket`,
 requested by `github:<actor>`, expiring with the ticket); approving after its window is 409
 `deploy_run_gone`. "Deploy to production" with no release opens one with subject `app` (the
@@ -2776,7 +2807,12 @@ and the compare URL. Cached on the app row (`apps.main_compare`), asked at most 
 release moves the base and invalidates the reading at once. A GitHub failure is `aheadBy: null`
 with `error` (200, cached for the window), never a 5xx; no tag at all is `aheadBy: null`.
 
-**Known gaps:** GitHub is polled, not listened to (webhooks are P6); the first release of an app
+**Known gaps:** GitHub is polled, not listened to (webhooks are P6); build once races the kit's
+`release-bundle` job: a Promote approved before that job created its draft POSTs a new release
+(production rebuilds; the job then adds its asset to the published release), and Launch never
+reads the bundle itself, so "staging runs this version" is not checked against the asset's
+`bundleSha256` — only production's upload against staging's (§18.7); the `launch/gate` link is the
+gated head's checks page, not the check run itself; the first release of an app
 with no earlier tag lists only its session PRs; the bump is a direct push to the default branch,
 so a branch protected by anything the App cannot bypass (classic protection, or a ruleset without
 the Launch App as a bypass actor) refuses it — the Launch ruleset (§18.5) closes that gap for apps

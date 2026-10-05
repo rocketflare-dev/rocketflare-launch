@@ -4,7 +4,7 @@
  *
  * | Subject | Opened by | `applyInTx` (in the decide transaction) | `applyAfter` (after commit) |
  * |---|---|---|---|
- * | `release` | Promote | a pre-approval bound to `refs/tags/X.Y.Z` + the approval + the release; the release `promoting` | publish the GitHub Release (idempotent by `getReleaseByTag`) — `release: published` starts the job, whose `start` claims the pre-approval |
+ * | `release` | Promote | a pre-approval bound to `refs/tags/X.Y.Z` + the approval + the release; the release `promoting` | publish the GitHub Release (idempotent by `getReleaseByTag`; issue #12: the kit's staging DRAFT for the tag is published by PATCH, so production deploys its build-once bundle, else a new one is POSTed — `releases/publish.ts`) — `release: published` starts the job, whose `start` claims the pre-approval |
  * | `deploy_ticket` | a production run with nothing to claim (a Release published or a dispatch made by hand in GitHub) | `decidePending(source: 'approval')`; 409 `deploy_run_gone` once the run stopped waiting (the decision rolls back — the approver uses Promote) | nothing: the job's next poll sees `approved` |
  * | `app` | "Deploy to production" with no release | a pre-approval bound to the default branch | `workflow_dispatch` of `deploy.yml` |
  * | `rollback` (app page P3) | Roll back, the subject the release to go back TO | a pre-approval bound to that release's `refs/tags/X.Y.Z`, linked to it | `workflow_dispatch` of `deploy.yml` at the tag (`environment=production`) — the repo's own workflow, as by hand |
@@ -36,13 +36,15 @@ import {
   getTenantTicket,
   insertIntent,
 } from '../../launch/deploy/tickets'
-import {
-  createRelease as createGitHubRelease,
-  dispatchWorkflow,
-  getReleaseByTag,
-} from '../../launch/github-app'
+import { dispatchWorkflow } from '../../launch/github-app'
 import { DEPLOY_WORKFLOW_FILE, withRepoToken } from '../../launch/releases/github'
 import { moveRelease } from '../../launch/releases/lifecycle'
+import {
+  hasBundle,
+  publishGitHubRelease,
+  releaseNoteFacts,
+  releaseNotes,
+} from '../../launch/releases/publish'
 import { nudgeRelease } from '../../launch/releases/release'
 import type { ApprovalDeps, KindHandler } from '../types'
 
@@ -135,14 +137,6 @@ async function appOf(db: Database, tenantId: string, appId: string) {
 }
 
 /** The release notes of a published Release: the PRs it carries. */
-function releaseNotes(release: AppReleaseRow): string {
-  if (release.prs.length === 0) return `Release ${release.version}, promoted from Launch.`
-  const lines = release.prs.map(
-    p => `- #${p.number} ${p.title}${p.author ? ` (@${p.author})` : ''}`
-  )
-  return `Promoted from Launch.\n\n${lines.join('\n')}\n`
-}
-
 /**
  * `workflow_dispatch` of `deploy.yml` with `environment=production` at `ref` (a branch or a tag
  * name) for the approval's pre-approval — once. Already claimed (a retry after the run started),
@@ -322,21 +316,25 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
         { contents: 'write' },
         async (token, { owner, repo }) => {
           const gh = { fetch: deps.fetch }
-          // Idempotent: a retry (the sweep) after a publish that succeeded finds it.
-          const existing = await getReleaseByTag(token, owner, repo, release.tag, gh)
-          if (existing) return { release: existing, created: false }
-          const created = await createGitHubRelease(
+          // Issue #12: published already → nothing (idempotent: a retry after a publish that
+          // succeeded finds it); the kit's draft for the tag → PATCH it published, so production
+          // deploys its bundle; no draft → POST, and production rebuilds (`releases/publish.ts`).
+          const facts = await releaseNoteFacts(db, release, { token, owner, repo, gh })
+          return publishGitHubRelease(
             token,
             owner,
             repo,
-            { tagName: release.tag, name: release.version, body: releaseNotes(release) },
+            {
+              tag: release.tag,
+              name: release.version,
+              body: bundle => releaseNotes(release, { ...facts, bundle }),
+            },
             gh
           )
-          return { release: created, created: true }
         },
         { fetch: deps.fetch }
       )
-      if (published.created) {
+      if (published.action !== 'existing') {
         await recordAudit(db, {
           ...SYSTEM_ACTOR,
           tenantId: request.tenantId,
@@ -346,7 +344,15 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
           appId: release.appId,
           approvalId: request.id,
           summary: {
-            after: { tag: release.tag, url: published.release.html_url, status: release.status },
+            after: {
+              tag: release.tag,
+              url: published.release.html_url,
+              status: release.status,
+              // `draft`: the kit's staging draft was published (production deploys its bundle
+              // when it carries one); `created`: a new release (production rebuilds).
+              via: published.action === 'published_draft' ? 'draft' : 'created',
+              bundle: hasBundle(published.release, release.tag),
+            },
           },
         })
       }

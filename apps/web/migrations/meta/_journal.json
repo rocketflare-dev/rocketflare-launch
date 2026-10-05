@@ -288,6 +288,13 @@
       "when": 1791122125414,
       "tag": "0040_launch-kit-upgrades",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791207141810,
+      "tag": "0041_launch-deploy-artifact-digest",
+      "breakpoints": true
     }
   ]
 }

@@ -105,6 +105,13 @@ export const deployTickets = pgTable(
      * when the ticket last MOVED.
      */
     runPolledAt: timestamp('run_polled_at', { withTimezone: true }),
+    /**
+     * Issue #12 (build once): Launch's own digest of what `upload` received — sha256 over the
+     * `sha256sum` lines of `worker/<module>` + `ui/<asset>`, sorted (`deploy/artifact-digest.ts`).
+     * A production upload is compared with the staging deploy of the same version; null on a
+     * ticket uploaded before issue #12 (or never uploaded).
+     */
+    artifactDigest: text('artifact_digest'),
     /** The bindings the build declared, as checked (`binding-check.ts`). Ids and names only. */
     bindings: jsonb('bindings').$type<Record<string, unknown>>(),
     /** `"<kind> <binding>=<value>"` per refused binding. */

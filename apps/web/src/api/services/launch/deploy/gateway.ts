@@ -20,7 +20,10 @@
  * - **upload** — only on `approved` (409). The toml is parsed here and `checkBindings` decides;
  *   a refusal is 403 `{ error, refused }` and the ticket `failed`. P5 (plan §1.5): a toml var a
  *   live grant of the app and environment supplies is dropped from the upload and recorded as
- *   `shadowedVars` (on the ticket and in `deploy.uploaded`) — the grant's secret wins.
+ *   `shadowedVars` (on the ticket and in `deploy.uploaded`) — the grant's secret wins. Issue #12:
+ *   Launch's artifact digest of the upload is recorded on the ticket (`checkArtifact`); a
+ *   production upload that differs from the staging deploy of the same version is warned about
+ *   and recorded, and refused only when the job declares `source: 'bundle'`.
  * - **activate** — only on `uploaded` (409): registers the build's Workflows and cron schedules
  *   (a version upload does neither), deploys the version at 100%, revokes the migrator. A release's
  *   run moves it to `staging_active` / `production_active` (audited `release.*`). P5 (plan §1.6):
@@ -39,7 +42,7 @@
 import { githubRequesterLabel } from '@launch/shared/launch-approvals'
 import { DEPLOY_FINISHED_EVENT, type DeployUpload } from '@launch/shared/launch-pipeline'
 import { taggedRunVersion } from '@launch/shared/launch-releases'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
@@ -48,6 +51,7 @@ import {
   appEnvironments,
   appGrants,
   type DeployTicketRow,
+  deployTickets,
 } from '../../../../db/schema'
 import {
   ApiError,
@@ -58,6 +62,7 @@ import {
   NotFoundError,
   ServiceUnavailableError,
 } from '../../../utils/core/errors'
+import type { Defer } from '../../../utils/routes/route-helpers'
 import { open as openApproval } from '../../approvals/engine'
 import type { ApprovalDeps } from '../../approvals/types'
 import { grantedKeys, pushedSince } from '../../grants/holders'
@@ -76,6 +81,8 @@ import {
   releaseRunFailed,
   releaseRunStarted,
 } from '../releases/lifecycle'
+import { prepareLiveVersion } from '../releases/publish'
+import { deployArtifactDigest } from './artifact-digest'
 import { type BindingCheckResult, type CheckedWorkflow, checkBindings } from './binding-check'
 import { issueMigratorUrl, revokeMigrator } from './migrator'
 import {
@@ -190,6 +197,11 @@ export interface GatewayContext {
    * `deploy.production` approval through it. Absent, the ticket waits with no approval and expires.
    */
   approvals?: ApprovalDeps
+  /**
+   * Issue #12: where a side effect after the response goes (`waitUntil`) — production's
+   * `activate` writing Live's Worker version into the release's GitHub notes. Absent, it is skipped.
+   */
+  defer?: Defer
 }
 
 /** `start` and `get`'s body: `{ id, status }` plus what the job's log may find useful. */
@@ -521,6 +533,91 @@ async function failTicket(
   }
 }
 
+/**
+ * Issue #12: what `upload` learnt about the artifact. `stagingDigest` is set on a production
+ * upload only — the digest of the latest activated staging deploy of the same version, or null
+ * when there is none (or it predates issue #12).
+ */
+interface ArtifactCheck {
+  digest: string
+  stagingDigest?: string | null
+  mismatch: boolean
+}
+
+/** The digest of the newest activated staging deploy of `version` on this app, if recorded. */
+async function stagingDigestOf(
+  ctx: GatewayContext,
+  ticket: DeployTicketRow,
+  version: string
+): Promise<string | null> {
+  const [row] = await ctx.db
+    .select({ digest: deployTickets.artifactDigest })
+    .from(deployTickets)
+    .innerJoin(appEnvironments, eq(appEnvironments.id, deployTickets.environmentId))
+    .where(
+      and(
+        eq(deployTickets.tenantId, ticket.tenantId),
+        eq(deployTickets.appId, ticket.appId),
+        eq(appEnvironments.tenantId, ticket.tenantId),
+        eq(appEnvironments.name, 'staging'),
+        eq(deployTickets.version, version),
+        isNotNull(deployTickets.activatedAt),
+        isNotNull(deployTickets.artifactDigest)
+      )
+    )
+    .orderBy(desc(deployTickets.activatedAt))
+    .limit(1)
+  return row?.digest ?? null
+}
+
+/**
+ * Issue #12 (build once): Launch's own digest of the upload (`deployArtifactDigest`), checked
+ * against what the job claims and — on production — against the staging deploy of the same
+ * version. Before any vendor call, so a refusal uploads nothing.
+ *
+ * - A `digest` the job sent that is not Launch's: 400 `deploy_digest_invalid`, the ticket failed.
+ * - Production, staging recorded a digest for this version and this one differs: a job that says
+ *   it deployed the staging bundle (`source: 'bundle'`) is refused (409 `deploy_digest_mismatch`,
+ *   the ticket failed); any other upload — a rebuild (`source: 'build'`, the fallback for a tag with
+ *   no release asset) or a kit that says nothing — is warned about and recorded
+ *   (`deploy.uploaded`'s `digestMismatch`, and the release view's `artifact.matches: false`).
+ */
+async function checkArtifact(
+  ctx: GatewayContext,
+  ticket: DeployTicketRow,
+  body: DeployUpload,
+  version: string
+): Promise<ArtifactCheck> {
+  const digest = await deployArtifactDigest(body)
+  if (body.digest && body.digest !== digest) {
+    const error = 'the upload does not match the digest the job sent'
+    await failTicket(ctx, ticket, 'approved', error)
+    throw new DeployerProtocolError(400, error, 'deploy_digest_invalid', {
+      digest,
+      claimed: body.digest,
+    })
+  }
+  if (ctx.caller.environment.name !== 'production') return { digest, mismatch: false }
+
+  const stagingDigest = await stagingDigestOf(ctx, ticket, version)
+  const mismatch = stagingDigest !== null && stagingDigest !== digest
+  if (mismatch && body.source === 'bundle') {
+    const error = `the upload is not the build staging ran for ${version}`
+    await failTicket(ctx, ticket, 'approved', error)
+    throw new DeployerProtocolError(409, error, 'deploy_digest_mismatch', {
+      digest,
+      stagingDigest,
+    })
+  }
+  if (mismatch) {
+    ctx.logger?.warn(
+      { ticketId: ticket.id, version, digest, stagingDigest, source: body.source ?? null },
+      'deploy: the production upload is not the build staging ran'
+    )
+  }
+  return { digest, stagingDigest, mismatch }
+}
+
 export interface UploadResult {
   ticket: DeployTicketRow
   /** A CREDENTIAL. Returned to the job once; never logged, stored or audited. */
@@ -573,6 +670,8 @@ export async function uploadDeploy(
     })
   }
 
+  const artifact = await checkArtifact(ctx, ticket, body, version)
+
   const { check: uploading, shadowedVars } = await withoutShadowedVars(ctx, ticket, check)
   const vendors = await ctx.vendors()
   const workerName = environment.workerName ?? ''
@@ -598,6 +697,7 @@ export async function uploadDeploy(
   const uploaded = await transitionTicket(ctx.db, ticket, ['approved'], 'uploaded', {
     version,
     cfVersionId: versionId,
+    artifactDigest: artifact.digest,
     bindings: ticketBindings(uploading, { shadowedVars, uploadedAt }) as unknown as Record<
       string,
       unknown
@@ -629,6 +729,10 @@ export async function uploadDeploy(
     versionId,
     bindings: ticketBindings(uploading).bindings.map(b => `${b.type}:${b.name}`),
     ...(shadowedVars.length > 0 ? { shadowedVars } : {}),
+    digest: artifact.digest,
+    ...(body.source ? { source: body.source } : {}),
+    ...(artifact.stagingDigest !== undefined ? { stagingDigest: artifact.stagingDigest } : {}),
+    ...(artifact.mismatch ? { digestMismatch: true } : {}),
     migrator: 'issued',
   })
   return { ticket: uploaded, migratorUrl }
@@ -786,6 +890,18 @@ export async function activateDeploy(
       previousVersion: environment.lastDeployVersion,
       actor: ctx.actor,
     })
+    // Issue #12: the release's GitHub notes were written at publish, before production ran; its
+    // `Live Worker version` line is filled in now, after the response (best-effort).
+    const approvals = ctx.approvals
+    if (environment.name === 'production' && active.cfVersionId && approvals && ctx.defer) {
+      const input = {
+        tenantId: active.tenantId,
+        releaseId: active.releaseId,
+        versionId: active.cfVersionId,
+      }
+      const write = await prepareLiveVersion(approvals, input)
+      if (write) ctx.defer(write)
+    }
   }
   return active
 }

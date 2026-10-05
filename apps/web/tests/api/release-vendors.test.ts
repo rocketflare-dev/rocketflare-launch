@@ -20,6 +20,8 @@ import {
   getReleaseByTag,
   installationToken,
   listPullRequestsForCommit,
+  listReleases,
+  updateRelease,
 } from '@/api/services/launch/github-app'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 
@@ -128,6 +130,50 @@ describe('GitHub: tags and releases', () => {
     expect(called).toBe(false)
     expect((await getReleaseByTag(t, org(), 'shop', '0.1.0', opts()))?.tag_name).toBe('0.1.0')
     expect(cloud.github.releaseFor(org(), 'shop', '0.1.0')?.via).toBe('hook')
+  })
+
+  it('issue #12: a draft is listed (to contents: write), 404s by tag, and PATCH draft:false publishes it once', async () => {
+    const { t } = await releasedRepo()
+    const draft = cloud.github.draft(org(), 'shop', '0.1.0')
+    let published = 0
+    cloud.github.onRelease = () => {
+      published++
+    }
+    expect(await getReleaseByTag(t, org(), 'shop', '0.1.0', opts())).toBeNull()
+    const listed = await listReleases(t, org(), 'shop', opts())
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: draft.id,
+        tag_name: '0.1.0',
+        draft: true,
+        assets: [expect.objectContaining({ name: 'launch-bundle-0.1.0.tgz' })],
+      }),
+    ])
+    const reader = await token({ permissions: { contents: 'read' } })
+    expect(await listReleases(reader, org(), 'shop', opts())).toEqual([])
+    expect(
+      (await updateRelease(reader, org(), 'shop', draft.id, { draft: false }, opts()).catch(e => e))
+        .status
+    ).toBe(403)
+
+    const out = await updateRelease(
+      t,
+      org(),
+      'shop',
+      draft.id,
+      { draft: false, name: '0.1.0', body: 'notes' },
+      opts()
+    )
+    expect(out).toMatchObject({ id: draft.id, draft: false, body: 'notes' })
+    expect(published).toBe(1)
+    expect((await getReleaseByTag(t, org(), 'shop', '0.1.0', opts()))?.id).toBe(draft.id)
+    // A notes-only PATCH of a published release fires nothing.
+    await updateRelease(t, org(), 'shop', draft.id, { body: 'more' }, opts())
+    expect(published).toBe(1)
+    expect(cloud.github.releaseUpdates.map(u => u.body)).toEqual([
+      { draft: false, name: '0.1.0', body: 'notes' },
+      { body: 'more' },
+    ])
   })
 })
 
