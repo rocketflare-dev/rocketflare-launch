@@ -1867,7 +1867,12 @@ buffered, and a 401/404 did nothing. An older token's 404 passes through at once
 `SESSION_BACKEND=local` (development only) swaps only where the repo lives (the local
 git server, still through the git handler) — procedure and timings in `docs/SESSIONS-LOCAL.md`.
 Under `APP_ENV=development` (every `wrangler dev` container, whatever the backend) each command
-runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`). The allow-list is widened at
+runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`). Every process in the
+container — each dev step and each agent turn, Claude Code or Codex, on either sandbox host —
+also gets `TEST_LATENCY_FACTOR=4` (`sessionSharedEnv`, `rocketflare-dev.ts`): a test an agent runs
+by hand outside the gate scales the kit's vitest limits for the container's slower CPU instead of
+timing out at 5 s (kit rocketflare-dev/rocketflare#62; the kit keeps the larger of it and its own
+factor, so the gate's 12 stands, and an older kit ignores it). The allow-list is widened at
 RUNTIME by `sessionBootstrap` (`setAllowedHosts`, bounded at 90 s): measured under wrangler 4.127 /
 sandbox 0.12.10, a runtime `setAllowedHosts` on a running container returns at once and the next
 command runs, immediately and after 40 s idle — it re-registers the interception on the proxy

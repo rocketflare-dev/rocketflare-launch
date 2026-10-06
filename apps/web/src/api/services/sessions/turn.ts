@@ -137,7 +137,7 @@ import {
   type SessionEgressPort,
   type SessionPorts,
 } from './ports'
-import { claudeTranscriptPath, SESSION_LAUNCH_DIR } from './rocketflare-dev'
+import { claudeTranscriptPath, SESSION_LAUNCH_DIR, sessionSharedEnv } from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
 import type {
   AgentRuntime,
@@ -1339,6 +1339,7 @@ async function runLeasedTurn(
     const proc = await sandbox.startProcess(turnProcessCommand(runtime.buildCommand(command)), {
       cwd: p.cwd,
       env: {
+        ...sessionSharedEnv(),
         ...runtime.turnEnv({ model: p.policy.model, source: lease.source }),
         ...lease.env,
         ...egressEnv,

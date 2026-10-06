@@ -26,6 +26,7 @@ import {
   SESSION_API_PORT,
   SESSION_IMAGE_VERSION,
   SESSION_KIT_TAG,
+  SESSION_TEST_LATENCY_FACTOR,
   SESSION_UI_PORT,
   sessionBootstrap,
   sessionDevVars,
@@ -139,7 +140,10 @@ describe('the bootstrap command', () => {
   it('uses the neon driver straight to the branch, on a laptop too — never a proxy', () => {
     for (const cfg of [cloud, local, devCloud]) {
       const dev = devEnvFor(cfg, session)
-      expect(sessionProcessEnv(dev)).toMatchObject({ DATABASE_DRIVER: 'neon' })
+      expect(sessionProcessEnv(dev)).toMatchObject({
+        DATABASE_DRIVER: 'neon',
+        TEST_LATENCY_FACTOR: SESSION_TEST_LATENCY_FACTOR,
+      })
       expect(sessionProcessEnv(dev)).not.toHaveProperty('NEON_LOCAL_PROXY')
       expect(sessionDevVars(dev)).toMatchObject({ DATABASE_DRIVER: 'neon', NEON_LOCAL_PROXY: '' })
     }

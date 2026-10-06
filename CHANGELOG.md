@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
+  Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
+  kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of
+  5 s. The ship gate keeps its own factor of 12; a kit older than the variable ignores it.
 - **Coding sessions default to the agent's own model.** With nothing pinned, Claude Code runs with
   no `--model` (and no background-model override) and Codex with no `-m`, so each picks its model
   as it does on a laptop — Opus 5.5 for Claude Code today, not Sonnet. Platform → Coding agents

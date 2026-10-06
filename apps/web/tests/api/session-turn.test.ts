@@ -30,6 +30,7 @@ import { requestTurn } from '@/api/services/sessions/chat'
 import { CLAUDE_TURN_INPUT } from '@/api/services/sessions/claude-stream'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
+import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/rocketflare-dev'
 import {
   CONVERSATION_LOST_MESSAGE,
   createShipTurnRunner,
@@ -159,6 +160,8 @@ describe('runTurn: a turn that finishes', () => {
     expect(proc?.command).not.toContain('{{')
     expect(proc?.opts?.cwd).toBe('/workspace/app')
     expect(proc?.opts?.env?.ANTHROPIC_API_KEY).toBe(MODEL_KEY_PLACEHOLDER)
+    // The kit's vitest limits scale for the container's slower CPU (kit #62).
+    expect(proc?.opts?.env?.TEST_LATENCY_FACTOR).toBe(SESSION_TEST_LATENCY_FACTOR)
   })
 
   it('the next turn resumes Claude’s session and continues the seq; the turn’s cost is what was metered', async () => {

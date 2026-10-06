@@ -122,12 +122,29 @@ export interface SessionDevEnv {
 }
 
 /**
+ * How much the kit's vitest time limits scale in a session container (`TEST_LATENCY_FACTOR`, kit
+ * rocketflare-dev/rocketflare#62): a container has a fraction of a laptop's CPU — under emulation
+ * on an ARM Mac in `wrangler dev` — so a test an agent runs BY HAND, outside the ship gate, timed
+ * out at vitest's 5 s (`plugin-skills.test.ts`'s end-to-end upgrade took 7.3 s) and the agent went
+ * after a failure that was not one. 4 is the factor the kit already gives the `neon` driver
+ * (20 s per test). The kit takes the LARGER of this and its own target factor, so the gate's 12
+ * stands; a kit older than the variable ignores it.
+ */
+export const SESSION_TEST_LATENCY_FACTOR = '4'
+
+/** Variables every process in the container gets — the turn's agent and every dev step. */
+export function sessionSharedEnv(): Record<string, string> {
+  return { TEST_LATENCY_FACTOR: SESSION_TEST_LATENCY_FACTOR }
+}
+
+/**
  * Command-level variables every step shares: no credential, no telemetry, the ports, and the neon
  * driver — the container has no TCP out, so the kit's scripts (which read `DATABASE_DRIVER` from
  * the environment before `.dev.vars`) must speak HTTPS/WebSocket to the branch.
  */
 export function sessionProcessEnv(dev: SessionDevEnv): Record<string, string> {
   return {
+    ...sessionSharedEnv(),
     CI: '1',
     WRANGLER_SEND_METRICS: 'false',
     DATABASE_DRIVER: 'neon',

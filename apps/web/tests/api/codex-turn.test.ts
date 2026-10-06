@@ -26,6 +26,7 @@ import {
 import { handleOpenAi } from '@/api/services/sessions/egress/openai'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
+import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/rocketflare-dev'
 import { parseCodexAuthJson } from '@/api/services/sessions/runtimes/codex/auth-json'
 import {
   CODEX_AGENTS_PATH,
@@ -121,6 +122,7 @@ describe('a Codex turn on Launch’s account', () => {
     expect(first?.opts?.env).toMatchObject({
       CODEX_API_KEY: MODEL_KEY_PLACEHOLDER,
       CODEX_HOME: '/root/.codex',
+      TEST_LATENCY_FACTOR: SESSION_TEST_LATENCY_FACTOR,
     })
     expect(first?.opts?.env).not.toHaveProperty('ANTHROPIC_API_KEY')
 
