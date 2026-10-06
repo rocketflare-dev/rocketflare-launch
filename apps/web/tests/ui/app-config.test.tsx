@@ -307,7 +307,7 @@ describe('ShipPanel — the shared config a PR needs', () => {
       <MemoryRouter>
         {/* The PR read is disabled without a PR number: a bare client is enough. */}
         <ShipPanelHarness>
-          <ShipPanel session={session} gates={[]} configNeeds={needs} appSlug="expenses" />
+          <ShipPanel session={session} configNeeds={needs} appSlug="expenses" />
         </ShipPanelHarness>
       </MemoryRouter>
     )

@@ -476,6 +476,7 @@ export async function landCiStep(
     passed: checks.passed,
     failed: checks.failed,
     pending: checks.pending,
+    ...(checks.queued ? { queued: checks.queued } : {}),
   }
   const emit = emitterFor(scope)
   const changed = prChecksChanged(session.prChecks ?? null, checks)

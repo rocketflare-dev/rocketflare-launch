@@ -84,10 +84,10 @@ export function composerBlockedReason(
       return 'This session has used its budget.'
     case 'shipping':
       // Issue #5: `shipping` spans the gate AND what follows the PR, up to the merge.
-      if (stage === 'ci') return 'Shipping — waiting for CI on the pull request.'
+      if (stage === 'ci') return 'Shipping — waiting for the automatic checks on the pull request.'
       if (stage === 'approval') return 'Shipping — waiting for a review before merging.'
       if (stage === 'merging') return 'Shipping — merging the pull request.'
-      return 'Shipping — checking the code and opening a pull request.'
+      return 'Shipping — checking your change, then opening a pull request.'
     case 'shipped':
       if (stage === 'releasing' || stage === 'deploying')
         return 'This session was shipped and is on its way to staging. Start a new one to keep changing the app.'

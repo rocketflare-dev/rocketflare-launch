@@ -11,12 +11,16 @@
  * `shipGates` — never a second fetch of the same fact.
  *
  * Layout: a fixed-height split from `lg` up, so the transcript scrolls inside its own panel and the
- * preview keeps its place; below `lg` the panes stack and the page scrolls. The ship panel sits
- * above the preview once shipping has started, because from then on it is the news.
+ * preview keeps its place; below `lg` the panes stack and the page scrolls. Issue #22: while a ship
+ * is under way (`shipInProgress` — the gate, the PR, its checks, a review, the release, the staging
+ * deploy, or a stall a person moves on) the ship timeline REPLACES the preview pane, which has
+ * nothing new to show until the change is live; a small "Show preview" link brings the preview
+ * back, and it returns by itself when the ship ends (live, or handed back), when the timeline's
+ * outcome sits above it instead.
  */
 import { ChatBubbleLeftRightIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
 import { sessionTakesMessages } from '@launch/shared/launch-sessions'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
 import { useApp } from '@/ui/hooks/useApps'
@@ -35,7 +39,8 @@ import { PreviewFrame } from './components/PreviewFrame'
 import { SessionChat } from './components/SessionChat'
 import { SessionHeader } from './components/SessionHeader'
 import { ShipPanel, shipConfigNeeds } from './components/ShipPanel'
-import { bootSteps, latestPreviewChangeSeq, shipGateRunning, shipGates } from './sessionChatModel'
+import { bootSteps, latestPreviewChangeSeq, shipGates } from './sessionChatModel'
+import { shipInProgress } from './shipTimelineModel'
 import { useComposerAttachments } from './useComposerAttachments'
 
 export default function SessionPage() {
@@ -58,12 +63,30 @@ export default function SessionPage() {
   const events = stream.events
   const steps = useMemo(() => bootSteps(events), [events])
   const gates = useMemo(() => shipGates(events), [events])
-  const runningGate = useMemo(() => shipGateRunning(events), [events])
   // P5: the shared config ship's scan of the PR head found the app does not hold (names only).
   const configNeeds = useMemo(() => shipConfigNeeds(events), [events])
   const changeSeq = useMemo(
     () => (stream.isLoading ? undefined : latestPreviewChangeSeq(events)),
     [events, stream.isLoading]
+  )
+  // Issue #22: the timeline stands in for the preview while the ship is under way, unless the
+  // reader asked for the preview back; that choice lasts until the ship ends.
+  const shipping = session ? shipInProgress(session) : false
+  const [previewWanted, setPreviewWanted] = useState(false)
+  useEffect(() => {
+    if (!shipping) setPreviewWanted(false)
+  }, [shipping])
+  // What the app does after the PR, before the landing snapshots it.
+  const plan = useMemo(
+    () =>
+      app
+        ? {
+            mode: app.shipSettings.sessionShip,
+            review:
+              app.shipReviewSetBy === 'policy' ? ('policy' as const) : app.shipSettings.review.mode,
+          }
+        : null,
+    [app]
   )
 
   if (isLoading) {
@@ -108,6 +131,7 @@ export default function SessionPage() {
     session.prNumber !== null ||
     session.landing !== null ||
     gates.length > 0
+  const timelineInPane = shipping && !previewWanted
 
   return (
     <div className="flex flex-col gap-4 lg:h-[calc(100dvh-7.5rem)]">
@@ -142,39 +166,64 @@ export default function SessionPage() {
           />
         </section>
         <div className="flex min-h-0 flex-col gap-4">
-          {showShip && (
+          {showShip && !timelineInPane && !shipping && (
             <ShipPanel
               session={session}
-              gates={gates}
-              running={runningGate}
               events={events}
               configNeeds={configNeeds}
               appSlug={slug}
+              plan={plan}
             />
           )}
-          <div className="h-[32rem] min-h-0 lg:h-auto lg:flex-1">
-            <PreviewFrame
-              session={session}
-              changeSeq={changeSeq}
-              steps={steps}
-              canManage={session.viewerCanManage}
-              onResume={() => resume.mutate()}
-              resuming={resume.isPending}
-              appSlug={slug}
-              // A screenshot is an image for the next message: a kit upgrade takes none.
-              onScreenshot={
-                sessionTakesMessages(session)
-                  ? request =>
-                      attachments.addPending(
-                        request.path
-                          ? `Screenshot of ${request.path}`
-                          : 'Screenshot of the preview',
-                        () => takePreviewScreenshot(id, request)
-                      )
-                  : undefined
-              }
-            />
-          </div>
+          {shipping && !timelineInPane && (
+            <div className="flex items-center justify-between gap-3 text-sm" role="status">
+              <span className="text-secondary">Your change is shipping.</span>
+              <button
+                type="button"
+                className="link link-hover"
+                onClick={() => setPreviewWanted(false)}
+              >
+                Show shipping progress
+              </button>
+            </div>
+          )}
+          {timelineInPane ? (
+            <div className="min-h-[32rem] lg:min-h-0 lg:flex-1" data-testid="ship-pane">
+              <ShipPanel
+                session={session}
+                events={events}
+                configNeeds={configNeeds}
+                appSlug={slug}
+                plan={plan}
+                fill
+                onShowPreview={() => setPreviewWanted(true)}
+              />
+            </div>
+          ) : (
+            <div className="h-[32rem] min-h-0 lg:h-auto lg:flex-1">
+              <PreviewFrame
+                session={session}
+                changeSeq={changeSeq}
+                steps={steps}
+                canManage={session.viewerCanManage}
+                onResume={() => resume.mutate()}
+                resuming={resume.isPending}
+                appSlug={slug}
+                // A screenshot is an image for the next message: a kit upgrade takes none.
+                onScreenshot={
+                  sessionTakesMessages(session)
+                    ? request =>
+                        attachments.addPending(
+                          request.path
+                            ? `Screenshot of ${request.path}`
+                            : 'Screenshot of the preview',
+                          () => takePreviewScreenshot(id, request)
+                        )
+                    : undefined
+                }
+              />
+            </div>
+          )}
         </div>
       </div>
 

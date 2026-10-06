@@ -174,6 +174,30 @@ describe('sessions start / ls / end / preview-url', () => {
     expect(JSON.parse(out.content()).items[0].id).toBe(ID)
   })
 
+  it('lists a ship in flight in the session page’s words, with its time so far (issue #22)', async () => {
+    const since = new Date(Date.now() - 125_000).toISOString()
+    const shipping = {
+      stage: 'releasing',
+      waitingOn: null,
+      stalledReason: null,
+      approvalId: null,
+      prNumber: 7,
+      version: null,
+      since,
+      mainCi: null,
+    }
+    const { fetch } = mockFetch({
+      '/api/apps/expenses': () => jsonResponse(appDetail),
+      [`/api/apps/${APP_ID}/sessions`]: () =>
+        jsonResponse({ items: [summary({ status: 'shipped', prNumber: 7, shipping })] }),
+    })
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsList(ctx, 'expenses')
+    expect(out.content()).toContain(
+      'PR #7 · Merged, waiting for main’s checks · 2 min (releases anyway after 30 min)'
+    )
+  })
+
   it('ends a session, and a 403 is exit 3', async () => {
     const ok = mockFetch({
       [`/api/sessions/${ID}/end`]: () =>
@@ -428,15 +452,23 @@ describe('sessions ship', () => {
     const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
     await runSessionsShip(ctx, ID, { wait: true, sleep: noSleep })
     const text = out.content()
-    expect(text).toContain('gate passed (attempt 1)')
-    expect(text).toContain('tests failed (attempt 2)')
-    expect(text).toContain('preparing the test database (attempt 3)')
-    expect(text).toContain('running tests (attempt 3): pnpm gate test')
-    expect(text).toContain('tests passed (attempt 3)')
+    // Issue #22: the session page's words — the gate is "checking your change", a red step is a
+    // problem Claude is fixing, and the try counts against the three.
+    expect(text).toContain('✓ Your change passed lint, types and tests\n')
+    expect(text).toContain('! The tests found a problem. Claude is fixing it (try 3 of 3).')
+    expect(text).toContain(
+      '… Checking your change: preparing a test copy of the database (try 3 of 3)'
+    )
+    expect(text).toContain(
+      '… Checking your change: running the tests (try 3 of 3) · pnpm gate test'
+    )
+    expect(text).toContain('✓ Your change passed lint, types and tests (try 3 of 3)')
     // A start row is never read as a verdict.
-    expect(text).not.toContain('tests failed (attempt 3)')
-    expect(text).toContain(`PR #12 ${prUrl}`)
-    expect(text).toContain('CI passed')
+    expect(text).not.toContain('found a problem after')
+    expect(text).toContain(`✓ Pull request #12 opened ${prUrl}`)
+    // Said once: the PR's row, not again at the end.
+    expect(text.split('Pull request #12 opened').length - 1).toBe(1)
+    expect(text).toContain('✓ The automatic checks passed')
     expect(prReads).toBe(2)
   })
 
@@ -452,7 +484,7 @@ describe('sessions ship', () => {
     })
     const a = await testContext({ store: await loggedInStore(), fetch: failing.fetch })
     const ciError = await captureError(runSessionsShip(a.ctx, ID, { wait: true, sleep: noSleep }))
-    expect(ciError.message).toBe('CI failed on PR #12')
+    expect(ciError.message).toBe('The automatic checks found a problem on PR #12')
 
     const noPr = mockFetch({
       [`/api/sessions/${ID}/events`]: url => eventsRoute([])(url),
@@ -565,9 +597,9 @@ describe('sessions ship — through to live on staging (#5)', () => {
           })
         )
       )
-    expect(merged('github')).toContain('merged PR #12 on GitHub (ccccccc)')
-    expect(merged('launch')).toContain('merged PR #12 (ccccccc)')
-    expect(merged()).toContain('merged PR #12 (ccccccc)')
+    expect(merged('github')).toContain('Merged on GitHub: PR #12 (ccccccc)')
+    expect(merged('launch')).toContain('✓ Merged: PR #12 (ccccccc)')
+    expect(merged()).toContain('✓ Merged: PR #12 (ccccccc)')
   })
 
   it('waits through to live by default, printing each stage', async () => {
@@ -575,13 +607,19 @@ describe('sessions ship — through to live on staging (#5)', () => {
     const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
     await runSessionsShip(ctx, ID, { sleep: noSleep })
     const text = out.content()
-    expect(text).toContain(`opened PR #12 ${prUrl}`)
-    expect(text).toContain('CI passed')
-    expect(text).toContain('merged PR #12 (ccccccc)')
-    expect(text).toContain('released v1.4.3')
-    expect(text).toContain(`live on staging: ${stagingUrl} (v1.4.3)`)
+    expect(text).toContain(`✓ Pull request #12 opened ${prUrl}`)
+    expect(text).toContain('✓ The automatic checks passed')
+    expect(text).toContain('✓ Merged: PR #12 (ccccccc)')
+    // The stage with no row of its own: the release waits for main's checks, with its limit.
+    expect(text).toContain(
+      '… Merged, waiting for main’s checks (launch releases anyway after 30 minutes)'
+    )
+    expect(text).toContain('✓ Released v1.4.3')
+    expect(text).toContain('… Deploying v1.4.3 to staging')
+    expect(text).toContain(`✓ Live on staging: ${stagingUrl} (v1.4.3)`)
+    expect(text).toContain('Ready to promote to production — from the app’s page.')
     // Live once: the closing line is the row's, not printed twice.
-    expect(text.split('live on staging').length - 1).toBe(1)
+    expect(text.split('Live on staging').length - 1).toBe(1)
     // Past the PR nothing reads `GET /pr`: the landing rows say it.
     expect(calls.some(c => c.url.pathname.endsWith('/pr'))).toBe(false)
   })
@@ -644,7 +682,10 @@ describe('sessions ship — through to live on staging (#5)', () => {
     expect(exitCodeFor(error)).toBe(EXIT_ERROR)
     expect(error.message).toBe('Not merged: CI failed on the pull request.')
     const text = out.content()
-    expect(text).toContain('CI failed: Gate https://github.com/acme/expenses/actions/runs/9/job/1')
+    expect(text).toContain(
+      '✗ The automatic checks found a problem: Gate https://github.com/acme/expenses/actions/runs/9/job/1'
+    )
+    expect(text).toContain('! Not merged: CI failed on the pull request.')
     expect(text).toContain('expected "Welcome" to be "Welcome back"')
   })
 

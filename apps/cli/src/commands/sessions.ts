@@ -42,6 +42,7 @@ import {
   type SessionEvent,
   type SessionShipReopenedData,
   type SessionStatus,
+  SHIP_GATE_ATTEMPTS,
   SHIP_GATE_STEP_LABELS,
   sessionBootTimingDataSchema,
   sessionDetailResponseSchema,
@@ -52,6 +53,7 @@ import {
   sessionShipGateDataSchema,
   sessionShipMergedDataSchema,
   sessionShipPrDataSchema,
+  sessionShippingOf,
   sessionShipReleasedDataSchema,
   sessionShipReopenedDataSchema,
   sessionShipReviewDataSchema,
@@ -62,6 +64,18 @@ import {
   sessionUserMessageDataSchema,
   UPGRADE_SESSION_READ_ONLY_CODE,
 } from '@launch/shared/launch-sessions'
+import {
+  checksCountText,
+  gateFixingText,
+  gateProblemText,
+  gateStepNowText,
+  gateTryText,
+  MAIN_CHECKS_LIMIT_TEXT,
+  SHIP_STAGE_NEXT_TEXT,
+  shippingLineText,
+  shippingSummaryText,
+  shipStageText,
+} from '@launch/shared/launch-ship-progress'
 import chalk from 'chalk'
 import { type ApiClient, CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
@@ -165,7 +179,11 @@ export async function runSessionsList(
       { header: 'Id', value: s => s.id },
       { header: 'Title', value: s => s.title },
       // A ship in flight outlives the container (a `shipped` row still releasing): say its stage.
-      { header: 'Status', value: s => (s.shipping ? `shipping (${s.shipping.stage})` : s.status) },
+      // Issue #22: in the words the session page and the status chip use, with its time so far.
+      {
+        header: 'Status',
+        value: s => (s.shipping ? shippingLineText(s.shipping, Date.now()) : s.status),
+      },
       { header: 'Turns', value: s => s.turnCount },
       { header: 'Cost', value: s => usd(s.costMicrocents) },
       { header: 'PR', value: s => s.prUrl },
@@ -288,8 +306,18 @@ async function readEventsAfter(
   return { items, nextSeq: cursor }
 }
 
-/** One row as a human line, or null for rows a terminal reader does not need. Pure. */
-export function formatSessionEvent(event: SessionEvent): string | null {
+/** "Running the tests" → "running the tests", inside a sentence. */
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
+
+/** Who fixes a red gate step, as the session page names it. */
+const agentOf = (runtime: AgentRuntimeId | undefined) => (runtime === 'codex' ? 'Codex' : 'Claude')
+
+/**
+ * One row as a human line, or null for rows a terminal reader does not need. The ship's rows are
+ * worded as the session page's timeline words them (`@launch/shared/launch-ship-progress`, issue
+ * #22); `agent` is who fixes a red gate step. Pure.
+ */
+export function formatSessionEvent(event: SessionEvent, agent = 'Claude'): string | null {
   const data = (event.data ?? {}) as Record<string, unknown>
   switch (event.type) {
     case 'user.message': {
@@ -344,78 +372,93 @@ export function formatSessionEvent(event: SessionEvent): string | null {
     case 'ship.gate': {
       const parsed = sessionShipGateDataSchema.safeParse(event.data)
       if (!parsed.success) return null
-      // One row per step Launch ran (issue #1); a row without `step` is the whole gate (older).
-      const what = parsed.data.step ? SHIP_GATE_STEP_LABELS[parsed.data.step].toLowerCase() : 'gate'
+      const data = parsed.data
+      // Issue #22: the words the session page's timeline uses (`launch-ship-progress`).
+      const tries = data.attempt > 1 ? ` (${gateTryText(data.attempt)})` : ''
       // The step's start: said as it begins, so a long test run is not a silent wait.
-      if (isShipGateRunning(parsed.data)) {
-        return parsed.data.phase === 'database'
-          ? chalk.dim(`  … preparing the test database (attempt ${parsed.data.attempt})`)
-          : chalk.dim(
-              `  … running ${what} (attempt ${parsed.data.attempt}): ${parsed.data.command}`
-            )
+      if (isShipGateRunning(data)) {
+        const doing = gateStepNowText(data.step, data.phase)
+        const command = data.phase === 'database' ? '' : ` · ${data.command}`
+        return chalk.dim(`  … Checking your change: ${lowerFirst(doing)}${tries}${command}`)
       }
-      return parsed.data.passed
-        ? chalk.green(`✓ ${what} passed (attempt ${parsed.data.attempt})`)
-        : chalk.yellow(`! ${what} failed (attempt ${parsed.data.attempt})`)
+      if (!data.step) {
+        return data.passed
+          ? chalk.green(`✓ ${shipStageText('check', 'done')}${tries}`)
+          : chalk.yellow(`! ${gateProblemText(undefined)}${tries}`)
+      }
+      if (data.passed) {
+        return data.step === 'test'
+          ? chalk.green(`✓ ${shipStageText('check', 'done')}${tries}`)
+          : chalk.dim(`  ✓ ${SHIP_GATE_STEP_LABELS[data.step]} passed${tries}`)
+      }
+      return chalk.yellow(
+        data.attempt < SHIP_GATE_ATTEMPTS
+          ? `! ${gateFixingText(data.step, agent, data.attempt + 1)}`
+          : `! ${gateProblemText(data.step)} after ${data.attempt} tries`
+      )
     }
     case 'ship.pr': {
       const parsed = sessionShipPrDataSchema.safeParse(event.data)
       return parsed.success
-        ? chalk.green(`✓ opened PR #${parsed.data.number} ${parsed.data.url}`)
+        ? chalk.green(
+            `✓ ${shipStageText('pr', 'done', { prNumber: parsed.data.number })} ${parsed.data.url}`
+          )
         : null
     }
     case 'ship.ci': {
       const parsed = sessionShipCiDataSchema.safeParse(event.data)
       if (!parsed.success) return null
       const ci = parsed.data
-      if (ci.state === 'success') return chalk.green('✓ CI passed')
+      if (ci.state === 'success') return chalk.green(`✓ ${shipStageText('checks', 'done')}`)
       if (ci.state === 'failure') {
         const check = ci.failedCheck
         const lines = [
           chalk.red(
-            `✗ CI failed${check ? `: ${check.name}` : ''}${check?.url ? ` ${check.url}` : ''}`
+            `✗ ${shipStageText('checks', 'failed')}${check ? `: ${check.name}` : ''}${check?.url ? ` ${check.url}` : ''}`
           ),
         ]
         const tail = check?.logTail?.trim().split('\n').slice(-CI_TAIL_LINES)
         if (tail?.length) lines.push(...tail.map(line => chalk.dim(`    ${line}`)))
         return lines.join('\n')
       }
-      return chalk.dim(
-        `  … CI: ${ci.passed} passed${ci.failed ? `, ${ci.failed} failed` : ''}${ci.pending ? `, ${ci.pending} running` : ''}`
-      )
+      return chalk.dim(`  … Automatic checks: ${lowerFirst(checksCountText(ci))}`)
     }
     case 'ship.review': {
       const parsed = sessionShipReviewDataSchema.safeParse(event.data)
       if (!parsed.success) return null
-      const by = parsed.data.by ? ` by ${parsed.data.by}` : ''
+      const by = parsed.data.by ?? null
       const note = parsed.data.note ? `: ${parsed.data.note}` : ''
       switch (parsed.data.status) {
         case 'requested':
-          return chalk.cyan(`… waiting for a review in Launch (approval ${parsed.data.approvalId})`)
+          return chalk.cyan(
+            `… ${shipStageText('review', 'now')} in Launch (approval ${parsed.data.approvalId})`
+          )
         case 'approved':
-          return chalk.green(`✓ approved${by}${note}`)
+          return chalk.green(`✓ ${shipStageText('review', 'done', { reviewer: by })}${note}`)
         case 'rejected':
-          return chalk.yellow(`! sent back${by}${note}`)
+          return chalk.yellow(`! ${shipStageText('review', 'failed', { reviewer: by })}${note}`)
         case 'expired':
-          return chalk.yellow('! the review request lapsed')
+          return chalk.yellow(
+            `! ${shipStageText('review', 'failed', { reviewOutcome: 'expired' })}`
+          )
         case 'cancelled':
-          return chalk.dim('  the review request was withdrawn')
+          return chalk.dim(`  ${shipStageText('review', 'failed', { reviewOutcome: 'cancelled' })}`)
       }
       return null
     }
     case 'ship.merged': {
       const parsed = sessionShipMergedDataSchema.safeParse(event.data)
-      return parsed.success
-        ? chalk.green(
-            `✓ merged PR #${parsed.data.number}${parsed.data.by === 'github' ? ' on GitHub' : ''} (${parsed.data.sha.slice(0, 7)})`
-          )
-        : null
+      if (!parsed.success) return null
+      const onGitHub = parsed.data.by === 'github'
+      return chalk.green(
+        `✓ ${shipStageText('merge', 'done', { mergedOnGitHub: onGitHub })}: PR #${parsed.data.number} (${parsed.data.sha.slice(0, 7)})`
+      )
     }
     case 'ship.released': {
       const parsed = sessionShipReleasedDataSchema.safeParse(event.data)
       return parsed.success
         ? chalk.green(
-            `✓ released ${versionLabel(parsed.data.version)}${parsed.data.shared ? ' (shared with another merge)' : ''}`
+            `✓ ${shipStageText('release', 'done', { version: parsed.data.version })}${parsed.data.shared ? ' (shared with another merge)' : ''}`
           )
         : null
     }
@@ -426,20 +469,22 @@ export function formatSessionEvent(event: SessionEvent): string | null {
       const version = versionLabel(parsed.data.version)
       switch (status) {
         case 'deploying':
-          return chalk.dim(`  … deploying ${version} to staging`)
+          return chalk.dim(
+            `  … ${shipStageText('staging', 'now', { version: parsed.data.version })}`
+          )
         case 'active':
-          return chalk.dim(`  … ${version} is on staging; checking its health`)
+          return chalk.dim(`  … ${shipStageText('staging', 'now', { checkingHealth: true })}`)
         case 'live':
-          return chalk.green(`✓ live on staging: ${url ?? 'staging'} (${version})`)
+          return chalk.green(
+            `✓ ${shipStageText('staging', 'done')}: ${url ?? 'staging'} (${version})`
+          )
         default:
           return chalk.red(`✗ ${error ?? `${version} did not go live on staging (${status})`}`)
       }
     }
     case 'ship.reopened': {
       const parsed = sessionShipReopenedDataSchema.safeParse(event.data)
-      return parsed.success
-        ? chalk.yellow(`! not merged (${parsed.data.reason}): ${parsed.data.message}`)
-        : null
+      return parsed.success ? chalk.yellow(`! Not merged: ${parsed.data.message}`) : null
     }
     case 'error':
       return chalk.red(`✗ ${typeof data.message === 'string' ? data.message : 'error'}`)
@@ -453,10 +498,15 @@ export function formatSessionEvent(event: SessionEvent): string | null {
 }
 
 /** Human lines as rows arrive; with `--json` the rows are collected and printed once at the end. */
-function emit(ctx: CommandContext, seen: SessionEvent[], event: SessionEvent): void {
+function emit(
+  ctx: CommandContext,
+  seen: SessionEvent[],
+  event: SessionEvent,
+  agent?: string
+): void {
   seen.push(event)
   if (ctx.json) return
-  const line = formatSessionEvent(event)
+  const line = formatSessionEvent(event, agent)
   if (line !== null) ctx.out.text(line)
 }
 
@@ -612,12 +662,28 @@ export async function runSessionsShip(
   const seen: SessionEvent[] = []
   let reopened: SessionShipReopenedData | null = null
   let state: ShipFollowState = 'moving'
+  const agent = agentOf(data.session.runtime)
+  // Issue #22: the stages that write no row of their own (merging, waiting for main's checks).
+  let lastStage: string | null = null
+  const sayStage = () => {
+    if (ctx.json) return
+    const shipping = sessionShippingOf(session)
+    if (!shipping || (shipping.stage !== 'merging' && shipping.stage !== 'releasing')) return
+    const line = shippingSummaryText(shipping)
+    if (line === lastStage) return
+    lastStage = line
+    const limit =
+      shipping.stage === 'releasing' && !shipping.mainCi
+        ? ` (${lowerFirst(MAIN_CHECKS_LIMIT_TEXT)})`
+        : ''
+    ctx.out.text(chalk.dim(`  … ${line}${limit}`))
+  }
 
   const readRows = async () => {
     const batch = await readEventsAfter(client, id, cursor)
     cursor = batch.nextSeq
     for (const event of batch.items) {
-      emit(ctx, seen, event)
+      emit(ctx, seen, event, agent)
       if (event.type === 'ship.reopened') {
         const parsed = sessionShipReopenedDataSchema.safeParse(event.data)
         if (parsed.success) reopened = parsed.data
@@ -629,6 +695,7 @@ export async function runSessionsShip(
   while (now() < deadline) {
     await readRows()
     session = await getSession(client, id)
+    sayStage()
     state = shipFollowState(session, reopened !== null)
     // The row can settle before its last rows are read: read once more before calling it.
     if (state !== 'moving') {
@@ -663,9 +730,10 @@ export async function runSessionsShip(
           ? ` (${versionLabel(session.landing.version)})`
           : ''
         ctx.out.text(
-          chalk.green(`✓ live on staging: ${session.landing?.stagingUrl ?? 'staging'}${version}`)
+          chalk.green(`✓ Live on staging: ${session.landing?.stagingUrl ?? 'staging'}${version}`)
         )
       }
+      if (!ctx.json) ctx.out.text(`${SHIP_STAGE_NEXT_TEXT.promote} — from the app’s page.`)
       return
     }
     case 'stalled':
@@ -699,7 +767,11 @@ export async function runSessionsShip(
       break
   }
   // `pr` mode (or a server from before issue #5): today's ending — the PR, then its CI.
-  if (!ctx.json) ctx.out.text(`${chalk.green('✓')} PR #${session.prNumber} ${session.prUrl ?? ''}`)
+  // The PR's own row already said it was opened; an older server's ship may have written none.
+  if (!ctx.json && !seen.some(event => event.type === 'ship.pr'))
+    ctx.out.text(
+      `${chalk.green('✓')} ${shipStageText('pr', 'done', { prNumber: session.prNumber })} ${session.prUrl ?? ''}`
+    )
 
   // 2. Its CI, until it settles.
   while (now() < deadline) {
@@ -718,9 +790,16 @@ export async function runSessionsShip(
           ctx.out.text(`  ${mark} ${check.name}`)
         }
       }
-      if (state === 'failure') throw new CliError(`CI failed on PR #${session.prNumber}`)
+      if (state === 'failure')
+        throw new CliError(`${shipStageText('checks', 'failed')} on PR #${session.prNumber}`)
       if (!ctx.json)
-        ctx.out.text(chalk.green(state === 'none' ? '✓ no CI checks reported' : '✓ CI passed'))
+        ctx.out.text(
+          chalk.green(
+            state === 'none'
+              ? '✓ No automatic checks reported'
+              : `✓ ${shipStageText('checks', 'done')}`
+          )
+        )
       return
     }
     await sleep(Math.max(options.pollMs ?? 1000, 1000) * 10)

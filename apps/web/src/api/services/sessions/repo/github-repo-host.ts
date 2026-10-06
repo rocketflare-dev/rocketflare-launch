@@ -105,6 +105,8 @@ export function foldChecks(
         source: 'check_run' as const,
         state: checkRunState(run),
         url: run.html_url ?? run.details_url ?? null,
+        // Issue #22: GitHub has not started it (a backlog), which is not the same as running.
+        ...(run.status === 'queued' && !run.started_at ? { queued: true } : {}),
       })),
     ...(combined?.statuses ?? []).map(status => ({
       name: status.context,
@@ -117,9 +119,20 @@ export function foldChecks(
   const failed = count('failure')
   const pending = count('pending')
   const passed = count('success')
+  const queued = checks.filter(c => c.queued).length
   const state: PrCheckState =
     checks.length === 0 ? 'none' : failed > 0 ? 'failure' : pending > 0 ? 'pending' : 'success'
-  return { state, headSha, checkedAt: now, total: checks.length, passed, failed, pending, checks }
+  return {
+    state,
+    headSha,
+    checkedAt: now,
+    total: checks.length,
+    passed,
+    failed,
+    pending,
+    queued,
+    checks,
+  }
 }
 
 export class GitHubRepoHost implements RepoHostPort {

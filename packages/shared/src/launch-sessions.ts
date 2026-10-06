@@ -615,6 +615,11 @@ export const sessionShipCiDataSchema = z.object({
   passed: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   pending: z.number().int().nonnegative(),
+  /**
+   * Issue #22: of `pending`, the check runs GitHub has not started (`status: queued`, no
+   * `started_at`) — "Waiting for GitHub to start the checks". Absent on rows written before it.
+   */
+  queued: z.number().int().nonnegative().optional(),
   failedCheck: z
     .object({
       name: z.string(),
@@ -1051,6 +1056,8 @@ export const prChecksSchema = z.object({
   passed: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   pending: z.number().int().nonnegative(),
+  /** Issue #22: of `pending`, the check runs GitHub has not started yet (queued, no `started_at`). */
+  queued: z.number().int().nonnegative().optional(),
   checks: z.array(
     z.object({
       name: z.string(),
@@ -1058,6 +1065,8 @@ export const prChecksSchema = z.object({
       source: z.enum(['check_run', 'status']),
       state: prCheckStateSchema,
       url: z.string().nullable(),
+      /** Issue #22: a check run GitHub has queued and not started (a GitHub backlog). */
+      queued: z.boolean().optional(),
     })
   ),
 })
@@ -1235,6 +1244,11 @@ export const sessionShippingSchema = z.object({
   version: z.string().nullable(),
   /** When the stage last changed. */
   since: isoTimestampSchema,
+  /**
+   * Issue #22: `land.main-ci`'s verdict on the merge commit's checks — null while `releasing` waits
+   * for them (and before the merge), so a list can say "waiting for main's checks".
+   */
+  mainCi: shipMainCiVerdictSchema.nullable().default(null),
 })
 export type SessionShipping = z.infer<typeof sessionShippingSchema>
 
@@ -1269,6 +1283,7 @@ export function sessionShippingOf(row: {
     prNumber: landing.prNumber,
     version: landing.version ?? null,
     since: landing.stageAt,
+    mainCi: landing.mainCi?.verdict ?? null,
   }
 }
 

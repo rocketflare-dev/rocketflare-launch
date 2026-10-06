@@ -875,6 +875,8 @@ export interface GitHubCheckRun {
   status: 'queued' | 'in_progress' | 'completed' | string
   /** Null until `completed`; then `success`, `failure`, `neutral`, `skipped`, `cancelled`… */
   conclusion: string | null
+  /** Null while GitHub has queued the run and not started it (issue #22). */
+  started_at?: string | null
   html_url?: string | null
   details_url?: string | null
   /**

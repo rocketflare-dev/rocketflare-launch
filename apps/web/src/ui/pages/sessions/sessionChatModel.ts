@@ -691,9 +691,9 @@ export function versionLabel(version: string): string {
 
 /** Why the landing gave the session back, in one sentence (`ship.reopened`). */
 export const REOPEN_TEXT: Record<ShipReopenReason, string> = {
-  ci_failed: 'CI failed on the pull request, so Launch didn’t merge it.',
-  ci_timeout: `CI didn’t finish within ${SHIP_CI_MAX_MINUTES / 60} hours, so Launch stopped waiting.`,
-  ci_none: 'The repository’s CI never reported on the pull request, so Launch didn’t merge it.',
+  ci_failed: 'The automatic checks found a problem, so Launch didn’t merge it.',
+  ci_timeout: `The automatic checks didn’t finish within ${SHIP_CI_MAX_MINUTES / 60} hours, so Launch stopped waiting.`,
+  ci_none: 'No automatic checks ever reported on the pull request, so Launch didn’t merge it.',
   head_moved:
     'Someone changed the pull request after Launch checked it, so Launch didn’t merge it.',
   pr_closed: 'The pull request was closed without being merged.',
@@ -711,7 +711,7 @@ const REVIEW_CANCELLED_TEXT = 'The review was cancelled, so Launch didn’t merg
 /** Why a landing stalled after the merge, in one sentence (the change is merged either way). */
 export const STALLED_TEXT: Record<ShipStalledReason, string> = {
   release_failed: 'The change is merged, but Launch couldn’t cut a release for it.',
-  main_ci_failed: 'The change is merged, but CI failed on main, so Launch didn’t release it.',
+  main_ci_failed: 'The change is merged, but main’s checks failed, so Launch didn’t release it.',
   deploy_failed: 'The change is merged and released, but the staging deploy failed.',
   deploy_timeout: 'The change is merged and released, but staging didn’t pick it up in time.',
   unhealthy: 'The change is on staging, but staging isn’t passing its health check.',
@@ -723,10 +723,16 @@ function landingNotice(event: SessionEvent): { tone: NoticeTone; text: string } 
     case 'ship.ci': {
       const parsed = sessionShipCiDataSchema.safeParse(event.data)
       if (!parsed.success) return null
-      if (parsed.data.state === 'success') return { tone: 'success', text: 'CI passed.' }
+      if (parsed.data.state === 'success')
+        return { tone: 'success', text: 'The automatic checks passed.' }
       if (parsed.data.state !== 'failure') return null
       const name = parsed.data.failedCheck?.name
-      return { tone: 'warning', text: name ? `CI failed: ${name}.` : 'CI failed.' }
+      return {
+        tone: 'warning',
+        text: name
+          ? `The automatic checks found a problem (${name}).`
+          : 'The automatic checks found a problem.',
+      }
     }
     case 'ship.review': {
       const parsed = sessionShipReviewDataSchema.safeParse(event.data)

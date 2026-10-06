@@ -388,7 +388,9 @@ export function prChecksChanged(prev: PrChecks | null, next: PrChecks): boolean 
     requiredCheckState(prev.checks) !== requiredCheckState(next.checks) ||
     prev.passed !== next.passed ||
     prev.failed !== next.failed ||
-    prev.pending !== next.pending
+    prev.pending !== next.pending ||
+    // Issue #22: GitHub starting a queued run is news ("waiting for GitHub" → "running").
+    (prev.queued ?? 0) !== (next.queued ?? 0)
   )
 }
 
