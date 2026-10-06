@@ -35,8 +35,10 @@ suites on vitest 4, §9 — never part of the gate).
   (`requireMultiTenant`) and hidden via `useTenancyMode()`. Switching to `multi` needs no migration.
   Launch deploys `single` (both tomls, and `.dev.vars.example` for the seed); the test suite runs
   `multi`, because the kit's tests exercise the multi-tenant paths.
-- **`SIGNUP_MODE = open | invite_only | approval` (D9)**, default `invite_only`. Uninvited logins
-  land on `/pending`; `approval` also files an `access_requests` row at *verify* time;
+- **`SIGNUP_MODE = open | invite_only | approval` (D9)**, default `invite_only`; Launch deploys
+  `approval` (both tomls), so a stranger's sign-in files a request an admin approves under Settings →
+  Platform → Access requests — in `single` that joins the one organisation (as `member` unless the
+  reviewer picks another role). Uninvited logins land on `/pending`; `approval` also files an `access_requests` row at *verify* time;
   `open` gives a personal tenant through `onNoTenant`. Invitations are handled first on every login
   path, and every fallback gates on "has no memberships", not "is new".
 - **Roles (D10).** `owner | admin | member` plus `support` (minted from `/admin`, visible to the

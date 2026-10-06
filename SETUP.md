@@ -418,7 +418,8 @@ the organisation's **owner** — it creates the organisation with you as owner i
 otherwise you join as, or are promoted to, owner. Absent: promote by hand once —
 `UPDATE users SET is_global_admin = true WHERE email = '…'` (single mode: also
 `UPDATE tenant_users SET role = 'owner' WHERE user_id = …`) — or every sign-up parks on `/pending`
-with nobody to approve it (`SIGNUP_MODE=invite_only` default).
+with nobody to approve it (Launch's tomls set `SIGNUP_MODE=approval`; the kit default is
+`invite_only`).
 
 **Where Setup lives.** The setup wizard (Launch's credentials, apps domain, GitHub App, Neon, Resend,
 public URL), the kit pin, the OIDC issuer's keys and the access-request queue are
@@ -738,7 +739,7 @@ containers (the Session sandbox setting's remote host is for development only).
 Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the names;
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns
 ok (it runs a query — a 503 there means the Worker cannot reach Neon: under `neon` a missing or
-wrong `DATABASE_URL` secret, under `postgres` Hyperdrive pointing at the wrong host or SSL), and `/auth/methods` lists your providers. With `SIGNUP_MODE=invite_only` (the default) the
+wrong `DATABASE_URL` secret, under `postgres` Hyperdrive pointing at the wrong host or SSL), and `/auth/methods` lists your providers. With Launch's `SIGNUP_MODE=approval` (the kit default is `invite_only`) the
 admin's first login lands on `/pending` under `multi` (the first organisation is created at `/admin`);
 under `single` it creates the organisation with the admin as owner (Part 2.4).
 Point the CLI at it: `pnpm cli login --server https://<staging-host>`.

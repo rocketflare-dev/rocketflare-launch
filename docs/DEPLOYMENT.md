@@ -236,8 +236,9 @@ email DNS record's presence when verification stalls.
 1. Open `https://launch.rocketflare.dev/login` and request a magic link for the **first**
    `LAUNCH_ADMIN_EMAILS` address. It arrives from `notifications.rocketflare.dev` (with
    `--skip-email`, copy it from `wrangler tail -c wrangler.deploy.toml`). Signing in makes you the
-   organisation's owner and the platform admin. `SIGNUP_MODE` is `invite_only`, so nobody else
-   can sign up until you invite them.
+   organisation's owner and the platform admin. `SIGNUP_MODE` is `approval`: anyone else
+   who signs in lands on `/pending` with an access request you approve under Settings → Platform →
+   Access requests (or invite them first).
 2. **Settings → Platform → Setup** (`/settings/platform/setup`). `setup` stored every value and ran
    each card's check (it printed `check passed` or the failing probes; the Cloudflare one records
    the zone id that creating an app needs), so:

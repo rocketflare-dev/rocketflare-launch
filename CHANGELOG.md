@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Launch signs strangers up by request, not refusal.** Both tomls set `SIGNUP_MODE = "approval"`
+  (was `invite_only`): someone with no invitation who signs in lands on `/pending` with an access
+  request under Settings → Platform → Access requests, and approving it joins the organisation
+  (`member` by default). Before, they were turned away with `not_invited` and nothing was recorded.
+  A deployed instance re-renders `wrangler.deploy.toml` (`pnpm provision render`) to pick it up.
 - **The ship gate checks its test database before the tests, and says what failed when it cannot
   reach it** (rocketflare-launch#7). Before `pnpm gate test` Launch runs a small probe in the
   container: the app's own `@neondatabase/serverless` asks the gate branch for `select 1` over the
