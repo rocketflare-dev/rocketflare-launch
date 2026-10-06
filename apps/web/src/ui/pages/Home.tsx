@@ -11,6 +11,10 @@
  * Lazy in `App.tsx` like every other page: its sections reuse the app page's and the inbox's
  * models, which the eager shell should not carry.
  *
+ * A platform admin sees "Finish setting up Launch" first while any connection Launch runs on is
+ * unfinished (`home/SetupChecklistSection.tsx`), one line per connection linking to its page under
+ * Settings → Connections; it disappears once every one works.
+ *
  * Installed plugins' quick links (`UiPlugin.homeLinks`, D31) close the page as one quiet line,
  * each filtered by its route's own guard.
  */
@@ -25,6 +29,7 @@ import { agentOnboarding } from './agent-accounts/agentAccountsModel'
 import { ApprovalsWaitingSection } from './home/ApprovalsWaitingSection'
 import { AppsSection } from './home/AppsSection'
 import { CodingAgentsLine, CodingAgentsOnboarding } from './home/CodingAgentsSection'
+import { SetupChecklistSection } from './home/SetupChecklistSection'
 
 export interface QuickLink {
   to: string
@@ -37,6 +42,8 @@ export interface QuickLink {
 /** The same guards as `/approvals` and `/apps` (and their nav items). */
 const APPROVALS_GUARD: NavGuard = { action: 'read', subject: 'Approval' }
 const APPS_GUARD: NavGuard = { action: 'read', subject: 'App' }
+/** The same guard as the Connections pages it links to. */
+const SETUP_GUARD: NavGuard = 'platformAdmin'
 
 const PLUGIN_LINKS: QuickLink[] = uiPlugins.flatMap(p => p.homeLinks ?? [])
 
@@ -65,6 +72,7 @@ export default function Home() {
   return (
     <div className="w-full space-y-10">
       <PageHeader title={tenant?.name ?? 'Home'} className="mb-0" />
+      {canAccess(SETUP_GUARD) && <SetupChecklistSection />}
       {agentAccounts.data && onboarding.state === 'connect' && (
         <CodingAgentsOnboarding data={agentAccounts.data} onboarding={onboarding} />
       )}

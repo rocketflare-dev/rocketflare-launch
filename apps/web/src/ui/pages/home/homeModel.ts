@@ -12,6 +12,8 @@ import type {
   AppEnvironmentName,
   AppEnvironmentSummary,
 } from '@launch/shared/launch-apps'
+import type { SetupStep, SetupStepId, SetupStepStatus } from '@launch/shared/launch-setup'
+import { CONNECTION_LABELS, CONNECTION_ORDER, CONNECTION_PATHS } from '@/ui/lib/settings-paths'
 import { ENV_LABEL, notDeployedYet } from '../apps/app/appPageModel'
 import { v } from '../apps/components/promotionModel'
 
@@ -75,4 +77,44 @@ export function homeAppRows(apps: readonly AppCatalogueItem[]) {
       const rb = b.attention && b.attention.tone !== 'muted' ? RANK[b.attention.tone] : 3
       return ra - rb || a.app.displayName.localeCompare(b.app.displayName)
     })
+}
+
+/** One line of Home's "Finish setting up Launch": a connection, its state and its page. */
+export interface SetupChecklistRow {
+  id: SetupStepId
+  label: string
+  path: string
+  status: SetupStepStatus
+  /** Working: `ok`, or `warning` — a choice the server flags but that works (magic link only). */
+  done: boolean
+}
+
+export interface SetupChecklist {
+  rows: SetupChecklistRow[]
+  done: number
+  total: number
+  /** Every connection works: Home shows nothing. */
+  complete: boolean
+}
+
+/**
+ * Home's setup checklist from the setup overview's steps, in the Connections menu's order. A
+ * `warning` counts as done — the count the old wizard's "n of 7 steps" made — because some are
+ * deliberate (no SSO provider: people sign in by magic link) and the list must be able to go away;
+ * the Connections menu still shows its dot. Pure.
+ */
+export function setupChecklist(steps: readonly SetupStep[]): SetupChecklist {
+  const byId = new Map(steps.map(step => [step.id, step.status]))
+  const rows = CONNECTION_ORDER.map(id => {
+    const status = byId.get(id) ?? 'todo'
+    return {
+      id,
+      label: CONNECTION_LABELS[id],
+      path: CONNECTION_PATHS[id],
+      status,
+      done: status === 'ok' || status === 'warning',
+    }
+  })
+  const done = rows.filter(row => row.done).length
+  return { rows, done, total: rows.length, complete: done === rows.length }
 }

@@ -3,10 +3,12 @@
  * and rows linking to each request, or one compact quiet line when there are none), the apps — a
  * grid of large cards, each one link to the app, with its screenshot or initial, Live's version and
  * health, Staging's version and an attention word — "New app" only for whoever may create one, and
- * no request per app.
+ * no request per app. A platform admin also sees "Finish setting up Launch" while a connection is
+ * unfinished.
  */
 import { HEALTH_NOT_DEPLOYED_ERROR } from '@launch/shared/launch-apps'
-import { screen, within } from '@testing-library/react'
+import type { SetupOverview } from '@launch/shared/launch-setup'
+import { screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Home from '@/ui/pages/Home'
 import { APPROVAL_ID, approvalRow } from './helpers/approvals'
@@ -16,6 +18,7 @@ import {
   renderWithProviders,
   stubFetch,
 } from './helpers/renderWithProviders'
+import { setupComplete, setupOverview } from './helpers/setup'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -235,5 +238,71 @@ describe('Home — apps', () => {
     for (const href of ['/chat', '/agents', '/documents', '/search']) {
       expect(document.querySelector(`a[href^="${href}"]`)).toBeNull()
     }
+  })
+})
+
+describe('Home — finish setting up Launch', () => {
+  const withSetup = (overview: SetupOverview) =>
+    stubFetch({
+      '/api/approvals': { items: [] },
+      '/api/approvals/count': { count: 0 },
+      '/api/apps': { items: [], appsDomain: null },
+      '/api/platform/setup': overview,
+    })
+  const singleOwner = () => makeSession({ tenancyMode: 'single' })
+
+  it('lists every connection with its state in words, linking to its page, while one is unfinished', async () => {
+    withSetup(setupOverview)
+    renderWithProviders(<Home />, { session: singleOwner() })
+    // domain ok, cloudflare warning (working), identity ok → 3 of 7.
+    expect(
+      await screen.findByRole('heading', { level: 2, name: 'Finish setting up Launch — 3 of 7' })
+    ).toBeInTheDocument()
+    const list = screen.getByRole('list', { name: 'Connections' })
+    const rows = within(list).getAllByRole('listitem')
+    expect(rows.map(row => within(row).getByRole('link').textContent)).toEqual([
+      'Domain',
+      'Cloudflare',
+      'Neon',
+      'GitHub',
+      'Email',
+      'Sign-in',
+      'Public URL',
+    ])
+    expect(within(list).getByRole('link', { name: 'Public URL' })).toHaveAttribute(
+      'href',
+      '/settings/public-url'
+    )
+    expect(within(list).getByRole('link', { name: 'Email' })).toHaveAttribute(
+      'href',
+      '/settings/email'
+    )
+    // The state in words, at the end of the row.
+    expect(rows[4]?.lastElementChild).toHaveTextContent('Failed')
+    expect(rows[2]?.lastElementChild).toHaveTextContent('Not set')
+    expect(rows[1]?.lastElementChild).toHaveTextContent('Needs a look')
+  })
+
+  it('is gone once every connection works', async () => {
+    const fetchMock = withSetup(setupComplete)
+    renderWithProviders(<Home />, { session: singleOwner() })
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/platform/setup'))
+      ).toBe(true)
+    )
+    await screen.findByTestId('home-approvals-none')
+    expect(screen.queryByRole('heading', { name: /Finish setting up Launch/ })).toBeNull()
+  })
+
+  it('is never shown to — or fetched for — somebody who does not administer the platform', async () => {
+    // Multi mode: an organisation owner is not a platform admin.
+    const fetchMock = withSetup(setupOverview)
+    renderWithProviders(<Home />, { session: makeSession() })
+    await screen.findByTestId('home-approvals-none')
+    expect(screen.queryByRole('heading', { name: /Finish setting up Launch/ })).toBeNull()
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('/api/platform/setup'))
+    ).toBe(false)
   })
 })
