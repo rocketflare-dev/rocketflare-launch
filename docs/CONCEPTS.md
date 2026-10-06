@@ -1550,7 +1550,24 @@ reload) is restarted as `<id>-rN` from the row.
   15 stderr lines) → `bootstrap` (the kit's bootstrap on the session's own database)
   → `dev` (the kit's `node apps/web/scripts/dev-server.mjs --start` directly — what `pnpm dev`
   runs, without its two pnpm startups; `pnpm dev` when the checkout has no such script — UI :5173,
-  API :8787, never :3000) → `ready` + `preview.ready`. Each boot
+  API :8787, never :3000) → `ready` + `preview.ready`. **The dev start is tuned for a 2-vCPU
+  container** (`rocketflare-dev.ts`): ready is ONE in-container wait per chunk
+  (`DEV_READY_PROBE`, `waitForPort` with `followedBy`) — `:8787/api/health` 2xx FIRST (curl `-m 5`),
+  then a bare TCP connect to `:5173`, polled every 0.2 s — never a GET of the UI's `/` while
+  `wrangler dev` boots (that made Vite transform the whole UI graph on the same CPUs: -30 % wall
+  measured locally without it); once ready, `/` is warmed by a background `curl` nobody waits on.
+  Every dev step runs with `CLOUDFLARE_CF_FETCH_ENABLED=false` (Miniflare otherwise fetches
+  `workers.cloudflare.com/cf.json`, a host no allow-list carries, and waited its 3 s timeout out) and
+  `NODE_COMPILE_CACHE` inside the workspace (`node_modules/.cache/node-compile-cache`), which the
+  workspace backup and the prebuild both carry (`PREBUILD_EXCLUDES` leaves it in: V8 code cache,
+  nothing session-specific); node writes it only on a JS exit, so a backup first stops the dev
+  server POLITELY (`stopDevServerGracefully`: SIGTERM to `DEV_PID_FILE`, up to 10 s — the kit's
+  supervisor passes it on to wrangler and Vite). The session's wrangler config is written by the
+  dev server's own node, as a `--import` preload (no exec and node start of its own). After a
+  restore (a workspace backup or a prebuild), a background process (`PREREAD_COMMAND`, started
+  and never awaited, its failure ignored) reads workerd, esbuild, wrangler-dist, miniflare,
+  vite/dist and rollup's native module once, so a presigned restore's lazy FUSE page-in from R2
+  overlaps the bootstrap instead of the dev start. Each boot
   step writes a `step` event (the page's checklist). The first successful `bootstrap` records the
   checkout's `apps/web/migrations` hash (`sessions.migrations_hash`); a later one (a cold resume) is
   against a prepared database, so it never re-seeds or re-checks it and migrates only when the hash
@@ -1583,7 +1600,7 @@ reload) is restarted as `<id>-rN` from the row.
 - **Boot timing (issue #8, `boot-timing.ts`).** `withProgress` times each boot step by its own
   clock and returns it on the step's result (`timing`: start, duration, and the bootstrap's
   `installMs`); the Workflow collects those from step RESULTS and hands them to the boot's LAST
-  step — `dev` on a first boot and a warm resume, `transcript#K` on a cold one — which writes ONE
+  step — `dev`, on a first boot and on a warm or cold resume — which writes ONE
   `boot.timing` event: `kind` (`boot` | `warm` | `cold`), `totalMs` (first start → last end, so
   phases that overlap count once) and `phases[]` (`db`, `prepare`, `branch`, `sandbox.start`,
   `restore`, `repo`, `install`, `bootstrap`, `dev`, `transcript` — the ones that ran, each with
@@ -1600,7 +1617,7 @@ reload) is restarted as `<id>-rN` from the row.
   the first real ship (hola-world PR #2) carried the toggle and a `worker-configuration.d.ts`
   without `AI`, which merged would have taken Workers AI out of the app's production. Now: the
   bootstrap preload drops the kit's writes to the two tomls and the types (`LAUNCH_BOOTSTRAP_KEEP`);
-  every dev start (`startDevServer`) first writes `apps/web/wrangler.session.toml` — the CURRENT
+  every dev start (`startDevServer`, as the dev server's `--import` preload) first writes `apps/web/wrangler.session.toml` — the CURRENT
   `wrangler.toml` with `[ai]` off, the kit's own toggle — and wrangler's own redirect file
   `apps/web/.wrangler/deploy/config.json` (`{ "configPath": "../../wrangler.session.toml" }`), which
   `wrangler dev` follows ("Using redirected Wrangler configuration.") and `wrangler types` does not,
@@ -1633,7 +1650,7 @@ reload) is restarted as `<id>-rN` from the row.
   `land.merge#N`, then `land.wait#N` or `land.reopen#N`, §18.13; checked BEFORE `maxSessionHours`
   and after an explicit End, except that `merging` beats an End too), `suspend#N` (a drain),
   `cool#N` (a drain, or a warm window already over), `resume#N` (boot again with `#K` names — warm:
-  `sandbox.start#K` → `dev#K` only; cold: the whole boot, then restore the transcript), `end#N`. A message that arrives while
+  `sandbox.start#K` → `dev#K` only; cold: the whole boot, the transcript restored alongside the bootstrap, `dev#K` last), `end#N`. A message that arrives while
   booting waits on the row and runs as soon as it is `ready`. **`cleanup` always runs**: destroy
   the container, delete the ship gate's branches and then the database branch, forget the sealed
   credentials, settle `ended` (a
@@ -1822,6 +1839,10 @@ reload) is restarted as `<id>-rN` from the row.
 
 **Known gaps:** proven with fakes (`tests/api/session-e2e.test.ts`, `session-stall.test.ts` and the
 per-slice suites) and run against a local Launch on hola-world; Launch itself is never deployed.
+The faster dev start (readiness order, `cf.json` off, the compile cache, the preload, the
+post-restore pre-read, the transcript beside the bootstrap) was measured piece by piece on a
+laptop and is proven with fakes; its effect on a real amd64 container's `dev` phase is not
+measured yet, nor how much of the compile cache a SIGTERM stop actually writes there.
 Real ships there opened PRs (#2, and #4 whose CI passed, 2026-10-01); a Launch-merged ship to
 staging (issue #5) has not run on real GitHub yet. The suites use fake Claude Code output
 (`claudeStreamJson`, reconstructed from the S7 transcripts). `wrangler dev` reloading the Worker (a source edit, or a build rewriting `dist/ui` in

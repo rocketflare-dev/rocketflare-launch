@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A coding session's dev server is ready sooner.** The `dev` step waits for the API's
+  `/api/health` first and then only opens a TCP connection to Vite — one in-container wait polled
+  every 0.2 s, instead of a GET of the UI's `/` that made Vite transform the whole UI while
+  `wrangler dev` was still booting (the page is warmed in the background once ready). Every dev
+  command runs with `CLOUDFLARE_CF_FETCH_ENABLED=false` (Miniflare's 3 s `cf.json` fetch to a host
+  the allow-list does not carry) and a Node compile cache inside the workspace that backups and
+  prebuilds carry to the next container; a backup now stops the dev server with SIGTERM first so
+  that cache is written. The session's wrangler config is written by the dev server's own node (a
+  preload) rather than an exec of its own. After a workspace or prebuild restore, the dev server's
+  biggest files are read once in the background while the bootstrap runs. A cold resume restores
+  the conversation alongside the bootstrap and starts the dev server last, so `boot.timing` is now
+  written by `dev` on every kind of boot. No migration; not yet measured on a real container.
 - **A new coding session restores the app's prebuild instead of cloning and installing** (issue
   #16). After a first boot that found none to use, and after every merge Launch makes to the
   default branch, a `prebuild` run — a session of its own kind, in its own container, with no
