@@ -76,6 +76,7 @@ import {
 import { redactModelKeyText } from './model-key'
 import type { GateBranch, SandboxPort } from './ports'
 import {
+  redactLog,
   SESSION_LAUNCH_DIR,
   SESSION_WORKSPACE,
   type SessionDevEnv,
@@ -336,15 +337,51 @@ export const GATE_OUTPUT_TAIL_LINES = 60
 /** …and at most this many characters of them. */
 export const GATE_OUTPUT_MAX_CHARS = 6_000
 
+/** How many failed tests {@link gateFailureDigest} names, and how long each line may be. */
+const DIGEST_MAX_FAILURES = 5
+const DIGEST_LINE_MAX_CHARS = 300
+
 /**
- * A step's output as the ship panel and the fix turn see it: the command's own error lines first,
- * then the last {@link GATE_OUTPUT_TAIL_LINES} lines (`tailOf`), with `secrets` (the gate URL and
- * its password), anything shaped like a connection string, and anything shaped like a model key
- * or a GitHub token removed, clipped from the front to {@link GATE_OUTPUT_MAX_CHARS}.
+ * Vitest's own account of what failed, which a tail loses: a failure prints its `FAIL  <project>
+ * <file> > <test>` header and the error's message line FIRST, then a stack that can run past any
+ * tail (an error object's frames, issue #7). Each distinct header with the first message line under
+ * it, at most {@link DIGEST_MAX_FAILURES}; empty when the log has none (not vitest, or it passed).
+ * Takes a log already redacted. Pure.
+ */
+export function gateFailureDigest(clean: string): string[] {
+  const lines = clean.split('\n')
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < lines.length && seen.size < DIGEST_MAX_FAILURES; i++) {
+    const header = lines[i]?.trim() ?? ''
+    if (!/^FAIL\s/.test(header) || !header.includes('>') || seen.has(header)) continue
+    seen.add(header)
+    out.push(header.slice(0, DIGEST_LINE_MAX_CHARS))
+    for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+      const next = lines[j]?.trim() ?? ''
+      if (!next || /^[⎯─-]+/.test(next)) continue
+      if (/^FAIL\s/.test(next)) break
+      out.push(`  ${next.slice(0, DIGEST_LINE_MAX_CHARS)}`)
+      break
+    }
+  }
+  return out
+}
+
+/**
+ * A step's output as the ship panel and the fix turn see it: vitest's failed tests and their
+ * messages first ({@link gateFailureDigest}), then the command's own error lines and the last
+ * {@link GATE_OUTPUT_TAIL_LINES} lines (`tailOf`), with `secrets` (the gate URL and its password),
+ * anything shaped like a connection string, and anything shaped like a model key or a GitHub
+ * token removed, clipped to {@link GATE_OUTPUT_MAX_CHARS} — from the front of the TAIL, so the
+ * digest always survives.
  */
 export function gateOutputTail(log: string, secrets: readonly string[] = []): string {
-  const text = redactModelKeyText(tailOf(log, secrets, GATE_OUTPUT_TAIL_LINES))
-  return text.length > GATE_OUTPUT_MAX_CHARS ? `…${text.slice(-GATE_OUTPUT_MAX_CHARS)}` : text
+  const digest = redactModelKeyText(gateFailureDigest(redactLog(log, secrets)).join('\n'))
+  const tail = redactModelKeyText(tailOf(log, secrets, GATE_OUTPUT_TAIL_LINES))
+  const room = GATE_OUTPUT_MAX_CHARS - (digest ? digest.length + 1 : 0)
+  const clipped = tail.length > room ? `…${tail.slice(-Math.max(room, 0))}` : tail
+  return digest ? `${digest}\n${clipped}` : clipped
 }
 
 /** How long a target line the ship panel shows may be. */

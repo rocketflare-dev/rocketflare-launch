@@ -351,6 +351,40 @@ describe('the output tail', () => {
     expect(tail).toContain('expected 2 to be 3')
   })
 
+  it('keeps vitest’s failed test and its message when the stack runs past the tail (issue #7)', () => {
+    const frames = Array.from({ length: 40 }, (_, i) =>
+      ['    {', `      method: 'f${i}',`, `      file: '/workspace/app/x${i}.ts',`, '    },'].join(
+        '\n'
+      )
+    ).join('\n')
+    const log = [
+      ' FAIL   api  tests/api/admin.test.ts > access requests > approving creates the tenant',
+      'NeonDbError: Connection terminated unexpectedly',
+      '  error: {',
+      frames,
+      ' ❯ createTenantForUser src/api/utils/db/tenant-helpers.ts:67:18',
+      ' Test Files  1 failed | 59 passed (61)',
+      '✖ pnpm gate failed: test',
+    ].join('\n')
+    const tail = gateOutputTail(log)
+    expect(tail.startsWith(' FAIL') || tail.startsWith('FAIL')).toBe(true)
+    expect(tail).toContain('approving creates the tenant')
+    expect(tail).toContain('  NeonDbError: Connection terminated unexpectedly')
+    expect(tail).toContain('✖ pnpm gate failed: test')
+    // Vitest prints each failure twice (the list, then the detail): the digest names it once.
+    expect(gateOutputTail(`${log}\n${log}`).match(/approving creates the tenant/g)).toHaveLength(1)
+  })
+
+  it('keeps the digest when the tail is clipped', () => {
+    const long = Array.from({ length: 500 }, (_, i) => `line ${i} ${'x'.repeat(200)}`).join('\n')
+    const log = ` FAIL   api  tests/api/a.test.ts > t\nError: boom\n${long}`
+    const tail = gateOutputTail(log)
+    expect(tail.length).toBeLessThanOrEqual(GATE_OUTPUT_MAX_CHARS + 1)
+    expect(tail).toContain('FAIL   api  tests/api/a.test.ts > t')
+    expect(tail).toContain('Error: boom')
+    expect(tail).toContain('line 499')
+  })
+
   it('is clipped from the front', () => {
     const long = Array.from({ length: 500 }, (_, i) => `line ${i} ${'x'.repeat(200)}`).join('\n')
     const tail = gateOutputTail(long)

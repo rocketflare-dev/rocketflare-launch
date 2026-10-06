@@ -10,6 +10,10 @@
   Default. With no pin the model proxy lets through any model of the agent's provider that Launch
   can price. No migration. Deploy the sandbox host with Launch: an older host refuses unpinned
   sessions' model calls.
+- **A failed gate step keeps vitest's failed tests and their messages.** The stored output was the
+  last 60 lines, and a failure whose stack ran long (an error object's frames) lost the test's name
+  and its message. The output now leads with each `FAIL … > test` header and the message under it,
+  and clipping only ever shortens the tail.
 - **A landing no longer waits ten minutes on its own release claim.** A `land.release` step killed
   mid-release (a `wrangler dev` reload, a deploy) never ran its `finally`, so the claim stayed held
   by the session itself and the retried step waited for it to go stale, showing "Cutting a
