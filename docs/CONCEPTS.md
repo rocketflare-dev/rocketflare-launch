@@ -2421,7 +2421,24 @@ run STARTS — a lazy env, so a retried step that re-attaches never resets it un
 `NEON_LOCAL_PROXY`: a session's database is always a real Neon branch reached directly, on a laptop
 too, so the gate's is as well (there is no local-Docker variant to fall back to). The allow-list
 gains exactly the branch's direct and `-pooler` hosts and its region's SQL host for the step (a
-no-op under `SESSION_EGRESS=open`). **The driver differs from the copy's CI by design**: the copy's
+no-op under `SESSION_EGRESS=open`). **The database probe, and the one retry** (rocketflare-launch#7,
+`gate-db-probe.ts`): before `pnpm gate test` STARTS (never under a suite a retried step finds
+running), Launch writes a small script into the container and runs it with `node` from
+`apps/web`, with the test step's own environment — the SAME minted URL the suite then gets, one
+password reset per step — so the app's own `@neondatabase/serverless` `Pool` (the WebSocket the
+kit's test setup opens first) asks the branch for `select 1`: up to 45 s of attempts on a capped
+backoff (a waking compute, a password that has not propagated, a blip), then, when none answered,
+DNS and plain HTTPS to the endpoint host to say WHICH failed — because Node's WebSocket reports
+every failed connection as an `ErrorEvent` with no message, and the kit's setup (`db-roles` before
+the migrator's `waitForDatabase`) has no retry on that first connection. A probe that gives up
+means the tests do not run: a red `test` row leading with the probe's verdict, and the ship stops
+(`db_unreachable`, no fix turn — the code is not what failed). An app without the driver, or no
+URL, skips the probe (exit 0). A test run that is red ONLY because vitest's globalSetup died on a
+connection error (`isSetupConnectionFailure`: a connection error, globalSetup in the stack, no
+failed test) is run ONCE more as `gate-test-retry`, its row starting "Launch ran the tests twice"
+with the first run's error; a real test failure is never retried. Every Neon WebSocket pool in this
+repo comes from `createNeonPool` (`src/db/client.ts`), whose `error` listeners keep a dropped
+connection from being an uncaught exception (the query in flight still rejects). **The driver differs from the copy's CI by design**: the copy's
 CI runs the suite under `postgres` plus a `neon` conformance pass (the driver seam); the ship gate's
 `pnpm gate test` runs the WHOLE suite under `neon` on a real Neon branch, because a sandbox has 443
 and no Docker. Same steps, different driver — a failure on one and not the other is a seam bug for
@@ -2647,7 +2664,15 @@ the app's `<snake>_app`, the grants and the truncate, on a branch of a branch), 
 small compute, the kit's scaled time limits on a fresh 0.16.0 scaffold, how long branch creation
 takes — has not run; nor has `pnpm gate --list --json` been read from a real checkout, nor a gate
 run inside a real sandbox (the memory the suite needs beside the dev server, a vitest that
-hangs on exit under `allowlist` — the deadline kills it, which then reads as red). An app on a kit
+hangs on exit under `allowlist` — the deadline kills it, which then reads as red). **A LOCAL
+sandbox loses its internet when Launch's `wrangler dev` reloads** (measured 2026-10-06 with a
+bare `Sandbox` under wrangler 4.127 / workerd 1.20260828): workerd re-attaches to a container that
+is still running with the new egress port but without its internet setting, so the hosts Launch
+handles (Anthropic, GitHub) keep working and everything else fails at once — `curl` "unexpected eof
+while reading", a WebSocket "Received network error or non-101 status code", so the gate's first
+database query is an empty `ErrorEvent`. Only a new container gets it back (suspend and resume, or
+a new session); the database probe names it, Launch does not yet restart the container itself.
+Deployed containers are not reloaded this way. An app on a kit
 before 0.15.7 cannot ship until its kit is upgraded (a red `test` row says so), and a kit whose
 `pnpm gate` gains a step Launch does not know cannot ship until Launch learns it. The session
 image with the 0.16.0 store (`session-5`, now `session-6` with Codex) is defined, not yet deployed (`wrangler deploy` builds

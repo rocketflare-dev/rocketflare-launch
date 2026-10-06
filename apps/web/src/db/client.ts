@@ -11,7 +11,7 @@
  * Code outside this file sees `Database` — the base both drivers share — and reads raw `execute()`
  * results through `rows()` / `affected()`, never a driver's own shape.
  */
-import { Pool as NeonPool, neon, neonConfig } from '@neondatabase/serverless'
+import { Pool as NeonPool, neon, neonConfig, type PoolClient } from '@neondatabase/serverless'
 import { drizzle as drizzleNeonHttp } from 'drizzle-orm/neon-http'
 import { drizzle as drizzleNeonPool } from 'drizzle-orm/neon-serverless'
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core'
@@ -126,6 +126,24 @@ export function createDatabase(url: string, options: CreateDatabaseOptions = {})
   }
 }
 
+/**
+ * A Neon WebSocket `Pool` whose dropped connections cannot crash the process. pg-pool emits
+ * `error` on the POOL when an IDLE client's connection drops, and a CHECKED-OUT client (an
+ * interactive transaction's) emits `error` on ITSELF; with no listener either is an uncaught
+ * exception — the process dies under Node, an uncaught error in the isolate under workerd. Both
+ * reproduced 2026-10-06 by dropping the socket under each (rocketflare-launch#7). The query in
+ * flight still REJECTS, so nothing is swallowed: the listeners only stop the second, unhandled
+ * copy of the same error. Every Neon pool in this repo is made here (scripts included).
+ */
+export function createNeonPool(url: string, max = 1): NeonPool {
+  const pool = new NeonPool({ connectionString: url, max })
+  pool.on('error', () => {})
+  pool.on('connect', (client: PoolClient) => {
+    client.on('error', () => {})
+  })
+  return pool
+}
+
 export interface CreateNeonDatabaseOptions extends CreateDatabaseOptions {
   /** `NEON_LOCAL_PROXY`: route HTTP and WebSocket through a local proxy instead of Neon. */
   localProxy?: string
@@ -152,7 +170,7 @@ export function createNeonDatabase(
   let poolDb: Database | undefined
   const transactional = (): Database => {
     if (!poolDb) {
-      pool = new NeonPool({ connectionString: url, max: options.max ?? 1 })
+      pool = createNeonPool(url, options.max ?? 1)
       poolDb = drizzleNeonPool(pool, { schema }) as unknown as Database
     }
     return poolDb

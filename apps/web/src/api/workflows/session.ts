@@ -799,7 +799,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         if (gate.stop === 'container_lost') return { status: 'lost' }
         if (gate.stop) {
-          reason = gate.stop === 'ended' ? 'ended' : 'unfixable'
+          reason = gate.stop === 'ended' || gate.stop === 'db_unreachable' ? gate.stop : 'unfixable'
           break
         }
         if (attempt === last) {

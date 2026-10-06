@@ -11,12 +11,12 @@
  * TCP out (a coding sandbox on a Neon branch).
  */
 import { fileURLToPath } from 'node:url'
-import { Pool as NeonPool } from '@neondatabase/serverless'
 import { drizzle as drizzleNeon } from 'drizzle-orm/neon-serverless'
 import { migrate as migrateNeon } from 'drizzle-orm/neon-serverless/migrator'
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js'
 import { migrate as migratePostgres } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
+import { createNeonPool } from '../src/db/client'
 import { isNeonUrl, openScriptSql, scriptDriver, toDirectNeonHost } from './lib/sql'
 
 export { isNeonUrl, toDirectNeonHost }
@@ -85,7 +85,7 @@ export async function runMigrations(
 
   if (scriptDriver(env) === 'neon') {
     const sql = openScriptSql(url, env) // routes through NEON_LOCAL_PROXY when set
-    const pool = new NeonPool({ connectionString: url, max: 1 })
+    const pool = createNeonPool(url, 1)
     try {
       await sql.query(createVector)
       await migrateNeon(drizzleNeon(pool), { migrationsFolder })

@@ -35,6 +35,13 @@ import {
   gateEgressHosts,
 } from '@/api/services/sessions/gate'
 import { gateBranchName } from '@/api/services/sessions/gate-branch'
+import {
+  GATE_DB_PROBE_CWD,
+  GATE_DB_PROBE_PATH,
+  GATE_DB_PROBE_SCRIPT,
+  GATE_DB_PROBE_UNREACHABLE,
+  GATE_DB_PROBE_VERDICT,
+} from '@/api/services/sessions/gate-db-probe'
 import { runGateSweep, sessionsGateSweepTask } from '@/api/services/sessions/gate-sweep'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import type { SandboxExecOptions } from '@/api/services/sessions/ports'
@@ -91,6 +98,16 @@ interface GateRun {
   branch?: { name: string; parentId: string | null; host: string }
 }
 
+/** The database probe's run (`gate-db-probe.ts`), as the sandbox saw it start. */
+interface ProbeRun {
+  env: Record<string, string>
+  cwd?: string
+  /** The allow-list while it ran. */
+  allowedHosts: string[]
+  /** The probe script in the container when it started. */
+  script?: string
+}
+
 /** What a scripted gate command does: its exit and log, or `hang` (it never ends by itself). */
 type GateScript = (run: GateRun, n: number) => { exitCode?: number; log?: string } | 'hang'
 
@@ -102,6 +119,7 @@ interface Harness {
   ports: FakeSessionPorts
   hooks: SessionStepHooks
   runs: GateRun[]
+  probes: ProbeRun[]
   fixes: string[]
   checkpoints: string[]
   summary: FakeChatClient
@@ -115,6 +133,8 @@ interface Harness {
 async function harness(
   opts: {
     gate?: Partial<Record<GateRun['step'], GateScript>>
+    /** What the database probe does (default: the branch answers at once, exit 0). */
+    probe?: (run: ProbeRun, n: number) => { exitCode?: number; log?: string }
     /** What a fix turn does besides being recorded. */
     onFix?: (h: Harness) => void
     /** What the checkout's kit answers the probe (default `gate`, the pinned kit). */
@@ -138,6 +158,7 @@ async function harness(
     .where(eq(apps.id, f.app.id))
   const row = await insertSession(db, f, { status: 'requested', title: null })
   const runs: GateRun[] = []
+  const probes: ProbeRun[] = []
   const counts = { lint: 0, typecheck: 0, test: 0 }
   const branch = sessionBranchName(row.shortId)
   const ports = createFakeSessionPorts({
@@ -185,6 +206,22 @@ async function harness(
           ' src/ui/pages/Home.tsx | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)\n',
       })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
+      // The database probe before the tests (`gate-db-probe.ts`): its env and allow-list recorded.
+      .onBackground(/gate-db-probe\.cjs/, (_command, procOpts) => {
+        const sandbox = ports.sandbox(row.id) as FakeSandbox
+        const probe: ProbeRun = {
+          env: { ...(procOpts?.env ?? {}) },
+          ...(procOpts?.cwd ? { cwd: procOpts.cwd } : {}),
+          allowedHosts: [...sandbox.allowedHosts],
+          script: sandbox.files.get(GATE_DB_PROBE_PATH),
+        }
+        probes.push(probe)
+        const outcome = opts.probe?.(probe, probes.length) ?? {}
+        return {
+          exitCode: outcome.exitCode ?? 0,
+          log: outcome.log ?? 'gate db probe: the gate branch answered select 1 after 1 attempt\n',
+        }
+      })
       // The `pnpm gate <step>` commands, or a legacy kit's three.
       .onBackground(/pnpm (gate )?lint/, gateScript('lint'))
       .onBackground(/pnpm (gate )?typecheck/, gateScript('typecheck'))
@@ -232,6 +269,7 @@ async function harness(
     ports,
     hooks,
     runs,
+    probes,
     fixes,
     checkpoints,
     summary,
@@ -446,6 +484,17 @@ describe('the ship gate: green', () => {
     expect(lint?.allowedHosts).not.toContain(pooler)
     expect(h.sandbox().allowedHosts).not.toContain(direct)
     expect(gateBranchesLeft(h)).toEqual([])
+    // rocketflare-launch#7: before the tests, ONE database probe from the app's `apps/web`, with
+    // the test step's own environment — the same URL, so one password reset, not two — and the
+    // branch's hosts already allowed; its script written where its command runs it from.
+    expect(h.probes).toHaveLength(1)
+    expect(h.probes[0]?.cwd).toBe(GATE_DB_PROBE_CWD)
+    expect(h.probes[0]?.env).toEqual(test?.env)
+    for (const host of [direct, pooler, api]) expect(h.probes[0]?.allowedHosts).toContain(host)
+    expect(h.probes[0]?.script).toBe(GATE_DB_PROBE_SCRIPT)
+    const order = h.sandbox().backgroundRuns.map(r => r.name)
+    expect(order.indexOf('test-db-probe')).toBeLessThan(order.indexOf('gate-test'))
+    expect(order.filter(n => n === 'gate-test-retry')).toEqual([])
 
     // The PR: the summary's title and body, and Launch's line about the gate.
     const pr = h.cloud.github.pulls.find(p => p.head === sessionBranchName(row.shortId))
@@ -775,6 +824,152 @@ describe('the ship gate: red', () => {
     const row = await reload(h.row)
     expect(row.prNumber).toBeNull()
     expect(row.status).toBe('ended')
+  })
+})
+
+/** What the kit's `pnpm test` printed on 2026-10-06 when its globalSetup's first query died. */
+const SETUP_CONNECTION_FAILURE = [
+  '▶ the other packages',
+  ' Tests  52 passed (52)',
+  '▶ web: api (shared registry) under neon',
+  ' RUN  v3.2.7 /workspace/app/apps/web',
+  'No test files found, exiting with code 1',
+  '⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯',
+  "ErrorEvent { type: 'error', defaultPrevented: false, cancelable: false, timeStamp: 2416.586118 }",
+  ' ❯ ../../node_modules/.pnpm/@neondatabase+serverless@1.1.0/node_modules/@neondatabase/serverless/index.mjs:1087:33',
+  ' ❯ Object.query scripts/lib/sql.ts:39:42',
+  ' ❯ applyDbRoles scripts/db-roles.ts:48:22',
+  ' ❯ prepareTestDatabase tests/setup.ts:23:3',
+  ' ❯ Object.setup tests/setup.ts:15:16',
+  ' ❯ TestProject._initializeGlobalSetup node_modules/vitest/dist/chunks/cli-api.js:1:1',
+].join('\n')
+
+describe('the ship gate: the test database (rocketflare-launch#7)', () => {
+  it('a probe that gives up: the tests never run, the ship stops with what failed, no fix turn', async () => {
+    const verdict =
+      'the container cannot reach ep-x.us-east-2.aws.neon.tech over HTTPS either (socket hang up)'
+    const h = await harness({
+      probe: () => ({
+        exitCode: GATE_DB_PROBE_UNREACHABLE,
+        log: [
+          'gate db probe: attempt 1 failed after 0.1 s: the WebSocket failed before Postgres answered (the driver gives no detail); retrying in 0.5 s',
+          'gate db probe: attempt 2 failed after 0.1 s: the WebSocket failed before Postgres answered (the driver gives no detail)',
+          `${GATE_DB_PROBE_VERDICT} ${verdict}`,
+        ].join('\n'),
+      }),
+    })
+    const run = await drive(h)
+    expect(run.names.slice(BOOT.length + 3)).toEqual([
+      'ship.claim#1',
+      'ship.save#1',
+      'ship.kit#1',
+      'ship.tree#1.1',
+      'ship.gate#1.1.lint',
+      'ship.gate#1.1.typecheck',
+      'ship.db#1.1',
+      'ship.gate#1.1.test',
+      'ship.db-clean#1.1',
+      'ship.settle#1',
+      'inspect#2',
+      'wait#2',
+      'inspect#3',
+      'end#3',
+      'cleanup',
+    ])
+    // Probed once; the suite never started; nothing for a fix turn to fix.
+    expect(h.probes).toHaveLength(1)
+    expect(h.runs.map(r => r.step)).toEqual(['lint', 'typecheck'])
+    expect(h.fixes).toEqual([])
+    const test = (await gateEvents(h)).find(g => g.step === 'test')
+    expect(test).toMatchObject({ passed: false, attempt: 1, command: 'pnpm gate test' })
+    expect(test?.output).toMatch(/^The session's container could not reach its test database/)
+    expect(test?.output).toContain(verdict)
+    expect(test?.output).toContain('Suspend and resume the session')
+    expect(test?.output).toContain('attempt 2 failed')
+    expect(await errorsOf(h)).toContainEqual(
+      expect.stringContaining('could not reach its test database')
+    )
+    expect(gateBranchesLeft(h)).toEqual([])
+    const probeEnv = h.probes[0]?.env ?? {}
+    expect(probeEnv.DATABASE_URL).toMatch(/^postgres/)
+    expectNoCredential('events', await eventsOf(h), [{ env: probeEnv } as GateRun])
+    expectNoCredential('step results', run.results, [{ env: probeEnv } as GateRun])
+  })
+
+  it('a setup-level connection failure is run ONCE more, says so, and ships when the second run is green', async () => {
+    const h = await harness({
+      gate: {
+        test: (_run, n) => (n === 1 ? { exitCode: 1, log: SETUP_CONNECTION_FAILURE } : {}),
+      },
+    })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    // Inside the ONE test step: the probe, the first run, the retry — and no fix turn.
+    expect(run.names.filter(n => n.startsWith('ship.gate#'))).toEqual([
+      'ship.gate#1.1.lint',
+      'ship.gate#1.1.typecheck',
+      'ship.gate#1.1.test',
+    ])
+    expect(h.runs.map(r => r.step)).toEqual(['lint', 'typecheck', 'test', 'test'])
+    expect(
+      h
+        .sandbox()
+        .backgroundRuns.map(r => r.name)
+        .filter(n => n.includes('test'))
+    ).toEqual(['test-db-probe', 'gate-test', 'gate-test-retry'])
+    // One password for the whole step: the probe and both runs share the URL.
+    expect(
+      new Set([h.probes[0]?.env.DATABASE_URL, ...h.runs.slice(2).map(r => r.env.DATABASE_URL)]).size
+    ).toBe(1)
+    expect(h.fixes).toEqual([])
+    const test = (await gateEvents(h)).find(g => g.step === 'test')
+    expect(test?.passed).toBe(true)
+    expect(test?.output).toMatch(/^Launch ran the tests twice/)
+    expect(test?.output).toContain('ErrorEvent')
+    expectNoCredential('events', await eventsOf(h), h.runs)
+  })
+
+  it('a setup-level failure that recurs is retried only once: red, and the normal fix turn follows', async () => {
+    const h = await harness({
+      gate: {
+        test: (_run, n) => (n <= 2 ? { exitCode: 1, log: SETUP_CONNECTION_FAILURE } : {}),
+      },
+    })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    // Attempt 1: two runs (the retry), red; a fix turn; attempt 2: probed again, green at once.
+    expect(h.runs.filter(r => r.step === 'test')).toHaveLength(3)
+    expect(h.probes).toHaveLength(2)
+    expect(h.fixes).toHaveLength(1)
+    const tests = (await gateEvents(h)).filter(g => g.step === 'test')
+    expect(tests.map(g => g.passed)).toEqual([false, true])
+    expect(tests[0]?.output).toMatch(/^Launch ran the tests twice/)
+  })
+
+  it('a real test failure is never retried, even with a connection error in its log', async () => {
+    const h = await harness({
+      gate: {
+        test: (_run, n) =>
+          n === 1
+            ? {
+                exitCode: 1,
+                log: [
+                  ' FAIL  api tests/api/access-requests.test.ts > approve creates the tenant',
+                  "ErrorEvent { type: 'error' }",
+                  ' ❯ createTenantForUser src/api/services/tenants.ts:40:3',
+                  ' Tests  1 failed | 1380 passed (1381)',
+                ].join('\n'),
+              }
+            : {},
+      },
+    })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    expect(h.runs.filter(r => r.step === 'test')).toHaveLength(2)
+    expect(h.sandbox().backgroundRuns.some(r => r.name === 'gate-test-retry')).toBe(false)
+    expect(h.fixes).toHaveLength(1)
+    const first = (await gateEvents(h)).find(g => g.step === 'test')
+    expect(first?.output).not.toContain('ran the tests twice')
   })
 })
 

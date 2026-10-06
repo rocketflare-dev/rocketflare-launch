@@ -9,9 +9,13 @@
  *
  * Queries are text + `$n` parameters, identical on both drivers.
  */
-import { Pool as NeonPool } from '@neondatabase/serverless'
 import postgres from 'postgres'
-import { type DatabaseDriver, databaseDriver, routeNeonThroughProxy } from '../../src/db/client'
+import {
+  createNeonPool,
+  type DatabaseDriver,
+  databaseDriver,
+  routeNeonThroughProxy,
+} from '../../src/db/client'
 
 export type Query = <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>
 
@@ -67,7 +71,8 @@ function postgresSql(url: string, options: ScriptSqlOptions): ScriptSql {
 
 function neonSql(url: string, env: DriverEnv): ScriptSql {
   if (env.NEON_LOCAL_PROXY) routeNeonThroughProxy(env.NEON_LOCAL_PROXY)
-  const pool = new NeonPool({ connectionString: url, max: 1 })
+  // A dropped connection rejects the query; it never crashes the script (`createNeonPool`).
+  const pool = createNeonPool(url, 1)
   return {
     driver: 'neon',
     query: async (text, params = []) => (await pool.query(text, params)).rows as never,

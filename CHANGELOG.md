@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The ship gate checks its test database before the tests, and says what failed when it cannot
+  reach it** (rocketflare-launch#7). Before `pnpm gate test` Launch runs a small probe in the
+  container: the app's own `@neondatabase/serverless` asks the gate branch for `select 1` over the
+  WebSocket the kit's test setup opens first, retrying for up to 45 s, then checks DNS and HTTPS to
+  the endpoint to say which part failed. A probe that gives up stops the ship with that verdict on
+  the Tests row (no fix turn: the code is not what failed) instead of a vitest "No test files
+  found" under an empty `ErrorEvent`. A test run that failed only because the kit's test setup lost
+  its database connection is run once more, and the row says so; a real test failure is never
+  retried. The 2026-10-06 failure (hola-world, a local sandbox) was the container itself: a reload
+  of Launch's `wrangler dev` while a session's container runs leaves that container without
+  internet (Launch's own hosts still work) — suspend and resume the session, or start a new one.
+  Every Neon WebSocket pool (`createNeonPool`, `src/db/client.ts`, and the scripts) now listens for
+  `error`, so a dropped connection rejects its query instead of crashing the process. No migration.
+
 - **A session that is still shipping stays on the app page.** After the merge a session is
   `shipped` while its landing still cuts the release and deploys it to staging, and a stall before
   the release (CI failed on main, the release failed) waits on a person; until now none of that

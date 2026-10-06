@@ -249,6 +249,25 @@ async function isAlive(sandbox: SandboxPort, pid: number): Promise<boolean> {
   return result.exitCode === 0
 }
 
+/**
+ * Whether `<dir>/<name>` names a run that is still going — what {@link runInBackground} would
+ * ATTACH to rather than start. The ship gate asks before it probes the database, so a retried step
+ * never mints a new password under a suite still running on the old one.
+ */
+export async function backgroundRunLive(
+  sandbox: SandboxPort,
+  dir: string,
+  name: string
+): Promise<boolean> {
+  const files = backgroundFiles(dir, name)
+  const previous = parsePid(await sandbox.readFile(files.pid))
+  return (
+    !!previous &&
+    exitCodeOf(await sandbox.readFile(files.exit), previous.runId) === null &&
+    (await isAlive(sandbox, previous.pid))
+  )
+}
+
 /** See the header. */
 export async function runInBackground(
   sandbox: SandboxPort,

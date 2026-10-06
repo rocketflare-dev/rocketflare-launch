@@ -54,7 +54,13 @@ import { scanShipConfig } from '../grants/detect'
 import { reviewPolicyFor } from '../launch/ship-settings'
 import { upgradeNeedsAttention } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
-import { BackgroundCommandAbortedError, BackgroundCommandLostError } from './background-command'
+import {
+  BackgroundCommandAbortedError,
+  BackgroundCommandLostError,
+  BackgroundCommandTimeoutError,
+  backgroundRunLive,
+  runInBackground,
+} from './background-command'
 import { checkContainer } from './boot-marker'
 import { readHeadTree, readWorktreeTree, workspaceChanged } from './checkpoint'
 import { safeErrorMessage } from './events'
@@ -79,12 +85,23 @@ import {
 } from './gate'
 import { gateBranchName } from './gate-branch'
 import {
+  GATE_DB_PROBE_COMMAND,
+  GATE_DB_PROBE_CWD,
+  GATE_DB_PROBE_PATH,
+  GATE_DB_PROBE_SCRIPT,
+  GATE_DB_PROBE_TIMEOUT_MS,
+  gateDbProbeMessage,
+  gateDbProbeVerdict,
+  gateSetupRetryNote,
+  isSetupConnectionFailure,
+} from './gate-db-probe'
+import {
   type GateBranch,
   SandboxInterruptedError,
   type SandboxPort,
   sessionAllowedHosts,
 } from './ports'
-import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
+import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './rocketflare-dev'
 import {
   clipDiffStat,
   DEFAULT_SHIP_ATTEMPTS,
@@ -112,7 +129,12 @@ import {
 import { containerGone } from './turn'
 
 /** Why a gate stopped short of a verdict (or of any use trying again). */
-export type ShipStop = 'container_lost' | 'ended' | 'unfixable'
+/**
+ * Why a gate stopped without a verdict worth a fix turn: the container went away, the person ended
+ * the session, the gate cannot run on this app at all, or (`db_unreachable`) the container could
+ * not reach its test database — the database probe (`gate-db-probe.ts`) gave up before the tests.
+ */
+export type ShipStop = 'container_lost' | 'ended' | 'unfixable' | 'db_unreachable'
 
 /** The session's container went away mid-ship: said once, as an `error` event. */
 export const SHIP_CONTAINER_LOST_MESSAGE =
@@ -393,6 +415,59 @@ async function whileNotEnded<T>(
   }
 }
 
+/** The second run's file name suffix: `gate-test-retry` (a finished name is never reused anyway). */
+const GATE_RETRY_SUFFIX = '-retry'
+
+interface GateProbeResult {
+  /** The probe's exit code (0 = ready, or nothing to probe); null when Launch stopped it. */
+  exitCode: number | null
+  log: string
+}
+
+/**
+ * The database probe (`gate-db-probe.ts`): its script written to the container, then run in the
+ * app's `apps/web` with the test step's own environment — the same `DATABASE_URL` the suite gets.
+ * A probe past its deadline is answered as a failure; a lost container or an end throws.
+ */
+async function probeGateDatabase(
+  scope: StepScope,
+  sandbox: SandboxPort,
+  env: () => Promise<Record<string, string>>
+): Promise<GateProbeResult> {
+  await sandbox.writeFile(GATE_DB_PROBE_PATH, GATE_DB_PROBE_SCRIPT)
+  try {
+    const probed = await whileNotEnded(scope, signal =>
+      runInBackground(sandbox, {
+        name: 'test-db-probe',
+        dir: SESSION_LAUNCH_DIR,
+        command: GATE_DB_PROBE_COMMAND,
+        cwd: GATE_DB_PROBE_CWD,
+        env,
+        timeoutMs: GATE_DB_PROBE_TIMEOUT_MS,
+        signal,
+        pollMs: limitsOf(scope).commandPollMs,
+      })
+    )
+    return { exitCode: probed.exitCode, log: probed.stdout }
+  } catch (err) {
+    if (!(err instanceof BackgroundCommandTimeoutError)) throw err
+    return { exitCode: null, log: err.log }
+  }
+}
+
+/** The first run's connection error, one redacted line, for the retry's sentence. */
+function connectionErrorLine(log: string, secrets: readonly string[]): string {
+  const line = log
+    .split('\n')
+    .map(l => l.trim())
+    .find(l =>
+      /ErrorEvent|WebSocket|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|Connection terminated|fetch failed/.test(
+        l
+      )
+    )
+  return line ? gateOutputTail(line, secrets).slice(0, 200) : 'a database connection error'
+}
+
 /**
  * `ship.gate#N.A.<step>`: one of the kit's gate commands, run by Launch in the checkout (see the
  * header and `gate.ts`), its verdict an event. The test step takes `branch` (from `ship.db`): the
@@ -433,7 +508,10 @@ export async function shipGateStep(
   // so its tail relies on `tailOf`'s connection-string rule (the kit's refusals print the host only).
   const secrets: string[] = []
   const sessionHosts = gate.database ? await dbEgressHostsOf(scope, session) : []
-  const env = async (): Promise<Record<string, string>> => {
+  // ONE credential per step invocation: the probe and the suite it clears share the password, so
+  // the suite never starts on a password reset under the probe's (`gate-db-probe.ts`).
+  let minted: Promise<Record<string, string>> | undefined
+  const mint = async (): Promise<Record<string, string>> => {
     if (!gate.database || !branch) return gateBaseEnv(dev)
     const app = await loadAppRef(scope, session.appId)
     const uri = await vendorCall(phased, "Neon (the gate branch's password)", () =>
@@ -442,24 +520,57 @@ export async function shipGateStep(
     secrets.push(...uriSecrets(uri))
     return gateTestEnv(dev, branch, uri)
   }
+  const env = (): Promise<Record<string, string>> => {
+    minted ??= mint()
+    return minted
+  }
 
   const limits = limitsOf(scope)
   const started = Date.now()
-  let result: Awaited<ReturnType<typeof runGateCommand>>
-  try {
-    if (gate.database && branch) {
-      await sandbox.setAllowedHosts(
-        sessionAllowedHosts([...sessionHosts, ...gateEgressHosts(branch)])
-      )
-    }
-    result = await whileNotEnded(scope, signal =>
+  const run = (name?: string) =>
+    whileNotEnded(scope, signal =>
       runGateCommand(sandbox, gate, {
         env,
         signal,
         pollMs: limits.commandPollMs,
         ...(limits.gateMaxMs !== undefined ? { maxMs: limits.gateMaxMs } : {}),
+        ...(name ? { name } : {}),
       })
     )
+  let result: Awaited<ReturnType<typeof runGateCommand>> | null = null
+  let probe: GateProbeResult | null = null
+  /** The first run's connection error, when the tests were run a second time. */
+  let retriedAfter: string | null = null
+  try {
+    if (gate.database && branch) {
+      await sandbox.setAllowedHosts(
+        sessionAllowedHosts([...sessionHosts, ...gateEgressHosts(branch)])
+      )
+      const retryName = `gate-${step}${GATE_RETRY_SUFFIX}`
+      if (await backgroundRunLive(sandbox, SESSION_LAUNCH_DIR, retryName)) {
+        // A step retry that finds the second run going: attach to it (its first run is history).
+        retriedAfter = 'a database connection error in the first run'
+        result = await run(retryName)
+      } else {
+        // The probe runs only before a run STARTS — never under a suite an earlier try left going.
+        if (!(await backgroundRunLive(sandbox, SESSION_LAUNCH_DIR, `gate-${step}`))) {
+          probe = await probeGateDatabase(scope, sandbox, env)
+        }
+        if (!probe || probe.exitCode === 0) {
+          result = await run()
+          if (!result.passed && result.exitCode !== null && isSetupConnectionFailure(result.log)) {
+            retriedAfter = connectionErrorLine(result.log, secrets)
+            scope.logger.warn(
+              { step, attempt: input.attempt },
+              'session ship: the tests failed in their setup on a database connection error; running them once more'
+            )
+            result = await run(retryName)
+          }
+        }
+      }
+    } else {
+      result = await run()
+    }
   } catch (err) {
     if (err instanceof BackgroundCommandAbortedError) return { passed: false, step, stop: 'ended' }
     if (await lostContainer(scope, sandbox, bootId)) {
@@ -479,6 +590,34 @@ export async function shipGateStep(
     }
   }
 
+  if (!result) {
+    // The probe gave up: the tests never ran. Not the code's fault, so no fix turn either.
+    const failed = probe as GateProbeResult
+    const output = [
+      gateDbProbeMessage(failed.exitCode, gateDbProbeVerdict(failed.log)),
+      gateOutputTail(failed.log, secrets),
+    ]
+      .filter(Boolean)
+      .join('\n')
+    scope.logger.warn(
+      { step, attempt: input.attempt, exitCode: failed.exitCode },
+      'session ship: the gate database probe gave up; the tests did not run'
+    )
+    await emitterFor(scope)({
+      type: 'ship.gate',
+      turn: session.turnCount,
+      data: {
+        step,
+        passed: false,
+        attempt: input.attempt,
+        command: gate.command,
+        durationMs: Math.max(0, Date.now() - started),
+        output,
+      },
+    })
+    return { passed: false, step, stop: 'db_unreachable', command: gate.command, output }
+  }
+
   // Issue #9: what a green gate ran on — read BEFORE the event, so a read that throws retries the
   // step (the command re-attached, finished) without writing its row twice.
   const tree = result.passed && input.last ? await gateTreeOf(scope, sandbox, bootId) : undefined
@@ -487,7 +626,10 @@ export async function shipGateStep(
     tree && input.startTree && tree !== input.startTree
       ? await changedBetween(sandbox, input.startTree, tree)
       : undefined
-  const output = [result.note, gateOutputTail(result.log, secrets)].filter(Boolean).join('\n')
+  const retryNote = retriedAfter ? gateSetupRetryNote(retriedAfter) : null
+  const output = [retryNote, result.note, gateOutputTail(result.log, secrets)]
+    .filter(Boolean)
+    .join('\n')
   const target = gate.database ? gateTestTarget(result.log, secrets) : null
   await emitterFor(scope)({
     type: 'ship.gate',
@@ -810,6 +952,7 @@ export async function shipPrStep(
 export type ShipSettleReason =
   | 'exhausted'
   | 'unfixable'
+  | 'db_unreachable'
   | 'fix_failed'
   | 'ended'
   | 'not_committed'
@@ -829,6 +972,8 @@ function settleMessage(reason: ShipSettleReason, attempts: number, detail?: stri
       return `The gate still fails after ${attempts} attempt${attempts === 1 ? '' : 's'}, so no pull request was opened. The failing step's output is on the ship panel; carry on in the chat, then ship again.`
     case 'unfixable':
       return 'The gate cannot run on this app, so no pull request was opened. The ship panel says why.'
+    case 'db_unreachable':
+      return "The session's container could not reach its test database, so the tests did not run and no pull request was opened. The ship panel says what failed; ship again once it is fixed."
     case 'fix_failed':
       return 'The fix turn did not run to its end, so Launch stopped the ship without a pull request. Carry on in the chat, then ship again.'
     case 'not_committed':

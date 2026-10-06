@@ -60,6 +60,10 @@
  * ({@link gateEgressHosts}: the direct and `-pooler` endpoint and the region's HTTP SQL host) — a
  * no-op under `SESSION_EGRESS=open`, correct under `allowlist`.
  *
+ * **Before the tests, a database probe; after a setup-only connection failure, one retry**
+ * (`gate-db-probe.ts`, rocketflare-launch#7): the kit's first query is the one a sandbox's network
+ * trouble kills, and the driver reports it as an empty `ErrorEvent`.
+ *
  * **Deadlines.** Each command runs as a polled background command (`background-command.ts`) with a
  * hard deadline, past which its process group is killed: under `allowlist` a vitest run can hang
  * on exit behind the egress interceptor's WebSocket bug (docs/plans/sandbox-websocket-close.md),
@@ -418,6 +422,8 @@ export interface RunGateCommandOptions {
   sleep?: (ms: number) => Promise<void>
   /** Caps the command's own deadline (`SESSION_CALL_LIMITS.execMaxMs`-style; tests shrink it). */
   maxMs?: number
+  /** The run's file name under `SESSION_LAUNCH_DIR` (default `gate-<step>`; the retry's differs). */
+  name?: string
 }
 
 /**
@@ -434,7 +440,7 @@ export async function runGateCommand(
   const timeoutMs = Math.min(gate.timeoutMs, opts.maxMs ?? gate.timeoutMs)
   try {
     const result = await runInBackground(sandbox, {
-      name: `gate-${gate.step}`,
+      name: opts.name ?? `gate-${gate.step}`,
       dir: SESSION_LAUNCH_DIR,
       command: gate.command,
       cwd: SESSION_WORKSPACE,
