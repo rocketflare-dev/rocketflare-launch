@@ -142,7 +142,7 @@ heartbeat `services/sessions/reconcile.ts` reads (a running turn writes the same
 straight to `cleanup` — which is how the reconcile's fresh instance cleans up — and a LIVE one
 (`ready`/`working`/`blocked`/`shipping`: its instance was lost) to `salvage` (`SALVAGE_STEP`: one
 retry, 15 min) before the loop: with the container still carrying its boot marker, stop the
-orphaned turn by `TURN_PID_FILE` (the turn's `turnKillScript`), checkpoint (`reason: 'salvage'`,
+orphaned turn (`runtime.cancel` — a process runtime: by `TURN_PID_FILE`, `turnKillScript`), checkpoint (`reason: 'salvage'`,
 transcript included), KEEP the container when the process is confirmed stopped (the loop's
 `resume#N` then goes warm), else destroy it; then `suspended` + `resume` and close a `working` turn
 saying whether the work was saved (`turn.failed`, or `turn.interrupted { cancelled }` for a pending

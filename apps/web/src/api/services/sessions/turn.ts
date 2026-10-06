@@ -50,51 +50,40 @@
  *    the command's message starts with the `session-interrupted` line; `user.message` does not.
  *    A message with images (`pending_attachments`) names them in `user.message`'s data; one that is
  *    ONLY images (`pending_message = ''`) reaches the agent as {@link imageOnlyMessage}.
- * 4. **Run** `claude -p …` (`claude-stream.ts`) with `startProcess`, and read `streamLogs`. First,
- *    the message's images go from R2 into the container (`attachments.ts`' `stageAttachments`, to
- *    `/workspace/.launch/attachments/`, outside the checkout) once — before the resume retry, which
- *    reuses them — and the runtime's `turnInputCommand` runs (Claude: the stream-json input the
- *    command reads on stdin); an image that cannot be loaded fails the turn with a sentence. Then each
- *    stream-json line → events, buffered and written every 250 ms or 20 events (`event-log.ts`);
- *    `system.init`'s session id is stored at once (the next turn `--resume`s it). **A resume that
- *    cannot work never breaks the session**: when the container answers that the transcript is
- *    missing (`test -s`), or Claude Code ends a `--resume` at once with `error_during_execution`,
- *    no tokens and nothing said, `claude_session_id` is cleared, an `error` event says so
- *    ({@link CONVERSATION_LOST_MESSAGE}) and the turn runs (again, once) as a new conversation.
- * 5. **Watch**, concurrently: every 2 s re-read `cancel_requested_at` (→ `kill`, `cancelled`) and
- *    the clock against `policy.maxTurnMinutes` (→ `kill`, `timeout`); every 10 s write the
- *    heartbeat (`last_activity_at` of a `working` row) that `reconcile.ts` reads to tell a live
- *    turn from one whose Workflow died under it. And every {@link TURN_LIVENESS_PROBE_MS} (with a
- *    `bootId`) read the boot marker: a container that died does not end its log stream — it just
- *    goes quiet — so without this a dead container holds the turn until its timeout. A marker that
- *    is gone (the read booted a fresh, empty container) ends the turn at once; a read that does
- *    not answer within {@link TURN_LIVENESS_CALL_MS} {@link TURN_LIVENESS_MAX_FAILURES} times in a
- *    row does too — `interrupted { container_lost }`. A lost or ended stream is checked once more.
- * 6. **End** with exactly one of `turn.end` (the `result` line, with the turn's METERED cost — the
- *    model proxy's `ai_usage` rows, as the row's running total moved), `turn.failed` (the process
- *    exited without a result, or would not start) or `turn.interrupted` (`rollout` — the
- *    container was replaced, `SandboxInterruptedError` — `container_lost` — it died and came back
- *    empty, {@link CONTAINER_LOST_MESSAGE} — `cancelled` or `timeout`), and the status back to
- *    `ready` (`suspended` after a rollout or a lost container).
- * 7. **Never leave it running**: whenever Launch stops reading a process that has not exited — the
- *    log stream failed or closed early, or a cancel/timeout aborted the reader — it SIGTERMs the
- *    turn's pid (`TURN_PID_FILE`) and its children, and SIGKILLs them after
- *    `TURN_KILL_GRACE_SECONDS` (`terminateTurnProcess`: bounded, logged, never throws). Not after a
- *    rollout or a lost container: that container is gone.
+ * 4. **Run** it through the session's runtime — `runtimeOf(row).runTurn(ctx, input, sink)`
+ *    (`runtimes/types.ts`). This file knows nothing about HOW: Claude Code and Codex are
+ *    `processRuntime(cli)` (`runtimes/process/turn.ts` — the images staged into the container, the
+ *    egress grant and the credential lease, the CLI's files and input, `startProcess`, its parser,
+ *    the resume check and retry, the liveness probe, the self-metered budget stop, and the kill by
+ *    pid when Launch stops reading). The {@link TurnContext} carries the step's clocks and the two
+ *    row callbacks — the heartbeat every 10 s (`last_activity_at` of a `working` row, what
+ *    `reconcile.ts` reads to tell a live turn from one whose Workflow died under it) and the
+ *    `cancel_requested_at` read every 2 s (→ `cancelled`); the turn's own timeout is
+ *    `policy.maxTurnMinutes` (→ `timeout`). The {@link TurnSink} is this file's: each normalised
+ *    mapping's events buffered and written every 250 ms or 20 events (`event-log.ts`), its resume
+ *    id stored at once (the next turn resumes it) and its `runtime_state` too. **A resume that
+ *    cannot work never breaks the session**: the runtime asks the sink to forget it —
+ *    `claude_session_id` is cleared, an `error` event says so ({@link CONVERSATION_LOST_MESSAGE})
+ *    — and the turn runs as a new conversation.
+ * 5. **End** with exactly one of `turn.end` (the result, with the turn's METERED cost — the model
+ *    proxy's `ai_usage` rows, or the turn's own, as the row's running total moved), `turn.failed`
+ *    (no result, or it would not start) or `turn.interrupted` (`rollout` — the container was
+ *    replaced, `container_lost` — it died and came back empty, {@link CONTAINER_LOST_MESSAGE} —
+ *    `cancelled` or `timeout`), and the status back to `ready` (`suspended` after a rollout or a
+ *    lost container).
  *
  * ## The ship's fix turn (issue #1)
  *
  * `createShipTurnRunner(db, ports, opts?)` → `ShipTurnRunner` —
  * `({ message, session }) => Promise<{ outcome: 'completed' | 'failed' | 'interrupted' |
  * 'cancelled'; turn; text; reason? }>`, what the ship's `ship.fix#N.A` step runs (through the
- * `shipFix` hook). It is `runPromptTurn`: the same steps 4–6 for a Launch-authored prompt while
- * the session is `shipping` — no `pending_message`, no `user.message`, no status change —
- * returning Claude's final answer (`text`, the `result` line). Launch runs the gate itself; this
- * turn only fixes what a step reported.
+ * `shipFix` hook). It is `runPromptTurn`: the same steps 4–5 — the same `runTurn` of the same
+ * runtime — for a Launch-authored prompt while the session is `shipping` — no `pending_message`,
+ * no `user.message`, no status change — returning the agent's final answer (`text`, the result).
+ * Launch runs the gate itself; this turn only fixes what a step reported.
  *
- * No secret is in any event or in the outcome: the process env is the placeholder
- * (`claudeTurnEnv`), every string is redacted and clipped (`mapClaudeLine`), and the outcome is
- * ids, counts and flags.
+ * No secret is in any event or in the outcome: the runtime's process env is placeholders, every
+ * string it maps is redacted and clipped, and the outcome is ids, counts and flags.
  */
 import {
   PENDING_MODEL_DEFAULT,
@@ -113,41 +102,24 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { resolvePrompt } from '../prompts'
 import { nudge, type Realtime, realtimeEvent } from '../realtime'
 import type { StorageService } from '../storage'
-import { AttachmentsUnavailableError, stageAttachments } from './attachments'
 import {
   CONTAINER_LOST_BEFORE_TURN_MESSAGE,
   CONTAINER_LOST_MESSAGE,
   checkContainer,
 } from './boot-marker'
-import { type BudgetHeadroom, budgetHeadroom, checkBudget } from './budget'
-import { type ClaudeTurnResult, clipStrings, SESSION_WORKDIR } from './claude-stream'
-import {
-  CredentialBusyError,
-  CredentialNeedsLoginError,
-  CredentialPortMissingError,
-} from './credentials/errors'
+import { checkBudget } from './budget'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
-import { ModelKeyMissingError, redactModelKeyText } from './model-key'
-import {
-  credentialsFor,
-  egressFor,
-  NotWiredError,
-  SandboxInterruptedError,
-  type SandboxPort,
-  type SessionEgressPort,
-  type SessionPorts,
-} from './ports'
-import { claudeTranscriptPath, SESSION_LAUNCH_DIR, sessionSharedEnv } from './rocketflare-dev'
+import { redactModelKeyText } from './model-key'
+import { credentialsFor, egressFor, type SessionPorts } from './ports'
 import { runtimeOf } from './runtimes'
 import type {
   AgentRuntime,
-  RuntimeAttachment,
-  RuntimeLineMapping,
-  RuntimeStreamParser,
-  SessionCredentialPort,
-  TurnCredentialLease,
+  RuntimeTurnOutcome,
+  RuntimeTurnResult,
+  RuntimeTurnStop,
+  TurnContext,
+  TurnSink,
 } from './runtimes/types'
-import { createTurnMeter, recordTurnUsage, type TurnMeter } from './turn-meter'
 
 /** Write buffered events at least this often while a turn streams (plan §3c). */
 export const TURN_FLUSH_MS = 250
@@ -179,21 +151,22 @@ export const TURN_LIVENESS_MAX_FAILURES = 4
 /** The step timeout's margin over the turn's own, so the turn's timeout always fires first. */
 export const TURN_STEP_TIMEOUT_MARGIN_MINUTES = 2
 
-/**
- * The turn's `claude` pid: the command writes `$$` and `exec`s into Claude Code, so it IS that pid
- * (the dev server's `DEV_PID_FILE` pattern). What {@link terminateTurnProcess} signals directly.
- */
-export const TURN_PID_FILE = `${SESSION_LAUNCH_DIR}/turn.pid`
-/** Between SIGTERM and SIGKILL, when Launch stops a turn's process it no longer reads. */
-export const TURN_KILL_GRACE_SECONDS = 5
-/** The bound on each call {@link terminateTurnProcess} makes: it never holds the turn up longer. */
-export const TURN_KILL_CALL_MS = 30_000
-/** How long writing a turn's input (the images' stream-json line) may take in the container. */
-export const TURN_INPUT_TIMEOUT_MS = 60_000
+// The process runtimes' names, where their importers always found them (rocketflare-launch#13
+// moved them to `runtimes/process/`, and the transcript check to `runtimes/claude-code/`).
+export { transcriptCheckCommand } from './runtimes/claude-code/state'
+export {
+  TURN_KILL_CALL_MS,
+  TURN_KILL_GRACE_SECONDS,
+  TURN_PID_FILE,
+  terminateTurnProcess,
+  turnKillScript,
+  turnProcessCommand,
+} from './runtimes/process/kill'
+export { selfMetered, TURN_INPUT_TIMEOUT_MS } from './runtimes/process/turn'
 
 /**
- * What the person reads when the conversation a turn would `--resume` is gone (its transcript was
- * never checkpointed, or did not come back with a resume): Claude starts a new one.
+ * What the person reads when the conversation a turn would resume is gone (it was never
+ * checkpointed, did not come back with a resume, or the agent refused it): a new one starts.
  */
 export const CONVERSATION_LOST_MESSAGE =
   'The earlier conversation could not be restored; Claude starts fresh with the code as it is.'
@@ -201,96 +174,6 @@ export const CONVERSATION_LOST_MESSAGE =
 /** What a message from anyone but a personal-account session's owner meets (§18.22). */
 export const CREDENTIAL_OWNER_ONLY_MESSAGE =
   'Only the person whose account this session uses can send it messages.'
-
-/** `test -s` on the transcript `--resume` needs: exit 1 = missing or empty. */
-export const transcriptCheckCommand = (claudeSessionId: string) =>
-  `test -s ${claudeTranscriptPath(claudeSessionId)}`
-
-/** The process a turn starts: its pid recorded, then `exec` into Claude Code. */
-export function turnProcessCommand(claudeCommand: string): string {
-  return `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${TURN_PID_FILE} && exec ${claudeCommand}`
-}
-
-/**
- * SIGTERM the recorded pid (and its children), wait up to `graceSeconds`, then SIGKILL whatever is
- * left. Signals by pid rather than through the SDK because the SDK's `killProcess` drops its
- * signal argument (0.12.10 sends a bare `DELETE /api/process/:id`), so it can neither escalate nor
- * be told apart from a polite stop.
- */
-export function turnKillScript(
-  graceSeconds = TURN_KILL_GRACE_SECONDS,
-  pidFile = TURN_PID_FILE
-): string {
-  const ticks = Math.max(1, graceSeconds * 2)
-  return [
-    `pid=$(cat ${pidFile} 2>/dev/null)`,
-    '[ -n "$pid" ] || exit 0',
-    'kill -0 "$pid" 2>/dev/null || exit 0',
-    'pkill -TERM -P "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null',
-    `for i in $(seq 1 ${ticks}); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.5; done`,
-    'pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null',
-    'echo killed',
-  ].join('; ')
-}
-
-/** `work`, or a rejection after `ms` (the work itself cannot be cancelled — it is an RPC). */
-async function bounded<T>(ms: number, work: () => Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const promise = work()
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms)
-      }),
-    ])
-  } finally {
-    clearTimeout(timer)
-    promise.catch(() => {})
-  }
-}
-
-/**
- * Stop a turn's Claude Code process that Launch has stopped READING — a lost log stream, or a
- * cancel/timeout whose reader was aborted — so it cannot run on for minutes spending tokens and
- * editing the workspace. Best effort, bounded, logged; never throws. `signalled`: the SDK kill was
- * already sent (a cancel), so only the pid escalation runs.
- */
-export async function terminateTurnProcess(
-  sandbox: SandboxPort,
-  processId: string,
-  opts: {
-    logger?: Logger
-    sessionId: string
-    reason: string
-    signalled?: boolean
-    callMs?: number
-  }
-): Promise<void> {
-  const callMs = opts.callMs ?? TURN_KILL_CALL_MS
-  const log = { sessionId: opts.sessionId, processId, reason: opts.reason }
-  if (!opts.signalled) {
-    try {
-      await bounded(callMs, () => sandbox.kill(processId, 'SIGTERM'))
-    } catch (err) {
-      if (err instanceof SandboxInterruptedError) return
-      opts.logger?.warn({ err, ...log }, 'session turn: kill failed')
-    }
-  }
-  try {
-    const result = await bounded(callMs, () =>
-      sandbox.exec(turnKillScript(), { timeoutMs: (TURN_KILL_GRACE_SECONDS + 15) * 1000 })
-    )
-    if (result.stdout.includes('killed')) {
-      opts.logger?.warn(log, 'session turn: Claude Code ignored SIGTERM and was SIGKILLed')
-    } else {
-      opts.logger?.info(log, 'session turn: stopped the Claude Code process')
-    }
-  } catch (err) {
-    if (err instanceof SandboxInterruptedError) return
-    opts.logger?.warn({ err, ...log }, 'session turn: could not stop the Claude Code process')
-  }
-}
 
 /** The `step.do` config for `turn#N`: no retries (a turn is not idempotent), the policy's timeout. */
 export function turnStepConfig(policy: Pick<SessionPolicy, 'maxTurnMinutes'>) {
@@ -304,7 +187,7 @@ export interface RunTurnOptions {
   /** `entity.changed { entity: 'session' }` after each status write. Settle it after the step. */
   realtime?: Realtime
   logger?: Logger
-  /** The checkout the turn runs in (default `SESSION_WORKDIR`). */
+  /** The checkout the turn runs in (default: the runtime's own, `SESSION_WORKSPACE`). */
   cwd?: string
   /** Milliseconds clock (default `Date.now`). */
   now?: () => number
@@ -340,7 +223,7 @@ export interface RunTurnOptions {
  * `container_lost` — it died and came back empty (its boot marker is gone, or it stopped
  * answering); `cancelled` — a Stop; `timeout` — `maxTurnMinutes`.
  */
-export type TurnInterruptReason = 'rollout' | 'container_lost' | 'cancelled' | 'timeout'
+export type TurnInterruptReason = RuntimeTurnStop
 
 /** The container a turn ran in is gone: the session is `suspended` and nothing is left to save. */
 export function containerGone(outcome: { status: string; reason?: string }): boolean {
@@ -388,7 +271,7 @@ export type TurnOutcome =
 
 /** The {@link TurnResultSummary} of a `result` line, or undefined without one. */
 export function turnResultSummary(
-  result: ClaudeTurnResult | null | undefined
+  result: RuntimeTurnResult | null | undefined
 ): TurnResultSummary | undefined {
   if (!result) return undefined
   const text = result.text?.trimEnd() ?? null
@@ -727,20 +610,20 @@ export type ExecutedTurn =
       status: 'completed' | 'failed'
       costMicrocents: number
       /** The `result` line (absent when the process never printed one). */
-      result: ClaudeTurnResult | null
+      result: RuntimeTurnResult | null
     }
   | {
       status: 'interrupted'
       reason: TurnInterruptReason
       costMicrocents: number
-      result: ClaudeTurnResult | null
+      result: RuntimeTurnResult | null
     }
 
 /**
  * Steps 4–6 without the status: run `message` as turn `turn` of `row` (already claimed — its
- * `turn_count` is `turn`), stream its events, and write the ONE closing event (`turn.end`,
- * `turn.failed` or `turn.interrupted`). Shared by the chat turn and the ship turn, which own their
- * statuses differently.
+ * `turn_count` is `turn`) through the session's runtime (`runtimeOf(row).runTurn`), with this
+ * turn's sink, and write the ONE closing event (`turn.end`, `turn.failed` or `turn.interrupted`).
+ * Shared by the chat turn and the ship turn, which own their statuses differently.
  */
 async function executeTurn(
   db: Database,
@@ -758,16 +641,21 @@ async function executeTurn(
 ): Promise<ExecutedTurn> {
   const { turn, policy } = input
   const costBefore = Number(row.costMicrocents)
+  const now = opts.now ?? (() => Date.now())
   // Issue #8: the first token is measured from here — what the person waits through.
-  const startedAt = (opts.now ?? (() => Date.now()))()
-  const sandbox = ports.sandbox(row.id)
-  const params: StreamTurnParams = {
+  const startedAt = now()
+  const ctx: TurnContext = {
+    db,
+    session: row,
+    sandbox: ports.sandbox(row.id),
+    logger: opts.logger,
     turn,
-    message: input.message,
-    policy,
-    now: opts.now ?? (() => Date.now()),
+    egress: egressFor(ports, db),
+    credentials: credentialsFor(ports, db),
+    storage: opts.storage ?? null,
+    cwd: opts.cwd,
+    now,
     sleep: opts.sleep ?? realSleep,
-    cwd: opts.cwd ?? SESSION_WORKDIR,
     timeoutMs: opts.timeoutMs ?? policy.maxTurnMinutes * 60_000,
     flushMs: opts.flushMs ?? TURN_FLUSH_MS,
     flushEvery: opts.flushEvery ?? TURN_FLUSH_EVERY,
@@ -777,65 +665,85 @@ async function executeTurn(
     probeMs: opts.probeMs ?? TURN_LIVENESS_PROBE_MS,
     probeCallMs: opts.probeCallMs ?? TURN_LIVENESS_CALL_MS,
     probeFailures: opts.probeFailures ?? TURN_LIVENESS_MAX_FAILURES,
-    logger: opts.logger,
-    egress: egressFor(ports, db),
-    credentials: credentialsFor(ports, db),
-    attachments: [],
+    // "This turn is alive" — only while `working` (a ship's fix turn runs `shipping`, and its
+    // step's `withHeartbeat` beats for it). A failed beat is not a failed turn: the next one tries.
+    heartbeat: at =>
+      db
+        .update(sessions)
+        .set({ lastActivityAt: new Date(at) })
+        .where(
+          and(
+            eq(sessions.tenantId, row.tenantId),
+            eq(sessions.id, row.id),
+            eq(sessions.status, 'working')
+          )
+        )
+        .then(
+          () => {},
+          err => opts.logger?.warn({ err, sessionId: row.id }, 'session turn: heartbeat failed')
+        ),
+    async cancelRequested() {
+      const [flags] = await db
+        .select({ cancelRequestedAt: sessions.cancelRequestedAt })
+        .from(sessions)
+        .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+        .limit(1)
+      return Boolean(flags?.cancelRequestedAt)
+    },
   }
-
-  // The images go into the container once, before the run (and its resume retry) reads them.
   const runtime = runtimeOf(row)
-  const staged = await stageTurnAttachments(sandbox, row, input.attachments ?? [], opts)
-  if ('stop' in staged) {
-    return closeTurn(db, row, writer, { turn, startedAt }, costBefore, runtime, staged)
-  }
-  params.attachments = staged.attachments
-
-  // A conversation to resume whose transcript is not in the container (a resume that had nothing
-  // to restore, a turn that died before any checkpoint): `claude --resume` would fail every turn
-  // from now on, so start a fresh conversation instead — the code is all in the checkout.
-  let resumeId = row.claudeSessionId
-  if (resumeId && (await transcriptMissing(sandbox, runtime, row, opts.logger))) {
-    await forgetConversation(db, row, writer, turn)
-    resumeId = null
-  }
-  let run = await streamTurn(db, sandbox, { ...row, claudeSessionId: resumeId }, writer, params)
-  if (resumeId && runtime.resumeRefused(run)) {
-    // The transcript was there but Claude Code would not resume it (an `error_during_execution`
-    // with no tokens and nothing said): the same turn once more, as a new conversation.
-    opts.logger?.warn(
-      { sessionId: row.id, turn },
-      'session turn: --resume ended at once with nothing done; retrying without it'
-    )
-    await forgetConversation(db, row, writer, turn)
-    run = await streamTurn(db, sandbox, { ...row, claudeSessionId: null }, writer, params)
-  }
+  const run = await runtime.runTurn(
+    ctx,
+    {
+      message: input.message,
+      model: policy.model,
+      attachments: input.attachments ?? [],
+      systemNote: () => sessionSystemNote(db, row),
+    },
+    createTurnSink(db, row, writer, turn)
+  )
   return closeTurn(db, row, writer, { turn, startedAt }, costBefore, runtime, run)
 }
 
 /**
- * Put the message's images into the container (`stageAttachments`), or the run result that ends
- * the turn when they cannot be: a rollout, or `turn.failed` with a sentence for the person.
+ * The {@link TurnSink} a turn hands its runtime: a mapping's resume id (when it names a new one)
+ * and runtime state written at once, its events into the turn's buffered writer.
  */
-async function stageTurnAttachments(
-  sandbox: SandboxPort,
+function createTurnSink(
+  db: Database,
   row: SessionRow,
-  attachments: readonly SessionAttachment[],
-  opts: RunTurnOptions
-): Promise<{ attachments: RuntimeAttachment[] } | StreamTurnResult> {
-  try {
-    return {
-      attachments: await stageAttachments(sandbox, opts.storage ?? null, row.id, attachments),
-    }
-  } catch (err) {
-    const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
-    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (err instanceof AttachmentsUnavailableError) out.failure = err.message
-    else {
-      opts.logger?.warn({ err, sessionId: row.id }, 'session turn: could not stage the images')
-      out.failure = new AttachmentsUnavailableError().message
-    }
-    return out
+  writer: SessionEventWriter,
+  turn: number
+): TurnSink {
+  let resumeId = row.claudeSessionId
+  return {
+    async apply(mapping) {
+      if (mapping.resumeId && mapping.resumeId !== resumeId) {
+        resumeId = mapping.resumeId
+        // At once, not at the end: a turn that fails later must still be resumable.
+        await db
+          .update(sessions)
+          .set({ claudeSessionId: resumeId })
+          .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+      }
+      if (mapping.runtimeState) {
+        // §18.22: what the runtime keeps between turns (its own shape, `AgentRuntimeState`).
+        await db
+          .update(sessions)
+          .set({ runtimeState: mapping.runtimeState })
+          .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
+      }
+      if (mapping.events.length > 0) writer.append(...mapping.events)
+    },
+    append: (...events) => writer.append(...events),
+    get pending() {
+      return writer.pending
+    },
+    flush: () => writer.flush(),
+    async forgetConversation() {
+      resumeId = null
+      await forgetConversation(db, row, writer, turn)
+    },
   }
 }
 
@@ -847,10 +755,10 @@ async function closeTurn(
   { turn, startedAt }: { turn: number; startedAt: number },
   costBefore: number,
   runtime: AgentRuntime,
-  run: StreamTurnResult
+  run: RuntimeTurnOutcome
 ): Promise<ExecutedTurn> {
-  // The turn's cost is what was metered while it ran — by the model proxy, or (`host`, and a
-  // ChatGPT plan's Codex turn) by the turn itself as it ended: either way the row's total moved.
+  // The turn's cost is what was metered while it ran — by the model proxy, or (a self-metered
+  // turn) by the runtime itself as it ended: either way the row's total moved.
   const after = await readRow(db, row)
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
   let executed: ExecutedTurn
@@ -893,31 +801,7 @@ async function closeTurn(
   return executed
 }
 
-/**
- * True only when the container ANSWERED that the transcript `--resume` needs is missing or empty;
- * a check that failed (the container busy, a rollout on its way) is not evidence, and the turn
- * resumes as asked — {@link resumeRefused} still catches a resume that cannot work.
- */
-async function transcriptMissing(
-  sandbox: SandboxPort,
-  runtime: AgentRuntime,
-  row: SessionRow,
-  logger?: Logger
-): Promise<boolean> {
-  const path = runtime.state.restorePath(row)
-  if (!path) return true
-  try {
-    const result = await bounded(TURN_KILL_CALL_MS, () =>
-      sandbox.exec(runtime.state.checkCommand(path), { timeoutMs: 15_000 })
-    )
-    return result.exitCode === 1
-  } catch (err) {
-    logger?.warn({ err }, 'session turn: could not check the transcript; resuming as asked')
-    return false
-  }
-}
-
-/** Clear `claude_session_id` (the next `claude -p` starts a conversation) and say so. */
+/** Clear the resume id (`claude_session_id` — the next turn starts a conversation) and say so. */
 async function forgetConversation(
   db: Database,
   row: SessionRow,
@@ -946,7 +830,7 @@ export interface ShipTurnResult {
   outcome: 'completed' | 'failed' | 'interrupted' | 'cancelled'
   /** The turn number it ran as (0 when it never started). */
   turn: number
-  /** Claude's final answer (the `result` line). */
+  /** The agent's final answer (its result). */
   text?: string | null
   /**
    * For `interrupted`: why — `rollout` and `container_lost` mean the container is gone
@@ -1046,47 +930,6 @@ export function createShipTurnRunner(
   return input => runPromptTurn(db, ports, input, opts)
 }
 
-interface StreamTurnParams {
-  turn: number
-  message: string
-  policy: SessionPolicy
-  now: () => number
-  sleep: (ms: number) => Promise<void>
-  cwd: string
-  timeoutMs: number
-  flushMs: number
-  flushEvery: number
-  cancelPollMs: number
-  heartbeatMs: number
-  /** The boot's id — the marker the liveness probe expects; null = no probe. */
-  bootId: string | null
-  probeMs: number
-  probeCallMs: number
-  probeFailures: number
-  logger?: Logger
-  /** How the container reaches Anthropic and GitHub (`proxied` unless the sandbox is remote). */
-  egress: SessionEgressPort
-  /** §18.22: the turn's credential lease (platform: nothing). */
-  credentials: SessionCredentialPort
-  /** The message's images, already in the container. */
-  attachments: RuntimeAttachment[]
-}
-
-interface StreamTurnResult {
-  result: ClaudeTurnResult | null
-  /** Why the turn stopped before its end, if it did. */
-  stop: TurnInterruptReason | null
-  /** A human sentence for `turn.failed` — redacted and clipped. */
-  failure: string | null
-  /** Claude Code said or did something (a text, a tool call) — {@link resumeRefused} reads it. */
-  output: boolean
-  /** Issue #8: when (`now()`) it first did — the turn's `firstTokenMs`. */
-  firstOutputAt?: number
-}
-
-/** A sentence for `turn.failed`, safe to store and show. */
-const failureText = (text: string) => clipStrings(redactModelKeyText(text), 1_000)
-
 /** How far back `latestCiFailure` looks for the last ship's CI verdict. */
 const CI_FAILURE_LOOKBACK = 50
 
@@ -1138,7 +981,7 @@ export function ciFailureNote(failure: NonNullable<Awaited<ReturnType<typeof lat
 }
 
 /**
- * `session-system-note` filled in for this session: Claude Code's appended system prompt — plus,
+ * `session-system-note` filled in for this session: the agent's appended system prompt — plus,
  * after a red CI reopened the ship (issue #5), the failing check and its redacted log tail.
  */
 export async function sessionSystemNote(db: Database, row: SessionRow): Promise<string> {
@@ -1162,437 +1005,4 @@ export async function sessionSystemNote(db: Database, row: SessionRow): Promise<
   })
   const failure = await latestCiFailure(db, row)
   return failure ? `${note}\n\n${ciFailureNote(failure)}` : note
-}
-
-/**
- * Start the process, read it to its end, and write what it says; meanwhile watch for a cancel and
- * the timeout. Resolves when the process has ended (or was killed, or the container went away).
- */
-async function streamTurn(
-  db: Database,
-  sandbox: SandboxPort,
-  row: SessionRow,
-  writer: SessionEventWriter,
-  p: StreamTurnParams
-): Promise<StreamTurnResult> {
-  const out: StreamTurnResult = { result: null, stop: null, failure: null, output: false }
-  const runtime = runtimeOf(row)
-
-  // `host` (a remote sandbox): the host is granted the turn's model credential and a fresh token
-  // (the process keeps the runtime's placeholders), and the turn meters itself against what the
-  // budget has left (`turn-meter.ts`) — a personal account has no money budget, so it is only
-  // recorded. `proxied`: none of it, except that a Codex turn on a ChatGPT plan meters itself too
-  // ({@link selfMetered}).
-  try {
-    return await streamGrantedTurn(db, sandbox, row, writer, p, out, runtime)
-  } finally {
-    await p.egress
-      .endTurn?.(sandbox, row)
-      .catch(err =>
-        p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not revoke the turn grant')
-      )
-  }
-}
-
-/**
- * Does the turn meter ITSELF from the CLI's own output (`turn-meter.ts`)? Under `host`, always —
- * the host's handlers cannot reach the database. Under `proxied`, a Codex turn on a person's
- * ChatGPT plan: its model calls go to `chatgpt.com` directly (ChatGPT blocks the Workers runtime,
- * `egress/registry.ts`), so no proxy sees them. Every other proxied turn is metered per request by
- * its proxy, and metering it here as well would count it twice.
- */
-export function selfMetered(
-  mode: SessionEgressPort['mode'],
-  row: Pick<SessionRow, 'runtime' | 'credentialSource'>
-): boolean {
-  if (mode === 'host') return true
-  return row.runtime === 'codex' && row.credentialSource === 'user'
-}
-
-/** The turn once the egress may be granted: grant, lease, run. */
-async function streamGrantedTurn(
-  db: Database,
-  sandbox: SandboxPort,
-  row: SessionRow,
-  writer: SessionEventWriter,
-  p: StreamTurnParams,
-  out: StreamTurnResult,
-  runtime: AgentRuntime
-): Promise<StreamTurnResult> {
-  let egressEnv: Record<string, string>
-  let meter: TurnMeter | null = null
-  let headroom: BudgetHeadroom = {
-    microcents: Number.POSITIVE_INFINITY,
-    scope: 'session',
-    spentMicrocents: 0,
-    capMicrocents: 0,
-  }
-  try {
-    await p.egress.prepareGit(sandbox, row)
-    egressEnv = await p.egress.turnEnv(sandbox, row)
-    if (selfMetered(p.egress.mode, row)) {
-      const subscription = row.credentialSource === 'user'
-      meter = createTurnMeter(p.policy.model, {
-        provider: runtime.provider,
-        billing: subscription ? 'subscription' : 'metered',
-      })
-      if (!subscription) headroom = await budgetHeadroom(db, row, new Date(p.now()))
-    }
-  } catch (err) {
-    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (err instanceof ModelKeyMissingError || err instanceof CredentialNeedsLoginError) {
-      out.failure = err.message
-    } else {
-      p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not prepare the sandbox')
-      out.failure = 'Launch could not give the sandbox its credentials for this turn'
-    }
-    return out
-  }
-
-  // §18.22: the turn's credential. Platform: nothing (the egress swaps Launch's key in). A personal
-  // account: the runtime's lease, released in the `finally` below whatever happens.
-  let lease: TurnCredentialLease
-  try {
-    lease = await p.credentials.lease(row, sandbox, runtime)
-  } catch (err) {
-    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else out.failure = leaseFailure(err, runtime, row.id, p.logger)
-    return out
-  }
-  try {
-    return await runLeasedTurn(db, sandbox, row, writer, p, {
-      out,
-      runtime,
-      lease,
-      egressEnv,
-      meter,
-      headroom,
-    })
-  } finally {
-    await lease
-      .release()
-      .catch(err =>
-        p.logger?.warn({ err, sessionId: row.id }, 'session turn: could not release the credential')
-      )
-  }
-}
-
-/** A lease that would not come: a sentence safe for `turn.failed`, never the credential. */
-function leaseFailure(err: unknown, runtime: AgentRuntime, sessionId: string, logger?: Logger) {
-  if (
-    err instanceof CredentialNeedsLoginError ||
-    err instanceof CredentialBusyError ||
-    err instanceof CredentialPortMissingError ||
-    err instanceof NotWiredError
-  ) {
-    return err.message
-  }
-  logger?.warn({ err, sessionId }, 'session turn: could not lease the credential')
-  return `Launch could not get ${runtime.label} its credential for this turn`
-}
-
-/** What `streamTurn` hands the leased half of the turn. */
-interface LeasedTurn {
-  out: StreamTurnResult
-  runtime: AgentRuntime
-  lease: TurnCredentialLease
-  egressEnv: Record<string, string>
-  meter: TurnMeter | null
-  headroom: BudgetHeadroom
-}
-
-/** The turn once its credential is leased: start, read, watch, end. */
-async function runLeasedTurn(
-  db: Database,
-  sandbox: SandboxPort,
-  row: SessionRow,
-  writer: SessionEventWriter,
-  p: StreamTurnParams,
-  leased: LeasedTurn
-): Promise<StreamTurnResult> {
-  const { out, runtime, lease, egressEnv, meter, headroom } = leased
-  let parser: RuntimeStreamParser
-  let processId: string
-  try {
-    parser = runtime.createParser(p.turn, { runtimeState: row.runtimeState ?? null })
-    const systemNote = await sessionSystemNote(db, row)
-    const files = [
-      ...(runtime.beforeTurnFiles?.({
-        model: p.policy.model,
-        systemNote,
-        source: lease.source,
-      }) ?? []),
-      ...lease.files,
-    ]
-    for (const file of files) await sandbox.writeFile(file.path, file.content)
-    const command = {
-      message: p.message,
-      model: p.policy.model,
-      resumeId: row.claudeSessionId,
-      systemNote,
-      attachments: p.attachments,
-    }
-    // What the command reads besides its argv (Claude with images: the stream-json input).
-    const input = runtime.turnInputCommand?.(command)
-    if (input) {
-      const written = await sandbox.exec(input, { timeoutMs: TURN_INPUT_TIMEOUT_MS })
-      if (written.exitCode !== 0) {
-        p.logger?.warn(
-          { sessionId: row.id, exitCode: written.exitCode, stderr: written.stderr.slice(0, 500) },
-          'session turn: could not write the turn input'
-        )
-        out.failure = new AttachmentsUnavailableError().message
-        return out
-      }
-    }
-    const proc = await sandbox.startProcess(turnProcessCommand(runtime.buildCommand(command)), {
-      cwd: p.cwd,
-      env: {
-        ...sessionSharedEnv(),
-        ...runtime.turnEnv({ model: p.policy.model, source: lease.source }),
-        ...lease.env,
-        ...egressEnv,
-      },
-    })
-    processId = proc.id
-  } catch (err) {
-    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (err instanceof NotWiredError) out.failure = err.message
-    else {
-      p.logger?.warn({ err, sessionId: row.id }, `session turn: could not start ${runtime.label}`)
-      out.failure = `${runtime.label} could not be started in the sandbox`
-    }
-    return out
-  }
-
-  // Everything below waits on `done` as well as its timer, so the turn ends when the process does.
-  let finished = false
-  let markDone: () => void = () => {}
-  const done = new Promise<void>(resolve => {
-    markDone = resolve
-  })
-  const pause = (ms: number) => Promise.race([p.sleep(ms), done])
-  const reader = new AbortController()
-  const startedAt = p.now()
-
-  let overBudget = false
-  const stop = async (reason: 'cancelled' | 'timeout') => {
-    if (out.stop || overBudget || finished) return
-    out.stop = reason
-    try {
-      await sandbox.kill(processId, 'SIGTERM')
-    } catch (err) {
-      p.logger?.warn({ err, sessionId: row.id }, 'session turn: kill failed')
-    }
-    // Stop READING too: a killed process's last lines are not worth waiting for.
-    reader.abort()
-  }
-
-  let lastBeat = startedAt
-  const watcher = (async () => {
-    while (!finished) {
-      await pause(p.cancelPollMs)
-      if (finished) return
-      if (p.now() - startedAt >= p.timeoutMs) return stop('timeout')
-      if (p.now() - lastBeat >= p.heartbeatMs) {
-        lastBeat = p.now()
-        // "This turn is alive" — only while `working` (a ship's fix turn runs `shipping`, and its
-        // step's `withHeartbeat` beats for it).
-        // A failed beat is not a failed turn: the next one tries again.
-        await db
-          .update(sessions)
-          .set({ lastActivityAt: new Date(lastBeat) })
-          .where(
-            and(
-              eq(sessions.tenantId, row.tenantId),
-              eq(sessions.id, row.id),
-              eq(sessions.status, 'working')
-            )
-          )
-          .catch(err =>
-            p.logger?.warn({ err, sessionId: row.id }, 'session turn: heartbeat failed')
-          )
-      }
-      const [flags] = await db
-        .select({ cancelRequestedAt: sessions.cancelRequestedAt })
-        .from(sessions)
-        .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
-        .limit(1)
-      if (flags?.cancelRequestedAt) return stop('cancelled')
-    }
-  })()
-
-  const flusher = (async () => {
-    while (!finished) {
-      await pause(p.flushMs)
-      if (writer.pending > 0) await writer.flush()
-    }
-  })()
-
-  /** The container is gone (`boot-marker.ts`): stop reading — there is nothing left to kill. */
-  const lose = (verdict: 'replaced' | 'interrupted' | 'silent') => {
-    if (out.stop || overBudget || finished) return
-    p.logger?.warn({ sessionId: row.id, verdict }, 'session turn: the container is gone')
-    out.stop = verdict === 'interrupted' ? 'rollout' : 'container_lost'
-    reader.abort()
-  }
-
-  // Liveness: a dead container's log stream does not end, it goes quiet. Its own loop, so a slow
-  // probe never delays the cancel poll or the heartbeat.
-  const bootId = p.bootId
-  const prober = (async () => {
-    if (!bootId) return
-    let silent = 0
-    while (!finished) {
-      await pause(p.probeMs)
-      if (finished) return
-      const verdict = await checkContainer(sandbox, bootId, p.probeCallMs)
-      if (finished) return
-      if (verdict === 'ours') silent = 0
-      else if (verdict === 'unknown') {
-        silent += 1
-        p.logger?.warn(
-          { sessionId: row.id, silent },
-          'session turn: the container did not answer the liveness probe'
-        )
-        if (silent >= p.probeFailures) return lose('silent')
-      } else return lose(verdict)
-    }
-  })()
-
-  /**
-   * `host` only: the turn's running cost reached the headroom — stop reading and say why; the
-   * process itself is stopped below by `terminateTurnProcess` (SIGTERM, then SIGKILL by pid).
-   */
-  const stopForBudget = async () => {
-    if (out.stop || overBudget || finished || !meter) return
-    overBudget = true
-    writer.append({
-      type: 'budget.reached',
-      turn: p.turn,
-      data: {
-        spentMicrocents: headroom.spentMicrocents + meter.runningCostMicrocents(),
-        capMicrocents: headroom.capMicrocents,
-        scope: headroom.scope,
-      },
-    })
-    out.failure =
-      headroom.scope === 'session'
-        ? 'This turn was stopped: the session reached its budget. Ask an app owner to extend it.'
-        : "This turn was stopped: this app's coding sessions reached their monthly budget."
-    reader.abort()
-  }
-
-  let claudeSessionId = row.claudeSessionId
-  let exitCode: number | null = null
-  let stderrTail = ''
-  const apply = async (mappings: RuntimeLineMapping[]) => {
-    for (const mapping of mappings) {
-      if (mapping.resumeId && mapping.resumeId !== claudeSessionId) {
-        claudeSessionId = mapping.resumeId
-        // At once, not at the end: a turn that fails later must still be resumable.
-        await db
-          .update(sessions)
-          .set({ claudeSessionId })
-          .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
-      }
-      if (mapping.runtimeState) {
-        // §18.22: what the runtime keeps between turns (Codex: its running usage total).
-        await db
-          .update(sessions)
-          .set({ runtimeState: mapping.runtimeState })
-          .where(and(eq(sessions.tenantId, row.tenantId), eq(sessions.id, row.id)))
-      }
-      if (mapping.result) out.result = mapping.result
-      if (mapping.events.length > 0) {
-        out.output = true
-        out.firstOutputAt ??= p.now()
-        writer.append(...mapping.events)
-      }
-      if (meter) {
-        meter.observe(mapping)
-        if (meter.runningCostMicrocents() >= headroom.microcents) await stopForBudget()
-      }
-    }
-    if (writer.pending >= p.flushEvery) await writer.flush()
-  }
-
-  let readFailed = false
-  let exited = false
-  try {
-    for await (const event of sandbox.streamLogs(processId, { signal: reader.signal })) {
-      if (event.type === 'stdout') await apply(parser.push(event.data))
-      else if (event.type === 'stderr') stderrTail = (stderrTail + event.data).slice(-2_000)
-      else if (event.type === 'exit') {
-        exited = true
-        exitCode = event.exitCode
-      }
-    }
-    await apply(parser.end())
-  } catch (err) {
-    if (err instanceof SandboxInterruptedError) out.stop = 'rollout'
-    else if (!out.stop && !overBudget) {
-      readFailed = true
-      p.logger?.warn({ err, sessionId: row.id }, 'session turn: reading the process failed')
-      out.failure = `Launch lost the connection to ${runtime.label} in the sandbox`
-    }
-  } finally {
-    finished = true
-    markDone()
-  }
-  const [watched, flushed, probed] = await Promise.allSettled([watcher, flusher, prober])
-  if (watched.status === 'rejected') {
-    p.logger?.warn({ err: watched.reason, sessionId: row.id }, 'session turn: watch failed')
-  }
-  if (probed.status === 'rejected') {
-    p.logger?.warn({ err: probed.reason, sessionId: row.id }, 'session turn: probe failed')
-  }
-
-  // A stream that failed, or ended with no exit and no result: was it the container that went?
-  // Then say so (and suspend) rather than "lost the connection" on a session with nothing in it.
-  if (bootId && !out.stop && !overBudget && !exited && (readFailed || !out.result)) {
-    const verdict = await checkContainer(sandbox, bootId, p.probeCallMs)
-    if (verdict === 'replaced' || verdict === 'interrupted') {
-      out.stop = verdict === 'interrupted' ? 'rollout' : 'container_lost'
-      out.failure = null
-      readFailed = false
-    }
-  }
-
-  // Launch has stopped reading a process that may still be running: stop it too, or it spends
-  // tokens and edits the workspace unseen. Not after a rollout or a lost container (it is gone)
-  // and not after an `exit` (it is over); a cancel/timeout already sent the SDK kill, so only
-  // escalate. A `host` turn that reached its budget stops here too (the SDK kill, then the pid).
-  const cutOff = out.stop === 'cancelled' || out.stop === 'timeout'
-  const gone = out.stop === 'rollout' || out.stop === 'container_lost'
-  if (!gone && !exited && (readFailed || cutOff || overBudget || !out.result)) {
-    await terminateTurnProcess(sandbox, processId, {
-      logger: p.logger,
-      sessionId: row.id,
-      reason: readFailed
-        ? 'read-failed'
-        : cutOff
-          ? (out.stop as string)
-          : overBudget
-            ? 'budget'
-            : 'stream-ended',
-      signalled: cutOff,
-    })
-  }
-  if (flushed.status === 'rejected') throw flushed.reason
-
-  if (meter) {
-    // Before `executeTurn` reads the row's total back: the turn's cost IS this write.
-    await recordTurnUsage(db, row, meter).catch(err =>
-      p.logger?.error({ err, sessionId: row.id }, 'session turn: could not record usage')
-    )
-  }
-
-  // A `result` line is the end of the turn whatever the exit code; no `result` is a failure.
-  if (!out.stop && !out.failure && !out.result) {
-    const detail = stderrTail.trim() ? `: ${stderrTail.trim()}` : ''
-    const code = exitCode === null ? '' : ` with code ${exitCode}`
-    out.failure = failureText(`${runtime.label} exited${code} before finishing the turn${detail}`)
-  }
-  return out
 }

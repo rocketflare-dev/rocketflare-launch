@@ -1,11 +1,11 @@
 /**
- * Claude Code as an `AgentRuntime` (§18.22) — the P3 behaviour, wrapped byte for byte: the command
- * is `buildClaudeCommand` (with images: `buildClaudeTurnInputScript` first, the message on stdin),
- * the environment `claudeTurnEnv`, the parser `createClaudeStreamParser`
+ * Claude Code as a `CliAdapter` (§18.22), run by `processRuntime` — the P3 behaviour, byte for
+ * byte: the command is `buildClaudeCommand` (with images: `buildClaudeTurnInputScript` first, the
+ * message on stdin), the environment `claudeTurnEnv`, the parser `createClaudeStreamParser`
  * (its `claudeSessionId` becomes the generic `resumeId`), the workspace file the boot always wrote
  * (`.claude/settings.local.json`), and the transcript the checkpoint always copied. Nothing here
  * decides anything new: `claude-stream.ts` and its tests are unchanged, and
- * `tests/api/agent-runtime-claude.test.ts` pins the equivalence.
+ * `tests/config/agent-runtime-claude.test.ts` pins the equivalence.
  */
 import {
   buildClaudeCommand,
@@ -14,7 +14,8 @@ import {
   createClaudeStreamParser,
 } from '../../claude-stream'
 import { claudeSettingsLocal, SESSION_WORKSPACE } from '../../rocketflare-dev'
-import type { AgentRuntime, RuntimeRunSummary } from '../types'
+import { processRuntime } from '../process'
+import type { CliAdapter, RuntimeRunSummary } from '../types'
 import { leaseClaudeUserCredential } from './credentials'
 import { claudeLoginDriver } from './login'
 import { claudeState } from './state'
@@ -30,7 +31,8 @@ export function claudeResumeRefused(run: RuntimeRunSummary): boolean {
   return !u || u.tokensIn + u.tokensOut + u.cacheRead + u.cacheWrite === 0
 }
 
-export const claudeCodeRuntime: AgentRuntime = {
+/** Claude Code's half of the seam: what its process is (`processRuntime` drives it). */
+export const claudeCli: CliAdapter = {
   id: 'claude_code',
   label: 'Claude Code',
   provider: 'anthropic',
@@ -65,3 +67,6 @@ export const claudeCodeRuntime: AgentRuntime = {
   login: claudeLoginDriver,
   userLease: leaseClaudeUserCredential,
 }
+
+/** Claude Code as an `AgentRuntime`: its CLI, as a process in the container. */
+export const claudeCodeRuntime = processRuntime(claudeCli)

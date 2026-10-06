@@ -2071,7 +2071,8 @@ runs under bash in `background-command.test.ts` where `setsid` exists).
 A turn (`services/sessions/turn.ts`, step `turn#N`, no retries, the policy's `maxTurnMinutes`)
 checks the budget, claims `ready → working`, writes `user.message` (naming who sent it,
 `pending_message_user_id`) + `turn.start` (naming the model it runs on), leases the session's credential (nothing on Launch's key,
-§18.22), and runs the session runtime's command — for Claude Code
+§18.22), and runs it through the session's runtime (`runtimeOf(row).runTurn`, §18.22) — for Claude
+Code, the process runtime's
 `claude -p … --resume <id> --output-format stream-json` — in the sandbox; `claude-stream.ts` maps
 each line to `text` / `tool.start` / `tool.end` / `turn.end` events, batched every 250 ms or 20
 events. Every turn, resumed ones included (the flag does not survive `--resume`), carries
@@ -2202,7 +2203,7 @@ running sum saw, so a killed turn is still paid for, is written through the prox
 transaction per row. A personal account's turn has no headroom (no money budget) and is recorded
 `billing: 'subscription'` with a null cost, as the proxies record it.
 **A Codex turn on a ChatGPT plan meters itself the same way in the `proxied` mode too**
-(`selfMetered` in `turn.ts`): its model calls go to `chatgpt.com` directly — ChatGPT blocks
+(`selfMetered` in `runtimes/process/turn.ts`, from Codex's `CliAdapter.selfMetered`): its model calls go to `chatgpt.com` directly — ChatGPT blocks
 requests from the Workers runtime, §18.22-B — so no proxy sees them, and the turn records Codex's
 `turn.completed` delta as one `billing: 'subscription'` row per model, null cost, no budget check.
 Every other proxied turn is metered by its proxy alone (the turn records nothing of its own, so
@@ -3513,14 +3514,34 @@ runtimes. **A default deployment is exactly P3**: Claude Code on Launch's key, e
 and row reading as before (the 0036 migration defaults both columns), and every `session-*` test
 unchanged.
 
-**The seam** (`services/sessions/runtimes/`): `AgentRuntime { buildCommand, turnEnv, createParser,
-resumeRefused, workspaceFiles, beforeTurnFiles?, state, login?, userLease? }`,
-reached only through `runtimeFor(id)` / `runtimeOf(row)`. Claude Code is `claude-code/index.ts`,
-wrapping `claude-stream.ts` byte for byte (`tests/config/agent-runtime-claude.test.ts` pins the
-command, the environment, the parsed events, the workspace file and the transcript paths). The turn
-(`turn.ts`), the boot's `repo` and `transcript#K` steps (`steps.ts`) and the checkpoint
-(`checkpoint.ts`) call the seam; `sessions.claude_session_id` is the generic resume id
-(`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
+**The seam** (`services/sessions/runtimes/`, rocketflare-launch#13): `AgentRuntime { id, label,
+provider, placement, workspaceFiles, runTurn(ctx, input, sink), cancel, state, login?, userLease? }`
+— "run a turn, hand me normalised output", reached only through `runtimeFor(id)` /
+`runtimeOf(row)`. `placement` is `container` for every runtime today (`durable-object` is reserved
+for Pi, #14, not built). `runTurn` gets a `TurnContext` (the claimed row, its container, the
+egress and credential ports, the turn's clocks, and two row callbacks: the heartbeat and "was a
+Stop asked for?"), a `TurnInput` (the message, the model, the images still in R2, the system note
+on demand) and a `TurnSink` that `turn.ts` owns — each `RuntimeLineMapping` (events, resume id,
+result, usage, runtime state) is applied through it, so `turn.ts` alone writes `session_events`,
+the resume id and `runtime_state`, and `forgetConversation()` is how a runtime drops a
+conversation it cannot resume. It returns a `RuntimeTurnOutcome` (result, stop, failure, output),
+from which `turn.ts` writes the ONE closing event — for a chat turn and for the ship's `ship.fix`
+turn alike. `state` is a `RuntimeStateStore` (`key`, `contentType`, `read` — the checkpoint —
+`restorable`, `restore` — the `transcript#K` step); `cancel` stops an orphaned turn (the salvage
+step). **Claude Code and Codex are one implementation**: `processRuntime(cli)`
+(`runtimes/process/`) drives a `CliAdapter` — the interface this seam used to be: `buildCommand`,
+`turnInputCommand?`, `turnEnv`, `createParser`, `resumeRefused`, `selfMetered?`,
+`beforeTurnFiles?`, its conversation FILE (`RuntimeStateFiles`) — as one process in the container:
+the images staged, the egress grant and the credential lease, the CLI's files and input,
+`startProcess`, the parser, the cancel/timeout/heartbeat watch, the liveness probe, the
+self-metered budget stop, the resume check and once-only retry, and the kill by pid
+(`process/turn.ts`, `process/kill.ts`). `turn.ts` has no CLI in it. `claudeCodeRuntime =
+processRuntime(claudeCli)` wraps `claude-stream.ts` byte for byte
+(`tests/config/agent-runtime-claude.test.ts` pins the command, the environment, the parsed
+events, the workspace file and the transcript paths), `codexRuntime = processRuntime(codexCli)`;
+every runtime passes the contract suite (`tests/helpers/runtime-contract.ts`, run against both by
+`tests/config/agent-runtime-contract.test.ts`). `sessions.claude_session_id` is the generic resume
+id (`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
 
 **Where the switches live**: a PLATFORM SETTING, not a deployment var — the session policy's
 `runtimes` (`launch_settings.session_policy`), edited on Settings → Platform → Setup's **Coding

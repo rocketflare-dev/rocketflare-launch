@@ -2,10 +2,23 @@
 
 ## Unreleased
 
+- **A coding session's agent is reached through one turn call, and the CLI process is one kind of
+  agent** (rocketflare-launch#13). `AgentRuntime` is now `runTurn(ctx, input, sink)` (with
+  `placement`, `workspaceFiles`, `cancel`, a `state` store, `login?`, `userLease?`): the turn hands
+  each normalised mapping to a sink `turn.ts` owns and writes the one closing event from the
+  outcome, for chat turns and the ship's fix turn alike. Claude Code and Codex are
+  `processRuntime(claudeCli)` / `processRuntime(codexCli)` (`runtimes/process/`) — the container
+  driver moved out of `turn.ts` unchanged, over a `CliAdapter` that is the old interface renamed;
+  the checkpoint, the conversation restore and the salvage's kill go through `runtime.state` and
+  `runtime.cancel`. A runtime contract suite runs against both. No behaviour change: every turn,
+  checkpoint and login test is untouched. It is the seam a runtime that runs no CLI (Pi on a
+  Durable Object, #14) plugs into.
+
 - **The remote sandbox host backs workspaces up to a development bucket of its own.** `wrangler.sandbox-host.toml`
   binds `BACKUP_BUCKET` to `launch-files-dev` (a 14-day lifecycle rule on `backups/`) instead of the
   `launch-files` a deployed Launch uses; the account id is passed at deploy (`--var
   CLOUDFLARE_ACCOUNT_ID:<id>`), never committed (`docs/SESSIONS-LOCAL.md`, issue #3).
+
 - **The sign-in page flies a rocket across a night sky.** `/login` (every state of it, including
   "check your email") and `/magic-link/sent` sit on `RocketBackground`, ported from the hola-world
   app's login: a canvas of bright, twinkling stars with a Rocketflare rocket that follows the

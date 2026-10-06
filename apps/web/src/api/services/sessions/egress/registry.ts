@@ -27,7 +27,8 @@
  * Nothing secret is lost: on a ChatGPT plan the container already holds the person's `auth.json`
  * for the turn (§18.22-B); what goes is the path allow-list (Codex's `config.toml` turns analytics,
  * feedback and OTEL off) and per-request metering — the turn is metered from Codex's own
- * `turn.completed` instead (`turn-meter.ts`, `turn.ts`). Under `allowlist` it does NOT work: any
+ * `turn.completed` instead (`turn-meter.ts`, `runtimes/process/turn.ts`). Under `allowlist` it
+ * does NOT work: any
  * allow-list makes `@cloudflare/containers` 0.3.7 intercept every HTTPS connection and its
  * `ContainerProxy` re-fetches an allowed host with no handler from the Worker — which ChatGPT
  * blocks — and the runtime has no way to exempt one host (§18.22-B known gaps).

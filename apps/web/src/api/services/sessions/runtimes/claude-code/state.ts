@@ -25,6 +25,10 @@ export const CLAUDE_SESSION_ID_RE = /^[A-Za-z0-9-]+$/
 const safeId = (row: Pick<SessionRow, 'claudeSessionId'>): string | null =>
   row.claudeSessionId && CLAUDE_SESSION_ID_RE.test(row.claudeSessionId) ? row.claudeSessionId : null
 
+/** `test -s` on the transcript `--resume` needs: exit 1 = missing or empty. */
+export const transcriptCheckCommand = (claudeSessionId: string) =>
+  `test -s ${claudeTranscriptPath(claudeSessionId)}`
+
 export const claudeState: RuntimeStateFiles = {
   key: transcriptKeyFor,
   contentType: 'application/x-ndjson',

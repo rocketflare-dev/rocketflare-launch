@@ -3,15 +3,16 @@
  * the sandbox host's handlers key the requests but cannot reach Launch's database to meter them,
  * and, in either mode, a Codex turn on a person's ChatGPT plan, whose model calls go to
  * `chatgpt.com` directly with no handler to meter them (`egress/registry.ts`; `selfMetered` in
- * `turn.ts` decides).
+ * `runtimes/process/turn.ts` decides).
  * Same ledger as the proxies: the same pricing (`@launch/shared/ai/pricing`, under the runtime's
  * provider) and the same write (`recordSessionUsage`: one `ai_usage` row and the session's running
  * totals in ONE transaction, feature `session`).
  *
  * - **While the turn runs**: every Claude Code `assistant` line carries its response's usage
  *   (repeated on each content block of the same response — kept per response id, last value
- *   wins). Their priced sum is the turn's RUNNING cost, which `turn.ts` compares with the budget
- *   headroom it read at the start (`budgetHeadroom`) and kills the process when it is reached.
+ *   wins). Their priced sum is the turn's RUNNING cost, which the process runtime
+ *   (`runtimes/process/turn.ts`) compares with the budget headroom it read at the start
+ *   (`budgetHeadroom`), killing the process when it is reached.
  *   Codex reports nothing per response, so its running cost stays 0 until the turn ends.
  * - **When it ends**: the turn's usage per model (`turnUsage`: Claude Code's `result` line's
  *   `modelUsage`, which includes its background calls, else its plain `usage` under the policy's

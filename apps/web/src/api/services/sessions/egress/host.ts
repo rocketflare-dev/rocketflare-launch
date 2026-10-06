@@ -33,8 +33,8 @@
  *
  * **What it still gives up, against the proxies**: the BUDGET is enforced per turn, not per
  * request — checked before a turn, and a turn on Launch's account is KILLED when its running cost
- * (from the CLI's own usage) reaches what is left (`turn-meter.ts`, `turn.ts`), so one response can
- * overshoot by its own size (Codex reports usage only at the end of a turn, so its turn is not cut
+ * (from the CLI's own usage) reaches what is left (`turn-meter.ts`, `runtimes/process/turn.ts`),
+ * so one response can overshoot by its own size (Codex reports usage only at the end of a turn, so its turn is not cut
  * short at all); a subscription token Anthropic refuses is not marked `needs_login`; a ChatGPT
  * refresh is not resealed the moment it rotates (the lease's read-back after the turn reseals it);
  * and the host records no container time.

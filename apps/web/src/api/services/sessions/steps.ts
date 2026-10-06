@@ -118,13 +118,7 @@ import {
   writeDevVars,
 } from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
-import {
-  CONVERSATION_LOST_MESSAGE,
-  containerGone,
-  TURN_HEARTBEAT_MS,
-  TURN_KILL_GRACE_SECONDS,
-  turnKillScript,
-} from './turn'
+import { CONVERSATION_LOST_MESSAGE, containerGone, TURN_HEARTBEAT_MS } from './turn'
 import { isUnpromptedWarmStart, warmMinutesLeft, warmStartMinutes } from './warm'
 import { BACKUP_TTL_MARGIN_SECONDS, workspaceBackupMode } from './workspace-backup'
 
@@ -710,19 +704,18 @@ export function withHeartbeat<T>(
 }
 
 /**
- * Stop the orphaned turn's process (`TURN_PID_FILE`: SIGTERM, the grace, SIGKILL — the turn's own
- * `turnKillScript`). True when the container ran the script, which ends with nothing of it left
- * (or found nothing to stop); false when it could not be asked.
+ * Stop the orphaned turn (`runtime.cancel` — a process runtime: its `TURN_PID_FILE`, SIGTERM, the
+ * grace, SIGKILL, the turn's own `turnKillScript`). True when nothing of it is left (or there was
+ * nothing to stop); false when it could not be asked.
  */
-async function stopOrphanedTurn(scope: StepScope, sandbox: SandboxPort): Promise<boolean> {
+async function stopOrphanedTurn(
+  scope: StepScope,
+  session: SessionRow,
+  sandbox: SandboxPort
+): Promise<boolean> {
   try {
-    const result = await sandbox.exec(turnKillScript(), {
-      timeoutMs: (TURN_KILL_GRACE_SECONDS + 15) * 1000,
-    })
-    if (result.stdout.includes('killed')) {
-      scope.logger.warn({}, 'session salvage: the orphaned turn ignored SIGTERM and was SIGKILLed')
-    }
-    return result.exitCode === 0
+    await runtimeOf(session).cancel({ session, sandbox, logger: scope.logger })
+    return true
   } catch (err) {
     scope.logger.warn({ err }, 'session salvage: could not stop the orphaned turn')
     return false
@@ -768,7 +761,7 @@ export async function salvageStep(
   let detail: string | undefined
   try {
     const marker = await sandbox.readFile(SESSION_BOOT_MARKER).catch(() => null)
-    if (marker?.trim() && (await stopOrphanedTurn(scope, sandbox))) {
+    if (marker?.trim() && (await stopOrphanedTurn(scope, session, sandbox))) {
       try {
         const current = await loadSession(scope)
         await scope.hooks.checkpoint(hookContext(scope, current, current.turnCount), 'salvage')
@@ -1207,17 +1200,12 @@ export async function restoreTranscriptStep(
       : null
   // Where the session's runtime keeps the conversation (§18.22 — Claude: its transcript).
   const state = runtimeOf(session).state
-  const path = object ? state.restorePath(session) : null
-  if (object && path) {
+  if (object && state.restorable(session)) {
     const text = await object.text()
     const sandbox = sandboxFor(scope, session)
-    const there = await inOurContainer(scope, sandbox, bootId, async () => {
-      await sandbox.writeFile(path, text)
-      const check = await sandbox.exec(state.checkCommand(path), {
-        timeoutMs: 15_000,
-      })
-      return check.exitCode === 0
-    })
+    const there = await inOurContainer(scope, sandbox, bootId, () =>
+      state.restore({ session, sandbox, logger: scope.logger }, text)
+    )
     if (there) return { restored: true }
   }
   // Only the id this step read: a turn that started a new conversation meanwhile keeps its own.

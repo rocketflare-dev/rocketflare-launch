@@ -637,22 +637,19 @@ export async function checkpoint(
   // The conversation, where the session's runtime keeps it (§18.22 — Claude: its transcript).
   let transcriptKey: string | null = null
   const state = runtimeOf(session).state
-  const path =
+  const transcript =
     deps.storage && session.claudeSessionId
-      ? await state.locate(deps.sandbox, session, {
-          cwd,
-          home: opts.claudeHome ?? SESSION_CLAUDE_HOME,
-        })
+      ? await state.read(
+          { session, sandbox: deps.sandbox },
+          { cwd, home: opts.claudeHome ?? SESSION_CLAUDE_HOME }
+        )
       : null
-  if (deps.storage && path) {
-    const transcript = await deps.sandbox.readFile(path)
-    if (transcript !== null) {
-      transcriptKey = state.key(session.id)
-      await deps.storage.put(transcriptKey, transcript, {
-        contentType: state.contentType,
-        metadata: { sessionId: session.id, claudeSessionId: session.claudeSessionId ?? '' },
-      })
-    }
+  if (deps.storage && transcript !== null) {
+    transcriptKey = state.key(session.id)
+    await deps.storage.put(transcriptKey, transcript, {
+      contentType: state.contentType,
+      metadata: { sessionId: session.id, claudeSessionId: session.claudeSessionId ?? '' },
+    })
   }
 
   await db

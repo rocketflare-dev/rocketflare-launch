@@ -2,7 +2,9 @@
  * The agent-runtime registry (§18.22): `runtimeFor(id)` / `runtimeOf(row)` are the ONE way the
  * session code reaches a runtime — never a `if (runtime === 'codex')` branch outside `runtimes/`.
  * A row without a runtime (none exists since the 0036 migration defaulted the column, but a
- * hand-built fixture may lack one) is Claude Code.
+ * hand-built fixture may lack one) is Claude Code. Both are `processRuntime(cli)` (`process/`);
+ * a runtime of another placement (#14) is one more entry here, and `runtimeFor` / `runtimeOf` stay
+ * the only way in.
  */
 import { type AgentRuntimeId, DEFAULT_AGENT_RUNTIME } from '@launch/shared/launch-agents'
 import type { SessionRow } from '../../../../db/schema'
