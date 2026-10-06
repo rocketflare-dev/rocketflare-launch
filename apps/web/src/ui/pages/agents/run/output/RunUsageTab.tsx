@@ -16,6 +16,7 @@ import type { AgentRun } from '@launch/shared/ai/agents'
 import { Link } from 'react-router-dom'
 import { Row, Section } from '@/ui/components/ai/StatRows'
 import { formatDateTime, formatDuration, runDuration } from '@/ui/lib/format'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
 import { humaniseToolName, type RunWorkStats } from '../timeline/timelineModel'
 
 export function RunUsageTab({
@@ -71,7 +72,7 @@ export function RunUsageTab({
         <p className="text-xs text-secondary">
           Not attributed per run in this deployment: <code>ai_usage</code> records every model call
           against the tenant and the feature, not the run. The tenant-wide ledger is on{' '}
-          <Link to="/settings?tab=usage" className="link">
+          <Link to={SETTINGS_PATHS.usage} className="link">
             Settings → Usage
           </Link>
           .

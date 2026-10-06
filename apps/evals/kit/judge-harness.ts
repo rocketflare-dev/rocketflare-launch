@@ -2,8 +2,8 @@
  * The judge model (D33), as a vitest-evals `JudgeHarness`. Every LLM judge — ours and vitest-evals'
  * own `FactualityJudge` — calls through here, and here calls through the KIT:
  *
- * - the client comes from `resolveChat(..., { promptKey: 'evals-judge' })`, so Settings → agent
- *   models can pin the judge like any agent, `--judge-model` pins it for one run (an
+ * - the client comes from `resolveChat(..., { promptKey: 'evals-judge' })`, so Settings → AI & models
+ *   → Agent models can pin the judge like any agent, `--judge-model` pins it for one run (an
  *   `agent_models` row on the judge's own tenant) and `--judge-provider fireworks|gemini` moves it
  *   to another provider (an `ai_configs` row there);
  * - the system prompt is the `evals-judge` registry entry followed by the judge's own instructions;

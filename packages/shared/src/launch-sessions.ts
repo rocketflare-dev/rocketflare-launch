@@ -879,7 +879,7 @@ export const PENDING_MODEL_DEFAULT = 'default'
 /**
  * One agent runtime under the session policy (§18.22): whether sessions may run it, its model
  * (null: the agent's own default), and whose account they bill. The ONE place these switches live
- * — a platform setting edited on the Platform → Coding agents tab
+ * — a platform setting edited on Settings → Coding agents
  * (`PUT /api/platform/setup/session-agents`), not a deployment var.
  */
 export const runtimePolicySchema = z.object({

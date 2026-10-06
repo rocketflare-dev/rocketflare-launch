@@ -10,8 +10,10 @@ import SideNav, {
   isPathActive,
   type NavConfig,
   navigationConfig,
+  showsGroupLabel,
 } from '@/ui/components/SideNav'
 import type { NavGuard } from '@/ui/hooks/useNavGuard'
+import { SETTINGS_GUARD } from '@/ui/lib/settings-paths'
 import {
   makeSession,
   renderWithProviders,
@@ -28,7 +30,7 @@ vi.mock('@/ui/hooks/useNavGuard', async importOriginal => {
 const config: NavConfig = [
   { items: [{ to: '/', label: 'Home', icon: HomeIcon }] },
   {
-    label: 'Organisation',
+    label: 'Settings',
     items: [{ to: '/settings', label: 'Settings', icon: HomeIcon, guard: 'admin' }],
   },
   {
@@ -134,7 +136,7 @@ describe('composeNav', () => {
   })
 
   it('merges with an explicit anchor too, when the group before it is unlabelled', () => {
-    const out = composeNav(config, [{ items: [item('/x')], before: 'Organisation' }])
+    const out = composeNav(config, [{ items: [item('/x')], before: 'Settings' }])
     expect((out[0] as { items: { to: string }[] }).items.map(i => i.to)).toEqual(['/', '/x'])
   })
 
@@ -142,7 +144,7 @@ describe('composeNav', () => {
     const out = composeNav(config, [{ items: [item('/x')], before: 'Platform' }])
     expect(out).toHaveLength(config.length + 1)
     const at = out.findIndex(e => 'items' in e && e.items.some(i => i.to === '/x'))
-    expect((out[at - 1] as { label?: string }).label).toBe('Organisation')
+    expect((out[at - 1] as { label?: string }).label).toBe('Settings')
     expect((out[at] as { label?: string }).label).toBeUndefined()
   })
 
@@ -178,10 +180,24 @@ describe('navigationConfig', () => {
     expect(groups.filter(g => g.label === undefined)).toHaveLength(1)
   })
 
-  it('lists Audit as the one log — no Activity item', () => {
+  it('has ONE door into settings — no Audit, Setup or Admin items beside it', () => {
     const tos = groups.flatMap(g => g.items.map(i => i.to))
-    expect(tos).toContain('/audit')
-    expect(tos).not.toContain('/activity')
+    expect(tos).toContain('/settings')
+    for (const gone of ['/audit', '/activity', '/settings/platform', '/admin']) {
+      expect(tos).not.toContain(gone)
+    }
+    const settings = groups.flatMap(g => g.items).find(i => i.to === '/settings')
+    // Its route's guard: anyone with a section — an organisation admin OR a platform admin.
+    expect((settings as { guard?: NavGuard }).guard).toEqual(SETTINGS_GUARD)
+  })
+
+  it('anchors plugins on the Settings group, whose heading is not rendered', () => {
+    const anchor = groups.find(g => g.label === DEFAULT_NAV_ANCHOR)
+    expect(anchor?.items.map(i => i.to)).toEqual(['/settings'])
+    expect(showsGroupLabel(anchor as Parameters<typeof showsGroupLabel>[0])).toBe(false)
+    expect(
+      showsGroupLabel({ label: 'Reports', items: [{ to: '/r', label: 'R', icon: HomeIcon }] })
+    ).toBe(true)
   })
 })
 
@@ -195,11 +211,11 @@ describe('isPathActive', () => {
 })
 
 describe('activeNavPath', () => {
-  it('lights the most specific entry alone — Setup under Settings, not both', () => {
-    const tos = ['/', '/settings', '/settings/platform', '/admin']
-    expect(activeNavPath('/settings/platform/setup', tos)).toBe('/settings/platform')
-    expect(activeNavPath('/settings', tos)).toBe('/settings')
-    expect(activeNavPath('/settings/people', tos)).toBe('/settings')
+  it('lights the most specific entry alone — a nested entry, not its parent too', () => {
+    const tos = ['/', '/reports', '/reports/archive', '/settings']
+    expect(activeNavPath('/reports/archive/2026', tos)).toBe('/reports/archive')
+    expect(activeNavPath('/reports', tos)).toBe('/reports')
+    expect(activeNavPath('/settings/people/groups', tos)).toBe('/settings')
     expect(activeNavPath('/', tos)).toBe('/')
     expect(activeNavPath('/elsewhere', tos)).toBeUndefined()
   })

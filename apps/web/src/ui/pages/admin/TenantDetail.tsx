@@ -1,6 +1,7 @@
 /**
- * Admin → one organisation (D10, D25): members, suspend/reinstate, and "enter as support" — which
- * adds a real `support` membership its owners can see in Settings → People, then switches in.
+ * Settings → Organisations → one (D10, D25; the Operator group, multi mode only): members,
+ * suspend/reinstate, and "enter as support" — which adds a real `support` membership its owners can
+ * see in Settings → People, then switches in.
  */
 import { ArrowLeftIcon, BuildingOffice2Icon } from '@heroicons/react/24/outline'
 import { useState } from 'react'
@@ -9,7 +10,6 @@ import { RoleBadge } from '@/ui/components/RoleBadge'
 import {
   ConfirmModal,
   EmptyState,
-  PageHeader,
   SectionPanel,
   SectionPanelSkeleton,
 } from '@/ui/components/shared'
@@ -19,12 +19,12 @@ import {
   useLeaveSupport,
   useSuspendTenant,
 } from '@/ui/hooks/useAdminTenants'
-import { useAuth } from '@/ui/hooks/useAuth'
 import { formatDate, timeAgo } from '@/ui/lib/format'
+import { SETTINGS_PATHS, userPath } from '@/ui/lib/settings-paths'
+import { SectionHeader } from '@/ui/pages/settings/SectionHeader'
 
 export default function TenantDetail() {
   const { id = '' } = useParams()
-  const { tenancyMode } = useAuth()
   const { data: tenant, isLoading } = useAdminTenant(id)
   const suspend = useSuspendTenant(id)
   const enter = useEnterSupport(id)
@@ -38,12 +38,10 @@ export default function TenantDetail() {
 
   return (
     <div className="space-y-4">
-      {tenancyMode === 'multi' && (
-        <Link to="/admin/tenants" className="btn btn-ghost btn-xs -ml-2 gap-1">
-          <ArrowLeftIcon className="w-3.5 h-3.5" /> All organisations
-        </Link>
-      )}
-      <PageHeader
+      <Link to={SETTINGS_PATHS.organisations} className="btn btn-ghost btn-xs -ml-2 gap-1">
+        <ArrowLeftIcon className="w-3.5 h-3.5" /> All organisations
+      </Link>
+      <SectionHeader
         title={tenant.name}
         badge={
           suspended ? (
@@ -109,7 +107,7 @@ export default function TenantDetail() {
                 {tenant.members.map(m => (
                   <tr key={m.userId}>
                     <td>
-                      <Link to={`/admin/users/${m.userId}`} className="link link-hover font-medium">
+                      <Link to={userPath(m.userId)} className="link link-hover font-medium">
                         {m.name}
                       </Link>
                       <div className="text-xs text-secondary">{m.email}</div>

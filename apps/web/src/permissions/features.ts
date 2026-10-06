@@ -9,7 +9,7 @@
  *      because a surface that ships dark has to be dark on the FIRST request of a new deploy,
  *      before any row exists, and config is the only source with no bootstrap problem.
  *   2. `feature_flags` + `tenant_feature_overrides` — among deployments where it exists, which
- *      tenants have it yet? A global admin drives that from `/admin` with no redeploy.
+ *      tenants have it yet? A global admin drives that from Settings → Feature flags with no redeploy.
  *
  * `resolveFeatures` is the ONE place they combine, and every consumer downstream — `requireFeature`,
  * `cubesFor`, `listTemplates`, the nav — reads the array it returns. A third source (a per-plan

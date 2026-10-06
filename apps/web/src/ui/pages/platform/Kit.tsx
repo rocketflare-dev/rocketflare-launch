@@ -1,9 +1,8 @@
 /**
- * `/settings/platform/kit`: the kit every new app (and every re-scaffold) is cut from — the Kit
- * version card over `launch_settings.template_pin`. Its own tab rather than a card under Setup's
- * stepper, because it is not a setup step (it has a default) and Follow latest makes it something
- * an admin comes back to. Reads the same setup overview as the Setup tab; `canAdministerPlatform`
- * (the layout's guard).
+ * Settings → Kit version (`/settings/kit`): the kit every new app (and every re-scaffold) is cut
+ * from — the Kit version card over `launch_settings.template_pin`. Not a connection (it has a
+ * default), and Follow latest makes it something an admin comes back to. Reads the same setup
+ * overview as the Connections pages; `canAdministerPlatform` (the section's guard).
  */
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'

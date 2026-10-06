@@ -1,9 +1,9 @@
 /**
- * Admin → Sessions (Launch P3, plan §1.8): every live coding session on this deployment, and the
+ * Settings → All sessions (Launch P3, plan §1.8): every live coding session on this deployment, and the
  * drain.
  *
  * Sessions are platform capacity — containers under one `max_instances`, all on one image — so
- * this is the operator's page (`globalAdmin`, like the rest of `/admin`). The one thing it exists
+ * this is the operator's page (`globalAdmin`, like the rest of the Operator group). The one thing it exists
  * for is **the drain before a deploy that touches the session image or `[[containers]]`**
  * (`docs/DEPLOY.md`): Drain pauses new sessions and asks every live one to suspend at its next
  * safe point (a checkpoint keeps its branch and transcript); after the deploy, Undrain lets people

@@ -21,7 +21,7 @@ import { useGroups } from '@/ui/hooks/useGroups'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useAppsDomain, useCreateApp } from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
-import { PLATFORM_SETUP_PATH } from '@/ui/lib/platform-paths'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
 
 /**
  * What to do next, for the refusals a person can act on — keyed on the HTTP status, since that is
@@ -44,8 +44,8 @@ export function notReachable(error: unknown): LaunchNotReachableDetails | null {
   return parsed.success ? parsed.data : { url: '', checks: [] }
 }
 
-/** Where Setup's public-URL step lives (its card's anchor). */
-export const PUBLIC_URL_SETUP_PATH = `${PLATFORM_SETUP_PATH}#setup-public_url`
+/** Settings → Connections → Public URL, where the reachability check lives. */
+export const PUBLIC_URL_SETUP_PATH = SETTINGS_PATHS.publicUrl
 
 /**
  * A slug suggested from the display name — lower-case, hyphenated, starting with a letter, at most
@@ -206,7 +206,7 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
                 </ul>
                 <p>
                   <Link to={PUBLIC_URL_SETUP_PATH} className="link" onClick={close}>
-                    Setup › Public URL
+                    Settings › Public URL
                   </Link>{' '}
                   (an administrator re-checks it there once it is fixed).
                 </p>

@@ -207,7 +207,11 @@ export interface UiPlugin<S extends SharedPlugin = SharedPlugin> {
   shared: S
   routes: readonly PluginRoute[]
   nav?: readonly PluginNavGroup[]
-  /** Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability. */
+  /**
+   * Extra Settings sections, listed under its "Plugins" group at `/settings/plugins/<id>` (the
+   * old `/settings?tab=<id>` redirects there). `can` is the caller's ability; return only the
+   * tabs it allows. Organisation admins only, as the tabs were.
+   */
   settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]
   /**
    * Quick links for the Home page, listed under its overview (D31). A feature somebody reaches

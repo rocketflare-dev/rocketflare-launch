@@ -51,7 +51,7 @@ function renderAs(tenancyMode: 'multi' | 'single') {
   return fetchMock
 }
 
-describe('Settings → Platform → Access requests', () => {
+describe('Settings → People → Access requests', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('multi mode: approve offers "new organisation" and posts the nested decide body', async () => {

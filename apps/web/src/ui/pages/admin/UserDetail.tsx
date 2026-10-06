@@ -1,5 +1,5 @@
 /**
- * Admin → one user (D10): the global-admin flag and blocking (never on yourself), their
+ * Settings → Users → one user (D10, Operator): the global-admin flag and blocking (never on yourself), their
  * memberships, and linked sign-in providers.
  */
 import { ArrowLeftIcon, UserIcon } from '@heroicons/react/24/outline'
@@ -9,13 +9,14 @@ import { RoleBadge } from '@/ui/components/RoleBadge'
 import {
   ConfirmModal,
   EmptyState,
-  PageHeader,
   SectionPanel,
   SectionPanelSkeleton,
 } from '@/ui/components/shared'
 import { useAdminUser, useBlockUser, useSetGlobalAdmin } from '@/ui/hooks/useAdminUsers'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { formatDate, timeAgo } from '@/ui/lib/format'
+import { organisationPath, SETTINGS_PATHS } from '@/ui/lib/settings-paths'
+import { SectionHeader } from '@/ui/pages/settings/SectionHeader'
 
 export default function UserDetail() {
   const { id = '' } = useParams()
@@ -33,10 +34,10 @@ export default function UserDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/admin/users" className="btn btn-ghost btn-xs -ml-2 gap-1">
+      <Link to={SETTINGS_PATHS.users} className="btn btn-ghost btn-xs -ml-2 gap-1">
         <ArrowLeftIcon className="w-3.5 h-3.5" /> All users
       </Link>
-      <PageHeader
+      <SectionHeader
         title={user.name}
         badge={
           <>
@@ -95,7 +96,7 @@ export default function UserDetail() {
                   <tr key={m.tenantId}>
                     <td>
                       <Link
-                        to={`/admin/tenants/${m.tenantId}`}
+                        to={organisationPath(m.tenantId)}
                         className="link link-hover font-medium"
                       >
                         {m.name}

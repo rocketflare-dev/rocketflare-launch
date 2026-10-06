@@ -40,7 +40,7 @@ export default function PromptsSettings() {
     <SectionPanel
       flush
       title="Prompts"
-      description="The system prompts behind each AI feature. Override any of them for this workspace; a reset returns to the built-in default."
+      description="The system prompts behind each AI feature. Override any of them for this organisation; a reset returns to the built-in default."
     >
       {isLoading ? (
         <div className="px-5 pb-5">
@@ -275,7 +275,7 @@ function PromptEditorModal({
       <ConfirmModal
         isOpen={confirmReset}
         title="Reset to default"
-        message={`Discard this workspace's override of "${definition.title}" and use the built-in prompt again?`}
+        message={`Discard this organisation's override of "${definition.title}" and use the built-in prompt again?`}
         confirmText="Reset"
         confirmButtonClass="btn-warning"
         isLoading={clear.isPending}

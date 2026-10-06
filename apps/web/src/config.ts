@@ -216,7 +216,7 @@ const coreConfigSchema = z.object({
     z.enum(['cloud', 'local']).default('cloud')
   ),
   // Where a session's CONTAINER runs is no longer a var: it is the `session_sandbox_host` platform
-  // setting (`services/sessions/sandbox-host.ts`, the Platform → Coding agents tab), development
+  // setting (`services/sessions/sandbox-host.ts`, Settings → Coding agents), development
   // only for `remote` and never with SESSION_BACKEND=local — enforced there, frozen per session.
   /**
    * Launch P3: how a session's CONTAINER reaches the internet. `allowlist` — internet off, the

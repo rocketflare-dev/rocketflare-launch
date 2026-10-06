@@ -945,8 +945,9 @@ export function stepStatuses(
 }
 
 /**
- * Everything the Setup page renders. `tenantId` is the organisation the admin acts for (the
- * session's, else the deployment's one) — only the Coding agents card's count of connected
+ * Everything the Settings pages over the setup API render (Connections, Coding agents, Kit
+ * version). `tenantId` is the organisation the admin acts for (the session's, else the
+ * deployment's one) — only the Coding agents card's count of connected
  * personal accounts reads it; without one that count is 0.
  */
 export async function setupOverview(

@@ -166,7 +166,7 @@ describe('who may decide, and why not', () => {
     const nobody = { ...base, eligible: [] }
     expect(waitingOn(nobody)).toEqual({ who: '', nobody: true })
     expect(whyNotSentence('not_an_approver', nobody)).toMatch(/^Nobody can approve this request/)
-    expect(whyNotSentence('self_approval', nobody)).toMatch(/Settings → Approvals/)
+    expect(whyNotSentence('self_approval', nobody)).toMatch(/Settings → Approval policies/)
   })
 
   it('counts progress as N of M, never past M', () => {

@@ -92,7 +92,7 @@ export function AccessPicker({
           {available.length === 0 ? (
             <p className="text-xs text-muted">
               You are not in any groups, so you have none to share with. An administrator can put
-              you in one under Settings → Groups.
+              you in one under Settings → People → Groups.
             </p>
           ) : (
             byType(available).map(bucket => (

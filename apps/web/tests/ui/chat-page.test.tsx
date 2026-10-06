@@ -244,7 +244,7 @@ describe('Chat page', () => {
     })
     await typeAndSend('Anyone there?')
     const cta = await screen.findByRole('link', { name: 'Configure AI' })
-    expect(cta).toHaveAttribute('href', '/settings?tab=ai')
+    expect(cta).toHaveAttribute('href', '/settings/ai')
     // The optimistic bubble was taken back: nothing was persisted
     expect(screen.queryByText('Anyone there?')).not.toBeInTheDocument()
   })

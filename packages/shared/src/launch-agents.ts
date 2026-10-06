@@ -10,7 +10,7 @@
  *   neither is a credential — and the code a person pastes back is accepted, sealed and never
  *   echoed.
  * - Which runtimes sessions may run, their models and whose account they bill is a PLATFORM
- *   SETTING — `launch_settings.session_policy.runtimes`, edited on the Setup page's Coding agents
+ *   SETTING — `launch_settings.session_policy.runtimes`, edited on Settings → Coding agents'
  *   card (`PUT /api/platform/setup/session-agents`), never a deployment var. It fails closed: with
  *   nothing stored, Claude Code on Launch's key and nothing else (`runtimePolicyOf`).
  * - `AGENT_LOGIN_CODE_EVENT` is golden-tested against Cloudflare's event-type rule
@@ -260,7 +260,7 @@ export const agentRuntimeOptionSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
   accountLabel: z.string(),
-  /** The session policy (the Platform → Coding agents tab) has it on. */
+  /** The session policy (Settings → Coding agents) has it on. */
   enabled: z.boolean(),
   /** The policy's mode: who may pay for its sessions. */
   credentialMode: sessionCredentialModeSchema,

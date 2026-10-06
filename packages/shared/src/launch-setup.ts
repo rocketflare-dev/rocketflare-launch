@@ -140,19 +140,19 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  *
  * - `template_pin` — `{ repo, tag?, commit, follow? }`, the kit a new app is cut from
  *   (`DEFAULT_TEMPLATE_PIN`): a release tag, an unreleased commit (no tag), or the newest release
- *   (`follow: 'latest'`, kept current by the five-minute cron). Set on Platform → Kit.
+ *   (`follow: 'latest'`, kept current by the five-minute cron). Set on Settings → Kit version.
  * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
  *
  * And P3's two (`@launch/shared/launch-sessions`):
  *
  * - `session_policy` — the coding-session budgets and limits (`DEFAULT_SESSION_POLICY`), read
  *   through `resolveSessionPolicy` and snapshotted on each session at create. Its `runtimes` are
- *   the coding agents sessions may run (§18.22) — the Platform → Coding agents tab.
+ *   the coding agents sessions may run (§18.22) — Settings → Coding agents.
  * - `sessions_paused` — `true` while an operator has drained sessions for a deploy; new sessions
  *   answer 409 until it is cleared.
  * - `session_sandbox_host` — where a NEW session's container runs (`SESSION_SANDBOX_HOSTS`): this
  *   Worker's own containers (`local`, the default and the only choice deployed) or the remote
- *   sandbox host (`remote`, development only). The Platform → Coding agents tab's Session sandbox
+ *   sandbox host (`remote`, development only). Settings → Coding agents' Session sandbox
  *   section; each session freezes it at create (`sessions.sandbox_host`).
  *
  * And two Launch writes itself:
@@ -328,7 +328,7 @@ export const kitLatestCheckSchema = z.object({
 })
 export type KitLatestCheck = z.infer<typeof kitLatestCheckSchema>
 
-/** The kit pin as Platform → Kit sees it: what new apps use, and whether it is the code default. */
+/** The kit pin as Settings → Kit version sees it: what new apps use, and whether it is the code default. */
 export const templatePinStatusSchema = z.object({
   pin: templatePinSchema,
   /** No `launch_settings.template_pin` row: `DEFAULT_TEMPLATE_PIN` applies. */

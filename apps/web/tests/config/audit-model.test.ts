@@ -39,12 +39,19 @@ describe('auditValue', () => {
 })
 
 describe('the real route table', () => {
-  // `protected-route.test.tsx` proves `Moved` keeps `?query#hash` on a mirror of the table; this
-  // pins that App.tsx itself sends the old Activity page there and no longer mounts it.
+  // `settings-layout.test.tsx` proves the redirects land, query and hash kept; this pins that the
+  // shell's settings routes send the old Activity page (and the old /audit) to Settings → Audit,
+  // and that nothing mounts the Activity page any more.
   const app = readFileSync(path.resolve(__dirname, '../../src/ui/App.tsx'), 'utf8')
+  const settings = readFileSync(
+    path.resolve(__dirname, '../../src/ui/components/SettingsRoutes.tsx'),
+    'utf8'
+  )
 
-  it('redirects /activity to /audit and no longer imports the Activity page', () => {
-    expect(app).toContain('<Route path="/activity" element={<Moved to="/audit" />} />')
+  it('redirects /activity and /audit to Settings → Audit, and imports no Activity page', () => {
+    expect(settings).toContain("{ path: '/activity', to: SETTINGS_PATHS.audit }")
+    expect(settings).toContain("{ path: '/audit', to: SETTINGS_PATHS.audit }")
+    expect(app).toContain('{settingsRoutes()}')
     expect(app).not.toMatch(/pages\/Activity['"]/)
   })
 })

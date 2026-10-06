@@ -39,8 +39,11 @@ export function adminAccessRequestsQueryOptions(filters: AccessRequestsFilters =
   })
 }
 
-export function useAdminAccessRequests(filters: AccessRequestsFilters = {}) {
-  return useQuery(adminAccessRequestsQueryOptions(filters))
+export function useAdminAccessRequests(
+  filters: AccessRequestsFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery({ ...adminAccessRequestsQueryOptions(filters), ...options })
 }
 
 export function useDecideAccessRequest() {

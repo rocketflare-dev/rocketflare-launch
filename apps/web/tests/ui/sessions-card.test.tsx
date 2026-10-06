@@ -1,7 +1,7 @@
 /**
  * The ways into and around coding sessions (Launch P3): the app page's `SessionsCard` — "Start
  * session" goes straight to the new session's page, a refusal is explained in place (never a
- * toast), the list links every row — and the operator's `/admin/sessions`, whose Drain and Undrain
+ * toast), the list links every row — and the operator's Settings → All sessions, whose Drain and Undrain
  * both confirm first.
  */
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
@@ -188,7 +188,7 @@ describe('SessionsAdmin', () => {
     const fetchMock = stubFetch(routes)
     renderWithProviders(<SessionsAdmin />, {
       session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
-      route: '/admin/sessions',
+      route: '/settings/sessions',
     })
     return fetchMock
   }

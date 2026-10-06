@@ -1,5 +1,5 @@
 /**
- * The kit pin (`launch_settings.template_pin`) as Platform → Kit's Kit version card edits it. The
+ * The kit pin (`launch_settings.template_pin`) as Settings → Kit version edits it. The
  * pin has ONE source of truth — the setting, else `DEFAULT_TEMPLATE_PIN` — and this module is the
  * only writer besides a hand-edited row:
  *

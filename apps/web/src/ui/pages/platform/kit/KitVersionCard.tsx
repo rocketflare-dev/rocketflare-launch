@@ -1,6 +1,6 @@
 /**
  * The kit version every new app (and every re-scaffold) is cut from — `launch_settings.template_pin`,
- * else Launch's code default. Platform → Kit.
+ * else Launch's code default. Settings → Kit version.
  *
  * Three ways to pin it, each resolved by the SERVER through GitHub (it refuses what the repo does
  * not have, so the page never stores what it cannot prove):

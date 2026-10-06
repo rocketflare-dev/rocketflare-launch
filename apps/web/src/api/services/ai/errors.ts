@@ -29,8 +29,8 @@ export class AiNotConfiguredError extends ServiceUnavailableError {
   constructor(scope: 'chat' | 'embeddings' = 'chat') {
     super(
       scope === 'chat'
-        ? 'No AI chat provider is configured. Add one in Settings → AI, or set ANTHROPIC_API_KEY.'
-        : 'No embeddings provider is configured. Add one in Settings → AI, bind Workers AI, or set EMBEDDINGS_API_KEY.',
+        ? 'No AI chat provider is configured. Add one in Settings → AI & models, or set ANTHROPIC_API_KEY.'
+        : 'No embeddings provider is configured. Add one in Settings → AI & models, bind Workers AI, or set EMBEDDINGS_API_KEY.',
       ERROR_CODES.aiNotConfigured
     )
     this.name = 'AiNotConfiguredError'
@@ -132,12 +132,12 @@ export function describeAiError(err: AiError): string {
   }
   switch (err.code) {
     case 'auth':
-      return 'The AI provider rejected the credentials. Check the API key in Settings → AI.'
+      return 'The AI provider rejected the credentials. Check the API key in Settings → AI & models.'
     case 'rate_limit':
       return 'The AI provider is rate-limited or overloaded right now. Wait a few seconds and retry.'
     case 'invalid_request':
       return err.status === 404
-        ? 'The AI provider does not recognise the configured model. Check the model in Settings → AI.'
+        ? 'The AI provider does not recognise the configured model. Check the model in Settings → AI & models.'
         : 'The AI provider rejected the request. This usually means the model id is wrong for this provider.'
     case 'unavailable':
       return 'The AI provider did not answer. Wait a moment and retry.'

@@ -4,7 +4,7 @@
  * "members of this tenant" index.
  *
  * Roles: `owner` / `admin` / `member` are assignable (`tenantRoleSchema`); `support` is minted only
- * by a global admin entering an org from `/admin` — admin-equivalent, a REAL visible membership
+ * by a global admin entering an org from Settings → Organisations — admin-equivalent, a REAL visible membership
  * row rather than a hidden bypass, and excluded from member counts (`NON_MEMBER_ROLES`).
  * Stored as text with a TypeScript enum (not a pg enum) so adding a role is a code change.
  */

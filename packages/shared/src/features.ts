@@ -8,7 +8,7 @@
  *      (`FEATURES_ENABLED`), fail-closed, no database. This is what lets half-built code be
  *      released to production dark, and it is settled before any row is read.
  *   2. ROLLOUT — among deployments where it exists, which tenants (or users) have it yet? A
- *      database decision a global admin drives from `/admin`: on, off, or a percentage.
+ *      database decision a global admin drives from Settings → Feature flags: on, off, or a percentage.
  *
  * The composition is total and is written once, in `evaluateFlag`:
  *
@@ -57,7 +57,7 @@ export const featureNameSchema = z
   })
 
 export interface FeatureDefinition {
-  /** Shown in `/admin`; the key is what code uses. */
+  /** Shown in Settings → Feature flags; the key is what code uses. */
   label: string
   description: string
   /** Applied when no row exists yet — a flag needs no row to be evaluated. */
@@ -218,7 +218,7 @@ export function evaluateFeatures(
 
 // ---- API contracts ------------------------------------------------------------------------------
 
-/** One flag as `/admin` sees it: the registry, the stored state, and how many tenants override it. */
+/** One flag as Settings → Feature flags sees it: the registry, the stored state, and how many tenants override it. */
 export const featureFlagSchema = z.object({
   key: featureNameSchema,
   label: z.string(),

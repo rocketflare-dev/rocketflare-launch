@@ -38,7 +38,8 @@ function ResearchTopicForm({ value, onChange, issues, disabled }: AgentFormProps
       />
       <FieldError message={fieldErrorFor(issues, 'topic')} />
       <p className="text-xs text-muted mt-1">
-        The agent answers from this workspace's knowledge base only, citing the documents it used.
+        The agent answers from this organisation's knowledge base only, citing the documents it
+        used.
       </p>
     </div>
   )

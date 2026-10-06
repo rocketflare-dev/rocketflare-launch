@@ -1,9 +1,9 @@
 /**
- * `/settings/platform/access-requests` (D9, D25): the sign-up review queue — a global admin's, or in
- * single mode the organisation's owner/admin (`canAdministerPlatform`). Approving either adds the
- * requester to an existing organisation or mints a new one (the `new_org` branch is hidden in single
- * mode); rejecting takes an optional reason. One endpoint:
- * `POST /api/platform/access-requests/:id/decide` (`decideAccessRequestSchema`).
+ * Settings → People → Access requests (`/settings/people/access-requests`, D9, D25): the sign-up
+ * review queue — a global admin's, or in single mode the organisation's owner/admin
+ * (`canAdministerPlatform`). Approving either adds the requester to an existing organisation or
+ * mints a new one (the `new_org` branch is hidden in single mode); rejecting takes an optional
+ * reason. One endpoint: `POST /api/platform/access-requests/:id/decide` (`decideAccessRequestSchema`).
  */
 
 import { InboxArrowDownIcon } from '@heroicons/react/24/outline'

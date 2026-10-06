@@ -1,5 +1,5 @@
 /**
- * Per-tenant settings contract (D13, D25 — rendered as "Workspace settings" in single mode).
+ * Per-tenant settings contract (D13, D25 — Settings → General in the UI).
  * `timezone` and `notificationsEnabled` are columns; `settings` is the app-extensible jsonb bag,
  * typed here so the column and the API agree.
  */

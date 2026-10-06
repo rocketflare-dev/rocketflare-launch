@@ -37,6 +37,7 @@ import { useMyFeedback } from '@/ui/hooks/useFeedback'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { isAiNotConfigured } from '@/ui/lib/aguiStream'
 import { timeAgo } from '@/ui/lib/format'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
 import { ChatStatsPanel } from './ChatStatsPanel'
 
 /** Whether the inspector was left open. Remembered, because it is a working posture, not a task. */
@@ -173,12 +174,12 @@ export default function ChatPage() {
               message="AI is not configured"
               description={
                 canConfigure
-                  ? 'Add a chat provider so this workspace can answer.'
-                  : 'Ask an administrator to add a chat provider in Settings → AI.'
+                  ? 'Add a chat provider so this organisation can answer.'
+                  : 'Ask an administrator to add a chat provider in Settings → AI & models.'
               }
               action={
                 canConfigure ? (
-                  <Link to="/settings?tab=ai" className="btn btn-primary btn-sm">
+                  <Link to={SETTINGS_PATHS.ai} className="btn btn-primary btn-sm">
                     Configure AI
                   </Link>
                 ) : undefined

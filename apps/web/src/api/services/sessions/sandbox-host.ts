@@ -1,6 +1,6 @@
 /**
  * Where a NEW session's (or sign-in's) container runs — the platform setting
- * `launch_settings.session_sandbox_host` (`SESSION_SANDBOX_HOSTS`, the Platform → Coding agents
+ * `launch_settings.session_sandbox_host` (`SESSION_SANDBOX_HOSTS`, Settings → Coding agents
  * tab's Session sandbox section), and whether each choice can run one on THIS Worker right now:
  *
  * - `local` — this Worker's own `SESSION_SANDBOX`. Deployed: always (Cloudflare's containers).

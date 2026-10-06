@@ -1,7 +1,7 @@
 /**
- * One step of the setup stepper: a numbered card with its status dot. The `id` is the anchor the
- * stepper at the top of the page links to. A card that is not a step (the OpenAI key, §18.22-B)
- * has no `number`.
+ * One connection (or one credential that is not a step — the Anthropic and OpenAI keys, §18.22-B):
+ * a card with its title, what it is for and its status dot. Each connection is its own page under
+ * Settings → Connections; the `id` stays an anchor (`setup-<id>`) so a card can still be linked.
  */
 import type { SetupStepId, SetupStepStatus } from '@launch/shared/launch-setup'
 import type { ReactNode } from 'react'
@@ -11,14 +11,12 @@ export const stepAnchor = (id: SetupStepId | string) => `setup-${id}`
 
 export function StepCard({
   id,
-  number,
   title,
   description,
   status,
   children,
 }: {
   id: SetupStepId | string
-  number?: number
   title: string
   description: ReactNode
   status: SetupStepStatus
@@ -34,9 +32,6 @@ export function StepCard({
       <header className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 id={headingId} className="text-base font-semibold leading-6">
-            {number !== undefined && (
-              <span className="text-muted tabular-nums mr-2">{number}.</span>
-            )}
             {title}
           </h2>
           <div className="text-sm text-secondary mt-0.5">{description}</div>

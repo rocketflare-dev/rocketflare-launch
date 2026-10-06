@@ -12,6 +12,7 @@ import { ShieldCheckIcon } from '@heroicons/react/24/outline'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useAppInfo } from '@/ui/hooks/useAppInfo'
+import { SETTINGS_PATH } from '@/ui/lib/settings-paths'
 import { BrandLockup } from './shared/LogoMark'
 import ThemeToggle from './ThemeToggle'
 
@@ -74,18 +75,19 @@ export function SignedInAs({ email, onSignOut }: { email: string; onSignOut: () 
 }
 
 /**
- * A global admin parked on a no-tenant page can still run the platform: `/admin/*` needs no
- * membership (`ProtectedRoute`'s one exemption), and it is where they approve the next person.
+ * A global admin parked on a no-tenant page can still run the platform: Settings needs no
+ * membership (`ProtectedRoute`'s one exemption) and shows them its Connections, the access-request
+ * queue where they approve the next person, and the operator's sections.
  */
 export function AdminAreaLink({ className = '' }: { className?: string }) {
   return (
     <div className={`surface-inset rounded-lg p-3 text-sm flex items-center gap-3 ${className}`}>
       <ShieldCheckIcon className="w-5 h-5 shrink-0 text-muted" />
       <span className="flex-1 text-secondary">
-        You're a global administrator — the admin area works without an organisation.
+        You're a global administrator — Settings works without an organisation.
       </span>
-      <Link to="/admin" className="btn btn-primary btn-sm whitespace-nowrap">
-        Open the admin area
+      <Link to={SETTINGS_PATH} className="btn btn-primary btn-sm whitespace-nowrap">
+        Open Settings
       </Link>
     </div>
   )

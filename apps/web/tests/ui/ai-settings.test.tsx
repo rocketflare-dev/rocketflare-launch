@@ -1,5 +1,5 @@
 /**
- * Settings → AI (D17): readiness `none` shows the set-up CTA; adding a config validates with the
+ * Settings → AI & models → Providers (D17): readiness `none` shows the set-up CTA; adding a config validates with the
  * shared schema and posts the exact upsert body; preset chips fill base URL + model; a member sees
  * readiness and the list but no write controls; delete confirms then calls DELETE.
  */
@@ -96,7 +96,7 @@ function mount(routes: RouteTable = {}, session = makeSession()) {
 
 const openDialog = () => document.querySelector('dialog[open]') as HTMLElement
 
-describe('Settings → AI', () => {
+describe('Settings → AI & models → Providers', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('shows a set-up CTA when readiness is none and opens the add modal', async () => {

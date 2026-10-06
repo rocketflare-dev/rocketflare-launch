@@ -10,15 +10,16 @@ import { useAuth } from './useAuth'
 
 /**
  * Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL
- * `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,
- * not the typed unions, so apps can add subjects without touching the shell; the pair is cast when
- * it reaches the ability.
+ * `{ action, subject }` pair for per-page checks, a feature flag, a list meaning AND, or `{ anyOf }`
+ * meaning OR. Strings, not the typed unions, so apps can add subjects without touching the shell;
+ * the pair is cast when it reaches the ability.
  */
 export type NavGuard =
   | 'admin'
   | 'globalAdmin'
   /**
-   * Administering the deployment (`/settings/platform/*`): `canAdministerPlatform` from
+   * Administering the deployment (Settings → Connections, Coding agents, Kit, access requests):
+   * `canAdministerPlatform` from
    * `@launch/shared/permissions`, the SAME function the server's `platformAdminMiddleware` calls —
    * a global admin (membership or not), or in single mode the organisation's owner/admin.
    */
@@ -38,6 +39,13 @@ export type NavGuard =
    * allowed, matching `undefined`.
    */
   | readonly NavGuard[]
+  /**
+   * At least one guard must pass (OR). For a door into several sections with different guards —
+   * Settings is `{ anyOf: ['admin', 'platformAdmin'] }`: in multi mode an organisation's owner
+   * (`admin`, not `platformAdmin`) and a global admin with no membership (`platformAdmin`, not
+   * `admin`) both have sections to open there, and neither guard covers both.
+   */
+  | { anyOf: readonly NavGuard[] }
 
 const ADMIN_ROLES = new Set(['owner', 'admin', 'support'])
 
@@ -56,6 +64,7 @@ export function useNavGuard(): (guard: NavGuard | undefined) => boolean {
     function check(guard: NavGuard | undefined): boolean {
       if (guard === undefined) return true
       if (isGuardList(guard)) return guard.every(check)
+      if (typeof guard === 'object' && 'anyOf' in guard) return guard.anyOf.some(check)
       // Before the tenant check: a feature that is off is off for everyone, membership or not.
       if (typeof guard === 'object' && 'feature' in guard) return features.includes(guard.feature)
       if (guard === 'globalAdmin') return isGlobalAdmin

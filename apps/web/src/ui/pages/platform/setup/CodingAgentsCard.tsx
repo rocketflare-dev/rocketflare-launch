@@ -1,6 +1,6 @@
 /**
  * The coding agents sessions may run (§18.22) — `launch_settings.session_policy.runtimes`, the ONE
- * place these switches live. The first panel of Settings → Platform → Coding agents
+ * place these switches live. The first panel of Settings → Coding agents
  * (`pages/platform/CodingAgents.tsx`), above Launch's keys for the agents.
  *
  * A table, one row per agent: on/off, its model ("Default — Claude Code picks" first, no model

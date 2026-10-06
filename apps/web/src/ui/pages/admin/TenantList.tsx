@@ -1,12 +1,15 @@
 /**
- * Admin → Organisations (D25): search + status filter over `/api/admin/tenants`. In single mode
- * there is exactly one, so the list collapses straight into its detail.
+ * Settings → Organisations (D25; the Operator group): search + status filter over
+ * `/api/admin/tenants`. Multi mode only — the route answers 404 `tenancy_mode_single` in single
+ * mode, where the one organisation's settings are Settings → General and this section is not
+ * listed. A failed load says so: it used to read as "No organisations match", which is how a 404
+ * looked exactly like an empty search.
  */
 
 import { BuildingOffice2Icon, ChevronRightIcon } from '@heroicons/react/24/outline'
 import type { TenantStatus } from '@launch/shared/tenants'
 import { useState } from 'react'
-import { Link, Navigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import {
   EmptyState,
   PaginationControls,
@@ -15,8 +18,8 @@ import {
   SkeletonRows,
 } from '@/ui/components/shared'
 import { useAdminTenants } from '@/ui/hooks/useAdminTenants'
-import { useAuth } from '@/ui/hooks/useAuth'
 import { timeAgo } from '@/ui/lib/format'
+import { organisationPath } from '@/ui/lib/settings-paths'
 
 const FILTERS: { value: TenantStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -25,20 +28,15 @@ const FILTERS: { value: TenantStatus | 'all'; label: string }[] = [
 ]
 
 export default function TenantList() {
-  const { tenancyMode } = useAuth()
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<TenantStatus | 'all'>('all')
   const [page, setPage] = useState(1)
-  const { data, isLoading, isFetching } = useAdminTenants({
+  const { data, isLoading, isError, isFetching } = useAdminTenants({
     q,
     page,
     status: status === 'all' ? undefined : status,
   })
   const items = data?.items ?? []
-
-  if (tenancyMode === 'single' && data && items.length === 1 && !q && status === 'all') {
-    return <Navigate to={`/admin/tenants/${items[0].id}`} replace />
-  }
 
   return (
     <SectionPanel
@@ -79,6 +77,12 @@ export default function TenantList() {
         <div className="px-5 pb-5">
           <SkeletonRows rows={3} />
         </div>
+      ) : isError && !data ? (
+        <div className="px-5 pb-5">
+          <p role="alert" className="text-sm text-error">
+            The organisations could not be loaded.
+          </p>
+        </div>
       ) : items.length === 0 ? (
         <EmptyState icon={BuildingOffice2Icon} message="No organisations match" />
       ) : (
@@ -109,7 +113,7 @@ export default function TenantList() {
                   <td className="text-secondary whitespace-nowrap">{timeAgo(t.lastAccessedAt)}</td>
                   <td className="text-secondary whitespace-nowrap">{timeAgo(t.createdAt)}</td>
                   <td className="text-right">
-                    <Link to={`/admin/tenants/${t.id}`} className="btn btn-ghost btn-xs gap-1">
+                    <Link to={organisationPath(t.id)} className="btn btn-ghost btn-xs gap-1">
                       Open <ChevronRightIcon className="w-3.5 h-3.5" />
                     </Link>
                   </td>

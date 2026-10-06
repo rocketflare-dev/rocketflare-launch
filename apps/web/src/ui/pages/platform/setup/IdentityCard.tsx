@@ -1,5 +1,5 @@
 /**
- * Step 6 — how people sign in to Launch itself (spec/05). Read-only: the upstream IdP is the
+ * Connections → Sign-in: how people sign in to Launch itself (spec/05). Read-only: the upstream IdP is the
  * Worker's own `GOOGLE_*` / `MICROSOFT_*` / `OIDC_*` config, set as vars and secrets at deploy
  * time, so this card reports it and says where to change it. No client secret is shown — only
  * whether one is set.
@@ -24,7 +24,6 @@ export function IdentityCard({
   return (
     <StepCard
       id="identity"
-      number={6}
       title="Identity provider"
       status={status}
       description="Where people sign in to Launch. Apps then sign in through Launch."

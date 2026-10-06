@@ -76,7 +76,7 @@ function OrganisationPanel() {
 
   return (
     <SectionPanel
-      title={tenancyMode === 'single' ? 'Workspace' : 'Organisation'}
+      title="Organisation"
       description="What members see in the header and the switcher."
     >
       <form onSubmit={submit} noValidate>

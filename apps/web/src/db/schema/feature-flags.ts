@@ -85,7 +85,7 @@ export const tenantFeatureOverrides = pgTable(
     primaryKey({ columns: [table.tenantId, table.flagKey] }),
     /**
      * Deliberately NOT led by `tenant_id`, unlike every other index in this schema. It serves one
-     * query — "every override on this flag" in `/admin` — which is cross-tenant by design and
+     * query — "every override on this flag" in Settings → Feature flags — which is cross-tenant by design and
      * reachable only behind `globalAdminMiddleware`. Do not "fix" it.
      */
     index('tenant_feature_overrides_flag_idx').on(table.flagKey),

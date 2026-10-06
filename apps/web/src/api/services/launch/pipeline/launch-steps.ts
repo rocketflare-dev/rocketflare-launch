@@ -243,7 +243,7 @@ function jobFailure(what: string, detail: string | undefined, launchUrl: string)
   return [
     `${what} failed${detail ? `: ${detail}` : ''}.`,
     unreachable
-      ? `It calls Launch back at ${launchUrl}, which GitHub's runners cannot reach — see Setup › Public URL.`
+      ? `It calls Launch back at ${launchUrl}, which GitHub's runners cannot reach — see Settings › Public URL.`
       : 'Open the run on GitHub for its log.',
   ].join(' ')
 }

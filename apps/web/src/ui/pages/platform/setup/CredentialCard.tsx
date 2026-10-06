@@ -132,8 +132,6 @@ export interface PayloadFieldSpec {
 interface CredentialCardProps {
   /** The anchor: a step's id, or a card's own (`openai`). */
   id: SetupStepId | string
-  /** Absent for a card that is not a numbered step. */
-  number?: number
   title: string
   description: ReactNode
   status: SetupStepStatus
@@ -148,7 +146,6 @@ interface CredentialCardProps {
 
 export function CredentialCard({
   id,
-  number,
   title,
   description,
   status,
@@ -217,7 +214,7 @@ export function CredentialCard({
   const lastCheck = credential.lastCheck ?? []
 
   return (
-    <StepCard id={id} number={number} title={title} description={description} status={status}>
+    <StepCard id={id} title={title} description={description} status={status}>
       {help && <div className="text-sm text-secondary space-y-1">{help}</div>}
 
       <form className="space-y-4" onSubmit={e => void onSubmit(e).catch(() => undefined)}>

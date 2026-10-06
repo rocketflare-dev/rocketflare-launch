@@ -1,7 +1,7 @@
 /**
  * Membership administration (D10): list, role change, removal — with the ownership invariants
  * the matrix leaves to routes: assigning or taking away `owner` is owner-only, the last owner can
- * never be demoted or removed, and `support` rows are managed only from /admin.
+ * never be demoted or removed, and `support` rows are managed only from Settings → Organisations.
  */
 import type { PaginationQuery } from '@launch/shared/pagination'
 import type { Member, TenantRole } from '@launch/shared/tenants'

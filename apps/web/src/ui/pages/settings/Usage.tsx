@@ -33,7 +33,7 @@ export default function UsageSettings() {
       description={
         data
           ? `${formatDate(data.from)} – ${formatDate(data.to)}`
-          : 'Tokens spent by this workspace, per provider, model and feature.'
+          : 'Tokens spent by this organisation, per provider, model and feature.'
       }
       actions={
         <div className="join" role="group" aria-label="Date range">

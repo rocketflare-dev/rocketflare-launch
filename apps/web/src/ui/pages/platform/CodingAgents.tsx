@@ -1,10 +1,10 @@
 /**
- * `/settings/platform/coding-agents` (§18.22): which coding agents sessions run, each one's model and
- * who pays — `CodingAgentsCard` over `session_policy.runtimes` — then where their containers run
- * (`SessionSandboxCard`, `session_sandbox_host`), then the Anthropic and OpenAI keys
- * sessions on Launch's account spend. Neither is a setup step (Claude Code on the Worker secret works
- * with nothing set), which is why they have their own tab rather than sitting under the stepper.
- * Reads the same setup overview as the Setup tab; `canAdministerPlatform` (the layout's guard).
+ * Settings → Coding agents (`/settings/coding-agents`, §18.22): which coding agents sessions run,
+ * each one's model and who pays — `CodingAgentsCard` over `session_policy.runtimes` — then where
+ * their containers run (`SessionSandboxCard`, `session_sandbox_host`), then the Anthropic and
+ * OpenAI keys sessions on Launch's account spend. Not a connection (Claude Code on the Worker
+ * secret works with nothing set), so Home's setup checklist never asks for it. Reads the same setup
+ * overview as the Connections pages; `canAdministerPlatform` (the section's guard).
  */
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'

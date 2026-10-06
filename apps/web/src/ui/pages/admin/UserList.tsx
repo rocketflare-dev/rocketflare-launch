@@ -1,4 +1,4 @@
-/** Admin → Users (D10): search + filter over `/api/admin/users` (`adminUserListQuerySchema`). */
+/** Settings → Users (D10, Operator): search + filter over `/api/admin/users` (`adminUserListQuerySchema`). */
 
 import { ChevronRightIcon, UsersIcon } from '@heroicons/react/24/outline'
 import type { AdminUserListQuery } from '@launch/shared/admin'
@@ -13,6 +13,7 @@ import {
 } from '@/ui/components/shared'
 import { useAdminUsers } from '@/ui/hooks/useAdminUsers'
 import { timeAgo } from '@/ui/lib/format'
+import { userPath } from '@/ui/lib/settings-paths'
 
 type Filter = NonNullable<AdminUserListQuery['filter']> | 'all'
 
@@ -106,7 +107,7 @@ export default function UserList() {
                   </td>
                   <td className="text-secondary whitespace-nowrap">{timeAgo(u.lastLoginAt)}</td>
                   <td className="text-right">
-                    <Link to={`/admin/users/${u.id}`} className="btn btn-ghost btn-xs gap-1">
+                    <Link to={userPath(u.id)} className="btn btn-ghost btn-xs gap-1">
                       Open <ChevronRightIcon className="w-3.5 h-3.5" />
                     </Link>
                   </td>

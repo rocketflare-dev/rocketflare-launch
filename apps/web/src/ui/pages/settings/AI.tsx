@@ -1,5 +1,5 @@
 /**
- * Settings → AI (D17): readiness for `chat` and `embeddings` (what the resolver WOULD pick, with
+ * Settings → AI & models → Providers (D17): readiness for `chat` and `embeddings` (what the resolver WOULD pick, with
  * its source), then one table per scope — label, provider, model, default and credential badges,
  * and for `manage AiConfig` holders: set default, test, edit, delete. Members (`read`) see the
  * readiness and a read-only list. Credentials never reach the browser (`hasCredential` only).
@@ -63,7 +63,7 @@ export default function AiSettings() {
     <div className="space-y-6">
       <SectionPanel
         title="Readiness"
-        description="What answers this workspace right now, and where that comes from."
+        description="What answers this organisation right now, and where that comes from."
       >
         {readiness.isLoading ? (
           <SkeletonRows rows={2} />
@@ -159,7 +159,7 @@ function ReadinessCard({
             </>
           )}
           {' · '}
-          {readiness.source === 'tenant' ? 'this workspace' : 'platform default'}
+          {readiness.source === 'tenant' ? 'this organisation' : 'platform default'}
         </p>
       ) : canManage ? (
         <button

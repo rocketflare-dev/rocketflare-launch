@@ -1,5 +1,5 @@
 /**
- * Settings → Groups (D29). Group TYPES on the left, that type's groups on the right, and a modal
+ * Settings → People → Groups (D29). Group TYPES on the left, that type's groups on the right, and a modal
  * for who is in a group. `manage Group` (admin+) throughout — the tab does not render at all
  * otherwise, because a picker or a table you cannot save from is worse than no tab.
  *

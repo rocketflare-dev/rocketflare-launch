@@ -6,13 +6,10 @@ import {
   ChevronRightIcon,
   Cog6ToothIcon,
   CpuChipIcon,
-  DocumentMagnifyingGlassIcon,
   HomeIcon,
   KeyIcon,
   MagnifyingGlassIcon,
-  ShieldCheckIcon,
   Squares2X2Icon,
-  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline'
 import type { ComponentType, ReactNode } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
@@ -23,7 +20,7 @@ import { useBooleanPreference } from '@/ui/hooks/useLocalStoragePreference'
 import { type NavBadgeKey, type NavBadges, useNavBadges } from '@/ui/hooks/useNavBadges'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
 import { AGENTS_GUARD, CHAT_GUARD, KNOWLEDGE_GUARD } from '@/ui/lib/feature-guards'
-import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
+import { SETTINGS_GUARD, SETTINGS_PATH } from '@/ui/lib/settings-paths'
 import { BrandLockup, LogoMark } from './shared/LogoMark'
 
 export interface NavItem {
@@ -52,8 +49,8 @@ export type NavConfig = (NavItem | NavGroup)[]
 
 /**
  * The kit's navigation (D10: each `guard` is the SAME flag the route uses). Profile and
- * Notifications live in the header `UserMenu`; apps add their own groups above "Organisation",
- * and an installed plugin (D31) does the same through `UiPlugin.nav` — see `composeNav` below.
+ * Notifications live in the header `UserMenu`; apps add their own groups above "Settings", and an
+ * installed plugin (D31) does the same through `UiPlugin.nav` — see `composeNav` below.
  */
 const CORE_NAVIGATION: NavConfig = [
   {
@@ -120,29 +117,13 @@ const CORE_NAVIGATION: NavConfig = [
       },
     ],
   },
+  // ONE door into every setting: the organisation's, the deployment's, the operator's and Audit
+  // (`pages/settings/SettingsLayout.tsx`). Its guard is the route's — anyone with a section there.
+  // The group's label is the plugin anchor (`DEFAULT_NAV_ANCHOR`); a heading that only repeats its
+  // one item is not rendered.
   {
-    label: 'Organisation',
-    items: [
-      { to: '/settings', label: 'Settings', icon: Cog6ToothIcon, guard: 'admin' },
-      // Launch (spec/08): the append-only audit log — the ONE log; the kit's activity events are
-      // appended to it too, and the old `/activity` redirects here. The same guard as its route.
-      { to: '/audit', label: 'Audit', icon: DocumentMagnifyingGlassIcon, guard: 'admin' },
-    ],
-  },
-  {
-    label: 'Platform',
-    items: [
-      // The deployment's own administration: a global admin, or in single mode the organisation's
-      // owner/admin (`canAdministerPlatform`) — the same guard as its route.
-      {
-        to: PLATFORM_SETTINGS_PATH,
-        label: 'Setup',
-        icon: WrenchScrewdriverIcon,
-        guard: 'platformAdmin',
-      },
-      // The operator's cross-tenant area — global admins only, in single mode too.
-      { to: '/admin', label: 'Admin', icon: ShieldCheckIcon, guard: 'globalAdmin' },
-    ],
+    label: 'Settings',
+    items: [{ to: SETTINGS_PATH, label: 'Settings', icon: Cog6ToothIcon, guard: SETTINGS_GUARD }],
   },
 ]
 
@@ -150,8 +131,17 @@ function isNavGroup(item: NavItem | NavGroup): item is NavGroup {
   return 'items' in item
 }
 
-/** Where a plugin group lands when it names no anchor: above the kit's "Organisation" group. */
-export const DEFAULT_NAV_ANCHOR = 'Organisation'
+/** Where a plugin group lands when it names no anchor: above the kit's "Settings" group. */
+export const DEFAULT_NAV_ANCHOR = 'Settings'
+
+/**
+ * Whether a group's heading renders: not when it only repeats the label of its one item (the
+ * Settings group, which exists to be the plugins' anchor and to set Settings apart). Pure.
+ */
+export function showsGroupLabel(group: NavGroup): boolean {
+  if (!group.label) return false
+  return !(group.items.length === 1 && group.items[0]?.label === group.label)
+}
 
 /**
  * Splice plugin nav groups into the kit's config (D31). Pure, so it is unit-tested rather than
@@ -218,8 +208,8 @@ export function isPathActive(pathname: string, to: string): boolean {
 }
 
 /**
- * The ONE item to highlight: the longest `to` that `isPathActive` matches, so a nested entry
- * (`/settings/platform` under `/settings`) lights alone rather than beside its parent.
+ * The ONE item to highlight: the longest `to` that `isPathActive` matches, so a nested entry (an
+ * app's `/reports/archive` beside `/reports`) lights alone rather than beside its parent.
  */
 export function activeNavPath(pathname: string, tos: readonly string[]): string | undefined {
   return tos.filter(to => isPathActive(pathname, to)).sort((a, b) => b.length - a.length)[0]
@@ -335,7 +325,7 @@ export default function SideNav({ items = navigationConfig, footer }: SideNavPro
           if (isNavGroup(item)) {
             return (
               <div key={item.label ?? item.items[0]?.to}>
-                {!isCollapsed && item.label && (
+                {!isCollapsed && showsGroupLabel(item) && (
                   <div className="nav-group-label px-2.5 pb-1.5">{item.label}</div>
                 )}
                 <div className="space-y-0.5">{item.items.map(renderItem)}</div>

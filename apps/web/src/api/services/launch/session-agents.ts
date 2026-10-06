@@ -1,5 +1,5 @@
 /**
- * The Platform → Coding agents tab (§18.22): which coding agents sessions may run, each one's
+ * The Settings → Coding agents (§18.22): which coding agents sessions may run, each one's
  * model, and whose account it bills — `launch_settings.session_policy.runtimes`, the ONE place
  * these switches live (there is no deployment var for them).
  *

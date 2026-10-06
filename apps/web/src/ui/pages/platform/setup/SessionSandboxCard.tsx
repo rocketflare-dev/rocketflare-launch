@@ -1,6 +1,6 @@
 /**
  * Where a new coding session's container runs — `launch_settings.session_sandbox_host`, the
- * Session sandbox section of Settings → Platform → Coding agents (`pages/platform/CodingAgents.tsx`,
+ * Session sandbox section of Settings → Coding agents (`pages/platform/CodingAgents.tsx`,
  * below the agents table). Two choices (`sessionSandboxStatusSchema`): this Worker's own containers
  * (local Docker under `pnpm dev`, Cloudflare's when deployed) and the remote sandbox host
  * (development only). The server says whether each can run a session right now and, if not, why —

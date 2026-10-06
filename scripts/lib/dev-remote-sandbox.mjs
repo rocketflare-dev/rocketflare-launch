@@ -1,7 +1,7 @@
 /**
  * Both session sandbox hosts for `pnpm dev` (Launch P3, docs/SESSIONS-LOCAL.md § Real containers
  * from a laptop). Where a session's container runs is a PLATFORM SETTING
- * (`launch_settings.session_sandbox_host`, Settings → Platform → Coding agents → Session sandbox),
+ * (`launch_settings.session_sandbox_host`, Settings → Coding agents → Session sandbox),
  * so `apps/web/scripts/dev-server.mjs` makes BOTH choices available whenever it can, and tells the
  * Worker which it could not:
  *

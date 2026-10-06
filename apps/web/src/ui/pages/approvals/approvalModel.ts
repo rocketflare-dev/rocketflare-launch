@@ -230,7 +230,7 @@ export function waitingOn(
 
 const NOBODY_SENTENCE =
   'Nobody can approve this request: everyone the policy names is excluded or has already ' +
-  'decided. An admin can change the policy in Settings → Approvals.'
+  'decided. An admin can change the policy in Settings → Approval policies.'
 
 /**
  * The one sentence a person who may NOT decide reads instead of the buttons. Null when they may,

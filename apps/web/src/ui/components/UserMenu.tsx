@@ -6,19 +6,17 @@ import {
   ArrowRightStartOnRectangleIcon,
   BellIcon,
   Cog6ToothIcon,
-  ShieldCheckIcon,
   UserCircleIcon,
-  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline'
 import { useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { useNavGuard } from '@/ui/hooks/useNavGuard'
 import { initials } from '@/ui/lib/format'
-import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
+import { SETTINGS_GUARD, SETTINGS_PATH } from '@/ui/lib/settings-paths'
 
 export function UserMenu() {
-  const { user, tenant, logout } = useAuth()
+  const { user, tenant, isGlobalAdmin, logout } = useAuth()
   const canAccess = useNavGuard()
   const ref = useRef<HTMLDetailsElement>(null)
   if (!user) return null
@@ -45,14 +43,16 @@ export function UserMenu() {
             <div className="text-sm font-medium truncate">{user.name}</div>
             <div className="text-xs text-muted truncate">{user.email}</div>
             {tenant && (
-              <div className="text-xs text-muted mt-0.5 capitalize">
-                {tenant.role} · {tenant.name}
+              <div className="text-xs text-muted mt-0.5">
+                {/* A global admin's membership role is not what they may do — `manage all` is. */}
+                {isGlobalAdmin ? 'Global admin' : <span className="capitalize">{tenant.role}</span>}{' '}
+                · {tenant.name}
               </div>
             )}
           </div>
         </li>
         <li className="border-t border-[color:var(--border-subtle)] my-1" />
-        {/* Both pages live under the tenant shell — a global admin with no membership gets /admin only */}
+        {/* Both pages live under the tenant shell — a global admin with no membership gets Settings */}
         {tenant && (
           <>
             <li>
@@ -75,36 +75,14 @@ export function UserMenu() {
             </li>
           </>
         )}
-        {canAccess('admin') && (
+        {canAccess(SETTINGS_GUARD) && (
           <li>
             <Link
-              to="/settings"
+              to={SETTINGS_PATH}
               onClick={close}
               className="nav-item flex items-center gap-2 px-2.5 py-1.5 text-sm"
             >
               <Cog6ToothIcon className="w-4 h-4" /> Settings
-            </Link>
-          </li>
-        )}
-        {canAccess('platformAdmin') && (
-          <li>
-            <Link
-              to={PLATFORM_SETTINGS_PATH}
-              onClick={close}
-              className="nav-item flex items-center gap-2 px-2.5 py-1.5 text-sm"
-            >
-              <WrenchScrewdriverIcon className="w-4 h-4" /> Setup
-            </Link>
-          </li>
-        )}
-        {canAccess('globalAdmin') && (
-          <li>
-            <Link
-              to="/admin"
-              onClick={close}
-              className="nav-item flex items-center gap-2 px-2.5 py-1.5 text-sm"
-            >
-              <ShieldCheckIcon className="w-4 h-4" /> Admin
             </Link>
           </li>
         )}

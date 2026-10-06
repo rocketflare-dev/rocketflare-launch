@@ -178,7 +178,7 @@ export type PackedRule = PackRule<RawRuleOf<AppAbility>>
 export const PLATFORM_ADMIN_ROLES = ['owner', 'admin'] as const satisfies readonly MembershipRole[]
 
 /**
- * THE one predicate for the platform surface (`/api/platform/*`, `/settings/platform/*`): a global
+ * THE one predicate for the platform surface (`/api/platform/*` — Settings' Connections, Coding agents, Kit version and access requests): a global
  * admin anywhere, or — in a single-tenant deployment, where the one organisation IS the company
  * that runs Launch — its owner or admin. In multi mode it is exactly `isGlobalAdmin`, as before:
  * one tenant's admin must never hold deployment-wide credentials that every tenant depends on.

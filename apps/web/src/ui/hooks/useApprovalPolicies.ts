@@ -1,5 +1,5 @@
 /**
- * Approval policies (Launch P4, plan §1.5) — Settings → Approvals over `/api/approval-policies`.
+ * Approval policies (Launch P4, plan §1.5) — Settings → Approval policies over `/api/approval-policies`.
  * `manage ApprovalPolicy` (the organisation's admins) at every scope; the tab is hidden otherwise,
  * so these hooks are only mounted for someone whose save would succeed.
  *

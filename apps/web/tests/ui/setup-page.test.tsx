@@ -1,21 +1,16 @@
 /**
- * Settings → Platform → Setup (spec/03): the stepper renders every step with the server's status, a set
- * credential is write-only ("Set — hidden" + Replace, never an input holding a value), Replace
+ * Settings → Connections (spec/03): each connection is its own page showing the server's status, a
+ * set credential is write-only ("Set — hidden" + Replace, never an input holding a value), Replace
  * opens an EMPTY field and PUTs only what was typed, and a bad settings value is refused with the
- * server's own schema message before any request.
+ * server's own schema message before any request. Kit version and Coding agents are their own
+ * sections too.
  */
-import {
-  DEFAULT_TEMPLATE_PIN,
-  type SetupCredential,
-  type SetupOverview,
-} from '@launch/shared/launch-setup'
+import { DEFAULT_TEMPLATE_PIN, type SetupOverview } from '@launch/shared/launch-setup'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import CodingAgents from '@/ui/pages/platform/CodingAgents'
+import Connection from '@/ui/pages/platform/Connection'
 import Kit from '@/ui/pages/platform/Kit'
-import PlatformLayout from '@/ui/pages/platform/PlatformLayout'
-import Setup from '@/ui/pages/platform/Setup'
 import {
   makeSession,
   makeUser,
@@ -23,145 +18,7 @@ import {
   requestBody,
   stubFetch,
 } from './helpers/renderWithProviders'
-
-const unset = (kind: SetupCredential['kind']): SetupCredential => ({
-  kind,
-  set: false,
-  setAt: null,
-  setByUserId: null,
-  setByEmail: null,
-  rotatedAt: null,
-  metadata: {},
-  lastCheckStatus: null,
-  lastCheck: null,
-  lastCheckedAt: null,
-})
-
-const overview: SetupOverview = {
-  steps: [
-    { id: 'domain', status: 'ok' },
-    { id: 'cloudflare', status: 'warning' },
-    { id: 'neon', status: 'todo' },
-    { id: 'resend', status: 'failed' },
-    { id: 'github', status: 'todo' },
-    { id: 'identity', status: 'ok' },
-    { id: 'public_url', status: 'failed' },
-  ],
-  settings: {
-    apps_domain: 'company-apps.test',
-    cloudflare_account_id: '0123456789abcdef0123456789abcdef',
-    neon_org_id: null,
-    neon_region_id: null,
-    notifications_domain: null,
-    github_org: null,
-  },
-  effectiveNotificationsDomain: 'notifications.company-apps.test',
-  credentials: [
-    {
-      ...unset('cloudflare_api_token'),
-      set: true,
-      setAt: new Date('2026-09-01T00:00:00Z'),
-      setByUserId: '11111111-1111-4111-8111-111111111111',
-      setByEmail: 'ada@example.test',
-      metadata: { accountId: '0123456789abcdef0123456789abcdef' },
-      lastCheckStatus: 'warning',
-      lastCheck: [
-        { id: 'zone.account', label: 'Apps zone in this account', status: 'ok' },
-        {
-          id: 'token.write',
-          label: 'Write permissions',
-          status: 'warning',
-          detail: 'Write scope unverified',
-        },
-      ],
-      lastCheckedAt: new Date('2026-09-01T00:00:00Z'),
-    },
-    unset('neon_org_api_key'),
-    {
-      ...unset('resend_api_key'),
-      set: true,
-      setAt: new Date('2026-09-01T00:00:00Z'),
-      lastCheckStatus: 'failed',
-      lastCheck: [
-        {
-          id: 'domain.verified',
-          label: 'Notifications domain verified',
-          status: 'failed',
-          detail: 'notifications.company-apps.test is not a Resend domain yet.',
-        },
-      ],
-    },
-    unset('github_app'),
-  ],
-  identity: {
-    providers: ['google'],
-    oidc: null,
-    oidcOnly: false,
-    checks: [{ id: 'providers', label: 'Single sign-on configured', status: 'ok' }],
-  },
-  publicUrl: {
-    url: 'http://localhost:3000',
-    status: 'failed',
-    checks: [
-      {
-        id: 'url',
-        label: 'Public URL',
-        status: 'failed',
-        detail: 'http://localhost:3000 is only reachable from this machine or network',
-      },
-    ],
-    checkedAt: null,
-  },
-  templatePin: {
-    pin: DEFAULT_TEMPLATE_PIN,
-    isDefault: true,
-    default: DEFAULT_TEMPLATE_PIN,
-    latestCheck: null,
-  },
-  sessionAgents: {
-    runtimes: [
-      {
-        runtime: 'claude_code',
-        label: 'Claude Code',
-        accountLabel: 'Claude subscription',
-        enabled: true,
-        model: 'claude-sonnet-4-5',
-        credentialMode: 'platform',
-        isDefault: true,
-        models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
-        platformKey: { kind: 'anthropic_api_key', source: 'secret' },
-        connectedAccounts: 0,
-        minImage: null,
-      },
-      {
-        runtime: 'codex',
-        label: 'Codex',
-        accountLabel: 'ChatGPT plan',
-        enabled: false,
-        model: 'gpt-6.1-sol',
-        credentialMode: 'platform',
-        isDefault: true,
-        models: ['gpt-6.1-sol'],
-        platformKey: { kind: 'openai_api_key', source: null },
-        connectedAccounts: 2,
-        minImage: 'session-6',
-      },
-    ],
-  },
-  sessionSandbox: {
-    host: 'local',
-    isDefault: true,
-    options: [
-      { host: 'local', label: "This Worker's containers", available: true, reason: null },
-      {
-        host: 'remote',
-        label: 'Remote sandbox host',
-        available: false,
-        reason: 'pnpm dev could not use your Cloudflare account. Run wrangler login.',
-      },
-    ],
-  },
-}
+import { setupOverview as overview, unsetCredential as unset } from './helpers/setup'
 
 const checkResponse = {
   credential: overview.credentials[0],
@@ -169,7 +26,13 @@ const checkResponse = {
   checks: overview.credentials[0]?.lastCheck ?? [],
 }
 
-function render(current: SetupOverview = overview, Page: () => JSX.Element = Setup) {
+/** One Connections page, as `SettingsLayout` mounts it. */
+const page = (step: SetupOverview['steps'][number]['id']) =>
+  function ConnectionPage() {
+    return <Connection step={step} />
+  }
+
+function render(current: SetupOverview = overview, Page: () => JSX.Element = page('cloudflare')) {
   const fetchMock = stubFetch({
     '/api/platform/setup': current,
     'PUT /api/platform/setup/template-pin': current,
@@ -202,26 +65,29 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = Set
   return fetchMock
 }
 
-describe('Admin → Setup', () => {
+describe('Settings → Connections', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('renders the stepper and each step with its status', async () => {
-    render()
-    const nav = await screen.findByRole('navigation', { name: 'Setup steps' })
-    for (const title of ['Domain & zone', 'Cloudflare', 'Neon', 'Resend', 'GitHub App']) {
-      expect(within(nav).getByText(title)).toBeInTheDocument()
-    }
-    const resend = screen.getByRole('region', { name: /Resend/ })
+  it('renders each connection on its own page, with its status', async () => {
+    render(overview, page('resend'))
+    const resend = await screen.findByRole('region', { name: /Resend/ })
     expect(resend.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('failed')
     expect(within(resend).getByText(/is not a Resend domain yet/)).toBeInTheDocument()
-    const cloudflare = screen.getByRole('region', { name: /2\.\s*Cloudflare/ })
+    // One connection per page: no stepper, no other card.
+    expect(screen.queryByRole('navigation', { name: 'Setup steps' })).toBeNull()
+    expect(screen.queryByRole('region', { name: /Cloudflare/ })).toBeNull()
+  })
+
+  it('shows the Cloudflare probes and who set the token', async () => {
+    render(overview, page('cloudflare'))
+    const cloudflare = await screen.findByRole('region', { name: /Cloudflare/ })
     expect(within(cloudflare).getByText('Write permissions')).toBeInTheDocument()
     expect(within(cloudflare).getByText(/by ada@example.test/)).toBeInTheDocument()
   })
 
-  it('shows the public URL step failing with why, and "Check now" probes it', async () => {
-    const fetchMock = render()
-    const card = await screen.findByRole('region', { name: /7\.\s*Public URL/ })
+  it('shows the public URL failing with why, and "Check now" probes it', async () => {
+    const fetchMock = render(overview, page('public_url'))
+    const card = await screen.findByRole('region', { name: /Public URL/ })
     expect(card.querySelector('header [data-status]')?.getAttribute('data-status')).toBe('failed')
     expect(within(card).getByText('http://localhost:3000')).toBeInTheDocument()
     expect(within(card).getByText(/only reachable from this machine/)).toBeInTheDocument()
@@ -238,9 +104,27 @@ describe('Admin → Setup', () => {
     )
   })
 
+  it('Sign-in holds the upstream identity provider AND the issuer keys', async () => {
+    stubFetch({
+      '/api/platform/setup': overview,
+      '/api/platform/oidc/keys': {
+        issuer: 'https://launch.example.test',
+        discoveryUrl: 'https://launch.example.test/.well-known/openid-configuration',
+        jwksUrl: 'https://launch.example.test/oidc/jwks',
+        keys: [],
+      },
+    })
+    renderWithProviders(<Connection step="identity" />, {
+      session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
+    })
+    expect(await screen.findByRole('region', { name: /Identity provider/ })).toBeInTheDocument()
+    expect(screen.getByText('Google')).toBeInTheDocument()
+    expect(await screen.findByText('Signing keys')).toBeInTheDocument()
+  })
+
   it('shows a set secret as hidden, and Replace opens an empty field that PUTs what was typed', async () => {
     const fetchMock = render()
-    const cloudflare = await screen.findByRole('region', { name: /2\.\s*Cloudflare/ })
+    const cloudflare = await screen.findByRole('region', { name: /Cloudflare/ })
     expect(within(cloudflare).getByText(/Set — hidden/)).toBeInTheDocument()
     expect(cloudflare.querySelector('input[type="password"]')).toBeNull()
 
@@ -260,16 +144,9 @@ describe('Admin → Setup', () => {
     expect(requestBody(fetchMock, 'PUT /api/platform/setup/settings')).toBeUndefined()
   })
 
-  it('the Setup tab no longer carries the coding agents or their keys', async () => {
-    render({ ...overview, credentials: [...overview.credentials, unset('openai_api_key')] })
-    await screen.findByRole('navigation', { name: 'Setup steps' })
-    expect(screen.queryByRole('region', { name: 'Coding agents' })).toBeNull()
-    expect(screen.queryByRole('region', { name: /OpenAI key/ })).toBeNull()
-  })
-
   it('offers the Neon regions as a select, with a free-text fallback for any other id', async () => {
-    const fetchMock = render()
-    const neon = await screen.findByRole('region', { name: /3\.\s*Neon/ })
+    const fetchMock = render(overview, page('neon'))
+    const neon = await screen.findByRole('region', { name: /Neon/ })
     const select = within(neon).getByLabelText('Region')
     expect(select.tagName).toBe('SELECT')
     expect(select).toHaveValue('')
@@ -287,8 +164,8 @@ describe('Admin → Setup', () => {
   })
 
   it('keeps a Neon region id the list does not know through "Other…"', async () => {
-    const fetchMock = render()
-    const neon = await screen.findByRole('region', { name: /3\.\s*Neon/ })
+    const fetchMock = render(overview, page('neon'))
+    const neon = await screen.findByRole('region', { name: /Neon/ })
     const select = within(neon).getByLabelText('Region')
     fireEvent.change(select, { target: { value: '__other__' } })
     const other = within(neon).getByLabelText('Region (other)') as HTMLInputElement
@@ -304,7 +181,7 @@ describe('Admin → Setup', () => {
   })
 
   it("refuses a bad setting with the server's own message, before any request", async () => {
-    const fetchMock = render()
+    const fetchMock = render(overview, page('github'))
     const github = await screen.findByRole('region', { name: /GitHub App/ })
     fireEvent.change(within(github).getByLabelText('Organization'), {
       target: { value: 'not a valid org!' },
@@ -315,36 +192,7 @@ describe('Admin → Setup', () => {
   })
 })
 
-describe('Platform → Kit: the tab', () => {
-  afterEach(() => vi.unstubAllGlobals())
-
-  it('has its own tab holding the Kit version card, which Setup no longer shows', async () => {
-    stubFetch({ '/api/platform/setup': overview })
-    renderWithProviders(
-      <Routes>
-        <Route path="/settings/platform" element={<PlatformLayout />}>
-          <Route path="setup" element={<Setup />} />
-          <Route path="kit" element={<Kit />} />
-        </Route>
-      </Routes>,
-      {
-        route: '/settings/platform/kit',
-        session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
-      }
-    )
-    const tabs = await screen.findByRole('tablist')
-    const kitTab = within(tabs).getByRole('tab', { name: 'Kit' })
-    expect(kitTab).toHaveAttribute('href', '/settings/platform/kit')
-    expect(kitTab.className).toContain('tab-active')
-    expect(await screen.findByRole('region', { name: 'Kit version' })).toBeInTheDocument()
-
-    fireEvent.click(within(tabs).getByRole('tab', { name: 'Setup' }))
-    expect(await screen.findByRole('navigation', { name: 'Setup steps' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Kit version' })).toBeNull()
-  })
-})
-
-describe('Platform → Kit: the Kit version card', () => {
+describe('Settings → Kit version', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   const commitPinned: SetupOverview = {
@@ -524,7 +372,7 @@ describe('Platform → Kit: the Kit version card', () => {
   })
 })
 
-describe('Admin → Coding agents tab', () => {
+describe('Settings → Coding agents', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('shows each agent with its switch, model and who pays, plus readiness', async () => {
@@ -630,7 +478,7 @@ describe('Admin → Coding agents tab', () => {
   })
 })
 
-describe('Admin → Coding agents tab: the Session sandbox section', () => {
+describe('Settings → Coding agents: the Session sandbox section', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   const bothAvailable: SetupOverview = {

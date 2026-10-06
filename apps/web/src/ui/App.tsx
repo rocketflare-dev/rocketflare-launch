@@ -11,7 +11,7 @@
  */
 import { QueryClientProvider } from '@tanstack/react-query'
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import type { PluginRouteTier } from '@/plugins/types'
 import { uiPlugins } from '@/plugins/ui'
 import { ConnectionBanner } from '@/ui/components/ConnectionBanner'
@@ -25,21 +25,16 @@ import { PendingInvitationsBanner } from '@/ui/components/PendingInvitationsBann
 import { ProtectedRoute } from '@/ui/components/ProtectedRoute'
 import { AbilityProvider } from '@/ui/components/permissions/AbilityContext'
 import { RequireGuard } from '@/ui/components/RequireGuard'
-import { RoleBadge } from '@/ui/components/RoleBadge'
 import ScrollToTop from '@/ui/components/ScrollToTop'
+import { settingsRoutes } from '@/ui/components/SettingsRoutes'
 import { ToastContainer } from '@/ui/components/shared'
+import { TenantFooter } from '@/ui/components/TenantFooter'
 import { UserMenu } from '@/ui/components/UserMenu'
 import { WebSocketProvider } from '@/ui/components/WebSocketProvider'
 import { WebSocketStatus } from '@/ui/components/WebSocketStatus'
-import { AuthProvider, useAuth } from '@/ui/hooks/useAuth'
+import { AuthProvider } from '@/ui/hooks/useAuth'
 import { AGENTS_GUARD, CHAT_GUARD, KNOWLEDGE_GUARD } from '@/ui/lib/feature-guards'
 import { NavigationBridge } from '@/ui/lib/navigation'
-import {
-  PLATFORM_ACCESS_REQUESTS_PATH,
-  PLATFORM_IDENTITY_PATH,
-  PLATFORM_SETTINGS_PATH,
-  PLATFORM_SETUP_PATH,
-} from '@/ui/lib/platform-paths'
 import { queryClient } from '@/ui/lib/queryClient'
 import Login from '@/ui/pages/Login'
 import NotFound from '@/ui/pages/NotFound'
@@ -54,7 +49,6 @@ const NoAccess = lazy(() => import('@/ui/pages/NoAccess'))
 const Home = lazy(() => import('@/ui/pages/Home'))
 const Profile = lazy(() => import('@/ui/pages/Profile'))
 const Notifications = lazy(() => import('@/ui/pages/Notifications'))
-const SettingsLayout = lazy(() => import('@/ui/pages/settings/SettingsLayout'))
 // D17: its own chunk — the markdown renderer must not ride in the main bundle.
 const ChatPage = lazy(() => import('@/ui/pages/chat/ChatPage'))
 // D7: also carries the markdown renderer (run transcripts) — lazy for the same reason.
@@ -78,21 +72,6 @@ const ApprovalPage = lazy(() => import('@/ui/pages/approvals/ApprovalPage'))
 const SharedConfigPage = lazy(() => import('@/ui/pages/shared-config/SharedConfigPage'))
 const SharedResourcePage = lazy(() => import('@/ui/pages/shared-config/SharedResourcePage'))
 const RequestAccess = lazy(() => import('@/ui/pages/RequestAccess'))
-const Audit = lazy(() => import('@/ui/pages/Audit'))
-const AdminLayout = lazy(() => import('@/ui/pages/admin/AdminLayout'))
-const TenantList = lazy(() => import('@/ui/pages/admin/TenantList'))
-const TenantDetail = lazy(() => import('@/ui/pages/admin/TenantDetail'))
-const UserList = lazy(() => import('@/ui/pages/admin/UserList'))
-const UserDetail = lazy(() => import('@/ui/pages/admin/UserDetail'))
-const FeatureFlags = lazy(() => import('@/ui/pages/admin/FeatureFlags'))
-const SessionsAdmin = lazy(() => import('@/ui/pages/admin/SessionsAdmin'))
-// The deployment's own administration (`canAdministerPlatform`) — under Settings, not /admin.
-const PlatformLayout = lazy(() => import('@/ui/pages/platform/PlatformLayout'))
-const AccessRequests = lazy(() => import('@/ui/pages/platform/AccessRequests'))
-const Setup = lazy(() => import('@/ui/pages/platform/Setup'))
-const Kit = lazy(() => import('@/ui/pages/platform/Kit'))
-const CodingAgents = lazy(() => import('@/ui/pages/platform/CodingAgents'))
-const Identity = lazy(() => import('@/ui/pages/platform/Identity'))
 
 // TanStack Query devtools: dev-only and OPT-IN — set `VITE_QUERY_DEVTOOLS=on` in
 // `apps/web/.env.local` to show the toggle (off by default: it sits over the bottom of the page,
@@ -135,20 +114,6 @@ function pluginRoutes(tier: PluginRouteTier) {
         />
       )
     })
-}
-
-/** Sidebar footer: which org (and as what) the reader is acting in. */
-function TenantFooter() {
-  const { tenant } = useAuth()
-  if (!tenant) return null
-  return (
-    <div className="flex items-center justify-between gap-2 px-1 py-1 text-xs">
-      <span className="truncate text-secondary" title={tenant.name}>
-        {tenant.name}
-      </span>
-      <RoleBadge role={tenant.role} />
-    </div>
-  )
 }
 
 /**
@@ -305,65 +270,10 @@ function ShellRoutes() {
           />
           {/* spec/05: where `/oidc/authorize` sends a signed-in person the app's policy denies. */}
           <Route path="/request-access" element={<RequestAccess />} />
-          <Route
-            path="/audit"
-            element={
-              <RequireGuard guard="admin">
-                <Audit />
-              </RequireGuard>
-            }
-          />
-          {/* Audit is the one log: the kit's activity events are appended to it too. */}
-          <Route path="/activity" element={<Moved to="/audit" />} />
-          <Route
-            path="/settings"
-            element={
-              <RequireGuard guard="admin">
-                <SettingsLayout />
-              </RequireGuard>
-            }
-          />
-          {/* The deployment's own administration: a global admin, or in single mode the
-              organisation's owner/admin (`canAdministerPlatform`; server `/api/platform/*`). */}
-          <Route
-            path={PLATFORM_SETTINGS_PATH}
-            element={
-              <RequireGuard guard="platformAdmin">
-                <PlatformLayout />
-              </RequireGuard>
-            }
-          >
-            <Route index element={<Navigate to={PLATFORM_SETUP_PATH} replace />} />
-            <Route path="setup" element={<Setup />} />
-            <Route path="kit" element={<Kit />} />
-            <Route path="coding-agents" element={<CodingAgents />} />
-            <Route path="identity" element={<Identity />} />
-            <Route path="access-requests" element={<AccessRequests />} />
-          </Route>
-          {/* The three screens that moved out of /admin — old links and bookmarks keep working. */}
-          <Route path="/admin/setup" element={<Moved to={PLATFORM_SETUP_PATH} />} />
-          <Route path="/admin/identity" element={<Moved to={PLATFORM_IDENTITY_PATH} />} />
-          <Route
-            path="/admin/access-requests"
-            element={<Moved to={PLATFORM_ACCESS_REQUESTS_PATH} />}
-          />
-          {/* The operator's cross-tenant area: global admins only, in every mode. */}
-          <Route
-            path="/admin"
-            element={
-              <RequireGuard guard="globalAdmin">
-                <AdminLayout />
-              </RequireGuard>
-            }
-          >
-            <Route index element={<Navigate to="/admin/tenants" replace />} />
-            <Route path="tenants" element={<TenantList />} />
-            <Route path="tenants/:id" element={<TenantDetail />} />
-            <Route path="users" element={<UserList />} />
-            <Route path="users/:id" element={<UserDetail />} />
-            <Route path="feature-flags" element={<FeatureFlags />} />
-            <Route path="sessions" element={<SessionsAdmin />} />
-          </Route>
+          {/* Settings is one place (`pages/settings/SettingsLayout.tsx`): the organisation's own
+              settings, the deployment's (`platformAdmin`), the operator's (`globalAdmin`) and
+              Audit, each section behind its own guard. Everything it replaced redirects. */}
+          {settingsRoutes()}
           {pluginRoutes('shell')}
           <Route path="*" element={<NotFound />} />
         </Routes>

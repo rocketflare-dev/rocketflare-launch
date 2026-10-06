@@ -6,7 +6,7 @@
  * Two layers, narrowest wins (nothing about runtimes is a deployment var, and both sandbox hosts
  * run every runtime on either account):
  *
- * 1. **The session policy** (`runtimePolicyOf`) — the platform setting the Platform → Coding
+ * 1. **The session policy** (`runtimePolicyOf`) — the platform setting Settings → Coding
  *    agents tab edits: enabled, model, `credentialMode`. Fail-closed when nothing is stored:
  *    Claude Code on Launch's key, nothing else.
  * 2. **The request** (`runtime?`, `credential?`), checked against the policy. A request naming

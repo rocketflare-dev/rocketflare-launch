@@ -337,9 +337,9 @@ describe('CreateAppModal', () => {
     expect(alert).toHaveTextContent('only reachable from this machine or network')
     // Not the 409 "slug taken" hint.
     expect(alert).not.toHaveTextContent(/Pick another slug/)
-    expect(within(alert).getByRole('link', { name: 'Setup › Public URL' })).toHaveAttribute(
+    expect(within(alert).getByRole('link', { name: 'Settings › Public URL' })).toHaveAttribute(
       'href',
-      '/settings/platform/setup#setup-public_url'
+      '/settings/public-url'
     )
   })
 
@@ -544,7 +544,7 @@ describe('App page — the first build takes the Overview over', () => {
       url: runUrl,
       attempt: 1,
       error:
-        "The scaffold job failed: the GitHub Actions run ended “failure”. It calls Launch back at http://localhost:3000, which GitHub's runners cannot reach — see Setup › Public URL.",
+        "The scaffold job failed: the GitHub Actions run ended “failure”. It calls Launch back at http://localhost:3000, which GitHub's runners cannot reach — see Settings › Public URL.",
     })
     renderDetail(makeSession(), { status: 'failed' }, pipelineRoute(view))
     const panel = await screen.findByRole('region', { name: 'Launch progress' })

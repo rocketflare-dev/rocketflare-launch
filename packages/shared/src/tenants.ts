@@ -1,7 +1,7 @@
 /**
  * Tenant, membership and invitation contracts (D9, D10, D13, D25). `tenantRoleSchema` is what an
  * invitation or role change may ASSIGN; `membershipRoleSchema` is what a membership row may HOLD
- * (adds `support`, minted only from /admin). Keep the assignable one on every input schema and the
+ * (adds `support`, minted only from Settings → Organisations). Keep the assignable one on every input schema and the
  * validator refuses `support` for free.
  */
 import { z } from 'zod'

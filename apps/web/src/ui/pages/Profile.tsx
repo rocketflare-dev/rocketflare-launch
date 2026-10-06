@@ -49,7 +49,7 @@ export default function Profile() {
 }
 
 /**
- * Read-only (D29): group membership is administered under Settings → Groups, but a person should
+ * Read-only (D29): group membership is administered under Settings → People → Groups, but a person should
  * be able to see what they are in without asking — it is what decides which documents and
  * dashboards they can open. The panel hides itself when they are in none, so an organisation that
  * does not use groups never sees it.

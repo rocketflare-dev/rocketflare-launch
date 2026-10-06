@@ -348,7 +348,7 @@ describe('the routes that dispatch CI refuse while Launch is unreachable', () =>
   })
 })
 
-describe('Setup › Public URL', () => {
+describe('Settings › Public URL', () => {
   it('is 401 without a session and 403 for a tenant admin', async () => {
     expect((await request('/api/platform/setup/public-url/check', { method: 'POST' })).status).toBe(
       401

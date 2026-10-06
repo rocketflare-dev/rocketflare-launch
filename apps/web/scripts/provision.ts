@@ -22,7 +22,7 @@
  *   deploy                    render → (drain + mid-turn check) → build → wrangler deploy → /api/health, /api/ready
  *   secrets [--dry-run]       OAUTH_ENCRYPTION_KEY (file, else generated + written back first),
  *                             BOOTSTRAP_ADMIN_EMAILS, DATABASE_URL, every optional secret set
- *   setup                     the Setup page's settings + sealed credentials, audited, in the DB
+ *   setup                     the Connections settings + sealed credentials, audited, in the DB
  *   all                       every phase above in order (github-app only when missing)
  *   tokens                    TTY only: prompt (hidden) for the tokens → the instance file
  *   github [name]             CI later: a GitHub Environment + DATABASE_URL / CLOUDFLARE_* secrets
@@ -158,7 +158,7 @@ flags
   --dry-run             secrets: list what would be put, generated or skipped (names only)
   --rotate              regenerate OAUTH_ENCRYPTION_KEY (re-seals Setup credentials), the Neon password,
                         the Resend sending key; github-app: create a new app
-  --drained             deploy: sessions are drained (Admin → Sessions → Drain), go ahead with a new image
+  --drained             deploy: sessions are drained (Settings → All sessions → Drain), go ahead with a new image
   --interrupt-turns     deploy: go ahead although sessions are mid-turn (each turn fails; sessions survive)
   --adopt               neon: use an existing project with the instance's name the state does not record
   --skip-email          no Resend: skip email create/verify (magic links are only logged)
@@ -1025,7 +1025,7 @@ async function deployPhase(flags: Flags): Promise<void> {
     const live = await liveSessionCount(info.url)
     if (live > 0)
       throw new ProvisionError(
-        `the session image or [[containers]] changed since the last deploy and ${live} session(s) hold a container — a deploy replaces them mid-turn. Drain first: Admin → Sessions → Drain at ${instance.appUrl}/admin, wait until none is live, then rerun with --drained (and Undrain after)`,
+        `the session image or [[containers]] changed since the last deploy and ${live} session(s) hold a container — a deploy replaces them mid-turn. Drain first: Settings → All sessions → Drain at ${instance.appUrl}/settings/sessions, wait until none is live, then rerun with --drained (and Undrain after)`,
         2
       )
     log(`  session image changed; no live sessions hold a container — no drain needed`)
@@ -1034,7 +1034,7 @@ async function deployPhase(flags: Flags): Promise<void> {
     const busy = await liveSessionCount(info.url, MID_TURN_SQL)
     if (busy > 0)
       throw new ProvisionError(
-        `${busy} session(s) are booting or mid-turn — a deploy restarts Launch's Worker and cuts their turn (the session survives; the person resends the message). Wait for them to finish (Admin → Sessions at ${instance.appUrl}/admin), or rerun with --interrupt-turns`,
+        `${busy} session(s) are booting or mid-turn — a deploy restarts Launch's Worker and cuts their turn (the session survives; the person resends the message). Wait for them to finish (Settings → All sessions at ${instance.appUrl}/settings/sessions), or rerun with --interrupt-turns`,
         2
       )
   }
@@ -1195,7 +1195,7 @@ async function setupPhase(flags: Flags): Promise<void> {
     const failing = Object.entries(result.checks).filter(([, c]) => c?.failed.length)
     if (failing.length)
       warn(
-        `setup: ${failing.map(([k]) => k).join(', ')} failed a check — open Settings → Platform → Setup for the reasons (a GitHub App not yet installed on the org is the usual one), fix, and press Check there or rerun \`pnpm provision setup\``
+        `setup: ${failing.map(([k]) => k).join(', ')} failed a check — open Settings → Connections for the reasons (a GitHub App not yet installed on the org is the usual one), fix, and press Check there or rerun \`pnpm provision setup\``
       )
     verifyLine(
       `setup ok — ${Object.keys(result.credentials).length} credential(s) sealed with the instance key (${Object.entries(
@@ -1256,8 +1256,9 @@ function closeOut(flags: Flags): void {
 1. Sign in: open ${instance.appUrl}/login and request a magic link for ${instance.adminEmails[0]}.
    ${flags.skipEmail ? 'Email is skipped: copy the link from `pnpm --filter @launch/web exec wrangler tail -c wrangler.deploy.toml`.' : `It arrives from ${instance.emailDomain}.`}
    You are the organisation's owner and the platform admin.
-2. Setup (${instance.appUrl}/settings/platform/setup): press Check on every card (Cloudflare, Neon,
-   Resend, GitHub App), run the Public URL check, pin the kit version, and turn on Coding agents.
+2. Settings → Connections (${instance.appUrl}/settings/domain; Home lists what is unfinished): press
+   Check on each (Cloudflare, Neon, GitHub, Email), run the Public URL check, then pin Settings →
+   Kit version and turn on Settings → Coding agents.
 3. Back up ${TOKEN_FILE_LABEL} and .launch/ (password manager or encrypted storage): the file holds
    OAUTH_ENCRYPTION_KEY, which unseals every credential; losing it means rotating them all.
 4. CLI: pnpm cli login --server ${instance.appUrl}

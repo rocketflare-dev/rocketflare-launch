@@ -1,9 +1,9 @@
 /**
- * Step 7 — is Launch reachable from the internet at its public URL (`APP_URL`)? The scaffold job
- * and every app's deploy job run on GitHub and call Launch back there, so creating an app (and a
- * create's retry, and "Deploy to production") is refused while this step has FAILED. The URL is the
- * Worker's own config, so this card only reports and re-checks it; "Check now" makes Launch fetch
- * its own `/ci/ping` through that URL.
+ * Connections → Public URL: is Launch reachable from the internet at its public URL (`APP_URL`)?
+ * The scaffold job and every app's deploy job run on GitHub and call Launch back there, so
+ * creating an app (and a create's retry, and "Deploy to production") is refused while this step
+ * has FAILED. The URL is the Worker's own config, so this card only reports and re-checks it;
+ * "Check now" makes Launch fetch its own `/ci/ping` through that URL.
  */
 import type { SetupOverview, SetupStepStatus } from '@launch/shared/launch-setup'
 import { useCheckPublicUrl } from '@/ui/hooks/useSetup'
@@ -22,7 +22,6 @@ export function PublicUrlCard({
   return (
     <StepCard
       id="public_url"
-      number={7}
       title="Public URL"
       status={status}
       description="GitHub's runners build every app and call Launch back at this URL, so it has to be reachable from the internet. Creating an app is refused until it is."

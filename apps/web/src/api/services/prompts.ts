@@ -174,7 +174,7 @@ export const CORE_PROMPT_REGISTRY = {
     key: 'chat-compaction',
     title: 'Compact chat history',
     description:
-      'Folds the messages that no longer fit a conversation into its rolling summary (the `chat.compact` job). Point it at a cheap model in Settings → agent models.',
+      'Folds the messages that no longer fit a conversation into its rolling summary (the `chat.compact` job). Point it at a cheap model in Settings → AI & models → Agent models.',
     variables: ['appName', 'tenantName', 'maxChars'],
     defaultText: CHAT_COMPACTION_DEFAULT,
   },
@@ -190,7 +190,7 @@ export const CORE_PROMPT_REGISTRY = {
     key: 'evals-judge',
     title: 'Eval judge (LLM-as-judge)',
     description:
-      'System prompt for the LLM judges in `pnpm eval` (rubric, faithfulness, factuality). Never used by the app itself; assign it a strong model in Settings → agent models, or pass `--judge-model`.',
+      'System prompt for the LLM judges in `pnpm eval` (rubric, faithfulness, factuality). Never used by the app itself; assign it a strong model in Settings → AI & models → Agent models, or pass `--judge-model`.',
     variables: ['appName'],
     defaultText: EVALS_JUDGE_DEFAULT,
   },
@@ -222,7 +222,7 @@ export const CORE_PROMPT_REGISTRY = {
     key: 'session-ship-summary',
     title: 'Coding session: pull request summary',
     description:
-      "The system prompt of the ONE model call a green ship makes: the pull request's `{ title, body }` as JSON, from the person's messages and the diff stat. No tools. Point it at a cheap model in Settings → agent models (without one: Anthropic's Haiku when the provider is Anthropic, else the default model).",
+      "The system prompt of the ONE model call a green ship makes: the pull request's `{ title, body }` as JSON, from the person's messages and the diff stat. No tools. Point it at a cheap model in Settings → AI & models → Agent models (without one: Anthropic's Haiku when the provider is Anthropic, else the default model).",
     variables: ['appName', 'userName'],
     defaultText: SESSION_SHIP_SUMMARY_DEFAULT,
   },

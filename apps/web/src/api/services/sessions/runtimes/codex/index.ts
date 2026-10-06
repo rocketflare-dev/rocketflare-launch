@@ -7,7 +7,7 @@
  * `chatgpt.com` reached directly, the refresh through `egress/openai-auth.ts`), connected by a relayed device-code sign-in
  * (`login.ts`).
  *
- * Off until an admin turns it on (the session policy's `runtimes.codex`, the Platform → Coding
+ * Off until an admin turns it on (the session policy's `runtimes.codex`, Settings → Coding
  * agents tab — `runtimePolicyOf` fails closed). It runs on either sandbox host: the remote one's
  * handlers forward its two proxied hosts from the turn's egress grant (`egress/host.ts`).
  */

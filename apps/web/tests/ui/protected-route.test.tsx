@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Moved } from '@/ui/components/Moved'
 import { ProtectedRoute } from '@/ui/components/ProtectedRoute'
 import { RequireGuard } from '@/ui/components/RequireGuard'
+import { SETTINGS_GUARD } from '@/ui/lib/settings-paths'
 import {
   makeSession,
   makeTenant,
@@ -56,43 +57,38 @@ function App() {
             <Routes>
               <Route path="/" element={<Where label="home" />} />
               <Route
-                path="/settings/platform/*"
+                path="/settings/kit"
                 element={
                   <RequireGuard guard="platformAdmin">
                     <Where label="platform" />
                   </RequireGuard>
                 }
               />
-              <Route path="/admin/setup" element={<Moved to="/settings/platform/setup" />} />
+              <Route path="/admin/users" element={<Moved to="/settings/users" />} />
               <Route path="/secrets" element={<Where label="secrets" />} />
               <Route path="/secrets/:id" element={<Where label="secret" />} />
               <Route path="/shared-config" element={<Moved to="/secrets" />} />
-              <Route
-                path="/audit"
-                element={
-                  <RequireGuard guard="admin">
-                    <Where label="audit" />
-                  </RequireGuard>
-                }
-              />
-              <Route path="/activity" element={<Moved to="/audit" />} />
+              <Route path="/activity" element={<Moved to="/settings/audit" />} />
               <Route
                 path="/shared-config/:id"
                 element={<Moved to={({ id = '' }) => `/secrets/${encodeURIComponent(id)}`} />}
               />
+              {/* As `settingsRoutes()` mounts it, one section standing in for each guard. */}
               <Route
-                path="/settings/*"
+                path="/settings/users"
                 element={
-                  <RequireGuard guard="admin">
-                    <Where label="settings" />
+                  <RequireGuard guard={SETTINGS_GUARD}>
+                    <RequireGuard guard="globalAdmin" redirectTo="/settings">
+                      <Where label="operator" />
+                    </RequireGuard>
                   </RequireGuard>
                 }
               />
               <Route
-                path="/admin/*"
+                path="/settings/*"
                 element={
-                  <RequireGuard guard="globalAdmin">
-                    <Where label="admin" />
+                  <RequireGuard guard={SETTINGS_GUARD}>
+                    <Where label="settings" />
                   </RequireGuard>
                 }
               />
@@ -165,7 +161,7 @@ describe('ProtectedRoute', () => {
     expect(page()).toBe('select-tenant')
   })
 
-  it('RequireGuard: member is bounced from /settings and /admin to home', () => {
+  it('RequireGuard: member is bounced from /settings to home', () => {
     renderWithProviders(<App />, {
       session: makeSession({ tenant: makeTenant({ role: 'member' }) }),
       route: '/settings/people',
@@ -173,15 +169,16 @@ describe('ProtectedRoute', () => {
     expect(page()).toBe('home')
   })
 
-  it('RequireGuard: owner opens /settings but not /admin', () => {
+  it("RequireGuard: owner opens /settings but not the operator's sections", () => {
     const { unmount } = renderWithProviders(<App />, { session: makeSession(), route: '/settings' })
     expect(page()).toBe('settings')
     unmount()
-    renderWithProviders(<App />, { session: makeSession(), route: '/admin/users' })
-    expect(page()).toBe('home')
+    renderWithProviders(<App />, { session: makeSession(), route: '/settings/users' })
+    expect(page()).toBe('settings')
+    expect(path()).toBe('/settings')
   })
 
-  it('a global admin with NO membership reaches /admin/* — and only /admin/*', () => {
+  it('a global admin with NO membership reaches /settings/* (and the old /admin/*) — and only that', () => {
     const session = makeSession({
       user: makeUser({ isGlobalAdmin: true }),
       tenant: null,
@@ -193,25 +190,29 @@ describe('ProtectedRoute', () => {
       unmount()
       return label
     }
-    expect(landsOn('/admin/users')).toBe('admin')
-    expect(landsOn('/admin')).toBe('admin')
+    expect(landsOn('/settings/users')).toBe('operator')
+    expect(landsOn('/admin/users')).toBe('operator')
+    expect(landsOn('/settings')).toBe('settings')
     expect(landsOn('/')).toBe('no-access')
-    expect(landsOn('/settings')).toBe('no-access')
+    expect(landsOn('/secrets')).toBe('no-access')
   })
 
-  it('a non-admin with no membership is still redirected away from /admin', () => {
-    renderWithProviders(<App />, {
-      session: makeSession({ tenant: null, tenants: [] }),
-      route: '/admin/users',
-    })
-    expect(page()).toBe('no-access')
+  it('a non-admin with no membership is still redirected away from /settings and /admin', () => {
+    for (const route of ['/admin/users', '/settings/users']) {
+      const { unmount } = renderWithProviders(<App />, {
+        session: makeSession({ tenant: null, tenants: [] }),
+        route,
+      })
+      expect(page()).toBe('no-access')
+      unmount()
+    }
   })
 
-  it('/settings/platform: the single-mode owner/admin; never a member or a multi-mode owner', () => {
+  it('a platform section: the single-mode owner/admin; never a member or a multi-mode owner', () => {
     const landsOn = (session: ReturnType<typeof makeSession>) => {
       const { unmount } = renderWithProviders(<App />, {
         session,
-        route: '/settings/platform/setup',
+        route: '/settings/kit',
       })
       const label = page()
       unmount()
@@ -225,21 +226,12 @@ describe('ProtectedRoute', () => {
     expect(landsOn(makeSession({ tenant: makeTenant({ role: 'owner' }) }))).toBe('home')
   })
 
-  it('a global admin with NO membership reaches /settings/platform too', () => {
+  it('a global admin with NO membership reaches the platform sections too', () => {
     renderWithProviders(<App />, {
       session: makeSession({ user: makeUser({ isGlobalAdmin: true }), tenant: null, tenants: [] }),
-      route: '/settings/platform/access-requests',
+      route: '/settings/kit',
     })
     expect(page()).toBe('platform')
-  })
-
-  it('the old /admin/setup link lands on the platform page with its step anchor', () => {
-    renderWithProviders(<App />, {
-      session: makeSession({ tenancyMode: 'single', tenant: makeTenant({ role: 'admin' }) }),
-      route: '/admin/setup#setup-public_url',
-    })
-    expect(page()).toBe('platform')
-    expect(path()).toBe('/settings/platform/setup#setup-public_url')
   })
 
   it('the old /shared-config links land on Secrets, keeping the id, query and hash', () => {
@@ -248,13 +240,13 @@ describe('ProtectedRoute', () => {
     expect(path()).toBe('/secrets?archived=1')
   })
 
-  it('the old /activity link lands on Audit — the one log — keeping the query and hash', () => {
+  it('the old /activity link lands on Settings → Audit — the one log — keeping the query and hash', () => {
     renderWithProviders(<App />, {
       session: makeSession({ tenant: makeTenant({ role: 'admin' }) }),
       route: '/activity?page=2#top',
     })
-    expect(page()).toBe('audit')
-    expect(path()).toBe('/audit?page=2#top')
+    expect(page()).toBe('settings')
+    expect(path()).toBe('/settings/audit?page=2#top')
   })
 
   it('an old /shared-config/:id link lands on that secret', () => {
@@ -263,12 +255,12 @@ describe('ProtectedRoute', () => {
     expect(path()).toBe('/secrets/abc-123#push')
   })
 
-  it('RequireGuard: global admin opens /admin', () => {
+  it("RequireGuard: global admin opens the operator's sections", () => {
     renderWithProviders(<App />, {
       session: makeSession({ user: makeUser({ isGlobalAdmin: true }) }),
-      route: '/admin/users',
+      route: '/settings/users',
     })
-    expect(page()).toBe('admin')
+    expect(page()).toBe('operator')
   })
 
   it('a non-401 session failure shows a retry panel instead of bouncing to login', async () => {

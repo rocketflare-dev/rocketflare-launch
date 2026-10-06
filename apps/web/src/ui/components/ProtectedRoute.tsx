@@ -2,9 +2,10 @@
  * Session gate for the app shell (D9, D20). Unauthenticated → `/login?returnUrl=`; signed in but
  * in no organisation → the `noTenantRoute` rule (pending / select-tenant / no-access). Pages that
  * must render WITHOUT a tenant (those three) pass `requireTenant={false}`. One exemption: a global
- * admin may open `/admin/*` and `/settings/platform/*` with no membership at all (`isAdminPath`) —
- * otherwise the bootstrap admin of an invite-only deployment could never approve anyone or finish
- * Setup (SETUP.md 2.4). Cosmetic — the server enforces on every request (`/api/admin/*` and
+ * admin may open `/settings/*` (and the old `/admin/*` addresses that redirect into it) with no
+ * membership at all (`isAdminPath`) — otherwise the bootstrap admin of an invite-only deployment
+ * could never approve anyone or finish the Connections (SETUP.md 2.4). Inside, `useNavGuard`
+ * passes only their `platformAdmin` / `globalAdmin` sections, so nothing tenant-scoped opens. Cosmetic — the server enforces on every request (`/api/admin/*` and
  * `/api/platform/*` resolve a global admin without a tenant by design).
  */
 import { ArrowPathIcon } from '@heroicons/react/24/outline'
@@ -12,7 +13,7 @@ import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { noTenantRoute, useAuth } from '@/ui/hooks/useAuth'
 import { loginUrl } from '@/ui/lib/navigation'
-import { PLATFORM_SETTINGS_PATH } from '@/ui/lib/platform-paths'
+import { SETTINGS_PATH } from '@/ui/lib/settings-paths'
 import { LoadingIndicator } from './LoadingIndicator'
 
 interface ProtectedRouteProps {
@@ -21,9 +22,9 @@ interface ProtectedRouteProps {
   requireTenant?: boolean
 }
 
-/** Under `/admin` or `/settings/platform` — the global admin's areas, which need no membership. */
+/** Under `/settings` (or the old `/admin`) — where a global admin needs no membership. */
 export function isAdminPath(pathname: string): boolean {
-  return ['/admin', PLATFORM_SETTINGS_PATH].some(
+  return ['/admin', SETTINGS_PATH].some(
     root => pathname === root || pathname.startsWith(`${root}/`)
   )
 }

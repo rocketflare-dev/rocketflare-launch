@@ -395,7 +395,7 @@ async function sessionSandboxArgs() {
   const devVars = existsSync(file) ? readDevVars(readFileSync(file, 'utf8')) : {}
   if (legacyRemoteRequested(devVars)) {
     process.stdout.write(
-      `${COLOR.dim}  sessions: .dev.vars still says SESSION_SANDBOX_HOST=remote — read as the Session sandbox setting's starting value; choose on Settings → Platform → Coding agents and delete the line${COLOR.reset}\n`
+      `${COLOR.dim}  sessions: .dev.vars still says SESSION_SANDBOX_HOST=remote — read as the Session sandbox setting's starting value; choose on Settings → Coding agents and delete the line${COLOR.reset}\n`
     )
   }
   return plan.args

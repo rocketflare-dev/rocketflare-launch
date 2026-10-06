@@ -448,7 +448,7 @@ The server surface: the context family, and the types a plugin must be able to n
   - `routes: readonly PluginRoute[]`
   - `nav?: readonly PluginNavGroup[]`
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
-    Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
+    Extra Settings sections, listed under its "Plugins" group at `/settings/plugins/<id>` (the old `/settings?tab=<id>` redirects there). `can` is the caller's ability; return only…
   - `homeLinks?: readonly QuickLink[]`
     Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
@@ -504,8 +504,8 @@ The only host module a plugin's `ui/index.ts` may import — it ships in the mai
   `Array.isArray` widens a `readonly T[]` to `any[]` rather than narrowing the union, so this.
 - `type NavConfig = (NavItem \| NavGroup)[]`
 - `interface NavGroup`
-- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
-  Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,…
+- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[] \| { anyOf: readonly NavGuard[] }`
+  Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, a list meaning AND, or `{ anyOf…
 - `interface NavItem`
 - `interface PluginNavGroup`
   A nav group, placed relative to a named core group ("Organisation" by default).
@@ -531,7 +531,7 @@ The only host module a plugin's `ui/index.ts` may import — it ships in the mai
   - `routes: readonly PluginRoute[]`
   - `nav?: readonly PluginNavGroup[]`
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
-    Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
+    Extra Settings sections, listed under its "Plugins" group at `/settings/plugins/<id>` (the old `/settings?tab=<id>` redirects there). `can` is the caller's ability; return only…
   - `homeLinks?: readonly QuickLink[]`
     Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
@@ -589,8 +589,8 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
 - `function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)`
   `<dialog>`-based modal: native focus trap, Escape and backdrop close, `aria-modal` for free. Controlled — the caller owns `open`. Falls back to the `open` attribute where…
 - `interface ModalProps`
-- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[]`
-  Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, or a list meaning AND. Strings,…
+- `type NavGuard = \| 'admin' \| 'globalAdmin' \| 'platformAdmin' \| { action: string; subject: string } \| { feature: string } \| readonly NavGuard[] \| { anyOf: readonly NavGuard[] }`
+  Coarse role flags for routing (`AdminRoute` / `GlobalAdminRoute` semantics), a CASL `{ action, subject }` pair for per-page checks, a feature flag, a list meaning AND, or `{ anyOf…
 - `function notifyUnauthorized(error: ApiError): void`
   Invoke the 401 handler. A stale session makes every in-flight query fail at once, so calls within the same tick are coalesced into ONE handler invocation. Called by `request()`…
 - `function PageHeader({ title, description, breadcrumbs, badge, actions, leading, className = '', }: PageHeaderProps)`
@@ -708,7 +708,7 @@ Components and hooks, for a lazy PAGE. Never for the UI entry.
   - `routes: readonly PluginRoute[]`
   - `nav?: readonly PluginNavGroup[]`
   - `settingsTabs?: (ctx: { can: (action: string, subject: string) => boolean }) => TabConfig[]`
-    Extra `/settings?tab=` tabs, appended after the kit's. `can` is the caller's ability.
+    Extra Settings sections, listed under its "Plugins" group at `/settings/plugins/<id>` (the old `/settings?tab=<id>` redirects there). `can` is the caller's ability; return only…
   - `homeLinks?: readonly QuickLink[]`
     Quick links for the Home page, listed under its overview (D31). A feature somebody reaches from Home is one they were told about; a plugin that only adds a nav item is one they…
   - `queryKeys?: Readonly<Record<string, unknown>>`
@@ -1242,7 +1242,7 @@ nothing in the comparison that can throw.
 @/plugins/api/ui-wiring :: const :: isGuardList :: const isGuardList: (guard: NavGuard) => guard is readonly NavGuard[]
 @/plugins/api/ui-wiring :: type :: NavConfig :: type NavConfig = (NavItem | NavGroup)[]
 @/plugins/api/ui-wiring :: interface :: NavGroup :: interface NavGroup
-@/plugins/api/ui-wiring :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
+@/plugins/api/ui-wiring :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[] | { anyOf: readonly NavGuard[] }
 @/plugins/api/ui-wiring :: interface :: NavItem :: interface NavItem
 @/plugins/api/ui-wiring :: interface :: PluginNavGroup :: interface PluginNavGroup
 @/plugins/api/ui-wiring :: member :: PluginNavGroup.label :: label?: string
@@ -1292,7 +1292,7 @@ nothing in the comparison that can throw.
 @/plugins/api/ui :: function :: LogoMark :: function LogoMark({ className = 'w-7 h-7' }: { className?: string })
 @/plugins/api/ui :: function :: Modal :: function Modal({ open, onClose, title, children, actions, closeButton = true, className = '', }: ModalProps)
 @/plugins/api/ui :: interface :: ModalProps :: interface ModalProps
-@/plugins/api/ui :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[]
+@/plugins/api/ui :: type :: NavGuard :: type NavGuard = | 'admin' | 'globalAdmin' | 'platformAdmin' | { action: string; subject: string } | { feature: string } | readonly NavGuard[] | { anyOf: readonly NavGuard[] }
 @/plugins/api/ui :: function :: notifyUnauthorized :: function notifyUnauthorized(error: ApiError): void
 @/plugins/api/ui :: function :: PageHeader :: function PageHeader({ title, description, breadcrumbs, badge, actions, leading, className = '', }: PageHeaderProps)
 @/plugins/api/ui :: function :: PaginationControls :: function PaginationControls({ pagination, onPageChange, isLoading = false, className = '', }: PaginationControlsProps)

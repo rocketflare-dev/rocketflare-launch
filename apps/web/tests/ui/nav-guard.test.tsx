@@ -1,6 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type NavGuard, useNavGuard } from '@/ui/hooks/useNavGuard'
+import { SETTINGS_GUARD } from '@/ui/lib/settings-paths'
 import {
   makeSession,
   makeTenant,
@@ -92,7 +93,7 @@ describe('useNavGuard with a real ability unpacked from the session rules', () =
     await expectGuards({ admin: true, globalAdmin: true, manageTenant: true, manageMembers: true })
   })
 
-  it('global admin with no organisation: only the admin area (and unguarded items)', async () => {
+  it('global admin with no organisation: only the platform and operator guards (and unguarded items)', async () => {
     renderWithProviders(<Probe />, {
       session: makeSession({ user: makeUser({ isGlobalAdmin: true }), tenant: null, tenants: [] }),
     })
@@ -109,6 +110,37 @@ describe('useNavGuard with a real ability unpacked from the session rules', () =
   it('logged out: only unguarded items', async () => {
     renderWithProviders(<Probe />, { session: null })
     await expectGuards({ admin: false, globalAdmin: false, platformAdmin: false, readKeys: false })
+  })
+})
+
+describe('{ anyOf } — the Settings door', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function SettingsProbe() {
+    const canAccess = useNavGuard()
+    return <p data-testid="settings">{String(canAccess(SETTINGS_GUARD))}</p>
+  }
+
+  const settings = async (session: ReturnType<typeof makeSession>) => {
+    const { unmount } = renderWithProviders(<SettingsProbe />, { session })
+    const value = (await screen.findByTestId('settings')).textContent
+    unmount()
+    return value
+  }
+
+  it('opens for an organisation admin OR a platform admin, and for nobody else', async () => {
+    // Multi mode: an owner is `admin` but not `platformAdmin`; a global admin with no
+    // membership is the reverse. Each needs the door; neither single guard lets both in.
+    expect(await settings(makeSession({ tenant: makeTenant({ role: 'owner' }) }))).toBe('true')
+    expect(
+      await settings(
+        makeSession({ user: makeUser({ isGlobalAdmin: true }), tenant: null, tenants: [] })
+      )
+    ).toBe('true')
+    expect(await settings(makeSession({ tenant: makeTenant({ role: 'member' }) }))).toBe('false')
+    expect(
+      await settings(makeSession({ tenancyMode: 'single', tenant: makeTenant({ role: 'member' }) }))
+    ).toBe('false')
   })
 })
 

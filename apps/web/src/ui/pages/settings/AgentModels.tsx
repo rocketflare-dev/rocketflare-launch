@@ -1,5 +1,5 @@
 /**
- * Settings → Agent models (D17): every registry prompt key (`GET /api/ai/agent-models`) with what
+ * Settings → AI & models → Agent models (D17): every registry prompt key (`GET /api/ai/agent-models`) with what
  * would answer it right now — provider, model and a source badge (`assignment | tenant | platform |
  * none`) computed by the server's own planner. "Override" opens a modal: pick an existing chat
  * config (or keep the default one) and/or type a model; `PUT` sends only what is set. "Use default"
@@ -27,6 +27,7 @@ import {
 import { useAgentModels, useDeleteAgentModel, useUpsertAgentModel } from '@/ui/hooks/useAgentModels'
 import { configsForScope, useAiConfigs } from '@/ui/hooks/useAiConfig'
 import { usePermissions } from '@/ui/hooks/usePermissions'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
 
 const SOURCE_LABELS: Record<AgentModelSource, string> = {
   assignment: 'agent',
@@ -59,7 +60,7 @@ export default function AgentModelsSettings() {
     <SectionPanel
       flush
       title="Agent models"
-      description="Point an individual agent or feature at a specific chat provider and model. Anything left on the default follows the workspace's default chat provider."
+      description="Point an individual agent or feature at a specific chat provider and model. Anything left on the default follows the organisation's default chat provider."
     >
       {entries.isLoading || configs.isLoading ? (
         <div className="px-5 pb-5">
@@ -76,10 +77,10 @@ export default function AgentModelsSettings() {
           {chatConfigs.length === 0 && (
             <div className="mx-5 mb-3 alert alert-warning text-sm">
               <span>
-                No chat provider is configured for this workspace, so every agent falls back to the
-                platform default (if any).{' '}
+                No chat provider is configured for this organisation, so every agent falls back to
+                the platform default (if any).{' '}
                 {canManage && (
-                  <Link to="/settings?tab=ai" className="link">
+                  <Link to={SETTINGS_PATHS.ai} className="link">
                     Add one in the AI tab
                   </Link>
                 )}
@@ -127,7 +128,7 @@ export default function AgentModelsSettings() {
                           entry.effective.source === 'assignment'
                             ? 'Pinned for this agent'
                             : entry.effective.source === 'tenant'
-                              ? "The workspace's default chat provider"
+                              ? "The organisation's default chat provider"
                               : entry.effective.source === 'platform'
                                 ? 'The platform default'
                                 : 'Nothing answers this agent'
@@ -173,7 +174,7 @@ export default function AgentModelsSettings() {
                 description="Add a chat provider and the agents follow it."
                 action={
                   canManage ? (
-                    <Link to="/settings?tab=ai" className="btn btn-primary btn-sm">
+                    <Link to={SETTINGS_PATHS.ai} className="btn btn-primary btn-sm">
                       Open the AI tab
                     </Link>
                   ) : undefined

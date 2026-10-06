@@ -1,6 +1,6 @@
 /**
- * Step 1 — the dedicated apps domain (spec/04) and the notifications sending domain beneath it.
- * The zone itself is probed with the Cloudflare token (step 2), so this card shows the `zone.*`
+ * Connections → Domain: the dedicated apps domain (spec/04) and the notifications sending domain
+ * beneath it. The zone itself is probed with the Cloudflare token, so this card shows the `zone.*`
  * probes from that credential's last check, and re-runs it after a change when a token is set.
  */
 import type {
@@ -58,7 +58,6 @@ export function DomainCard({
   return (
     <StepCard
       id="domain"
-      number={1}
       title="Domain and zone"
       status={status}
       description={

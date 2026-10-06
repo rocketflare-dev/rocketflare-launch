@@ -2,7 +2,7 @@
  * Header bell (D13): unread count from `/api/notifications/unread-count`, the five newest unread
  * in a dropdown, mark-all-read, and a link to the full page. Subscribes to query state only;
  * Phase 2's websocket store invalidates the keys. Notifications are tenant-scoped (403 `no_tenant`
- * without one), so the bell renders nothing for a global admin browsing `/admin` with no membership.
+ * without one), so the bell renders nothing for a global admin browsing Settings with no membership.
  */
 import { BellIcon } from '@heroicons/react/24/outline'
 import { Link } from 'react-router-dom'

@@ -5,7 +5,7 @@
  * or login is the same 404 as a missing one.
  *
  * - `GET /agent-credentials` → `agentAccountsResponseSchema`: the runtimes this deployment offers
- *   (the session policy's `runtimes` — the Platform → Coding agents tab), the caller's connected
+ *   (the session policy's `runtimes` — Settings → Coding agents), the caller's connected
  *   accounts (value-free) and their logins in flight. The Profile panel and the session picker
  *   both read it.
  * - `DELETE /agent-credentials/:runtime` → 204: disconnect (audited `agent_credential.removed`);
