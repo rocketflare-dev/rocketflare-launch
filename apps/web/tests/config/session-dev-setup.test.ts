@@ -380,7 +380,7 @@ describe('the session steps, against a FakeSandbox', () => {
     expect(fake.files.get('/workspace/.launch/session-wrangler.mjs')).toBe(SESSION_WRANGLER_SCRIPT)
     const order = fake.commands.filter(c => /session-wrangler|exec pnpm dev/.test(c))
     expect(order[0]).toBe('node /workspace/.launch/session-wrangler.mjs')
-    expect(order[1]).toContain('exec pnpm dev')
+    expect(order[1]).toContain('exec node apps/web/scripts/dev-server.mjs --start')
 
     const broken = new FakeSandbox().onExec(/session-wrangler/, {
       exitCode: 1,

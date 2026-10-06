@@ -4,6 +4,10 @@
  * the dev server's process is gone, and a failed command's error carries its own output (the tail,
  * scrubbed of the database URI).
  */
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   boundedSandbox,
@@ -15,10 +19,14 @@ import {
 import { SandboxProcessExitedError } from '@/api/services/sessions/ports'
 import {
   BOOTSTRAP_LOCK,
+  DEV_COMMAND,
+  DEV_FALLBACK_COMMAND,
   DEV_LOG_FILE,
   DEV_PID_FILE,
+  DEV_SERVER_SCRIPT,
   DEV_START_COMMAND,
   INSTALL_COMMAND,
+  SESSION_LAUNCH_DIR,
   SessionBootstrapError,
   serialised,
   sessionBootstrap,
@@ -101,10 +109,57 @@ describe('the dev server wait', () => {
     expect(waitForPortScript(5173)).not.toContain('kill -0')
   })
 
-  it('starts pnpm dev with its pid and its log in files', () => {
+  it('starts the kit’s dev server directly, its pid and its log in files', () => {
+    expect(DEV_COMMAND).toBe('node apps/web/scripts/dev-server.mjs --start')
     expect(DEV_START_COMMAND).toBe(
-      `mkdir -p /workspace/.launch && echo $$ > ${DEV_PID_FILE} && exec pnpm dev > ${DEV_LOG_FILE} 2>&1`
+      `mkdir -p /workspace/.launch && echo $$ > ${DEV_PID_FILE} && if [ -f apps/web/scripts/dev-server.mjs ]; then exec ${DEV_COMMAND} > ${DEV_LOG_FILE} 2>&1; else exec ${DEV_FALLBACK_COMMAND} > ${DEV_LOG_FILE} 2>&1; fi`
     )
+  })
+
+  /** {@link DEV_START_COMMAND} under a real shell in a stand-in checkout, the launch dir moved. */
+  function runDevStart(withScript: boolean) {
+    const root = mkdtempSync(path.join(tmpdir(), 'launch-dev-start-'))
+    try {
+      const launch = path.join(root, 'launch')
+      const checkout = path.join(root, 'app')
+      const bin = path.join(root, 'bin')
+      mkdirSync(path.join(checkout, 'apps/web/scripts'), { recursive: true })
+      mkdirSync(bin)
+      if (withScript) {
+        writeFileSync(
+          path.join(checkout, DEV_SERVER_SCRIPT),
+          "console.log('dev-server ' + process.argv.slice(2).join(' ') + ' pid=' + process.pid)\n"
+        )
+      }
+      // A stand-in pnpm: what the fallback runs.
+      writeFileSync(path.join(bin, 'pnpm'), '#!/bin/sh\necho "pnpm $* pid=$$"\n')
+      chmodSync(path.join(bin, 'pnpm'), 0o755)
+      const command = DEV_START_COMMAND.split(SESSION_LAUNCH_DIR).join(launch)
+      const res = spawnSync('sh', ['-c', command], {
+        cwd: checkout,
+        env: {
+          PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+        } as unknown as NodeJS.ProcessEnv,
+        encoding: 'utf8',
+      })
+      expect(res.status, res.stderr).toBe(0)
+      return {
+        log: readFileSync(path.join(launch, 'dev.log'), 'utf8').trim(),
+        pid: readFileSync(path.join(launch, 'dev.pid'), 'utf8').trim(),
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+
+  it('runs dev-server.mjs when the checkout has it — the recorded pid is the dev server', () => {
+    const { log, pid } = runDevStart(true)
+    expect(log).toBe(`dev-server --start pid=${pid}`)
+  })
+
+  it('falls back to pnpm dev when the checkout has no dev-server.mjs', () => {
+    const { log, pid } = runDevStart(false)
+    expect(log).toBe(`pnpm dev pid=${pid}`)
   })
 
   it('a dev server that exits fails at once with the tail of its own output', async () => {

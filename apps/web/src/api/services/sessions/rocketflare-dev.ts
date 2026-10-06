@@ -33,8 +33,9 @@
  * earlier Launch committed is put back on a resume (`healDevSetup`), and a checkpoint refuses to
  * commit the toggle (`checkpoint.ts`, the dev-setup guard).
  *
- * `startDevServer(sandbox, dev)` — the `dev` step: the session config, then `pnpm dev` in the
- * background (its pid and output in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
+ * `startDevServer(sandbox, dev)` — the `dev` step: the session config, then the kit's dev server
+ * (`node apps/web/scripts/dev-server.mjs --start`, what `pnpm dev` runs; `pnpm dev` itself when the
+ * script is missing — `DEV_START_COMMAND`) in the background (its pid and output in `DEV_PID_FILE` / `DEV_LOG_FILE`), then `:5173` answering and `:8787/api/health` 2xx — waited
  * for in short chunks, failing at once if the dev server exits.
  *
  * The install and the kit bootstrap each run as a BACKGROUND command, polled
@@ -193,8 +194,17 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  * `syncBuiltinESMExports`, before the bootstrap loads:
  * - For each part named in `LAUNCH_BOOTSTRAP_SKIP` (`BOOTSTRAP_SKIP_ENV`) it answers that child
  *   with a one-line `node -e` that prints what the kit's step checks for ("Migrations applied")
- *   and exits 0. `sessionBootstrap` always skips `db-check`: the branch was just made through
- *   Neon's API, and the migrator fails loudly if it cannot connect.
+ *   and exits 0. `sessionBootstrap` always skips three ({@link ALWAYS_SKIPPED}): `db-check` (the
+ *   branch was just made through Neon's API, and the migrator fails loudly if it cannot connect),
+ *   `install` (the kit's step 2 `pnpm install --prefer-offline`, a second install right after
+ *   Launch's own — the kit then only checks the exit code and that
+ *   `apps/web/node_modules/.bin/wrangler` exists, which it still does) and `whoami` (step 8's
+ *   `pnpm web exec wrangler whoami`: a sandbox never has a Cloudflare login, and the kit reads
+ *   "logged in" only from "You are logged in with" in the output — the stand-in's
+ *   "You are not authenticated" takes `--offline`'s not-logged-in branch, `[ai]` off, exactly as
+ *   the real call did, without starting wrangler). Measured locally the two cost 8-12 s of the
+ *   bootstrap. Verified against the kit's `scripts/bootstrap.mjs` and `parseWhoami`, identical
+ *   from 0.15.0 through 0.17.3.
  * - `pnpm db:migrate` that is NOT skipped runs the kit's migrator ALONE
  *   (`pnpm web exec dotenv -e .dev.vars -- tsx scripts/migrate.ts`), without the kit's `db-roles`
  *   before and after it: the RLS role those make (the app's `<snake>_app`) is on `dev` already,
@@ -223,11 +233,13 @@ import path from 'node:path'
 const userInfo = os.userInfo
 os.userInfo = options => ({ ...userInfo(options), uid: 1000 })
 const skip = new Set((process.env.LAUNCH_BOOTSTRAP_SKIP || '').split(',').filter(Boolean))
-const stand = {
-  seed: ['seed', 'seed skipped by Launch: a resume never re-seeds'],
-  'db:migrate': ['migrate', 'Migrations applied (skipped by Launch: unchanged since the last bootstrap)'],
-  'db:check': ['db-check', 'db:check skipped by Launch: the branch was made through the Neon API'],
-}
+const stand = [
+  ['install', a => a[0] === 'install', 'Already up to date (install skipped by Launch: it ran just before the bootstrap)'],
+  ['whoami', a => a[0] === 'web' && a[1] === 'exec' && a[2] === 'wrangler' && a[3] === 'whoami', 'You are not authenticated. Please run wrangler login. (whoami skipped by Launch: a sandbox has no Cloudflare login)'],
+  ['seed', a => a[0] === 'seed', 'seed skipped by Launch: a resume never re-seeds'],
+  ['migrate', a => a[0] === 'db:migrate', 'Migrations applied (skipped by Launch: unchanged since the last bootstrap)'],
+  ['db-check', a => a[0] === 'web' && a[1] === 'db:check', 'db:check skipped by Launch: the branch was made through the Neon API'],
+]
 const instead = {
   'db:migrate': ['web', 'exec', 'dotenv', '-e', '.dev.vars', '--', 'tsx', 'scripts/migrate.ts'],
 }
@@ -240,12 +252,12 @@ fs.writeFileSync = function (file, ...rest) {
 const spawn = cp.spawn
 cp.spawn = function (cmd, args, opts) {
   const list = Array.isArray(args) ? args : []
-  const script = cmd === 'pnpm' ? (list[0] === 'web' ? list[1] : list[0]) : undefined
-  const hit = script && Object.hasOwn(stand, script) ? stand[script] : undefined
-  if (hit && skip.has(hit[0])) {
-    return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[1]) + ')'], opts)
+  const hit = cmd === 'pnpm' ? stand.find(([part, match]) => skip.has(part) && match(list)) : undefined
+  if (hit) {
+    return spawn.call(this, process.execPath, ['-e', 'console.log(' + JSON.stringify(hit[2]) + ')'], opts)
   }
-  if (script && list[0] === script && Object.hasOwn(instead, script)) {
+  const script = cmd === 'pnpm' ? list[0] : undefined
+  if (script && Object.hasOwn(instead, script)) {
     return spawn.call(this, cmd, [...instead[script], ...list.slice(1)], opts)
   }
   return spawn.apply(this, arguments)
@@ -253,8 +265,10 @@ cp.spawn = function (cmd, args, opts) {
 syncBuiltinESMExports()
 `
 
-/** What a resume's bootstrap may leave out (`BOOTSTRAP_SKIP_ENV`, see {@link NOT_ROOT_PRELOAD}). */
-export type BootstrapSkip = 'seed' | 'migrate' | 'db-check'
+/** What a bootstrap may leave out (`BOOTSTRAP_SKIP_ENV`, see {@link NOT_ROOT_PRELOAD}). */
+export type BootstrapSkip = 'seed' | 'migrate' | 'db-check' | 'install' | 'whoami'
+/** What EVERY session bootstrap leaves out, a first boot's too (see {@link NOT_ROOT_PRELOAD}). */
+export const ALWAYS_SKIPPED: readonly BootstrapSkip[] = ['db-check', 'install', 'whoami']
 /** The environment variable the preload reads: comma-separated {@link BootstrapSkip}s. */
 export const BOOTSTRAP_SKIP_ENV = 'LAUNCH_BOOTSTRAP_SKIP'
 /** The environment variable the preload reads: absolute paths the bootstrap must never write. */
@@ -459,17 +473,31 @@ export async function migrationsHash(sandbox: SandboxPort): Promise<string | nul
 
 export const BOOTSTRAP_COMMAND = `node --import ${NOT_ROOT_PRELOAD} scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev --no-open --no-plugins --yes`
 
-export const DEV_COMMAND = 'pnpm dev'
+/** The kit's dev-stack supervisor — what `pnpm dev` runs (root → `@<app>/web dev` → this). */
+export const DEV_SERVER_SCRIPT = 'apps/web/scripts/dev-server.mjs'
+/**
+ * The dev server, run DIRECTLY: the kit's `pnpm dev` is `pnpm --silent --filter @<app>/web dev`,
+ * which is `node scripts/dev-server.mjs --start` in `apps/web` (kit 0.15.0 through 0.17.3) — two
+ * pnpm startups (1-3 s in a container) for nothing. The script resolves its own directory from
+ * `import.meta.url`, spawns `wrangler` and `vite` by absolute path from `apps/web/node_modules/.bin`
+ * with `cwd` `apps/web`, and reads its ports from the environment then `.dev.vars` — nothing pnpm's
+ * environment adds. Its `--stop` (`pnpm dev:stop`) still finds it: its process match is
+ * `dev-server.mjs --start` with a cwd in the checkout.
+ */
+export const DEV_COMMAND = `node ${DEV_SERVER_SCRIPT} --start`
+/** What runs when the checkout has no {@link DEV_SERVER_SCRIPT} (an app that moved it). */
+export const DEV_FALLBACK_COMMAND = 'pnpm dev'
 
 /** The dev server's pid (`startDevServer`) — what the port wait checks is still alive. */
 export const DEV_PID_FILE = `${SESSION_LAUNCH_DIR}/dev.pid`
 /** The dev server's output, for the error when it dies before its ports answer. */
 export const DEV_LOG_FILE = `${SESSION_LAUNCH_DIR}/dev.log`
 /**
- * `pnpm dev` as the dev step starts it: its pid recorded (the shell `exec`s into pnpm, so `$$`
- * IS pnpm) and its output kept in a file.
+ * The dev server as the dev step starts it — {@link DEV_COMMAND}, or {@link DEV_FALLBACK_COMMAND}
+ * when the script is not there: its pid recorded (the shell `exec`s into it, so `$$` IS the dev
+ * server) and its output kept in a file.
  */
-export const DEV_START_COMMAND = `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${DEV_PID_FILE} && exec ${DEV_COMMAND} > ${DEV_LOG_FILE} 2>&1`
+export const DEV_START_COMMAND = `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${DEV_PID_FILE} && if [ -f ${DEV_SERVER_SCRIPT} ]; then exec ${DEV_COMMAND} > ${DEV_LOG_FILE} 2>&1; else exec ${DEV_FALLBACK_COMMAND} > ${DEV_LOG_FILE} 2>&1; fi`
 
 /**
  * The install and the bootstrap run one at a time per container (`flock`): a step attempt the
@@ -693,8 +721,9 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
-  // The database check never runs in a sandbox: see NOT_ROOT_PRELOAD.
-  const skipped = new Set<BootstrapSkip>([...(ctx.skip ?? []), 'db-check'])
+  // The database check, the kit's second install and its wrangler login check never run in a
+  // sandbox: see NOT_ROOT_PRELOAD.
+  const skipped = new Set<BootstrapSkip>([...(ctx.skip ?? []), ...ALWAYS_SKIPPED])
   const skip = { [BOOTSTRAP_SKIP_ENV]: [...skipped].join(',') }
   await show(BOOTSTRAP_PROGRESS)
   // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
@@ -738,7 +767,7 @@ export interface StartDevServerOptions {
 }
 
 /**
- * `pnpm dev` in the background, then both ports answering. Returns the process id. The waits are
+ * The dev server in the background ({@link DEV_START_COMMAND}), then both ports answering. Returns the process id. The waits are
  * chunked ({@link DEV_WAIT_CHUNK_MS}) with `opts.checkpoint` between them, and each chunk fails at
  * once when the dev server's process is gone (`DEV_PID_FILE`) — with the tail of its output
  * (`DEV_LOG_FILE`) as the reason, rather than a curl loop against nothing for minutes.

@@ -30,8 +30,8 @@
  * An attached run gets the whole `timeoutMs` again from the moment it is attached to: when it
  * started is not recorded, and the step's own timeout bounds the total anyway.
  *
- * Every `pollMs` (every {@link BACKGROUND_FAST_POLL_MS} for the run's first
- * {@link BACKGROUND_FAST_WINDOW_MS}, when that is shorter) it reads the exit file and the log; `onProgress` gets `progressOf(log)` (default:
+ * Every `pollMs` (more often while the run is young: {@link backgroundPollInterval}) it reads the
+ * exit file and the log; `onProgress` gets `progressOf(log)` (default:
  * the last non-empty line) only when that CHANGES. Past `timeoutMs` it kills the process group and
  * throws {@link BackgroundCommandTimeoutError} with the log; an aborted `signal` does the same at
  * the next poll and throws {@link BackgroundCommandAbortedError}. A run whose files vanish (the container
@@ -45,15 +45,29 @@
  */
 import { type SandboxExecOptions, SandboxInterruptedError, type SandboxPort } from './sandbox-port'
 
-/** How often a running command's files are read. */
+/** How often a running command's files are read once it has run a while. */
 export const BACKGROUND_POLL_MS = 2_500
 /**
- * Issue #15: for its first {@link BACKGROUND_FAST_WINDOW_MS} a run is read every
- * {@link BACKGROUND_FAST_POLL_MS} instead — a short command (a no-op install, a kit bootstrap with
- * nothing to do) is then noticed within half a second of its end rather than up to 2.5 s after.
+ * Issue #15 / epic #7: a young run is read more often — every {@link BACKGROUND_FAST_POLL_MS} for
+ * its first {@link BACKGROUND_FAST_WINDOW_MS}, then every {@link BACKGROUND_MID_POLL_MS} until
+ * {@link BACKGROUND_MID_WINDOW_MS}, then every `pollMs` ({@link backgroundPollInterval}). A boot's
+ * install and kit bootstrap (20-25 s each, measured locally; longer on a real container) then end
+ * inside the half-second window and are noticed within 0.5 s rather than up to 2.5 s after, and
+ * one that takes a minute or two within 1 s. A poll is two short `readFile`s, so the first two
+ * minutes cost at most 150 polls; a command running for many minutes (the ship gate) settles to
+ * one every 2.5 s.
  */
 export const BACKGROUND_FAST_POLL_MS = 500
-export const BACKGROUND_FAST_WINDOW_MS = 10_000
+export const BACKGROUND_FAST_WINDOW_MS = 30_000
+export const BACKGROUND_MID_POLL_MS = 1_000
+export const BACKGROUND_MID_WINDOW_MS = 120_000
+
+/** The wait before the next poll of a run polled for `elapsedMs`; never longer than `pollMs`. */
+export function backgroundPollInterval(elapsedMs: number, pollMs: number): number {
+  if (elapsedMs < BACKGROUND_FAST_WINDOW_MS) return Math.min(pollMs, BACKGROUND_FAST_POLL_MS)
+  if (elapsedMs < BACKGROUND_MID_WINDOW_MS) return Math.min(pollMs, BACKGROUND_MID_POLL_MS)
+  return pollMs
+}
 /** Every Nth poll also asks whether the process is still alive (a runner that died writes no exit). */
 export const LIVENESS_EVERY_POLLS = 8
 /** Consecutive failed polls before the run is given up on. */
@@ -352,10 +366,7 @@ export async function runInBackground(
       if (left > 0) throw new BackgroundCommandAbortedError(opts.name, log)
       throw new BackgroundCommandTimeoutError(opts.name, opts.timeoutMs, log)
     }
-    const interval =
-      Date.now() - polledFrom < BACKGROUND_FAST_WINDOW_MS
-        ? Math.min(pollMs, BACKGROUND_FAST_POLL_MS)
-        : pollMs
+    const interval = backgroundPollInterval(Date.now() - polledFrom, pollMs)
     await abortableSleep(sleep, Math.min(interval, left), opts.signal)
   }
 }

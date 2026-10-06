@@ -1545,7 +1545,9 @@ reload) is restarted as `<id>-rN` from the row.
   `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
   `/workspace/.launch/repo.lock` so overlapping attempts queue, and a failure reports git's last
   15 stderr lines) → `bootstrap` (the kit's bootstrap on the session's own database)
-  → `dev` (`pnpm dev`, UI :5173, API :8787 — never :3000) → `ready` + `preview.ready`. Each boot
+  → `dev` (the kit's `node apps/web/scripts/dev-server.mjs --start` directly — what `pnpm dev`
+  runs, without its two pnpm startups; `pnpm dev` when the checkout has no such script — UI :5173,
+  API :8787, never :3000) → `ready` + `preview.ready`. Each boot
   step writes a `step` event (the page's checklist). The first successful `bootstrap` records the
   checkout's `apps/web/migrations` hash (`sessions.migrations_hash`); a later one (a cold resume) is
   against a prepared database, so it never re-seeds or re-checks it and migrates only when the hash
@@ -1553,7 +1555,12 @@ reload) is restarted as `<id>-rN` from the row.
   session branched from a `ready` `dev` STARTS from it (`branchStep`; `unknown` for a `dev`
   prepared before it was recorded — then it migrates once), so its first boot is a resume's too — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
   `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): the kit has no flag for
-  it. On EVERY boot the preload skips `db:check` and runs `db:migrate` as the kit's migrator alone
+  it. On EVERY boot the preload skips `db:check`, the kit's own second `pnpm install
+  --prefer-offline` (step 2, right after Launch's; the kit then checks only the exit code and that
+  wrangler's bin exists) and step 8's `pnpm web exec wrangler whoami` (answered with wrangler's "You
+  are not authenticated", so `--offline` takes its not-logged-in branch as before) — 8-12 s of a
+  local boot, checked against the kit's `bootstrap.mjs` / `parseWhoami`, identical 0.15.0 → 0.17.3
+  — and runs `db:migrate` as the kit's migrator alone
   (`tsx scripts/migrate.ts`, no `db-roles` before or after — its role is on `dev` already, its
   grants matter only under `TENANT_SCOPE_MODE=enforce`): each of the kit's database scripts opens
   its own WebSocket through the container's egress interception, and on real Cloudflare containers
@@ -1586,8 +1593,8 @@ reload) is restarted as `<id>-rN` from the row.
   `wrangler dev` follows ("Using redirected Wrangler configuration.") and `wrangler types` does not,
   so the gate's `pnpm typecheck` still generates the types from the tracked toml, `AI` included.
   Both files are git-ignored (`.git/info/exclude`, written by the checkout and the checkpoint's
-  scan; `.wrangler/` is also in the kit's `.gitignore`). No kit change: `pnpm dev` runs as the kit
-  wrote it. **Branches an earlier Launch checkpointed** are healed on their next boot (every
+  scan; `.wrangler/` is also in the kit's `.gitignore`). No kit change: the dev server runs as the
+  kit wrote it. **Branches an earlier Launch checkpointed** are healed on their next boot (every
   `bootstrap#K`, the restored-workspace path too, `healDevSetup` against `sessions.base_sha`): a
   toml whose `[ai]` is off where the base's is on gets the block back (the agent's other edits
   kept), and the types are the base's again when they differ from it ONLY by `AI: Ai;` and the
@@ -1954,7 +1961,8 @@ BACKGROUND process runs every call answers at once. So the command starts with `
 (a runner script: `setsid -w` gives it its own process group, whose leader writes
 `<name>.pid` = `<pid> <runId>`; output in `<name>.log`; `<runId> <code>` in `<name>.exit`, via tmp +
 `mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s; every 0.5 s for
-a run's first 10 s, issue #15, so a short command is noticed at once) with short
+a run's first 30 s and every 1 s to 2 min, `backgroundPollInterval` — issue #15 and epic #7, so a
+boot's 20-25 s install and bootstrap are noticed within half a second of their end) with short
 `readFile`s — every 8th poll also `kill -0`s the pid, so a runner that died without an exit code
 is noticed; three failed polls in a row give up. A step RETRY attaches to a live run of the same
 name instead of starting another; a finished one is never reused (the same name runs again for

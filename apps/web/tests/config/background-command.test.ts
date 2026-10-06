@@ -12,10 +12,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BACKGROUND_FAST_POLL_MS,
   BACKGROUND_FAST_WINDOW_MS,
+  BACKGROUND_MID_POLL_MS,
+  BACKGROUND_MID_WINDOW_MS,
   BACKGROUND_POLL_MS,
   BackgroundCommandAbortedError,
   BackgroundCommandLostError,
   BackgroundCommandTimeoutError,
+  backgroundPollInterval,
   backgroundRunnerScript,
   killGroupCommand,
   LIVENESS_EVERY_POLLS,
@@ -62,7 +65,7 @@ describe('runInBackground', () => {
     expect(fake.files.get(`${DIR}/install.exit`)).toBe(`${run?.runId} 0\n`)
   })
 
-  it('polls every 0.5 s for its first 10 s, then every 2.5 s (issue #15)', async () => {
+  it('polls every 0.5 s for its first 30 s, every 1 s to 2 min, then every 2.5 s', async () => {
     const fake = new FakeSandbox().onBackground(/pnpm install/, { hang: true })
     let clock = 1_000_000
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
@@ -70,21 +73,36 @@ describe('runInBackground', () => {
     try {
       await runInBackground(fake, {
         ...base,
+        timeoutMs: 10 * 60_000,
         pollMs: BACKGROUND_POLL_MS,
         name: 'install',
         command: 'pnpm install',
         sleep: async ms => {
           slept.push(ms)
           clock += ms
-          if (clock - 1_000_000 >= 15_000) fake.finishBackground('install', { exitCode: 0 })
+          if (clock - 1_000_000 >= 125_000) fake.finishBackground('install', { exitCode: 0 })
         },
       })
     } finally {
       now.mockRestore()
     }
     const fast = BACKGROUND_FAST_WINDOW_MS / BACKGROUND_FAST_POLL_MS
+    const mid = (BACKGROUND_MID_WINDOW_MS - BACKGROUND_FAST_WINDOW_MS) / BACKGROUND_MID_POLL_MS
     expect(slept.slice(0, fast)).toEqual(Array(fast).fill(BACKGROUND_FAST_POLL_MS))
-    expect(slept.slice(fast)).toEqual([BACKGROUND_POLL_MS, BACKGROUND_POLL_MS])
+    expect(slept.slice(fast, fast + mid)).toEqual(Array(mid).fill(BACKGROUND_MID_POLL_MS))
+    expect(slept.slice(fast + mid)).toEqual([BACKGROUND_POLL_MS, BACKGROUND_POLL_MS])
+    // A boot's 20-25 s install or bootstrap ends inside the half-second window.
+    expect(BACKGROUND_FAST_WINDOW_MS).toBeGreaterThanOrEqual(30_000)
+  })
+
+  it('the schedule: 0.5 s, then 1 s, then pollMs — never longer than pollMs', () => {
+    expect(backgroundPollInterval(0, 2_500)).toBe(500)
+    expect(backgroundPollInterval(29_999, 2_500)).toBe(500)
+    expect(backgroundPollInterval(30_000, 2_500)).toBe(1_000)
+    expect(backgroundPollInterval(119_999, 2_500)).toBe(1_000)
+    expect(backgroundPollInterval(120_000, 2_500)).toBe(2_500)
+    expect(backgroundPollInterval(60_000, 700)).toBe(700)
+    expect(backgroundPollInterval(0, 1)).toBe(1)
   })
 
   it('a poll interval already shorter than the fast one is kept', async () => {

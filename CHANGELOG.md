@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A session boots faster: the kit bootstrap skips two redundant children, the dev server starts
+  directly, and finished commands are noticed sooner** (epic #7, track B). The bootstrap preload
+  now also answers the kit's own second `pnpm install --prefer-offline` (Launch's install has just
+  run) and its `pnpm web exec wrangler whoami` (a sandbox never has a Cloudflare login; the
+  stand-in says "not authenticated", so `--offline` behaves exactly as before) — together 8-12 s of
+  a local boot. The `dev` step runs `node apps/web/scripts/dev-server.mjs --start`, what `pnpm dev`
+  runs, without pnpm's two startups (`pnpm dev` when the script is missing). A background command
+  (the install, the bootstrap, the ship gate's commands) is read every 0.5 s for its first 30 s
+  and every 1 s to 2 minutes before settling to 2.5 s. No migration, no image change.
 - **A session started from the app page boots while you write, and one nobody writes to goes
   away** (issue #17). Start session and Change it now start the session WARM (`warm: true` on
   `POST /api/apps/:id/sessions`), once per press; opening it again while it waits for its first
