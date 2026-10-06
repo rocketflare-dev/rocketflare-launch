@@ -53,9 +53,11 @@ import {
   SESSION_WORKSPACE,
 } from '@/api/services/sessions/rocketflare-dev'
 import {
+  BOOT_RESTART_DETAIL,
   BOOT_STEP_LABELS,
   checkpointDueInMs,
   dirtyAfterTurn,
+  MAX_BOOT_RESTARTS,
   SESSION_BOOT_MARKER,
   type TurnStepResult,
   waitDuration,
@@ -415,6 +417,146 @@ describe('SessionWorkflow: boot', () => {
     )
     expect(failedStep?.data).toMatchObject({ key: 'bootstrap', label: BOOT_STEP_LABELS.bootstrap })
     expect(events.at(-1)?.type).toBe('status')
+  })
+
+  it('a container replaced mid-bootstrap fails fast and boots again from sandbox.start', async () => {
+    const h = await harness()
+    let bootstraps = 0
+    h.ports.script(sandbox =>
+      sandbox.onBackground(/scripts\/bootstrap\.mjs/, () => {
+        bootstraps++
+        if (bootstraps > 1) return {}
+        // The platform replaces the container under the running bootstrap, which has printed
+        // nothing yet — before, the poll waited out the bootstrap's deadline.
+        setTimeout(() => sandbox.recreate(), 0)
+        return new Promise<never>(() => {})
+      })
+    )
+    const run = await drive(
+      h,
+      async () => {
+        await patch(h.row, { requestedAction: 'end' })
+        return WAKE
+      },
+      { commandPollMs: 1 }
+    )
+
+    expect(run.names).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'bootstrap',
+      'sandbox.start.r1',
+      'repo.r1',
+      'bootstrap.r1',
+      'dev.r1',
+      'inspect#0',
+      'wait#0',
+      'inspect#1',
+      'end#1',
+      'cleanup',
+    ])
+    const sandbox = h.sandbox()
+    expect(sandbox.recreations).toBe(1)
+    // A fresh boot id, a second clone, a second install; the first run was never killed (gone).
+    expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(2)
+    expect(sandbox.backgroundRuns.map(r => r.name)).toEqual([
+      'install',
+      'bootstrap',
+      'install',
+      'bootstrap',
+    ])
+    const restarted = run.results[run.names.indexOf('bootstrap')] as { restart: string }
+    expect(restarted.restart).toMatch(/came back empty/)
+    const after = await reload(h.row)
+    expect(after.readyAt).toBeInstanceOf(Date)
+    expect(after.error).toBeNull()
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    expect(events.filter(e => e.type === 'preview.ready')).toHaveLength(1)
+    // The checklist says what happened, then finishes: the second bootstrap and dev are done.
+    const steps = events
+      .filter(e => e.type === 'step')
+      .map(e => e.data as { key: string; status: string; detail?: string })
+    const settled = steps.filter(s => s.key === 'bootstrap' && s.status !== 'running')
+    // The step's own error, then the checklist's word that the boot carries on, then done.
+    expect(settled.map(s => s.status)).toEqual(['error', 'error', 'done'])
+    expect(settled[1]?.detail).toBe(BOOT_RESTART_DETAIL)
+    expect(steps.at(-1)).toMatchObject({ key: 'dev', status: 'done' })
+    expect(steps.filter(s => s.key === 'sandbox' && s.status === 'done')).toHaveLength(2)
+    // `boot.timing` counts both attempts: two sandbox starts and two clones.
+    const timing = events.find(e => e.type === 'boot.timing')?.data as SessionBootTimingData
+    expect(timing.phases.filter(p => p.phase === 'sandbox.start')).toHaveLength(2)
+    expect(timing.phases.filter(p => p.phase === 'repo')).toHaveLength(2)
+    expect(timing.phases.map(p => p.phase)).toContain('install')
+  })
+
+  it('a container replaced under the clone starts again before the bootstrap ever runs on it', async () => {
+    const h = await harness()
+    let clones = 0
+    h.ports.script(sandbox => {
+      // The first clone dies with its container (the harness's own script answers the rest).
+      const exec = sandbox.exec.bind(sandbox)
+      sandbox.exec = async (command, opts) => {
+        if (command.includes('git init') && ++clones === 1) {
+          sandbox.recreate()
+          return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' }
+        }
+        return exec(command, opts)
+      }
+    })
+    const run = await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(0, 8)).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'sandbox.start.r1',
+      'repo.r1',
+      'bootstrap.r1',
+      'dev.r1',
+    ])
+    expect(run.outcome.status).toBe('ended')
+    expect((await reload(h.row)).readyAt).toBeInstanceOf(Date)
+  })
+
+  it('a container replaced at every attempt fails the boot after MAX_BOOT_RESTARTS restarts', async () => {
+    const h = await harness()
+    h.ports.script(sandbox =>
+      sandbox.onBackground(/scripts\/bootstrap\.mjs/, () => {
+        setTimeout(() => sandbox.recreate(), 0)
+        return new Promise<never>(() => {})
+      })
+    )
+    const run = await drive(
+      h,
+      () => {
+        throw new Error('the loop must not be reached')
+      },
+      { commandPollMs: 1 }
+    )
+    expect(run.names).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'bootstrap',
+      'sandbox.start.r1',
+      'repo.r1',
+      'bootstrap.r1',
+      'sandbox.start.r2',
+      'repo.r2',
+      'bootstrap.r2',
+      'fail',
+      'cleanup',
+    ])
+    expect(MAX_BOOT_RESTARTS).toBe(2)
+    const after = await reload(h.row)
+    expect(after.status).toBe('failed')
+    expect(after.error).toMatch(/came back empty/)
   })
 
   it('prepares an unprepared app’s dev inline, then branches from it', async () => {

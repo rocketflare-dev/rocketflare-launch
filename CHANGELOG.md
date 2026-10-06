@@ -9,6 +9,14 @@
   The version is the checkout's own (`.rocketflare.json` `kit.version`, else `launch.plugins.json`
   `kitVersion`), read at every bootstrap; an older kit, or one Launch cannot read, keeps the
   stand-ins. The boot's steps and its `boot.timing` phases are unchanged. No migration.
+- **A container replaced mid-boot fails fast and the boot starts again from the sandbox** (epic
+  #7). A long command (the install, the kit bootstrap) whose container was replaced is noticed at
+  the next poll — even one that had printed nothing, which used to be polled to its 10-minute
+  deadline — and the boot marker is asked after a poll that fails and with each liveness check. A
+  first boot whose `repo`, `bootstrap` or `dev` step finds its container replaced starts again from
+  `sandbox.start.r1` (fresh boot marker, clone, install, bootstrap, dev; the database is kept), up
+  to twice, instead of failing the session; the checklist says it is starting again. A cold resume
+  still fails as before. No migration.
 - **A coding session's agent is reached through one turn call, and the CLI process is one kind of
   agent** (rocketflare-launch#13). `AgentRuntime` is now `runTurn(ctx, input, sink)` (with
   `placement`, `workspaceFiles`, `cancel`, a `state` store, `login?`, `userLease?`): the turn hands

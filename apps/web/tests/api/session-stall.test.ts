@@ -223,7 +223,7 @@ describe('bounded sandbox calls', () => {
 })
 
 describe('a container that died', () => {
-  it('under a command: said so, as a restart — not a bare HTTP 500', async () => {
+  it('under a command: said so, as a restart — not a bare HTTP 500 — after booting again from sandbox.start', async () => {
     const h = await harness()
     h.sandbox().onBackground(/pnpm install/, () => {
       // Docker's OOM killer took the sandbox's control server; the SDK answers a bare 500.
@@ -231,7 +231,13 @@ describe('a container that died', () => {
       throw new Error('SandboxError: HTTP error! status: 500')
     })
     const run = await drive(h, noWait)
-    expect(run.names.slice(-3)).toEqual(['bootstrap', 'fail', 'cleanup'])
+    // Every attempt dies the same way: the boot starts again twice (MAX_BOOT_RESTARTS), then fails.
+    expect(run.names.filter(n => n.startsWith('sandbox.start'))).toEqual([
+      'sandbox.start',
+      'sandbox.start.r1',
+      'sandbox.start.r2',
+    ])
+    expect(run.names.slice(-3)).toEqual(['bootstrap.r2', 'fail', 'cleanup'])
     const after = await reload(h.row)
     expect(after.status).toBe('failed')
     expect(after.error).toMatch(
@@ -248,7 +254,7 @@ describe('a container that died', () => {
       if (path.endsWith('/boot-id')) sandbox.recreate()
     }
     const run = await drive(h, noWait)
-    expect(run.names.slice(-3)).toEqual(['repo', 'fail', 'cleanup'])
+    expect(run.names.slice(-3)).toEqual(['repo.r2', 'fail', 'cleanup'])
     expect(sandbox.execs).toHaveLength(0)
     expect((await reload(h.row)).error).toMatch(/stopped while cloning repo and came back empty/)
   })

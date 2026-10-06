@@ -665,6 +665,12 @@ export interface SessionBootstrapContext {
   maxCommandMs?: number
   /** Test hook: the poll's sleep. */
   sleep?: (ms: number) => Promise<void>
+  /**
+   * Whether the container is no longer the one the boot prepared (the steps read the boot
+   * marker): a long command in a replaced container then fails at once, rather than at its
+   * deadline (`runInBackground`'s `replaced`).
+   */
+  replaced?: () => Promise<boolean>
 }
 
 export interface BootstrapTimings {
@@ -768,6 +774,7 @@ async function runPhase(
       timeoutMs,
       ...(ctx.pollMs !== undefined ? { pollMs: ctx.pollMs } : {}),
       ...(ctx.sleep ? { sleep: ctx.sleep } : {}),
+      ...(ctx.replaced ? { replaced: ctx.replaced } : {}),
       ...(report && opts.progressOf ? { onProgress: report, progressOf: opts.progressOf } : {}),
     })
   } catch (err) {

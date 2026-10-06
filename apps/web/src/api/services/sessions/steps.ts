@@ -390,6 +390,55 @@ export async function inOurContainer<T>(
   }
 }
 
+/**
+ * How many times one boot starts its container again after it was replaced under a step (see
+ * {@link restartable}); one more replacement fails the boot with the step's own sentence.
+ */
+export const MAX_BOOT_RESTARTS = 2
+
+/** A boot step that found its container replaced: `restart` is the step's sentence for it. */
+export interface BootRestart {
+  restart: string
+}
+
+/** The checklist's word for a boot step whose container was replaced: the boot carries on. */
+export const BOOT_RESTART_DETAIL =
+  'The session container stopped and came back empty — starting it again'
+
+/**
+ * A boot step (`repo`, `bootstrap`, `dev`) whose container may be replaced under it: a
+ * {@link SandboxRestartedError} becomes a RESULT, `{ restart }`, rather than a failure — the
+ * platform's retries would only find the same empty container — and the Workflow boots again from
+ * `sandbox.start` (a fresh marker, then the clone), under `.rN` step names. Wraps `withProgress`;
+ * the step's checklist row then says the boot is starting again ({@link BOOT_RESTART_DETAIL})
+ * rather than "Start a new session". Any other failure throws as before.
+ */
+export function restartable<T>(
+  phase: BootPhase,
+  body: (scope: StepScope) => Promise<T>
+): (scope: StepScope) => Promise<T | BootRestart> {
+  return async scope => {
+    try {
+      return await body(scope)
+    } catch (err) {
+      if (!(err instanceof SandboxRestartedError)) throw err
+      scope.logger.warn({ err, phase }, 'session: container replaced mid-boot')
+      const label = BOOT_STEP_LABELS[phase]
+      await emitterFor(scope)({
+        type: 'step',
+        turn: 0,
+        data: { key: phase, label, status: 'error', detail: BOOT_RESTART_DETAIL },
+      })
+      return { restart: err.message }
+    }
+  }
+}
+
+/** Did the step come back asking for the boot to start again from `sandbox.start`? */
+export function isBootRestart(result: object): result is BootRestart {
+  return 'restart' in result && typeof (result as BootRestart).restart === 'string'
+}
+
 /** What the dev stack is told about where it is served from. */
 export function devEnvFor(cfg: AppConfig, session: Pick<SessionRow, 'shortId' | 'previewToken'>) {
   const template = cfg.SESSION_PREVIEW_URL
@@ -1038,7 +1087,7 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
         sandbox,
         dbUri: uri,
         dev: devEnvFor(scope.cfg, session),
-        ...bootstrapPolling(scope),
+        ...bootstrapPolling(scope, sandbox, bootId),
       })
       return migrationsHash(sandbox)
     })
@@ -1057,13 +1106,26 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
   return { prepared: true }
 }
 
-/** How a step's kit bootstrap polls its commands and reports progress (`sessionBootstrap`). */
-function bootstrapPolling(scope: StepScope) {
+/** How long a running command's boot-marker probe may take before it counts as "not known". */
+export const REPLACED_PROBE_MS = 15_000
+
+/**
+ * How a step's kit bootstrap polls its commands and reports progress (`sessionBootstrap`), and —
+ * with the boot's id — how it notices the container was replaced under a command: the marker read
+ * answers, and is not this boot's. A probe that fails or stalls is no evidence either way.
+ */
+function bootstrapPolling(scope: StepScope, sandbox: SandboxPort, bootId: string | undefined) {
   const limits = limitsOf(scope)
   return {
     pollMs: limits.commandPollMs,
     maxCommandMs: limits.execMaxMs,
     ...(scope.progress ? { onProgress: scope.progress } : {}),
+    ...(bootId
+      ? {
+          replaced: async () =>
+            (await checkContainer(sandbox, bootId, REPLACED_PROBE_MS)) === 'replaced',
+        }
+      : {}),
   }
 }
 
@@ -1127,7 +1189,7 @@ export async function bootstrapStep(
       dbUri: uri,
       dev,
       skip,
-      ...bootstrapPolling(scope),
+      ...bootstrapPolling(scope, sandbox, bootId),
     })
     if (hash) await updateSession(scope, { migrationsHash: hash })
     const healed = await heal()

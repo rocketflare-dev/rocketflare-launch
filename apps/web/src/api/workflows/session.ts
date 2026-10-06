@@ -11,7 +11,9 @@
  *            keep the container for a warm resume or destroy it — `salvageStep`)
  *   boot:    (db ‖ sandbox.start → repo) → [prepare → branch]* → bootstrap → dev (`preview.ready`)
  *            (‖: side by side, both settled before what follows — issue #15; * only when this
- *            session prepares the app's `dev`; a `prepare` run stops after it).
+ *            session prepares the app's `dev`; a `prepare` run stops after it). A container
+ *            replaced under `repo`, `bootstrap` or `dev` boots again from `sandbox.start.rN`
+ *            (`restartable`, at most `MAX_BOOT_RESTARTS`; `BootContainer`).
  *            Each boot step's result carries its clock (`timing`); the boot's last step — `dev`,
  *            or `transcript#K` on a cold resume — writes them as ONE `boot.timing` event and a
  *            `session.boot` trace (issue #8, `services/sessions/boot-timing.ts`)
@@ -149,6 +151,7 @@ import {
 } from '../services/sessions/step-config'
 import {
   BOOT_ERROR_MAX_CHARS,
+  type BootRestart,
   bootstrapStep,
   branchStep,
   checkpointStep,
@@ -162,9 +165,12 @@ import {
   endStep,
   failStep,
   inspectStep,
+  isBootRestart,
+  MAX_BOOT_RESTARTS,
   type PhaseALandingStage,
   prepareStep,
   repoStep,
+  restartable,
   restoreCheckStep,
   restoreStep,
   restoreTranscriptStep,
@@ -228,6 +234,63 @@ export const MAX_LAND_PHASE_ROUNDS = 200
 const shipping = <T>(body: (scope: StepScope) => Promise<T>) => withHeartbeat(['shipping'], body)
 /** The same for a merged landing's `cleanup` and Phase B steps (the row is `shipped`). */
 const released = <T>(body: (scope: StepScope) => Promise<T>) => withHeartbeat(['shipped'], body)
+
+/**
+ * The container half of a first boot: `sandbox.start` → `repo`, and again — `sandbox.start.rN` →
+ * `repo.rN`, then the caller's `bootstrap.rN` / `dev.rN` — each time a step finds the container
+ * replaced under it ({@link restartable}). State lives only in step RESULTS (replay-safe):
+ * `bootId` is the latest `sandbox.start`'s, `timings` the completed steps' clocks not yet taken.
+ */
+class BootContainer {
+  restarts = 0
+  bootId = ''
+  timings: (BootStepTiming | undefined)[] = []
+
+  constructor(private readonly run: StepRunner) {}
+
+  /** `base` for the first attempt, `base.rN` for the Nth restart. */
+  name(base: string): string {
+    return this.restarts === 0 ? base : `${base}.r${this.restarts}`
+  }
+
+  /** Start the container and clone into it, again while the clone finds it replaced. */
+  async up(): Promise<void> {
+    for (;;) {
+      const started = await this.run(
+        this.name('sandbox.start'),
+        withProgress('sandbox', startSandboxStep),
+        BOOT_STEP
+      )
+      this.bootId = started.bootId
+      this.timings.push(started.timing)
+      const booted = started.bootId
+      const repo = await this.run(
+        this.name('repo'),
+        restartable(
+          'repo',
+          withProgress('repo', s => repoStep(s, booted))
+        ),
+        BOOT_STEP
+      )
+      if (!isBootRestart(repo)) {
+        this.timings.push(repo.timing)
+        return
+      }
+      this.next(repo)
+    }
+  }
+
+  /** A later step found the container replaced: count it, then {@link up} again. */
+  async again(lost: BootRestart): Promise<void> {
+    this.next(lost)
+    await this.up()
+  }
+
+  private next(lost: BootRestart): void {
+    if (this.restarts >= MAX_BOOT_RESTARTS) throw new Error(lost.restart)
+    this.restarts += 1
+  }
+}
 
 /** How one ship round ended, for the loop's dirty state. */
 type ShipRound =
@@ -306,31 +369,22 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         // neither needs the other; `bootstrap` (or `prepare`) waits for both. Settled, not raced:
         // a failure on one side still lets the other's step finish before `fail` and `cleanup`
         // run, so nothing is left running under them, and the first side's error fails the boot.
+        // A container replaced under `repo`, `bootstrap` or `dev` boots again from `sandbox.start`
+        // (`restartable`): `.rN` step names, at most MAX_BOOT_RESTARTS times. Each attempt's
+        // completed steps keep their clocks, so `boot.timing` counts the lost time too.
+        const boot = new BootContainer(run)
         const [dbSide, sandboxSide] = await Promise.allSettled([
           run('db', withProgress('db', dbStep), BOOT_STEP),
-          (async () => {
-            const started = await run(
-              'sandbox.start',
-              withProgress('sandbox', startSandboxStep),
-              BOOT_STEP
-            )
-            const repo = await run(
-              'repo',
-              withProgress('repo', s => repoStep(s, started.bootId)),
-              BOOT_STEP
-            )
-            return { started, repo }
-          })(),
+          boot.up(),
         ])
         if (dbSide.status === 'rejected') throw dbSide.reason
         if (sandboxSide.status === 'rejected') throw sandboxSide.reason
         const db = dbSide.value
-        const { started, repo } = sandboxSide.value
-        const booted = started.bootId
-        bootId = booted
         // Issue #8: each boot step's clock, from its result; `dev` writes them as `boot.timing`.
-        const timings: (BootStepTiming | undefined)[] = [db.timing, started.timing, repo.timing]
+        const timings: (BootStepTiming | undefined)[] = [db.timing, ...boot.timings]
+        boot.timings = []
         if (db.prepare) {
+          const booted = boot.bootId
           const prepared = await run(
             'prepare',
             withProgress('prepare', s => prepareStep(s, booted)),
@@ -343,17 +397,41 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           const branched = await run('branch', withProgress('branch', branchStep), BOOT_STEP)
           timings.push(branched.timing)
         }
-        const bootstrapped = await run(
-          'bootstrap',
-          withProgress('bootstrap', s => bootstrapStep(s, booted)),
-          BOOT_STEP
-        )
-        timings.push(bootstrapped.timing)
-        await run(
-          'dev',
-          withProgress('dev', s => devStep(s, booted), { kind: 'boot', before: timings }),
-          BOOT_STEP
-        )
+        for (;;) {
+          const booted = boot.bootId
+          const bootstrapped = await run(
+            boot.name('bootstrap'),
+            restartable(
+              'bootstrap',
+              withProgress('bootstrap', s => bootstrapStep(s, booted))
+            ),
+            BOOT_STEP
+          )
+          if (isBootRestart(bootstrapped)) {
+            await boot.again(bootstrapped)
+            timings.push(...boot.timings)
+            boot.timings = []
+            continue
+          }
+          timings.push(bootstrapped.timing)
+          const before = [...timings]
+          const dev = await run(
+            boot.name('dev'),
+            restartable(
+              'dev',
+              withProgress('dev', s => devStep(s, booted), { kind: 'boot', before })
+            ),
+            BOOT_STEP
+          )
+          if (isBootRestart(dev)) {
+            await boot.again(dev)
+            timings.push(...boot.timings)
+            boot.timings = []
+            continue
+          }
+          break
+        }
+        bootId = boot.bootId
       }
       if (claim.start !== 'cleanup') merged = (await this.loop(run, step, bootId)).merged
     } catch (err) {

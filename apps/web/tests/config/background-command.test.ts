@@ -312,6 +312,97 @@ describe('runInBackground', () => {
     expect(err.message).toMatch(/files are gone/)
   })
 
+  it('a container replaced before the first poll: the log Launch wrote is gone, so it fails at once — even for a command that printed nothing', async () => {
+    const fake = new FakeSandbox().onBackground('x', { hang: true })
+    const start = fake.startProcess.bind(fake)
+    fake.startProcess = async (command, opts) => {
+      const proc = await start(command, opts)
+      fake.recreate()
+      return proc
+    }
+    let polls = 0
+    const err = await runInBackground(fake, {
+      ...base,
+      timeoutMs: 2_000,
+      name: 'x',
+      command: 'x',
+      sleep: async () => {
+        polls++
+      },
+    }).catch(e => e)
+    expect(err).toBeInstanceOf(BackgroundCommandLostError)
+    expect(err.message).toMatch(/files are gone/)
+    expect(polls).toBe(0)
+  })
+
+  it('a replaced container whose calls fail: the boot-marker probe ends the wait at the first failed poll', async () => {
+    const fake = new FakeSandbox().onBackground('x', { hang: true })
+    const probes: number[] = []
+    let polls = 0
+    const err = await runInBackground(fake, {
+      ...base,
+      timeoutMs: 2_000,
+      name: 'x',
+      command: 'x',
+      sleep: async () => {
+        polls++
+        // The platform is bringing a new container up under the old run's id.
+        fake.failNext('readFile', new Error('HTTP error! status: 500'))
+      },
+      replaced: async () => {
+        probes.push(polls)
+        return true
+      },
+    }).catch(e => e)
+    expect(err).toBeInstanceOf(BackgroundCommandLostError)
+    expect(err.message).toMatch(/container was replaced under it/)
+    // One good poll, one failed one, then the probe — not MAX_POLL_FAILURES of them, nor the deadline.
+    expect(probes).toEqual([1])
+    expect(fake.backgroundRuns[0]?.killed).toBe(false)
+  })
+
+  it('a replaced container that still answers: the probe with the liveness check notices it', async () => {
+    const fake = new FakeSandbox().onBackground('x', { hang: true })
+    let polls = 0
+    let asked = 0
+    const err = await runInBackground(fake, {
+      ...base,
+      timeoutMs: 5_000,
+      name: 'x',
+      command: 'x',
+      sleep: async () => {
+        polls++
+      },
+      replaced: async () => {
+        asked++
+        return polls >= LIVENESS_EVERY_POLLS * 2 - 1
+      },
+    }).catch(e => e)
+    expect(err).toBeInstanceOf(BackgroundCommandLostError)
+    expect(err.message).toMatch(/container was replaced under it/)
+    // Asked only with the liveness checks: the second one says replaced.
+    expect(asked).toBe(2)
+    expect(polls).toBe(LIVENESS_EVERY_POLLS * 2 - 1)
+  })
+
+  it('a probe that fails is no evidence: the run goes on and finishes', async () => {
+    const fake = new FakeSandbox().onBackground('x', {
+      log: Array.from({ length: LIVENESS_EVERY_POLLS + 2 }, (_, i) => `line ${i}\n`),
+    })
+    let asked = 0
+    const result = await runInBackground(fake, {
+      ...base,
+      name: 'x',
+      command: 'x',
+      replaced: async () => {
+        asked++
+        throw new Error('no answer within 15000 ms')
+      },
+    })
+    expect(result.exitCode).toBe(0)
+    expect(asked).toBe(1)
+  })
+
   it('a runner that died without an exit code is noticed by the liveness check', async () => {
     const fake = new FakeSandbox().onBackground('x', () => Promise.reject(new Error('runner died')))
     const err = await runInBackground(fake, { ...base, name: 'x', command: 'x' }).catch(e => e)

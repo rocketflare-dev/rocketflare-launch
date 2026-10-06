@@ -302,7 +302,9 @@ each Neon call 5 minutes, and a failure puts the step's error (a failed command'
 the database URI scrubbed) on the checklist and in `sessions.error`. `sandbox.start` writes a boot
 id to `/workspace/.launch/boot-id`; every later step checks it, so a container that died and came
 back EMPTY fails the step with "The session container stopped while … and came back empty" instead
-of cloning into nothing or curling a dev server that is not there. Pressing **End** while a step
+of cloning into nothing or curling a dev server that is not there. On a first boot the checklist
+then says it is starting the container again, and the boot runs again from **Starting sandbox**
+(at most twice) before it gives up. Pressing **End** while a step
 runs stops it within ten seconds (each boot step polls the row) and ends the session.
 
 ## Suspend and resume

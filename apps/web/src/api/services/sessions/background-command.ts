@@ -35,7 +35,9 @@
  * the last non-empty line) only when that CHANGES. Past `timeoutMs` it kills the process group and
  * throws {@link BackgroundCommandTimeoutError} with the log; an aborted `signal` does the same at
  * the next poll and throws {@link BackgroundCommandAbortedError}. A run whose files vanish (the container
- * was replaced) or whose process is gone without an exit code throws
+ * was replaced — the log Launch wrote before the start counts, so a command that printed nothing
+ * yet is covered too), whose process is gone without an exit code, or whose container `replaced`
+ * says is no longer the run's (asked after a failed poll and with each liveness check) throws
  * {@link BackgroundCommandLostError}. A poll that fails is retried up to {@link MAX_POLL_FAILURES}
  * times in a row, because one dropped RPC must not fail a 10-minute install.
  *
@@ -110,6 +112,15 @@ export interface BackgroundCommandOptions {
   onProgress?: (progress: string) => void | Promise<void>
   /** What in the log is progress; default {@link lastMeaningfulLine}. */
   progressOf?: (log: string) => string | null
+  /**
+   * Is the container still the one the run was started in? Asked after a poll that FAILED and
+   * with every liveness check ({@link LIVENESS_EVERY_POLLS}); `true` ends the wait at once with
+   * {@link BackgroundCommandLostError}. The session steps answer it from the boot marker
+   * (`boot-marker.ts`): a replaced container's calls may fail, or stall, rather than answer
+   * "no such file", and without it such a run was waited on until its deadline. Its own errors
+   * count as "not known" (false).
+   */
+  replaced?: () => Promise<boolean>
 }
 
 export interface BackgroundCommandResult {
@@ -285,6 +296,7 @@ export async function runInBackground(
   let pid: number | null = null
   let processId: string | null = null
   let attached = false
+  let logWritten = false
   const previous = parsePid(await sandbox.readFile(files.pid))
   if (
     previous &&
@@ -297,7 +309,13 @@ export async function runInBackground(
   } else {
     runId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
     // An earlier run's log must not be read as this one's progress before the runner truncates it.
-    await sandbox.writeFile(files.log, '').catch(() => {})
+    // Once written, the log never vanishes while the run lives (the runner truncates, never
+    // removes it): a later read that finds NO log is a replaced container, even when the command
+    // printed nothing yet (a silent `pnpm install`).
+    logWritten = await sandbox.writeFile(files.log, '').then(
+      () => true,
+      () => false
+    )
     const env = typeof opts.env === 'function' ? await opts.env() : opts.env
     const execOpts: SandboxExecOptions = {
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
@@ -315,7 +333,7 @@ export async function runInBackground(
   const deadline = polledFrom + opts.timeoutMs
   let lastProgress: string | null = null
   let lastLog = ''
-  let seenFiles = false
+  let seenFiles = logWritten
   let failures = 0
   let polls = 0
   const report = async (log: string) => {
@@ -329,6 +347,12 @@ export async function runInBackground(
       // Progress is a courtesy; it never fails the command.
     }
   }
+
+  const replacedNow = async () => (opts.replaced ? opts.replaced().catch(() => false) : false)
+  const lostToReplacement = () =>
+    new BackgroundCommandLostError(
+      `${opts.name}: the container was replaced under it — it is not the one the run started in`
+    )
 
   for (;;) {
     try {
@@ -351,6 +375,7 @@ export async function runInBackground(
       }
       polls++
       if (polls % LIVENESS_EVERY_POLLS === 0) {
+        if (await replacedNow()) throw lostToReplacement()
         pid ??= parsePid(await sandbox.readFile(files.pid))?.pid ?? null
         if (pid !== null && !(await isAlive(sandbox, pid))) {
           // It may have ended between the two reads: one more look at the exit file.
@@ -369,6 +394,8 @@ export async function runInBackground(
       if (err instanceof BackgroundCommandLostError || err instanceof SandboxInterruptedError) {
         throw err
       }
+      // A call that fails may be the container going away: ask before retrying the poll.
+      if (await replacedNow()) throw lostToReplacement()
       if (++failures >= MAX_POLL_FAILURES) throw err
     }
     const left = deadline - Date.now()

@@ -1686,7 +1686,16 @@ reload) is restarted as `<id>-rN` from the row.
   failed session's page offers "Start a new session". `sandbox.start` writes a boot id into the
   container and every later boot step checks it: a container recreated EMPTY under the session
   (Docker's OOM killer on a laptop) fails the step as "The session container stopped while … and
-  came back empty" rather than working on nothing. The dev step's port wait checks the dev
+  came back empty" rather than working on nothing. **On a first boot that is not the end**: a
+  `repo`, `bootstrap` or `dev` step that finds its container replaced RETURNS `{ restart }`
+  (`restartable`, so the platform's retries do not each meet the same empty container) and the
+  Workflow boots again from `sandbox.start.r1` → `repo.r1` → `bootstrap.r1` → `dev.r1` (a fresh
+  marker; the database side is not repeated), at most `MAX_BOOT_RESTARTS` (2) times before the
+  boot fails with that sentence; the checklist row says "starting it again", and `boot.timing`
+  keeps every attempt's completed steps. A long command notices a replaced container at once:
+  `runInBackground` treats the log it wrote before the start as seen (a silent `pnpm install`
+  whose log vanished used to be polled to its 10-minute deadline), and asks the boot marker
+  (`replaced`) after a poll that fails and with every liveness check. The dev step's port wait checks the dev
   server's pid and fails at once, with its log's tail, when it exits. A boot step polls the row every
   10 s: **End** mid-step stops it and the session ends (not fails) — the button reads "Ending…" —
   and it writes a heartbeat (`last_activity_at`) every 30 s.
@@ -1787,7 +1796,10 @@ survives 45 idle minutes, and that the SDK does not stop it earlier, need a real
 on the same Durable Object seconds after a destroy has twice never answered under `wrangler dev`
 (`docs/SESSIONS-LOCAL.md` § A start that never answers): `CloudflareSandbox.start` now bounds each
 attempt (100 s) and retries once after a reset, and `onStop`'s database write is bounded (10 s) —
-the cause is not reproduced, so whether that is enough is unproven. The kit's own bootstrap flags (0.17.4) are
+the cause is not reproduced, so whether that is enough is unproven. A boot that restarts from
+`sandbox.start` (a container replaced mid-boot) is the FIRST boot only: a cold RESUME whose
+container is replaced still fails its step as before (the person resumes again), and so does a
+`prepare`, whose failure marks the app's `dev` failed. The kit's own bootstrap flags (0.17.4) are
 proven against the `FakeSandbox` and the kit's argument parser as read, not yet by a real 0.17.4
 bootstrap in a container. The lighter cold-resume
 bootstrap on a kit before 0.17.4 swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
