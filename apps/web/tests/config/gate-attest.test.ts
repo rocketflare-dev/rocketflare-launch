@@ -25,6 +25,7 @@ import {
   worktreeTreeScript,
 } from '@/api/services/sessions/checkpoint'
 import { formatGateDuration, launchGateCheckRun } from '@/api/services/sessions/gate-attest'
+import { foldChecks } from '@/api/services/sessions/repo/github-repo-host'
 
 const hasGit = spawnSync('git', ['--version']).status === 0
 
@@ -158,6 +159,25 @@ describe('requiredCheckState', () => {
 
   it('a commit status named Gate counts like a check run', () => {
     expect(requiredCheckState([check('Gate', 'success', 'status')])).toBe('success')
+  })
+})
+
+describe('foldChecks (the PR panel’s fold)', () => {
+  const run = (name: string, conclusion = 'success') => ({
+    id: 1,
+    name,
+    status: 'completed',
+    conclusion,
+    html_url: null,
+  })
+  const NOW = new Date('2026-10-06T00:00:00Z')
+
+  it('leaves Launch’s own launch/gate out: a repo with no CI is none, not "1 passed"', () => {
+    const alone = foldChecks([run(LAUNCH_GATE_CHECK)], null, 'abc', NOW)
+    expect(alone).toMatchObject({ state: 'none', total: 0, passed: 0, checks: [] })
+    const beside = foldChecks([run(LAUNCH_GATE_CHECK), run('Gate', 'failure')], null, 'abc', NOW)
+    expect(beside).toMatchObject({ state: 'failure', total: 1, passed: 0, failed: 1 })
+    expect(beside.checks.map(c => c.name)).toEqual(['Gate'])
   })
 })
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Track A follow-ups for sessions (issue #21).**
+  - **The PR panel no longer counts `launch/gate` as CI.** Launch's own attestation is left out of
+    the checks fold (`foldChecks`), so a repo with no CI reads "no checks" rather than "1 passed".
+  - **No attestation for a tree the earlier gate steps did not see.** Each attempt now reads its
+    starting tree in a new step, `ship.tree#N.A`. When a step rewrites files (e.g. typecheck
+    regenerating `worker-configuration.d.ts`), the last step's tree differs. `ship.attest` then
+    posts no `launch/gate` and an `error` event names the files, so the PR's CI runs the whole gate.
+    The ship carries on.
+  - **Kit upgrade sessions have Stop again**, in the session header while a turn runs. They have no
+    composer, which is where Stop lived.
+  - **A workflow edit the agent made and then undid no longer blocks saving.** The checkpoint
+    judges the net change under `.github/workflows/` against the pushed tip. Unpushed commits that
+    touched a workflow on the way are folded into the save's one commit (`git reset --soft`),
+    because GitHub refuses a push if any of its commits touches a workflow.
+
 - **A kit upgrade session no longer ends its turn without running the upgrade.** Told to "run
   `/rf-upgrade`", headless Claude Code invoked the Skill tool, read its "Launching skill" as a
   background job, said it would wait, and ended the turn: nothing changed, no `LAUNCH-UPGRADE:`

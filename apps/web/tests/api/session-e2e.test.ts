@@ -422,6 +422,7 @@ describe('a coding session, end to end', () => {
       'ship.claim#3',
       'ship.save#3',
       'ship.kit#3',
+      'ship.tree#3.1',
       'ship.gate#3.1.lint',
       'ship.gate#3.1.typecheck',
       'ship.db#3.1',

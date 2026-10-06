@@ -332,6 +332,7 @@ const SHIP = [
   'ship.claim#1',
   'ship.save#1',
   'ship.kit#1',
+  'ship.tree#1.1',
   'ship.gate#1.1.lint',
   'ship.gate#1.1.typecheck',
   'ship.db#1.1',

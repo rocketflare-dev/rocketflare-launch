@@ -24,6 +24,12 @@
  * **Never fails the ship**: an attestation is an optimisation for CI. Any failure — no `checks:
  * write` on an installation that has not accepted it yet, GitHub down — is a log line and ONE
  * `error` event saying the PR's CI runs the whole gate itself, and the ship carries on.
+ *
+ * **Never for a tree the earlier steps did not see** (issue #21): each attempt reads its tree first
+ * (`ship.tree#N.A`); when the last step's tree differs — a step rewrote files, e.g. typecheck
+ * regenerating `worker-configuration.d.ts` — the attest posts nothing and ONE `error` event names
+ * the files ({@link attestRewroteMessage}). Re-running the gate on the new tree would usually just
+ * rewrite again; the PR's full CI gate is the honest fallback.
  */
 import {
   LAUNCH_GATE_CHECK,
@@ -132,6 +138,16 @@ export function attestFailedMessage(detail: string): string {
   return `The gate passed, but Launch could not record it on GitHub as the \`${LAUNCH_GATE_CHECK}\` check (${detail}), so the pull request's CI runs the whole gate itself. The ship carries on. If GitHub says the App lacks a permission, an organisation owner must accept the Launch GitHub App's new "Checks: read and write" permission on its installation.`
 }
 
+/**
+ * Issue #21: the `error` event's sentence when a gate step rewrote files, so the earlier steps did
+ * not run on the tree being shipped — Launch attests nothing and the PR's CI runs the whole gate.
+ */
+export function attestRewroteMessage(files: readonly string[]): string {
+  const names = files.slice(0, 5).join(', ')
+  const more = files.length > 5 ? ` and ${files.length - 5} more` : ''
+  return `The gate passed, but one of its steps changed files (${names}${more}), so the steps before it did not run on the code being shipped. Launch did not record the gate as the \`${LAUNCH_GATE_CHECK}\` check, so the pull request's CI runs the whole gate itself. The ship carries on. Commit what that step generates, and the next ship is attested.`
+}
+
 export interface ShipAttestResult {
   posted: boolean
   /** False when an earlier try's run was found (or there is no GitHub: `local`). */
@@ -144,13 +160,21 @@ export interface ShipAttestResult {
  */
 export async function shipAttestStep(
   scope: StepScope,
-  input: { attempt: number; tree: string }
+  input: { attempt: number; tree: string; rewrote?: string[] }
 ): Promise<ShipAttestResult> {
   let turn = 0
   try {
     const session = await loadSession(scope)
     turn = session.turnCount
     if (session.status !== 'shipping' || !session.headSha) return { posted: false }
+    if (input.rewrote && input.rewrote.length > 0) {
+      await emitterFor(scope)({
+        type: 'error',
+        turn,
+        data: { message: attestRewroteMessage(input.rewrote) },
+      })
+      return { posted: false }
+    }
     const steps = await greenGateSteps(scope, input.attempt)
     const repo = await sessionRepo(scope.db, session)
     const run = launchGateCheckRun({

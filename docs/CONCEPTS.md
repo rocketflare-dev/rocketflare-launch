@@ -2260,16 +2260,19 @@ that fails transiently ("Repository not found", a 401/404/429/5xx, a dropped con
 `TRANSIENT_PUSH_RE`) is tried once more after 3 s: the push is idempotent and the step has no
 retry of its own; a rejected ref (non-fast-forward, the git handler's 403) is not retried.
 **Workflow files** (`checkpoint.ts`, `workflowsGuardScript`): an ordinary session's token has no
-`workflows: write`, so after `git add` and before the commit the checkpoint lists what the push
-would carry under `.github/workflows/` — the staged change, plus every commit since the last
-pushed one (`head_sha`, else `base_sha`; `git log -m`, so a reverted round trip and a merge that
-brings a workflow change in count too, as they do for GitHub) — and, when any, refuses with
-`CheckpointError('workflows')` whose message is the sentence alone: "This change edits the app's CI
+`workflows: write`, so after `git add` and before the commit the checkpoint judges the NET change
+the push would carry under `.github/workflows/` — the staged tree against the last pushed commit
+(`head_sha`, else `base_sha`; a merge that brings a workflow change in counts, as it does for
+GitHub) — and, when any, refuses with `CheckpointError('workflows')` whose message is the sentence
+alone: "This change edits the app's CI
 workflows (.github/workflows/ci.yml). Coding sessions can't push workflow changes — an owner has to
 make that change, or run a kit upgrade. Nothing was saved: …". Nothing is committed or pushed, and
 the `error` event ("Could not save the session's work: …", or "… before the gate" in a ship) says
-it. GitHub's own refusal (`without \`workflows\` permission`), should a change get past the guard,
-is told in the same words. A kit upgrade session is not guarded: its token carries the scope.
+it. A round trip the net change does not show — an unpushed commit edited a workflow and a later
+one undid it (issue #21) — is not refused: GitHub checks EVERY pushed commit and would refuse it,
+so the checkpoint folds the unpushed commits into its own one (`git reset --soft` to the pushed
+tip, the index keeping the tree; the guard's `history` lines, `git log -m`). GitHub's own refusal
+(`without \`workflows\` permission`), should a change get past the guard, is told in the same words. A kit upgrade session is not guarded: its token carries the scope.
 **Ship** (issue #1; the steps in `ship-steps.ts`, the kit contract in `gate.ts`, the PR in
 `ship.ts`): **Launch runs the gate, never Claude, and only its exit codes decide.** `ship.claim#N`
 (`ready → shipping`) → `ship.save#N` (a checkpoint, so the half hour the gate may take risks
@@ -2345,8 +2348,10 @@ take over (**Landing**, below). **`sessions.ship_summary`** keeps what Launch wr
 gateTree, at }`, overwritten on a re-ship and never reset by a reopen; the squash message, the
 `session.merge` request's context and the promotion strip (§18.17) read it. A green gate makes no
 model call but the summary. **The gate's tree, and the attestation** (issue #9; a result belongs to
-a git TREE — a squash or a release bump makes a new commit over the same tree): the green attempt's
-LAST gate step, once its command ends, reads the working tree's tree as the checkpoint would commit
+a git TREE — a squash or a release bump makes a new commit over the same tree): each attempt first
+reads the tree it STARTS on in its own step, `ship.tree#N.A` (issue #21 — its own step, so a
+retried first gate step that re-attaches to a command which already rewrote files never reads it
+late); the green attempt's LAST gate step, once its command ends, reads the working tree's tree as the checkpoint would commit
 it (`worktreeTreeScript`: the checkpoint's scan and pathspec, `git add -A` into a COPY of the index,
 `git write-tree` — the checkout's index untouched) onto its `ship.gate` row (`tree`) and step
 result. `ship.commit` reads it AGAIN before it commits — anything that moved since the gate (a
@@ -2363,7 +2368,12 @@ kit's CI reads to skip the gate it would only run again; never posted for a red 
 on the green path only). Idempotent: `createCheckRun` lists the head's runs first and answers one
 with the same name and `external_id`, so a retried step posts nothing new. **It never fails the
 ship**: any failure (an installation that has not accepted `checks: write`, GitHub down) is a log
-line and one `error` event saying the PR's CI runs the whole gate itself. The GitHub App needs
+line and one `error` event saying the PR's CI runs the whole gate itself. **Nor for a tree the
+earlier steps did not see** (issue #21): when the last step's tree is not the one `ship.tree` read
+— a step rewrote files, e.g. typecheck regenerating `worker-configuration.d.ts` — `ship.attest`
+posts nothing and one `error` event names the files (`git diff-tree`, `attestRewroteMessage`); the
+PR's CI then runs the whole gate. Re-running the gate on the new tree was the alternative, but a
+step that rewrites usually rewrites again. The GitHub App needs
 `checks: write` for it (`REQUIRED_GITHUB_PERMISSIONS`; an installation made before issue #9 has
 `read`, and Setup's GitHub check names the gap until an owner accepts the new permission). **No
 PR** → `ship.settle#N`: an `error` event saying why (still red after every attempt, the gate
@@ -2399,7 +2409,9 @@ evals run) proceeds; a repo with no `Gate` check at all (an older kit whose CI j
 otherwise) falls back to the fold over its other checks (any red fails, all green passes, else
 pending); and Launch's own
 `launch/gate` never counts — neither as `Gate` nor as "something reported" (a repo whose only
-check is it is `none`). Green → `approval` (a review is
+check is it is `none`). It is not in the fold either (issue #21, `foldChecks`): it is the sandbox
+gate's result, which the panel already shows, so the PR panel never lists it as a passing check
+and a repo with no CI reads "no checks", not "1 passed". Green → `approval` (a review is
 required) or `merging`; red → reopen `ci_failed`, its `ship.ci` event carrying the failing check
 (`Gate` first) with the last 80 lines of its Actions job log (else its annotations), timestamps
 stripped and REDACTED like the gate's tail (`redactCheckLog`: connection strings, model keys,
@@ -3668,7 +3680,8 @@ change the app's CI workflows."), before any write: `POST /:id/turns` (queued or
 input either. Launch's own input still runs — the upgrade prompt, a ship's fix turns
 (`requestTurn` with no sender) — and Ship, End, Stop and the budget stay the owner's. The session
 page shows that sentence and what to do if it stops in the composer's place (no starter prompts,
-no Withdraw, no preview camera); `launch sessions say` prints it with a hint naming
+no Withdraw, no preview camera), and — with no composer to hold it — Stop sits in the header
+while a turn runs (issue #21, `SessionHeader`, `POST /:id/cancel`); `launch sessions say` prints it with a hint naming
 `sessions ship` / `sessions end`.
 
 **Fetching the kit** (§18.10's git proxy, `egress/forward-git.ts`): `pnpm kit:upgrade` clones

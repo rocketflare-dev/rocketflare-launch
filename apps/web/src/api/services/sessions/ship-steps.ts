@@ -9,6 +9,7 @@
  *                       `pnpm gate` steps (0.16.0+, from `pnpm gate --list --json`), the legacy
  *                       `test:ephemeral` three (0.15.7+), or neither — a red row, no fix turn
  *   per attempt A (numbered across the session's ships, so a gate branch name is never reused):
+ *     ship.tree#N.A       the tree the attempt starts on (issue #21): the last step compares it
  *     ship.gate#N.A.lint, ship.gate#N.A.typecheck      the kit's commands, run by Launch
  *     ship.db#N.A         the throwaway gate branch `gate-<short>-<A>` (a child of the session's)
  *     ship.gate#N.A.test  `pnpm gate test` on it, with the kit's three variables
@@ -83,7 +84,7 @@ import {
   type SandboxPort,
   sessionAllowedHosts,
 } from './ports'
-import { SESSION_WORKSPACE } from './rocketflare-dev'
+import { SESSION_HOME, SESSION_WORKSPACE } from './rocketflare-dev'
 import {
   clipDiffStat,
   DEFAULT_SHIP_ATTEMPTS,
@@ -345,6 +346,12 @@ export interface GateStepResult {
   output?: string
   /** Issue #9: green, on the attempt's last step — the working tree's tree when it ended. */
   tree?: string
+  /**
+   * Issue #21: green, but the working tree is not the one the attempt STARTED on (`ship.tree`) — a
+   * step rewrote these files (e.g. typecheck regenerating `worker-configuration.d.ts`), so the
+   * earlier steps did not run on {@link tree}. `ship.attest` then posts nothing.
+   */
+  rewrote?: string[]
 }
 
 /**
@@ -402,6 +409,8 @@ export async function shipGateStep(
     command?: ShipGateCommand
     /** Issue #9: the attempt's last command — a green one reads the tree it ran on. */
     last?: boolean
+    /** Issue #21: the tree the attempt started on (`ship.tree`), which the last step compares. */
+    startTree?: string
   },
   bootId?: string
 ): Promise<GateStepResult> {
@@ -474,6 +483,10 @@ export async function shipGateStep(
   // step (the command re-attached, finished) without writing its row twice.
   const tree = result.passed && input.last ? await gateTreeOf(scope, sandbox, bootId) : undefined
   if (tree === null) return { passed: false, step, stop: 'container_lost' }
+  const rewrote =
+    tree && input.startTree && tree !== input.startTree
+      ? await changedBetween(sandbox, input.startTree, tree)
+      : undefined
   const output = [result.note, gateOutputTail(result.log, secrets)].filter(Boolean).join('\n')
   const target = gate.database ? gateTestTarget(result.log, secrets) : null
   await emitterFor(scope)({
@@ -491,8 +504,43 @@ export async function shipGateStep(
     },
   })
   return result.passed
-    ? { passed: true, step, ...(tree ? { tree } : {}) }
+    ? { passed: true, step, ...(tree ? { tree } : {}), ...(rewrote ? { rewrote } : {}) }
     : { passed: false, step, command: gate.command, output }
+}
+
+/**
+ * The paths that differ between two trees (`git diff-tree`), for the sentence saying why a gate
+ * was not attested. Best effort: an unreadable diff still means "changed" — `['(unknown)']`.
+ */
+async function changedBetween(sandbox: SandboxPort, from: string, to: string): Promise<string[]> {
+  const result = await sandbox
+    .exec(`git diff-tree -r --name-only ${from} ${to}`, {
+      cwd: SESSION_WORKSPACE,
+      env: { GIT_TERMINAL_PROMPT: '0', HOME: SESSION_HOME },
+      timeoutMs: 30_000,
+    })
+    .catch(() => null)
+  const files = result?.exitCode === 0 ? result.stdout.split('\n').filter(Boolean) : []
+  return files.length > 0 ? files : ['(unknown)']
+}
+
+// ---- ship.tree ---------------------------------------------------------------------------------
+
+export type ShipTreeResult = { ok: true; tree: string } | { ok: false; stop: ShipStop }
+
+/**
+ * `ship.tree#N.A` (issue #21): the working tree's tree BEFORE the attempt's first command, so the
+ * last one can tell whether a step rewrote files (`GateStepResult.rewrote`). Its own step, so a
+ * retried first gate step — which may re-attach to a command that already rewrote them — never
+ * reads it late. A read that fails throws (the step retries).
+ */
+export async function shipGateTreeStep(scope: StepScope, bootId?: string): Promise<ShipTreeResult> {
+  const session = await loadSession(scope)
+  if (session.status !== 'shipping' || endRequested(session)) return { ok: false, stop: 'ended' }
+  const sandbox = sandboxFor(scope, session)
+  if (await lostContainer(scope, sandbox, bootId)) return { ok: false, stop: 'container_lost' }
+  const tree = await gateTreeOf(scope, sandbox, bootId)
+  return tree === null ? { ok: false, stop: 'container_lost' } : { ok: true, tree }
 }
 
 /**

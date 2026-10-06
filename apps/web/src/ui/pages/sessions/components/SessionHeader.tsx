@@ -11,6 +11,9 @@
  *   merge itself runs (`landing.stage === 'merging'`), which cannot stop half-way.
  * - **End** confirms too, and says what is kept (the branch) and what is not (the sandbox and its
  *   database). **Resume** is offered while the session is asleep.
+ * - **Stop** (issue #21) is here only for a kit upgrade session, which has no composer to hold it
+ *   (`sessionTakesMessages`): it stops the running turn (`POST /:id/cancel`), as the composer's
+ *   Stop does for an ordinary session.
  * - **The cost meter** is spent / cap with a bar that turns amber past 80 % and red at the cap;
  *   the person who may extend the budget (the app's owners and admins) gets "Extend" beside it;
  *   the session's creator without that right gets "Ask for more" (a `session.budget` approval,
@@ -25,17 +28,23 @@ import {
   ChevronLeftIcon,
   RocketLaunchIcon,
   StopCircleIcon,
+  StopIcon,
 } from '@heroicons/react/24/outline'
 import { AGENT_ACCOUNT_LABELS, AGENT_RUNTIME_LABELS } from '@launch/shared/launch-agents'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppShipSettings } from '@launch/shared/launch-apps'
-import { type Session, SHIP_GATE_ATTEMPTS } from '@launch/shared/launch-sessions'
+import {
+  type Session,
+  SHIP_GATE_ATTEMPTS,
+  sessionTakesMessages,
+} from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { formatCost } from '@/ui/components/ai/StatRows'
 import { ConfirmModal } from '@/ui/components/shared'
 import {
   turnInProgress,
+  useCancelTurn,
   useEndSession,
   useResumeSession,
   useShipSession,
@@ -133,6 +142,8 @@ export function SessionHeader({
   const ship = useShipSession(session.id)
   const end = useEndSession(session.id)
   const resume = useResumeSession(session.id)
+  const cancel = useCancelTurn(session.id)
+  const stopping = session.cancelRequested || cancel.isPending
   const meter = budgetMeter(session.budget)
   const plan = shipPlanSentences(shipSettings)
   const settled =
@@ -215,6 +226,24 @@ export function SessionHeader({
             {session.requestedAction === 'resume' ? 'Waking…' : 'Resume'}
           </button>
         )}
+        {session.viewerCanManage &&
+          !sessionTakesMessages(session) &&
+          session.status === 'working' && (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost gap-1.5"
+              onClick={() => cancel.mutate()}
+              disabled={stopping}
+              aria-label={stopping ? 'Stopping' : 'Stop this turn'}
+            >
+              {stopping ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                <StopIcon className="h-4 w-4" />
+              )}
+              {stopping ? 'Stopping…' : 'Stop'}
+            </button>
+          )}
         {endable && (
           <button
             type="button"

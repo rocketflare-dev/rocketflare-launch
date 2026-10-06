@@ -474,9 +474,9 @@ describe('GitHub (issue #5): the RepoHostPort additions over the FakeCloud', () 
       head_sha: gateSha,
       output: run.output,
     })
-    // The fold still shows it (display); it is never `Gate`.
+    // Issue #21: never in the fold — it is the sandbox gate's result, not CI.
     const checks = await host().getChecks(repo(), { prNumber: 1, headSha: gateSha })
-    expect(checks.checks.map(c => c.name)).toEqual(['launch/gate', 'launch/gate'])
+    expect(checks).toMatchObject({ state: 'none', total: 0, checks: [] })
   })
 
   it('issue #9: an installation without checks: write cannot mint the token — it throws, the caller decides', async () => {
