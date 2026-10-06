@@ -39,6 +39,14 @@
  *   `streamLogs` yields its first chunk and then throws it. The container is gone afterwards, so
  *   files, ports and processes are wiped (`interruptions` counts them) — resume must clone again.
  * - `failNext(method, error)` — the next call of `method` throws `error` once.
+ * - `dropStreamNext({ after?, process?, error? })` — the next `streamLogs` yields `after` chunks
+ *   (default 0), then its connection drops (throws `error`, default "Network connection lost").
+ *   The process itself: `running` (default) runs on, `exited` ran to its end while nobody read,
+ *   `vanished` is gone with its record (a re-attach throws). Each call queues one more drop;
+ *   `streamDrops` counts them. Like the SDK (0.12.10), every `streamLogs` replays the process's
+ *   output from its FIRST line, and an ended process replays it and its `exit` — and the turn's
+ *   liveness question (`turnAliveScript`) is answered from the latest turn process: `alive` while
+ *   it runs, else `exited` (a script matching it wins).
  * - `hangNext(method)` — the next call of `method` never answers (a stuck Durable Object RPC): what
  *   the steps' deadlines (`services/sessions/deadline.ts`) are for.
  * - `recreate()` — the container died and came back EMPTY (Docker's OOM killer on a laptop): files,
@@ -79,6 +87,7 @@ import {
   type SandboxWaitForPortOptions,
   SESSION_BASE_ALLOWED_HOSTS,
 } from '@/api/services/sessions/ports'
+import { TURN_PID_FILE, turnAliveScript } from '@/api/services/sessions/runtimes/process/kill'
 
 export type Match = RegExp | string
 
@@ -115,6 +124,17 @@ export interface FakeProcessRecord {
   exitCode: number | null
   /** Its container died under it (`die()`): its stream goes quiet, a kill reaches nothing. */
   silenced?: boolean
+  /** Gone with its record (`dropStreamNext({ process: 'vanished' })`): nothing to attach to. */
+  vanished?: boolean
+}
+
+/** One scripted log-stream drop (`dropStreamNext`). */
+export interface StreamDrop {
+  /** Chunks the stream yields before it drops. */
+  after?: number
+  /** What the process does meanwhile (default `running`). */
+  process?: 'running' | 'exited' | 'vanished'
+  error?: Error
 }
 
 export interface BackgroundScript {
@@ -194,6 +214,8 @@ export class FakeSandbox implements SandboxPort {
   destroyed = false
   destroyCount = 0
   interruptions = 0
+  /** Log streams dropped by `dropStreamNext`. */
+  streamDrops = 0
   /** Every backup taken, by id: the files under its `dir`, as they were. */
   readonly backups = new Map<string, { dir: string; files: Map<string, string> }>()
   readonly restores: string[] = []
@@ -221,6 +243,7 @@ export class FakeSandbox implements SandboxPort {
   private readonly killWaiters = new Map<string, () => void>()
   private readonly fileWaiters = new Map<string, (() => void)[]>()
   private interruptArmed = false
+  private readonly drops: StreamDrop[] = []
   private nextPid = 1
 
   constructor(opts: { name?: string; id?: string } = {}) {
@@ -279,6 +302,11 @@ export class FakeSandbox implements SandboxPort {
 
   failNext(method: Method, error: Error): this {
     this.failures.set(method, error)
+    return this
+  }
+
+  dropStreamNext(drop: StreamDrop = {}): this {
+    this.drops.push(drop)
     return this
   }
 
@@ -381,6 +409,15 @@ export class FakeSandbox implements SandboxPort {
       return result
     }
     const script = this.execScripts.find(s => matches(s.match, command))?.script
+    if (!script && command === turnAliveScript()) {
+      const result = {
+        exitCode: 0,
+        stdout: `${this.turnAlive() ? 'alive' : 'exited'}\n`,
+        stderr: '',
+      }
+      this.execs.push({ command, opts, result })
+      return result
+    }
     const partial = typeof script === 'function' ? await script(command, opts) : (script ?? {})
     const result: SandboxExecResult = { exitCode: 0, stdout: '', stderr: '', ...partial }
     this.execs.push({ command, opts, result })
@@ -399,13 +436,43 @@ export class FakeSandbox implements SandboxPort {
     return { id }
   }
 
+  /** The latest turn process (its command records `TURN_PID_FILE`) is still running. */
+  private turnAlive(): boolean {
+    const proc = [...this.processes].reverse().find(p => p.command.includes(TURN_PID_FILE))
+    return Boolean(
+      proc && proc.exitCode === null && !proc.killed && !proc.silenced && !proc.vanished
+    )
+  }
+
   async *streamLogs(
     processId: string,
     opts: { signal?: AbortSignal } = {}
   ): AsyncIterable<SandboxLogEvent> {
     await this.guard('streamLogs')
     const proc = this.processes.find(p => p.id === processId)
-    if (!proc) throw new Error(`FakeSandbox: no process ${processId}`)
+    if (!proc || proc.vanished) throw new Error(`FakeSandbox: no process ${processId}`)
+    const drop = this.drops.shift()
+    if (!drop) return yield* this.replay(proc, opts)
+    let shown = 0
+    if ((drop.after ?? 0) > 0) {
+      for await (const event of this.replay(proc, opts)) {
+        yield event
+        if (event.type === 'exit') return
+        if (++shown >= (drop.after ?? 0)) break
+      }
+    }
+    this.streamDrops++
+    if (drop.process === 'exited') proc.exitCode ??= proc.script.exitCode ?? 0
+    if (drop.process === 'vanished') proc.vanished = true
+    throw drop.error ?? new Error('Network connection lost')
+  }
+
+  /** The process's output from its first line (the SDK's replay), then live, then its `exit`. */
+  private async *replay(
+    proc: FakeProcessRecord,
+    opts: { signal?: AbortSignal }
+  ): AsyncIterable<SandboxLogEvent> {
+    const processId = proc.id
     const interrupting = this.interruptArmed
     let first = true
     for (const line of proc.script.lines) {

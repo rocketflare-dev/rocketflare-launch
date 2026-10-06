@@ -2114,8 +2114,22 @@ checkpoint. A dead container (out of memory in a `pnpm build`, most often) does 
 log stream — it goes quiet — so every 45 s (`TURN_LIVENESS_PROBE_MS`) the turn reads the marker,
 bounded at 20 s: the read reaches a fresh, EMPTY container with no marker → `turn.interrupted {
 container_lost }` at once; 4 reads in a row with no answer (`TURN_LIVENESS_MAX_FAILURES`, about four
-minutes) → the same. A log stream that fails or ends early is checked once more before it is called
-"lost the connection". The session goes `suspended` (like a rollout: `rollout#N` destroys what is
+minutes) → the same. **A dropped log stream is not a failed turn** (`runtimes/process/logs.ts`;
+session 7291f986 lost a remote sandbox's stream crossing the wrangler dev binding 20 s into a
+silent `tsc`, with Claude Code fine): when reading throws (not a rollout, not Launch's own
+stop/budget/container-lost abort) or the stream ends with no `exit`, the turn waits 0.5 s × n, asks
+the container whether the pid in `turn.pid` lives (`turnAliveScript`, bounded by the probe's 20 s)
+and, if it does — or has exited meanwhile — attaches again, up to 3 times a turn
+(`TURN_LOG_REATTACHES`), each logged as a warning and counted on the closing `turn.end` /
+`turn.failed` (`logReattaches`). The Sandbox SDK (0.12.10, read from the container server) answers
+every attach with the process's whole output so far — its accumulated stdout as one chunk, then
+stderr — then the live chunks, and an ended process with that and its `exit` (`startProcess` keeps
+the record, `autoCleanup: false`); so each attach skips the characters already read, mid-line if
+need be, and every event is written once. The watchers (cancel, timeout, heartbeat, boot marker,
+budget) keep running across a re-attach and abort it like any read. A container that does not
+answer, an exited process whose re-attach fails too, or the 3 used up → the stream's error as
+before; a stream that fails or ends early is checked once more for a lost container before it is
+called "lost the connection". The session goes `suspended` (like a rollout: `rollout#N` destroys what is
 left, nothing is checkpointed), and the next message resumes from the last save (§18.9's cold
 resume: the workspace backup, else the branch; the transcript from R2). A turn whose container is
 already empty never starts: the message stays pending, the session goes `suspended` with a resume
@@ -2124,8 +2138,8 @@ requested and an `error` event says why, so the resume runs it on the new contai
 `error` event and runs the turn (once more) as a new conversation. Pushing is disallowed to Claude — Launch commits and pushes.
 **Launch never leaves a turn's process running unread**: the command records its pid
 (`/workspace/.launch/turn.pid`, then `exec claude …`), and whenever the turn stops reading a
-process that has not reported its exit — the log stream failed (`turn.failed`, "Launch lost the
-connection…") or closed early, or a cancel/timeout aborted the reader — `terminateTurnProcess`
+process that has not reported its exit — the log stream failed for good (`turn.failed`, "Launch
+lost the connection…") or closed early, or a cancel/timeout aborted the reader — `terminateTurnProcess`
 sends the SDK kill and then, in the container, SIGTERM to the pid and its children and SIGKILL
 after 5 s. Each call is bounded at 30 s, logged, and never fails the turn; after a rollout there is
 no container to stop. The escalation goes by pid because the SDK's `killProcess` (0.12.10) drops

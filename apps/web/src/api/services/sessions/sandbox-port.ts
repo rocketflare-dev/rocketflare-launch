@@ -138,6 +138,9 @@ export interface SandboxPort {
   /**
    * The process's output as it arrives, ending with its `exit`. Throws `SandboxInterruptedError`
    * when the container is replaced mid-stream. `signal` stops READING; it does not kill.
+   * Every call starts from the process's FIRST output (the SDK replays what it has accumulated,
+   * then streams live; an ended process replays and exits) — what a re-attach after a dropped
+   * stream relies on (`runtimes/process/logs.ts`).
    */
   streamLogs(processId: string, opts?: { signal?: AbortSignal }): AsyncIterable<SandboxLogEvent>
   /** Kill a background process (a cancelled or timed-out turn). */

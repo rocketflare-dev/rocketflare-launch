@@ -7,8 +7,9 @@
  *
  * It drives `runtime.runTurn` directly — no database, no Workflow — with a recording sink, and
  * pins only what `turn.ts` relies on: the normalised output reaches the sink, a resume that cannot
- * work is forgotten rather than failing, and every way a turn can end (a result, a Stop, the
- * timeout, a replaced container, a start that fails) is an OUTCOME, never a throw.
+ * work is forgotten rather than failing, a dropped log stream loses and repeats nothing, and every
+ * way a turn can end (a result, a Stop, the timeout, a replaced container, a start that fails) is
+ * an OUTCOME, never a throw.
  */
 import { describe, expect, it } from 'vitest'
 import { PLATFORM_CREDENTIALS } from '@/api/services/sessions/credentials/lease'
@@ -231,6 +232,34 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
       expect(outcome).toMatchObject({ stop: null, failure: null })
       expect(outcome.result?.text).toBe('Fresh.')
     })
+
+    // A runtime whose agent prints to a log stream (a container process).
+    it.runIf(runtime.placement === 'container')(
+      'outlives a dropped log stream: the same output, each mapping once',
+      async () => {
+        const run = async (drop: boolean) => {
+          const sandbox = container()
+          harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Added the button.' })
+          if (drop) sandbox.dropStreamNext({ after: 1 }).dropStreamNext({ after: 2 })
+          const sink = recordingSink()
+          const outcome = await runtime.runTurn(
+            // The re-attach's backoff, shortened.
+            turnContext(sessionRow(runtime, null), sandbox, { sleep: () => sleep(1) }),
+            input(),
+            sink
+          )
+          return { sandbox, sink, outcome }
+        }
+        const clean = await run(false)
+        const dropped = await run(true)
+        expect(dropped.sandbox.streamDrops).toBe(2)
+        expect(dropped.outcome).toMatchObject({ stop: null, failure: null, logReattaches: 2 })
+        expect(dropped.outcome.result?.text).toBe('Added the button.')
+        const shape = (sink: RecordedSink) =>
+          sink.mappings.map(m => ({ resumeId: m.resumeId, events: m.events.map(e => e.type) }))
+        expect(shape(dropped.sink)).toEqual(shape(clean.sink))
+      }
+    )
 
     it('stops on a Stop: `cancelled`, no throw', async () => {
       const sandbox = container()

@@ -396,6 +396,8 @@ export interface RuntimeTurnOutcome {
   output: boolean
   /** Issue #8: when (`now()`) it first did — the turn's `firstTokenMs`. */
   firstOutputAt?: number
+  /** How many times the turn re-attached to its agent's output after the stream dropped. */
+  logReattaches?: number
 }
 
 /**

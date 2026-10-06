@@ -276,10 +276,20 @@ export const sessionTurnEndDataSchema = z
      * so it is an upper bound on its first token. Absent on rows written before it was measured.
      */
     firstTokenMs: z.number().int().nonnegative().optional(),
+    /**
+     * How many times Launch re-attached to the agent's output after its log stream dropped (the
+     * process ran on); absent when it never did.
+     */
+    logReattaches: z.number().int().positive().optional(),
   })
   .passthrough()
 export const sessionTurnFailedDataSchema = z
-  .object({ turn: z.number().int().positive(), message: z.string() })
+  .object({
+    turn: z.number().int().positive(),
+    message: z.string(),
+    /** As on `turn.end`: the re-attaches before the turn failed. */
+    logReattaches: z.number().int().positive().optional(),
+  })
   .passthrough()
 /**
  * A turn cut off by a rollout, a container that died under it (`container_lost` — its boot marker

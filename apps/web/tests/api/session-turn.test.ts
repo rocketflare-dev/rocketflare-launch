@@ -31,6 +31,8 @@ import { CLAUDE_TURN_INPUT } from '@/api/services/sessions/claude-stream'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/rocketflare-dev'
+import { turnAliveScript } from '@/api/services/sessions/runtimes/process/kill'
+import { TURN_LOG_REATTACHES } from '@/api/services/sessions/runtimes/process/logs'
 import {
   CONVERSATION_LOST_MESSAGE,
   createShipTurnRunner,
@@ -492,13 +494,13 @@ describe('runTurn: a turn that does not finish', () => {
     expect((await reload(row)).status).toBe('ready')
   })
 
-  it('a lost log stream kills the process it can no longer read: turn.failed, back to ready', async () => {
+  it('a log stream lost for good kills the process it can no longer read: turn.failed, back to ready', async () => {
     const { row } = await readySession()
-    const ports = createFakeSessionPorts().script(sb =>
-      sb
-        .onProcess(/claude -p/, claudeStreamJson({ text: 'Working on it', hang: true }))
-        .failNext('streamLogs', new Error('Network connection lost'))
-    )
+    // One drop, then one for each re-attach: the reconnects run out (`runtimes/process/logs.ts`).
+    const ports = createFakeSessionPorts().script(sb => {
+      sb.onProcess(/claude -p/, claudeStreamJson({ text: 'Working on it', hang: true }))
+      for (let i = 0; i <= TURN_LOG_REATTACHES; i++) sb.dropStreamNext()
+    })
     const outcome = await runTurn(db, ports, row, FAST)
     expect(outcome.status).toBe('failed')
     const sandbox = ports.sandboxes.get(row.id)
@@ -507,13 +509,21 @@ describe('runTurn: a turn that does not finish', () => {
       proc?.command.startsWith(`mkdir -p /workspace/.launch && echo $$ > ${TURN_PID_FILE}`)
     ).toBe(true)
     expect(proc?.command).toContain('&& exec claude -p ')
-    // SIGTERM through the SDK, then the pid escalation (SIGTERM → grace → SIGKILL) in the box.
+    expect(sandbox?.streamDrops).toBe(TURN_LOG_REATTACHES + 1)
+    // Asked whether it was alive before each re-attach; then SIGTERM through the SDK, and the pid
+    // escalation (SIGTERM → grace → SIGKILL) in the box.
     expect(sandbox?.killed).toEqual([proc?.id])
-    expect(sandbox?.execs.map(e => e.command)).toEqual([turnKillScript()])
+    expect(sandbox?.execs.map(e => e.command)).toEqual([
+      ...Array(TURN_LOG_REATTACHES).fill(turnAliveScript()),
+      turnKillScript(),
+    ])
     const last = (await eventsOf(row)).at(-1)
     expect(last).toMatchObject({
       type: 'turn.failed',
-      data: { message: 'Launch lost the connection to Claude Code in the sandbox' },
+      data: {
+        message: 'Launch lost the connection to Claude Code in the sandbox',
+        logReattaches: TURN_LOG_REATTACHES,
+      },
     })
     expect((await reload(row)).status).toBe('ready')
   })
@@ -587,6 +597,146 @@ describe('runTurn: a turn that does not finish', () => {
       'turn.start',
       'turn.failed',
     ])
+  })
+})
+
+describe('runTurn: a dropped log stream (the process runs on)', () => {
+  const TURN = {
+    sessionId: 'claude-sess-drop',
+    tools: [
+      { name: 'Read', input: { file_path: 'src/ui/pages/Home.tsx' }, result: '<h1>Hi</h1>' },
+      { name: 'Bash', input: { command: 'pnpm exec tsc --noEmit' }, result: '' },
+    ],
+    text: 'Changed the heading.',
+  }
+  /** The turn's events without the per-run ids, in order. */
+  const shapes = async (row: SessionRow) =>
+    (await eventsOf(row)).map(e => ({ type: e.type, seq: e.seq, data: e.data }))
+  /** What the agent said and did; the rows that carry a run's own ids and timings by type only. */
+  const OWN = new Set(['user.message', 'turn.start', 'turn.end'])
+  const comparable = (events: { type: string; seq: number; data: unknown }[]) =>
+    events.map(e => (OWN.has(e.type) ? { type: e.type, seq: e.seq } : e))
+
+  it('re-attaches while the process lives: every event exactly once, then turn.end', async () => {
+    const clean = await readySession()
+    const cleanPorts = createFakeSessionPorts().script(sb =>
+      sb.onProcess(/claude -p/, claudeStreamJson(TURN))
+    )
+    expect((await runTurn(db, cleanPorts, clean.row, FAST)).status).toBe('completed')
+
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/claude -p/, claudeStreamJson(TURN))
+        // Mid-turn, twice: each re-attach replays the output from its first line.
+        .dropStreamNext({ after: 2 })
+        .dropStreamNext({ after: 4 })
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome).toMatchObject({ status: 'completed', result: { tail: 'Changed the heading.' } })
+    const sandbox = ports.sandboxes.get(row.id)
+    expect(sandbox?.streamDrops).toBe(2)
+    expect(sandbox?.killed).toEqual([])
+    expect(sandbox?.execs.map(e => e.command)).toEqual([turnAliveScript(), turnAliveScript()])
+
+    const events = await shapes(row)
+    expect(comparable(events)).toEqual(comparable(await shapes(clean.row)))
+    expect(events.at(-1)?.data).toMatchObject({ result: 'success', logReattaches: 2 })
+    expect((await reload(row)).status).toBe('ready')
+  })
+
+  it('a process that exited while nobody read: the re-attach brings its last output and its exit', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/claude -p/, claudeStreamJson(TURN))
+        .dropStreamNext({ after: 1, process: 'exited' })
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome.status).toBe('completed')
+    const events = await eventsOf(row)
+    expect(events.map(e => e.type)).toEqual([
+      'user.message',
+      'turn.start',
+      'tool.start',
+      'tool.end',
+      'tool.start',
+      'tool.end',
+      'text',
+      'turn.end',
+    ])
+    expect(events.at(-1)?.data).toMatchObject({ logReattaches: 1 })
+    // It had ended: nothing to stop.
+    expect(ports.sandboxes.get(row.id)?.killed).toEqual([])
+  })
+
+  it('a process that is gone with its record: turn.failed, as before', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/claude -p/, claudeStreamJson(TURN))
+        .dropStreamNext({ after: 1, process: 'vanished' })
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome.status).toBe('failed')
+    const sandbox = ports.sandboxes.get(row.id)
+    // One look (it was not alive), one try for its last output, then the kill as before.
+    expect(sandbox?.execs.map(e => e.command)).toEqual([turnAliveScript(), turnKillScript()])
+    expect((await eventsOf(row)).at(-1)).toMatchObject({
+      type: 'turn.failed',
+      data: { message: 'Launch lost the connection to Claude Code in the sandbox' },
+    })
+  })
+
+  it('a container that does not answer the liveness question: no re-attach, turn.failed', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts().script(sb =>
+      sb
+        .onProcess(/claude -p/, claudeStreamJson({ ...TURN, hang: true }))
+        .dropStreamNext({ after: 1 })
+        .onExec(turnAliveScript(), { exitCode: 1, stdout: '' })
+    )
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome.status).toBe('failed')
+    expect(ports.sandboxes.get(row.id)?.streamDrops).toBe(1)
+    expect((await eventsOf(row)).at(-1)).toMatchObject({
+      type: 'turn.failed',
+      data: { message: 'Launch lost the connection to Claude Code in the sandbox' },
+    })
+  })
+
+  it('a Stop while it re-attaches still stops the turn: cancelled, and it never attaches again', async () => {
+    const { row } = await readySession()
+    const ports = createFakeSessionPorts()
+    const sb = ports.sandbox(row.id) as FakeSandbox
+    sb.onProcess(/claude -p/, claudeStreamJson({ ...TURN, hang: true })).dropStreamNext({
+      after: 1,
+    })
+    // The Stop lands while the turn asks whether its process lives, and the watcher acts on it
+    // (the SDK kill) before the answer comes back.
+    sb.onExec(turnAliveScript(), async () => {
+      await db
+        .update(sessions)
+        .set({ cancelRequestedAt: new Date() })
+        .where(eq(sessions.id, row.id))
+      while (sb.killed.length === 0) await tick()
+      return { stdout: 'alive\n' }
+    })
+    let attaches = 0
+    const stream = sb.streamLogs.bind(sb)
+    sb.streamLogs = (id, opts) => {
+      attaches += 1
+      return stream(id, opts)
+    }
+    const outcome = await runTurn(db, ports, row, FAST)
+    expect(outcome).toMatchObject({ status: 'interrupted', reason: 'cancelled' })
+    expect(attaches).toBe(1)
+    expect(sb.killed).toEqual([sb.processes[0]?.id])
+    expect((await eventsOf(row)).at(-1)).toMatchObject({
+      type: 'turn.interrupted',
+      data: { reason: 'cancelled' },
+    })
+    expect(await reload(row)).toMatchObject({ status: 'ready', cancelRequestedAt: null })
   })
 })
 

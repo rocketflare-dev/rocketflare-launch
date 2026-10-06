@@ -17,10 +17,12 @@
  *    stream-json input), then `startProcess(turnProcessCommand(cli.buildCommand(…)))` with the
  *    shared env, the CLI's placeholders, the lease's env and the egress's.
  * 4. **Read** `streamLogs` through the CLI's parser into the sink — every mapping at once, a flush
- *    every `flushMs` or `flushEvery` events — and **watch**, concurrently: the cancel flag and the
- *    timeout every `cancelPollMs` (→ SDK kill, `cancelled` / `timeout`), the heartbeat every
- *    `heartbeatMs`, the boot marker every `probeMs` (a dead container's stream does not end, it goes
- *    quiet → `container_lost`), and under self-metering the running cost against the budget.
+ *    every `flushMs` or `flushEvery` events; a stream that drops while the process lives is
+ *    re-attached to, each chunk read once (`logs.ts`) — and **watch**, concurrently: the cancel
+ *    flag and the timeout every `cancelPollMs` (→ SDK kill, `cancelled` / `timeout`), the heartbeat
+ *    every `heartbeatMs`, the boot marker every `probeMs` (a dead container's stream does not end,
+ *    it goes quiet → `container_lost`), and under self-metering the running cost against the
+ *    budget. The watchers run across a re-attach; any of them stopping the turn ends it.
  * 5. **Never leave it running**: a process Launch stopped reading without an `exit` is stopped by
  *    pid (`terminateTurnProcess`) — not after a rollout or a lost container: that one is gone.
  */
@@ -56,6 +58,7 @@ import type {
   TurnSink,
 } from '../types'
 import { bounded, TURN_KILL_CALL_MS, terminateTurnProcess, turnProcessCommand } from './kill'
+import { reattachingLogs } from './logs'
 
 /** How long writing a turn's input (the images' stream-json line) may take in the container. */
 export const TURN_INPUT_TIMEOUT_MS = 60_000
@@ -491,7 +494,18 @@ async function runLeasedTurn(
   let readFailed = false
   let exited = false
   try {
-    for await (const event of sandbox.streamLogs(processId, { signal: reader.signal })) {
+    // A dropped stream is re-attached to while the process lives (`logs.ts`): each chunk once.
+    const logs = reattachingLogs(sandbox, processId, {
+      signal: reader.signal,
+      sleep: ctx.sleep,
+      probeCallMs: ctx.probeCallMs,
+      logger: ctx.logger,
+      sessionId: row.id,
+      onReattach: count => {
+        out.logReattaches = count
+      },
+    })
+    for await (const event of logs) {
       if (event.type === 'stdout') await apply(parser.push(event.data))
       else if (event.type === 'stderr') stderrTail = (stderrTail + event.data).slice(-2_000)
       else if (event.type === 'exit') {

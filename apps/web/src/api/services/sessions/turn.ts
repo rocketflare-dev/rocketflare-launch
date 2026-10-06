@@ -762,6 +762,8 @@ async function closeTurn(
   const after = await readRow(db, row)
   const costMicrocents = Math.max(0, Number(after?.costMicrocents ?? costBefore) - costBefore)
   let executed: ExecutedTurn
+  // How often the turn re-attached to a dropped log stream (`runtimes/process/logs.ts`).
+  const reattached = run.logReattaches ? { logReattaches: run.logReattaches } : {}
   if (run.stop) {
     writer.append({
       type: 'turn.interrupted',
@@ -786,6 +788,7 @@ async function closeTurn(
         ...(run.firstOutputAt !== undefined
           ? { firstTokenMs: Math.max(0, Math.round(run.firstOutputAt - startedAt)) }
           : {}),
+        ...reattached,
       },
     })
     executed = { status: 'completed', costMicrocents, result: run.result }
@@ -793,7 +796,11 @@ async function closeTurn(
     writer.append({
       type: 'turn.failed',
       turn,
-      data: { turn, message: run.failure ?? `${runtime.label} stopped without finishing the turn` },
+      data: {
+        turn,
+        message: run.failure ?? `${runtime.label} stopped without finishing the turn`,
+        ...reattached,
+      },
     })
     executed = { status: 'failed', costMicrocents, result: run.result }
   }

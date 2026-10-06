@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A coding-session turn survives a dropped log stream.** When reading the agent's output throws
+  (or the stream ends with no exit) while its process runs on — seen on a remote sandbox, whose
+  stream crosses the wrangler dev binding — the turn checks the process's pid and attaches again,
+  up to 3 times with a short backoff, instead of failing with "Launch lost the connection". The
+  Sandbox SDK replays a process's output from its start on every attach, so the turn skips what it
+  already read and writes every event once; a process that exited meanwhile still delivers its
+  last output and exit code. Stop, the timeout and the budget still end the turn mid-reconnect.
+  Each re-attach is logged and counted on `turn.end` / `turn.failed` (`logReattaches`). No
+  migration.
 - **An instance with the R2 keys set backs coding-session workspaces up** (no hand edit). When
   `launch.deploy.env` has both `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, `pnpm provision
   render` (and so `deploy`) adds `SESSION_WORKSPACE_BACKUP = "presigned"`, `BACKUP_BUCKET_NAME`

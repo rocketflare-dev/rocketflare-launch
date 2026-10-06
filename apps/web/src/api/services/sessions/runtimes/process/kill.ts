@@ -46,6 +46,37 @@ export function turnKillScript(
   ].join('; ')
 }
 
+/**
+ * Is the turn's recorded pid still running? Prints `alive` or `exited` (no pid file counts as
+ * exited) — what a turn asks before it re-attaches to a log stream that dropped (`logs.ts`).
+ */
+export function turnAliveScript(pidFile = TURN_PID_FILE): string {
+  return [
+    `pid=$(cat ${pidFile} 2>/dev/null)`,
+    'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo alive; else echo exited; fi',
+  ].join('; ')
+}
+
+/**
+ * {@link turnAliveScript}'s answer, bounded by `callMs`: `unknown` when the container did not
+ * answer (or answered something else). A replaced container throws `SandboxInterruptedError`.
+ */
+export async function turnProcessAlive(
+  sandbox: SandboxPort,
+  callMs: number
+): Promise<'alive' | 'exited' | 'unknown'> {
+  try {
+    const result = await bounded(callMs, () =>
+      sandbox.exec(turnAliveScript(), { timeoutMs: callMs })
+    )
+    const said = result.stdout.trim()
+    return said === 'alive' || said === 'exited' ? said : 'unknown'
+  } catch (err) {
+    if (err instanceof SandboxInterruptedError) throw err
+    return 'unknown'
+  }
+}
+
 /** `work`, or a rejection after `ms` (the work itself cannot be cancelled — it is an RPC). */
 export async function bounded<T>(ms: number, work: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
