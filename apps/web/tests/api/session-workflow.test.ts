@@ -687,6 +687,11 @@ describe('SessionWorkflow: the database alongside the sandbox (issue #15)', () =
       const createBranch = port.createBranch.bind(port)
       port.createBranch = async (...args) => {
         await cloned.promise
+        // The clone returning is not the repo step done: wait for its `done` row, or the
+        // database can still write first.
+        for (let i = 0; i < 200 && (await doneSeq(h.row, 'repo')) < 0; i++) {
+          await new Promise(r => setTimeout(r, 5))
+        }
         return createBranch(...args)
       }
     })
