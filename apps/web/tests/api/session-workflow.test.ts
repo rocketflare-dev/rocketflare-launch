@@ -45,9 +45,12 @@ import type { SandboxExecResult, SessionDbPort } from '@/api/services/sessions/p
 import {
   BOOTSTRAP_PROGRESS,
   claudeTranscriptPath,
+  DEV_GRACEFUL_STOP_COMMAND,
   DEV_START_COMMAND,
   DEV_STOP_COMMAND,
+  DEV_WARM_COMMAND,
   INSTALL_PROGRESS,
+  PREREAD_COMMAND,
   SESSION_HOME,
   SESSION_IMAGE_VERSION,
   SESSION_WORKSPACE,
@@ -284,7 +287,8 @@ describe('SessionWorkflow: boot', () => {
     expect(bootstrap).toBeGreaterThan(install)
     expect(commands[clone]).toContain(`https://github.com/${h.f.repo.owner}/${h.f.repo.repo}.git`)
     expect(commands[clone]).toContain(`session/${h.row.shortId}`)
-    expect(sandbox.processes.map(p => p.command)).toEqual([DEV_START_COMMAND])
+    // The dev server, then (once it answered) the background warm-up of the UI's `/`.
+    expect(sandbox.processes.map(p => p.command)).toEqual([DEV_START_COMMAND, DEV_WARM_COMMAND])
     expect(JSON.stringify(sandbox.execs.map(e => e.opts?.env))).not.toContain('3000')
     expect(settings).toContain('Bash(git push:*)')
 
@@ -749,23 +753,33 @@ describe('SessionWorkflow: boot timing (issue #8)', () => {
     expect(timings[1]?.traceId).not.toBe(timings[0]?.traceId)
   })
 
-  it('a cold resume writes its own, through the conversation’s restore', async () => {
+  it('a cold resume writes its own, through dev — the conversation restored alongside the bootstrap', async () => {
     const h = await harness()
     const run = await drive(
       h,
       suspendThenResume(h, () => h.sandbox().recreate())
     )
-    expect(run.names).toContain('transcript#1')
+    // The transcript beside the bootstrap (both settled), then `dev` last: it writes the timing.
+    const at = (name: string) => run.names.indexOf(name)
+    expect(at('transcript#1')).toBe(at('bootstrap#1') + 1)
+    expect(at('dev#1')).toBe(at('transcript#1') + 1)
     const timings = await timingsOf(h.row)
     expect(timings.map(t => t.kind)).toEqual(['boot', 'cold'])
-    expect(timings[1]?.phases.map(p => p.phase)).toEqual([
-      'sandbox.start',
-      'repo',
-      'install',
-      'bootstrap',
-      'dev',
-      'transcript',
-    ])
+    const phases = timings[1]?.phases ?? []
+    expect(phases.map(p => p.phase).slice(0, 2)).toEqual(['sandbox.start', 'repo'])
+    expect(phases.at(-1)?.phase).toBe('dev')
+    expect(phases.map(p => p.phase).sort()).toEqual(
+      ['bootstrap', 'dev', 'install', 'repo', 'sandbox.start', 'transcript'].sort()
+    )
+    // Every phase still recorded; the transcript's starts before the bootstrap's ends.
+    const of = (phase: string) => phases.find(p => p.phase === phase)
+    const bootstrap = of('bootstrap')
+    expect(of('transcript')?.startMs).toBeLessThanOrEqual(
+      (bootstrap?.startMs ?? 0) + (bootstrap?.ms ?? 0)
+    )
+    expect(of('dev')?.startMs).toBeGreaterThanOrEqual(
+      (bootstrap?.startMs ?? 0) + (bootstrap?.ms ?? 0)
+    )
   })
 
   it('a boot that fails writes none', async () => {
@@ -1216,8 +1230,8 @@ describe('SessionWorkflow: the loop', () => {
       'restore.check#1',
       'repo#1',
       'bootstrap#1',
-      'dev#1',
       'transcript#1',
+      'dev#1',
     ])
     expect(h.sandbox().execs.filter(e => e.command.includes('git init'))).toHaveLength(2)
   })
@@ -1275,8 +1289,8 @@ describe('SessionWorkflow: the loop', () => {
       'restore.check#1',
       'repo#1',
       'bootstrap#1',
-      'dev#1',
       'transcript#1',
+      'dev#1',
       'inspect#4',
       'turn#4',
       'inspect#5',
@@ -1370,16 +1384,13 @@ describe('SessionWorkflow: the loop', () => {
         healed: ['apps/web/wrangler.toml', 'apps/web/worker-configuration.d.ts'],
       })
     )
-    // Each dev start writes the session's own wrangler config first — never a tracked file.
+    // Each dev start writes the session's own wrangler config first (its preload) — never a
+    // tracked file, and never an exec of its own.
     const order = sandbox.commands.filter(
       c => c.includes('session-wrangler.mjs') || c.includes('exec pnpm dev')
     )
-    expect(order).toEqual([
-      'node /workspace/.launch/session-wrangler.mjs',
-      expect.stringContaining('exec pnpm dev'),
-      'node /workspace/.launch/session-wrangler.mjs',
-      expect.stringContaining('exec pnpm dev'),
-    ])
+    expect(order).toEqual([DEV_START_COMMAND, DEV_START_COMMAND])
+    expect(DEV_START_COMMAND).toContain('--import /workspace/.launch/session-wrangler.mjs')
     for (const path of sandbox.files.keys()) {
       expect(path).not.toMatch(/wrangler(\.staging)?\.toml$|worker-configuration\.d\.ts$/)
     }
@@ -1498,8 +1509,8 @@ describe('SessionWorkflow: the loop', () => {
     'restore.check#1',
     'repo#1',
     'bootstrap#1',
-    'dev#1',
     'transcript#1',
+    'dev#1',
   ]
   const claudeRuns = (h: Harness) =>
     h.sandbox().processes.filter(p => p.command.includes('claude -p'))
@@ -1735,8 +1746,8 @@ describe('SessionWorkflow: the loop', () => {
       'restore.check#1',
       'repo#1',
       'bootstrap#1',
-      'dev#1',
       'transcript#1',
+      'dev#1',
     ])
     // The old container was destroyed before starting over.
     expect(h.sandbox().destroyCount).toBeGreaterThanOrEqual(2)
@@ -2259,8 +2270,8 @@ describe('SessionWorkflow: workspace backups', () => {
       'restore.check#1',
       'restore#1',
       'bootstrap#1',
-      'dev#1',
       'transcript#1',
+      'dev#1',
     ])
     const sandbox = h.sandbox()
     expect(sandbox.restores).toEqual([backup?.id])
@@ -2278,6 +2289,33 @@ describe('SessionWorkflow: workspace backups', () => {
       e => e.type === 'step' && (e.data as { key: string }).key === 'restore'
     )
     expect(steps.map(e => (e.data as { status: string }).status)).toEqual(['running', 'done'])
+    // The dev server was stopped politely before the backup (its compile cache flushed), and the
+    // restore paged the dev server's files in, in the background, before the bootstrap.
+    const stop = sandbox.commands.indexOf(DEV_GRACEFUL_STOP_COMMAND)
+    const preread = sandbox.commands.indexOf(PREREAD_COMMAND)
+    const kit = sandbox.commands.map(c => c.includes('heal-dev-setup.mjs')).lastIndexOf(true)
+    expect(stop).toBeGreaterThan(-1)
+    expect(preread).toBeGreaterThan(stop)
+    expect(kit).toBeGreaterThan(preread)
+    expect(sandbox.processes.filter(p => p.command === PREREAD_COMMAND)).toHaveLength(1)
+    expect(sandbox.execs.some(e => e.command === PREREAD_COMMAND)).toBe(false)
+  })
+
+  it('a pre-read that cannot start changes nothing: the restore and the resume go on', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => {
+      sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` })
+      const start = sandbox.startProcess.bind(sandbox)
+      sandbox.startProcess = async (command, opts) => {
+        if (command === PREREAD_COMMAND) throw new Error('no process for you')
+        return start(command, opts)
+      }
+    })
+    const run = await drive(h, coolThenResume(h))
+    expect(run.names).toContain('restore#1')
+    expect(run.names).not.toContain('repo#1')
+    expect(h.sandbox().restores).toHaveLength(1)
+    expect((await reload(h.row)).status).toBe('ended')
   })
 
   it('a backup the branch has moved past is not restored: the resume clones', async () => {

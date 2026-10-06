@@ -97,7 +97,7 @@ Shape: `claim` → boot `(db ‖ sandbox.start → repo) → [prepare → branch
 side by side, both settled before what follows, issue #15) (or
 `salvage` instead, for a live session whose instance was lost) (each
 wrapped in `withProgress`, which writes the boot checklist's `step` events and returns the step's
-clock as `timing`; the boot's last step — `dev`, or `transcript#K` on a cold resume — is given the
+clock as `timing`; the boot's last step — `dev`, on every kind of boot — is given the
 timings collected from the earlier RESULTS and writes ONE `boot.timing` event, issue #8) → a loop of
 `inspect#N` (the row decides: end · drain-suspend · resume · ship · turn · checkpoint · wait) and
 one of
@@ -121,7 +121,7 @@ the ship round (below), `suspend#N` (an IDLE suspend keeps the container: `conta
 → `sandbox.start#K` → WARM (it found its own boot marker: `dev#K` only, reusing the dev server when
 it answers) or COLD (`restore.check#K` → `restore#K` when the workspace backup is at the branch
 head, else `repo#K` → `bootstrap#K` — never re-seeds, migrates only when `sessions.migrations_hash`
-differs, and does nothing after a restore with unchanged migrations — → `dev#K` → `transcript#K`),
+differs, and does nothing after a restore with unchanged migrations — alongside it, settled, `transcript#K` — → `dev#K`),
 `end#N` →
 `fail` on a thrown step → `cleanup` ALWAYS (destroy the sandbox, delete the ship gate's branches
 and then the session's branch, `ended` unless

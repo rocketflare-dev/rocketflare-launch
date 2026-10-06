@@ -105,6 +105,7 @@ import {
   type BootstrapSkip,
   healDevSetup,
   migrationsHash,
+  prereadHotFiles,
   previewHostSuffix,
   resumeDevServer,
   SESSION_DEV_EXCLUDES,
@@ -116,6 +117,7 @@ import {
   sessionBootstrap,
   sessionDevVars,
   startDevServer,
+  stopDevServerGracefully,
   writeDevVars,
 } from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
@@ -528,7 +530,7 @@ export function checkoutScript(input: {
     // Launch's own files never land in a commit, and neither does a core dump (checkpoint.ts).
     'mkdir -p .claude && printf "%s\\n" .claude/settings.local.json >> .git/info/exclude',
     `printf "%s\\n" ${CORE_DUMP_EXCLUDES.map(p => q(p)).join(' ')} >> .git/info/exclude`,
-    // Nor the dev server's own config (`writeSessionWranglerConfig`): the setup is never committed.
+    // Nor the dev server's own config (`SESSION_WRANGLER_SCRIPT`): the setup is never committed.
     `printf "%s\\n" ${SESSION_DEV_EXCLUDES.map(p => q(p)).join(' ')} >> .git/info/exclude`,
     'echo "base=$base"',
     'echo "head=$(git rev-parse HEAD)"'
@@ -2184,6 +2186,9 @@ export async function backupWorkspace(
       await record({ status: 'failed', reason })
       return false
     }
+    // The container is destroyed after every backup: stop the dev server politely first, so its
+    // node processes write their compile cache into the workspace the backup carries.
+    await stopDevServerGracefully(sandbox)
     const dbHosts = await dbEgressHostsOf(scope, session)
     const extra = sandbox.backupHosts
     if (extra.length) await sandbox.setAllowedHosts(sessionAllowedHosts([...dbHosts, ...extra]))
@@ -2282,6 +2287,9 @@ export async function restoreStep(
       if (head.exitCode !== 0 || head.stdout.trim() !== backup.headSha) {
         throw new Error('the restored workspace is not at the backup’s commit')
       }
+      // A presigned restore mounts the archive lazily from R2: page the dev server's biggest
+      // files in while the bootstrap runs (in the background, never waited on).
+      await prereadHotFiles(sandbox)
       return { restored: true }
     } catch (err) {
       if (err instanceof SandboxRestartedError) throw err

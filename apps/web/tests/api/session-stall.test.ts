@@ -832,8 +832,8 @@ describe('reconcile (a Workflow that died under a running turn) and the salvage'
       'restore.check#1',
       'repo#1',
       'bootstrap#1',
-      'dev#1',
       'transcript#1',
+      'dev#1',
     ])
     expect(calls.map(c => c.reason)).not.toContain('salvage')
     expect(h.sandbox().execs.some(e => e.command === turnKillScript())).toBe(false)

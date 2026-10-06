@@ -32,6 +32,7 @@ import {
   requestPrebuild,
 } from '@/api/services/sessions/prebuild'
 import {
+  PREREAD_COMMAND,
   SESSION_IMAGE_VERSION,
   WORKSPACE_FACTS_COMMAND,
 } from '@/api/services/sessions/rocketflare-dev'
@@ -329,6 +330,11 @@ describe('a session after the prebuild', () => {
     const checkout = sandbox.commands.find(c => c.includes('git remote set-url'))
     expect(checkout).toContain(`session/${row.shortId}`)
     expect(checkout).toContain('git clean -q -fd')
+    // The dev server's biggest files paged in, in the background, before the in-place checkout.
+    expect(sandbox.processes.filter(p => p.command === PREREAD_COMMAND)).toHaveLength(1)
+    expect(sandbox.commands.indexOf(PREREAD_COMMAND)).toBeLessThan(
+      sandbox.commands.findIndex(c => c.includes('git remote set-url'))
+    )
     // No install; the kit bootstrap for the session's own database still ran.
     expect(sandbox.backgroundRuns.map(r => r.name)).toEqual(['bootstrap'])
     expect(phasesOf(await timingOf(row))).toEqual([

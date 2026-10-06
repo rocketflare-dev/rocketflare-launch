@@ -23,7 +23,7 @@
  *   prebuild (a `prebuild` session, issue #16): claim → sandbox.start → prebuild.build →
  *            prebuild.save → cleanup
  *            Each boot step's result carries its clock (`timing`); the boot's last step — `dev`,
- *            or `transcript#K` on a cold resume — writes them as ONE `boot.timing` event and a
+ *            on every kind of boot — writes them as ONE `boot.timing` event and a
  *            `session.boot` trace (issue #8, `services/sessions/boot-timing.ts`)
  *   loop N:  inspect#N (given the loop's `DirtyState`) → one of
  *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout, or
@@ -54,7 +54,7 @@
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
  *                `services/sessions/warm.ts`): dev#K only · cold: restore.check#K →
  *                [restore#K] (the workspace backup, when it is at the branch head) → repo#K
- *                (unless restored) → bootstrap#K → dev#K → transcript#K
+ *                (unless restored) → (bootstrap#K ‖ transcript#K) → dev#K
  *              end#N → leave the loop
  *   fail     (a step gave up: `failed`, with a secret-free sentence)
  *   cleanup  ALWAYS: destroy the sandbox, delete the gate branches then the session's branch,
@@ -759,24 +759,28 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             )
             timings.push(repo.timing)
           }
-          const bootstrapped = await run(
-            `bootstrap#${k}`,
-            withProgress('bootstrap', s => bootstrapStep(s, booted, { restored })),
-            BOOT_STEP
-          )
-          timings.push(bootstrapped.timing)
-          const dev = await run(
-            `dev#${k}`,
-            withProgress('dev', s => devStep(s, booted)),
-            BOOT_STEP
-          )
-          timings.push(dev.timing)
+          // The conversation (Claude Code's transcript, under `$HOME`, not the workspace) needs
+          // neither the bootstrap nor the dev server: it is put back ALONGSIDE the bootstrap —
+          // settled, not raced, as the first boot's `db` beside the container — and `dev` comes
+          // last, once the bootstrap's migrate is done, so `ready` means everything is back.
+          const [bootstrapSide, transcriptSide] = await Promise.allSettled([
+            run(
+              `bootstrap#${k}`,
+              withProgress('bootstrap', s => bootstrapStep(s, booted, { restored })),
+              BOOT_STEP
+            ),
+            run(
+              `transcript#${k}`,
+              withProgress('transcript', s => restoreTranscriptStep(s, booted)),
+              BOOT_STEP
+            ),
+          ])
+          if (bootstrapSide.status === 'rejected') throw bootstrapSide.reason
+          if (transcriptSide.status === 'rejected') throw transcriptSide.reason
+          timings.push(bootstrapSide.value.timing, transcriptSide.value.timing)
           await run(
-            `transcript#${k}`,
-            withProgress('transcript', s => restoreTranscriptStep(s, booted), {
-              kind: 'cold',
-              before: timings,
-            }),
+            `dev#${k}`,
+            withProgress('dev', s => devStep(s, booted), { kind: 'cold', before: timings }),
             BOOT_STEP
           )
           break

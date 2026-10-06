@@ -75,10 +75,29 @@ export type SandboxLogEvent =
   | { type: 'stdout' | 'stderr'; data: string }
   | { type: 'exit'; exitCode: number }
 
+/** One port check inside a wait: an HTTP `path` that must answer 2xx, or a bare TCP connect. */
+export interface SandboxPortProbe {
+  port: number
+  /** GET this path; it answers when the status is 2xx. Absent: any HTTP answer at `/`. */
+  path?: string
+  /**
+   * A TCP connect is enough — no request is sent, so the server does no work for the probe (a GET
+   * `/` makes Vite transform the whole UI graph while `wrangler dev` is still booting).
+   */
+  tcp?: boolean
+}
+
 export interface SandboxWaitForPortOptions {
   path?: string
+  /** `port` answers when a TCP connection opens (see {@link SandboxPortProbe.tcp}). */
+  tcp?: boolean
   timeoutMs?: number
   pidFile?: string
+  /**
+   * Probes waited for AFTER `port` answers, in order, in the SAME in-container wait — one call for
+   * the whole dev stack. `timeoutMs` covers them all.
+   */
+  followedBy?: readonly SandboxPortProbe[]
 }
 
 export interface SandboxStartOptions {
@@ -152,7 +171,8 @@ export interface SandboxPort {
   /** Kill a background process (a cancelled or timed-out turn). */
   kill(processId: string, signal?: 'SIGTERM' | 'SIGKILL' | 'SIGINT'): Promise<void>
   /**
-   * Resolve once `port` answers (`path` returns 2xx when given); throws after `timeoutMs`. With
+   * Resolve once `port` answers (`path` returns 2xx when given; `tcp`: a connection opens), then
+   * each of `followedBy` in turn; throws after `timeoutMs`. With
    * `pidFile` (a file holding the pid of the process that should open the port), throws
    * `SandboxProcessExitedError` as soon as that process is gone instead of waiting out the time.
    */

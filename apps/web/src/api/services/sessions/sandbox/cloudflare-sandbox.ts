@@ -48,6 +48,7 @@ import {
   SandboxInterruptedError,
   type SandboxLogEvent,
   type SandboxPort,
+  type SandboxPortProbe,
   type SandboxProcess,
   SandboxProcessExitedError,
   type SandboxStartOptions,
@@ -143,21 +144,52 @@ export const PROCESS_EXITED_CODE = 3
 const waitSeconds = (opts: SandboxWaitForPortOptions) =>
   Math.max(1, Math.ceil((opts.timeoutMs ?? 120_000) / 1000))
 
+/** Seconds between two rounds of probes: a dev server is ready a fifth of a second sooner. */
+export const PORT_POLL_SECONDS = 0.2
+/** `curl -m` of a probe with a `path` (an API health check, its first request may be slow). */
+export const HTTP_PATH_PROBE_SECONDS = 5
+/** `curl -m` of a bare HTTP probe. */
+export const HTTP_PROBE_SECONDS = 2
+
+/** The probes a wait runs, in order: `port` itself, then each of `followedBy`. */
+export function portProbes(port: number, opts: SandboxWaitForPortOptions = {}): SandboxPortProbe[] {
+  return [
+    { port, ...(opts.path ? { path: opts.path } : {}), ...(opts.tcp ? { tcp: true } : {}) },
+    ...(opts.followedBy ?? []),
+  ]
+}
+
+/** `8787/api/health` — a probe as the errors name it. */
+export const probeLabel = (probe: SandboxPortProbe) => `${probe.port}${probe.path ?? ''}`
+
+/** One probe as a shell condition: true when it answers. */
+function probeCondition(probe: SandboxPortProbe): string {
+  if (probe.tcp) return `(: <>/dev/tcp/127.0.0.1/${probe.port}) 2>/dev/null`
+  const url = shellQuote(`http://127.0.0.1:${probe.port}${probe.path ?? '/'}`)
+  return probe.path
+    ? `code=$(curl -s -o /dev/null -w "%{http_code}" -m ${HTTP_PATH_PROBE_SECONDS} ${url}); [ "\${code:0:1}" = "2" ]`
+    : `curl -s -o /dev/null -m ${HTTP_PROBE_SECONDS} ${url}`
+}
+
 /**
  * The port poller: the SDK waits on a PROCESS, so a port is waited for with a tiny loop of its own
- * (a dev server started by an earlier step, or a resumed one, can be waited on too). With
- * `pidFile` it also checks, every half second, that the process which should open the port is
- * alive — a dev server that crashed fails the wait at once instead of after `timeoutMs`.
+ * (a dev server started by an earlier step, or a resumed one, can be waited on too). The probes
+ * (`portProbes`) are passed IN ORDER — the next is only tried once the one before it answered, so
+ * the dev stack's wait asks nothing of Vite until the API is up — every
+ * {@link PORT_POLL_SECONDS}, all in ONE command. With `pidFile` it also checks, each round, that
+ * the process which should open the ports is alive — a dev server that crashed fails the wait at
+ * once instead of after `timeoutMs`. Out of time, it prints `waiting=<index>` (the probe it was
+ * on) and exits 1.
  */
 export function waitForPortScript(port: number, opts: SandboxWaitForPortOptions = {}): string {
-  const url = `http://127.0.0.1:${port}${opts.path ?? '/'}`
-  const probe = opts.path
-    ? `code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 ${shellQuote(url)}); [ "\${code:0:1}" = "2" ]`
-    : `curl -s -o /dev/null -m 2 ${shellQuote(url)}`
+  const probes = portProbes(port, opts)
   const alive = opts.pidFile
     ? `pid=$(cat ${shellQuote(opts.pidFile)} 2>/dev/null); if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then exit ${PROCESS_EXITED_CODE}; fi; `
     : ''
-  return `for i in $(seq 1 ${waitSeconds(opts) * 2}); do if ${probe}; then exit 0; fi; ${alive}sleep 0.5; done; exit 1`
+  const stages = probes
+    .map((probe, i) => `if [ $s -eq ${i} ] && ${probeCondition(probe)}; then s=${i + 1}; fi; `)
+    .join('')
+  return `s=0; end=$((SECONDS + ${waitSeconds(opts)})); while :; do ${stages}if [ $s -eq ${probes.length} ]; then exit 0; fi; ${alive}if [ $SECONDS -ge $end ]; then echo "waiting=$s"; exit 1; fi; sleep ${PORT_POLL_SECONDS}; done`
 }
 
 const INTERRUPTED_NAMES = new Set(['OperationInterruptedError', 'SessionTerminatedError'])
@@ -389,7 +421,12 @@ export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements San
       )
     }
     if (result.exitCode !== 0) {
-      throw new Error(`Port ${port}${opts.path ?? ''} did not answer within ${waitSeconds(opts)}s`)
+      const probes = portProbes(port, opts)
+      const at = Number(/waiting=(\d+)/.exec(result.stdout)?.[1] ?? 0)
+      const probe = probes[at] ?? probes[0]
+      throw new Error(
+        `Port ${probe ? probeLabel(probe) : port} did not answer within ${waitSeconds(opts)}s`
+      )
     }
   }
 

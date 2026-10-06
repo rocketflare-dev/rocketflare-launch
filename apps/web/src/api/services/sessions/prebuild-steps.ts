@@ -41,6 +41,7 @@ import {
 } from './prebuild'
 import {
   installDependencies,
+  prereadHotFiles,
   SESSION_IMAGE_VERSION,
   SESSION_WORKSPACE,
   workspaceFacts,
@@ -159,6 +160,9 @@ export async function prebuildRestoreStep(
       if (restoredAt.headSha !== row.baseSha) {
         throw new Error('the restored workspace is not at the prebuild’s commit')
       }
+      // A presigned restore mounts the archive lazily from R2: page the dev server's biggest files in
+      // while the checkout and the bootstrap run (in the background, never waited on).
+      await prereadHotFiles(sandbox)
       await checkOut(scope, await loadSession(scope), app, sandbox, { restored: true })
       const facts = await workspaceFacts(sandbox)
       // No lockfile to compare: install (cheap over a restored tree), but a new prebuild would

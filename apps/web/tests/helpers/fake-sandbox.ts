@@ -56,7 +56,8 @@
  *   it goes QUIET until the reader aborts — and whatever calls in next finds a fresh, EMPTY
  *   container (files, ports and background runs gone, no boot marker). `deaths` counts them.
  * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
- *   and no hanging process is alive (a dev server that exited).
+ *   and no hanging process is alive (a dev server that exited). `followedBy` probes are checked after
+ *   `port`, in order; every call is recorded in `portWaits`.
  * - `backup({ dir, excludes? })` snapshots the files under `dir`, less `excludes` (kept in
  *   `backups` by id — they survive `destroy` and `recreate`, as R2 would, and the map is shared
  *   between sandboxes when the constructor is given one), `restore(handle)` puts them back (`restores`),
@@ -215,6 +216,8 @@ export class FakeSandbox implements SandboxPort {
   readonly binaryFiles = new Map<string, Uint8Array>()
   readonly ports = new Map<number, PortHandler | null>()
   readonly fetches: { port: number; url: string; method: string }[] = []
+  /** Every `waitForPort` call, in order (the dev stack's is ONE call: `:8787`, then `:5173`). */
+  readonly portWaits: { port: number; opts: SandboxWaitForPortOptions }[] = []
   allowedHosts: string[] = [...SESSION_BASE_ALLOWED_HOSTS]
   started = false
   startCount = 0
@@ -538,16 +541,20 @@ export class FakeSandbox implements SandboxPort {
 
   async waitForPort(port: number, opts: SandboxWaitForPortOptions = {}): Promise<void> {
     await this.guard('waitForPort')
+    this.portWaits.push({ port, opts })
     const alive = this.processes.some(p => p.script.hang && !p.killed && p.exitCode === null)
-    if (!this.ports.has(port) && opts.pidFile && !alive) {
-      throw new SandboxProcessExitedError(
-        `The process that should open port ${port} exited before it answered`
-      )
-    }
-    if (!this.ports.has(port)) {
-      throw new Error(
-        `FakeSandbox: port ${port} never opened (timeout ${opts.timeoutMs ?? 'default'})`
-      )
+    // `port`, then each of `then`, in order — the first closed one is what the wait is stuck on.
+    for (const probe of [port, ...(opts.followedBy ?? []).map(p => p.port)]) {
+      if (!this.ports.has(probe) && opts.pidFile && !alive) {
+        throw new SandboxProcessExitedError(
+          `The process that should open port ${probe} exited before it answered`
+        )
+      }
+      if (!this.ports.has(probe)) {
+        throw new Error(
+          `FakeSandbox: port ${probe} never opened (timeout ${opts.timeoutMs ?? 'default'})`
+        )
+      }
     }
   }
 

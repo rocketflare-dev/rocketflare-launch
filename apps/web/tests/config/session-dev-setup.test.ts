@@ -28,6 +28,7 @@ import {
 } from '@/api/services/sessions/checkpoint'
 import {
   BOOTSTRAP_KEEP_ENV,
+  DEV_LOG_FILE,
   DEV_SETUP_HEAL_SCRIPT,
   healDevSetup,
   NOT_ROOT_PRELOAD_SCRIPT,
@@ -219,6 +220,36 @@ describe('the session’s own wrangler config', () => {
     expect(read(SESSION_WRANGLER_CONFIG)).toContain('name = "x"\nmain = "src/worker.ts"\n')
   })
 
+  it('runs as the dev server’s --import preload: the config is there before the supervisor loads, and the process carries on', () => {
+    const { dir, put } = repo()
+    const preload = path.join(dir, '.session-wrangler.mjs')
+    writeFileSync(preload, SESSION_WRANGLER_SCRIPT)
+    // A stand-in supervisor: it reads what the preload wrote, and is the same process.
+    put(
+      'apps/web/scripts/dev-server.mjs',
+      `import { existsSync } from 'node:fs'\nconsole.log('supervisor config=' + existsSync(${JSON.stringify(SESSION_WRANGLER_CONFIG)}) + ' args=' + process.argv.slice(2).join(' '))\n`
+    )
+    const run = () =>
+      spawnSync(
+        process.execPath,
+        ['--import', preload, 'apps/web/scripts/dev-server.mjs', '--start'],
+        { cwd: dir, encoding: 'utf8', env: childEnv() }
+      )
+    const ok = run()
+    expect(ok.status, ok.stderr).toBe(0)
+    expect(ok.stdout.trim().split('\n')).toEqual([
+      'session-config ai=on',
+      'supervisor config=true args=--start',
+    ])
+
+    // No toml: the preload's exit 1 stops the dev server before the supervisor ever runs.
+    rmSync(path.join(dir, 'apps/web/wrangler.toml'))
+    const broken = run()
+    expect(broken.status).toBe(1)
+    expect(broken.stderr).toContain('no apps/web/wrangler.toml in the checkout')
+    expect(broken.stdout).not.toContain('supervisor')
+  })
+
   it('the checkout writes the same exclude lines', () => {
     const script = checkoutScript({
       url: 'https://github.com/o/r.git',
@@ -370,7 +401,7 @@ describe('the session steps, against a FakeSandbox', () => {
     for (const command of fake.commands) expect(command).not.toMatch(/wrangler types|pnpm types/)
   })
 
-  it('the dev server starts on the session config: written first, a failure stops the start', async () => {
+  it('the dev server starts on the session config: written by the dev start itself, a failure stops it', async () => {
     const fake = new FakeSandbox().onProcess(/exec pnpm dev/, {
       lines: ['ready'],
       ports: [5173, 8787],
@@ -378,17 +409,19 @@ describe('the session steps, against a FakeSandbox', () => {
     })
     await startDevServer(fake, dev, { chunkMs: 10 })
     expect(fake.files.get('/workspace/.launch/session-wrangler.mjs')).toBe(SESSION_WRANGLER_SCRIPT)
-    const order = fake.commands.filter(c => /session-wrangler|exec pnpm dev/.test(c))
-    expect(order[0]).toBe('node /workspace/.launch/session-wrangler.mjs')
-    expect(order[1]).toContain('exec node apps/web/scripts/dev-server.mjs --start')
+    // No exec of its own: the script is the dev server's `--import` preload (one node, one RPC).
+    expect(fake.execs.map(e => e.command).filter(c => c.includes('session-wrangler'))).toEqual([])
+    const [start] = fake.commands.filter(c => /session-wrangler|exec pnpm dev/.test(c))
+    expect(start).toContain(
+      'exec node --import /workspace/.launch/session-wrangler.mjs apps/web/scripts/dev-server.mjs --start'
+    )
 
-    const broken = new FakeSandbox().onExec(/session-wrangler/, {
-      exitCode: 1,
-      stderr: 'no apps/web/wrangler.toml in the checkout',
-    })
+    // A missing toml exits the dev server (the preload's exit 1): the step says so, from its log.
+    const broken = new FakeSandbox().onProcess(/exec pnpm dev/, { lines: [], exitCode: 1 })
+    broken.files.set(DEV_LOG_FILE, 'no apps/web/wrangler.toml in the checkout\n')
     const err = await startDevServer(broken, dev).catch(e => e)
+    expect(err.message).toContain('the dev server exited before its ports answered')
     expect(err.message).toContain('no apps/web/wrangler.toml')
-    expect(broken.commands.some(c => c.includes('pnpm dev'))).toBe(false)
   })
 })
 

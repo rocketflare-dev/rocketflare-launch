@@ -5,7 +5,7 @@
  * - **Each boot step times itself** (`withProgress`, `steps.ts`): its result carries a
  *   {@link BootStepTiming} — when it started and how long it ran, by the step's own clock. The
  *   Workflow collects them from step RESULTS (replayed unchanged), never from a clock read of its
- *   own, and hands them to the boot's LAST step (`dev`, or `transcript#K` on a cold resume).
+ *   own, and hands them to the boot's LAST step (`dev`, on every kind of boot).
  * - **That step writes ONE `boot.timing` event** ({@link bootTimingData}: the phases it was given
  *   plus its own; `bootstrap` split into `install` and the kit `bootstrap` after it) and records
  *   the same phases as spans (`session.boot`, one child per phase) through the tracer, so `launch
