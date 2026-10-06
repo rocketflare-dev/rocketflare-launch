@@ -48,6 +48,7 @@ import {
   type Session,
   type SessionAttachment,
   type SessionStatus,
+  sessionShippingOf,
   sessionTakesMessages,
   UPGRADE_SESSION_READ_ONLY_CODE,
   UPGRADE_SESSION_READ_ONLY_MESSAGE,
@@ -356,6 +357,7 @@ export function toSessionDetail(row: SessionRow, viewerCanManage: boolean): Sess
     runtime: row.runtime ?? 'claude_code',
     credentialSource: row.credentialSource ?? 'platform',
     model: resolveSessionPolicy(row.policy).model,
+    shipping: sessionShippingOf(row),
     credentialOwnerUserId: row.credentialSource === 'user' ? row.createdByUserId : null,
   }
 }

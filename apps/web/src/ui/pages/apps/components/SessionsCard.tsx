@@ -13,6 +13,9 @@
  *   is a real `<Link>` to the session page (middle-click works), with its agent and model (the
  *   agent is fixed at create, so this is where you tell them apart), status, turns, cost and PR. Members see their own sessions; the app's owners and admins see everyone's — the route
  *   decides, the card just renders what it gets.
+ * - A session whose ship is still in flight (the summary's derived `shipping`) is in the active list
+ *   whatever its status — after the merge it is `shipped` while it releases and deploys — and its
+ *   row says where the ship stands ("Waiting for a review", "Deploying v1.4.2 to staging").
  * - Freshness is the `['session']` nudge, plus a poll only while a listed session is moving.
  * - §18.22: when the deployment offers a CHOICE — more than one coding agent, or a runtime that may
  *   bill your own account — a compact picker sits above the list (`agentPickerVisible`): the agent,
@@ -40,6 +43,7 @@ import { useAppSessions, useWarmStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { timeAgo } from '@/ui/lib/format'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
+import { shippingStageText } from '@/ui/pages/sessions/sessionShipping'
 
 /** A start refusal → what the card says about it. Pure. */
 export function startRefusal(error: unknown): { tone: 'info' | 'warning'; message: string } {
@@ -201,7 +205,12 @@ function SessionRow({ appSlug, session }: { appSlug: string; session: SessionSum
         )}
       </td>
       <td>
-        <SessionStatusBadge status={session.status} />
+        <SessionStatusBadge status={session.status} shipping={session.shipping} />
+        {session.shipping && (
+          <span className="mt-0.5 block text-xs text-secondary" data-testid="session-shipping">
+            {shippingStageText(session.shipping)}
+          </span>
+        )}
       </td>
       <td className="tabular-nums text-sm">{session.turnCount}</td>
       <td className="tabular-nums text-sm">{usd(session.costMicrocents)}</td>

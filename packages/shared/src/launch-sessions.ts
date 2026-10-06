@@ -1084,7 +1084,12 @@ export const extendBudgetSchema = z.object({
 })
 export type ExtendBudgetRequest = z.infer<typeof extendBudgetSchema>
 
-/** `GET /api/apps/:id/sessions` and `GET /api/admin/sessions`. */
+/**
+ * `GET /api/apps/:id/sessions` and `GET /api/admin/sessions`. `active`: the statuses that hold
+ * resources (`ACTIVE_SESSION_STATUSES`) AND any session whose ship is still in flight
+ * (`sessionShippingOf` not null) — after the merge the row is `shipped` (settled) while its
+ * landing still releases and deploys, and a stall before the release waits on a person.
+ */
 export const sessionListQuerySchema = z.object({
   scope: z.enum(['active', 'all']).default('active'),
 })
@@ -1106,6 +1111,72 @@ export const sessionBudgetSchema = z.object({
   extraMicrocents: z.number().int().nonnegative(),
 })
 export type SessionBudget = z.infer<typeof sessionBudgetSchema>
+
+/**
+ * Who a ship in flight waits on, when it is not Launch or GitHub: `review` — a person approving the
+ * merge (the landing's `session.merge` approval); `retry` — a stall before the release
+ * (`landingRetryable`) that a person moves on from the session page (Re-run CI, Retry the release,
+ * Release anyway).
+ */
+export const SESSION_SHIPPING_WAITS = ['review', 'retry'] as const
+export const sessionShippingWaitSchema = z.enum(SESSION_SHIPPING_WAITS)
+export type SessionShippingWait = z.infer<typeof sessionShippingWaitSchema>
+
+/**
+ * A ship still in flight, DERIVED from `status` + `landing` ({@link sessionShippingOf}) — never a
+ * `session_status` of its own: the status is the container's lifecycle, and a landing outlives it
+ * (Phase B runs on a `shipped` row whose sandbox is gone). What the app's lists show a shipping
+ * session by, and what "Needs you" reads.
+ */
+export const sessionShippingSchema = z.object({
+  /** A moving stage (`MOVING_LANDING_STAGES`), or `stalled` on a retryable stall. */
+  stage: shipLandingStageSchema,
+  /** Null: Launch (or GitHub's CI) is moving it. */
+  waitingOn: sessionShippingWaitSchema.nullable(),
+  stalledReason: shipStalledReasonSchema.nullable(),
+  /** The `session.merge` approval, once `land.review` opened it. */
+  approvalId: z.string().uuid().nullable(),
+  prNumber: z.number().int().positive(),
+  /** The release's version once cut (`releasing` → `deploying`). */
+  version: z.string().nullable(),
+  /** When the stage last changed. */
+  since: isoTimestampSchema,
+})
+export type SessionShipping = z.infer<typeof sessionShippingSchema>
+
+/** The statuses a landing lives on: Phase A `shipping`, Phase B `shipped`. */
+export const LANDING_SESSION_STATUSES = [
+  'shipping',
+  'shipped',
+] as const satisfies readonly SessionStatus[]
+
+/**
+ * The ship in flight on a session, or null: a landing on a `shipping` / `shipped` row in a moving
+ * stage, or stalled before its release (a person moves it on). Null before the PR, in `pr` mode,
+ * once live, after a reopen, and on a stall after the release (merged and released — the app
+ * page's release and deploy own it). Pure — the lists' SQL filter (`listAppSessions`) is the same
+ * predicate.
+ */
+export function sessionShippingOf(row: {
+  status: SessionStatus
+  landing: SessionLanding | null | undefined
+}): SessionShipping | null {
+  const landing = row.landing
+  if (!landing) return null
+  if (!(LANDING_SESSION_STATUSES as readonly SessionStatus[]).includes(row.status)) return null
+  const moving = (MOVING_LANDING_STAGES as readonly ShipLandingStage[]).includes(landing.stage)
+  const retryable = landingRetryable(landing)
+  if (!moving && !retryable) return null
+  return {
+    stage: landing.stage,
+    waitingOn: retryable ? 'retry' : landing.stage === 'approval' ? 'review' : null,
+    stalledReason: retryable ? landing.stalledReason : null,
+    approvalId: landing.approvalId ?? null,
+    prNumber: landing.prNumber,
+    version: landing.version ?? null,
+    since: landing.stageAt,
+  }
+}
 
 /** One row in a list: the app's sessions card, the admin page, `launch sessions ls`. */
 export const sessionSummarySchema = z.object({
@@ -1129,6 +1200,8 @@ export const sessionSummarySchema = z.object({
   credentialSource: sessionCredentialSourceSchema.default('platform'),
   /** The model the session runs now (`policy.model`); null: the agent's own default. */
   model: z.string().nullable().default(null),
+  /** The ship still in flight ({@link sessionShippingOf}); null when there is none. */
+  shipping: sessionShippingSchema.nullable().default(null),
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 

@@ -132,6 +132,34 @@ describe('polling while the socket is open vs closed', () => {
     expect(sessionListPollInterval([{ status: 'shipping' }], false)).toBe(SESSION_POLL_MS)
     expect(sessionListPollInterval([{ status: 'shipping' }], true)).toBe(SESSION_CONNECTED_POLL_MS)
     expect(sessionListPollInterval([{ status: 'ready' }], true)).toBe(false)
+  })
+
+  it('a listed ship in flight counts as moving, at the landing’s pace; one parked on a person does not', () => {
+    const ship = (waitingOn: 'review' | 'retry' | null, stage = 'deploying') =>
+      ({ stage, waitingOn }) as never
+    // After the merge the row is `shipped` — settled — yet its landing still moves.
+    expect(sessionListPollInterval([{ status: 'shipped', shipping: ship(null) }], false)).toBe(
+      SESSION_LANDING_POLL_MS
+    )
+    expect(sessionListPollInterval([{ status: 'shipped', shipping: ship(null) }], true)).toBe(
+      SESSION_LANDING_CONNECTED_POLL_MS
+    )
+    // A review and a stall wait on a person: their nudges move them, not a poll.
+    expect(
+      sessionListPollInterval([{ status: 'shipping', shipping: ship('review', 'approval') }])
+    ).toBe(false)
+    expect(
+      sessionListPollInterval([{ status: 'shipped', shipping: ship('retry', 'stalled') }])
+    ).toBe(false)
+    // A booting row beside a landing keeps the faster pace.
+    expect(
+      sessionListPollInterval([
+        { status: 'shipped', shipping: ship(null) },
+        { status: 'booting', shipping: null },
+      ])
+    ).toBe(SESSION_POLL_MS)
+    // The gate (no landing yet) is still `shipping` and moving.
+    expect(sessionListPollInterval([{ status: 'shipping', shipping: null }])).toBe(SESSION_POLL_MS)
 
     const pending = { checks: { state: 'pending' } } as never
     const green = { checks: { state: 'success' } } as never

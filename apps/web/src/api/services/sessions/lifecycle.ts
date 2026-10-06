@@ -36,8 +36,11 @@ import {
   CODING_SESSION_KINDS,
   type CreateSessionRequest,
   type DrainResponse,
+  LANDING_SESSION_STATUSES,
+  MOVING_LANDING_STAGES,
   newPreviewToken,
   newSessionShortId,
+  RETRYABLE_STALLED_REASONS,
   resolveSessionPolicy,
   type SessionAction,
   type SessionPolicy,
@@ -507,6 +510,36 @@ export async function undrainSessions(
 
 // ---- lists -------------------------------------------------------------------------------------
 
+const textList = (values: readonly string[]) =>
+  sql.join(
+    values.map(value => sql`${value}`),
+    sql`, `
+  )
+
+/**
+ * A ship still in flight — `sessionShippingOf(row) !== null` in SQL: a landing on a `shipping` /
+ * `shipped` row in a moving stage, or stalled before its release. Such a row is in the `active`
+ * lists whatever its status: after the merge it is `shipped` (settled) while the landing still
+ * releases and deploys, or waits on a person.
+ */
+export function shipInFlightSql() {
+  return and(
+    inArray(sessions.status, [...LANDING_SESSION_STATUSES]),
+    or(
+      sql`${sessions.landing}->>'stage' in (${textList(MOVING_LANDING_STAGES)})`,
+      and(
+        sql`${sessions.landing}->>'stage' = 'stalled'`,
+        sql`${sessions.landing}->>'stalledReason' in (${textList(RETRYABLE_STALLED_REASONS)})`
+      )
+    )
+  )
+}
+
+/** The `active` scope: holding resources, or shipping (`shipInFlightSql`). */
+function activeScopeSql() {
+  return or(inArray(sessions.status, [...ACTIVE_SESSION_STATUSES]), shipInFlightSql())
+}
+
 /** An app's sessions for `GET /api/apps/:id/sessions`, newest first. */
 export async function listAppSessions(
   db: Database,
@@ -522,9 +555,7 @@ export async function listAppSessions(
         eq(sessions.tenantId, tenantId),
         eq(sessions.appId, appId),
         inArray(sessions.kind, [...CODING_SESSION_KINDS]),
-        filter.scope === 'active'
-          ? inArray(sessions.status, [...ACTIVE_SESSION_STATUSES])
-          : undefined,
+        filter.scope === 'active' ? activeScopeSql() : undefined,
         filter.onlyCreatedBy ? eq(sessions.createdByUserId, filter.onlyCreatedBy) : undefined
       )
     )
@@ -544,7 +575,7 @@ export async function listAllSessions(
     .select({ session: sessions, appSlug: apps.slug })
     .from(sessions)
     .innerJoin(apps, and(eq(apps.id, sessions.appId), eq(apps.tenantId, sessions.tenantId)))
-    .where(scope === 'active' ? inArray(sessions.status, [...ACTIVE_SESSION_STATUSES]) : undefined)
+    .where(scope === 'active' ? activeScopeSql() : undefined)
     .orderBy(desc(sessions.createdAt))
     .limit(500)
 }

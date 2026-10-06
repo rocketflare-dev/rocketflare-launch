@@ -69,6 +69,7 @@ import {
   sessionLandingSchema,
   sessionPolicySchema,
   sessionSchema,
+  sessionShippingOf,
   sessionShipSummarySchema,
   sessionTurnRequestSchema,
   TERMINAL_SESSION_STATUSES,
@@ -548,5 +549,51 @@ describe('issue #5: the contracts beside the session', () => {
       'Says hello.'
     )
     expect(PROMOTION_SUMMARY_MAX).toBe(600)
+  })
+})
+
+describe('the derived ship in flight (sessionShippingOf)', () => {
+  const at = '2026-10-06T10:00:00.000Z'
+  const landing = (over: Record<string, unknown>) =>
+    sessionLandingSchema.parse({
+      mode: 'staging',
+      stage: 'ci',
+      prNumber: 7,
+      gateSha: 'a'.repeat(40),
+      startedAt: at,
+      stageAt: at,
+      reviewMode: 'none',
+      ...over,
+    })
+
+  it('is the landing in a moving stage, on a shipping or shipped row', () => {
+    for (const stage of MOVING_LANDING_STAGES) {
+      const status = ['releasing', 'deploying'].includes(stage) ? 'shipped' : 'shipping'
+      expect(sessionShippingOf({ status, landing: landing({ stage }) })).toMatchObject({
+        stage,
+        waitingOn: stage === 'approval' ? 'review' : null,
+        prNumber: 7,
+        since: at,
+      })
+    }
+  })
+
+  it('waits on a person on a stall before the release; nothing after it, live, pr, or no landing', () => {
+    expect(
+      sessionShippingOf({
+        status: 'shipped',
+        landing: landing({ stage: 'stalled', stalledReason: 'main_ci_failed' }),
+      })
+    ).toMatchObject({ waitingOn: 'retry', stalledReason: 'main_ci_failed' })
+    for (const l of [
+      landing({ stage: 'stalled', stalledReason: 'unhealthy' }),
+      landing({ stage: 'live' }),
+      landing({ mode: 'pr', stage: 'pr' }),
+      null,
+    ]) {
+      expect(sessionShippingOf({ status: 'shipped', landing: l })).toBeNull()
+    }
+    // A landing only lives on `shipping` / `shipped`.
+    expect(sessionShippingOf({ status: 'ended', landing: landing({ stage: 'ci' }) })).toBeNull()
   })
 })

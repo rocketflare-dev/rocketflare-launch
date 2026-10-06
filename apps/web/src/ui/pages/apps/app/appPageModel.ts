@@ -10,14 +10,15 @@
  * - `stagingInFlight` / `liveInFlight` — the one line under an environment row while a release is
  *   on its way to it (the big steppers are gone);
  * - `needsYou` — the band that shows only when something needs a person: a failed release or
- *   deploy, a pending approval, a missing config grant;
+ *   deploy, a pending approval, a session's ship waiting on a review or stalled before its
+ *   release, a missing config grant;
  * - deploy tickets: `ticketBadge`, `ticketVersion`, `deployRows`, `pendingProduction`, `ticketRunUrl`;
  * - `releaseRows` — the Releases tab's one row per version, merging releases and deploy tickets.
  *
  * The server stays the judge of every action; nothing here decides who MAY do something beyond
  * what the detail (`viewerCanDeploy`) and the config view (`canRequest`) already said.
  */
-import { approvalPath } from '@launch/shared/launch-approvals'
+import { type ApprovalRequest, approvalPath } from '@launch/shared/launch-approvals'
 import {
   APP_ENVIRONMENT_NAMES,
   type AppDetail,
@@ -31,6 +32,7 @@ import type { AppConfigView } from '@launch/shared/launch-grants'
 import type { DeployTicket, PipelineView } from '@launch/shared/launch-pipeline'
 import type { PromotionRollback } from '@launch/shared/launch-promotion'
 import { type Release, rollbackRefusal } from '@launch/shared/launch-releases'
+import type { SessionSummary } from '@launch/shared/launch-sessions'
 import { missingEnvironments } from '../components/configModel'
 import { DEPLOY_PHASE_LABELS } from '../components/deployProgressModel'
 import { type PromotionState, peopleSentence, v } from '../components/promotionModel'
@@ -55,6 +57,11 @@ export function appPath(slug: string): string {
 
 export function appTabPath(slug: string, tab: AppTab): string {
   return tab === 'overview' ? appPath(slug) : `${appPath(slug)}/${tab}`
+}
+
+/** A coding session's page under its app. */
+export function sessionPath(slug: string, sessionId: string): string {
+  return `${appPath(slug)}/sessions/${sessionId}`
 }
 
 export function settingsPath(slug: string, section: SettingsSection = 'general'): string {
@@ -359,6 +366,19 @@ export type NeedsYouItem =
   /** A pending production ticket from before the approvals engine: decided in place. */
   | { kind: 'deploy-decision'; key: string; ticket: DeployTicket; canAct: boolean }
   | { kind: 'grant'; key: string; title: string; canAct: boolean }
+  /**
+   * A session's ship waiting on a person, acted on from the session page: a stall before the
+   * release (Re-run CI, Retry the release, Release anyway), or a review this reader is not asked
+   * for (they read who it waits on there).
+   */
+  | {
+      kind: 'session'
+      key: string
+      title: string
+      detail: string | null
+      sessionId: string
+      canAct: boolean
+    }
 
 export interface NeedsYouInput {
   state: PromotionState | null
@@ -369,6 +389,30 @@ export interface NeedsYouInput {
   viewerId: string | null
   /** The app's owners and admins: they ship, retry and decide production deploys. */
   viewerCanDeploy: boolean
+  /** The app's active sessions (`?scope=active` — a ship in flight included, whatever its status). */
+  sessions?: readonly Pick<
+    SessionSummary,
+    'id' | 'title' | 'shortId' | 'createdByUserId' | 'shipping'
+  >[]
+  /** The `session.merge` requests on this app waiting on THIS reader (`box: 'mine'`, pending). */
+  mergeApprovals?: readonly Pick<ApprovalRequest, 'id' | 'status' | 'context'>[]
+}
+
+/** What a session is called in a sentence. Pure. */
+export function sessionName(session: { title: string | null; shortId: string }): string {
+  return session.title?.trim() || `Session ${session.shortId.slice(0, 6)}`
+}
+
+/** A stall before the release, as a Needs-you item says it: what happened, and what to do. */
+const STALL_TEXT: Record<string, { title: string; detail: string }> = {
+  main_ci_failed: {
+    title: 'is merged, but CI failed on main, so it was not released',
+    detail: 'Re-run CI or release anyway from the session.',
+  },
+  release_failed: {
+    title: 'is merged, but Launch couldn’t cut a release for it',
+    detail: 'Retry the release from the session.',
+  },
 }
 
 /**
@@ -464,6 +508,51 @@ export function needsYou(input: NeedsYouInput): NeedsYouItem[] {
             canAct: input.viewerCanDeploy,
           }
     )
+  }
+
+  // A session's ship waiting on a person: this reader's review of its merge (an approval), a
+  // review someone else is asked for, or a stall before the release.
+  const mine = new Set<string>()
+  for (const request of input.mergeApprovals ?? []) {
+    if (request.status !== 'pending' || request.context.kind !== 'session.merge') continue
+    mine.add(request.id)
+    items.push({
+      kind: 'approval',
+      key: `approval:${request.id}`,
+      title: `${sessionName(request.context)} is waiting for your review before it merges`,
+      href: approvalPath(request.id),
+      canAct: true,
+    })
+  }
+  for (const session of input.sessions ?? []) {
+    const shipping = session.shipping
+    if (!shipping?.waitingOn) continue
+    if (shipping.waitingOn === 'review') {
+      if (shipping.approvalId && mine.has(shipping.approvalId)) continue
+      items.push({
+        kind: 'session',
+        key: `session:${session.id}`,
+        title: `${sessionName(session)} is waiting for a review before it merges`,
+        detail: null,
+        sessionId: session.id,
+        canAct: false,
+      })
+      continue
+    }
+    const stall = STALL_TEXT[shipping.stalledReason ?? ''] ?? {
+      title: 'stalled after the merge',
+      detail: 'Open the session to move it on.',
+    }
+    items.push({
+      kind: 'session',
+      key: `session:${session.id}`,
+      title: `${sessionName(session)} ${stall.title}`,
+      detail: stall.detail,
+      sessionId: session.id,
+      canAct:
+        input.viewerCanDeploy ||
+        (input.viewerId !== null && session.createdByUserId === input.viewerId),
+    })
   }
 
   // Shared config the app declares and does not hold.

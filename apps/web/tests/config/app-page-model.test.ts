@@ -228,6 +228,83 @@ describe('needsYou', () => {
   })
 })
 
+describe('needsYou: a session’s ship waiting on a person', () => {
+  const base = {
+    state: null,
+    latest: [],
+    tickets: [],
+    config: null,
+    viewerId: 'u1',
+    viewerCanDeploy: false,
+  }
+  const APPROVAL = 'p0000000-0000-4000-8000-0000000000aa'
+  const ship = (over: Record<string, unknown>) =>
+    ({
+      stage: 'approval',
+      waitingOn: 'review',
+      stalledReason: null,
+      approvalId: APPROVAL,
+      prNumber: 12,
+      version: null,
+      since: at(5),
+      ...over,
+    }) as never
+  const session = (shipping: unknown, createdByUserId = 'u2') => ({
+    id: 's0000000-0000-4000-8000-000000000001',
+    title: 'Friendlier home page',
+    shortId: 'abcdefghijkl',
+    createdByUserId,
+    shipping: shipping as never,
+  })
+  const mergeRequest = {
+    id: APPROVAL,
+    status: 'pending' as const,
+    context: { kind: 'session.merge', title: null, shortId: 'abcdefghijkl' } as never,
+  }
+
+  it('lists nothing for a ship Launch is moving', () => {
+    expect(
+      needsYou({ ...base, sessions: [session(ship({ stage: 'deploying', waitingOn: null }))] })
+    ).toEqual([])
+  })
+
+  it('a review: the reader’s own request once, as an approval; anyone else’s, read-only', () => {
+    const mine = needsYou({
+      ...base,
+      sessions: [session(ship({}))],
+      mergeApprovals: [mergeRequest],
+    })
+    expect(mine).toEqual([
+      expect.objectContaining({
+        kind: 'approval',
+        title: 'Session abcdef is waiting for your review before it merges',
+        href: `/approvals/${APPROVAL}`,
+        canAct: true,
+      }),
+    ])
+    const theirs = needsYou({ ...base, sessions: [session(ship({}))] })
+    expect(theirs).toEqual([
+      expect.objectContaining({ kind: 'session', canAct: false, detail: null }),
+    ])
+  })
+
+  it('a stall before the release: its creator and the app’s owners may act', () => {
+    const stalled = ship({ stage: 'stalled', waitingOn: 'retry', stalledReason: 'release_failed' })
+    expect(needsYou({ ...base, sessions: [session(stalled)] })[0]).toMatchObject({
+      kind: 'session',
+      title: 'Friendlier home page is merged, but Launch couldn’t cut a release for it',
+      detail: 'Retry the release from the session.',
+      canAct: false,
+    })
+    expect(needsYou({ ...base, sessions: [session(stalled, 'u1')] })[0]).toMatchObject({
+      canAct: true,
+    })
+    expect(
+      needsYou({ ...base, viewerCanDeploy: true, sessions: [session(stalled)] })[0]
+    ).toMatchObject({ canAct: true })
+  })
+})
+
 describe('the Releases tab', () => {
   it('merges releases and tickets into one row per version, newest first', () => {
     const r = release()

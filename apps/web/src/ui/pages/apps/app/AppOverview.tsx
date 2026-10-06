@@ -12,7 +12,10 @@
  *   Copy link") — read from each environment's latest deploy (`useDeployProgress`) and the
  *   promotion view (`useAppPromotion`). Health is the dot only, kept apart from the deploy result;
  * - **the kit** (P6 6c, `UpgradeCard`) — only while the app requires an upgrade or one is open;
- * - **active sessions**, with "All sessions →".
+ * - **active sessions**, with "All sessions →" — a session whose ship is still in flight among them
+ *   whatever its status (the summary's derived `shipping`: after the merge the row is `shipped`
+ *   while it releases and deploys), with where it stands ("Waiting for a review"). One waiting on a
+ *   person (a review, a stall before its release) is also a Needs-you item.
  *
  * A release in flight's line carries Details and a ⋯ with Cancel release (app page P2); a stuck
  * one is a Needs-you item with its stage-aware Retry and "Fix in a session" (`ReleaseActions`).
@@ -38,11 +41,13 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { showToast } from '@/ui/components/shared'
 import { useAppConfig } from '@/ui/hooks/useAppConfig'
+import { useApprovals } from '@/ui/hooks/useApprovals'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { useDeployProgress, useDeploys } from '@/ui/hooks/useDeploys'
 import { useAppPromotion, useReleaseCompare } from '@/ui/hooks/useReleases'
 import { useAppSessions } from '@/ui/hooks/useSessions'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
+import { shippingStageText } from '@/ui/pages/sessions/sessionShipping'
 import { HEALTH_LABEL, HealthDot } from '../components/HealthDot'
 import { PipelineProgress } from '../components/PipelineProgress'
 import {
@@ -446,7 +451,12 @@ function ActiveSessions({ appId, slug }: { appId: string; slug: string }) {
               >
                 {session.title?.trim() || `Session ${session.shortId.slice(0, 6)}`}
               </Link>
-              <SessionStatusBadge status={session.status} />
+              <SessionStatusBadge status={session.status} shipping={session.shipping} />
+              {session.shipping && (
+                <span className="text-xs text-secondary" data-testid="session-shipping">
+                  {shippingStageText(session.shipping)}
+                </span>
+              )}
               <span className="text-xs text-secondary ml-auto">
                 <Ago at={session.lastActivityAt ?? session.createdAt} />
               </span>
@@ -467,6 +477,15 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
   const latest = useDeployProgress(app.id, app.status !== 'requested')
   const tickets = useDeploys(app.id, running)
   const config = useAppConfig(app.id, hasRepo && app.status !== 'archived')
+  // The same query `ActiveSessions` reads (one request): a ship waiting on a person is Needs you.
+  const sessions = useAppSessions(
+    hasRepo && app.status !== 'archived' ? app.id : undefined,
+    'active'
+  )
+  const merges = useApprovals(
+    { box: 'mine', kind: 'session.merge', appId: app.id, status: 'pending' },
+    hasRepo && running
+  )
 
   const state = promotion.data ? promotionState(promotion.data) : null
   const latestItems = latest.data?.items ?? []
@@ -479,6 +498,8 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
     config: config.data ?? null,
     viewerId: user?.id ?? null,
     viewerCanDeploy: app.viewerCanDeploy,
+    sessions: sessions.data?.items ?? [],
+    mergeApprovals: merges.data?.items ?? [],
   })
   const staging = app.environments.find(env => env.name === 'staging')
   const live = app.environments.find(env => env.name === 'production')

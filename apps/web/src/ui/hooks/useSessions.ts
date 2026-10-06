@@ -40,6 +40,7 @@ import {
   type SessionAttachment,
   type SessionListQuery,
   type SessionPrResponse,
+  type SessionShipping,
   type SessionStatus,
   type SessionSummary,
   type SessionTurnRequestInput,
@@ -142,13 +143,32 @@ export function sessionPollInterval(
   return connected ? SESSION_CONNECTED_POLL_MS : SESSION_POLL_MS
 }
 
-/** `refetchInterval` for a list: poll while any listed row is moving. Pure. */
+/**
+ * A listed row's ship in flight is moving on Launch (or GitHub's CI), not on a person: a review
+ * and a stall before the release (`waitingOn`) wait on someone, and their nudges move them. Pure.
+ */
+export function shippingIsMoving(shipping: Pick<SessionShipping, 'waitingOn'> | null | undefined) {
+  return Boolean(shipping && shipping.waitingOn === null)
+}
+
+type ListRow = Pick<SessionSummary, 'status'> & { shipping?: SessionSummary['shipping'] }
+
+/**
+ * `refetchInterval` for a list: poll while any listed row is moving. Pure. A row with a ship in
+ * flight (`shipping`, derived — a `shipped` row still releasing counts) moves by its landing, at
+ * the landing's pace; one parked on a reviewer or a stall does not poll at all.
+ */
 export function sessionListPollInterval(
-  items: readonly Pick<SessionSummary, 'status'>[] | undefined,
+  items: readonly ListRow[] | undefined,
   connected = false
 ): number | false {
-  if (!items?.some(s => sessionIsMoving(s.status))) return false
-  return connected ? SESSION_CONNECTED_POLL_MS : SESSION_POLL_MS
+  if (!items) return false
+  const live = (row: ListRow) => (row.shipping ? false : sessionIsMoving(row.status))
+  if (items.some(live)) return connected ? SESSION_CONNECTED_POLL_MS : SESSION_POLL_MS
+  if (items.some(row => shippingIsMoving(row.shipping))) {
+    return connected ? SESSION_LANDING_CONNECTED_POLL_MS : SESSION_LANDING_POLL_MS
+  }
+  return false
 }
 
 /**

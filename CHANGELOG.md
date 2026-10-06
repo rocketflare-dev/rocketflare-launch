@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A session that is still shipping stays on the app page.** After the merge a session is
+  `shipped` while its landing still cuts the release and deploys it to staging, and a stall before
+  the release (CI failed on main, the release failed) waits on a person; until now none of that
+  appeared under Active sessions or Needs you, only on the session page under "show finished".
+  Session summaries now carry a derived `shipping` (`{ stage, waitingOn, stalledReason,
+  approvalId, prNumber, version, since }`, null when nothing is in flight) — the session status
+  enum is unchanged — and the `active` scope of `GET /api/apps/:id/sessions` and
+  `GET /api/admin/sessions` includes such sessions whatever their status. The Overview's Active
+  sessions and the Sessions tab say "Shipping" with where it stands ("Waiting for a review",
+  "Deploying v1.4.2 to staging", "Merged, but CI failed on main"); Needs you lists a merge review
+  waiting on you (once, linking the request), a review waiting on someone else (read-only), and a
+  stall before the release (linking the session, where Re-run CI / Release anyway / Retry live);
+  `launch sessions ls` prints the stage. No migration.
+
 - **A session boots faster: the kit bootstrap skips two redundant children, the dev server starts
   directly, and finished commands are noticed sooner** (epic #7, track B). The bootstrap preload
   now also answers the kit's own second `pnpm install --prefer-offline` (Launch's install has just

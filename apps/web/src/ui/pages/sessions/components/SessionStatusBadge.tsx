@@ -7,8 +7,12 @@
  * Markdown-free and light on purpose: the app page's sessions card and the admin list import it,
  * and neither may pull the session page's chunk in with it.
  */
-import type { SessionStatus } from '@launch/shared/launch-sessions'
-import { sessionIsMoving } from '@/ui/hooks/useSessions'
+import type {
+  SessionShipping,
+  SessionShippingWait,
+  SessionStatus,
+} from '@launch/shared/launch-sessions'
+import { sessionIsMoving, shippingIsMoving } from '@/ui/hooks/useSessions'
 
 export const SESSION_STATUS_LABELS: Record<SessionStatus, string> = {
   requested: 'Starting',
@@ -38,16 +42,36 @@ const TONE: Record<SessionStatus, string> = {
   failed: 'failed',
 }
 
-export function SessionStatusBadge({ status }: { status: SessionStatus }) {
-  const live = sessionIsMoving(status)
+/** A ship in flight's tone: moving, parked on a reviewer, or stalled on a person. */
+const SHIPPING_TONE: Record<'moving' | SessionShippingWait, string> = {
+  moving: 'running',
+  review: 'pending',
+  retry: 'blocked',
+}
+
+/**
+ * `shipping` (the summary's derived ship in flight, when the caller has it) wins over the status:
+ * after the merge the row is `shipped` while the landing still releases and deploys, and the
+ * badge says "Shipping" until it is live — pulsing only while Launch moves it.
+ */
+export function SessionStatusBadge({
+  status,
+  shipping = null,
+}: {
+  status: SessionStatus
+  shipping?: Pick<SessionShipping, 'waitingOn'> | null
+}) {
+  const live = shipping ? shippingIsMoving(shipping) : sessionIsMoving(status)
+  const tone = shipping ? SHIPPING_TONE[shipping.waitingOn ?? 'moving'] : TONE[status]
   return (
     <span
       className={`status-badge ${live ? 'animate-pulse' : ''}`}
-      data-status={TONE[status]}
+      data-status={tone}
       data-session-status={status}
+      data-shipping={shipping ? (shipping.waitingOn ?? 'moving') : undefined}
       aria-live={live ? 'polite' : undefined}
     >
-      {SESSION_STATUS_LABELS[status]}
+      {shipping ? 'Shipping' : SESSION_STATUS_LABELS[status]}
     </span>
   )
 }

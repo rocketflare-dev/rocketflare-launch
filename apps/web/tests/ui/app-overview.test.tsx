@@ -19,7 +19,7 @@ import { Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useToastStore } from '@/ui/components/shared'
 import AppPage from '@/ui/pages/apps/AppPage'
-import { APP_ID, APPROVAL_ID, RELEASE_ID, releaseRow } from './helpers/approvals'
+import { APP_ID, APPROVAL_ID, approvalRow, RELEASE_ID, releaseRow } from './helpers/approvals'
 import { appConfigView } from './helpers/grants'
 import {
   IDS,
@@ -172,6 +172,7 @@ function renderOverview(
       pipelineNone(url.searchParams.get('kind') === 'create' ? 'create' : 'teardown'),
     [`/api/apps/${APP_ID}/sessions`]: { items: [] },
     [`/api/apps/${APP_ID}/deploys`]: { items: [] },
+    '/api/approvals': { items: [] },
     [LATEST]: { items: [] },
     [PROMOTION]: view(),
     ...routes,
@@ -499,5 +500,183 @@ describe('the first build', () => {
     expect(screen.queryByTestId('env-staging')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Change it' })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/promotion'))).toBe(false)
+  })
+})
+
+describe('a session whose ship is in flight', () => {
+  const SESSION_ID = '5e551000-0000-4000-8000-000000000001'
+  const SESSIONS = `/api/apps/${APP_ID}/sessions`
+
+  const shipping = (overrides: Record<string, unknown> = {}) => ({
+    stage: 'deploying',
+    waitingOn: null,
+    stalledReason: null,
+    approvalId: null,
+    prNumber: 12,
+    version: '1.4.3',
+    since: minutesAgo(1),
+    ...overrides,
+  })
+
+  // After the merge the row is `shipped` (settled) while the landing still moves.
+  const sessionRow = (ship: Record<string, unknown> | null, overrides = {}) => ({
+    id: SESSION_ID,
+    appId: APP_ID,
+    kind: 'session',
+    shortId: 'abcdefghijkl',
+    title: 'Friendlier home page',
+    status: 'shipped',
+    createdByUserId: IDS.otherUser,
+    branch: 'session/abcdefghijkl',
+    turnCount: 3,
+    costMicrocents: 0,
+    prNumber: 12,
+    prUrl: 'https://github.com/acme/expenses/pull/12',
+    lastActivityAt: minutesAgo(1),
+    createdAt: minutesAgo(40),
+    runtime: 'claude_code',
+    credentialSource: 'platform',
+    model: null,
+    shipping: ship,
+    ...overrides,
+  })
+
+  const mergeApproval = () =>
+    approvalRow({
+      kind: 'session.merge',
+      subjectType: 'session',
+      subjectId: SESSION_ID,
+      reason: null,
+      context: {
+        kind: 'session.merge',
+        sessionId: SESSION_ID,
+        shortId: 'abcdefghijkl',
+        title: 'Friendlier home page',
+        appSlug: 'expenses',
+        prNumber: 12,
+        prUrl: 'https://github.com/acme/expenses/pull/12',
+        prTitle: 'Make the home page friendlier',
+        summary: 'Changes the headline.',
+        diffStat: ' 1 file changed',
+        headSha: 'b'.repeat(40),
+        sessionPath: `/sessions/${SESSION_ID}`,
+      },
+    })
+
+  const activeRow = async () =>
+    (
+      await within(
+        (
+          await screen.findByRole('heading', { name: 'Active sessions' })
+        ).closest('section') as HTMLElement
+      ).findByRole('link', { name: 'Friendlier home page' })
+    ).closest('li') as HTMLElement
+
+  it.each([
+    [shipping({ stage: 'ci', version: null }), 'Waiting for CI'],
+    [shipping({ stage: 'merging', version: null }), 'Merging'],
+    [shipping({ stage: 'releasing', version: null }), 'Merged, cutting a release'],
+    [shipping(), 'Deploying v1.4.3 to staging'],
+  ])('lists it under Active sessions with where it stands (%#)', async (ship, words) => {
+    renderOverview({ [SESSIONS]: { items: [sessionRow(ship)] } })
+    const row = await activeRow()
+    expect(row).toHaveTextContent('Shipping')
+    expect(row).not.toHaveTextContent('Shipped')
+    expect(within(row).getByTestId('session-shipping')).toHaveTextContent(words)
+    expect(within(row).getByRole('link', { name: 'Friendlier home page' })).toHaveAttribute(
+      'href',
+      `/apps/expenses/sessions/${SESSION_ID}`
+    )
+    // Moving on Launch, nobody's to act on: no band.
+    expect(screen.queryByRole('heading', { name: 'Needs you' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Attention' })).not.toBeInTheDocument()
+  })
+
+  it('a review waiting on THIS reader is one Needs-you item, to the request', async () => {
+    renderOverview({
+      [SESSIONS]: {
+        items: [
+          sessionRow(
+            shipping({ stage: 'approval', waitingOn: 'review', approvalId: APPROVAL_ID }),
+            { status: 'shipping' }
+          ),
+        ],
+      },
+      '/api/approvals': (_init: RequestInit | undefined, url: URL) =>
+        url.searchParams.get('kind') === 'session.merge' && url.searchParams.get('box') === 'mine'
+          ? { items: [mergeApproval()] }
+          : { items: [] },
+    })
+    const band = (await screen.findByRole('heading', { name: 'Needs you' })).closest(
+      'section'
+    ) as HTMLElement
+    const item = (
+      await within(band).findByText(
+        'Friendlier home page is waiting for your review before it merges'
+      )
+    ).closest('li') as HTMLElement
+    expect(within(item).getByRole('link', { name: 'Review and decide' })).toHaveAttribute(
+      'href',
+      `/approvals/${APPROVAL_ID}`
+    )
+    // Not listed twice.
+    expect(within(band).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(await activeRow()).getByTestId('session-shipping')).toHaveTextContent(
+      'Waiting for a review'
+    )
+  })
+
+  it('a review someone else is asked for reads under Attention, to the session', async () => {
+    renderOverview({
+      [SESSIONS]: {
+        items: [
+          sessionRow(
+            shipping({ stage: 'approval', waitingOn: 'review', approvalId: APPROVAL_ID }),
+            { status: 'shipping' }
+          ),
+        ],
+      },
+    })
+    const band = (await screen.findByRole('heading', { name: 'Attention' })).closest(
+      'section'
+    ) as HTMLElement
+    const item = within(band)
+      .getByText('Friendlier home page is waiting for a review before it merges')
+      .closest('li') as HTMLElement
+    expect(within(item).getByRole('link', { name: 'Open session' })).toHaveAttribute(
+      'href',
+      `/apps/expenses/sessions/${SESSION_ID}`
+    )
+  })
+
+  it('a stall before the release needs whoever may move it on, from the session', async () => {
+    renderOverview({
+      [SESSIONS]: {
+        items: [
+          sessionRow(
+            shipping({
+              stage: 'stalled',
+              waitingOn: 'retry',
+              stalledReason: 'main_ci_failed',
+              version: null,
+            })
+          ),
+        ],
+      },
+    })
+    const band = (await screen.findByRole('heading', { name: 'Needs you' })).closest(
+      'section'
+    ) as HTMLElement
+    const item = within(band)
+      .getByText('Friendlier home page is merged, but CI failed on main, so it was not released')
+      .closest('li') as HTMLElement
+    expect(item).toHaveTextContent('Re-run CI or release anyway from the session.')
+    expect(within(item).getByRole('link', { name: 'Open session' })).toHaveAttribute(
+      'href',
+      `/apps/expenses/sessions/${SESSION_ID}`
+    )
+    expect(within(await activeRow()).getByTestId('session-shipping')).toHaveTextContent(
+      'Merged, but CI failed on main'
+    )
   })
 })

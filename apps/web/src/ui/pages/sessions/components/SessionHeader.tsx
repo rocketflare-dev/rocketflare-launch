@@ -168,7 +168,7 @@ export function SessionHeader({
         </nav>
         <div className="mt-0.5 flex min-w-0 items-center gap-2.5">
           <h1 className="truncate text-lg font-semibold tracking-tight">{sessionName(session)}</h1>
-          <SessionStatusBadge status={session.status} />
+          <SessionStatusBadge status={session.status} shipping={session.shipping} />
           {session.branch && (
             <span className="hidden truncate font-mono text-xs text-muted md:inline">
               {session.branch}

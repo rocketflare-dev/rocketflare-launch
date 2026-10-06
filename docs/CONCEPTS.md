@@ -2732,6 +2732,24 @@ where it helps (`none`, `blocks`). The Overview's "changes not live" list prints
 plain line under its title (`summaryLine`), and an approval page for a `session.merge` shows the PR,
 the session (link to its page), the head commit, the summary and the diff stat.
 
+**A ship in flight in the lists.** A landing outlives the container, and after the merge the
+row is `shipped` (settled) while it still releases and deploys — so the summary carries a DERIVED
+`shipping` (`sessionShippingOf(status, landing)` in `@launch/shared/launch-sessions`; never a
+`session_status` of its own): `{ stage, waitingOn: 'review' | 'retry' | null, stalledReason,
+approvalId, prNumber, version, since }`, set while the landing is in a moving stage on a `shipping`
+/ `shipped` row, or stalled BEFORE its release (`landingRetryable` — a person moves it on), null
+once live, in `pr` mode, after a reopen and on a stall after the release (the app page's release
+and deploy own that). The `active` scope of `GET /api/apps/:id/sessions` and
+`GET /api/admin/sessions` is the resource-holding statuses OR the same predicate in SQL
+(`shipInFlightSql`, `lifecycle.ts`), tenant-scoped as before; the concurrency count is unchanged.
+The badge says **Shipping** for such a row (pulsing only while Launch moves it), and the
+Overview's Active sessions and the Sessions tab add where it stands (`shippingStageText`:
+"Waiting for CI", "Waiting for a review", "Merging", "Merged, cutting a release", "Deploying
+v1.4.2 to staging", "Merged, but CI failed on main"); `launch sessions ls` prints `shipping
+(<stage>)`. A list polls such a row at the landing's pace (`SESSION_LANDING_POLL_MS`) and never
+while it waits on a person; the session nudge already refreshes every app's list
+(`['session','app']`), which the Overview's Needs you reads.
+
 **Known gaps:** a drain wakes live sessions in EVERY organisation (it is about the deployment's
 image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
 drain → deploy → resume rehearsal has not been run. Issue #5: the ship panel names who a review
@@ -3147,7 +3165,11 @@ health, the repository, archive — each for whoever may use it). The UI calls t
 **Staging** and **Live**; GitHub and wrangler keep staging/production. **The Overview**, top to
 bottom: **Needs you**, shown only when something needs a person (a failed release — which job, its
 run, Details; a failed deploy with why; a release waiting on THIS reader's approval; a production
-ticket waiting on a decision; a secret (shared config) not held) — a plain list, read-only under "Attention"
+ticket waiting on a decision; a session's ship waiting on a person — its `session.merge` review
+when it waits on THIS reader (`box: 'mine'`, Review and decide, listed once), the same review
+read-only when someone else is asked, or a stall before its release (Re-run CI / Release anyway /
+Retry the release, for its creator and the app's owners), each with Open session; a secret
+(shared config) not held) — a plain list, read-only under "Attention"
 for somebody who can act on none of it; then the flow: first (app page P3) **`main  N commits
 ahead`** (`GET …/releases/compare`, §18.17; the count links to GitHub's compare) with **Release
 to staging ▸** — a plain button, never the hero — which opens the release dialog (patch by

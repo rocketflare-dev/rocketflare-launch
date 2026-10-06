@@ -44,7 +44,7 @@ function Row({ session }: { session: AdminSession }) {
         <span className="block font-mono text-xs text-muted">{session.appSlug}</span>
       </td>
       <td>
-        <SessionStatusBadge status={session.status} />
+        <SessionStatusBadge status={session.status} shipping={session.shipping} />
       </td>
       <td className="tabular-nums text-sm">{session.turnCount}</td>
       <td className="tabular-nums text-sm">{usd(session.costMicrocents)}</td>

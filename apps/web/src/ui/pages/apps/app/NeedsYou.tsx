@@ -1,6 +1,7 @@
 /**
  * The Overview's "Needs you" band (decision 5): shown only when something needs a person — a
- * failed release or deploy, a pending approval, a missing config grant (`needsYou` in
+ * failed release or deploy, a pending approval, a session's ship waiting on a review or stalled
+ * before its release (opened on the session page), a missing config grant (`needsYou` in
  * `appPageModel.ts` decides what is on it). A plain list under a heading, never a tinted box; each
  * item says what happened and offers the one thing to do about it.
  *
@@ -24,6 +25,7 @@ import {
   appTabPath,
   type NeedsYouItem,
   releasePath,
+  sessionPath,
   settingsPath,
   ticketVersion,
 } from './appPageModel'
@@ -169,6 +171,19 @@ function Item({ item, appId, slug }: { item: NeedsYouItem; appId: string; slug: 
             appId={appId}
             canDecide={item.canAct}
           />
+        </>
+      )
+    case 'session':
+      return (
+        <>
+          <StateDot tone={item.canAct ? 'warning' : 'muted'} />
+          <ItemBody title={item.title} detail={item.detail} />
+          <Link
+            to={sessionPath(slug, item.sessionId)}
+            className={`btn btn-sm ${item.canAct ? '' : 'btn-ghost'}`}
+          >
+            Open session
+          </Link>
         </>
       )
     case 'grant':

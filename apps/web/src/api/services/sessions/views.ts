@@ -6,11 +6,14 @@
  * What is never here, by construction: `preview_token`, `db_uri_sealed`, `github_token_sealed`,
  * `pending_message`'s text (only whether one is waiting — the detail carries it, `queuedMessage`),
  * `sandbox_id`, `db`.
+ *
+ * `shipping` is DERIVED (`sessionShippingOf`): the ship still in flight, whatever the status says.
  */
 import {
   type AdminSession,
   resolveSessionPolicy,
   type SessionSummary,
+  sessionShippingOf,
 } from '@launch/shared/launch-sessions'
 import type { SessionRow } from '../../../db/schema'
 
@@ -33,6 +36,7 @@ export function toSessionSummary(row: SessionRow): SessionSummary {
     runtime: row.runtime ?? 'claude_code',
     credentialSource: row.credentialSource ?? 'platform',
     model: resolveSessionPolicy(row.policy).model,
+    shipping: sessionShippingOf(row),
   }
 }
 

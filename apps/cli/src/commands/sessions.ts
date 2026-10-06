@@ -163,7 +163,8 @@ export async function runSessionsList(
     renderTable(data.items, [
       { header: 'Id', value: s => s.id },
       { header: 'Title', value: s => s.title },
-      { header: 'Status', value: s => s.status },
+      // A ship in flight outlives the container (a `shipped` row still releasing): say its stage.
+      { header: 'Status', value: s => (s.shipping ? `shipping (${s.shipping.stage})` : s.status) },
       { header: 'Turns', value: s => s.turnCount },
       { header: 'Cost', value: s => usd(s.costMicrocents) },
       { header: 'PR', value: s => s.prUrl },
