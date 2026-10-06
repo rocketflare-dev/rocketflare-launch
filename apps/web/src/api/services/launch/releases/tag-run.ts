@@ -39,6 +39,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { type AppReleaseRow, type AppRow, appReleases } from '../../../../db/schema'
+import type { Realtime } from '../../realtime'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
 import {
   GITHUB_TOKEN_PERMISSIONS,
@@ -51,6 +52,7 @@ import {
 import type { ImportGitHub } from '../import'
 import { DEPLOY_WORKFLOW_FILE, withRepoToken } from './github'
 import { moveRelease } from './lifecycle'
+import { nudgeRelease } from './release'
 
 /** One GitHub read per release per window, however many readers. */
 export const TAG_RUN_POLL_WINDOW_MS = 20_000
@@ -69,6 +71,26 @@ export interface TagRunOptions extends Pick<GitHubOptions, 'fetch' | 'apiBase'> 
   /** The GitHub App credentials (tests); loaded from the platform store otherwise. */
   github?: ImportGitHub
   logger?: TagRunLogger
+  /**
+   * Where a reading that changed (or failed the release) is announced: `entity.changed { entity:
+   * 'release', id, appId }`, so every open strip and releases card refreshes — not only the reader
+   * whose turn it was. Absent, nothing is nudged.
+   */
+  realtime?: Realtime
+}
+
+/** Whether two readings of a tag run differ in anything the strip shows. Pure. */
+export function tagRunChanged(prev: unknown, next: CandidateRun | null): boolean {
+  const parsed = prev ? candidateRunSchema.safeParse(prev) : null
+  const before = parsed?.success ? parsed.data : null
+  if (!before || !next) return before !== next
+  return (
+    before.status !== next.status ||
+    before.conclusion !== next.conclusion ||
+    before.url !== next.url ||
+    before.currentJob !== next.currentJob ||
+    before.failedJob !== next.failedJob
+  )
 }
 
 /** GitHub's run status, folded to the three the strip speaks of. Pure. */
@@ -236,7 +258,11 @@ export async function followTagRun(
   const current = stored ?? release
   if (run && candidateRunFailed(run)) {
     const failed = await failReleaseOnRun(db, current, run)
-    if (failed) return { release: failed, run }
+    if (failed) {
+      nudgeRelease({ realtime: options.realtime }, failed)
+      return { release: failed, run }
+    }
   }
+  if (tagRunChanged(release.tagRun, run)) nudgeRelease({ realtime: options.realtime }, current)
   return { release: current, run }
 }

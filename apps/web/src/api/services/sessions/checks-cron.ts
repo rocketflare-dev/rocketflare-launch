@@ -39,6 +39,8 @@ import {
   recordPrClosed,
   recordPrMerged,
 } from '../launch/releases/pr-audit'
+import type { Realtime } from '../realtime'
+import { nudgeSession } from './events'
 import { nudgeLandingSessions } from './land'
 import { adoptHandMerge, startAdoptedLanding } from './land-adopt'
 import { defaultSessionPorts, type RepoHostPort } from './ports'
@@ -85,7 +87,13 @@ export interface MergeAdoption {
 export async function followMergedPullRequests(
   db: Database,
   readPull: PullReader,
-  opts: { now?: Date; limitPerTenant?: number; tenantIds?: string[]; adopt?: MergeAdoption } = {}
+  opts: {
+    now?: Date
+    limitPerTenant?: number
+    tenantIds?: string[]
+    adopt?: MergeAdoption
+    realtime?: Realtime
+  } = {}
 ): Promise<{ merged: number; closed: number; open: number; failed: number; adopted: number }> {
   const now = opts.now ?? new Date()
   const since = new Date(now.getTime() - MERGE_FOLLOW_WINDOW_MS)
@@ -165,6 +173,7 @@ export async function followMergedPullRequests(
           out.merged++
           if (adopted && opts.adopt) {
             out.adopted++
+            nudgeSession(opts.realtime, { id: row.id, tenantId })
             await startAdoptedLanding(db, opts.adopt.workflow, adopted, opts.adopt.logger)
           }
         } else if (pull && pull.state === 'closed') {
@@ -203,10 +212,17 @@ export function sessionsChecksTask(
 ): ScheduledTask {
   return {
     name: 'sessions.checks',
-    async run({ db, env, config, logger }) {
+    async run({ db, env, config, logger, waitUntil }) {
+      // A changed PR verdict or an adopted merge nudges the session through the cron's `waitUntil`.
+      const realtime: Realtime = {
+        env,
+        defer: fn =>
+          waitUntil(fn().catch(err => logger.warn({ err }, 'sessions.checks: a nudge failed'))),
+      }
       const result = await runSessionChecks(
         db,
-        repoHostFor ?? (d => defaultSessionPorts(env, config).repoHost(d))
+        repoHostFor ?? (d => defaultSessionPorts(env, config).repoHost(d)),
+        { realtime }
       )
       logger.info(result, 'sessions.checks: refreshed pending pull request checks')
       try {
@@ -225,6 +241,7 @@ export function sessionsChecksTask(
       const merges = await followMergedPullRequests(db, reader, {
         ...(landings.tenantIds ? { tenantIds: landings.tenantIds } : {}),
         ...(workflow ? { adopt: { workflow, logger } } : {}),
+        realtime,
       })
       logger.info(merges, 'sessions.checks: followed shipped pull requests to their merge')
     },

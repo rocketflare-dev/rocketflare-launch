@@ -41,7 +41,7 @@
  */
 import { githubRequesterLabel } from '@launch/shared/launch-approvals'
 import { DEPLOY_FINISHED_EVENT, type DeployUpload } from '@launch/shared/launch-pipeline'
-import { taggedRunVersion } from '@launch/shared/launch-releases'
+import { RELEASE_REALTIME_ENTITY, taggedRunVersion } from '@launch/shared/launch-releases'
 import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { parse as parseToml } from 'smol-toml'
 import type { AppConfig } from '../../../../config'
@@ -68,6 +68,7 @@ import type { ApprovalDeps } from '../../approvals/types'
 import { grantedKeys, pushedSince } from '../../grants/holders'
 import { startPush } from '../../grants/push'
 import { activeVersion } from '../../grants/values'
+import { nudge, type Realtime, realtimeEvent } from '../../realtime'
 import { type AuditActor, recordAudit } from '../audit'
 import type { ResolvedCaller } from '../ci/caller'
 import { CloudflareClient } from '../cloudflare'
@@ -202,6 +203,23 @@ export interface GatewayContext {
    * `activate` writing Live's Worker version into the release's GitHub notes. Absent, it is skipped.
    */
   defer?: Defer
+}
+
+/**
+ * A deploy run moved something (a ticket, an environment's live version, its release): nudge the
+ * app's views — `entity.changed { entity: 'release', appId }` for the releases card and the
+ * pipeline strip, `{ entity: 'apps', id }` for the deploys list and the environments. Ids only;
+ * every reader re-reads through its own authorized route. The router calls this after each
+ * successful write (`routes/ci-deploy.ts`), so no transition below needs its own.
+ */
+export function nudgeDeployMoved(realtime: Realtime | undefined, caller: ResolvedCaller): void {
+  const { tenantId } = caller
+  const appId = caller.app.id
+  nudge(
+    realtime,
+    realtimeEvent('entity.changed', tenantId, { entity: RELEASE_REALTIME_ENTITY, appId })
+  )
+  nudge(realtime, realtimeEvent('entity.changed', tenantId, { entity: 'apps', id: appId }))
 }
 
 /** `start` and `get`'s body: `{ id, status }` plus what the job's log may find useful. */

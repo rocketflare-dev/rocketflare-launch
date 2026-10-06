@@ -15,7 +15,9 @@
  * polled; nor is `blocked` (it waits on someone extending the budget) or `suspended` (on a resume),
  * and a settled one never is — except a `shipped` row whose landing is still releasing or
  * deploying to staging (issue #5), polled at `SESSION_LANDING_POLL_MS` like the rest of a landing;
- * a landing parked in `approval` waits on a reviewer and is not polled.
+ * a landing parked in `approval` waits on a reviewer and is not polled. While the realtime socket
+ * is open (`useRealtimeConnected`) every interval here slows to its `*_CONNECTED_POLL_MS` fallback:
+ * each change arrives as a nudge first.
  *
  * The chat transcript is NOT here: it is `useSessionStream`, under its own `['session-agui']` root,
  * which the nudge must never reach.
@@ -37,6 +39,7 @@ import {
   type Session,
   type SessionAttachment,
   type SessionListQuery,
+  type SessionPrResponse,
   type SessionStatus,
   type SessionSummary,
   type SessionTurnRequestInput,
@@ -51,11 +54,20 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
+import { useRealtimeConnected } from '@/ui/stores/websocketStore'
 import { useApprovals } from './useApprovals'
 
 export const SESSION_POLL_MS = 3000
 /** CI moves in minutes, and the server refreshes `pr_checks` at most every 30 s anyway. */
 export const SESSION_PR_POLL_MS = 15_000
+/**
+ * With the realtime socket open, every durable write to a session (a boot step, a turn's flush, a
+ * landing move, a changed CI verdict) arrives as an `entity.changed { entity: 'session', id }`
+ * nudge, so the poll is only a slow safety net. Disconnected, the intervals above apply.
+ */
+export const SESSION_CONNECTED_POLL_MS = 15_000
+export const SESSION_LANDING_CONNECTED_POLL_MS = 30_000
+export const SESSION_PR_CONNECTED_POLL_MS = 30_000
 
 /**
  * Statuses in which the WORKFLOW is doing something the reader is waiting to see: booting, a turn,
@@ -113,18 +125,41 @@ export function sessionOwesAnswer(session: OwesAnswerInput | undefined): boolean
   )
 }
 
-/** `refetchInterval` for one session. Pure. */
-export function sessionPollInterval(session: OwesAnswerInput | undefined): number | false {
+/**
+ * `refetchInterval` for one session. Pure. `connected` (the realtime socket is open) slows it to
+ * the fallback: the nudge brings each change.
+ */
+export function sessionPollInterval(
+  session: OwesAnswerInput | undefined,
+  connected = false
+): number | false {
   if (!sessionOwesAnswer(session)) return false
   // Past the PR the Workflow works in poll ROUNDS (30 s – 2 min): a 3 s poll would show nothing new.
-  return landingIsMoving(session?.landing) ? SESSION_LANDING_POLL_MS : SESSION_POLL_MS
+  if (landingIsMoving(session?.landing)) {
+    return connected ? SESSION_LANDING_CONNECTED_POLL_MS : SESSION_LANDING_POLL_MS
+  }
+  return connected ? SESSION_CONNECTED_POLL_MS : SESSION_POLL_MS
 }
 
 /** `refetchInterval` for a list: poll while any listed row is moving. Pure. */
 export function sessionListPollInterval(
-  items: readonly Pick<SessionSummary, 'status'>[] | undefined
+  items: readonly Pick<SessionSummary, 'status'>[] | undefined,
+  connected = false
 ): number | false {
-  return items?.some(s => sessionIsMoving(s.status)) ? SESSION_POLL_MS : false
+  if (!items?.some(s => sessionIsMoving(s.status))) return false
+  return connected ? SESSION_CONNECTED_POLL_MS : SESSION_POLL_MS
+}
+
+/**
+ * `refetchInterval` for a session's PR panel: while its checks are pending or not read yet. Pure.
+ * The GET itself refreshes `pr_checks` (throttled server-side), and a changed verdict nudges.
+ */
+export function sessionPrPollInterval(
+  pr: Pick<SessionPrResponse, 'checks'> | undefined,
+  connected = false
+): number | false {
+  if (!pr || (pr.checks && pr.checks.state !== 'pending')) return false
+  return connected ? SESSION_PR_CONNECTED_POLL_MS : SESSION_PR_POLL_MS
 }
 
 /** A turn is queued or running: nothing else (a ship) may start, and Stop is offered. Pure. */
@@ -156,22 +191,24 @@ export function sessionHasSandbox(status: SessionStatus): boolean {
 const sessionPath = (id: string) => `/api/sessions/${encodeURIComponent(id)}`
 
 export function useSession(id: string | undefined) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.sessions.detail(id ?? ''),
     queryFn: async () =>
       (await api.get(sessionPath(id ?? ''), { schema: sessionDetailResponseSchema })).session,
     enabled: Boolean(id),
-    refetchInterval: q => sessionPollInterval(q.state.data),
+    refetchInterval: q => sessionPollInterval(q.state.data, connected),
   })
 }
 
 export function useAppSessions(appId: string | undefined, scope: SessionListQuery['scope']) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.sessions.forApp(appId ?? '', { scope }),
     queryFn: () =>
       api.get(`/api/apps/${appId}/sessions?scope=${scope}`, { schema: sessionListResponseSchema }),
     enabled: Boolean(appId),
-    refetchInterval: q => sessionListPollInterval(q.state.data?.items),
+    refetchInterval: q => sessionListPollInterval(q.state.data?.items, connected),
   })
 }
 
@@ -379,27 +416,26 @@ export function usePreviewGrant(id: string) {
   })
 }
 
-/** `GET /:id/pr`, polled while the PR's checks are still running. */
+/** `GET /:id/pr`, polled while the PR's checks are still running (`sessionPrPollInterval`). */
 export function useSessionPr(id: string, enabled: boolean) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.sessions.pr(id),
     queryFn: () => api.get(`${sessionPath(id)}/pr`, { schema: sessionPrResponseSchema }),
     enabled,
-    refetchInterval: q =>
-      q.state.data?.checks?.state === 'pending' || (q.state.data && !q.state.data.checks)
-        ? SESSION_PR_POLL_MS
-        : false,
+    refetchInterval: q => sessionPrPollInterval(q.state.data, connected),
   })
 }
 
 // ---- the operator's view -------------------------------------------------------------------
 
 export function useAdminSessions(scope: SessionListQuery['scope']) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.sessions.admin({ scope }),
     queryFn: () =>
       api.get(`/api/admin/sessions?scope=${scope}`, { schema: adminSessionListResponseSchema }),
-    refetchInterval: q => sessionListPollInterval(q.state.data?.items),
+    refetchInterval: q => sessionListPollInterval(q.state.data?.items, connected),
   })
 }
 

@@ -541,7 +541,17 @@ describe('applyAfter and its retries', () => {
       env,
       () => new Date(Date.now() + APPLY_RETRY_BACKOFF_MS + 60_000)
     )
+    const approvalNudges = () =>
+      stubs(env).hub.broadcasts.filter(
+        b =>
+          b.tenantId === tenant.id &&
+          b.args[0] === 'broadcastToUsers' &&
+          (b.args[2] as { payload?: { id?: string } }).payload?.id === request.id
+      ).length
+    const beforeRetry = approvalNudges()
     expect(await retryApply(later, { tenantId: tenant.id, requestId: request.id })).toBe('applied')
+    // The request's page hears that the apply landed (it polls only as a fallback while connected).
+    expect(approvalNudges()).toBe(beforeRetry + 1)
     const [row] = await db
       .select()
       .from(approvalRequests)
@@ -549,6 +559,7 @@ describe('applyAfter and its retries', () => {
     expect(row).toMatchObject({ applyAttempts: 2, applyError: null })
     expect(row?.appliedAt).not.toBeNull()
     expect(await retryApply(later, { tenantId: tenant.id, requestId: request.id })).toBe('not_owed')
+    expect(approvalNudges()).toBe(beforeRetry + 1)
   })
 })
 

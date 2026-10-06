@@ -260,6 +260,35 @@ describe('start', () => {
   })
 })
 
+describe('realtime: a deploy run nudges its app', () => {
+  /** The `entity.changed` payloads broadcast to `tenantId`'s hub. */
+  const nudged = (tenantId: string) =>
+    stubs(env)
+      .hub.broadcasts.filter(b => b.tenantId === tenantId && b.args[0] === 'broadcast')
+      .map(b => (b.args[1] as { type: string; payload: unknown }).payload)
+
+  it('each write nudges the release and apps views of its own tenant only; a poll nudges nothing', async () => {
+    const t = await tenant()
+    const other = await tenant()
+    const seeded = await seedDeployableApp(db, cloud, t.tenantId)
+    const { call } = job(seeded, 'staging')
+    const opened = await body<{ id: string }>(await call('POST', '/start', { protocol: 1 }))
+    expect(nudged(t.tenantId)).toEqual([
+      { entity: 'release', appId: seeded.app.id },
+      { entity: 'apps', id: seeded.app.id },
+    ])
+    expect(nudged(other.tenantId)).toEqual([])
+    // Ids only: never the ticket, a version id or a URL.
+    expect(JSON.stringify(stubs(env).hub.broadcasts)).not.toContain(opened.id)
+
+    const before = stubs(env).hub.broadcasts.length
+    expect((await call('GET', `/${opened.id}`)).status).toBe(200)
+    // A refused write (another protocol) moved nothing either.
+    expect((await call('POST', '/start', { protocol: 2 })).status).toBe(400)
+    expect(stubs(env).hub.broadcasts.length).toBe(before)
+  })
+})
+
 describe('a ticket belongs to its run', () => {
   it('another run is 403, another app’s ticket or a junk id is 404', async () => {
     const t = await tenant()

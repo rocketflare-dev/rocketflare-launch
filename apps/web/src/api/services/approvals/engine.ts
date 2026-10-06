@@ -500,7 +500,14 @@ export async function retryApply(
   const row = await findRequest(deps.db, input.tenantId, input.requestId)
   if (!row) return 'not_owed'
   const quietSince = new Date(nowOf(deps).getTime() - APPLY_RETRY_BACKOFF_MS)
-  return runApplyAfter(deps, row, quietSince)
+  const outcome = await runApplyAfter(deps, row, quietSince)
+  // A retry that landed (or failed again) changed what the request's page shows; `gave_up` has
+  // nudged already. The decision path nudges after its own inline attempt.
+  if (outcome === 'applied' || outcome === 'failed') {
+    const latest = (await findRequest(deps.db, input.tenantId, input.requestId)) ?? row
+    await nudgeApproval(deps, latest, [])
+  }
+  return outcome
 }
 
 // ---- cancel and expire -------------------------------------------------------------------------

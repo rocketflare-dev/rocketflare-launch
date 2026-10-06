@@ -31,8 +31,14 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api } from '@/ui/lib/api-client'
 import { cleanFilters, queryKeys, toSearchParams } from '@/ui/lib/query-keys'
+import { useRealtimeConnected } from '@/ui/stores/websocketStore'
 
 export const APPROVAL_APPLY_POLL_MS = 3000
+/**
+ * The socket is open: the apply landing (or failing) nudges the request, inline after a decision or
+ * from the sweep's retry, so the poll is only a safety net.
+ */
+export const APPROVAL_APPLY_CONNECTED_POLL_MS = 15_000
 
 /** Pending requests waiting on me — the "Approvals" nav badge. Refreshed by the nudge, not a poll. */
 export function useApprovalCount(enabled = true) {
@@ -90,17 +96,20 @@ export function approvalOwesAnswer(
 }
 
 export function approvalPollInterval(
-  detail: Pick<ApprovalDetail, 'status' | 'appliedAt' | 'applyError'> | undefined
+  detail: Pick<ApprovalDetail, 'status' | 'appliedAt' | 'applyError'> | undefined,
+  connected = false
 ): number | false {
-  return approvalOwesAnswer(detail) ? APPROVAL_APPLY_POLL_MS : false
+  if (!approvalOwesAnswer(detail)) return false
+  return connected ? APPROVAL_APPLY_CONNECTED_POLL_MS : APPROVAL_APPLY_POLL_MS
 }
 
 export function useApproval(id: string) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.approvals.detail(id),
     queryFn: () => api.get(`/api/approvals/${id}`, { schema: approvalDetailSchema }),
     enabled: id !== '',
-    refetchInterval: q => approvalPollInterval(q.state.data),
+    refetchInterval: q => approvalPollInterval(q.state.data, connected),
   })
 }
 

@@ -91,14 +91,14 @@ import { recordedPrNumbers, recordPrMerged } from '../launch/releases/pr-audit'
 import { reviewPolicyFor } from '../launch/ship-settings'
 import { checkContainer, SESSION_BOOT_MARKER } from './boot-marker'
 import { type WarnLogger, wakeSession } from './chat'
-import { safeErrorMessage } from './events'
+import { nudgeSession, safeErrorMessage } from './events'
 import type { LandHealthResult, LandReleaseResult, LandStagingResult } from './hooks'
 import { restartSessionInstance, sessionsPaused } from './lifecycle'
 import { redactModelKeyText } from './model-key'
 import type { FailedCheckLog, RepoPullRequest } from './ports'
 import { FAILED_CHECK_LOG_LINES } from './repo/github-repo-host'
 import { tailOf } from './rocketflare-dev'
-import { sessionRepo } from './ship'
+import { prChecksChanged, sessionRepo } from './ship'
 import {
   backupWorkspace,
   emitterFor,
@@ -176,6 +176,10 @@ export const LAND_CHECK_LOG_MAX_CHARS = 6_000
  * Compare-and-set the landing: the row must be in one of `statuses` with `landing->>'stage'` in
  * `stages` (and the same gate SHA); `patch` is MERGED into the jsonb, `set` written beside it. The
  * row after, or null when it had moved.
+ *
+ * Every landing move goes through here, so this is where the ship card hears about it: a move
+ * that landed nudges `entity.changed { entity: 'session', id }` — whether a poll round, the cron or
+ * a webhook woke the step. The nudge is collected by the step's `realtime` and never fails it.
  */
 export async function casLanding(
   scope: Pick<StepScope, 'db' | 'params' | 'realtime'>,
@@ -205,6 +209,7 @@ export async function casLanding(
       )
     )
     .returning()
+  if (row) nudgeSession(scope.realtime, row)
   return row ?? null
 }
 
@@ -424,19 +429,6 @@ async function releaseIfDue(scope: StepScope, session: SessionRow, landing: Sess
 
 // ---- land.ci -----------------------------------------------------------------------------------
 
-/** Whether `next` says something `prev` did not (the panel's `ship.ci` row is per change). */
-function checksChanged(prev: PrChecks | null, next: PrChecks): boolean {
-  if (!prev || prev.headSha !== next.headSha) return true
-  return (
-    prev.state !== next.state ||
-    // Issue #9: `Gate` reporting can leave the fold's counts as they were (`launch/gate` beside it).
-    requiredCheckState(prev.checks) !== requiredCheckState(next.checks) ||
-    prev.passed !== next.passed ||
-    prev.failed !== next.failed ||
-    prev.pending !== next.pending
-  )
-}
-
 /**
  * `land.ci#N` (plan §1.4–§1.5): `getPullRequest` + `getChecks` on `landing.gateSha`, fresh each
  * round; a red CI carries `failedCheckLog`'s REDACTED tail on `ship.ci`. See the header.
@@ -484,7 +476,7 @@ export async function landCiStep(
     pending: checks.pending,
   }
   const emit = emitterFor(scope)
-  const changed = checksChanged(session.prChecks ?? null, checks)
+  const changed = prChecksChanged(session.prChecks ?? null, checks)
   const elapsedMs = sinceMs(scope, landing.stageAt)
 
   if (state === 'failure') {

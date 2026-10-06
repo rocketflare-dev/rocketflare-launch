@@ -245,9 +245,9 @@ appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
 })
 
 appReleasesRouter.get('/:id/promotion', async c => {
-  const { db, cfg, tenantId, logger, app } = await readableApp(c)
+  const { db, cfg, tenantId, logger, realtime, app } = await readableApp(c)
   const body: AppPromotion = appPromotionSchema.parse(
-    await appPromotion(db, cfg, { tenantId, app }, { logger })
+    await appPromotion(db, cfg, { tenantId, app }, { logger, realtime })
   )
   return c.json(body)
 })

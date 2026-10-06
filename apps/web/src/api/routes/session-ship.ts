@@ -299,6 +299,7 @@ sessionShipRouter.get('/:id/pr', async c => {
     try {
       checks = await refreshChecks(db, defaultSessionPorts(c.env, cfg).repoHost(db), row, {
         maxAgeMs: PR_CHECKS_MAX_AGE_MS,
+        realtime,
       })
     } catch (err) {
       logger.warn({ err, sessionId: row.id }, 'PR checks refresh failed; answering the stored ones')

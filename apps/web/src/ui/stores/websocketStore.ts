@@ -48,3 +48,12 @@ export const useWebSocketStore = create<WebSocketState>(set => ({
   setLastEvent: event => set({ lastEvent: event }),
   reset: () => set({ ...initial }),
 }))
+
+/**
+ * Whether the socket is open — what a polling hook reads to slow its `refetchInterval` to a
+ * fallback (every change it waits for arrives as a nudge while this is true). Re-renders only when
+ * the answer flips.
+ */
+export function useRealtimeConnected(): boolean {
+  return useWebSocketStore(state => state.status === 'open')
+}

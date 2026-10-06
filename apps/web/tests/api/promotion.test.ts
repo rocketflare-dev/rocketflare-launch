@@ -48,7 +48,7 @@ import {
   shipSessionPr,
 } from '../helpers/releases'
 import { request } from '../helpers/request'
-import { createTestEnv, type TestEnv } from '../mocks/bindings'
+import { createTestEnv, stubs, type TestEnv } from '../mocks/bindings'
 
 const store = vi.hoisted(() => ({
   credentials: new Map<string, unknown>(),
@@ -451,6 +451,43 @@ describe('GET /api/apps/:id/promotion — the tag’s deploy run', () => {
     const events = releaseChainSchema.parse(await chain.json()).events.map(e => e.action)
     expect(events).toEqual(expect.arrayContaining(['release.created', 'release.failed']))
     expect(events.indexOf('release.failed')).toBeGreaterThan(events.indexOf('release.created'))
+  })
+
+  it('a reading that changed nudges the release (ids only); one that did not, nothing', async () => {
+    const { tenantId, alice, carol, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    const releaseNudges = () =>
+      stubs(env)
+        .hub.broadcasts.filter(b => b.tenantId === tenantId && b.args[0] === 'broadcast')
+        .map(b => (b.args[1] as { payload?: { entity?: string } }).payload)
+        .filter(p => p?.entity === 'release')
+    await read(app, carol)
+    const afterCut = releaseNudges().length
+
+    const run = cloud.github.pushTagRun(app.owner, app.repo, cut.version, {
+      status: 'in_progress',
+      jobs: [{ name: 'ci / Gate', status: 'in_progress' }],
+    })
+    await expireThrottle(cut.id)
+    await read(app, carol)
+    expect(releaseNudges().slice(afterCut)).toEqual([
+      { entity: 'release', id: cut.id, appId: app.app.id },
+    ])
+
+    // The same reading again: no nudge.
+    await expireThrottle(cut.id)
+    await read(app, carol)
+    expect(releaseNudges().length).toBe(afterCut + 1)
+
+    // The run fails: the release moves to `failed`, and that is announced too.
+    run.status = 'completed'
+    run.conclusion = 'failure'
+    run.jobs = [{ name: 'ci / Gate', status: 'completed', conclusion: 'failure' }]
+    await expireThrottle(cut.id)
+    expect((await read(app, carol)).candidate?.status).toBe('failed')
+    expect(releaseNudges().slice(afterCut + 1)).toEqual([
+      { entity: 'release', id: cut.id, appId: app.app.id },
+    ])
   })
 
   it('a GitHub error is a null run, never a failed read', async () => {

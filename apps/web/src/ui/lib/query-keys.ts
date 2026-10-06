@@ -209,8 +209,9 @@ const CORE_QUERY_KEYS = {
    * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is
    * `session` ON PURPOSE — it is `SESSION_REALTIME_ENTITY`: the Workflow nudges
    * `entity.changed { entity: 'session', id }` after every durable write, and `invalidationsFor()`
-   * resolves that to this root, so the session page, the app's sessions card and the admin list
-   * refresh with no socket code in a hook.
+   * resolves that to this family — narrowed to that session's keys and the lists — so the session
+   * page, the app's sessions card and the admin list refresh with no socket code in a hook. A new
+   * key here must be added to `ENTITY_TARGETS` (`@launch/shared/realtime`); a ui test checks.
    */
   sessions: {
     all: ['session'] as const,

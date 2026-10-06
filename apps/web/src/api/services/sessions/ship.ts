@@ -38,6 +38,7 @@ import type { SessionShipMode } from '@launch/shared/launch-apps'
 import {
   type LandingReviewMode,
   type PrChecks,
+  requiredCheckState,
   type SessionEventInput,
   type SessionLanding,
   type SessionShipConfigNeedsData,
@@ -64,7 +65,9 @@ import type { ScanShipConfigInput } from '../grants/detect'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { upgradePrOpened } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
+import type { Realtime } from '../realtime'
 import { recordSessionUsage } from './egress/anthropic'
+import { nudgeSession } from './events'
 import { shipGateCommands } from './gate'
 import { redactModelKeyText, resolveModelKey } from './model-key'
 import type { RepoHostPort, RepoRef } from './ports'
@@ -376,15 +379,30 @@ export async function sessionRepo(
 
 // ---- checks ------------------------------------------------------------------------------------
 
+/** Whether `next` says something `prev` did not (the panel's `ship.ci` row is per change). */
+export function prChecksChanged(prev: PrChecks | null, next: PrChecks): boolean {
+  if (!prev || prev.headSha !== next.headSha) return true
+  return (
+    prev.state !== next.state ||
+    // Issue #9: `Gate` reporting can leave the fold's counts as they were (`launch/gate` beside it).
+    requiredCheckState(prev.checks) !== requiredCheckState(next.checks) ||
+    prev.passed !== next.passed ||
+    prev.failed !== next.failed ||
+    prev.pending !== next.pending
+  )
+}
+
 /**
  * The PR's CI, refreshed from the repo host when the stored verdict is older than `maxAgeMs`
- * (0 forces it) and written back to `pr_checks`. Null when the session has no PR.
+ * (0 forces it) and written back to `pr_checks`. Null when the session has no PR. A reading that
+ * changed the verdict nudges the session (`realtime`), so every open PR panel refreshes — not only
+ * the reader whose GET (or the cron) took it.
  */
 export async function refreshChecks(
   db: Database,
   repoHost: RepoHostPort,
   session: SessionRow,
-  opts: { maxAgeMs?: number; now?: Date } = {}
+  opts: { maxAgeMs?: number; now?: Date; realtime?: Realtime } = {}
 ): Promise<PrChecks | null> {
   if (!session.prNumber) return null
   const now = opts.now ?? new Date()
@@ -405,6 +423,7 @@ export async function refreshChecks(
     .update(sessions)
     .set({ prChecks: checks })
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
+  if (prChecksChanged(stored ?? null, checks)) nudgeSession(opts.realtime, session)
   return checks
 }
 
@@ -643,7 +662,7 @@ export const CHECKS_NONE_GRACE_MS = 60 * 60 * 1000
 export async function runSessionChecks(
   db: Database,
   repoHostFor: (db: Database) => RepoHostPort,
-  opts: { now?: Date; limitPerTenant?: number } = {}
+  opts: { now?: Date; limitPerTenant?: number; realtime?: Realtime } = {}
 ): Promise<{ refreshed: number; failed: number }> {
   const now = opts.now ?? new Date()
   const since = new Date(now.getTime() - CHECKS_WINDOW_MS)
@@ -668,7 +687,7 @@ export async function runSessionChecks(
       .limit(opts.limitPerTenant ?? 50)
     for (const row of rows) {
       try {
-        await refreshChecks(db, host, row, { now })
+        await refreshChecks(db, host, row, { now, realtime: opts.realtime })
         refreshed++
       } catch {
         failed++
