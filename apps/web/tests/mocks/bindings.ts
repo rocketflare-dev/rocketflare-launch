@@ -529,7 +529,28 @@ export class RecordingWorkflow {
     }
   }
 
+  /** Indexes into {@link events} a fake step's wait has already taken (`inbox`). */
+  private readonly taken = new Set<number>()
+
+  /**
+   * The events sent to `instanceId`, as a fake step's inbox (`createFakeWorkflowStep({ inbox })`):
+   * each is delivered to ONE wait of its type, oldest first, as the platform buffers them.
+   */
+  inbox(instanceId: string) {
+    return {
+      take: (type: string): { payload: unknown } | undefined => {
+        const i = this.events.findIndex(
+          (e, n) => !this.taken.has(n) && e.instanceId === instanceId && e.type === type
+        )
+        if (i < 0) return undefined
+        this.taken.add(i)
+        return { payload: this.events[i]?.payload ?? null }
+      },
+    }
+  }
+
   clear(): void {
+    this.taken.clear()
     this.created.length = 0
     this.terminated.length = 0
     this.events.length = 0

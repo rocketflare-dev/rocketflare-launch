@@ -13,7 +13,7 @@
  * container is a `FakeSandbox` with a green kit gate, the chat turn and the checkpoint are the
  * `session-land.test.ts` stand-ins (a push to the session's branch), and the ship summary is the
  * real `summarizeShip` over a fake chat client. The `deploy.yml` run the tag starts is played by
- * the test inside the `land.staging-wait` sleep: start → upload → activate → finish.
+ * the test inside the `land.staging-wake` round: start → upload → activate → finish.
  *
  * Cases: the main path with `app_owners` review (alice, the session's creator, is refused 403
  * `self_approval`; bob, an owner, approves); CI red (a redacted log tail, reopened `ready`); a
@@ -355,7 +355,7 @@ async function deployStaging(h: Harness, version: string) {
 
 /**
  * Run the Workflow to its end. The first idle wait is alice pressing Ship (the real route); each
- * `land.wait#N` is `onLand`'s (the repository's CI, a reviewer); a `land.staging-wait` sleep is
+ * `land.wait#N` is `onLand`'s (the repository's CI, a reviewer); a `land.staging-wake` round is
  * the deploy the tag started; a later idle wait ends the session (`onIdle` sees the row first).
  */
 async function drive(
@@ -368,10 +368,22 @@ async function drive(
   let idle = 0
   let lands = 0
   let deployed = false
+  /** The staging deploy, played once inside the first `land.staging-wake` round. */
+  const playDeploy = async () => {
+    if (deployed) return
+    deployed = true
+    const landing = (await reload(h)).landing as SessionLanding
+    await deployStaging(h, landing.version ?? '')
+  }
   const fake = createFakeWorkflowStep({
     onWait: async wait => {
       if (wait.name.startsWith('land.wait#')) {
         return (await opts.onLand?.(wait, lands++)) === 'wake' ? WAKE : undefined
+      }
+      // Issue #19: Phase B's GitHub-facing rounds are `waitForEvent`s; nobody wakes them here.
+      if (/^land\.(main-ci|release|staging)-wake#/.test(wait.name)) {
+        if (wait.name.startsWith('land.staging-wake#')) await playDeploy()
+        return undefined
       }
       if (idle++ === 0) {
         const res = await request(
@@ -392,11 +404,6 @@ async function drive(
   })
   ;(fake.step as { sleep: unknown }).sleep = async (name: string) => {
     fake.names.push(name)
-    if (name.startsWith('land.staging-wait#') && !deployed) {
-      deployed = true
-      const landing = (await reload(h)).landing as SessionLanding
-      await deployStaging(h, landing.version ?? '')
-    }
   }
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
   workflow.overrides = { ports: h.ports, hooks: h.hooks, limits: LIMITS }
@@ -534,7 +541,7 @@ describe('Ship means live on staging, end to end', () => {
         'land.main-ci#4.0',
         'land.release#4.0',
         'land.staging#4.0',
-        'land.staging-wait#4.0',
+        'land.staging-wake#4.0',
         'land.staging#4.1',
         'land.health#4.0',
         'land.live#4',

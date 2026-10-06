@@ -66,6 +66,22 @@ export interface RecordedWait {
   name: string
   type: string
   timeout?: string | number
+  /**
+   * How the wait ended, set once it has: `event` — a payload was delivered (by `onWait`, the
+   * {@link FakeWorkflowStepOptions.inbox} or the queue) BEFORE the timeout; `timeout` — nothing
+   * was, and the wait rejected the way the platform's timeout does.
+   */
+  outcome?: 'event' | 'timeout'
+}
+
+/**
+ * The platform's event delivery, for a wait: `take(type)` hands over (and consumes) the oldest
+ * payload sent to this instance with that type, or undefined when none waits — as the platform
+ * buffers a `sendEvent` until a `waitForEvent` of its type takes it.
+ * `RecordingWorkflow.inbox(instanceId)` (`tests/mocks/bindings.ts`) is one.
+ */
+export interface FakeWorkflowInbox {
+  take(type: string): { payload: unknown } | undefined
 }
 
 export interface FakeWorkflowStepOptions {
@@ -81,6 +97,12 @@ export interface FakeWorkflowStepOptions {
    * Return a value to use it as the event payload; return nothing to fall through to the queue.
    */
   onWait?: (wait: RecordedWait) => unknown | Promise<unknown>
+  /**
+   * Events sent to the instance through its binding (`instance.sendEvent`), consulted after
+   * `onWait` supplied nothing and before the `events` queue — so a test can drive the REAL sender
+   * (a route, a queue handler) inside `onWait` and the wait sees what it sent.
+   */
+  inbox?: FakeWorkflowInbox
 }
 
 /** What the platform raises when `waitForEvent` reaches its timeout with nothing delivered. */
@@ -128,8 +150,20 @@ export function createFakeWorkflowStep(options: FakeWorkflowStepOptions = {}) {
       waits.push(wait)
       names.push(name)
       const supplied = await options.onWait?.(wait)
-      if (supplied !== undefined) return supplied as T
-      if (queue.length > 0) return queue.shift() as T
+      if (supplied !== undefined) {
+        wait.outcome = 'event'
+        return supplied as T
+      }
+      const sent = options.inbox?.take(waitOptions.type)
+      if (sent) {
+        wait.outcome = 'event'
+        return sent.payload as T
+      }
+      if (queue.length > 0) {
+        wait.outcome = 'event'
+        return queue.shift() as T
+      }
+      wait.outcome = 'timeout'
       throw new FakeWorkflowTimeoutError(name)
     },
   }

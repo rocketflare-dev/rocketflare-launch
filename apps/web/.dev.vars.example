@@ -97,6 +97,13 @@ OTEL_EXPORTER_OTLP_HEADERS=
 # Link-out for `traces show`: {traceId} is substituted.
 OBSERVABILITY_TRACE_URL=
 
+# --- GitHub App webhooks (issue #19, docs/DEPLOYMENT.md § GitHub App webhooks) ------------
+# The App's webhook secret: POST /api/github/webhook verifies X-Hub-Signature-256 with it, and a
+# delivery wakes the landing waiting on it. Blank = 503 on the route and polling only — what local
+# dev wants, since GitHub cannot reach localhost without a tunnel (cloudflared / smee). Deployed,
+# it is a SECRET on both Workers (`wrangler secret put GITHUB_WEBHOOK_SECRET`), never a toml var.
+GITHUB_WEBHOOK_SECRET=
+
 # --- Coding sessions (Launch P3, docs/SESSIONS-LOCAL.md) --------------------------------
 # Under wrangler dev a session's sandbox is always a local Docker container, and its database is
 # always a real Neon branch of the app's project (Neon connected in Setup). `local` swaps only the

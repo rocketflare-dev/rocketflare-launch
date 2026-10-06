@@ -78,11 +78,11 @@ import type {
   SessionStepContext,
 } from './hooks'
 
-/** `land.release-wait#K.R`: how long a landing that lost the release claim sleeps. */
+/** `land.release-wake#K.R`: how long a landing that lost the release claim waits (or until woken). */
 export const LAND_RELEASE_WAIT_SECONDS = 20
 /** A landing waits at most this long (from reaching `releasing`) for another holder's claim. */
 export const LAND_RELEASE_CLAIM_MAX_MINUTES = 15
-/** `land.staging-wait#K.R`: one round of following the release's staging deploy. */
+/** `land.staging-wake#K.R`: one round of following the release's staging deploy. */
 export const LAND_STAGING_WAIT_SECONDS = 120
 /** A release still not live on staging this long after it was cut has timed out. */
 export const LAND_STAGING_MAX_MINUTES = RELEASE_STAGING_TIMEOUT_MINUTES

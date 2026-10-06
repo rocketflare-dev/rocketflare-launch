@@ -46,8 +46,10 @@
  *            `failed`), audit `session.ended`
  *   Phase B  (issue #5, after a merge — or straight from `claim` for a merged landing whose
  *            instance was lost): land.main-ci#K.R (issue #11: the squash commit's `Gate`) /
- *            land.release#K.R / land.staging#K.R / land.health#K.R, each with a `step.sleep`
- *            …-wait#K.R between its rounds → land.live#K | land.stalled#K
+ *            land.release#K.R / land.staging#K.R / land.health#K.R, each with a wait between
+ *            its rounds — `waitForEvent(SESSION_WAKE_EVENT)` …-wake#K.R for the first three (a
+ *            GitHub webhook wakes it, issue #19), a `step.sleep` land.health-wait#K.R for health —
+ *            → land.live#K | land.stalled#K
  *
  * - One DB client per step (`withStepDatabase`, as `agent-run.ts`) and nudges through
  *   `createStepRealtime().settle()` — no `waitUntil` in a step. The step bodies are
@@ -611,12 +613,30 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
    * Phase B (issue #5), after `cleanup`: the merge commit's own `Gate` on the default branch
    * (`land.main-ci#K.R`, issue #11: green or past its bound → on; red → stalled `main_ci_failed`),
    * the release that carries the merge, its staging deploy, staging's health — each a round of its
-   * hook (`land.release#K.R`, `land.staging#K.R`, `land.health#K.R`) with a `step.sleep` between
-   * (`…-wait#K.R`) — then `land.live#K`, or
+   * hook (`land.release#K.R`, `land.staging#K.R`, `land.health#K.R`). Between the GitHub-facing
+   * rounds a `waitForEvent(SESSION_WAKE_EVENT)` with the round as its timeout (`…-wake#K.R`,
+   * issue #19: a webhook ends it early); between health probes a `step.sleep` (`land.health-wait#K.R`
+   * — the probes are counted, so nothing may shorten the gap) — then `land.live#K`, or
    * `land.stalled#K` with the hook's reason. `K` is the merge's loop round (0 under a fresh
    * instance). Nothing here reopens the session: after the merge a failure stalls (decision §0.1).
    */
   private async release(run: StepRunner, step: WorkflowStep, k: number): Promise<void> {
+    /**
+     * Issue #19: one round of a GitHub-facing stage — `SESSION_WAKE_EVENT` (a GitHub webhook about
+     * the merge commit, the default branch or the release's tag, `github-events.ts`) or the
+     * round's timeout, whichever comes first; either way the next round reads GitHub itself.
+     */
+    const wake = async (name: string, seconds: number) => {
+      try {
+        await step.waitForEvent(name, {
+          type: SESSION_WAKE_EVENT,
+          timeout: waitDuration(seconds) as WorkflowSleepDuration,
+        })
+      } catch {
+        // The round is over: poll again.
+      }
+    }
+    /** Health probes staging, not GitHub, and counts its probes: a plain sleep, never woken. */
     const sleep = (name: string, seconds: number) =>
       step.sleep(name, waitDuration(seconds) as WorkflowSleepDuration)
     const stall = async (reason: ShipStalledReason, error: string) => {
@@ -645,7 +665,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (res.status === 'done') return
       if (res.status === 'ready') break
       if (res.status === 'stalled') return stall(res.reason, res.error)
-      await sleep(`land.main-ci-wait#${k}.${r}`, res.waitSeconds)
+      await wake(`land.main-ci-wake#${k}.${r}`, res.waitSeconds)
     }
     for (let r = 0; ; r++) {
       if (r >= MAX_LAND_PHASE_ROUNDS) {
@@ -655,7 +675,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (res.status === 'done') return
       if (res.status === 'released') break
       if (res.status === 'stalled') return stall(res.reason, res.error)
-      await sleep(`land.release-wait#${k}.${r}`, res.waitSeconds)
+      await wake(`land.release-wake#${k}.${r}`, res.waitSeconds)
     }
     for (let r = 0; ; r++) {
       if (r >= MAX_LAND_PHASE_ROUNDS) {
@@ -665,7 +685,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       if (res.status === 'done') return
       if (res.status === 'active') break
       if (res.status === 'stalled') return stall(res.reason, res.error)
-      await sleep(`land.staging-wait#${k}.${r}`, res.waitSeconds)
+      await wake(`land.staging-wake#${k}.${r}`, res.waitSeconds)
     }
     for (let r = 0; ; r++) {
       if (r >= MAX_LAND_PHASE_ROUNDS) {

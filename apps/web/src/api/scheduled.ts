@@ -19,6 +19,7 @@ import { grantsSweep } from './services/grants/sweep'
 import { pruneInvitations } from './services/invitations'
 import { auditSeal } from './services/launch/audit-chain'
 import { gateVariableSweep } from './services/launch/gate-variable'
+import { pruneGitHubDeliveries } from './services/launch/github-webhook'
 import { healthPoll } from './services/launch/health'
 import { kitFollowLatest } from './services/launch/kit-pin'
 import { sessionsChecks } from './services/sessions/checks-cron'
@@ -60,7 +61,9 @@ export async function runPruneExpired(db: Database) {
   ).length
   const magicLinks = await pruneMagicLinkTokens(db)
   const invitations = await pruneInvitations(db)
-  return { sessions, magicLinks, invitations }
+  // Issue #19: the GitHub webhook's delivery claims, past the window GitHub redelivers in.
+  const githubDeliveries = await pruneGitHubDeliveries(db)
+  return { sessions, magicLinks, invitations, githubDeliveries }
 }
 
 /** Nightly prune of expired rows (D12): counts are logged so the run is auditable. */

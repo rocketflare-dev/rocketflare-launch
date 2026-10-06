@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **GitHub App webhooks wake the landing; polling stays the fallback** (#19). A new public route,
+  `POST /api/github/webhook`, verifies `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` in
+  constant time (401 otherwise), claims each `X-GitHub-Delivery` once (a redelivery enqueues
+  nothing), and enqueues a `github.event` job (202). The job maps the delivery's repository to its
+  app, takes the tenant from that row, and wakes the landings the event concerns (their PR, gate
+  SHA, merge commit, release tag, or the default branch while releasing) with `SESSION_WAKE_EVENT`;
+  a followed release's tag-run reading is refreshed. Phase B's GitHub-facing waits are now
+  `waitForEvent` rounds (`land.main-ci-wake`, `land.release-wake`, `land.staging-wake`) with the old
+  round as the timeout; health keeps its counted sleep. A missed delivery changes nothing: the round
+  times out and polls, and the cron stays the safety net. New instances' Apps get the webhook URL,
+  the five events (`check_run`, `workflow_run`, `pull_request`, `push`, `release`) and the secret from
+  `pnpm provision github-app`; no new permission. **Deploy:** run migrations (`0044`,
+  `github_webhook_deliveries`), put `GITHUB_WEBHOOK_SECRET` on the Worker, then turn the webhook on
+  in the App — `docs/DEPLOYMENT.md` § 12. Without the secret the route answers 503 and Launch polls
+  as before.
 - **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
   Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
   kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of

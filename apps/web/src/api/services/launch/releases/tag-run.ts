@@ -24,7 +24,8 @@
  *    moved back out of `failed`.
  *
  * A `failed` release keeps its last reading, so the strip can still say which job failed; no
- * other status reads GitHub. Any GitHub error is logged and the answer is null — it never fails
+ * other status reads GitHub. A GitHub webhook about the tag (issue #19) clears the stamp
+ * (`expireTagRunReading`), so the read it wakes is fresh. Any GitHub error is logged and the answer is null — it never fails
  * the read it is part of.
  */
 import {
@@ -56,7 +57,7 @@ import { moveRelease } from './lifecycle'
 export const TAG_RUN_POLL_WINDOW_MS = 20_000
 
 /** The statuses whose tag run is still worth reading: no staging job has gone live yet. */
-const FOLLOWED: readonly ReleaseStatus[] = ['tagged', 'staging']
+export const TAG_RUN_FOLLOWED: readonly ReleaseStatus[] = ['tagged', 'staging']
 
 type RepoOf = Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch'>
 
@@ -145,12 +146,37 @@ async function claimTagRunPoll(db: Database, release: AppReleaseRow, now: Date):
       and(
         eq(appReleases.tenantId, release.tenantId),
         eq(appReleases.id, release.id),
-        inArray(appReleases.status, [...FOLLOWED]),
+        inArray(appReleases.status, [...TAG_RUN_FOLLOWED]),
         or(isNull(appReleases.tagRunPolledAt), lt(appReleases.tagRunPolledAt, cutoff))
       )
     )
     .returning({ id: appReleases.id })
   return claimed.length > 0
+}
+
+/**
+ * Issue #19: a GitHub webhook about the release's tag (its deploy run finished, a job on its commit
+ * completed) clears the throttle stamp, so the next reader — the landing the same delivery woke, or
+ * the pipeline strip — reads GitHub fresh instead of a reading taken before the event. Only while
+ * the run is still followed; true when a stamp was cleared.
+ */
+export async function expireTagRunReading(
+  db: Database,
+  tenantId: string,
+  releaseId: string
+): Promise<boolean> {
+  const cleared = await db
+    .update(appReleases)
+    .set({ tagRunPolledAt: null, updatedAt: sql`${appReleases.updatedAt}` })
+    .where(
+      and(
+        eq(appReleases.tenantId, tenantId),
+        eq(appReleases.id, releaseId),
+        inArray(appReleases.status, [...TAG_RUN_FOLLOWED])
+      )
+    )
+    .returning({ id: appReleases.id })
+  return cleared.length > 0
 }
 
 /** The sentence a failed run leaves on the release (`staging:` — the run never got past staging). */
@@ -168,7 +194,7 @@ async function failReleaseOnRun(
   run: CandidateRun
 ): Promise<AppReleaseRow | null> {
   const error = tagRunFailureError(run)
-  const moved = await moveRelease(db, release, FOLLOWED, 'failed', { error })
+  const moved = await moveRelease(db, release, TAG_RUN_FOLLOWED, 'failed', { error })
   if (!moved) return null
   await recordAudit(db, {
     ...SYSTEM_ACTOR,
@@ -211,7 +237,7 @@ export async function followTagRun(
   options: TagRunOptions = {}
 ): Promise<{ release: AppReleaseRow; run: CandidateRun | null }> {
   if (release.status === 'failed') return { release, run: lastFailedRun(release) }
-  if (!FOLLOWED.includes(release.status) || !app.repoOwner || !app.repoName) {
+  if (!TAG_RUN_FOLLOWED.includes(release.status) || !app.repoOwner || !app.repoName) {
     return { release, run: null }
   }
   const now = options.now ?? new Date()

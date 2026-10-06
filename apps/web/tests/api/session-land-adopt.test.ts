@@ -5,7 +5,7 @@
  * before issue #5 (no landing) — or one left at stage `pr` — whose PR a person merged on GitHub is
  * picked up by `sessions.checks` in a `staging`-mode app, given a `releasing` landing, and its
  * Workflow restarted into Phase B, which runs the REAL S3 hooks: a patch release listing the PR and
- * the session, the staging deploy (`/ci/deploy`, played inside `land.staging-wait`), the health
+ * the session, the staging deploy (`/ci/deploy`, played inside `land.staging-wake`), the health
  * probe, `live`.
  *
  * Also: a `pr`-mode app only records `pr.merged`; a merge older than `LAND_ADOPT_MAX_AGE_HOURS` is
@@ -166,16 +166,21 @@ async function deployStaging(h: Harness, version: string) {
 async function runInstance(h: Harness, instanceId: string) {
   let deployed = false
   const fake = createFakeWorkflowStep({
-    onWait: async () => {
-      throw new Error('Phase B never waits for an event')
+    // Issue #19: Phase B's GitHub-facing rounds wait for a wake; nobody sends one here, so each
+    // times out — the staging deploy played inside the first `land.staging-wake` round.
+    onWait: async wait => {
+      if (!/^land\.(main-ci|release|staging)-wake#/.test(wait.name)) {
+        throw new Error(`Phase B never waits on ${wait.name}`)
+      }
+      if (wait.name.startsWith('land.staging-wake#') && !deployed) {
+        deployed = true
+        await deployStaging(h, ((await reload(h)).landing as SessionLanding).version ?? '')
+      }
+      return undefined
     },
   })
   ;(fake.step as { sleep: unknown }).sleep = async (name: string) => {
     fake.names.push(name)
-    if (name.startsWith('land.staging-wait#') && !deployed) {
-      deployed = true
-      await deployStaging(h, ((await reload(h)).landing as SessionLanding).version ?? '')
-    }
   }
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
   workflow.overrides = {

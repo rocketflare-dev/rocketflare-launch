@@ -47,8 +47,9 @@ with `wrangler workflows instances describe launch-agent-run <runId>`.
 
 Testing: `tests/api/agent-run-workflow.test.ts` instantiates the class with `createTestEnv()` and
 `createFakeWorkflowStep(options)` (`tests/mocks/cloudflare-workers.ts`) and asserts on the rows.
-The fake's `waitForEvent` is a recorder: `{ events?, onWait? }` in, `{ step, calls, waits, names,
-queueEvent }` out. `onWait` is the test's stand-in for the resolve route (write the answer, flip the
+The fake's `waitForEvent` is a recorder: `{ events?, onWait?, inbox? }` in, `{ step, calls, waits,
+names, queueEvent }` out (each recorded wait gets `outcome: 'event' | 'timeout'`; `inbox` is a
+binding's sends — `RecordingWorkflow.inbox(id)` — consulted after `onWait` and before `events`). `onWait` is the test's stand-in for the resolve route (write the answer, flip the
 row, return a payload); an empty queue with no `onWait` rejects the way the platform's timeout does,
 which is how the expiry path is driven. `names` is every step name in call order.
 
@@ -190,8 +191,11 @@ default branch — green, no check within `SHIP_MAIN_CI_NONE_GRACE_MINUTES`, or 
 `main_ci_failed`, no release), then
 `land.release#K.R` / `land.staging#K.R` / `land.health#K.R` (the `landRelease` / `landStaging` /
 `landHealth` hooks through `land.ts`'s wrappers, `LAND_PHASE_B_STEP`), each followed while it
-answers `wait` by a `step.sleep` named `land.main-ci-wait#K.R` / `land.release-wait#K.R` /
-`land.staging-wait#K.R` / `land.health-wait#K.R`, ending in `land.live#K` or `land.stalled#K`
+answers `wait` by one round of `waitForEvent(SESSION_WAKE_EVENT)` named `land.main-ci-wake#K.R` /
+`land.release-wake#K.R` / `land.staging-wake#K.R` (issue #19: a GitHub webhook about the merge
+commit, the default branch or the release's tag ends it early — `../services/sessions/github-events.ts`;
+a timeout just ends the round) or, for health, a `step.sleep` `land.health-wait#K.R` (its probes are
+COUNTED — nothing may shorten the gap), ending in `land.live#K` or `land.stalled#K`
 (`MAX_LAND_PHASE_ROUNDS` caps each stage; out of `land.main-ci` rounds the release goes ahead). `claim` answers `{ start: 'loop' }` for a Phase A landing (never `salvage`)
 and `{ start: 'land', cleanup }` for a `shipped` one in `releasing` / `deploying` — `run()` then
 runs `cleanup` (when `ended_at` is still null) and `release(…, 0)` only. That is also how a hand
@@ -199,10 +203,14 @@ merge the `sessions.checks` cron ADOPTS runs (`../services/sessions/land-adopt.t
 landing written on a `shipped` row, then a fresh `<id>-rN` instance via `wakeOrRestartLanding`;
 `tests/api/session-land-adopt.test.ts`). The tests are
 `tests/api/session-land.test.ts` (the `session-ship-gate` harness with fake Phase B hooks; the fake
-step's `sleep` is wrapped there so its names are recorded too) and
+step's `sleep` is wrapped there so its names are recorded too, and a `…-wake` round goes to the
+same `onSleep` before it times out; its issue #19 block hands the fake step an `inbox` — the
+session `RecordingWorkflow`'s `inbox(instanceId)`, which delivers what the real webhook route →
+queue → handler sent, oldest first, as the platform buffers events — and asserts each wait's
+`outcome`, `event` or `timeout`) and
 `tests/api/session-land-e2e.test.ts` (every slice's real code at once: the settings route, the
 real `reviewPolicyFor`, the approvals route, the REAL Phase B hooks over the FakeCloud as the
-global fetch, the staging deploy played inside the `land.staging-wait` sleep, then the release's
+global fetch, the staging deploy played inside the `land.staging-wake` round, then the release's
 `chain` and the app's `promotion`).
 
 The calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`, bound

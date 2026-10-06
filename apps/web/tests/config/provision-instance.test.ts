@@ -3,12 +3,15 @@
  * answers, where a second instance keeps its state, the zone audit, the `secrets` plan (NAMES
  * only — what `--dry-run` prints), the GitHub App manifest and the Cloudflare token link.
  */
+
+import { GITHUB_WEBHOOK_EVENTS } from '@launch/shared/launch-github'
 import { describe, expect, it } from 'vitest'
 import { REQUIRED_GITHUB_PERMISSIONS } from '@/api/services/launch/setup'
 import { zoneAuditFindings } from '../../scripts/provision/cloudflare-dns'
 import { resolveDeployFile } from '../../scripts/provision/config'
 import {
   buildGitHubAppManifest,
+  GITHUB_EVENT_PERMISSION,
   installUrl,
   manifestFormUrl,
   manifestPage,
@@ -200,7 +203,7 @@ describe('the GitHub App manifest', () => {
     redirectUrl: 'http://127.0.0.1:4567/callback',
   })
 
-  it('asks for exactly the permissions Launch’s Setup check requires, and no webhook', () => {
+  it('asks for exactly the permissions Launch’s Setup check requires', () => {
     expect(manifest.default_permissions).toEqual(REQUIRED_GITHUB_PERMISSIONS)
     expect(manifest.default_permissions).toMatchObject({
       administration: 'write',
@@ -214,9 +217,20 @@ describe('the GitHub App manifest', () => {
       checks: 'write',
       statuses: 'read',
     })
-    expect(manifest.hook_attributes.active).toBe(false)
-    expect(manifest.default_events).toEqual([])
     expect(manifest.public).toBe(false)
+  })
+
+  it('subscribes the webhook to the events a landing waits on (issue #19), with no new permission', () => {
+    expect(manifest.hook_attributes).toEqual({
+      url: 'https://launch.rocketflare.dev/api/github/webhook',
+      active: true,
+    })
+    expect(manifest.default_events).toEqual([...GITHUB_WEBHOOK_EVENTS])
+    // Each event is delivered under a permission the app already holds.
+    for (const [event, permission] of Object.entries(GITHUB_EVENT_PERMISSION)) {
+      expect(manifest.default_events, event).toContain(event)
+      expect(manifest.default_permissions[permission], `${event} needs ${permission}`).toBeDefined()
+    }
   })
 
   it('returns to the local server and fits GitHub’s 34-character name limit', () => {

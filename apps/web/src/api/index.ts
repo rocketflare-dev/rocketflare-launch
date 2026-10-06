@@ -41,6 +41,7 @@ import { evalsRouter } from './routes/evals'
 import { featuresRouter } from './routes/features'
 import { feedbackRouter } from './routes/feedback'
 import { filesRouter } from './routes/files'
+import { githubWebhookRouter } from './routes/github-webhook'
 import { groupsRouter } from './routes/groups'
 import { healthRouter } from './routes/health'
 import { invitationsRouter } from './routes/invitations'
@@ -124,6 +125,10 @@ app.route('/oidc', oidcRouter)
 // a CI job has no session. Every route beneath verifies the job's GitHub OIDC token and resolves
 // the calling repo, environment and workflow before it touches a row (`routes/ci.ts`).
 app.route('/ci', ciRouter)
+// Issue #19: the GitHub App's webhook. PUBLIC by design: GitHub has no session, so the route
+// verifies `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` (constant-time) before it reads
+// anything, claims the delivery id once, and only enqueues a `github.event` job.
+app.route('/api/github', githubWebhookRouter)
 app.use('/api/invite/:token/accept', authRateLimit)
 app.route('/api/invite', inviteRouter)
 // Launch's platform administration (spec/03, spec/05, D9): the setup credentials, the issuer's

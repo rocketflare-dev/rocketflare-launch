@@ -131,6 +131,8 @@ export const OPTIONAL_WORKER_SECRETS = [
   'OTEL_EXPORTER_OTLP_HEADERS',
   'R2_ACCESS_KEY_ID',
   'R2_SECRET_ACCESS_KEY',
+  // Issue #19: written by the `github-app` phase from GitHub's manifest conversion.
+  'GITHUB_WEBHOOK_SECRET',
 ] as const
 
 let tokenFileMemo: Record<string, string> | undefined

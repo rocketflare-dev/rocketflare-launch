@@ -112,7 +112,7 @@ export interface SessionStepHooks {
  *   has ALREADY recorded `releaseId` / `version` / `tag` on `sessions.landing` and moved its stage
  *   `releasing → deploying` (one compare-and-set), and emitted `ship.released`.
  * - `wait`: another holder has the app's release claim (`withReleaseClaim`); the Workflow sleeps
- *   `waitSeconds` (`land.release-wait#K.R`, 20 s) and calls again. The hook itself answers
+ *   `waitSeconds` (`land.release-wake#K.R`, 20 s) and calls again. The hook itself answers
  *   `stalled` once the landing has waited longer than its cap (15 min).
  * - `stalled`: the release could not be cut (GitHub refused the bump or the tag). Nothing written:
  *   the Workflow's `land.stalled#K` records `stalledReason` and `error`.
@@ -125,7 +125,7 @@ export type LandReleaseResult =
 /**
  * `landStaging`'s answer: `active` — the release reached `staging_active` (or later; `ship.staging
  * {status:'active'}` emitted), health next; `wait` — still deploying, read again after
- * `waitSeconds` (`land.staging-wait#K.R`, 2 min); `stalled` — the deploy failed, or the release is
+ * `waitSeconds` (`land.staging-wake#K.R`, 2 min); `stalled` — the deploy failed, or the release is
  * still `tagged` 45 minutes on. Nothing written for `stalled`: `land.stalled#K` does.
  */
 export type LandStagingResult =

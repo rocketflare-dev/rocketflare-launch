@@ -182,15 +182,15 @@ export const SESSION_LANDING_STALL_MS: Record<PhaseALandingStage, number> = (() 
 
 /**
  * A merged landing in Phase B (`shipped`, `releasing` / `deploying`): its `cleanup` and each
- * round's step beat; between them a `step.sleep` of the hook's wait (20 s – 2 min), the retry
- * wait, or a retry's delay (`cleanup`'s up to 160 s).
+ * round's step beat; between them the hook's wait (20 s – 2 min; a webhook may end it early),
+ * the retry wait, or a retry's delay (`cleanup`'s up to 160 s).
  */
 export const SESSION_RELEASE_STALL_MS =
   Math.max(
     LAND_RELEASE_WAIT_SECONDS * 1000,
     LAND_STAGING_WAIT_SECONDS * 1000,
     LAND_HEALTH_WAIT_SECONDS * 1000,
-    // Issue #11: `land.main-ci-wait#K.R` sleeps a `land.ci` round.
+    // Issue #11: `land.main-ci-wake#K.R` waits a `land.ci` round (issue #19: a webhook may end it).
     LAND_CI_SLOW_SECONDS * 1000,
     LAND_RETRY_SECONDS * 1000,
     longestRetryDelayMs(LAND_PHASE_B_STEP),
