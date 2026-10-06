@@ -61,7 +61,7 @@ import {
   waitDuration,
 } from '@/api/services/sessions/steps'
 import { runTurn, turnKillScript } from '@/api/services/sessions/turn'
-import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
+import { SESSION_WARM_KEEP_MINUTES, SESSION_WARM_START_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { aiSpans, apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
@@ -1621,6 +1621,163 @@ describe('SessionWorkflow: the loop', () => {
     const types = await typesOf(h.row)
     expect(types).not.toContain('turn.failed')
     expect(types).not.toContain('error')
+  })
+})
+
+describe('SessionWorkflow: warm on intent (issue #17)', () => {
+  /** A session started warm — the composer opened — that nobody has written to yet. */
+  const warmHarness = async () => {
+    const h = await harness()
+    await patch(h.row, { warmStart: true })
+    return h
+  }
+  const endReasons = async (row: SessionRow) =>
+    (await listSessionEvents(db, row.tenantId, row.id))
+      .filter(e => e.type === 'status')
+      .map(e => (e.data as { reason?: string }).reason)
+
+  it('boots to ready before any message; the first message then runs at once, with no boot', async () => {
+    const h = await warmHarness()
+    let readyBeforePrompt = false
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        // The person is still typing: the session is already up.
+        const row = await reload(h.row)
+        readyBeforePrompt = row.status === 'ready' && row.pendingMessage === null
+        await patch(h.row, { pendingMessage: 'Change the Home heading' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(readyBeforePrompt).toBe(true)
+    expect(run.names).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'bootstrap',
+      'dev',
+      'inspect#0',
+      'wait#0',
+      'inspect#1',
+      'turn#1',
+      'inspect#2',
+      'wait#2',
+      'inspect#3',
+      'end#3',
+      'cleanup',
+    ])
+    // The unprompted wait is the warm-start window, not the idle policy's.
+    expect(run.waits[0]?.timeout).toBe(`${SESSION_WARM_START_MINUTES} minutes`)
+    const sandbox = h.sandbox()
+    expect(sandbox.startCount).toBe(1)
+    expect(sandbox.execs.filter(e => e.command.includes('git init'))).toHaveLength(1)
+    // The boot's timing was written before the message arrived; the turn followed it.
+    const types = await typesOf(h.row)
+    expect(types.indexOf('boot.timing')).toBeLessThan(types.indexOf('user.message'))
+    expect(types.filter(t => t === 'boot.timing')).toHaveLength(1)
+    expect((await reload(h.row)).turnCount).toBe(1)
+  })
+
+  it('an abandoned warm session ends after the window: destroyed, branch deleted, no turn, nothing saved', async () => {
+    const h = await warmHarness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, {
+          lastActivityAt: new Date(Date.now() - (SESSION_WARM_START_MINUTES + 1) * 60_000),
+        })
+        return undefined
+      }
+      throw new Error('an abandoned warm session must not wait again')
+    })
+    expect(run.names.slice(6)).toEqual(['inspect#0', 'wait#0', 'end#0', 'cleanup'])
+    expect(run.outcome).toEqual({ sessionId: h.row.id, status: 'ended' })
+    expect(h.checkpoints).toEqual([])
+    expect(h.sandbox().destroyed).toBe(true)
+    expect(h.cloud.neon.branchNamed(h.f.neonProjectId, `session-${h.row.shortId}`)).toBeUndefined()
+    const after = await reload(h.row)
+    expect(after).toMatchObject({ status: 'ended', turnCount: 0, containerKeptAt: null })
+    expect(await typesOf(h.row)).not.toContain('turn.start')
+    expect(await endReasons(h.row)).toContain('unprompted')
+  })
+
+  it('the preview kept it busy: no end yet, it waits out the rest of the window', async () => {
+    const h = await warmHarness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 5 * 60_000) })
+        return undefined
+      }
+      expect((await reload(h.row)).status).toBe('ready')
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'wait#0',
+      'end#0',
+      'inspect#1',
+      'wait#1',
+      'inspect#2',
+      'end#2',
+      'cleanup',
+    ])
+    expect(run.waits[1]?.timeout).toBe(`${SESSION_WARM_START_MINUTES - 5} minutes`)
+  })
+
+  it('a first message that lands as the window closes wins: the turn runs', async () => {
+    const h = await warmHarness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        // The wait timed out, but the message is on the row (its wake was too late).
+        await patch(h.row, {
+          lastActivityAt: new Date(Date.now() - (SESSION_WARM_START_MINUTES + 1) * 60_000),
+          pendingMessage: 'Change the Home heading',
+        })
+        return undefined
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.names.slice(6, 10)).toEqual(['inspect#0', 'wait#0', 'end#0', 'inspect#1'])
+    expect(run.names).toContain('turn#1')
+    expect((await reload(h.row)).turnCount).toBe(1)
+  })
+
+  it('a drained warm session that nobody wrote to ends instead of waiting out its expiry', async () => {
+    const h = await warmHarness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        paused.value = true
+        return WAKE
+      }
+      throw new Error('a drained warm session must not wait again')
+    })
+    expect(run.names.slice(6)).toEqual([
+      'inspect#0',
+      'wait#0',
+      'inspect#1',
+      'suspend#1',
+      'inspect#2',
+      'end#2',
+      'cleanup',
+    ])
+    expect(await reload(h.row)).toMatchObject({ status: 'ended', turnCount: 0 })
+  })
+
+  it('a session that was not started warm keeps the idle suspend', async () => {
+    const h = await harness()
+    const run = await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    expect(run.waits[0]?.timeout).toBe('30 minutes')
+    expect(run.names).toContain('suspend#0')
   })
 })
 

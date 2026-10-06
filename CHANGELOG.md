@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A session started from the app page boots while you write, and one nobody writes to goes
+  away** (issue #17). Start session and Change it now start the session WARM (`warm: true` on
+  `POST /api/apps/:id/sessions`), once per press; opening it again while it waits for its first
+  message returns the same session instead of booting a second one. Each person may hold
+  `maxWarmPerUser` (a new session-policy limit, default 2) such sessions — beyond that the start is
+  refused with `warm_session_limit`, explained on the card — and they count against the app's
+  concurrency as before. One nobody writes to ends after `SESSION_WARM_START_MINUTES` (15) quiet,
+  the preview's use counting as activity: no checkpoint, the container destroyed and the branch
+  deleted, no turn counted, and the chat says why. A first message that arrives as it ends still
+  runs. Sessions started from the CLI, Fix in a session and kit upgrades are unchanged. **Deploy:**
+  run migrations (`0045`, `sessions.warm_start`).
 - **Workspace backups can run on the remote sandbox host, and a failed backup says why** (issue
   #3). The host reads its own `SESSION_WORKSPACE_BACKUP` (`off` or `presigned`; `binding` and
   anything else are refused by name) and gains a `BACKUP_BUCKET` binding on `launch-files`, with

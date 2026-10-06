@@ -331,13 +331,13 @@ describe('SessionsCard and the agent picker', () => {
     return fetchMock
   }
 
-  it('with no choice to make there is no picker and Start sends the P3 request', async () => {
+  it('with no choice to make there is no picker and Start sends the P3 request, warm', async () => {
     const fetchMock = renderCard(accounts())
     await screen.findByText('No sessions running')
     expect(screen.queryByText('Bill to')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
     expect(await screen.findByText('session page')).toBeInTheDocument()
-    expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/sessions`)).toEqual({})
+    expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/sessions`)).toEqual({ warm: true })
   })
 
   it('offers "Bill to" when a personal account may be used, and sends the choice', async () => {
@@ -367,6 +367,7 @@ describe('SessionsCard and the agent picker', () => {
     expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/sessions`)).toEqual({
       runtime: 'claude_code',
       credential: 'user',
+      warm: true,
     })
   })
 })

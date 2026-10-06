@@ -122,6 +122,96 @@ describe('POST /api/apps/:id/sessions', () => {
     expect(await sessionCount(f.app.id, f.tenant.id)).toBe(4)
   })
 
+  describe('warm on intent (issue #17)', () => {
+    const warmPost = (
+      f: { app: { id: string } },
+      cookie: Record<string, string>,
+      env = createTestEnv()
+    ) => post(`/api/apps/${f.app.id}/sessions`, cookie, env, { warm: true })
+
+    it('a warm start is marked; the same person’s next warm start on the app is the same session', async () => {
+      const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
+      const env = createTestEnv()
+      const first = await warmPost(f, f.cookie, env)
+      expect(first.status).toBe(202)
+      const { session } = sessionDetailResponseSchema.parse(await json(first))
+      const [row] = await db
+        .select()
+        .from(sessions)
+        .where(and(eq(sessions.tenantId, f.tenant.id), eq(sessions.id, session.id)))
+      expect(row?.warmStart).toBe(true)
+      const audit = await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.tenantId, f.tenant.id), eq(auditEvents.targetId, session.id)))
+      expect(audit[0]?.summary).toMatchObject({ after: { warmStart: true } })
+
+      // Opened again (another tab, back and forth): no second row, no second instance.
+      await db
+        .update(sessions)
+        .set({ status: 'ready', lastActivityAt: new Date(Date.now() - 10 * 60_000) })
+        .where(and(eq(sessions.tenantId, f.tenant.id), eq(sessions.id, session.id)))
+      const again = await warmPost(f, f.cookie, env)
+      expect(again.status).toBe(202)
+      const reused = sessionDetailResponseSchema.parse(await json(again)).session
+      expect(reused.id).toBe(session.id)
+      expect(await sessionCount(f.app.id, f.tenant.id)).toBe(1)
+      expect(stubs(env).sessionWorkflow?.created).toHaveLength(1)
+      // Its quiet window starts over.
+      const [touched] = await db
+        .select()
+        .from(sessions)
+        .where(and(eq(sessions.tenantId, f.tenant.id), eq(sessions.id, session.id)))
+      expect(Date.now() - (touched?.lastActivityAt?.getTime() ?? 0)).toBeLessThan(60_000)
+
+      // A start that is not warm (the CLI's) is always a new session.
+      const plain = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, env)
+      expect(plain.status).toBe(202)
+      expect(await sessionCount(f.app.id, f.tenant.id)).toBe(2)
+    })
+
+    it('never attaches to a session someone has written to, or to a colleague’s', async () => {
+      const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
+      const env = createTestEnv()
+      const mine = await insertSession(db, f, { status: 'ready', warmStart: true, turnCount: 1 })
+      const waiting = await insertSession(db, f, {
+        status: 'booting',
+        warmStart: true,
+        pendingMessage: 'Make it blue',
+      })
+      const other = await colleague(f.tenant.id)
+      const res = await warmPost(f, other.cookie, env)
+      expect(res.status).toBe(202)
+      const theirs = sessionDetailResponseSchema.parse(await json(res)).session
+      expect([mine.id, waiting.id]).not.toContain(theirs.id)
+      // (Settled, so the app's concurrency limit leaves room for one more.)
+      await db
+        .update(sessions)
+        .set({ status: 'ended' })
+        .where(and(eq(sessions.tenantId, f.tenant.id), eq(sessions.id, theirs.id)))
+      const mineAgain = sessionDetailResponseSchema.parse(
+        await json(await warmPost(f, f.cookie, env))
+      ).session
+      expect([mine.id, waiting.id, theirs.id]).not.toContain(mineAgain.id)
+      expect(await sessionCount(f.app.id, f.tenant.id)).toBe(4)
+    })
+
+    it('409 warm_session_limit past maxWarmPerUser unprompted warm sessions, before any row', async () => {
+      const f = await seedSessionApp(db, createFakeCloud())
+      // Suspended ones still count (they hold a branch) but are never reattached.
+      await insertSession(db, f, { status: 'suspended', warmStart: true })
+      await insertSession(db, f, { status: 'suspended', warmStart: true })
+      const env = createTestEnv()
+      const res = await warmPost(f, f.cookie, env)
+      expect(res.status).toBe(409)
+      expect(await json(res)).toMatchObject({ code: 'warm_session_limit', details: { limit: 2 } })
+      expect(await sessionCount(f.app.id, f.tenant.id)).toBe(2)
+      expect(stubs(env).sessionWorkflow?.created ?? []).toHaveLength(0)
+      // Not a warm start: the cap does not apply.
+      expect((await post(`/api/apps/${f.app.id}/sessions`, f.cookie, env)).status).toBe(202)
+    })
+  })
+
   it('409 session_budget_exhausted when the app’s month is spent', async () => {
     const f = await seedSessionApp(db, createFakeCloud())
     await db

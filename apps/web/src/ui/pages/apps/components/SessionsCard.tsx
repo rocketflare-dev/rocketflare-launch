@@ -3,7 +3,8 @@
  * header's "Change it" does the same, and is the page's hero) and the sessions already running or
  * recently finished.
  *
- * - **Start** posts `POST /api/apps/:id/sessions` and goes straight to the new session's page;
+ * - **Start** posts `POST /api/apps/:id/sessions` WARM (issue #17, `useWarmStartSession`: it boots
+ *   while you write; a second press reuses it) and goes straight to the session's page;
  *   there is nothing to fill in first (a title is optional, and the chat is where you say what
  *   you want). The refusals are explained IN PLACE, never toasted: the app's concurrency limit
  *   and a paused deployment (drained for a deploy) are information, a missing budget or backend
@@ -35,7 +36,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useAgentAccounts } from '@/ui/hooks/useAgentAccounts'
-import { useAppSessions, useStartSession } from '@/ui/hooks/useSessions'
+import { useAppSessions, useWarmStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { timeAgo } from '@/ui/lib/format'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
@@ -70,6 +71,13 @@ export function startRefusal(error: unknown): { tone: 'info' | 'warning'; messag
       }
     case 'agent_credential_required':
       return { tone: 'info', message: error.message }
+    case 'warm_session_limit':
+      // Issue #17: sessions this person opened and has not written to yet.
+      return {
+        tone: 'info',
+        message:
+          'You already have sessions waiting for a first message. Write in one of them, or end it, to start another.',
+      }
     default:
       return { tone: 'warning', message: error.message }
   }
@@ -231,7 +239,7 @@ export function SessionsCard({
 }) {
   const [showAll, setShowAll] = useState(false)
   const list = useAppSessions(appId, showAll ? 'all' : 'active')
-  const start = useStartSession(appId)
+  const start = useWarmStartSession(appId)
   const accounts = useAgentAccounts(canStart)
   const [choice, setChoice] = useState<StartChoice | null>(null)
   const navigate = useNavigate()
@@ -241,10 +249,11 @@ export function SessionsCard({
   const firstEnabled = accounts.data?.runtimes.find(r => r.enabled)?.runtime ?? 'claude_code'
   const current: StartChoice = choice ?? { runtime: firstEnabled, credential: 'platform' }
 
+  // Issue #17: the session starts warm, so it boots while the person writes on its page.
   const onStart = () =>
-    start.mutate(startRequestFor(accounts.data, picker ? current : null), {
-      onSuccess: ({ session }) => navigate(`/apps/${appSlug}/sessions/${session.id}`),
-    })
+    start.startWarm(startRequestFor(accounts.data, picker ? current : null), session =>
+      navigate(`/apps/${appSlug}/sessions/${session.id}`)
+    )
 
   return (
     <SectionPanel

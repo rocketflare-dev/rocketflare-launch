@@ -52,6 +52,7 @@ import {
   sessionPrResponseSchema,
 } from '@launch/shared/launch-sessions'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useRef } from 'react'
 import { ApiError, api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
 import { useRealtimeConnected } from '@/ui/stores/websocketStore'
@@ -229,6 +230,36 @@ export function useStartSession(appId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.forApp(appId) })
     },
   })
+}
+
+/**
+ * Issue #17, warm on intent: the app page's Start session / Change it opens the composer, and the
+ * session starts WARM (`warm: true`) there and then, so it boots while the person writes their
+ * first message. Once per press: a second press (or a double click) while the first is in flight
+ * sends nothing, and the server hands back the person's own warm session on the app instead of a
+ * second one. `startWarm` takes the picker's choice (`{}` with no picker) and the navigation.
+ */
+export function useWarmStartSession(appId: string) {
+  const start = useStartSession(appId)
+  const inFlight = useRef(false)
+  const { mutate } = start
+  const startWarm = useCallback(
+    (body: CreateSessionRequest, onStarted: (session: Session) => void) => {
+      if (inFlight.current) return
+      inFlight.current = true
+      mutate(
+        { ...body, warm: true },
+        {
+          onSuccess: ({ session }) => onStarted(session),
+          onSettled: () => {
+            inFlight.current = false
+          },
+        }
+      )
+    },
+    [mutate]
+  )
+  return { ...start, startWarm }
 }
 
 /** Write a 202's row into the cache — the page moves on the click, not on the next poll. */

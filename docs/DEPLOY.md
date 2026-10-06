@@ -303,6 +303,10 @@ needs, beyond the bindings above:
   window skips the clone, install and bootstrap. A kept container is billed container time and
   counts against `max_instances` until it is cooled; lower the constant to trade resume speed for
   cost. The SDK's own `sleepAfter` (90 min) must stay longer than it (a config test pins it).
+- **Warm starts (issue #17).** The app page starts a session the moment someone opens it, so it
+  boots while they type. One nobody writes to holds a container (and a branch) for at most
+  `SESSION_WARM_START_MINUTES` (15, or the idle window when shorter) and then ends; each person
+  may hold `maxWarmPerUser` (2) of them, and they count against `maxConcurrentPerApp` too.
 - **Workspace backups (off unless set).** When a container IS destroyed (after the warm window, or
   by a drain) the SDK's `createBackup` can save `/workspace/app` — checkout, `node_modules` and the
   app's `.dev.vars` (the session branch's URI: a credential, kept in Launch's own bucket, deleted

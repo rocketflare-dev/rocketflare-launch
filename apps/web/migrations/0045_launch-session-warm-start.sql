@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "warm_start" boolean DEFAULT false NOT NULL;
