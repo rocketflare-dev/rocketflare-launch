@@ -18,7 +18,8 @@
  *   loop N:  inspect#N (given the loop's `DirtyState`) → one of
  *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout, or
  *                the checkpoint DEBOUNCE's when the workspace holds unsaved changes) →
- *                on a timeout suspend#N (live; an idle suspend KEEPS the container), cool#N
+ *                on a timeout suspend#N (live; an idle suspend KEEPS the container) — or end#N
+ *                for a warm start nobody has written to (issue #17, `warm.ts`) — cool#N
  *                (suspended with a kept container past its warm window), end#N (suspended
  *                past expiry) or, for a debounce wait, checkpoint#N — and the loop waits on
  *              turn#N (3c's `runTurn`; reports `changed` + `endedAt`) → nothing (the debounce
@@ -403,10 +404,13 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       switch (next.action) {
         case 'done':
           return done
-        case 'end':
-          // `endStep` checkpoints a live session first.
-          await run(`end#${n}`, scope => endStep(scope, next.reason, bootId))
+        case 'end': {
+          // `endStep` checkpoints a live session first (never an unprompted warm start's).
+          const { ending } = await run(`end#${n}`, scope => endStep(scope, next.reason, bootId))
+          // Issue #17: a first message beat the end of an abandoned warm start — carry on.
+          if (!ending && next.reason === 'unprompted') break
           return done
+        }
         case 'land': {
           // Issue #5 Phase A: the PR's CI, its review and the merge (`land.ts`).
           const landed = await this.land(run, step, n, bootId, next.stage)
@@ -443,6 +447,15 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             }
             // Nobody woke us inside the window: an idle live session suspends; a suspended one
             // that nobody resumed before its expiry ends.
+            // Issue #17: a warm start nobody wrote to ends (no suspend, no kept container) —
+            // unless the preview kept it busy or a message just landed: then wait on.
+            if (next.unprompted) {
+              const { ending } = await run(`end#${n}`, scope =>
+                endStep(scope, 'unprompted', bootId)
+              )
+              if (ending) return done
+              break
+            }
             if (next.waitingIn === 'suspended' && next.cool) {
               await run(`cool#${n}`, scope => coolStep(scope, 'idle'))
               break

@@ -811,6 +811,12 @@ export const sessionPolicySchema = z.object({
   suspendedExpiryHours: z.number().int().positive().max(720),
   maxSessionHours: z.number().int().positive().max(168),
   maxTurns: z.number().int().positive().max(1000),
+  /**
+   * Issue #17: how many WARM sessions — started when the person opened the composer (`warm`),
+   * not written to yet — one person may hold at once, across the deployment's apps. Each still
+   * counts against `maxConcurrentPerApp` too.
+   */
+  maxWarmPerUser: z.number().int().positive().max(25),
 })
 export type SessionPolicy = z.infer<typeof sessionPolicySchema>
 
@@ -824,6 +830,7 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   suspendedExpiryHours: 24,
   maxSessionHours: 8,
   maxTurns: 100,
+  maxWarmPerUser: 2,
 }
 
 /** A stored policy with the defaults filled in; an unparseable one is the defaults. */
@@ -1024,6 +1031,15 @@ export const createSessionRequestSchema = z.object({
    * `platform`. Fixed for the session's life.
    */
   credential: sessionCredentialSourceSchema.optional(),
+  /**
+   * Issue #17, warm on intent: the person opened the composer and has not written yet, so the
+   * session boots while they type. The caller's own warm session on this app that nobody has
+   * written to yet (same runtime and account, still booting or ready) is returned instead of a
+   * second one; past `maxWarmPerUser` such sessions it is 409 `warm_session_limit`; and one
+   * nobody writes to ends after `SESSION_WARM_START_MINUTES` quiet, its container destroyed and
+   * no turn counted. Ignored for a seeded start (`fixRelease`), which has its first message.
+   */
+  warm: z.boolean().optional(),
 })
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>
 

@@ -205,6 +205,13 @@ export const sessions = pgTable(
      * owner's later turns never ship by themselves.
      */
     autoShip: boolean('auto_ship').notNull().default(false),
+    /**
+     * Issue #17: started WARM, on intent — the person opened the composer before writing. Until
+     * its first message (`turn_count` 0, no `pending_message`) it is reused by the same person's
+     * next start on the app, counts against `maxWarmPerUser`, and ends after
+     * `SESSION_WARM_START_MINUTES` quiet (`warm.ts`).
+     */
+    warmStart: boolean('warm_start').notNull().default(false),
 
     // ---- turns and requests (routes write these; the Workflow consumes them)
     turnCount: integer('turn_count').notNull().default(0),

@@ -1503,6 +1503,26 @@ reload) is restarted as `<id>-rN` from the row.
   before any write with 503 `sessions_not_configured`, 409 `app_has_no_repo`, `sessions_paused`,
   `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
   then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
+- **Warm on intent** (issue #17, `warm.ts`): Launch has no separate new-session composer — the
+  app page's Start session / Change it IS opening it: it creates the session WARM (`warm: true`,
+  `useWarmStartSession`, once per press — a second press while the first is in flight sends
+  nothing) and goes to the session page, whose composer takes the first message while `claim` →
+  `db` ‖ `sandbox.start` → `repo` → `bootstrap` → `dev` run (a message that arrives first waits on
+  the row). The row carries `sessions.warm_start`; until its first message (`turn_count` 0, no
+  `pending_message`) it is an UNPROMPTED warm start, and: the same person's next warm start on the
+  app (same base, runtime and account; `requested`, `booting` or `ready`) RETURNS it — no row, no
+  audit, no instance, its quiet clock restarted — so reopening never boots twice; past the
+  policy's `maxWarmPerUser` (2) such sessions (`suspended` ones count, never reattached) a warm
+  start is 409 `warm_session_limit`, before any write, and every one still counts against
+  `maxConcurrentPerApp`; and `inspect#N` waits `SESSION_WARM_START_MINUTES` (15, or
+  `idleSuspendMinutes` when shorter) from `last_activity_at` instead of the idle window — on the
+  timeout `end#N` (reason `unprompted`) re-checks it is still unprompted and quiet (the preview
+  moves the clock) and moves it to `ending` by a compare-and-set on `turn_count = 0` and no
+  `pending_message`, so a message that lands at the same moment wins and runs; no checkpoint, then
+  `cleanup` destroys the container and deletes the branch, `turn_count` 0. A suspended unprompted
+  warm start (a drain, a rollout) nobody asked to resume ends at once. The chat says why it ended.
+  A seeded start (Fix in a session, a kit upgrade) is never warm; the CLI's `sessions start` is
+  not either (two starts are two sessions).
 - **Boot**: `claim` → `db` (the app's `dev` branch ensured, with `session_owner` and the app's RLS
   role — the kit's `rocketflare_app` as the kit's rename made it, `<snake>_app` (`appRlsRoleFor`:
   `hello-world` → `hello_world_app`) — NOLOGIN, held by `session_owner` WITH ADMIN so the kit's

@@ -118,6 +118,35 @@ describe('SessionsCard', () => {
     ).toBe(true)
   })
 
+  it('starts WARM, once: a double press sends one request (issue #17)', async () => {
+    let answer: (res: Response) => void = () => {}
+    const fetchMock = renderCard({
+      [`/api/apps/${APP_ID}/sessions`]: { items: [] },
+      [`POST /api/apps/${APP_ID}/sessions`]: () =>
+        new Promise<Response>(resolve => {
+          answer = resolve
+        }),
+    })
+    const button = await screen.findByRole('button', { name: 'Start session' })
+    // Two presses before the first answer (and before React re-renders the button disabled).
+    fireEvent.click(button)
+    fireEvent.click(button)
+    const posts = () =>
+      fetchMock.mock.calls.filter(
+        ([u, i]) => String(u).endsWith(`/api/apps/${APP_ID}/sessions`) && i?.method === 'POST'
+      )
+    await waitFor(() => expect(posts()).toHaveLength(1))
+    expect(JSON.parse(String(posts()[0]?.[1]?.body))).toEqual({ warm: true })
+    answer(
+      new Response(JSON.stringify(detailOf({ status: 'requested', turnCount: 0 })), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    expect(await screen.findByText('session page')).toBeInTheDocument()
+    expect(posts()).toHaveLength(1)
+  })
+
   it('explains a refusal in place, without a toast', async () => {
     renderCard({
       [`/api/apps/${APP_ID}/sessions`]: { items: [] },
@@ -141,6 +170,7 @@ describe('SessionsCard', () => {
     expect(refusal('sessions_paused')).toMatch(/paused while Launch is being updated/)
     expect(refusal('session_budget_exhausted')).toMatch(/budget for the month/)
     expect(refusal('sessions_not_configured')).toMatch(/not set up on this deployment/)
+    expect(refusal('warm_session_limit')).toMatch(/waiting for a first message/)
     expect(startRefusal(new Error('boom')).tone).toBe('warning')
   })
 })

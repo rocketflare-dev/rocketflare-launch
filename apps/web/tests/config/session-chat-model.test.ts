@@ -115,6 +115,19 @@ describe('buildSessionChat', () => {
       ],
     ])
   })
+
+  it('an abandoned warm start says why it ended; other lifecycle statuses say nothing (#17)', () => {
+    const items = buildSessionChat([
+      ev(1, 'status', { status: 'suspended', reason: 'idle' }, 0),
+      ev(2, 'status', { status: 'ending', reason: 'unprompted' }, 0),
+    ])
+    expect(items.map(i => (i.kind === 'notice' ? [i.tone, i.text] : i.kind))).toEqual([
+      [
+        'info',
+        'This session ended because no message came after it started. Start a new one when you are ready.',
+      ],
+    ])
+  })
 })
 
 describe('toolSummary', () => {

@@ -30,7 +30,7 @@ import {
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import { UPGRADE_SESSION_REASONS } from '@launch/shared/launch-upgrades'
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import {
@@ -125,7 +125,7 @@ import {
   TURN_KILL_GRACE_SECONDS,
   turnKillScript,
 } from './turn'
-import { warmMinutesLeft } from './warm'
+import { isUnpromptedWarmStart, warmMinutesLeft, warmStartMinutes } from './warm'
 import { BACKUP_TTL_MARGIN_SECONDS, workspaceBackupMode } from './workspace-backup'
 
 /** One step's world. Built by the Workflow for each `step.do`, closed with it. */
@@ -1429,6 +1429,12 @@ export type NextAction =
       /** A timeout means the kept container's warm window is over: cool it, do not end. */
       cool?: boolean
       /**
+       * Issue #17: the session is a warm start nobody has written to — a timeout ENDS it
+       * (`endStep` with `unprompted`, which re-checks it is still unprompted and quiet), it is
+       * never suspended.
+       */
+      unprompted?: boolean
+      /**
        * The timeout is the checkpoint debounce's, not the idle policy's: on a timeout the loop
        * checkpoints and carries on waiting — it never suspends for it.
        */
@@ -1510,6 +1516,8 @@ export async function inspectStep(
   if (status === 'suspended') {
     const paused = await sessionsPaused(scope.db)
     if (session.requestedAction === 'resume' && !paused) return { action: 'resume' }
+    // Issue #17: a warm start nobody wrote to has nothing to resume to — it ends at once.
+    if (isUnpromptedWarmStart(session)) return { action: 'end', reason: 'unprompted' }
     const expiryMinutes = policy.suspendedExpiryHours * 60
     const warmLeft = warmMinutesLeft(session.containerKeptAt, scope.now())
     if (warmLeft !== null) {
@@ -1525,6 +1533,12 @@ export async function inspectStep(
   if (status === 'ready' && session.requestedAction === 'ship') return { action: 'ship' }
   if (status === 'ready' && session.pendingMessage !== null) {
     return { action: 'turn', maxTurnMinutes: policy.maxTurnMinutes }
+  }
+  if (status === 'ready' && isUnpromptedWarmStart(session)) {
+    // Issue #17: booted on intent and still waiting for its first message — it ends, quiet for
+    // the warm-start window (`warm.ts`); a message wakes it first.
+    const left = idleMinutesLeft(session, warmStartMinutes(policy), scope.now())
+    return { action: 'wait', waitingIn: status, timeoutSeconds: left * 60, unprompted: true }
   }
   const idleSeconds = idleMinutesLeft(session, policy.idleSuspendMinutes, scope.now()) * 60
   if (live && dirty) {
@@ -2205,6 +2219,7 @@ export async function endStep(
   bootId?: string
 ): Promise<{ ending: boolean }> {
   const session = await loadSession(scope)
+  if (reason === 'unprompted') return endUnpromptedWarmStart(scope, session)
   if (session.status === 'ready' || session.status === 'blocked') {
     await checkpointStep(scope, 'end', bootId)
   }
@@ -2249,6 +2264,47 @@ export async function endStep(
     })
   }
   return { ending: row !== null }
+}
+
+/**
+ * `end#N` for an abandoned warm start (issue #17, `warm.ts`): the session is moved to `ending` ONLY
+ * while it is still unprompted — a compare-and-set on `turn_count = 0` and no `pending_message`, so
+ * a first message that lands meanwhile wins — and, when `ready`, only once it has been quiet for the
+ * warm-start window (the preview moves the clock without waking the Workflow). No checkpoint:
+ * nobody asked for anything, so there is nothing to save. `cleanup` then destroys the container
+ * and deletes the branch. `{ ending: false }` = carry on (the next `inspect` reads the row).
+ */
+async function endUnpromptedWarmStart(
+  scope: StepScope,
+  session: SessionRow
+): Promise<{ ending: boolean }> {
+  if (!isUnpromptedWarmStart(session)) return { ending: false }
+  if (session.status === 'ready') {
+    const windowMs = warmStartMinutes(resolveSessionPolicy(session.policy)) * 60_000
+    const lastActivity = session.lastActivityAt?.getTime() ?? 0
+    if (scope.now().getTime() - lastActivity < windowMs) return { ending: false }
+  }
+  const [row] = await scope.db
+    .update(sessions)
+    .set({ status: 'ending', requestedAction: null, lastActivityAt: scope.now() })
+    .where(
+      and(
+        eq(sessions.tenantId, scope.params.tenantId),
+        eq(sessions.id, scope.params.sessionId),
+        inArray(sessions.status, ['ready', 'suspended']),
+        eq(sessions.turnCount, 0),
+        isNull(sessions.pendingMessage)
+      )
+    )
+    .returning()
+  if (!row) return { ending: false }
+  nudgeSession(scope.realtime, row)
+  await emitterFor(scope)({
+    type: 'status',
+    turn: 0,
+    data: { status: 'ending', reason: 'unprompted' },
+  })
+  return { ending: true }
 }
 
 /**

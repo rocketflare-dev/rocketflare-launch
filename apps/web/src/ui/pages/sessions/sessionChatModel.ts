@@ -234,6 +234,15 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
       return notice ? { kind: 'notice', ...base, ...notice } : null
     }
     case 'status': {
+      // Issue #17: a warm start nobody wrote to, ended by Launch.
+      if ((event.data as { reason?: unknown } | null)?.reason === 'unprompted') {
+        return {
+          kind: 'notice',
+          ...base,
+          tone: 'info',
+          text: 'This session ended because no message came after it started. Start a new one when you are ready.',
+        }
+      }
       // P6 6c: what Launch decided after a kit upgrade's first turn. Every other status: nothing.
       const parsed = upgradeSessionStatusDataSchema.safeParse(event.data)
       if (!parsed.success) return null

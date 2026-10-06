@@ -36,7 +36,7 @@ import {
   useRetryPipeline,
 } from '@/ui/hooks/usePipeline'
 import { useAppPromotion } from '@/ui/hooks/useReleases'
-import { useStartSession } from '@/ui/hooks/useSessions'
+import { useWarmStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { formatDateTime } from '@/ui/lib/format'
 import { AppThumbnail } from '../components/AppThumbnail'
@@ -115,7 +115,7 @@ export default function AppLayout() {
   const retry = useRetryPipeline(app?.id ?? '')
   const cancel = useCancelPipeline(app?.id ?? '')
   const rescaffold = useRescaffoldPipeline(app?.id ?? '')
-  const startSession = useStartSession(app?.id ?? '')
+  const startSession = useWarmStartSession(app?.id ?? '')
   const check = useCheckAppHealth({ id: app?.id ?? '', slug })
   const startWatching = (kind: PipelineKind) =>
     setKick({ kind, until: Date.now() + PIPELINE_KICK_GRACE_MS })
@@ -287,12 +287,8 @@ export default function AppLayout() {
                   className={`btn btn-sm gap-1.5 ${heroHere ? 'btn-primary btn-flame' : ''}`}
                   disabled={startSession.isPending}
                   onClick={() =>
-                    startSession.mutate(
-                      {},
-                      {
-                        onSuccess: ({ session }) =>
-                          navigate(`${appPath(slug)}/sessions/${session.id}`),
-                      }
+                    startSession.startWarm({}, session =>
+                      navigate(`${appPath(slug)}/sessions/${session.id}`)
                     )
                   }
                 >

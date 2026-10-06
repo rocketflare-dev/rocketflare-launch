@@ -17,7 +17,11 @@
  *   `agent_credential_not_allowed` or `agent_credential_required` for a runtime or account that is
  *   not on offer;
  * - 409 `session_sandbox_unavailable` when the `session_sandbox_host` setting names a host this
- *   Worker cannot run a container on right now (`sandbox-host.ts`).
+ *   Worker cannot run a container on right now (`sandbox-host.ts`);
+ * - issue #17, a WARM start (`warm: true`, the composer opened): 409 `warm_session_limit` when the
+ *   caller already holds `maxWarmPerUser` warm sessions nobody has written to (`warm.ts`). Before
+ *   any refusal, the caller's own such session on THIS app (same runtime and account, booting or
+ *   ready) is returned instead of a new one — no row, no audit, no instance.
  * Then the row (the policy SNAPSHOTTED onto it, with the chosen runtime's model; the runtime,
  * whose account it bills and the sandbox host fixed for its life), audit `session.created`, and
  * `SESSION_WORKFLOW.create({ id: session.id, params })`.
@@ -40,7 +44,7 @@ import {
   type SessionStatus,
   sessionBranchName,
 } from '@launch/shared/launch-sessions'
-import { and, desc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import { type AppRow, apps, type SessionRow, sessions } from '../../../db/schema'
@@ -88,6 +92,64 @@ export async function activeSessionCount(
       )
     )
   return Number(row?.n ?? 0)
+}
+
+// ---- warm starts (issue #17, `warm.ts`) ---------------------------------------------------------
+
+/** Statuses a warm start nobody has written to may be in: it holds, or is about to hold, a container. */
+const UNPROMPTED_WARM_STATUSES: readonly SessionStatus[] = [
+  'requested',
+  'booting',
+  'ready',
+  'suspended',
+]
+
+/** The caller's warm starts nobody has written to yet, newest first — across the tenant's apps. */
+export async function unpromptedWarmSessions(
+  db: Database,
+  tenantId: string,
+  userId: string
+): Promise<SessionRow[]> {
+  return db
+    .select()
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.tenantId, tenantId),
+        eq(sessions.createdByUserId, userId),
+        eq(sessions.kind, 'session'),
+        eq(sessions.warmStart, true),
+        eq(sessions.turnCount, 0),
+        isNull(sessions.pendingMessage),
+        inArray(sessions.status, [...UNPROMPTED_WARM_STATUSES])
+      )
+    )
+    .orderBy(desc(sessions.createdAt))
+}
+
+/**
+ * The warm session a new warm start on `appId` should attach to: the caller's own, unprompted,
+ * booting or ready (a suspended one would boot again — a fresh start is no slower), on the same
+ * base and with the same runtime and account when the request names them.
+ */
+function reusableWarmSession(
+  rows: readonly SessionRow[],
+  appId: string,
+  request: CreateSessionRequest
+): SessionRow | null {
+  return (
+    rows.find(
+      row =>
+        row.appId === appId &&
+        (row.status === 'requested' || row.status === 'booting' || row.status === 'ready') &&
+        // Never one its person already asked to end.
+        row.requestedAction === null &&
+        (request.title === undefined || request.title === row.title) &&
+        (request.baseRef === undefined || request.baseRef === row.baseRef) &&
+        (request.runtime === undefined || request.runtime === row.runtime) &&
+        (request.credential === undefined || request.credential === row.credentialSource)
+    ) ?? null
+  )
 }
 
 // ---- waking the Workflow -----------------------------------------------------------------------
@@ -185,6 +247,19 @@ export async function createSession(
   if (!app.repoOwner || !app.repoName) {
     throw new ConflictError('This app has no repository to work on', 'app_has_no_repo')
   }
+  // Issue #17: a warm start is an ordinary start with no first message yet (a seeded one has one).
+  const warm = input.request.warm === true && !input.firstMessage && !input.upgrade
+  const warmRows = warm ? await unpromptedWarmSessions(db, tenantId, input.userId) : []
+  const reusable = reusableWarmSession(warmRows, app.id, input.request)
+  if (reusable) {
+    // Opening the composer again is activity: its quiet window starts over (`warm.ts`).
+    const [touched] = await db
+      .update(sessions)
+      .set({ lastActivityAt: input.now ?? new Date() })
+      .where(and(eq(sessions.tenantId, tenantId), eq(sessions.id, reusable.id)))
+      .returning()
+    return touched ?? reusable
+  }
   if (await sessionsPaused(db)) {
     throw new ConflictError(
       'Coding sessions are paused while Launch is being updated. Try again in a few minutes.',
@@ -208,6 +283,14 @@ export async function createSession(
       `This app already has ${policy.maxConcurrentPerApp} active sessions. End one first.`,
       'session_limit',
       { limit: policy.maxConcurrentPerApp }
+    )
+  }
+  const warmLimit = policy.maxWarmPerUser
+  if (warm && warmRows.length >= warmLimit) {
+    throw new ConflictError(
+      `You already have ${warmRows.length} sessions waiting for a first message. Write in one of them, or end it, to start another.`,
+      'warm_session_limit',
+      { limit: warmLimit, sessionIds: warmRows.map(row => row.id) }
     )
   }
   const month =
@@ -238,6 +321,7 @@ export async function createSession(
           kind: input.upgrade ? 'upgrade' : 'session',
           upgradeId: input.upgrade?.upgradeId ?? null,
           autoShip: input.upgrade?.autoShip ?? false,
+          warmStart: warm,
           shortId,
           previewToken: newPreviewToken(),
           title: input.request.title ?? null,
@@ -279,6 +363,7 @@ export async function createSession(
         ...(row.runtime !== 'claude_code' ? { runtime: row.runtime } : {}),
         ...(row.credentialSource !== 'platform' ? { credentialSource: row.credentialSource } : {}),
         ...(row.sandboxHost !== 'local' ? { sandboxHost: row.sandboxHost } : {}),
+        ...(row.warmStart ? { warmStart: true } : {}),
       },
     },
   })

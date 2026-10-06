@@ -119,6 +119,8 @@ describe('policy and money', () => {
       suspendedExpiryHours: 24,
       maxSessionHours: 8,
       maxTurns: 100,
+      // Issue #17: warm sessions nobody has written to, per person.
+      maxWarmPerUser: 2,
     })
   })
 
