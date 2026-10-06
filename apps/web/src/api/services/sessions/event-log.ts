@@ -4,7 +4,8 @@
  *
  * - **One writer, so `seq` is counted, not contended.** `createSessionEventWriter` reads the last
  *   `seq` once and numbers from there; `(session_id, seq)` is unique, so a second writer that should
- *   not exist fails loudly rather than interleaving.
+ *   not exist fails loudly rather than interleaving. The one exception is the boot's two parallel
+ *   branches (issue #15), whose short appends renumber on a conflict (`appendSessionEvents`).
  * - **Batched for the turn** (plan §3c: every 250 ms or 20 events): Claude Code prints in bursts, and
  *   one INSERT per line would be one round trip per token of a long answer. `append` buffers,
  *   `flush` writes one multi-row INSERT; flushes are serialised, so rows land in `seq` order.
@@ -124,10 +125,26 @@ export async function createSessionEventWriter(
   }
 }
 
+/** How many times {@link appendSessionEvents} renumbers after another append took its `seq`s. */
+export const APPEND_SEQ_ATTEMPTS = 5
+
+/** A unique violation (`23505`) on the event log's `(session_id, seq)`, through any wrapping. */
+function isSeqConflict(err: unknown): boolean {
+  for (let e = err, depth = 0; e && depth < 5; depth++) {
+    const { code, cause } = e as { code?: unknown; cause?: unknown }
+    if (code === '23505') return true
+    e = cause
+  }
+  return false
+}
+
 /**
  * Append `events` in one INSERT, numbering from the stored maximum — the unbatched writer the
- * lifecycle steps and the ship use (`events.ts`'s emitter). The Workflow is the one writer, so the
- * read-then-insert cannot interleave with another.
+ * lifecycle steps and the ship use (`events.ts`'s emitter). The Workflow is the one writer, but
+ * two of its BOOT steps run side by side (issue #15: `db` alongside `sandbox.start` → `repo`), so
+ * two appends may read the same maximum: the one whose INSERT loses on the unique `(session_id,
+ * seq)` reads it again and renumbers, up to {@link APPEND_SEQ_ATTEMPTS} times. The batched turn
+ * writer never runs alongside another and keeps its single read.
  */
 export async function appendSessionEvents(
   db: Database,
@@ -135,7 +152,14 @@ export async function appendSessionEvents(
   events: readonly SessionEventInput[]
 ): Promise<void> {
   if (events.length === 0) return
-  const writer = await createSessionEventWriter(db, session)
-  writer.append(...events)
-  await writer.flush()
+  for (let attempt = 1; ; attempt++) {
+    const writer = await createSessionEventWriter(db, session)
+    writer.append(...events)
+    try {
+      await writer.flush()
+      return
+    } catch (err) {
+      if (attempt >= APPEND_SEQ_ATTEMPTS || !isSeqConflict(err)) throw err
+    }
+  }
 }

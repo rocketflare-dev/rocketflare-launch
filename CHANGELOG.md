@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A session boots faster (issue #15).** The database step runs alongside the container's start
+  and the clone instead of before them, and the bootstrap waits for both; a failure on either
+  side still fails the boot cleanly once the other has finished. A session on a prepared `dev`
+  that this Launch has already checked skips `ensureDev` (no owner password reset, no role or
+  extension SQL) and only branches: `apps.session_db` now records `roleVersion` and `appRole`
+  (jsonb, no migration; the first session after the deploy checks `dev` once and records them).
+  Background commands (install, bootstrap, gate) are polled every 0.5 s for their first 10 s,
+  then every 2.5 s as before. Compare the boot's `boot.timing` before and after.
 - **A session's boot is measured, phase by phase (issue #8).** When a boot is done (a first
   boot, a warm resume or a cold one) the session writes ONE `boot.timing` event: what `db`,
   `sandbox.start`, `repo`, `restore`, `install`, `bootstrap`, `dev` and the other phases it ran each

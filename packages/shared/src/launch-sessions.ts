@@ -905,6 +905,14 @@ export const appSessionDbSchema = z.object({
    * staging branch). Recorded only once that scrub finished; missing on a `dev` cut before it was.
    */
   devSource: z.enum(APP_SESSION_DEV_SOURCES).optional(),
+  /**
+   * Issue #15: the version of `ensureDev`'s checks (the session role, the app's RLS role and its
+   * grant, the database and its extensions) that last passed on this `dev`, and the RLS role name
+   * they checked. A session on a `ready` `dev` whose record matches the running Launch skips
+   * `ensureDev` and branches at once. Missing until the first `ensureDev` that records them.
+   */
+  roleVersion: z.number().int().positive().optional(),
+  appRole: z.string().optional(),
 })
 export type AppSessionDb = z.infer<typeof appSessionDbSchema>
 

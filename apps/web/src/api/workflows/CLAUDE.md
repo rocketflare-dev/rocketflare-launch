@@ -92,7 +92,8 @@ instance id is the session id (`<id>-rN` after a restart — `wakeOrRestart`,
 functions in `../services/sessions/steps.ts` over a `StepScope` (one DB client, the ports, the
 hooks, a step realtime).
 
-Shape: `claim` → boot `db → sandbox.start → repo → [prepare → branch] → bootstrap → dev` (or
+Shape: `claim` → boot `(db ‖ sandbox.start → repo) → [prepare → branch] → bootstrap → dev` (‖:
+side by side, both settled before what follows, issue #15) (or
 `salvage` instead, for a live session whose instance was lost) (each
 wrapped in `withProgress`, which writes the boot checklist's `step` events and returns the step's
 clock as `timing`; the boot's last step — `dev`, or `transcript#K` on a cold resume — is given the

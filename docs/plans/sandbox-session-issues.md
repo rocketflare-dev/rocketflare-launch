@@ -295,8 +295,10 @@ cold start the first connection would trigger anyway) and a per-session role pas
   with 423 rather than misapplied (neon.com/docs/manage/operations). The password reset's own
   operations are still awaited — the password must be live before the container connects.
   Expected: roughly halved (13–16 s → about 6–9 s); **not yet timed against real Neon**.
-- **Still open:** run the step in parallel with the sandbox start and clone. The container only
-  needs the database host added to its allow-list, which `setAllowedHosts` can do at runtime.
+- **Done (rocketflare-launch#15):** the step runs in parallel with the sandbox start and clone
+  (`Promise.allSettled`); the bootstrap adds the database host to the allow-list. A session on a
+  `ready` `dev` already checked by this Launch skips `ensureDev`. Not yet timed on real containers:
+  compare `boot.timing` (issue #8) before and after.
 - **Maybe:** skip the per-session password reset (the branch inherits `dev`'s password, but Launch
   does not keep it), which would take the compute start off the critical path entirely.
 

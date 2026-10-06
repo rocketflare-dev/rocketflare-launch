@@ -11,6 +11,7 @@
 import {
   type AppSessionDb,
   SESSION_WAKE_EVENT,
+  type SessionBootTimingData,
   type SessionEventType,
   sessionBootTimingDataSchema,
   sessionTurnEndDataSchema,
@@ -31,10 +32,16 @@ import {
   WORKSPACE_CHANGED_TIMEOUT_MS,
   workspaceChanged,
 } from '@/api/services/sessions/checkpoint'
-import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import {
+  appRlsRoleFor,
+  devIsCurrent,
+  NeonSessionDb,
+  SESSION_DEV_ROLE_VERSION,
+} from '@/api/services/sessions/db/neon-session-db'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
+import type { SandboxExecResult, SessionDbPort } from '@/api/services/sessions/ports'
 import {
   BOOTSTRAP_PROGRESS,
   claudeTranscriptPath,
@@ -305,13 +312,12 @@ describe('SessionWorkflow: boot', () => {
     const steps = events
       .filter(e => e.type === 'step')
       .map(e => e.data as { key: string; status: string; label: string })
-    expect(steps.filter(s => s.status === 'done').map(s => s.label)).toEqual([
-      BOOT_STEP_LABELS.db,
-      BOOT_STEP_LABELS.sandbox,
-      BOOT_STEP_LABELS.repo,
-      BOOT_STEP_LABELS.bootstrap,
-      BOOT_STEP_LABELS.dev,
-    ])
+    // `db` runs alongside `sandbox.start` → `repo` (issue #15): either may finish first.
+    const done = steps.filter(s => s.status === 'done').map(s => s.label)
+    expect(done.slice(0, 3).sort()).toEqual(
+      [BOOT_STEP_LABELS.db, BOOT_STEP_LABELS.sandbox, BOOT_STEP_LABELS.repo].sort()
+    )
+    expect(done.slice(3)).toEqual([BOOT_STEP_LABELS.bootstrap, BOOT_STEP_LABELS.dev])
 
     const audit = await db
       .select()
@@ -494,6 +500,18 @@ describe('SessionWorkflow: boot timing (issue #8)', () => {
       .filter(e => e.type === 'boot.timing')
       .map(e => sessionBootTimingDataSchema.parse(e.data))
 
+  /**
+   * The phases in start order — except that `db` and `sandbox.start` start together (issue #15),
+   * so those two are put in a fixed order.
+   */
+  const startOrder = (timing: SessionBootTimingData | undefined) => {
+    const names = timing?.phases.map(p => p.phase) ?? []
+    const both = names.slice(0, 2)
+    return both.includes('db') && both.includes('sandbox.start')
+      ? ['db', 'sandbox.start', ...names.slice(2)]
+      : names
+  }
+
   /** Idle past the idle window (a warm suspend), then resumed: `prepare` runs between the two. */
   const suspendThenResume =
     (h: Harness, prepare?: () => void) => async (_wait: RecordedWait, n: number) => {
@@ -521,7 +539,7 @@ describe('SessionWorkflow: boot timing (issue #8)', () => {
     const [timing, ...more] = await timingsOf(h.row)
     expect(more).toEqual([])
     expect(timing?.kind).toBe('boot')
-    expect(timing?.phases.map(p => p.phase)).toEqual([
+    expect(startOrder(timing)).toEqual([
       'db',
       'sandbox.start',
       'repo',
@@ -564,7 +582,7 @@ describe('SessionWorkflow: boot timing (issue #8)', () => {
       return WAKE
     })
     const [timing] = await timingsOf(h.row)
-    expect(timing?.phases.map(p => p.phase)).toEqual([
+    expect(startOrder(timing)).toEqual([
       'db',
       'sandbox.start',
       'repo',
@@ -615,6 +633,251 @@ describe('SessionWorkflow: boot timing (issue #8)', () => {
     })
     expect((await reload(h.row)).status).toBe('failed')
     expect(await timingsOf(h.row)).toEqual([])
+  })
+})
+
+describe('SessionWorkflow: the database alongside the sandbox (issue #15)', () => {
+  /** Every `sessionDb` port the harness hands out, with `edit` applied to it first. */
+  const wrapDb = (h: Harness, edit: (port: SessionDbPort) => void) => {
+    const make = h.ports.sessionDb
+    h.ports.sessionDb = d => {
+      const port = make(d)
+      edit(port)
+      return port
+    }
+  }
+  const doneSeq = async (row: SessionRow, key: string) =>
+    (await listSessionEvents(db, row.tenantId, row.id)).find(
+      e =>
+        e.type === 'step' &&
+        (e.data as { key: string; status: string }).key === key &&
+        (e.data as { status: string }).status === 'done'
+    )?.seq ?? -1
+  /** Wrap the checkout's `exec` (`git init` …): `run` is the harness's own answer. */
+  const onClone = (
+    h: Harness,
+    around: (run: () => Promise<SandboxExecResult>) => Promise<SandboxExecResult>
+  ) => {
+    const sandbox = h.sandbox()
+    const exec = sandbox.exec.bind(sandbox)
+    sandbox.exec = (command, opts) =>
+      command.includes('git init') ? around(() => exec(command, opts)) : exec(command, opts)
+  }
+  const endAtOnce = (h: Harness) => async () => {
+    await patch(h.row, { requestedAction: 'end' })
+    return WAKE
+  }
+  const deferred = () => {
+    let resolve: () => void = () => {}
+    const promise = new Promise<void>(r => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it('the clone finishes first: the database branch waits for it, and the boot still goes ready', async () => {
+    const h = await harness()
+    const cloned = deferred()
+    onClone(h, async run => {
+      const result = await run()
+      cloned.resolve()
+      return result
+    })
+    wrapDb(h, port => {
+      const createBranch = port.createBranch.bind(port)
+      port.createBranch = async (...args) => {
+        await cloned.promise
+        return createBranch(...args)
+      }
+    })
+    const run = await drive(h, endAtOnce(h))
+    expect(run.names.slice(0, 6)).toEqual([
+      'claim',
+      'db',
+      'sandbox.start',
+      'repo',
+      'bootstrap',
+      'dev',
+    ])
+    expect(await doneSeq(h.row, 'repo')).toBeLessThan(await doneSeq(h.row, 'db'))
+    const after = await reload(h.row)
+    expect(after.readyAt).toBeInstanceOf(Date)
+    expect(after.status).toBe('ended')
+    // The phases overlap: the sandbox started while the database step was still running.
+    const [timing] = (await listSessionEvents(db, h.row.tenantId, h.row.id))
+      .filter(e => e.type === 'boot.timing')
+      .map(e => sessionBootTimingDataSchema.parse(e.data))
+    const phase = (name: string) => timing?.phases.find(p => p.phase === name)
+    const dbPhase = phase('db')
+    expect(phase('sandbox.start')?.startMs).toBeLessThan(
+      (dbPhase?.startMs ?? 0) + (dbPhase?.ms ?? 0)
+    )
+  })
+
+  it('the database finishes first: the clone waits for nothing, and the bootstrap gets the branch', async () => {
+    const h = await harness()
+    const branched = deferred()
+    wrapDb(h, port => {
+      const createBranch = port.createBranch.bind(port)
+      port.createBranch = async (...args) => {
+        const branch = await createBranch(...args)
+        branched.resolve()
+        return branch
+      }
+    })
+    onClone(h, async run => {
+      await branched.promise
+      return run()
+    })
+    await drive(h, endAtOnce(h))
+    expect(await doneSeq(h.row, 'db')).toBeLessThan(await doneSeq(h.row, 'repo'))
+    // The bootstrap ran against the session's own branch.
+    const bootstrap = h
+      .sandbox()
+      .backgroundRuns.find(r => r.command.includes('scripts/bootstrap.mjs'))
+    expect(bootstrap?.opts?.env?.LAUNCH_DB_URL).toContain(`session_owner`)
+    expect((await reload(h.row)).readyAt).toBeInstanceOf(Date)
+  })
+
+  it('a database failure fails the boot cleanly — after the clone it ran alongside has settled', async () => {
+    const h = await harness()
+    wrapDb(h, port => {
+      port.ensureDev = async () => {
+        throw new Error('Neon is down')
+      }
+    })
+    const run = await drive(h, () => {
+      throw new Error('the loop must not be reached')
+    })
+    expect(run.names).toEqual(['claim', 'db', 'sandbox.start', 'repo', 'fail', 'cleanup'])
+    const after = await reload(h.row)
+    expect(after.status).toBe('failed')
+    expect(after.error).toContain('Neon is down')
+    expect(h.sandbox().destroyed).toBe(true)
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    // Both sides' checklist lines, each settled; every row numbered once.
+    expect(new Set(events.map(e => e.seq)).size).toBe(events.length)
+    const settled = events
+      .filter(e => e.type === 'step')
+      .map(e => e.data as { key: string; status: string })
+      .filter(d => d.status !== 'running')
+    expect(settled).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'db', status: 'error' }),
+        expect.objectContaining({ key: 'repo', status: 'done' }),
+      ])
+    )
+    expect(events.some(e => e.type === 'boot.timing')).toBe(false)
+  })
+
+  it('a sandbox failure fails the boot too, once the database step has finished', async () => {
+    const h = await harness()
+    onClone(h, async () => ({ exitCode: 128, stdout: '', stderr: 'fatal: repository not found' }))
+    const run = await drive(h, () => {
+      throw new Error('the loop must not be reached')
+    })
+    expect(run.names).toEqual(['claim', 'db', 'sandbox.start', 'repo', 'fail', 'cleanup'])
+    expect((await reload(h.row)).error).toContain('repository not found')
+    // The branch the database step made is deleted by the cleanup.
+    expect(h.cloud.neon.branchNamed(h.f.neonProjectId, `session-${h.row.shortId}`)).toBeUndefined()
+  })
+})
+
+describe('SessionWorkflow: a current dev skips ensureDev (issue #15)', () => {
+  const countEnsureDev = (h: Harness) => {
+    const calls = { n: 0 }
+    const make = h.ports.sessionDb
+    h.ports.sessionDb = d => {
+      const port = make(d)
+      const ensureDev = port.ensureDev.bind(port)
+      port.ensureDev = async app => {
+        calls.n++
+        return ensureDev(app)
+      }
+      return port
+    }
+    return calls
+  }
+  const appDb = async (h: Harness) =>
+    (await db.select().from(apps).where(eq(apps.id, h.f.app.id)))[0]?.sessionDb as AppSessionDb
+  const current = (h: Harness, over: Partial<AppSessionDb> = {}) =>
+    db
+      .update(apps)
+      .set({
+        sessionDb: {
+          ...(h.f.app.sessionDb as AppSessionDb),
+          devSource: 'main',
+          roleVersion: SESSION_DEV_ROLE_VERSION,
+          appRole: appRlsRoleFor(h.f.app.slug),
+          ...over,
+        },
+      })
+      .where(eq(apps.id, h.f.app.id))
+  const end = (h: Harness) => async () => {
+    await patch(h.row, { requestedAction: 'end' })
+    return WAKE
+  }
+
+  it('the first session checks dev and records the check; a later one only branches', async () => {
+    const first = await harness()
+    const firstCalls = countEnsureDev(first)
+    await drive(first, end(first))
+    expect(firstCalls.n).toBe(1)
+    expect(await appDb(first)).toMatchObject({
+      status: 'ready',
+      roleVersion: SESSION_DEV_ROLE_VERSION,
+      appRole: appRlsRoleFor(first.f.app.slug),
+    })
+    expect(devIsCurrent({ slug: first.f.app.slug, sessionDb: await appDb(first) })).toBe(true)
+
+    const h = await harness()
+    await current(h)
+    const calls = countEnsureDev(h)
+    const sql = h.cloud.neon.sql.length
+    await drive(h, end(h))
+    expect(calls.n).toBe(0)
+    // No owner password reset, no role or extension SQL: only the branch's own work.
+    expect(
+      h.cloud.neon.sql.slice(sql).some(s => /CREATE EXTENSION|CREATE ROLE/i.test(s.query))
+    ).toBe(false)
+    expect((await reload(h.row)).readyAt).toBeInstanceOf(Date)
+    expect(bootstrapSkips(h.sandbox())).toEqual(['seed,db-check'])
+  })
+
+  it('an older check, another role name, or a dev not ready runs ensureDev', async () => {
+    for (const over of [
+      { roleVersion: SESSION_DEV_ROLE_VERSION + 1 },
+      { appRole: 'rocketflare_app' },
+      { devSource: undefined },
+    ] satisfies Partial<AppSessionDb>[]) {
+      const h = await harness()
+      await current(h, over)
+      const calls = countEnsureDev(h)
+      await drive(h, end(h))
+      expect(calls.n).toBe(1)
+      expect((await appDb(h)).roleVersion).toBe(SESSION_DEV_ROLE_VERSION)
+    }
+    expect(devIsCurrent({ slug: 'x', sessionDb: null })).toBe(false)
+  })
+
+  it('a branch that fails on the trusted dev drops the record, so the retry checks dev in full', async () => {
+    const h = await harness()
+    await current(h)
+    const make = h.ports.sessionDb
+    h.ports.sessionDb = d => {
+      const port = make(d)
+      port.createBranch = async () => {
+        throw new Error('Neon: parent branch not found')
+      }
+      return port
+    }
+    await drive(h, () => {
+      throw new Error('the loop must not be reached')
+    })
+    expect((await reload(h.row)).status).toBe('failed')
+    const after = await appDb(h)
+    expect(after.roleVersion).toBeUndefined()
+    expect(after.status).toBe('ready')
   })
 })
 

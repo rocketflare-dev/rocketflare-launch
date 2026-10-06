@@ -8,8 +8,11 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  BACKGROUND_FAST_POLL_MS,
+  BACKGROUND_FAST_WINDOW_MS,
+  BACKGROUND_POLL_MS,
   BackgroundCommandAbortedError,
   BackgroundCommandLostError,
   BackgroundCommandTimeoutError,
@@ -57,6 +60,47 @@ describe('runInBackground', () => {
     })
     expect(run?.command).not.toContain('pw@')
     expect(fake.files.get(`${DIR}/install.exit`)).toBe(`${run?.runId} 0\n`)
+  })
+
+  it('polls every 0.5 s for its first 10 s, then every 2.5 s (issue #15)', async () => {
+    const fake = new FakeSandbox().onBackground(/pnpm install/, { hang: true })
+    let clock = 1_000_000
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const slept: number[] = []
+    try {
+      await runInBackground(fake, {
+        ...base,
+        pollMs: BACKGROUND_POLL_MS,
+        name: 'install',
+        command: 'pnpm install',
+        sleep: async ms => {
+          slept.push(ms)
+          clock += ms
+          if (clock - 1_000_000 >= 15_000) fake.finishBackground('install', { exitCode: 0 })
+        },
+      })
+    } finally {
+      now.mockRestore()
+    }
+    const fast = BACKGROUND_FAST_WINDOW_MS / BACKGROUND_FAST_POLL_MS
+    expect(slept.slice(0, fast)).toEqual(Array(fast).fill(BACKGROUND_FAST_POLL_MS))
+    expect(slept.slice(fast)).toEqual([BACKGROUND_POLL_MS, BACKGROUND_POLL_MS])
+  })
+
+  it('a poll interval already shorter than the fast one is kept', async () => {
+    const fake = new FakeSandbox().onBackground(/pnpm install/, { hang: true })
+    const slept: number[] = []
+    await runInBackground(fake, {
+      ...base,
+      pollMs: 100,
+      name: 'install',
+      command: 'pnpm install',
+      sleep: async ms => {
+        slept.push(ms)
+        fake.finishBackground('install', { exitCode: 0 })
+      },
+    })
+    expect(slept).toEqual([100])
   })
 
   it('a non-zero exit is a result, not a throw', async () => {

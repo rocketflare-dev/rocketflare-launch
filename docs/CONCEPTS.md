@@ -1500,9 +1500,19 @@ reload) is restarted as `<id>-rN` from the row.
   `db-roles` may `ALTER ROLE` it; made in SQL by `neondb_owner` when missing, and when staging's
   copy (made by `migrator` in a deploy) is not yet held, granted by `neondb_owner` borrowing
   `migrator`'s ADMIN for one statement — it created `migrator` — and revoking the borrow at once;
-  re-checked at EVERY session's start, so a `dev` an older Launch prepared is repaired without a
-  reset; the first session PREPARES it — migrate + seed — then branches) →
-  `sandbox.start` → `repo` (clone, `session/<short>`,
+  re-checked at a session's start — unless `dev` is `ready` and `apps.session_db` records that
+  this Launch's checks already passed on it (`roleVersion` = `SESSION_DEV_ROLE_VERSION`, `appRole`
+  = the app's role name, `devSource` set: `devIsCurrent`, issue #15), when the step branches at
+  once with no `neondb_owner` password reset and no role or extension SQL; a branch that then
+  fails drops `roleVersion` so the retry checks in full; bump the constant whenever `ensureDev`'s
+  checks change — so a `dev` an older Launch prepared is repaired without a reset; the first
+  session PREPARES it — migrate + seed — then branches) ALONGSIDE
+  `sandbox.start` → `repo` (issue #15: `Promise.allSettled` of the two sides, so a failure on
+  one still lets the other's step finish before `fail` and `cleanup`; the first side's error fails
+  the boot; `prepare`/`bootstrap` wait for both. The container may start before the branch exists
+  — its allow-list gains the database host at `bootstrap`, which sets it from the URI. The two
+  sides' `step` rows are appended concurrently: `appendSessionEvents` renumbers on a `seq`
+  conflict) (clone, `session/<short>`,
   `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
   `/workspace/.launch/repo.lock` so overlapping attempts queue, and a failure reports git's last
   15 stderr lines) → `bootstrap` (the kit's bootstrap on the session's own database)
@@ -1902,7 +1912,8 @@ within 2 min"); and over the sandbox host's remote binding a blocking exec RPC w
 BACKGROUND process runs every call answers at once. So the command starts with `startProcess`
 (a runner script: `setsid -w` gives it its own process group, whose leader writes
 `<name>.pid` = `<pid> <runId>`; output in `<name>.log`; `<runId> <code>` in `<name>.exit`, via tmp +
-`mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s) with short
+`mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s; every 0.5 s for
+a run's first 10 s, issue #15, so a short command is noticed at once) with short
 `readFile`s — every 8th poll also `kill -0`s the pid, so a runner that died without an exit code
 is noticed; three failed polls in a row give up. A step RETRY attaches to a live run of the same
 name instead of starting another; a finished one is never reused (the same name runs again for
@@ -1924,9 +1935,9 @@ another role owns refuses (the session start then fails; Launch's apps keep thei
 The cut-from-staging path is proven against the FakeCloud's Neon, not yet against real Neon. The
 Neon wait's speed-up (only `create_branch`, 200 ms backoff) is proven with
 fakes, not yet timed against real Neon; the session branch still waits for its password reset's
-operations, which Neon may hold until the compute has started; and the branch step still runs
-before the sandbox starts rather than alongside it (`docs/plans/sandbox-session-issues.md`,
-"Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
+operations, which Neon may hold until the compute has started (now behind the container's start
+and the clone, issue #15 — its saving is not yet measured on real containers;
+`docs/plans/sandbox-session-issues.md`, "Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
 (`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). The dev setup's untracked config
 leans on two things the kit and wrangler do not promise: the kit's bootstrap toggling `[ai]`
 through `writeFileSync` (the preload's hook — a kit that writes another way would toggle the tomls
