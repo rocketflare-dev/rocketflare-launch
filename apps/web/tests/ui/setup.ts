@@ -17,6 +17,12 @@ console.warn = (...args: unknown[]) => {
   realWarn(...args)
 }
 
+// jsdom has no 2D canvas: its `getContext` returns null after printing a "Not implemented" stack
+// for every page that paints one (the sign-in page's `RocketBackground`). Return the null quietly;
+// a test that wants to see the drawing spies on this with a fake context.
+HTMLCanvasElement.prototype.getContext = (() =>
+  null) as typeof HTMLCanvasElement.prototype.getContext
+
 afterEach(() => {
   cleanup()
   localStorage.clear()

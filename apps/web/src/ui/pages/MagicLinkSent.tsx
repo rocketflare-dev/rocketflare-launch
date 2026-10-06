@@ -1,10 +1,12 @@
 /**
  * "Check your email" (D11). Rendered inline by Login after a successful request and at
- * `/magic-link/sent?email=` for deep links. Verification itself is a server redirect.
+ * `/magic-link/sent?email=` for deep links — on the same night sky as the sign-in page, since it is
+ * the same step. Verification itself is a server redirect.
  */
 import { CheckCircleIcon } from '@heroicons/react/24/outline'
 import { Link, useSearchParams } from 'react-router-dom'
 import { AuthCard } from '@/ui/components/AuthCard'
+import { RocketBackground } from '@/ui/components/RocketBackground'
 
 export function MagicLinkSentCard({
   email,
@@ -47,7 +49,7 @@ export function MagicLinkSentCard({
 export default function MagicLinkSent() {
   const [searchParams] = useSearchParams()
   return (
-    <AuthCard>
+    <AuthCard background={<RocketBackground />}>
       <MagicLinkSentCard email={searchParams.get('email')} />
     </AuthCard>
   )

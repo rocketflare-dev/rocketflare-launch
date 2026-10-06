@@ -138,3 +138,39 @@ describe('theme-color', () => {
     )
   })
 })
+
+/**
+ * The sign-in page's night sky is the one surface that is dark in BOTH themes, so its colours live
+ * in a theme-free `:root` block — never in a `[data-theme]` block, where they would flip. Text set
+ * straight on it (AuthCard's footer) and the stars hold the text floor at both ends of the
+ * gradient; the rocket's light body clears the 3:1 graphics floor; and its outline is darker than
+ * any point of the sky, so the ink line reads as a line.
+ */
+describe('night sky', () => {
+  const block = css.match(/:root \{([^}]*--night-sky-top[^}]*)\}/)
+  const map = declarations(block?.[1] ?? '')
+
+  it('is declared once, outside both themes', () => {
+    expect(block).not.toBeNull()
+    for (const theme of THEMES) expect(tokens(theme)['--night-sky-top']).toBeUndefined()
+  })
+
+  it.each([
+    ['--night-sky-ink', 4.5],
+    ['--night-star', 4.5],
+    ['--rocket-body', 3],
+  ] as const)('%s on both ends of the sky ≥ %s:1', (fg, floor) => {
+    for (const bg of ['--night-sky-top', '--night-sky-bottom']) {
+      const ratio = contrast(resolve(map, fg), resolve(map, bg))
+      expect(ratio, `${fg} on ${bg} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(floor)
+    }
+  })
+
+  it('outlines the rocket in an ink darker than the sky', () => {
+    const outline = luminance(resolve(map, '--rocket-outline'))
+    expect(outline).toBeLessThan(luminance(resolve(map, '--night-sky-top')))
+    expect(
+      contrast(resolve(map, '--rocket-outline'), resolve(map, '--rocket-body'))
+    ).toBeGreaterThan(7)
+  })
+})

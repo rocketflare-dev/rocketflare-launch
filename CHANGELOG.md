@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The sign-in page flies a rocket across a night sky.** `/login` (every state of it, including
+  "check your email") and `/magic-link/sent` sit on `RocketBackground`, ported from the hola-world
+  app's login: a canvas of bright, twinkling stars with a Rocketflare rocket that follows the
+  pointer (and loops on its own over the card), leaving an exhaust trail; a click on the sky fires
+  sparks. Unlike the original, the sky is night in BOTH themes (fixed `:root` colours, not theme
+  tokens) and the rocket wears the mark's colours inside a dark ink outline. Decorative only
+  (`aria-hidden`, no pointer events, nothing focusable); `prefers-reduced-motion` gets a still sky
+  with no rocket. The card keeps its theme surface. No new dependency, no migration.
+
 - **Launch signs strangers up by request, not refusal.** Both tomls set `SIGNUP_MODE = "approval"`
   (was `invite_only`): someone with no invitation who signs in lands on `/pending` with an access
   request under Settings → Platform → Access requests, and approving it joins the organisation

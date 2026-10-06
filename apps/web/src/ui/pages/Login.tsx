@@ -13,6 +13,8 @@
  * mount. Threat model: this is login-CSRF against a dev-only route that already 404s outside
  * `APP_ENV=development`; the page honours it ONLY when the server reports `devLogin` AND the email
  * is one of `DEV_ACCOUNTS` — an arbitrary address in the URL does nothing.
+ *
+ * Every state of the page sits on `RocketBackground`'s night sky (dark in both themes).
  */
 
 import { EnvelopeIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
@@ -26,6 +28,7 @@ import { Navigate, useSearchParams } from 'react-router-dom'
 import { AuthCard } from '@/ui/components/AuthCard'
 import { PROVIDER_ICONS, providerLabel } from '@/ui/components/icons/ProviderIcons'
 import { LoadingIndicator } from '@/ui/components/LoadingIndicator'
+import { RocketBackground } from '@/ui/components/RocketBackground'
 import { FieldError, fieldErrorFor, SkeletonRows } from '@/ui/components/shared'
 import { useAuth } from '@/ui/hooks/useAuth'
 import { useAuthMethods } from '@/ui/hooks/useAuthMethods'
@@ -141,7 +144,7 @@ export default function Login() {
 
   if (sentTo) {
     return (
-      <AuthCard>
+      <AuthCard background={<RocketBackground />}>
         <MagicLinkSentCard email={sentTo} onReset={() => setSentTo(null)} />
       </AuthCard>
     )
@@ -149,7 +152,7 @@ export default function Login() {
 
   if (autoOidc) {
     return (
-      <AuthCard>
+      <AuthCard background={<RocketBackground />}>
         <div className="flex items-center gap-3 text-sm text-secondary">
           <LoadingIndicator size="sm" />
           Redirecting to {providerLabel('oidc', methods)}…
@@ -164,7 +167,7 @@ export default function Login() {
     methods && !methods.magicLink && providers.length === 0 && !methods.devLogin
 
   return (
-    <AuthCard>
+    <AuthCard background={<RocketBackground />}>
       <h1 className="text-lg font-semibold mb-1">Sign in</h1>
       <p className="text-sm text-secondary mb-5">
         {forInvitation

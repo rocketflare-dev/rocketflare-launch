@@ -32,7 +32,10 @@ Read it before building or restyling a page; the app page (`pages/apps/app/`) fo
   the `theme-color` metas; if you change a colour, run it (`pnpm web test:config`). The theme is
   "Afterburner": flame primary, violet accent, `--highlight` (nose-cone yellow, a fill only), and
   `.btn-flame` — the one gradient, layered on `btn btn-primary` for the single hero action on a page.
-  `.starfield` is a dark-only dot field on public pages and `EmptyState`
+  `.starfield` is a dark-only dot field on public pages and `EmptyState`; the sign-in pages (`/login`,
+  `/magic-link/sent`) instead sit on `RocketBackground`'s night sky, the ONE surface dark in both
+  themes — its colours are fixed `:root` values (`--night-*`, `--rocket-*`), never theme tokens,
+  and `contrast.test.ts` gates them too
 - `ThemeToggle` sets `data-theme` on `<html>`; the DOM attribute is the state, mirrored to
   `localStorage['theme']` and validated on read (`index.html` pre-hydration script)
 - Tailwind v4 content scanning: `index.css` starts with `@import "tailwindcss" source(none)` and then

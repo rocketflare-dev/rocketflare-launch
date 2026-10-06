@@ -266,6 +266,31 @@
   --starfield-dot: color-mix(in srgb, #f5f3ff 55%, transparent);
 }
 
+/* ------------------------------------------------------ Night sky (login) */
+/* The sign-in page's `RocketBackground` — the ONE surface that is dark in BOTH themes, on
+   purpose: a night sky does not turn cream in the light theme. These are fixed brand colours,
+   not theme tokens, so nothing here flips with `data-theme`. The rocket takes the Rocketflare
+   mark's own fills (shared/LogoMark.tsx) inside a near-black ink outline, so its light shape has a
+   hard edge against the sky; the stars are the dark theme's ink at full strength. The card on
+   top keeps its theme surface, so every text pair the contrast test gates is unchanged. */
+:root {
+  --night-sky-top: #0d0818;
+  --night-sky-bottom: #1d1630; /* the dark panel — the horizon lifts a little */
+  --night-sky-ink: #d6d1e6; /* text set straight on the sky (AuthCard's footer): ≥ 10:1 */
+  --night-star: #f5f3ff;
+  --rocket-body: #f4f1e8; /* the mark's window ring — the lightest fill, so the rocket reads */
+  --rocket-nose: #f2c94c;
+  --rocket-window: #3b82c4;
+  --rocket-fin: #e65a3a;
+  --rocket-outline: #050309; /* darker than any point of the sky: a deliberate ink line */
+  --rocket-flame-hot: #f2c94c;
+  --rocket-flame-cool: #e65a3a;
+}
+
+.night-sky {
+  background: linear-gradient(180deg, var(--night-sky-top) 0%, var(--night-sky-bottom) 100%);
+}
+
 /* ------------------------------------------------ Shape / spacing / motion */
 :root {
   --radius-control: 5px;

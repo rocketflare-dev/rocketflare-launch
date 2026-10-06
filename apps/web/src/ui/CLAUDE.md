@@ -15,7 +15,9 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `.status-badge`, `.nav-item`). Rebrand instructions are in its header comment.
 - `components/` — shell: `Layout` (slots `headerStart`=`OrgSwitcher`, `headerEnd`=`NotificationsBell`
   + `UserMenu`, `sidebarFooter`), `SideNav` (config-driven, `guard` flags), `AuthCard` (public-page
-  card), `PendingInvitationsBanner`, `RoleBadge`, `EnvironmentBadge`, `ThemeToggle`, `ErrorBoundary`.
+  card; `background` swaps the starfield for a decorative, `aria-hidden` layer — the sign-in pages'
+  `RocketBackground`: a canvas night sky, dark in BOTH themes, from the `--night-*` / `--rocket-*`
+  colours in `index.css` `:root`, static under `prefers-reduced-motion`), `PendingInvitationsBanner`, `RoleBadge`, `EnvironmentBadge`, `ThemeToggle`, `ErrorBoundary`.
   Guards: `ProtectedRoute` (session + tenant → `noTenantRoute`; a global admin with NO tenant is
   let through to `/admin/*` and `/settings/platform/*` only — `isAdminPath`), `RequireGuard` (any
   `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`),
