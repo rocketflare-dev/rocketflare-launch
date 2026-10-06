@@ -14,8 +14,11 @@
   than 12 days, or a restore that fails: the boot clones as before, and a `workspace.prebuild`
   event says why. Building one never slows or fails a session. Only where workspace backups are
   on; `SESSION_PREBUILD=off` turns it off. Migration `0046` (the `app_prebuilds` table and the
-  `prebuild` session kind) — run `pnpm db:migrate` on deploy. Proven with the fake sandbox; not yet
-  measured on a real container.
+  `prebuild` session kind) — run `pnpm db:migrate` on deploy. A request that comes while a build
+  runs (a merge) is remembered and built when it finishes; a prebuild is only started while two of
+  the host's container slots stay free (`SESSION_MAX_CONTAINERS`, default 10 — keep it equal to the
+  toml's `max_instances`); one built for the other sandbox host is neither restored nor rebuilt.
+  Proven with the fake sandbox; not yet measured on a real container.
 - **A coding-session turn survives a dropped log stream.** When reading the agent's output throws
   (or the stream ends with no exit) while its process runs on — seen on a remote sandbox, whose
   stream crosses the wrangler dev binding — the turn checks the process's pid and attaches again,

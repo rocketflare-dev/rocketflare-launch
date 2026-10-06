@@ -1691,14 +1691,25 @@ reload) is restarted as `<id>-rN` from the row.
     #3), with the first turn queued behind it, and a session's workspace holds its branch URI and
     encryption key in `.dev.vars`. The price is about a minute of container time per build.
   - **Asked for, never run, by a step** (`requestPrebuild`): `prebuild.request` after a first
-    boot's `dev` that found none it could use (none yet, another image, backup mode or sandbox
-    host, older than 12 days) or whose lockfile had moved on; `prebuild.refresh#N` after every
-    merge Launch makes (`land.merge` — the default branch moved). The request is a claim on the
-    app's row (`building_session_id`, stale after 30 min or once its session is settled) — one
-    build per app at a time, none for 15 min after a failed one (`last_error`), none when the
-    current prebuild was built after what the caller saw (`notBuiltSince`: the session's start, or
-    the merge) — then the `prebuild` session and its `SESSION_WORKFLOW` instance. A request that
-    cannot be made is a reason on the step's result, never a failure.
+    boot's `dev` that found none it could use (none yet, another image, older than 12 days) or
+    whose lockfile had moved on — but NOT when the only mismatch is the sandbox host or backup
+    mode (a laptop running local and remote sessions would otherwise rebuild back and forth);
+    `prebuild.refresh#N` after every merge Launch makes (`land.merge` — the default branch moved).
+    First the container cap: every kind's live containers on that host (sessions `requested` →
+    `ending`, kept suspended ones, sign-ins in flight; `container-capacity.ts`) must leave two of
+    `max_instances` free — the prebuild's and the next person's. Launch cannot read the toml, so
+    the cap is `SESSION_MAX_CONTAINERS` (default 10, pinned to both tomls by a config test) and 3
+    for the remote host (pinned to its toml). Then a claim on the app's row
+    (`building_session_id`, stale after 30 min or once its session is settled) — one build per app
+    at a time, none for 15 min after a failed one (`last_error`, counted from the failure), none
+    when the current prebuild was built after what the caller saw (`notBuiltSince`: the session's
+    start, or the merge) — then the `prebuild` session and its `SESSION_WORKFLOW` instance. A
+    request refused because a build is IN FLIGHT stamps `refresh_requested_at`, and that build,
+    once saved (`prebuild.save`) or given up (`cleanup`), asks again (`followUpPrebuild`) — so a
+    merge during a build is not lost. A request that cannot be made is a `deferred` row with its
+    reason, never a failure. Whether prebuilds are on for a run comes from its `claim` step's
+    RESULT, so a replay after a config change takes the path it took. A prebuild records the
+    image its own run booted on (`sessions.image_version`).
   - **Restored by a first boot** (while `SESSION_PREBUILD` is on): `prebuild.check` (no checklist
     line) then, instead of `repo`, `restore` — `restoreBackup`, its HEAD checked against the
     prebuild's commit, then the session's own commit checked out IN PLACE (`checkoutScript`'s
@@ -1711,7 +1722,8 @@ reload) is restarted as `<id>-rN` from the row.
     the sandbox host. Need not: the commit (checked out over it) or the lockfile (installed over
     it). Anything else — none usable, a restore or checkout that fails — clones as before, with a
     `workspace.prebuild` row saying why (`skipped`, `failed`; `restored` with `lockfile:
-    same|changed`; `requested` with the reason; `saved` on the run).
+    same|changed`; `requested` or `deferred` with the reason; `saved` on the run). A container
+    replaced mid-boot starts its pass over: a `restore.rN` that then fails clones AND installs.
   - **Replaced, not accumulated**: a save deletes the archive it replaced (a session restoring that
     very one at that moment falls back to the clone); an app's deletion takes its row.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
@@ -1872,9 +1884,10 @@ a `pnpm install` on the presigned restore's fuse-overlayfs (a lazily paged squas
 writable overlay; a session's cold resume already runs its bootstrap and dev server there) and the
 time a first boot then takes are unmeasured, as is whether the first reads of a lazily paged
 `node_modules` (workerd, esbuild, wrangler's bundle) make the dev server start slower than after an
-install. A request made while a build runs is dropped, so a merge during a build leaves the older
-prebuild until the next lockfile change, image or merge asks again (a session still checks its own
-commit out over it). Evicting an archive made on the OTHER host or mode goes through this host's
+install. A follow-up refused by the failure backoff or the cap stays stamped until a later run's
+follow-up or a boot asks again. The cap check is a count, not a reservation: two requests at the
+same instant can both pass (the headroom of two absorbs one), and a sign-in is counted against both
+hosts (its row names none). Evicting an archive made on the OTHER host or mode goes through this host's
 bucket, so a `binding` archive left by a laptop's local session is the lifecycle rule's. A failed
 build holds requests off for 15 min, then the next boot tries again — one container per window
 while the default branch does not install. The image's kit-0.16.0 pnpm store pin is still there.

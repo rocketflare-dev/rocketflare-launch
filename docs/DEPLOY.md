@@ -327,7 +327,9 @@ needs, beyond the bindings above:
   after a first boot and after each merge Launch makes — saves the default branch with
   `node_modules` (no `.dev.vars`, no credential) under `backups/` too, one per app, 13-day TTL
   under the lifecycle rule, and new sessions restore it instead of cloning and installing.
-  Migration `0046` adds its table. Every attempt is a `workspace.backup` session event — `saved`
+  Migration `0046` adds its table. A prebuild only starts while two container slots are free:
+  Launch reads the cap from `SESSION_MAX_CONTAINERS` (default 10), so an instance that changes the
+  toml's `max_instances` sets the var to match. Every attempt is a `workspace.backup` session event — `saved`
   with its duration, or `failed` with the reason (the SDK lists missing R2 settings by name) — and a
   failure is also a chat notice and a warning log; a backup never fails the suspend, and a restore
   that fails falls back to the clone ("Cloning instead: …" on the checklist). **Proven on Cloudflare** (issue #3, the
