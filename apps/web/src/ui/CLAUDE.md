@@ -85,7 +85,14 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   started and has no verdict yet), `openTurn` (the turn under way, a fix turn's included), and issue #5's `landingTimeline(events,
   landing, status)` — the ship's walk after the PR up to live on staging, a reopen or a stall; an
   End that abandoned the landing reads as the plain PR view —
-  `tests/config/session-chat-model.test.ts`). A landing still moving keeps the row polled at
+  `tests/config/session-chat-model.test.ts`). Issue #22: the ship panel is the plain-language
+  timeline of `pages/sessions/shipTimelineModel.ts` (`shipTimeline` over those selectors, worded
+  by `@launch/shared/launch-ship-progress`, `tests/config/ship-timeline-model.test.ts`); while
+  `shipInProgress(session)` it REPLACES the preview pane (a "Show preview" link brings the preview
+  back, and it returns by itself when the ship ends); Needs you is its one loud block with one
+  action, and every engineer's fact is under its one Details disclosure. The app page's lists
+  print a ship in flight with `ShippingLine` (`pages/sessions/components/ShippingLine.tsx`, a
+  minute tick) and the chip's word from `shippingChipText`. A landing still moving keeps the row polled at
   `SESSION_LANDING_POLL_MS`, `shipped` included (`sessionOwesAnswer`); one in `approval` waits on a
   person and is not polled. The app page's `ShipSettingsCard` reads `useBranchProtection` (never
   polled) and saves through `useUpdateShipSettings` (`useApps`). The next message's images are
@@ -472,7 +479,12 @@ A `CUSTOM kit.notice` renders
 - **Settings → Approvals** (`settings/ApprovalPolicies.tsx` + `ApprovalPolicyModal.tsx`): the
   organisation row or the SERVER-reported default per kind, then team/app overrides; the modal
   validates with `putApprovalPolicySchema` and refuses a policy with no approver and no
-  auto-approve.
+  auto-approve. Issue #22: each kind's organisation row has an explicit Approval: Required / Not
+  required choice (`approvalRequirement`, `requirementSentence`) — for `session.merge` Not
+  required is no row (each app's Ship settings decide), for every other kind it is
+  `autoApproveRole: 'member'`; loosening is confirmed first. `autoApproveLabel` says "Always (every
+  request is approved at once)" for `member`, never "When a member asks"; `APPROVAL_POLICIES_PATH`
+  is the one spelling of a link to the page (the Ship settings card's notice uses it).
 - **The app page** (`pages/apps/AppPage.tsx` + `pages/apps/app/`, `docs/DESIGN.md` first): an
   Overview and tabs as nested routes under `AppLayout` (`/apps/:slug/*` — Overview, `sessions`,
   `releases` + `releases/:version`, `activity`, `settings/:section?`; the old `config` and

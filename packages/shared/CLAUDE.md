@@ -133,6 +133,17 @@ owners-only default); `launch-releases.ts` `RELEASE_ERROR_CODES` (`inProgress:
 older answer still parses) and `PROMOTION_SUMMARY_MAX` 600, and `candidateRunSchema` /
 `candidateRun` (the candidate's tag deploy run on GitHub — status, conclusion, URL, current and
 failed job; nullable, default null) with `CANDIDATE_RUN_FAILED_CONCLUSIONS` / `candidateRunFailed` ·
+Launch issue #22 (shipping in plain words): `launch-ship-progress.ts` — the ONE wording of a ship,
+pure words over facts the session already carries: `SHIP_PROGRESS_STAGES` (check → pr → checks →
+review → merge → release → staging → promote) and `SHIP_PROGRESS_STATES` (done · now · next ·
+needs_you · failed), `shipStageText`, the gate's `gateStepNowText` / `gateProblemText` /
+`gateFixingText` / `gateTryText` / `earlierTryText` / `typicalDurationText`, `checksCountText`
+(queued checks say "Waiting for GitHub to start the checks"), `reviewReasonText`,
+`MAIN_CHECKS_WAIT_TEXT` / `MAIN_CHECKS_LIMIT_TEXT` / `mainChecksVerdictText`, and the lists'
+`shippingSummaryText` / `shippingChipText` / `shippingLineText` — read by the session page, the app
+page's lists and status chip and the CLI; it imports `launch-sessions`, never the reverse.
+`launch-sessions.ts` gained `PrChecks.queued` and a check's `queued` (optional, so an older stored
+row parses), `ship.ci`'s optional `queued`, and `SessionShipping.mainCi` (defaulted null) ·
 Launch P6 6c (kit upgrades, one app): `launch-upgrades.ts` — `UPGRADE_TARGET_KINDS`,
 `APP_UPGRADE_STATUSES` + `OPEN_APP_UPGRADE_STATUSES` (the open index renders it) and their labels,
 `UPGRADE_ERROR_CODES`, the semver helpers over `compareReleaseVersions` (`kitVersionOf`,

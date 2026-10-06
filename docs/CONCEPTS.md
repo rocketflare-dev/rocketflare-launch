@@ -1004,7 +1004,9 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   `approval_policies` row for `session.merge`** — app scope, the app's owner group, or tenant
   (`findPolicyRow`, in the leaf `approvals/policy-row.ts` and re-exported by `policy.ts`, the same order `resolvePolicy` reads) — **wins**: review
   becomes mandatory with that row's own policy, the detail answers `shipReviewSetBy: 'policy'`, the
-  card shows the review read-only, and a PUT that changes the review is 409
+  card shows the review read-only — and says so on its summary, "Review is required by your
+  organisation’s approval policy" with a link to Settings → Approvals for whoever may change it
+  (issue #22) — and a PUT that changes the review is 409
   `ship_review_set_by_policy` (the ship mode may still change; send the review back as it is). This
   is the one kind whose gate the app's owners may shape (decision §0.3 relaxes P4 §1.5 for it).
 - **Branch protection** (issue #5, `services/launch/branch-protection.ts`): Launch protects an app's
@@ -2544,18 +2546,18 @@ WebSocket bug), a Workflow step with one retry that RE-ATTACHES to the running c
 a redacted tail (`gateOutputTail`: the URL and its password, anything shaped like a connection
 string or a key removed), and — on the test step — `target`, the line the kit's `pnpm test` prints
 first (`test target: remote Neon branch gate-… (no Docker; the whole suite under neon)`, redacted
-the same way), which the ship panel shows under the Tests row. **A step says when it starts**, too:
+the same way), which the ship panel shows under Details. **A step says when it starts**, too:
 one `ship.gate { status: 'running', attempt, step, command, phase?, plan? }` row written at the top
 of the step body (and by `ship.db` with `phase: 'database'`), never with a `passed` — a reader of
 verdicts alone (`sessionShipGateResultDataSchema`, the attestation, an older UI or CLI) fails to
 parse it and skips it. A retried step finds its own row (`gateStepStarted`, keyed by
 `(attempt, step, phase)`) and writes none, so the elapsed time counts from the first try. The ship
-panel shows that step (`shipGateRunning`: the newest attempt's start row with no verdict yet) with a
-spinner, its command and the time since its `at` ticking, the plan's later steps as pending, and
-swaps it for the verdict when it lands; `launch sessions ship --wait` prints `… running tests
-(attempt N): pnpm gate test`. A gate command's live output is NOT streamed: the background command's
+timeline shows that step (`shipGateRunning`: the newest attempt's start row with no verdict yet) as
+its Now — "Checking your change · Running the tests (try 2 of 3)", the time since its `at` ticking
+— and moves on when the verdict lands; the command is under Details; `launch sessions ship` prints
+`… Checking your change: running the tests (try N of 3) · pnpm gate test`. A gate command's live output is NOT streamed: the background command's
 log is read only when it ends. **A fix turn (or any turn) shows its own clock**: the chat's working
-bubble and the panel's "Claude is fixing the failing tests" count from the open turn's `turn.start`
+bubble and the timeline's "The tests found a problem. Claude is fixing it (try 2 of 3)." count from the open turn's `turn.start`
 (`openTurn` — a fix turn runs while the row says `shipping`, so the status alone never showed it),
 and after 30 s with no `text`/tool row add "Waiting for Claude's first reply" — a resumed
 conversation whose prompt cache expired can take minutes to answer at all. **The test step's database** is a throwaway Neon
@@ -2918,13 +2920,60 @@ once live, in `pr` mode, after a reopen and on a stall after the release (the ap
 and deploy own that). The `active` scope of `GET /api/apps/:id/sessions` and
 `GET /api/admin/sessions` is the resource-holding statuses OR the same predicate in SQL
 (`shipInFlightSql`, `lifecycle.ts`), tenant-scoped as before; the concurrency count is unchanged.
-The badge says **Shipping** for such a row (pulsing only while Launch moves it), and the
-Overview's Active sessions and the Sessions tab add where it stands (`shippingStageText`:
-"Waiting for CI", "Waiting for a review", "Merging", "Merged, cutting a release", "Deploying
-v1.4.2 to staging", "Merged, but CI failed on main"); `launch sessions ls` prints `shipping
-(<stage>)`. A list polls such a row at the landing's pace (`SESSION_LANDING_POLL_MS`) and never
+The badge names the stage for such a row (`shippingChipText`: "Checks running", "In review",
+"Merging", "Releasing", "Deploying", "Needs you"; pulsing only while Launch moves it), and the
+Overview's Active sessions and the Sessions tab add a line with where it stands and for how long
+(`ShippingLine` over `shippingLineText`: "PR #6 · Merged, waiting for main’s checks · 2 min
+(releases anyway after 30 min)", "PR #6 · Deploying v1.4.2 to staging · 4 min"); `launch sessions
+ls` prints the same line. The summary's `shipping` carries `mainCi` (the landing's verdict, null
+while the release waits for main's checks) so a list can say so. A list polls such a row at the landing's pace (`SESSION_LANDING_POLL_MS`) and never
 while it waits on a person; the session nudge already refreshes every app's list
 (`['session','app']`), which the Overview's Needs you reads.
+
+**Shipping, in plain words (issue #22).** The ship panel is one ordered timeline a non-engineer can
+follow — checking your change (lint, types and tests as one stage) → the pull request → the
+automatic checks → a review, only when one is required → merging → releasing → live on staging →
+ready to promote — each stage done, now, next, needs you or failed. Its model is the pure
+`shipTimeline` (`pages/sessions/shipTimelineModel.ts`) over the rows and the row the page already
+holds (`currentShipEvents` — the current ship's rows: a ship starts again after a reopen, when the
+attempt number goes down, or when a step's start row repeats — `shipGates`, `shipGateRunning`,
+`openTurn`, `landingTimeline`, the PR read and the review request); every sentence comes from
+`@launch/shared/launch-ship-progress`, which `launch sessions ship` / `ls` and the app page's lists
+and status chip print too. Nothing new is stored except two facts no stage had: `PrChecks.queued` /
+a check's `queued` (a check run GitHub queued and has not started — `status: queued`, no
+`started_at` — counted by `foldChecks` and carried on `ship.ci` as `queued`), so the checks read
+"Waiting for GitHub to start the checks" in a GitHub backlog, and `SessionShipping.mainCi`, derived.
+- **While the ship is under way** (`shipInProgress`: `shipping`, a `ship` request, or a `shipped`
+  row whose `shipping` is not null — Phase B, or a stall before the release) **the timeline
+  replaces the preview pane**; a small "Show preview" link brings the preview back ("Show
+  shipping progress" swaps again), and the preview returns by itself when the ship ends — live,
+  given back, or a stall after the release — with the timeline above it.
+- **Now** is the one prominent row: the sentence, a second line (what runs, the checks counted —
+  "2 of 3 passed, 1 running" — who reviews and why, "Launch releases anyway after 30 minutes"),
+  the time since the stage's row ticking (`useElapsed`: every second for an hour, then every
+  minute) and, when this session timed the step before, "The tests usually take about 6 minutes".
+  The current stage's sentence is in a visually hidden `aria-live="polite"` line that changes only
+  with the stage; the clock is outside it. The timeline is an `<ol>` with `aria-current="step"`.
+- **Failures in words**: a red step being fixed reads "The tests found a problem. Claude is fixing
+  it (try 2 of 3)."; earlier tries collapse to one line each ("First try: tests failed, fixed
+  automatically"); main's checks that timed out read "Main’s checks were slow, so the deploy will
+  check it again."
+- **Needs you** is the only loud state, one block with one action: a review THIS reader may give
+  ("Review the change", from the request's `canDecide`), a gate Claude couldn't fix ("Ask Claude to
+  fix it", posting the step and its output tail as an ordinary turn — `gateFixMessage`), red checks
+  on the PR (the same, with the check's log — `ciFixMessage`), a stall before the release (Re-run
+  main's checks · Release anyway), or after it ("Release by hand on the app’s page"). A review
+  someone else gives is a quiet Now naming who, with why it is required (the app's Ship settings
+  or the organisation's policy — `reviewReasonText`); the Review stage appears only when one is
+  required (the landing's `reviewMode`, or before the PR the app's settings and `shipReviewSetBy`).
+- **Details** (one disclosure) keeps every technical fact: each try's steps with commands, times,
+  the test target line (the Neon branch) and output; the PR's checks by name (`launch/gate` never
+  among them); a red check's link and log tail; the landing's own error; the PR link.
+- **On the app page**: "Release to staging" is disabled with one line while a session's landing is
+  merging or releasing that app (`landingReleaseReason` — its release carries main's head and
+  would compete for the release claim); the Kit card follows an upgrade's landing ("merged,
+  releasing to staging", then "The app is on 0.17.1" once the kit reads it — `openUpgradeSentence`
+  over the active list's `shipping`).
 
 **Known gaps:** a drain wakes live sessions in EVERY organisation (it is about the deployment's
 image), and audits in each; there is no scheduled drain or automatic undrain after a deploy; the
@@ -2933,7 +2982,11 @@ waits on only for a reader who may read the `session.merge` request (otherwise "
 Launch"); "Ask Claude to fix it" exists for red CI only (a rejected review's note is shown, not
 sent); the CLI's follow gives up after four hours (a review may wait two days) and says the ship
 carries on; the branch-protection line is shown to owners and admins only, though any member may
-read it.
+read it. Issue #22: "typical" durations come only from this session's own earlier runs (no
+cross-session history is kept), so a first ship says none; the timeline does not say when
+Launch's `launch/gate` attestation let the repository's CI skip work — Launch knows it posted the
+check, not whether the app's CI read it; the chat's notices still name each gate step and CI check
+as they happen; a shipped session's PR from before the landing (issue #5) reads as `pr` mode.
 
 ### 18.15 The approvals engine (P4)
 
@@ -3332,7 +3385,16 @@ PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`)
 snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
 approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
-overrides. **The app page** (`/apps/:slug/*`, `pages/apps/AppPage.tsx`; `docs/DESIGN.md`) is an
+overrides, and (issue #22) an explicit **Approval: Required / Not required** choice for the
+organisation (`approvalRequirement` / `requirementSentence` in `approvalModel.ts`). For
+`session.merge` Not required is NO organisation row — "Not required. Each app decides in its Ship
+settings (default: no review)" — reached by deleting the row after a confirmation, and Required
+opens the editor on the default to create one; a row whose auto-approval is everyone reads
+"Required for every app, and approved automatically". Every other kind always opens a request, so
+Not required saves the row with `autoApproveRole: 'member'` (confirmed first) and Required takes
+it back to the default's role. Auto-approval is worded "Always (every request is approved at
+once)", "When an admin or owner asks", "When an owner asks" or "Never (a person decides)", always
+with "An automatic approval is still recorded and audited." **The app page** (`/apps/:slug/*`, `pages/apps/AppPage.tsx`; `docs/DESIGN.md`) is an
 Overview and tabs — Sessions · Releases (+ `/releases/:version`) · Activity · Settings
 (`/settings/:section?`: General · Config & secrets · Access & sign-in · Shipping · Danger zone) —
 each its own sub-route under one layout. The header: name · `v1.4.1 live` · Open ↗ (Live) ·

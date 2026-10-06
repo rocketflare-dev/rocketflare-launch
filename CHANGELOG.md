@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **Shipping replaces the preview with a plain-language timeline** (issue #22). While a session
+  ships — the gate, the pull request, its checks, a review, the release and the staging deploy —
+  the preview pane shows one ordered timeline instead: checking your change (lint, types and tests
+  as one stage) → the pull request → the automatic checks → a review, only when one is required
+  and naming who and why → merging → releasing → live on staging, with its link → ready to promote.
+  Each stage is done, now, next, needs you or failed. Now is the prominent row: what is happening,
+  its time so far, and how long the step took before in this session when known; it is announced
+  once (`aria-live="polite"`), never the clock. A red step reads "The tests found a problem. Claude
+  is fixing it (try 2 of 3)." and earlier tries collapse to one line ("First try: tests failed,
+  fixed automatically"); checks are counted ("2 of 3 passed, 1 running"), never named. Needs you
+  is the only loud state, with one button: Review the change, Ask Claude to fix it (now also when
+  the gate itself gave up), Re-run main’s checks, or Release by hand on the app’s page. Commands,
+  check names, the Neon branch, each try's steps and output, and a red check's log are all under
+  one Details disclosure. A "Show preview" link brings the preview back, and it returns by itself
+  when the ship ends. The words live in `@launch/shared/launch-ship-progress`, which `launch
+  sessions ship` and `ls`, the session status chip and the app page's lists now print too. No
+  migration.
+- **After the merge, the landing stays visible.** The app page's Active sessions and Sessions tab
+  print a ship in flight as "PR #6 · Merged, waiting for main’s checks · 2 min (releases anyway
+  after 30 min)" and its chip names the stage ("Checks running", "In review", "Releasing",
+  "Deploying", "Needs you"); "Release to staging" is disabled, with the reason, while a session's
+  landing is releasing the app; the Kit card follows an upgrade's landing ("merged, releasing to
+  staging", then "The app is on 0.17.1"); the session page shows every Phase B step — waiting for
+  main's checks with the 30-minute limit, releasing, deploying, checking staging is healthy, live —
+  and says "Main’s checks were slow, so the deploy will check it again." when it released anyway.
+  Checks GitHub has queued and not started (`status: queued`, no `started_at`) read "Waiting for
+  GitHub to start the checks": `PrChecks` and `ship.ci` carry an optional `queued` count, and the
+  session summary's `shipping` a derived `mainCi`. No migration.
+- **Approval policies say plainly when approval is off.** Settings → Approvals has an explicit
+  Approval: Required / Not required choice per kind. For a session merge, Not required is no
+  organisation policy — "Not required. Each app decides in its Ship settings (default: no review)"
+  — instead of the code default that read as if review were on; for every other kind it approves
+  every request at once and says so. Auto-approval reads "Always (every request is approved at
+  once)", "When an admin or owner asks", "When an owner asks" or "Never (a person decides)", each
+  with "An automatic approval is still recorded and audited." An app's Shipping card says when
+  "Review is required by your organisation’s approval policy", with a link to it.
+
 - **Shipping says what is running now, not only what finished.** Each gate step writes a
   `ship.gate { status: 'running', attempt, step, command, plan? }` row as it starts (`ship.db` one
   with `phase: 'database'` while it makes the test branch) — once per step, a retried step adds

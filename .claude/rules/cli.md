@@ -62,7 +62,13 @@ Following POLLS the durable rows (`GET /events?afterSeq=`)
 rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pollMs` are injectable.
 `ship` WAITS by default (issue #5): one line per stage row — the gate, `ship.pr`, `ship.ci` (a red
 check with its URL and the last 20 lines of its redacted log), `ship.review`, `ship.merged`,
-`ship.released`, `ship.staging` — until `landing.stage` is `live` (exit 0); `ship.reopened` (given
+`ship.released`, `ship.staging` — worded as the session page's timeline words them
+(`@launch/shared/launch-ship-progress`, issue #22: "… Checking your change: running the tests (try
+2 of 3) · pnpm gate test", "! The tests found a problem. Claude is fixing it (try 2 of 3).", "✓ The
+automatic checks passed"), plus a line for the stages that write no row ("… Merged, waiting for
+main’s checks (launch releases anyway after 30 minutes)") — until `landing.stage` is `live` (exit
+0, then "Ready to promote to production — from the app’s page."); `ls` prints a ship in flight as
+the app page's line ("PR #6 · Deploying v1.4.2 to staging · 4 min"); `ship.reopened` (given
 back before the merge) and `stalled` (after it) exit 1, and so do a ship that opened no PR and
 one whose session was ended while its landing waited ("PR #n was left open"). Past
 the PR it polls every ten `pollMs` (the Workflow works in 30 s – 2 min rounds). In the app's `pr`
