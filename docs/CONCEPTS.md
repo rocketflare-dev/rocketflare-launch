@@ -1651,7 +1651,8 @@ reload) is restarted as `<id>-rN` from the row.
   lost instance whose container could not be salvaged still destroy at once (a salvaged one is kept
   — Reconcile, below). A warm container is billed as container time while it waits.
 - **Workspace backups** (`workspace-backup.ts`, `SESSION_WORKSPACE_BACKUP`: `binding` under
-  `APP_ENV=development`, `off` deployed unless `presigned` is set up — `docs/DEPLOY.md`): before a
+  `APP_ENV=development`, `off` deployed unless `presigned` is set up — an instance's render does it
+  when both R2 keys are in `launch.deploy.env`, `docs/DEPLOY.md`): before a
   destroying suspend (a drain, after its checkpoint) or a `cool#N` destroys the container, the
   Sandbox SDK's `createBackup` archives `/workspace/app` (`node_modules` and the app's `.dev.vars`
   included) into `BACKUP_BUCKET` (the `FILES` bucket, under `backups/`), recorded on

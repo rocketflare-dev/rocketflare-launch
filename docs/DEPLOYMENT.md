@@ -146,6 +146,17 @@ Setup credentials), `EMBEDDINGS_API_KEY`, `GOOGLE_CLIENT_ID`/`_SECRET`,
 and the feature degrades as `SETUP.md` Part 2 describes. You can add them later and rerun
 `pnpm provision secrets`.
 
+**Setting both R2 keys turns coding-session workspace backups on** (a cold resume restores the
+workspace instead of cloning and installing — `docs/DEPLOY.md` § Coding sessions). `render` then
+adds `SESSION_WORKSPACE_BACKUP = "presigned"`, `BACKUP_BUCKET_NAME` (the `FILES` bucket,
+`<LAUNCH_NAME>-files`) and `CLOUDFLARE_ACCOUNT_ID` to the rendered `[vars]`; with either key empty
+backups stay off, and `pnpm provision check` says which. Mint an R2 API token (R2 → Manage API
+tokens) with **Object Read & Write on the `FILES` bucket only** — its Access Key ID and Secret
+Access Key are the two values. Give that bucket an R2 lifecycle rule deleting `backups/` after a
+few days (`launch-files` has a 14-day one): a session's `cleanup` deletes its backup, the rule
+catches the rest. Added later: rerun `pnpm provision deploy` (re-renders) and
+`pnpm provision secrets`.
+
 **An exported variable of the same name wins over the file** (that's how CI or a one-off run
 overrides a value).
 
@@ -188,7 +199,7 @@ push and the Resend DNS check are the slow parts.
 | 5 | `cloudflare` (pauses) | agent | KV `LAUNCH_RATE_LIMIT`, queue `launch-jobs`, R2 bucket `launch-files` (plus any installed plugin's), ids into `.launch/state.json` | Cloudflare resources, within Workers Paid's included usage at this size | `cloudflare ok — account …: LAUNCH_RATE_LIMIT, launch-jobs, launch-files; ids in .launch/state.json …` |
 | 6 | `migrate` | agent | every migration against the instance database; applied count must equal the journal | the Neon database | `migrate ok — n/n migrations applied on <host>` |
 | 7 | `route` (pauses) | agent | the proxied wildcard `AAAA * → 100::` at `*.<domain>`, only if no `*` record exists. A DNS-only one is refused, not changed | one DNS record in your zone | `route ok — zone rocketflare.dev: *.rocketflare.dev created AAAA * → 100:: (proxied); deploy adds the custom domain launch.rocketflare.dev and the route *.rocketflare.dev/*` |
-| 8 | `render` | agent | `apps/web/wrangler.deploy.toml`: Worker `name`, account-scoped names, `workers_dev = false`, the routes (`LAUNCH_HOST` as a custom domain, `*.<domain>/*`), `APP_URL`, `EMAIL_FROM`, `SESSION_PREVIEW_URL`, `DATABASE_DRIVER = "neon"`, the KV id, plugin declarations | a local file | `render ok — apps/web/wrangler.deploy.toml: worker launch, routes launch.rocketflare.dev + *.rocketflare.dev/*, no placeholders` |
+| 8 | `render` | agent | `apps/web/wrangler.deploy.toml`: Worker `name`, account-scoped names, `workers_dev = false`, the routes (`LAUNCH_HOST` as a custom domain, `*.<domain>/*`), `APP_URL`, `EMAIL_FROM`, `SESSION_PREVIEW_URL`, `DATABASE_DRIVER = "neon"`, the KV id, plugin declarations, and with both R2 keys set the workspace-backup vars (§ 2) | a local file | `render ok — apps/web/wrangler.deploy.toml: worker launch, routes launch.rocketflare.dev + *.rocketflare.dev/*, workspace backups on, no placeholders` |
 | 9 | `deploy` (pauses) | agent | renders, builds the UI, `wrangler deploy -c wrangler.deploy.toml` (builds and pushes the session image, creates the custom domain and route, registers the Workflows and Durable Objects), puts `DATABASE_URL` (the pooled Neon URI) on first deploy, then polls `/api/health` and `/api/ready` | **the Worker goes live** on `LAUNCH_HOST`; the container application and its image; workflows. The custom domain's certificate can take a couple of minutes | `deploy ok — https://launch.rocketflare.dev/api/health ok (version …), /api/ready ok` |
 | 10 | `secrets` | agent | `OAUTH_ENCRYPTION_KEY` (from the file, else **generated and written back to the file first**), `BOOTSTRAP_ADMIN_EMAILS`, `DATABASE_URL`, every optional secret set in the file, over stdin | Worker secrets | `secrets ok — set n; wrangler secret list shows n: …` |
 | 11 | `setup` | agent | the Setup page's settings (apps domain, account id, Neon org and region, notifications domain, GitHub org) and **sealed** credentials (Cloudflare, Neon, Resend, GitHub App, Anthropic/OpenAI when set), audited. Creates the organisation with the first admin as owner if none exists | rows in the instance database | `setup ok — n credential(s) sealed with the instance key (…), n setting(s) changed, audited in organisation <id>` |

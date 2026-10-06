@@ -41,8 +41,10 @@ SESSION_PREVIEW_URL = "https://{label}.clewro.com"  # P3: preview origins, {labe
 GRANT_BACKEND = "cloudflare"            # Shared config (P5): cloudflare | local (local = wrangler dev only; loadConfig refuses it elsewhere)
 SESSION_EGRESS = "open"                # P3: open | allowlist (missing = allowlist). open until the egress interception ends
                                        # a container's stream after a WebSocket closes (docs/plans/sandbox-websocket-close.md)
-# Coding sessions' workspace backups (P3) — add to BOTH files, with the R2 secrets, to turn them on
-# deployed (docs/DEPLOY.md § Coding sessions):  SESSION_WORKSPACE_BACKUP = "presigned"
+# Coding sessions' workspace backups (P3): off deployed until set. `pnpm provision render` adds
+# SESSION_WORKSPACE_BACKUP = "presigned", BACKUP_BUCKET_NAME and CLOUDFLARE_ACCOUNT_ID itself when
+# launch.deploy.env has R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY (docs/DEPLOY.md § Coding sessions);
+# a hand-deployed toml adds the three here, in BOTH files, with the two R2 secrets
 # Tracing backend (D32) — add these to BOTH files when you pick one (docs/DEPLOY.md § Tracing):
 #   OBSERVABILITY_PRESET = "langfuse"    # langfuse | phoenix | generic (unset + Langfuse keys = langfuse)
 #   OTEL_EXPORTER_OTLP_ENDPOINT = "https://…"   # unset + Langfuse keys = <LANGFUSE_BASE_URL>/api/public/otel

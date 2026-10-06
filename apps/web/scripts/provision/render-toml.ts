@@ -15,6 +15,10 @@
  *     sends every other subdomain (apps' previews, coding-session previews) to the Worker — an app's
  *     own custom domain wins over the route, as any custom domain does
  *   - `[vars]` APP_URL, EMAIL_FROM, SESSION_PREVIEW_URL, DATABASE_DRIVER = "neon"
+ *   - with both R2 keys in the instance file, coding-session workspace backups on: `[vars]`
+ *     SESSION_WORKSPACE_BACKUP = "presigned", BACKUP_BUCKET_NAME (the bucket `BACKUP_BUCKET` names)
+ *     and CLOUDFLARE_ACCOUNT_ID (a `<PLACEHOLDER>` until an account id is known); without them
+ *     backups stay off, as the template has them
  *   - the RATE_LIMIT_KV id (a `<PLACEHOLDER>` until `cloudflare` has created it)
  *   - every installed plugin's declarations (D31): bindings named from `LAUNCH_NAME`, crons,
  *     worker-first prefixes, non-secret vars, Durable Object migrations — the same mapping
@@ -49,6 +53,38 @@ export interface RenderInput {
   /** binding → KV namespace id; a binding with no id keeps its placeholder. */
   kvIds?: Record<string, string>
   plugins?: PluginResources[]
+  /** Set = workspace backups on (`workspaceBackupState`); its account id, when one is known. */
+  workspaceBackup?: { accountId?: string }
+}
+
+/** The Worker secrets a presigned workspace backup signs its R2 URLs with. */
+export const BACKUP_KEY_NAMES = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'] as const
+export const ACCOUNT_ID_PLACEHOLDER = '<CLOUDFLARE_ACCOUNT_ID>'
+
+/**
+ * Whether the render turns coding-session workspace backups on: both R2 keys set, nothing else
+ * (`has` answers by name — a value is never read here). `why` is the one line `check` prints.
+ */
+export function workspaceBackupState(has: (name: string) => boolean): {
+  on: boolean
+  why: string
+} {
+  const set = BACKUP_KEY_NAMES.filter(has)
+  const unset = BACKUP_KEY_NAMES.filter(n => !has(n))
+  if (!unset.length)
+    return {
+      on: true,
+      why: `${set.join(' + ')} set — render adds SESSION_WORKSPACE_BACKUP = "presigned", BACKUP_BUCKET_NAME, CLOUDFLARE_ACCOUNT_ID`,
+    }
+  if (set.length) return { on: false, why: `${set.join(', ')} set but ${unset.join(', ')} not` }
+  return { on: false, why: `${unset.join(', ')} not set` }
+}
+
+/** The bucket the `BACKUP_BUCKET` binding names (FILES' bucket — the SDK writes under backups/). */
+export function backupBucketName(text: string): string {
+  const m = /^\s*binding\s*=\s*"BACKUP_BUCKET"\s*\n\s*bucket_name\s*=\s*"([^"]+)"/m.exec(text)
+  if (!m) throw new TomlPatchError('no `[[r2_buckets]]` block binding BACKUP_BUCKET found')
+  return m[1]
 }
 
 export const GENERATED_HEADER = [
@@ -114,6 +150,15 @@ export function renderDeployToml(template: string, input: RenderInput): string {
   out = setVar(out, 'EMAIL_FROM', input.emailFrom)
   out = setVar(out, 'SESSION_PREVIEW_URL', `https://{label}.${input.domain}`)
   out = patchToml(out, { databaseDriver: 'neon' })
+  if (input.workspaceBackup) {
+    out = setVar(out, 'SESSION_WORKSPACE_BACKUP', 'presigned')
+    out = setVar(out, 'BACKUP_BUCKET_NAME', backupBucketName(out))
+    out = setVar(
+      out,
+      'CLOUDFLARE_ACCOUNT_ID',
+      input.workspaceBackup.accountId || ACCOUNT_ID_PLACEHOLDER
+    )
+  }
 
   const kvIds = input.kvIds ?? {}
   if (kvIds.RATE_LIMIT_KV) out = patchToml(out, { kvId: kvIds.RATE_LIMIT_KV, force: true })

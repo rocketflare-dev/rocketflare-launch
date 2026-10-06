@@ -86,9 +86,12 @@ to the instance file. Never run it from the agent's shell.
   records the Cloudflare zone id app creation needs). A check that failed (usually a GitHub App not
   yet installed) is fixed, then rechecked from the Setup page or by rerunning `setup`. Pressing
   Check in the page is the proof that the Worker itself can unseal what was sealed.
-- **`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` alone don't turn on workspace backups.** The template's
-  `SESSION_WORKSPACE_BACKUP` and `BACKUP_BUCKET_NAME` vars must be set too (`docs/DEPLOY.md`
-  § Coding sessions); render doesn't add them.
+- **`R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` turn on workspace backups.** With both set, render
+  adds `SESSION_WORKSPACE_BACKUP = "presigned"`, `BACKUP_BUCKET_NAME` (the `BACKUP_BUCKET` binding's
+  bucket) and `CLOUDFLARE_ACCOUNT_ID` (`accountId()`; a `<CLOUDFLARE_ACCOUNT_ID>` placeholder,
+  which deploy refuses, until one is known) to `[vars]`; with either missing, backups stay off.
+  `check` prints which, by name. The token: Object Read & Write on the FILES bucket only
+  (`docs/DEPLOYMENT.md` § 2, `docs/DEPLOY.md` § Coding sessions).
 - **The database driver is `neon` for an instance** (render sets it). Hyperdrive (`postgres`) is the
   committed-toml path only (`docs/DEPLOY.md` § Database driver).
 - **Nothing is ever deprovisioned**, a changed `LAUNCH_NAME` included (the old resources stay).

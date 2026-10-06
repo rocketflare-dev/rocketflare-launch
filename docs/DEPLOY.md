@@ -311,11 +311,15 @@ needs, beyond the bindings above:
   by a drain) the SDK's `createBackup` can save `/workspace/app` — checkout, `node_modules` and the
   app's `.dev.vars` (the session branch's URI: a credential, kept in Launch's own bucket, deleted
   with the session) — so a cold resume restores it instead of cloning and installing. Deployed it
-  needs the SDK's presigned path: `SESSION_WORKSPACE_BACKUP = "presigned"` in BOTH tomls' `[vars]`,
-  and on the Worker `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` (an R2 API token with object
-  read/write on the bucket, `wrangler secret put`), `BACKUP_BUCKET_NAME` (the bucket's name) and
-  `CLOUDFLARE_ACCOUNT_ID` (or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction endpoint) — as vars in
-  both tomls or as secrets. The session's allow-list gains `<account>.r2.cloudflarestorage.com`
+  needs the SDK's presigned path: `SESSION_WORKSPACE_BACKUP = "presigned"`, and on the Worker
+  `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` (an R2 API token, Object Read & Write on the `FILES`
+  bucket only), `BACKUP_BUCKET_NAME` (the bucket's name) and `CLOUDFLARE_ACCOUNT_ID` (or
+  `BACKUP_BUCKET_ENDPOINT` for a jurisdiction endpoint). **For an instance this is automatic**:
+  with both R2 keys in `launch.deploy.env`, `pnpm provision render` writes the three vars into the
+  rendered `[vars]` (the bucket the `BACKUP_BUCKET` binding names; the account `accountId()`
+  resolves) and `secrets` puts the keys; without them backups stay off, and `pnpm provision check`
+  prints which (`docs/DEPLOYMENT.md` § 2). The committed tomls only carry a comment: a hand-run
+  deploy adds the three vars to BOTH tomls' `[vars]` and puts the two secrets. The session's allow-list gains `<account>.r2.cloudflarestorage.com`
   only while a backup or restore runs; a restore mounts the archive with FUSE (the SDK's
   squashfuse + overlay). `loadConfig` refuses `presigned` without an account id or endpoint (the
   allow-list would have no R2 host). Every attempt is a `workspace.backup` session event — `saved`

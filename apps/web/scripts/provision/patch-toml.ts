@@ -362,7 +362,7 @@ function appendToArray(text: string, key: string, values: string[]): string {
 
 /**
  * Append `KEY = "value"` to `[vars]` when the key is absent, placed after the LAST assignment in
- * the table rather than at its end — the kit's `[vars]` closes with a comment about secrets, and a
+ * the table (and its indented continuation comments) rather than at its end — the kit's `[vars]` closes with a comment about secrets, and a
  * new key belongs above it. An existing key is left exactly as it is: its value is the operator's.
  */
 function appendVar(text: string, key: string, value: string): string {
@@ -376,6 +376,8 @@ function appendVar(text: string, key: string, value: string): string {
     if (/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(lines[i])) last = i
   }
   if (last === -1) last = start
+  // …and after that assignment's indented continuation comments, which belong to it.
+  else while (last + 1 < lines.length && /^\s+#/.test(lines[last + 1])) last++
   const insertAt = lines.slice(0, last + 1).reduce((n, l) => n + l.length + 1, 0)
   return `${text.slice(0, insertAt)}${key} = "${value}"\n${text.slice(insertAt)}`
 }

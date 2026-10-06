@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **An instance with the R2 keys set backs coding-session workspaces up** (no hand edit). When
+  `launch.deploy.env` has both `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, `pnpm provision
+  render` (and so `deploy`) adds `SESSION_WORKSPACE_BACKUP = "presigned"`, `BACKUP_BUCKET_NAME`
+  (the bucket the `BACKUP_BUCKET` binding names) and `CLOUDFLARE_ACCOUNT_ID` to the rendered
+  `[vars]` — a `<CLOUDFLARE_ACCOUNT_ID>` placeholder, which deploy refuses, until an account id is
+  known; without both keys nothing changes and backups stay off. `pnpm provision check` prints the
+  state in one line, by name. A var appended to `[vars]` now lands after the last assignment's
+  indented continuation comment, not between the two. No migration.
 - **Workspace backups are proven on a real Cloudflare container** (issue #3). Through the remote
   sandbox host, a drain saved a 369 MB `presigned` archive in 23 s and the cold resume restored it
   in 6.4 s: ready in 27 s against the 41 s first boot, with no clone, install or seed. The docs

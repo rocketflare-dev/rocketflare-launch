@@ -7,13 +7,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import TOML from '@iarna/toml'
 import { describe, expect, it } from 'vitest'
+import { loadConfig } from '@/config'
 import { pluginSurfaces, readManifest } from '../../../../scripts/lib/manifest.mjs'
 import { tomlPlaceholders } from '../../scripts/provision/patch-toml'
 import { readPluginResources } from '../../scripts/provision/plugin-resources'
 import {
+  ACCOUNT_ID_PLACEHOLDER,
   GENERATED_HEADER,
   renderDeployToml,
   reprefixNames,
+  workspaceBackupState,
 } from '../../scripts/provision/render-toml'
 
 const WEB_DIR = path.resolve(__dirname, '../..')
@@ -131,6 +134,71 @@ describe('renderDeployToml', () => {
 
   it('is pure: the committed template on disk is untouched', () => {
     expect(fs.readFileSync(templatePath, 'utf8')).toBe(template)
+  })
+})
+
+describe('workspace backups (R2 keys in the instance file)', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef'
+  /** The secrets a deployed Worker carries next to the rendered [vars] — fixtures, never real. */
+  const SECRETS = {
+    DATABASE_URL: 'postgresql://launch:fixture@ep-fixture-pooler.neon.tech/launch',
+    R2_ACCESS_KEY_ID: 'fixture-access-key-id',
+    R2_SECRET_ACCESS_KEY: 'fixture-secret-access-key',
+  }
+  const BACKUP_VARS = ['SESSION_WORKSPACE_BACKUP', 'BACKUP_BUCKET_NAME', 'CLOUDFLARE_ACCOUNT_ID']
+
+  it('both keys set turn backups on; one or none leaves them off, naming what is missing', () => {
+    expect(workspaceBackupState(n => n in SECRETS).on).toBe(true)
+    const one = workspaceBackupState(n => n === 'R2_ACCESS_KEY_ID')
+    expect(one).toEqual({
+      on: false,
+      why: 'R2_ACCESS_KEY_ID set but R2_SECRET_ACCESS_KEY not',
+    })
+    expect(workspaceBackupState(() => false)).toEqual({
+      on: false,
+      why: 'R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY not set',
+    })
+  })
+
+  it('on: [vars] gains presigned, the BACKUP_BUCKET bucket and the account id', () => {
+    const doc = parse(
+      renderDeployToml(template, { ...SAMPLE, workspaceBackup: { accountId: ACCOUNT } })
+    )
+    const backup = (doc.r2_buckets as Row[]).find(b => b.binding === 'BACKUP_BUCKET')
+    expect(doc.vars.SESSION_WORKSPACE_BACKUP).toBe('presigned')
+    expect(doc.vars.BACKUP_BUCKET_NAME).toBe(backup?.bucket_name)
+    expect(doc.vars.CLOUDFLARE_ACCOUNT_ID).toBe(ACCOUNT)
+    const acme = parse(
+      renderDeployToml(template, {
+        ...SAMPLE,
+        name: 'acme',
+        workspaceBackup: { accountId: ACCOUNT },
+      })
+    )
+    expect(acme.vars.BACKUP_BUCKET_NAME).toBe('acme-files')
+  })
+
+  it('the rendered vars, with the secrets, pass loadConfig — on and off', () => {
+    const on = parse(
+      renderDeployToml(template, { ...SAMPLE, workspaceBackup: { accountId: ACCOUNT } })
+    )
+    const cfg = loadConfig({ ...on.vars, ...SECRETS })
+    expect(cfg.SESSION_WORKSPACE_BACKUP).toBe('presigned')
+    expect(cfg.CLOUDFLARE_ACCOUNT_ID).toBe(ACCOUNT)
+    // The account id is what makes presigned parse: loadConfig refuses it without one.
+    const { CLOUDFLARE_ACCOUNT_ID: _, ...noAccount } = on.vars
+    expect(() => loadConfig({ ...noAccount, ...SECRETS })).toThrow(/presigned needs/)
+
+    const off = parse(renderDeployToml(template, SAMPLE))
+    for (const key of BACKUP_VARS) expect(off.vars).not.toHaveProperty(key)
+    expect(
+      loadConfig({ ...off.vars, DATABASE_URL: SECRETS.DATABASE_URL }).SESSION_WORKSPACE_BACKUP
+    ).toBeUndefined()
+  })
+
+  it('an unknown account id is a placeholder deploy refuses, never a blank loadConfig would reject', () => {
+    const text = renderDeployToml(template, { ...SAMPLE, workspaceBackup: {} })
+    expect(tomlPlaceholders(text)).toEqual([ACCOUNT_ID_PLACEHOLDER])
   })
 })
 

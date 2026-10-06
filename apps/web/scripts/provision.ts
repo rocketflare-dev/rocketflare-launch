@@ -104,7 +104,11 @@ import {
   readPluginResources,
 } from './provision/plugin-resources'
 import { redact } from './provision/redact'
-import { renderDeployToml, renderedPlaceholders } from './provision/render-toml'
+import {
+  renderDeployToml,
+  renderedPlaceholders,
+  workspaceBackupState,
+} from './provision/render-toml'
 import { emailFromFor, ResendClient, resendRecordsToDns, zoneCandidates } from './provision/resend'
 import {
   describeSecretPlan,
@@ -410,6 +414,8 @@ async function checkPhase(flags: Flags): Promise<void> {
   )
   const optional = OPTIONAL_WORKER_SECRETS.filter(n => token(n))
   line('info', `optional Worker secrets set: ${optional.join(', ') || 'none'}`)
+  const backup = workspaceBackupState(n => !!token(n))
+  line('info', `coding-session workspace backups: ${backup.on ? 'on' : 'off'} — ${backup.why}`)
   const missingNames = [...reading.missing, ...tokens.filter(t => !token(t))]
   for (const msg of reading.invalid) line('fail', msg)
   if (missingNames.length) problems.push(`missing: ${missingNames.join(', ')}`)
@@ -930,6 +936,9 @@ function renderToFile(): { placeholders: string[]; text: string } {
     emailFrom: emailFromFor(appName, instance.emailDomain),
     kvIds: readState().cloudflare?.kv ?? {},
     plugins: installedPluginResources(),
+    workspaceBackup: workspaceBackupState(n => !!token(n)).on
+      ? { accountId: accountId() }
+      : undefined,
   })
   fs.writeFileSync(DEPLOY_TOML, text)
   return { placeholders: renderedPlaceholders(text), text }
@@ -944,7 +953,7 @@ async function renderPhase(): Promise<void> {
   const instance = requireInstance()
   const { placeholders } = renderToFile()
   verifyLine(
-    `render ok — apps/web/${DEPLOY_TOML_BASENAME}: worker ${instance.name}, routes ${instance.host} + *.${instance.domain}/*${placeholders.length ? `; still placeholders ${placeholders.join(', ')} (run \`pnpm provision cloudflare\`)` : ', no placeholders'}`
+    `render ok — apps/web/${DEPLOY_TOML_BASENAME}: worker ${instance.name}, routes ${instance.host} + *.${instance.domain}/*, workspace backups ${workspaceBackupState(n => !!token(n)).on ? 'on' : 'off'}${placeholders.length ? `; still placeholders ${placeholders.join(', ')} (run \`pnpm provision cloudflare\`)` : ', no placeholders'}`
   )
 }
 
