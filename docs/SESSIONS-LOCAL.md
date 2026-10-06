@@ -28,7 +28,7 @@ esbuild segfaults, 2+ minute installs, 12 GB of Docker memory and start hangs. W
 sandbox host a laptop's Launch runs each session container on **Cloudflare**, in a small second
 Worker, and keeps everything else — the Workflow, the database, the routes, the UI — on the laptop.
 
-**Choosing it is a platform setting, not a var.** Settings → Platform → Coding agents → **Session
+**Choosing it is a platform setting, not a var.** Settings → Coding agents → **Session
 sandbox** (`launch_settings.session_sandbox_host`, `PUT /api/platform/setup/session-sandbox`,
 audited `setting.changed`): **This Worker's containers** (local Docker under `pnpm dev`) or **Remote
 sandbox host** (development only, never with `SESSION_BACKEND=local`). A change applies to NEW
@@ -169,7 +169,7 @@ resume shows **Restoring the saved workspace** instead of **Cloning repo**.
   chat notice — saying what is missing. Turned on, a hola-world cold resume restores a 369 MB
   archive in 6.4 s and is ready in about 27 s (measured 2026-10-06; `docs/DEPLOY.md` § Coding
   sessions has the phases). To force one without waiting out the 45-minute warm window, **Drain**
-  on `/admin/sessions` (a global admin), then Undrain and Resume.
+  on Settings → All sessions (a global admin), then Undrain and Resume.
 - The emulation settings (`GOGC=off GOMEMLIMIT=1536MiB`) still apply, because they key on
   `APP_ENV=development`. They are harmless on native hardware (a little more memory per Go process).
 

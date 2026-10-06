@@ -60,7 +60,7 @@ suite threshold (0.7 by default).
 | `ReferenceJudge()` | LLM | `expected.output` | vitest-evals `FactualityJudge` (A 0.4 · B 0.6 · C 1 · D 0 · E 1) |
 
 LLM judges run through `judgeHarness`, which calls the kit's resolver on the `evals-judge` prompt
-key (so Settings → agent models, or `--judge-model`, picks the model). Every call is an `ai_usage`
+key (so Settings → AI & models → Agent models, or `--judge-model`, picks the model). Every call is an `ai_usage`
 row under feature `evals.judge` and a trace `invoke_agent evals-judge` with `launch.eval=true`.
 The scorers are plain functions in `kit/scoring.ts`. An app's own judge is
 `{ name, assess(ctx), appliesTo? }`, where `ctx.input` is the case, `ctx.output` the answer,

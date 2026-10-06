@@ -6,7 +6,7 @@ starting from `git clone`. It takes one private file, one skill and one command:
 1. **You** fill in `launch.deploy.env` at the repo root: your answers and three account tokens.
 2. **You** type `/launch-deploy` in Claude Code, or run `pnpm provision all` yourself.
 3. **The scripts** do the rest: the GitHub App, Neon, Cloudflare resources, migrations, DNS, the
-   deploy, every Worker secret, the Setup page's credentials and email.
+   deploy, every Worker secret, the Connections credentials and email.
 
 Every step below says who does it, **you** or **the agent** (Claude, driving `/launch-deploy`),
 and the exact command. Every phase ends in one `Verify:` line. Don't move on until it prints.
@@ -202,7 +202,7 @@ push and the Resend DNS check are the slow parts.
 | 8 | `render` | agent | `apps/web/wrangler.deploy.toml`: Worker `name`, account-scoped names, `workers_dev = false`, the routes (`LAUNCH_HOST` as a custom domain, `*.<domain>/*`), `APP_URL`, `EMAIL_FROM`, `SESSION_PREVIEW_URL`, `DATABASE_DRIVER = "neon"`, the KV id, plugin declarations, and with both R2 keys set the workspace-backup vars (§ 2) | a local file | `render ok — apps/web/wrangler.deploy.toml: worker launch, routes launch.rocketflare.dev + *.rocketflare.dev/*, workspace backups on, no placeholders` |
 | 9 | `deploy` (pauses) | agent | renders, builds the UI, `wrangler deploy -c wrangler.deploy.toml` (builds and pushes the session image, creates the custom domain and route, registers the Workflows and Durable Objects), puts `DATABASE_URL` (the pooled Neon URI) on first deploy, then polls `/api/health` and `/api/ready` | **the Worker goes live** on `LAUNCH_HOST`; the container application and its image; workflows. The custom domain's certificate can take a couple of minutes | `deploy ok — https://launch.rocketflare.dev/api/health ok (version …), /api/ready ok` |
 | 10 | `secrets` | agent | `OAUTH_ENCRYPTION_KEY` (from the file, else **generated and written back to the file first**), `BOOTSTRAP_ADMIN_EMAILS`, `DATABASE_URL`, every optional secret set in the file, over stdin | Worker secrets | `secrets ok — set n; wrangler secret list shows n: …` |
-| 11 | `setup` | agent | the Setup page's settings (apps domain, account id, Neon org and region, notifications domain, GitHub org) and **sealed** credentials (Cloudflare, Neon, Resend, GitHub App, Anthropic/OpenAI when set), audited. Creates the organisation with the first admin as owner if none exists | rows in the instance database | `setup ok — n credential(s) sealed with the instance key (…), n setting(s) changed, audited in organisation <id>` |
+| 11 | `setup` | agent | the Connections settings (apps domain, account id, Neon org and region, notifications domain, GitHub org) and **sealed** credentials (Cloudflare, Neon, Resend, GitHub App, Anthropic/OpenAI when set), audited. Creates the organisation with the first admin as owner if none exists | rows in the instance database | `setup ok — n credential(s) sealed with the instance key (…), n setting(s) changed, audited in organisation <id>` |
 | 12 | `email verify` | agent | polls Resend until the domain verifies (up to 10 minutes), mints the Worker's own sending key into `RESEND_API_KEY`, checks `/auth/methods` | a Resend API key (sending only) | `email verify ok — domain=… verified, RESEND_API_KEY set, https://launch.rocketflare.dev/auth/methods reports magic link` |
 
 `all` then prints a close-out checklist (§ 4) and `Verify: all ok — n phases passed; https://launch.rocketflare.dev is live`.
@@ -236,7 +236,7 @@ email DNS record's presence when verification stalls.
 | `route`: `*.<domain>` is a DNS-only record | turn its proxy on in the dashboard, or delete it; rerun `route` |
 | `deploy`: a plan or permission error on containers | Workers Paid, and the token's Containers: Edit scope |
 | `deploy`: the session image changed and sessions hold a container | drain first (§ 6), then `pnpm provision deploy --drained` |
-| `deploy`: n session(s) are booting or mid-turn | wait for the turns to finish (Admin → Sessions), or `--interrupt-turns` (§ 6) |
+| `deploy`: n session(s) are booting or mid-turn | wait for the turns to finish (Settings → All sessions), or `--interrupt-turns` (§ 6) |
 | `deploy` / `email verify`: `fetch failed` on the new host | usually this machine cached "no such host" from before the custom domain existed. The probes retry through public DNS (`curl --resolve`); if that fails too the error says so. Flush the cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) and rerun the phase |
 | `deploy`: `/api/ready` not ready | the Worker can't reach Neon. `pnpm provision neon --rotate` resets the Neon password and re-puts the Worker's `DATABASE_URL`. **Not** `secrets --rotate`, which also replaces `OAUTH_ENCRYPTION_KEY` |
 | `secrets`: the Worker holds `OAUTH_ENCRYPTION_KEY` but the file has none | restore the key from your backup of the file (§ 7). `--rotate` only if it's truly lost |
@@ -248,19 +248,20 @@ email DNS record's presence when verification stalls.
    `LAUNCH_ADMIN_EMAILS` address. It arrives from `notifications.rocketflare.dev` (with
    `--skip-email`, copy it from `wrangler tail -c wrangler.deploy.toml`). Signing in makes you the
    organisation's owner and the platform admin. `SIGNUP_MODE` is `approval`: anyone else
-   who signs in lands on `/pending` with an access request you approve under Settings → Platform →
+   who signs in lands on `/pending` with an access request you approve under Settings → People →
    Access requests (or invite them first).
-2. **Settings → Platform → Setup** (`/settings/platform/setup`). `setup` stored every value and ran
-   each card's check (it printed `check passed` or the failing probes; the Cloudflare one records
+2. **Settings → Connections** (`/settings/domain` and the pages under it — Home's "Finish setting
+   up Launch" lists any that is not working yet). `setup` stored every value and ran each card's
+   check (it printed `check passed` or the failing probes; the Cloudflare one records
    the zone id that creating an app needs), so:
    - every card should be green. Press **Check** on any that isn't once you've fixed the cause
      (a GitHub App that failed because it wasn't installed yet is the usual one). Pressing Check
      here is also the proof that the Worker can unseal what `setup` sealed;
    - run the **Public URL** check (GitHub's runners call Launch back at it, and creating an app is
      refused until it passes).
-3. **Settings → Platform → Kit**: pin the kit version apps are created from — a release, **Follow
+3. **Settings → Kit version**: pin the kit version apps are created from — a release, **Follow
    latest** (the newest release, re-checked hourly) or, for development, a commit.
-4. **Settings → Platform → Coding agents**: turn on the coding agents sessions may run, and who
+4. **Settings → Coding agents**: turn on the coding agents sessions may run, and who
    pays. With nothing set, it's Claude Code on Launch's key only, which needs `ANTHROPIC_API_KEY`
    or the Anthropic credential.
 5. Google or Microsoft sign-in: add `https://launch.rocketflare.dev/auth/google/callback` (or
@@ -307,9 +308,9 @@ the `[[containers]]` block replaces every running session container and cuts off
 `deploy` records a hash of both. When the hash changed and the database shows sessions holding a
 container, it **refuses** and tells you to drain:
 
-1. **You**: Admin → Sessions → **Drain**. New sessions are refused, and live ones checkpoint and
-   suspend once their running turn finishes.
-2. Wait until Admin → Sessions shows no `ready`, `working` or `booting` session.
+1. **You**: Settings → All sessions → **Drain**. New sessions are refused, and live ones
+   checkpoint and suspend once their running turn finishes.
+2. Wait until Settings → All sessions shows no `ready`, `working` or `booting` session.
 3. **The agent**: `pnpm provision deploy --drained`, then `pnpm provision all` to finish the rest.
 4. **You**: **Undrain**. People resume their own sessions.
 
@@ -456,8 +457,8 @@ answer 503 — harmless, but noisy in Recent Deliveries).
      **Webhook secret**: the value from step 2. Keep **SSL verification** enabled. **Save changes**.
    - **Permissions & events → Subscribe to events**: tick **Check run**, **Workflow run**,
      **Pull request**, **Push** and **Release**. **Save changes**. Leave every permission as it is.
-4. **No new permission.** Each event arrives under a permission the App already holds (Setup's check
-   requires them): Check run → Checks, Workflow run → Actions, Pull request → Pull requests, Push and
+4. **No new permission.** Each event arrives under a permission the App already holds (Connections → GitHub's
+   check requires them): Check run → Checks, Workflow run → Actions, Pull request → Pull requests, Push and
    Release → Contents. Because no permission changes, the organization's installation has nothing to
    accept.
 5. **Verify**: the App → **Advanced → Recent Deliveries**. Activating the webhook sends a `ping`: it should

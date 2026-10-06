@@ -165,8 +165,8 @@ Components subscribe to query state, never to the socket; `WebSocketStatus` (hea
   `@launch/shared/ai/agui` first — an APP adds its own CUSTOM events under its own prefix,
   never `kit.`
 - Guards: `/chat/:conversationId?` is `read Conversation` (every role; ownership is server-side);
-  `/settings` (`?tab=ai|prompts|agent-models|usage`) is `guard="admin"`, the last two additionally
-  `manage AiConfig`. Agent runs (`/agents`, `/agents/runs/:runId`, `AgentRun`), documents
+  Settings → AI & models (`/settings/ai`, `/settings/ai/agent-models`), Prompts and Usage are
+  `guard="admin"`, Agent models and Usage additionally `manage AiConfig`. Agent runs (`/agents`, `/agents/runs/:runId`, `AgentRun`), documents
   (`/documents`, `Document`) and the agent-models tab follow the same contracts
   (`@launch/shared/ai/{agents,embeddings,agent-models,interrupts,artifacts}`). Documents
   poll/nudge; **a run STREAMS** (below) and `entity.changed { entity: 'agent-run' }` invalidates the
@@ -180,10 +180,19 @@ Components subscribe to query state, never to the socket; `WebSocketStatus` (hea
   guards (authenticated, owner/admin, global admin) and fine ability guards (`RequireAbility`,
   `<Can I="manage" a="Tenant">` from `components/permissions/`). `SideNav` item flags use the SAME
   guard as the page they open; `ProtectedRoute` requires a tenant for the whole shell EXCEPT
-  `/admin/*` and `/settings/platform/*` for a global admin (no membership needed — `useNavGuard`
-  then passes only `'globalAdmin'` / `'platformAdmin'` guards, so nothing tenant-scoped is linked).
-  `'platformAdmin'` is `canAdministerPlatform` from `@launch/shared/permissions` — the server's own
-  function — so Settings → Platform shows exactly to whom `/api/platform/*` answers
+  `/settings/*` (and the old `/admin/*` that redirects into it) for a global admin (no membership
+  needed — `useNavGuard` then passes only `'globalAdmin'` / `'platformAdmin'` guards, so nothing
+  tenant-scoped is linked). `'platformAdmin'` is `canAdministerPlatform` from
+  `@launch/shared/permissions` — the server's own function — so Settings' Connections, Coding
+  agents, Kit version and access requests show exactly to whom `/api/platform/*` answers. A guard
+  may be `{ anyOf: [...] }` (OR) — the Settings item is `SETTINGS_GUARD`, `admin` OR
+  `platformAdmin`
+- **Settings is ONE layout** (`pages/settings/SettingsLayout.tsx`): a grouped menu, a real path
+  per section (`lib/settings-paths.ts`), each section behind the guard its page always had, and
+  the menu decided by the pure `settingsModel.ts` with the same `useNavGuard`. A new setting is a
+  section there (id, path, guard) plus its page in `sectionPage` — never a new nav item, a new
+  `?tab=` or a second admin area. An address that moves gets a line in
+  `components/SettingsRoutes.tsx`; old addresses are never deleted
 - OAuth is a full-page redirect to `/auth/:provider?returnUrl=`; magic link via
   `POST /auth/magic-link/request`; `GET /auth/methods` drives which buttons render. `oidcOnly`
   auto-redirects to `/auth/oidc` — never on `?signedOut=1` / `?error=` / `?as=`, which would loop
@@ -297,14 +306,16 @@ the eager shell sees. The rules follow from that one fact:
 - **The route's guard and its nav item's guard are the SAME object**, declared once beside them, so
   a link can never point at a page its reader cannot open — `EXAMPLE_FEATURE_GUARD` is the pattern
 - **`nav` is a list of GROUPS**, spliced by `composeNav(CORE_NAVIGATION, …)`: `before: '<label>'`
-  inserts before that core group (the kit's own default is "Organisation"), and a group with no
+  inserts before that core group (the kit's own default is "Settings", the group holding the one
+  Settings item — `showsGroupLabel` hides a heading that only repeats its item), and a group with no
   `before` lands above it, which is where an app's own features go. A label that is not found
   appends. An UNLABELLED group whose insertion point is directly after an unlabelled group is
   MERGED into it (items appended, in order) instead of becoming a group of its own — a lone item
   after a group gap is the bug that rule fixes; a labelled group always stays a group. The kit's
   nav literal is `CORE_NAVIGATION`; `navigationConfig` is the composed result, and
   `filterNavConfig` applies the same guards to plugin items and drops any group they leave empty
-- `settingsTabs(ctx)` appends tabs after the kit's (`ctx.can` is the caller's ability);
+- `settingsTabs(ctx)` adds Settings sections under its "Plugins" group, each at
+  `/settings/plugins/<tab id>` (`ctx.can` is the caller's ability; organisation admins only);
   `agentForms` is the plugin's half of `AGENT_FORMS`
 - **`queryKeys` roots must start with `<id>:`** (checked by `plugins.test.ts`), so one plugin's
   invalidation can never reach another's cache. The `entity.changed` convention is unchanged and is

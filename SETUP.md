@@ -24,7 +24,7 @@ Mac that runs coding sessions locally, use `colima start --vm-type vz --vz-roset
 the session image is amd64-only, and QEMU emulation crashes it (`docs/SESSIONS-LOCAL.md` § Emulation).
 Or skip local session containers entirely: with the sandbox host deployed and `wrangler login`,
 `pnpm dev` also offers the **remote sandbox host** (real Cloudflare containers), chosen on Settings →
-Platform → Coding agents → Session sandbox (`docs/SESSIONS-LOCAL.md` § Real containers from a
+Coding agents → Session sandbox (`docs/SESSIONS-LOCAL.md` § Real containers from a
 laptop); `pnpm dev` says which of the two it could make available.
 On Linux install Docker
 Engine and add your user to the `docker` group. Confirm the tool works, then carry on.
@@ -171,7 +171,7 @@ pnpm seed --demo      # the same, plus each installed plugin's demo data (what t
 for `invited@example.test`, the global admin `admin@clewro.com` and one API key. Launch runs
 `TENANCY_MODE=single` (`.dev.vars`), so the one tenant is named after `APP_NAME` with slug
 `default`, and `admin@clewro.com` is also its owner; under `multi` it is `Acme` (`acme`). In single
-mode `owner@` and `admin@example.test` reach Setup (Settings → Platform) on their role alone. `--demo` additionally runs every installed plugin's
+mode `owner@` and `admin@example.test` reach Settings → Connections on their role alone. `--demo` additionally runs every installed plugin's
 `seedDemo` hook — the analytics plugin seeds its dashboards and rebuilds its fact table. Every demo
 row has a fixed id and is inserted `onConflictDoNothing`, so re-running adds nothing. Local
 database only — it is a `tsx` script over `DATABASE_URL`.
@@ -316,9 +316,8 @@ Webhook URL at `<the tunnel URL>/api/github/webhook` and set its secret as `GITH
 
 **Creating apps needs it.** The scaffold and deploy jobs run on GitHub and call Launch back at
 `APP_URL`, so `POST /api/apps` refuses with 409 `launch_not_reachable` while Launch is at
-`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Setup (sidebar →
-Platform → Setup, `/settings/platform/setup`) → 7.
-Public URL and click "Check now": Launch fetches its own `/ci/ping` through the tunnel and the step
+`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Settings → Connections →
+Public URL (`/settings/public-url`; Home's "Finish setting up Launch" links it) and click "Check now": Launch fetches its own `/ci/ping` through the tunnel and the step
 turns green.
 Verify: the printed `https://…` host opens the app; `/auth/methods` there reports the same providers
 as localhost. `.dev.vars` and the tomls are untouched.
@@ -421,14 +420,19 @@ otherwise you join as, or are promoted to, owner. Absent: promote by hand once �
 with nobody to approve it (Launch's tomls set `SIGNUP_MODE=approval`; the kit default is
 `invite_only`).
 
-**Where Setup lives.** The setup wizard (Launch's credentials, apps domain, GitHub App, Neon, Resend,
-public URL), the kit pin, the OIDC issuer's keys and the access-request queue are
-**Settings → Platform** (`/settings/platform/setup`, `/kit`, `/identity`, `/access-requests`; sidebar
-"Setup"). In single mode every organisation owner and admin can open it; in multi mode only global
-admins. `/admin` (organisations, users, feature flags, live sessions) stays global-admin only;
-the old `/admin/setup` links redirect. Verify: `/settings/platform/setup` opens as the first admin.
+**Where setup lives.** Everything is under the one **Settings** item in the sidebar. Launch's
+credentials and domain are **Settings → Connections** — one page each: Domain, Cloudflare, Neon,
+GitHub, Email (Resend), Sign-in (the upstream identity provider and the OIDC issuer's keys) and
+Public URL, each with its status dot in the menu (`/settings/domain`, `/cloudflare`, `/neon`,
+`/github`, `/email`, `/sign-in`, `/public-url`). The kit pin is **Settings → Kit version**, the
+coding agents **Settings → Coding agents**, and the access-request queue **Settings → People →
+Access requests**. In single mode every organisation owner and admin can open these; in multi mode
+only global admins. The **Operator** group (users, feature flags, all sessions; organisations in
+multi mode) stays global-admin only. Until every connection works, a platform admin's Home lists
+them under "Finish setting up Launch — n of 7". The old `/settings/platform/*` and `/admin/*`
+links redirect. Verify: `/settings/domain` opens as the first admin.
 
-**Kit version.** Settings → Platform → **Kit** is the Rocketflare kit every new app is cut from:
+**Kit version.** Settings → **Kit version** is the Rocketflare kit every new app is cut from:
 Launch's default release unless you change it. Choose **Follow latest** (the kit's newest release —
 the highest `X.Y.Z` tag, never a pre-release; Launch re-checks it hourly and moves the pin when a
 newer one appears, without upgrading existing apps; "Check now" checks at once), pin a **release
@@ -440,7 +444,7 @@ Launch's pin. Apps already launched keep their kit; a re-scaffold uses the pin a
 Verify: the card shows the tag (or `Unreleased commit`) with the short SHA you pinned, and for
 Follow latest "Checked …" and "Latest".
 
-**The GitHub App's Administration permission also writes rulesets.** Setup already requires
+**The GitHub App's Administration permission also writes rulesets.** Connections → GitHub already requires
 Repository › Administration: write (environments). From issue #5 Launch uses it for one more thing:
 it protects each app's default branch with a repository ruleset named `launch` — `Gate` (the kit's
 CI job) required, pull requests only, no force-push or deletion, and the App itself allowed to
@@ -452,8 +456,8 @@ Rulesets lists `launch` with your Launch GitHub App in its bypass list.
 
 ### 2.5 AI — chat, agents, embeddings
 Resolution (`docs/CONCEPTS.md` §9): a per-agent assignment → the tenant's default provider in
-Settings → AI → the platform `ANTHROPIC_API_KEY` → **Workers AI through the `AI` binding**. That last
-tier means **chat and agents work on a fresh workspace with nothing configured**: Settings → AI shows
+Settings → AI & models → the platform `ANTHROPIC_API_KEY` → **Workers AI through the `AI` binding**. That last
+tier means **chat and agents work on a fresh organisation with nothing configured**: Settings → AI & models shows
 chat readiness `Cloudflare Workers AI · glm-4.7-flash · platform default`. Read the
 cost line before relying on it, then pick any of these:
 
@@ -473,10 +477,10 @@ cost line before relying on it, then pick any of these:
    and `/chat` streams a reply.
 1. **Platform key (optional).** `ANTHROPIC_API_KEY=` in `apps/web/.dev.vars` (deployed:
    `wrangler secret put`, Part 3). Every tenant without its own chat provider then uses it with
-   `claude-sonnet-4-5` — it ranks above Workers AI. Verify: Settings → AI (as owner/admin) shows chat
+   `claude-sonnet-4-5` — it ranks above Workers AI. Verify: Settings → AI & models (as owner/admin) shows chat
    readiness `Anthropic · claude-sonnet-4-5 · platform default`; `curl -b <cookie>
    localhost:3001/api/ai/config/readiness` → `"chat":{…,"source":"platform","provider":"anthropic"…}`.
-2. **Tenant provider (no platform key).** Settings → AI → *Add provider*: scope `chat`, a label (it is
+2. **Tenant provider (no platform key).** Settings → AI & models → *Add provider*: scope `chat`, a label (it is
    the upsert key — renaming later means delete + re-add), provider `anthropic` / `anthropic_compatible`
    (Fireworks, Moonshot presets; base URL required) / `openai` / `openai_compatible`, model, API key
    (encrypted with `OAUTH_ENCRYPTION_KEY`, never shown again — the row reports `hasCredential`). The
@@ -608,7 +612,7 @@ Writing one of your own: `/launch-plugin`, or `apps/web/src/plugins/CLAUDE.md` a
 
 Nothing to configure — flags work out of the box, and Launch ships none yet (a flag is declared in
 `CORE_FEATURE_FLAGS` or by a plugin's `SharedPlugin.features`). Once one exists, as a global admin
-open **Admin → Feature flags**: set it to On, or to Rollout and the percentage decides
+open **Settings → Feature flags**: set it to On, or to Rollout and the percentage decides
 deterministically; force it on or off for one organisation and that beats the percentage either
 way.
 
@@ -623,7 +627,7 @@ Two things worth knowing before you add your own:
   surface the deployment does not ship. `docs/CONCEPTS.md` §15 has the incident this rule came from.
 
 Verify: `pnpm cli features list --json` prints the effective flags for your tenant; flipping one in
-`/admin` changes it on the next call.
+Settings → Feature flags changes it on the next call.
 
 ### 2.9 Rebrand checklist
 Done when Launch was seeded from Rocketflare 0.15.0: package names (`@launch/*`), worker names, DB
@@ -638,7 +642,7 @@ themes and logo are still the kit's.
 fresh clone: fill one git-ignored file at the repo root (`launch.deploy.env`, from
 `launch.deploy.env.example`), then type **`/launch-deploy`** in Claude Code or run
 `pnpm provision all`. It creates the GitHub App, the Neon project, the Cloudflare resources, the
-DNS, deploys, puts every Worker secret and writes the Setup page's credentials, pausing before each
+DNS, deploys, puts every Worker secret and writes the Connections credentials, pausing before each
 paid step under the skill. An instance never touches the committed tomls: its ids live in
 `.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
 `wrangler.toml`. Updating it is a rerun. `pnpm provision --help` lists the phases.
@@ -733,14 +737,15 @@ environment. `ANTHROPIC_API_KEY`, `EMBEDDINGS_API_KEY`, the two `LANGFUSE_*` key
 (Part 2.5/2.6): skip them and the features degrade as described there. `OPENAI_API_KEY` is optional
 too: what Codex sessions on Launch's account spend (`docs/CONCEPTS.md` §18.22). Which coding agents
 sessions run, and whether people may use their own Claude subscription or ChatGPT plan, is not a
-var: enable them on Settings → Platform → Setup → Coding agents (by default, Claude Code on
+var: enable them on Settings → Coding agents (by default, Claude Code on
 Launch's key only). Nor is where session containers run: a deployed Launch always uses its own
 containers (the Session sandbox setting's remote host is for development only).
 Verify: `pnpm web exec wrangler secret list -c wrangler.staging.toml` shows the names;
 `curl https://<staging-host>/api/health` returns ok, `curl https://<staging-host>/api/ready` returns
 ok (it runs a query — a 503 there means the Worker cannot reach Neon: under `neon` a missing or
 wrong `DATABASE_URL` secret, under `postgres` Hyperdrive pointing at the wrong host or SSL), and `/auth/methods` lists your providers. With Launch's `SIGNUP_MODE=approval` (the kit default is `invite_only`) the
-admin's first login lands on `/pending` under `multi` (the first organisation is created at `/admin`);
+admin's first login lands on `/pending` under `multi` (the first organisation is created from Settings → People → Access requests, which needs no
+membership);
 under `single` it creates the organisation with the admin as owner (Part 2.4).
 Point the CLI at it: `pnpm cli login --server https://<staging-host>`.
 

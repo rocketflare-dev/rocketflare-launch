@@ -277,9 +277,10 @@ kit's tests exercise the multi-tenant paths. Effects:
 - The one tenant is created at bootstrap: `pnpm seed`, or the first verified login of an address in
   `BOOTSTRAP_ADMIN_EMAILS`, who becomes `owner`
 - Every user admitted by `SIGNUP_MODE` is auto-joined as `member`; the session always resolves to it
-- Hidden/404: `OrgSwitcher`, `/select-tenant`, org create/delete, `/admin/tenants` list (collapses to
-  the tenant's detail). Kept: members/roles/invitations, "Workspace settings", `/admin` users and
-  access requests, analytics, AI settings
+- Hidden/404: `OrgSwitcher`, `/select-tenant`, org create/delete, the Settings → Organisations
+  list (its old `/admin/tenants` address lands on Settings → General). Kept: members/roles/
+  invitations and access requests (Settings → People), the Operator group's users, flags and
+  sessions, analytics, AI settings; the organisation is called "Organisation" throughout
 - `apps/web/tests/api/tenancy-single.test.ts` proves the disabled routes 404 and auto-join works
 - The CLI's `login` skips tenant selection (the one tenant is implied)
 

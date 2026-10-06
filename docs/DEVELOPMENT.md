@@ -71,7 +71,7 @@ Then `pnpm test:db:up && pnpm test` (the full suite against a throwaway Postgres
 - **Sign-up policy as configuration** — `SIGNUP_MODE=open|invite_only|approval`: personal tenants, invite-only, or an access-request queue that global admins approve into a new or existing tenant, with an optional email-domain allow-list.
 - **Roles and abilities** — `owner | admin | member` per tenant plus a platform `support` role and global admins; CASL abilities are computed server-side and shipped to the UI (`<Can>`, `RequireAbility`) so pages and nav use the same guard as the route.
 - **Invitations and members** — create, bulk-invite, resend, revoke, accept; change roles, remove members, transfer ownership; activity log of everything.
-- **Admin area** — `/admin` for global admins: tenants, users, access requests; "enter" a customer tenant as `support` with a real membership row, so the single "must be a member" invariant never bends.
+- **Operator settings** — Settings → Operator for global admins: organisations, users, feature flags, all sessions (access requests are under People); "enter" a customer tenant as `support` with a real membership row, so the single "must be a member" invariant never bends.
 - **Isolation by predicate, RLS in reserve** — every query filters by the session's tenant; every tenant table also ships a row-level-security policy, inert until `TENANT_SCOPE_MODE=enforce` (`docs/RLS.md`), with a catalog test that fails CI if a table is missed.
 
 ### Authentication
@@ -93,7 +93,7 @@ Then `pnpm test:db:up && pnpm test` (the full suite against a throwaway Postgres
 - **File storage** on R2 behind a `StorageService` seam: tenant-prefixed keys, bytes streamed through the Worker, an indexed `files` table, per-scope MIME and size limits, avatars wired end-to-end (upload UI → `/api/files/:id` with ETag/304).
 
 ### AI layer
-- **Tiered provider resolution with a zero-key floor** — per-agent model assignment → the tenant's own provider (keys encrypted at rest, tested from Settings → AI) → a platform key → **Workers AI through the binding** (`@cf/zai-org/glm-4.7-flash` by default, no key, billed to the Cloudflare account) → a clean 503. Providers: Anthropic, Anthropic-compatible (Fireworks, Moonshot presets), OpenAI, OpenAI-compatible (any local server such as Ollama), Workers AI for chat and embeddings.
+- **Tiered provider resolution with a zero-key floor** — per-agent model assignment → the tenant's own provider (keys encrypted at rest, tested from Settings → AI & models) → a platform key → **Workers AI through the binding** (`@cf/zai-org/glm-4.7-flash` by default, no key, billed to the Cloudflare account) → a clean 503. Providers: Anthropic, Anthropic-compatible (Fireworks, Moonshot presets), OpenAI, OpenAI-compatible (any local server such as Ollama), Workers AI for chat and embeddings.
 - **Streamed chat** — conversations and messages persisted per user, SSE frames with a shared event contract, auto-titles, prompt caching breakpoints, extended thinking off unless a tenant turns it on.
 - **Prompt registry** — prompts are code with `{{variables}}`; tenants override them in Settings → Prompts and revert with one click.
 - **Agents on Workflows** — `POST /api/agents/runs` enqueues and answers 202; runs are exclusive per tenant and agent via a partial unique index, emit a durable event timeline, cancel cooperatively, and reconcile against the Workflow engine on read. The `summarize-text` example shows structured output through a forced tool call; an Agents page shows live timelines.

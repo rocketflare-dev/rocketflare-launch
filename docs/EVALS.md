@@ -83,7 +83,7 @@ string can't check.
 | it agrees with a reference answer | `ReferenceJudge()` + `expected.output` |
 
 The full catalogue, with scoring, is `.claude/skills/launch-evals/reference.md`. LLM judges run
-through the `evals-judge` prompt (Settings → Prompts), on whatever model Settings → Agent models
+through the `evals-judge` prompt (Settings → Prompts), on whatever model Settings → AI & models → Agent models
 assigns it, or on `--judge-model <id>` for one run. Every judge call is costed in `ai_usage`
 (feature `evals.judge`) and never counted in a case's own spend.
 
@@ -100,7 +100,7 @@ pnpm eval knowledge --judge-provider gemini                # a non-Claude judge
 
 `--provider anthropic` (the default) is the resolver's platform tier. `fireworks` and `gemini`
 write a real, encrypted `ai_configs` row on each case's tenant (Fireworks through the kit's own
-`fireworks` preset, which is exactly what Settings → AI offers a tenant; Gemini as
+`fireworks` preset, which is exactly what Settings → AI & models offers a tenant; Gemini as
 `openai_compatible` at Google's OpenAI-compatible endpoint), so those runs also exercise the
 tenant-config tier. `--model` picks a model on that
 provider. Fireworks serverless availability varies by account, so pick one your key can call.

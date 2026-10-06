@@ -17,7 +17,7 @@ a tenant id, and you never could. Any member may query (`read Analytics`).
 2. **A credential.** An API key acts as the person who created it, in that key's organisation.
    Pick one of these:
    - **A dedicated key (recommended for Claude and scripts).** In the app, go to **Settings → API
-     keys** (`/settings?tab=api-keys`) and create a key named after where it will live (for example
+     keys** (`/settings/api-keys`) and create a key named after where it will live (for example
      `mcp:claude-desktop`). Keys are created by owners and admins, and the key is **shown once**, so
      copy it then. It sees what its creator sees.
    - **The CLI's key.** `pnpm cli login --server http://localhost:3001` mints `cli:<hostname>` and

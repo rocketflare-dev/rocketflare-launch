@@ -37,19 +37,20 @@ suites on vitest 4, §9 — never part of the gate).
   `multi`, because the kit's tests exercise the multi-tenant paths.
 - **`SIGNUP_MODE = open | invite_only | approval` (D9)**, default `invite_only`; Launch deploys
   `approval` (both tomls), so a stranger's sign-in files a request an admin approves under Settings →
-  Platform → Access requests — in `single` that joins the one organisation (as `member` unless the
+  People → Access requests — in `single` that joins the one organisation (as `member` unless the
   reviewer picks another role). Uninvited logins land on `/pending`; `approval` also files an `access_requests` row at *verify* time;
   `open` gives a personal tenant through `onNoTenant`. Invitations are handled first on every login
   path, and every fallback gates on "has no memberships", not "is new".
-- **Roles (D10).** `owner | admin | member` plus `support` (minted from `/admin`, visible to the
+- **Roles (D10).** `owner | admin | member` plus `support` (minted from Settings → Organisations, visible to the
   customer); `users.isGlobalAdmin` is a platform flag. Default for a new subject: owner/admin/support
   `manage`, member `read` with route-scoped writes. "Own row" is always a route predicate — **CASL
   conditions are used nowhere**. Deleting a tenant and changing `owner` need an explicit
   `role === 'owner'` check. The matrix lives in `apps/web/src/permissions/` (+ its `CLAUDE.md`).
 - **One admin in single mode: `canAdministerPlatform`.** Two surfaces administer more than one
-  organisation's data. **`/api/platform/*` + `/settings/platform/*`** is the DEPLOYMENT: the setup
-  wizard (credentials, apps domain, public URL, template pin — every `launch_settings` /
-  `admin_credentials` write), the OIDC issuer's signing keys and the access-request queue. Its gate
+  organisation's data. **`/api/platform/*`** is the DEPLOYMENT — in the UI the Settings sections
+  Connections, Coding agents and Kit version (credentials, apps domain, public URL, template pin —
+  every `launch_settings` / `admin_credentials` write), Sign-in's issuer keys and People's
+  access-request queue. Its gate
   is `canAdministerPlatform(auth, config)` (`@launch/shared/permissions`, wrapped by
   `apps/web/src/permissions/platform.ts`, enforced by `platformAdminMiddleware`, mirrored by the
   UI's `platformAdmin` nav guard): a global admin, or **in `single` mode the one organisation's
@@ -57,16 +58,18 @@ suites on vitest 4, §9 — never part of the gate).
   the platform too. In `multi` mode it is `isGlobalAdmin` alone, exactly as before: one tenant's
   admin never holds credentials every tenant depends on. Those tables stay deployment-wide (no
   `tenant_id`); an action is audited in the admin's organisation with them as the actor.
-  **`/admin` + `/api/admin/*`** behind `globalAdminMiddleware` stays the operator's cross-tenant
+  **`/api/admin/*`** behind `globalAdminMiddleware` stays the operator's cross-tenant
   surface in every mode — organisations (list, suspend, enter as `support`, which creates a real
-  membership), users (the global flag, blocking), feature flags and live coding sessions — and its
-  nav entry shows only to global admins. Both are cookie-only (a tenant API key never passes), and a
-  global admin with no membership reaches both, so there is always someone to approve the first
-  request and finish Setup. A single-mode reviewer who is not a global admin approves only into
+  membership; multi mode only), users (the global flag, blocking), feature flags and live coding
+  sessions — Settings' **Operator** group, shown only to global admins. Both are cookie-only (a
+  tenant API key never passes), and a global admin with no membership reaches both (`/settings/*`
+  needs no membership for them), so there is always someone to approve the first request and
+  finish the Connections. **The UI is ONE Settings** (§7): every section keeps exactly its API's
+  gate, and the menu lists only what the reader may open. A single-mode reviewer who is not a global admin approves only into
   their own organisation, and grants `owner` only as an owner. The first admin (a
   `BOOTSTRAP_ADMIN_EMAILS` address on a verified login, and the seed's platform admin) is the
   organisation's **owner** in single mode (`admitBootstrapAdmin`: created as it, joined as it, or
-  promoted to it), so Setup is theirs on the tenant role, not only the global flag.
+  promoted to it), so the Connections are theirs on the tenant role, not only the global flag.
 - **Deleting a tenant has two halves.** The `tenantRef()` FK cascade removes everything in
   Postgres; the **`tenant.purge`** job (§5) removes the R2 prefix and runs each plugin's
   `onTenantDeleted`. The queue binding is checked *before* the `DELETE`.
@@ -81,8 +84,8 @@ suites on vitest 4, §9 — never part of the gate).
   `access.changed` nudges the affected users.
 - **Isolation = predicates + inert RLS (D1)** — §4, `docs/RLS.md`.
 
-**Known gaps:** in single mode the users list, blocking a user and feature flags stay on `/admin`
-(global admins only) — a single-company admin removes people from Settings → People instead;
+**Known gaps:** in single mode the users list, blocking a user and feature flags stay global-admin
+only (Settings → Operator) — a single-company admin removes people from Settings → People instead;
 dev-login does not apply `BOOTSTRAP_ADMIN_EMAILS` (the seed makes its admin an owner instead);
 no IdP group sync (SCIM/SAML claims); no group hierarchy or per-group roles;
 conversations, runs, prompts and non-Knowledge files have no visibility; agent-written documents
@@ -282,15 +285,31 @@ re-uploads leave the old object; no listing endpoint, quotas or presigned URLs; 
   CSS gets none.
 - **Providers**: ErrorBoundary → QueryClient → Auth → Ability → WebSocket → Router. A global 401
   clears the cache and redirects to `/login?returnUrl=`.
-- **Guards**: one `RequireGuard` primitive; nav items use the same guard as their page.
-  `/login?as=` dev sign-in only works when the server reports `devLogin` and the email is a seeded
-  account.
+- **Guards**: one `RequireGuard` primitive; nav items use the same guard as their page. A guard is a
+  role flag (`admin`, `platformAdmin`, `globalAdmin`), an ability pair, a feature flag, a list (AND)
+  or `{ anyOf }` (OR). `/login?as=` dev sign-in only works when the server reports `devLogin` and
+  the email is a seeded account.
+- **Nav and Settings**: the nav is Home, Apps, Secrets, Approvals, the analytics plugin's Analytics
+  and ONE Settings item (`{ anyOf: ['admin', 'platformAdmin'] }`). Settings
+  (`pages/settings/SettingsLayout.tsx`, paths in `lib/settings-paths.ts`, who sees what in the pure
+  `settingsModel.ts`) is a grouped menu with a real path per section — **Organisation** (General,
+  People = members + groups + access requests, Approval policies, API keys) · **Building apps**
+  (Coding agents, AI & models, Prompts, Kit version) · **Connections** (Domain, Cloudflare, Neon,
+  GitHub, Email, Sign-in, Public URL — each its own page, its setup dot in the menu) ·
+  **Activity** (Audit, Usage) · **Operator** (global admins: Users, Feature flags, All sessions,
+  and Organisations in multi mode) · **Plugins** (`UiPlugin.settingsTabs`). Each section keeps the
+  guard its page had before; a group the guards empty is not shown; below `lg` the menu is one
+  `<select>`. It replaced `/settings?tab=`, `/settings/platform/*` and `/admin/*`, and every old
+  address — the setup wizard's `#setup-<step>` anchors, `/audit`, `/activity` included — redirects
+  (`components/SettingsRoutes.tsx`). While a connection is unfinished, a platform admin's Home
+  leads with "Finish setting up Launch — n of 7" (a warning counts as finished).
 - **Data**: `api-client.ts` parses with shared schemas, there is one hook file per resource, and
   keys come from `queryKeys`. zustand holds only websocket state. Detail: `.claude/rules/ui.md`,
   `apps/web/src/ui/CLAUDE.md`.
 
 **Known gaps:** no route preloading; no "system" theme or cross-tab sync; the dev quick-login list
-is hard-coded.
+is hard-coded. Settings has no search across its sections, and the Settings nav item carries no
+badge (the pending access-request count and the setup dots show only inside Settings and on Home).
 
 ## 8. Analytics
 
@@ -479,7 +498,7 @@ single gate, which `deploy.yml` calls.
 runs the same phases one at a time and pauses before each paid one: `check` (read-only, names only)
 → `github-app` (a manifest flow: the user clicks Create, then Install) → `email create` → `neon` →
 `cloudflare` → `migrate` → `route` (the proxied wildcard) → `render` → `deploy` (drain guard on a
-session-image change) → `secrets` → `setup` (the Setup page's settings and credentials, sealed with
+session-image change) → `secrets` → `setup` (the Connections settings and credentials, sealed with
 the instance key and audited) → `email verify`. The committed tomls stay templates: the ids live in
 `.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
 `wrangler.toml`. Idempotent, so rerunning `all` is how an instance is updated; a second instance
@@ -597,7 +616,8 @@ The full gate stays green at every step. `SETUP.md` is the walkthrough.
   flags.
 - Resolved inside the session query, with no extra round trip. Gate every door: API mounts (404
   `feature_disabled`, not 403), plugin registries, **hooks that create rows**, and nav/routes.
-- Admin UI at `/admin/feature-flags`; a tenant override nudges that tenant.
+- Admin UI at Settings → Feature flags (`/settings/feature-flags`, global admins); a tenant
+  override nudges that tenant.
   `GET /api/features` / `launch features list` show effective state.
 - **Rejected**: Cloudflare Flagship. It has no notion of your tenants, whole-object `PUT` loses
   updates, it has no local store, and the browser SDK needs a token. It fits the kit's own
@@ -632,7 +652,8 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
   follows one pattern: `X = [...CORE_X, ...plugins]`. `ServerPlugin<S>` checks handlers, agents and
   prompts exhaustively against the plugin's own keys.
 - **Nav composition**: `UiPlugin.nav` groups are spliced by `composeNav` before the core group a
-  group names (`before`, default "Organisation"), appended when that label is missing. An
+  group names (`before`, default "Settings" — the group holding the one Settings item, whose heading
+  is not rendered because it only repeats its item), appended when that label is missing. An
   UNLABELLED group landing directly after an unlabelled group is MERGED into it, items appended in
   order — so the analytics plugin's one "Analytics" item sits in the first group instead of
   floating alone after a group gap. A labelled group always stays its own group. After guards,
@@ -827,7 +848,7 @@ revoked from `launch_app`. Actors are `user` (with email, IP, user agent, reques
 cron) or `app` (a relying party at the token endpoint); `actor_user_id` has no FK, so deleting a
 user never rewrites history. A summary is `{before?, after?}` and never carries a secret — a
 credential or client secret is recorded as `'set'`. `GET /api/audit` (admin+, filter by app and
-action, cursor-paged) backs the `/audit` page.
+action, cursor-paged) backs Settings → Audit (`/settings/audit`; the old `/audit` redirects).
 
 From P4 the log is sealed into a hash chain, verifiable and exportable (§18.18), and every
 approval's audit rows carry `approval_id`.
@@ -844,7 +865,7 @@ with any secret-looking key (`secret`, `token`, `password`, `apiKey`, …) reduc
 the actor is `user` with the email copied at write time (a scalar subquery on `users`), or
 `system` when the activity has no user. `activity_events` and `GET /api/activity` stay (the
 analytics plugin's cubes read the table); the UI's Activity page is gone, and `/activity`
-redirects to `/audit`, whose action filter takes `member`, `invitation`, `api_key` … like `oidc`.
+redirects to Settings → Audit, whose action filter takes `member`, `invitation`, `api_key` … like `oidc`.
 
 **Known gaps:** no SIEM stream (spec/08, P6); no retention policy; the page filters only by app and
 action. Kit activity is **forward-only**: rows recorded in `activity_events` before this landed
@@ -855,9 +876,11 @@ surfaced, unlike an awaited `recordAudit`.
 
 ### 18.2 Admin credentials and setup checks
 
-The setup wizard (`/settings/platform/setup`, `routes/setup.ts` at `/api/platform/setup`;
+Settings → Connections (one page per step — `/settings/domain`, `/cloudflare`, `/neon`,
+`/github`, `/email`, `/sign-in`, `/public-url`; `routes/setup.ts` at `/api/platform/setup`;
 `canAdministerPlatform` — a global admin, or in single mode the organisation's owner/admin, §1;
-the old `/admin/setup` link redirects, anchors kept) holds the Cloudflare account
+the old wizard at `/settings/platform/setup` and `/admin/setup` redirects, a `#setup-<step>`
+anchor to that step's page) holds the Cloudflare account
 token, the Neon org key, a full-access Resend key and the GitHub App (id, PEM, org), plus the
 settings beside them (apps domain, account id, Neon region, notifications domain, GitHub org). A
 credential is validated, SEALED with `OAUTH_ENCRYPTION_KEY` (one row per kind in
@@ -879,9 +902,9 @@ organization keys (404): a pinned id is checked against the static `NEON_REGIONS
 (`@launch/shared/launch-setup`; an unknown one is a warning, Neon validates it on the first
 create), and an unset one is pinned to where most of the org's projects already are, else
 `DEFAULT_NEON_REGION` (`aws-us-east-2`, Neon's default for a new project), with a warning either
-way. The wizard offers the list as a select with an "Other…" free-text fallback.
+way. Connections → Neon offers the list as a select with an "Other…" free-text fallback.
 
-**The public URL (step 7).** The scaffold job and every app's deploy job run on GitHub's runners
+**The public URL (Connections → Public URL).** The scaffold job and every app's deploy job run on GitHub's runners
 and call Launch BACK (`/ci/scaffold/*`, `/ci/deploy/*`) at the URL they were dispatched with —
 Launch's `APP_URL` (`issuerOf(cfg)`, the same value that is the jobs' OIDC audience, every app's
 `DEPLOYER_URL` and `OIDC_ISSUER`; under `pnpm dev` it is `.dev.vars`' `http://localhost:3000`,
@@ -894,7 +917,7 @@ expects the nonce back with an HMAC of it under its own `OAUTH_ENCRYPTION_KEY`, 
 hostname routes to THIS Launch (through the tunnel locally), not merely to something. A wrong
 proof or a non-ping answer fails; unreachable fails under `APP_ENV=development` and is a
 `warning` in a deployment (see the gap). The result is stored as `launch_settings.public_url_check`
-for the URL it ran against. The wizard's card shows it (the static half alone until someone clicks
+for the URL it ran against. Its Connections page shows it (the static half alone until someone clicks
 "Check now", `POST /api/platform/setup/public-url/check`, audited `public_url.checked`; the overview
 still never probes). **The gate**: `POST /api/apps`, a create run's retry and "Deploy to
 production" call `requirePublicUrl` first and refuse with 409 `launch_not_reachable` (`details`:
@@ -904,7 +927,7 @@ a static failure never probes. The Create modal shows the reason and links to th
 
 **Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
 creating a Worker; `NEON_REGIONS` is a hand-kept list (a region Neon adds later is only a
-warning until it is added); saving the apps domain through the API alone (not the wizard)
+warning until it is added); saving the apps domain through the API alone (not Connections → Domain)
 does not re-check, so the wildcard is created on the next save or check; checks run only when a credential is saved or re-checked, not on a schedule;
 one row per kind for the whole deployment, so a suite that needs credentials mocks the module
 over an in-memory store (`tests/helpers/credential-store.ts`) rather than racing the setup suite.
@@ -932,7 +955,8 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
 - **Keys** (`services/oidc/keys.ts`): `next → active → retiring → retired`; the next key is
   published before it signs, a retiring one stays in the JWKS until the longest token plus a
   cache margin has passed. Private JWKs are sealed; `/api/platform/oidc` lists and rotates
-  (`oidc.key.rotated`) — Settings → Platform → Identity, `canAdministerPlatform` (§1).
+  (`oidc.key.rotated`) — Settings → Connections → Sign-in, below the upstream identity provider,
+  `canAdministerPlatform` (§1).
 - **Access policy** (`services/oidc/policy.ts`): the person must be a member of the client's
   tenant; app owners (named or the owner group) always pass; `company` admits every member,
   `restricted` needs a user or group grant. A member refused is sent to `/request-access`
@@ -1337,9 +1361,9 @@ workflows (`kit.yml`, `plugin-ci.yml`, `notify-plugins.yml`) `kitOnly`, so the r
 on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). A
 `launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
 
-**Kit version (Platform → Kit).** A platform admin sets the pin on its own tab, Platform → Kit
-(`/settings/platform/kit`, `pages/platform/Kit.tsx` → `KitVersionCard`; Setup no longer carries it —
-it is not a setup step). The card shows the pin new apps get (repo, "Release X", "Latest release,
+**Kit version (Settings → Kit version).** A platform admin sets the pin on its own section,
+Settings → Building apps → Kit version (`/settings/kit`, `pages/platform/Kit.tsx` →
+`KitVersionCard`; not a connection — it has a default — so Home's setup checklist never asks). The card shows the pin new apps get (repo, "Release X", "Latest release,
 now X" or "Unreleased commit", short SHA; Default or Overridden) and takes one of three modes:
 **Follow latest**, a **release tag** (a combobox — `components/Combobox.tsx`, ARIA combobox with a
 listbox popup, full keyboard — over `GET /api/platform/setup/template-pin/tags`, loaded when it
@@ -1940,7 +1964,7 @@ the sandbox host's class, and the `CloudflareSandbox` adapter); everything else 
 always), `RepoHostPort` (GitHub, or the local git server), `ModelUpstream` and `SessionEgressPort`,
 all bound once in `defaultSessionPorts`.
 **Where the container runs — a platform setting** (`launch_settings.session_sandbox_host`,
-`services/sessions/sandbox-host.ts`; Settings → Platform → Coding agents → **Session sandbox**,
+`services/sessions/sandbox-host.ts`; Settings → Coding agents → **Session sandbox**,
 `PUT /api/platform/setup/session-sandbox`, platform admins, audited `setting.changed`). `local`
 (the default, and the only choice a deployed Launch offers — a stored `remote` is ignored there and
 a PUT of it refused): this Worker's `SESSION_SANDBOX` — under `wrangler dev`, local Docker. `remote`
@@ -2864,14 +2888,14 @@ release, as before.
 
 ### 18.14 Drain, the UI and the CLI
 
-**Drain** (`POST /api/admin/sessions/drain`, global admins, Admin → Sessions) sets
+**Drain** (`POST /api/admin/sessions/drain`, global admins, Settings → All sessions) sets
 `launch_settings.sessions_paused` (new sessions 409) and wakes every live session, whose
 `inspect#N` checkpoints and suspends it, and every suspended one that still keeps a warm container,
 whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume their own.
 `docs/DEPLOY.md` makes it a required step before a deploy that touches the image. **UI**: the
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
-"Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start
+"Coding sessions" card on the app page, Settings → All sessions. **CLI**: `launch sessions start
 [--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|preview-url` (§11; `show` prints each
 boot's `boot.timing`, §18.9). §18.22 adds the session card's
 agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
@@ -3383,7 +3407,7 @@ under the policy), a 409 shown as information, N-of-M progress, an expiry that t
 requester's reason, the per-kind context (a production deploy: version, commit, staging health, the
 PRs with their CI) and, for a release, its chain (`GET …/releases/:rid/chain`), beside the policy
 snapshot and the decisions (with "Waiting on": the eligible people, by name). It polls only while an
-approval is being carried out (`appliedAt` pending). **Settings → Approvals** (`manage
+approval is being carried out (`appliedAt` pending). **Settings → Approval policies** (`manage
 ApprovalPolicy`): per kind, the organisation's policy or the server-reported default, plus team/app
 overrides, and (issue #22) an explicit **Approval: Required / Not required** choice for the
 organisation (`approvalRequirement` / `requirementSentence` in `approvalModel.ts`). For
@@ -3597,7 +3621,7 @@ redirects there) shows the matched resources with a state per
 environment (held / pushing / requested with the request's link / missing with Request), the
 declared keys by plugin and the keys nothing matches. A `grant.request` approval names what the app
 would receive and who decides — `extraApprovers` in `approvalModel.ts` names the owner team,
-because the policy's own lists are empty; Settings → Approvals accepts a "Secret access" (`grant.request`) policy that
+because the policy's own lists are empty; Settings → Approval policies accepts a "Secret access" (`grant.request`) policy that
 names nobody for the same reason (`hasImplicitApprovers`). Ship's `ship.config_needs` row is one
 line in the session's ship panel. CLI: `launch shared ls|show|set|rotate|pushes` (values from a
 hidden TTY prompt or stdin, never argv) and `launch grants needs|ls|request|revoke`.
@@ -3754,7 +3778,7 @@ every runtime passes the contract suite (`tests/helpers/runtime-contract.ts`, ru
 id (`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
 
 **Where the switches live**: a PLATFORM SETTING, not a deployment var — the session policy's
-`runtimes` (`launch_settings.session_policy`), edited on Settings → Platform → Setup's **Coding
+`runtimes` (`launch_settings.session_policy`), edited on Settings → Coding agents' **Coding
 agents** card (`PUT /api/platform/setup/session-agents`, platform admins, audited
 `setting.changed` with the effective before and after). Per agent: on/off, its model (only a model
 `ai/pricing.ts` prices — `AGENT_RUNTIME_MODELS` is the offered list — because a budget needs a
@@ -3902,8 +3926,8 @@ valid for a year with no refresh, so a revoked one is noticed only at the next m
 
 #### 18.22-B Codex
 
-**Wired** (`services/sessions/runtimes/codex/`), off until an admin turns it on in the Setup page's
-Coding agents card — and, for ChatGPT plans, sets its "Who pays" to the person's own account or
+**Wired** (`services/sessions/runtimes/codex/`), off until an admin turns it on in Settings → Coding
+agents — and, for ChatGPT plans, sets its "Who pays" to the person's own account or
 Either. The image pins Codex 0.160.0 (`ARG CODEX_VERSION`, image `session-6`); the default model is
 Codex's own, `gpt-6.1-sol` (`DEFAULT_CODEX_MODEL`, priced in `ai/pricing.ts`), chosen on the same
 card (`runtimes.codex.model`); a session also offers `gpt-6-astra` and `gpt-6-luna` per message —
@@ -3943,7 +3967,7 @@ above, and the ChatGPT plan below).
   (Codex tries `wss://…/responses` first, then streams over HTTP); a live Codex session on Launch's
   account only; `POST /v1/responses` (and `/compact`) for the policy's model, and `GET /v1/models`
   unmetered; the budget; `Authorization: Bearer` from `resolveOpenAiKey` (the `openai_api_key`
-  credential — a card on the Platform → Coding agents tab, checked against Codex's model — else
+  credential — a card on Settings → Coding agents, checked against Codex's model — else
   `OPENAI_API_KEY`); `response.completed` metered into `ai_usage` as provider `openai`.
 - **A person's ChatGPT plan.** The lease (`credentials.ts`) CLAIMS the credential (another session
   holding it: "in use by another session"), writes `auth.json`, and on release — success, failure,

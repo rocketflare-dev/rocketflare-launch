@@ -240,9 +240,9 @@ needs, beyond the bindings above:
   and the route `*.<LAUNCH_DOMAIN>/*` (zone route) beside `LAUNCH_HOST`'s custom domain, which
   `deploy` creates. In the committed tomls the value is a template — and a second instance needs
   its own `LAUNCH_DOMAIN` (`docs/DEPLOYMENT.md` § 8).
-- **Secrets.** No new Worker secret: the Anthropic key is the Setup page's `anthropic_api_key`
+- **Secrets.** No new Worker secret: the Anthropic key is Settings → Coding agents' `anthropic_api_key`
   credential, falling back to `ANTHROPIC_API_KEY`. The GitHub App needs `checks: read` and
-  `statuses: read` on top of P2's permissions (the Setup check fails without them).
+  `statuses: read` on top of P2's permissions (the Connections → GitHub check fails without them).
 - **Egress.** `SESSION_EGRESS` in `[vars]` (both tomls, and the sandbox host's) picks the mode.
   `allowlist` (missing = this): internet OFF and an allow-list (`registry.npmjs.org`, `github.com`,
   `codeload.github.com`, `api.anthropic.com`, plus the session's Neon endpoint). `open` (what the
@@ -257,15 +257,15 @@ needs, beyond the bindings above:
   session.
 - **Agent runtimes and personal AI accounts** (`docs/CONCEPTS.md` §18.22). Not vars: which coding
   agents sessions run, each one's model and who pays (Launch, the person's own Claude subscription
-  or ChatGPT plan, or either) are set on Settings → Platform → Setup → **Coding agents**, a platform
+  or ChatGPT plan, or either) are set on Settings → **Coding agents**, a platform
   setting (`session_policy.runtimes`). With nothing set there: Claude Code on Launch's key only.
-  Where a session's container runs is a platform setting too (Settings → Platform → Coding agents →
+  Where a session's container runs is a platform setting too (Settings → Coding agents →
   **Session sandbox**, `launch_settings.session_sandbox_host`); a deployed Launch offers only its
   own containers, so there is nothing to set — the retired `SESSION_SANDBOX_HOST` var was
   development only and never in the tomls.
   `[[workflows]]` `AGENT_LOGIN_WORKFLOW` (`launch-agent-login`, staging `-staging`; nothing to
   create) runs a sign-in in a throwaway `login-<id>` sandbox of the existing `SessionSandbox` class
-  — those count against `max_instances`. Optional secret `OPENAI_API_KEY` (or the Setup page's
+  — those count against `max_instances`. Optional secret `OPENAI_API_KEY` (or Settings → Coding agents'
   `openai_api_key` credential, which wins): what Codex sessions on Launch's account spend; likewise
   `ANTHROPIC_API_KEY` or the `anthropic_api_key` credential for Claude Code. Nothing to do on a
   deploy. To offer Codex, deploy the `session-6` image (or later), then turn Codex on in the card
@@ -285,11 +285,11 @@ needs, beyond the bindings above:
   `booting`/`working` unless `--interrupt-turns` (`docs/DEPLOYMENT.md` § 6).
 - **Drain before a deploy that touches the image or `[[containers]]` — REQUIRED.** A rollout replaces
   running containers and cuts off a running turn (S7 finding 8). The steps:
-  1. Admin → Sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409
+  1. Settings → All sessions → **Drain** (`POST /api/admin/sessions/drain`): new sessions answer 409
      `sessions_paused`, and every live session is woken to checkpoint (commit + push + transcript
      to R2) and suspend; a running turn finishes first. A suspended session that still keeps a
      warm container (an idle suspend, below) is woken too, and its Workflow destroys the container.
-  2. Wait until Admin → Sessions shows no `ready` / `working` / `booting` session (and give the
+  2. Wait until Settings → All sessions shows no `ready` / `working` / `booting` session (and give the
      warm-suspended ones a few seconds to be cooled).
   3. Deploy.
   4. **Undrain** (`POST /api/admin/sessions/undrain`). People resume their own sessions (a message
@@ -708,6 +708,6 @@ fail a request; `wrangler tail` is where to look.
 | A Workflow hijacked by a name collision | fix the staging name, redeploy **both** workers (last deployer owns the name); stuck `agent_runs` rows settle on read (`GET /api/agents/runs/:id` → `reconcileRun` → `instance.status()`; `not_found` marks them `failed`) — except on the RESUME path, where `not_found` is recovered from by starting `<runId>-r1` rather than failing the run |
 | Fact tables stale or wrong after a deploy | `GET /api/analytics/facts/status` (or `launch analytics check-facts`) says which; fire the `15 * * * *` cron, or `launch analytics refresh-facts` for one organisation. Rows are derived data — a rebuild is always safe; a schema change to a fact table is a normal forward migration followed by one rebuild. **First check the cron is in both tomls at all**: it is the analytics plugin's declaration, and an install that skipped that step leaves a task nothing ever dispatches |
 | A dashboard renders empty / errors after a cube change | a cube member referenced by stored `analytics_pages.config` was renamed or removed — restore the member (names are frozen) or, per tenant, `POST /api/analytics/templates/recreate` (admin+) to re-copy the templates; user-created pages need a manual edit |
-| Tenant AI keys unreadable after rotating `OAUTH_ENCRYPTION_KEY` | there is no re-encrypt path: admins re-enter the key in Settings → AI (the row keeps its label/model, `hasCredential` flips back); the platform `ANTHROPIC_API_KEY` is unaffected |
+| Tenant AI keys unreadable after rotating `OAUTH_ENCRYPTION_KEY` | there is no re-encrypt path: admins re-enter the key in Settings → AI & models (the row keeps its label/model, `hasCredential` flips back); the platform `ANTHROPIC_API_KEY` is unaffected |
 
 Verify any rollback with `/auth/session` (`releaseVersion`), `launch status` and `wrangler tail`.

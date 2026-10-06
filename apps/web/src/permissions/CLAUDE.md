@@ -13,7 +13,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `TenantMember`, `Invitation`, `ApiKey`, `ActivityEvent` | manage | manage | manage | manage | read |
 | `Notification` (own, route-scoped) | manage | manage | manage | manage | manage |
 | `File` (D23) | manage | manage | manage | manage | create + read (own-file delete is `routes/files.ts`'s `ownerUserId` check, not CASL) |
-| `AiConfig`, `Prompt` (D17) | manage | manage | manage | manage | read (Settings → AI / Prompts are read-only for members; `/api/ai/usage` and `/api/ai/agent-models` writes need `manage AiConfig`) |
+| `AiConfig`, `Prompt` (D17) | manage | manage | manage | manage | read (Settings → AI & models / Prompts are read-only for members; `/api/ai/usage` and `/api/ai/agent-models` writes need `manage AiConfig`) |
 | `Conversation` (D17) | manage | manage | manage | manage | manage (own only — `routes/chat.ts` filters every query by `userId`; another member's thread is 404, admins included) |
 | `AgentRun` (D7, #17) | manage | manage | manage | manage | manage (own runs — `routes/agents.ts` filters by `requestedByUserId` unless `isAdminLevel(auth)`, which sees and cancels every run) |
 | `Group` (D29) | manage | manage | manage | manage | read (administering groups is `manage Group`; a member's only read is `GET /api/groups/mine`. Which ROWS a group lets you see is a SQL predicate in `services/access.ts`, never a CASL condition) |
@@ -31,7 +31,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 | `SharedResource` (Launch P5, spec/09) | manage | manage | manage | manage | read (in `ADMIN_MANAGED`: members see the bundles, item names and policy — what they need to ask; the owner GROUP's rights — values, items, holders — are `services/grants/access.ts`, never a grant; no subject reads a value) |
 
 - Actions: `manage` (wildcard) · `create` · `read` · `update` · `delete` · `access` (features only)
-- Roles come from `tenant_users.role`; `support` is minted only from `/admin`. `globalAdmin` is `users.isGlobalAdmin`.
+- Roles come from `tenant_users.role`; `support` is minted only from Settings → Organisations (global admins). `globalAdmin` is `users.isGlobalAdmin`.
   In single mode a `BOOTSTRAP_ADMIN_EMAILS` address is also made the organisation's `owner`
   (`admitBootstrapAdmin` in `services/auth.ts`), so it holds the platform on the role too
 - **Owner-only checks are explicit `role === 'owner'`, not CASL** (`isOwnerLevel` in
@@ -50,7 +50,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 
 `canAdministerPlatform(auth, config)` (`platform.ts`, over the pure `canAdministerPlatform` +
 `PLATFORM_ADMIN_ROLES` in `@launch/shared/permissions`) is the ONE rule for the deployment's own
-administration — the setup wizard and every `launch_settings` / `admin_credentials` write, the OIDC
+administration — Settings → Connections, Coding agents and Kit version, every `launch_settings` / `admin_credentials` write, the OIDC
 issuer's keys, the access-request queue:
 
 | | global admin | owner | admin | support | member |

@@ -30,7 +30,7 @@
   Checks GitHub has queued and not started (`status: queued`, no `started_at`) read "Waiting for
   GitHub to start the checks": `PrChecks` and `ship.ci` carry an optional `queued` count, and the
   session summary's `shipping` a derived `mainCi`. No migration.
-- **Approval policies say plainly when approval is off.** Settings → Approvals has an explicit
+- **Approval policies say plainly when approval is off.** Settings → Approval policies has an explicit
   Approval: Required / Not required choice per kind. For a session merge, Not required is no
   organisation policy — "Not required. Each app decides in its Ship settings (default: no review)"
   — instead of the code default that read as if review were on; for every other kind it approves
@@ -49,6 +49,25 @@
   it. A turn that has not answered yet — a ship's fix turn included, which the chat did not show at
   all — shows its time since `turn.start`, and after 30 s "Waiting for Claude's first reply".
   The gate command's live output is still only shown when it ends.
+- **Settings is one place.** The nav's Settings, Audit, Setup and Admin items are one Settings
+  item, opening one layout with a grouped menu and a real path per section: Organisation (General,
+  People — members, groups and access requests — Approval policies, API keys), Building apps
+  (Coding agents, AI & models, Prompts, Kit version), Connections (Domain, Cloudflare, Neon,
+  GitHub, Email, Sign-in, Public URL, each with its status dot), Activity (Audit, Usage), Operator
+  (global admins: Users, Feature flags, All sessions, and Organisations in multi mode) and the
+  installed plugins' tabs. Each section keeps exactly the guard its page had, a group with nothing
+  the reader may open is not shown, and on a small screen the menu is one select. Every old address
+  — `/settings?tab=…`, `/settings/platform/…` (its `#setup-<step>` anchors included), `/admin/…`,
+  `/audit`, `/activity` — redirects to its section. Single mode says "Organisation" throughout
+  (never "Workspace"), and a global admin reads as "Global admin" in the sidebar footer and the
+  user menu instead of their membership role.
+- **The setup wizard is a checklist on Home.** Its seven steps are each a Connections page now;
+  while any is unfinished, a platform admin's Home leads with "Finish setting up Launch — n of 7",
+  one line per connection with its state in words and a link to its page, and it disappears once
+  every one works.
+- **The organisations list says when it could not load.** In single mode its API answers 404, and
+  the list read that as "No organisations match"; single mode no longer lists organisations at all
+  (the one organisation's settings are General), and a failed load says so.
 
 - **A prebuild keeps its `node_modules`.** The prebuild's excludes were paths
   (`apps/web/.wrangler`, `node_modules/.vite`), and the Sandbox SDK also hands each to

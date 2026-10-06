@@ -19,10 +19,13 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `RocketBackground`: a canvas night sky, dark in BOTH themes, from the `--night-*` / `--rocket-*`
   colours in `index.css` `:root`, static under `prefers-reduced-motion`), `PendingInvitationsBanner`, `RoleBadge`, `EnvironmentBadge`, `ThemeToggle`, `ErrorBoundary`.
   Guards: `ProtectedRoute` (session + tenant → `noTenantRoute`; a global admin with NO tenant is
-  let through to `/admin/*` and `/settings/platform/*` only — `isAdminPath`), `RequireGuard` (any
-  `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`),
-  `Moved` (a redirect that keeps `?query#hash`; `to` may be a function of the old route's params —
-  the old `/admin/{setup,identity,access-requests}`, `/shared-config[/:id]` → `/secrets[/:id]`, and `/activity` → `/audit`),
+  let through to `/settings/*` and the old `/admin/*` only — `isAdminPath`), `RequireGuard` (any
+  `NavGuard`, incl. `'platformAdmin'` = `canAdministerPlatform` from `@launch/shared/permissions`
+  and `{ anyOf }` = OR), `Moved` (a redirect that keeps `?query#hash`; `to` may be a function of
+  the old route's params — `/shared-config[/:id]` → `/secrets[/:id]`, and every old settings
+  address in `SettingsRoutes`), `SettingsRoutes` (`settingsRoutes()`: the guarded `/settings/*`
+  plus the redirect table from `/settings/platform/*`, `/admin/*`, `/audit`, `/activity`),
+  `TenantFooter` (the sidebar's organisation + role; a global admin reads "Global admin"),
   `AdminRoute`/`GlobalAdminRoute` (sugar over it). `components/permissions/` — `AbilityProvider`
   (unpacks `session.permissions`), `Can`, `IfCan`/`IfCannot`. Realtime (D8): `WebSocketProvider`
   (connects the singleton once authenticated with a tenant, `useQueryClient()` →
@@ -159,9 +162,11 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   hard-navigates to `/auth/oidc?returnUrl=` once, EXCEPT on `?signedOut=1`, `?error=` or `?as=`
   (each would loop through the issuer) — then it shows the one SSO button; other methods are
   hidden, not disabled. `useAuth().logout` follows a `200 { endSessionUrl }` with `hardNavigate`,
-  else lands on `/login?signedOut=1`. `settings/`
-  is one page with `URLTabs` (`?tab=general|people|groups|api-keys|ai|prompts|agent-models|usage`;
-  `groups` only for `manage Group`, `agent-models` and `usage` only for `manage AiConfig`); `admin/` is nested routes under `AdminLayout` (the operator's area: organisations, users, feature flags, sessions — `globalAdmin`); `platform/` is nested routes under `PlatformLayout` at `/settings/platform` (`setup`, `kit`, `coding-agents`, `identity`, `access-requests` — `'platformAdmin'`: a global admin, or in single mode the organisation's owner/admin; real paths rather than a `?tab=` because a global admin with no membership must open them and the Create-app modal deep-links `/settings/platform/setup#setup-public_url`; paths live in `lib/platform-paths.ts` so no link imports a lazy page); `chat/ChatPage.tsx` is
+  else lands on `/login?signedOut=1`. `settings/SettingsLayout.tsx`
+  is EVERY setting (`/settings/*`, see "Settings" below); `admin/` (Users, Feature flags, All
+  sessions, Organisations) and `platform/` (Connections via `Connection.tsx` + `setup/` cards, Kit,
+  Coding agents, the issuer keys in `Identity.tsx`, Access requests) are the pages it mounts —
+  they keep their directories, no longer their own layouts; `chat/ChatPage.tsx` is
   `/chat/:conversationId?` (D17, guard `read Conversation`, lazy — its chunk carries the markdown
   renderer). `agents/` — `/agents` (`AgentsPage`, the roster + runs table) and `/agents/runs/:runId`
   (`RunPage`, its OWN lazy chunk), both `read AgentRun`; `documents/DocumentsPage.tsx` —
@@ -208,15 +213,16 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   (`hardNavigate`) so the cookie round-trips cleanly.
 - No active tenant → `noTenantRoute(session)`: access request → `/pending`; memberships →
   `/select-tenant`; `signupMode === 'approval'` → `/pending`; else `/no-access`. Exception: a
-  global admin opens `/admin/*` and `/settings/platform/*` with no membership (the bootstrap admin
-  must be able to approve the first request and finish Setup), and `/pending` / `/no-access` show
-  them an "Open the admin area" link. In that state `useNavGuard` allows ONLY `'globalAdmin'` and
-  `'platformAdmin'` guards (every tenant page hides),
+  global admin opens `/settings/*` (and the old `/admin/*`) with no membership (the bootstrap admin
+  must be able to approve the first request and finish the Connections), and `/pending` /
+  `/no-access` show them an "Open Settings" link. In that state `useNavGuard` allows ONLY
+  `'globalAdmin'` and `'platformAdmin'` guards (every tenant page and Settings section hides),
   `OrgSwitcher` reads "No organisation", `NotificationsBell` and the Profile / Notifications
   menu links render nothing, and `WebSocketProvider` never connects (it needs a tenant id).
 - Single-tenant mode (D25) hides: `OrgSwitcher`, `/select-tenant` (redirects home), org
-  create/delete and the slug field, the `new_org` approve branch, and collapses `/admin/tenants`
-  to the one detail. Read it via `useTenancyMode()`.
+  create/delete and the slug field, the `new_org` approve branch, and Settings → Organisations (the
+  old `/admin/tenants[/:id]` lands on Settings → General). It is "Organisation" everywhere, never
+  "Workspace". Read it via `useTenancyMode()`.
 - Coarse guards are role flags (`'admin'` = owner/admin/support/globalAdmin, `'globalAdmin'`);
   fine gates are abilities (`{ action, subject }`, `<IfCan>`). Owner-ONLY actions (delete org,
   assign/strip owner) check `tenant.role === 'owner'` explicitly — `manage Tenant` is also held
@@ -245,18 +251,18 @@ A `CUSTOM kit.notice` renders
   `parseErrorBody` for the envelope. `EventSource` is not used (GET-only).
 - `ai_not_configured` (503) — from `POST /api/chat/conversations` (`ApiError`, toast suppressed in
   the hook) or from the send (`AiNotConfiguredError`) — or readiness `chat.ready === false` →
-  `ChatPage` renders the `EmptyState` with a "Configure AI" link to `/settings?tab=ai` for
+  `ChatPage` renders the `EmptyState` with a "Configure AI" link to `/settings/ai` for
   `manage AiConfig`, "ask an administrator" otherwise.
-- Settings → AI: the providers catalog (`GET /api/ai/config/providers`) has NO shared schema (it
+- Settings → AI & models → Providers: the providers catalog (`GET /api/ai/config/providers`) has NO shared schema (it
   is `services/ai/providers.ts` data), so `useAiConfig.ts` carries a permissive `passthrough`
   one. `PROVIDER_PRESETS`/`presetsFor`, `DEFAULT_MODELS`, `THINKING_*` come from
   `@launch/shared/ai/config`. The label is the upsert key `(tenant, scope, label)` — read-only on
   edit (renaming would create a second row). `apiKey` is write-only: blank on edit keeps the stored
   key (`hasCredential`); switching provider on edit requires a new key. `serviceTier: ''` clears.
   "Set default" re-posts the row with `isDefault: true` and no `apiKey`.
-- `/settings` is behind `RequireGuard guard="admin"`, so the member (`read AiConfig` /
-  `read Prompt`) read-only rendering of the AI and Prompts tabs is exercised component-level in
-  tests only; a member has no nav path to it.
+- The AI and Prompts sections are behind `guard="admin"`, so the member (`read AiConfig` /
+  `read Prompt`) read-only rendering of them is exercised component-level in tests only; a member
+  has no nav path to it.
 - Tests: `tests/ui/helpers/sse.ts` builds fake `text/event-stream` `Response`s (`sseResponse`,
   `streamResponse` for arbitrary chunking, `hangingSseResponse` for Stop). Bubbles remount when an
   optimistic id becomes the persisted one, so assert with `waitFor(() => getByText…)`, not `findBy`.
@@ -399,15 +405,15 @@ A `CUSTOM kit.notice` renders
   `lib/notificationLink.ts` maps a notification's `type` + `data` to a path (unknown → `null`) and
   is used by BOTH `NotificationsBell` and `/notifications`, so a parked run's bell entry opens the
   run rather than a list of notifications about it.
-- **Settings → Agent models** (`pages/settings/AgentModels.tsx`, tab `agent-models`, `manage
+- **Settings → AI & models → Agent models** (`pages/settings/AgentModels.tsx`, `/settings/ai/agent-models`, `manage
   AiConfig`): `GET /api/ai/agent-models` is the whole truth (every prompt key, its assignment, and
   the effective provider/model/source the server's planner computed — the page never re-derives
   it). Override modal = pick a chat `ai_configs` row (`configsForScope(configs, 'chat')`; blank =
   keep the default config) and/or type a model; validated with `upsertAgentModelRequestSchema` (at
   least one) and `PUT` sends ONLY the set fields (the PUT replaces the row, so a blank model
   clears it). "Use default" is `DELETE` — absence is the default. Source badges: `agent`
-  (assignment), `tenant`, `platform`, `none` (→ EmptyState linking `/settings?tab=ai`).
-- **Knowledge (`/documents`)**: the paginated documents table first, then `URLTabs` (`?tab=text|file`, like Settings) to add. Paste text posts
+  (assignment), `tenant`, `platform`, `none` (→ EmptyState linking `/settings/ai`).
+- **Knowledge (`/documents`)**: the paginated documents table first, then `URLTabs` (`?tab=text|file`) to add. Paste text posts
   `ingestTextRequestSchema` output (blank source omitted; the server defaults it to `upload`);
   Upload file checks the pick with `validateDocumentUpload` (the shared allowlist
   `DOCUMENT_UPLOAD_ACCEPT` + `MAX_UPLOAD_BYTES`) before any request, then `useUploadDocument()`
@@ -476,7 +482,7 @@ A `CUSTOM kit.notice` renders
   context; a deploy of a release adds `pages/apps/components/ReleaseChain` (windowed, never
   virtualised). Group names come from `useGroupNames` — every group for `manage Group`, otherwise
   the reader's own, and the rest are COUNTED in words rather than fetched.
-- **Settings → Approvals** (`settings/ApprovalPolicies.tsx` + `ApprovalPolicyModal.tsx`): the
+- **Settings → Approval policies** (`settings/ApprovalPolicies.tsx` + `ApprovalPolicyModal.tsx`): the
   organisation row or the SERVER-reported default per kind, then team/app overrides; the modal
   validates with `putApprovalPolicySchema` and refuses a policy with no approver and no
   auto-approve. Issue #22: each kind's organisation row has an explicit Approval: Required / Not
@@ -509,8 +515,9 @@ A `CUSTOM kit.notice` renders
 - **Session budget**: `budgetAccess(session, canExtend, pendingId)` decides once whether the reader
   extends (owners/admins — their click also approves), asks (the creator), or reads; header and
   banner take the same object.
-- **`/audit` is the one log** (`pages/Audit.tsx`, nav "Audit" under Organisation; the kit's Activity
-  page and its `useActivity` hook are gone and `/activity` is a `Moved` to `/audit`). Kit activity
+- **Settings → Audit is the one log** (`pages/Audit.tsx` at `/settings/audit`, the Activity group;
+  the kit's Activity page and its `useActivity` hook are gone, and `/audit` and `/activity` are
+  `Moved` to it). Kit activity
   events arrive there with their type as the action (`member.role_changed`), so the action filter's
   prefixes are `member`, `invitation`, `api_key`, `group`, `tenant` as well as `oidc`, `app` ….
   What a row SAYS is the pure `pages/auditModel.ts` (`auditSummaryText` — `key: before → after`
@@ -518,6 +525,44 @@ A `CUSTOM kit.notice` renders
   `title`; `tests/config/audit-model.test.ts`).
 - Tests: `approvals-inbox`, `approval-policies`, `release-chain`, `app-overview`, `audit-integrity`, the P4 cases
   in `session-page` and `apps-create`; fixtures in `tests/ui/helpers/approvals.ts`.
+
+## Settings
+
+- **One nav item, one layout.** The nav is Home, Apps, Secrets, Approvals (+ the analytics
+  plugin's Analytics) and Settings, whose guard is `SETTINGS_GUARD` = `{ anyOf: ['admin',
+  'platformAdmin'] }` — in multi mode an organisation owner is not a platform admin and a global
+  admin with no membership is not an organisation admin, and both have sections to open. It sits in
+  a core group labelled "Settings" (the plugins' `DEFAULT_NAV_ANCHOR`); `showsGroupLabel` hides a
+  heading that only repeats its one item.
+- **`pages/settings/SettingsLayout.tsx`** renders "Settings" (the page's `h1`), a grouped menu and
+  the active section beneath its own `<Routes>`. What exists and who sees it is the pure
+  `settingsModel.ts` (`settingsGroups({ single, pluginTabs })` → `visibleSettingsGroups(groups,
+  canAccess)` → `firstSettingsPath`; `tests/config/settings-model.test.ts`); every path is in
+  `lib/settings-paths.ts` (eager-safe — links import it, never a lazy page):
+  - **Organisation** — General (`admin`), People (`{ anyOf }` of its three tabs: Members `admin`,
+    Groups `admin` + `manage Group`, Access requests `platformAdmin`, with the pending count),
+    Approval policies (`admin` + `manage ApprovalPolicy`), API keys (`admin`)
+  - **Building apps** — Coding agents (`platformAdmin`), AI & models (`admin`; tabs Providers and
+    Agent models, `+ manage AiConfig`), Prompts (`admin`), Kit version (`platformAdmin`)
+  - **Connections** (`platformAdmin`) — Domain, Cloudflare, Neon, GitHub, Email, Sign-in, Public URL:
+    one `platform/Connection.tsx` told its `step`, reusing the `setup/` cards; Sign-in is the
+    upstream `IdentityCard` plus `Identity.tsx`'s issuer keys. The menu shows each one's `StatusDot`
+    from `useSetupOverview` (fetched only for a platform admin)
+  - **Activity** — Audit (`admin`), Usage (`admin` + `manage AiConfig`)
+  - **Operator** (`globalAdmin`) — Users, Feature flags, All sessions, and Organisations in multi
+    mode only (its API is multi-only; the list now says when a load FAILED rather than reading an
+    error as "No organisations match")
+  - **Plugins** — each `UiPlugin.settingsTabs` tab, `admin`
+  Each section's route is wrapped in `RequireGuard` with its own guard (redirecting to `/settings`,
+  which lands on the reader's first section); a group the guards empty is not rendered. Sections
+  that are pages of their own (Audit, a user, an organisation) title themselves with
+  `SectionHeader` (an `h2`), never a second `PageHeader`. Below `lg` the menu is one `<select>` of
+  the same groups; from `lg` it is a `nav aria-label="Settings"` of `ul`s labelled by their group,
+  the active section (longest path prefix) `aria-current="page"`.
+- **Old addresses are forever** (`components/SettingsRoutes.tsx`): `/settings?tab=<id>` (resolved
+  by `legacyTabPath`, plugin tab ids included), `/settings/platform/*`, the wizard's
+  `#setup-<step>` anchors (`legacySetupPath`), `/admin/*`, `/audit` and `/activity` all `Moved`
+  to their section, query and hash kept (`tests/ui/settings-layout.test.tsx` walks every one).
 
 ## Home
 
@@ -551,6 +596,12 @@ A `CUSTOM kit.notice` renders
   last reported (`healthVersion`) — the catalogue row carries no `lastDeployVersion` and no
   releases, so a release that failed before any deploy shows on the app page, not here.
   `UiPlugin.homeLinks` render last as one line of links. Tests: `home`, `app-thumbnails`.
+- **"Finish setting up Launch — n of 7"** (`home/SetupChecklistSection.tsx`, `platformAdmin`)
+  leads the page while any connection is unfinished: one row per connection in the Connections
+  menu's order — its dot (`aria-hidden`; the state is spelled out), its name linking to its
+  Settings page, its state in words — from `setupChecklist(steps)` in `homeModel.ts`. A `warning`
+  counts as done (magic-link-only sign-in is a choice), so the section can go away; it renders
+  nothing while loading, on an error, or once complete. It replaced the setup wizard page.
 
 ## Shared config and grants (Launch P5) — "Secrets" in the UI
 
@@ -596,8 +647,8 @@ A `CUSTOM kit.notice` renders
 - **Never gate on `{ action: 'access', subject: 'Feature:x' }`.** A global admin's `manage all`
   satisfies it, so they would see a nav item whose routes the server 404s — and the app this rule
   came from shipped exactly that. The flag is configuration; only `session.features` answers it.
-- `/admin/feature-flags` (`pages/admin/FeatureFlags.tsx` + `FlagOverrides.tsx`, lazy, the
-  `globalAdmin` guard the whole `/admin` block already carries) separates the two layers visually:
+- Settings → Feature flags (`/settings/feature-flags`, `pages/admin/FeatureFlags.tsx` +
+  `FlagOverrides.tsx`, the `globalAdmin` guard of the whole Operator group) separates the two layers visually:
   `availableInEnvironment` is config a redeploy moves, everything else is a click. Overrides offer
   three states — On / Off / Default — because deleting the row (follow the platform state) is a real
   third answer a checkbox cannot express; the section is absent in single mode, matching the routes.
@@ -607,7 +658,7 @@ A `CUSTOM kit.notice` renders
 
 ## Groups and visibility (D29)
 
-- **Settings → Groups** (`pages/settings/Groups.tsx`, tab `groups`, `manage Group`): group TYPES on
+- **Settings → People → Groups** (`pages/settings/Groups.tsx`, `/settings/people/groups`, `manage Group`): group TYPES on
   the left, that type's groups on the right, `GroupMembersModal` for who is in one. The tab does not
   render at all without the ability — a picker or a table you cannot save from is worse than no tab,
   which is the same rule `agent-models` follows.
@@ -643,7 +694,8 @@ A `CUSTOM kit.notice` renders
   `Suspense`; `SideNav`'s `navigationConfig` is `composeNav(CORE_NAVIGATION, …)` (an UNLABELLED
   plugin group landing right after an unlabelled group is merged into it, so the analytics item
   sits in the first group; `filterNavConfig` drops a group its guards empty);
-  `SettingsLayout` appends `settingsTabs(ctx)`; `queryKeys` is `CORE_QUERY_KEYS` spread with every
+  `SettingsLayout` lists `settingsTabs(ctx)` under its "Plugins" group at
+  `/settings/plugins/<tab id>`; `queryKeys` is `CORE_QUERY_KEYS` spread with every
   plugin's families; `pages/agents/forms/index.ts` is `CORE_AGENT_FORMS` plus every plugin's.
   **Nothing in the shell names a plugin** — that is what makes install and remove a handful of
   barrel lines, and reversible by deleting a directory.

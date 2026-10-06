@@ -1,6 +1,6 @@
 ---
 name: launch-deploy
-description: Deploy (or update) your own Launch instance on your Cloudflare account and domain from one git-ignored file, launch.deploy.env — the GitHub App, Neon, Cloudflare resources, migrations, DNS, the deploy, every Worker secret, the Setup page's credentials and email, pausing before each paid or outward step. Rerun it to update an instance.
+description: Deploy (or update) your own Launch instance on your Cloudflare account and domain from one git-ignored file, launch.deploy.env — the GitHub App, Neon, Cloudflare resources, migrations, DNS, the deploy, every Worker secret, the Connections credentials and email, pausing before each paid or outward step. Rerun it to update an instance.
 disable-model-invocation: true
 argument-hint: "[--skip-email] [update]"
 ---
@@ -129,8 +129,8 @@ means the key is missing from the file (restore it from backup, don't `--rotate`
    first admin address (with `--skip-email`, run
    `pnpm --filter @launch/web exec wrangler tail -c wrangler.deploy.toml` and point them at the
    link in the log).
-2. Walk them through **Settings → Platform → Setup** (`docs/DEPLOYMENT.md` § 4): Check on every
-   card, the Public URL check, pin the kit version. Then **Settings → Platform → Coding agents**.
+2. Walk them through **Settings → Connections** (`docs/DEPLOYMENT.md` § 4; Home lists what is unfinished): Check on every
+   card, the Public URL check, then **Settings → Kit version** and **Settings → Coding agents**.
 3. The smoke test (`docs/DEPLOYMENT.md` § 5). You run `pnpm cli whoami` after they run
    `! pnpm cli login --server https://<LAUNCH_HOST>` (it opens a browser). They create a
    throwaway app, start a session, check the preview, and archive the app. You can watch
@@ -149,7 +149,7 @@ means the key is missing from the file (restore it from backup, don't `--rotate`
 3. **Is there a session-image change?** `deploy` compares a hash of `apps/web/containers/session/`
    and the `[[containers]]` block with the last deploy. Run the phases as in § 4 (pausing only
    before `deploy` on an update, since the others find what exists). If `deploy` refuses because
-   sessions hold a container, the drain is the user's: **Admin → Sessions → Drain**, wait until no
+   sessions hold a container, the drain is the user's: **Settings → All sessions → Drain**, wait until no
    session is `ready`/`working`/`booting`, then `pnpm provision deploy --drained`, then finish
    `secrets` → `setup` → `email verify`, then **Undrain**. Any deploy, image or not, also refuses
    while a session is `booting`/`working` (it would cut that turn): tell the user, wait, and only

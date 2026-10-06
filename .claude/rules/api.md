@@ -63,7 +63,7 @@ Auth is per-mount, not global: the public surface is enumerable and small.
   subject. **The nav is not the only door** — a surface with no nav entry gates independently, and
   the sharpest kind is a hook that CREATES rows, which is why `ServerPlugin.hooks.onTenantCreated`
   is handed `features` (the analytics plugin's dashboard templates are the worked example)
-- `TENANCY_MODE=single` (D25): routes that only make sense multi-tenant (`create-org`, `delete-org`, `/select-tenant`, `/admin/tenants` list) return 404 `tenancy_mode_single`; use the `requireMultiTenant` helper, don't inline the check
+- `TENANCY_MODE=single` (D25): routes that only make sense multi-tenant (`create-org`, `delete-org`, `/select-tenant`, the `GET /api/admin/tenants` list) return 404 `tenancy_mode_single`; use the `requireMultiTenant` helper, don't inline the check
 - **Administering the deployment is ONE predicate**: `canAdministerPlatform(auth, cfg)` (`permissions/platform.ts` over `@launch/shared/permissions`) — `isGlobalAdmin`, or in single mode `owner`/`admin`. A new deployment-wide surface (anything writing `launch_settings` / `admin_credentials`, or otherwise not an organisation's) mounts under `/api/platform/<x>` and inherits `platformAdminMiddleware`; never re-derive the rule in a route. The operator-only cross-tenant surface stays `/api/admin/*`
 - **A READ stream is not a write stream, and the terminal convention INVERTS** (issue #7,
   `services/agents/run-stream.ts`). `chat-turn.ts` emits `RUN_ERROR` when its body throws, and it is
@@ -94,7 +94,7 @@ Auth is per-mount, not global: the public surface is enumerable and small.
 - **Streaming routes speak AG-UI** (`services/ai/chat-turn.ts` is the ONE implementation; `routes/chat.ts` and `routes/agui.ts` are wrappers around it): resolve, authorise, validate and write anything that can fail as JSON **before** the stream opens — after the first frame a failure can only be a `RUN_ERROR`. Inside the stream use `streamDatabase(c)` (`utils/routes/route-helpers.ts`) for every write and close it in the stream's `finally`: `databaseMiddleware` ends the request's `db` in `waitUntil` the moment the Response object is returned, which is BEFORE the stream body runs. Transport is hono's generic `stream(c, cb)` plus `createAguiEncoder(c.req.header('Accept'))` (`services/ai/agui.ts`) — **never `streamSSE`**, whose `writeSSE` imposes an `event:` line and pins the content type, and spec AG-UI frames are `data:` only. `encodeBinary` covers SSE and protobuf in one path; await every write and the tracer flush inside the stream — there is no `defer` after the Response. A cancelled run emits NOTHING: closing with neither `RUN_FINISHED` nor `RUN_ERROR` IS the cancellation signal
 - **A coding session's agent and account are decided ONCE, at create** (§18.22,
   `services/sessions/credentials/resolve.ts`): the policy's `runtimes` — a PLATFORM SETTING the
-  Platform → Coding agents tab writes (`PUT /api/platform/setup/session-agents`), fail-closed to
+  Settings → Coding agents section writes (`PUT /api/platform/setup/session-agents`), fail-closed to
   Claude Code on Launch's key, never a deployment var — narrow the request, and nothing
   narrows them further (both sandbox hosts run every runtime on either account). WHERE its
   container runs is decided at create too and frozen on the row (`sessions.sandbox_host`, the
