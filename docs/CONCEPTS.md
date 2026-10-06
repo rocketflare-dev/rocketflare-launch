@@ -235,7 +235,16 @@ work goes to `AGENT_RUN_WORKFLOW`, and cron only dispatches.
   with RPC publish. `GET /ws` resolves the cookie itself. **"DB is the truth, WebSocket is a
   nudge"**: events carry ids, and the UI invalidates the query-key roots from
   `REALTIME_INVALIDATIONS`. The `entity` of `entity.changed` IS the query-key root. All nudges go
-  through `services/realtime.ts` inside `defer`, after commit.
+  through `services/realtime.ts` inside `defer`, after commit. The two entities that fire most
+  while something ships are narrowed by `invalidationsFor`: `{ entity: 'session', id }` refreshes
+  that session's detail, PR and events plus the session lists, never another session's page;
+  `{ entity: 'release', appId, id? }` refreshes that app's releases card, pipeline strip and
+  compare (and the release's own keys). The payload may carry `appId` for that; ids only, always.
+- **Polling while connected**: the shipping views (session, session lists, the PR panel, releases,
+  the pipeline strip, an approval's owed apply) read `useRealtimeConnected()` and pass it to their
+  pure interval functions: open socket → a slow fallback (15–30 s), closed → today's pace (3–15 s).
+  `WebSocketProvider` re-reads those families (`RESYNC_ON_RECONNECT`: `session`, `release`,
+  `approval`) once when the socket comes back after a drop, since a nudge sent meanwhile is lost.
 
 **Known gaps:** `/api/admin` paths do not nudge; `notification.read` is never emitted;
 `activity.record` has no producer; the DO 101 upgrade is untestable under Node; no dead-letter
@@ -2608,7 +2617,11 @@ no reopen, the session no longer shipping: the PR stays open and nothing is wait
 composer's blocked sentence names the stage; End is hidden while `merging` (the route's 409); the
 Ship confirm words what will happen from the app's ship settings. A session is polled every
 `SESSION_LANDING_POLL_MS` (15 s) while its landing moves — `shipped` included, while `releasing` /
-`deploying` — and never while it waits on a reviewer (`approval`). The app page's **Shipping** card
+`deploying` — and never while it waits on a reviewer (`approval`); with the realtime socket open
+that poll is a 30 s fallback (`SESSION_LANDING_CONNECTED_POLL_MS`; a moving session 15 s, the PR
+panel 30 s), because every landing move nudges the session: `casLanding` (each stage change,
+whichever of a round, the cron or a webhook advanced it) and the `ship.*` events through the
+session emitter, and `refreshChecks` when a PR's CI verdict changes (the panel's GET, the cron). The app page's **Shipping** card
 (`ShipSettingsCard`, Settings → Shipping) is a summary — the settings as two sentences and, for
 owners and admins, one line about the main branch — and its **Change** button opens the form in a
 modal: "go live on staging" or "open a pull request for review on GitHub", and who reviews (nobody
@@ -2794,6 +2807,15 @@ deploy run failed at "<job>" (<run url>)`), audited `release.failed` (target the
 in the chain) — settled on the read, and only from a fresh reading (a cached one may predate a
 re-run, which `releaseRunStarted` moves back out of `failed`). A `failed` release keeps the reading
 that failed it; no other status reads GitHub, and a GitHub error is a null run, never a failed read.
+**Realtime**: a reading that changed (`tagRunChanged`) or failed the release nudges `entity.changed
+{ entity: 'release', id, appId }`, and every 2xx write on `/ci/deploy` (start, upload, activate,
+finish — never the job's `GET` poll) nudges `{ entity: 'release', appId }` and `{ entity: 'apps',
+id }` from the router (`nudgeDeployMoved`), so the card and the strip move with the deploy run. With
+the socket open the releases list polls every 30 s while a release is in flight, and the strip 20 s
+while its candidate is `tagged`/`staging` (its read is what follows the tag run, at the server's
+20 s window) or 30 s while `promoting`; closed, both stay at 5 s. A session landing in `deploying`
+still sees staging go live only at its own next round (`LAND_STAGING_WAIT_SECONDS`) — the deploy
+run's nudge refreshes the app page, not the Workflow.
 
 **Release on merge (issue #5, `docs/plans/i5-ship-to-staging.md` §1.8–§1.9, §1.14).** After Launch
 merges a session's PR — or after `sessions.checks` ADOPTS a person's merge of it on GitHub in a

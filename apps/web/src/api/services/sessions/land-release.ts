@@ -374,7 +374,7 @@ export async function landStaging(ctx: SessionStepContext): Promise<LandStagingR
             ctx.cfg,
             await getAppRow(ctx.db, ctx.ref.tenantId, session.appId),
             read,
-            { now: ctx.now(), logger: ctx.logger }
+            { now: ctx.now(), logger: ctx.logger, realtime: ctx.realtime }
           )
         ).release
       : read

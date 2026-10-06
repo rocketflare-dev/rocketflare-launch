@@ -15,6 +15,14 @@
   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` secrets and account id, `pnpm deploy:sandbox-host`,
   then `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars` (`docs/SESSIONS-LOCAL.md`). Until then nothing
   changes: a remote cold resume clones and installs. No migration.
+- **Shipping updates in real time, with much less polling.** Every landing move (`casLanding`),
+  every changed PR verdict (`refreshChecks`, from the panel or the cron), every changed reading of
+  a release's tag run, every write a deploy run makes on `/ci/deploy`, and an approval's apply
+  landing on a sweep retry now nudge the tenant's realtime hub (`entity.changed`, ids only). The
+  UI refreshes just the named session or app — a session nudge no longer refetches every other
+  session's page — and, while the socket is open, the ship card, the PR panel, the releases card,
+  the pipeline strip and an approval's apply poll only as a fallback: 15–30 s instead of 3–15 s.
+  With the socket down they poll as before, and a reconnect re-reads them once. No migration.
 - **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
   Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
   kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of

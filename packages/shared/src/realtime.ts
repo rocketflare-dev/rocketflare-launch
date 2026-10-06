@@ -6,6 +6,8 @@
  * `apps/web/src/ui/lib/query-keys.ts`); the server emits, the UI reacts, both through this file.
  */
 import { z } from 'zod'
+import { RELEASE_REALTIME_ENTITY } from './launch-releases'
+import { SESSION_REALTIME_ENTITY } from './launch-sessions'
 import { sharedPlugins } from './plugins/index'
 
 export const realtimeEventTypeSchema = z.enum([
@@ -23,10 +25,16 @@ export const realtimeEventTypeSchema = z.enum([
 ])
 export type RealtimeEventType = z.infer<typeof realtimeEventTypeSchema>
 
-/** Generic nudge: `entity` is a query-key root (`'members'`, `'activity'`…), `id` narrows it. */
+/**
+ * Generic nudge: `entity` is a query-key root (`'members'`, `'activity'`…), `id` narrows it, and
+ * `appId` names the app a per-app row belongs to (a release, a CI deploy run) so the UI can refresh
+ * just that app's views (`apps/web/src/ui/lib/realtime-invalidations.ts`). Ids only — never state:
+ * the client re-reads through the normal, authorized API.
+ */
 export const entityChangedPayloadSchema = z.object({
   entity: z.string().min(1),
   id: z.string().optional(),
+  appId: z.string().optional(),
 })
 export type EntityChangedPayload = z.infer<typeof entityChangedPayloadSchema>
 
@@ -77,11 +85,56 @@ export const REALTIME_INVALIDATIONS: Record<RealtimeEventType, string[][]> = {
   ],
 }
 
-/** The query-key roots an event should invalidate, including the `entity.changed` payload root. */
+/**
+ * Narrower keys for the nudges that fire most while something ships. A session's Workflow nudges
+ * `{ entity: 'session', id }` after every durable write (a turn's every flush, every landing
+ * round), and a release moves several times between its tag and production; invalidating the whole
+ * root for each one would refetch every OTHER session's page and every other app's release card in
+ * the tenant. So a nudge that names its row refreshes that row's queries and the lists it appears
+ * in — never a sibling's detail. A nudge without the id (or the app, for a release) falls back to
+ * the whole root.
+ *
+ * Each key is a PREFIX of a `queryKeys` factory in `apps/web/src/ui/lib/query-keys.ts`
+ * (`sessions.detail(id)`, `sessions.forApp(appId, …)`, `releases.promotion(appId)`…); a ui test
+ * asserts every key of those families is covered, so a new sub-key cannot silently go stale.
+ */
+const ENTITY_TARGETS: Record<string, (payload: EntityChangedPayload) => string[][] | null> = {
+  [SESSION_REALTIME_ENTITY]: ({ id }) =>
+    id
+      ? [
+          [SESSION_REALTIME_ENTITY, 'detail', id],
+          [SESSION_REALTIME_ENTITY, 'pr', id],
+          [SESSION_REALTIME_ENTITY, 'events', id],
+          // The lists a session row appears in: any app's (the nudge names no app) and the admin's.
+          [SESSION_REALTIME_ENTITY, 'app'],
+          [SESSION_REALTIME_ENTITY, 'admin'],
+        ]
+      : null,
+  [RELEASE_REALTIME_ENTITY]: ({ id, appId }) =>
+    appId
+      ? [
+          [RELEASE_REALTIME_ENTITY, 'app', appId],
+          [RELEASE_REALTIME_ENTITY, 'promotion', appId],
+          [RELEASE_REALTIME_ENTITY, 'compare', appId],
+          ...(id
+            ? [
+                [RELEASE_REALTIME_ENTITY, 'detail', id],
+                [RELEASE_REALTIME_ENTITY, 'chain', id],
+              ]
+            : []),
+        ]
+      : null,
+}
+
+/**
+ * The query keys an event should invalidate: the type's roots, or for `entity.changed` the
+ * payload's root — narrowed to the named row for the entities in `ENTITY_TARGETS`.
+ */
 export function invalidationsFor(event: RealtimeEvent): string[][] {
   if (event.type === 'entity.changed') {
     const parsed = entityChangedPayloadSchema.safeParse(event.payload)
-    return parsed.success ? [[parsed.data.entity]] : []
+    if (!parsed.success) return []
+    return ENTITY_TARGETS[parsed.data.entity]?.(parsed.data) ?? [[parsed.data.entity]]
   }
   return REALTIME_INVALIDATIONS[event.type]
 }

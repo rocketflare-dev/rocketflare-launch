@@ -10,7 +10,8 @@
  * Polling (ui.md) — only while the SERVER owes an answer: `tagged` (the tag's staging run is about
  * to start), `staging` (it is deploying) and `promoting` (the production run is deploying).
  * `staging_active` waits on a person to promote and `awaiting_approval` on an approver, so neither
- * polls; the rest are settled.
+ * polls; the rest are settled. With the realtime socket open the poll slows to a fallback: every
+ * deploy-run call (`/ci/deploy`), release write and changed tag-run reading nudges `release`.
  */
 import type { ApprovalDetail } from '@launch/shared/launch-approvals'
 import { type AppPromotion, appPromotionSchema } from '@launch/shared/launch-promotion'
@@ -34,8 +35,17 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/ui/lib/api-client'
 import { queryKeys } from '@/ui/lib/query-keys'
+import { useRealtimeConnected } from '@/ui/stores/websocketStore'
 
 export const RELEASES_POLL_MS = 5000
+/** The socket is open: a release's moves arrive as nudges, so the poll is only a safety net. */
+export const RELEASES_CONNECTED_POLL_MS = 30_000
+/**
+ * The strip while its candidate is `tagged` or `staging` with the socket open. Its own read is what
+ * follows the tag's deploy run on GitHub (`tag-run.ts`, one read per release per 20 s however many
+ * readers), so it keeps that pace: slower would leave the run's jobs unread for longer.
+ */
+export const PROMOTION_FOLLOW_POLL_MS = 20_000
 
 const IN_FLIGHT: readonly ReleaseStatus[] = ['tagged', 'staging', 'promoting']
 
@@ -44,27 +54,43 @@ export function releaseInFlight(release: Pick<Release, 'status'>): boolean {
   return IN_FLIGHT.includes(release.status)
 }
 
-/** `refetchInterval` for the releases list: poll while any release is in flight. Pure. */
+/**
+ * `refetchInterval` for the releases list: poll while any release is in flight — at the fallback
+ * pace while the realtime socket is open (`connected`). Pure.
+ */
 export function releasesPollInterval(
-  items: readonly Pick<Release, 'status'>[] | undefined
+  items: readonly Pick<Release, 'status'>[] | undefined,
+  connected = false
 ): number | false {
-  return items?.some(releaseInFlight) ? RELEASES_POLL_MS : false
+  if (!items?.some(releaseInFlight)) return false
+  return connected ? RELEASES_CONNECTED_POLL_MS : RELEASES_POLL_MS
 }
 
 const base = (appId: string) => `/api/apps/${appId}/releases`
 
 export function useReleases(appId: string | undefined, enabled = true) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.releases.forApp(appId ?? ''),
     queryFn: () => api.get(base(appId ?? ''), { schema: releaseListResponseSchema }),
     enabled: Boolean(appId) && enabled,
-    refetchInterval: q => releasesPollInterval(q.state.data?.items),
+    refetchInterval: q => releasesPollInterval(q.state.data?.items, connected),
   })
 }
 
-/** `refetchInterval` for the pipeline strip: poll while its candidate release is in flight. Pure. */
-export function promotionPollInterval(view: Pick<AppPromotion, 'candidate'> | undefined) {
-  return view?.candidate && releaseInFlight(view.candidate) ? RELEASES_POLL_MS : false
+/**
+ * `refetchInterval` for the pipeline strip: poll while its candidate release is in flight. With
+ * the socket open (`connected`), a candidate still on its tag run keeps the GitHub-follow pace
+ * (`PROMOTION_FOLLOW_POLL_MS`) and a promoting one falls back to `RELEASES_CONNECTED_POLL_MS`. Pure.
+ */
+export function promotionPollInterval(
+  view: Pick<AppPromotion, 'candidate'> | undefined,
+  connected = false
+): number | false {
+  const candidate = view?.candidate
+  if (!candidate || !releaseInFlight(candidate)) return false
+  if (!connected) return RELEASES_POLL_MS
+  return candidate.status === 'promoting' ? RELEASES_CONNECTED_POLL_MS : PROMOTION_FOLLOW_POLL_MS
 }
 
 /**
@@ -75,11 +101,12 @@ export function promotionPollInterval(view: Pick<AppPromotion, 'candidate'> | un
  * person, not the server.
  */
 export function useAppPromotion(appId: string | undefined, enabled = true) {
+  const connected = useRealtimeConnected()
   return useQuery({
     queryKey: queryKeys.releases.promotion(appId ?? ''),
     queryFn: () => api.get(`/api/apps/${appId}/promotion`, { schema: appPromotionSchema }),
     enabled: Boolean(appId) && enabled,
-    refetchInterval: q => promotionPollInterval(q.state.data),
+    refetchInterval: q => promotionPollInterval(q.state.data, connected),
   })
 }
 

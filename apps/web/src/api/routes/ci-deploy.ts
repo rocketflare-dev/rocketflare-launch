@@ -34,6 +34,7 @@ import {
   type GatewayContext,
   getDeploy,
   loadDeployVendors,
+  nudgeDeployMoved,
   startDeploy,
   ticketState,
   uploadDeploy,
@@ -56,8 +57,14 @@ export const ciDeployRouter = createRouter()
 const proven = new WeakMap<Request, GatewayContext>()
 
 ciDeployRouter.use('*', async (c, next) => {
-  proven.set(c.req.raw, await proveJob(c))
+  const ctx = await proveJob(c)
+  proven.set(c.req.raw, ctx)
   await next()
+  // Every write that answered 2xx may have moved a ticket or a release: one nudge here covers them
+  // all (`nudgeDeployMoved`). A `GET` is the job polling, and moves nothing.
+  if (c.req.method !== 'GET' && c.res.status < 400) {
+    nudgeDeployMoved({ defer: makeDefer(c), env: c.env }, ctx.caller)
+  }
 })
 
 function gatewayFor(c: AppContext): GatewayContext {

@@ -82,7 +82,12 @@ Read it before building or restyling a page; the app page (`pages/apps/app/`) fo
   lists poll while any listed row owes an answer); documents 5 s
   (`DOCUMENT_POLL_MS`) while a row is `pending`. Polling is the belt to the nudge's braces — a resource
   that has a server nudge still polls (the socket may be down); a resource without one (documents) polls
-  only. Never poll a settled row, never poll unconditionally, never fight `refetchInterval` with timers in tests
+  only. Never poll a settled row, never poll unconditionally, never fight `refetchInterval` with timers in tests.
+  A resource whose every move is nudged may slow its poll to a fallback while the socket is open:
+  the hook reads `useRealtimeConnected()` (`stores/websocketStore.ts`) and passes it to the pure
+  interval function as `connected` (`sessionPollInterval(row, connected)`, `releasesPollInterval`,
+  `promotionPollInterval`, `approvalPollInterval`); add its root to `RESYNC_ON_RECONNECT` in
+  `WebSocketProvider` so a reconnect re-reads what a lost nudge would have refreshed
 - Global 401: `QueryCache.onError` clears the client and redirects to `/login?returnUrl=` (D20)
 - Pagination meta is `{ page, pageSize, total, totalPages }`; `PaginationControls` consumes it
 
@@ -105,7 +110,9 @@ root map is **`REALTIME_INVALIDATIONS` / `invalidationsFor()` in `@launch/shared
 the UI — a new server event type adds its roots there, and `tests/ui` asserts every root is a real
 `queryKeys` family (`['invitations']`, `['pending-invitations']`, `['members']`, `['tenant']`…).
 **Convention: the `entity` string of an `entity.changed { entity, id }` nudge IS the query-key family
-root** — `invalidationsFor()` returns `[[entity]]`, so a resource whose server nudges
+root** — `invalidationsFor()` returns `[[entity]]` (narrowed to the named row for `session` and, with
+an `appId`, `release` — `ENTITY_TARGETS` in the same file; `tests/ui/websocket-provider.test.tsx`
+asserts every key of those families is still covered), so a resource whose server nudges
 `entity: 'agent-run'` names its family `['agent-run']` (`queryKeys.agentRuns.all`) and gets live
 refresh with zero hook-side socket code. When you add a resource: pick the root first, use the same
 string in the service's nudge and in `query-keys.ts`, and never subscribe to the socket from a hook.
