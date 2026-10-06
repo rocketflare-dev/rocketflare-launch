@@ -37,11 +37,18 @@
  */
 import { compareReleaseVersions } from '@launch/shared/launch-promotion'
 import { RELEASE_STAGING_TIMEOUT_MINUTES } from '@launch/shared/launch-releases'
-import type { SessionLanding } from '@launch/shared/launch-sessions'
+import {
+  type PrCheckState,
+  type PrChecks,
+  requiredCheckState,
+  type SessionLanding,
+  SHIP_MAIN_CI_MAX_MINUTES,
+} from '@launch/shared/launch-sessions'
 import { and, count, eq, gte, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import {
   type AppReleaseRow,
+  type AppRow,
   appEnvironments,
   appHealthChecks,
   auditEvents,
@@ -52,6 +59,7 @@ import { isApiError } from '../../utils/core/errors'
 import type { ApprovalDeps } from '../approvals/types'
 import { getAppRow } from '../launch/apps'
 import { SYSTEM_ACTOR } from '../launch/audit'
+import { getRef, listCheckRuns } from '../launch/github-app'
 import { checkAppHealth } from '../launch/health'
 import { type ReleaseClaimOutcome, withReleaseClaim } from '../launch/releases/claim'
 import {
@@ -60,6 +68,7 @@ import {
   RELEASE_TRIGGER_SESSION_MERGE,
   releaseListingPr,
 } from '../launch/releases/release'
+import { withRepoToken } from '../launch/releases/github'
 import { followTagRun } from '../launch/releases/tag-run'
 import { safeErrorMessage } from './events'
 import type {
@@ -205,6 +214,56 @@ async function recordReleased(
   }
 }
 
+/**
+ * Issue #21: what the release's bump commit will sit on. `land.main-ci` saw the merge commit's
+ * `Gate` green, so the tag's deploy skips its gate — unless another merge landed on the default
+ * branch since, which would make the bump's parent an untested commit and the deploy re-gate.
+ *
+ * - Not a `success` verdict (none, timeout, override): the deploy re-gates anyway — null.
+ * - The head is still the merge commit (or GitHub cannot be read): null, release now.
+ * - The head moved: its own `Gate` decides — `success` releases (the parent is tested);
+ *   `failure` releases too (the deploy re-gates; the newer merge's own landing stalls on it);
+ *   pending or not reported yet → `wait`, until {@link SHIP_MAIN_CI_MAX_MINUTES} after `land.main-ci`
+ *   let the release go, then `timeout` (release; the deploy re-gates, as before issue #11).
+ *
+ * The state is recorded on `release.created` (`trigger.parentGate`).
+ */
+async function bumpParentGate(
+  ctx: SessionStepContext,
+  app: AppRow,
+  landing: SessionLanding
+): Promise<{ state: 'success' | 'failure' | 'timeout' | 'wait'; head: string } | null> {
+  const gated = landing.mainCi
+  if (gated?.verdict !== 'success' || !landing.mergeSha) return null
+  let read: { head: string; state: PrCheckState } | null
+  try {
+    read = await withRepoToken(ctx.db, ctx.cfg, app, { contents: 'read', checks: 'read' }, async (token, repo) => {
+      const ref = await getRef(token, repo.owner, repo.repo, `heads/${repo.branch}`)
+      const head = ref.object.sha
+      if (head === gated.sha) return null
+      const runs = await listCheckRuns(token, repo.owner, repo.repo, head)
+      const checks = runs.map(r => ({
+        name: r.name,
+        state: (r.status !== 'completed'
+          ? 'pending'
+          : ['success', 'neutral', 'skipped'].includes(r.conclusion ?? '')
+            ? 'success'
+            : 'failure') as PrCheckState,
+      }))
+      return { head, state: requiredCheckState(checks as PrChecks['checks']) }
+    })
+  } catch (err) {
+    ctx.logger.warn({ err }, 'landRelease: could not read the default branch head; releasing')
+    return null
+  }
+  if (!read) return null
+  const { head, state } = read
+  if (state === 'success' || state === 'failure') return { state, head }
+  const waitedMs = ctx.now().getTime() - Date.parse(gated.at)
+  if (waitedMs >= SHIP_MAIN_CI_MAX_MINUTES * 60_000) return { state: 'timeout', head }
+  return { state: 'wait', head }
+}
+
 /** `land.release#K.R` (plan §1.8). */
 export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseResult> {
   const { db } = ctx
@@ -239,7 +298,7 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
     realtime: ctx.realtime,
     now: ctx.now,
   }
-  let outcome: ReleaseClaimOutcome<{ release: AppReleaseRow; shared: boolean }>
+  let outcome: ReleaseClaimOutcome<{ release: AppReleaseRow; shared: boolean } | { wait: true }>
   try {
     outcome = await withReleaseClaim(
       db,
@@ -248,13 +307,17 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
         // Re-check under the claim: the holder we waited on may have cut the release with us in it.
         const again = await releaseListingPr(db, listing)
         if (again) return { release: again, shared: await isShared(db, again, sessionId) }
+        // Issue #21: the bump's parent is the default branch's head NOW — gated only if it is
+        // still the merge `land.main-ci` saw green, or its own `Gate` is green too.
+        const parent = await bumpParentGate(ctx, app, landing)
+        if (parent?.state === 'wait') return { wait: true as const }
         const release = await createRelease(deps, {
           tenantId,
           app,
           bump: 'patch',
           userId: null,
           actor: SYSTEM_ACTOR,
-          trigger: { sessionId },
+          trigger: { sessionId, ...(parent ? { parentGate: parent.state } : {}) },
         })
         return { release, shared: false }
       }
@@ -269,7 +332,10 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
       error: safeErrorMessage(err, 'The release could not be cut'),
     }
   }
-  if (outcome.claimed) return recordReleased(ctx, outcome.value.release, outcome.value.shared)
+  if (outcome.claimed) {
+    if ('wait' in outcome.value) return { status: 'wait', waitSeconds: LAND_RELEASE_WAIT_SECONDS }
+    return recordReleased(ctx, outcome.value.release, outcome.value.shared)
+  }
 
   // Issue #11: the claim's wait starts once `land.main-ci` let the release go, not at the merge —
   // or at a person's Retry (issue #21), which moves `stageAt` past it.

@@ -1787,7 +1787,10 @@ export class FakeGitHub implements VendorHandler {
       const bytes = release.assetBytes?.get(name)
       if (!bytes) return ghError(404, 'Not Found')
       this.assetDownloads.push({ id, name })
-      return new Response(bytes, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } })
+      return new Response(bytes as unknown as BodyInit, {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      })
     }
     match = rest.match(/^\/releases\/tags\/(.+)$/)
     if (match && m === 'GET') {

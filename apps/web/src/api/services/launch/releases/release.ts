@@ -73,7 +73,14 @@ export interface CreateReleaseInput {
    * Issue #5: what cut it when no person did — a session's landing after its merge. Recorded on
    * `release.created` as `{ trigger: 'session.merge', sessionId }`.
    */
-  trigger?: { sessionId: string }
+  trigger?: {
+    sessionId: string
+    /**
+     * Issue #21: the bump's parent when another merge landed after the session's green main
+     * `Gate` (`land-release.ts` `bumpParentGate`) — its own `Gate` then decided.
+     */
+    parentGate?: 'success' | 'failure' | 'timeout'
+  }
 }
 
 /** `release.created`'s `trigger` for a release a session's merge cut (issue #5, plan §1.14). */
@@ -358,7 +365,11 @@ export async function createRelease(
         prs: prs.map(p => p.number),
         bump: input.bump,
         ...(input.trigger
-          ? { trigger: RELEASE_TRIGGER_SESSION_MERGE, sessionId: input.trigger.sessionId }
+          ? {
+              trigger: RELEASE_TRIGGER_SESSION_MERGE,
+              sessionId: input.trigger.sessionId,
+              ...(input.trigger.parentGate ? { parentGate: input.trigger.parentGate } : {}),
+            }
           : {}),
       },
     },

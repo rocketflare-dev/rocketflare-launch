@@ -395,6 +395,59 @@ describe('landRelease', () => {
     })
   })
 
+  it('another merge after the green main Gate: waits for the new head’s Gate, then releases on a tested parent (issue #21)', async () => {
+    const f = await fixture()
+    const session = await mergedSession(f, 'Gated on main', { mainCiAt: minutesAgo(1) })
+    // A person merges another PR after `land.main-ci` saw this merge green: main's head moves.
+    const other = await shipSessionPr(db, cloud, f.app, {
+      tenantId: f.tenantId,
+      userId: f.alice.id,
+      title: 'Merged meanwhile',
+    })
+    const head = cloud.github.merge(f.app.owner, f.app.repo, other.number)
+    cloud.github.setCheckRuns(f.app.owner, f.app.repo, head, [
+      { name: 'Gate', status: 'in_progress', conclusion: null },
+    ])
+    expect(await landRelease(stepCtx(session))).toEqual({
+      status: 'wait',
+      waitSeconds: LAND_RELEASE_WAIT_SECONDS,
+    })
+    expect(tagsOf(f.app)).toEqual([])
+    // The claim is not held while it waits.
+    expect((await claimOf(f.app))?.holder).toBeNull()
+
+    cloud.github.setCheckRuns(f.app.owner, f.app.repo, head, [
+      { name: 'Gate', status: 'completed', conclusion: 'success' },
+    ])
+    const released = await landRelease(stepCtx(session))
+    expect(released).toMatchObject({ status: 'released', version: '0.1.1' })
+    const [created] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.appId, f.app.app.id), eq(auditEvents.action, 'release.created')))
+    expect((created?.summary as { after?: unknown })?.after).toMatchObject({
+      sessionId: session.id,
+      parentGate: 'success',
+    })
+  })
+
+  it('another merge whose Gate never reports: releases after the bound, recorded as timeout (issue #21)', async () => {
+    const f = await fixture()
+    const session = await mergedSession(f, 'Gated long ago', { mainCiAt: minutesAgo(31) })
+    const other = await shipSessionPr(db, cloud, f.app, {
+      tenantId: f.tenantId,
+      userId: f.alice.id,
+      title: 'Merged meanwhile, no CI',
+    })
+    cloud.github.merge(f.app.owner, f.app.repo, other.number)
+    expect(await landRelease(stepCtx(session))).toMatchObject({ status: 'released' })
+    const [created] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.appId, f.app.app.id), eq(auditEvents.action, 'release.created')))
+    expect((created?.summary as { after?: unknown })?.after).toMatchObject({ parentGate: 'timeout' })
+  })
+
   it('takes over a stale claim', async () => {
     const f = await fixture()
     const session = await mergedSession(f, 'After a crash')
