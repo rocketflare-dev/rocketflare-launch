@@ -23,6 +23,7 @@ import {
   runSessionsPreviewUrl,
   runSessionsSay,
   runSessionsShip,
+  runSessionsShow,
   runSessionsStart,
 } from './commands/sessions'
 import { registerSharedCommands } from './commands/shared'
@@ -231,6 +232,10 @@ sessions
   .command('end <id>')
   .description('end a session (its branch is kept)')
   .action(action((ctx, cmd) => runSessionsEnd(ctx, cmd.args[0] ?? '')))
+sessions
+  .command('show <id>')
+  .description('show a session and how long each of its boots took')
+  .action(action((ctx, cmd) => runSessionsShow(ctx, cmd.args[0] ?? '')))
 sessions
   .command('ls <app>')
   .description('list an app’s sessions')

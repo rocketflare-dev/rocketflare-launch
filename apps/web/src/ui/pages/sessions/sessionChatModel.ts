@@ -14,7 +14,9 @@
  *   kit upgrade's auto-ship decision — a `status` row with an `upgrade.*` reason); the ones they do
  *   not (`turn.start`, `step`, any other `status`, `preview.ready`) render nothing here — boot has
  *   its own panel and the preview its own pane;
- * - `turn.end` becomes a footnote (how long, what it cost).
+ * - `turn.end` becomes a footnote (how long, what it cost — and for the first turn after a boot,
+ *   how long the agent took to answer, issue #8);
+ * - `boot.timing` (issue #8) is one quiet line: how long the boot took, phase by phase.
  *
  * Plus the selectors the page needs from the same rows, so nothing re-derives them:
  * `bootSteps` (the boot panel), `latestPreviewChangeSeq` (the preview reloads when the dev server comes back up),
@@ -29,7 +31,9 @@ import {
 } from '@launch/shared/ai/agents'
 import { agentModelLabel } from '@launch/shared/launch-agents'
 import {
+  type BootTimingPhase,
   type SessionAttachment,
+  type SessionBootTimingData,
   type SessionEvent,
   type SessionLanding,
   type SessionShipCiData,
@@ -45,6 +49,7 @@ import {
   type ShipLandingStage,
   type ShipReopenReason,
   type ShipStalledReason,
+  sessionBootTimingDataSchema,
   sessionBudgetReachedDataSchema,
   sessionShipCiDataSchema,
   sessionShipGateDataSchema,
@@ -65,6 +70,7 @@ import {
   upgradeSessionStatusDataSchema,
 } from '@launch/shared/launch-upgrades'
 import type { z } from 'zod'
+import { formatDuration } from '@/ui/lib/format'
 import {
   buildTimeline,
   humaniseToolName,
@@ -92,6 +98,8 @@ export type ChatItem =
       turn: number
       durationMs?: number
       costMicrocents?: number
+      /** Issue #8: the first turn after a boot only — how long until the agent's first output. */
+      firstTokenMs?: number
     }
   | { kind: 'notice'; id: string; seq: number; tone: NoticeTone; text: string; at: Date }
 
@@ -105,6 +113,27 @@ const INTERRUPTED_TEXT: Record<z.infer<typeof sessionTurnInterruptedDataSchema>[
       'The sandbox stopped (most likely it ran out of memory). Send a message to carry on from the last save.',
     timeout: 'Stopped: the turn ran past its time limit.',
   }
+
+/** What a `boot.timing` line calls each phase. */
+const BOOT_PHASE_WORDS: Record<BootTimingPhase, string> = {
+  db: 'database',
+  prepare: 'database prepare',
+  branch: 'database branch',
+  'sandbox.start': 'sandbox',
+  restore: 'restore',
+  repo: 'clone',
+  install: 'install',
+  bootstrap: 'bootstrap',
+  dev: 'dev server',
+  transcript: 'conversation',
+}
+
+/** `Ready in 1m 4s: database 3s, sandbox 12s, …` — one `boot.timing` row in words. Pure. */
+export function bootTimingText(data: SessionBootTimingData): string {
+  const lead = data.kind === 'boot' ? 'Ready' : 'Resumed'
+  const phases = data.phases.map(p => `${BOOT_PHASE_WORDS[p.phase]} ${formatDuration(p.ms)}`)
+  return `${lead} in ${formatDuration(data.totalMs)}${phases.length ? `: ${phases.join(', ')}` : ''}`
+}
 
 const usd = (microcents: number) => {
   const dollars = microcents / 100_000_000
@@ -213,6 +242,12 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
         text: parsed.data.message,
       }
     }
+    case 'boot.timing': {
+      const parsed = sessionBootTimingDataSchema.safeParse(event.data)
+      return parsed.success
+        ? { kind: 'notice', ...base, tone: 'info', text: bootTimingText(parsed.data) }
+        : null
+    }
     case 'error': {
       const parsed = agentErrorEventDataSchema.safeParse(event.data)
       return {
@@ -274,6 +309,8 @@ export function buildSessionChat(events: readonly SessionEvent[]): ChatItem[] {
     }
   }
   let model: string | null | undefined
+  // Issue #8: the first turn to end after a boot shows how long the agent took to answer.
+  let afterBoot = false
   for (const event of ordered) {
     if (CHAT_TIMELINE_TYPES.has(event.type)) continue
     if (event.type === 'turn.start') {
@@ -282,7 +319,14 @@ export function buildSessionChat(events: readonly SessionEvent[]): ChatItem[] {
       if (switched) model = switched.model
       continue
     }
-    const item = lifecycleItem(event)
+    if (event.type === 'boot.timing') afterBoot = true
+    let item = lifecycleItem(event)
+    if (item?.kind === 'turn-end') {
+      const first = sessionTurnEndDataSchema.safeParse(event.data)
+      const ms = first.success ? first.data.firstTokenMs : undefined
+      if (afterBoot && ms !== undefined) item = { ...item, firstTokenMs: ms }
+      afterBoot = false
+    }
     if (item) units.push(item)
   }
   units.sort((a, b) => a.seq - b.seq)

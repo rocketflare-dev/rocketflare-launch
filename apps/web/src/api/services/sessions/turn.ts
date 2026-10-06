@@ -758,6 +758,8 @@ async function executeTurn(
 ): Promise<ExecutedTurn> {
   const { turn, policy } = input
   const costBefore = Number(row.costMicrocents)
+  // Issue #8: the first token is measured from here — what the person waits through.
+  const startedAt = (opts.now ?? (() => Date.now()))()
   const sandbox = ports.sandbox(row.id)
   const params: StreamTurnParams = {
     turn,
@@ -784,7 +786,9 @@ async function executeTurn(
   // The images go into the container once, before the run (and its resume retry) reads them.
   const runtime = runtimeOf(row)
   const staged = await stageTurnAttachments(sandbox, row, input.attachments ?? [], opts)
-  if ('stop' in staged) return closeTurn(db, row, writer, turn, costBefore, runtime, staged)
+  if ('stop' in staged) {
+    return closeTurn(db, row, writer, { turn, startedAt }, costBefore, runtime, staged)
+  }
   params.attachments = staged.attachments
 
   // A conversation to resume whose transcript is not in the container (a resume that had nothing
@@ -806,7 +810,7 @@ async function executeTurn(
     await forgetConversation(db, row, writer, turn)
     run = await streamTurn(db, sandbox, { ...row, claudeSessionId: null }, writer, params)
   }
-  return closeTurn(db, row, writer, turn, costBefore, runtime, run)
+  return closeTurn(db, row, writer, { turn, startedAt }, costBefore, runtime, run)
 }
 
 /**
@@ -840,7 +844,7 @@ async function closeTurn(
   db: Database,
   row: SessionRow,
   writer: SessionEventWriter,
-  turn: number,
+  { turn, startedAt }: { turn: number; startedAt: number },
   costBefore: number,
   runtime: AgentRuntime,
   run: StreamTurnResult
@@ -871,6 +875,9 @@ async function closeTurn(
         ...(run.result.durationMs !== null ? { durationMs: run.result.durationMs } : {}),
         ...(run.result.usage ? { usage: run.result.usage } : {}),
         costMicrocents,
+        ...(run.firstOutputAt !== undefined
+          ? { firstTokenMs: Math.max(0, Math.round(run.firstOutputAt - startedAt)) }
+          : {}),
       },
     })
     executed = { status: 'completed', costMicrocents, result: run.result }
@@ -1073,6 +1080,8 @@ interface StreamTurnResult {
   failure: string | null
   /** Claude Code said or did something (a text, a tool call) — {@link resumeRefused} reads it. */
   output: boolean
+  /** Issue #8: when (`now()`) it first did — the turn's `firstTokenMs`. */
+  firstOutputAt?: number
 }
 
 /** A sentence for `turn.failed`, safe to store and show. */
@@ -1497,6 +1506,7 @@ async function runLeasedTurn(
       if (mapping.result) out.result = mapping.result
       if (mapping.events.length > 0) {
         out.output = true
+        out.firstOutputAt ??= p.now()
         writer.append(...mapping.events)
       }
       if (meter) {

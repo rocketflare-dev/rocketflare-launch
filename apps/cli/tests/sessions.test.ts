@@ -18,7 +18,9 @@ import {
   runSessionsPreviewUrl,
   runSessionsSay,
   runSessionsShip,
+  runSessionsShow,
   runSessionsStart,
+  sessionBoots,
 } from '../src/commands/sessions'
 import { EXIT_ERROR, EXIT_FORBIDDEN, exitCodeFor } from '../src/errors'
 import {
@@ -205,6 +207,78 @@ describe('sessions start / ls / end / preview-url', () => {
     await runSessionsPreviewUrl(ctx, ID, { open: true })
     expect(opened).toEqual([url])
     expect(out.content()).toContain(url)
+  })
+})
+
+describe('sessions show (issue #8)', () => {
+  const boot = {
+    kind: 'boot',
+    totalMs: 63_000,
+    phases: [
+      { phase: 'db', startMs: 0, ms: 4_000 },
+      { phase: 'sandbox.start', startMs: 4_000, ms: 12_000 },
+      { phase: 'install', startMs: 16_000, ms: 47_000 },
+    ],
+    traceId: 'b'.repeat(32),
+  }
+  const warm = { kind: 'warm', totalMs: 2_000, phases: [{ phase: 'dev', startMs: 0, ms: 2_000 }] }
+  const log = [
+    event(1, 'boot.timing', boot, 0),
+    event(2, 'turn.end', { turn: 1, durationMs: 9_000, firstTokenMs: 2_400 }),
+    event(3, 'turn.end', { turn: 2, durationMs: 5_000, firstTokenMs: 1_100 }, 2),
+    event(4, 'boot.timing', warm, 0),
+  ]
+
+  it('pairs each boot with the first turn that ended after it', () => {
+    const boots = sessionBoots(log.map(e => sessionEventSchema.parse(e)))
+    expect(boots.map(b => [b.kind, b.seq, b.firstTokenMs])).toEqual([
+      ['boot', 1, 2_400],
+      ['warm', 4, undefined],
+    ])
+  })
+
+  it('prints each boot’s phases, and { session, boots } with --json', async () => {
+    const routes = {
+      [`/api/sessions/${ID}/events`]: (url: URL) => eventsRoute(log)(url),
+      [`/api/sessions/${ID}`]: () => jsonResponse({ session: session({ turnCount: 2 }) }),
+    }
+    const human = await testContext({
+      store: await loggedInStore(),
+      fetch: mockFetch(routes).fetch,
+    })
+    await runSessionsShow(human.ctx, ID)
+    const text = human.out.content()
+    expect(text).toContain('first boot')
+    expect(text).toContain('63.0s · first reply after 2.4s')
+    expect(text).toMatch(/sandbox\.start\s+\+4\.0s\s+12\.0s/)
+    expect(text).toContain('warm resume')
+    expect(text).toContain(`traces show ${'b'.repeat(32)}`)
+
+    const json = await testContext({
+      store: await loggedInStore(),
+      fetch: mockFetch(routes).fetch,
+      json: true,
+    })
+    await runSessionsShow(json.ctx, ID)
+    const doc = JSON.parse(json.out.content())
+    expect(doc.session.id).toBe(ID)
+    expect(doc.boots).toHaveLength(2)
+    expect(doc.boots[0]).toMatchObject({ ...boot, firstTokenMs: 2_400 })
+  })
+
+  it('a session with no boot timing says so', async () => {
+    const { fetch } = mockFetch({
+      [`/api/sessions/${ID}/events`]: url => eventsRoute([])(url),
+      [`/api/sessions/${ID}`]: () => jsonResponse({ session: session() }),
+    })
+    const { ctx, out } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsShow(ctx, ID)
+    expect(out.content()).toContain('No boot timing recorded yet')
+  })
+
+  it('a follow prints a boot as one dim line', () => {
+    const line = formatSessionEvent(sessionEventSchema.parse(log[0]))
+    expect(line).toContain('booted in 63.0s (db 4.0s, sandbox.start 12.0s, install 47.0s)')
   })
 })
 

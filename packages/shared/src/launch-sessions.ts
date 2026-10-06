@@ -198,6 +198,8 @@ export const SESSION_EVENT_TYPES = [
   'ship.released',
   'ship.staging',
   'ship.reopened',
+  // Issue #8: how long each phase of a boot took, written once when the boot is done.
+  'boot.timing',
 ] as const
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
@@ -266,6 +268,12 @@ export const sessionTurnEndDataSchema = z
     durationMs: z.number().nonnegative().optional(),
     usage: sessionUsageSchema.partial().optional(),
     costMicrocents: z.number().int().nonnegative().optional(),
+    /**
+     * Issue #8: from the turn's start (Launch's clock, before the agent's process starts) to the
+     * first thing the agent said or did — a text or a tool call. The agent streams whole messages,
+     * so it is an upper bound on its first token. Absent on rows written before it was measured.
+     */
+    firstTokenMs: z.number().int().nonnegative().optional(),
   })
   .passthrough()
 export const sessionTurnFailedDataSchema = z
@@ -623,6 +631,54 @@ export const sessionShipReopenedDataSchema = z.object({
 })
 export type SessionShipReopenedData = z.infer<typeof sessionShipReopenedDataSchema>
 
+/**
+ * Issue #8: the phases a `boot.timing` row names — the boot checklist's steps (`sandbox.start` is
+ * the checklist's `sandbox`), with its `bootstrap` step split into the dependency install and the
+ * kit bootstrap after it. A boot lists only the phases it ran, in the order they started.
+ */
+export const BOOT_TIMING_PHASES = [
+  'db',
+  'prepare',
+  'branch',
+  'sandbox.start',
+  'restore',
+  'repo',
+  'install',
+  'bootstrap',
+  'dev',
+  'transcript',
+] as const
+export const bootTimingPhaseSchema = z.enum(BOOT_TIMING_PHASES)
+export type BootTimingPhase = z.infer<typeof bootTimingPhaseSchema>
+
+/** A first boot, a resume onto the kept container, or a resume that booted a new one. */
+export const BOOT_TIMING_KINDS = ['boot', 'warm', 'cold'] as const
+export const bootTimingKindSchema = z.enum(BOOT_TIMING_KINDS)
+export type BootTimingKind = z.infer<typeof bootTimingKindSchema>
+
+/**
+ * `boot.timing` (issue #8) — ONE row when a boot (or a resume) is done: what each phase took, by
+ * the clock of the step that ran it. `startMs` is from the boot's first phase, so phases that run
+ * alongside each other overlap and `totalMs` (first start → last end) is less than their sum.
+ * Ids and numbers only.
+ */
+export const sessionBootTimingDataSchema = z
+  .object({
+    kind: bootTimingKindSchema,
+    totalMs: z.number().int().nonnegative(),
+    phases: z.array(
+      z.object({
+        phase: bootTimingPhaseSchema,
+        startMs: z.number().int().nonnegative(),
+        ms: z.number().int().nonnegative(),
+      })
+    ),
+    /** The boot's trace in `ai_spans` (`launch traces show <id>`), when one was recorded. */
+    traceId: z.string().optional(),
+  })
+  .passthrough()
+export type SessionBootTimingData = z.infer<typeof sessionBootTimingDataSchema>
+
 /** Event type → the schema its `data` parses with; one lookup for the timeline and the projection. */
 export const SESSION_EVENT_DATA = {
   'user.message': sessionUserMessageDataSchema,
@@ -647,6 +703,7 @@ export const SESSION_EVENT_DATA = {
   'ship.released': sessionShipReleasedDataSchema,
   'ship.staging': sessionShipStagingDataSchema,
   'ship.reopened': sessionShipReopenedDataSchema,
+  'boot.timing': sessionBootTimingDataSchema,
 } as const satisfies Record<SessionEventType, z.ZodTypeAny>
 
 /** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */
@@ -668,7 +725,7 @@ export type SessionEvent = z.infer<typeof sessionEventSchema>
  * `services/sessions/agui-projection.ts`): an app's prefix (`launch.`), never the kit's `kit.`.
  * Its `value` is one `session_events` row as `sessionEventSchema` draws it (`at` an ISO string on
  * the wire) — the facts with no AG-UI frame of their own: `turn.end` / `turn.failed` /
- * `turn.interrupted`, `status`, `preview.ready`, `budget.reached`, `ship.*`, `error`.
+ * `turn.interrupted`, `status`, `preview.ready`, `budget.reached`, `ship.*`, `error`, `boot.timing`.
  */
 export const SESSION_CUSTOM_EVENTS = {
   event: 'launch.session.event',

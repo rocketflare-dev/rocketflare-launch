@@ -500,7 +500,7 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `~/.launch/config.json` (0600); `LAUNCH_API_KEY`/`LAUNCH_URL` override it for CI.
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
-case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
+case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|show|preview-url`
 drives Launch P3 coding sessions (§18.14; `start --runtime` picks the coding agent, §18.22) — `ship` follows the ship to live on staging by default,
 printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
 (`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
@@ -1521,6 +1521,20 @@ reload) is restarted as `<id>-rN` from the row.
   a later one of those hung. A prepare opens two (migrate, seed); a session on a `ready` `dev`
   none, or one when its migrations are newer; a session branched while `dev` is being prepared
   elsewhere two (it seeds its own branch).
+- **Boot timing (issue #8, `boot-timing.ts`).** `withProgress` times each boot step by its own
+  clock and returns it on the step's result (`timing`: start, duration, and the bootstrap's
+  `installMs`); the Workflow collects those from step RESULTS and hands them to the boot's LAST
+  step — `dev` on a first boot and a warm resume, `transcript#K` on a cold one — which writes ONE
+  `boot.timing` event: `kind` (`boot` | `warm` | `cold`), `totalMs` (first start → last end, so
+  phases that overlap count once) and `phases[]` (`db`, `prepare`, `branch`, `sandbox.start`,
+  `restore`, `repo`, `install`, `bootstrap`, `dev`, `transcript` — the ones that ran, each with
+  `startMs` from the boot's start and `ms`). The same phases go to `ai_spans` as a `session.boot
+  <kind>` trace (one `boot.<phase>` child each; its id is on the event), so `launch traces show`
+  draws a boot. Every `turn.end` carries `firstTokenMs` (from the turn's start to the agent's first
+  text or tool call — an upper bound on the first token, as the agent streams whole messages); the
+  page shows the boot as one quiet line and the first turn after it with "first reply after Ns",
+  and `launch sessions show <id> [--json]` lists every boot with its phases and that first reply.
+  A failure to record the timing is logged, never a failed boot; a boot that fails writes none.
 - **A session never changes a tracked file for its dev setup** (`rocketflare-dev.ts`). The kit's
   `bootstrap --offline` (a sandbox has no Cloudflare login, so `[ai]` must be off) comments the
   `[ai]` block out of BOTH wrangler tomls in place, and the checkpoint commits the whole tree — so
@@ -2573,7 +2587,8 @@ whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume th
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
 "Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start
-[--runtime]|say [--follow]|ship [--no-wait]|end|ls|preview-url` (§11). §18.22 adds the session card's
+[--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|preview-url` (§11; `show` prints each
+boot's `boot.timing`, §18.9). §18.22 adds the session card's
 agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the

@@ -12,6 +12,8 @@ import {
   type AppSessionDb,
   SESSION_WAKE_EVENT,
   type SessionEventType,
+  sessionBootTimingDataSchema,
+  sessionTurnEndDataSchema,
 } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,7 +57,7 @@ import { runTurn, turnKillScript } from '@/api/services/sessions/turn'
 import { SESSION_WARM_KEEP_MINUTES } from '@/api/services/sessions/warm'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
-import { apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
+import { aiSpans, apps, auditEvents, type SessionRow, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { claudeStreamJson } from '../helpers/fake-anthropic'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
@@ -483,6 +485,136 @@ describe('SessionWorkflow: boot', () => {
       return WAKE
     })
     expect(bootstrapSkips(h.sandbox())).toEqual(['db-check'])
+  })
+})
+
+describe('SessionWorkflow: boot timing (issue #8)', () => {
+  const timingsOf = async (row: SessionRow) =>
+    (await listSessionEvents(db, row.tenantId, row.id))
+      .filter(e => e.type === 'boot.timing')
+      .map(e => sessionBootTimingDataSchema.parse(e.data))
+
+  /** Idle past the idle window (a warm suspend), then resumed: `prepare` runs between the two. */
+  const suspendThenResume =
+    (h: Harness, prepare?: () => void) => async (_wait: RecordedWait, n: number) => {
+      if (n === 0) {
+        await patch(h.row, { lastActivityAt: new Date(Date.now() - 31 * 60_000) })
+        return undefined
+      }
+      if (n === 1) {
+        prepare?.()
+        await patch(h.row, { requestedAction: 'resume' })
+        return WAKE
+      }
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    }
+
+  it('a first boot writes ONE boot.timing after preview.ready, and a session.boot trace', async () => {
+    const h = await harness()
+    await patch(h.row, { pendingMessage: 'Change the Home heading' })
+    await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    const events = await listSessionEvents(db, h.row.tenantId, h.row.id)
+    const [timing, ...more] = await timingsOf(h.row)
+    expect(more).toEqual([])
+    expect(timing?.kind).toBe('boot')
+    expect(timing?.phases.map(p => p.phase)).toEqual([
+      'db',
+      'sandbox.start',
+      'repo',
+      'install',
+      'bootstrap',
+      'dev',
+    ])
+    // In the order they started, from the first one; the total spans them all.
+    const starts = timing?.phases.map(p => p.startMs) ?? []
+    expect(starts[0]).toBe(0)
+    expect([...starts].sort((a, b) => a - b)).toEqual(starts)
+    const last = timing?.phases.at(-1)
+    expect(timing?.totalMs).toBe((last?.startMs ?? 0) + (last?.ms ?? 0))
+    const types = events.map(e => e.type)
+    expect(types.indexOf('boot.timing')).toBeGreaterThan(types.indexOf('preview.ready'))
+    expect(types.indexOf('boot.timing')).toBeLessThan(types.indexOf('turn.start'))
+
+    // The same phases as spans: the root, then one child each, in the boot's own trace.
+    expect(timing?.traceId).toMatch(/^[0-9a-f]{32}$/)
+    const spans = await db
+      .select()
+      .from(aiSpans)
+      .where(and(eq(aiSpans.tenantId, h.row.tenantId), eq(aiSpans.traceId, timing?.traceId ?? '')))
+    const root = spans.find(s => s.parentSpanId === null)
+    expect(root?.name).toBe('session.boot boot')
+    expect(spans.filter(s => s.parentSpanId === root?.spanId).map(s => s.name)).toEqual(
+      expect.arrayContaining(timing?.phases.map(p => `boot.${p.phase}`) ?? [])
+    )
+    expect(spans).toHaveLength(7)
+
+    // The first turn says how long the agent took to answer.
+    const end = events.find(e => e.type === 'turn.end')
+    expect(sessionTurnEndDataSchema.parse(end?.data).firstTokenMs).toEqual(expect.any(Number))
+  })
+
+  it('the first session on an unprepared app counts its prepare and branch', async () => {
+    const h = await harness({ prepared: false })
+    await drive(h, async () => {
+      await patch(h.row, { requestedAction: 'end' })
+      return WAKE
+    })
+    const [timing] = await timingsOf(h.row)
+    expect(timing?.phases.map(p => p.phase)).toEqual([
+      'db',
+      'sandbox.start',
+      'repo',
+      'prepare',
+      'branch',
+      'install',
+      'bootstrap',
+      'dev',
+    ])
+  })
+
+  it('a warm resume writes its own: the sandbox and the dev server only', async () => {
+    const h = await harness()
+    const run = await drive(h, suspendThenResume(h))
+    expect(run.names).toContain('dev#1')
+    const timings = await timingsOf(h.row)
+    expect(timings.map(t => t.kind)).toEqual(['boot', 'warm'])
+    expect(timings[1]?.phases.map(p => p.phase)).toEqual(['sandbox.start', 'dev'])
+    expect(timings[1]?.traceId).not.toBe(timings[0]?.traceId)
+  })
+
+  it('a cold resume writes its own, through the conversation’s restore', async () => {
+    const h = await harness()
+    const run = await drive(
+      h,
+      suspendThenResume(h, () => h.sandbox().recreate())
+    )
+    expect(run.names).toContain('transcript#1')
+    const timings = await timingsOf(h.row)
+    expect(timings.map(t => t.kind)).toEqual(['boot', 'cold'])
+    expect(timings[1]?.phases.map(p => p.phase)).toEqual([
+      'sandbox.start',
+      'repo',
+      'install',
+      'bootstrap',
+      'dev',
+      'transcript',
+    ])
+  })
+
+  it('a boot that fails writes none', async () => {
+    const h = await harness()
+    h.ports.script(sandbox =>
+      sandbox.onBackground(/scripts\/bootstrap\.mjs/, { exitCode: 1, log: '✖ 5/10 migrate' })
+    )
+    await drive(h, () => {
+      throw new Error('the loop must not be reached')
+    })
+    expect((await reload(h.row)).status).toBe('failed')
+    expect(await timingsOf(h.row)).toEqual([])
   })
 })
 

@@ -49,6 +49,8 @@ const CUSTOM_ROW_TYPES = new Set<SessionEvent['type']>([
   'error',
   // P5: the shared config the PR needs (ShipPanel's "needs" line reads it from here).
   'ship.config_needs',
+  // Issue #8: what each phase of a finished boot took.
+  'boot.timing',
 ])
 
 export interface SessionProjectionState {

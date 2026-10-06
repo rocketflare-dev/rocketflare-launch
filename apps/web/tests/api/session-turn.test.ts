@@ -132,6 +132,8 @@ describe('runTurn: a turn that finishes', () => {
       durationMs: 6500,
       usage: { tokensIn: 6, tokensOut: 115, cacheRead: 40131, cacheWrite: 4865 },
       costMicrocents: 0,
+      // Issue #8: from the turn's start to Claude's first text or tool call.
+      firstTokenMs: expect.any(Number),
     })
 
     const after = await reload(row)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A session's boot is measured, phase by phase (issue #8).** When a boot is done (a first
+  boot, a warm resume or a cold one) the session writes ONE `boot.timing` event: what `db`,
+  `sandbox.start`, `repo`, `restore`, `install`, `bootstrap`, `dev` and the other phases it ran each
+  took, by the clock of the step that ran them, with the boot's total. The same phases are a
+  `session.boot` trace in `ai_spans`, so `launch traces show` draws a boot. Every `turn.end` now
+  carries `firstTokenMs` (how long the agent took to answer). The session page shows the boot as
+  one line and the first turn after it with "first reply after Ns"; the new `launch sessions show
+  <id> [--json]` lists every boot with its phases. No migration.
 - **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
   Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
   kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of
