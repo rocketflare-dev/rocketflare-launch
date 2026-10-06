@@ -658,6 +658,11 @@ export interface SessionBootstrapContext {
   /** A resume against an already-prepared database: the parts of the kit bootstrap to leave out. */
   skip?: readonly BootstrapSkip[]
   /**
+   * Run `pnpm install` before the kit bootstrap (default). False: `node_modules` is already the
+   * lockfile's — a workspace restored from the app's prebuild whose lockfile matched (issue #16).
+   */
+  install?: boolean
+  /**
    * The running step's detail, called only when it changes: `pnpm install`, then the kit
    * bootstrap's latest `✔ n/10 name` ({@link bootstrapProgressOf}). Never carries a secret.
    */
@@ -679,6 +684,8 @@ export interface SessionBootstrapContext {
 export interface BootstrapTimings {
   installMs: number
   bootstrapMs: number
+  /** False when the install was left out (`SessionBootstrapContext.install`). */
+  installed: boolean
 }
 
 /** A failed phase: the exit code and the TAIL of its output (never an env dump). */
@@ -821,13 +828,11 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(ctx.dbUri)))
 
   const t0 = Date.now()
-  await show(INSTALL_PROGRESS)
-  await runPhase(progressCtx, 'install', {
-    command: INSTALL_COMMAND,
-    timeoutMs: BOOTSTRAP_TIMEOUTS.installMs,
-    env,
-    what: 'pnpm install',
-  })
+  const installed = ctx.install !== false
+  if (installed) {
+    await show(INSTALL_PROGRESS)
+    await installDependencies(progressCtx)
+  }
 
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
@@ -846,7 +851,55 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   const t2 = Date.now()
 
   await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
-  return { installMs: t1 - t0, bootstrapMs: t2 - t1 }
+  return { installMs: t1 - t0, bootstrapMs: t2 - t1, installed }
+}
+
+/**
+ * Step 1 of {@link sessionBootstrap} on its own: `pnpm install` in the checkout, as a polled
+ * background command under the bootstrap lock. What a `prebuild` run installs with (issue #16) —
+ * the same command, so the prebuild's `node_modules` is exactly what a session's install makes.
+ */
+export async function installDependencies(
+  ctx: Omit<SessionBootstrapContext, 'dbUri'> & { dbUri?: string }
+): Promise<void> {
+  await runPhase({ ...ctx, dbUri: ctx.dbUri ?? '' }, 'install', {
+    command: INSTALL_COMMAND,
+    timeoutMs: BOOTSTRAP_TIMEOUTS.installMs,
+    env: sessionProcessEnv(ctx.dev),
+    what: 'pnpm install',
+  })
+}
+
+/** The dependency lockfile a prebuild is keyed on (issue #16): pnpm's, at the checkout's root. */
+export const LOCKFILE = 'pnpm-lock.yaml'
+
+/**
+ * What a checkout IS, for the prebuild (issue #16): its commit, that commit's tree, and the sha256
+ * of {@link LOCKFILE} (`lockfile=` empty when there is none) — `head=<sha>`, `tree=<sha>`,
+ * `lockfile=<hex>` lines.
+ */
+export const WORKSPACE_FACTS_COMMAND = `cd ${SESSION_WORKSPACE} && echo "head=$(git rev-parse HEAD)" && echo "tree=$(git rev-parse 'HEAD^{tree}')" && echo "lockfile=$( [ -f ${LOCKFILE} ] && sha256sum ${LOCKFILE} | cut -c1-64 )"`
+
+export interface WorkspaceFacts {
+  headSha: string
+  treeSha: string
+  /** Null when the checkout has no lockfile (nothing to compare: every restore installs). */
+  lockfileHash: string | null
+}
+
+/** {@link WORKSPACE_FACTS_COMMAND} in `sandbox`; throws when git cannot answer. */
+export async function workspaceFacts(sandbox: SandboxPort): Promise<WorkspaceFacts> {
+  const result = await sandbox.exec(WORKSPACE_FACTS_COMMAND, { timeoutMs: 60_000 })
+  const headSha = /head=([0-9a-f]{40,64})/.exec(result.stdout)?.[1]
+  const treeSha = /tree=([0-9a-f]{40,64})/.exec(result.stdout)?.[1]
+  if (result.exitCode !== 0 || !headSha || !treeSha) {
+    throw new Error(`git could not read the workspace: ${tailOf(result.stderr, [], 5)}`)
+  }
+  return {
+    headSha,
+    treeSha,
+    lockfileHash: /lockfile=([0-9a-f]{64})/.exec(result.stdout)?.[1] ?? null,
+  }
 }
 
 /** Upsert `vars` into the dotenv file at `path` (inside the container). */

@@ -458,6 +458,7 @@ export class CloudflareSandbox<S extends AnySandbox = AnySandbox> implements San
         ...(opts.name ? { name: opts.name } : {}),
         // node_modules and .dev.vars are git-ignored and are the point of the backup.
         gitignore: false,
+        ...(opts.excludes?.length ? { excludes: [...opts.excludes] } : {}),
         ...(mode === 'binding' ? { localBucket: true } : {}),
       })
       return {

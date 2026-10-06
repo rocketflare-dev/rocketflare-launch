@@ -274,6 +274,18 @@ const coreConfigSchema = z.object({
     z.enum(['off', 'binding', 'presigned']).optional()
   ),
   /**
+   * Issue #16: per-app prebuilds (`services/sessions/prebuild.ts`) — a workspace backup of the
+   * app's default branch with its dependencies installed, built in a container of its own after a
+   * first boot and after every merge Launch makes, which a new session restores instead of cloning
+   * and installing. `on` (unset) wherever workspace backups are on for the session's host; `off`
+   * never builds or restores one — e.g. on a laptop whose Docker cannot take a second container
+   * beside a booting session.
+   */
+  SESSION_PREBUILD: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.enum(['on', 'off']).default('on')
+  ),
+  /**
    * `SESSION_WORKSPACE_BACKUP=presigned`: where the container reaches R2 — the allow-list gains
    * this origin's host, else `<account>.r2.cloudflarestorage.com` from the account id below. The
    * SDK reads the same three names from the Worker's environment.

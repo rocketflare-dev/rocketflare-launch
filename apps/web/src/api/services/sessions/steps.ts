@@ -100,6 +100,7 @@ import {
   sandboxHostOf,
   sessionAllowedHosts,
 } from './ports'
+import { releasePrebuildClaim } from './prebuild'
 import {
   type BootstrapSkip,
   healDevSetup,
@@ -474,6 +475,11 @@ export const CHECKOUT_ERROR_LINES = 15
  * session's branch — from the remote when an earlier run pushed it (a resume), else fresh from
  * the base. Prints `base=<sha>` and `head=<sha>`.
  *
+ * `restored` (issue #16): the workspace is the app's PREBUILD, just restored — a checkout of the
+ * default branch with `node_modules` installed. It is checked out IN PLACE instead of being wiped:
+ * the same fetch, then a forced checkout and `git clean -fd` (never `-x`: the git-ignored
+ * `node_modules` is the point), so the tracked files are exactly the session's commit's.
+ *
  * - `GIT_TERMINAL_PROMPT=0`: git never waits for a username on a terminal nobody is at — a
  *   refused credential fails at once, with git's own message, instead of hanging to the timeout.
  * - The whole body runs under `flock` on {@link REPO_LOCK_FILE} (file descriptor 9, released when
@@ -483,6 +489,7 @@ export function checkoutScript(input: {
   url: string
   baseRef: string
   branch: string | null
+  restored?: boolean
 }): string {
   const q = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
   const lines = [
@@ -491,26 +498,32 @@ export function checkoutScript(input: {
     `mkdir -p ${SESSION_LAUNCH_DIR}`,
     `exec 9>${REPO_LOCK_FILE}`,
     `flock -w ${REPO_LOCK_WAIT_SECONDS} 9 || { echo "An earlier checkout still holds ${REPO_LOCK_FILE}" >&2; exit 1; }`,
-    `rm -rf ${SESSION_WORKSPACE}`,
-    `git init -q ${SESSION_WORKSPACE}`,
-    `cd ${SESSION_WORKSPACE}`,
-    `git remote add origin ${q(input.url)}`,
+    ...(input.restored
+      ? [`cd ${SESSION_WORKSPACE}`, `git remote set-url origin ${q(input.url)}`]
+      : [
+          `rm -rf ${SESSION_WORKSPACE}`,
+          `git init -q ${SESSION_WORKSPACE}`,
+          `cd ${SESSION_WORKSPACE}`,
+          `git remote add origin ${q(input.url)}`,
+        ]),
     `git fetch -q --depth 50 origin ${q(input.baseRef)}`,
     'base=$(git rev-parse FETCH_HEAD)',
   ]
+  const force = input.restored ? ' -f' : ''
   if (input.branch) {
     const branch = q(input.branch)
     const remote = q(`refs/remotes/origin/${input.branch}`)
     lines.push(
       `if git fetch -q --depth 50 origin ${q(`refs/heads/${input.branch}`)}:${remote} 2>/dev/null; then`,
-      `  git checkout -q -B ${branch} ${remote}`,
+      `  git checkout -q${force} -B ${branch} ${remote}`,
       'else',
-      `  git checkout -q -B ${branch} "$base"`,
+      `  git checkout -q${force} -B ${branch} "$base"`,
       'fi'
     )
   } else {
-    lines.push('git checkout -q --detach "$base"')
+    lines.push(`git checkout -q${force} --detach "$base"`)
   }
+  if (input.restored) lines.push('git clean -q -fd')
   lines.push(
     // Launch's own files never land in a commit, and neither does a core dump (checkpoint.ts).
     'mkdir -p .claude && printf "%s\\n" .claude/settings.local.json >> .git/info/exclude',
@@ -592,6 +605,12 @@ export async function claimStep(scope: StepScope): Promise<ClaimResult> {
       : { start: 'skip', status: session.status }
   }
   if (session.status === 'ending') return { start: 'cleanup' }
+  if (session.kind === 'prebuild') {
+    // Issue #16: a `prebuild` run whose instance was lost mid-build has nothing worth resuming —
+    // it is failed (its claim given back by `cleanup`), and the next request builds again.
+    await transition(scope, ['booting'], 'failed', { error: 'The prebuild was interrupted' })
+    return { start: 'cleanup' }
+  }
   if ((SALVAGE_STATUSES as readonly SessionStatus[]).includes(session.status)) {
     // "Alive again": the reconcile must not take this instance for the one it replaced.
     await scope.db
@@ -1031,19 +1050,27 @@ export function checkoutFailure(
   )
 }
 
-async function checkOut(
+/**
+ * Clone (or, `restored`, check out in place — {@link checkoutScript}) the session's commit and
+ * record its shas. A `prebuild` run (issue #16) clones the default branch detached and writes no
+ * runtime files: its workspace is saved for sessions that write their own.
+ */
+export async function checkOut(
   scope: StepScope,
   session: SessionRow,
   app: SessionAppRef,
-  sandbox: SandboxPort
+  sandbox: SandboxPort,
+  opts: { restored?: boolean } = {}
 ): Promise<{ baseSha: string; headSha: string }> {
   // `host` (a remote sandbox): the host's git handler is granted the token; `proxied`: nothing.
   await egressFor(scope.ports, scope.db).prepareGit(sandbox, session)
+  const coding = session.kind !== 'prepare' && session.kind !== 'prebuild'
   const result = await sandbox.exec(
     checkoutScript({
       url: repoCloneUrl(app),
       baseRef: session.baseSha ?? session.baseRef ?? app.defaultBranch,
-      branch: session.kind === 'prepare' ? null : session.branch,
+      branch: coding ? session.branch : null,
+      ...(opts.restored ? { restored: true } : {}),
     }),
     { timeoutMs: 5 * 60_000 }
   )
@@ -1051,8 +1078,10 @@ async function checkOut(
   const baseSha = /base=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? ''
   const headSha = /head=([0-9a-f]{7,64})/.exec(result.stdout)?.[1] ?? baseSha
   // The runtime's own files in the checkout (§18.22 — Claude: `.claude/settings.local.json`).
-  for (const file of runtimeOf(session).workspaceFiles()) {
-    await sandbox.writeFile(file.path, file.content)
+  if (session.kind !== 'prebuild') {
+    for (const file of runtimeOf(session).workspaceFiles()) {
+      await sandbox.writeFile(file.path, file.content)
+    }
   }
   await updateSession(scope, {
     baseSha: session.baseSha ?? (baseSha || null),
@@ -1113,7 +1142,11 @@ export const REPLACED_PROBE_MS = 15_000
  * with the boot's id — how it notices the container was replaced under a command: the marker read
  * answers, and is not this boot's. A probe that fails or stalls is no evidence either way.
  */
-function bootstrapPolling(scope: StepScope, sandbox: SandboxPort, bootId: string | undefined) {
+export function bootstrapPolling(
+  scope: StepScope,
+  sandbox: SandboxPort,
+  bootId: string | undefined
+) {
   const limits = limitsOf(scope)
   return {
     pollMs: limits.commandPollMs,
@@ -1131,6 +1164,8 @@ function bootstrapPolling(scope: StepScope, sandbox: SandboxPort, bootId: string
 export interface BootstrapStepResult {
   installMs: number
   bootstrapMs: number
+  /** False when no install ran: a restored workspace, or a prebuild whose lockfile matched. */
+  installed: boolean
   /** False on a resume whose migrations had not changed since the last bootstrap. */
   migrated: boolean
   /** False on every bootstrap after the first successful one: a resume never re-seeds. */
@@ -1158,7 +1193,7 @@ export interface BootstrapStepResult {
 export async function bootstrapStep(
   scope: StepScope,
   bootId?: string,
-  opts: { restored?: boolean } = {}
+  opts: { restored?: boolean; install?: boolean } = {}
 ): Promise<BootstrapStepResult> {
   const session = await loadSession(scope)
   const uri = await decryptToken(scope.cfg, session.dbUriSealed)
@@ -1178,7 +1213,15 @@ export async function bootstrapStep(
       await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(uri)))
       await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
       const healed = await heal()
-      return { installMs: 0, bootstrapMs: 0, migrated: false, seeded: false, reused: true, healed }
+      return {
+        installMs: 0,
+        bootstrapMs: 0,
+        installed: false,
+        migrated: false,
+        seeded: false,
+        reused: true,
+        healed,
+      }
     }
     const skip: BootstrapSkip[] = prepared
       ? ['seed', 'db-check', ...(migrate ? [] : (['migrate'] as const))]
@@ -1188,6 +1231,8 @@ export async function bootstrapStep(
       dbUri: uri,
       dev,
       skip,
+      // Issue #16: a restored prebuild whose lockfile matched already has the install's result.
+      ...(opts.install === false ? { install: false } : {}),
       ...bootstrapPolling(scope, sandbox, bootId),
     })
     if (hash) await updateSession(scope, { migrationsHash: hash })
@@ -1306,6 +1351,8 @@ export const BOOT_STEP_LABELS = {
   bootstrap: 'Installing and seeding',
   dev: 'Starting dev server',
   transcript: 'Restoring the conversation',
+  // Issue #16: a `prebuild` run's clone + install, then its save.
+  prebuild: "Building the app's prebuild",
 } as const
 
 export type BootPhase = keyof typeof BOOT_STEP_LABELS
@@ -2096,7 +2143,7 @@ export async function coolStep(
 // ---- workspace backups (`workspace-backup.ts`) ------------------------------------------------
 
 /** A backup failure's reason for the event log: secret-free, and no presigned URL's signature. */
-function backupFailureReason(err: unknown): string {
+export function backupFailureReason(err: unknown): string {
   return safeErrorMessage(err, 'the backup failed', 400).replace(
     /(https?:\/\/[^\s?'"]+)\?[^\s'"]*/gi,
     '$1'
@@ -2178,6 +2225,18 @@ export async function backupWorkspace(
   }
 }
 
+/**
+ * Leave nothing half-restored behind for the clone after a failed restore: a presigned restore is
+ * a FUSE mount (squashfuse + an overlay), unmounted before the directory goes. Never throws.
+ */
+export async function clearRestoredWorkspace(sandbox: SandboxPort): Promise<void> {
+  await sandbox
+    .exec(`fusermount3 -uz ${SESSION_WORKSPACE} 2>/dev/null; rm -rf ${SESSION_WORKSPACE}; true`, {
+      timeoutMs: 120_000,
+    })
+    .catch(() => {})
+}
+
 /** Why a recorded backup cannot be restored now, or null when it can. */
 function unusableBackup(scope: StepScope, session: SessionRow): string | null {
   const backup = session.workspaceBackup
@@ -2227,13 +2286,7 @@ export async function restoreStep(
     } catch (err) {
       if (err instanceof SandboxRestartedError) throw err
       scope.logger.warn({ err }, 'session: workspace restore failed; cloning instead')
-      // Leave nothing half-restored behind for the clone (a presigned restore is a FUSE mount).
-      await sandbox
-        .exec(
-          `fusermount3 -uz ${SESSION_WORKSPACE} 2>/dev/null; rm -rf ${SESSION_WORKSPACE}; true`,
-          { timeoutMs: 120_000 }
-        )
-        .catch(() => {})
+      await clearRestoredWorkspace(sandbox)
       return {
         restored: false,
         stepDetail: `Cloning instead: ${safeErrorMessage(err, 'the restore failed')}`,
@@ -2371,6 +2424,14 @@ export async function failStep(scope: StepScope, message: string): Promise<void>
     appId: session.appId,
     sessionId: session.id,
   })
+  if (session.kind === 'prebuild') {
+    await releasePrebuildClaim(scope.db, {
+      tenantId: session.tenantId,
+      appId: session.appId,
+      sessionId: session.id,
+      error: message,
+    })
+  }
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(session.status)) return
   if (session.requestedAction === 'end' || session.status === 'ending') {
     await endStep(scope, 'requested')
@@ -2422,6 +2483,15 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
     appId: session.appId,
     sessionId: session.id,
   })
+  if (session.kind === 'prebuild') {
+    // Issue #16: a run that saved has given its claim back already; any other gives it back here.
+    await releasePrebuildClaim(scope.db, {
+      tenantId: session.tenantId,
+      appId: session.appId,
+      sessionId: session.id,
+      error: session.error ?? 'The prebuild ended before it was saved',
+    })
+  }
   const now = scope.now()
   const keep = session.status === 'shipped' || session.status === 'failed'
   const [row] = await scope.db

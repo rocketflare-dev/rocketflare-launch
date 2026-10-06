@@ -46,10 +46,12 @@ import { healthStatusSchema, KIT_REQUIRED_CHECK, sessionShipModeSchema } from '.
  * `session` is a person's chat; `prepare` is the one-off run that migrates and seeds `dev`;
  * `upgrade` (P6 6c) is a coding session started to upgrade the app's kit — a `session` in every
  * respect, plus its `upgrade_id`, the first turn's auto-ship, a push token that may change
- * `.github/workflows/**`, and therefore NO human input ({@link sessionTakesMessages}).
- * Append-only (a pg enum).
+ * `.github/workflows/**`, and therefore NO human input ({@link sessionTakesMessages});
+ * `prebuild` (issue #16) is Launch's own one-off run that clones the app's default branch,
+ * installs its dependencies and saves the result as the app's prebuild (`app_prebuilds`) — no
+ * database, no branch, no chat. Append-only (a pg enum).
  */
-export const SESSION_KINDS = ['session', 'prepare', 'upgrade'] as const
+export const SESSION_KINDS = ['session', 'prepare', 'upgrade', 'prebuild'] as const
 export const sessionKindSchema = z.enum(SESSION_KINDS)
 export type SessionKind = z.infer<typeof sessionKindSchema>
 
@@ -202,6 +204,8 @@ export const SESSION_EVENT_TYPES = [
   'workspace.backup',
   // Issue #8: how long each phase of a boot took, written once when the boot is done.
   'boot.timing',
+  // Issue #16: the app's prebuild — restored for this boot, passed over (and why), asked for, saved.
+  'workspace.prebuild',
 ] as const
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
@@ -663,6 +667,36 @@ export const sessionWorkspaceBackupDataSchema = z.object({
 export type SessionWorkspaceBackupData = z.infer<typeof sessionWorkspaceBackupDataSchema>
 
 /**
+ * `workspace.prebuild` (issue #16) — the app's prebuild (`app_prebuilds`) as one session saw it:
+ *
+ * - `restored`: a first boot put the prebuild back instead of cloning and installing; `lockfile`
+ *   says whether the checkout's `pnpm-lock.yaml` still matched (`changed`: the install ran);
+ * - `skipped`: it was not used — `reason` says why (none yet, another image, too old…), and the
+ *   boot cloned and installed as before;
+ * - `failed`: the restore was tried and did not work (`reason`); the boot cloned instead;
+ * - `requested`: this session asked for a new one (`reason`: why the old one would not do, or a
+ *   merge to the default branch) — a `prebuild` run builds it in its own container;
+ * - `saved`: on the `prebuild` run itself, the archive is in R2 and on `app_prebuilds`.
+ *
+ * Ids, hashes and numbers only. No row at all while prebuilds or workspace backups are off.
+ */
+export const sessionWorkspacePrebuildDataSchema = z.object({
+  status: z.enum(['restored', 'skipped', 'failed', 'requested', 'saved']),
+  /** `binding` or `presigned` (`workspace-backup.ts`). */
+  mode: z.string().optional(),
+  reason: z.string().optional(),
+  /** The default-branch commit the prebuild holds. */
+  baseSha: z.string().optional(),
+  /** `restored` only: whether the session's lockfile matched the prebuild's. */
+  lockfile: z.enum(['same', 'changed']).optional(),
+  /** `restored` / `saved`: how long the restore (with the checkout) or the archive took. */
+  durationMs: z.number().int().nonnegative().optional(),
+  /** `requested` only: the `prebuild` run that builds it. */
+  prebuildSessionId: z.string().uuid().optional(),
+})
+export type SessionWorkspacePrebuildData = z.infer<typeof sessionWorkspacePrebuildDataSchema>
+
+/**
  * Issue #8: the phases a `boot.timing` row names — the boot checklist's steps (`sandbox.start` is
  * the checklist's `sandbox`), with its `bootstrap` step split into the dependency install and the
  * kit bootstrap after it. A boot lists only the phases it ran, in the order they started.
@@ -678,6 +712,8 @@ export const BOOT_TIMING_PHASES = [
   'bootstrap',
   'dev',
   'transcript',
+  // Issue #16: a `prebuild` run's clone + install and its save — never in a session's own boot.
+  'prebuild',
 ] as const
 export const bootTimingPhaseSchema = z.enum(BOOT_TIMING_PHASES)
 export type BootTimingPhase = z.infer<typeof bootTimingPhaseSchema>
@@ -736,6 +772,7 @@ export const SESSION_EVENT_DATA = {
   'ship.reopened': sessionShipReopenedDataSchema,
   'workspace.backup': sessionWorkspaceBackupDataSchema,
   'boot.timing': sessionBootTimingDataSchema,
+  'workspace.prebuild': sessionWorkspacePrebuildDataSchema,
 } as const satisfies Record<SessionEventType, z.ZodTypeAny>
 
 /** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */

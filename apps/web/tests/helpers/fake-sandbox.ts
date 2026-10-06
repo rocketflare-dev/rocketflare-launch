@@ -57,8 +57,9 @@
  *   container (files, ports and background runs gone, no boot marker). `deaths` counts them.
  * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
  *   and no hanging process is alive (a dev server that exited).
- * - `backup({ dir })` snapshots the files under `dir` (kept in `backups` by id — they survive
- *   `destroy` and `recreate`, as R2 would), `restore(handle)` puts them back (`restores`),
+ * - `backup({ dir, excludes? })` snapshots the files under `dir`, less `excludes` (kept in
+ *   `backups` by id — they survive `destroy` and `recreate`, as R2 would, and the map is shared
+ *   between sandboxes when the constructor is given one), `restore(handle)` puts them back (`restores`),
  *   `deleteBackup` forgets one (`deletedBackups`); `backupHosts` is settable (`presigned` mode).
  *   `backupsOff()` makes `backup` throw `SandboxBackupUnavailableError`.
  *
@@ -175,6 +176,12 @@ interface LiveRun {
 
 type PortHandler = (req: Request) => Response | Promise<Response>
 
+/** One stored backup: the directory and the files under it (minus `excludes`), as they were. */
+export interface FakeBackup {
+  dir: string
+  files: Map<string, string>
+}
+
 type Method =
   | 'start'
   | 'exec'
@@ -216,8 +223,12 @@ export class FakeSandbox implements SandboxPort {
   interruptions = 0
   /** Log streams dropped by `dropStreamNext`. */
   streamDrops = 0
-  /** Every backup taken, by id: the files under its `dir`, as they were. */
-  readonly backups = new Map<string, { dir: string; files: Map<string, string> }>()
+  /**
+   * Every backup taken, by id: the files under its `dir`, as they were. Shared between sandboxes
+   * when the constructor is handed one (`createFakeSessionPorts` does): R2 is one bucket, so a
+   * prebuild one container saved restores into another (issue #16).
+   */
+  readonly backups: Map<string, FakeBackup>
   readonly restores: string[] = []
   readonly deletedBackups: string[] = []
   /** The allow-list each backup and restore ran under (the R2 host in `presigned` mode). */
@@ -246,9 +257,10 @@ export class FakeSandbox implements SandboxPort {
   private readonly drops: StreamDrop[] = []
   private nextPid = 1
 
-  constructor(opts: { name?: string; id?: string } = {}) {
+  constructor(opts: { name?: string; id?: string; backups?: Map<string, FakeBackup> } = {}) {
     this.name = opts.name ?? crypto.randomUUID()
     this.id = opts.id ?? `fake-sandbox-${this.name}`
+    this.backups = opts.backups ?? new Map()
   }
 
   // ---- scripting -------------------------------------------------------------------------------
@@ -693,8 +705,14 @@ export class FakeSandbox implements SandboxPort {
     this.backupAllowedHosts.push([...this.allowedHosts])
     const id = crypto.randomUUID()
     const files = new Map<string, string>()
+    const excluded = (path: string) =>
+      (opts.excludes ?? []).some(
+        rel => path === `${opts.dir}/${rel}` || path.startsWith(`${opts.dir}/${rel}/`)
+      )
     for (const [path, content] of this.files) {
-      if (path === opts.dir || path.startsWith(`${opts.dir}/`)) files.set(path, content)
+      if ((path === opts.dir || path.startsWith(`${opts.dir}/`)) && !excluded(path)) {
+        files.set(path, content)
+      }
     }
     this.backups.set(id, { dir: opts.dir, files })
     return { id, dir: opts.dir, localBucket: true }

@@ -124,6 +124,11 @@ SESSION_LOCAL_GIT_URL=http://localhost:9420
 SESSION_WORKSPACE_BACKUP=
 # CLOUDFLARE_ACCOUNT_ID=
 # BACKUP_BUCKET_ENDPOINT=https://<account>.eu.r2.cloudflarestorage.com   # instead, for a jurisdiction bucket
+# Per-app prebuilds (issue #16, docs/CONCEPTS.md §18.10): on | off. Unset = on wherever workspace
+# backups are on: after a first boot (and after each merge Launch makes) a container of its own
+# clones the app's default branch, installs, and saves it; new sessions restore it instead of
+# cloning and installing. `off` if your Docker cannot take that second container beside a session.
+SESSION_PREBUILD=
 # Where a session's CONTAINER runs is a PLATFORM SETTING now, not a var: Settings → Platform →
 # Coding agents → Session sandbox — this Worker's containers (wrangler dev's Docker) or the remote
 # sandbox host (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker). `pnpm dev`

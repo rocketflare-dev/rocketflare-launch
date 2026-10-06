@@ -64,7 +64,7 @@ import {
 import { createTestEnv } from '../mocks/bindings'
 import { createTestSession, createTestTenantWithUser, sessionCookieHeader } from './auth'
 import type { FakeCloud } from './fake-cloud'
-import { type ExecScript, FakeSandbox } from './fake-sandbox'
+import { type ExecScript, type FakeBackup, FakeSandbox } from './fake-sandbox'
 import { seedApp, uniqueSlug } from './launch-apps'
 
 export interface SessionAppFixture {
@@ -317,6 +317,8 @@ export const UNEXPECTED_LAND_HOOKS: Pick<
 export interface FakeSessionPorts extends SessionPorts {
   /** Every sandbox handed out, by name. */
   sandboxes: Map<string, FakeSandbox>
+  /** The one "bucket" every sandbox's backups live in (a prebuild restores across sandboxes). */
+  backups: Map<string, FakeBackup>
   /** Apply `fn` to every sandbox created from now on (script them before the code asks). */
   script(fn: (sandbox: FakeSandbox) => void): FakeSessionPorts
 }
@@ -336,6 +338,7 @@ export function createFakeSessionPorts(
   } = {}
 ): FakeSessionPorts {
   const sandboxes = new Map<string, FakeSandbox>()
+  const backups = new Map<string, FakeBackup>()
   const scripts: ((sandbox: FakeSandbox) => void)[] = []
   const pick = <T>(value: T | ((db: Database) => T) | undefined, fallback: T, db: Database): T =>
     value === undefined
@@ -345,6 +348,7 @@ export function createFakeSessionPorts(
         : value
   const ports: FakeSessionPorts = {
     sandboxes,
+    backups,
     script(fn) {
       scripts.push(fn)
       for (const sandbox of sandboxes.values()) fn(sandbox)
@@ -353,7 +357,7 @@ export function createFakeSessionPorts(
     sandbox(name) {
       let sandbox = sandboxes.get(name)
       if (!sandbox) {
-        sandbox = new FakeSandbox({ name })
+        sandbox = new FakeSandbox({ name, backups })
         for (const fn of scripts) fn(sandbox)
         sandboxes.set(name, sandbox)
       }

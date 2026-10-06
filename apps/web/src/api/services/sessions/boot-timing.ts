@@ -50,11 +50,13 @@ const PHASE_OF: Record<BootPhase, BootTimingPhase> = {
   bootstrap: 'bootstrap',
   dev: 'dev',
   transcript: 'transcript',
+  prebuild: 'prebuild',
 }
 
 /**
  * A boot step's timing, from its clock readings; `installMs` when the result reports an install
- * that ran (a restored workspace's bootstrap, `reused`, ran none).
+ * that ran (a restored workspace's bootstrap, `reused`, ran none — nor did one on a prebuild whose
+ * lockfile matched, `installed: false`, issue #16).
  */
 export function stepTiming(
   phase: BootPhase,
@@ -62,12 +64,18 @@ export function stepTiming(
   endedAt: number,
   result: unknown
 ): BootStepTiming {
-  const { installMs, reused } = (result ?? {}) as { installMs?: unknown; reused?: unknown }
+  const { installMs, reused, installed } = (result ?? {}) as {
+    installMs?: unknown
+    reused?: unknown
+    installed?: unknown
+  }
   return {
     phase,
     startedAt,
     ms: Math.max(0, endedAt - startedAt),
-    ...(typeof installMs === 'number' && reused !== true ? { installMs } : {}),
+    ...(typeof installMs === 'number' && reused !== true && installed !== false
+      ? { installMs }
+      : {}),
   }
 }
 

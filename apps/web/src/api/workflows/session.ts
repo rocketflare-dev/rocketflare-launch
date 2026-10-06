@@ -9,11 +9,19 @@
  *
  *   claim → salvage (a live session whose instance was lost: stop the orphaned turn, checkpoint,
  *            keep the container for a warm resume or destroy it — `salvageStep`)
- *   boot:    (db ‖ sandbox.start → repo) → [prepare → branch]* → bootstrap → dev (`preview.ready`)
+ *   boot:    (db ‖ [prebuild.check →] sandbox.start → restore | repo) → [prepare → branch]* →
+ *            bootstrap → dev (`preview.ready`) → [prebuild.request]
  *            (‖: side by side, both settled before what follows — issue #15; * only when this
- *            session prepares the app's `dev`; a `prepare` run stops after it). A container
- *            replaced under `repo`, `bootstrap` or `dev` boots again from `sandbox.start.rN`
+ *            session prepares the app's `dev`; a `prepare` run stops after it). Issue #16, while
+ *            `SESSION_PREBUILD` is on: `restore` puts the app's PREBUILD back and checks the
+ *            session's commit out over it instead of `repo`'s clone (a failed one falls through to
+ *            `repo`), `bootstrap` then installs only when the lockfile moved, and
+ *            `prebuild.request` asks for a new prebuild when there was none to use or its lockfile
+ *            had moved on (`services/sessions/prebuild.ts`). A container replaced under `restore`,
+ *            `repo`, `bootstrap` or `dev` boots again from `sandbox.start.rN`
  *            (`restartable`, at most `MAX_BOOT_RESTARTS`; `BootContainer`).
+ *   prebuild (a `prebuild` session, issue #16): claim → sandbox.start → prebuild.build →
+ *            prebuild.save → cleanup
  *            Each boot step's result carries its clock (`timing`); the boot's last step — `dev`,
  *            or `transcript#K` on a cold resume — writes them as ONE `boot.timing` event and a
  *            `session.boot` trace (issue #8, `services/sessions/boot-timing.ts`)
@@ -40,7 +48,8 @@
  *                ready) · a lost container: suspended, the next inspect resumes
  *              the landing (issue #5, `services/sessions/land.ts`, Phase A): land.ci#N →
  *                [land.review#N] → [land.merge#N] → land.wait#N (one round of the wake event) ·
- *                land.reopen#N (back to ready / suspended) · merged: leave the loop
+ *                land.reopen#N (back to ready / suspended) · merged: prebuild.refresh#N (issue
+ *                #16, while prebuilds are on: the default branch moved), then leave the loop
  *              suspend#N (a drain) · cool#N (a drain, or a warm window already over)
  *              resume#N → sandbox.start#K → warm (the kept container is still there,
  *                `services/sessions/warm.ts`): dev#K only · cold: restore.check#K →
@@ -124,6 +133,15 @@ import {
   landStalledStep,
 } from '../services/sessions/land'
 import { defaultSessionPorts, type SessionPorts } from '../services/sessions/ports'
+import { prebuildsEnabled } from '../services/sessions/prebuild'
+import {
+  type PrebuildCheckResult,
+  prebuildBuildStep,
+  prebuildCheckStep,
+  prebuildRequestStep,
+  prebuildRestoreStep,
+  prebuildSaveStep,
+} from '../services/sessions/prebuild-steps'
 import { sessionSandboxHostOf } from '../services/sessions/sandbox-host'
 import {
   type GateStepResult,
@@ -245,16 +263,35 @@ class BootContainer {
   restarts = 0
   bootId = ''
   timings: (BootStepTiming | undefined)[] = []
+  /**
+   * Issue #16, from step results: `prebuild.check`'s answer (once per boot), whether the workspace
+   * came from the prebuild (and whether its lockfile still matched), and why the boot should ask
+   * for a new prebuild once it is done (null: no need).
+   */
+  check: PrebuildCheckResult | null = null
+  prebuilt: { install: boolean } | null = null
+  refresh: string | null = null
 
-  constructor(private readonly run: StepRunner) {}
+  /** `prebuilds`: this boot may restore the app's prebuild (`SESSION_PREBUILD` is not `off`). */
+  constructor(
+    private readonly run: StepRunner,
+    private readonly prebuilds = false
+  ) {}
 
   /** `base` for the first attempt, `base.rN` for the Nth restart. */
   name(base: string): string {
     return this.restarts === 0 ? base : `${base}.r${this.restarts}`
   }
 
-  /** Start the container and clone into it, again while the clone finds it replaced. */
+  /**
+   * Start the container and fill its workspace — the app's prebuild when there is one to use
+   * (`restore`, issue #16), else the clone (`repo`) — again while a step finds it replaced.
+   */
   async up(): Promise<void> {
+    if (this.prebuilds && !this.check) {
+      this.check = await this.run('prebuild.check', prebuildCheckStep)
+      if (this.check.refresh) this.refresh = this.check.reason ?? 'no usable prebuild'
+    }
     for (;;) {
       const started = await this.run(
         this.name('sandbox.start'),
@@ -264,6 +301,26 @@ class BootContainer {
       this.bootId = started.bootId
       this.timings.push(started.timing)
       const booted = started.bootId
+      if (this.check?.usable) {
+        const restored = await this.run(
+          this.name('restore'),
+          restartable(
+            'restore',
+            withProgress('restore', s => prebuildRestoreStep(s, booted))
+          ),
+          BOOT_STEP
+        )
+        if (isBootRestart(restored)) {
+          this.next(restored)
+          continue
+        }
+        this.timings.push(restored.timing)
+        if (restored.refresh) this.refresh = restored.reason ?? 'the prebuild did not fit'
+        if (restored.restored) {
+          this.prebuilt = { install: restored.install }
+          return
+        }
+      }
       const repo = await this.run(
         this.name('repo'),
         restartable(
@@ -306,6 +363,8 @@ type ShipRound =
 export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWorkflowParams> {
   /** Tests only — see the header. */
   overrides: SessionWorkflowOverrides = {}
+  /** Issue #16: `SESSION_PREBUILD` is not `off` (read once per run, with the rest of the config). */
+  private prebuilds = false
 
   async run(
     event: WorkflowEvent<SessionWorkflowParams>,
@@ -314,6 +373,7 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     const params = event.payload
     const env = this.env
     const cfg = loadConfig(env)
+    this.prebuilds = prebuildsEnabled(cfg)
     const logger = loggerFor(cfg, { handler: 'workflow', workflow: 'session', ...params })
     // The session's frozen sandbox host (`sessions.sandbox_host`), read once per step — the
     // setting can change while a session runs, and a session never moves host.
@@ -372,7 +432,12 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         // A container replaced under `repo`, `bootstrap` or `dev` boots again from `sandbox.start`
         // (`restartable`): `.rN` step names, at most MAX_BOOT_RESTARTS times. Each attempt's
         // completed steps keep their clocks, so `boot.timing` counts the lost time too.
-        const boot = new BootContainer(run)
+        // Issue #16: a `prebuild` run is its own short shape (`SessionWorkflow.prebuild`).
+        if (claim.kind === 'prebuild') {
+          await this.prebuild(run)
+          return await this.finish(run, params.sessionId)
+        }
+        const boot = new BootContainer(run, this.prebuilds)
         const [dbSide, sandboxSide] = await Promise.allSettled([
           run('db', withProgress('db', dbStep), BOOT_STEP),
           boot.up(),
@@ -399,11 +464,15 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         }
         for (;;) {
           const booted = boot.bootId
+          // Issue #16: a prebuild whose lockfile still matched needs no install.
+          const install = boot.prebuilt?.install ?? true
           const bootstrapped = await run(
             boot.name('bootstrap'),
             restartable(
               'bootstrap',
-              withProgress('bootstrap', s => bootstrapStep(s, booted))
+              withProgress('bootstrap', s =>
+                bootstrapStep(s, booted, install ? {} : { install: false })
+              )
             ),
             BOOT_STEP
           )
@@ -432,6 +501,12 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           break
         }
         bootId = boot.bootId
+        // Issue #16: the boot found no prebuild to use, or one whose lockfile had moved on — ask
+        // for a new one now the session is ready (a request, never the build; never a failure).
+        const reason = boot.refresh
+        if (reason) {
+          await run('prebuild.request', s => prebuildRequestStep(s, { reason, after: 'boot' }))
+        }
       }
       if (claim.start !== 'cleanup') merged = (await this.loop(run, step, bootId)).merged
     } catch (err) {
@@ -449,6 +524,30 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     // Phase B (issue #5): the container and the branch are gone; follow the merge to staging.
     if (merged !== null) await this.release(run, step, merged)
     return outcome
+  }
+
+  /**
+   * Issue #16: a `prebuild` run (`services/sessions/prebuild.ts`) — `sandbox.start` →
+   * `prebuild.build` (clone the default branch, install) → `prebuild.save` (the archive, made the
+   * app's prebuild); `cleanup` follows in `run`. No restart on a replaced container: a failed
+   * build is `fail` + `cleanup`, and the next request builds again.
+   */
+  private async prebuild(run: StepRunner): Promise<void> {
+    const started = await run('sandbox.start', withProgress('sandbox', startSandboxStep), BOOT_STEP)
+    const booted = started.bootId
+    const built = await run(
+      'prebuild.build',
+      withProgress('prebuild', s => prebuildBuildStep(s, booted)),
+      BOOT_STEP
+    )
+    const { baseSha, treeSha, lockfileHash, buildMs } = built
+    await run(
+      'prebuild.save',
+      withProgress('prebuild', s =>
+        prebuildSaveStep(s, booted, { baseSha, treeSha, lockfileHash, buildMs })
+      ),
+      BOOT_STEP
+    )
   }
 
   private async finish(run: StepRunner, sessionId: string): Promise<SessionOutcome> {
@@ -492,7 +591,15 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         case 'land': {
           // Issue #5 Phase A: the PR's CI, its review and the merge (`land.ts`).
           const landed = await this.land(run, step, n, bootId, next.stage)
-          if (landed === 'merged') return { merged: n }
+          if (landed === 'merged') {
+            // Issue #16: the default branch moved — the app's prebuild is rebuilt from it.
+            if (this.prebuilds) {
+              await run(`prebuild.refresh#${n}`, s =>
+                prebuildRequestStep(s, { reason: 'merged to the default branch', after: 'merge' })
+              )
+            }
+            return { merged: n }
+          }
           // Everything was committed at `ship.commit`; a reopen leaves nothing unsaved.
           dirty = null
           break

@@ -106,6 +106,12 @@ export interface SandboxBackupOptions {
   /** When the SDK treats it as expired (R2 lifecycle rules delete the object itself). */
   ttlSeconds: number
   name?: string
+  /**
+   * Paths under `dir` (mksquashfs wildcard patterns, relative to it) left out of the archive —
+   * issue #16's prebuild drops anything session-specific. Absent: everything (a session's own
+   * backup keeps `.dev.vars`).
+   */
+  excludes?: readonly string[]
 }
 
 /** Workspace backups are off (`SESSION_WORKSPACE_BACKUP=off`, or no `BACKUP_BUCKET`). */

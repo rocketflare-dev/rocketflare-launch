@@ -659,6 +659,8 @@ export function createTestEnv(overrides: Partial<TestEnv> = {}): TestEnv {
     TENANCY_MODE: process.env.TENANCY_MODE ?? 'multi',
     SIGNUP_MODE: process.env.SIGNUP_MODE ?? 'invite_only',
     TENANT_SCOPE_MODE: process.env.TENANT_SCOPE_MODE ?? 'off',
+    // Issue #16: off unless a test asks (`createTestEnv({ SESSION_PREBUILD: 'on' })`) — see .env.test.
+    SESSION_PREBUILD: process.env.SESSION_PREBUILD ?? 'off',
     DATABASE_DRIVER: driver,
     ...(process.env.NEON_LOCAL_PROXY ? { NEON_LOCAL_PROXY: process.env.NEON_LOCAL_PROXY } : {}),
   }

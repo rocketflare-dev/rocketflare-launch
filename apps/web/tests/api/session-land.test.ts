@@ -63,6 +63,7 @@ import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import {
   appOwners,
+  appPrebuilds,
   approvalRequests,
   apps,
   auditEvents,
@@ -537,6 +538,53 @@ describe('landing: CI green', () => {
       stage: 'live',
       mergeSha: expect.any(String),
     })
+  })
+})
+
+describe('landing: the app prebuild (issue #16)', () => {
+  it('a merge asks for a new prebuild of the default branch, then the session cleans up', async () => {
+    const h = await harness({ SESSION_PREBUILD: 'on' })
+    const prebuildRow = and(
+      eq(appPrebuilds.tenantId, h.f.tenant.id),
+      eq(appPrebuilds.appId, h.f.app.id)
+    )
+    const run = await drive(h, {
+      onLand: async (h, _wait, n) => {
+        if (n === 0) {
+          setGate(h, await gateShaOf(h), 'success')
+          // The prebuild the boot asked for was built meanwhile, an hour before this clock.
+          await db
+            .update(appPrebuilds)
+            .set({
+              buildingSessionId: null,
+              buildingSince: null,
+              backup: { id: 'before-the-merge', dir: '/workspace/app' },
+              builtAt: new Date(h.clock.ms - HOUR),
+            })
+            .where(prebuildRow)
+        }
+        return 'wake'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    const merge = run.names.indexOf('land.merge#3')
+    expect(run.names.slice(merge, merge + 3)).toEqual([
+      'land.merge#3',
+      'prebuild.refresh#3',
+      'cleanup',
+    ])
+    const requested = (
+      await eventData<{ status: string; reason?: string }>(h, 'workspace.prebuild')
+    )
+      .filter(e => e.status === 'requested')
+      .map(e => e.reason)
+    expect(requested).toEqual(['no prebuild yet', 'merged to the default branch'])
+    // Two `prebuild` runs: the boot's, and the one that rebuilds from the merge.
+    const created = stubs(h.env).sessionWorkflow?.created ?? []
+    expect(created).toHaveLength(2)
+    const [claim] = await db.select().from(appPrebuilds).where(prebuildRow)
+    const second = created[1]?.params as { sessionId: string } | undefined
+    expect(claim?.buildingSessionId).toBe(second?.sessionId)
   })
 })
 

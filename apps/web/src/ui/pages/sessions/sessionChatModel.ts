@@ -128,6 +128,7 @@ const BOOT_PHASE_WORDS: Record<BootTimingPhase, string> = {
   bootstrap: 'bootstrap',
   dev: 'dev server',
   transcript: 'conversation',
+  prebuild: 'prebuild',
 }
 
 /** `Ready in 1m 4s: database 3s, sandbox 12s, …` — one `boot.timing` row in words. Pure. */
