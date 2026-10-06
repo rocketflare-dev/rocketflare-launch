@@ -542,6 +542,21 @@ export class SessionBootstrapError extends Error {
 export const ERROR_TAIL_LINES = 40
 
 /**
+ * `text` with `secrets` (the database URI) replaced wherever they appear, anything shaped like a
+ * connection string with a password replaced, and ANSI colour codes stripped. Pure.
+ */
+export function redactLog(text: string, secrets: readonly string[] = []): string {
+  let clean = text
+  for (const secret of secrets) if (secret) clean = clean.split(secret).join('<database url>')
+  return (
+    clean
+      .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"@/]*:[^\s'"@/]*@[^\s'"]*/gi, '<connection string>')
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes from the kit's output
+      .replace(/\u001b\[[0-9;]*m/g, '')
+  )
+}
+
+/**
  * What a failed command said, for the person: its own error lines first (the kit's bootstrap
  * prints `bootstrap: …` for a usage error and `✖ n/10 …` for a failed step, before any usage text
  * or child output), then the last {@link ERROR_TAIL_LINES} lines — stdout AND stderr, because the
@@ -550,13 +565,9 @@ export const ERROR_TAIL_LINES = 40
  * connection string with a password.
  */
 export function tailOf(text: string, secrets: readonly string[] = [], lines = ERROR_TAIL_LINES) {
-  let clean = text
-  for (const secret of secrets) if (secret) clean = clean.split(secret).join('<database url>')
-  clean = clean
-    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"@/]*:[^\s'"@/]*@[^\s'"]*/gi, '<connection string>')
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes from the kit's output
-    .replace(/\u001b\[[0-9;]*m/g, '')
-  const all = clean.split('\n').filter(line => line.trim() !== '')
+  const all = redactLog(text, secrets)
+    .split('\n')
+    .filter(line => line.trim() !== '')
   const headline = all.filter(line => /^(bootstrap:|\S*✖|error\b|Error\b|ERR_)/.test(line.trim()))
   const tail = all.slice(-lines).filter(line => !headline.includes(line))
   return [...headline.slice(0, 4), ...tail].join('\n')
