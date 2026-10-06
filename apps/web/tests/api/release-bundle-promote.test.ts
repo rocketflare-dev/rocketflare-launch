@@ -17,12 +17,14 @@
  *   refused 409; a claimed digest that is not Launch's is 400.
  */
 import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { promoteReleaseResponseSchema, releaseSchema } from '@launch/shared/launch-releases'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { decide } from '@/api/services/approvals/engine'
+import { decide, retryApply } from '@/api/services/approvals/engine'
 import { deployArtifactDigest } from '@/api/services/launch/deploy/artifact-digest'
-import { appReleases, auditEvents, deployTickets, sessions } from '@/db/schema'
+import { BUNDLE_DRAFT_WAIT_MINUTES, withLiveVersion } from '@/api/services/launch/releases/publish'
+import { appReleases, approvalRequests, auditEvents, deployTickets, sessions } from '@/db/schema'
 import { actorOf, approvalDeps, viewerOf } from '../helpers/approvals'
 import {
   createTestSession,
@@ -207,6 +209,54 @@ async function releaseView(app: ReleasableApp, releaseId: string, who: Person) {
   return releaseSchema.parse(await res.json())
 }
 
+/** A ustar entry: header + data padded to 512 bytes. */
+function tarEntry(name: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(512)
+  header.write(name, 0, 100, 'utf8')
+  header.write('0000644\0', 100)
+  header.write('0000000\0', 108)
+  header.write('0000000\0', 116)
+  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124)
+  header.write('00000000000\0', 136)
+  header.write('        ', 148)
+  header.write('0', 156)
+  header.write('ustar\0', 257)
+  header.write('00', 263)
+  let sum = 0
+  for (const b of header) sum += b
+  header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148)
+  const pad = Buffer.alloc((512 - (data.length % 512)) % 512)
+  return Buffer.concat([header, data, pad])
+}
+
+/** The kit's `launch-bundle-<tag>.tgz` with a manifest naming `tag` and `bundleSha256`. */
+function bundleTgz(tag: string, bundleSha256: string): Uint8Array {
+  const manifest = Buffer.from(
+    JSON.stringify({ protocol: 1, tag, version: tag, commit: 'c'.repeat(40), bundleSha256, files: {} })
+  )
+  return new Uint8Array(
+    gzipSync(
+      Buffer.concat([
+        tarEntry('manifest.json', manifest),
+        tarEntry('worker/worker.js', Buffer.from('export default {}')),
+        Buffer.alloc(1024),
+      ])
+    )
+  )
+}
+
+/** A staging upload from a build-once kit (kit 0.17.0+ sends `source`). */
+const buildOnceUpload = (app: ReleasableApp, version: string): Upload => ({
+  ...uploadBody(appToml(app, 'staging'), version),
+  source: 'build',
+})
+
+async function approvalRow(id: string) {
+  const [row] = await db.select().from(approvalRequests).where(eq(approvalRequests.id, id))
+  if (!row) throw new Error(`no approval ${id}`)
+  return row
+}
+
 const releasesOn = (app: ReleasableApp, tag: string) =>
   cloud.github.releases.filter(r => r.owner === app.owner && r.repo === app.repo && r.tag === tag)
 
@@ -219,7 +269,9 @@ describe('Promote publishes the staging draft', () => {
     expect(stagingTicket.artifactDigest).toMatch(/^[0-9a-f]{64}$/)
     // The kit's release-bundle job's draft with the bundle — and a NEWER draft without one (a
     // person's), which GitHub lists first: the bundle's draft still wins.
-    const draft = cloud.github.draft(app.owner, app.repo, '0.1.1')
+    const draft = cloud.github.draft(app.owner, app.repo, '0.1.1', {
+      bundleBytes: bundleTgz('0.1.1', stagingTicket.artifactDigest as string),
+    })
     const stale = cloud.github.draft(app.owner, app.repo, '0.1.1', { bundle: false })
     const updatesOf = () =>
       cloud.github.releaseUpdates.filter(u => u.id === draft.id || u.id === stale.id)
@@ -315,6 +367,107 @@ describe('Promote publishes the staging draft', () => {
     expect(created).toMatchObject({ via: 'api', draft: false })
     expect(created?.body).toContain('Production builds from the tag (no release bundle)')
     expect(releasesOn(app, '0.1.1')).toHaveLength(1)
+  })
+})
+
+describe('Promote waits for the bundle draft, and checks it (issue #21)', () => {
+  it('a build-once kit with no draft yet: nothing is published; the retry after the draft appears publishes it', async () => {
+    const { tenantId, alice, bob, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    const staging = await ship(app, 'staging', 'refs/tags/0.1.1', buildOnceUpload(app, '0.1.1'))
+    const digest = (await ticket(staging.ticketId)).artifactDigest as string
+
+    const approvalId = await promoteAndApprove(tenantId, app, cut.id, alice, bob)
+
+    expect(releasesOn(app, '0.1.1')).toEqual([])
+    const waiting = await approvalRow(approvalId)
+    expect(waiting.appliedAt).toBeNull()
+    expect(waiting.applyError).toContain('Waiting for the staging run to attach the release bundle')
+
+    const draft = cloud.github.draft(app.owner, app.repo, '0.1.1', {
+      bundleBytes: bundleTgz('0.1.1', digest),
+    })
+    const later = new Date(Date.now() + 5 * 60_000)
+    expect(await retryApply(approvalDeps(db, env, () => later), { tenantId, requestId: approvalId })).toBe(
+      'applied'
+    )
+    expect(cloud.github.releaseFor(app.owner, app.repo, '0.1.1')?.id).toBe(draft.id)
+    expect(releasesOn(app, '0.1.1')).toHaveLength(1)
+    expect(cloud.github.assetDownloads.some(d => d.name === 'launch-bundle-0.1.1.tgz')).toBe(true)
+  })
+
+  it('the draft long gone (staging went live over 20 minutes ago — a kit prunes old drafts): POSTs at once and says why', async () => {
+    const { tenantId, alice, bob, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    const staging = await ship(app, 'staging', 'refs/tags/0.1.1', buildOnceUpload(app, '0.1.1'))
+    await db
+      .update(deployTickets)
+      .set({ activatedAt: new Date(Date.now() - (BUNDLE_DRAFT_WAIT_MINUTES + 5) * 60_000) })
+      .where(eq(deployTickets.id, staging.ticketId))
+
+    const approvalId = await promoteAndApprove(tenantId, app, cut.id, alice, bob)
+
+    expect((await approvalRow(approvalId)).appliedAt).toBeInstanceOf(Date)
+    const created = cloud.github.releaseFor(app.owner, app.repo, '0.1.1')
+    expect(created).toMatchObject({ via: 'api', draft: false })
+    expect(created?.body).toContain('the staging release bundle’s draft is gone')
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.targetId, cut.id), eq(auditEvents.action, 'release.published')))
+    expect((audit?.summary as { after?: unknown } | undefined)?.after).toMatchObject({
+      via: 'created',
+      rebuildReason: 'draft_gone',
+    })
+  })
+
+  it('the last attempt the engine allows publishes without the draft: production rebuilds', async () => {
+    const { tenantId, alice, bob, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    await ship(app, 'staging', 'refs/tags/0.1.1', buildOnceUpload(app, '0.1.1'))
+    const approvalId = await promoteAndApprove(tenantId, app, cut.id, alice, bob)
+    expect(releasesOn(app, '0.1.1')).toEqual([])
+    // Retries past the sweep's 4-minute backoff, inside the 20-minute window: three more wait,
+    // the fifth attempt gives up waiting and POSTs.
+    for (let i = 1; i <= 4; i++) {
+      const at = new Date(Date.now() + i * 4.5 * 60_000)
+      const outcome = await retryApply(approvalDeps(db, env, () => at), {
+        tenantId,
+        requestId: approvalId,
+      })
+      expect(outcome).toBe(i < 4 ? 'failed' : 'applied')
+    }
+    expect(cloud.github.releaseFor(app.owner, app.repo, '0.1.1')?.body).toContain(
+      'did not appear in time'
+    )
+  })
+
+  it('a bundle that is not the build staging deployed is never published', async () => {
+    const { tenantId, alice, bob, app } = await fixture()
+    const cut = await cutRelease(app, alice)
+    await ship(app, 'staging', 'refs/tags/0.1.1', buildOnceUpload(app, '0.1.1'))
+    const draft = cloud.github.draft(app.owner, app.repo, '0.1.1', {
+      bundleBytes: bundleTgz('0.1.1', 'f'.repeat(64)),
+    })
+    const before = cloud.github.releaseUpdates.length
+
+    const approvalId = await promoteAndApprove(tenantId, app, cut.id, alice, bob)
+
+    expect(cloud.github.releaseUpdates).toHaveLength(before)
+    expect(cloud.github.releaseFor(app.owner, app.repo, '0.1.1')).toBeUndefined()
+    expect(releasesOn(app, '0.1.1').map(r => r.id)).toEqual([draft.id])
+    expect((await approvalRow(approvalId)).applyError).toContain('not the build staging deployed')
+  })
+})
+
+describe('the Live Worker version line (issue #21)', () => {
+  it('is filled once: a rollback or re-deploy of the tag leaves it naming the first go-live', () => {
+    const pending = '**Build**\n\n- Live Worker version: pending (set when production goes live)\n'
+    const first = withLiveVersion(pending, 'v-first')
+    expect(first).toContain('- Live Worker version: `v-first`')
+    expect(withLiveVersion(first, 'v-rollback')).toBe(first)
+    // Notes Launch did not write (no line) are left alone.
+    expect(withLiveVersion('Hand-written notes', 'v-first')).toBe('Hand-written notes')
   })
 })
 

@@ -4,7 +4,7 @@
  *
  * | Subject | Opened by | `applyInTx` (in the decide transaction) | `applyAfter` (after commit) |
  * |---|---|---|---|
- * | `release` | Promote | a pre-approval bound to `refs/tags/X.Y.Z` + the approval + the release; the release `promoting` | publish the GitHub Release (idempotent by `getReleaseByTag`; issue #12: the kit's staging DRAFT for the tag is published by PATCH, so production deploys its build-once bundle, else a new one is POSTed — `releases/publish.ts`) — `release: published` starts the job, whose `start` claims the pre-approval |
+ * | `release` | Promote | a pre-approval bound to `refs/tags/X.Y.Z` + the approval + the release; the release `promoting` | publish the GitHub Release (idempotent by `getReleaseByTag`; issue #12: the kit's staging DRAFT for the tag is published by PATCH, so production deploys its build-once bundle, else a new one is POSTed — `releases/publish.ts`; issue #21: on a build-once kit a draft not attached yet is waited for — the attempt fails and the sweep retries — and a bundle that is not staging's is refused) — `release: published` starts the job, whose `start` claims the pre-approval |
  * | `deploy_ticket` | a production run with nothing to claim (a Release published or a dispatch made by hand in GitHub) | `decidePending(source: 'approval')`; 409 `deploy_run_gone` once the run stopped waiting (the decision rolls back — the approver uses Promote) | nothing: the job's next poll sees `approved` |
  * | `app` | "Deploy to production" with no release | a pre-approval bound to the default branch | `workflow_dispatch` of `deploy.yml` |
  * | `rollback` (app page P3) | Roll back, the subject the release to go back TO | a pre-approval bound to that release's `refs/tags/X.Y.Z`, linked to it | `workflow_dispatch` of `deploy.yml` at the tag (`environment=production`) — the repo's own workflow, as by hand |
@@ -15,8 +15,12 @@
  * The run's `ref` must equal the pre-approval's (`claimIntent`), so approving tag A never lets a
  * run of tag B through. Nothing here publishes or dispatches inside the transaction.
  */
-import { APPROVAL_ERROR_CODES, DEFAULT_APPROVAL_POLICIES } from '@launch/shared/launch-approvals'
-import { releaseTagRef } from '@launch/shared/launch-releases'
+import {
+  APPROVAL_ERROR_CODES,
+  APPROVAL_MAX_APPLY_ATTEMPTS,
+  DEFAULT_APPROVAL_POLICIES,
+} from '@launch/shared/launch-approvals'
+import { releaseBundleAssetName, releaseTagRef } from '@launch/shared/launch-releases'
 import { and, desc, eq } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
 import {
@@ -38,10 +42,14 @@ import {
 } from '../../launch/deploy/tickets'
 import { dispatchWorkflow } from '../../launch/github-app'
 import { DEPLOY_WORKFLOW_FILE, withRepoToken } from '../../launch/releases/github'
+import { verifyBundleAsset } from '../../launch/releases/bundle-manifest'
 import { moveRelease } from '../../launch/releases/lifecycle'
 import {
+  BUNDLE_DRAFT_WAIT_MINUTES,
+  draftExpectation,
   hasBundle,
   publishGitHubRelease,
+  type RebuildReason,
   releaseNoteFacts,
   releaseNotes,
 } from '../../launch/releases/publish'
@@ -309,6 +317,18 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
     if (request.subjectType === 'release') {
       const release = await releaseOf(db, request)
       const app = await appOf(db, request.tenantId, release.appId)
+      // Issue #21: on a build-once kit the draft may not be there YET (the staging run's
+      // `release-bundle` job attaches it after staging went live): wait for it — by failing this
+      // attempt, which the approvals sweep retries — unless it is long gone or this is the last
+      // attempt the engine allows, and then publish without it.
+      const expected = await draftExpectation(db, release, nowOf(deps))
+      const lastAttempt = request.applyAttempts >= APPROVAL_MAX_APPLY_ATTEMPTS
+      const rebuildReason: RebuildReason | null =
+        expected.state === 'gone'
+          ? 'draft_gone'
+          : expected.state === 'wait' && lastAttempt
+            ? 'draft_wait_timed_out'
+            : null
       const published = await withRepoToken(
         db,
         deps.cfg,
@@ -320,6 +340,7 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
           // succeeded finds it); the kit's draft for the tag → PATCH it published, so production
           // deploys its bundle; no draft → POST, and production rebuilds (`releases/publish.ts`).
           const facts = await releaseNoteFacts(db, release, { token, owner, repo, gh })
+          const stagingDigest = expected.stagingDigest
           return publishGitHubRelease(
             token,
             owner,
@@ -327,13 +348,36 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
             {
               tag: release.tag,
               name: release.version,
-              body: bundle => releaseNotes(release, { ...facts, bundle }),
+              body: bundle =>
+                releaseNotes(release, { ...facts, bundle, rebuildReason: bundle ? null : rebuildReason }),
+              waitForDraft: expected.state === 'wait' && !lastAttempt,
+              // Issue #21: the bundle must be the build staging deployed.
+              verifyDraft: stagingDigest
+                ? async draft => {
+                    const asset = (draft.assets ?? []).find(
+                      a => a.name === releaseBundleAssetName(release.tag)
+                    )
+                    if (!asset) return
+                    await verifyBundleAsset(
+                      token,
+                      owner,
+                      repo,
+                      { assetId: asset.id, tag: release.tag, stagingDigest },
+                      gh
+                    )
+                  }
+                : undefined,
             },
             gh
           )
         },
         { fetch: deps.fetch }
       )
+      if (published.action === 'waiting') {
+        throw new Error(
+          `Waiting for the staging run to attach the release bundle to ${release.tag}'s draft; Launch publishes it as soon as it appears (at most ${BUNDLE_DRAFT_WAIT_MINUTES} minutes after staging went live)`
+        )
+      }
       if (published.action !== 'existing') {
         await recordAudit(db, {
           ...SYSTEM_ACTOR,
@@ -352,6 +396,8 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
               // when it carries one); `created`: a new release (production rebuilds).
               via: published.action === 'published_draft' ? 'draft' : 'created',
               bundle: hasBundle(published.release, release.tag),
+              // Issue #21: a build-once kit published without its bundle, and why.
+              ...(published.action === 'created' && rebuildReason ? { rebuildReason } : {}),
             },
           },
         })

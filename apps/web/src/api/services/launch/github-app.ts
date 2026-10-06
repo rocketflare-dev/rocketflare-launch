@@ -1080,6 +1080,41 @@ export function listReleases(
 }
 
 /**
+ * Issue #21: a release asset's bytes as a stream (`GET …/releases/assets/{id}`, `Accept:
+ * application/octet-stream`, `contents: read` — a draft's asset needs `contents: write`). GitHub
+ * answers a redirect to a short-lived signed URL; it is followed WITHOUT the token, which belongs
+ * to api.github.com only. The caller reads what it needs and cancels the rest.
+ */
+export async function downloadReleaseAsset(
+  token: string,
+  owner: string,
+  repo: string,
+  assetId: number,
+  opts: GitHubOptions = {}
+): Promise<ReadableStream<Uint8Array>> {
+  const doFetch = opts.fetch ?? fetch
+  const path = `${repoPath(owner, repo)}/releases/assets/${assetId}`
+  const res = await doFetch(`${opts.apiBase ?? GITHUB_API_BASE}${path}`, {
+    headers: {
+      Accept: 'application/octet-stream',
+      Authorization: `Bearer ${token}`,
+      'User-Agent': GITHUB_USER_AGENT,
+      'X-GitHub-Api-Version': GITHUB_API_VERSION,
+    },
+    redirect: 'manual',
+  })
+  let body = res
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get('location')
+    await res.body?.cancel().catch(() => {})
+    if (!location) throw new GitHubApiError(res.status, 'GitHub sent a redirect with no location', path)
+    body = await doFetch(location, { headers: { 'User-Agent': GITHUB_USER_AGENT } })
+  }
+  if (!body.ok || !body.body) throw await failure(body, path)
+  return body.body
+}
+
+/**
  * Issue #12: `PATCH …/releases/{id}` — publish a draft (`draft: false`, which fires `release:
  * published` exactly once) or rewrite a release's notes. Never moves `tag_name`.
  */

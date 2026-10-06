@@ -170,6 +170,8 @@ export interface FakeGitHubRelease {
   via: 'api' | 'hook'
   /** Issue #12: asset names (`launch-bundle-<tag>.tgz` on a build-once draft). */
   assets: string[]
+  /** Issue #21: an asset's bytes by name (`GET …/releases/assets/{id}`); absent → 404. */
+  assetBytes?: Map<string, Uint8Array>
 }
 
 export interface FakeCheckRun {
@@ -295,6 +297,8 @@ export class FakeGitHub implements VendorHandler {
    * a POST of a non-draft, or (issue #12) a PATCH `draft: false` of a draft.
    */
   onRelease: ((release: FakeGitHubRelease) => unknown | Promise<unknown>) | null = null
+  /** Issue #21: every asset download (`GET …/releases/assets/{id}`). */
+  readonly assetDownloads: { id: number; name: string }[] = []
   /** Issue #12: every `PATCH …/releases/{id}` body, in order. */
   readonly releaseUpdates: { id: number; tag: string; body: Record<string, unknown> }[] = []
   /** Issue #5: every merge through the API, in order (`mergeCount` counts them). */
@@ -665,7 +669,7 @@ export class FakeGitHub implements VendorHandler {
     owner: string,
     name: string,
     tag: string,
-    opts: { bundle?: boolean; body?: string } = {}
+    opts: { bundle?: boolean; body?: string; bundleBytes?: Uint8Array } = {}
   ): FakeGitHubRelease {
     const repo = this.repo(owner, name)
     if (!repo) throw new Error(`FakeGitHub: no repo ${owner}/${name}`)
@@ -673,6 +677,9 @@ export class FakeGitHub implements VendorHandler {
     if (!sha) throw new Error(`FakeGitHub: no tag ${tag}`)
     const release = this.newRelease(repo, { tag, sha, via: 'hook', body: opts.body, draft: true })
     if (opts.bundle !== false) release.assets.push(`launch-bundle-${tag}.tgz`)
+    if (opts.bundleBytes) {
+      release.assetBytes = new Map([[`launch-bundle-${tag}.tgz`, opts.bundleBytes]])
+    }
     return release
   }
 
@@ -1762,6 +1769,25 @@ export class FakeGitHub implements VendorHandler {
         await this.onRelease?.(release)
       }
       return json(this.releaseJson(release))
+    }
+    // Issue #21: a release asset's bytes (`Accept: application/octet-stream`; a draft's needs
+    // `contents: write`). Answered directly — GitHub redirects to a signed URL.
+    match = rest.match(/^\/releases\/assets\/(\d+)$/)
+    if (match && m === 'GET') {
+      const id = Number(match[1])
+      const release = this.releases.find(
+        r =>
+          r.owner.toLowerCase() === repo.owner.toLowerCase() &&
+          r.repo.toLowerCase() === repo.name.toLowerCase() &&
+          r.id === Math.floor(id / 100)
+      )
+      const name = release?.assets[id % 100]
+      if (!release || !name) return ghError(404, 'Not Found')
+      if (release.draft && !this.can(token, 'contents', 'write')) return ghError(404, 'Not Found')
+      const bytes = release.assetBytes?.get(name)
+      if (!bytes) return ghError(404, 'Not Found')
+      this.assetDownloads.push({ id, name })
+      return new Response(bytes, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } })
     }
     match = rest.match(/^\/releases\/tags\/(.+)$/)
     if (match && m === 'GET') {
