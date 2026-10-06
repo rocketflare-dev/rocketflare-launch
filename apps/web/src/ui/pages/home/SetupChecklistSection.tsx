@@ -30,11 +30,8 @@ export function SetupChecklistSection() {
     >
       <ul className="surface-panel p-0 divide-y divide-base-300" aria-label="Connections">
         {checklist.rows.map(row => (
-          <li
-            key={row.id}
-            className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-5 py-3"
-          >
-            <span className="flex items-baseline gap-2 min-w-0">
+          <li key={row.id} className="flex items-baseline justify-between gap-4 px-5 py-3">
+            <span className="flex flex-1 items-baseline gap-2 min-w-0">
               {/* The state is spelled out on the right; the dot is for the eye only. */}
               <span aria-hidden="true">
                 <StatusDot status={row.status} />
@@ -46,7 +43,7 @@ export function SetupChecklistSection() {
                 {row.reason && <span className="block text-sm text-secondary">{row.reason}</span>}
               </span>
             </span>
-            <span className="text-sm text-secondary">{statusLabel(row.status)}</span>
+            <span className="shrink-0 text-sm text-secondary">{statusLabel(row.status)}</span>
           </li>
         ))}
       </ul>
