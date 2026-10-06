@@ -461,6 +461,35 @@ describe('landRelease', () => {
     expect(await claimOf(f.app)).toEqual({ holder: null, at: null })
   })
 
+  it('takes back its own claim at once: a step that died mid-release left it behind', async () => {
+    const f = await fixture()
+    const session = await mergedSession(f, 'After a reload')
+    await holdClaim(f.app, `session:${session.id}`, minutesAgo(2))
+    expect(await landRelease(stepCtx(session))).toMatchObject({
+      status: 'released',
+      version: '0.1.1',
+    })
+    expect(await claimOf(f.app)).toEqual({ holder: null, at: null })
+  })
+
+  it('a person never takes back their own fresh claim: a second press is still refused', async () => {
+    const f = await fixture()
+    await holdClaim(f.app, 'user:00000000-0000-4000-8000-000000000001', minutesAgo(1))
+    const outcome = await withReleaseClaim(
+      db,
+      {
+        tenantId: f.app.app.tenantId,
+        appId: f.app.app.id,
+        holder: 'user:00000000-0000-4000-8000-000000000001',
+      },
+      async () => 'ran'
+    )
+    expect(outcome).toEqual({
+      claimed: false,
+      holder: 'user:00000000-0000-4000-8000-000000000001',
+    })
+  })
+
   it('stalls release_failed when the default branch is protected and Launch cannot bypass it', async () => {
     const f = await fixture()
     const session = await mergedSession(f, 'Blocked by protection')

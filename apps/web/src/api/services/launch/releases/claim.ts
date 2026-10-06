@@ -8,7 +8,10 @@
  *
  * The claim is a ROW, never a lock or a `Map`: it survives the Worker that took it, and a holder
  * that died mid-release (a Workflow step killed between the claim and the `finally`) leaves a claim
- * that goes stale after ten minutes and is then taken over. The release is still safe without it —
+ * that goes stale after ten minutes and is then taken over — or at once by the same SESSION, whose
+ * landing re-runs `land.release` after its Workflow step died (a `wrangler dev` reload, a deploy):
+ * one landing runs at a time, so a session's own claim is always a dead attempt's. A PERSON's own
+ * claim is never re-entered (a second press of Release is still 409). The release is still safe without it —
  * the tag is the idempotency key (unique `(app_id, tag)`, GitHub's 422 on an existing ref) — the
  * claim only stops two releases from bumping the same version at once and failing one of them.
  */
@@ -49,7 +52,11 @@ export async function withReleaseClaim<T>(
       and(
         eq(apps.tenantId, tenantId),
         eq(apps.id, appId),
-        or(isNull(apps.releaseClaimHolder), lt(apps.releaseClaimedAt, staleBefore))
+        or(
+          isNull(apps.releaseClaimHolder),
+          lt(apps.releaseClaimedAt, staleBefore),
+          holder.startsWith('session:') ? eq(apps.releaseClaimHolder, holder) : undefined
+        )
       )
     )
     .returning({ id: apps.id })

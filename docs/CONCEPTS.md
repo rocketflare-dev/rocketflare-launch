@@ -2795,7 +2795,9 @@ from timestamps on rows rather than counters in memory:
   that already lists the PR (`app_releases.prs @> [{"number": n}]`) is shared; otherwise it takes
   the app's **release claim** (`apps.release_claim_holder` = `session:<id>` | `user:<id>` +
   `release_claimed_at`, `UPDATE … WHERE holder IS NULL OR claimed_at < now() - 10 min RETURNING`,
-  released in a `finally` only while still its own — `releases/claim.ts`), re-checks, and calls
+  released in a `finally` only while still its own — `releases/claim.ts`; a `session:` holder also
+  takes back its OWN claim at once, which a `land.release` step killed mid-release — a `wrangler
+  dev` reload — left behind, where a person's second press stays 409), re-checks, and calls
   `createRelease({ bump: 'patch', userId: null, actor: SYSTEM, trigger: { sessionId } })`:
   `created_by_user_id` null, `release.created` carries `{ trigger: 'session.merge', sessionId }`,
   `prs[].sessionId` names each PR's session. Claim held elsewhere → wait 20 s, up to 15 minutes

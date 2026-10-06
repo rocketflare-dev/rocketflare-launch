@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A landing no longer waits ten minutes on its own release claim.** A `land.release` step killed
+  mid-release (a `wrangler dev` reload, a deploy) never ran its `finally`, so the claim stayed held
+  by the session itself and the retried step waited for it to go stale, showing "Cutting a
+  release" the whole time. A session's landing now takes back its own claim at once; a person's
+  second press of Release is still refused.
 - **`pnpm plugin upgrade` no longer removes a package Launch itself declares** (ported from kit
   rocketflare-dev/rocketflare#61). `add --apply` records on the plugin's surface which packages it
   brought into the host (`addedDependencies`), `upgrade --apply` keeps that record current, and a
