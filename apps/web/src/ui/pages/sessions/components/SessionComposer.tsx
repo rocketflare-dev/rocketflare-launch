@@ -23,14 +23,15 @@
  * the preview's screenshot button can add one too. Send waits while one is uploading, and while a
  * failed one is still there; a message may be images alone.
  *
- * The footer's model picker chooses the model for the NEXT message — the runtime's offered list
+ * The footer's model picker chooses the model for the NEXT message — "Default (Claude Code's
+ * choice)" first (no model pinned: the agent picks its own), then the runtime's offered list
  * (`AGENT_RUNTIME_MODELS`, named by `agentModelLabel`: "Opus 5.5"), seeded from the session's
- * current one. A different pick travels with the message (`model`) and becomes the session's model
- * when that turn starts.
+ * current one. A different pick travels with the message (`model`, null for Default) and becomes
+ * the session's model when that turn starts.
  */
 import { PaperClipIcon, PhotoIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
-import { AGENT_RUNTIME_MODELS, agentModelLabel } from '@launch/shared/launch-agents'
+import { AGENT_RUNTIME_MODELS, sessionModelLabel } from '@launch/shared/launch-agents'
 import {
   SESSION_ATTACHMENT_MIME_TYPES,
   SESSION_MESSAGE_MAX,
@@ -60,9 +61,9 @@ interface SessionComposerProps {
   /** `queue` behind a running turn (or simply send); `interrupt` stops the running turn first. */
   onSend: (text: string, mode: 'queue' | 'interrupt') => void
   onCancel: () => void
-  /** The model the next message runs on, and a new pick. */
-  model: string
-  onModelChange: (model: string) => void
+  /** The model the next message runs on (null: the agent's own default), and a new pick. */
+  model: string | null
+  onModelChange: (model: string | null) => void
   sending: boolean
   cancelling: boolean
   /** A refused send, rendered under the box. */
@@ -162,14 +163,18 @@ function AttachmentChip({ item, onRemove }: { item: ComposerAttachment; onRemove
 }
 
 /**
- * The models the picker offers: the runtime's list, with the session's current model first when
- * the list no longer names it (a session started on an older model keeps it until switched). Pure.
+ * The models the picker offers: the agent's own default (null) first, then the runtime's list,
+ * with the session's current model after Default when the list no longer names it (a session
+ * started on an older model keeps it until switched). Pure.
  */
 export function composerModelOptions(
   session: Pick<Session, 'runtime' | 'policy'>
-): readonly string[] {
+): readonly (string | null)[] {
   const offered = AGENT_RUNTIME_MODELS[session.runtime]
-  return offered.includes(session.policy.model) ? offered : [session.policy.model, ...offered]
+  const current = session.policy.model
+  return current === null || offered.includes(current)
+    ? [null, ...offered]
+    : [null, current, ...offered]
 }
 
 export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposerProps>(
@@ -434,13 +439,13 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                 <select
                   id="session-composer-model"
                   className="select select-xs select-ghost w-auto"
-                  value={model}
-                  onChange={event => onModelChange(event.target.value)}
+                  value={model ?? ''}
+                  onChange={event => onModelChange(event.target.value || null)}
                   title="Model for the next message"
                 >
                   {models.map(option => (
-                    <option key={option} value={option}>
-                      {agentModelLabel(option)}
+                    <option key={option ?? ''} value={option ?? ''}>
+                      {sessionModelLabel(session.runtime, option)}
                     </option>
                   ))}
                 </select>

@@ -40,7 +40,7 @@
  * than a green light the check did not earn.
  */
 
-import { DEFAULT_CODEX_MODEL, DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
+import { DEFAULT_CLAUDE_CODE_MODEL, DEFAULT_CODEX_MODEL } from '@launch/shared/launch-sessions'
 import {
   CREDENTIAL_KINDS,
   type CredentialCheck,
@@ -638,7 +638,7 @@ export const ANTHROPIC_VERSION = '2023-06-01'
 
 /**
  * The key coding sessions spend: `GET /v1/models` proves it authenticates and lists what it may
- * call; the session policy's default model (`DEFAULT_SESSION_POLICY.model`) must be among them,
+ * call; Claude Code's own default model (`DEFAULT_CLAUDE_CODE_MODEL`) must be among them,
  * matched by prefix because Anthropic's ids carry dates (`claude-sonnet-4-5-20250929`). A model
  * this key cannot see is a `warning` — the policy may name another — and a refused key `failed`.
  */
@@ -651,7 +651,7 @@ export async function checkAnthropic(
   const checks: CredentialCheck[] = []
   const metadata: CredentialMetadata = {}
   const doFetch = opts.fetch ?? fetch
-  const model = opts.model ?? DEFAULT_SESSION_POLICY.model
+  const model = opts.model ?? DEFAULT_CLAUDE_CODE_MODEL
   let ids: string[]
   try {
     const res = await doFetch(`${ANTHROPIC_API_BASE}/v1/models?limit=100`, {

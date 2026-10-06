@@ -48,8 +48,11 @@ export interface RuntimeAttachment {
 export interface RuntimeCommandInput {
   /** The person's message (or Launch's prompt), verbatim — the runtime quotes it. */
   message: string
-  /** The frozen `policy.model`: the only model the egress lets through. */
-  model: string
+  /**
+   * The frozen `policy.model`: pinned, the only model the egress lets through; null, none is
+   * passed and the agent runs its own default (the egress lets through any priced model).
+   */
+  model: string | null
   /** `resumeIdOf(row)` from the previous turn; absent on the first. */
   resumeId?: string | null
   /** The `session-system-note` prompt, filled in. */
@@ -235,12 +238,12 @@ export interface AgentRuntime {
    * not carry itself; null (or absent) when it needs nothing. Must exit 0.
    */
   turnInputCommand?(input: RuntimeCommandInput): string | null
-  turnEnv(input: { model: string; source: SessionCredentialSource }): Record<string, string>
+  turnEnv(input: { model: string | null; source: SessionCredentialSource }): Record<string, string>
   createParser(turn: number, ctx?: RuntimeParserContext): RuntimeStreamParser
   resumeRefused(run: RuntimeRunSummary): boolean
   workspaceFiles(): RuntimeFile[]
   beforeTurnFiles?(input: {
-    model: string
+    model: string | null
     systemNote: string | null
     source: SessionCredentialSource
   }): RuntimeFile[]

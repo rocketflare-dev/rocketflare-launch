@@ -18,6 +18,7 @@ import {
 } from '@launch/shared/launch-agents'
 import {
   createSessionRequestSchema,
+  DEFAULT_CLAUDE_CODE_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_SESSION_POLICY,
   defaultRuntimeOf,
@@ -135,7 +136,7 @@ describe('runtimes are a platform setting, not a deployment var', () => {
         expect(isPricedRuntimeModel(runtime, model), `${runtime} ${model}`).toBe(true)
       }
     }
-    expect(isPricedRuntimeModel('claude_code', DEFAULT_SESSION_POLICY.model)).toBe(true)
+    expect(isPricedRuntimeModel('claude_code', DEFAULT_CLAUDE_CODE_MODEL)).toBe(true)
     expect(isPricedRuntimeModel('codex', DEFAULT_CODEX_MODEL)).toBe(true)
     // A model of the other vendor, or one the table does not know, is not.
     expect(isPricedRuntimeModel('codex', 'claude-sonnet-4-5')).toBe(false)

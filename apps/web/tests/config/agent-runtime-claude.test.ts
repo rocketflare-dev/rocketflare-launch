@@ -61,6 +61,19 @@ describe('Claude Code through the seam is the P3 turn, byte for byte', () => {
     )
   })
 
+  it('no model pinned: no --model and no background-model env — Claude Code picks both', () => {
+    const cmd = buildClaudeCommand({ message: 'hi', model: null })
+    expect(cmd).not.toContain('--model')
+    expect(cmd).toContain('--disallowedTools')
+    const env = claudeTurnEnv(null)
+    expect(env).not.toHaveProperty('ANTHROPIC_SMALL_FAST_MODEL')
+    expect(env).not.toHaveProperty('ANTHROPIC_DEFAULT_HAIKU_MODEL')
+    expect(claudeTurnEnv('claude-sonnet-5')).toMatchObject({
+      ANTHROPIC_SMALL_FAST_MODEL: 'claude-sonnet-5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-5',
+    })
+  })
+
   it('the environment, on Launch’s key', () => {
     expect(claudeCodeRuntime.turnEnv({ model: input.model, source: 'platform' })).toEqual(
       claudeTurnEnv(input.model)

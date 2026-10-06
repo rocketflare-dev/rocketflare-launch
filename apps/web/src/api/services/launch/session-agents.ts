@@ -12,7 +12,8 @@
  * - `updateSessionAgents` — merges whole per-runtime entries into the stored policy, keeping every
  *   other field (budgets, limits, the default runtime), and refuses a result with nothing enabled
  *   (409 `session_agents_none_enabled`). Claude Code's model is mirrored onto the policy's own
- *   `model`, which is what a policy without `runtimes` has always meant by it.
+ *   `model`, which is what a policy without `runtimes` has always meant by it. A model of null is
+ *   the agent's own default — no model flag, the code default for both runtimes.
  *
  * A change reaches NEW sessions only: each session froze its policy at create.
  */
@@ -93,7 +94,8 @@ export async function sessionAgentsStatus(
       model: rp.model,
       credentialMode: rp.credentialMode,
       isDefault: !policy.runtimes?.[runtime],
-      models: offered.includes(rp.model) ? [...offered] : [rp.model, ...offered],
+      models:
+        rp.model === null || offered.includes(rp.model) ? [...offered] : [rp.model, ...offered],
       platformKey: {
         kind: keyKind,
         source: credentialSet ? 'credential' : secretSet(cfg, keyKind) ? 'secret' : null,

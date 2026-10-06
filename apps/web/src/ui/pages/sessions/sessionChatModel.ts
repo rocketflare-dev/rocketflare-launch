@@ -229,16 +229,17 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
 }
 
 /**
- * A `turn.start` naming a model: the model, and a notice when an earlier turn ran on another one.
- * Null when the row names none (rows written before the model was recorded).
+ * A `turn.start` naming a model: the model (null: the agent's own default), and a notice when an
+ * earlier turn ran on another one. Null when the row names none (rows written before the model
+ * was recorded).
  */
 function modelSwitchItem(
   event: SessionEvent,
-  previous: string | undefined
-): { model: string; item: ChatItem | null } | null {
+  previous: string | null | undefined
+): { model: string | null; item: ChatItem | null } | null {
   const parsed = sessionTurnStartDataSchema.safeParse(event.data)
   const model = parsed.success ? parsed.data.model : undefined
-  if (!model) return null
+  if (model === undefined || model === '') return null
   if (previous === undefined || previous === model) return { model, item: null }
   return {
     model,
@@ -248,7 +249,10 @@ function modelSwitchItem(
       seq: event.seq,
       at: event.at,
       tone: 'info',
-      text: `Switched to ${agentModelLabel(model)}`,
+      text:
+        model === null
+          ? 'Switched to the agent’s default model'
+          : `Switched to ${agentModelLabel(model)}`,
     },
   }
 }
@@ -269,13 +273,13 @@ export function buildSessionChat(events: readonly SessionEvent[]): ChatItem[] {
       units.push({ kind: 'tools', id: row.id, seq: row.seq, rows: [row] })
     }
   }
-  let model: string | undefined
+  let model: string | null | undefined
   for (const event of ordered) {
     if (CHAT_TIMELINE_TYPES.has(event.type)) continue
     if (event.type === 'turn.start') {
       const switched = modelSwitchItem(event, model)
       if (switched?.item) units.push(switched.item)
-      model = switched?.model ?? model
+      if (switched) model = switched.model
       continue
     }
     const item = lifecycleItem(event)

@@ -9,7 +9,11 @@
  * ever lands in an event. The clock and the timers are injected; `tick` yields to the event loop so
  * the watch loops do not starve the stream.
  */
-import { SESSION_EVENT_DATA, usdToMicrocents } from '@launch/shared/launch-sessions'
+import {
+  PENDING_MODEL_DEFAULT,
+  SESSION_EVENT_DATA,
+  usdToMicrocents,
+} from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import {
@@ -137,11 +141,15 @@ describe('runTurn: a turn that finishes', () => {
       claudeSessionId: 'claude-sess-1',
     })
 
-    // The process ran the policy's model in the checkout with the placeholder only.
+    // No model pinned (the default): Claude Code runs its own, main and background — no `--model`,
+    // no background-model env — in the checkout with the placeholder only.
     const sandbox = ports.sandboxes.get(row.id)
     const proc = sandbox?.processes[0]
     expect(proc?.command).toContain("claude -p 'Change the Home heading'")
-    expect(proc?.command).toContain('--model claude-opus-5-5')
+    expect(proc?.command).not.toContain('--model')
+    expect(proc?.opts?.env).not.toHaveProperty('ANTHROPIC_SMALL_FAST_MODEL')
+    expect(proc?.opts?.env).not.toHaveProperty('ANTHROPIC_DEFAULT_HAIKU_MODEL')
+    expect(events.find(e => e.type === 'turn.start')?.data).toEqual({ turn: 1, model: null })
     expect(proc?.command).not.toContain('--resume')
     // The session-system-note, filled in: where it is, and only targeted checks — never the gate.
     expect(proc?.command).toContain('--append-system-prompt')
@@ -231,7 +239,7 @@ describe('runTurn: a turn that finishes', () => {
         { containerId: sandboxId },
         anthropic
       )
-    const old = await call(row.policy.model)
+    const old = await call('claude-opus-5-5')
     expect(old.status).toBe(403)
     await old.text()
     expect(anthropic.requests).toHaveLength(0)
@@ -252,6 +260,19 @@ describe('runTurn: a turn that finishes', () => {
       { turn: 1, model: 'claude-sonnet-5' },
       { turn: 2, model: 'claude-sonnet-5' },
     ])
+
+    // Back to the agent's own default: the claim clears the pin, the command passes no model.
+    await db
+      .update(sessions)
+      .set({ pendingMessage: 'Your call', pendingModel: PENDING_MODEL_DEFAULT })
+      .where(eq(sessions.id, row.id))
+    await runTurn(db, ports, row, FAST)
+    const back = await reload(row)
+    expect(back.pendingModel).toBeNull()
+    expect(back.policy.model).toBeNull()
+    expect(ports.sandboxes.get(row.id)?.processes[2]?.command).not.toContain('--model')
+    const third = (await eventsOf(row)).filter(e => e.type === 'turn.start')[2]
+    expect(third?.data).toEqual({ turn: 3, model: null })
   })
 
   it('writes a long burst in batches, in order', async () => {

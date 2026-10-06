@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Coding sessions default to the agent's own model.** With nothing pinned, Claude Code runs with
+  no `--model` (and no background-model override) and Codex with no `-m`, so each picks its model
+  as it does on a laptop — Opus 5.5 for Claude Code today, not Sonnet. Platform → Coding agents
+  and the composer's picker offer "Default" first; a pinned model works as before, and a policy
+  that already pins one (such as an older `claude-sonnet-4-5`) keeps it until an admin picks
+  Default. With no pin the model proxy lets through any model of the agent's provider that Launch
+  can price. No migration. Deploy the sandbox host with Launch: an older host refuses unpinned
+  sessions' model calls.
 - **A landing no longer waits ten minutes on its own release claim.** A `land.release` step killed
   mid-release (a `wrangler dev` reload, a deploy) never ran its `finally`, so the claim stayed held
   by the session itself and the retried step waited for it to go stale, showing "Cutting a

@@ -70,17 +70,19 @@ export interface GitEgressGrant {
 /**
  * Claude Code's model calls (`api.anthropic.com`): the credential (a SECRET) — Launch's API key
  * (`api_key`, sent as `x-api-key`) or the session creator's Claude subscription token (`oauth`,
- * sent as `Authorization: Bearer` with the OAuth beta flag) — and the policy's model.
+ * sent as `Authorization: Bearer` with the OAuth beta flag) — and the policy's model (null: none
+ * pinned, any model Launch can price — a host older than this refuses every call on null, so
+ * deploy the sandbox host with Launch).
  */
 export interface AnthropicEgressGrant {
   auth: { kind: 'api_key' | 'oauth'; value: string }
-  model: string
+  model: string | null
 }
 
 /** Codex on Launch's account (`api.openai.com`): Launch's OpenAI key (a SECRET) and the model. */
 export interface OpenAiEgressGrant {
   key: string
-  model: string
+  model: string | null
 }
 
 /**

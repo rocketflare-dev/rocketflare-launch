@@ -97,6 +97,7 @@
  * ids, counts and flags.
  */
 import {
+  PENDING_MODEL_DEFAULT,
   resolveSessionPolicy,
   SESSION_REALTIME_ENTITY,
   type SessionAttachment,
@@ -600,7 +601,10 @@ export async function runTurn(
       // The model the message asked for becomes the session's from this turn on — in the claim
       // itself, read from the column, so the proxy's allow-list (it re-reads `policy`) and the
       // command can never disagree about which model this turn runs.
+      // `PENDING_MODEL_DEFAULT` is the way back to the agent's own default: `model` null.
       policy: sql`case when ${sessions.pendingModel} is null then ${sessions.policy}
+        when ${sessions.pendingModel} = ${PENDING_MODEL_DEFAULT}
+          then jsonb_set(${sessions.policy}, '{model}', 'null'::jsonb)
         else jsonb_set(${sessions.policy}, '{model}', to_jsonb(${sessions.pendingModel})) end`,
       pendingModel: null,
       pendingAttachments: null,

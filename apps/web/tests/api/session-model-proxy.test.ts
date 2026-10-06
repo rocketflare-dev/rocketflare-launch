@@ -9,7 +9,7 @@
  * test and removes it in that test's `finally`.
  */
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
-import { usdToMicrocents } from '@launch/shared/launch-sessions'
+import { DEFAULT_SESSION_POLICY, usdToMicrocents } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import { putCredential, removeCredential } from '@/api/services/launch/credentials'
@@ -110,7 +110,7 @@ describe('the model proxy: who and what may pass', () => {
   it('a model other than the policy’s — or no parseable body — is a 403', async () => {
     const anthropic = createFakeAnthropic()
     const env = createTestEnv({ ANTHROPIC_API_KEY: ENV_KEY })
-    const { sandboxId } = await liveSession()
+    const { sandboxId } = await liveSession({ policy: { ...DEFAULT_SESSION_POLICY, model: MODEL } })
     for (const body of [{ model: 'claude-opus-4-1' }, { model: 'claude-opus-5-5-evil' }, {}, 'x']) {
       const res = await handleAnthropic(
         modelRequest(body),
@@ -124,6 +124,41 @@ describe('the model proxy: who and what may pass', () => {
     expect(isAllowedModel('claude-opus-5-5-20260801', MODEL)).toBe(true)
     expect(isAllowedModel('CLAUDE-OPUS-5-5', MODEL)).toBe(true)
     expect(isAllowedModel('claude-opus-5-5x', MODEL)).toBe(false)
+  })
+
+  it('no model pinned (the default): any Anthropic model Launch can price passes, an unpriced one is a 403', async () => {
+    expect(DEFAULT_SESSION_POLICY.model).toBeNull()
+    const anthropic = createFakeAnthropic()
+    const env = createTestEnv({ ANTHROPIC_API_KEY: ENV_KEY })
+    const { sandboxId } = await liveSession()
+    // Claude Code's main model and its own background model, both its choice.
+    for (const model of ['claude-opus-5-5', 'claude-haiku-4-5-20251001']) {
+      const res = await handleAnthropic(
+        modelRequest({ model, stream: true }),
+        env,
+        { containerId: sandboxId },
+        anthropic
+      )
+      expect(res.status, model).toBe(200)
+      await res.text()
+    }
+    for (const body of [{ model: 'claude-mystery-9' }, { model: 'gpt-6.1-sol' }, {}]) {
+      const res = await handleAnthropic(
+        modelRequest(body),
+        env,
+        { containerId: sandboxId },
+        anthropic
+      )
+      expect(res.status).toBe(403)
+      expect(((await res.json()) as { error: { message: string } }).error.message).toContain(
+        'a model Launch has a price for'
+      )
+    }
+    expect(anthropic.requests).toHaveLength(2)
+    expect(isAllowedModel('claude-sonnet-5', null)).toBe(true)
+    expect(isAllowedModel('claude-mystery-9', null)).toBe(false)
+    expect(isAllowedModel('gpt-6.1-sol', null, 'openai')).toBe(true)
+    expect(isAllowedModel('claude-sonnet-5', null, 'openai')).toBe(false)
   })
 
   it('over the session budget: 403 permission_error and NO upstream call', async () => {

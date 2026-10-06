@@ -591,12 +591,18 @@ export const AGENT_RUNTIME_PLATFORM_KEY = {
   codex: 'openai_api_key',
 } as const satisfies Record<AgentRuntimeId, CredentialKind>
 
-/** One runtime's entry in `PUT /session-agents`: its model must have a price (budgets need one). */
+/**
+ * One runtime's entry in `PUT /session-agents`: a pinned model must have a price (budgets need
+ * one); null leaves the choice to the agent.
+ */
 function sessionAgentSettingSchema(runtime: AgentRuntimeId) {
-  return runtimePolicySchema.refine(v => isPricedRuntimeModel(runtime, v.model), {
-    path: ['model'],
-    message: `Launch has no price for that model, so ${AGENT_RUNTIME_LABELS[runtime]} sessions could not be held to a budget`,
-  })
+  return runtimePolicySchema.refine(
+    v => v.model === null || isPricedRuntimeModel(runtime, v.model),
+    {
+      path: ['model'],
+      message: `Launch has no price for that model, so ${AGENT_RUNTIME_LABELS[runtime]} sessions could not be held to a budget`,
+    }
+  )
 }
 
 /**
@@ -629,7 +635,8 @@ export const sessionAgentStatusSchema = z.object({
   /** The personal account it can bill ("Claude subscription", "ChatGPT plan"). */
   accountLabel: z.string(),
   enabled: z.boolean(),
-  model: z.string(),
+  /** Null: the agent's own default (no model flag). */
+  model: z.string().nullable(),
   credentialMode: sessionCredentialModeSchema,
   /** No stored entry: the fail-closed code default applies. */
   isDefault: z.boolean(),

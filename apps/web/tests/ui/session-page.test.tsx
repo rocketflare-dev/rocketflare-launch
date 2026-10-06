@@ -831,12 +831,13 @@ describe('SessionPage', () => {
       [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true }),
     })
     const picker = await screen.findByLabelText('Model for the next message')
-    expect(picker).toHaveValue('claude-opus-5-5')
+    // No model pinned: the agent's own default is selected, first in the list.
+    expect(picker).toHaveValue('')
     expect(
       within(picker)
         .getAllByRole('option')
         .map(o => o.textContent)
-    ).toEqual(['Opus 5.5', 'Sonnet 5', 'Fable 5.1', 'Haiku 4.5'])
+    ).toEqual(['Default (Claude Code’s choice)', 'Opus 5.5', 'Sonnet 5', 'Fable 5.1', 'Haiku 4.5'])
     fireEvent.change(picker, { target: { value: 'claude-sonnet-5' } })
     const box = screen.getByLabelText('Message the coding agent')
     fireEvent.change(box, { target: { value: 'Think it through' } })
@@ -849,6 +850,26 @@ describe('SessionPage', () => {
     )
   })
 
+  it('switches a pinned session back to the agent’s own default (model null)', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf({ policy: { ...DEFAULT_SESSION_POLICY, model: 'claude-sonnet-5' } }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+      [`POST ${BASE}/turns`]: () => detailOf({ pendingMessage: true }),
+    })
+    const picker = await screen.findByLabelText('Model for the next message')
+    expect(picker).toHaveValue('claude-sonnet-5')
+    fireEvent.change(picker, { target: { value: '' } })
+    const box = screen.getByLabelText('Message the coding agent')
+    fireEvent.change(box, { target: { value: 'Your call' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `POST ${BASE}/turns`)).toEqual({
+        message: 'Your call',
+        model: null,
+      })
+    )
+  })
+
   it('keeps an older model the session runs on, and offers a Codex session Codex’s models', async () => {
     renderPage({
       [BASE]: detailOf({ policy: { ...DEFAULT_SESSION_POLICY, model: 'claude-sonnet-4-5' } }),
@@ -856,7 +877,7 @@ describe('SessionPage', () => {
     })
     const picker = await screen.findByLabelText('Model for the next message')
     expect(picker).toHaveValue('claude-sonnet-4-5')
-    expect(within(picker).getAllByRole('option')).toHaveLength(5)
+    expect(within(picker).getAllByRole('option')).toHaveLength(6)
     cleanup()
     renderPage({
       [BASE]: detailOf({
@@ -871,7 +892,7 @@ describe('SessionPage', () => {
       within(codexPicker)
         .getAllByRole('option')
         .map(o => o.textContent)
-    ).toEqual(['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'])
+    ).toEqual(['Default (Codex’s choice)', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'])
   })
 
   it('says when a turn ran on a different model from the one before it', async () => {

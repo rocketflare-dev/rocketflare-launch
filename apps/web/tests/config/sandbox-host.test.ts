@@ -16,6 +16,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import TOML from '@iarna/toml'
+import { DEFAULT_CLAUDE_CODE_MODEL, DEFAULT_CODEX_MODEL } from '@launch/shared/launch-sessions'
 import { describe, expect, it } from 'vitest'
 import type { ClaudeLineMapping } from '@/api/services/sessions/claude-stream'
 import { createClaudeStreamParser } from '@/api/services/sessions/claude-stream'
@@ -296,6 +297,15 @@ describe('the host mode’s turn meter', () => {
       },
     ])
   })
+
+  it('no model pinned: plain usage is priced as each agent’s own default, so the budget counts it', () => {
+    const claude = createTurnMeter(null)
+    for (const m of mappingsOf(claudeStreamJsonLines({ usage: { input: 10, output: 5 } }))) {
+      claude.observe(m)
+    }
+    expect(claude.entries().map(e => e.model)).toEqual([DEFAULT_CLAUDE_CODE_MODEL])
+    expect(claude.runningCostMicrocents()).toBeGreaterThan(0)
+  })
 })
 
 describe('the host mode’s turn meter for Codex and personal accounts', () => {
@@ -327,6 +337,10 @@ describe('the host mode’s turn meter for Codex and personal accounts', () => {
     expect(meter.provider).toBe('openai')
     // Codex says nothing per response: there is no running cost to cut a turn short with.
     expect(meter.runningCostMicrocents()).toBe(0)
+    // No model pinned: Codex's lines never name one, so the turn is priced as Codex's own default.
+    const unpinned = createTurnMeter(null, { provider: 'openai' })
+    for (const m of codexMappings({ input: 1000, cached: 400, output: 50 })) unpinned.observe(m)
+    expect(unpinned.entries().map(e => e.model)).toEqual([DEFAULT_CODEX_MODEL])
   })
 
   it('a personal account is recorded as a subscription and costs nothing to the budget', () => {

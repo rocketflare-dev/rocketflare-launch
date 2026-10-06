@@ -255,8 +255,8 @@ export const sessionUserMessageDataSchema = z.object({
 })
 export const sessionTurnStartDataSchema = z.object({
   turn: z.number().int().positive(),
-  /** The model the turn runs on (the policy's, after any switch the message asked for). */
-  model: z.string().optional(),
+  /** The model the turn runs on (the policy's, after any switch the message asked for); null: the agent's own default. */
+  model: z.string().nullable().optional(),
 })
 export const sessionTurnEndDataSchema = z
   .object({
@@ -686,27 +686,42 @@ export interface SessionEventInput<T extends SessionEventType = SessionEventType
 // ---- policy ------------------------------------------------------------------------------------
 
 /**
- * One agent runtime under the session policy (§18.22): whether sessions may run it, its model, and
- * whose account they bill. The ONE place these switches live — a platform setting edited on the
- * Platform → Coding agents tab (`PUT /api/platform/setup/session-agents`), not a deployment var.
+ * A session's model: a pinned id, or null — the coding agent's OWN default (Claude Code and Codex
+ * pick their model as they would on a laptop; Launch passes no model flag). Null is the default.
+ */
+export const sessionModelSchema = z.string().trim().min(1).max(100).nullable()
+export type SessionModel = z.infer<typeof sessionModelSchema>
+
+/**
+ * `pending_model`'s value for "back to the agent's own default" — the column is text, and NULL
+ * there already means "no switch asked for". Never a real model id.
+ */
+export const PENDING_MODEL_DEFAULT = 'default'
+
+/**
+ * One agent runtime under the session policy (§18.22): whether sessions may run it, its model
+ * (null: the agent's own default), and whose account they bill. The ONE place these switches live
+ * — a platform setting edited on the Platform → Coding agents tab
+ * (`PUT /api/platform/setup/session-agents`), not a deployment var.
  */
 export const runtimePolicySchema = z.object({
   enabled: z.boolean(),
-  model: z.string().trim().min(1).max(100),
+  model: sessionModelSchema,
   credentialMode: sessionCredentialModeSchema,
 })
 export type RuntimePolicy = z.infer<typeof runtimePolicySchema>
 
 /**
  * `launch_settings.session_policy`, with code defaults, snapshotted on `sessions.policy` at create
- * so a policy edit never changes a session already running. `model` is the ONLY model the model
- * proxy lets through for the session — the CHOSEN runtime's model once frozen on a row
- * (`createSession`), so the allow-list never has to know about runtimes. `runtime` (the default a
+ * so a policy edit never changes a session already running. `model` is the CHOSEN runtime's model
+ * once frozen on a row (`createSession`): pinned, it is the ONLY model the model proxy lets
+ * through; null (the default), the agent picks its own and the proxy lets through any model of
+ * the runtime's provider that Launch can price — budgets are money. `runtime` (the default a
  * session starts with) and `runtimes` (per-runtime settings) are optional: a stored policy without
  * them is Claude Code on Launch's key, exactly as before (`runtimePolicyOf`).
  */
 export const sessionPolicySchema = z.object({
-  model: z.string().trim().min(1).max(100),
+  model: sessionModelSchema,
   runtime: agentRuntimeSchema.optional(),
   runtimes: z.object(runtimesShape()).partial().optional(),
   maxSessionUsd: z.number().positive().max(10_000),
@@ -721,7 +736,7 @@ export const sessionPolicySchema = z.object({
 export type SessionPolicy = z.infer<typeof sessionPolicySchema>
 
 export const DEFAULT_SESSION_POLICY: SessionPolicy = {
-  model: 'claude-opus-5-5',
+  model: null,
   maxSessionUsd: 10,
   appMonthlyUsd: 200,
   maxConcurrentPerApp: 3,
@@ -746,11 +761,17 @@ function runtimesShape(): Record<AgentRuntimeId, typeof runtimePolicySchema> {
 }
 
 /**
- * Codex's model when the policy names none (§18.22-B): Codex 0.160's own default — the first of
- * its bundled `models-manager/models.json` by priority, "latest workhorse model for coding" — and
- * priced in `@launch/shared/ai/pricing`. A policy's `runtimes.codex.model` overrides it.
+ * Codex 0.160's own default model (§18.22-B) — the first of its bundled
+ * `models-manager/models.json` by priority, "latest workhorse model for coding". Only the Setup
+ * page's key check calls it: a session with no pinned model lets Codex choose.
  */
 export const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol'
+
+/**
+ * Claude Code's own default model today — only the Setup page's key check calls it: a session
+ * with no pinned model lets Claude Code choose.
+ */
+export const DEFAULT_CLAUDE_CODE_MODEL = 'claude-opus-5-5'
 
 /**
  * The policy for one runtime, defaults filled in. FAIL-CLOSED: with no `runtimes` entry Claude Code
@@ -764,7 +785,7 @@ export function runtimePolicyOf(policy: SessionPolicy, runtime: AgentRuntimeId):
   if (stored) return stored
   return runtime === 'claude_code'
     ? { enabled: true, model: policy.model, credentialMode: 'platform' }
-    : { enabled: false, model: DEFAULT_CODEX_MODEL, credentialMode: 'platform' }
+    : { enabled: false, model: null, credentialMode: 'platform' }
 }
 
 /** The runtime a new session runs when the request names none. */
@@ -928,9 +949,10 @@ export const sessionTurnRequestSchema = z
     message: z.string().trim().max(SESSION_MESSAGE_MAX).default(''),
     /**
      * Switch the session to this model from this turn on — one of `AGENT_RUNTIME_MODELS[runtime]`
-     * that is priced, else 400 `model_not_offered`. Absent: the session's current model.
+     * that is priced, else 400 `model_not_offered`; null: back to the agent's own default. Absent:
+     * the session's current model.
      */
-    model: z.string().trim().min(1).max(100).optional(),
+    model: sessionModelSchema.optional(),
     /**
      * While a turn runs: `queue` (the default) runs this message when the turn ends; `interrupt`
      * also stops the turn — the same write asks for the cancel — so this message runs next, resuming
@@ -1002,7 +1024,7 @@ export const sessionSummarySchema = z.object({
   runtime: agentRuntimeSchema.default(DEFAULT_AGENT_RUNTIME),
   /** §18.22: `platform` (Launch's key) or `user` (a personal account) — fixed at create. */
   credentialSource: sessionCredentialSourceSchema.default('platform'),
-  /** The model the session runs now (`policy.model`); null from a server that predates it. */
+  /** The model the session runs now (`policy.model`); null: the agent's own default. */
   model: z.string().nullable().default(null),
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>

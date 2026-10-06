@@ -240,7 +240,7 @@ describe('a subscription session’s model call', () => {
     }
     // The model allow-list still holds.
     const wrongModel = await handleAnthropic(
-      oauthRequest({ model: 'claude-opus-4-1' }),
+      oauthRequest({ model: 'claude-mystery-9' }),
       s.env,
       { containerId: s.sandboxId },
       up

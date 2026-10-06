@@ -98,9 +98,11 @@ describe('the overview', () => {
     const res = await call('GET')
     expect(res.status).toBe(200)
     const { claude_code, codex } = await agents(res)
+    // No model pinned: each agent runs its own default.
+    expect(DEFAULT_SESSION_POLICY.model).toBeNull()
     expect(claude_code).toMatchObject({
       enabled: true,
-      model: DEFAULT_SESSION_POLICY.model,
+      model: null,
       credentialMode: 'platform',
       isDefault: true,
       platformKey: { kind: 'anthropic_api_key', source: null },
@@ -108,12 +110,13 @@ describe('the overview', () => {
     })
     expect(codex).toMatchObject({
       enabled: false,
+      model: null,
       credentialMode: 'platform',
       isDefault: true,
       platformKey: { kind: 'openai_api_key', source: null },
       minImage: 'session-6',
     })
-    expect(claude_code?.models).toContain(DEFAULT_SESSION_POLICY.model)
+    expect(claude_code?.models).toContain('claude-opus-5-5')
   })
 
   it('an old stored policy (no runtimes) still reads as Claude Code on its own model', async () => {
@@ -196,7 +199,7 @@ describe('PUT /session-agents', () => {
             model: DEFAULT_SESSION_POLICY.model,
             credentialMode: 'platform',
           },
-          codex: { enabled: false, model: 'gpt-6.1-sol', credentialMode: 'platform' },
+          codex: { enabled: false, model: null, credentialMode: 'platform' },
         },
       },
       after: {

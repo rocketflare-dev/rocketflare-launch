@@ -109,7 +109,8 @@ describe('statuses', () => {
 describe('policy and money', () => {
   it('the defaults are the plan’s, and valid', () => {
     expect(sessionPolicySchema.parse(DEFAULT_SESSION_POLICY)).toEqual({
-      model: 'claude-opus-5-5',
+      // No model pinned: Claude Code (or Codex) runs its own default.
+      model: null,
       maxSessionUsd: 10,
       appMonthlyUsd: 200,
       maxConcurrentPerApp: 3,

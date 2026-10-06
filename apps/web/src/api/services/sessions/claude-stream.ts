@@ -7,13 +7,15 @@
  *
  * ```
  * claude -p '<message>' [--resume <id>] --output-format stream-json --verbose
- *        --permission-mode bypassPermissions --model <policy model> --disallowedTools "Bash(git push:*)"
+ *        --permission-mode bypassPermissions [--model <policy model>] --disallowedTools "Bash(git push:*)"
  *        --append-system-prompt '<the session-system-note prompt>'
  * ```
  *
- * - `--model` is the session POLICY's model — the only one the model proxy lets through — and the
- *   env points Claude Code's background model at it too (`claudeTurnEnv`), or its small-model calls
- *   (titles, command-prefix checks) would be refused by the allow-list.
+ * - `--model` is the session POLICY's model when one is pinned — the only one the model proxy lets
+ *   through — and the env points Claude Code's background model at it too (`claudeTurnEnv`), or its
+ *   small-model calls (titles, command-prefix checks) would be refused by the allow-list. With none
+ *   pinned (the default) there is no `--model` and no background-model env: Claude Code picks both
+ *   as it would on a laptop, and the proxy lets through any Anthropic model Launch can price.
  * - `bypassPermissions`: the sandbox IS the boundary (egress allow-list, placeholder key, its own
  *   database branch), so the agent runs any tool without asking — in `-p` mode nobody could answer
  *   a prompt, and `acceptEdits` silently denied every Bash command outside an allow-list. Claude
@@ -69,8 +71,8 @@ export const CLAUDE_DISALLOWED_TOOLS = 'Bash(git push:*)'
 export interface ClaudeCommandInput {
   /** The user's message, verbatim. Quoted here. */
   message: string
-  /** `policy.model` — the only model the proxy allows. */
-  model: string
+  /** `policy.model` — pinned, the only model the proxy allows; null, Claude Code's own default. */
+  model: string | null
   /** `sessions.claude_session_id` from the previous turn; absent on the first. */
   resumeSessionId?: string | null
   /**
@@ -96,7 +98,9 @@ export function shellQuote(text: string): string {
 
 /** The shell command for one turn. Throws on a model or resume id that is not a plain token. */
 export function buildClaudeCommand(input: ClaudeCommandInput): string {
-  if (!SAFE_TOKEN.test(input.model)) throw new Error('buildClaudeCommand: invalid model id')
+  if (input.model !== null && !SAFE_TOKEN.test(input.model)) {
+    throw new Error('buildClaudeCommand: invalid model id')
+  }
   const stdin = Boolean(input.attachments?.length)
   const parts = stdin
     ? ['claude', '-p', '--input-format', 'stream-json']
@@ -113,8 +117,7 @@ export function buildClaudeCommand(input: ClaudeCommandInput): string {
     '--verbose',
     '--permission-mode',
     'bypassPermissions',
-    '--model',
-    input.model,
+    ...(input.model === null ? [] : ['--model', input.model]),
     '--disallowedTools',
     `"${CLAUDE_DISALLOWED_TOOLS}"`
   )
@@ -155,8 +158,9 @@ export function buildClaudeTurnInputScript(
 
 /**
  * The turn process's environment. NON-secret by construction: the key is a placeholder the model
- * proxy replaces outside the sandbox (plan §1.4), and the background model is pinned to the
- * policy's so the proxy's allow-list does not refuse Claude Code's own small-model calls.
+ * proxy replaces outside the sandbox (plan §1.4), and — a pinned model only — the background model
+ * is pinned to the policy's so the proxy's allow-list does not refuse Claude Code's own small-model
+ * calls. With none pinned, Claude Code keeps its own background model.
  * `IS_SANDBOX=1` lets `bypassPermissions` run as root (the session image's user); `HOME` is pinned
  * to `SESSION_HOME` because the transcript path (`CLAUDE_PROJECT_DIR`) is derived from it.
  *
@@ -167,7 +171,7 @@ export function buildClaudeTurnInputScript(
  * itself never enters the container. `platform` is the P3 environment, byte for byte.
  */
 export function claudeTurnEnv(
-  model: string,
+  model: string | null,
   /** §18.22: whose account the turn bills. */
   source: SessionCredentialSource = 'platform'
 ): Record<string, string> {
@@ -177,8 +181,9 @@ export function claudeTurnEnv(
       : { ANTHROPIC_API_KEY: MODEL_KEY_PLACEHOLDER }
   return {
     ...credential,
-    ANTHROPIC_SMALL_FAST_MODEL: model,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+    ...(model === null
+      ? {}
+      : { ANTHROPIC_SMALL_FAST_MODEL: model, ANTHROPIC_DEFAULT_HAIKU_MODEL: model }),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_AUTOUPDATER: '1',
     NODE_USE_SYSTEM_CA: '1',

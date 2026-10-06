@@ -42,6 +42,7 @@ import {
   isPricedRuntimeModel,
 } from '@launch/shared/launch-agents'
 import {
+  PENDING_MODEL_DEFAULT,
   resolveSessionPolicy,
   SESSION_WAKE_EVENT,
   type Session,
@@ -153,14 +154,16 @@ export function assertTakesMessages(row: Pick<SessionRow, 'kind'>): void {
 
 /**
  * The model a message asked for, as `pending_model`: null when it asked for none or for the one
- * the session already runs; 400 `model_not_offered` when the runtime does not offer it or it has
+ * the session already runs; {@link PENDING_MODEL_DEFAULT} when it asked (`model: null`) to go back
+ * to the agent's own default; 400 `model_not_offered` when the runtime does not offer it or it has
  * no price (a session's budget is money, so an unpriced model could never be held to one).
  */
 export function pendingModelFor(
   row: Pick<SessionRow, 'runtime' | 'policy'>,
-  model: string | undefined
+  model: string | null | undefined
 ): string | null {
   if (model === undefined || model === resolveSessionPolicy(row.policy).model) return null
+  if (model === null) return PENDING_MODEL_DEFAULT
   const runtime = row.runtime ?? 'claude_code'
   if (!AGENT_RUNTIME_MODELS[runtime].includes(model) || !isPricedRuntimeModel(runtime, model)) {
     throw new BadRequestError(
@@ -174,8 +177,8 @@ export function pendingModelFor(
 /** What `POST /:id/turns` asks for. */
 export interface TurnRequest {
   message: string
-  /** Switch the session to this model from this turn on (see the header). */
-  model?: string
+  /** Switch the session to this model from this turn on — null: the agent's own default (see the header). */
+  model?: string | null
   /** While a turn runs: wait for it (`queue`, the default) or stop it (`interrupt`). */
   mode?: 'queue' | 'interrupt'
   /** Its images, already found under the session's prefix (`resolveSessionAttachments`). */

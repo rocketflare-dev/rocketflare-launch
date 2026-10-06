@@ -2042,18 +2042,30 @@ a turn runs, which `/cancel` cannot — it stops the turn and keeps the message;
 flag), which the page draws as a muted "Runs when this turn ends" bubble with Withdraw. **Latency**:
 a Send now waits for the watcher's 2 s poll plus the 5 s kill grace (`TURN_KILL_GRACE_SECONDS`)
 before the next turn starts — acceptable for v1.
-**The model, per message**: the session's model is `policy.model`, frozen at create
-(`DEFAULT_SESSION_POLICY` is `claude-opus-5-5`; Claude Code offers `AGENT_RUNTIME_MODELS` —
-Opus 5.5, Sonnet 5, Fable 5.1, Haiku 4.5 — and Codex `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`;
-every one priced). `POST /:id/turns { model }` switches
-it from that message on: a model the runtime does not offer, or one without a price, is 400
+**The model, per message**: the session's model is `policy.model`, frozen at create. **Null —
+the default (`DEFAULT_SESSION_POLICY.model`, and every runtime with nothing stored) — pins
+nothing**: Claude Code runs with no `--model` and no `ANTHROPIC_SMALL_FAST_MODEL` /
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, Codex with no `-m` and no `model =` in its `config.toml`, so each
+picks its main and background models exactly as it does on a laptop, and the egress (Launch's
+proxy and the sandbox host alike, `isAllowedModel`) lets through any model of the runtime's
+provider that `ai/pricing` can price — an unpriced one is still a 403, because a budget is money.
+The tenant's AI config (`ai_configs`) is chat's and agents', never a session's. A pinned model
+(Claude Code offers `AGENT_RUNTIME_MODELS` — Opus 5.5, Sonnet 5, Fable 5.1, Haiku 4.5 — and Codex
+`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`; every one priced) is the old rule: the only model
+allowed, the background model pinned to it. `POST /:id/turns { model }` switches it from that
+message on (`model: null` = back to the agent's own default, stored as `pending_model` `'default'`,
+`PENDING_MODEL_DEFAULT`): a model the runtime does not offer, or one without a price, is 400
 `model_not_offered`; a different one is stored as `pending_model` beside `pending_message`, and the
 turn's claim moves it onto `policy.model` IN the compare-and-set to `working` (`jsonb_set`, read
 from the column), so the command's `--model` and the proxy's allow-list — it re-reads the row on
 every call — switch together and the old model is refused from then on. Every write that drops
-the message drops `pending_model` with it. The composer's footer picker sends `model` only when
-it differs, and the transcript says "Switched to …" where a `turn.start` names a model other than
-the turn before's.
+the message drops `pending_model` with it. The composer's footer picker offers "Default (Claude
+Code's choice)" first, sends `model` only when it differs, and the transcript says "Switched to …"
+where a `turn.start` names a model other than the turn before's. A remote turn's meter
+(`turn-meter.ts`) prices a line that names no model — Codex's never do — as the pinned model, or
+with none pinned as the agent's own default today (`DEFAULT_CLAUDE_CODE_MODEL`,
+`DEFAULT_CODEX_MODEL`). A sandbox host older than this change refuses every call on an unpinned
+grant: deploy it with Launch.
 **Images in a message** (`services/sessions/attachments.ts`, `routes/session-attachments.ts`):
 the composer uploads each pasted, dropped or picked image at once — shrunk in the browser to a
 1568 px long edge first (`ui/lib/images.ts`; Anthropic resizes past that anyway; PNG stays PNG) —
@@ -3302,8 +3314,10 @@ A session runs ONE coding agent and bills ONE account, both fixed when it is cre
 (`sessions.credential_source` — `platform`, Launch's key swapped in at the egress as since P3, or
 `user`, the creator's own Claude subscription / ChatGPT plan, `sessions.agent_credential_id`).
 Contracts: `@launch/shared/launch-agents`; the session policy gains `runtime?` (the default a
-session starts with) and `runtimes?` (`{ enabled, model, credentialMode }` per runtime), and the
-frozen `policy.model` is the CHOSEN runtime's model, so the model allow-list never learns about
+session starts with) and `runtimes?` (`{ enabled, model, credentialMode }` per runtime; `model`
+null — the code default for both — is the agent's own choice, the Coding agents tab's "Default —
+Claude Code picks", and a stored pin stays until an admin changes it), and the frozen
+`policy.model` is the CHOSEN runtime's model, so the model allow-list never learns about
 runtimes. **A default deployment is exactly P3**: Claude Code on Launch's key, every stored policy
 and row reading as before (the 0036 migration defaults both columns), and every `session-*` test
 unchanged.

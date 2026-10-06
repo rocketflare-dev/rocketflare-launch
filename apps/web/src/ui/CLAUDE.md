@@ -95,7 +95,8 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   the frame's size (`screenshotViewport`); the page turns it into a chip through `addPending` +
   `takePreviewScreenshot` (`useSessions`: the 202, then `api.head` on the image every
   `SCREENSHOT_POLL_MS` for up to `SCREENSHOT_WAIT_MS` — one bounded wait for one job, not a
-  query). The picker and "Switched to …" name models with `agentModelLabel`
+  query). The picker names models with `sessionModelLabel` (null = "Default (Claude Code's
+  choice)", the agent's own) and "Switched to …" with `agentModelLabel`
   (`@launch/shared/launch-agents`).
   Launch P4 (approvals and shipping): `useApprovals` (`useApprovalCount` — the nav badge, never
   polled; `useApprovals(filters)` for the inbox; `useApproval(id)` polling `APPROVAL_APPLY_POLL_MS`

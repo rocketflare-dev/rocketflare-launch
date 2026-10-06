@@ -3,7 +3,8 @@
  * place these switches live. The first panel of Settings → Platform → Coding agents
  * (`pages/platform/CodingAgents.tsx`), above Launch's keys for the agents.
  *
- * A table, one row per agent: on/off, its model (only priced ones — a session's budget is money),
+ * A table, one row per agent: on/off, its model ("Default — Claude Code picks" first, no model
+ * pinned, as the agent runs on a laptop; else only priced ones — a session's budget is money),
  * who pays, and one status line. Choosing an option that lets people bill their OWN account asks first, in one sentence, about
  * the vendor's terms: the admin is accepting that responsibility. Readiness comes from the server
  * (`sessionAgentStatusSchema`): whether Launch's key for the agent is set, how many people have
@@ -56,7 +57,8 @@ const KEY_ANCHOR: Record<SessionAgentStatus['platformKey']['kind'], string> = {
 
 interface Draft {
   enabled: boolean
-  model: string
+  /** Null: no model pinned — the agent's own default. */
+  model: string | null
   credentialMode: SessionCredentialMode
 }
 
@@ -74,7 +76,7 @@ const allowsPersonal = (mode: SessionCredentialMode) => mode !== 'platform'
 /** The card's React key: the stored settings, so it remounts only when they change. */
 export function codingAgentsKey(status: SessionAgentsStatus): string {
   return status.runtimes
-    .map(r => `${r.runtime}:${r.enabled}:${r.model}:${r.credentialMode}`)
+    .map(r => `${r.runtime}:${r.enabled}:${r.model ?? 'default'}:${r.credentialMode}`)
     .join('|')
 }
 
@@ -218,9 +220,10 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
                       <select
                         id={`${id}-model`}
                         className="select select-sm w-full font-mono"
-                        value={draft.model}
-                        onChange={e => set(agent.runtime, { model: e.target.value })}
+                        value={draft.model ?? ''}
+                        onChange={e => set(agent.runtime, { model: e.target.value || null })}
                       >
+                        <option value="">Default — {agent.label} picks</option>
                         {agent.models.map(m => (
                           <option key={m} value={m}>
                             {m}

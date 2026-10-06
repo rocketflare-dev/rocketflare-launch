@@ -69,6 +69,16 @@ export function agentModelLabel(model: string): string {
   return Object.hasOwn(AGENT_MODEL_LABELS, model) ? (AGENT_MODEL_LABELS[model] as string) : model
 }
 
+/**
+ * What a person reads for a session's model, where null is the agent's own default ("Default
+ * (Claude Code's choice)") and a pinned id reads as {@link agentModelLabel}. Pure.
+ */
+export function sessionModelLabel(runtime: AgentRuntimeId, model: string | null): string {
+  return model === null
+    ? `Default (${AGENT_RUNTIME_LABELS[runtime]}’s choice)`
+    : agentModelLabel(model)
+}
+
 /** A model a runtime may be set to: one the pricing table can put a price on. */
 export function isPricedRuntimeModel(runtime: AgentRuntimeId, model: string): boolean {
   return priceFor(AGENT_RUNTIME_PROVIDERS[runtime], model) !== null

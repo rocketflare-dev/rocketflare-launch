@@ -27,7 +27,7 @@
  * the budget and the meter in between.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
-import { isAllowedModel, type UpstreamFetch } from './forward-model'
+import { isAllowedModel, refusedModelMessage, type UpstreamFetch } from './forward-model'
 import { openAiError } from './refuse'
 
 export { openAiError }
@@ -90,7 +90,7 @@ export interface ResponsesCall {
 /** The request as a {@link ResponsesCall}, or the 403/415 that refuses it. */
 export async function readResponsesCall(
   req: Request,
-  policyModel: string
+  policyModel: string | null
 ): Promise<ResponsesCall | Response> {
   const url = new URL(req.url)
   const encoding = req.headers.get('content-encoding')
@@ -108,12 +108,8 @@ export async function readResponsesCall(
   } catch {
     parsed = null
   }
-  if (!parsed || !isAllowedModel(parsed.model, policyModel)) {
-    return openAiError(
-      403,
-      'permission_error',
-      `This Launch session may only use the model ${policyModel}`
-    )
+  if (!parsed || !isAllowedModel(parsed.model, policyModel, 'openai')) {
+    return openAiError(403, 'permission_error', refusedModelMessage(policyModel))
   }
   return { path: url.pathname, search: url.search, body, model: String(parsed.model) }
 }
@@ -164,8 +160,8 @@ export function openAiKeyedRequest(req: Request, call: ResponsesCall | null, key
 export interface ForwardOpenAiOptions {
   /** Launch's OpenAI key. It goes on the one upstream request and nowhere else. */
   key: string
-  /** The session policy's model. */
-  model: string
+  /** The session policy's model; null: any priced OpenAI model (Codex picks). */
+  model: string | null
   upstream?: UpstreamFetch
 }
 

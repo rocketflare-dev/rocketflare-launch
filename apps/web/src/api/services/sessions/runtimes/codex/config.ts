@@ -47,11 +47,11 @@ function tomlString(value: string): string {
   return `"${clean.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-/** `$CODEX_HOME/config.toml` for a turn on `model`. */
-export function codexConfigToml(model: string): string {
+/** `$CODEX_HOME/config.toml` for a turn on `model` — no `model` line when none is pinned. */
+export function codexConfigToml(model: string | null): string {
   return [
     '# Written by Launch before every turn (§18.22-B). Edits here are overwritten.',
-    `model = ${tomlString(model)}`,
+    ...(model === null ? [] : [`model = ${tomlString(model)}`]),
     'approval_policy = "never"',
     'sandbox_mode = "danger-full-access"',
     'cli_auth_credentials_store = "file"',
@@ -102,7 +102,7 @@ prefix_rule(
 
 /** The files a Codex turn needs in `$CODEX_HOME` (the lease adds `auth.json` on a person's plan). */
 export function codexBeforeTurnFiles(input: {
-  model: string
+  model: string | null
   systemNote: string | null
 }): RuntimeFile[] {
   return [

@@ -121,6 +121,14 @@ describe('the command', () => {
     expect(buildCodexCommand({ message: '--help', model: 'm' })).toContain("' --help'")
   })
 
+  it('no model pinned: no `-m`, and Codex runs its own default', () => {
+    const cmd = buildCodexCommand({ message: 'hi', model: null, resumeId: THREAD })
+    expect(cmd).not.toContain(' -m ')
+    expect(cmd).toContain(`resume ${THREAD}`)
+    expect(codexConfigToml(null)).not.toMatch(/^model = /m)
+    expect(codexConfigToml(null)).toContain('approval_policy = "never"')
+  })
+
   it('is what the runtime builds', () => {
     expect(codexRuntime.buildCommand({ message: 'hi', model: 'gpt-6.1-sol' })).toBe(
       buildCodexCommand({ message: 'hi', model: 'gpt-6.1-sol' })
@@ -508,9 +516,9 @@ describe('around the runtime', () => {
     ).toBe('the disk-usage-analyzer-component-widget task-runner-sk-thing')
   })
 
-  it('the default Codex model is Codex 0.160’s own default, and it is priced', () => {
+  it('Codex 0.160’s own default model is priced; a policy pins none, so Codex chooses', () => {
     expect(DEFAULT_CODEX_MODEL).toBe('gpt-6.1-sol')
-    expect(runtimePolicyOf(DEFAULT_SESSION_POLICY, 'codex').model).toBe(DEFAULT_CODEX_MODEL)
+    expect(runtimePolicyOf(DEFAULT_SESSION_POLICY, 'codex').model).toBeNull()
     expect(priceFor('openai', 'gpt-6.1-sol-2026-09-30')).toEqual({
       input: 2,
       output: 10,

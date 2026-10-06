@@ -4,7 +4,8 @@
  * sandbox host Worker (`src/sandbox-host/`) bundles it too:
  *
  * - {@link readModelCall}: only `POST /v1/messages` and `/v1/messages/count_tokens`, and only the
- *   policy's model (or a dated id of it) — else an Anthropic-shaped 403;
+ *   policy's model (or a dated id of it) — or, with no model pinned (Claude Code picks its own),
+ *   any Anthropic model Launch can price — else an Anthropic-shaped 403;
  * - {@link keyedModelRequest}: the sandbox's own `x-api-key` / `Authorization` (the placeholder)
  *   and hop headers dropped, the real credential set ({@link ModelAuth}: Launch's key as
  *   `x-api-key`, or — §18.22-A — a person's subscription token as `Authorization: Bearer` with
@@ -20,6 +21,8 @@
  * budget between the two halves and meters the answer as it streams back; a remote sandbox's turn
  * meters itself from Claude Code's output (`turn-meter.ts`), because the host has no database.
  */
+
+import { priceFor } from '@launch/shared/ai/pricing'
 
 /** Where a keyed request goes. The path and query come from the sandbox's request; the host never does. */
 export const ANTHROPIC_UPSTREAM_ORIGIN = 'https://api.anthropic.com'
@@ -40,9 +43,19 @@ export function anthropicError(status: number, type: string, message: string): R
   return Response.json({ type: 'error', error: { type, message } }, { status })
 }
 
-/** Is `requested` the policy's model — exactly, or a dated id of it (`<model>-YYYYMMDD`)? */
-export function isAllowedModel(requested: unknown, policyModel: string): boolean {
+/**
+ * Is `requested` the policy's model — exactly, or a dated id of it (`<model>-YYYYMMDD`)? With no
+ * model pinned (`null`: the agent picks its own, main and background models alike), any model of
+ * `provider` that the pricing table can price — a session's budget is money, so an unpriced model
+ * is refused either way.
+ */
+export function isAllowedModel(
+  requested: unknown,
+  policyModel: string | null,
+  provider: 'anthropic' | 'openai' = 'anthropic'
+): boolean {
   if (typeof requested !== 'string' || !requested) return false
+  if (policyModel === null) return priceFor(provider, requested) !== null
   const want = policyModel.trim().toLowerCase()
   const got = requested.trim().toLowerCase()
   return (
@@ -58,14 +71,21 @@ export interface ModelCall {
   path: (typeof ALLOWED_MODEL_PATHS)[number]
   search: string
   body: string
-  /** The model the body names (the policy's, or a dated id of it). */
+  /** The model the body names (the policy's, a dated id of it, or — none pinned — a priced one). */
   model: string
+}
+
+/** The 403's sentence for a model outside the session's allow-list. */
+export function refusedModelMessage(policyModel: string | null): string {
+  return policyModel === null
+    ? 'This Launch session may only use a model Launch has a price for, so it can be held to a budget'
+    : `This Launch session may only use the model ${policyModel}`
 }
 
 /** The request as a {@link ModelCall}, or the 403 that refuses it. */
 export async function readModelCall(
   req: Request,
-  policyModel: string
+  policyModel: string | null
 ): Promise<ModelCall | Response> {
   const url = new URL(req.url)
   const path = url.pathname
@@ -84,11 +104,7 @@ export async function readModelCall(
     parsed = null
   }
   if (!parsed || !isAllowedModel(parsed.model, policyModel)) {
-    return anthropicError(
-      403,
-      'permission_error',
-      `This Launch session may only use the model ${policyModel}`
-    )
+    return anthropicError(403, 'permission_error', refusedModelMessage(policyModel))
   }
   return {
     path: path as ModelCall['path'],
@@ -156,8 +172,8 @@ const globalUpstream: UpstreamFetch = { fetch: (r: Request) => fetch(r) }
 export interface ForwardModelOptions {
   /** The real credential. It goes on the one upstream request and nowhere else. */
   auth: ModelAuth
-  /** The session policy's model. */
-  model: string
+  /** The session policy's model; null: any priced Anthropic model (the agent picks). */
+  model: string | null
   /** Where the keyed request goes; the global `fetch` by default. */
   upstream?: UpstreamFetch
 }

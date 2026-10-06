@@ -40,7 +40,8 @@ import { getForUser } from './store'
 export interface RuntimeOffer {
   runtime: AgentRuntimeId
   enabled: boolean
-  model: string
+  /** Null: the agent's own default. */
+  model: string | null
   platformAllowed: boolean
   userAllowed: boolean
   credentialMode: SessionCredentialMode

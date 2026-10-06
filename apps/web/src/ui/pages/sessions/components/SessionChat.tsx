@@ -327,7 +327,7 @@ export function SessionChat({
   )
   // The model the next message runs on: the session's, until the person picks another; a switch
   // that took effect (the turn's claim moved `policy.model`) re-seeds it.
-  const [model, setModel] = useState(session.policy.model)
+  const [model, setModel] = useState<string | null>(session.policy.model)
   useEffect(() => setModel(session.policy.model), [session.policy.model])
   const composer = useRef<SessionComposerHandle>(null)
   const send = useSendTurn(session.id)

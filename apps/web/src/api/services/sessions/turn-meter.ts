@@ -25,6 +25,7 @@ import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { AiProvider } from '@launch/shared/ai/config'
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
 import type { AiUsageBilling } from '@launch/shared/ai/usage'
+import { DEFAULT_CLAUDE_CODE_MODEL, DEFAULT_CODEX_MODEL } from '@launch/shared/launch-sessions'
 import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { ClaudeLineMapping, ClaudeModelUsage } from './claude-stream'
@@ -55,12 +56,24 @@ export interface TurnMeterOptions {
   billing?: AiUsageBilling
 }
 
+/** What an unnamed model is priced as when the session pins none: each agent's own default. */
+const AGENT_DEFAULT_MODEL: Partial<Record<AiProvider, string>> & { anthropic: string } = {
+  anthropic: DEFAULT_CLAUDE_CODE_MODEL,
+  openai: DEFAULT_CODEX_MODEL,
+}
+
 const isEmpty = (u: TokenUsage) =>
   !u.inputTokens && !u.outputTokens && !u.cacheReadTokens && !u.cacheWriteTokens
 
-export function createTurnMeter(policyModel: string, opts: TurnMeterOptions = {}): TurnMeter {
+export function createTurnMeter(
+  pinnedModel: string | null,
+  opts: TurnMeterOptions = {}
+): TurnMeter {
   const provider = opts.provider ?? 'anthropic'
   const billing = opts.billing ?? 'metered'
+  // A line that names no model is priced as the pinned one — or, none pinned, as the agent's own
+  // default today (Codex's lines never name one), so the budget still counts it.
+  const policyModel = pinnedModel ?? AGENT_DEFAULT_MODEL[provider] ?? AGENT_DEFAULT_MODEL.anthropic
   const price = (model: string, usage: TokenUsage) =>
     billing === 'subscription' ? 0 : (estimateCostMicrocents(provider, model, usage) ?? 0)
   const responses = new Map<string, TurnUsageEntry>()

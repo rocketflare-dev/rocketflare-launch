@@ -7,6 +7,7 @@
  * Another tenant's session — or one the caller may not see — is the same 404.
  */
 import {
+  PENDING_MODEL_DEFAULT,
   SESSION_WAKE_EVENT,
   sessionDetailResponseSchema,
   sessionEventsResponseSchema,
@@ -14,6 +15,7 @@ import {
 } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
+import { pendingModelFor } from '@/api/services/sessions/chat'
 import {
   approvalRequests,
   auditEvents,
@@ -125,17 +127,26 @@ describe('POST /api/sessions/:id/turns', () => {
       pendingMessage: 'Think harder',
       pendingModel: 'claude-sonnet-5',
       // Not switched yet: the turn's claim does that.
-      policy: expect.objectContaining({ model: 'claude-opus-5-5' }),
+      policy: expect.objectContaining({ model: null }),
     })
+    // Asking for the default the session already runs is no switch; on a pinned session it is.
+    expect(pendingModelFor({ runtime: 'claude_code', policy: row.policy }, null)).toBeNull()
+    expect(
+      pendingModelFor(
+        { runtime: 'claude_code', policy: { ...row.policy, model: 'claude-sonnet-5' } },
+        null
+      )
+    ).toBe(PENDING_MODEL_DEFAULT)
 
-    // Asking for the model the session already runs is no switch at all.
+    // Asking for the model the session already runs is no switch at all — Default on a default
+    // session too.
     const same = await insertSession(db, f, { status: 'ready' })
     const sameEnv = await envWithInstance(same)
     expect(
       (
         await post(`/api/sessions/${same.id}/turns`, f.cookie, sameEnv, {
           message: 'x',
-          model: 'claude-opus-5-5',
+          model: null,
         })
       ).status
     ).toBe(202)

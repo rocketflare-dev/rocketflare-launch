@@ -36,15 +36,20 @@ const SAFE_TOKEN = /^[A-Za-z0-9._:@/-]{1,200}$/
 export const CODEX_THREAD_ID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
-/** The shell command for one Codex turn. Throws on a model or thread id that is not a plain token. */
+/**
+ * The shell command for one Codex turn — `-m` only for a pinned model; none, and Codex runs its own
+ * default. Throws on a model or thread id that is not a plain token.
+ */
 export function buildCodexCommand(input: RuntimeCommandInput): string {
-  if (!SAFE_TOKEN.test(input.model)) throw new Error('buildCodexCommand: invalid model id')
+  if (input.model !== null && !SAFE_TOKEN.test(input.model)) {
+    throw new Error('buildCodexCommand: invalid model id')
+  }
   const parts = ['codex', 'exec', '--json', '-s', 'danger-full-access', '--skip-git-repo-check']
   for (const attachment of input.attachments ?? []) {
     if (!SAFE_TOKEN.test(attachment.path)) throw new Error('buildCodexCommand: invalid image path')
     parts.push('-i', attachment.path)
   }
-  parts.push('-m', input.model)
+  if (input.model !== null) parts.push('-m', input.model)
   if (input.resumeId) {
     if (!CODEX_THREAD_ID_RE.test(input.resumeId)) {
       throw new Error('buildCodexCommand: invalid thread id')
