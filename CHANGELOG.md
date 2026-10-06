@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A new coding session restores the app's prebuild instead of cloning and installing** (issue
+  #16). After a first boot that found none to use, and after every merge Launch makes to the
+  default branch, a `prebuild` run — a session of its own kind, in its own container, with no
+  database — clones the default branch, runs `pnpm install` and saves the workspace as a workspace
+  backup, one per app (`app_prebuilds`; a new one deletes the archive it replaces). The next
+  session's first boot restores it (`restore` in `boot.timing`, where `repo` and `install` were),
+  checks its own commit out over it in place, skips the install while the lockfile matches (and
+  installs over it, then asks for a new prebuild, when it does not), and runs the kit bootstrap for
+  its own database as before. Another session image, backup mode or sandbox host, a prebuild older
+  than 12 days, or a restore that fails: the boot clones as before, and a `workspace.prebuild`
+  event says why. Building one never slows or fails a session. Only where workspace backups are
+  on; `SESSION_PREBUILD=off` turns it off. Migration `0046` (the `app_prebuilds` table and the
+  `prebuild` session kind) — run `pnpm db:migrate` on deploy. Proven with the fake sandbox; not yet
+  measured on a real container.
 - **A coding-session turn survives a dropped log stream.** When reading the agent's output throws
   (or the stream ends with no exit) while its process runs on — seen on a remote sandbox, whose
   stream crosses the wrangler dev binding — the turn checks the process's pid and attaches again,

@@ -322,7 +322,12 @@ needs, beyond the bindings above:
   deploy adds the three vars to BOTH tomls' `[vars]` and puts the two secrets. The session's allow-list gains `<account>.r2.cloudflarestorage.com`
   only while a backup or restore runs; a restore mounts the archive with FUSE (the SDK's
   squashfuse + overlay). `loadConfig` refuses `presigned` without an account id or endpoint (the
-  allow-list would have no R2 host). Every attempt is a `workspace.backup` session event — `saved`
+  allow-list would have no R2 host). The same setting gives each app a PREBUILD (issue #16,
+  `SESSION_PREBUILD`, on unless `off`): a `prebuild` run — about a minute of one more container
+  after a first boot and after each merge Launch makes — saves the default branch with
+  `node_modules` (no `.dev.vars`, no credential) under `backups/` too, one per app, 13-day TTL
+  under the lifecycle rule, and new sessions restore it instead of cloning and installing.
+  Migration `0046` adds its table. Every attempt is a `workspace.backup` session event — `saved`
   with its duration, or `failed` with the reason (the SDK lists missing R2 settings by name) — and a
   failure is also a chat notice and a warning log; a backup never fails the suspend, and a restore
   that fails falls back to the clone ("Cloning instead: …" on the checklist). **Proven on Cloudflare** (issue #3, the

@@ -1538,7 +1538,8 @@ reload) is restarted as `<id>-rN` from the row.
   fails drops `roleVersion` so the retry checks in full; bump the constant whenever `ensureDev`'s
   checks change — so a `dev` an older Launch prepared is repaired without a reset; the first
   session PREPARES it — migrate + seed — then branches) ALONGSIDE
-  `sandbox.start` → `repo` (issue #15: `Promise.allSettled` of the two sides, so a failure on
+  `sandbox.start` → `repo` (or, issue #16, `prebuild.check` → `sandbox.start` → `restore` — the
+  app's prebuild, below) (issue #15: `Promise.allSettled` of the two sides, so a failure on
   one still lets the other's step finish before `fail` and `cleanup`; the first side's error fails
   the boot; `prepare`/`bootstrap` wait for both. The container may start before the branch exists
   — its allow-list gains the database host at `bootstrap`, which sets it from the URI. The two
@@ -1665,14 +1666,54 @@ reload) is restarted as `<id>-rN` from the row.
   the checklist line says "Cloning instead: …". A backup never fails a suspend or a resume, but
   every attempt is a `workspace.backup` event (`saved` with its duration, or `failed` with the
   secret-free reason — a chat notice and a warning log), so a `workspace_backup` that stayed null
-  is explained. **The three resume tiers**: warm (the kept container, inside the warm window) →
-  backup (a cold resume restores the archive: no clone, install or bootstrap, only the dev server
-  restarts) → rebuild (clone, install, bootstrap). **The mode follows the session's sandbox host**
+  is explained. **The boot tiers**: warm (the kept container, inside the warm window) → backup (a
+  cold resume restores the session's own archive: no clone, install or bootstrap, only the dev
+  server restarts) → prebuild (a FIRST boot, or a resume with no usable backup is still a clone —
+  see below: the app's prebuild instead of the clone and, while the lockfile matches, the install)
+  → rebuild (clone, install, bootstrap). **The mode follows the session's sandbox host**
   (`workspaceBackupMode(cfg, host)`): this Worker's own containers use `SESSION_WORKSPACE_BACKUP`;
   a session on the remote sandbox host is `presigned` whenever Launch knows the R2 endpoint
   (`CLOUDFLARE_ACCOUNT_ID` / `BACKUP_BUCKET_ENDPOINT`) and the var is not `off` — never `binding`,
   which the host refuses (§18.10). `loadConfig` refuses `presigned` with no account id or
   endpoint: the allow-list would have no R2 host.
+- **The per-app prebuild** (issue #16, `prebuild.ts` / `prebuild-steps.ts`, `app_prebuilds`,
+  `SESSION_PREBUILD` — `on` unless set `off`, and only where workspace backups are on for the
+  session's host): a workspace backup of the app's DEFAULT branch with `node_modules` installed,
+  one per app, which a new session restores instead of cloning and installing.
+  - **Built in a container of its own**: a `prebuild` session (kind `prebuild` — no database, no
+    branch, no chat; out of the app's session list and its concurrency count, in the operator's
+    list) runs `claim → sandbox.start → prebuild.build` (the default branch cloned detached, then
+    the session install's own `pnpm install`) `→ prebuild.save` (`createBackup` with
+    `PREBUILD_EXCLUDES` — `.dev.vars`, `.wrangler/`, the session wrangler config, Launch's
+    runtime settings, `.vite` caches — none of which the run writes; TTL 13 days, under the
+    bucket's 14-day `backups/` rule) `→ cleanup`. Not a person's container, deliberately: an
+    archive is tens of seconds of that container's control connection (23 s for 369 MB, issue
+    #3), with the first turn queued behind it, and a session's workspace holds its branch URI and
+    encryption key in `.dev.vars`. The price is about a minute of container time per build.
+  - **Asked for, never run, by a step** (`requestPrebuild`): `prebuild.request` after a first
+    boot's `dev` that found none it could use (none yet, another image, backup mode or sandbox
+    host, older than 12 days) or whose lockfile had moved on; `prebuild.refresh#N` after every
+    merge Launch makes (`land.merge` — the default branch moved). The request is a claim on the
+    app's row (`building_session_id`, stale after 30 min or once its session is settled) — one
+    build per app at a time, none for 15 min after a failed one (`last_error`), none when the
+    current prebuild was built after what the caller saw (`notBuiltSince`: the session's start, or
+    the merge) — then the `prebuild` session and its `SESSION_WORKFLOW` instance. A request that
+    cannot be made is a reason on the step's result, never a failure.
+  - **Restored by a first boot** (while `SESSION_PREBUILD` is on): `prebuild.check` (no checklist
+    line) then, instead of `repo`, `restore` — `restoreBackup`, its HEAD checked against the
+    prebuild's commit, then the session's own commit checked out IN PLACE (`checkoutScript`'s
+    `restored`: fetch, forced checkout, `git clean -fd` — never `-x`, which would take
+    `node_modules`) and the lockfiles compared. `bootstrap` then leaves the install out when they
+    match and runs it over the restored `node_modules` when not (and the boot asks for a new
+    prebuild); the kit bootstrap itself always runs, for the session's own database (`.dev.vars`
+    fresh, migrate only when the migrations hash moved, as on any first boot). `boot.timing`
+    shows `restore` where `repo` (and `install`) were. Must match: the image, the backup mode and
+    the sandbox host. Need not: the commit (checked out over it) or the lockfile (installed over
+    it). Anything else — none usable, a restore or checkout that fails — clones as before, with a
+    `workspace.prebuild` row saying why (`skipped`, `failed`; `restored` with `lockfile:
+    same|changed`; `requested` with the reason; `saved` on the run).
+  - **Replaced, not accumulated**: a save deletes the archive it replaced (a session restoring that
+    very one at that moment falls back to the clone); an app's deletion takes its row.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
   Issue #5 adds one READ-ONLY grant: someone a PENDING `session.merge` request on the session names
@@ -1825,7 +1866,18 @@ whole archive through the Durable Object, base64, on the SDK's default HTTP tran
 clone and an install under `wrangler dev` is unmeasured.
 `SANDBOX_TRANSPORT=rpc` would stream the `binding` restore instead, but changes every SDK call and
 is untried. A tenant's deletion leaves its sessions' backups to the bucket's lifecycle rule
-(`tenant.purge` pages `tenants/<id>/` only).
+(`tenant.purge` pages `tenants/<id>/` only), and its apps' prebuild archives too. **The per-app
+prebuild (issue #16) is proven with the `FakeSandbox` only**: on a real container, a checkout and
+a `pnpm install` on the presigned restore's fuse-overlayfs (a lazily paged squashfs from R2 under a
+writable overlay; a session's cold resume already runs its bootstrap and dev server there) and the
+time a first boot then takes are unmeasured, as is whether the first reads of a lazily paged
+`node_modules` (workerd, esbuild, wrangler's bundle) make the dev server start slower than after an
+install. A request made while a build runs is dropped, so a merge during a build leaves the older
+prebuild until the next lockfile change, image or merge asks again (a session still checks its own
+commit out over it). Evicting an archive made on the OTHER host or mode goes through this host's
+bucket, so a `binding` archive left by a laptop's local session is the lifecycle rule's. A failed
+build holds requests off for 15 min, then the next boot tries again — one container per window
+while the default branch does not install. The image's kit-0.16.0 pnpm store pin is still there.
 
 ### 18.10 The sandbox and the local backend
 
@@ -1942,7 +1994,9 @@ pending operations read in parallel per round; a wait gives up (504) after 120 s
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
 Claude Code, a pinned Codex (§18.22-B) and a warm pnpm store for the default pin's kit (0.16.0,
-`SESSION_KIT_TAG`; image `session-6`). The checkout is `/workspace/app` and `$HOME` is
+`SESSION_KIT_TAG`; image `session-6`) — an app on another kit gets its `node_modules` from the app's
+prebuild instead once one exists (§18.9, issue #16; a prebuild is only restored on the image it
+was built on, so an image bump rebuilds each app's on its next boot). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.

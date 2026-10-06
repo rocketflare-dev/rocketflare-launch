@@ -336,6 +336,14 @@ restore carries the whole archive through the Durable Object as base64, which fo
 `node_modules` may be slower than the clone and install it replaces — set
 `SESSION_WORKSPACE_BACKUP=off` in `.dev.vars` if it is.
 
+**The app's prebuild** (issue #16) rides on the same backups: after a first boot that found none,
+Launch starts a `prebuild` run — a SECOND container, beside your session, that clones the app's
+default branch, runs `pnpm install` and saves it — and the next new session on the app shows
+**Restoring the saved workspace** instead of **Cloning repo**, with no install while the lockfile
+matches. On a laptop that second container competes with the session for Docker's memory; set
+`SESSION_PREBUILD=off` in `.dev.vars` if your Docker cannot take it (and `SESSION_WORKSPACE_BACKUP=off`
+turns prebuilds off with the backups).
+
 To see both locally without waiting: give a NEW session a short idle window — the policy is
 frozen onto the row at create, from `launch_settings.session_policy` (e.g. `{"idleSuspendMinutes":
 2}` in Launch's database; there is no UI for it) — and for a cold resume, `docker rm -f` the session's container while it is

@@ -216,6 +216,21 @@ real `reviewPolicyFor`, the approvals route, the REAL Phase B hooks over the Fak
 global fetch, the staging deploy played inside the `land.staging-wake` round, then the release's
 `chain` and the app's `promotion`).
 
+**The app's prebuild** (issue #16, bodies in `../services/sessions/prebuild-steps.ts`, CONCEPTS
+§18.9), only while `SESSION_PREBUILD` is not `off` (`this.prebuilds`, read once per run): a first
+boot's container side is `prebuild.check` (once) → `sandbox.start[.rN]` → `restore[.rN]` (the
+prebuild, then the session's commit checked out over it) when the check found one usable, else —
+or when the restore answers `{ restored: false }` — `repo[.rN]`; `bootstrap` gets `{ install:
+false }` when the restore's lockfile matched; and after `dev`, `prebuild.request` when the check or
+the restore asked for a refresh (`BootContainer.refresh`, from step results only). A merge is
+followed by `prebuild.refresh#N` before the loop returns. A session of kind `prebuild` never
+enters the boot: `run()` sends it to `SessionWorkflow.prebuild` — `sandbox.start` →
+`prebuild.build` → `prebuild.save` — then `cleanup`; its `claim` on a lost instance fails it and
+goes to `cleanup`, which (like `fail`) gives the app's build claim back
+(`releasePrebuildClaim`). Tests: `tests/api/session-prebuild.test.ts` (and the merge in
+`session-land.test.ts`), with `createTestEnv({ SESSION_PREBUILD: 'on' })` — the suite's default is
+`off`, so every other test's step names are today's.
+
 The calls into other slices go through `SessionStepHooks` (`services/sessions/hooks.ts`, bound
 once in `defaultSessionStepHooks`): `runTurn`, `checkpoint`, `shipFix` (a fix turn),
 `shipSummary` (the PR's one model call) and issue #5's `landRelease` / `landStaging` /
