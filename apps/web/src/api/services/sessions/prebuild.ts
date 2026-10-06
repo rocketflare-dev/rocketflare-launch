@@ -79,19 +79,23 @@ export const PREBUILD_BUILD_STALE_MS = 30 * 60_000
 export const PREBUILD_RETRY_AFTER_MS = 15 * 60_000
 
 /**
- * What a prebuild's archive never carries, relative to the workspace: the session-specific files a
- * boot writes (`.dev.vars` — a branch URI and an encryption key — the dev server's own config and
- * state, Launch's runtime settings) and caches that belong to one dev server. A `prebuild` run
- * writes none of them; this keeps it so should that change.
+ * What a prebuild's archive never carries: the session-specific files a boot writes (`.dev.vars` —
+ * a branch URI and an encryption key — the dev server's own config and state, Launch's runtime
+ * settings) and caches that belong to one dev server. A `prebuild` run writes none of them; this
+ * keeps it so should that change.
+ *
+ * Bare NAMES only, never paths: the SDK hands each pattern to `mksquashfs -wildcards` twice, as
+ * given and as `... <pattern>` (match anywhere), and a non-anchored pattern of two or more parts
+ * drops its FIRST directory whole — `... apps/web/.wrangler` loses all of `apps/`, `... node_modules/.vite`
+ * every `node_modules` (measured on the SDK image, 0.12.10). That shipped a prebuild with no
+ * `node_modules`, so a name matches wherever it appears instead.
  */
 export const PREBUILD_EXCLUDES = [
-  'apps/web/.dev.vars',
   '.dev.vars',
-  'apps/web/.wrangler',
-  'apps/web/wrangler.session.toml',
-  '.claude/settings.local.json',
-  'node_modules/.vite',
-  'apps/web/node_modules/.vite',
+  '.wrangler',
+  'wrangler.session.toml',
+  'settings.local.json',
+  '.vite',
 ] as const
 
 /** `SESSION_PREBUILD` is not `off`. */

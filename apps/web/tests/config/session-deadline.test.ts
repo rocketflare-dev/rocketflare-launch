@@ -347,6 +347,14 @@ describe('a failed command says what it printed', () => {
   })
 })
 
+describe('the prebuild archive’s excludes', () => {
+  it('are bare names: the SDK also reads each as `... <pattern>`, which drops a path’s first directory whole', () => {
+    for (const exclude of PREBUILD_EXCLUDES) expect(exclude).not.toContain('/')
+    expect(PREBUILD_EXCLUDES).toEqual(expect.arrayContaining(['.dev.vars', '.wrangler']))
+    expect(PREBUILD_EXCLUDES).not.toContain('node_modules')
+  })
+})
+
 describe('a faster dev start', () => {
   it('every dev step runs with Miniflare’s cf.json fetch off and a compile cache the backups carry', () => {
     const env = sessionProcessEnv(dev)
@@ -354,8 +362,8 @@ describe('a faster dev start', () => {
     expect(env.NODE_COMPILE_CACHE).toBe(NODE_COMPILE_CACHE_DIR)
     // Inside the workspace (a backup's `dir`), and not under one of the prebuild's excludes.
     expect(NODE_COMPILE_CACHE_DIR.startsWith(`${SESSION_WORKSPACE}/`)).toBe(true)
-    const relative = NODE_COMPILE_CACHE_DIR.slice(SESSION_WORKSPACE.length + 1)
-    for (const exclude of PREBUILD_EXCLUDES) expect(relative.startsWith(exclude)).toBe(false)
+    const parts = NODE_COMPILE_CACHE_DIR.slice(SESSION_WORKSPACE.length + 1).split('/')
+    for (const exclude of PREBUILD_EXCLUDES) expect(parts).not.toContain(exclude)
   })
 
   it('waits for the stack in ONE call per chunk — the API’s health, then Vite by TCP — and warms / after, unwaited', async () => {

@@ -959,13 +959,15 @@ export const LOCKFILE = 'pnpm-lock.yaml'
  * of {@link LOCKFILE} (`lockfile=` empty when there is none) — `head=<sha>`, `tree=<sha>`,
  * `lockfile=<hex>` lines.
  */
-export const WORKSPACE_FACTS_COMMAND = `cd ${SESSION_WORKSPACE} && echo "head=$(git rev-parse HEAD)" && echo "tree=$(git rev-parse 'HEAD^{tree}')" && echo "lockfile=$( [ -f ${LOCKFILE} ] && sha256sum ${LOCKFILE} | cut -c1-64 )"`
+export const WORKSPACE_FACTS_COMMAND = `cd ${SESSION_WORKSPACE} && echo "head=$(git rev-parse HEAD)" && echo "tree=$(git rev-parse 'HEAD^{tree}')" && echo "lockfile=$( [ -f ${LOCKFILE} ] && sha256sum ${LOCKFILE} | cut -c1-64 )" && echo "modules=$( [ -f node_modules/.modules.yaml ] && echo 1 || echo 0 )"`
 
 export interface WorkspaceFacts {
   headSha: string
   treeSha: string
   /** Null when the checkout has no lockfile (nothing to compare: every restore installs). */
   lockfileHash: string | null
+  /** pnpm's `node_modules/.modules.yaml` is there: an install has run in this tree. */
+  installed: boolean
 }
 
 /** {@link WORKSPACE_FACTS_COMMAND} in `sandbox`; throws when git cannot answer. */
@@ -980,6 +982,7 @@ export async function workspaceFacts(sandbox: SandboxPort): Promise<WorkspaceFac
     headSha,
     treeSha,
     lockfileHash: /lockfile=([0-9a-f]{64})/.exec(result.stdout)?.[1] ?? null,
+    installed: /modules=1/.test(result.stdout),
   }
 }
 

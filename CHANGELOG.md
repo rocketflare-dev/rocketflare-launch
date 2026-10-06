@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A prebuild keeps its `node_modules`.** The prebuild's excludes were paths
+  (`apps/web/.wrangler`, `node_modules/.vite`), and the Sandbox SDK also hands each to
+  `mksquashfs` as `... <pattern>`, which with two or more parts drops the first directory whole —
+  so the archive had no `apps/` and no `node_modules`, and a session restored from it failed its
+  bootstrap ("wrangler missing after install"). The excludes are bare names now, and a restore
+  whose tree has no `node_modules/.modules.yaml` installs and asks for a new prebuild, which also
+  heals an archive saved before the fix.
+
 - **A coding session's dev server is ready sooner.** The `dev` step waits for the API's
   `/api/health` first and then only opens a TCP connection to Vite — one in-container wait polled
   every 0.2 s, instead of a GET of the UI's `/` that made Vite transform the whole UI while

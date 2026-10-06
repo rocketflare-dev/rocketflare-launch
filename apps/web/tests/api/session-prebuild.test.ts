@@ -103,7 +103,7 @@ async function harness(env: Partial<TestEnv> = {}): Promise<Harness> {
     sandbox
       // Before `/sha256sum/`: the facts command hashes the lockfile with it too.
       .onExec(WORKSPACE_FACTS_COMMAND, () => ({
-        stdout: `head=${BASE_SHA}\ntree=${TREE_SHA}\nlockfile=${lock.hash}\n`,
+        stdout: `head=${BASE_SHA}\ntree=${TREE_SHA}\nlockfile=${lock.hash}\nmodules=${sandbox.files.has(`${WS}/node_modules/.modules.yaml`) ? 1 : 0}\n`,
       }))
       .onExec(/git init/, () => {
         // The clone: a checkout with a lockfile.
@@ -350,6 +350,26 @@ describe('a session after the prebuild', () => {
     // Nothing more was asked for.
     expect(await prebuildRuns(h)).toHaveLength(1)
     expect((await reload(row)).baseSha).toBe(BASE_SHA)
+  })
+
+  it('an archive that came back without node_modules installs, and asks for one that has them', async () => {
+    const h = await harness()
+    const { row: prebuild } = await prebuilt(h)
+    // What a prebuild saved before PREBUILD_EXCLUDES were bare names looked like on Cloudflare.
+    const archive = h.ports.backups.get(prebuild.backup?.id ?? '')
+    archive?.files.delete(`${WS}/node_modules/.modules.yaml`)
+    const { row } = await bootSession(h)
+    const sandbox = sandboxOf(h, row)
+    expect(sandbox.backgroundRuns.map(r => r.name)).toEqual(['install', 'bootstrap'])
+    expect(await prebuildEvents(row)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'restored', lockfile: 'changed' }),
+        expect.objectContaining({
+          status: 'requested',
+          reason: 'the prebuild has no node_modules',
+        }),
+      ])
+    )
   })
 
   it('a changed lockfile installs over it, asks for a new one, and that one evicts the old archive', async () => {

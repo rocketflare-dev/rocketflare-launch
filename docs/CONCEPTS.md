@@ -1702,7 +1702,11 @@ reload) is restarted as `<id>-rN` from the row.
     list) runs `claim → sandbox.start → prebuild.build` (the default branch cloned detached, then
     the session install's own `pnpm install`) `→ prebuild.save` (`createBackup` with
     `PREBUILD_EXCLUDES` — `.dev.vars`, `.wrangler/`, the session wrangler config, Launch's
-    runtime settings, `.vite` caches — none of which the run writes; TTL 13 days, under the
+    runtime settings, `.vite` caches — none of which the run writes; bare NAMES, never paths:
+    the SDK also reads each as `mksquashfs`'s `... <pattern>`, and a non-anchored pattern of two
+    or more parts drops its first directory whole, which once shipped an archive with no
+    `node_modules`, so a restore whose tree has no `node_modules/.modules.yaml` installs and asks
+    for a new prebuild; TTL 13 days, under the
     bucket's 14-day `backups/` rule) `→ cleanup`. Not a person's container, deliberately: an
     archive is tens of seconds of that container's control connection (23 s for 369 MB, issue
     #3), with the first turn queued behind it, and a session's workspace holds its branch URI and

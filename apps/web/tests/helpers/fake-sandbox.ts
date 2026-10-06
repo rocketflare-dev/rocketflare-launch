@@ -58,7 +58,8 @@
  * - `waitForPort(port, { pidFile })` rejects with `SandboxProcessExitedError` when the port is closed
  *   and no hanging process is alive (a dev server that exited). `followedBy` probes are checked after
  *   `port`, in order; every call is recorded in `portWaits`.
- * - `backup({ dir, excludes? })` snapshots the files under `dir`, less `excludes` (kept in
+ * - `backup({ dir, excludes? })` snapshots the files under `dir`, less `excludes` (as `mksquashfs`
+ *   applies them — see `backup`; kept in
  *   `backups` by id — they survive `destroy` and `recreate`, as R2 would, and the map is shared
  *   between sandboxes when the constructor is given one), `restore(handle)` puts them back (`restores`),
  *   `deleteBackup` forgets one (`deletedBackups`); `backupHosts` is settable (`presigned` mode).
@@ -712,10 +713,19 @@ export class FakeSandbox implements SandboxPort {
     this.backupAllowedHosts.push([...this.allowedHosts])
     const id = crypto.randomUUID()
     const files = new Map<string, string>()
-    const excluded = (path: string) =>
-      (opts.excludes ?? []).some(
-        rel => path === `${opts.dir}/${rel}` || path.startsWith(`${opts.dir}/${rel}/`)
-      )
+    // As the SDK's `mksquashfs -wildcards` reads them: each pattern anchored at `dir` AND as
+    // `... <pattern>`. A bare name drops that name wherever it appears; a non-anchored pattern of
+    // two or more parts drops its FIRST directory whole (`... a/b` loses every `a`) — measured on
+    // the SDK image, and why PREBUILD_EXCLUDES are bare names.
+    const excluded = (path: string) => {
+      const rel = path.slice(opts.dir.length + 1)
+      const parts = rel.split('/')
+      return (opts.excludes ?? []).some(pattern => {
+        if (rel === pattern || rel.startsWith(`${pattern}/`)) return true
+        const first = pattern.split('/')[0] ?? pattern
+        return parts.includes(first)
+      })
+    }
     for (const [path, content] of this.files) {
       if ((path === opts.dir || path.startsWith(`${opts.dir}/`)) && !excluded(path)) {
         files.set(path, content)

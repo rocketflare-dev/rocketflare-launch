@@ -168,7 +168,10 @@ export async function prebuildRestoreStep(
       // No lockfile to compare: install (cheap over a restored tree), but a new prebuild would
       // have none either — only a lockfile that MOVED asks for one.
       const changed = facts.lockfileHash !== row.lockfileHash
-      const install = changed || facts.lockfileHash === null
+      // An archive that came back without `node_modules` (one saved before PREBUILD_EXCLUDES were
+      // bare names had none) installs too, and asks for a prebuild that has them.
+      const missing = !facts.installed
+      const install = changed || missing || facts.lockfileHash === null
       await recordPrebuildEvent(scope, 0, {
         status: 'restored',
         ...(row.mode ? { mode: row.mode } : {}),
@@ -179,9 +182,19 @@ export async function prebuildRestoreStep(
       return {
         restored: true,
         install,
-        refresh: changed,
-        ...(changed ? { reason: 'the lockfile changed' } : {}),
-        ...(install ? { stepDetail: 'The lockfile differs from the prebuild’s: installing' } : {}),
+        refresh: changed || missing,
+        ...(changed
+          ? { reason: 'the lockfile changed' }
+          : missing
+            ? { reason: 'the prebuild has no node_modules' }
+            : {}),
+        ...(install
+          ? {
+              stepDetail: missing
+                ? 'The prebuild has no node_modules: installing'
+                : 'The lockfile differs from the prebuild’s: installing',
+            }
+          : {}),
       }
     } catch (err) {
       if (err instanceof SandboxRestartedError) throw err
