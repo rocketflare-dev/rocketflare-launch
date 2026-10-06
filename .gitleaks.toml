@@ -25,6 +25,8 @@ regexes = [
   '''^ghp_e2eSECRETabcdefghijklmnopqrstuvwxyz''',
   # claude-login-driver.test.ts: Anthropic's public `anthropic-beta` flag names, not a key.
   '''^interleaved-thinking-2025-05-14$''',
+  # tests/helpers/github-webhooks.ts: the made-up webhook secret the tests sign deliveries with.
+  '''^whsec-test-0123456789abcdef$''',
   # provision-setup.test.ts' made-up GitHub App key: a PEM header around the literal `MIIfake`.
   '''-----BEGIN RSA PRIVATE KEY-----\\nMIIfake\\n-----END RSA PRIVATE KEY-----''',
 ]
