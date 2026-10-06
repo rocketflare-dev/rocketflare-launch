@@ -264,8 +264,10 @@ const coreConfigSchema = z.object({
    * archive moves through the Durable Object and the R2 binding (`localBucket`, what `wrangler dev`
    * supports); `presigned` — the container moves it itself over presigned R2 URLs (the SDK's
    * deployed path: needs the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` secrets, `BACKUP_BUCKET_NAME`
-   * and an account id — `docs/DEPLOY.md` § Coding sessions). Unset: `binding` under
-   * `APP_ENV=development`, else `off` (`workspaceBackupMode`).
+   * and an account id — `docs/DEPLOY.md` § Coding sessions; `loadConfig` refuses it without an
+   * account id or endpoint). Unset: `binding` under `APP_ENV=development`, else `off`
+   * (`workspaceBackupMode`). This governs THIS Worker's containers: a session on the remote sandbox
+   * host is `presigned` whenever the account id or endpoint below is set (and this is not `off`).
    */
   SESSION_WORKSPACE_BACKUP: z.preprocess(
     value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
@@ -376,6 +378,20 @@ const configSchema = coreConfigSchema.extend(pluginConfigShape).superRefine((cfg
       code: z.ZodIssueCode.custom,
       path: ['GRANT_BACKEND'],
       message: 'GRANT_BACKEND=local is only allowed with APP_ENV=development',
+    })
+  }
+  // A presigned backup is moved by the CONTAINER, so its allow-list needs the R2 endpoint — which
+  // Launch derives from these (`backupEgressHosts`). Without one every backup would be refused.
+  if (
+    cfg.SESSION_WORKSPACE_BACKUP === 'presigned' &&
+    !(cfg.BACKUP_BUCKET_ENDPOINT || cfg.CLOUDFLARE_R2_ACCOUNT_ID || cfg.CLOUDFLARE_ACCOUNT_ID)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SESSION_WORKSPACE_BACKUP'],
+      message:
+        'SESSION_WORKSPACE_BACKUP=presigned needs CLOUDFLARE_ACCOUNT_ID (or BACKUP_BUCKET_ENDPOINT): ' +
+        'the container reaches R2 itself, and the egress allow-list is derived from them',
     })
   }
   // A Neon deployment has no HYPERDRIVE fallback: fail here, not on the first query.

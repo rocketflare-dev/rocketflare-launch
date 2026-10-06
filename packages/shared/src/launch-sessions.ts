@@ -198,6 +198,8 @@ export const SESSION_EVENT_TYPES = [
   'ship.released',
   'ship.staging',
   'ship.reopened',
+  // Issue #3: a workspace backup taken before a container was destroyed — or why there is none.
+  'workspace.backup',
 ] as const
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 export type SessionEventType = z.infer<typeof sessionEventTypeSchema>
@@ -623,6 +625,25 @@ export const sessionShipReopenedDataSchema = z.object({
 })
 export type SessionShipReopenedData = z.infer<typeof sessionShipReopenedDataSchema>
 
+/**
+ * `workspace.backup` — one workspace backup attempt (`SESSION_WORKSPACE_BACKUP`), written when a
+ * suspend, a cool or a landing destroys the container. `saved`: the archive is in R2 and on the row
+ * (`sessions.workspace_backup`). `failed`: why not — a backup never fails the suspend, so this is
+ * the one record of why the next cold resume clones and installs. No row when backups are off.
+ */
+export const sessionWorkspaceBackupDataSchema = z.object({
+  status: z.enum(['saved', 'failed']),
+  /** `binding` or `presigned` (`workspace-backup.ts`). */
+  mode: z.string(),
+  /** `failed` only: the secret-free reason. */
+  reason: z.string().optional(),
+  /** How long the backup took, the HEAD check included. */
+  durationMs: z.number().int().nonnegative().optional(),
+  /** `saved` only: the commit the archive holds. */
+  headSha: z.string().optional(),
+})
+export type SessionWorkspaceBackupData = z.infer<typeof sessionWorkspaceBackupDataSchema>
+
 /** Event type → the schema its `data` parses with; one lookup for the timeline and the projection. */
 export const SESSION_EVENT_DATA = {
   'user.message': sessionUserMessageDataSchema,
@@ -647,6 +668,7 @@ export const SESSION_EVENT_DATA = {
   'ship.released': sessionShipReleasedDataSchema,
   'ship.staging': sessionShipStagingDataSchema,
   'ship.reopened': sessionShipReopenedDataSchema,
+  'workspace.backup': sessionWorkspaceBackupDataSchema,
 } as const satisfies Record<SessionEventType, z.ZodTypeAny>
 
 /** One `session_events` row. `data` stays `unknown` so a row from a newer server still lists. */

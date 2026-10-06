@@ -126,6 +126,28 @@ agents tab's credentials), `pnpm dev`, then choose **Remote sandbox host** on th
 A Worker whose binding went away under a remote session fails its next step with "no SANDBOX_HOST
 binding… start Launch with `pnpm dev`".
 
+**Workspace backups on the host** (issue #3) — the steps that need your account:
+
+1. Cloudflare dashboard → R2 → Manage API tokens: a token with **Object Read & Write** on the
+   bucket `wrangler.sandbox-host.toml`'s `BACKUP_BUCKET` names (`BACKUP_BUCKET_NAME`) only. The
+   Access Key ID and Secret Access Key are shown once.
+2. `apps/web/wrangler.sandbox-host.toml`: set `CLOUDFLARE_ACCOUNT_ID` (empty in git; `wrangler
+   whoami` shows it), or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction bucket. Then:
+
+   ```bash
+   cd apps/web
+   pnpm exec wrangler secret put R2_ACCESS_KEY_ID -c wrangler.sandbox-host.toml
+   pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY -c wrangler.sandbox-host.toml
+   pnpm deploy:sandbox-host
+   ```
+3. `apps/web/.dev.vars`: `CLOUDFLARE_ACCOUNT_ID=<account id>` (or the same `BACKUP_BUCKET_ENDPOINT`),
+   leaving `SESSION_WORKSPACE_BACKUP` unset (= `binding` for local Docker sessions, `presigned` for
+   remote ones), then restart `pnpm dev`.
+
+A cool or drain then records `sessions.workspace_backup` and a `workspace.backup` event (`saved`,
+with how long it took); the bucket holds `backups/<id>/data.sqsh` and `meta.json`. The next cold
+resume shows **Restoring the saved workspace** instead of **Cloning repo**.
+
 **What differs from the in-process sandbox:**
 
 - `sessions.sandbox_id` is `remote:<session id>` (`remote:login-<id>` for a sign-in; a laptop cannot
@@ -134,8 +156,16 @@ binding… start Launch with `pnpm dev`".
 - No container time is metered (`container_seconds` stays 0): the host's `onStop` has nowhere to
   write. A container the platform put to sleep is not marked `suspended` by it either; the next
   step's boot-marker check finds the empty container and says so.
-- Workspace backups are off on the host (the only credential-free mode moves the archive through
-  the Durable Object's 128 MB); a cold resume clones and installs — natively, which is fast.
+- Workspace backups are **presigned** on the host, never `binding` (the host refuses it: the
+  archive would cross the Durable Object's 128 MB). The container uploads and downloads the archive
+  itself over presigned R2 URLs and a restore mounts it with FUSE. Launch decides — when to back up
+  and restore, and the allow-list (`<account>.r2.cloudflarestorage.com`, only while one runs) — so a
+  remote session is backed up only when local Launch knows the R2 endpoint, and `binding` stays the
+  mode for this Worker's own Docker containers in the same `pnpm dev`. Turning it on (once; see
+  below): an R2 API token, the host's two secrets and account id, the host redeployed, and
+  `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars`. Until then a remote cold resume clones and installs
+  (natively, about 45 s for hola-world), and each refused backup is a `workspace.backup` event — a
+  chat notice — saying what is missing.
 - The emulation settings (`GOGC=off GOMEMLIMIT=1536MiB`) still apply, because they key on
   `APP_ENV=development`. They are harmless on native hardware (a little more memory per Go process).
 
@@ -290,7 +320,10 @@ with `node_modules` and `.dev.vars`, through the Durable Object into the local `
 whose branch head is still the backup's commit then shows **Restoring the saved workspace** instead
 of **Cloning repo**, and its **Installing and seeding** step only re-applies the allow-list and the
 dev-server keys (when the migrations did not change). A restore that fails says "Cloning instead: …"
-on that line and the boot goes on the old way. Unmeasured: on the SDK's default HTTP transport the
+on that line and the boot goes on the old way. Every backup attempt is a `workspace.backup` event:
+`saved` (with its duration), or `failed` with the reason — shown as a quiet notice in the chat, so
+a `workspace_backup` that stayed null is explained. A remote-host session is backed up
+`presigned` instead (§ Real containers from a laptop). Unmeasured: on the SDK's default HTTP transport the
 restore carries the whole archive through the Durable Object as base64, which for a checkout with
 `node_modules` may be slower than the clone and install it replaces — set
 `SESSION_WORKSPACE_BACKUP=off` in `.dev.vars` if it is.

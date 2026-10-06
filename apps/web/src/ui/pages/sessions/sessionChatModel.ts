@@ -11,9 +11,10 @@
  *   block of one-liners between two bubbles, not nine rows shouting over the answer;
  * - the lifecycle rows a person needs to know about become `notice`s (a failed or cut-off turn,
  *   the budget, the ship gate, the PR, a turn on a different model from the one before it, and a
- *   kit upgrade's auto-ship decision — a `status` row with an `upgrade.*` reason); the ones they do
- *   not (`turn.start`, `step`, any other `status`, `preview.ready`) render nothing here — boot has
- *   its own panel and the preview its own pane;
+ *   kit upgrade's auto-ship decision — a `status` row with an `upgrade.*` reason, and a workspace
+ *   backup that failed, with why); the ones they do not (`turn.start`, `step`, any other `status`,
+ *   `preview.ready`, a saved backup) render nothing here — boot has its own panel and the preview
+ *   its own pane;
  * - `turn.end` becomes a footnote (how long, what it cost).
  *
  * Plus the selectors the page needs from the same rows, so nothing re-derives them:
@@ -59,6 +60,7 @@ import {
   sessionTurnInterruptedDataSchema,
   sessionTurnStartDataSchema,
   sessionUserMessageDataSchema,
+  sessionWorkspaceBackupDataSchema,
 } from '@launch/shared/launch-sessions'
 import {
   UPGRADE_SESSION_REASONS,
@@ -211,6 +213,17 @@ function lifecycleItem(event: SessionEvent): ChatItem | null {
         ...base,
         tone: parsed.data.reason === UPGRADE_SESSION_REASONS.needsAttention ? 'warning' : 'info',
         text: parsed.data.message,
+      }
+    }
+    case 'workspace.backup': {
+      // Issue #3: only a failure is worth a line — it is why the next cold resume clones.
+      const parsed = sessionWorkspaceBackupDataSchema.safeParse(event.data)
+      if (!parsed.success || parsed.data.status !== 'failed') return null
+      return {
+        kind: 'notice',
+        ...base,
+        tone: 'info',
+        text: `The workspace was not backed up (${parsed.data.reason ?? 'unknown reason'}), so the next resume clones and installs.`,
       }
     }
     case 'error': {

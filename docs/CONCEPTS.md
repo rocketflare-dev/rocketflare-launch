@@ -1589,7 +1589,17 @@ reload) is restarted as `<id>-rN` from the row.
   HEAD re-checked) instead of `repo#K`; the `bootstrap#K` after a restore whose migrations did not
   change installs and bootstraps nothing — it re-applies the allow-list and the dev-server keys.
   Anything else — no backup, the branch moved on, a restore that fails — clones and installs, and
-  the checklist line says "Cloning instead: …". A backup never fails a suspend or a resume.
+  the checklist line says "Cloning instead: …". A backup never fails a suspend or a resume, but
+  every attempt is a `workspace.backup` event (`saved` with its duration, or `failed` with the
+  secret-free reason — a chat notice and a warning log), so a `workspace_backup` that stayed null
+  is explained. **The three resume tiers**: warm (the kept container, inside the warm window) →
+  backup (a cold resume restores the archive: no clone, install or bootstrap, only the dev server
+  restarts) → rebuild (clone, install, bootstrap). **The mode follows the session's sandbox host**
+  (`workspaceBackupMode(cfg, host)`): this Worker's own containers use `SESSION_WORKSPACE_BACKUP`;
+  a session on the remote sandbox host is `presigned` whenever Launch knows the R2 endpoint
+  (`CLOUDFLARE_ACCOUNT_ID` / `BACKUP_BUCKET_ENDPOINT`) and the var is not `off` — never `binding`,
+  which the host refuses (§18.10). `loadConfig` refuses `presigned` with no account id or
+  endpoint: the allow-list would have no R2 host.
 - **Who**: the creator, the app's owners and admins may see and drive a session (`access.ts`); any
   other caller gets the same 404 as a missing one. Extending the budget is owners and admins only.
   Issue #5 adds one READ-ONLY grant: someone a PENDING `session.merge` request on the session names
@@ -1722,7 +1732,9 @@ bootstrap, not yet in a container. Workspace backups are proven against the `Fak
 SDK's call shapes only: whether `binding` mode's restore (the whole archive through the Durable
 Object, base64, on the SDK's default HTTP transport) beats a clone and an install under `wrangler
 dev`, and everything about `presigned` on Cloudflare (the upload through the HTTPS interception,
-FUSE in the container, the size and time of an archive with `node_modules`), need real containers.
+FUSE in the container, the size and time of an archive with `node_modules`), need real containers
+— the remote sandbox host is wired for it (issue #3) but not yet turned on or measured (it needs an
+R2 token, the host's secrets and account id, and `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars`).
 `SANDBOX_TRANSPORT=rpc` would stream the `binding` restore instead, but changes every SDK call and
 is untried. A tenant's deletion leaves its sessions' backups to the bucket's lifecycle rule
 (`tenant.purge` pages `tenants/<id>/` only).
@@ -1977,7 +1989,10 @@ remote binding at once, which `pnpm dev` now always asks for. The host must be r
 of this (`docs/DEPLOY.md` § The sandbox host): an older one answers only Claude Code on Launch's
 key. A remote container's time is not
 metered (`container_seconds` stays 0; the host's `onStop` has nowhere to write), a container the
-platform put to sleep is not marked `suspended` by it, and the host keeps no workspace backups. JS
+platform put to sleep is not marked `suspended` by it, and its workspace backups are `presigned`
+only (`sandboxHostConfig` reads the host's own `SESSION_WORKSPACE_BACKUP`: `off` when missing,
+`presigned`, and refuses `binding` or anything else by name; its `BACKUP_BUCKET` binding and R2
+secrets are what the SDK signs with — `docs/SESSIONS-LOCAL.md` lists the steps to enable it). JS
 RPC, a `ReadableStream` result and the HMR upgrade through a REMOTE binding are read from wrangler
 4.127's remote-proxy source (capnweb over a WebSocket; `Upgrade` passed through), not yet run.
 The remaining blocking execs are short (the clone ≤ 5 min, the port waits in 20 s chunks, the

@@ -49,6 +49,7 @@ import { CloudflareSandbox } from './sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from './sandbox/remote-sandbox'
 import type { SandboxHostBinding } from './sandbox-host/protocol'
 import type { SandboxPort } from './sandbox-port'
+import { backupEgressHosts } from './workspace-backup'
 
 // ---- errors ------------------------------------------------------------------------------------
 
@@ -427,7 +428,7 @@ export function defaultSessionPorts(
   return {
     sandbox: name =>
       remote
-        ? new RemoteSandbox(sandboxHostBinding(env), name)
+        ? new RemoteSandbox(sandboxHostBinding(env), name, backupEgressHosts(cfg, 'remote'))
         : new CloudflareSandbox(env.SESSION_SANDBOX, name, {
             cfg,
             backupBucket: env.BACKUP_BUCKET,

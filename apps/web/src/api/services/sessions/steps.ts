@@ -24,6 +24,7 @@ import {
   type SessionKind,
   type SessionLanding,
   type SessionStatus,
+  type SessionWorkspaceBackupData,
   type ShipLandingStage,
   sessionLandingSchema,
   TERMINAL_SESSION_STATUSES,
@@ -90,6 +91,7 @@ import {
   SandboxRestartedError,
   type SessionAppRef,
   type SessionPorts,
+  sandboxHostOf,
   sessionAllowedHosts,
 } from './ports'
 import {
@@ -1987,23 +1989,48 @@ export async function coolStep(
 
 // ---- workspace backups (`workspace-backup.ts`) ------------------------------------------------
 
+/** A backup failure's reason for the event log: secret-free, and no presigned URL's signature. */
+function backupFailureReason(err: unknown): string {
+  return safeErrorMessage(err, 'the backup failed', 400).replace(
+    /(https?:\/\/[^\s?'"]+)\?[^\s'"]*/gi,
+    '$1'
+  )
+}
+
 /**
  * Back the workspace up before its container is destroyed, and record it on the row (replacing —
  * and deleting — the previous one). Best effort: a backup that fails, or is off, costs the next
- * resume a clone and an install, never the suspend. True when a backup was recorded.
+ * resume a clone and an install, never the suspend. Every attempt is a `workspace.backup` event —
+ * `failed` with the reason, so a `workspace_backup` that stayed null is explained (issue #3) —
+ * and a failure is logged. True when a backup was recorded.
  */
 export async function backupWorkspace(
   scope: StepScope,
   session: SessionRow,
   sandbox: SandboxPort
 ): Promise<boolean> {
-  if (session.kind === 'prepare' || workspaceBackupMode(scope.cfg) === 'off') return false
+  if (session.kind === 'prepare') return false
+  const mode = workspaceBackupMode(scope.cfg, sandboxHostOf(session))
+  if (mode === 'off') return false
+  const started = Date.now()
+  const record = async (data: Omit<SessionWorkspaceBackupData, 'mode' | 'durationMs'>) => {
+    await emitterFor(scope)({
+      type: 'workspace.backup',
+      turn: session.turnCount,
+      data: { ...data, mode, durationMs: Math.max(0, Date.now() - started) },
+    }).catch(err => scope.logger.warn({ err }, 'session: could not record the workspace backup'))
+  }
   try {
     const head = await sandbox.exec(`git -C ${SESSION_WORKSPACE} rev-parse HEAD`, {
       timeoutMs: 30_000,
     })
     const headSha = head.exitCode === 0 ? head.stdout.trim() : ''
-    if (!/^[0-9a-f]{40}$/.test(headSha)) return false
+    if (!/^[0-9a-f]{40}$/.test(headSha)) {
+      const reason = 'the workspace has no commit to back up (git rev-parse HEAD failed)'
+      scope.logger.warn({ mode }, `session: workspace not backed up: ${reason}`)
+      await record({ status: 'failed', reason })
+      return false
+    }
     const dbHosts = await dbEgressHostsOf(scope, session)
     const extra = sandbox.backupHosts
     if (extra.length) await sandbox.setAllowedHosts(sessionAllowedHosts([...dbHosts, ...extra]))
@@ -2021,6 +2048,7 @@ export async function backupWorkspace(
         createdAt: scope.now().toISOString(),
       }
       await updateSession(scope, { workspaceBackup: backup })
+      await record({ status: 'saved', headSha })
       const previous = session.workspaceBackup
       if (previous && previous.id !== backup.id) {
         await sandbox.deleteBackup(previous).catch(err => {
@@ -2034,7 +2062,12 @@ export async function backupWorkspace(
       }
     }
   } catch (err) {
-    scope.logger.warn({ err }, 'session: workspace backup failed; the next resume clones')
+    const reason = backupFailureReason(err)
+    scope.logger.warn(
+      { err, mode },
+      `session: workspace backup failed (${reason}); the next resume clones`
+    )
+    await record({ status: 'failed', reason })
     return false
   }
 }
@@ -2042,7 +2075,7 @@ export async function backupWorkspace(
 /** Why a recorded backup cannot be restored now, or null when it can. */
 function unusableBackup(scope: StepScope, session: SessionRow): string | null {
   const backup = session.workspaceBackup
-  if (workspaceBackupMode(scope.cfg) === 'off') return 'backups are off'
+  if (workspaceBackupMode(scope.cfg, sandboxHostOf(session)) === 'off') return 'backups are off'
   if (!backup) return 'no backup'
   if (!session.headSha || backup.headSha !== session.headSha) return 'the branch moved on'
   if (backup.imageVersion !== SESSION_IMAGE_VERSION) return 'another session image'

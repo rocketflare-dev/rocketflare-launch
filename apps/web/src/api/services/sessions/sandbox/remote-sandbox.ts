@@ -18,8 +18,11 @@
  *   WebSocket upgrade (Vite HMR) — naming the sandbox and port in two headers the host strips.
  * - **`id` is `remote:<name>`** (`remoteSandboxId`): a Durable Object id depends on its namespace,
  *   which this side cannot compute for the host's class.
- * - **Backups are off** (`backupHosts` is empty and the host has no `BACKUP_BUCKET`): a cold resume
- *   clones and installs, which is cheap on native hardware.
+ * - **Backups are `presigned` or off** (`workspace-backup.ts`): the container on the host moves the
+ *   archive over presigned R2 URLs, so `backupHosts` is the R2 endpoint Launch derived for the
+ *   `remote` host (empty when it has none — Launch then never asks for a backup). The host's own
+ *   `SESSION_WORKSPACE_BACKUP` and R2 secrets decide whether it can; a refusal comes back as
+ *   `SandboxBackupUnavailableError` with the host's reason.
  */
 import {
   type HostResult,
@@ -73,11 +76,11 @@ export async function unwrap<T>(call: Promise<HostResult<T>>): Promise<T> {
 }
 
 export class RemoteSandbox implements SandboxPort {
-  readonly backupHosts: readonly string[] = []
-
   constructor(
     private readonly host: SandboxHostBinding,
-    readonly name: string
+    readonly name: string,
+    /** The R2 endpoint a presigned backup or restore must reach (`backupEgressHosts(cfg, 'remote')`). */
+    readonly backupHosts: readonly string[] = []
   ) {}
 
   get id(): string {

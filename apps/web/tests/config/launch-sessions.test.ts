@@ -387,7 +387,8 @@ describe('issue #5: the landing', () => {
 
 describe('issue #5: the six new events, and ship.pr’s title', () => {
   it('appends the events after ship.config_needs, each with a payload schema', () => {
-    expect(SESSION_EVENT_TYPES.slice(-7)).toEqual([
+    const from = SESSION_EVENT_TYPES.indexOf('ship.config_needs')
+    expect(SESSION_EVENT_TYPES.slice(from, from + 7)).toEqual([
       'ship.config_needs',
       'ship.ci',
       'ship.review',

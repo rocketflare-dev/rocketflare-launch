@@ -97,6 +97,24 @@ describe('buildSessionChat', () => {
       ['error', 'This turn failed: claude exited 1'],
     ])
   })
+
+  it('a failed workspace backup says why; a saved one says nothing', () => {
+    const items = buildSessionChat([
+      ev(1, 'workspace.backup', { status: 'saved', mode: 'presigned', headSha: 'a'.repeat(40) }, 0),
+      ev(
+        2,
+        'workspace.backup',
+        { status: 'failed', mode: 'presigned', reason: 'Missing: R2_ACCESS_KEY_ID' },
+        0
+      ),
+    ])
+    expect(items.map(i => (i.kind === 'notice' ? [i.tone, i.text] : i.kind))).toEqual([
+      [
+        'info',
+        'The workspace was not backed up (Missing: R2_ACCESS_KEY_ID), so the next resume clones and installs.',
+      ],
+    ])
+  })
 })
 
 describe('toolSummary', () => {

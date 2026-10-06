@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Workspace backups can run on the remote sandbox host, and a failed backup says why** (issue
+  #3). The host reads its own `SESSION_WORKSPACE_BACKUP` (`off` or `presigned`; `binding` and
+  anything else are refused by name) and gains a `BACKUP_BUCKET` binding on `launch-files`, with
+  `SESSION_WORKSPACE_BACKUP = "presigned"`, `BACKUP_BUCKET_NAME` and an empty `CLOUDFLARE_ACCOUNT_ID`
+  to fill in. Local Launch backs a remote session up `presigned` whenever `.dev.vars` has
+  `CLOUDFLARE_ACCOUNT_ID` (or `BACKUP_BUCKET_ENDPOINT`), while its own Docker sessions keep
+  `binding`; the R2 host is on the allow-list only during a backup or restore. `loadConfig` now
+  refuses `SESSION_WORKSPACE_BACKUP=presigned` with no account id or endpoint. Every backup attempt
+  is a new `workspace.backup` session event (`saved` with its duration, or `failed` with the
+  reason), and a failure is a quiet chat notice. To turn it on: an R2 token, the host's
+  `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` secrets and account id, `pnpm deploy:sandbox-host`,
+  then `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars` (`docs/SESSIONS-LOCAL.md`). Until then nothing
+  changes: a remote cold resume clones and installs. No migration.
 - **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
   Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
   kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of

@@ -11,7 +11,8 @@
 # Its containers hold no Launch credential: `HostedSessionSandbox`'s outbound handlers inject what
 # local Launch grants each sandbox over the binding (the `host` egress mode) — the GitHub token,
 # the turn's Anthropic key or subscription token, OpenAI key, or ChatGPT model, a sign-in's
-# passthrough — kept in the sandbox's Durable Object storage. No secrets of its own.
+# passthrough — kept in the sandbox's Durable Object storage. Its only secrets are the R2 token for
+# workspace backups (below).
 
 name = "launch-sandbox-dev"
 main = "src/sandbox-host/worker.ts"
@@ -27,6 +28,21 @@ preview_urls = false
 # interception ends a container's stream after a WebSocket closes (docs/plans/sandbox-websocket-close.md).
 [vars]
 SESSION_EGRESS = "open"
+# Workspace backups (docs/SESSIONS-LOCAL.md § Suspend and resume): off | presigned (`binding` is
+# refused here — it moves the whole archive through the Durable Object's 128 MB). The container
+# uploads and downloads the archive itself over presigned R2 URLs; a restore mounts it with FUSE.
+# Needs the R2 token as two secrets (Object Read & Write on BACKUP_BUCKET_NAME only):
+#   pnpm --filter @launch/web exec wrangler secret put R2_ACCESS_KEY_ID -c wrangler.sandbox-host.toml
+#   pnpm --filter @launch/web exec wrangler secret put R2_SECRET_ACCESS_KEY -c wrangler.sandbox-host.toml
+# Until they are set every backup is refused, with the SDK's list of what is missing as the
+# session's recorded reason, and a cold resume clones and installs as before. Local Launch backs a
+# remote session up only when its own .dev.vars has CLOUDFLARE_ACCOUNT_ID (or BACKUP_BUCKET_ENDPOINT).
+SESSION_WORKSPACE_BACKUP = "presigned"
+BACKUP_BUCKET_NAME = "launch-files"        # = the BACKUP_BUCKET binding's bucket_name (sandbox-host.test.ts)
+# PLACEHOLDER — your Cloudflare account id (`wrangler whoami`; not a secret). Empty = every backup
+# is refused. A jurisdiction bucket sets BACKUP_BUCKET_ENDPOINT = "https://<account>.eu.r2.cloudflarestorage.com"
+# instead. Local Launch's .dev.vars needs the same value.
+CLOUDFLARE_ACCOUNT_ID = ""
 
 [observability.logs]
 enabled = true
@@ -51,6 +67,14 @@ enabled = true
 [[containers.authorized_keys]]
 name = "launch-dev"
 public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEW+2HDFcrMKhlJdd3q7nOBKakNAi1+p9rAcIHO9+Jwj"
+
+# Workspace backups: the Sandbox SDK's FIXED binding name, on the bucket local Launch's FILES names
+# (wrangler.toml) — the same convention as the deployed tomls (BACKUP_BUCKET = the FILES bucket,
+# objects under backups/). A deployed Worker's R2 binding is the real bucket; the SDK checks each
+# presigned upload through it. Give backups/ an R2 lifecycle rule (docs/DEPLOY.md).
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "launch-files"
 
 [[durable_objects.bindings]]
 name = "SESSION_SANDBOX"

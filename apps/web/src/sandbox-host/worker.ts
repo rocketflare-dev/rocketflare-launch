@@ -15,9 +15,9 @@
  * credentials from the sandbox's EGRESS GRANT (`setEgressGrant` / `clearEgressGrant`, stored on
  * the sandbox's Durable Object, `sandbox-host/egress.ts`).
  *
- * It has no public URL (`workers_dev = false`, `preview_urls = false`) and no secrets of its own:
- * only a binding in the same account reaches it, and it knows nothing about Launch but a sandbox's
- * name and the grant Launch pushed for it.
+ * It has no public URL (`workers_dev = false`, `preview_urls = false`): only a binding in the same
+ * account reaches it, and it knows nothing about Launch but a sandbox's name and the grant Launch
+ * pushed for it. Its only secrets are the R2 token for workspace backups (`sandboxHostConfig`).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import {
@@ -44,14 +44,43 @@ import type { HostedSessionSandbox } from './hosted-session-sandbox'
 export { ContainerProxy } from '../api/durable-objects/session-sandbox-base'
 export { HostedSessionSandbox } from './hosted-session-sandbox'
 
+/** The workspace backup modes this host runs (`binding` is refused, see below). */
+const HOST_BACKUP_MODES = ['off', 'presigned'] as const
+
+const blank = (value: string | undefined): string | undefined =>
+  value?.trim() ? value.trim() : undefined
+
 /**
- * The adapter's settings on this side. Workspace backups are OFF: the only mode that needs no R2
- * credentials (`binding`) moves the whole archive through the Durable Object's 128 MB of memory,
- * which suits `wrangler dev`, not the platform.
+ * The adapter's settings on this side, from the host's own vars. Workspace backups are `off`
+ * unless `SESSION_WORKSPACE_BACKUP = "presigned"`: the container moves the archive itself over
+ * presigned R2 URLs, with the R2 secrets and `BACKUP_BUCKET` (`docs/SESSIONS-LOCAL.md`). `binding`
+ * — the only mode that needs no R2 credentials — moves the whole archive through the Durable
+ * Object's 128 MB of memory, which suits `wrangler dev`, not the platform: it is refused here, as
+ * is anything else, so a typo never turns backups silently off.
  */
-export const SANDBOX_HOST_CONFIG: CloudflareSandboxConfig = {
-  APP_ENV: 'development',
-  SESSION_WORKSPACE_BACKUP: 'off',
+export function sandboxHostConfig(env: Partial<SandboxHostEnv>): CloudflareSandboxConfig {
+  const mode = blank(env.SESSION_WORKSPACE_BACKUP) ?? 'off'
+  if (mode === 'binding') {
+    throw new Error(
+      'SESSION_WORKSPACE_BACKUP=binding is not supported on the sandbox host: it moves the whole ' +
+        "archive through the Durable Object's 128 MB of memory. Use presigned (with the R2 secrets) or off."
+    )
+  }
+  if (!(HOST_BACKUP_MODES as readonly string[]).includes(mode)) {
+    throw new Error(
+      `SESSION_WORKSPACE_BACKUP must be off or presigned on the sandbox host, not "${mode}"`
+    )
+  }
+  const endpoint = blank(env.BACKUP_BUCKET_ENDPOINT)
+  const account = blank(env.CLOUDFLARE_ACCOUNT_ID)
+  const r2Account = blank(env.CLOUDFLARE_R2_ACCOUNT_ID)
+  return {
+    APP_ENV: 'development',
+    SESSION_WORKSPACE_BACKUP: mode as (typeof HOST_BACKUP_MODES)[number],
+    ...(endpoint ? { BACKUP_BUCKET_ENDPOINT: endpoint } : {}),
+    ...(account ? { CLOUDFLARE_ACCOUNT_ID: account } : {}),
+    ...(r2Account ? { CLOUDFLARE_R2_ACCOUNT_ID: r2Account } : {}),
+  }
 }
 
 /** The SDK's control server's own port inside a sandbox — never a preview. */
@@ -87,7 +116,10 @@ export default class SandboxHost
 {
   private sandbox(name: string): CloudflareSandbox<HostedSessionSandbox> {
     if (!SANDBOX_NAME.test(name)) throw new Error('Not a Launch sandbox name')
-    return new CloudflareSandbox(this.env.SESSION_SANDBOX, name, { cfg: SANDBOX_HOST_CONFIG })
+    return new CloudflareSandbox(this.env.SESSION_SANDBOX, name, {
+      cfg: sandboxHostConfig(this.env),
+      ...(this.env.BACKUP_BUCKET ? { backupBucket: this.env.BACKUP_BUCKET } : {}),
+    })
   }
 
   /** The sandbox's Durable Object itself — the same one `getSandbox(ns, name)` reaches. */

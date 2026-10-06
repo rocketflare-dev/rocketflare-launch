@@ -32,10 +32,13 @@ import { createCodexStreamParser } from '@/api/services/sessions/runtimes/codex/
 import { CloudflareSandbox } from '@/api/services/sessions/sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from '@/api/services/sessions/sandbox/remote-sandbox'
 import { createTurnMeter } from '@/api/services/sessions/turn-meter'
+import { backupEgressHosts, workspaceBackupMode } from '@/api/services/sessions/workspace-backup'
 import type { AppBindings } from '@/api/types'
 import { loadConfig } from '@/config'
 import type { Database } from '@/db/client'
+import type { SandboxHostEnv } from '@/sandbox-host/env'
 import { HostedSessionSandbox } from '@/sandbox-host/hosted-session-sandbox'
+import { hostCall, sandboxHostConfig } from '@/sandbox-host/worker'
 import {
   devSandboxPlan,
   legacyRemoteRequested,
@@ -76,7 +79,7 @@ describe('wrangler.sandbox-host.toml', () => {
     expect(host.compatibility_flags).toEqual(launch.compatibility_flags)
   })
 
-  it('declares exactly SESSION_SANDBOX → HostedSessionSandbox, SQLite-backed', () => {
+  it('declares exactly SESSION_SANDBOX → HostedSessionSandbox, SQLite-backed, and BACKUP_BUCKET', () => {
     expect(rows(host, 'containers').map(c => c.class_name)).toEqual(['HostedSessionSandbox'])
     expect(doBindings(host)).toEqual([
       { name: 'SESSION_SANDBOX', class_name: 'HostedSessionSandbox' },
@@ -84,12 +87,37 @@ describe('wrangler.sandbox-host.toml', () => {
     expect(rows(host, 'migrations')).toEqual([
       { tag: 'v1', new_sqlite_classes: ['HostedSessionSandbox'] },
     ])
-    for (const key of ['services', 'kv_namespaces', 'r2_buckets', 'workflows']) {
+    for (const key of ['services', 'kv_namespaces', 'workflows']) {
       expect(host[key], key).toBeUndefined()
     }
-    // One var, the egress switch — the same value as Launch's own tomls.
-    expect(host.vars).toEqual({ SESSION_EGRESS: 'open' })
+    // Workspace backups: the SDK's fixed binding, on the bucket local Launch's FILES names.
+    const files = rows(launch, 'r2_buckets').find(b => b.binding === 'FILES')
+    expect(rows(host, 'r2_buckets')).toEqual([
+      { binding: 'BACKUP_BUCKET', bucket_name: files?.bucket_name },
+    ])
+  })
+
+  it('its vars: the egress switch (= Launch’s), and presigned backups naming the bound bucket', () => {
+    const vars = host.vars as Record<string, unknown>
+    expect(Object.keys(vars).sort()).toEqual([
+      'BACKUP_BUCKET_NAME',
+      'CLOUDFLARE_ACCOUNT_ID',
+      'SESSION_EGRESS',
+      'SESSION_WORKSPACE_BACKUP',
+    ])
+    expect(vars.SESSION_EGRESS).toBe('open')
     expect((launch.vars as Record<string, unknown>).SESSION_EGRESS).toBe('open')
+    expect(vars.SESSION_WORKSPACE_BACKUP).toBe('presigned')
+    // The presigned URLs and the binding the SDK checks the upload through are ONE bucket.
+    expect(vars.BACKUP_BUCKET_NAME).toBe(rows(host, 'r2_buckets')[0]?.bucket_name)
+    // The config the host Worker builds from them parses (the account id may be the placeholder).
+    expect(sandboxHostConfig(vars as Partial<SandboxHostEnv>).SESSION_WORKSPACE_BACKUP).toBe(
+      'presigned'
+    )
+    // The R2 token is a secret, never a var.
+    expect(text('wrangler.sandbox-host.toml')).not.toMatch(
+      /^R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)\s*=/m
+    )
   })
 
   it('the deployed tomls never carry the dev binding', () => {
@@ -179,6 +207,108 @@ describe('pnpm dev makes both sandbox hosts available whenever it can', () => {
   })
 })
 
+describe('the sandbox host’s workspace backup mode (its own SESSION_WORKSPACE_BACKUP)', () => {
+  it('off when missing or blank; presigned when it says so, with the R2 endpoint settings', () => {
+    expect(sandboxHostConfig({}).SESSION_WORKSPACE_BACKUP).toBe('off')
+    expect(sandboxHostConfig({ SESSION_WORKSPACE_BACKUP: ' ' }).SESSION_WORKSPACE_BACKUP).toBe(
+      'off'
+    )
+    expect(sandboxHostConfig({ SESSION_WORKSPACE_BACKUP: 'off' }).SESSION_WORKSPACE_BACKUP).toBe(
+      'off'
+    )
+    const cfg = sandboxHostConfig({
+      SESSION_WORKSPACE_BACKUP: 'presigned',
+      CLOUDFLARE_ACCOUNT_ID: 'acct',
+      BACKUP_BUCKET_ENDPOINT: '',
+    })
+    expect(cfg).toEqual({
+      APP_ENV: 'development',
+      SESSION_WORKSPACE_BACKUP: 'presigned',
+      CLOUDFLARE_ACCOUNT_ID: 'acct',
+    })
+    expect(workspaceBackupMode(cfg)).toBe('presigned')
+    expect(backupEgressHosts(cfg)).toEqual(['acct.r2.cloudflarestorage.com'])
+  })
+
+  it('refuses binding (the Durable Object’s 128 MB) and anything else, by name', () => {
+    expect(() => sandboxHostConfig({ SESSION_WORKSPACE_BACKUP: 'binding' })).toThrow(
+      /binding is not supported on the sandbox host.*presigned/
+    )
+    expect(() => sandboxHostConfig({ SESSION_WORKSPACE_BACKUP: 'presign' })).toThrow(
+      /must be off or presigned/
+    )
+  })
+
+  it('a refusal crosses the binding as the call’s error, not a crash', async () => {
+    const result = await hostCall(async () =>
+      sandboxHostConfig({ SESSION_WORKSPACE_BACKUP: 'binding' })
+    )
+    expect(result).toMatchObject({
+      ok: false,
+      error: { message: expect.stringMatching(/binding/) },
+    })
+  })
+})
+
+describe('Launch’s backup mode for a session on the remote host', () => {
+  const dev = (vars: Record<string, string> = {}) =>
+    loadConfig(createTestEnv({ APP_ENV: 'development', ...vars }))
+
+  it('is presigned whenever Launch knows the R2 endpoint — never the development default, binding', () => {
+    expect(workspaceBackupMode(dev(), 'local')).toBe('binding')
+    expect(workspaceBackupMode(dev(), 'remote')).toBe('off')
+    expect(workspaceBackupMode(dev({ CLOUDFLARE_ACCOUNT_ID: 'acct' }), 'remote')).toBe('presigned')
+    expect(
+      workspaceBackupMode(
+        dev({ SESSION_WORKSPACE_BACKUP: 'binding', CLOUDFLARE_ACCOUNT_ID: 'acct' }),
+        'remote'
+      )
+    ).toBe('presigned')
+    // …while this Worker's own containers keep the binding.
+    expect(
+      workspaceBackupMode(
+        dev({ SESSION_WORKSPACE_BACKUP: 'binding', CLOUDFLARE_ACCOUNT_ID: 'acct' })
+      )
+    ).toBe('binding')
+    expect(
+      workspaceBackupMode(
+        dev({ SESSION_WORKSPACE_BACKUP: 'off', CLOUDFLARE_ACCOUNT_ID: 'acct' }),
+        'remote'
+      )
+    ).toBe('off')
+  })
+
+  it('the R2 endpoint is a backup host of a remote session only when it is presigned', () => {
+    expect(backupEgressHosts(dev(), 'remote')).toEqual([])
+    expect(backupEgressHosts(dev({ CLOUDFLARE_ACCOUNT_ID: 'acct' }), 'remote')).toEqual([
+      'acct.r2.cloudflarestorage.com',
+    ])
+    expect(
+      backupEgressHosts(
+        dev({ BACKUP_BUCKET_ENDPOINT: 'https://acct.eu.r2.cloudflarestorage.com' }),
+        'remote'
+      )
+    ).toEqual(['acct.eu.r2.cloudflarestorage.com'])
+    // A local session in binding mode moves nothing over the network.
+    expect(backupEgressHosts(dev({ CLOUDFLARE_ACCOUNT_ID: 'acct' }), 'local')).toEqual([])
+  })
+
+  it('loadConfig refuses presigned with no account id or endpoint: the allow-list would have no R2 host', () => {
+    expect(() =>
+      loadConfig(createTestEnv({ APP_ENV: 'production', SESSION_WORKSPACE_BACKUP: 'presigned' }))
+    ).toThrow(/SESSION_WORKSPACE_BACKUP=presigned needs CLOUDFLARE_ACCOUNT_ID/)
+    expect(
+      loadConfig(
+        createTestEnv({
+          APP_ENV: 'production',
+          SESSION_WORKSPACE_BACKUP: 'presigned',
+          CLOUDFLARE_ACCOUNT_ID: 'acct',
+        })
+      ).SESSION_WORKSPACE_BACKUP
+    ).toBe('presigned')
+  })
+})
+
 describe('the sandbox host is no longer a var', () => {
   it('loadConfig neither reads nor refuses SESSION_SANDBOX_HOST, anywhere', () => {
     for (const APP_ENV of ['development', 'staging', 'production']) {
@@ -215,6 +345,21 @@ describe('defaultSessionPorts', () => {
     expect(sandbox.id).toBe('remote:s-1')
     expect(egressFor(ports, db)).toBeInstanceOf(HostEgress)
     expect(egressFor(ports, db).mode).toBe('host')
+    // No R2 endpoint on this side: no backups for a remote session, so nothing to allow.
+    expect(sandbox.backupHosts).toEqual([])
+  })
+
+  it('remote, with the account id in .dev.vars: the R2 endpoint is the sandbox’s backup host', () => {
+    const env = {
+      ...createTestEnv({ APP_ENV: 'development', CLOUDFLARE_ACCOUNT_ID: 'acct' }),
+      SANDBOX_HOST: { fetch: async () => new Response('ok') },
+    } as unknown as AppBindings
+    const remote = defaultSessionPorts(env, loadConfig(env), 'remote').sandbox('s-1')
+    expect(remote.backupHosts).toEqual(['acct.r2.cloudflarestorage.com'])
+    // The same Worker's own (binding-mode) containers reach no R2 host.
+    expect(defaultSessionPorts(env, loadConfig(env), 'local').sandbox('s-1').backupHosts).toEqual(
+      []
+    )
   })
 
   it('remote without the binding fails by name when a sandbox is asked for', () => {

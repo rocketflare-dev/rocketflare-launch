@@ -1648,6 +1648,92 @@ describe('SessionWorkflow: workspace backups', () => {
     })
     expect(run.names).toContain('suspend#1')
     expect((await reload(h.row)).workspaceBackup).toBeNull()
+    // …but it says why, so a workspace_backup that stayed null is explained (issue #3).
+    const recorded = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'workspace.backup'
+    )
+    expect(recorded.map(e => e.data)).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        mode: 'binding',
+        reason: 'BACKUP_CREATE_FAILED',
+      }),
+    ])
+  })
+
+  it('a saved backup is recorded too, with its commit and how long it took', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        paused.value = true
+        return WAKE
+      }
+      return undefined
+    })
+    const recorded = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'workspace.backup'
+    )
+    expect(recorded.map(e => e.data)).toEqual([
+      expect.objectContaining({ status: 'saved', mode: 'binding', headSha: BASE_SHA }),
+    ])
+    const data = recorded[0]?.data as { durationMs?: number } | undefined
+    expect(data?.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('a workspace with no commit is not backed up, and says so', async () => {
+    const h = await harness()
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { exitCode: 128, stderr: 'fatal' }))
+    await drive(h, async (_wait, n) => {
+      if (n === 0) {
+        paused.value = true
+        return WAKE
+      }
+      return undefined
+    })
+    expect(h.sandbox().backups.size).toBe(0)
+    const recorded = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'workspace.backup'
+    )
+    expect(recorded.map(e => e.data)).toEqual([
+      expect.objectContaining({ status: 'failed', reason: expect.stringMatching(/no commit/) }),
+    ])
+  })
+
+  it('a remote session with no R2 endpoint on this side is not backed up (binding never reaches the host)', async () => {
+    const h = await harness()
+    await patch(h.row, { sandboxHost: 'remote' })
+    h.ports.script(sandbox => sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` }))
+    const run = await drive(h, coolThenResume(h))
+    expect(h.sandbox().backups.size).toBe(0)
+    expect(run.names).toContain('repo#1')
+    const recorded = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'workspace.backup'
+    )
+    expect(recorded).toEqual([])
+  })
+
+  it('a remote session backs up presigned when the account id is set, and a cold resume restores it', async () => {
+    const h = await harness({ env: { CLOUDFLARE_ACCOUNT_ID: 'acct' } })
+    await patch(h.row, { sandboxHost: 'remote' })
+    h.ports.script(sandbox => {
+      sandbox.onExec(/rev-parse HEAD/, { stdout: `${BASE_SHA}\n` })
+      sandbox.backupHosts = ['acct.r2.cloudflarestorage.com']
+    })
+    const run = await drive(h, coolThenResume(h))
+    const sandbox = h.sandbox()
+    expect(sandbox.restores).toHaveLength(1)
+    expect(run.names).toContain('restore#1')
+    // The R2 endpoint was allowed for the backup and the restore, and only then.
+    expect(sandbox.backupAllowedHosts.length).toBeGreaterThanOrEqual(1)
+    expect(sandbox.backupAllowedHosts[0]).toContain('acct.r2.cloudflarestorage.com')
+    expect(sandbox.allowedHosts).not.toContain('acct.r2.cloudflarestorage.com')
+    const recorded = (await listSessionEvents(db, h.row.tenantId, h.row.id)).filter(
+      e => e.type === 'workspace.backup'
+    )
+    expect(recorded.map(e => e.data)).toEqual([
+      expect.objectContaining({ status: 'saved', mode: 'presigned' }),
+    ])
   })
 
   it('with backups off, nothing is backed up', async () => {
