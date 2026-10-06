@@ -651,6 +651,8 @@ export const sessionWorkspaceBackupDataSchema = z.object({
   headSha: z.string().optional(),
 })
 export type SessionWorkspaceBackupData = z.infer<typeof sessionWorkspaceBackupDataSchema>
+
+/**
  * Issue #8: the phases a `boot.timing` row names — the boot checklist's steps (`sandbox.start` is
  * the checklist's `sandbox`), with its `bootstrap` step split into the dependency install and the
  * kit bootstrap after it. A boot lists only the phases it ran, in the order they started.
