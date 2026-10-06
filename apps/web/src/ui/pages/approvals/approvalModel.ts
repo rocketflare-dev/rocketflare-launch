@@ -25,6 +25,7 @@ import {
   type AutoApproveRole,
   BUILT_APPROVAL_KINDS,
 } from '@launch/shared/launch-approvals'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
 
 /** Short names for a filter, a badge, a policy row. */
 export const KIND_LABELS: Record<ApprovalKind, string> = {
@@ -281,10 +282,10 @@ export function autoApproveLabel(role: AutoApproveRole | null): string {
 export const AUTO_APPROVAL_NOTE = 'An automatic approval is still recorded and audited.'
 
 /**
- * Where Settings → Approvals lives — the one spelling a link to it uses (the app's Ship settings
- * card points here when an organisation policy forces review).
+ * Where Settings → Approval policies lives — the one spelling a link to it uses (the app's Ship
+ * settings card points here when an organisation policy forces review).
  */
-export const APPROVAL_POLICIES_PATH = '/settings?tab=approvals'
+export const APPROVAL_POLICIES_PATH = SETTINGS_PATHS.approvalPolicies
 
 export type ApprovalRequirement = 'required' | 'not_required' | 'always'
 

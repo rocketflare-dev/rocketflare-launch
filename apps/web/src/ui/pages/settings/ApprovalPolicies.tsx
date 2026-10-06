@@ -1,5 +1,5 @@
 /**
- * Settings → Approvals (Launch P4, plan §1.5): who approves each kind of request, for the whole
+ * Settings → Approval policies (Launch P4, plan §1.5): who approves each kind of request, for the whole
  * organisation and as overrides for one team (group) or one app, over `/api/approval-policies`.
  * `manage ApprovalPolicy` only (the tab is hidden otherwise) — an app owner loosening their own
  * production gate would defeat it.

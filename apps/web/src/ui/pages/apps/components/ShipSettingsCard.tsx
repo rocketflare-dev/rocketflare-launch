@@ -341,7 +341,7 @@ export function ShipSettingsCard({
                 See the approval policy
               </Link>
             ) : (
-              'An administrator can change it in Settings → Approvals.'
+              'An administrator can change it in Settings → Approval policies.'
             )}
           </p>
         )}

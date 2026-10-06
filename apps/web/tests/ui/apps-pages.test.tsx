@@ -357,7 +357,7 @@ describe('App page', () => {
       )
       expect(within(notice).getByRole('link', { name: 'See the approval policy' })).toHaveAttribute(
         'href',
-        '/settings?tab=approvals'
+        '/settings/approval-policies'
       )
       const form = await openSettings(section)
       expect(within(form).getByTestId('review-policy')).toHaveTextContent(
@@ -374,7 +374,9 @@ describe('App page', () => {
       })
       const section = await card()
       const notice = within(section).getByTestId('review-policy-notice')
-      expect(notice).toHaveTextContent('An administrator can change it in Settings → Approvals.')
+      expect(notice).toHaveTextContent(
+        'An administrator can change it in Settings → Approval policies.'
+      )
       expect(within(notice).queryByRole('link')).toBeNull()
     })
 

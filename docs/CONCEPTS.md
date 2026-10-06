@@ -1029,7 +1029,7 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   (`findPolicyRow`, in the leaf `approvals/policy-row.ts` and re-exported by `policy.ts`, the same order `resolvePolicy` reads) — **wins**: review
   becomes mandatory with that row's own policy, the detail answers `shipReviewSetBy: 'policy'`, the
   card shows the review read-only — and says so on its summary, "Review is required by your
-  organisation’s approval policy" with a link to Settings → Approvals for whoever may change it
+  organisation’s approval policy" with a link to Settings → Approval policies for whoever may change it
   (issue #22) — and a PUT that changes the review is 409
   `ship_review_set_by_policy` (the ship mode may still change; send the review back as it is). This
   is the one kind whose gate the app's owners may shape (decision §0.3 relaxes P4 §1.5 for it).

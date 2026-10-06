@@ -1,5 +1,5 @@
 /**
- * Settings → Approvals (Launch P4, plan §1.5): per kind, the organisation's policy — its row, or
+ * Settings → Approval policies (Launch P4, plan §1.5): per kind, the organisation's policy — its row, or
  * the default the SERVER reports — and the team/app overrides. Editing posts
  * `putApprovalPolicySchema` (the route's own schema); an override needs its team or app chosen;
  * "Use default" / "Remove" delete the row after a confirmation.
