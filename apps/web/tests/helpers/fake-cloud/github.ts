@@ -1789,7 +1789,7 @@ export class FakeGitHub implements VendorHandler {
       this.assetDownloads.push({ id, name })
       return new Response(bytes as unknown as BodyInit, {
         status: 200,
-        headers: { "Content-Type": "application/octet-stream" },
+        headers: { 'Content-Type': 'application/octet-stream' },
       })
     }
     match = rest.match(/^\/releases\/tags\/(.+)$/)

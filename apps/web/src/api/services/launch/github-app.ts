@@ -1107,7 +1107,8 @@ export async function downloadReleaseAsset(
   if (res.status >= 300 && res.status < 400) {
     const location = res.headers.get('location')
     await res.body?.cancel().catch(() => {})
-    if (!location) throw new GitHubApiError(res.status, 'GitHub sent a redirect with no location', path)
+    if (!location)
+      throw new GitHubApiError(res.status, 'GitHub sent a redirect with no location', path)
     body = await doFetch(location, { headers: { 'User-Agent': GITHUB_USER_AGENT } })
   }
   if (!body.ok || !body.body) throw await failure(body, path)

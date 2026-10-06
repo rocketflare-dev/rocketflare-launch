@@ -377,12 +377,15 @@ export async function importApp(
     // Issue #21: CI trusts Launch's gate only once the repo names Launch's App — set it now when
     // the installation may write Actions variables; else the cron sweep tries again hourly
     // (`sweepGateVariables`). Never fails the import.
-    await ensureAppGateVariable(db, cfg, app, { github, fetch: opts.fetch, apiBase: opts.apiBase }).catch(
-      err =>
-        (opts.logger ?? loggerFor(cfg, { component: 'import' })).warn(
-          { appId: app.id, err: err instanceof Error ? err.message : String(err) },
-          'import: could not set LAUNCH_GATE_APP_ID; the sweep retries'
-        )
+    await ensureAppGateVariable(db, cfg, app, {
+      github,
+      fetch: opts.fetch,
+      apiBase: opts.apiBase,
+    }).catch(err =>
+      (opts.logger ?? loggerFor(cfg, { component: 'import' })).warn(
+        { appId: app.id, err: err instanceof Error ? err.message : String(err) },
+        'import: could not set LAUNCH_GATE_APP_ID; the sweep retries'
+      )
     )
     return { app, runId }
   } catch (err) {

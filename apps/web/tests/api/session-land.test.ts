@@ -1222,8 +1222,7 @@ describe('Phase B: retrying a stall from the session (issue #21)', () => {
   }
   const mergeShaOf = async (h: Harness) => (await reload(h.row)).landing?.mergeSha ?? ''
   const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
-  const NO_RUNNER =
-    'The job was not acquired by Runner of type hosted even after multiple attempts'
+  const NO_RUNNER = 'The job was not acquired by Runner of type hosted even after multiple attempts'
   const retryRoute = (h: Harness, body: unknown) =>
     request(
       `/api/sessions/${h.row.id}/landing/retry`,

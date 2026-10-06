@@ -619,7 +619,10 @@ describe('SessionPage', () => {
       })
       const { fetchMock } = renderPage({
         [BASE]: detailOf({ status: 'shipped', prNumber: 12, prUrl, landing: stalled }),
-        [`${BASE}/events`]: eventsRoute([...SHIPPED, sessionEvent(11, 'ship.ci', ci('success'), 2)]),
+        [`${BASE}/events`]: eventsRoute([
+          ...SHIPPED,
+          sessionEvent(11, 'ship.ci', ci('success'), 2),
+        ]),
         [`POST ${BASE}/landing/retry`]: () =>
           detailOf({
             status: 'shipped',

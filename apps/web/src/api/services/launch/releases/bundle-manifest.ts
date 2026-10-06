@@ -52,14 +52,19 @@ function header(block: Uint8Array): { name: string; size: number } | null {
   const name = text(block, 0, 100)
   const prefix = text(block, 345, 155)
   const size = Number.parseInt(text(block, 124, 12).trim() || '0', 8)
-  if (!Number.isFinite(size) || size < 0) throw new BundleManifestError('The bundle is not a tar archive')
+  if (!Number.isFinite(size) || size < 0)
+    throw new BundleManifestError('The bundle is not a tar archive')
   return { name: prefix ? `${prefix}/${name}` : name, size }
 }
 
 /** The `manifest.json` of a gzip'd ustar stream; the stream is cancelled once it is read. */
-export async function readBundleManifest(stream: ReadableStream<Uint8Array>): Promise<BundleManifest> {
+export async function readBundleManifest(
+  stream: ReadableStream<Uint8Array>
+): Promise<BundleManifest> {
   const reader = stream
-    .pipeThrough(new DecompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>)
+    .pipeThrough(
+      new DecompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>
+    )
     .getReader()
   let buffer = new Uint8Array(0)
   let scanned = 0
@@ -92,8 +97,10 @@ export async function readBundleManifest(stream: ReadableStream<Uint8Array>): Pr
       if (!entry) break
       const padded = Math.ceil(entry.size / BLOCK) * BLOCK
       if (entry.name === 'manifest.json' || entry.name === './manifest.json') {
-        if (entry.size > MANIFEST_MAX_BYTES) throw new BundleManifestError('The bundle manifest is too large')
-        if (!(await fill(entry.size))) throw new BundleManifestError('The bundle ends inside its manifest')
+        if (entry.size > MANIFEST_MAX_BYTES)
+          throw new BundleManifestError('The bundle manifest is too large')
+        if (!(await fill(entry.size)))
+          throw new BundleManifestError('The bundle ends inside its manifest')
         let parsed: unknown
         try {
           parsed = JSON.parse(new TextDecoder().decode(take(entry.size)))
@@ -107,7 +114,8 @@ export async function readBundleManifest(stream: ReadableStream<Uint8Array>): Pr
       // Skip the entry's data, a buffer's worth at a time.
       let left = padded
       while (left > 0) {
-        if (!(await fill(Math.min(left, 64 * 1024)))) throw new BundleManifestError('The bundle is truncated')
+        if (!(await fill(Math.min(left, 64 * 1024))))
+          throw new BundleManifestError('The bundle is truncated')
         left -= take(Math.min(left, buffer.length)).length
       }
     }
@@ -132,7 +140,9 @@ export async function verifyBundleAsset(
 ): Promise<BundleManifest> {
   let manifest: BundleManifest
   try {
-    manifest = await readBundleManifest(await downloadReleaseAsset(token, owner, repo, input.assetId, gh))
+    manifest = await readBundleManifest(
+      await downloadReleaseAsset(token, owner, repo, input.assetId, gh)
+    )
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err)
     throw new Error(`Launch could not read the release bundle of ${input.tag} to check it: ${why}`)

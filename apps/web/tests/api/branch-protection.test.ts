@@ -23,8 +23,8 @@ import {
 } from '@launch/shared/launch-apps'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { commitFiles } from '@/api/services/launch/github-app'
 import { sweepGateVariables } from '@/api/services/launch/gate-variable'
+import { commitFiles } from '@/api/services/launch/github-app'
 import { loadConfig } from '@/config'
 import { apps, auditEvents } from '@/db/schema'
 import {
@@ -391,7 +391,10 @@ describe('POST /api/apps/:id/branch-protection', () => {
 describe('the LAUNCH_GATE_APP_ID sweep (issue #21)', () => {
   it('sets it on a live app Launch has not seen it on, records it, and leaves the app alone after', async () => {
     const { tenantId, seeded, owner, repo } = await fixture()
-    await db.update(apps).set({ status: 'live', gateVariableSetAt: null }).where(eq(apps.id, seeded.app.id))
+    await db
+      .update(apps)
+      .set({ status: 'live', gateVariableSetAt: null })
+      .where(eq(apps.id, seeded.app.id))
     const cfg = loadConfig(env)
     const now = new Date()
     const warnings: unknown[] = []
@@ -428,11 +431,15 @@ describe('the LAUNCH_GATE_APP_ID sweep (issue #21)', () => {
     const now = new Date()
     const opts = { now, tenantIds: [tenantId], logger: { warn: () => {} } }
     expect(await sweepGateVariables(db, cfg, opts)).toEqual({ set: 0, failed: 1 })
-    expect(await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 30 * 60_000) })).toEqual({
+    expect(
+      await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 30 * 60_000) })
+    ).toEqual({
       set: 0,
       failed: 0,
     })
-    expect(await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 61 * 60_000) })).toEqual({
+    expect(
+      await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 61 * 60_000) })
+    ).toEqual({
       set: 0,
       failed: 1,
     })

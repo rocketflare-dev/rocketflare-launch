@@ -41,8 +41,8 @@ import {
   insertIntent,
 } from '../../launch/deploy/tickets'
 import { dispatchWorkflow } from '../../launch/github-app'
-import { DEPLOY_WORKFLOW_FILE, withRepoToken } from '../../launch/releases/github'
 import { verifyBundleAsset } from '../../launch/releases/bundle-manifest'
+import { DEPLOY_WORKFLOW_FILE, withRepoToken } from '../../launch/releases/github'
 import { moveRelease } from '../../launch/releases/lifecycle'
 import {
   BUNDLE_DRAFT_WAIT_MINUTES,
@@ -349,7 +349,11 @@ export const deployProductionHandler: KindHandler<'deploy.production'> = {
               tag: release.tag,
               name: release.version,
               body: bundle =>
-                releaseNotes(release, { ...facts, bundle, rebuildReason: bundle ? null : rebuildReason }),
+                releaseNotes(release, {
+                  ...facts,
+                  bundle,
+                  rebuildReason: bundle ? null : rebuildReason,
+                }),
               waitForDraft: expected.state === 'wait' && !lastAttempt,
               // Issue #21: the bundle must be the build staging deployed.
               verifyDraft: stagingDigest

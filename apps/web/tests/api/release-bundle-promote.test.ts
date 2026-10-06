@@ -232,7 +232,14 @@ function tarEntry(name: string, data: Buffer): Buffer {
 /** The kit's `launch-bundle-<tag>.tgz` with a manifest naming `tag` and `bundleSha256`. */
 function bundleTgz(tag: string, bundleSha256: string): Uint8Array {
   const manifest = Buffer.from(
-    JSON.stringify({ protocol: 1, tag, version: tag, commit: 'c'.repeat(40), bundleSha256, files: {} })
+    JSON.stringify({
+      protocol: 1,
+      tag,
+      version: tag,
+      commit: 'c'.repeat(40),
+      bundleSha256,
+      files: {},
+    })
   )
   return new Uint8Array(
     gzipSync(
@@ -388,9 +395,12 @@ describe('Promote waits for the bundle draft, and checks it (issue #21)', () => 
       bundleBytes: bundleTgz('0.1.1', digest),
     })
     const later = new Date(Date.now() + 5 * 60_000)
-    expect(await retryApply(approvalDeps(db, env, () => later), { tenantId, requestId: approvalId })).toBe(
-      'applied'
-    )
+    expect(
+      await retryApply(
+        approvalDeps(db, env, () => later),
+        { tenantId, requestId: approvalId }
+      )
+    ).toBe('applied')
     expect(cloud.github.releaseFor(app.owner, app.repo, '0.1.1')?.id).toBe(draft.id)
     expect(releasesOn(app, '0.1.1')).toHaveLength(1)
     expect(cloud.github.assetDownloads.some(d => d.name === 'launch-bundle-0.1.1.tgz')).toBe(true)
@@ -431,10 +441,13 @@ describe('Promote waits for the bundle draft, and checks it (issue #21)', () => 
     // the fifth attempt gives up waiting and POSTs.
     for (let i = 1; i <= 4; i++) {
       const at = new Date(Date.now() + i * 4.5 * 60_000)
-      const outcome = await retryApply(approvalDeps(db, env, () => at), {
-        tenantId,
-        requestId: approvalId,
-      })
+      const outcome = await retryApply(
+        approvalDeps(db, env, () => at),
+        {
+          tenantId,
+          requestId: approvalId,
+        }
+      )
       expect(outcome).toBe(i < 4 ? 'failed' : 'applied')
     }
     expect(cloud.github.releaseFor(app.owner, app.repo, '0.1.1')?.body).toContain(

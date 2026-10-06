@@ -10,6 +10,35 @@
   its next upgrade starts one. `translateBlock(block, null)` now translates nothing (the kit's
   no-app fix; Launch always has an app, so it changes nothing here).
 
+- **Track A follow-ups for shipping and promote (issue #21).** Migration `0043` adds
+  `apps.gate_variable_set_at` / `gate_variable_tried_at`; run `pnpm db:migrate`.
+  - **A landing stalled before its release can be retried from the session.** `main_ci_failed`
+    shows **Re-run CI** (GitHub's "Re-run failed jobs" on the merge commit's failed runs; then
+    `land.main-ci` waits for them again) and **Release anyway** (the release is cut past the red
+    `Gate`, recorded as the `override` verdict; the tag's deploy runs the full gate itself);
+    `release_failed` shows **Retry the release**. `POST /api/sessions/:id/landing/retry
+    {action}`, audited `session.land_retried`; a double press retries once.
+  - **A Gate GitHub never ran says so.** A job no runner picked up ("not acquired by Runner",
+    `startup_failure`, `cancelled`) stalls with "GitHub did not run the default branch's CI … Retry
+    re-runs it" rather than "CI failed".
+  - **Imported apps get `LAUNCH_GATE_APP_ID`.** The import sets it when the installation may write
+    Actions variables, and the five-minute cron (`apps.gateVariable`) sets it on any live app
+    Launch has not seen it on, retrying a refused repo hourly. Apply records it too.
+  - **Promote waits for the bundle draft.** On a build-once kit (its staging upload sent `source`),
+    a draft not attached yet is waited for — the publish attempt fails and the approvals sweep
+    retries it — until 20 minutes after staging went live or the engine's last attempt. A draft
+    gone by then (a kit pruning old drafts) is POSTed at once; the notes and `release.published`
+    say why production rebuilds (`rebuildReason`).
+  - **Promote checks the bundle before publishing it.** The draft's `manifest.json` must name the
+    tag and carry the staging deploy's artifact digest as `bundleSha256`; a bundle that is not
+    staging's build is never published.
+  - **A rollback no longer rewrites the old release's `Live Worker version` line.** Only a pending
+    line is filled; notes Launch did not write are left alone.
+  - **A merge after the green main `Gate` no longer leaves the bump on an untested parent.** When
+    the default branch moved past the merge `land.main-ci` saw green, `land.release` waits for the
+    new head's `Gate` (up to 30 minutes from that verdict) before cutting the release;
+    `release.created` records `parentGate`.
+
 - **Track A follow-ups for sessions (issue #21).**
   - **The PR panel no longer counts `launch/gate` as CI.** Launch's own attestation is left out of
     the checks fold (`foldChecks`), so a repo with no CI reads "no checks" rather than "1 passed".

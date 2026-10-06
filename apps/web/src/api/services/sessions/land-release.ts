@@ -62,13 +62,13 @@ import { SYSTEM_ACTOR } from '../launch/audit'
 import { getRef, listCheckRuns } from '../launch/github-app'
 import { checkAppHealth } from '../launch/health'
 import { type ReleaseClaimOutcome, withReleaseClaim } from '../launch/releases/claim'
+import { withRepoToken } from '../launch/releases/github'
 import {
   createRelease,
   getRelease,
   RELEASE_TRIGGER_SESSION_MERGE,
   releaseListingPr,
 } from '../launch/releases/release'
-import { withRepoToken } from '../launch/releases/github'
 import { followTagRun } from '../launch/releases/tag-run'
 import { safeErrorMessage } from './events'
 import type {
@@ -237,21 +237,27 @@ async function bumpParentGate(
   if (gated?.verdict !== 'success' || !landing.mergeSha) return null
   let read: { head: string; state: PrCheckState } | null
   try {
-    read = await withRepoToken(ctx.db, ctx.cfg, app, { contents: 'read', checks: 'read' }, async (token, repo) => {
-      const ref = await getRef(token, repo.owner, repo.repo, `heads/${repo.branch}`)
-      const head = ref.object.sha
-      if (head === gated.sha) return null
-      const runs = await listCheckRuns(token, repo.owner, repo.repo, head)
-      const checks = runs.map(r => ({
-        name: r.name,
-        state: (r.status !== 'completed'
-          ? 'pending'
-          : ['success', 'neutral', 'skipped'].includes(r.conclusion ?? '')
-            ? 'success'
-            : 'failure') as PrCheckState,
-      }))
-      return { head, state: requiredCheckState(checks as PrChecks['checks']) }
-    })
+    read = await withRepoToken(
+      ctx.db,
+      ctx.cfg,
+      app,
+      { contents: 'read', checks: 'read' },
+      async (token, repo) => {
+        const ref = await getRef(token, repo.owner, repo.repo, `heads/${repo.branch}`)
+        const head = ref.object.sha
+        if (head === gated.sha) return null
+        const runs = await listCheckRuns(token, repo.owner, repo.repo, head)
+        const checks = runs.map(r => ({
+          name: r.name,
+          state: (r.status !== 'completed'
+            ? 'pending'
+            : ['success', 'neutral', 'skipped'].includes(r.conclusion ?? '')
+              ? 'success'
+              : 'failure') as PrCheckState,
+        }))
+        return { head, state: requiredCheckState(checks as PrChecks['checks']) }
+      }
+    )
   } catch (err) {
     ctx.logger.warn({ err }, 'landRelease: could not read the default branch head; releasing')
     return null
@@ -339,7 +345,10 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
 
   // Issue #11: the claim's wait starts once `land.main-ci` let the release go, not at the merge —
   // or at a person's Retry (issue #21), which moves `stageAt` past it.
-  const since = Math.max(Date.parse(landing.mainCi?.at ?? landing.stageAt), Date.parse(landing.stageAt))
+  const since = Math.max(
+    Date.parse(landing.mainCi?.at ?? landing.stageAt),
+    Date.parse(landing.stageAt)
+  )
   const waitedMs = ctx.now().getTime() - since
   if (waitedMs >= LAND_RELEASE_CLAIM_MAX_MINUTES * 60_000) {
     return {

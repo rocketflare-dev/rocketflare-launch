@@ -1036,8 +1036,13 @@ parties (a cross-site POST with the cookie is refused by CSRF).
   missing or wrong and offers Apply on an otherwise protected branch. **Detaching**: Launch has no
   detach flow that removes it — delete `LAUNCH_GATE_APP_ID` in the repo's Settings › Secrets and
   variables › Actions and CI runs the full gate on every push again (teardown archives or deletes
-  the repo, so it needs nothing). Gaps: nothing re-checks it on a schedule (only the card's read
-  and the three writes above); an app imported and never Applied or upgraded runs the full gate.
+  the repo, so it needs nothing). Issue #21: an **import** sets it too (best-effort, after its
+  transaction), and the five-minute cron's **`apps.gateVariable`** (`sweepGateVariables`) sets it
+  on every live app Launch has not seen it on (`apps.gate_variable_set_at IS NULL`, written by the
+  import, Apply, the upgrade start and the sweep itself): one statement claims up to 20 apps by
+  stamping `gate_variable_tried_at`, so a repo GitHub refuses (an installation without
+  `actions_variables: write`) is retried at most hourly. Gap: an app Launch once saw it on is not
+  re-checked (someone deleting the variable is caught only by the card's read).
 
 **Known gaps:** no Cloudflare verification of the recorded resource ids; the kit version is re-read
 at every Release (§18.23), but nothing else is re-synced from the repo after import (the tomls'
@@ -2450,7 +2455,22 @@ request cancelled, `landing := null`, the PR left open); during `merging` it is 
 then the `landRelease` / `landStaging` / `landHealth` hooks, §18.17) ends in `land.live#K` (stage `live`, `stagingUrl`, the version,
 `ship.staging {status:'live'}`, audit `session.landed`) or `land.stalled#K` (stage `stalled`, the
 reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
-`session.land_stalled`) — after the merge nothing reopens (decision §0.1). **The safety net**:
+`session.land_stalled`) — after the merge nothing reopens (decision §0.1). **Retrying a stall**
+(issue #21, `land-retry.ts`, `POST /api/sessions/:id/landing/retry {action}`, `update` on the
+session like ship): the two stalls that released NOTHING (`RETRYABLE_STALLED_REASONS`) go round
+again. `main_ci_failed` + `retry` first re-runs the merge commit's failed Actions runs
+(`RepoHostPort.rerunFailedRuns` — GitHub's "Re-run failed jobs", `actions: write`; a run already
+going counts; nothing to re-run → 409 `landing_nothing_to_rerun`), then the landing goes back to
+`releasing` with `mainCi` cleared and a fresh `stageAt`, so `land.main-ci` waits for the new
+attempt with fresh bounds; `release_anyway` sets `mainCi.verdict = 'override'` instead (the tag's
+deploy runs the full gate itself); `release_failed` + `retry` re-enters `land.release` (its claim
+bound from the new `stageAt`). ONE compare-and-set on stage `stalled` and the same reason, so a
+double press retries once (the loser answers the landing as it is); then `wakeOrRestartLanding`
+starts a fresh instance (`claim` → Phase B). Audited `session.land_retried`; anything else is 409
+`landing_not_retryable`. A failed main check GitHub never ran (`infrastructureFailure`: a
+`startup_failure` / `cancelled` conclusion, or "not acquired by Runner" in its annotations) stalls
+with "GitHub did not run the default branch's CI … Retry re-runs it", and both retryable stalls'
+sentences say "Retry from the session". **The safety net**:
 `sessions.checks` (`*/5`) wakes every landing in a moving stage quiet for three of its rounds (by
 `stageAt` AND `last_activity_at`, which each land step stamps and beats), or restarts its instance
 when that is gone — one alive in name only (a `wrangler dev` reload) is the reconcile's, which
@@ -2547,7 +2567,9 @@ and the row's `landing`; once a reopen clears the landing the rows tell the stor
 one sentence (`REOPEN_TEXT`), and for red CI the failing check, its link, the redacted log tail and
 **Ask Claude to fix it**, which posts the fix as an ordinary turn (`POST /turns`, the composer's
 route; a `suspended` session resumes on it). A stall (after the merge) says why (`STALLED_TEXT` +
-the landing's `error`) and links the app page, where release, retry and production live. `pr`
+the landing's `error`) and links the app page, where release, retry and production live; a
+retryable one (issue #21) also offers **Re-run CI** + **Release anyway** (`main_ci_failed`) or
+**Retry the release** (`release_failed`). `pr`
 mode keeps today's ending (the PR and its CI), and so does a landing an End abandoned (no landing,
 no reopen, the session no longer shipping: the PR stays open and nothing is waiting on CI). The chat gets a notice per landing row; the
 composer's blocked sentence names the stage; End is hidden while `merging` (the route's 409); the
@@ -2685,11 +2707,24 @@ draft fires no `release: published`), so publishing is three steps — `GET …/
 to the `contents: write` token) and `PATCH …/releases/{id}` `{ draft: false, name, body }` on the
 tag's draft (the one carrying the bundle first; never `tag_name`), which fires `published` once
 and production deploys the bytes staging ran; no draft (an older kit) → `POST` as before and
-production rebuilds. `release.published` records `via: draft|created` and `bundle`. The notes
+production rebuilds. Issue #21: on a **build-once kit** (`draftExpectation`: the staging upload's
+`deploy.uploaded` audit carries `source`, which kit 0.17.0 added with the bundle) a missing draft
+is **waited for** — the publish attempt throws "Waiting for the staging run to attach the release
+bundle…", and the approvals sweep retries the owed `applyAfter` every few minutes — until
+`BUNDLE_DRAFT_WAIT_MINUTES` (20) after staging went live, or the engine's last attempt
+(`APPROVAL_MAX_APPLY_ATTEMPTS`); then it POSTs and the notes say why production rebuilds
+(`rebuildReason`: `draft_gone` — a kit prunes old drafts, so an old tag skips the wait —  or
+`draft_wait_timed_out`). A draft carrying the bundle is **checked before it is published**
+(`releases/bundle-manifest.ts`, `verifyBundleAsset`): the asset is downloaded (the redirect to
+GitHub's signed URL followed without the token) only as far as its first entry, `manifest.json`,
+whose `tag` must be the release's and `bundleSha256` the staging deploy's artifact digest; a
+bundle that is not staging's is never published (the attempt fails with that sentence).
+`release.published` records `via: draft|created`, `bundle` and `rebuildReason`. The notes
 carry the PRs, the release commit's tree, each session PR's `launch/gate` check (its landing's
 `gateSha`/`gateTree`, issue #9), Staging's Worker version id and artifact digest (§18.7), and a
-`Live Worker version` line: production's `activate` fills it in with a second, best-effort PATCH
-after the response (`prepareLiveVersion` reads everything from the database first; a failure is a
+`Live Worker version` line: production's `activate` fills it in — once: only a `pending` line
+(issue #21), so a rollback or re-deploy of the tag leaves it naming the first go-live, and notes
+Launch did not write are left alone — with a second, best-effort PATCH after the response (`prepareLiveVersion` reads everything from the database first; a failure is a
 log line — the release view's `artifact.productionVersionId` has it anyway). Launch's releases list
 is its own `app_releases`, never GitHub's, so a draft is invisible to it; Promote itself never
 touches GitHub Releases.
@@ -2747,9 +2782,14 @@ from timestamps on rows rather than counters in memory:
   claim's 15-minute wait below counts from its `at`. A landing already `deploying` (or holding a
   release) skips it. No `[skip ci]` on the bump: GitHub would skip the TAG's push workflows too. A
   release cut by a person (`POST /api/apps/:id/releases`, `launch releases`) does not wait.
-  **Gap:** the bump's parent is the default branch's head when the release is cut — another merge
-  landing between this one's green `Gate` and the bump makes that the parent, whose CI may still
-  run, and the deploy re-gates.
+  Issue #21: the bump's parent is the default branch's head when the release is cut, so after a
+  `success` verdict `land.release` reads the head under the claim (`bumpParentGate`): still the
+  merge → release; moved (another merge landed since) → that head's own `Gate` decides — green
+  releases on a tested parent, red releases too (the deploy re-gates; the newer merge's landing
+  stalls on it), pending or unreported waits a round (`LAND_RELEASE_WAIT_SECONDS`, the claim not
+  held) until `SHIP_MAIN_CI_MAX_MINUTES` after the verdict, then releases (`timeout`).
+  `release.created` records `trigger.parentGate`. A `main_ci_failed` stall — and `release_failed`
+  — can be retried from the session (§18.13 **Retrying a stall**).
 - `land.release` cuts — or SHARES — the patch release that carries the merge. A release of the app
   that already lists the PR (`app_releases.prs @> [{"number": n}]`) is shared; otherwise it takes
   the app's **release claim** (`apps.release_claim_holder` = `session:<id>` | `user:<id>` +
@@ -2867,11 +2907,9 @@ and the compare URL. Cached on the app row (`apps.main_compare`), asked at most 
 release moves the base and invalidates the reading at once. A GitHub failure is `aheadBy: null`
 with `error` (200, cached for the window), never a 5xx; no tag at all is `aheadBy: null`.
 
-**Known gaps:** GitHub is polled, not listened to (webhooks are P6); build once races the kit's
-`release-bundle` job: a Promote approved before that job created its draft POSTs a new release
-(production rebuilds; the job then adds its asset to the published release), and Launch never
-reads the bundle itself, so "staging runs this version" is not checked against the asset's
-`bundleSha256` — only production's upload against staging's (§18.7); the `launch/gate` link is the
+**Known gaps:** GitHub is polled, not listened to (webhooks are P6); a Promote that waits for
+the bundle draft (issue #21) waits in the approvals sweep's rounds (about five minutes each), and
+the approval shows the wait as its `apply_error`; the `launch/gate` link is the
 gated head's checks page, not the check run itself; the first release of an app
 with no earlier tag lists only its session PRs; the bump is a direct push to the default branch,
 so a branch protected by anything the App cannot bypass (classic protection, or a ruleset without

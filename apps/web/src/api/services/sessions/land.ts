@@ -1151,7 +1151,9 @@ export async function landStalledStep(
   const retry = (RETRYABLE_STALLED_REASONS as readonly string[]).includes(input.reason)
     ? ' Retry from the session, or open'
     : ' Open'
-  const where = app ? `${retry} the app page (/apps/${app.slug}) to release or deploy it by hand.` : ''
+  const where = app
+    ? `${retry} the app page (/apps/${app.slug}) to release or deploy it by hand.`
+    : ''
   const sentence = `${detail.replace(/\.?$/, '.')} The change is merged.${where}`
   const row = await casLanding(
     scope,

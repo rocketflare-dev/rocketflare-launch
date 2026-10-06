@@ -358,9 +358,13 @@ describe('importApp', () => {
 
   it('an installation that may not write variables still imports; the sweep is left to set it', async () => {
     const { tenant, actor } = await adminActor()
-    const gh = fakeGitHub(repoFiles({ '.rocketflare.json': rocketflareJson(uniqueSlug()) }), undefined, {
-      variables: 'refuse',
-    })
+    const gh = fakeGitHub(
+      repoFiles({ '.rocketflare.json': rocketflareJson(uniqueSlug()) }),
+      undefined,
+      {
+        variables: 'refuse',
+      }
+    )
     const { app } = await importApp(db, cfg, tenant.id, { repo: 'acme/ungated' }, actor, {
       fetch: gh.fetch,
       github: github(),

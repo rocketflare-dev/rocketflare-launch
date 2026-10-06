@@ -445,7 +445,9 @@ describe('landRelease', () => {
       .select()
       .from(auditEvents)
       .where(and(eq(auditEvents.appId, f.app.app.id), eq(auditEvents.action, 'release.created')))
-    expect((created?.summary as { after?: unknown })?.after).toMatchObject({ parentGate: 'timeout' })
+    expect((created?.summary as { after?: unknown })?.after).toMatchObject({
+      parentGate: 'timeout',
+    })
   })
 
   it('takes over a stale claim', async () => {

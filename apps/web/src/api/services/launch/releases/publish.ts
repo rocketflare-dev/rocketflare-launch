@@ -290,7 +290,10 @@ export async function draftExpectation(
     .select({ activatedAt: deployTickets.activatedAt, digest: deployTickets.artifactDigest })
     .from(deployTickets)
     .where(
-      and(eq(deployTickets.tenantId, release.tenantId), eq(deployTickets.id, release.stagingTicketId))
+      and(
+        eq(deployTickets.tenantId, release.tenantId),
+        eq(deployTickets.id, release.stagingTicketId)
+      )
     )
     .limit(1)
   const stagingDigest = staging?.digest ?? null

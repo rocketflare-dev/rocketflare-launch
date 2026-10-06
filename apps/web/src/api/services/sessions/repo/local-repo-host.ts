@@ -29,8 +29,8 @@ import type {
   OpenPullRequestInput,
   RepoHostPort,
   RepoPullRequest,
-  RerunFailedRunsResult,
   RepoRef,
+  RerunFailedRunsResult,
 } from '../ports'
 
 /** The check a local PR reports: the gate `ship()` ran before opening it. */
@@ -108,7 +108,10 @@ export class LocalRepoHost implements RepoHostPort {
     return null
   }
 
-  async rerunFailedRuns(_repo: RepoRef, _input: { headSha: string }): Promise<RerunFailedRunsResult> {
+  async rerunFailedRuns(
+    _repo: RepoRef,
+    _input: { headSha: string }
+  ): Promise<RerunFailedRunsResult> {
     return { rerun: [], running: [] }
   }
 }
