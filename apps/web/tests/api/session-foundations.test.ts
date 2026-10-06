@@ -15,6 +15,11 @@ import { getVisibleSession, maySeeSession, sessionViewerOf } from '@/api/service
 import { handleAnthropic } from '@/api/services/sessions/egress/anthropic'
 import { handleGitHub } from '@/api/services/sessions/egress/github'
 import {
+  APPEND_SEQ_ATTEMPTS,
+  appendSessionEvents,
+  listSessionEvents,
+} from '@/api/services/sessions/event-log'
+import {
   defaultSessionPorts,
   SandboxInterruptedError,
   SESSION_BASE_ALLOWED_HOSTS,
@@ -397,5 +402,23 @@ describe('the session image', () => {
     const version = pkg.dependencies['@cloudflare/sandbox']
     expect(version).toBe('0.12.10')
     expect(dockerfile).toContain(`FROM docker.io/cloudflare/sandbox:${version}`)
+  })
+})
+
+describe('the event log under the parallel boot (issue #15)', () => {
+  it('appends that race for the same seq renumber; every row lands once, in a seq of its own', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const row = await insertSession(db, f, { status: 'booting' })
+    const ref = { id: row.id, tenantId: row.tenantId }
+    await Promise.all(
+      Array.from({ length: APPEND_SEQ_ATTEMPTS }, (_, i) =>
+        appendSessionEvents(db, ref, [
+          { type: 'step', turn: 0, data: { key: `k${i}`, label: `Step ${i}`, status: 'running' } },
+        ])
+      )
+    )
+    const events = await listSessionEvents(db, row.tenantId, row.id)
+    expect(events.map(e => e.seq).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5])
+    expect(new Set(events.map(e => (e.data as { key: string }).key)).size).toBe(5)
   })
 })

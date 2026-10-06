@@ -56,7 +56,9 @@ narrows access has no honest one-line equivalent in a CLI.
 Coding sessions (Launch P3): `sessions start <app> [--runtime <claude_code|codex>]` (slug → `GET
 /api/apps/:slug` → `POST /api/apps/:id/sessions`; an unknown runtime is refused before any request,
 §18.22), `say <id> <msg> [--follow]`, `ship <id> [--no-wait]`, `end`, `ls <app>
-[--all]`, `preview-url <id> [--open]`. Following POLLS the durable rows (`GET /events?afterSeq=`)
+[--all]`, `show <id>` (issue #8: the session and each `boot.timing` row's phases, with the first
+turn's `firstTokenMs` after it; `--json` → `{ session, boots }`), `preview-url <id> [--open]`.
+Following POLLS the durable rows (`GET /events?afterSeq=`)
 rather than reading SSE — `api.ts` stays the one JSON fetch site; `sleep`/`pollMs` are injectable.
 `ship` WAITS by default (issue #5): one line per stage row — the gate, `ship.pr`, `ship.ci` (a red
 check with its URL and the last 20 lines of its redacted log), `ship.review`, `ship.merged`,

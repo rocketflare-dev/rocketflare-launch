@@ -30,7 +30,8 @@
  * An attached run gets the whole `timeoutMs` again from the moment it is attached to: when it
  * started is not recorded, and the step's own timeout bounds the total anyway.
  *
- * Every `pollMs` it reads the exit file and the log; `onProgress` gets `progressOf(log)` (default:
+ * Every `pollMs` (every {@link BACKGROUND_FAST_POLL_MS} for the run's first
+ * {@link BACKGROUND_FAST_WINDOW_MS}, when that is shorter) it reads the exit file and the log; `onProgress` gets `progressOf(log)` (default:
  * the last non-empty line) only when that CHANGES. Past `timeoutMs` it kills the process group and
  * throws {@link BackgroundCommandTimeoutError} with the log; an aborted `signal` does the same at
  * the next poll and throws {@link BackgroundCommandAbortedError}. A run whose files vanish (the container
@@ -46,6 +47,13 @@ import { type SandboxExecOptions, SandboxInterruptedError, type SandboxPort } fr
 
 /** How often a running command's files are read. */
 export const BACKGROUND_POLL_MS = 2_500
+/**
+ * Issue #15: for its first {@link BACKGROUND_FAST_WINDOW_MS} a run is read every
+ * {@link BACKGROUND_FAST_POLL_MS} instead — a short command (a no-op install, a kit bootstrap with
+ * nothing to do) is then noticed within half a second of its end rather than up to 2.5 s after.
+ */
+export const BACKGROUND_FAST_POLL_MS = 500
+export const BACKGROUND_FAST_WINDOW_MS = 10_000
 /** Every Nth poll also asks whether the process is still alive (a runner that died writes no exit). */
 export const LIVENESS_EVERY_POLLS = 8
 /** Consecutive failed polls before the run is given up on. */
@@ -270,7 +278,8 @@ export async function runInBackground(
   }
 
   // ---- poll ----
-  const deadline = Date.now() + opts.timeoutMs
+  const polledFrom = Date.now()
+  const deadline = polledFrom + opts.timeoutMs
   let lastProgress: string | null = null
   let lastLog = ''
   let seenFiles = false
@@ -343,7 +352,11 @@ export async function runInBackground(
       if (left > 0) throw new BackgroundCommandAbortedError(opts.name, log)
       throw new BackgroundCommandTimeoutError(opts.name, opts.timeoutMs, log)
     }
-    await abortableSleep(sleep, Math.min(pollMs, left), opts.signal)
+    const interval =
+      Date.now() - polledFrom < BACKGROUND_FAST_WINDOW_MS
+        ? Math.min(pollMs, BACKGROUND_FAST_POLL_MS)
+        : pollMs
+    await abortableSleep(sleep, Math.min(interval, left), opts.signal)
   }
 }
 

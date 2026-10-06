@@ -9,8 +9,12 @@
  *
  *   claim → salvage (a live session whose instance was lost: stop the orphaned turn, checkpoint,
  *            keep the container for a warm resume or destroy it — `salvageStep`)
- *   boot:    db → sandbox.start → repo → [prepare → branch]* → bootstrap → dev (`preview.ready`)
- *            (* only when this session prepares the app's `dev`; a `prepare` run stops after it)
+ *   boot:    (db ‖ sandbox.start → repo) → [prepare → branch]* → bootstrap → dev (`preview.ready`)
+ *            (‖: side by side, both settled before what follows — issue #15; * only when this
+ *            session prepares the app's `dev`; a `prepare` run stops after it).
+ *            Each boot step's result carries its clock (`timing`); the boot's last step — `dev`,
+ *            or `transcript#K` on a cold resume — writes them as ONE `boot.timing` event and a
+ *            `session.boot` trace (issue #8, `services/sessions/boot-timing.ts`)
  *   loop N:  inspect#N (given the loop's `DirtyState`) → one of
  *              wait#N (`waitForEvent(SESSION_WAKE_EVENT)`, the idle / warm / expiry timeout, or
  *                the checkpoint DEBOUNCE's when the workspace holds unsaved changes) →
@@ -94,6 +98,7 @@ import {
 import { loadConfig } from '../../config'
 import type { Database } from '../../db/client'
 import { createStepRealtime } from '../services/agents/runtime'
+import type { BootStepTiming } from '../services/sessions/boot-timing'
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '../services/sessions/deadline'
 import { safeErrorMessage } from '../services/sessions/events'
 import type { ShipGateCommand } from '../services/sessions/gate'
@@ -294,38 +299,56 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       let bootId: string | undefined
       if (claim.start === 'salvage') await run('salvage', salvageStep, SALVAGE_STEP)
       if (claim.start === 'boot') {
-        const db = await run('db', withProgress('db', dbStep), BOOT_STEP)
-        const started = await run(
-          'sandbox.start',
-          withProgress('sandbox', startSandboxStep),
-          BOOT_STEP
-        )
+        // Issue #15: the database (Neon) runs ALONGSIDE the container's start and the clone —
+        // neither needs the other; `bootstrap` (or `prepare`) waits for both. Settled, not raced:
+        // a failure on one side still lets the other's step finish before `fail` and `cleanup`
+        // run, so nothing is left running under them, and the first side's error fails the boot.
+        const [dbSide, sandboxSide] = await Promise.allSettled([
+          run('db', withProgress('db', dbStep), BOOT_STEP),
+          (async () => {
+            const started = await run(
+              'sandbox.start',
+              withProgress('sandbox', startSandboxStep),
+              BOOT_STEP
+            )
+            const repo = await run(
+              'repo',
+              withProgress('repo', s => repoStep(s, started.bootId)),
+              BOOT_STEP
+            )
+            return { started, repo }
+          })(),
+        ])
+        if (dbSide.status === 'rejected') throw dbSide.reason
+        if (sandboxSide.status === 'rejected') throw sandboxSide.reason
+        const db = dbSide.value
+        const { started, repo } = sandboxSide.value
         const booted = started.bootId
         bootId = booted
-        await run(
-          'repo',
-          withProgress('repo', s => repoStep(s, booted)),
-          BOOT_STEP
-        )
+        // Issue #8: each boot step's clock, from its result; `dev` writes them as `boot.timing`.
+        const timings: (BootStepTiming | undefined)[] = [db.timing, started.timing, repo.timing]
         if (db.prepare) {
-          await run(
+          const prepared = await run(
             'prepare',
             withProgress('prepare', s => prepareStep(s, booted)),
             BOOT_STEP
           )
+          timings.push(prepared.timing)
           if (claim.kind === 'prepare') {
             return await this.finish(run, params.sessionId)
           }
-          await run('branch', withProgress('branch', branchStep), BOOT_STEP)
+          const branched = await run('branch', withProgress('branch', branchStep), BOOT_STEP)
+          timings.push(branched.timing)
         }
-        await run(
+        const bootstrapped = await run(
           'bootstrap',
           withProgress('bootstrap', s => bootstrapStep(s, booted)),
           BOOT_STEP
         )
+        timings.push(bootstrapped.timing)
         await run(
           'dev',
-          withProgress('dev', s => devStep(s, booted)),
+          withProgress('dev', s => devStep(s, booted), { kind: 'boot', before: timings }),
           BOOT_STEP
         )
       }
@@ -489,13 +512,18 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
             withProgress('sandbox', startSandboxStep),
             BOOT_STEP
           )
+          // Issue #8: the resume's step clocks; its last step writes them as `boot.timing`.
+          const timings: (BootStepTiming | undefined)[] = [started.timing]
           const booted = started.bootId
           bootId = booted
           if (started.warm) {
             // The kept container: workspace, dependencies, database and transcript are all there.
             await run(
               `dev#${k}`,
-              withProgress('dev', s => devStep(s, booted, { warm: true })),
+              withProgress('dev', s => devStep(s, booted, { warm: true }), {
+                kind: 'warm',
+                before: timings,
+              }),
               BOOT_STEP
             )
             break
@@ -505,32 +533,40 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
           const { usable } = await run(`restore.check#${k}`, restoreCheckStep)
           let restored = false
           if (usable) {
-            ;({ restored } = await run(
+            const restore = await run(
               `restore#${k}`,
               withProgress('restore', s => restoreStep(s, booted)),
               BOOT_STEP
-            ))
+            )
+            restored = restore.restored
+            timings.push(restore.timing)
           }
           if (!restored) {
-            await run(
+            const repo = await run(
               `repo#${k}`,
               withProgress('repo', s => repoStep(s, booted)),
               BOOT_STEP
             )
+            timings.push(repo.timing)
           }
-          await run(
+          const bootstrapped = await run(
             `bootstrap#${k}`,
             withProgress('bootstrap', s => bootstrapStep(s, booted, { restored })),
             BOOT_STEP
           )
-          await run(
+          timings.push(bootstrapped.timing)
+          const dev = await run(
             `dev#${k}`,
             withProgress('dev', s => devStep(s, booted)),
             BOOT_STEP
           )
+          timings.push(dev.timing)
           await run(
             `transcript#${k}`,
-            withProgress('transcript', s => restoreTranscriptStep(s, booted)),
+            withProgress('transcript', s => restoreTranscriptStep(s, booted), {
+              kind: 'cold',
+              before: timings,
+            }),
             BOOT_STEP
           )
           break

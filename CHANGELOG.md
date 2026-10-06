@@ -23,6 +23,22 @@
   session's page — and, while the socket is open, the ship card, the PR panel, the releases card,
   the pipeline strip and an approval's apply poll only as a fallback: 15–30 s instead of 3–15 s.
   With the socket down they poll as before, and a reconnect re-reads them once. No migration.
+- **A session boots faster (issue #15).** The database step runs alongside the container's start
+  and the clone instead of before them, and the bootstrap waits for both; a failure on either
+  side still fails the boot cleanly once the other has finished. A session on a prepared `dev`
+  that this Launch has already checked skips `ensureDev` (no owner password reset, no role or
+  extension SQL) and only branches: `apps.session_db` now records `roleVersion` and `appRole`
+  (jsonb, no migration; the first session after the deploy checks `dev` once and records them).
+  Background commands (install, bootstrap, gate) are polled every 0.5 s for their first 10 s,
+  then every 2.5 s as before. Compare the boot's `boot.timing` before and after.
+- **A session's boot is measured, phase by phase (issue #8).** When a boot is done (a first
+  boot, a warm resume or a cold one) the session writes ONE `boot.timing` event: what `db`,
+  `sandbox.start`, `repo`, `restore`, `install`, `bootstrap`, `dev` and the other phases it ran each
+  took, by the clock of the step that ran them, with the boot's total. The same phases are a
+  `session.boot` trace in `ai_spans`, so `launch traces show` draws a boot. Every `turn.end` now
+  carries `firstTokenMs` (how long the agent took to answer). The session page shows the boot as
+  one line and the first turn after it with "first reply after Ns"; the new `launch sessions show
+  <id> [--json]` lists every boot with its phases. No migration.
 - **Tests an agent runs by hand in a session no longer time out on the container's slow CPU.**
   Every turn (Claude Code and Codex) and every dev step gets `TEST_LATENCY_FACTOR=4`, which the
   kit (rocketflare-dev/rocketflare#62) uses to raise its vitest limits — 20 s per test instead of

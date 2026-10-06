@@ -509,7 +509,7 @@ a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config l
 `~/.launch/config.json` (0600); `LAUNCH_API_KEY`/`LAUNCH_URL` override it for CI.
 `--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
 `feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
-case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|preview-url`
+case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|show|preview-url`
 drives Launch P3 coding sessions (§18.14; `start --runtime` picks the coding agent, §18.22) — `ship` follows the ship to live on staging by default,
 printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
 (`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
@@ -1509,9 +1509,19 @@ reload) is restarted as `<id>-rN` from the row.
   `db-roles` may `ALTER ROLE` it; made in SQL by `neondb_owner` when missing, and when staging's
   copy (made by `migrator` in a deploy) is not yet held, granted by `neondb_owner` borrowing
   `migrator`'s ADMIN for one statement — it created `migrator` — and revoking the borrow at once;
-  re-checked at EVERY session's start, so a `dev` an older Launch prepared is repaired without a
-  reset; the first session PREPARES it — migrate + seed — then branches) →
-  `sandbox.start` → `repo` (clone, `session/<short>`,
+  re-checked at a session's start — unless `dev` is `ready` and `apps.session_db` records that
+  this Launch's checks already passed on it (`roleVersion` = `SESSION_DEV_ROLE_VERSION`, `appRole`
+  = the app's role name, `devSource` set: `devIsCurrent`, issue #15), when the step branches at
+  once with no `neondb_owner` password reset and no role or extension SQL; a branch that then
+  fails drops `roleVersion` so the retry checks in full; bump the constant whenever `ensureDev`'s
+  checks change — so a `dev` an older Launch prepared is repaired without a reset; the first
+  session PREPARES it — migrate + seed — then branches) ALONGSIDE
+  `sandbox.start` → `repo` (issue #15: `Promise.allSettled` of the two sides, so a failure on
+  one still lets the other's step finish before `fail` and `cleanup`; the first side's error fails
+  the boot; `prepare`/`bootstrap` wait for both. The container may start before the branch exists
+  — its allow-list gains the database host at `bootstrap`, which sets it from the URI. The two
+  sides' `step` rows are appended concurrently: `appendSessionEvents` renumbers on a `seq`
+  conflict) (clone, `session/<short>`,
   `.claude/settings.local.json`; `GIT_TERMINAL_PROMPT=0`, the whole checkout under a `flock` on
   `/workspace/.launch/repo.lock` so overlapping attempts queue, and a failure reports git's last
   15 stderr lines) → `bootstrap` (the kit's bootstrap on the session's own database)
@@ -1530,6 +1540,20 @@ reload) is restarted as `<id>-rN` from the row.
   a later one of those hung. A prepare opens two (migrate, seed); a session on a `ready` `dev`
   none, or one when its migrations are newer; a session branched while `dev` is being prepared
   elsewhere two (it seeds its own branch).
+- **Boot timing (issue #8, `boot-timing.ts`).** `withProgress` times each boot step by its own
+  clock and returns it on the step's result (`timing`: start, duration, and the bootstrap's
+  `installMs`); the Workflow collects those from step RESULTS and hands them to the boot's LAST
+  step — `dev` on a first boot and a warm resume, `transcript#K` on a cold one — which writes ONE
+  `boot.timing` event: `kind` (`boot` | `warm` | `cold`), `totalMs` (first start → last end, so
+  phases that overlap count once) and `phases[]` (`db`, `prepare`, `branch`, `sandbox.start`,
+  `restore`, `repo`, `install`, `bootstrap`, `dev`, `transcript` — the ones that ran, each with
+  `startMs` from the boot's start and `ms`). The same phases go to `ai_spans` as a `session.boot
+  <kind>` trace (one `boot.<phase>` child each; its id is on the event), so `launch traces show`
+  draws a boot. Every `turn.end` carries `firstTokenMs` (from the turn's start to the agent's first
+  text or tool call — an upper bound on the first token, as the agent streams whole messages); the
+  page shows the boot as one quiet line and the first turn after it with "first reply after Ns",
+  and `launch sessions show <id> [--json]` lists every boot with its phases and that first reply.
+  A failure to record the timing is logged, never a failed boot; a boot that fails writes none.
 - **A session never changes a tracked file for its dev setup** (`rocketflare-dev.ts`). The kit's
   `bootstrap --offline` (a sandbox has no Cloudflare login, so `[ai]` must be off) comments the
   `[ai]` block out of BOTH wrangler tomls in place, and the checkpoint commits the whole tree — so
@@ -1909,7 +1933,8 @@ within 2 min"); and over the sandbox host's remote binding a blocking exec RPC w
 BACKGROUND process runs every call answers at once. So the command starts with `startProcess`
 (a runner script: `setsid -w` gives it its own process group, whose leader writes
 `<name>.pid` = `<pid> <runId>`; output in `<name>.log`; `<runId> <code>` in `<name>.exit`, via tmp +
-`mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s) with short
+`mv`) under the bootstrap `flock`, and is polled every `commandPollMs` (2.5 s; every 0.5 s for
+a run's first 10 s, issue #15, so a short command is noticed at once) with short
 `readFile`s — every 8th poll also `kill -0`s the pid, so a runner that died without an exit code
 is noticed; three failed polls in a row give up. A step RETRY attaches to a live run of the same
 name instead of starting another; a finished one is never reused (the same name runs again for
@@ -1931,9 +1956,9 @@ another role owns refuses (the session start then fails; Launch's apps keep thei
 The cut-from-staging path is proven against the FakeCloud's Neon, not yet against real Neon. The
 Neon wait's speed-up (only `create_branch`, 200 ms backoff) is proven with
 fakes, not yet timed against real Neon; the session branch still waits for its password reset's
-operations, which Neon may hold until the compute has started; and the branch step still runs
-before the sandbox starts rather than alongside it (`docs/plans/sandbox-session-issues.md`,
-"Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
+operations, which Neon may hold until the compute has started (now behind the container's start
+and the clone, issue #15 — its saving is not yet measured on real containers;
+`docs/plans/sandbox-session-issues.md`, "Slow, not broken"). The kit's bootstrap refuses root, so the session works around it
 (`NOT_ROOT_PRELOAD`; `docs/plans/upstream-kit-issues.md` 10). The dev setup's untracked config
 leans on two things the kit and wrangler do not promise: the kit's bootstrap toggling `[ai]`
 through `writeFileSync` (the preload's hook — a kit that writes another way would toggle the tomls
@@ -2597,7 +2622,8 @@ whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume th
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
 "Coding sessions" card on the app page, Admin → Sessions. **CLI**: `launch sessions start
-[--runtime]|say [--follow]|ship [--no-wait]|end|ls|preview-url` (§11). §18.22 adds the session card's
+[--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|preview-url` (§11; `show` prints each
+boot's `boot.timing`, §18.9). §18.22 adds the session card's
 agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the

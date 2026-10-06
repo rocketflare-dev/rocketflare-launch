@@ -39,7 +39,8 @@ types `SCAFFOLD_FINISHED_EVENT` / `DEPLOY_FINISHED_EVENT`, golden-tested against
 Launch (P3): `launch-sessions.ts` (coding sessions — `SESSION_KINDS`, `SESSION_STATUSES` with
 `ACTIVE_SESSION_STATUSES` (the concurrency index's predicate is rendered from it) and
 `TERMINAL_SESSION_STATUSES`, `SESSION_ACTIONS`, `SESSION_EVENT_TYPES` + `SESSION_EVENT_DATA` (the
-agent-run payloads reused for `text`/`tool.*`/`step`/`status`/`error`), `sessionPolicySchema` +
+agent-run payloads reused for `text`/`tool.*`/`step`/`status`/`error`; issue #8's
+`sessionBootTimingDataSchema` over `BOOT_TIMING_PHASES`), `sessionPolicySchema` +
 `DEFAULT_SESSION_POLICY` + `resolveSessionPolicy`, microcents helpers, the jsonb shapes
 (`sessionDbSchema`, `appSessionDbSchema`, `prChecksSchema`), the request/response bodies of
 `/api/sessions`, `/api/apps/:id/sessions` and `/api/admin/sessions` (`sessionSchema` carries no

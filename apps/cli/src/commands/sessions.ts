@@ -1,6 +1,6 @@
 /**
- * `launch sessions start|say|ship|end|ls|preview-url` — coding sessions (Launch P3, spec/07) from a
- * terminal: start one on an app, talk to it, ship it, end it. The same routes and the same
+ * `launch sessions start|say|ship|end|ls|show|preview-url` — coding sessions (Launch P3, spec/07)
+ * from a terminal: start one on an app, talk to it, ship it, end it. The same routes and the same
  * `@launch/shared/launch-sessions` schemas as the web page.
  *
  * - `start <app> [--runtime <claude_code|codex>]` resolves the app by slug (`GET /api/apps/:slug`),
@@ -19,6 +19,9 @@
  *   `--wait` is still accepted and changes nothing.
  * - `end <id>`, `ls <app> [--all]`, `preview-url <id> [--open]` (a 60-second grant URL — it is a
  *   credential for that preview, so it is printed only when asked for and never logged).
+ * - `show <id>` (issue #8): the session and every boot it has had — each `boot.timing` row's
+ *   phases, and how long the first turn after it took to answer (`turn.end` `firstTokenMs`). With
+ *   `--json`: `{ session, boots }`.
  *
  * Polling, not SSE: the rows are the contract, `api.ts` is the one `fetch` site and speaks JSON,
  * and a CLI tailing a turn every second is cheap. `sleep` and `pollMs` are injectable so the tests
@@ -34,10 +37,12 @@ import {
   isActiveSessionStatus,
   previewGrantResponseSchema,
   type Session,
+  type SessionBootTimingData,
   type SessionEvent,
   type SessionShipReopenedData,
   type SessionStatus,
   SHIP_GATE_STEP_LABELS,
+  sessionBootTimingDataSchema,
   sessionDetailResponseSchema,
   sessionEventsResponseSchema,
   sessionListResponseSchema,
@@ -77,6 +82,9 @@ const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(res
 const sessionPath = (id: string) => `/api/sessions/${encodeURIComponent(id)}`
 
 const usd = (microcents: number) => `$${(microcents / 100_000_000).toFixed(2)}`
+
+/** `0.4s`, `12.3s` — a boot phase's duration. Pure. */
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
 
 /** `v1.4.2`. Pure. */
 const versionLabel = (version: string) => (version.startsWith('v') ? version : `v${version}`)
@@ -193,6 +201,69 @@ export async function runSessionsPreviewUrl(
   )
 }
 
+// ---- show: the session and its boots (issue #8) -------------------------------------------
+
+/** One boot as `sessions show` reports it. */
+export interface SessionBootReport extends SessionBootTimingData {
+  seq: number
+  at: Date
+  /** How long the first turn after this boot took to answer, when one has ended since. */
+  firstTokenMs?: number
+}
+
+/** Every `boot.timing` row, oldest first, each with the first turn that ended after it. Pure. */
+export function sessionBoots(events: readonly SessionEvent[]): SessionBootReport[] {
+  const boots: SessionBootReport[] = []
+  let open: SessionBootReport | null = null
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (event.type === 'boot.timing') {
+      const parsed = sessionBootTimingDataSchema.safeParse(event.data)
+      if (!parsed.success) continue
+      open = { ...parsed.data, seq: event.seq, at: event.at }
+      boots.push(open)
+    } else if (event.type === 'turn.end' && open) {
+      const ms = sessionTurnEndDataSchema.safeParse(event.data).data?.firstTokenMs
+      if (ms !== undefined) open.firstTokenMs = ms
+      open = null
+    }
+  }
+  return boots
+}
+
+const BOOT_KIND_WORDS: Record<SessionBootTimingData['kind'], string> = {
+  boot: 'first boot',
+  warm: 'warm resume',
+  cold: 'cold resume',
+}
+
+export async function runSessionsShow(ctx: CommandContext, id: string): Promise<void> {
+  const client = requireClient(ctx)
+  const session = await getSession(client, id)
+  const boots = sessionBoots((await readEventsAfter(client, id, 0)).items)
+  ctx.out.data({ session, boots }, () => {
+    const lines = [
+      `${chalk.bold(session.title)} ${chalk.dim(session.id)}`,
+      `  ${session.status} · ${session.turnCount} turns · ${usd(session.costMicrocents)}`,
+    ]
+    if (boots.length === 0) lines.push(chalk.dim('  No boot timing recorded yet.'))
+    for (const boot of boots) {
+      const reply =
+        boot.firstTokenMs !== undefined ? ` · first reply after ${secs(boot.firstTokenMs)}` : ''
+      lines.push(
+        '',
+        `${BOOT_KIND_WORDS[boot.kind]} ${chalk.dim(formatDate(boot.at))} · ${secs(boot.totalMs)}${reply}`,
+        renderTable(boot.phases, [
+          { header: 'Phase', value: p => p.phase },
+          { header: 'Start', value: p => `+${secs(p.startMs)}` },
+          { header: 'Took', value: p => secs(p.ms) },
+        ])
+      )
+      if (boot.traceId) lines.push(chalk.dim(`  ${ctx.binName} traces show ${boot.traceId}`))
+    }
+    return lines.join('\n')
+  })
+}
+
 // ---- following the event log ---------------------------------------------------------------
 
 /** Every row after `afterSeq`, all pages. */
@@ -262,6 +333,12 @@ export function formatSessionEvent(event: SessionEvent): string | null {
     }
     case 'budget.reached':
       return chalk.yellow('! budget reached — extend it in the web UI to keep going')
+    case 'boot.timing': {
+      const parsed = sessionBootTimingDataSchema.safeParse(event.data)
+      if (!parsed.success) return null
+      const phases = parsed.data.phases.map(p => `${p.phase} ${secs(p.ms)}`).join(', ')
+      return chalk.dim(`  booted in ${secs(parsed.data.totalMs)}${phases ? ` (${phases})` : ''}`)
+    }
     case 'ship.gate': {
       const parsed = sessionShipGateDataSchema.safeParse(event.data)
       if (!parsed.success) return null

@@ -68,12 +68,18 @@ import {
   SESSION_BOOT_MARKER,
 } from './boot-marker'
 import {
+  type BootStepTiming,
+  type BootTimingFinish,
+  recordBootTiming,
+  stepTiming,
+} from './boot-timing'
+import {
   CORE_DUMP_EXCLUDES,
   SESSION_CHECKPOINT_DEBOUNCE_MS,
   SESSION_CHECKPOINT_MAX_DEFER_MS,
   workspaceChanged,
 } from './checkpoint'
-import { sessionDbEgressHosts } from './db/neon-session-db'
+import { devIsCurrent, sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
   SESSION_CALL_LIMITS,
@@ -838,10 +844,23 @@ export interface DbStepResult {
  * Step `db`: the app's `dev` (created if missing), then — when it is prepared, or somebody else is
  * preparing it — the session's branch. When nobody has prepared it, this session claims the job
  * and branches AFTER its `prepare` step (plan §1.7: "prepare inline if needed").
+ *
+ * Issue #15: a `ready` `dev` whose checks last passed under this Launch (`devIsCurrent`) is
+ * branched at once, without `ensureDev`. Should that branch fail (`dev` deleted under Launch, say),
+ * the record is dropped before the error goes up, so the step's retry runs `ensureDev` in full.
  */
 export async function dbStep(scope: StepScope): Promise<DbStepResult> {
   const session = await loadSession(scope)
   const app = await loadAppRef(scope, session.appId)
+  if (session.kind !== 'prepare' && devIsCurrent(app)) {
+    try {
+      await branchStep(scope)
+    } catch (err) {
+      await forgetDevCheck(scope, app.id).catch(() => {})
+      throw err
+    }
+    return { branched: true, prepare: false }
+  }
   const port = scope.ports.sessionDb(scope.db)
   const dev = await vendorCall(scope, "Neon (the app's dev branch)", () => port.ensureDev(app))
   await saveAppSessionDb(scope, app.id, dev)
@@ -854,6 +873,14 @@ export async function dbStep(scope: StepScope): Promise<DbStepResult> {
   }
   await branchStep(scope)
   return { branched: true, prepare: false }
+}
+
+/** Drop `dev`'s record of its last check (`roleVersion`): the next `db` step runs `ensureDev`. */
+async function forgetDevCheck(scope: StepScope, appId: string): Promise<void> {
+  await scope.db
+    .update(apps)
+    .set({ sessionDb: sql`${apps.sessionDb} - 'roleVersion'` })
+    .where(and(eq(apps.tenantId, scope.params.tenantId), eq(apps.id, appId)))
 }
 
 /**
@@ -1317,10 +1344,17 @@ async function watched<T>(scope: StepScope, body: Promise<T>): Promise<T> {
   }
 }
 
-export function withProgress<T>(
+/**
+ * A boot step's body, with its checklist line (above) and its clock (issue #8): the result carries
+ * `timing` — when the body started and how long it ran — for the Workflow to collect. Given
+ * `finish`, this is the boot's LAST step: once it is done it writes the boot's `boot.timing` event
+ * and spans (`boot-timing.ts`) from `finish.before` and its own timing.
+ */
+export function withProgress<T extends object>(
   phase: BootPhase,
-  body: (scope: StepScope) => Promise<T>
-): (scope: StepScope) => Promise<T> {
+  body: (scope: StepScope) => Promise<T>,
+  finish?: BootTimingFinish
+): (scope: StepScope) => Promise<T & { timing: BootStepTiming }> {
   return async outer => {
     const label = BOOT_STEP_LABELS[phase]
     const scope: StepScope = { ...outer, phase: label }
@@ -1334,7 +1368,9 @@ export function withProgress<T>(
     await heartbeat(scope)
     await emit({ type: 'step', turn: 0, data: { key: phase, label, status: 'running' } })
     try {
+      const startedAt = scope.now().getTime()
       const result = await watched(scope, body(scope))
+      const timing = stepTiming(phase, startedAt, scope.now().getTime(), result)
       // A step that finished another way than planned says how (`restore#K`: "Cloning instead").
       const detail = (result as { stepDetail?: unknown } | null)?.stepDetail
       await emit({
@@ -1347,7 +1383,12 @@ export function withProgress<T>(
           ...(typeof detail === 'string' ? { detail } : {}),
         },
       })
-      return result
+      if (finish) {
+        await recordBootTiming(scope, finish, timing, data =>
+          emit({ type: 'boot.timing', turn: 0, data })
+        ).catch(err => scope.logger.warn({ err }, 'session: could not record the boot timing'))
+      }
+      return { ...result, timing }
     } catch (err) {
       await emit({
         type: 'step',

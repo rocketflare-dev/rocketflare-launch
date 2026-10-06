@@ -126,6 +126,31 @@ export function appRlsRoleFor(slug: string): string {
 /** The only extension the kit's migrations create. */
 const SESSION_EXTENSIONS = ['vector'] as const
 
+/**
+ * Issue #15: the version of what `ensureDev` checks and repairs on `dev` — `session_owner` made in
+ * SQL, `session_app` with its extensions, the app's RLS role held WITH ADMIN. `ensureDev` records it
+ * (with the role name) on `apps.session_db`; **bump it whenever those checks change**, so every
+ * `dev` is checked again by its next session instead of being trusted.
+ */
+export const SESSION_DEV_ROLE_VERSION = 1
+
+/**
+ * Issue #15: `dev` is prepared and the running Launch's checks last passed on it, for this app's
+ * role — a session may branch from it without `ensureDev` (which resets `neondb_owner`'s
+ * password, runs the role and extension SQL and lists the branches: seconds of Neon calls). A
+ * `dev` cut from staging must also have finished its scrub (`devSource`). Pure.
+ */
+export function devIsCurrent(app: Pick<SessionAppRef, 'slug' | 'sessionDb'>): boolean {
+  const dev = app.sessionDb
+  return (
+    dev?.status === 'ready' &&
+    !!dev.devBranchId &&
+    dev.devSource !== undefined &&
+    dev.roleVersion === SESSION_DEV_ROLE_VERSION &&
+    dev.appRole === appRlsRoleFor(app.slug)
+  )
+}
+
 export const sessionBranchNameFor = (shortId: string): string => `session-${shortId}`
 
 /** A Neon compute endpoint's host: `ep-<name>-<id>[-pooler].<region…>.neon.tech`. */
@@ -270,6 +295,9 @@ export class NeonSessionDb implements SessionDbPort {
     return {
       devBranchId: dev.id,
       database: SESSION_DB_NAME,
+      // Issue #15: what just passed — a later session on a `ready` `dev` may trust it.
+      roleVersion: SESSION_DEV_ROLE_VERSION,
+      appRole: appRlsRoleFor(app.slug),
       preparedCommit: kept?.preparedCommit ?? null,
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',

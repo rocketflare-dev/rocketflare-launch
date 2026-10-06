@@ -4,7 +4,8 @@
  *
  * - **Bubbles are `components/ai/ChatBubble`** (the person's text verbatim, Claude's through
  *   `Markdown`), tool calls are `ToolBlock` one-liners between them, and each finished turn gets a
- *   quiet footnote — how long it took and what it cost.
+ *   quiet footnote — how long it took and what it cost (the first after a boot: how long the agent
+ *   took to answer). A finished boot is one quiet line of what each phase took (issue #8).
  * - **The person's message shows the moment they press Enter** — a local optimistic bubble,
  *   dropped as soon as the durable `user.message` row after it arrives (the Workflow writes that
  *   row, not the route, so it can take a beat). A refused send takes the bubble back and puts the
@@ -150,6 +151,9 @@ const TranscriptItem = memo(function TranscriptItem({
       const parts = [
         item.durationMs !== undefined ? formatDuration(item.durationMs) : null,
         item.costMicrocents !== undefined ? formatCost(item.costMicrocents) : null,
+        item.firstTokenMs !== undefined
+          ? `first reply after ${formatDuration(item.firstTokenMs)}`
+          : null,
       ].filter(Boolean)
       return (
         <p className="text-center text-xs text-muted" data-turn-end={item.turn}>

@@ -10,7 +10,11 @@
 import { describe, expect, it } from 'vitest'
 import { NeonClient } from '@/api/services/launch/neon'
 import { loadAppNeon } from '@/api/services/sessions/app-neon'
-import { appRlsRoleFor, NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import {
+  appRlsRoleFor,
+  NeonSessionDb,
+  SESSION_DEV_ROLE_VERSION,
+} from '@/api/services/sessions/db/neon-session-db'
 import { gateBranchName } from '@/api/services/sessions/gate-branch'
 import { loadConfig } from '@/config'
 import { setupTestDatabase } from '../helpers/db'
@@ -47,6 +51,9 @@ describe('NeonSessionDb', () => {
       preparedAt: null,
       status: 'none',
       devSource: 'main',
+      // Issue #15: the checks that just passed, so a later session on a ready dev may skip them.
+      roleVersion: SESSION_DEV_ROLE_VERSION,
+      appRole: appRlsRoleFor(app.slug),
     })
     // Again (a retried step), and again with the result recorded: one dev, status kept.
     const again = await port.ensureDev({ ...app, sessionDb: { ...first, status: 'ready' } })
