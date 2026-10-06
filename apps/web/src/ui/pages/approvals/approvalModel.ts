@@ -260,14 +260,68 @@ export function whyNotSentence(
   }
 }
 
-const AUTO_ROLE_LABELS: Record<AutoApproveRole, string> = {
-  member: 'any member',
-  admin: 'an admin or owner',
-  owner: 'an owner',
+/**
+ * When a request is approved at once, in words (issue #22): `member` means EVERY request — any
+ * member may ask — so it says "Always", never "When a member asks". An automatic approval is still
+ * a recorded, audited decision (`AUTO_APPROVAL_NOTE`).
+ */
+export function autoApproveLabel(role: AutoApproveRole | null): string {
+  switch (role) {
+    case 'member':
+      return 'Always (every request is approved at once)'
+    case 'admin':
+      return 'When an admin or owner asks'
+    case 'owner':
+      return 'When an owner asks'
+    case null:
+      return 'Never (a person decides)'
+  }
 }
 
-export function autoApproveLabel(role: AutoApproveRole | null): string {
-  return role ? `When ${AUTO_ROLE_LABELS[role]} asks` : 'Never'
+export const AUTO_APPROVAL_NOTE = 'An automatic approval is still recorded and audited.'
+
+/**
+ * Where Settings → Approvals lives — the one spelling a link to it uses (the app's Ship settings
+ * card points here when an organisation policy forces review).
+ */
+export const APPROVAL_POLICIES_PATH = '/settings?tab=approvals'
+
+export type ApprovalRequirement = 'required' | 'not_required' | 'always'
+
+/**
+ * Whether a kind needs a person, at organisation scope (issue #22). `session.merge` is the one
+ * kind that opens no request at all without a policy row: no row is `not_required` (each app's
+ * Ship settings decide, default no review), any row makes review mandatory — `always` when that
+ * row approves every request at once. Every other kind always opens a request, so `not_required`
+ * IS auto-approval for everyone (`autoApproveRole: 'member'`). Pure.
+ */
+export function approvalRequirement(
+  kind: ApprovalKind,
+  tenantRow: Pick<ApprovalPolicy, 'autoApproveRole'> | null,
+  fallback: Pick<ApprovalPolicy, 'autoApproveRole'>
+): ApprovalRequirement {
+  if (kind === 'session.merge') {
+    if (!tenantRow) return 'not_required'
+    return tenantRow.autoApproveRole === 'member' ? 'always' : 'required'
+  }
+  return (tenantRow ?? fallback).autoApproveRole === 'member' ? 'not_required' : 'required'
+}
+
+/** The organisation row's sentence for a requirement. Pure. */
+export function requirementSentence(kind: ApprovalKind, requirement: ApprovalRequirement): string {
+  if (kind === 'session.merge') {
+    switch (requirement) {
+      case 'not_required':
+        return 'Not required. Each app decides in its Ship settings (default: no review).'
+      case 'always':
+        return `Required for every app, and approved automatically: every merge is approved at once. ${AUTO_APPROVAL_NOTE}`
+      case 'required':
+        return 'Required for every app: a person approves each change before it merges. Apps can’t turn it off in their Ship settings.'
+    }
+  }
+  return requirement === 'required'
+    ? 'Required: a person approves each request, unless it is approved automatically below.'
+    : `Not required: every request is approved at once. ${AUTO_APPROVAL_NOTE}`
 }
 
 const MINUTES_PER_HOUR = 60

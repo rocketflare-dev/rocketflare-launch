@@ -347,6 +347,18 @@ describe('App page', () => {
         [PROTECTION]: protection('ok'),
       })
       const section = await card()
+      // Issue #22: the summary says so, and links to the policy, before anything is opened.
+      expect(within(section).getByTestId('ship-settings-summary')).toHaveTextContent(
+        'Review is required by your organisation’s approval policy'
+      )
+      const notice = within(section).getByTestId('review-policy-notice')
+      expect(notice).toHaveTextContent(
+        'The app’s own review setting doesn’t apply while that policy exists.'
+      )
+      expect(within(notice).getByRole('link', { name: 'See the approval policy' })).toHaveAttribute(
+        'href',
+        '/settings?tab=approvals'
+      )
       const form = await openSettings(section)
       expect(within(form).getByTestId('review-policy')).toHaveTextContent(
         /that policy decides who approves/
@@ -354,6 +366,16 @@ describe('App page', () => {
       expect(within(form).queryByRole('radio', { name: /Nobody/ })).not.toBeInTheDocument()
       // Where Ship ends is still the app's to choose.
       expect(within(form).getByRole('radio', { name: /Open a pull request/ })).toBeEnabled()
+    })
+
+    it('a member reads that the organisation’s policy requires review, without a link they can’t open', async () => {
+      renderShipping(member(), {
+        '/api/apps/expenses': { ...detail(), viewerCanDeploy: false, shipReviewSetBy: 'policy' },
+      })
+      const section = await card()
+      const notice = within(section).getByTestId('review-policy-notice')
+      expect(notice).toHaveTextContent('An administrator can change it in Settings → Approvals.')
+      expect(within(notice).queryByRole('link')).toBeNull()
     })
 
     it('reads as sentences for somebody who may not change it, and asks GitHub nothing', async () => {

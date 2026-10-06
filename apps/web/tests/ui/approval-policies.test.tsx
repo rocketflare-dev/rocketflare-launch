@@ -101,7 +101,8 @@ describe('ApprovalPoliciesSettings', () => {
     expect(screen.getByRole('heading', { name: 'Secret access' })).toBeInTheDocument()
     // Issue #5: `session.merge` is the sixth built kind.
     expect(screen.getByRole('heading', { name: 'Session merge' })).toBeInTheDocument()
-    expect(screen.getAllByText('default')).toHaveLength(6)
+    // Five kinds show Launch's default; `session.merge` with no row is "Not required" instead.
+    expect(screen.getAllByText('default')).toHaveLength(5)
     expect(screen.getByText(/App: Expenses/)).toBeInTheDocument()
     expect(
       screen.getByText('2 approvals from the app’s owners or the organisation’s admins')
@@ -208,6 +209,174 @@ describe('ApprovalPoliciesSettings', () => {
       })
     )
     expect(within(dialog).queryByText(/Name at least one approver/)).toBeNull()
+  })
+
+  describe('Required / Not required, in plain words (issue #22)', () => {
+    const panelOf = async (name: string) =>
+      (await screen.findByRole('heading', { name })).closest('section') as HTMLElement
+    const tenantRow = (kind: string, overrides: Record<string, unknown> = {}) =>
+      policyRow({
+        ...DEFAULT_APPROVAL_POLICIES[kind as ApprovalKind],
+        kind,
+        scopeType: 'tenant',
+        scopeId: null,
+        minApprovals: 1,
+        ...overrides,
+      })
+    const echo = (init: RequestInit | undefined) => ({
+      ...policyRow({ scopeType: 'tenant', scopeId: null }),
+      ...JSON.parse(String(init?.body)),
+      id: ROW_ID,
+    })
+
+    it('session.merge with no organisation row is Not required: each app decides', async () => {
+      renderPolicies({ '/api/approval-policies': { items: [], defaults } })
+      const panel = await panelOf('Session merge')
+      expect(within(panel).getByRole('radio', { name: 'Not required' })).toBeChecked()
+      expect(within(panel).getByTestId('requirement-session.merge')).toHaveTextContent(
+        'Not required. Each app decides in its Ship settings (default: no review).'
+      )
+      // Not the code default's "app owners, 1 approval", which read as if review were on.
+      expect(within(panel).queryByText(/approval from the app’s owners/)).toBeNull()
+      expect(within(panel).queryByRole('button', { name: 'Use default' })).toBeNull()
+    })
+
+    it('session.merge with a row is Required for every app; approving every request at once is Always', async () => {
+      renderPolicies({
+        '/api/approval-policies': {
+          items: [tenantRow('session.merge', { id: ROW_ID })],
+          defaults,
+        },
+      })
+      const panel = await panelOf('Session merge')
+      expect(within(panel).getByRole('radio', { name: 'Required' })).toBeChecked()
+      expect(within(panel).getByTestId('requirement-session.merge')).toHaveTextContent(
+        'Required for every app: a person approves each change before it merges.'
+      )
+      cleanup()
+      renderPolicies({
+        '/api/approval-policies': {
+          items: [tenantRow('session.merge', { autoApproveRole: 'member' })],
+          defaults,
+        },
+      })
+      const always = await panelOf('Session merge')
+      expect(within(always).getByTestId('requirement-session.merge')).toHaveTextContent(
+        'Required for every app, and approved automatically: every merge is approved at once. An automatic approval is still recorded and audited.'
+      )
+      expect(always).toHaveTextContent(
+        'approved automatically: always (every request is approved at once)'
+      )
+    })
+
+    it('turning session.merge review off deletes the organisation row, after saying what follows', async () => {
+      const fetchMock = renderPolicies({
+        '/api/approval-policies': { items: [tenantRow('session.merge')], defaults },
+        [`DELETE /api/approval-policies/${ROW_ID}`]: undefined,
+      })
+      const panel = await panelOf('Session merge')
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Not required' }))
+      const dialog = screen.getByRole('dialog')
+      expect(
+        within(dialog).getByText(/Each app decides in its own Ship settings/)
+      ).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Make it not required' }))
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([input, init]) =>
+              init?.method === 'DELETE' && String(input).endsWith(`/approval-policies/${ROW_ID}`)
+          )
+        ).toBe(true)
+      )
+    })
+
+    it('requiring session.merge review opens the editor on the default, and saves an organisation row', async () => {
+      const fetchMock = renderPolicies({
+        '/api/approval-policies': { items: [], defaults },
+        'PUT /api/approval-policies': echo,
+      })
+      const panel = await panelOf('Session merge')
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Required' }))
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() =>
+        expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toMatchObject({
+          kind: 'session.merge',
+          scopeType: 'tenant',
+          scopeId: null,
+          approvers: { appOwners: true },
+          autoApproveRole: null,
+        })
+      )
+    })
+
+    it('any other kind: Not required approves every request at once, and the row says so', async () => {
+      const fetchMock = renderPolicies({
+        '/api/approval-policies': { items: [], defaults },
+        'PUT /api/approval-policies': echo,
+      })
+      const panel = await panelOf('Production deploy')
+      expect(within(panel).getByRole('radio', { name: 'Required' })).toBeChecked()
+      expect(within(panel).getByTestId('requirement-deploy.production')).toHaveTextContent(
+        'Required: a person approves each request'
+      )
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Not required' }))
+      const dialog = screen.getByRole('dialog')
+      expect(within(dialog).getByText(/still recorded and audited/)).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Approve automatically' }))
+      await waitFor(() =>
+        expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toMatchObject({
+          kind: 'deploy.production',
+          scopeType: 'tenant',
+          scopeId: null,
+          autoApproveRole: 'member',
+        })
+      )
+    })
+
+    it('a kind set to approve everyone reads Not required; Required takes it back', async () => {
+      const fetchMock = renderPolicies({
+        '/api/approval-policies': {
+          items: [tenantRow('deploy.production', { autoApproveRole: 'member' })],
+          defaults,
+        },
+        'PUT /api/approval-policies': echo,
+      })
+      const panel = await panelOf('Production deploy')
+      expect(within(panel).getByRole('radio', { name: 'Not required' })).toBeChecked()
+      expect(within(panel).getByTestId('requirement-deploy.production')).toHaveTextContent(
+        'Not required: every request is approved at once. An automatic approval is still recorded and audited.'
+      )
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Required' }))
+      await waitFor(() =>
+        expect(requestBody(fetchMock, 'PUT /api/approval-policies')).toMatchObject({
+          kind: 'deploy.production',
+          autoApproveRole: null,
+        })
+      )
+    })
+
+    it('words auto-approval plainly: Always, by role, or Never — in the list and the editor', async () => {
+      renderPolicies({ '/api/approval-policies': { items: [], defaults } })
+      // `app.create` approves an admin's own request at once by default.
+      const newApp = await panelOf('New app')
+      expect(newApp).toHaveTextContent('approved automatically: when an admin or owner asks')
+      expect(newApp).toHaveTextContent('An automatic approval is still recorded and audited.')
+      const access = await panelOf('App access')
+      expect(access).toHaveTextContent('approved automatically: never (a person decides)')
+      fireEvent.click(within(access).getByRole('button', { name: /Edit/ }))
+      const dialog = screen.getByRole('dialog')
+      const options = within(within(dialog).getByLabelText('Approve automatically'))
+        .getAllByRole('option')
+        .map(o => o.textContent)
+      expect(options).toEqual([
+        'Never (a person decides)',
+        'Always (every request is approved at once)',
+        'When an admin or owner asks',
+        'When an owner asks',
+      ])
+    })
   })
 
   it('removes an override after a confirmation', async () => {

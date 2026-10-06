@@ -8,7 +8,9 @@
  * - **Review before merging**: nobody, the app's owners, or named teams (the existing groups hooks:
  *   every group for `manage Group`, the reader's own otherwise — what they can name). When an
  *   administrator's approval policy for `session.merge` exists (`shipReviewSetBy === 'policy'`) it
- *   wins, and this half is read-only with that explanation.
+ *   wins, and this half is read-only with that explanation. Issue #22: the card's summary says so
+ *   too — "Review is required by your organisation’s approval policy" — with a link to the policy
+ *   for whoever may change it, so the app's own setting never silently stops mattering.
  * - The card is a summary — the settings as sentences plus one line about the main branch — and
  *   for the app's owners and admins (`viewerCanDeploy`, the route's rule) a Change button opening
  *   the form in a modal; everyone else reads the same sentences. The form validates with the server's
@@ -31,6 +33,7 @@ import {
   type ShipReviewMode,
 } from '@launch/shared/launch-apps'
 import { type ReactNode, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { FieldError, Modal, SectionPanel } from '@/ui/components/shared'
 import {
   useApplyBranchProtection,
@@ -39,6 +42,7 @@ import {
 } from '@/ui/hooks/useApps'
 import { useGroups, useMyGroups } from '@/ui/hooks/useGroups'
 import { usePermissions } from '@/ui/hooks/usePermissions'
+import { APPROVAL_POLICIES_PATH } from '@/ui/pages/approvals/approvalModel'
 
 const SHIP_MODE_TEXT: Record<SessionShipMode, { label: string; help: string }> = {
   staging: {
@@ -70,7 +74,8 @@ export function shipSettingsSentences(
   if (setBy === 'policy') {
     return {
       ship,
-      review: 'An administrator’s approval policy decides who reviews a change before it merges.',
+      review:
+        'Review is required by your organisation’s approval policy, which decides who approves each change before it merges.',
     }
   }
   if (settings.sessionShip === 'pr') return { ship, review: 'Reviews happen on GitHub.' }
@@ -268,6 +273,8 @@ export function ShipSettingsCard({
 }) {
   const canEdit = app.viewerCanDeploy
   const policy = app.shipReviewSetBy === 'policy'
+  const { can } = usePermissions()
+  const canSeePolicy = can('manage', 'ApprovalPolicy')
   const [draft, setDraft] = useState<AppShipSettings | null>(null)
   const [editing, setEditing] = useState(false)
   const current = draft ?? app.shipSettings
@@ -326,6 +333,18 @@ export function ShipSettingsCard({
         <p>
           {sentences.ship} <span className="text-secondary">{sentences.review}</span>
         </p>
+        {policy && (
+          <p className="text-xs text-muted" data-testid="review-policy-notice">
+            The app’s own review setting doesn’t apply while that policy exists.{' '}
+            {canSeePolicy ? (
+              <Link to={APPROVAL_POLICIES_PATH} className="link link-hover">
+                See the approval policy
+              </Link>
+            ) : (
+              'An administrator can change it in Settings → Approvals.'
+            )}
+          </p>
+        )}
         {!canEdit && (
           <p className="text-xs text-muted">The app’s owners and administrators can change this.</p>
         )}
@@ -387,8 +406,13 @@ export function ShipSettingsCard({
               <div className="space-y-1 text-sm" data-testid="review-policy">
                 <p className="font-medium">Review before merging</p>
                 <p className="text-secondary">
-                  An administrator requires a review for every merge in Settings → Approvals, so
-                  that policy decides who approves — it can’t be changed here.
+                  Review is required by your organisation’s approval policy, so that policy decides
+                  who approves — it can’t be changed here.{' '}
+                  {canSeePolicy && (
+                    <Link to={APPROVAL_POLICIES_PATH} className="link link-hover">
+                      See the approval policy
+                    </Link>
+                  )}
                 </p>
               </div>
             ) : (
