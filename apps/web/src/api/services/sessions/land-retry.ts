@@ -7,7 +7,8 @@
  *   (`RepoHostPort.rerunFailedRuns` — GitHub's "Re-run failed jobs"; a run already going again
  *   counts), then the landing goes back to `releasing` with `mainCi` cleared, so `land.main-ci`
  *   waits for the new attempt from scratch (its bounds run from the new `stageAt`). Nothing on the
- *   commit to re-run → 409 `landing_nothing_to_rerun` (Release anyway, or the app page).
+ *   commit to re-run (someone re-ran it on GitHub already) still goes round: `land.main-ci` reads
+ *   the checks again — green releases, still red stalls again with the same message.
  * - **`main_ci_failed`, `release_anyway`**: back to `releasing` with `mainCi.verdict = 'override'`
  *   — `land.main-ci` goes straight on, and the tag's deploy runs the full gate itself.
  * - **`release_failed`, `retry`**: back to `releasing`; `land.release` runs again (its claim bound
@@ -83,12 +84,6 @@ export async function retryLanding(input: RetryLandingInput): Promise<RetryLandi
     rerun = await input.repoHost.rerunFailedRuns(await sessionRepo(db, row), {
       headSha: landing.mergeSha,
     })
-    if (rerun.rerun.length === 0 && rerun.running.length === 0) {
-      throw new ConflictError(
-        'The merge commit has no failed GitHub Actions run to re-run. Release anyway, or release it from the app page.',
-        'landing_nothing_to_rerun'
-      )
-    }
   }
 
   const stamp = now.toISOString()

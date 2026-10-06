@@ -1066,8 +1066,8 @@ export const RETRYABLE_STALLED_REASONS = [
  * `POST /api/sessions/:id/landing/retry` — `retry` (the default) as above; `release_anyway`, on a
  * `main_ci_failed` stall only, cuts the release without a green default-branch `Gate` (recorded as
  * the `override` verdict; the tag's deploy runs the full gate itself). Answers 202
- * `sessionDetailResponseSchema`; 409 `landing_not_retryable` when the landing is not such a stall,
- * `landing_nothing_to_rerun` when the merge commit has no failed Actions run to re-run.
+ * `sessionDetailResponseSchema`; 409 `landing_not_retryable` when the landing is not such a stall.
+ * A merge commit with nothing left to re-run still goes round (`land.main-ci` reads it again).
  */
 export const LANDING_RETRY_ACTIONS = ['retry', 'release_anyway'] as const
 export const landingRetryRequestSchema = z.object({

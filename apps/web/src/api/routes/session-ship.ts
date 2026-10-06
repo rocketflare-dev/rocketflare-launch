@@ -29,7 +29,7 @@
  *   commit's failed CI re-run, or (`release_anyway`) the release cut past a red default-branch
  *   `Gate` (`services/sessions/land-retry.ts`). Same permission as ship (`update`), no
  *   credential-owner rule (Phase B runs no turn). A double press retries once. 409
- *   `landing_not_retryable` / `landing_nothing_to_rerun`.
+ *   `landing_not_retryable`.
  * - `GET /:id/pr` → `sessionPrResponseSchema`, refreshing `pr_checks` from the repo host when older
  *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks. Then the session is
  *   reconciled (`reconcile.ts`): a ship or landing whose Workflow died is restarted.

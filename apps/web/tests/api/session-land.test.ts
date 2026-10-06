@@ -1345,26 +1345,30 @@ describe('Phase B: retrying a stall from the session (issue #21)', () => {
     })
   })
 
-  it('retry with nothing on the merge commit to re-run: 409, the stall left as it was', async () => {
+  it('retry with nothing left to re-run (re-run by hand, now green): goes round and releases', async () => {
     const h = await harness()
     h.cloud.github.mergeCommitChecks = [
       { name: 'Gate', status: 'completed', conclusion: 'failure' },
     ]
     await drive(h, { onLand: async h => greenPr(h) })
-    await expect(
-      retryLanding({
-        db,
-        workflow: workflowOf(h) as unknown as Workflow,
-        repoHost: h.ports.repoHost(db),
-        row: await reload(h.row),
-        action: 'retry',
-        actor: SYSTEM_ACTOR,
-        logger: { warn: () => {} },
-      })
-    ).rejects.toMatchObject({ statusCode: 409, code: 'landing_nothing_to_rerun' })
+    const sha = (await reload(h.row)).landing?.mergeSha as string
+    setGate(h, sha, 'success')
+    const res = await retryLanding({
+      db,
+      workflow: workflowOf(h) as unknown as Workflow,
+      repoHost: h.ports.repoHost(db),
+      row: await reload(h.row),
+      action: 'retry',
+      actor: SYSTEM_ACTOR,
+      logger: { warn: () => {} },
+    })
+    expect(res.retried).toBe(true)
+    expect(h.cloud.github.reruns).toHaveLength(0)
+    expect(res.row.landing).toMatchObject({ stage: 'releasing', stalledReason: null, mainCi: null })
+    await drive(h, { fresh: true })
     expect((await reload(h.row)).landing).toMatchObject({
-      stage: 'stalled',
-      stalledReason: 'main_ci_failed',
+      stage: 'live',
+      mainCi: { verdict: 'success', sha },
     })
   })
 

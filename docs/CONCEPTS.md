@@ -2460,7 +2460,8 @@ reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
 session like ship): the two stalls that released NOTHING (`RETRYABLE_STALLED_REASONS`) go round
 again. `main_ci_failed` + `retry` first re-runs the merge commit's failed Actions runs
 (`RepoHostPort.rerunFailedRuns` — GitHub's "Re-run failed jobs", `actions: write`; a run already
-going counts; nothing to re-run → 409 `landing_nothing_to_rerun`), then the landing goes back to
+going counts; nothing left to re-run — re-run by hand on GitHub — still goes round, and
+`land.main-ci` reads the checks again), then the landing goes back to
 `releasing` with `mainCi` cleared and a fresh `stageAt`, so `land.main-ci` waits for the new
 attempt with fresh bounds; `release_anyway` sets `mainCi.verdict = 'override'` instead (the tag's
 deploy runs the full gate itself); `release_failed` + `retry` re-enters `land.release` (its claim
