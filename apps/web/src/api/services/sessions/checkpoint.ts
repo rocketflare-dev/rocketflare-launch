@@ -48,10 +48,14 @@
  *   {@link SESSION_DEV_EXCLUDES}.
  * - **Never a workflow file from an ordinary session.** Its push token has no `workflows: write`
  *   (only a kit upgrade's does, `egress/github.ts`), so after the dev-setup guard
- *   {@link workflowsGuardScript} lists what the push would carry under `.github/workflows/` (staged,
- *   or in a commit since `head_sha`, else `base_sha`); any → `CheckpointError('workflows', …)` with
- *   {@link workflowsChangeMessage} as the WHOLE message, before the commit. GitHub's own refusal
- *   ({@link WORKFLOWS_REJECTION_RE}) is told in the same words. An upgrade session skips it.
+ *   {@link workflowsGuardScript} judges the NET change under `.github/workflows/` — the staged tree
+ *   against `head_sha` (else `base_sha`); any → `CheckpointError('workflows', …)` with
+ *   {@link workflowsChangeMessage} as the WHOLE message, before the commit. When the net change is
+ *   clean but an unpushed commit touched a workflow (the agent edited and later undid it), GitHub
+ *   would still refuse the push — it checks every pushed commit — so the unpushed commits are
+ *   folded into this save's one commit (`git reset --soft` to the pushed tip; the index keeps the
+ *   tree). GitHub's own refusal ({@link WORKFLOWS_REJECTION_RE}) is told in the same words. An
+ *   upgrade session skips it.
  *
  * A failing git command throws `CheckpointError` with the command's output tail (the sandbox holds
  * no secret, so there is none in it); a command that did not answer in time (`GIT_TIMEOUT_MS`)
@@ -231,31 +235,41 @@ export class CheckpointError extends Error {
 export const WORKFLOWS_DIR = '.github/workflows'
 
 /**
- * The workflows guard, run after `git add` and before the commit: prints `workflow\t<path>` for each
- * file under {@link WORKFLOWS_DIR} that the push would carry — changed by a commit since `since`
- * (the last pushed commit, else the base; `-m` names a merge's changes against each parent, so
- * merging the default branch in counts too, as it does for GitHub) or staged now. `since` absent
- * or not in the checkout (it always is: the checkout fetches the branch tip or the base) checks
- * the staged change alone.
+ * The workflows guard, run after `git add` and before the commit. With `since` (the last pushed
+ * commit, else the base) in the checkout it prints `workflow\t<path>` for each file under
+ * {@link WORKFLOWS_DIR} the push's NET change carries (the staged tree against `since` — merging the
+ * default branch in counts, as it does for GitHub), and `history\t<path>` for each one an unpushed
+ * commit touched (`-m`: a merge against each parent), even if a later commit undid it. `since`
+ * absent or not in the checkout (it always is: the checkout fetches the branch tip or the base)
+ * checks the staged change alone.
  */
 export function workflowsGuardScript(since: string | null): string {
+  const staged = `git diff --cached --name-only HEAD -- ${WORKFLOWS_DIR} 2>/dev/null || git diff --cached --name-only -- ${WORKFLOWS_DIR}`
   const lines = ['{']
   if (since) {
     lines.push(
-      `  if git cat-file -e ${q(`${since}^{commit}`)} 2>/dev/null; then git log -m --format= --name-only ${q(`${since}..HEAD`)} -- ${WORKFLOWS_DIR}; fi`
+      `  if git cat-file -e ${q(`${since}^{commit}`)} 2>/dev/null; then`,
+      `    git diff --cached --name-only ${q(since)} -- ${WORKFLOWS_DIR} | sed 's/^/workflow\t/'`,
+      `    git log -m --format= --name-only ${q(`${since}..HEAD`)} -- ${WORKFLOWS_DIR} | sed '/^$/d; s/^/history\t/'`,
+      '  else',
+      `    { ${staged}; } | sed 's/^/workflow\t/'`,
+      '  fi'
     )
+  } else {
+    lines.push(`  { ${staged}; } | sed 's/^/workflow\t/'`)
   }
-  lines.push(
-    `  git diff --cached --name-only HEAD -- ${WORKFLOWS_DIR} 2>/dev/null || git diff --cached --name-only -- ${WORKFLOWS_DIR}`,
-    "} | sed '/^$/d' | sort -u | sed 's/^/workflow\t/'",
-    'exit 0'
-  )
+  lines.push('} | sort -u', 'exit 0')
   return lines.join('\n')
 }
 
-/** The guard's `workflow` lines. */
+/** The guard's `workflow` lines: what the push's net change carries under `.github/workflows/`. */
 export function parseWorkflowChanges(stdout: string): string[] {
   return [...stdout.matchAll(/^workflow\t(.+)$/gm)].map(m => m[1] ?? '')
+}
+
+/** The guard's `history` lines: workflow files an unpushed commit touched, net change or not. */
+export function parseWorkflowHistory(stdout: string): string[] {
+  return [...stdout.matchAll(/^history\t(.+)$/gm)].map(m => m[1] ?? '')
 }
 
 /**
@@ -565,11 +579,15 @@ export async function checkpoint(
   if (drift.length > 0) throw new CheckpointError('guard', devSetupDriftMessage(drift))
   if (session.kind !== 'upgrade') {
     const since = session.headSha ?? session.baseSha
-    const touched = parseWorkflowChanges(
-      (await git('workflows', workflowsGuardScript(since))).stdout
-    )
+    const guard = (await git('workflows', workflowsGuardScript(since))).stdout
+    const touched = parseWorkflowChanges(guard)
     if (touched.length > 0) {
       throw new CheckpointError('workflows', workflowsChangeMessage(touched), true)
+    }
+    // Net clean, but an unpushed commit edited a workflow and a later one undid it: GitHub checks
+    // each pushed commit, so fold them into this save's commit (the index keeps the tree).
+    if (since && parseWorkflowHistory(guard).length > 0) {
+      await git('workflows', `git reset --soft ${q(since)}`)
     }
   }
   const staged = await git('diff', 'git diff --cached --quiet', [0, 1])

@@ -212,6 +212,17 @@ describe('checkpoint', () => {
     expect(after?.headSha).toBe(HEAD)
   })
 
+  it('a workflow edit an unpushed commit made and a later one undid: folded into the save, then pushed', async () => {
+    const { sandbox, deps, ref } = await setup({ headSha: HEAD })
+    sandbox.onExec(workflowsGuardScript(HEAD), { stdout: 'history\t.github/workflows/ci.yml\n' })
+    const result = await checkpoint(db, deps, ref)
+    expect(result).toMatchObject({ committed: true, pushed: true })
+    const commands = sandbox.execs.map(e => e.command)
+    const reset = commands.indexOf(`git reset --soft '${HEAD}'`)
+    expect(reset).toBeGreaterThan(commands.indexOf(workflowsGuardScript(HEAD)))
+    expect(reset).toBeLessThan(commands.indexOf('git diff --cached --quiet'))
+  })
+
   it('a kit upgrade session is not guarded: its workflow change commits and pushes', async () => {
     const { sandbox, deps, ref } = await setup({ kind: 'upgrade' })
     sandbox.onExec('.github/workflows', { stdout: 'workflow\t.github/workflows/ci.yml\n' })

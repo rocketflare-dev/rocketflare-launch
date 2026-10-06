@@ -20,7 +20,7 @@
  * needs, and revoked when done — the sandbox's token is never reused Launch-side.
  */
 import { KIT_REQUIRED_CHECK } from '@launch/shared/launch-apps'
-import type { PrCheckState, PrChecks } from '@launch/shared/launch-sessions'
+import { LAUNCH_GATE_CHECK, type PrCheckState, type PrChecks } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { ConflictError } from '../../../utils/core/errors'
@@ -83,6 +83,8 @@ function statusState(state: string): PrCheckState {
 /**
  * Check runs plus the combined status, folded to one verdict: any failure fails, else anything
  * pending is pending, else success — and nothing reported at all is `none` (a repo with no CI).
+ * Launch's own `launch/gate` attestation (issue #9) is left out: it is the sandbox gate's result,
+ * which the panel already shows, not CI — so a repo with no CI still reads `none`, not "1 passed".
  */
 export function foldChecks(
   runs: readonly GitHubCheckRun[],
@@ -91,12 +93,14 @@ export function foldChecks(
   now: Date
 ): PrChecks {
   const checks: PrChecks['checks'] = [
-    ...runs.map(run => ({
-      name: run.name,
-      source: 'check_run' as const,
-      state: checkRunState(run),
-      url: run.html_url ?? run.details_url ?? null,
-    })),
+    ...runs
+      .filter(run => run.name !== LAUNCH_GATE_CHECK)
+      .map(run => ({
+        name: run.name,
+        source: 'check_run' as const,
+        state: checkRunState(run),
+        url: run.html_url ?? run.details_url ?? null,
+      })),
     ...(combined?.statuses ?? []).map(status => ({
       name: status.context,
       source: 'status' as const,

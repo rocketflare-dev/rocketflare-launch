@@ -23,6 +23,7 @@ import {
   DEV_SETUP_GUARD_SCRIPT,
   parseDevSetupDrift,
   parseWorkflowChanges,
+  parseWorkflowHistory,
   workflowsGuardScript,
 } from '@/api/services/sessions/checkpoint'
 import {
@@ -413,16 +414,31 @@ describe('the checkpoint’s workflows guard (an ordinary session)', () => {
     expect(guard(r.dir, r.base)).toEqual([])
   })
 
-  it('names a workflow change in a commit not yet pushed — even one a later commit reverted', () => {
+  it('names a workflow change in a commit not yet pushed', () => {
+    const r = repo({ [CI]: 'name: CI\n' })
+    r.put(CI, 'name: CI changed\n')
+    const edited = r.commit('edit ci')
+    expect(guard(r.dir, r.base)).toEqual([CI])
+    // Already pushed (the row's head): nothing new.
+    expect(guard(r.dir, edited)).toEqual([])
+  })
+
+  it('a workflow edit a later commit undid is not refused — it is history, and a soft reset drops it', () => {
     const r = repo({ [CI]: 'name: CI\n' })
     r.put(CI, 'name: CI changed\n')
     r.commit('edit ci')
     r.put(CI, 'name: CI\n')
-    const reverted = r.commit('revert ci')
-    // GitHub checks each pushed commit, so the round trip is still refused.
-    expect(guard(r.dir, r.base)).toEqual([CI])
-    // Already pushed (the row's head): nothing new.
-    expect(guard(r.dir, reverted)).toEqual([])
+    r.put('apps/web/src/a.ts', 'export {}\n')
+    r.commit('revert ci')
+    r.git('add', '-A')
+    const out = bash(r.dir, workflowsGuardScript(r.base))
+    expect(parseWorkflowChanges(out)).toEqual([])
+    // GitHub checks each pushed commit, so the round trip would still be refused on push.
+    expect(parseWorkflowHistory(out)).toEqual([CI])
+    // What the checkpoint does next: fold the unpushed commits into its own (the tree stays).
+    r.git('reset', '-q', '--soft', r.base)
+    expect(parseWorkflowHistory(bash(r.dir, workflowsGuardScript(r.base)))).toEqual([])
+    expect(r.git('diff', '--cached', '--name-only', r.base)).toBe('apps/web/src/a.ts')
   })
 
   it('names a merge that brings a workflow change in; an unknown base checks the staged change alone', () => {

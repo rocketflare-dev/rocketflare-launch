@@ -350,6 +350,7 @@ describe('the ship gate: green', () => {
       'ship.claim#1',
       'ship.save#1',
       'ship.kit#1',
+      'ship.tree#1.1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
@@ -539,7 +540,7 @@ describe('the gate attestation (issue #9)', () => {
     expect(await attestErrors(h)).toEqual([])
   })
 
-  it('a red gate posts none (and never reads a tree)', async () => {
+  it('a red gate posts none (and reads only the tree it started on)', async () => {
     const h = await harness({
       trackHead: true,
       gate: { test: () => ({ exitCode: 1, log: 'FAIL tests/home.test.ts' }) },
@@ -548,7 +549,9 @@ describe('the gate attestation (issue #9)', () => {
     expect(run.names.some(n => n.startsWith('ship.attest#'))).toBe(false)
     expect(run.names.some(n => n.startsWith('ship.commit#'))).toBe(false)
     expect(h.cloud.github.createdCheckRuns).toEqual([])
-    expect(h.sandbox().commands.some(c => c.includes('launch-tree-index'))).toBe(false)
+    // `ship.tree#1.N` per attempt (issue #21), never the last step's read.
+    const reads = h.sandbox().commands.filter(c => c.includes('launch-tree-index'))
+    expect(reads).toHaveLength(run.names.filter(n => n.startsWith('ship.tree#')).length)
     expect(h.cloud.github.pulls).toHaveLength(0)
   })
 
@@ -556,8 +559,8 @@ describe('the gate attestation (issue #9)', () => {
     let reads = 0
     const h = await harness({
       trackHead: true,
-      // The gate's read, then `ship.commit`'s: something wrote a file in between.
-      trees: { worktree: () => ({ stdout: `tree=${++reads === 1 ? GATE_TREE : OTHER_TREE}\n` }) },
+      // The attempt's start and the gate's read, then `ship.commit`'s: something wrote a file.
+      trees: { worktree: () => ({ stdout: `tree=${++reads <= 2 ? GATE_TREE : OTHER_TREE}\n` }) },
     })
     const run = await drive(h)
     expect(run.names).toContain('ship.commit#1')
@@ -573,6 +576,28 @@ describe('the gate attestation (issue #9)', () => {
     const row = await reload(h.row)
     expect(row.prNumber).toBeNull()
     expect(row.landing).toBeNull()
+  })
+
+  it('a gate step that rewrote files is not attested: it says which, and the PR still opens (issue #21)', async () => {
+    let reads = 0
+    const h = await harness({
+      trackHead: true,
+      // `ship.tree` reads the tree before lint; typecheck then regenerated a file.
+      trees: { worktree: () => ({ stdout: `tree=${++reads === 1 ? OTHER_TREE : GATE_TREE}\n` }) },
+    })
+    h.sandbox().onExec(/git diff-tree -r --name-only/, {
+      stdout: 'apps/web/worker-configuration.d.ts\n',
+    })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.names).toContain('ship.attest#1')
+    expect(h.cloud.github.createdCheckRuns).toEqual([])
+    expect(await attestErrors(h)).toEqual([
+      expect.stringMatching(
+        /^The gate passed, but one of its steps changed files \(apps\/web\/worker-configuration\.d\.ts\)/
+      ),
+    ])
+    expect(h.cloud.github.pulls).toHaveLength(1)
   })
 
   it('a commit that is not the gated tree (the checkpoint left something out) opens nothing', async () => {
@@ -653,12 +678,14 @@ describe('the ship gate: red', () => {
       'ship.claim#1',
       'ship.save#1',
       'ship.kit#1',
+      'ship.tree#1.1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
       'ship.gate#1.1.test',
       'ship.db-clean#1.1',
       'ship.fix#1.1',
+      'ship.tree#1.2',
       'ship.gate#1.2.lint',
       'ship.gate#1.2.typecheck',
       'ship.db#1.2',
@@ -710,10 +737,13 @@ describe('the ship gate: red', () => {
       'ship.claim#1',
       'ship.save#1',
       'ship.kit#1',
+      'ship.tree#1.1',
       'ship.gate#1.1.lint',
       'ship.fix#1.1',
+      'ship.tree#1.2',
       'ship.gate#1.2.lint',
       'ship.fix#1.2',
+      'ship.tree#1.3',
       'ship.gate#1.3.lint',
       'ship.settle#1',
       'inspect#2',
@@ -832,6 +862,7 @@ describe('the ship gate: stopped', () => {
       'ship.claim#1',
       'ship.save#1',
       'ship.kit#1',
+      'ship.tree#1.1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',
@@ -864,10 +895,11 @@ describe('the ship gate: stopped', () => {
     })
     const run = await drive(h)
     const after = run.names.slice(BOOT.length + 3)
-    expect(after.slice(0, 11)).toEqual([
+    expect(after.slice(0, 12)).toEqual([
       'ship.claim#1',
       'ship.save#1',
       'ship.kit#1',
+      'ship.tree#1.1',
       'ship.gate#1.1.lint',
       'ship.gate#1.1.typecheck',
       'ship.db#1.1',

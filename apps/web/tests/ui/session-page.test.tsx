@@ -1135,6 +1135,21 @@ describe('SessionPage', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('a kit upgrade session stops its running turn from the header (issue #21)', async () => {
+    const { fetchMock } = renderPage({
+      [BASE]: detailOf({ kind: 'upgrade', status: 'working' }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
+      [`POST ${BASE}/cancel`]: { cancelRequested: true },
+    })
+    await screen.findByTestId('upgrade-session-note')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop this turn' }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([u, i]) => String(u).endsWith('/cancel') && i?.method === 'POST')
+      ).toBe(true)
+    )
+  })
+
   it('an ordinary session keeps its composer and no upgrade note', async () => {
     renderPage({ [BASE]: detailOf(), [`${BASE}/events`]: eventsRoute(DONE_TURN) })
     expect(await screen.findByLabelText('Message the coding agent')).toBeInTheDocument()
@@ -1147,6 +1162,9 @@ describe('SessionPage', () => {
       [`${BASE}/events`]: eventsRoute(DONE_TURN.slice(0, 3)),
       [`POST ${BASE}/cancel`]: { cancelRequested: true },
     })
+    await screen.findByLabelText('Message the coding agent')
+    // The composer's Stop only: the header's is for a kit upgrade session.
+    expect(screen.getAllByRole('button', { name: 'Stop this turn' })).toHaveLength(1)
     fireEvent.click(await screen.findByRole('button', { name: 'Stop this turn' }))
     await waitFor(() =>
       expect(
