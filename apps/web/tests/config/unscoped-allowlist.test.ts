@@ -63,6 +63,9 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
     'pre-tenant: sandbox id → the live session (or the login in flight) row; tenant taken from the row',
   'src/api/services/sessions/egress/github.ts':
     'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
+  // Issue #16: a prebuild never takes the last container slot — the cap is the platform's.
+  'src/api/services/sessions/container-capacity.ts':
+    "liveContainerCount counts every tenant's live containers on a sandbox host: max_instances is one cap for the whole platform; it reads a count, never a row",
   'src/api/preview/gateway.ts':
     'pre-tenant: sandbox id / signed preview cookie → the session row; tenant taken from the row',
   // Launch P4: two crons that look across every tenant first (the due approvals; any unsealed

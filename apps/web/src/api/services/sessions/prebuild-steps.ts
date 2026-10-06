@@ -25,10 +25,11 @@ import {
   CODING_SESSION_KINDS,
   type SessionWorkspacePrebuildData,
 } from '@launch/shared/launch-sessions'
-import type { AppPrebuildBackup } from '../../../db/schema'
+import type { AppPrebuildBackup, SessionRow } from '../../../db/schema'
 import { safeErrorMessage } from './events'
 import { SandboxRestartedError, sandboxHostOf, sessionAllowedHosts } from './ports'
 import {
+  followUpPrebuild,
   loadPrebuild,
   PREBUILD_EXCLUDES,
   PREBUILD_TTL_SECONDS,
@@ -38,7 +39,12 @@ import {
   requestPrebuild,
   unusablePrebuild,
 } from './prebuild'
-import { installDependencies, SESSION_WORKSPACE, workspaceFacts } from './rocketflare-dev'
+import {
+  installDependencies,
+  SESSION_IMAGE_VERSION,
+  SESSION_WORKSPACE,
+  workspaceFacts,
+} from './rocketflare-dev'
 import {
   backupFailureReason,
   bootstrapPolling,
@@ -89,8 +95,9 @@ export async function prebuildCheckStep(scope: StepScope): Promise<PrebuildCheck
   const row = await loadPrebuild(scope.db, session.tenantId, session.appId)
   const why = unusablePrebuild(row, scope.cfg, host, scope.now())
   if (!why) return { usable: true, refresh: false }
-  await recordPrebuildEvent(scope, 0, { status: 'skipped', mode, reason: why })
-  return { usable: false, refresh: true, reason: why }
+  await recordPrebuildEvent(scope, 0, { status: 'skipped', mode, reason: why.reason })
+  // Built for the other host or mode: not rebuilt for this one (no local/remote ping-pong).
+  return { usable: false, refresh: why.rebuild, reason: why.reason }
 }
 
 export interface PrebuildRestoreResult {
@@ -121,12 +128,13 @@ export async function prebuildRestoreStep(
   const row = await loadPrebuild(scope.db, session.tenantId, session.appId)
   const why = unusablePrebuild(row, scope.cfg, host, scope.now())
   if (why || !row?.backup) {
+    const reason = why?.reason ?? 'no prebuild yet'
     return {
       restored: false,
       install: true,
-      refresh: true,
-      reason: why ?? 'no prebuild',
-      stepDetail: `Cloning instead: ${why ?? 'no prebuild'}`,
+      refresh: why?.rebuild ?? true,
+      reason,
+      stepDetail: `Cloning instead: ${reason}`,
     }
   }
   const backup = row.backup
@@ -212,7 +220,14 @@ export async function prebuildRequestStep(
       now,
       notBuiltSince: input.after === 'boot' ? session.createdAt : now,
     })
-    if (!result.requested) return { requested: false, reason: result.reason }
+    if (!result.requested) {
+      // Why nothing was asked for (a build in flight, the container cap, a recent failure…).
+      await recordPrebuildEvent(scope, session.turnCount, {
+        status: 'deferred',
+        reason: result.reason,
+      })
+      return { requested: false, reason: result.reason }
+    }
     await recordPrebuildEvent(scope, session.turnCount, {
       status: 'requested',
       reason: input.reason,
@@ -233,6 +248,8 @@ export interface PrebuildBuildResult {
   treeSha: string
   lockfileHash: string | null
   buildMs: number
+  /** The session image this run's container booted (`sessions.image_version`, set at its claim). */
+  imageVersion: string
 }
 
 /**
@@ -262,6 +279,7 @@ export async function prebuildBuildStep(
       treeSha: facts.treeSha,
       lockfileHash: facts.lockfileHash,
       buildMs: Math.max(0, Date.now() - started),
+      imageVersion: session.imageVersion ?? SESSION_IMAGE_VERSION,
     }
   })
 }
@@ -283,7 +301,11 @@ export async function prebuildSaveStep(
   const mode = prebuildModeFor(scope.cfg, host)
   const ref = { tenantId: session.tenantId, appId: session.appId, sessionId: session.id }
   if (!mode) {
-    await releasePrebuildClaim(scope.db, { ...ref, error: 'backups or prebuilds were turned off' })
+    await releasePrebuildClaim(scope.db, {
+      ...ref,
+      error: 'backups or prebuilds were turned off',
+      now: scope.now(),
+    })
     return { saved: false }
   }
   const app = await loadAppRef(scope, session.appId)
@@ -312,6 +334,7 @@ export async function prebuildSaveStep(
     lockfileHash: built.lockfileHash,
     buildMs: built.buildMs,
     builtAt: scope.now(),
+    imageVersion: built.imageVersion,
   })
   const evict = recorded ? replaced : backup
   if (evict) {
@@ -328,5 +351,32 @@ export async function prebuildSaveStep(
       durationMs: Math.max(0, Date.now() - started),
     })
   }
+  // A request that came while this run was building: build again from the newer default branch.
+  if (recorded) await followUpStep(scope, session)
   return { saved: recorded }
+}
+
+/**
+ * The follow-up of a `prebuild` run that gave its claim back (`prebuild.save`, and `cleanup` for
+ * one that failed or was abandoned): `followUpPrebuild`, its request recorded on the run's log.
+ * Never throws.
+ */
+export async function followUpStep(scope: StepScope, run: SessionRow): Promise<void> {
+  try {
+    const result = await followUpPrebuild(scope.db, scope.env, scope.cfg, run, scope.now())
+    if (!result) return
+    await recordPrebuildEvent(
+      scope,
+      0,
+      result.requested
+        ? {
+            status: 'requested',
+            reason: 'asked for while this one was building',
+            prebuildSessionId: result.sessionId,
+          }
+        : { status: 'deferred', reason: result.reason }
+    )
+  } catch (err) {
+    scope.logger.warn({ err }, 'session: could not follow a prebuild up')
+  }
 }

@@ -13,16 +13,20 @@
  *   A run of its own costs about a minute of container time per build, holds no credential, and its
  *   archive has nothing session-specific in it ({@link PREBUILD_EXCLUDES} is only a guard).
  * - **Asked for** ({@link requestPrebuild}) by a step, never run there: after a first boot that
- *   found none to use (none yet, another image or backup mode, too old) or whose lockfile no longer
- *   matched it (`prebuild.request`), and after every merge Launch makes to the default branch
- *   (`prebuild.refresh#N`, the base moved). The request is a claim on the app's row — one build
- *   per app at a time, none while a failed one is recent ({@link PREBUILD_RETRY_AFTER_MS}), none
- *   when the current prebuild is already newer than what the caller saw — then the `prebuild`
- *   session's row and its Workflow instance. A request that cannot be made is a reason, never an
- *   error: a prebuild never slows or fails the session that asked.
+ *   found none to use (none yet, another image, too old — not merely one built for the other
+ *   sandbox host or backup mode, which would only ping-pong) or whose lockfile no longer matched
+ *   it (`prebuild.request`), and after every merge Launch makes to the default branch
+ *   (`prebuild.refresh#N`, the base moved). Only while two of the host's container slots are free
+ *   (`container-capacity.ts`: a prebuild never takes the slot a person needs). Then a claim on the
+ *   app's row — one build per app at a time, none while a failed one is recent
+ *   ({@link PREBUILD_RETRY_AFTER_MS}, from the failure), none when the current prebuild is already
+ *   newer than what the caller saw — then the `prebuild` session's row and its Workflow instance.
+ *   A request refused because a build is in flight leaves `refresh_requested_at`, and that build
+ *   asks again when it is done ({@link followUpPrebuild}). A request that cannot be made is a
+ *   reason, never an error: a prebuild never slows or fails the session that asked.
  * - **Keyed** on the app (the row), the default-branch commit and its tree, the lockfile's hash,
- *   the session image, the backup mode and the sandbox host. A restore needs the last three to
- *   MATCH ({@link unusablePrebuild}) — `node_modules` is only good on its image, and an archive is
+ *   the session image (the one the BUILD booted on), the backup mode and the sandbox host. A
+ *   restore needs the last three to MATCH ({@link unusablePrebuild}) — `node_modules` is only good on its image, and an archive is
  *   only readable the way it was written. The commit need not: the session checks its own commit
  *   out over the restored one in place (`checkoutScript`'s `restored`). The lockfile need not
  *   either: a different one runs `pnpm install` over the restored `node_modules` (fast — most of it
@@ -41,7 +45,7 @@ import {
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import type { SessionSandboxHost } from '@launch/shared/launch-setup'
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lt, not, or, type SQL, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import {
@@ -49,9 +53,15 @@ import {
   type AppPrebuildRow,
   appPrebuilds,
   apps,
+  type SessionRow,
   sessions,
 } from '../../../db/schema'
 import type { AppBindings } from '../../types'
+import {
+  containerCapFor,
+  liveContainerCount,
+  PREBUILD_CONTAINER_HEADROOM,
+} from './container-capacity'
 import { loadSessionPolicy, sessionsPaused } from './lifecycle'
 import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
 import { type WorkspaceBackupMode, workspaceBackupMode } from './workspace-backup'
@@ -112,23 +122,38 @@ export async function loadPrebuild(
   return row ?? null
 }
 
+/** Why a prebuild cannot be restored, and whether a new one should be built for that reason. */
+export interface PrebuildUnusable {
+  reason: string
+  /**
+   * False when the prebuild is fine but for ANOTHER sandbox host or backup mode (a laptop running
+   * both): rebuilding it for this one would only make the other side rebuild in turn.
+   */
+  rebuild: boolean
+}
+
 /** Why `row`'s prebuild cannot be restored into a session on `host` now, or null when it can. */
 export function unusablePrebuild(
   row: AppPrebuildRow | null,
   cfg: AppConfig,
   host: SessionSandboxHost,
   now: Date
-): string | null {
-  if (!prebuildsEnabled(cfg)) return 'prebuilds are off'
+): PrebuildUnusable | null {
+  if (!prebuildsEnabled(cfg)) return { reason: 'prebuilds are off', rebuild: false }
   const mode = workspaceBackupMode(cfg, host)
-  if (mode === 'off') return 'backups are off'
-  if (!row?.backup) return 'no prebuild yet'
-  if (row.imageVersion !== SESSION_IMAGE_VERSION) return 'it was built on another session image'
+  if (mode === 'off') return { reason: 'backups are off', rebuild: false }
+  if (!row?.backup) return { reason: 'no prebuild yet', rebuild: true }
+  if (row.imageVersion !== SESSION_IMAGE_VERSION) {
+    return { reason: 'it was built on another session image', rebuild: true }
+  }
   if (row.mode !== mode || row.sandboxHost !== host) {
-    return `it was built for ${row.mode ?? 'other'} backups on the ${row.sandboxHost ?? 'other'} sandbox host`
+    return {
+      reason: `it was built for ${row.mode ?? 'other'} backups on the ${row.sandboxHost ?? 'other'} sandbox host`,
+      rebuild: false,
+    }
   }
   if (!row.builtAt || now.getTime() - row.builtAt.getTime() > PREBUILD_MAX_AGE_MS) {
-    return 'it is too old'
+    return { reason: 'it is too old', rebuild: true }
   }
   return null
 }
@@ -141,12 +166,21 @@ const TERMINAL_STATUS_SQL = sql.raw(
  * Claim the app's next build for `sessionId` — the row is made when missing. False when a build
  * is in flight (a claim younger than {@link PREBUILD_BUILD_STALE_MS} whose session is not
  * settled), when the last one failed under {@link PREBUILD_RETRY_AFTER_MS} ago, or when the current
- * prebuild was built after `notBuiltSince` (it is already newer than what the caller saw) — and
- * when `appId` is not the tenant's app (no row is made for it: the FK names the app alone).
+ * prebuild was built after `notBuiltSince` (it is already newer than what the caller saw; null:
+ * whatever it is) — and when `appId` is not the tenant's app (no row is made for it: the FK names
+ * the app alone). A claim refused because a build is IN FLIGHT stamps `refresh_requested_at`: that
+ * build may have cloned before the change the caller saw, so it asks again when it is done
+ * ({@link followUpPrebuild}).
  */
 export async function claimPrebuild(
   db: Database,
-  input: { tenantId: string; appId: string; sessionId: string; now: Date; notBuiltSince: Date }
+  input: {
+    tenantId: string
+    appId: string
+    sessionId: string
+    now: Date
+    notBuiltSince: Date | null
+  }
 ): Promise<boolean> {
   const { tenantId, appId, now } = input
   const [app] = await db
@@ -157,28 +191,37 @@ export async function claimPrebuild(
   await db.insert(appPrebuilds).values({ tenantId, appId }).onConflictDoNothing()
   const staleBefore = new Date(now.getTime() - PREBUILD_BUILD_STALE_MS)
   const retryBefore = new Date(now.getTime() - PREBUILD_RETRY_AFTER_MS)
+  const row = and(eq(appPrebuilds.tenantId, tenantId), eq(appPrebuilds.appId, appId))
+  const free = or(
+    isNull(appPrebuilds.buildingSessionId),
+    lt(appPrebuilds.buildingSince, staleBefore),
+    sql`exists (select 1 from ${sessions} where ${sessions.tenantId} = ${tenantId} and ${sessions.id} = ${appPrebuilds.buildingSessionId} and ${sessions.status} in (${TERMINAL_STATUS_SQL}))`
+  ) as SQL
   const claimed = await db
     .update(appPrebuilds)
     .set({ buildingSessionId: input.sessionId, buildingSince: now, lastAttemptAt: now })
     .where(
       and(
-        eq(appPrebuilds.tenantId, tenantId),
-        eq(appPrebuilds.appId, appId),
-        or(
-          isNull(appPrebuilds.buildingSessionId),
-          lt(appPrebuilds.buildingSince, staleBefore),
-          sql`exists (select 1 from ${sessions} where ${sessions.tenantId} = ${tenantId} and ${sessions.id} = ${appPrebuilds.buildingSessionId} and ${sessions.status} in (${TERMINAL_STATUS_SQL}))`
-        ),
+        row,
+        free,
         or(
           isNull(appPrebuilds.lastError),
           isNull(appPrebuilds.lastAttemptAt),
           lt(appPrebuilds.lastAttemptAt, retryBefore)
         ),
-        or(isNull(appPrebuilds.builtAt), lt(appPrebuilds.builtAt, input.notBuiltSince))
+        input.notBuiltSince
+          ? or(isNull(appPrebuilds.builtAt), lt(appPrebuilds.builtAt, input.notBuiltSince))
+          : undefined
       )
     )
     .returning({ id: appPrebuilds.id })
-  return claimed.length > 0
+  if (claimed.length > 0) return true
+  // A build in flight: leave word for it (a no-op when the claim is free — refused for another reason).
+  await db
+    .update(appPrebuilds)
+    .set({ refreshRequestedAt: now })
+    .where(and(row, isNotNull(appPrebuilds.buildingSessionId), not(free)))
+  return false
 }
 
 /**
@@ -188,11 +231,17 @@ export async function claimPrebuild(
  */
 export async function releasePrebuildClaim(
   db: Database,
-  ref: { tenantId: string; appId: string; sessionId: string; error: string }
+  ref: { tenantId: string; appId: string; sessionId: string; error: string; now: Date }
 ): Promise<boolean> {
   const released = await db
     .update(appPrebuilds)
-    .set({ buildingSessionId: null, buildingSince: null, lastError: ref.error.slice(0, 2000) })
+    .set({
+      buildingSessionId: null,
+      buildingSince: null,
+      lastError: ref.error.slice(0, 2000),
+      // The backoff runs from the failure, not from the claim a long build took.
+      lastAttemptAt: ref.now,
+    })
     .where(
       and(
         eq(appPrebuilds.tenantId, ref.tenantId),
@@ -214,6 +263,8 @@ export interface PrebuildRecord {
   lockfileHash: string | null
   buildMs: number
   builtAt: Date
+  /** The session image the BUILD ran on (its `sessions.image_version`, stamped at its claim). */
+  imageVersion: string
 }
 
 /**
@@ -231,7 +282,6 @@ export async function recordPrebuild(
     .update(appPrebuilds)
     .set({
       ...record,
-      imageVersion: SESSION_IMAGE_VERSION,
       buildingSessionId: null,
       buildingSince: null,
       lastError: null,
@@ -267,7 +317,8 @@ export async function requestPrebuild(
     appId: string
     host: SessionSandboxHost
     now: Date
-    notBuiltSince: Date
+    /** A prebuild built after it is already the one the caller wanted; null: build regardless. */
+    notBuiltSince: Date | null
   }
 ): Promise<PrebuildRequest> {
   if (!prebuildsEnabled(cfg)) return { requested: false, reason: 'prebuilds are off' }
@@ -284,6 +335,15 @@ export async function requestPrebuild(
     .where(and(eq(apps.tenantId, tenantId), eq(apps.id, appId)))
   if (!app?.repoOwner || !app.repoName)
     return { requested: false, reason: 'the app has no repository' }
+  // Never the slot a person is about to need: every kind's containers count (`max_instances`).
+  const live = await liveContainerCount(db, input.host)
+  const cap = containerCapFor(cfg, input.host)
+  if (live > cap - PREBUILD_CONTAINER_HEADROOM) {
+    return {
+      requested: false,
+      reason: `the ${input.host} sandbox host is near its container cap (${live} of ${cap} in use)`,
+    }
+  }
   const sessionId = crypto.randomUUID()
   const claimed = await claimPrebuild(db, {
     tenantId,
@@ -313,8 +373,48 @@ export async function requestPrebuild(
     await workflow.create({ id: sessionId, params: { sessionId, tenantId } })
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    await releasePrebuildClaim(db, { tenantId, appId, sessionId, error: reason })
+    await releasePrebuildClaim(db, { tenantId, appId, sessionId, error: reason, now: input.now })
     return { requested: false, reason: `the prebuild could not start: ${reason}` }
   }
   return { requested: true, sessionId }
+}
+
+/**
+ * After a `prebuild` run gave its claim back (saved, failed or abandoned): when a request came
+ * while it was building (`refresh_requested_at` later than the run's start), ask again — the
+ * newer default branch, or lockfile, is what that request wanted. The stamp is cleared only by a
+ * request that went through; one refused (the failure backoff, the container cap) leaves it for
+ * the next run's follow-up or a later boot. Never throws.
+ */
+export async function followUpPrebuild(
+  db: Database,
+  env: Pick<AppBindings, 'SESSION_WORKFLOW'>,
+  cfg: AppConfig,
+  run: Pick<SessionRow, 'id' | 'tenantId' | 'appId' | 'createdAt' | 'sandboxHost'>,
+  now: Date
+): Promise<PrebuildRequest | null> {
+  const row = await loadPrebuild(db, run.tenantId, run.appId)
+  const asked = row?.refreshRequestedAt
+  if (!asked || asked.getTime() < run.createdAt.getTime() || row?.buildingSessionId) return null
+  const host = run.sandboxHost === 'remote' ? 'remote' : 'local'
+  const result = await requestPrebuild(db, env, cfg, {
+    tenantId: run.tenantId,
+    appId: run.appId,
+    host,
+    now,
+    notBuiltSince: null,
+  })
+  if (result.requested) {
+    await db
+      .update(appPrebuilds)
+      .set({ refreshRequestedAt: null })
+      .where(
+        and(
+          eq(appPrebuilds.tenantId, run.tenantId),
+          eq(appPrebuilds.appId, run.appId),
+          lt(appPrebuilds.refreshRequestedAt, new Date(now.getTime() + 1))
+        )
+      )
+  }
+  return result
 }

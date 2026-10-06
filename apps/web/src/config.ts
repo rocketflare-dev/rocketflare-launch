@@ -286,6 +286,15 @@ const coreConfigSchema = z.object({
     z.enum(['on', 'off']).default('on')
   ),
   /**
+   * This Worker's `[[containers]] max_instances` (both tomls: 10), which Launch cannot read at run
+   * time: a prebuild is only asked for while enough of them are free
+   * (`services/sessions/container-capacity.ts`). Set it with the toml when an instance raises it.
+   */
+  SESSION_MAX_CONTAINERS: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.coerce.number().int().positive().default(10)
+  ),
+  /**
    * `SESSION_WORKSPACE_BACKUP=presigned`: where the container reaches R2 — the allow-list gains
    * this origin's host, else `<account>.r2.cloudflarestorage.com` from the account id below. The
    * SDK reads the same three names from the Worker's environment.

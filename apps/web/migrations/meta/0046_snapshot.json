@@ -1,5 +1,5 @@
 {
-  "id": "451dd49b-839e-4c83-a2cb-fc0acabdafd4",
+  "id": "4e7e3adb-f479-4092-a964-dad25ca69cf1",
   "prevId": "4f8afe06-fc1f-41f4-97a7-62359f9cf3a9",
   "version": "7",
   "dialect": "postgresql",
@@ -4829,6 +4829,12 @@
         },
         "building_since": {
           "name": "building_since",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_requested_at": {
+          "name": "refresh_requested_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

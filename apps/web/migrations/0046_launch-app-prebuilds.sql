@@ -14,6 +14,7 @@ CREATE TABLE "app_prebuilds" (
 	"build_ms" integer,
 	"building_session_id" uuid,
 	"building_since" timestamp with time zone,
+	"refresh_requested_at" timestamp with time zone,
 	"last_error" text,
 	"last_attempt_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,

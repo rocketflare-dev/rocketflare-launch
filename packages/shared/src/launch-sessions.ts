@@ -676,12 +676,14 @@ export type SessionWorkspaceBackupData = z.infer<typeof sessionWorkspaceBackupDa
  * - `failed`: the restore was tried and did not work (`reason`); the boot cloned instead;
  * - `requested`: this session asked for a new one (`reason`: why the old one would not do, or a
  *   merge to the default branch) — a `prebuild` run builds it in its own container;
+ * - `deferred`: it wanted one and none was started (`reason`: a build in flight — which then asks
+ *   again itself — a recent failure, the container cap, paused sessions…);
  * - `saved`: on the `prebuild` run itself, the archive is in R2 and on `app_prebuilds`.
  *
  * Ids, hashes and numbers only. No row at all while prebuilds or workspace backups are off.
  */
 export const sessionWorkspacePrebuildDataSchema = z.object({
-  status: z.enum(['restored', 'skipped', 'failed', 'requested', 'saved']),
+  status: z.enum(['restored', 'skipped', 'failed', 'requested', 'deferred', 'saved']),
   /** `binding` or `presigned` (`workspace-backup.ts`). */
   mode: z.string().optional(),
   reason: z.string().optional(),

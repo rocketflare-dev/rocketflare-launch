@@ -20,6 +20,7 @@ import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
+import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import {
@@ -85,7 +86,12 @@ interface Harness {
 
 /** A prepared app with prebuilds on; every sandbox scripted like a kit checkout. */
 async function harness(env: Partial<TestEnv> = {}): Promise<Harness> {
-  const testEnv = createTestEnv({ SESSION_PREBUILD: 'on', ...env })
+  // The container cap counts every live session in the (shared) test database: far above it here.
+  const testEnv = createTestEnv({
+    SESSION_PREBUILD: 'on',
+    SESSION_MAX_CONTAINERS: '100000',
+    ...env,
+  })
   const cfg = loadConfig(testEnv)
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud, { prepared: true })
@@ -142,7 +148,11 @@ async function reload(row: Pick<SessionRow, 'id' | 'tenantId'>): Promise<Session
 }
 
 /** Run `row`'s Workflow; the first idle wait ends a coding session. Every step name is distinct. */
-async function drive(h: Harness, row: Pick<SessionRow, 'id' | 'tenantId'>) {
+async function drive(
+  h: Harness,
+  row: Pick<SessionRow, 'id' | 'tenantId'>,
+  limits?: Partial<SessionCallLimits>
+) {
   const fake = createFakeWorkflowStep({
     onWait: async () => {
       await db.update(sessions).set({ requestedAction: 'end' }).where(eq(sessions.id, row.id))
@@ -150,7 +160,7 @@ async function drive(h: Harness, row: Pick<SessionRow, 'id' | 'tenantId'>) {
     },
   })
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
-  workflow.overrides = { ports: h.ports, hooks: h.hooks }
+  workflow.overrides = { ports: h.ports, hooks: h.hooks, ...(limits ? { limits } : {}) }
   const outcome = await workflow.run(
     {
       payload: { sessionId: row.id, tenantId: row.tenantId },
@@ -516,6 +526,7 @@ describe('the claim', () => {
         lockfileHash: lock.hash,
         buildMs: 10,
         builtAt: now,
+        imageVersion: SESSION_IMAGE_VERSION,
       }
     )
     expect((await ask(now, new Date(now.getTime() - 1000))).requested).toBe(false)
@@ -534,6 +545,171 @@ describe('the claim', () => {
       notBuiltSince: new Date(),
     })
     expect(res).toEqual({ requested: false, reason: 'sessions are paused' })
+  })
+})
+
+describe('review fixes', () => {
+  it('a container replaced after a restore, whose restore.r1 then fails, installs on the clone', async () => {
+    const h = await harness()
+    await prebuilt(h)
+    const row = await insertSession(db, h.f, { status: 'requested', instanceId: undefined })
+    const sandbox = sandboxOf(h, row)
+    let bootstraps = 0
+    sandbox.onBackground(/scripts\/bootstrap\.mjs/, () => {
+      bootstraps++
+      if (bootstraps > 1) return {}
+      // The container is replaced under the first bootstrap; the next restore will fail.
+      setTimeout(() => {
+        sandbox.recreate()
+        sandbox.failNext('restore', new Error('BACKUP_RESTORE_FAILED'))
+      }, 0)
+      return new Promise<never>(() => {})
+    })
+    const run = await drive(h, row, { commandPollMs: 1 })
+    expect(run.names.slice(3, 11)).toEqual([
+      'sandbox.start',
+      'restore',
+      'bootstrap',
+      'sandbox.start.r1',
+      'restore.r1',
+      'repo.r1',
+      'bootstrap.r1',
+      'dev.r1',
+    ])
+    // The first bootstrap had no install (the prebuild's lockfile matched); the fresh clone has one.
+    expect(sandbox.backgroundRuns.map(r => r.name)).toEqual(['bootstrap', 'install', 'bootstrap'])
+    expect((await reload(row)).error).toBeNull()
+  })
+
+  it('a request while a build is in flight is not lost: the build asks again when it is saved', async () => {
+    const h = await harness()
+    await bootSession(h)
+    const [first] = await prebuildRuns(h)
+    if (!first) throw new Error('no prebuild was asked for')
+    // A merge lands while the first build runs.
+    const cfg = loadConfig(h.env)
+    const merged = await requestPrebuild(db, h.env, cfg, {
+      tenantId: h.f.tenant.id,
+      appId: h.f.app.id,
+      host: 'local',
+      now: new Date(),
+      notBuiltSince: new Date(),
+    })
+    expect(merged).toEqual({
+      requested: false,
+      reason: 'a prebuild is being built, or is new enough',
+    })
+    expect((await loadPrebuild(db, h.f.tenant.id, h.f.app.id))?.refreshRequestedAt).toBeInstanceOf(
+      Date
+    )
+    await drive(h, first)
+    const runs = await prebuildRuns(h)
+    expect(runs).toHaveLength(2)
+    expect(await prebuildEvents(first)).toEqual([
+      expect.objectContaining({ status: 'saved' }),
+      expect.objectContaining({
+        status: 'requested',
+        reason: 'asked for while this one was building',
+        prebuildSessionId: runs[1]?.id,
+      }),
+    ])
+    const row = await loadPrebuild(db, h.f.tenant.id, h.f.app.id)
+    expect(row).toMatchObject({ refreshRequestedAt: null, buildingSessionId: runs[1]?.id })
+    // The prebuild records the image its own run booted on.
+    expect(row?.imageVersion).toBe((await reload(first)).imageVersion)
+  })
+
+  it('near the container cap nothing is asked for, and the boot says why', async () => {
+    const h = await harness({ SESSION_MAX_CONTAINERS: '1' })
+    const { row, run } = await bootSession(h)
+    expect(run.names).toContain('prebuild.request')
+    expect(await prebuildRuns(h)).toEqual([])
+    expect(await prebuildEvents(row)).toEqual([
+      expect.objectContaining({ status: 'skipped', reason: 'no prebuild yet' }),
+      expect.objectContaining({
+        status: 'deferred',
+        reason: expect.stringMatching(/near its container cap \(\d+ of 1 in use\)/),
+      }),
+    ])
+  })
+
+  it('built for the other sandbox host: not restored, and not rebuilt for this one', async () => {
+    const h = await harness()
+    await prebuilt(h)
+    await db
+      .update(appPrebuilds)
+      .set({ sandboxHost: 'remote', mode: 'presigned' })
+      .where(and(eq(appPrebuilds.tenantId, h.f.tenant.id), eq(appPrebuilds.appId, h.f.app.id)))
+    const { row, run } = await bootSession(h)
+    expect(run.names).toContain('repo')
+    expect(run.names).not.toContain('restore')
+    expect(run.names).not.toContain('prebuild.request')
+    expect(await prebuildEvents(row)).toEqual([
+      expect.objectContaining({
+        status: 'skipped',
+        reason: 'it was built for presigned backups on the remote sandbox host',
+      }),
+    ])
+    expect(await prebuildRuns(h)).toHaveLength(1)
+  })
+
+  it('the failure backoff runs from the failure, not from the claim', async () => {
+    const h = await harness()
+    const cfg = loadConfig(h.env)
+    const t0 = Date.now()
+    const at = (minutes: number) => new Date(t0 + minutes * 60_000)
+    const ask = (minutes: number) =>
+      requestPrebuild(db, h.env, cfg, {
+        tenantId: h.f.tenant.id,
+        appId: h.f.app.id,
+        host: 'local',
+        now: at(minutes),
+        notBuiltSince: at(minutes),
+      })
+    const first = await ask(0)
+    if (!first.requested) throw new Error('the first request was refused')
+    // A build that ran 20 minutes, then failed.
+    await releasePrebuildClaim(db, {
+      tenantId: h.f.tenant.id,
+      appId: h.f.app.id,
+      sessionId: first.sessionId,
+      error: 'pnpm install failed',
+      now: at(20),
+    })
+    expect((await loadPrebuild(db, h.f.tenant.id, h.f.app.id))?.lastAttemptAt).toEqual(at(20))
+    expect((await ask(21)).requested).toBe(false)
+    expect((await ask(36)).requested).toBe(true)
+  })
+
+  it('the run keeps the prebuild flag its claim recorded', async () => {
+    const h = await harness()
+    const row = await insertSession(db, h.f, { status: 'requested', instanceId: undefined })
+    const fake = createFakeWorkflowStep({
+      onWait: async () => {
+        await db.update(sessions).set({ requestedAction: 'end' }).where(eq(sessions.id, row.id))
+        return WAKE
+      },
+    })
+    const results: unknown[] = []
+    const realDo = fake.step.do.bind(fake.step) as (...args: unknown[]) => Promise<unknown>
+    ;(fake.step as { do: unknown }).do = async (...args: unknown[]) => {
+      const result = await realDo(...args)
+      results.push(result)
+      return result
+    }
+    const workflow = new SessionWorkflow(createExecutionContext(), h.env)
+    workflow.overrides = { ports: h.ports, hooks: h.hooks }
+    await workflow.run(
+      {
+        payload: { sessionId: row.id, tenantId: row.tenantId },
+        timestamp: new Date(),
+        instanceId: row.id,
+        workflowName: 'launch-session',
+      },
+      fake.step as unknown as Parameters<SessionWorkflow['run']>[1]
+    )
+    expect(results[0]).toMatchObject({ start: 'boot', prebuilds: true })
+    expect(fake.names).toContain('prebuild.check')
   })
 })
 
@@ -561,7 +737,7 @@ describe('app_prebuilds is tenant-scoped', () => {
     expect(underB).toEqual([])
     // Record / release under B's tenant never touch A's row.
     const ref = { tenantId: other.tenant.id, appId: h.f.app.id, sessionId: crypto.randomUUID() }
-    expect(await releasePrebuildClaim(db, { ...ref, error: 'x' })).toBe(false)
+    expect(await releasePrebuildClaim(db, { ...ref, error: 'x', now: new Date() })).toBe(false)
     expect(
       (
         await recordPrebuild(db, ref, {
@@ -573,6 +749,7 @@ describe('app_prebuilds is tenant-scoped', () => {
           lockfileHash: null,
           buildMs: 1,
           builtAt: new Date(),
+          imageVersion: SESSION_IMAGE_VERSION,
         })
       ).recorded
     ).toBe(false)

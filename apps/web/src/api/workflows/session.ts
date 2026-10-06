@@ -293,6 +293,9 @@ class BootContainer {
       if (this.check.refresh) this.refresh = this.check.reason ?? 'no usable prebuild'
     }
     for (;;) {
+      // Each pass fills a NEW container: what an earlier pass restored is gone with its own (a
+      // clone after a failed `restore.rN` must install).
+      this.prebuilt = null
       const started = await this.run(
         this.name('sandbox.start'),
         withProgress('sandbox', startSandboxStep),
@@ -363,7 +366,10 @@ type ShipRound =
 export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWorkflowParams> {
   /** Tests only — see the header. */
   overrides: SessionWorkflowOverrides = {}
-  /** Issue #16: `SESSION_PREBUILD` is not `off` (read once per run, with the rest of the config). */
+  /**
+   * Issue #16: `SESSION_PREBUILD` is not `off` — taken from the `claim` step's RESULT, so every
+   * replay of this run sees the value the run started with, even across a config change.
+   */
   private prebuilds = false
 
   async run(
@@ -373,7 +379,6 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
     const params = event.payload
     const env = this.env
     const cfg = loadConfig(env)
-    this.prebuilds = prebuildsEnabled(cfg)
     const logger = loggerFor(cfg, { handler: 'workflow', workflow: 'session', ...params })
     // The session's frozen sandbox host (`sessions.sandbox_host`), read once per step — the
     // setting can change while a session runs, and a session never moves host.
@@ -406,7 +411,12 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       return (config ? step.do(name, config, body) : step.do(name, body)) as never
     }
 
-    const claim = await run('claim', claimStep)
+    const claim = await run('claim', async s => ({
+      ...(await claimStep(s)),
+      prebuilds: prebuildsEnabled(s.cfg),
+    }))
+    // A result recorded before issue #16 has no flag: no prebuild for that run.
+    this.prebuilds = claim.prebuilds === true
     if (claim.start === 'skip') return { sessionId: params.sessionId, status: claim.status }
     if (claim.start === 'land') {
       // Issue #5 Phase B under a fresh instance: the merge is done; cleanup if it never ran.
@@ -540,11 +550,11 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
       withProgress('prebuild', s => prebuildBuildStep(s, booted)),
       BOOT_STEP
     )
-    const { baseSha, treeSha, lockfileHash, buildMs } = built
+    const { baseSha, treeSha, lockfileHash, buildMs, imageVersion } = built
     await run(
       'prebuild.save',
       withProgress('prebuild', s =>
-        prebuildSaveStep(s, booted, { baseSha, treeSha, lockfileHash, buildMs })
+        prebuildSaveStep(s, booted, { baseSha, treeSha, lockfileHash, buildMs, imageVersion })
       ),
       BOOT_STEP
     )

@@ -149,7 +149,8 @@ new_classes = ["NotificationsHub"]
 # Object (it extends the Sandbox SDK's class), reached with `getSandbox(env.SESSION_SANDBOX, id)`;
 # SQLite-backed, as the SDK requires. `image` is built by `wrangler deploy` (and by `wrangler dev`,
 # with Docker). **Changing the image or this block replaces running instances: drain sessions
-# first** (docs/DEPLOY.md § Coding sessions). `max_instances` is also the cap on live sessions.
+# first** (docs/DEPLOY.md § Coding sessions). `max_instances` is also the cap on live sessions — and Launch's own
+# SESSION_MAX_CONTAINERS (default 10) must follow it: a prebuild only starts while two slots are free.
 [[containers]]
 class_name = "SessionSandbox"
 image = "./containers/session/Dockerfile"

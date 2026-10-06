@@ -129,6 +129,9 @@ SESSION_WORKSPACE_BACKUP=
 # clones the app's default branch, installs, and saves it; new sessions restore it instead of
 # cloning and installing. `off` if your Docker cannot take that second container beside a session.
 SESSION_PREBUILD=
+# This Worker's `[[containers]] max_instances` (the tomls say 10): a prebuild is only started while
+# two of them are free. Set it with the toml if you change the cap.
+SESSION_MAX_CONTAINERS=
 # Where a session's CONTAINER runs is a PLATFORM SETTING now, not a var: Settings → Platform →
 # Coding agents → Session sandbox — this Worker's containers (wrangler dev's Docker) or the remote
 # sandbox host (a real Cloudflare container in the deployed `launch-sandbox-dev` Worker). `pnpm dev`

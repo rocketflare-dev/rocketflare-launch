@@ -543,7 +543,8 @@ describe('landing: CI green', () => {
 
 describe('landing: the app prebuild (issue #16)', () => {
   it('a merge asks for a new prebuild of the default branch, then the session cleans up', async () => {
-    const h = await harness({ SESSION_PREBUILD: 'on' })
+    // A cap far above the shared test database's live sessions (the count is platform-wide).
+    const h = await harness({ SESSION_PREBUILD: 'on', SESSION_MAX_CONTAINERS: '100000' })
     const prebuildRow = and(
       eq(appPrebuilds.tenantId, h.f.tenant.id),
       eq(appPrebuilds.appId, h.f.app.id)

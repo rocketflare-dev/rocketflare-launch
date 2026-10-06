@@ -100,7 +100,7 @@ import {
   sandboxHostOf,
   sessionAllowedHosts,
 } from './ports'
-import { releasePrebuildClaim } from './prebuild'
+import { followUpPrebuild, releasePrebuildClaim } from './prebuild'
 import {
   type BootstrapSkip,
   healDevSetup,
@@ -2430,6 +2430,7 @@ export async function failStep(scope: StepScope, message: string): Promise<void>
       appId: session.appId,
       sessionId: session.id,
       error: message,
+      now: scope.now(),
     })
   }
   if ((TERMINAL_SESSION_STATUSES as readonly string[]).includes(session.status)) return
@@ -2490,7 +2491,26 @@ export async function cleanupStep(scope: StepScope): Promise<{ status: SessionSt
       appId: session.appId,
       sessionId: session.id,
       error: session.error ?? 'The prebuild ended before it was saved',
+      now: scope.now(),
     })
+    // A request that came while it was building is not lost with it (the backoff may defer it).
+    await followUpPrebuild(scope.db, scope.env, scope.cfg, session, scope.now())
+      .then(result =>
+        result
+          ? emitterFor(scope)({
+              type: 'workspace.prebuild',
+              turn: 0,
+              data: result.requested
+                ? {
+                    status: 'requested',
+                    reason: 'asked for while this one was building',
+                    prebuildSessionId: result.sessionId,
+                  }
+                : { status: 'deferred', reason: result.reason },
+            })
+          : undefined
+      )
+      .catch(err => scope.logger.warn({ err }, 'session: could not follow a prebuild up'))
   }
   const now = scope.now()
   const keep = session.status === 'shipped' || session.status === 'failed'
