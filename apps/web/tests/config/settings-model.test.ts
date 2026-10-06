@@ -12,7 +12,7 @@ import {
   legacyTabPath,
   SETTINGS_PATHS,
 } from '@/ui/lib/settings-paths'
-import { setupChecklist } from '@/ui/pages/home/homeModel'
+import { connectionChecks, setupChecklist } from '@/ui/pages/home/homeModel'
 import {
   firstSettingsPath,
   settingsGroups,
@@ -128,6 +128,42 @@ describe("Home's setup checklist", () => {
     expect(list.complete).toBe(false)
     expect(list.rows.find(r => r.id === 'resend')?.path).toBe('/settings/email')
     expect(setupChecklist(steps({ identity: 'warning' })).complete).toBe(true)
+  })
+
+  it("says what is wrong in the worst probe's words, from the overview's checks", () => {
+    const check = (id: string, status: 'ok' | 'warning' | 'failed', detail?: string) => ({
+      id,
+      label: `${id} label`,
+      status,
+      detail,
+    })
+    const checks = connectionChecks({
+      credentials: [
+        {
+          kind: 'cloudflare_api_token',
+          lastCheck: [check('zone.found', 'ok'), check('token.write', 'warning')],
+        },
+        {
+          kind: 'resend_api_key',
+          lastCheck: [
+            check('resend.key', 'warning', 'later'),
+            check('resend.domain', 'failed', 'Add and verify the domain.'),
+          ],
+        },
+      ] as never,
+      identity: { checks: [check('sso', 'warning')] } as never,
+      publicUrl: { checks: [] } as never,
+    })
+    expect(checks.domain?.map(c => c.id)).toEqual(['zone.found'])
+    const list = setupChecklist(
+      steps({ cloudflare: 'warning', resend: 'failed', identity: 'warning' }),
+      checks
+    )
+    const reason = (id: string) => list.rows.find(r => r.id === id)?.reason
+    expect(reason('domain')).toBeNull()
+    expect(reason('cloudflare')).toBe('token.write label')
+    expect(reason('resend')).toBe('Add and verify the domain.')
+    expect(reason('identity')).toBe('sso label')
   })
 
   it('treats a step the server did not report as not set', () => {

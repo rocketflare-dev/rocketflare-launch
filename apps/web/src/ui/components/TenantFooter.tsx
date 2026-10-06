@@ -15,11 +15,14 @@ export function TenantFooter() {
         {tenant.name}
       </span>
       {isGlobalAdmin ? (
-        <span className="badge badge-sm badge-info" title={`Organisation role: ${tenant.role}`}>
+        <span
+          className="badge badge-sm badge-info shrink-0 whitespace-nowrap"
+          title={`Organisation role: ${tenant.role}`}
+        >
           Global admin
         </span>
       ) : (
-        <RoleBadge role={tenant.role} />
+        <RoleBadge role={tenant.role} className="shrink-0" />
       )}
     </div>
   )

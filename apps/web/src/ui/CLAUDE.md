@@ -596,7 +596,7 @@ A `CUSTOM kit.notice` renders
   last reported (`healthVersion`) — the catalogue row carries no `lastDeployVersion` and no
   releases, so a release that failed before any deploy shows on the app page, not here.
   `UiPlugin.homeLinks` render last as one line of links. Tests: `home`, `app-thumbnails`.
-- **"Finish setting up Launch — n of 7"** (`home/SetupChecklistSection.tsx`, `platformAdmin`)
+- **"Finish setting up Launch — n of 7 working"** (`home/SetupChecklistSection.tsx`, `platformAdmin`)
   leads the page while any connection is unfinished: one row per connection in the Connections
   menu's order — its dot (`aria-hidden`; the state is spelled out), its name linking to its
   Settings page, its state in words — from `setupChecklist(steps)` in `homeModel.ts`. A `warning`

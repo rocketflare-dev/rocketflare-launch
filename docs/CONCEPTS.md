@@ -302,7 +302,7 @@ re-uploads leave the old object; no listing endpoint, quotas or presigned URLs; 
   `<select>`. It replaced `/settings?tab=`, `/settings/platform/*` and `/admin/*`, and every old
   address — the setup wizard's `#setup-<step>` anchors, `/audit`, `/activity` included — redirects
   (`components/SettingsRoutes.tsx`). While a connection is unfinished, a platform admin's Home
-  leads with "Finish setting up Launch — n of 7" (a warning counts as finished).
+  leads with "Finish setting up Launch — n of 7 working" (a warning counts as finished).
 - **Data**: `api-client.ts` parses with shared schemas, there is one hook file per resource, and
   keys come from `queryKeys`. zustand holds only websocket state. Detail: `.claude/rules/ui.md`,
   `apps/web/src/ui/CLAUDE.md`.

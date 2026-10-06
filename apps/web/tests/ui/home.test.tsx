@@ -256,7 +256,10 @@ describe('Home — finish setting up Launch', () => {
     renderWithProviders(<Home />, { session: singleOwner() })
     // domain ok, cloudflare warning (working), identity ok → 3 of 7.
     expect(
-      await screen.findByRole('heading', { level: 2, name: 'Finish setting up Launch — 3 of 7' })
+      await screen.findByRole('heading', {
+        level: 2,
+        name: 'Finish setting up Launch — 3 of 7 working',
+      })
     ).toBeInTheDocument()
     const list = screen.getByRole('list', { name: 'Connections' })
     const rows = within(list).getAllByRole('listitem')
@@ -281,6 +284,8 @@ describe('Home — finish setting up Launch', () => {
     expect(rows[4]?.lastElementChild).toHaveTextContent('Failed')
     expect(rows[2]?.lastElementChild).toHaveTextContent('Not set')
     expect(rows[1]?.lastElementChild).toHaveTextContent('Needs a look')
+    // What is wrong, in the failing probe's own words, under the name.
+    expect(rows[4]).toHaveTextContent('notifications.company-apps.test is not a Resend domain yet.')
   })
 
   it('is gone once every connection works', async () => {

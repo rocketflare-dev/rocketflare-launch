@@ -12,7 +12,14 @@ import type {
   AppEnvironmentName,
   AppEnvironmentSummary,
 } from '@launch/shared/launch-apps'
-import type { SetupStep, SetupStepId, SetupStepStatus } from '@launch/shared/launch-setup'
+import type {
+  CredentialCheck,
+  CredentialKind,
+  SetupOverview,
+  SetupStep,
+  SetupStepId,
+  SetupStepStatus,
+} from '@launch/shared/launch-setup'
 import { CONNECTION_LABELS, CONNECTION_ORDER, CONNECTION_PATHS } from '@/ui/lib/settings-paths'
 import { ENV_LABEL, notDeployedYet } from '../apps/app/appPageModel'
 import { v } from '../apps/components/promotionModel'
@@ -87,6 +94,8 @@ export interface SetupChecklistRow {
   status: SetupStepStatus
   /** Working: `ok`, or `warning` — a choice the server flags but that works (magic link only). */
   done: boolean
+  /** What is wrong, in the check's own words — its worst probe's detail, else its label. */
+  reason: string | null
 }
 
 export interface SetupChecklist {
@@ -103,7 +112,10 @@ export interface SetupChecklist {
  * deliberate (no SSO provider: people sign in by magic link) and the list must be able to go away;
  * the Connections menu still shows its dot. Pure.
  */
-export function setupChecklist(steps: readonly SetupStep[]): SetupChecklist {
+export function setupChecklist(
+  steps: readonly SetupStep[],
+  checks: ConnectionChecks = {}
+): SetupChecklist {
   const byId = new Map(steps.map(step => [step.id, step.status]))
   const rows = CONNECTION_ORDER.map(id => {
     const status = byId.get(id) ?? 'todo'
@@ -113,8 +125,45 @@ export function setupChecklist(steps: readonly SetupStep[]): SetupChecklist {
       path: CONNECTION_PATHS[id],
       status,
       done: status === 'ok' || status === 'warning',
+      reason: status === 'ok' ? null : worstCheck(checks[id] ?? []),
     }
   })
   const done = rows.filter(row => row.done).length
   return { rows, done, total: rows.length, complete: done === rows.length }
+}
+
+/** Each connection's last probes, as its Connections page lists them. */
+export type ConnectionChecks = Partial<Record<SetupStepId, readonly CredentialCheck[]>>
+
+const STEP_CREDENTIAL: Partial<Record<SetupStepId, CredentialKind>> = {
+  cloudflare: 'cloudflare_api_token',
+  neon: 'neon_org_api_key',
+  resend: 'resend_api_key',
+  github: 'github_app',
+}
+
+/**
+ * The probes behind each connection's dot, from the setup overview: a credential's last check,
+ * the Domain page's `zone.*` share of Cloudflare's, and Sign-in's and Public URL's own. Pure.
+ */
+export function connectionChecks(
+  overview: Pick<SetupOverview, 'credentials' | 'identity' | 'publicUrl'>
+): ConnectionChecks {
+  const lastCheck = (kind: CredentialKind) =>
+    overview.credentials.find(c => c.kind === kind)?.lastCheck ?? []
+  const out: ConnectionChecks = {
+    domain: lastCheck('cloudflare_api_token').filter(c => c.id.startsWith('zone.')),
+    identity: overview.identity.checks,
+    public_url: overview.publicUrl.checks,
+  }
+  for (const [step, kind] of Object.entries(STEP_CREDENTIAL) as [SetupStepId, CredentialKind][]) {
+    out[step] = lastCheck(kind)
+  }
+  return out
+}
+
+/** The first failed probe, else the first warning: its detail when it has one, else its label. */
+function worstCheck(checks: readonly CredentialCheck[]): string | null {
+  const worst = checks.find(c => c.status === 'failed') ?? checks.find(c => c.status === 'warning')
+  return worst ? (worst.detail ?? worst.label) : null
 }
