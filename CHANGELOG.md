@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-- **A session on kit 0.17.4 or later bootstraps through the kit's own flags** (epic #7). The kit
-  bootstrap runs with `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (the database check, plus the
+- **A session whose kit bootstrap takes the kit's own flags (0.17.4+) uses them** (epic #7). The
+  kit bootstrap runs with `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (the database check, plus the
   seed and migrate a resume leaves out) and `ROCKETFLARE_ALLOW_ROOT=1`, and its `--offline` no
   longer runs `wrangler whoami`, so Launch's preload no longer has to stand in for those children.
-  The version is the checkout's own (`.rocketflare.json` `kit.version`, else `launch.plugins.json`
-  `kitVersion`), read at every bootstrap; an older kit, or one Launch cannot read, keeps the
-  stand-ins. The boot's steps and its `boot.timing` phases are unchanged. No migration.
+  Launch detects it from the checkout's own `scripts/lib/bootstrap-lib.mjs` at every bootstrap
+  (never from a version: a Launch-style copy's `launch.plugins.json` `kitVersion` is its plugin-API
+  level); an older parser, or one Launch cannot read, keeps the stand-ins. The boot's steps and its `boot.timing` phases are unchanged. No migration.
 - **A container replaced mid-boot fails fast and the boot starts again from the sandbox** (epic
   #7). A long command (the install, the kit bootstrap) whose container was replaced is noticed at
   the next poll — even one that had printed nothing, which used to be polled to its 10-minute

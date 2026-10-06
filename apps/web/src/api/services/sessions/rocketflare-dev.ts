@@ -12,8 +12,8 @@
  *    against ~17 s cold).
  * 2. `node scripts/bootstrap.mjs --db-url "$LAUNCH_DB_URL" --driver neon --offline --no-dev
  *    --no-open --no-plugins --yes` (with `NOT_ROOT_PRELOAD`: the kit refuses root, and a sandbox
- *    runs as root; plus `--no-install` and the kit's own skip and root variables on a kit that
- *    takes them — {@link bootstrapInvocation}) — the kit's own first run against a database it
+ *    runs as root; plus `--no-install` and the kit's own skip and root variables on a checkout
+ *    whose bootstrap takes them — {@link bootstrapInvocation}) — the kit's own first run against a database it
  *    does not own:
  *    `.dev.vars` from the example with the URL and a fresh encryption key, migrate, seed
  *    (idempotent; `SEED_ALLOW_REMOTE=1` under `--db-url`). **`--no-plugins`**: a session never changes the app's plugin set — the repo's
@@ -58,8 +58,6 @@
  * bootstrap command and in the checkout's git-ignored `.dev.vars`; never in an argument, a step
  * result or an event.
  */
-import { kitVersionOf, kitVersionReached } from '@launch/shared/launch-upgrades'
-import { MANIFEST_PATHS, parseManifest } from '../launch/rocketflare-manifest'
 import {
   BackgroundCommandTimeoutError,
   formatDuration,
@@ -190,7 +188,7 @@ export const INSTALL_COMMAND = 'pnpm install --frozen-lockfile --prefer-offline 
  * sandbox's commands run as root — the container is the isolation boundary, not the user. This
  * preload tells the bootstrap's ONE check otherwise; everything it runs (pnpm, migrate, seed)
  * still runs as root. Kit 0.17.4 added the explicit opt-out (`ROCKETFLARE_ALLOW_ROOT=1`), which
- * {@link bootstrapInvocation} sets on such a kit; the stand-in stays for older ones.
+ * {@link bootstrapInvocation} sets when the checkout's bootstrap takes it; the stand-in stays for older ones.
  *
  * **It also makes the bootstrap's database work lighter.** The kit's bootstrap has no flag to skip
  * its migrate, seed or database check, and reaches each ONLY as a `pnpm <script>` child
@@ -290,10 +288,18 @@ export const BOOTSTRAP_KEEP_ENV = 'LAUNCH_BOOTSTRAP_KEEP'
  * `--no-install` leaves step 2's `pnpm install` out (it still checks
  * `apps/web/node_modules/.bin/wrangler`, exit 3 without it), `ROCKETFLARE_BOOTSTRAP_SKIP` names
  * steps 1-8 to leave out (each prints `✔ n/10 <name> skipped (ROCKETFLARE_BOOTSTRAP_SKIP)`; an
- * unknown name is exit 2) and `ROCKETFLARE_ALLOW_ROOT=1` lifts the root refusal. An OLDER kit
- * refuses `--no-install` as an unknown flag, so the version decides ({@link bootstrapInvocation}).
+ * unknown name is exit 2) and `ROCKETFLARE_ALLOW_ROOT=1` lifts the root refusal. An OLDER bootstrap
+ * refuses `--no-install` as an unknown option, so the CHECKOUT's own parser decides
+ * ({@link kitBootstrapFlagsIn}) — never a version number: a Launch-style copy's
+ * `launch.plugins.json` `kitVersion` is its plugin-API level, not the age of its bootstrap.
  */
-export const KIT_BOOTSTRAP_FLAGS_VERSION = '0.17.4'
+export const KIT_BOOTSTRAP_LIB = 'scripts/lib/bootstrap-lib.mjs'
+/** What {@link KIT_BOOTSTRAP_LIB} must contain for the kit's flags to be used: all three. */
+export const KIT_BOOTSTRAP_FLAG_MARKERS = [
+  "'--no-install'",
+  'ROCKETFLARE_BOOTSTRAP_SKIP',
+  'ROCKETFLARE_ALLOW_ROOT',
+] as const
 /** The kit's own variable: comma-separated step names (`BOOTSTRAP_SKIPPABLE_STEPS`) to leave out. */
 export const KIT_BOOTSTRAP_SKIP_ENV = 'ROCKETFLARE_BOOTSTRAP_SKIP'
 /** The kit's own variable: `1` lets the bootstrap run as uid 0. */
@@ -320,22 +326,22 @@ export interface BootstrapInvocation {
 }
 
 /**
- * How the kit bootstrap is told what to leave out (`skip` plus {@link ALWAYS_SKIPPED}), by the
- * checkout's kit version:
+ * How the kit bootstrap is told what to leave out (`skip` plus {@link ALWAYS_SKIPPED}), by what
+ * the checkout's bootstrap understands ({@link checkoutTakesKitFlags}):
  *
- * - **0.17.4 or later** — the kit's own flags: `--no-install`, {@link KIT_BOOTSTRAP_SKIP_ENV}
+ * - **it takes the kit's flags (0.17.4+)** — `--no-install`, {@link KIT_BOOTSTRAP_SKIP_ENV}
  *   with the steps {@link KIT_STEP_OF} names, {@link KIT_ALLOW_ROOT_ENV}`=1`, and `whoami` left to
  *   `--offline`. The preload stays: it still runs a `db:migrate` that is not skipped as the
  *   migrator alone and keeps the tracked files unwritten (`BOOTSTRAP_KEEP_ENV`); its uid stand-in
  *   is then redundant, and its `pnpm` stand-ins never match (no {@link BOOTSTRAP_SKIP_ENV}).
- * - **older, or a version Launch cannot read** — the preload's stand-ins, as before.
+ * - **it does not, or its parser could not be read** — the preload's stand-ins, as before.
  */
 export function bootstrapInvocation(
-  kitVersion: string | null,
+  kitFlags: boolean,
   skip: readonly BootstrapSkip[] = []
 ): BootstrapInvocation {
   const skipped = new Set<BootstrapSkip>([...skip, ...ALWAYS_SKIPPED])
-  if (!kitVersionReached(kitVersion, KIT_BOOTSTRAP_FLAGS_VERSION)) {
+  if (!kitFlags) {
     return {
       command: BOOTSTRAP_COMMAND,
       env: { [BOOTSTRAP_SKIP_ENV]: [...skipped].join(',') },
@@ -353,25 +359,22 @@ export function bootstrapInvocation(
   }
 }
 
+/** Does this `scripts/lib/bootstrap-lib.mjs` text parse the kit's flags? Pure. */
+export function kitBootstrapFlagsIn(libText: string | null): boolean {
+  return libText !== null && KIT_BOOTSTRAP_FLAG_MARKERS.every(marker => libText.includes(marker))
+}
+
 /**
- * The checkout's kit version: `.rocketflare.json`'s `kit.version`, else a renamed Launch-style
- * copy's `launch.plugins.json` `kitVersion` (`MANIFEST_PATHS`, the import's own order). Read from
- * the CHECKOUT, not `apps.template_version`: a kit-upgrade session's resume bootstraps the kit its
- * branch now carries, and the upgrade script stamps the manifest last, after a clean apply. Null
- * when neither file answers or parses — the stand-ins then work on any kit.
+ * Whether the checkout's bootstrap takes the kit's own flags — FEATURE-detected from its argument
+ * parser ({@link KIT_BOOTSTRAP_LIB}, one read), at every bootstrap, so a kit-upgrade session's
+ * resume follows its branch. The parser is what refuses an unknown option, so it is the file that
+ * decides; a bootstrap whose `bootstrap.mjs` lags its parser still works (it only runs the step it
+ * was told to leave out). A read that fails, or no such file, keeps the stand-ins, which work on
+ * any kit.
  */
-export async function checkoutKitVersion(sandbox: SandboxPort): Promise<string | null> {
-  for (const file of MANIFEST_PATHS) {
-    const text = await sandbox.readFile(`${SESSION_WORKSPACE}/${file}`).catch(() => null)
-    if (text === null) continue
-    try {
-      const version = kitVersionOf(parseManifest(text, file).kitVersion)
-      if (version) return version
-    } catch {
-      // Not a manifest: the next file, or the stand-ins.
-    }
-  }
-  return null
+export async function checkoutTakesKitFlags(sandbox: SandboxPort): Promise<boolean> {
+  const text = await sandbox.readFile(`${SESSION_WORKSPACE}/${KIT_BOOTSTRAP_LIB}`).catch(() => null)
+  return kitBootstrapFlagsIn(text)
 }
 
 // ---- the dev setup never touches a tracked file ------------------------------------------------
@@ -829,8 +832,8 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   const t1 = Date.now()
   await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
   // The database check, the kit's second install and its wrangler login check never run in a
-  // sandbox: through the kit's own flags from 0.17.4, the preload's stand-ins before it.
-  const invocation = bootstrapInvocation(await checkoutKitVersion(sandbox), ctx.skip)
+  // sandbox: through the kit's own flags when its bootstrap takes them, else the preload's.
+  const invocation = bootstrapInvocation(await checkoutTakesKitFlags(sandbox), ctx.skip)
   await show(BOOTSTRAP_PROGRESS)
   // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
   await runPhase(progressCtx, 'bootstrap', {

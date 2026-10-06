@@ -479,9 +479,9 @@ describe('SessionWorkflow: boot', () => {
       .filter(e => e.type === 'step')
       .map(e => e.data as { key: string; status: string; detail?: string })
     const settled = steps.filter(s => s.key === 'bootstrap' && s.status !== 'running')
-    // The step's own error, then the checklist's word that the boot carries on, then done.
-    expect(settled.map(s => s.status)).toEqual(['error', 'error', 'done'])
-    expect(settled[1]?.detail).toBe(BOOT_RESTART_DETAIL)
+    // ONE error row, saying the boot carries on, then done.
+    expect(settled.map(s => s.status)).toEqual(['error', 'done'])
+    expect(settled[0]?.detail).toBe(BOOT_RESTART_DETAIL)
     expect(steps.at(-1)).toMatchObject({ key: 'dev', status: 'done' })
     expect(steps.filter(s => s.key === 'sandbox' && s.status === 'done')).toHaveLength(2)
     // `boot.timing` counts both attempts: two sandbox starts and two clones.

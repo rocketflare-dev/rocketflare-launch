@@ -22,13 +22,15 @@ import {
   BOOTSTRAP_COMMAND,
   BOOTSTRAP_SKIP_ENV,
   bootstrapInvocation,
-  checkoutKitVersion,
+  checkoutTakesKitFlags,
   claudeSettingsLocal,
   DEV_COMMAND,
   INSTALL_COMMAND,
   KIT_ALLOW_ROOT_ENV,
-  KIT_BOOTSTRAP_FLAGS_VERSION,
+  KIT_BOOTSTRAP_FLAG_MARKERS,
+  KIT_BOOTSTRAP_LIB,
   KIT_BOOTSTRAP_SKIP_ENV,
+  kitBootstrapFlagsIn,
   previewHostSuffix,
   SESSION_API_PORT,
   SESSION_IMAGE_VERSION,
@@ -191,7 +193,7 @@ describe('the bootstrap command', () => {
   })
 })
 
-describe('the kit’s own bootstrap flags (kit 0.17.4+)', () => {
+describe('the kit’s own bootstrap flags (kit 0.17.4+, feature-detected)', () => {
   /**
    * The kit's `BOOTSTRAP_SKIPPABLE_STEPS` (0.17.4 `scripts/lib/bootstrap-lib.mjs`): any other name
    * in `ROCKETFLARE_BOOTSTRAP_SKIP` is a usage error (exit 2).
@@ -207,21 +209,27 @@ describe('the kit’s own bootstrap flags (kit 0.17.4+)', () => {
     'cloudflare',
   ]
   const dbUri = 'postgresql://session_owner:pw@ep-kit-000001.us-east-2.aws.neon.tech/session_app'
-  const manifest = (version: string) =>
-    JSON.stringify({ app: { slug: 'hola-world' }, kit: { version, commit: 'abc' } })
+  /** The lines of the kit 0.17.4 parser (`scripts/lib/bootstrap-lib.mjs`) the detection reads. */
+  const KIT_0174_LIB = `export function parseBootstrapArgs(argv, env = {}) {
+  const skip = new Set(parseBootstrapSkip(env.ROCKETFLARE_BOOTSTRAP_SKIP))
+  const opts = { allowRoot: env.ROCKETFLARE_ALLOW_ROOT === '1' }
+  switch (arg) {
+      case '--no-install':
+        skip.add('install')
+  }
+}`
+  const libPath = `${SESSION_WORKSPACE}/${KIT_BOOTSTRAP_LIB}`
   const bootstrapRun = (sandbox: FakeSandbox) =>
     sandbox.backgroundRuns.find(r => /scripts\/bootstrap\.mjs/.test(r.command))
 
-  it('from 0.17.4: --no-install, the kit’s step skip and root opt-in — no stand-ins', () => {
-    for (const version of [KIT_BOOTSTRAP_FLAGS_VERSION, '0.17.7', '0.18.0', '1.0.0']) {
-      expect(bootstrapInvocation(version)).toEqual({
-        command: `${BOOTSTRAP_COMMAND} --no-install`,
-        env: { [KIT_ALLOW_ROOT_ENV]: '1', [KIT_BOOTSTRAP_SKIP_ENV]: 'database' },
-        kitFlags: true,
-      })
-    }
+  it('a bootstrap that takes them: --no-install, the kit’s step skip and root opt-in — no stand-ins', () => {
+    expect(bootstrapInvocation(true)).toEqual({
+      command: `${BOOTSTRAP_COMMAND} --no-install`,
+      env: { [KIT_ALLOW_ROOT_ENV]: '1', [KIT_BOOTSTRAP_SKIP_ENV]: 'database' },
+      kitFlags: true,
+    })
     // A resume against a prepared database: the seed and the migrate too, as the kit names them.
-    const resume = bootstrapInvocation('0.17.4', ['seed', 'db-check', 'migrate'])
+    const resume = bootstrapInvocation(true, ['seed', 'db-check', 'migrate'])
     expect(resume.env[KIT_BOOTSTRAP_SKIP_ENV]?.split(',').sort()).toEqual([
       'database',
       'migrate',
@@ -234,40 +242,50 @@ describe('the kit’s own bootstrap flags (kit 0.17.4+)', () => {
     expect(resume.env).not.toHaveProperty(BOOTSTRAP_SKIP_ENV)
   })
 
-  it('before 0.17.4, or a version Launch cannot read: the preload’s stand-ins, as before', () => {
-    for (const version of ['0.17.3', '0.16.0', '0.15.0', null, 'main', '']) {
-      expect(bootstrapInvocation(version)).toEqual({
-        command: BOOTSTRAP_COMMAND,
-        env: { [BOOTSTRAP_SKIP_ENV]: ALWAYS_SKIPPED.join(',') },
-        kitFlags: false,
-      })
-    }
-    expect(bootstrapInvocation('0.17.3', ['seed', 'migrate']).env).toEqual({
+  it('a bootstrap that does not: the preload’s stand-ins, as before', () => {
+    expect(bootstrapInvocation(false)).toEqual({
+      command: BOOTSTRAP_COMMAND,
+      env: { [BOOTSTRAP_SKIP_ENV]: ALWAYS_SKIPPED.join(',') },
+      kitFlags: false,
+    })
+    expect(bootstrapInvocation(false, ['seed', 'migrate']).env).toEqual({
       [BOOTSTRAP_SKIP_ENV]: ['seed', 'migrate', ...ALWAYS_SKIPPED].join(','),
     })
   })
 
-  it('reads the version from the checkout: .rocketflare.json, else launch.plugins.json', async () => {
-    const sandbox = new FakeSandbox({ name: 'kv' })
-    expect(await checkoutKitVersion(sandbox)).toBeNull()
-    sandbox.files.set(`${SESSION_WORKSPACE}/launch.plugins.json`, '{"kitVersion":"0.15.0"}')
-    expect(await checkoutKitVersion(sandbox)).toBe('0.15.0')
-    sandbox.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('v0.17.4'))
-    expect(await checkoutKitVersion(sandbox)).toBe('0.17.4')
-    // Not a manifest: the next file.
-    sandbox.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, '<<<<<<< HEAD')
-    expect(await checkoutKitVersion(sandbox)).toBe('0.15.0')
-    // A read that fails is no version, never a failed bootstrap.
-    sandbox.files.delete(`${SESSION_WORKSPACE}/launch.plugins.json`)
-    sandbox.failNext('readFile', new Error('HTTP error! status: 500'))
-    expect(await checkoutKitVersion(sandbox)).toBeNull()
+  it('is detected from the checkout’s own parser, never from a version number', () => {
+    expect(kitBootstrapFlagsIn(KIT_0174_LIB)).toBe(true)
+    expect(kitBootstrapFlagsIn(null)).toBe(false)
+    // Each marker is needed: a parser with only some of them would refuse the rest.
+    for (const marker of KIT_BOOTSTRAP_FLAG_MARKERS) {
+      expect(kitBootstrapFlagsIn(KIT_0174_LIB.split(marker).join('x'))).toBe(false)
+    }
+    // Launch's own copy (a renamed kit whose launch.plugins.json kitVersion is its plugin-API
+    // level) has the older parser: `--no-install` would be "unknown option" there.
+    const launchLib = readFileSync(path.join(WEB, '../..', KIT_BOOTSTRAP_LIB), 'utf8')
+    expect(kitBootstrapFlagsIn(launchLib)).toBe(false)
   })
 
-  it('sessionBootstrap on a 0.17.4 checkout runs the kit’s flags; on 0.17.3 the stand-ins', async () => {
+  it('reads the parser once; a missing file or a failed read keeps the stand-ins', async () => {
+    const sandbox = new FakeSandbox({ name: 'kv' })
+    // A manifest claiming a new kit decides nothing.
+    sandbox.files.set(`${SESSION_WORKSPACE}/launch.plugins.json`, '{"kitVersion":"0.18.0"}')
+    sandbox.files.set(
+      `${SESSION_WORKSPACE}/.rocketflare.json`,
+      JSON.stringify({ kit: { version: '0.18.0' } })
+    )
+    expect(await checkoutTakesKitFlags(sandbox)).toBe(false)
+    sandbox.files.set(libPath, KIT_0174_LIB)
+    expect(await checkoutTakesKitFlags(sandbox)).toBe(true)
+    sandbox.failNext('readFile', new Error('HTTP error! status: 500'))
+    expect(await checkoutTakesKitFlags(sandbox)).toBe(false)
+  })
+
+  it('sessionBootstrap runs the kit’s flags on a checkout that takes them, the stand-ins otherwise', async () => {
     const dev = devEnvFor(devCloud, session)
     const modern = new FakeSandbox({ name: 'k1' })
     await modern.start()
-    modern.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('0.17.4'))
+    modern.files.set(libPath, KIT_0174_LIB)
     await sessionBootstrap({ sandbox: modern, dbUri, dev, skip: ['seed', 'db-check'] })
     const kit = bootstrapRun(modern)
     expect(kit?.command).toContain(`${BOOTSTRAP_COMMAND} --no-install`)
@@ -284,7 +302,7 @@ describe('the kit’s own bootstrap flags (kit 0.17.4+)', () => {
 
     const older = new FakeSandbox({ name: 'k2' })
     await older.start()
-    older.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('0.17.3'))
+    older.files.set(libPath, 'export function parseBootstrapArgs(argv) {}')
     await sessionBootstrap({ sandbox: older, dbUri, dev, skip: ['seed', 'db-check'] })
     const stubbed = bootstrapRun(older)
     expect(stubbed?.command).not.toContain('--no-install')

@@ -142,6 +142,11 @@ export interface StepScope {
    * `running`, with this `detail`. Callers only call it when the detail CHANGES.
    */
   progress?: (detail: string) => Promise<void>
+  /**
+   * Set by {@link restartable}: a replaced container is not this step's end, so `withProgress`
+   * says the boot is starting again ({@link BOOT_RESTART_DETAIL}) on its one error row.
+   */
+  restartable?: boolean
 }
 
 export const limitsOf = (scope: Pick<StepScope, 'limits'>): SessionCallLimits =>
@@ -419,16 +424,10 @@ export function restartable<T>(
 ): (scope: StepScope) => Promise<T | BootRestart> {
   return async scope => {
     try {
-      return await body(scope)
+      return await body({ ...scope, restartable: true })
     } catch (err) {
       if (!(err instanceof SandboxRestartedError)) throw err
       scope.logger.warn({ err, phase }, 'session: container replaced mid-boot')
-      const label = BOOT_STEP_LABELS[phase]
-      await emitterFor(scope)({
-        type: 'step',
-        turn: 0,
-        data: { key: phase, label, status: 'error', detail: BOOT_RESTART_DETAIL },
-      })
       return { restart: err.message }
     }
   }
@@ -1450,7 +1449,9 @@ export function withProgress<T extends object>(
           detail:
             err instanceof SessionEndRequestedError
               ? 'Stopped: the session is being ended'
-              : safeErrorMessage(err, 'The step failed', BOOT_ERROR_MAX_CHARS),
+              : scope.restartable && err instanceof SandboxRestartedError
+                ? BOOT_RESTART_DETAIL
+                : safeErrorMessage(err, 'The step failed', BOOT_ERROR_MAX_CHARS),
         },
       })
       throw err

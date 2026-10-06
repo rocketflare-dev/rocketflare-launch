@@ -1562,13 +1562,16 @@ reload) is restarted as `<id>-rN` from the row.
   wrangler's bin exists) and step 8's `pnpm web exec wrangler whoami` (answered with wrangler's "You
   are not authenticated", so `--offline` takes its not-logged-in branch as before) — 8-12 s of a
   local boot, checked against the kit's `bootstrap.mjs` / `parseWhoami`, identical 0.15.0 → 0.17.3.
-  **A checkout on kit 0.17.4 or later** (its `.rocketflare.json` `kit.version`, else
-  `launch.plugins.json`'s `kitVersion`, read from the CHECKOUT at each bootstrap so a kit-upgrade
-  session's resume follows its branch — `bootstrapInvocation`) gets the kit's own flags instead:
+  **A checkout whose bootstrap takes the kit's own flags** (kit 0.17.4+) gets them instead:
   `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (`database` for the check, plus `seed` / `migrate`
   on a resume), `ROCKETFLARE_ALLOW_ROOT=1`, and nothing for whoami — the kit's `--offline` no
-  longer runs it; an older or unreadable version keeps the stand-ins, which work on any kit. The
-  preload still loads either way
+  longer runs it. It is FEATURE-detected, never read from a version: one read of the checkout's
+  `scripts/lib/bootstrap-lib.mjs` at each bootstrap (so a kit-upgrade session's resume follows its
+  branch), which must name `'--no-install'`, `ROCKETFLARE_BOOTSTRAP_SKIP` and
+  `ROCKETFLARE_ALLOW_ROOT` (`checkoutTakesKitFlags`) — a Launch-style copy's `launch.plugins.json`
+  `kitVersion` is its plugin-API level, and its older parser would refuse `--no-install` as an
+  unknown option. Any other parser, or a failed read, keeps the stand-ins, which work on any kit.
+  The preload still loads either way
   — and runs `db:migrate` as the kit's migrator alone
   (`tsx scripts/migrate.ts`, no `db-roles` before or after — its role is on `dev` already, its
   grants matter only under `TENANT_SCOPE_MODE=enforce`): each of the kit's database scripts opens
@@ -1691,7 +1694,7 @@ reload) is restarted as `<id>-rN` from the row.
   (`restartable`, so the platform's retries do not each meet the same empty container) and the
   Workflow boots again from `sandbox.start.r1` → `repo.r1` → `bootstrap.r1` → `dev.r1` (a fresh
   marker; the database side is not repeated), at most `MAX_BOOT_RESTARTS` (2) times before the
-  boot fails with that sentence; the checklist row says "starting it again", and `boot.timing`
+  boot fails with that sentence; the step's one error row says "starting it again", and `boot.timing`
   keeps every attempt's completed steps. A long command notices a replaced container at once:
   `runInBackground` treats the log it wrote before the start as seen (a silent `pnpm install`
   whose log vanished used to be polled to its 10-minute deadline), and asks the boot marker
@@ -1801,7 +1804,8 @@ the cause is not reproduced, so whether that is enough is unproven. A boot that 
 container is replaced still fails its step as before (the person resumes again), and so does a
 `prepare`, whose failure marks the app's `dev` failed. The kit's own bootstrap flags (0.17.4) are
 proven against the `FakeSandbox` and the kit's argument parser as read, not yet by a real 0.17.4
-bootstrap in a container. The lighter cold-resume
+bootstrap in a container; the detection is a substring check of the parser, so a parser that names
+the flags without honouring them would be trusted. The lighter cold-resume
 bootstrap on a kit before 0.17.4 swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
 `pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
 in full again (slower, and on real containers back to the connection count that hung); the RLS
