@@ -27,7 +27,8 @@
   event says why. Building one never slows or fails a session. Only where workspace backups are
   on; `SESSION_PREBUILD=off` turns it off. Migration `0046` (the `app_prebuilds` table and the
   `prebuild` session kind) — run `pnpm db:migrate` on deploy. A request that comes while a build
-  runs (a merge) is remembered and built when it finishes; a prebuild is only started while two of
+  runs (a merge) is remembered and built when it finishes (whatever the database clock says: the
+  follow-up no longer compares Postgres's `created_at` with the Worker's clock); a prebuild is only started while two of
   the host's container slots stay free (`SESSION_MAX_CONTAINERS`, default 10 — keep it equal to the
   toml's `max_instances`); one built for the other sandbox host is neither restored nor rebuilt.
   Proven with the fake sandbox; not yet measured on a real container.

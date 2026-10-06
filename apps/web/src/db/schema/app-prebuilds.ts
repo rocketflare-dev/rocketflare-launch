@@ -10,7 +10,8 @@
  *   first build is saved; a later build REPLACES it and deletes the old archive (one per app).
  * - **The claim** (`building_session_id`, `building_since`): the `prebuild` run building the next
  *   one. A request while it is held only stamps `refresh_requested_at`, and the build asks again
- *   when it is done — concurrency is this row, never a `Map`.
+ *   when it is done; a successful claim clears it (its build covers the request) — concurrency
+ *   is this row, never a `Map`.
  *   `last_error` / `last_attempt_at`: the last build that failed, which holds off the next request
  *   for a while (`PREBUILD_RETRY_AFTER_MS`).
  *

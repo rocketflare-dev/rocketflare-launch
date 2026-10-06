@@ -1723,7 +1723,9 @@ reload) is restarted as `<id>-rN` from the row.
     start, or the merge) — then the `prebuild` session and its `SESSION_WORKFLOW` instance. A
     request refused because a build is IN FLIGHT stamps `refresh_requested_at`, and that build,
     once saved (`prebuild.save`) or given up (`cleanup`), asks again (`followUpPrebuild`) — so a
-    merge during a build is not lost. A request that cannot be made is a `deferred` row with its
+    merge during a build is not lost. Every successful claim clears the stamp (the build it starts
+    clones after the request), so the follow-up compares no clock: Postgres's `created_at` against
+    the Worker's stamp once dropped it whenever the database clock ran ahead. A request that cannot be made is a `deferred` row with its
     reason, never a failure. Whether prebuilds are on for a run comes from its `claim` step's
     RESULT, so a replay after a config change takes the path it took. A prebuild records the
     image its own run booted on (`sessions.image_version`).

@@ -625,6 +625,50 @@ describe('review fixes', () => {
     expect(row?.imageVersion).toBe((await reload(first)).imageVersion)
   })
 
+  it('the follow-up does not compare the Worker’s clock with the database’s', async () => {
+    const h = await harness()
+    await bootSession(h)
+    const [first] = await prebuildRuns(h)
+    if (!first) throw new Error('no prebuild was asked for')
+    // The run's `created_at` is Postgres's `now()`; the stamp below is the Worker's clock. A
+    // database clock a minute ahead (Docker Desktop's VM drifts; Neon is not the Worker either)
+    // made the request look older than the build it came during, and the follow-up was dropped.
+    await db
+      .update(sessions)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(and(eq(sessions.tenantId, first.tenantId), eq(sessions.id, first.id)))
+    const merged = await requestPrebuild(db, h.env, loadConfig(h.env), {
+      tenantId: h.f.tenant.id,
+      appId: h.f.app.id,
+      host: 'local',
+      now: new Date(),
+      notBuiltSince: new Date(),
+    })
+    expect(merged.requested).toBe(false)
+    await drive(h, first)
+    expect(await prebuildRuns(h)).toHaveLength(2)
+  })
+
+  it('a stamp left before a build was claimed is that build’s to cover: no follow-up after it', async () => {
+    const h = await harness()
+    // A request refused while an earlier build was in flight, never followed up (its run died).
+    await db
+      .insert(appPrebuilds)
+      .values({
+        tenantId: h.f.tenant.id,
+        appId: h.f.app.id,
+        refreshRequestedAt: new Date(Date.now() - 60_000),
+      })
+      .onConflictDoNothing()
+    await bootSession(h)
+    const [first] = await prebuildRuns(h)
+    if (!first) throw new Error('no prebuild was asked for')
+    // The claim that started this build took the stamp: it clones after the change was asked for.
+    expect((await loadPrebuild(db, h.f.tenant.id, h.f.app.id))?.refreshRequestedAt).toBeNull()
+    await drive(h, first)
+    expect(await prebuildRuns(h)).toHaveLength(1)
+  })
+
   it('near the container cap nothing is asked for, and the boot says why', async () => {
     const h = await harness({ SESSION_MAX_CONTAINERS: '1' })
     const { row, run } = await bootSession(h)

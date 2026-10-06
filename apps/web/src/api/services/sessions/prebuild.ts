@@ -199,7 +199,13 @@ export async function claimPrebuild(
   ) as SQL
   const claimed = await db
     .update(appPrebuilds)
-    .set({ buildingSessionId: input.sessionId, buildingSince: now, lastAttemptAt: now })
+    // The new build clones after any request stamped so far: it covers them, so it takes the stamp.
+    .set({
+      buildingSessionId: input.sessionId,
+      buildingSince: now,
+      lastAttemptAt: now,
+      refreshRequestedAt: null,
+    })
     .where(
       and(
         row,
@@ -381,40 +387,31 @@ export async function requestPrebuild(
 
 /**
  * After a `prebuild` run gave its claim back (saved, failed or abandoned): when a request came
- * while it was building (`refresh_requested_at` later than the run's start), ask again — the
- * newer default branch, or lockfile, is what that request wanted. The stamp is cleared only by a
- * request that went through; one refused (the failure backoff, the container cap) leaves it for
- * the next run's follow-up or a later boot. Never throws.
+ * while it was building (`refresh_requested_at` is set), ask again — the newer default branch, or
+ * lockfile, is what that request wanted. No clock is compared: a stamp is only ever written while
+ * a build is in flight, and every successful claim clears it ({@link claimPrebuild} — the build it
+ * starts clones after the request), so a stamp still there was left during this run or during an
+ * earlier one whose follow-up was refused, and either way nothing built since covers it. (It used
+ * to be compared with the run's `created_at` — Postgres's clock against the Worker's, so a database
+ * clock running ahead dropped the follow-up.) The stamp is cleared only by a request that went
+ * through (its claim); one refused (the failure backoff, the container cap) leaves it for the next
+ * run's follow-up or a later boot. Never throws.
  */
 export async function followUpPrebuild(
   db: Database,
   env: Pick<AppBindings, 'SESSION_WORKFLOW'>,
   cfg: AppConfig,
-  run: Pick<SessionRow, 'id' | 'tenantId' | 'appId' | 'createdAt' | 'sandboxHost'>,
+  run: Pick<SessionRow, 'id' | 'tenantId' | 'appId' | 'sandboxHost'>,
   now: Date
 ): Promise<PrebuildRequest | null> {
   const row = await loadPrebuild(db, run.tenantId, run.appId)
-  const asked = row?.refreshRequestedAt
-  if (!asked || asked.getTime() < run.createdAt.getTime() || row?.buildingSessionId) return null
+  if (!row?.refreshRequestedAt || row.buildingSessionId) return null
   const host = run.sandboxHost === 'remote' ? 'remote' : 'local'
-  const result = await requestPrebuild(db, env, cfg, {
+  return requestPrebuild(db, env, cfg, {
     tenantId: run.tenantId,
     appId: run.appId,
     host,
     now,
     notBuiltSince: null,
   })
-  if (result.requested) {
-    await db
-      .update(appPrebuilds)
-      .set({ refreshRequestedAt: null })
-      .where(
-        and(
-          eq(appPrebuilds.tenantId, run.tenantId),
-          eq(appPrebuilds.appId, run.appId),
-          lt(appPrebuilds.refreshRequestedAt, new Date(now.getTime() + 1))
-        )
-      )
-  }
-  return result
 }
