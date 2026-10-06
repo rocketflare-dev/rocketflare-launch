@@ -21,9 +21,11 @@
  * "Live on staging: <link>"; a reopen's reason (for red CI: the check, its link, the redacted log
  * tail and "Ask Claude to fix it", which sends the fix as an ordinary turn through `POST /turns` —
  * the composer's own route); a stall's reason and a link to the app page, where release, retry and
- * production live; or, in `pr` mode, today's "PR opened" with its CI.
+ * production live — plus, for a stall before the release (issue #21), Re-run CI / Retry the
+ * release and Release anyway (`StallRetry`); or, in `pr` mode, today's "PR opened" with its CI.
  */
 import {
+  ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   ClockIcon,
@@ -35,6 +37,8 @@ import {
 import { approvalPath } from '@launch/shared/launch-approvals'
 import { appConfigPath } from '@launch/shared/launch-grants'
 import {
+  type LandingRetryRequest,
+  landingRetryable,
   type PrCheckState,
   type Session,
   type SessionEvent,
@@ -45,7 +49,12 @@ import {
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApproval } from '@/ui/hooks/useApprovals'
-import { turnInProgress, useSendTurn, useSessionPr } from '@/ui/hooks/useSessions'
+import {
+  turnInProgress,
+  useRetryLanding,
+  useSendTurn,
+  useSessionPr,
+} from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { waitingOn } from '@/ui/pages/approvals/approvalModel'
 import {
@@ -300,6 +309,54 @@ function ReopenNotice({ session, view }: { session: Session; view: LandingView }
   )
 }
 
+/**
+ * Issue #21: a landing that stalled before its release (`main_ci_failed`, `release_failed`) goes
+ * round again from here — Retry re-runs the merge commit's failed CI (or the release), and on red
+ * main CI, Release anyway cuts the release regardless (its deploy runs the full gate itself).
+ */
+function StallRetry({ session }: { session: Session }) {
+  const retry = useRetryLanding(session.id)
+  const [refused, setRefused] = useState<string | null>(null)
+  const mainCi = session.landing?.stalledReason === 'main_ci_failed'
+  const press = (action: LandingRetryRequest['action']) => {
+    setRefused(null)
+    retry.mutate({ action }, { onError: error => setRefused(error.message) })
+  }
+  const pending = retry.isPending ? retry.variables?.action : null
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        className="btn btn-sm btn-primary gap-1.5"
+        disabled={retry.isPending}
+        onClick={() => press('retry')}
+        data-testid="ship-stall-retry"
+      >
+        {pending === 'retry' ? (
+          <span className="loading loading-spinner loading-xs" />
+        ) : (
+          <ArrowPathIcon className="h-4 w-4" />
+        )}
+        {mainCi ? 'Re-run CI' : 'Retry the release'}
+      </button>
+      {mainCi && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost"
+          disabled={retry.isPending}
+          onClick={() => press('release_anyway')}
+          title="Cut the release without a green default-branch CI; its deploy runs the full gate itself"
+          data-testid="ship-stall-release-anyway"
+        >
+          {pending === 'release_anyway' && <span className="loading loading-spinner loading-xs" />}
+          Release anyway
+        </button>
+      )}
+      {refused && <span className="text-xs">{refused}</span>}
+    </div>
+  )
+}
+
 export function ShipPanel({
   session,
   gates,
@@ -488,6 +545,7 @@ export function ShipPanel({
           {view.stalled.note && view.stalled.note !== view.stalled.text && (
             <p className="mt-1">{view.stalled.note}</p>
           )}
+          {landingRetryable(session.landing) && <StallRetry session={session} />}
           <p className="mt-1 text-xs">
             Nothing is lost — the change is in the main branch. Release, retry and production are on{' '}
             {appSlug ? (

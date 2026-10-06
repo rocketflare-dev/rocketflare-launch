@@ -24,6 +24,12 @@
  *   `api/preview/gateway.ts`); `path` (`safePreviewPath`, else a 400) is the page it lands on, and
  *   `screenshots` says whether this deployment has `BROWSER` (the pane's camera).
  *   503 `previews_not_configured` without `SESSION_PREVIEW_URL`; 409 `session_ended` once settled.
+ * - Issue #21: `POST /:id/landing/retry {action?}` → 202 `sessionDetailResponseSchema`: a landing
+ *   stalled before its release (`main_ci_failed`, `release_failed`) goes round again — the merge
+ *   commit's failed CI re-run, or (`release_anyway`) the release cut past a red default-branch
+ *   `Gate` (`services/sessions/land-retry.ts`). Same permission as ship (`update`), no
+ *   credential-owner rule (Phase B runs no turn). A double press retries once. 409
+ *   `landing_not_retryable` / `landing_nothing_to_rerun`.
  * - `GET /:id/pr` → `sessionPrResponseSchema`, refreshing `pr_checks` from the repo host when older
  *   than 30 s (`refreshChecks`); a failed refresh answers the stored checks. Then the session is
  *   reconciled (`reconcile.ts`): a ship or landing whose Workflow died is restarted.
@@ -34,6 +40,7 @@
  * `sessions_not_configured` before any row is written. The answer is `toSessionDetail` (`chat.ts`).
  */
 import {
+  landingRetryRequestSchema,
   type PreviewGrantRequest,
   type PreviewGrantResponse,
   previewGrantRequestSchema,
@@ -54,6 +61,7 @@ import {
   toSessionDetail,
 } from '../services/sessions/chat'
 import { nudgeSession } from '../services/sessions/events'
+import { retryLanding } from '../services/sessions/land-retry'
 import { wakeOrRestart } from '../services/sessions/lifecycle'
 import { defaultSessionPorts } from '../services/sessions/ports'
 import { previewGrantUrl } from '../services/sessions/preview'
@@ -64,6 +72,7 @@ import type { AppContext } from '../types'
 import { ConflictError, ServiceUnavailableError, ValidationError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
+import { validate } from '../utils/routes/validate'
 
 export const sessionShipRouter = createRouter()
 
@@ -223,6 +232,27 @@ sessionShipRouter.post('/:id/end', async c => {
   nudgeSession(realtime, current)
   return c.json({ session: toSessionDetail(current, true) } satisfies SessionDetailResponse, 202)
 })
+
+sessionShipRouter.post(
+  '/:id/landing/retry',
+  validate('json', landingRetryRequestSchema),
+  async c => {
+    const { action } = c.req.valid('json')
+    const { db, cfg, logger, realtime, row } = await visible(c, 'update')
+    const workflow = requireSessionWorkflow(c.env)
+    const { row: current } = await retryLanding({
+      db,
+      workflow,
+      repoHost: defaultSessionPorts(c.env, cfg).repoHost(db),
+      row,
+      action,
+      actor: auditActor(c),
+      logger,
+    })
+    nudgeSession(realtime, current)
+    return c.json({ session: toSessionDetail(current, true) } satisfies SessionDetailResponse, 202)
+  }
+)
 
 /**
  * The preview grant's optional body. Not `validate('json')`: that refuses an EMPTY body sent as

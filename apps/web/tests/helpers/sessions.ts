@@ -292,6 +292,7 @@ const missingRepo: RepoHostPort = {
   mergePullRequest: () => missing('repoHost'),
   failedCheckLog: () => missing('repoHost'),
   createCheckRun: () => missing('repoHost'),
+  rerunFailedRuns: () => missing('repoHost'),
 }
 
 /**

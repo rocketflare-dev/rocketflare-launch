@@ -610,6 +610,47 @@ describe('SessionPage', () => {
       expect(walk()).toMatchObject({ released: 'done', staging: 'failed' })
     })
 
+    it('a stall before the release (issue #21): Re-run CI and Release anyway, from the session', async () => {
+      const stalled = landing({
+        stage: 'stalled',
+        stalledReason: 'main_ci_failed',
+        mergeSha: 'abc1234def',
+        error: 'GitHub did not run the default branch’s CI (Gate) for the merge commit abc1234.',
+      })
+      const { fetchMock } = renderPage({
+        [BASE]: detailOf({ status: 'shipped', prNumber: 12, prUrl, landing: stalled }),
+        [`${BASE}/events`]: eventsRoute([...SHIPPED, sessionEvent(11, 'ship.ci', ci('success'), 2)]),
+        [`POST ${BASE}/landing/retry`]: () =>
+          detailOf({
+            status: 'shipped',
+            prNumber: 12,
+            prUrl,
+            landing: { ...stalled, stage: 'releasing', stalledReason: null, error: null },
+          }),
+      })
+      await screen.findByTestId('ship-stalled')
+      expect(screen.getByTestId('ship-stall-release-anyway')).toHaveTextContent('Release anyway')
+      fireEvent.click(screen.getByTestId('ship-stall-retry'))
+      await waitFor(() =>
+        expect(requestBody(fetchMock, `POST ${BASE}/landing/retry`)).toEqual({ action: 'retry' })
+      )
+      await waitFor(() => expect(screen.queryByTestId('ship-stall-retry')).not.toBeInTheDocument())
+    })
+
+    it('a stall after the release offers no retry here', async () => {
+      renderPage({
+        [BASE]: detailOf({
+          status: 'shipped',
+          prNumber: 12,
+          prUrl,
+          landing: landing({ stage: 'stalled', version: '1.4.3', stalledReason: 'unhealthy' }),
+        }),
+        [`${BASE}/events`]: eventsRoute(SHIPPED),
+      })
+      await screen.findByTestId('ship-stalled')
+      expect(screen.queryByTestId('ship-stall-retry')).not.toBeInTheDocument()
+    })
+
     it('in `pr` mode ends at the open PR, as before', async () => {
       renderPage({
         [BASE]: detailOf({

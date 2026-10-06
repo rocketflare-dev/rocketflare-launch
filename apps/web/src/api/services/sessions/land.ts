@@ -51,6 +51,7 @@ import {
 import {
   MOVING_LANDING_STAGES,
   type PrChecks,
+  RETRYABLE_STALLED_REASONS,
   requiredCheckState,
   resolveSessionPolicy,
   type SessionLanding,
@@ -89,12 +90,12 @@ import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
 import { recordedPrNumbers, recordPrMerged } from '../launch/releases/pr-audit'
 import { reviewPolicyFor } from '../launch/ship-settings'
 import { checkContainer, SESSION_BOOT_MARKER } from './boot-marker'
-import { wakeSession } from './chat'
+import { type WarnLogger, wakeSession } from './chat'
 import { safeErrorMessage } from './events'
 import type { LandHealthResult, LandReleaseResult, LandStagingResult } from './hooks'
 import { restartSessionInstance, sessionsPaused } from './lifecycle'
 import { redactModelKeyText } from './model-key'
-import type { RepoPullRequest } from './ports'
+import type { FailedCheckLog, RepoPullRequest } from './ports'
 import { FAILED_CHECK_LOG_LINES } from './repo/github-repo-host'
 import { tailOf } from './rocketflare-dev'
 import { sessionRepo } from './ship'
@@ -1007,11 +1008,11 @@ export async function landMainCiStep(scope: StepScope): Promise<LandMainCiResult
       return null
     })
     const check = failed?.name ? ` (${failed.name})` : ''
-    return {
-      status: 'stalled',
-      reason: 'main_ci_failed',
-      error: `CI failed on the default branch${check} for the merge commit ${short(sha)}, so Launch did not cut a release`,
-    }
+    // Issue #21: a job GitHub never ran (no runner picked it up) is not the change's fault.
+    const error = infrastructureFailure(failed)
+      ? `GitHub did not run the default branch's CI${check} for the merge commit ${short(sha)} — the job never started on a runner — so Launch did not cut a release. Retry re-runs it`
+      : `CI failed on the default branch${check} for the merge commit ${short(sha)}, so Launch did not cut a release`
+    return { status: 'stalled', reason: 'main_ci_failed', error }
   }
   if (state === 'none' && elapsedMs >= SHIP_MAIN_CI_NONE_GRACE_MINUTES * 60_000) {
     return record('none')
@@ -1020,6 +1021,26 @@ export async function landMainCiStep(scope: StepScope): Promise<LandMainCiResult
   const waitSeconds =
     elapsedMs < LAND_CI_FAST_WINDOW_MINUTES * 60_000 ? LAND_CI_FAST_SECONDS : LAND_CI_SLOW_SECONDS
   return { status: 'wait', waitSeconds }
+}
+
+/**
+ * What GitHub's runners say when a job never ran — Actions' own words, matched loosely. A job that
+ * waited for a hosted runner and never got one ends `failure` with only this as its annotation.
+ */
+const INFRASTRUCTURE_FAILURE_RE =
+  /not acquired by runner|was not acquired|lost communication with the server|no runner|runner .*(?:shut down|offline)|startup failure/i
+
+/**
+ * Issue #21: whether a failed check failed before the change was ever tested — GitHub's
+ * `startup_failure` / `cancelled` conclusion, or a log (annotations) saying no runner took the job.
+ * A check with no log at all says nothing either way: false. Pure.
+ */
+export function infrastructureFailure(
+  failed: Pick<FailedCheckLog, 'conclusion' | 'logTail'> | null | undefined
+): boolean {
+  if (!failed) return false
+  if (failed.conclusion === 'startup_failure' || failed.conclusion === 'cancelled') return true
+  return Boolean(failed.logTail && INFRASTRUCTURE_FAILURE_RE.test(failed.logTail))
 }
 
 /** `land.release#K.R`: the `landRelease` hook (S3), or the release the landing already holds. */
@@ -1126,7 +1147,11 @@ export async function landStalledStep(
     .from(apps)
     .where(and(eq(apps.tenantId, session.tenantId), eq(apps.id, session.appId)))
   const detail = safeErrorMessage(input.error, 'The release did not reach staging', 600)
-  const where = app ? ` Open the app page (/apps/${app.slug}) to release or deploy it by hand.` : ''
+  // Issue #21: nothing was released yet — the session's own Retry moves it on.
+  const retry = (RETRYABLE_STALLED_REASONS as readonly string[]).includes(input.reason)
+    ? ' Retry from the session, or open'
+    : ' Open'
+  const where = app ? `${retry} the app page (/apps/${app.slug}) to release or deploy it by hand.` : ''
   const sentence = `${detail.replace(/\.?$/, '.')} The change is merged.${where}`
   const row = await casLanding(
     scope,
@@ -1205,7 +1230,7 @@ export async function wakeOrRestartLanding(
   db: Database,
   workflow: Workflow,
   row: SessionRow,
-  logger: Logger
+  logger: WarnLogger
 ): Promise<'woken' | 'restarted' | null> {
   let status: string | null
   try {

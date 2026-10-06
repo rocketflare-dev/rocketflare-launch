@@ -28,6 +28,7 @@ import {
   type ExtendBudgetRequest,
   extendBudgetResponseSchema,
   isActiveSessionStatus,
+  type LandingRetryRequest,
   MOVING_LANDING_STAGES,
   type PreviewGrantRequest,
   type PreviewScreenshotRequestInput,
@@ -238,6 +239,11 @@ export function useEndSession(id: string) {
 
 export function useResumeSession(id: string) {
   return useSessionAction(id, 'resume')
+}
+
+/** Issue #21: a landing stalled before its release goes round again (`POST /:id/landing/retry`). */
+export function useRetryLanding(id: string) {
+  return useSessionAction<LandingRetryRequest>(id, 'landing/retry')
 }
 
 /**

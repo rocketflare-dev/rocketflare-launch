@@ -14,6 +14,7 @@
  *   to read (`getPullRequest` → null), none to merge (`mergePullRequest` → `refused`), and no
  *   failing check (`failedCheckLog` → null).
  * - Issue #9: there is no GitHub to attest the gate on (`createCheckRun` posts nothing).
+ * - Issue #21: nor CI to re-run (`rerunFailedRuns` re-runs nothing).
  */
 import type { PrChecks } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
@@ -28,6 +29,7 @@ import type {
   OpenPullRequestInput,
   RepoHostPort,
   RepoPullRequest,
+  RerunFailedRunsResult,
   RepoRef,
 } from '../ports'
 
@@ -104,5 +106,9 @@ export class LocalRepoHost implements RepoHostPort {
     _input: { headSha: string }
   ): Promise<FailedCheckLog | null> {
     return null
+  }
+
+  async rerunFailedRuns(_repo: RepoRef, _input: { headSha: string }): Promise<RerunFailedRunsResult> {
+    return { rerun: [], running: [] }
   }
 }

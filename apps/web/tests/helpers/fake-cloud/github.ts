@@ -64,7 +64,8 @@
  * queued again — recorded in `reruns`; 403 for a run still going or one that succeeded) and
  * `POST …/actions/runs/{id}/cancel` (`actions: write`; the run and its unfinished jobs end
  * `cancelled`, recorded in `cancels`; 409 for a completed run). `pushRun(owner, repo, ref, …)`
- * records any run (a production run on a tag is `event: release`).
+ * records any run (a production run on a tag is `event: release`). Issue #21: `GET …/actions/runs`
+ * (`actions: read`) lists them, `?head_sha=` narrowing to one commit.
  */
 import {
   belongsTo,
@@ -1278,6 +1279,28 @@ export class FakeGitHub implements VendorHandler {
         .filter(r => r.owner === repo.owner && r.repo === repo.name && r.workflow === workflow)
         .filter(r => !branch || r.ref.replace(/^refs\/(heads|tags)\//, '') === branch)
         .filter(r => !event || (r.event ?? 'workflow_dispatch') === event)
+        .reverse()
+        .map(r => ({
+          id: r.id,
+          run_attempt: r.run_attempt,
+          status: r.status,
+          conclusion: r.conclusion,
+          head_sha: r.head_sha,
+          head_branch: r.ref.replace(/^refs\/(heads|tags)\//, ''),
+          event: r.event ?? 'workflow_dispatch',
+          created_at: r.created_at,
+          html_url: `https://github.com/${repo.owner}/${repo.name}/actions/runs/${r.id}`,
+        }))
+      return json({ total_count: runs.length, workflow_runs: runs })
+    }
+    // Issue #21: every run on a commit (`?head_sha=`), newest first — a stalled landing's re-run.
+    if (rest === '/actions/runs' && m === 'GET') {
+      if (!this.can(token, 'actions', 'read'))
+        return ghError(403, 'Resource not accessible by integration')
+      const sha = req.url.searchParams.get('head_sha')
+      const runs = this.runs
+        .filter(r => r.owner === repo.owner && r.repo === repo.name)
+        .filter(r => !sha || r.head_sha === sha)
         .reverse()
         .map(r => ({
           id: r.id,

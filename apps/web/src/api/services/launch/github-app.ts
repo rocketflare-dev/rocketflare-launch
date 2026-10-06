@@ -621,6 +621,27 @@ export async function listWorkflowRuns(
   return body.workflow_runs ?? []
 }
 
+/**
+ * Issue #21: every Actions run on commit `sha`, across the repo's workflows, newest first
+ * (`GET …/actions/runs?head_sha=`, `actions: read`) — the merge commit's CI a stalled landing
+ * re-runs.
+ */
+export async function listCommitWorkflowRuns(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  opts: GitHubOptions = {}
+): Promise<GitHubWorkflowRun[]> {
+  const params = new URLSearchParams({ head_sha: sha, per_page: '30' })
+  const body = await githubJson<{ workflow_runs?: GitHubWorkflowRun[] }>(
+    `${repoPath(owner, repo)}/actions/runs?${params}`,
+    { token },
+    opts
+  )
+  return body.workflow_runs ?? []
+}
+
 /** One run by id (its LATEST attempt's status), or null when the repo has no such run. */
 export async function getWorkflowRun(
   token: string,
@@ -1171,6 +1192,8 @@ export const GITHUB_TOKEN_PERMISSIONS = {
   releaseRun: { actions: 'write', contents: 'read' },
   /** App page P2: re-pushing a release's tag (and reading its runs). */
   releaseTag: { contents: 'write', actions: 'read' },
+  /** Issue #21: re-running a stalled landing's merge-commit CI (and listing its runs). */
+  rerunCommitRuns: { actions: 'write' },
 } as const satisfies Record<string, GitHubPermissions>
 
 export interface MergePullRequestInput {

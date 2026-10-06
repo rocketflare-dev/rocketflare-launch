@@ -456,9 +456,11 @@ export const SHIP_MAIN_CI_NONE_GRACE_MINUTES = 3
 /**
  * Issue #11: what `land.main-ci` decided the release on — the squash commit's `Gate` green
  * (`success`: the tag's deploy can skip its gate), no check reported within the grace (`none`), or
- * still running past {@link SHIP_MAIN_CI_MAX_MINUTES} (`timeout`). A red one stalls instead.
+ * still running past {@link SHIP_MAIN_CI_MAX_MINUTES} (`timeout`). A red one stalls instead —
+ * until a person presses Release anyway on the stall (`override`, issue #21: the tag's deploy
+ * re-gates).
  */
-export const SHIP_MAIN_CI_VERDICTS = ['success', 'none', 'timeout'] as const
+export const SHIP_MAIN_CI_VERDICTS = ['success', 'none', 'timeout', 'override'] as const
 export const shipMainCiVerdictSchema = z.enum(SHIP_MAIN_CI_VERDICTS)
 export type ShipMainCiVerdict = z.infer<typeof shipMainCiVerdictSchema>
 
@@ -1048,6 +1050,40 @@ export type Session = z.infer<typeof sessionSchema>
 
 export const sessionDetailResponseSchema = z.object({ session: sessionSchema })
 export type SessionDetailResponse = z.infer<typeof sessionDetailResponseSchema>
+
+/**
+ * Issue #21: the stalls a person can move on from the session (`POST /api/sessions/:id/landing/retry`)
+ * — nothing was released yet, so trying again cannot deploy anything twice. `main_ci_failed`: the
+ * merge commit's CI is re-run (its failed jobs) and `land.main-ci` waits for it again;
+ * `release_failed`: `land.release` runs again.
+ */
+export const RETRYABLE_STALLED_REASONS = [
+  'main_ci_failed',
+  'release_failed',
+] as const satisfies readonly ShipStalledReason[]
+
+/**
+ * `POST /api/sessions/:id/landing/retry` — `retry` (the default) as above; `release_anyway`, on a
+ * `main_ci_failed` stall only, cuts the release without a green default-branch `Gate` (recorded as
+ * the `override` verdict; the tag's deploy runs the full gate itself). Answers 202
+ * `sessionDetailResponseSchema`; 409 `landing_not_retryable` when the landing is not such a stall,
+ * `landing_nothing_to_rerun` when the merge commit has no failed Actions run to re-run.
+ */
+export const LANDING_RETRY_ACTIONS = ['retry', 'release_anyway'] as const
+export const landingRetryRequestSchema = z.object({
+  action: z.enum(LANDING_RETRY_ACTIONS).default('retry'),
+})
+export type LandingRetryRequest = z.infer<typeof landingRetryRequestSchema>
+
+/** Whether a person may retry `landing` from the session (issue #21). Pure. */
+export function landingRetryable(
+  landing: Pick<SessionLanding, 'stage' | 'stalledReason'> | null | undefined
+): boolean {
+  return (
+    landing?.stage === 'stalled' &&
+    (RETRYABLE_STALLED_REASONS as readonly (string | null)[]).includes(landing.stalledReason)
+  )
+}
 
 /**
  * `POST /api/sessions/:id/budget` (P4, plan §4c) — the session as it is now, plus the

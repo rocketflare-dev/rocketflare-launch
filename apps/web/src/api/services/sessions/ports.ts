@@ -228,6 +228,21 @@ export interface RepoHostPort {
    * (`created: false`, `id: null`). Token: `checks: write`.
    */
   createCheckRun(repo: RepoRef, input: CreateCheckRunInput): Promise<CreateCheckRunResult>
+  /**
+   * Issue #21: GitHub's "Re-run failed jobs" on every COMPLETED, unsuccessful Actions run of
+   * `headSha` (a landing's merge commit, after its `Gate` went red or never started). `rerun`: the
+   * runs that started a new attempt; `running`: runs already going again (a second press, or a
+   * person's re-run on GitHub) — nothing to do for those. Both empty: nothing on the commit to
+   * re-run (a red commit status, or CI outside Actions). `local`: always empty. Token:
+   * `actions: write`.
+   */
+  rerunFailedRuns(repo: RepoRef, input: { headSha: string }): Promise<RerunFailedRunsResult>
+}
+
+/** Issue #21: what `RepoHostPort.rerunFailedRuns` did, by Actions run id. */
+export interface RerunFailedRunsResult {
+  rerun: number[]
+  running: number[]
 }
 
 /** Issue #9: what `RepoHostPort.createCheckRun` posts (always `status: completed`). */
@@ -281,6 +296,11 @@ export type MergePullRequestResult =
 export interface FailedCheckLog {
   name: string
   url: string | null
+  /**
+   * Issue #21: GitHub's conclusion for a failed check run (`failure`, `cancelled`, `timed_out`,
+   * `startup_failure`…); absent for a commit status. `infrastructureFailure` reads it.
+   */
+  conclusion?: string | null
   /** The log's last lines, UNREDACTED; null when GitHub has none (expired, or a bare status). */
   logTail: string | null
 }

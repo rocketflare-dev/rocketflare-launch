@@ -15,6 +15,8 @@
  *   first failing check (`Gate` first) with the tail of its Actions job log, else its annotations.
  * - Issue #9: `createCheckRun` posts Launch's `launch/gate` attestation — after reading the head's
  *   runs, so a retried step finds the run its first try posted (same name and `external_id`).
+ * - Issue #21: `rerunFailedRuns` re-runs the failed jobs of a commit's completed, unsuccessful
+ *   Actions runs (a stalled landing's merge commit); a run GitHub says is already going is left.
  *
  * The API calls use their own short-lived tokens, narrowed to the one repo and to what the call
  * needs, and revoked when done — the sandbox's token is never reused Launch-side.
@@ -42,8 +44,10 @@ import {
   installationToken,
   listCheckRunAnnotations,
   listCheckRuns,
+  listCommitWorkflowRuns,
   listInstallations,
   mergePullRequest,
+  rerunFailedJobs,
   revokeInstallationToken,
 } from '../../launch/github-app'
 import { type ImportGitHub, loadImportGitHub } from '../../launch/import'
@@ -59,6 +63,7 @@ import type {
   RepoHostPort,
   RepoPullRequest,
   RepoRef,
+  RerunFailedRunsResult,
 } from '../ports'
 
 export interface GitHubRepoHostOptions extends GitHubOptions {
@@ -261,6 +266,40 @@ export class GitHubRepoHost implements RepoHostPort {
     })
   }
 
+  rerunFailedRuns(repo: RepoRef, input: { headSha: string }): Promise<RerunFailedRunsResult> {
+    return this.withToken(repo, GITHUB_TOKEN_PERMISSIONS.rerunCommitRuns, async token => {
+      const runs = await listCommitWorkflowRuns(
+        token,
+        repo.owner,
+        repo.repo,
+        input.headSha,
+        this.opts
+      )
+      const result: RerunFailedRunsResult = { rerun: [], running: [] }
+      for (const run of runs) {
+        if (run.status !== 'completed') {
+          result.running.push(run.id)
+          continue
+        }
+        if (run.conclusion && PASSING_CONCLUSIONS.has(run.conclusion)) continue
+        try {
+          await rerunFailedJobs(token, repo.owner, repo.repo, run.id, this.opts)
+          result.rerun.push(run.id)
+        } catch (err) {
+          // GitHub's 403 for a run that started again between the list and the re-run (a second
+          // press, a person on GitHub): it is going, which is all a retry wants.
+          const going =
+            err instanceof GitHubApiError &&
+            err.status === 403 &&
+            !/not accessible/i.test(err.message)
+          if (going) result.running.push(run.id)
+          else throw err
+        }
+      }
+      return result
+    })
+  }
+
   failedCheckLog(repo: RepoRef, input: { headSha: string }): Promise<FailedCheckLog | null> {
     const permissions = { ...GITHUB_TOKEN_PERMISSIONS.checks, ...GITHUB_TOKEN_PERMISSIONS.jobLogs }
     return this.withToken(repo, permissions, async token => {
@@ -271,6 +310,7 @@ export class GitHubRepoHost implements RepoHostPort {
         return {
           name: run.name,
           url: run.html_url ?? run.details_url ?? null,
+          conclusion: run.conclusion,
           logTail: await this.checkRunLogTail(token, repo, run),
         }
       }

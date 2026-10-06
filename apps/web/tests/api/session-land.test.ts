@@ -40,6 +40,7 @@ import {
   LAND_RETRY_SECONDS,
   nudgeLandingSessions,
 } from '@/api/services/sessions/land'
+import { retryLanding } from '@/api/services/sessions/land-retry'
 import type { RepoHostPort } from '@/api/services/sessions/ports'
 import {
   reconcileSession,
@@ -1210,6 +1211,227 @@ describe('Phase B: the merge commit’s Gate before the release (issue #11)', ()
       stage: 'live',
       mainCi: { verdict: 'success' },
     })
+  })
+})
+
+describe('Phase B: retrying a stall from the session (issue #21)', () => {
+  const greenPr = async (h: Harness) => {
+    setGate(h, await gateShaOf(h), 'success')
+    return 'wake' as const
+  }
+  const mergeShaOf = async (h: Harness) => (await reload(h.row)).landing?.mergeSha ?? ''
+  const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+  const NO_RUNNER =
+    'The job was not acquired by Runner of type hosted even after multiple attempts'
+  const retryRoute = (h: Harness, body: unknown) =>
+    request(
+      `/api/sessions/${h.row.id}/landing/retry`,
+      {
+        method: 'POST',
+        headers: { ...h.f.cookie, 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      { env: h.env }
+    )
+
+  /** A landing stalled `main_ci_failed`, with the merge commit's CI run on record as failed. */
+  async function stalledOnMainCi(h: Harness, annotations?: string) {
+    h.cloud.github.mergeCommitChecks = [
+      {
+        name: 'Gate',
+        status: 'completed',
+        conclusion: 'failure',
+        ...(annotations
+          ? {
+              annotations: [
+                {
+                  path: '.github',
+                  start_line: 1,
+                  annotation_level: 'failure' as const,
+                  message: annotations,
+                },
+              ],
+            }
+          : {}),
+      },
+    ]
+    await drive(h, { onLand: async h => greenPr(h) })
+    const sha = await mergeShaOf(h)
+    const run = h.cloud.github.pushRun(h.f.repo.owner, h.f.repo.repo, 'refs/heads/main', {
+      workflow: 'ci.yml',
+      status: 'completed',
+      conclusion: 'failure',
+      jobs: [{ id: 501, name: 'Gate', status: 'completed', conclusion: 'failure' }],
+    })
+    run.head_sha = sha
+    return { sha, run }
+  }
+
+  it('a job no runner picked up says so, and points at Retry', async () => {
+    const h = await harness()
+    await stalledOnMainCi(h, NO_RUNNER)
+    const row = await reload(h.row)
+    expect(row.landing).toMatchObject({ stage: 'stalled', stalledReason: 'main_ci_failed' })
+    expect(row.landing?.error).toContain('GitHub did not run the default branch')
+    expect(row.landing?.error).toContain('Retry from the session')
+    expect(row.landing?.error).not.toContain('CI failed on the default branch')
+  })
+
+  it('retry: re-runs the merge commit’s failed CI, waits for it again, then releases — a second press retries nothing', async () => {
+    const h = await harness()
+    const { sha, run } = await stalledOnMainCi(h, NO_RUNNER)
+    // The route's repo host is the deployment's (no GitHub App in this suite's store): the service
+    // it calls, with the suite's port onto the fake GitHub.
+    const logger = { warn: () => {} }
+    const first = await retryLanding({
+      db,
+      workflow: workflowOf(h) as unknown as Workflow,
+      repoHost: h.ports.repoHost(db),
+      row: await reload(h.row),
+      action: 'retry',
+      actor: SYSTEM_ACTOR,
+      logger,
+    })
+    expect(first.retried).toBe(true)
+    expect(h.cloud.github.reruns.filter(r => r.runId === run.id)).toHaveLength(1)
+    expect(first.row.landing).toMatchObject({
+      stage: 'releasing',
+      stalledReason: null,
+      error: null,
+      mainCi: null,
+      mergeSha: sha,
+    })
+    expect(workflowOf(h).created.map(c => c.id)).toContain(`${h.row.id}-r1`)
+    const [audit] = await auditOf(h, 'session.land_retried')
+    expect(audit?.summary).toMatchObject({
+      before: { stalledReason: 'main_ci_failed' },
+      after: { action: 'retry', rerunRuns: [run.id] },
+    })
+
+    // A second press: the landing is already moving — nothing re-run, nothing restarted.
+    const again = await retryLanding({
+      db,
+      workflow: workflowOf(h) as unknown as Workflow,
+      repoHost: h.ports.repoHost(db),
+      row: await reload(h.row),
+      action: 'retry',
+      actor: SYSTEM_ACTOR,
+      logger,
+    })
+    expect(again.retried).toBe(false)
+    expect(h.cloud.github.reruns.filter(r => r.runId === run.id)).toHaveLength(1)
+
+    // The fresh instance: `land.main-ci` waits on the re-run, which goes green → release → live.
+    setGate(h, sha, 'in_progress')
+    const fresh = await drive(h, {
+      fresh: true,
+      onSleep: async (h, name) => {
+        if (name === 'land.main-ci-wait#0.0') setGate(h, sha, 'success')
+      },
+    })
+    expect(fresh.names).toEqual([
+      'claim',
+      'land.main-ci#0.0',
+      'land.main-ci-wait#0.0',
+      'land.main-ci#0.1',
+      'land.release#0.0',
+      'land.staging#0.0',
+      'land.health#0.0',
+      'land.live#0',
+    ])
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'success', sha },
+    })
+  })
+
+  it('retry with nothing on the merge commit to re-run: 409, the stall left as it was', async () => {
+    const h = await harness()
+    h.cloud.github.mergeCommitChecks = [
+      { name: 'Gate', status: 'completed', conclusion: 'failure' },
+    ]
+    await drive(h, { onLand: async h => greenPr(h) })
+    await expect(
+      retryLanding({
+        db,
+        workflow: workflowOf(h) as unknown as Workflow,
+        repoHost: h.ports.repoHost(db),
+        row: await reload(h.row),
+        action: 'retry',
+        actor: SYSTEM_ACTOR,
+        logger: { warn: () => {} },
+      })
+    ).rejects.toMatchObject({ statusCode: 409, code: 'landing_nothing_to_rerun' })
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'stalled',
+      stalledReason: 'main_ci_failed',
+    })
+  })
+
+  it('Release anyway (the route): cuts the release past the red Gate, recorded as `override`', async () => {
+    const h = await harness()
+    await stalledOnMainCi(h)
+    const res = await retryRoute(h, { action: 'release_anyway' })
+    expect(res.status).toBe(202)
+    const body = await json<{ session: { landing: SessionLanding } }>(res)
+    expect(body.session.landing).toMatchObject({
+      stage: 'releasing',
+      mainCi: { verdict: 'override' },
+    })
+    // Nothing was re-run on GitHub.
+    expect(h.cloud.github.reruns).toEqual([])
+    const fresh = await drive(h, { fresh: true })
+    expect(fresh.names.slice(0, 3)).toEqual(['claim', 'land.main-ci#0.0', 'land.release#0.0'])
+    expect((await reload(h.row)).landing).toMatchObject({
+      stage: 'live',
+      mainCi: { verdict: 'override' },
+    })
+  })
+
+  it('refuses a landing that is not a retryable stall (409), and Release anyway on a failed release', async () => {
+    const h = await harness()
+    await drive(h, { onLand: async h => greenPr(h) })
+    expect((await reload(h.row)).landing?.stage).toBe('live')
+    const live = await retryRoute(h, {})
+    expect(live.status).toBe(409)
+    expect(await json(live)).toMatchObject({ code: 'landing_not_retryable' })
+    await patch(h.row, {
+      landing: {
+        ...((await reload(h.row)).landing as SessionLanding),
+        stage: 'stalled',
+        stalledReason: 'release_failed',
+      },
+    })
+    const anyway = await retryRoute(h, { action: 'release_anyway' })
+    expect(anyway.status).toBe(409)
+    expect(await json(anyway)).toMatchObject({ code: 'landing_not_retryable' })
+    const bad = await retryRoute(h, { action: 'deploy' })
+    expect(bad.status).toBe(400)
+  })
+
+  it('release_failed: retry goes back to `land.release`', async () => {
+    const h = await harness()
+    await drive(h, { onLand: async h => greenPr(h) })
+    await patch(h.row, {
+      landing: {
+        ...((await reload(h.row)).landing as SessionLanding),
+        stage: 'stalled',
+        stalledReason: 'release_failed',
+        releaseId: null,
+        version: null,
+        tag: null,
+      },
+    })
+    const res = await retryRoute(h, {})
+    expect(res.status).toBe(202)
+    const row = await reload(h.row)
+    expect(row.landing).toMatchObject({ stage: 'releasing', stalledReason: null })
+    // `mainCi` stays: the merge commit's CI was already decided.
+    expect(row.landing?.mainCi).toMatchObject({ verdict: 'success' })
+    h.phaseB.length = 0
+    const fresh = await drive(h, { fresh: true })
+    expect(fresh.names.slice(0, 3)).toEqual(['claim', 'land.main-ci#0.0', 'land.release#0.0'])
+    expect(h.phaseB).toEqual(['release', 'staging', 'health'])
   })
 })
 

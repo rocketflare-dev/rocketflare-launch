@@ -271,8 +271,10 @@ export async function landRelease(ctx: SessionStepContext): Promise<LandReleaseR
   }
   if (outcome.claimed) return recordReleased(ctx, outcome.value.release, outcome.value.shared)
 
-  // Issue #11: the claim's wait starts once `land.main-ci` let the release go, not at the merge.
-  const waitedMs = ctx.now().getTime() - Date.parse(landing.mainCi?.at ?? landing.stageAt)
+  // Issue #11: the claim's wait starts once `land.main-ci` let the release go, not at the merge —
+  // or at a person's Retry (issue #21), which moves `stageAt` past it.
+  const since = Math.max(Date.parse(landing.mainCi?.at ?? landing.stageAt), Date.parse(landing.stageAt))
+  const waitedMs = ctx.now().getTime() - since
   if (waitedMs >= LAND_RELEASE_CLAIM_MAX_MINUTES * 60_000) {
     return {
       status: 'stalled',
