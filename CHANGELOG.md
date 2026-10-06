@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Workspace backups are proven on a real Cloudflare container** (issue #3). Through the remote
+  sandbox host, a drain saved a 369 MB `presigned` archive in 23 s and the cold resume restored it
+  in 6.4 s: ready in 27 s against the 41 s first boot, with no clone, install or seed. The docs
+  (`DEPLOY.md`, `SESSIONS-LOCAL.md`, `CONCEPTS.md`) carry the measured phases instead of
+  "unproven".
+
 - **A session whose kit bootstrap takes the kit's own flags (0.17.4+) uses them** (epic #7). The
   kit bootstrap runs with `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (the database check, plus the
   seed and migrate a resume leaves out) and `ROCKETFLARE_ALLOW_ROOT=1`, and its `--offline` no

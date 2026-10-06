@@ -1815,13 +1815,13 @@ role by hand) has a different role made and granted — its migrator's policies 
 and its `db-roles` fails "permission denied to alter role"; the grant's borrow of `migrator`'s
 ADMIN is proven on a local Postgres 17 with Neon's role layout, not yet on a real Neon project
 (where `neondb_owner` is also a `neon_superuser` member); the preload is proven under real Node with a stand-in
-bootstrap, not yet in a container. Workspace backups are proven against the `FakeSandbox` and the
-SDK's call shapes only: whether `binding` mode's restore (the whole archive through the Durable
-Object, base64, on the SDK's default HTTP transport) beats a clone and an install under `wrangler
-dev`, and everything about `presigned` on Cloudflare (the upload through the HTTPS interception,
-FUSE in the container, the size and time of an archive with `node_modules`), need real containers
-— the remote sandbox host is wired for it (issue #3) but not yet turned on or measured (it needs an
-R2 token, the host's secrets and account id, and `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars`).
+bootstrap, not yet in a container. Workspace backups in `presigned` mode are proven on a real
+Cloudflare container through the remote sandbox host (issue #3: the upload through the HTTPS
+interception and the FUSE mount work; a 369 MB archive saved in 23 s and a cold resume was ready
+in 27 s against a 41 s first boot — `docs/DEPLOY.md` § Coding sessions), not yet on a DEPLOYED
+Launch, whose tomls still need the vars and the R2 secrets. Whether `binding` mode's restore (the
+whole archive through the Durable Object, base64, on the SDK's default HTTP transport) beats a
+clone and an install under `wrangler dev` is unmeasured.
 `SANDBOX_TRANSPORT=rpc` would stream the `binding` restore instead, but changes every SDK call and
 is untried. A tenant's deletion leaves its sessions' backups to the bucket's lifecycle rule
 (`tenant.purge` pages `tenants/<id>/` only).

@@ -165,8 +165,11 @@ resume shows **Restoring the saved workspace** instead of **Cloning repo**.
   mode for this Worker's own Docker containers in the same `pnpm dev`. Turning it on (once; see
   below): an R2 API token, the host's two secrets and account id, the host redeployed, and
   `CLOUDFLARE_ACCOUNT_ID` in `.dev.vars`. Until then a remote cold resume clones and installs
-  (natively, about 45 s for hola-world), and each refused backup is a `workspace.backup` event — a
-  chat notice — saying what is missing.
+  (natively, about 41 s for hola-world), and each refused backup is a `workspace.backup` event — a
+  chat notice — saying what is missing. Turned on, a hola-world cold resume restores a 369 MB
+  archive in 6.4 s and is ready in about 27 s (measured 2026-10-06; `docs/DEPLOY.md` § Coding
+  sessions has the phases). To force one without waiting out the 45-minute warm window, **Drain**
+  on `/admin/sessions` (a global admin), then Undrain and Resume.
 - The emulation settings (`GOGC=off GOMEMLIMIT=1536MiB`) still apply, because they key on
   `APP_ENV=development`. They are harmless on native hardware (a little more memory per Go process).
 

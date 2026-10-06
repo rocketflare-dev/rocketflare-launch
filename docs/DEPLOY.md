@@ -321,10 +321,13 @@ needs, beyond the bindings above:
   allow-list would have no R2 host). Every attempt is a `workspace.backup` session event — `saved`
   with its duration, or `failed` with the reason (the SDK lists missing R2 settings by name) — and a
   failure is also a chat notice and a warning log; a backup never fails the suspend, and a restore
-  that fails falls back to the clone ("Cloning instead: …" on the checklist). **Unproven on
-  Cloudflare** (issue #3; to be measured first on the sandbox host, below): the presigned upload
-  through the container's HTTPS interception, FUSE in the session container, and the time for an
-  archive with `node_modules`. The `binding` mode `wrangler dev` uses is not for a deployed Worker —
+  that fails falls back to the clone ("Cloning instead: …" on the checklist). **Proven on Cloudflare** (issue #3, the
+  remote sandbox host, 2026-10-06, hola-world session `7291f986`): the presigned upload through the
+  container's HTTPS interception and the FUSE mount both work. A 369 MB archive (`node_modules`
+  included) took 23.4 s to save on a drain; the cold resume took 26.6 s in all — sandbox 1.1 s,
+  restore 6.4 s, bootstrap (seed and migrate skipped) 2.4 s, dev server 14.7 s, conversation 1.8 s —
+  against 41 s for the same session's first boot (clone 3.7 s, install 14 s, bootstrap 6 s, dev
+  13 s). The dev server is now the largest phase of a resume. The `binding` mode `wrangler dev` uses is not for a deployed Worker —
   on the SDK's default HTTP transport its restore holds the archive in the Durable Object's 128 MB.
 
 ## The sandbox host (development only)
