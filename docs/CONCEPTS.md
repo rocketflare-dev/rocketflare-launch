@@ -1556,12 +1556,19 @@ reload) is restarted as `<id>-rN` from the row.
   changed. The prepare records its checkout's hash on `apps.session_db.migrationsHash`, and a
   session branched from a `ready` `dev` STARTS from it (`branchStep`; `unknown` for a `dev`
   prepared before it was recorded — then it migrates once), so its first boot is a resume's too — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
-  `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): the kit has no flag for
-  it. On EVERY boot the preload skips `db:check`, the kit's own second `pnpm install
+  `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): a kit before 0.17.4 has
+  no flag for it. On EVERY boot the preload skips `db:check`, the kit's own second `pnpm install
   --prefer-offline` (step 2, right after Launch's; the kit then checks only the exit code and that
   wrangler's bin exists) and step 8's `pnpm web exec wrangler whoami` (answered with wrangler's "You
   are not authenticated", so `--offline` takes its not-logged-in branch as before) — 8-12 s of a
-  local boot, checked against the kit's `bootstrap.mjs` / `parseWhoami`, identical 0.15.0 → 0.17.3
+  local boot, checked against the kit's `bootstrap.mjs` / `parseWhoami`, identical 0.15.0 → 0.17.3.
+  **A checkout on kit 0.17.4 or later** (its `.rocketflare.json` `kit.version`, else
+  `launch.plugins.json`'s `kitVersion`, read from the CHECKOUT at each bootstrap so a kit-upgrade
+  session's resume follows its branch — `bootstrapInvocation`) gets the kit's own flags instead:
+  `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (`database` for the check, plus `seed` / `migrate`
+  on a resume), `ROCKETFLARE_ALLOW_ROOT=1`, and nothing for whoami — the kit's `--offline` no
+  longer runs it; an older or unreadable version keeps the stand-ins, which work on any kit. The
+  preload still loads either way
   — and runs `db:migrate` as the kit's migrator alone
   (`tsx scripts/migrate.ts`, no `db-roles` before or after — its role is on `dev` already, its
   grants matter only under `TENANT_SCOPE_MODE=enforce`): each of the kit's database scripts opens
@@ -1780,8 +1787,10 @@ survives 45 idle minutes, and that the SDK does not stop it earlier, need a real
 on the same Durable Object seconds after a destroy has twice never answered under `wrangler dev`
 (`docs/SESSIONS-LOCAL.md` § A start that never answers): `CloudflareSandbox.start` now bounds each
 attempt (100 s) and retries once after a reset, and `onStop`'s database write is bounded (10 s) —
-the cause is not reproduced, so whether that is enough is unproven. The lighter cold-resume
-bootstrap swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
+the cause is not reproduced, so whether that is enough is unproven. The kit's own bootstrap flags (0.17.4) are
+proven against the `FakeSandbox` and the kit's argument parser as read, not yet by a real 0.17.4
+bootstrap in a container. The lighter cold-resume
+bootstrap on a kit before 0.17.4 swaps the kit bootstrap's `spawn` for its three database children by name (`pnpm seed`,
 `pnpm db:migrate`, `pnpm web db:check`, kit 0.15): a kit that reaches them another way runs them
 in full again (slower, and on real containers back to the connection count that hung); the RLS
 role's name is DERIVED from the slug (`appRlsRoleFor`, the kit rename's rule), not read from the

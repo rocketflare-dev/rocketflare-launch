@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A session on kit 0.17.4 or later bootstraps through the kit's own flags** (epic #7). The kit
+  bootstrap runs with `--no-install`, `ROCKETFLARE_BOOTSTRAP_SKIP` (the database check, plus the
+  seed and migrate a resume leaves out) and `ROCKETFLARE_ALLOW_ROOT=1`, and its `--offline` no
+  longer runs `wrangler whoami`, so Launch's preload no longer has to stand in for those children.
+  The version is the checkout's own (`.rocketflare.json` `kit.version`, else `launch.plugins.json`
+  `kitVersion`), read at every bootstrap; an older kit, or one Launch cannot read, keeps the
+  stand-ins. The boot's steps and its `boot.timing` phases are unchanged. No migration.
 - **A coding session's agent is reached through one turn call, and the CLI process is one kind of
   agent** (rocketflare-launch#13). `AgentRuntime` is now `runTurn(ctx, input, sink)` (with
   `placement`, `workspaceFiles`, `cancel`, a `state` store, `login?`, `userLease?`): the turn hands

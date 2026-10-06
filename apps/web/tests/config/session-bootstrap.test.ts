@@ -18,16 +18,24 @@ import {
   sessionAllowedHosts,
 } from '@/api/services/sessions/ports'
 import {
+  ALWAYS_SKIPPED,
   BOOTSTRAP_COMMAND,
+  BOOTSTRAP_SKIP_ENV,
+  bootstrapInvocation,
+  checkoutKitVersion,
   claudeSettingsLocal,
   DEV_COMMAND,
   INSTALL_COMMAND,
+  KIT_ALLOW_ROOT_ENV,
+  KIT_BOOTSTRAP_FLAGS_VERSION,
+  KIT_BOOTSTRAP_SKIP_ENV,
   previewHostSuffix,
   SESSION_API_PORT,
   SESSION_IMAGE_VERSION,
   SESSION_KIT_TAG,
   SESSION_TEST_LATENCY_FACTOR,
   SESSION_UI_PORT,
+  SESSION_WORKSPACE,
   sessionBootstrap,
   sessionDevVars,
   sessionProcessEnv,
@@ -180,6 +188,115 @@ describe('the bootstrap command', () => {
       'Bash(git config:*)',
     ])
     expect(settings.permissions.allow).toBeUndefined()
+  })
+})
+
+describe('the kit’s own bootstrap flags (kit 0.17.4+)', () => {
+  /**
+   * The kit's `BOOTSTRAP_SKIPPABLE_STEPS` (0.17.4 `scripts/lib/bootstrap-lib.mjs`): any other name
+   * in `ROCKETFLARE_BOOTSTRAP_SKIP` is a usage error (exit 2).
+   */
+  const KIT_SKIPPABLE = [
+    'toolchain',
+    'install',
+    'secrets',
+    'database',
+    'migrate',
+    'plugins',
+    'seed',
+    'cloudflare',
+  ]
+  const dbUri = 'postgresql://session_owner:pw@ep-kit-000001.us-east-2.aws.neon.tech/session_app'
+  const manifest = (version: string) =>
+    JSON.stringify({ app: { slug: 'hola-world' }, kit: { version, commit: 'abc' } })
+  const bootstrapRun = (sandbox: FakeSandbox) =>
+    sandbox.backgroundRuns.find(r => /scripts\/bootstrap\.mjs/.test(r.command))
+
+  it('from 0.17.4: --no-install, the kit’s step skip and root opt-in — no stand-ins', () => {
+    for (const version of [KIT_BOOTSTRAP_FLAGS_VERSION, '0.17.7', '0.18.0', '1.0.0']) {
+      expect(bootstrapInvocation(version)).toEqual({
+        command: `${BOOTSTRAP_COMMAND} --no-install`,
+        env: { [KIT_ALLOW_ROOT_ENV]: '1', [KIT_BOOTSTRAP_SKIP_ENV]: 'database' },
+        kitFlags: true,
+      })
+    }
+    // A resume against a prepared database: the seed and the migrate too, as the kit names them.
+    const resume = bootstrapInvocation('0.17.4', ['seed', 'db-check', 'migrate'])
+    expect(resume.env[KIT_BOOTSTRAP_SKIP_ENV]?.split(',').sort()).toEqual([
+      'database',
+      'migrate',
+      'seed',
+    ])
+    for (const step of resume.env[KIT_BOOTSTRAP_SKIP_ENV]?.split(',') ?? []) {
+      expect(KIT_SKIPPABLE).toContain(step)
+    }
+    // whoami needs nothing (`--offline` never asks), and no preload stand-in is armed.
+    expect(resume.env).not.toHaveProperty(BOOTSTRAP_SKIP_ENV)
+  })
+
+  it('before 0.17.4, or a version Launch cannot read: the preload’s stand-ins, as before', () => {
+    for (const version of ['0.17.3', '0.16.0', '0.15.0', null, 'main', '']) {
+      expect(bootstrapInvocation(version)).toEqual({
+        command: BOOTSTRAP_COMMAND,
+        env: { [BOOTSTRAP_SKIP_ENV]: ALWAYS_SKIPPED.join(',') },
+        kitFlags: false,
+      })
+    }
+    expect(bootstrapInvocation('0.17.3', ['seed', 'migrate']).env).toEqual({
+      [BOOTSTRAP_SKIP_ENV]: ['seed', 'migrate', ...ALWAYS_SKIPPED].join(','),
+    })
+  })
+
+  it('reads the version from the checkout: .rocketflare.json, else launch.plugins.json', async () => {
+    const sandbox = new FakeSandbox({ name: 'kv' })
+    expect(await checkoutKitVersion(sandbox)).toBeNull()
+    sandbox.files.set(`${SESSION_WORKSPACE}/launch.plugins.json`, '{"kitVersion":"0.15.0"}')
+    expect(await checkoutKitVersion(sandbox)).toBe('0.15.0')
+    sandbox.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('v0.17.4'))
+    expect(await checkoutKitVersion(sandbox)).toBe('0.17.4')
+    // Not a manifest: the next file.
+    sandbox.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, '<<<<<<< HEAD')
+    expect(await checkoutKitVersion(sandbox)).toBe('0.15.0')
+    // A read that fails is no version, never a failed bootstrap.
+    sandbox.files.delete(`${SESSION_WORKSPACE}/launch.plugins.json`)
+    sandbox.failNext('readFile', new Error('HTTP error! status: 500'))
+    expect(await checkoutKitVersion(sandbox)).toBeNull()
+  })
+
+  it('sessionBootstrap on a 0.17.4 checkout runs the kit’s flags; on 0.17.3 the stand-ins', async () => {
+    const dev = devEnvFor(devCloud, session)
+    const modern = new FakeSandbox({ name: 'k1' })
+    await modern.start()
+    modern.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('0.17.4'))
+    await sessionBootstrap({ sandbox: modern, dbUri, dev, skip: ['seed', 'db-check'] })
+    const kit = bootstrapRun(modern)
+    expect(kit?.command).toContain(`${BOOTSTRAP_COMMAND} --no-install`)
+    expect(kit?.opts?.env).toMatchObject({
+      [KIT_ALLOW_ROOT_ENV]: '1',
+      [KIT_BOOTSTRAP_SKIP_ENV]: 'seed,database',
+      LAUNCH_DB_URL: dbUri,
+    })
+    expect(kit?.opts?.env).not.toHaveProperty(BOOTSTRAP_SKIP_ENV)
+    // The preload still runs: a migrate that is not skipped is the kit's migrator alone, and the
+    // tracked files stay unwritten.
+    expect(kit?.command).toContain('--import /workspace/.launch/bootstrap-in-sandbox.mjs')
+    expect(kit?.opts?.env).toHaveProperty('LAUNCH_BOOTSTRAP_KEEP')
+
+    const older = new FakeSandbox({ name: 'k2' })
+    await older.start()
+    older.files.set(`${SESSION_WORKSPACE}/.rocketflare.json`, manifest('0.17.3'))
+    await sessionBootstrap({ sandbox: older, dbUri, dev, skip: ['seed', 'db-check'] })
+    const stubbed = bootstrapRun(older)
+    expect(stubbed?.command).not.toContain('--no-install')
+    expect(stubbed?.opts?.env).toMatchObject({
+      [BOOTSTRAP_SKIP_ENV]: 'seed,db-check,install,whoami',
+    })
+    expect(stubbed?.opts?.env).not.toHaveProperty(KIT_BOOTSTRAP_SKIP_ENV)
+    expect(stubbed?.opts?.env).not.toHaveProperty(KIT_ALLOW_ROOT_ENV)
+    // Launch's own install runs either way: it is what the kit's install would have repeated.
+    for (const sandbox of [modern, older]) {
+      expect(sandbox.backgroundRuns.map(r => r.name)).toEqual(['install', 'bootstrap'])
+    }
   })
 })
 
