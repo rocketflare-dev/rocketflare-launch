@@ -24,7 +24,9 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { commitFiles } from '@/api/services/launch/github-app'
-import { auditEvents } from '@/db/schema'
+import { sweepGateVariables } from '@/api/services/launch/gate-variable'
+import { loadConfig } from '@/config'
+import { apps, auditEvents } from '@/db/schema'
 import {
   createTestSession,
   createTestTenantWithUser,
@@ -383,5 +385,64 @@ describe('POST /api/apps/:id/branch-protection', () => {
     expect((await apply(seeded, other.admin)).status).toBe(404)
     expect(rulesetsOf(owner, repo)).toEqual([])
     expect(gateVarOf(owner, repo)).toBeUndefined()
+  })
+})
+
+describe('the LAUNCH_GATE_APP_ID sweep (issue #21)', () => {
+  it('sets it on a live app Launch has not seen it on, records it, and leaves the app alone after', async () => {
+    const { tenantId, seeded, owner, repo } = await fixture()
+    await db.update(apps).set({ status: 'live', gateVariableSetAt: null }).where(eq(apps.id, seeded.app.id))
+    const cfg = loadConfig(env)
+    const now = new Date()
+    const warnings: unknown[] = []
+    expect(
+      await sweepGateVariables(db, cfg, {
+        now,
+        tenantIds: [tenantId],
+        logger: { warn: (o: unknown) => warnings.push(o) },
+      }),
+      JSON.stringify(warnings)
+    ).toEqual({
+      set: 1,
+      failed: 0,
+    })
+    expect(gateVarOf(owner, repo)).toBe(String(cloud.opts.appId))
+    const [row] = await db.select().from(apps).where(eq(apps.id, seeded.app.id))
+    expect(row?.gateVariableSetAt).toBeInstanceOf(Date)
+    // Seen: the next tick asks GitHub nothing.
+    const calls = cloud.calls.length
+    expect(await sweepGateVariables(db, cfg, { now, tenantIds: [tenantId] })).toEqual({
+      set: 0,
+      failed: 0,
+    })
+    expect(cloud.calls.length).toBe(calls)
+  })
+
+  it('an app GitHub refuses is tried again only after an hour', async () => {
+    const { tenantId, seeded } = await fixture()
+    await db
+      .update(apps)
+      .set({ status: 'live', gateVariableSetAt: null, repoName: 'not-on-github' })
+      .where(eq(apps.id, seeded.app.id))
+    const cfg = loadConfig(env)
+    const now = new Date()
+    const opts = { now, tenantIds: [tenantId], logger: { warn: () => {} } }
+    expect(await sweepGateVariables(db, cfg, opts)).toEqual({ set: 0, failed: 1 })
+    expect(await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 30 * 60_000) })).toEqual({
+      set: 0,
+      failed: 0,
+    })
+    expect(await sweepGateVariables(db, cfg, { ...opts, now: new Date(now.getTime() + 61 * 60_000) })).toEqual({
+      set: 0,
+      failed: 1,
+    })
+  })
+
+  it('Apply records it too', async () => {
+    const { seeded, admin } = await fixture()
+    await db.update(apps).set({ gateVariableSetAt: null }).where(eq(apps.id, seeded.app.id))
+    expect((await apply(seeded, admin)).status).toBe(200)
+    const [row] = await db.select().from(apps).where(eq(apps.id, seeded.app.id))
+    expect(row?.gateVariableSetAt).toBeInstanceOf(Date)
   })
 })

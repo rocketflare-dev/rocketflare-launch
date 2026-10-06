@@ -43,8 +43,13 @@ interface Call {
 }
 
 /** A GitHub that serves `files` (path → text; absent = 404) for any repo. */
-function fakeGitHub(files: Record<string, string>, installations = [{ id: 77, login: 'acme' }]) {
+function fakeGitHub(
+  files: Record<string, string>,
+  installations = [{ id: 77, login: 'acme' }],
+  opts: { variables?: 'refuse' } = {}
+) {
   const calls: Call[] = []
+  const variables = new Map<string, string>()
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     calls.push({
@@ -74,9 +79,31 @@ function fakeGitHub(files: Record<string, string>, installations = [{ id: 77, lo
         : new Response(text, { status: 200 })
     }
     if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return json({ default_branch: 'main' })
+    // Issue #21: the repo's Actions variables — none until written; `variables: 'refuse'` is an
+    // installation without `actions_variables: write`.
+    const variable = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/actions\/variables(?:\/(.+))?$/)
+    if (variable) {
+      const method = init?.method ?? 'GET'
+      if (opts.variables === 'refuse' && method !== 'GET') {
+        return json({ message: 'Resource not accessible by integration' }, 403)
+      }
+      const name = variable[1] ? decodeURIComponent(variable[1]) : null
+      if (method === 'GET') {
+        const value = name ? variables.get(name) : undefined
+        return value === undefined ? json({ message: 'Not Found' }, 404) : json({ name, value })
+      }
+      if (method === 'PATCH') {
+        if (!name || !variables.has(name)) return json({ message: 'Not Found' }, 404)
+        variables.set(name, JSON.parse(String(init?.body)).value)
+        return new Response(null, { status: 204 })
+      }
+      const sent = JSON.parse(String(init?.body)) as { name: string; value: string }
+      variables.set(sent.name, sent.value)
+      return new Response(null, { status: 201 })
+    }
     return json({ message: `unexpected ${url.pathname}` }, 500)
   }) as typeof fetch
-  return { calls, fetch: fetchImpl }
+  return { calls, fetch: fetchImpl, variables }
 }
 
 function rocketflareJson(slug: string, extra: Record<string, unknown> = {}) {
@@ -315,6 +342,33 @@ describe('importApp', () => {
     expect(
       fileCalls.every(c => c.headers.get('authorization') === 'Bearer ghs_fake_installation_token')
     ).toBe(true)
+  })
+
+  it('sets LAUNCH_GATE_APP_ID on the repo after the import, and records it (issue #21)', async () => {
+    const { tenant, actor } = await adminActor()
+    const gh = fakeGitHub(repoFiles({ '.rocketflare.json': rocketflareJson(uniqueSlug()) }))
+    const { app } = await importApp(db, cfg, tenant.id, { repo: 'acme/gated' }, actor, {
+      fetch: gh.fetch,
+      github: github(),
+    })
+    expect(gh.variables.get('LAUNCH_GATE_APP_ID')).toBe('12345')
+    const [row] = await db.select().from(apps).where(eq(apps.id, app.id))
+    expect(row?.gateVariableSetAt).toBeInstanceOf(Date)
+  })
+
+  it('an installation that may not write variables still imports; the sweep is left to set it', async () => {
+    const { tenant, actor } = await adminActor()
+    const gh = fakeGitHub(repoFiles({ '.rocketflare.json': rocketflareJson(uniqueSlug()) }), undefined, {
+      variables: 'refuse',
+    })
+    const { app } = await importApp(db, cfg, tenant.id, { repo: 'acme/ungated' }, actor, {
+      fetch: gh.fetch,
+      github: github(),
+    })
+    expect(app.status).toBe('live')
+    expect(gh.variables.size).toBe(0)
+    const [row] = await db.select().from(apps).where(eq(apps.id, app.id))
+    expect(row?.gateVariableSetAt).toBeNull()
   })
 
   it('accepts the launch.plugins.json shape when there is no .rocketflare.json', async () => {

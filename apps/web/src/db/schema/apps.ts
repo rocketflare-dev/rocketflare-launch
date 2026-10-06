@@ -117,6 +117,15 @@ export const apps = pgTable(
      * so two clicks a second apart enqueue one capture, whatever isolate each lands on.
      */
     thumbnailRefreshAt: timestamp('thumbnail_refresh_at', { withTimezone: true }),
+    /**
+     * Issue #21: when Launch last found (or set) the repo's `LAUNCH_GATE_APP_ID` Actions variable
+     * holding its App id (`services/launch/gate-variable.ts`). Null → the `apps.gateVariable` cron
+     * sweep sets it (an imported app, an app launched before issue #10). Only ever a hint: the
+     * branch-protection card reads GitHub itself.
+     */
+    gateVariableSetAt: timestamp('gate_variable_set_at', { withTimezone: true }),
+    /** When the sweep last tried an app still missing it: retried at most hourly. */
+    gateVariableTriedAt: timestamp('gate_variable_tried_at', { withTimezone: true }),
     ...timestamps(),
   },
   table => [

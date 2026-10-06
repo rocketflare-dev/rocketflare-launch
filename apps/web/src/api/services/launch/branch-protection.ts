@@ -30,7 +30,7 @@ import type { Database } from '../../../db/client'
 import type { AppRow } from '../../../db/schema'
 import { ApiError, ConflictError } from '../../utils/core/errors'
 import { type AuditActor, recordAudit } from './audit'
-import { diagnoseGateVariable, ensureGateVariable } from './gate-variable'
+import { diagnoseGateVariable, ensureGateVariable, markGateVariableSet } from './gate-variable'
 import {
   createRuleset,
   GITHUB_TOKEN_PERMISSIONS,
@@ -379,6 +379,7 @@ export async function applyAppBranchProtection(
     },
     { ...opts, github }
   )
+  await markGateVariableSet(db, { id: app.id, tenantId })
   await recordAudit(db, {
     tenantId,
     ...actor,

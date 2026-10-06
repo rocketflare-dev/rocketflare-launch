@@ -15,7 +15,9 @@
  *    `app.imported` audit row — **in one transaction**, so a failed import leaves nothing behind.
  *    The slug's global uniqueness is the `apps_slug_key` constraint, mapped to 409 `slug_taken`.
  *
- * 5. **After commit, scan the declared config** (Launch P5, `grants/detect.scanAppConfig`): the
+ * 5. **After commit, set `LAUNCH_GATE_APP_ID`** on the repo (issue #21, best-effort: an
+ *    installation without `actions_variables: write` leaves it to the cron sweep).
+ * 6. **Then scan the declared config** (Launch P5, `grants/detect.scanAppConfig`): the
  *    plugins' keys matched to shared resources, the app's owners told what to request. A scan
  *    failure is recorded on the scan row and never fails the import.
  *
@@ -35,6 +37,7 @@ import type { Realtime } from '../realtime'
 import { assertGroupInTenant } from './apps'
 import { type AuditActor, recordAudit } from './audit'
 import { getCredential, getSetting } from './credentials'
+import { ensureAppGateVariable } from './gate-variable'
 import {
   GITHUB_API_BASE,
   GITHUB_USER_AGENT,
@@ -371,6 +374,16 @@ export async function importApp(
       },
       { tenantId, appId: app.id, ref: snapshot.ref, trigger: 'import' }
     ).catch(() => {})
+    // Issue #21: CI trusts Launch's gate only once the repo names Launch's App — set it now when
+    // the installation may write Actions variables; else the cron sweep tries again hourly
+    // (`sweepGateVariables`). Never fails the import.
+    await ensureAppGateVariable(db, cfg, app, { github, fetch: opts.fetch, apiBase: opts.apiBase }).catch(
+      err =>
+        (opts.logger ?? loggerFor(cfg, { component: 'import' })).warn(
+          { appId: app.id, err: err instanceof Error ? err.message : String(err) },
+          'import: could not set LAUNCH_GATE_APP_ID; the sweep retries'
+        )
+    )
     return { app, runId }
   } catch (err) {
     if (isUniqueViolation(err)) {

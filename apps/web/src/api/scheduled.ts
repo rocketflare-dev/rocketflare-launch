@@ -18,6 +18,7 @@ import { approvalsSweep } from './services/approvals/sweep'
 import { grantsSweep } from './services/grants/sweep'
 import { pruneInvitations } from './services/invitations'
 import { auditSeal } from './services/launch/audit-chain'
+import { gateVariableSweep } from './services/launch/gate-variable'
 import { healthPoll } from './services/launch/health'
 import { kitFollowLatest } from './services/launch/kit-pin'
 import { sessionsChecks } from './services/sessions/checks-cron'
@@ -112,6 +113,7 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
   // behind (`gate-*`, older than three hours). §18.22: expire personal-account sign-ins past their
   // TTL and release credential claims a dead turn left. Kit: a Follow latest pin moved to the kit's
   // newest release (at most hourly; a failed lookup retried next tick) — before the seal too.
+  // Issue #21: `LAUNCH_GATE_APP_ID` on live apps' repos Launch has not seen it on (imports).
   '*/5 * * * *': [
     healthPoll,
     expireSessions,
@@ -121,6 +123,7 @@ const CORE_SCHEDULED_TASKS: Record<string, ScheduledTask[]> = {
     approvalsSweep,
     grantsSweep,
     kitFollowLatest,
+    gateVariableSweep,
     auditSeal,
   ],
 }

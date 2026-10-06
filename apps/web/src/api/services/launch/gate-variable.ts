@@ -8,8 +8,10 @@
  *
  * - {@link ensureGateVariable}: read, then write only when it differs (`unchanged` costs no write).
  *   Called by the `github_env` launch step (new apps), Apply on the branch-protection card
- *   (`POST /api/apps/:id/branch-protection`, existing and imported apps) and the start of a kit
- *   upgrade ({@link ensureAppGateVariable}, best-effort — the upgrade that brings the job in).
+ *   (`POST /api/apps/:id/branch-protection`, existing and imported apps), the start of a kit
+ *   upgrade ({@link ensureAppGateVariable}, best-effort — the upgrade that brings the job in), an
+ *   import (best-effort, after its transaction) and the cron sweep ({@link sweepGateVariables},
+ *   issue #21) for live apps Launch has not seen it on (`apps.gate_variable_set_at`).
  * - {@link diagnoseGateVariable}: `ok | missing | wrong | unknown`, reported beside the
  *   branch-protection diagnosis (`gateVariable`).
  *
@@ -17,16 +19,19 @@
  * every push, as it did before Launch. Launch has no detach flow that removes it.
  */
 import { type AppGateVariable, LAUNCH_GATE_APP_ID_VARIABLE } from '@launch/shared/launch-apps'
+import { and, asc, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
-import type { AppRow } from '../../../db/schema'
+import { type AppRow, apps } from '../../../db/schema'
+import type { ScheduledTask } from '../../scheduled'
+import type { Logger } from '../../utils/core/logger'
 import {
   GITHUB_TOKEN_PERMISSIONS,
   type GitHubOptions,
   getRepoVariable,
   upsertRepoVariable,
 } from './github-app'
-import { loadImportGitHub } from './import'
+import { type ImportGitHub, loadImportGitHub } from './import'
 import { type RepoGitHubOptions, withRepoToken } from './releases/github'
 
 export { LAUNCH_GATE_APP_ID_VARIABLE }
@@ -99,18 +104,32 @@ export async function diagnoseGateVariable(
   return { state: 'ok', value, expected, detail: null }
 }
 
+/** Issue #21: record that `app`'s repo holds the variable (`apps.gate_variable_set_at`). */
+export async function markGateVariableSet(
+  db: Database,
+  app: Pick<AppRow, 'id' | 'tenantId'>,
+  now = new Date()
+): Promise<void> {
+  await db
+    .update(apps)
+    .set({ gateVariableSetAt: now })
+    .where(and(eq(apps.tenantId, app.tenantId), eq(apps.id, app.id)))
+}
+
 /**
- * Set the variable on `app`'s repo with a token narrowed to it — the start of a kit upgrade.
- * Throws whatever GitHub or the token mint refused; callers that must not fail catch it.
+ * Set the variable on `app`'s repo with a token narrowed to it — the start of a kit upgrade, an
+ * import, the sweep — and record it (`markGateVariableSet`). Throws whatever GitHub or the token
+ * mint refused (an installation without `actions_variables: write`); callers that must not fail
+ * catch it.
  */
 export async function ensureAppGateVariable(
   db: Database,
   cfg: AppConfig,
-  app: Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch'>,
+  app: Pick<AppRow, 'id' | 'tenantId' | 'repoOwner' | 'repoName' | 'defaultBranch'>,
   opts: RepoGitHubOptions = {}
 ): Promise<GateVariableWrite> {
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
-  return withRepoToken(
+  const write = await withRepoToken(
     db,
     cfg,
     app,
@@ -118,4 +137,97 @@ export async function ensureAppGateVariable(
     (token, repo) => ensureGateVariable(token, repo.owner, repo.repo, github.auth.appId, opts),
     { ...opts, github }
   )
+  await markGateVariableSet(db, app)
+  return write
+}
+
+/** How many apps one sweep tick tries at most, and how long an app that failed waits to be retried. */
+export const GATE_VARIABLE_SWEEP_BATCH = 20
+export const GATE_VARIABLE_RETRY_MS = 60 * 60 * 1000
+
+export interface GateVariableSweepReport {
+  set: number
+  failed: number
+}
+
+/**
+ * Issue #21: `LAUNCH_GATE_APP_ID` on every live app's repo that Launch has not seen it on
+ * (`gate_variable_set_at IS NULL`) — imported apps, and apps launched before issue #10 — so CI
+ * trusts Launch's gate without anyone pressing Apply. ONE statement claims the batch
+ * (`gate_variable_tried_at` stamped, so two ticks never try the same app, and an app GitHub refused
+ * — an installation without `actions_variables: write` — waits {@link GATE_VARIABLE_RETRY_MS}),
+ * then each is set best-effort. Cross-tenant like the other Launch crons; every write
+ * tenant-first. No GitHub App connected → nothing is claimed.
+ */
+export async function sweepGateVariables(
+  db: Database,
+  cfg: AppConfig,
+  opts: RepoGitHubOptions & {
+    now?: Date
+    logger?: Pick<Logger, 'warn'>
+    /** Narrows the sweep to these organisations (tests). */
+    tenantIds?: string[]
+  } = {}
+): Promise<GateVariableSweepReport> {
+  const { now: at, logger, tenantIds, ...gh } = opts
+  const now = at ?? new Date()
+  const report: GateVariableSweepReport = { set: 0, failed: 0 }
+  let github: ImportGitHub
+  try {
+    github = gh.github ?? (await loadImportGitHub(db, cfg))
+  } catch {
+    return report
+  }
+  const retryBefore = new Date(now.getTime() - GATE_VARIABLE_RETRY_MS)
+  const due = db
+    .select({ id: apps.id })
+    .from(apps)
+    .where(
+      and(
+        tenantIds ? inArray(apps.tenantId, tenantIds) : undefined,
+        eq(apps.status, 'live'),
+        isNull(apps.archivedAt),
+        isNull(apps.gateVariableSetAt),
+        isNotNull(apps.repoOwner),
+        isNotNull(apps.repoName),
+        or(isNull(apps.gateVariableTriedAt), lt(apps.gateVariableTriedAt, retryBefore))
+      )
+    )
+    .orderBy(asc(apps.createdAt))
+    .limit(GATE_VARIABLE_SWEEP_BATCH)
+  const claimed = await db
+    .update(apps)
+    .set({ gateVariableTriedAt: now })
+    .where(
+      and(
+        inArray(apps.id, due),
+        isNull(apps.gateVariableSetAt),
+        or(isNull(apps.gateVariableTriedAt), lt(apps.gateVariableTriedAt, retryBefore))
+      )
+    )
+    .returning()
+  for (const app of claimed) {
+    try {
+      await ensureAppGateVariable(db, cfg, app, { ...gh, github })
+      report.set++
+    } catch (err) {
+      report.failed++
+      logger?.warn(
+        { appId: app.id, err: err instanceof Error ? err.message : String(err) },
+        'apps.gateVariable: could not set LAUNCH_GATE_APP_ID'
+      )
+    }
+  }
+  return report
+}
+
+/** The five-minute cron task (`scheduled.ts`): {@link sweepGateVariables}. */
+export const gateVariableSweep: ScheduledTask = {
+  name: 'apps.gateVariable',
+  async run({ db, config, logger }) {
+    const report = await sweepGateVariables(db, config, { logger })
+    if (report.set > 0 || report.failed > 0) {
+      logger.info(report, 'apps.gateVariable: swept apps missing LAUNCH_GATE_APP_ID')
+    }
+  },
 }
