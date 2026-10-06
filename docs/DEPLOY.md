@@ -339,7 +339,7 @@ offers only the Worker's own containers (a stored `remote` is ignored, a PUT of 
 
 | | |
 |---|---|
-| Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`); `BACKUP_BUCKET` → the bucket local Launch's `FILES` names (`launch-files`), for workspace backups — nothing else |
+| Bindings | `SESSION_SANDBOX` → `HostedSessionSandbox` (Durable Object + `[[containers]]`, `[[migrations]] v1 new_sqlite_classes`); `BACKUP_BUCKET` → a development bucket of its own (`launch-files-dev`, with a 14-day lifecycle rule on `backups/`), for workspace backups — nothing else |
 | Vars | `SESSION_EGRESS = "open"` (= Launch's); `SESSION_WORKSPACE_BACKUP = "presigned"` (`off` or `presigned` — `binding` is refused: the archive would cross the Durable Object's 128 MB), `BACKUP_BUCKET_NAME` (= the binding's bucket, a config test pins it), `CLOUDFLARE_ACCOUNT_ID` (**empty in git — fill in your account id**; or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction bucket). Until the account id and the R2 secrets are set every backup is refused, with the reason recorded on the session |
 | Container | the SAME `./containers/session/Dockerfile` and `standard-3` as Launch (a config test pins both), `max_instances = 3`; container application `launch-sandbox-dev-hostedsessionsandbox` |
 | Reachability | `workers_dev = false`, `preview_urls = false`, no routes: only a service binding in the account reaches it |

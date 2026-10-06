@@ -90,11 +90,13 @@ describe('wrangler.sandbox-host.toml', () => {
     for (const key of ['services', 'kv_namespaces', 'workflows']) {
       expect(host[key], key).toBeUndefined()
     }
-    // Workspace backups: the SDK's fixed binding, on the bucket local Launch's FILES names.
+    // Workspace backups: the SDK's fixed binding, on a development bucket of its own — never the
+    // bucket a deployed Launch's FILES names, which a laptop's backups must not share.
     const files = rows(launch, 'r2_buckets').find(b => b.binding === 'FILES')
     expect(rows(host, 'r2_buckets')).toEqual([
-      { binding: 'BACKUP_BUCKET', bucket_name: files?.bucket_name },
+      { binding: 'BACKUP_BUCKET', bucket_name: 'launch-files-dev' },
     ])
+    expect(files?.bucket_name).not.toBe('launch-files-dev')
   })
 
   it('its vars: the egress switch (= Launch’s), and presigned backups naming the bound bucket', () => {

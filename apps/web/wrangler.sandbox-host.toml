@@ -38,7 +38,7 @@ SESSION_EGRESS = "open"
 # session's recorded reason, and a cold resume clones and installs as before. Local Launch backs a
 # remote session up only when its own .dev.vars has CLOUDFLARE_ACCOUNT_ID (or BACKUP_BUCKET_ENDPOINT).
 SESSION_WORKSPACE_BACKUP = "presigned"
-BACKUP_BUCKET_NAME = "launch-files"        # = the BACKUP_BUCKET binding's bucket_name (sandbox-host.test.ts)
+BACKUP_BUCKET_NAME = "launch-files-dev"    # = the BACKUP_BUCKET binding's bucket_name (sandbox-host.test.ts)
 # PLACEHOLDER — your Cloudflare account id (`wrangler whoami`; not a secret). Empty = every backup
 # is refused. A jurisdiction bucket sets BACKUP_BUCKET_ENDPOINT = "https://<account>.eu.r2.cloudflarestorage.com"
 # instead. Local Launch's .dev.vars needs the same value.
@@ -68,13 +68,16 @@ enabled = true
 name = "launch-dev"
 public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEW+2HDFcrMKhlJdd3q7nOBKakNAi1+p9rAcIHO9+Jwj"
 
-# Workspace backups: the Sandbox SDK's FIXED binding name, on the bucket local Launch's FILES names
-# (wrangler.toml) — the same convention as the deployed tomls (BACKUP_BUCKET = the FILES bucket,
-# objects under backups/). A deployed Worker's R2 binding is the real bucket; the SDK checks each
-# presigned upload through it. Give backups/ an R2 lifecycle rule (docs/DEPLOY.md).
+# Workspace backups: the Sandbox SDK's FIXED binding name, on a DEVELOPMENT bucket of its own,
+# `launch-files-dev` — not the `launch-files` a deployed Launch's FILES names, so a laptop's backups
+# never share a deployed instance's bucket (objects under backups/). A deployed Worker's R2 binding
+# is the real bucket; the SDK checks each presigned upload through it. Create it once, with the
+# lifecycle rule docs/DEPLOY.md asks for:
+#   pnpm exec wrangler r2 bucket create launch-files-dev
+#   pnpm exec wrangler r2 bucket lifecycle add launch-files-dev expire-backups backups/ --expire-days 14 -y
 [[r2_buckets]]
 binding = "BACKUP_BUCKET"
-bucket_name = "launch-files"
+bucket_name = "launch-files-dev"
 
 [[durable_objects.bindings]]
 name = "SESSION_SANDBOX"

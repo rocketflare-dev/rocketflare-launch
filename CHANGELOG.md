@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The remote sandbox host backs workspaces up to a development bucket of its own.** `wrangler.sandbox-host.toml`
+  binds `BACKUP_BUCKET` to `launch-files-dev` (a 14-day lifecycle rule on `backups/`) instead of the
+  `launch-files` a deployed Launch uses; the account id is passed at deploy (`--var
+  CLOUDFLARE_ACCOUNT_ID:<id>`), never committed (`docs/SESSIONS-LOCAL.md`, issue #3).
 - **The sign-in page flies a rocket across a night sky.** `/login` (every state of it, including
   "check your email") and `/magic-link/sent` sit on `RocketBackground`, ported from the hola-world
   app's login: a canvas of bright, twinkling stars with a Rocketflare rocket that follows the

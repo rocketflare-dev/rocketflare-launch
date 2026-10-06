@@ -131,14 +131,15 @@ binding… start Launch with `pnpm dev`".
 1. Cloudflare dashboard → R2 → Manage API tokens: a token with **Object Read & Write** on the
    bucket `wrangler.sandbox-host.toml`'s `BACKUP_BUCKET` names (`BACKUP_BUCKET_NAME`) only. The
    Access Key ID and Secret Access Key are shown once.
-2. `apps/web/wrangler.sandbox-host.toml`: set `CLOUDFLARE_ACCOUNT_ID` (empty in git; `wrangler
-   whoami` shows it), or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction bucket. Then:
+2. The bucket is `launch-files-dev` (create it once — the commands are in
+   `wrangler.sandbox-host.toml`). Pass your `CLOUDFLARE_ACCOUNT_ID` at deploy (empty in git;
+   `wrangler whoami` shows it), or `BACKUP_BUCKET_ENDPOINT` for a jurisdiction bucket:
 
    ```bash
    cd apps/web
    pnpm exec wrangler secret put R2_ACCESS_KEY_ID -c wrangler.sandbox-host.toml
    pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY -c wrangler.sandbox-host.toml
-   pnpm deploy:sandbox-host
+   pnpm deploy:sandbox-host --var CLOUDFLARE_ACCOUNT_ID:<account id>
    ```
 3. `apps/web/.dev.vars`: `CLOUDFLARE_ACCOUNT_ID=<account id>` (or the same `BACKUP_BUCKET_ENDPOINT`),
    leaving `SESSION_WORKSPACE_BACKUP` unset (= `binding` for local Docker sessions, `presigned` for
