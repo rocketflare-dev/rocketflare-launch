@@ -43,7 +43,7 @@ import { useAppSessions, useWarmStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { timeAgo } from '@/ui/lib/format'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
-import { shippingStageText } from '@/ui/pages/sessions/sessionShipping'
+import { ShippingLine } from '@/ui/pages/sessions/components/ShippingLine'
 
 /** A start refusal → what the card says about it. Pure. */
 export function startRefusal(error: unknown): { tone: 'info' | 'warning'; message: string } {
@@ -206,11 +206,7 @@ function SessionRow({ appSlug, session }: { appSlug: string; session: SessionSum
       </td>
       <td>
         <SessionStatusBadge status={session.status} shipping={session.shipping} />
-        {session.shipping && (
-          <span className="mt-0.5 block text-xs text-secondary" data-testid="session-shipping">
-            {shippingStageText(session.shipping)}
-          </span>
-        )}
+        {session.shipping && <ShippingLine shipping={session.shipping} className="mt-0.5 block" />}
       </td>
       <td className="tabular-nums text-sm">{session.turnCount}</td>
       <td className="tabular-nums text-sm">{usd(session.costMicrocents)}</td>

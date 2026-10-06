@@ -47,7 +47,7 @@ import { useDeployProgress, useDeploys } from '@/ui/hooks/useDeploys'
 import { useAppPromotion, useReleaseCompare } from '@/ui/hooks/useReleases'
 import { useAppSessions } from '@/ui/hooks/useSessions'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
-import { shippingStageText } from '@/ui/pages/sessions/sessionShipping'
+import { ShippingLine } from '@/ui/pages/sessions/components/ShippingLine'
 import { HEALTH_LABEL, HealthDot } from '../components/HealthDot'
 import { PipelineProgress } from '../components/PipelineProgress'
 import {
@@ -62,6 +62,7 @@ import { ShipDialog } from '../components/ShipDialog'
 import {
   ENV_LABEL,
   type InFlight,
+  landingReleaseReason,
   liveInFlight,
   needsYou,
   notDeployedYet,
@@ -265,10 +266,13 @@ function MainRow({
   ctx,
   compare,
   latest,
+  landingReason,
 }: {
   ctx: AppPageContext
   compare: ReleaseCompare | undefined
   latest: Release | null
+  /** Issue #22: a session's landing is releasing this app — the button waits, saying why. */
+  landingReason: string | null
 }) {
   const [open, setOpen] = useState(false)
   const { app } = ctx
@@ -302,11 +306,22 @@ function MainRow({
           )}
         </span>
         {app.viewerCanDeploy && app.status !== 'archived' && (
-          <button type="button" className="btn btn-sm ml-auto" onClick={() => setOpen(true)}>
+          <button
+            type="button"
+            className="btn btn-sm ml-auto"
+            disabled={landingReason !== null}
+            aria-describedby={landingReason ? 'main-row-wait' : undefined}
+            onClick={() => setOpen(true)}
+          >
             Release to staging ▸
           </button>
         )}
       </div>
+      {landingReason && app.viewerCanDeploy && (
+        <p id="main-row-wait" className="mt-1 text-xs text-muted sm:pl-20">
+          {landingReason}
+        </p>
+      )}
       {open && (
         <NewReleaseModal
           appId={app.id}
@@ -452,11 +467,7 @@ function ActiveSessions({ appId, slug }: { appId: string; slug: string }) {
                 {session.title?.trim() || `Session ${session.shortId.slice(0, 6)}`}
               </Link>
               <SessionStatusBadge status={session.status} shipping={session.shipping} />
-              {session.shipping && (
-                <span className="text-xs text-secondary" data-testid="session-shipping">
-                  {shippingStageText(session.shipping)}
-                </span>
-              )}
+              {session.shipping && <ShippingLine shipping={session.shipping} />}
               <span className="text-xs text-secondary ml-auto">
                 <Ago at={session.lastActivityAt ?? session.createdAt} />
               </span>
@@ -519,6 +530,7 @@ function LiveOverview({ ctx }: { ctx: AppPageContext }) {
                 ctx={ctx}
                 compare={compare.data}
                 latest={promotion.data?.candidate ?? null}
+                landingReason={landingReleaseReason(sessions.data?.items ?? [])}
               />
             )}
             {staging && (

@@ -211,6 +211,46 @@ describe('main ahead on the Overview', () => {
     expect(screen.queryByTestId('env-main')).not.toBeInTheDocument()
   })
 
+  it('waits while a session’s landing is releasing this app, and says why (issue #22)', async () => {
+    render({
+      [`/api/apps/${APP_ID}/sessions`]: {
+        items: [
+          {
+            id: '5e551000-0000-4000-8000-000000000001',
+            appId: APP_ID,
+            kind: 'session',
+            shortId: 'abcdefghijkl',
+            title: 'Friendlier home page',
+            status: 'shipped',
+            createdByUserId: null,
+            branch: 'session/abcdefghijkl',
+            turnCount: 3,
+            costMicrocents: 0,
+            prNumber: 6,
+            prUrl: 'https://github.com/acme/expenses/pull/6',
+            lastActivityAt: minutesAgo(1),
+            createdAt: minutesAgo(30),
+            shipping: {
+              stage: 'releasing',
+              waitingOn: null,
+              stalledReason: null,
+              approvalId: null,
+              prNumber: 6,
+              version: null,
+              since: minutesAgo(2),
+            },
+          },
+        ],
+      },
+    })
+    const main = await screen.findByTestId('env-main')
+    const button = within(main).getByRole('button', { name: 'Release to staging ▸' })
+    await waitFor(() => expect(button).toBeDisabled())
+    expect(main).toHaveTextContent(
+      'Launch is releasing pull request #6 to staging, with everything on main.'
+    )
+  })
+
   it('a reader who may not deploy sees the count and no button', async () => {
     render({}, { detail: notDeployer() })
     const main = await screen.findByTestId('env-main')

@@ -7,12 +7,18 @@
  *   session that runs the kit upgrade and ships it, and opens that session, as "Fix in a session"
  *   does. A refusal says why in a toast.
  * - **An upgrade open**: where it stands in words, the PR when there is one, why it needs the
- *   owner when it does, and the session it runs in.
+ *   owner when it does, and the session it runs in. Issue #22: once its session ships, the
+ *   sentence follows the landing (`shipping` on the active sessions list) — "merged, releasing to
+ *   staging" rather than "merge it and release" — and once the release records the kit, it says
+ *   the app is on the new version.
  * - **The last attempt** that ended without a release (failed, cancelled) is one line under the
  *   button, so a second click knows what happened to the first.
  *
  * Plain text, one row of actions, no panel and no badge — `docs/DESIGN.md`.
  */
+
+import type { SessionShipping } from '@launch/shared/launch-sessions'
+import { shippingSummaryText } from '@launch/shared/launch-ship-progress'
 import {
   APP_UPGRADE_STATUS_LABELS,
   type AppUpgrade,
@@ -22,6 +28,7 @@ import {
 } from '@launch/shared/launch-upgrades'
 import { Link, useNavigate } from 'react-router-dom'
 import { showToast } from '@/ui/components/shared'
+import { useAppSessions } from '@/ui/hooks/useSessions'
 import { useAppUpgrades, useStartUpgrade } from '@/ui/hooks/useUpgrades'
 import { startRefusal } from '../components/SessionsCard'
 import { appPath } from './appPageModel'
@@ -34,9 +41,33 @@ export function showUpgradeCard(kit: KitStatus | null | undefined): kit is KitSt
   return Boolean(kit && (kit.behind || kit.openUpgrade))
 }
 
-/** The open upgrade in one sentence. Pure. */
-export function openUpgradeSentence(upgrade: AppUpgrade): string {
+/**
+ * The open upgrade in one sentence — following its session's ship when that is in flight
+ * (`shipping`), and saying so once the kit reads the new version (`current`). Pure.
+ */
+export function openUpgradeSentence(
+  upgrade: AppUpgrade,
+  shipping: Pick<SessionShipping, 'stage' | 'stalledReason' | 'version' | 'mainCi'> | null = null,
+  current: string | null = null
+): string {
   const to = `to ${upgrade.toVersion}`
+  if (current && current === upgrade.toVersion) return `The app is on ${upgrade.toVersion}.`
+  if (shipping) {
+    switch (shipping.stage) {
+      case 'ci':
+      case 'approval':
+        return `The upgrade ${to} is shipping: ${shippingSummaryText(shipping).toLowerCase()}. Launch merges it when that’s done.`
+      case 'merging':
+      case 'releasing':
+        return `The upgrade ${to} is merged, releasing to staging.`
+      case 'deploying':
+        return `The upgrade ${to} is merged and released, deploying to staging.`
+      case 'stalled':
+        return `The upgrade ${to} is merged, but it isn’t on staging yet: ${shippingSummaryText(shipping).toLowerCase()}.`
+      default:
+        break
+    }
+  }
   switch (upgrade.status) {
     case 'queued':
       return `An upgrade ${to} is queued.`
@@ -64,6 +95,9 @@ export function UpgradeCard({ kit }: { kit: KitStatus }) {
   const navigate = useNavigate()
   const history = useAppUpgrades(app.id, kit.behind && !kit.openUpgrade)
   const open = kit.openUpgrade
+  // The same active list the Overview reads (one request): the upgrade's ship, once in flight.
+  const sessions = useAppSessions(open?.sessionId ? app.id : undefined, 'active')
+  const shipping = sessions.data?.items.find(s => s.id === open?.sessionId)?.shipping ?? null
   const sessionPath = (id: string) => `${appPath(app.slug)}/sessions/${id}`
   const ended = !open ? lastEndedUpgrade(history.data?.items ?? []) : null
   const label = requiresUpgradeLabel(kit)
@@ -117,7 +151,7 @@ export function UpgradeCard({ kit }: { kit: KitStatus }) {
       )}
       {open && (
         <div className="text-sm space-y-1">
-          <p>{openUpgradeSentence(open)}</p>
+          <p data-testid="upgrade-sentence">{openUpgradeSentence(open, shipping, kit.current)}</p>
           {open.status === 'needs_attention' && open.error && (
             <p className="text-secondary">{open.error}</p>
           )}

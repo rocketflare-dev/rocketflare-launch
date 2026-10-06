@@ -7,11 +7,13 @@
  * Markdown-free and light on purpose: the app page's sessions card and the admin list import it,
  * and neither may pull the session page's chunk in with it.
  */
+
 import type {
   SessionShipping,
   SessionShippingWait,
   SessionStatus,
 } from '@launch/shared/launch-sessions'
+import { shippingChipText } from '@launch/shared/launch-ship-progress'
 import { sessionIsMoving, shippingIsMoving } from '@/ui/hooks/useSessions'
 
 export const SESSION_STATUS_LABELS: Record<SessionStatus, string> = {
@@ -52,14 +54,16 @@ const SHIPPING_TONE: Record<'moving' | SessionShippingWait, string> = {
 /**
  * `shipping` (the summary's derived ship in flight, when the caller has it) wins over the status:
  * after the merge the row is `shipped` while the landing still releases and deploys, and the
- * badge says "Shipping" until it is live — pulsing only while Launch moves it.
+ * badge names the stage until it is live — "Checks running", "In review", "Releasing",
+ * "Deploying", "Needs you" (`shippingChipText`, issue #22: the words the session page and the CLI
+ * use) — pulsing only while Launch moves it.
  */
 export function SessionStatusBadge({
   status,
   shipping = null,
 }: {
   status: SessionStatus
-  shipping?: Pick<SessionShipping, 'waitingOn'> | null
+  shipping?: Pick<SessionShipping, 'waitingOn' | 'stage'> | null
 }) {
   const live = shipping ? shippingIsMoving(shipping) : sessionIsMoving(status)
   const tone = shipping ? SHIPPING_TONE[shipping.waitingOn ?? 'moving'] : TONE[status]
@@ -71,7 +75,7 @@ export function SessionStatusBadge({
       data-shipping={shipping ? (shipping.waitingOn ?? 'moving') : undefined}
       aria-live={live ? 'polite' : undefined}
     >
-      {shipping ? 'Shipping' : SESSION_STATUS_LABELS[status]}
+      {shipping ? shippingChipText(shipping) : SESSION_STATUS_LABELS[status]}
     </span>
   )
 }

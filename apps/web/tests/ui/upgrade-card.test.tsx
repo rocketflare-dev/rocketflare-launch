@@ -226,6 +226,53 @@ describe('the Overview’s Kit section', () => {
     expect(within(section).queryByRole('button', { name: 'Upgrade' })).toBeNull()
   })
 
+  it('follows the upgrade’s landing once Launch has merged it (issue #22)', async () => {
+    const sessionRow = (stage: string) => ({
+      id: SESSION_ID,
+      appId: APP_ID,
+      kind: 'upgrade',
+      shortId: 'abcdefghijkl',
+      title: 'Upgrade the kit to 0.16.1',
+      status: 'shipped',
+      createdByUserId: IDS.user,
+      branch: 'session/abcdefghijkl',
+      turnCount: 1,
+      costMicrocents: 0,
+      prNumber: 12,
+      prUrl: 'https://github.com/acme/expenses/pull/12',
+      lastActivityAt: '2026-10-01T00:00:00Z',
+      createdAt: '2026-10-01T00:00:00Z',
+      shipping: {
+        stage,
+        waitingOn: null,
+        stalledReason: null,
+        approvalId: null,
+        prNumber: 12,
+        version: null,
+        since: '2026-10-01T00:00:00Z',
+      },
+    })
+    renderOverview({
+      '/api/apps/expenses': detail({
+        kit: kit({
+          openUpgrade: upgrade({
+            status: 'pr_open',
+            prNumber: 12,
+            prUrl: 'https://github.com/acme/expenses/pull/12',
+          }),
+        }),
+      }),
+      [`/api/apps/${APP_ID}/sessions`]: { items: [sessionRow('releasing')] },
+    })
+    const section = await kitSection()
+    await waitFor(() =>
+      expect(within(section).getByTestId('upgrade-sentence')).toHaveTextContent(
+        'The upgrade to 0.16.1 is merged, releasing to staging.'
+      )
+    )
+    expect(within(section).queryByText(/Merge it and release/)).toBeNull()
+  })
+
   it('is absent for an app on the pinned kit', async () => {
     renderOverview({
       '/api/apps/expenses': detail({ kit: kit({ current: '0.16.1', behind: false }) }),
@@ -243,6 +290,23 @@ describe('the pure parts', () => {
     expect(openUpgradeSentence(upgrade({ status: 'needs_attention' }) as never)).toMatch(
       /needs its owner/
     )
+    // Issue #22: the landing's words while the upgrade ships, and the new version once recorded.
+    const pr = upgrade({ status: 'pr_open' }) as never
+    expect(openUpgradeSentence(pr)).toMatch(/Merge it and release/)
+    expect(
+      openUpgradeSentence(pr, { stage: 'ci', stalledReason: null, version: null, mainCi: null })
+    ).toBe(
+      'The upgrade to 0.16.1 is shipping: waiting for the automatic checks. Launch merges it when that’s done.'
+    )
+    expect(
+      openUpgradeSentence(pr, {
+        stage: 'deploying',
+        stalledReason: null,
+        version: '1.2.0',
+        mainCi: 'success',
+      })
+    ).toBe('The upgrade to 0.16.1 is merged and released, deploying to staging.')
+    expect(openUpgradeSentence(pr, null, '0.16.1')).toBe('The app is on 0.16.1.')
     expect(lastEndedUpgrade([upgrade({ status: 'cancelled' })] as never)?.status).toBe('cancelled')
     expect(lastEndedUpgrade([upgrade({ status: 'released' })] as never)).toBeNull()
   })

@@ -572,15 +572,30 @@ describe('a session whose ship is in flight', () => {
       ).findByRole('link', { name: 'Friendlier home page' })
     ).closest('li') as HTMLElement
 
+  // Issue #22: the chip names the stage, and the line says it in the session page's words with
+  // how long it has lasted (and, waiting for main's checks, the limit on that wait).
   it.each([
-    [shipping({ stage: 'ci', version: null }), 'Waiting for CI'],
-    [shipping({ stage: 'merging', version: null }), 'Merging'],
-    [shipping({ stage: 'releasing', version: null }), 'Merged, cutting a release'],
-    [shipping(), 'Deploying v1.4.3 to staging'],
-  ])('lists it under Active sessions with where it stands (%#)', async (ship, words) => {
+    [
+      shipping({ stage: 'ci', version: null }),
+      'Checks running',
+      'PR #12 · Waiting for the automatic checks · 1 min',
+    ],
+    [shipping({ stage: 'merging', version: null }), 'Merging', 'PR #12 · Merging · 1 min'],
+    [
+      shipping({ stage: 'releasing', version: null }),
+      'Releasing',
+      'PR #12 · Merged, waiting for main’s checks · 1 min (releases anyway after 30 min)',
+    ],
+    [
+      shipping({ stage: 'releasing', version: null, mainCi: 'success' }),
+      'Releasing',
+      'PR #12 · Merged, releasing · 1 min',
+    ],
+    [shipping(), 'Deploying', 'PR #12 · Deploying v1.4.3 to staging · 1 min'],
+  ])('lists it under Active sessions with where it stands (%#)', async (ship, chip, words) => {
     renderOverview({ [SESSIONS]: { items: [sessionRow(ship)] } })
     const row = await activeRow()
-    expect(row).toHaveTextContent('Shipping')
+    expect(row.querySelector('.status-badge')).toHaveTextContent(chip)
     expect(row).not.toHaveTextContent('Shipped')
     expect(within(row).getByTestId('session-shipping')).toHaveTextContent(words)
     expect(within(row).getByRole('link', { name: 'Friendlier home page' })).toHaveAttribute(
@@ -668,15 +683,17 @@ describe('a session whose ship is in flight', () => {
       'section'
     ) as HTMLElement
     const item = within(band)
-      .getByText('Friendlier home page is merged, but CI failed on main, so it was not released')
+      .getByText('Friendlier home page is merged, but main’s checks failed, so it was not released')
       .closest('li') as HTMLElement
-    expect(item).toHaveTextContent('Re-run CI or release anyway from the session.')
+    expect(item).toHaveTextContent('Re-run main’s checks or release anyway from the session.')
     expect(within(item).getByRole('link', { name: 'Open session' })).toHaveAttribute(
       'href',
       `/apps/expenses/sessions/${SESSION_ID}`
     )
-    expect(within(await activeRow()).getByTestId('session-shipping')).toHaveTextContent(
-      'Merged, but CI failed on main'
+    const stalled = await activeRow()
+    expect(within(stalled).getByTestId('session-shipping')).toHaveTextContent(
+      'Merged, but main’s checks failed'
     )
+    expect(stalled.querySelector('.status-badge')).toHaveTextContent('Needs you')
   })
 })

@@ -404,10 +404,25 @@ export function sessionName(session: { title: string | null; shortId: string }):
 }
 
 /** A stall before the release, as a Needs-you item says it: what happened, and what to do. */
+/**
+ * Issue #22: why "Release to staging" waits — a session's landing is merging or releasing on this
+ * app, and its release (which carries main's head) would compete for the release claim. Null when
+ * none is. Pure.
+ */
+export function landingReleaseReason(
+  sessions: readonly Pick<SessionSummary, 'shipping'>[]
+): string | null {
+  const landing = sessions.find(
+    s => s.shipping && (s.shipping.stage === 'merging' || s.shipping.stage === 'releasing')
+  )?.shipping
+  if (!landing) return null
+  return `Launch is releasing pull request #${landing.prNumber} to staging, with everything on main.`
+}
+
 const STALL_TEXT: Record<string, { title: string; detail: string }> = {
   main_ci_failed: {
-    title: 'is merged, but CI failed on main, so it was not released',
-    detail: 'Re-run CI or release anyway from the session.',
+    title: 'is merged, but main’s checks failed, so it was not released',
+    detail: 'Re-run main’s checks or release anyway from the session.',
   },
   release_failed: {
     title: 'is merged, but Launch couldn’t cut a release for it',
