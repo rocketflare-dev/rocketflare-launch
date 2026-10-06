@@ -36,6 +36,7 @@ import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import {
   casLanding,
+  LAND_CI_FAST_SECONDS,
   LAND_CI_SLOW_SECONDS,
   LAND_RETRY_SECONDS,
   nudgeLandingSessions,
@@ -51,17 +52,37 @@ import {
 } from '@/api/services/sessions/reconcile'
 import { GitHubRepoHost } from '@/api/services/sessions/repo/github-repo-host'
 import { sessionRepo, summarizeShip } from '@/api/services/sessions/ship'
-import { lostShipMessage, type StepScope, withHeartbeat } from '@/api/services/sessions/steps'
+import {
+  lostShipMessage,
+  type StepScope,
+  waitDuration,
+  withHeartbeat,
+} from '@/api/services/sessions/steps'
 import { sessionSystemNote } from '@/api/services/sessions/turn'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
-import { appOwners, approvalRequests, auditEvents, type SessionRow, sessions } from '@/db/schema'
+import {
+  appOwners,
+  approvalRequests,
+  apps,
+  auditEvents,
+  type SessionRow,
+  sessions,
+} from '@/db/schema'
 import { FakeChatClient } from '../helpers/ai'
 import { decideAs, expireNow, testApprovalDeps, viewerFor } from '../helpers/approvals-kinds'
 import { createTestUser, linkUserToTenant } from '../helpers/auth'
 import { setupTestDatabase } from '../helpers/db'
 import { createFakeCloud, type FakeCloud } from '../helpers/fake-cloud'
 import type { FakeSandbox } from '../helpers/fake-sandbox'
+import {
+  checkRunCompleted,
+  drainJobs,
+  postWebhook,
+  uniqueRepoId,
+  WEBHOOK_SECRET,
+  type WebhookRepo,
+} from '../helpers/github-webhooks'
 import { json, request } from '../helpers/request'
 import {
   createFakeSessionPorts,
@@ -78,7 +99,11 @@ import {
   stubs,
   type TestEnv,
 } from '../mocks/bindings'
-import { createFakeWorkflowStep, type RecordedWait } from '../mocks/cloudflare-workers'
+import {
+  createFakeWorkflowStep,
+  type FakeWorkflowInbox,
+  type RecordedWait,
+} from '../mocks/cloudflare-workers'
 
 vi.mock('@/api/services/sessions/lifecycle', async importOriginal => {
   const actual = await importOriginal<typeof import('@/api/services/sessions/lifecycle')>()
@@ -138,8 +163,8 @@ interface Harness {
 }
 
 /** A prepared app in `staging` mode, a `requested` session, a green gate, fake Phase B hooks. */
-async function harness(): Promise<Harness> {
-  const env = createTestEnv()
+async function harness(envOverrides: Partial<TestEnv> = {}): Promise<Harness> {
+  const env = createTestEnv(envOverrides)
   const cfg = loadConfig(env)
   const cloud = createFakeCloud()
   const f = await seedSessionApp(db, cloud, { prepared: true })
@@ -251,6 +276,9 @@ async function reload(row: Pick<SessionRow, 'id' | 'tenantId'>): Promise<Session
   return latest
 }
 
+/** Issue #19: Phase B's GitHub-facing rounds — `waitForEvent`s, where health keeps a sleep. */
+const PHASE_B_WAKE = /^land\.(main-ci|release|staging)-wake#/
+
 /** What a `land.wait#N` does in a test: wake the session, or let the round time out. */
 type LandWait = (h: Harness, wait: RecordedWait, n: number) => Promise<'wake' | 'timeout'>
 
@@ -275,17 +303,28 @@ async function drive(
     ) => Promise<unknown>
     /** A fresh instance's run (the row is already where it is). */
     fresh?: boolean
-    /** A `step.sleep` by name (issue #11: the merge commit's CI moving on during `land.main-ci-wait`). */
+    /**
+     * A Phase B wait by name — a `step.sleep` (`land.health-wait`) or, issue #19, a `…-wake` round
+     * of `waitForEvent` (issue #11: the merge commit's CI moving on during `land.main-ci-wake`).
+     * A `…-wake` round then times out unless the `inbox` holds a wake for it.
+     */
     onSleep?: (h: Harness, name: string) => Promise<void> | void
+    /** Issue #19: the session's `SESSION_WORKFLOW` sends, delivered to the waits as the platform does. */
+    inbox?: FakeWorkflowInbox
   } = {}
 ) {
   let idle = 0
   let lands = 0
   const fake = createFakeWorkflowStep({
+    inbox: opts.inbox,
     onWait: async wait => {
       if (wait.name.startsWith('land.wait#')) {
         const verdict = (await opts.onLand?.(h, wait, lands++)) ?? 'timeout'
         return verdict === 'wake' ? WAKE : undefined
+      }
+      if (PHASE_B_WAKE.test(wait.name)) {
+        await opts.onSleep?.(h, wait.name)
+        return undefined
       }
       if (idle++ === 0 && !opts.fresh) {
         await patch(h.row, { requestedAction: 'ship' })
@@ -325,7 +364,7 @@ async function drive(
   )
   // A step name is its identity to the platform: never one twice.
   expect(new Set(fake.names).size).toBe(fake.names.length)
-  return { outcome, names: fake.names }
+  return { outcome, names: fake.names, waits: fake.waits }
 }
 
 const SHIP = [
@@ -1102,14 +1141,14 @@ describe('Phase B: the merge commit’s Gate before the release (issue #11)', ()
     const run = await drive(h, {
       onLand: async h => greenPr(h),
       onSleep: async (h, name) => {
-        if (name === 'land.main-ci-wait#3.0') await mainGate(h, 'success')
+        if (name === 'land.main-ci-wake#3.0') await mainGate(h, 'success')
       },
     })
     expect(run.outcome.status).toBe('shipped')
     expect(run.names.slice(run.names.indexOf('cleanup'))).toEqual([
       'cleanup',
       'land.main-ci#3.0',
-      'land.main-ci-wait#3.0',
+      'land.main-ci-wake#3.0',
       'land.main-ci#3.1',
       'land.release#3.0',
       'land.staging#3.0',
@@ -1159,13 +1198,13 @@ describe('Phase B: the merge commit’s Gate before the release (issue #11)', ()
     const run = await drive(h, {
       onLand: async h => greenPr(h),
       onSleep: (h, name) => {
-        if (name.startsWith('land.main-ci-wait#')) h.clock.ms += 31 * MINUTE
+        if (name.startsWith('land.main-ci-wake#')) h.clock.ms += 31 * MINUTE
       },
     })
     expect(run.names.slice(run.names.indexOf('cleanup'), -3)).toEqual([
       'cleanup',
       'land.main-ci#3.0',
-      'land.main-ci-wait#3.0',
+      'land.main-ci-wake#3.0',
       'land.main-ci#3.1',
       'land.release#3.0',
     ])
@@ -1182,16 +1221,16 @@ describe('Phase B: the merge commit’s Gate before the release (issue #11)', ()
     const run = await drive(h, {
       onLand: async h => greenPr(h),
       onSleep: (h, name) => {
-        if (name.startsWith('land.main-ci-wait#')) h.clock.ms += 2 * MINUTE
+        if (name.startsWith('land.main-ci-wake#')) h.clock.ms += 2 * MINUTE
       },
     })
     // 2 minutes in, still inside the 3-minute grace: one more round; at 4, the release.
     expect(run.names.slice(run.names.indexOf('cleanup'), -3)).toEqual([
       'cleanup',
       'land.main-ci#3.0',
-      'land.main-ci-wait#3.0',
+      'land.main-ci-wake#3.0',
       'land.main-ci#3.1',
-      'land.main-ci-wait#3.1',
+      'land.main-ci-wake#3.1',
       'land.main-ci#3.2',
       'land.release#3.0',
     ])
@@ -1326,13 +1365,13 @@ describe('Phase B: retrying a stall from the session (issue #21)', () => {
     const fresh = await drive(h, {
       fresh: true,
       onSleep: async (h, name) => {
-        if (name === 'land.main-ci-wait#0.0') setGate(h, sha, 'success')
+        if (name === 'land.main-ci-wake#0.0') setGate(h, sha, 'success')
       },
     })
     expect(fresh.names).toEqual([
       'claim',
       'land.main-ci#0.0',
-      'land.main-ci-wait#0.0',
+      'land.main-ci-wake#0.0',
       'land.main-ci#0.1',
       'land.release#0.0',
       'land.staging#0.0',
@@ -1774,5 +1813,142 @@ describe('tenant isolation', () => {
     await nudgeLandingSessions(db, h.env, logger, new Date(), { tenantIds: [h.f.tenant.id] })
     expect(stubs(h.env).sessionWorkflow?.created.map(c => c.id)).toEqual([`${h.row.id}-r1`])
     expect((await reload(other.row)).instanceId).toBeNull()
+  })
+})
+
+describe('landing: GitHub webhooks wake the waits (issue #19)', () => {
+  /**
+   * The harness wired for webhooks (built with the secret set): the app's repository id recorded, the
+   * session's instance "waiting" so a wake reaches it, and that instance's sends as the fake
+   * step's inbox — route → queue → handler → `sendEvent` → the wait, all real.
+   */
+  async function webhooked(h: Harness) {
+    const repo: WebhookRepo = { id: uniqueRepoId(), owner: h.f.repo.owner, name: h.f.repo.repo }
+    await db
+      .update(apps)
+      .set({ githubRepoId: String(repo.id) })
+      .where(eq(apps.id, h.f.app.id))
+    const workflow = stubs(h.env).sessionWorkflow as RecordingWorkflow
+    workflow.setStatus(h.row.id, { status: 'waiting' })
+    const deliver = async (body: unknown) => {
+      const res = await postWebhook(h.env, 'check_run', body)
+      expect(res.status, await res.clone().text()).toBe(202)
+      expect(await drainJobs(h.env, db)).toEqual({ acked: 1, retried: 0 })
+    }
+    return { repo, inbox: workflow.inbox(h.row.id), deliver }
+  }
+  const mergeShaOf = async (h: Harness) => (await reload(h.row)).landing?.mergeSha ?? ''
+
+  it('a check_run completed webhook wakes land.ci before its timeout, then it merges', async () => {
+    const h = await harness({ GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET })
+    const hook = await webhooked(h)
+    const run = await drive(h, {
+      inbox: hook.inbox,
+      onLand: async (h, _wait, n) => {
+        if (n === 0) {
+          // CI goes green on GitHub, and GitHub says so: the round does NOT run out.
+          const gateSha = await gateShaOf(h)
+          setGate(h, gateSha, 'success')
+          await hook.deliver(checkRunCompleted(hook.repo, { sha: gateSha, prs: [1] }))
+        }
+        return 'timeout'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    const landWait = run.waits.find(w => w.name === 'land.wait#2')
+    expect(landWait).toMatchObject({ type: SESSION_WAKE_EVENT, outcome: 'event' })
+    expect(run.names).toEqual(
+      expect.arrayContaining([
+        'land.ci#2',
+        'land.wait#2',
+        'land.ci#3',
+        'land.merge#3',
+        'land.live#3',
+      ])
+    )
+    expect(h.cloud.github.merges.filter(m => m.repo === h.f.repo.repo)).toHaveLength(1)
+  })
+
+  it('with no webhook the round times out and the landing still completes by polling', async () => {
+    const h = await harness({ GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET })
+    const hook = await webhooked(h)
+    const run = await drive(h, {
+      inbox: hook.inbox,
+      onLand: async (h, _wait, n) => {
+        if (n === 0) setGate(h, await gateShaOf(h), 'success')
+        return 'timeout'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.waits.find(w => w.name === 'land.wait#2')).toMatchObject({
+      outcome: 'timeout',
+      timeout: waitDuration(LAND_CI_FAST_SECONDS),
+    })
+    expect(run.names).toEqual(expect.arrayContaining(['land.merge#3', 'land.live#3']))
+    expect(stubs(h.env).sessionWorkflow?.events ?? []).toHaveLength(0)
+  })
+
+  it('Phase B: the merge commit’s Gate completing wakes land.main-ci-wake before its timeout', async () => {
+    const h = await harness({ GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET })
+    const hook = await webhooked(h)
+    h.cloud.github.mergeCommitChecks = [{ name: 'Gate', status: 'in_progress', conclusion: null }]
+    const run = await drive(h, {
+      inbox: hook.inbox,
+      onLand: async h => {
+        setGate(h, await gateShaOf(h), 'success')
+        return 'wake'
+      },
+      onSleep: async (h, name) => {
+        if (name !== 'land.main-ci-wake#3.0') return
+        const mergeSha = await mergeShaOf(h)
+        setGate(h, mergeSha, 'success')
+        await hook.deliver(checkRunCompleted(hook.repo, { sha: mergeSha, branch: 'main' }))
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.waits.find(w => w.name === 'land.main-ci-wake#3.0')).toMatchObject({
+      type: SESSION_WAKE_EVENT,
+      outcome: 'event',
+    })
+    expect(run.names.slice(run.names.indexOf('cleanup'))).toEqual([
+      'cleanup',
+      'land.main-ci#3.0',
+      'land.main-ci-wake#3.0',
+      'land.main-ci#3.1',
+      'land.release#3.0',
+      'land.staging#3.0',
+      'land.health#3.0',
+      'land.live#3',
+    ])
+  })
+
+  it('a webhook for another app’s repository never wakes this landing', async () => {
+    const h = await harness({ GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET })
+    const hook = await webhooked(h)
+    const other = await seedSessionApp(db, h.cloud)
+    const otherRepo: WebhookRepo = {
+      id: uniqueRepoId(),
+      owner: other.repo.owner,
+      name: other.repo.repo,
+    }
+    await db
+      .update(apps)
+      .set({ githubRepoId: String(otherRepo.id) })
+      .where(eq(apps.id, other.app.id))
+    const run = await drive(h, {
+      inbox: hook.inbox,
+      onLand: async (h, _wait, n) => {
+        if (n === 0) {
+          const gateSha = await gateShaOf(h)
+          setGate(h, gateSha, 'success')
+          // The same SHA and PR number — on a different repository, in a different tenant.
+          await hook.deliver(checkRunCompleted(otherRepo, { sha: gateSha, prs: [1] }))
+        }
+        return 'timeout'
+      },
+    })
+    expect(run.outcome.status).toBe('shipped')
+    expect(run.waits.find(w => w.name === 'land.wait#2')?.outcome).toBe('timeout')
+    expect(stubs(h.env).sessionWorkflow?.events ?? []).toHaveLength(0)
   })
 })

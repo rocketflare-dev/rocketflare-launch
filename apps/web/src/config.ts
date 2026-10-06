@@ -329,6 +329,11 @@ const coreConfigSchema = z.object({
   LANGFUSE_SECRET_KEY: optionalString,
   /** D32: extra OTLP request headers, `k=v,k=v` (values URL-encoded, per the OTel spec). A secret. */
   OTEL_EXPORTER_OTLP_HEADERS: optionalString,
+  /**
+   * Issue #19: the GitHub App's webhook secret — `POST /api/github/webhook` verifies
+   * `X-Hub-Signature-256` with it. Unset = the route answers 503 and Launch polls, as before.
+   */
+  GITHUB_WEBHOOK_SECRET: optionalString,
 })
 
 /**

@@ -2492,7 +2492,8 @@ stripped and REDACTED like the gate's tail (`redactCheckLog`: connection strings
 GitHub tokens); nothing reported after `SHIP_CI_NONE_GRACE_MINUTES` (10) → `ci_none` (never
 green); still pending after `SHIP_CI_MAX_MINUTES` (120) → `ci_timeout`; merged by a person
 meanwhile → Phase B (`pr.merged` via `sessions.checks`); closed → `pr_closed`. Otherwise
-`land.wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`) for 30 s in the first 10 minutes, then 2.
+`land.wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`) for 30 s in the first 10 minutes, then 2 — or
+until a GitHub webhook about the PR or its gate SHA wakes it (issue #19, below).
 **`land.review#N`** opens the `session.merge` request (§18.15) idempotently — `landing.approvalId`
 first, then the pending-subject index (one for another head is cancelled) — with the policy
 `reviewPolicyFor` resolves, the creator as requester and everyone who wrote a `user.message`
@@ -2517,7 +2518,10 @@ destroyed (`landing.containerReleased`) once the policy's `idleSuspendMinutes` p
 `approval`, or under a drain. **End** during `ci` / `approval` abandons the landing (`end#N`: the
 request cancelled, `landing := null`, the PR left open); during `merging` it is a 409
 `session_merging`. **Phase B** (`land.main-ci#K.R`, `land.release#K.R`, `land.staging#K.R`,
-`land.health#K.R`, each with a `step.sleep` `…-wait#K.R` between rounds; bodies: `landMainCiStep`,
+`land.health#K.R`; between the GitHub-facing rounds a `waitForEvent(SESSION_WAKE_EVENT)`
+`land.main-ci-wake#K.R` / `land.release-wake#K.R` / `land.staging-wake#K.R` with the round as its
+timeout (issue #19: a webhook ends it early), between health probes a `step.sleep`
+`land.health-wait#K.R` (the probes are counted, so nothing may shorten the gap); bodies: `landMainCiStep`,
 then the `landRelease` / `landStaging` / `landHealth` hooks, §18.17) ends in `land.live#K` (stage `live`, `stagingUrl`, the version,
 `ship.staging {status:'live'}`, audit `session.landed`) or `land.stalled#K` (stage `stalled`, the
 reason, a sentence pointing at the app page, `ship.staging` + `error`, audit
@@ -2560,6 +2564,41 @@ safety net's; a second pass reads nothing (the PR is recorded) and the CAS refus
 who merged (`by`, also on a merge made while the landing watched CI), and the ship panel and the
 CLI read "Merged on GitHub", with no CI step when Launch never read CI.
 
+**GitHub App webhooks wake the landing (issue #19)** — polling stays the fallback and the source
+of truth. The App delivers `check_run`, `workflow_run`, `pull_request`, `push` and `release` to
+**`POST /api/github/webhook`** (`routes/github-webhook.ts`, public — GitHub has no session): no
+`GITHUB_WEBHOOK_SECRET` → 503 `github_webhook_not_configured`; `X-Hub-Signature-256` checked over the
+RAW body with WebCrypto's constant-time `subtle.verify('HMAC', …)` (missing or wrong → 401
+`github_signature_invalid`, before anything is parsed or written); `X-GitHub-Delivery` and
+`X-GitHub-Event` required (400); a `ping`, and an event or action no wait reads, answer 200 and queue
+nothing (`toGitHubEventPayload` keeps a check run or workflow run that COMPLETED, a PR closed /
+reopened / pushed to, a push that is not a delete, any release action but a delete); then the
+delivery id is CLAIMED (`github_webhook_deliveries`, `INSERT … ON CONFLICT DO NOTHING`, pruned after
+7 days by `pruneExpired`; a redelivery answers 202 `duplicate` and enqueues nothing) and ONE
+`github.event` job goes on `JOBS_QUEUE` carrying only the subject fields (repo id/owner/name, head
+SHA, branch-or-tag, PR numbers — never the raw payload); a failed enqueue gives the claim back and
+answers 503 so GitHub's retry is not taken for a duplicate. The job
+(`services/sessions/github-events.ts`) resolves the repository to its app — `apps.github_repo_id`,
+or `owner/name` for an app with no id recorded (an old import), archived apps never — and takes the
+TENANT FROM THAT ROW: every later query names it and the app id, so a delivery for app A's repo
+cannot reach tenant B whatever SHA, PR or tag it carries. Subjects: a **landing** (a
+`shipping`/`shipped` session of the app in a moving stage) the event is about — its PR number, its
+gate SHA, merge SHA or main-CI SHA, its release tag or release commit, or, while `releasing`, any
+news on the default branch (issue #21's newer head, another landing's release holding the claim);
+a **release** of the app in `tagged`/`staging` whose tag or commit it names. `deliverGitHubSubject`
+is the ONE place a delivery acts: a release's `tag_run_polled_at` is cleared
+(`expireTagRunReading`) so the next read is fresh, then the landing's instance gets
+`SESSION_WAKE_EVENT` (empty payload — the woken round reads GitHub exactly as a timed-out one would).
+A lost instance is logged, never restarted here (the safety net's job); an event with no subject is
+a no-op. Each wait wakes at most one round early: Workflows buffer an event sent while no wait of
+its type is open, and the next wait takes it at once — at worst one extra read of GitHub. Local dev
+has no public URL: leave the secret blank (polling only), or tunnel (`cloudflared` / smee,
+`docs/DEPLOYMENT.md` § GitHub App webhooks). Proven by `tests/api/github-webhook.test.ts` (the
+route), `tests/api/github-events.test.ts` (route → queue → handler → `sendEvent`, and isolation)
+and the issue #19 block of `tests/api/session-land.test.ts` (a `check_run` wakes `land.wait#N` and
+`land.main-ci-wake#K.R` before their timeouts through the fake step's `inbox`, which delivers the
+session `RecordingWorkflow`'s sends; with no webhook the landing still completes by polling).
+
 **Known gaps:** between a turn and its debounced checkpoint (up to 30 s, 5 min in a busy
 conversation) the work and the transcript live only in the container — a crash or a lost instance
 then loses them (a rollout always did; a container that runs out of memory mid-turn loses the
@@ -2601,8 +2640,13 @@ with every slice's real code from Ship to live on staging, the release's chain a
 strip (`tests/api/session-land-e2e.test.ts`) — not against GitHub: its job-log redirect, its
 annotations, its rulesets and its 405/409/422 answers to a real squash are read as documented
 (the first real ship to staging, on hola-world, is still to run). CI
-and the review are POLLED (no webhooks, P6): a verdict reaches the session within a round (30 s –
-2 min), and a lost instance within the cron's five minutes plus three rounds. A session waiting in
+and the review are POLLED, and a GitHub webhook (issue #19) only wakes the round early: a verdict
+reaches the session within a round (30 s – 2 min) without one, seconds after GitHub sends it with
+one, and a lost instance within the cron's five minutes plus three rounds. The webhook path is
+proven against hand-built deliveries in GitHub's documented shape, not yet against GitHub itself;
+a delivery over the 1 MB JSON cap (a huge `push`) is a 413 GitHub records as failed — the round's
+timeout covers it. The review's own decision still wakes the session directly; a `pull_request_review`
+event is not subscribed. A session waiting in
 `approval` holds its Neon branch and a `maxConcurrentPerApp` slot for up to the request's 48 h. A
 landing that the safety net restarts resumes with no boot id, so a reopen then always SUSPENDS (it
 cannot prove the container is its own) and destroys the container; the work is safe on the branch.
@@ -2990,7 +3034,9 @@ and the compare URL. Cached on the app row (`apps.main_compare`), asked at most 
 release moves the base and invalidates the reading at once. A GitHub failure is `aheadBy: null`
 with `error` (200, cached for the window), never a 5xx; no tag at all is `aheadBy: null`.
 
-**Known gaps:** GitHub is polled, not listened to (webhooks are P6); a Promote that waits for
+**Known gaps:** GitHub is polled — a webhook (issue #19, §18.13) wakes a session's landing early
+and refreshes a followed release's tag-run reading, but the pipeline strip, the main-ahead compare
+and the PR follower in `sessions.checks` still poll; a Promote that waits for
 the bundle draft (issue #21) waits in the approvals sweep's rounds (about five minutes each), and
 the approval shows the wait as its `apply_error`; the `launch/gate` link is the
 gated head's checks page, not the check run itself; the first release of an app

@@ -22,7 +22,9 @@
  *                   reopened), then ONE compare-and-set `shipping → shipped`, stage `releasing`.
  *   land.reopen#N   give the session back: `ready` while the container is still the loop's, else
  *                   `suspended`; the landing cleared.
- *   land.wait#N     (the Workflow's) `waitForEvent(SESSION_WAKE_EVENT)` for one round.
+ *   land.wait#N     (the Workflow's) `waitForEvent(SESSION_WAKE_EVENT)` for one round — or until a
+ *                   GitHub webhook about the PR or its gate SHA wakes it (issue #19,
+ *                   `github-events.ts`); the next round reads GitHub either way.
  *
  * While it waits in `ci` past the policy's `idleSuspendMinutes`, in `approval` as long, or under a
  * drain, the container is backed up and destroyed (`releaseLandingContainer`); a reopen then
@@ -938,7 +940,7 @@ async function phaseB(
 
 /**
  * `land.main-ci#K.R`'s answer (issue #11): `ready` — cut the release now; `wait` — read again after
- * `waitSeconds` (`land.main-ci-wait#K.R`); `stalled` — the merge commit's `Gate` is red.
+ * `waitSeconds` (`land.main-ci-wake#K.R`); `stalled` — the merge commit's `Gate` is red.
  */
 export type LandMainCiResult =
   | { status: 'ready'; verdict: ShipMainCiVerdict | 'skipped' }

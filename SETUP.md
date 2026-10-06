@@ -310,6 +310,10 @@ passes the URL to wrangler as `APP_URL`, so OAuth redirects, magic links and CSR
 still works. With no tunnel running it serves localhost only. `pnpm dev --public` / `--no-public`
 override the check. Restart `pnpm dev` after starting or stopping the tunnel.
 
+**GitHub App webhooks through it** (optional, issue #19): point a separate development GitHub App's
+Webhook URL at `<the tunnel URL>/api/github/webhook` and set its secret as `GITHUB_WEBHOOK_SECRET` in
+`apps/web/.dev.vars` — `docs/DEPLOYMENT.md` § 12. Without it Launch polls GitHub, as it always has.
+
 **Creating apps needs it.** The scaffold and deploy jobs run on GitHub and call Launch back at
 `APP_URL`, so `POST /api/apps` refuses with 409 `launch_not_reachable` while Launch is at
 `http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Setup (sidebar →

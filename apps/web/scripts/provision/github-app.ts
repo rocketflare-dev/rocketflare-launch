@@ -14,15 +14,26 @@
  *   5. The installation page opens: the person clicks **Install** on the org.
  *
  * The permissions are Launch's own required set (`REQUIRED_GITHUB_PERMISSIONS`, the one the Setup
- * check holds an installation to), so the app is created already passing it. No webhook: Launch
- * polls, so `hook_attributes.active` is false. The conversion also returns a client secret and a
- * webhook secret; neither is used and neither is written anywhere.
+ * check holds an installation to), so the app is created already passing it.
+ *
+ * Issue #19: the webhook is ON — `hook_attributes.url` is `<APP_URL>/api/github/webhook` and
+ * `default_events` the five a landing waits on (`GITHUB_WEBHOOK_EVENTS`), each delivered under a
+ * permission the app already has (`GITHUB_EVENT_PERMISSION`), so no new scope. GitHub generates
+ * the webhook secret and returns it in the conversion: it goes into the instance file as
+ * `GITHUB_WEBHOOK_SECRET`, and the `secrets` phase puts it on the Worker. A webhook only wakes a
+ * wait early; Launch still polls, so an app without it (or a delivery that never arrives) works.
+ * The conversion's client secret is not used and not written anywhere.
  */
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
+import {
+  GITHUB_WEBHOOK_EVENTS,
+  GITHUB_WEBHOOK_PATH,
+  type GitHubWebhookEvent,
+} from '@launch/shared/launch-github'
 import { REQUIRED_GITHUB_PERMISSIONS } from '../../src/api/services/launch/setup'
 import {
   capture,
@@ -51,6 +62,18 @@ export interface GitHubAppManifest {
   default_events: string[]
 }
 
+/**
+ * The App permission each subscribed event is delivered under (GitHub's "Permissions & events"
+ * page) — every one already in `REQUIRED_GITHUB_PERMISSIONS`, which the manifest test asserts.
+ */
+export const GITHUB_EVENT_PERMISSION: Record<GitHubWebhookEvent, string> = {
+  check_run: 'checks',
+  workflow_run: 'actions',
+  pull_request: 'pull_requests',
+  push: 'contents',
+  release: 'contents',
+}
+
 /** The manifest GitHub prefills its "create app" page from. Pure. */
 export function buildGitHubAppManifest(input: {
   name: string
@@ -61,12 +84,12 @@ export function buildGitHubAppManifest(input: {
     name: input.name.slice(0, 34),
     url: input.appUrl,
     description: `Launch at ${input.appUrl} — creates, ships and runs the organization's internal apps.`,
-    // Launch never receives a webhook (it polls); GitHub still wants a URL in the object.
-    hook_attributes: { url: `${input.appUrl}/api/github/webhook`, active: false },
+    // Issue #19: a delivery wakes the landing waiting on it (polling stays the fallback).
+    hook_attributes: { url: `${input.appUrl}${GITHUB_WEBHOOK_PATH}`, active: true },
     redirect_url: input.redirectUrl,
     public: false,
     default_permissions: { ...REQUIRED_GITHUB_PERMISSIONS } as Record<string, 'read' | 'write'>,
-    default_events: [],
+    default_events: [...GITHUB_WEBHOOK_EVENTS],
   }
 }
 
@@ -100,6 +123,8 @@ interface Conversion {
   html_url: string
   owner?: { login?: string }
   pem: string
+  /** GitHub generates it for the manifest's hook (issue #19). */
+  webhook_secret?: string | null
 }
 
 async function convert(code: string, fetchImpl: typeof fetch = fetch): Promise<Conversion> {
@@ -115,7 +140,7 @@ async function convert(code: string, fetchImpl: typeof fetch = fetch): Promise<C
     throw new ProvisionError(
       `GitHub refused the manifest code (${res.status} ${body.message ?? 'no app in the answer'}) — rerun \`pnpm provision github-app\``
     )
-  registerSecrets([body.pem])
+  registerSecrets([body.pem, ...(body.webhook_secret ? [body.webhook_secret] : [])])
   return body as Conversion
 }
 
@@ -198,11 +223,20 @@ export async function githubAppPhase(flags: { rotate: boolean }): Promise<void> 
   fs.mkdirSync(path.dirname(pemAbs), { recursive: true, mode: 0o700 })
   fs.writeFileSync(pemAbs, app.pem, { mode: 0o600 })
   fs.chmodSync(pemAbs, 0o600)
-  writeDeployFileValues({ GITHUB_APP_ID: String(app.id), GITHUB_APP_PRIVATE_KEY_FILE: pemRel })
+  writeDeployFileValues({
+    GITHUB_APP_ID: String(app.id),
+    GITHUB_APP_PRIVATE_KEY_FILE: pemRel,
+    // Issue #19: `pnpm provision secrets` puts it on the Worker (`OPTIONAL_WORKER_SECRETS`).
+    ...(app.webhook_secret ? { GITHUB_WEBHOOK_SECRET: app.webhook_secret } : {}),
+  })
   writeState({ githubApp: { slug: app.slug, htmlUrl: app.html_url, owner: app.owner?.login } })
   log(
-    `created ${app.slug} (id ${app.id}); key → ${pemRel} (0600); GITHUB_APP_ID → ${TOKEN_FILE_LABEL}`
+    `created ${app.slug} (id ${app.id}); key → ${pemRel} (0600); GITHUB_APP_ID${app.webhook_secret ? ' and GITHUB_WEBHOOK_SECRET' : ''} → ${TOKEN_FILE_LABEL}`
   )
+  if (!app.webhook_secret)
+    log(
+      'GitHub returned no webhook secret: set one on the app (docs/DEPLOYMENT.md § GitHub App webhooks) and put it in the instance file as GITHUB_WEBHOOK_SECRET'
+    )
   const install = installUrl(app.slug)
   log(`Install it on ${instance.githubOrg}: ${install} (opening now — choose "All repositories")`)
   openInBrowser(install)

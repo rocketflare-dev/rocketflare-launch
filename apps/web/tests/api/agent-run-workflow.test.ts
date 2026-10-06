@@ -562,6 +562,8 @@ describe('the suspend/resume loop (issue #17)', () => {
         name: 'resume#0',
         type: AGENT_RESUME_EVENT,
         timeout: loadConfig(env).AGENT_INTERRUPT_TIMEOUT,
+        // The resolve route's answer reached it before the timeout.
+        outcome: 'event',
       },
     ])
     // T8: a `.` in the event type is `workflow.invalid_event_type` — no fake step would catch it.

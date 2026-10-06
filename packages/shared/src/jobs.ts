@@ -15,6 +15,7 @@
 import { z } from 'zod'
 import { activityMetadataSchema } from './activity'
 import { appEnvironmentNameSchema } from './launch-apps'
+import { githubEventPayloadSchema } from './launch-github'
 import { PREVIEW_PATH_MAX } from './launch-sessions'
 import { type DeclaredBy, type SHARED_PLUGINS, sharedPlugins } from './plugins'
 
@@ -142,6 +143,8 @@ export const CORE_JOB_VARIANTS = [
     type: z.literal('session.preview_screenshot'),
     payload: sessionPreviewScreenshotPayloadSchema,
   }),
+  // Issue #19: one GitHub App webhook delivery, reduced to its subject (`launch-github.ts`).
+  z.object({ type: z.literal('github.event'), payload: githubEventPayloadSchema }),
 ] as const
 
 type PluginJobVariant = NonNullable<DeclaredBy<(typeof SHARED_PLUGINS)[number], 'jobs'>>[number]

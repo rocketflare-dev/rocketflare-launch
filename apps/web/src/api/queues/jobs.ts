@@ -26,6 +26,7 @@ import { handleChatCompact } from './handlers/chat-compact'
 import { handleDocumentConvert } from './handlers/document-convert'
 import { handleDocumentIndex } from './handlers/document-index'
 import { handleEmailSend } from './handlers/email-send'
+import { handleGitHubEvent } from './handlers/github-event'
 import { handleSessionPreviewScreenshot } from './handlers/session-preview-screenshot'
 import { handleTenantPurge } from './handlers/tenant-purge'
 
@@ -71,6 +72,7 @@ const coreHandlers: { [T in CoreJobType]: JobHandler<T> } = {
   'tenant.purge': handleTenantPurge,
   'app.thumbnail': handleAppThumbnail,
   'session.preview_screenshot': handleSessionPreviewScreenshot,
+  'github.event': handleGitHubEvent,
 }
 
 /**

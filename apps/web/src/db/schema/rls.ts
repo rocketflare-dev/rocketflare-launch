@@ -95,6 +95,8 @@ export const RLS_REVOKED_TABLES = [
   'oidc_signing_keys',
   'admin_credentials',
   'launch_settings',
+  // Issue #19: the GitHub webhook's delivery claims — taken before any app or tenant is known.
+  'github_webhook_deliveries',
 ] as const
 
 /**

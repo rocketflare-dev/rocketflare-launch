@@ -10,7 +10,8 @@
  *    `MERGE_FOLLOW_WINDOW_MS` after the session: a merge is audited `pr.merged` with its merge
  *    SHA — the first external link of the release chain (PR → merge → tag → … → production) —
  *    and a close without a merge `pr.closed`, after which the PR is no longer read. GitHub is
- *    polled, not listened to (webhooks are P6); a release's compare catches every other PR.
+ *    polled here (a webhook only wakes a moving landing, issue #19 — `github-events.ts`); a
+ *    release's compare catches every other PR.
  *    A PR Launch merged itself (issue #5's landing) is recorded already, so it is skipped.
  *    A merge made by hand while no landing was moving (a session shipped before issue #5, or one
  *    left at stage `pr`) is ADOPTED when the app ships to `staging` and the merge is under
