@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`pnpm plugin upgrade` no longer removes a package Launch itself declares** (ported from kit
+  rocketflare-dev/rocketflare#61). `add --apply` records on the plugin's surface which packages it
+  brought into the host (`addedDependencies`), `upgrade --apply` keeps that record current, and a
+  package a release drops is removed only when some plugin's record holds it — equal ranges alone
+  no longer count. A plugin installed before the record (`analytics`) keeps every package until
+  its next upgrade starts one. `translateBlock(block, null)` now translates nothing (the kit's
+  no-app fix; Launch always has an app, so it changes nothing here).
+
 - **Track A follow-ups for sessions (issue #21).**
   - **The PR panel no longer counts `launch/gate` as CI.** Launch's own attestation is left out of
     the checks fold (`foldChecks`), so a repo with no CI reads "no checks" rather than "1 passed".

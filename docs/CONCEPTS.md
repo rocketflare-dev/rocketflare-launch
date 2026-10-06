@@ -648,7 +648,8 @@ as merging a PR. A plugin repo mirrors the host tree and ships **no migration, n
 - **`plugin check` is an exhaustive oracle**: manifest fields, `minKit`, ledger diff, barrel lines,
   `*.rej`, migration tag, host dependencies (present, at a range inside the declared one —
   `add` writes the declared range, never pnpm's `^<resolved>`; `upgrade` installs what a release
-  adds or re-ranges and removes what it drops only when no other plugin declares it and the host
+  adds or re-ranges and removes what it drops only when a plugin brought it in — the surface's
+  `addedDependencies` record, never range equality — no other plugin declares it and the host
   holds exactly the old range — a range a peer plugin cannot use is refused), worker exports, a
   tenant-isolation test for tenant tables, `onTenantDeleted` for DOs, table collisions, declared skills. Each finding names file, line and exact edit.
   Structural checks read comment-free code. CI runs the same command.
@@ -734,7 +735,9 @@ the ledger judges only ledgered entries, ignores namespace imports, truncates ty
 chars, and `uses` is only as fresh as the last export; table collisions are caught by `check`, not
 refused at `add`; the isolation check proves a test exists, not that it is right; no database-free
 test of data-touching handlers; one DO per row is unpurgeable (purge-intent ledger not built);
-nothing tests a plugin against kit versions between its floor and `kitVersion`. Public mounts (D34) get no rate limit of their own and no `@testkit` builder
+nothing tests a plugin against kit versions between its floor and `kitVersion`. `addedDependencies`
+starts with this port: `analytics` (installed before it) has its older packages kept, never
+removed, when a release drops them, until its next `upgrade --apply` starts a record. Public mounts (D34) get no rate limit of their own and no `@testkit` builder
 (test them through `request()`); `verifyState` has no replay ledger — a token is reusable until it
 expires, so a plugin whose callback must run once records that itself; an ingested document's
 upsert reads the previous row before writing, so two racing re-ingests of a FILE may leave one

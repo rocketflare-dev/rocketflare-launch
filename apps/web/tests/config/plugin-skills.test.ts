@@ -640,6 +640,44 @@ describe('pnpm plugin upgrade, with dependencies, end to end', () => {
     expect(git(host, ['status', '--porcelain'])).toBe('')
   })
 
+  it('records what add brought in, and never removes a package the host declared first', () => {
+    const pnpm = fakePnpm()
+    const host = makeHost()
+    // A package the host (Launch) already declares, at exactly the range the plugin declares too.
+    const [hostDep, hostRange] = Object.entries(webDeps(host))[0] as [string, string]
+    const orders = makePlugin({
+      dependencies: { 'apps/web': { [hostDep]: hostRange, 'left-pad': '^1.0.0' } },
+    })
+    const added = run(host, ['add', orders, '--local', '--apply', '--allow-dirty'], pnpm.env)
+    expect(added.status, added.out).toBe(0)
+    const surface = () =>
+      (
+        sidecar(host).surfaces as unknown as {
+          id: string
+          addedDependencies?: Record<string, string[]>
+        }[]
+      ).find(x => x.id === 'orders')
+    // Only what the host did not declare at all.
+    expect(surface()?.addedDependencies).toEqual({ 'apps/web': ['left-pad'] })
+    git(host, ['add', '-A'])
+    git(host, ['commit', '-qm', 'installed'])
+
+    writePluginVersion(orders, { version: '1.1.0', dependencies: { 'apps/web': {} } })
+    const up = run(
+      host,
+      ['upgrade', 'orders', '--to', '1.1.0', '--apply', '--allow-dirty'],
+      pnpm.env
+    )
+    expect(up.status, up.out).toBe(0)
+    expect(up.out).toContain(
+      `- apps/web  ${hostDep} ${hostRange}  — keep (apps/web/package.json declared it before a plugin did`
+    )
+    expect(up.out).toContain('- apps/web  left-pad ^1.0.0  — remove')
+    expect(webDeps(host)[hostDep]).toBe(hostRange)
+    expect(webDeps(host)).not.toHaveProperty('left-pad')
+    expect(surface()?.addedDependencies).toEqual({})
+  })
+
   it('refuses, before writing anything, a range another installed plugin cannot use', () => {
     const pnpm = fakePnpm()
     const { host, orders } = installed(pnpm)

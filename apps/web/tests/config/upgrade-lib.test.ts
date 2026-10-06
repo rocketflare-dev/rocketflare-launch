@@ -132,6 +132,12 @@ describe('translateBlock', () => {
     expect(countLines(stripIndexLines(license.raw))).toBe(countLines(t))
   })
 
+  it('translates nothing, path lines included, with no names (the kit itself)', () => {
+    const t = translateBlock(source, null, { translate: false })
+    expect(t).toBe(stripIndexLines(source.raw))
+    expect(t).toContain('rocketflare')
+  })
+
   it('refuses a binary block rather than corrupting base85', () => {
     const binary = splitDiff(
       `diff --git a/logo.png b/logo.png
