@@ -8,6 +8,7 @@ import { dispatchScheduled, SCHEDULED_TASKS, type ScheduledTask, scheduled } fro
 import { approvalsSweep } from '@/api/services/approvals/sweep'
 import { grantsSweep } from '@/api/services/grants/sweep'
 import { auditSeal } from '@/api/services/launch/audit-chain'
+import { gateVariableSweep } from '@/api/services/launch/gate-variable'
 import { healthPoll, healthPollTask } from '@/api/services/launch/health'
 import { kitFollowLatest } from '@/api/services/launch/kit-pin'
 import { sessionsChecks } from '@/api/services/sessions/checks-cron'
@@ -38,6 +39,7 @@ describe('scheduled dispatcher', () => {
       approvalsSweep,
       grantsSweep,
       kitFollowLatest,
+      gateVariableSweep,
       auditSeal,
     ])
     expect(SCHEDULED_TASKS['*/5 * * * *']?.map(t => t.name)).toEqual([
@@ -49,6 +51,7 @@ describe('scheduled dispatcher', () => {
       'approvals.sweep',
       'grants.sweep',
       'kit.followLatest',
+      'apps.gateVariable',
       'audit.seal',
     ])
   })

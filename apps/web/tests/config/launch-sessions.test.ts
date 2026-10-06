@@ -303,7 +303,7 @@ describe('issue #5: the landing', () => {
     // Issue #11: the merge commit's Gate before the release.
     expect(SHIP_MAIN_CI_MAX_MINUTES).toBe(30)
     expect(SHIP_MAIN_CI_NONE_GRACE_MINUTES).toBe(3)
-    expect(SHIP_MAIN_CI_VERDICTS).toEqual(['success', 'none', 'timeout'])
+    expect(SHIP_MAIN_CI_VERDICTS).toEqual(['success', 'none', 'timeout', 'override'])
   })
 
   it('a minimal landing fills its nullable fields; a bad stage or timestamp is refused', () => {
