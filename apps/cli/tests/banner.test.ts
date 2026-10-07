@@ -6,6 +6,7 @@ import {
   bannerFrame,
   bannerMode,
   commandHeader,
+  isBareInvocation,
   isLocalServer,
   isRootHelp,
   staticBanner,
@@ -48,6 +49,13 @@ describe('isRootHelp', () => {
     expect(isRootHelp(['--server', 'prod', '-h'])).toBe(true)
     expect(isRootHelp(['sessions', '--help'])).toBe(false)
     expect(isRootHelp(['whoami'])).toBe(false)
+  })
+
+  it('tells a bare `launch` (help, exit 0) from an explicit --help', () => {
+    expect(isBareInvocation([])).toBe(true)
+    expect(isBareInvocation(['--server', 'prod'])).toBe(true)
+    expect(isBareInvocation(['--help'])).toBe(false)
+    expect(isBareInvocation(['whoami'])).toBe(false)
   })
 })
 

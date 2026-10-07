@@ -73,6 +73,7 @@ import {
   bannerMode,
   commandHeader,
   helpHeader,
+  isBareInvocation,
   isRootHelp,
   staticBanner,
   TAGLINE,
@@ -466,6 +467,13 @@ async function main(): Promise<void> {
       await animateBanner(headerInfo, process.stdout)
       rootBannerShown = true
     }
+  }
+  // Bare `launch` asks what is here: the help on stdout and exit 0. (Commander's default treats a
+  // missing subcommand as a usage error — help on stderr, exit 1 — which `pnpm cli` reports as a
+  // failure.) An unknown command still exits 1.
+  if (isBareInvocation(process.argv.slice(2))) {
+    program.outputHelp()
+    return
   }
   await program.parseAsync(process.argv)
 }

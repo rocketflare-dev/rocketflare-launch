@@ -55,6 +55,11 @@ export function isRootHelp(args: readonly string[]): boolean {
   )
 }
 
+/** `launch` alone (global server options aside): show the help and exit 0, not commander's 1. Pure. */
+export function isBareInvocation(args: readonly string[]): boolean {
+  return isRootHelp(args) && !args.some(a => a === '--help' || a === '-h' || a === 'help')
+}
+
 /** `launch` with each letter a step from flame to violet. Pure (given chalk's level). */
 export function wordmark(text = 'Launch'): string {
   const from = hex(PALETTE.flame)
