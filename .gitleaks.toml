@@ -29,4 +29,8 @@ regexes = [
   '''^whsec-test-0123456789abcdef$''',
   # provision-setup.test.ts' made-up GitHub App key: a PEM header around the literal `MIIfake`.
   '''-----BEGIN RSA PRIVATE KEY-----\\nMIIfake\\n-----END RSA PRIVATE KEY-----''',
+  # CLI test fixtures (issue #6): a made-up OIDC client secret (apps-manage.test.ts) and a made-up
+  # second server's key (servers.test.ts).
+  '''^oidc-secret-sentinel-91af$''',
+  '''^launch_prod_abcdefghijklmnopqrstuvwxyz0123456789$''',
 ]

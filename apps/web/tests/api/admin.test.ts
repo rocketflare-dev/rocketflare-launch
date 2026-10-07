@@ -272,21 +272,26 @@ describe('users', () => {
     )
     expect(await json(off)).toEqual({ id: target.id, isGlobalAdmin: false })
     // The shared test database has many admins; prove the guard inside a rolled-back transaction.
+    // REPEATABLE READ: one snapshot for the whole check, so a global admin another test file
+    // commits meanwhile (files share the database under --no-isolate) cannot land in the count.
     await db
-      .transaction(async tx => {
-        await tx
-          .update(users)
-          .set({ isGlobalAdmin: false })
-          .where(and(eq(users.isGlobalAdmin, true), ne(users.id, a.user.id)))
-        await expect(
-          setGlobalAdmin(tx as unknown as Database, {
-            userId: a.user.id,
-            isGlobalAdmin: false,
-            actor: a.user,
-          })
-        ).rejects.toMatchObject({ statusCode: 409, code: 'last_global_admin' })
-        tx.rollback()
-      })
+      .transaction(
+        async tx => {
+          await tx
+            .update(users)
+            .set({ isGlobalAdmin: false })
+            .where(and(eq(users.isGlobalAdmin, true), ne(users.id, a.user.id)))
+          await expect(
+            setGlobalAdmin(tx as unknown as Database, {
+              userId: a.user.id,
+              isGlobalAdmin: false,
+              actor: a.user,
+            })
+          ).rejects.toMatchObject({ statusCode: 409, code: 'last_global_admin' })
+          tx.rollback()
+        },
+        { isolationLevel: 'repeatable read' }
+      )
       .catch(err => {
         if (!(err instanceof Error && /rollback/i.test(err.message))) throw err
       })
