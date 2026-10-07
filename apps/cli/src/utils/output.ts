@@ -3,6 +3,7 @@
  * human rendering otherwise — both to STDOUT. Tables are plain text (no box drawing) so they diff
  * and grep well.
  */
+import { stripVTControlCharacters } from 'node:util'
 import chalk from 'chalk'
 
 export interface Output {
@@ -57,13 +58,21 @@ export function renderTable<Row>(rows: readonly Row[], columns: readonly Column<
   if (rows.length === 0) return chalk.dim('(no results)')
   const cells = rows.map(row => columns.map(column => formatCell(column.value(row))))
   const widths = columns.map((column, i) =>
-    Math.max(column.header.length, ...cells.map(line => line[i]?.length ?? 0))
+    Math.max(visibleWidth(column.header), ...cells.map(line => visibleWidth(line[i] ?? '')))
   )
+  // Pad by what the terminal shows: a coloured cell carries escape codes `.length` would count.
   const pad = (text: string, i: number) =>
-    i === columns.length - 1 ? text : text.padEnd(widths[i] ?? 0)
+    i === columns.length - 1
+      ? text
+      : text + ' '.repeat(Math.max(0, (widths[i] ?? 0) - visibleWidth(text)))
   const header = columns.map((column, i) => pad(column.header, i)).join('  ')
   const body = cells.map(line => line.map(pad).join('  '))
   return [chalk.bold(header), ...body].join('\n')
+}
+
+/** Columns a string takes on a terminal: ANSI colour codes count for nothing. */
+export function visibleWidth(text: string): number {
+  return stripVTControlCharacters(text).length
 }
 
 export function formatCell(value: unknown): string {
