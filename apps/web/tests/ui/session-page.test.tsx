@@ -12,7 +12,11 @@
  *   keeps the text, Stop cancels the running turn.
  */
 
-import { DEFAULT_SESSION_POLICY } from '@launch/shared/launch-sessions'
+import {
+  DEFAULT_SESSION_POLICY,
+  PREVIEW_CAPTURE_RESULT,
+  PREVIEW_LOCATION_MESSAGE,
+} from '@launch/shared/launch-sessions'
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { Route, Routes, useParams } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1615,40 +1619,66 @@ describe('SessionPage', () => {
     expect(screen.getByRole('button', { name: 'Queue' })).toBeEnabled()
   })
 
-  it('the preview’s camera adds a chip at once, which fills in when the capture lands', async () => {
+  it('the preview’s camera captures in the browser and attaches the PNG like any image', async () => {
     const SHOT = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
-    let heads = 0
+    const ORIGIN = 'http://5173-abcdefghijkl-t0k3n00000.localhost:3001'
     const { fetchMock } = renderPage({
       [BASE]: detailOf(),
       [`${BASE}/events`]: eventsRoute(DONE_TURN),
-      [`POST ${BASE}/preview-grant`]: () => ({ ...grantRoute(), screenshots: true }),
-      [`POST ${BASE}/preview-screenshot`]: () => ({ attachmentId: SHOT }),
-      // 404 while the job runs, then the image.
-      [`HEAD ${BASE}/attachments/${SHOT}`]: () => {
-        heads += 1
-        return heads === 1 ? notFoundResponse() : new Response(null, { status: 200 })
-      },
+      [`POST ${BASE}/attachments`]: () => ({ id: SHOT, contentType: 'image/png', bytes: 3 }),
     })
+    const frame = (await screen.findByTitle('App preview')) as HTMLIFrameElement
+    const target = frame.contentWindow as Window
+    const asked: { id: string }[] = []
+    vi.spyOn(target, 'postMessage').mockImplementation(((data: { id: string }) => {
+      asked.push(data)
+    }) as never)
+    const fromFrame = (data: unknown) =>
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', { data, origin: ORIGIN, source: target }))
+      })
+    // The camera appears once the bridge is there to capture.
+    fromFrame({ type: PREVIEW_LOCATION_MESSAGE, path: '/' })
     const camera = await screen.findByRole('button', {
       name: 'Screenshot the preview into the next message',
     })
-    await waitFor(() => expect(camera).toBeEnabled())
     fireEvent.click(camera)
     const chip = await screen.findByTestId('composer-attachment')
     expect(chip).toHaveAttribute('data-status', 'uploading')
-    // The frame's rendered size, clamped to the route's bounds (jsdom lays nothing out).
-    await waitFor(() =>
-      expect(requestBody(fetchMock, `POST ${BASE}/preview-screenshot`)).toEqual({
-        width: 320,
-        height: 240,
-      })
-    )
-    await waitFor(() => expect(chip).toHaveAttribute('data-status', 'ready'), { timeout: 4000 })
-    expect(heads).toBe(2)
+    await waitFor(() => expect(asked).toHaveLength(1))
+    fromFrame({
+      type: PREVIEW_CAPTURE_RESULT,
+      id: asked[0]?.id,
+      image: new Blob(['png'], { type: 'image/png' }),
+    })
+    await waitFor(() => expect(chip).toHaveAttribute('data-status', 'ready'))
     expect(within(chip).getByRole('img')).toHaveAttribute('src', `${BASE}/attachments/${SHOT}`)
+    // No server capture: the PNG went up as an ordinary attachment.
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('preview-screenshot'))).toBe(false)
   })
 
-  it('hides the camera when the deployment cannot take screenshots', async () => {
+  it('offers the camera only to the person whose AI account the session bills', async () => {
+    renderPage({
+      [BASE]: detailOf({ credentialOwnerUserId: '0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f' }),
+      [`${BASE}/events`]: eventsRoute(DONE_TURN),
+    })
+    const frame = (await screen.findByTitle('App preview')) as HTMLIFrameElement
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: PREVIEW_LOCATION_MESSAGE, path: '/' },
+          origin: 'http://5173-abcdefghijkl-t0k3n00000.localhost:3001',
+          source: frame.contentWindow,
+        })
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('preview-address')).toHaveTextContent('/'))
+    expect(
+      screen.queryByRole('button', { name: 'Screenshot the preview into the next message' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('hides the camera until the preview’s bridge has reported a page', async () => {
     renderPage({ [BASE]: detailOf(), [`${BASE}/events`]: eventsRoute(DONE_TURN) })
     await screen.findByRole('button', { name: 'Reload preview' })
     await waitFor(() => expect(screen.getByTitle('App preview')).toBeInTheDocument())
@@ -1666,7 +1696,7 @@ describe('SessionPage', () => {
         queuedMessage: 'Upgrade the kit',
       }),
       [`${BASE}/events`]: eventsRoute(DONE_TURN),
-      [`POST ${BASE}/preview-grant`]: () => ({ ...grantRoute(), screenshots: true }),
+      [`POST ${BASE}/preview-grant`]: () => grantRoute(),
     })
     const note = await screen.findByTestId('upgrade-session-note')
     expect(note).toHaveTextContent(

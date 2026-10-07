@@ -24,10 +24,10 @@
  * tab" — lands on it (`to=`) instead of `/`. An app whose CSP blocks the script reports nothing:
  * the pill shows the host alone and a reload goes to `/`.
  *
- * **Screenshot preview** (the camera, shown only when the grant says the deployment has Browser
- * Rendering — `screenshots`): captures the page the bridge last reported, at the frame's rendered
- * size (`screenshotViewport`, clamped to `PREVIEW_SCREENSHOT_BOUNDS`), on the server, into the
- * next message's images — `onScreenshot` hands the request to the page, which adds a chip at once.
+ * **Screenshot preview** (the camera, shown once the bridge has reported a page): the bridge
+ * renders the page in the browser and posts the PNG back (`capturePreview`, the
+ * `PREVIEW_CAPTURE_REQUEST` / `previewCaptureResultSchema` pair) — `onScreenshot` hands the capture
+ * to the page, which adds a chip at once and uploads it like any image.
  *
  * **A load has a deadline.** A frame that has not loaded {@link PREVIEW_LOAD_DEADLINE_MS} after its
  * grant (a dev server that is not running behind the gateway — a container left asleep under a
@@ -48,8 +48,8 @@ import {
   NoSymbolIcon,
 } from '@heroicons/react/24/outline'
 import {
-  PREVIEW_SCREENSHOT_BOUNDS,
-  type PreviewScreenshotRequestInput,
+  PREVIEW_CAPTURE_REQUEST,
+  previewCaptureResultSchema,
   previewLocationMessageSchema,
   type Session,
   safePreviewPath,
@@ -76,14 +76,40 @@ export function previewOriginOf(url: string | null): string | null {
   }
 }
 
-/** The frame's rendered size as a screenshot viewport, within the route's bounds. Pure. */
-export function screenshotViewport(width: number, height: number) {
-  const clamp = (value: number, { min, max }: { min: number; max: number }) =>
-    Math.min(max, Math.max(min, Math.round(Number.isFinite(value) ? value : 0)))
-  return {
-    width: clamp(width, PREVIEW_SCREENSHOT_BOUNDS.width),
-    height: clamp(height, PREVIEW_SCREENSHOT_BOUNDS.height),
-  }
+/** How long the bridge has to render a capture (the library loads on the first one). */
+export const PREVIEW_CAPTURE_TIMEOUT_MS = 20_000
+
+/**
+ * Ask the bridge in `frame` (at `origin`) for a screenshot of what it shows: the PNG, rendered in
+ * the browser at the screen's pixel ratio, or an Error saying why not.
+ */
+export function capturePreview(frame: HTMLIFrameElement, origin: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const target = frame.contentWindow
+    if (!target) {
+      reject(new Error('The preview is not loaded'))
+      return
+    }
+    const id = crypto.randomUUID()
+    const done = () => {
+      clearTimeout(timer)
+      window.removeEventListener('message', onMessage)
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== target || event.origin !== origin) return
+      const parsed = previewCaptureResultSchema.safeParse(event.data)
+      if (!parsed.success || parsed.data.id !== id) return
+      done()
+      if (parsed.data.image) resolve(parsed.data.image)
+      else reject(new Error(parsed.data.error ?? 'The screenshot failed'))
+    }
+    const timer = setTimeout(() => {
+      done()
+      reject(new Error('The preview did not answer. Reload it and try again.'))
+    }, PREVIEW_CAPTURE_TIMEOUT_MS)
+    window.addEventListener('message', onMessage)
+    target.postMessage({ type: PREVIEW_CAPTURE_REQUEST, id }, origin)
+  })
 }
 
 /** The preview's host, for the address pill. Pure. */
@@ -170,8 +196,11 @@ export function PreviewFrame({
   resuming: boolean
   /** The page the frame is on (as the bridge reports it), or null before it has said. */
   onPathChange?: (path: string | null) => void
-  /** Capture the preview into the next message (the camera); absent: no camera. */
-  onScreenshot?: (request: PreviewScreenshotRequestInput) => void
+  /**
+   * The camera: `capture` resolves to the frame's PNG, `path` is the page it shows. Absent: no
+   * camera. Shown once the bridge has reported a page, since it is the bridge that captures.
+   */
+  onScreenshot?: (capture: () => Promise<Blob>, path: string | null) => void
 }) {
   const grant = usePreviewGrant(session.id)
   const tabGrant = usePreviewGrant(session.id)
@@ -181,8 +210,6 @@ export function PreviewFrame({
   const [stalled, setStalled] = useState(false)
   const [updated, setUpdated] = useState(false)
   const [path, setPath] = useState<string | null>(null)
-  // The grant says whether this deployment can take screenshots (it has `BROWSER`).
-  const [canCapture, setCanCapture] = useState(false)
   const pathRef = useRef<string | null>(null)
   const frameRef = useRef<HTMLIFrameElement>(null)
   const onPathChangeRef = useRef(onPathChange)
@@ -198,7 +225,6 @@ export function PreviewFrame({
       mint(pathRef.current, {
         onSuccess: next => {
           setSrc(next.url)
-          setCanCapture(next.screenshots)
           setNonce(n => n + 1)
           setFrameLoaded(false)
           if (reason === 'change') setUpdated(true)
@@ -272,11 +298,9 @@ export function PreviewFrame({
   }
 
   const capture = () => {
-    const rect = frameRef.current?.getBoundingClientRect()
-    onScreenshot?.({
-      ...(pathRef.current ? { path: pathRef.current } : {}),
-      ...screenshotViewport(rect?.width ?? 0, rect?.height ?? 0),
-    })
+    const frame = frameRef.current
+    if (!frame || !previewOrigin) return
+    onScreenshot?.(() => capturePreview(frame, previewOrigin), pathRef.current)
   }
 
   const host = previewHostOf(src)
@@ -312,7 +336,7 @@ export function PreviewFrame({
       >
         <ArrowPathIcon className={`h-4 w-4 ${grant.isPending ? 'animate-spin' : ''}`} />
       </button>
-      {onScreenshot && canCapture && (
+      {onScreenshot && path !== null && (
         <button
           type="button"
           className="btn btn-ghost btn-sm btn-square"

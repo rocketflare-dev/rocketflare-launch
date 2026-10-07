@@ -24,10 +24,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyStateCard, SectionPanelSkeleton } from '@/ui/components/shared'
 import { useApp } from '@/ui/hooks/useApps'
+import { useAuth } from '@/ui/hooks/useAuth'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useSessionStream } from '@/ui/hooks/useSessionStream'
 import {
-  takePreviewScreenshot,
+  uploadPreviewScreenshot,
   usePendingBudgetApproval,
   useResumeSession,
   useSession,
@@ -51,6 +52,7 @@ export default function SessionPage() {
   const stream = useSessionStream(session)
   const resume = useResumeSession(id)
   const [extendOpen, setExtendOpen] = useState(false)
+  const viewerId = useAuth().user?.id ?? null
   // The next message's images: the composer adds them, and so does the preview's screenshot.
   const attachments = useComposerAttachments(id)
   // P4: the creator's open `session.budget` request, so a reload still links to it. Only asked
@@ -209,15 +211,16 @@ export default function SessionPage() {
                 onResume={() => resume.mutate()}
                 resuming={resume.isPending}
                 appSlug={slug}
-                // A screenshot is an image for the next message: a kit upgrade takes none.
+                // A screenshot is an image for the next message: a kit upgrade takes none, and a
+                // session on someone's own AI account takes images from them alone.
                 onScreenshot={
-                  sessionTakesMessages(session)
-                    ? request =>
+                  sessionTakesMessages(session) &&
+                  (session.credentialOwnerUserId === null ||
+                    session.credentialOwnerUserId === viewerId)
+                    ? (capture, path) =>
                         attachments.addPending(
-                          request.path
-                            ? `Screenshot of ${request.path}`
-                            : 'Screenshot of the preview',
-                          () => takePreviewScreenshot(id, request)
+                          path ? `Screenshot of ${path}` : 'Screenshot of the preview',
+                          () => uploadPreviewScreenshot(id, capture)
                         )
                     : undefined
                 }

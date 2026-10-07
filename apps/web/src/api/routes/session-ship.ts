@@ -287,9 +287,7 @@ sessionShipRouter.post('/:id/preview-grant', async c => {
     throw new ConflictError('This session has ended', 'session_ended')
   }
   const { url, expiresAt } = await previewGrantUrl(cfg, row, user.id, { path })
-  // Whether the pane may offer its camera (`POST /:id/preview-screenshot`).
-  const screenshots = Boolean(c.env.BROWSER)
-  return c.json({ url, expiresAt, screenshots } satisfies PreviewGrantResponse)
+  return c.json({ url, expiresAt } satisfies PreviewGrantResponse)
 })
 
 sessionShipRouter.get('/:id/pr', async c => {

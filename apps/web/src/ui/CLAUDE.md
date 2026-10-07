@@ -105,11 +105,11 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `uploadSessionAttachment` (`useSessions`, `api.upload`); a chip is `uploading` / `ready` /
   `error`, and Send waits on the first and the last. `ChatBubble` takes a `media` slot (the
   message's thumbnails, `sessionAttachmentPath`, same-origin cookie). `PreviewFrame`'s camera
-  (shown only when the last grant said `screenshots`) hands `onScreenshot` the bridge's page and
-  the frame's size (`screenshotViewport`); the page turns it into a chip through `addPending` +
-  `takePreviewScreenshot` (`useSessions`: the 202, then `api.head` on the image every
-  `SCREENSHOT_POLL_MS` for up to `SCREENSHOT_WAIT_MS` — one bounded wait for one job, not a
-  query). The picker names models with `sessionModelLabel` (null = "Default (Claude Code's
+  (shown once the bridge has reported a page) hands `onScreenshot` a capture — `capturePreview`
+  asks the bridge, which renders the page IN THE BROWSER at `devicePixelRatio` and posts the PNG
+  back — and the bridge's page; the page turns it into a chip through `addPending` +
+  `uploadPreviewScreenshot` (`useSessions`: the PNG uploads like any image, never downscaled
+  unless it is past the 5 MB cap). The picker names models with `sessionModelLabel` (null = "Default (Claude Code's
   choice)", the agent's own) and "Switched to …" with `agentModelLabel`
   (`@launch/shared/launch-agents`).
   Launch P4 (approvals and shipping): `useApprovals` (`useApprovalCount` — the nav badge, never

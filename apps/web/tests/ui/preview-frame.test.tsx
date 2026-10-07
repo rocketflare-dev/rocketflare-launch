@@ -4,12 +4,19 @@
  * origin — shows it in the address pill, hands it to `onPathChange`, and mints every reload's grant
  * with it so the reload stays on that page.
  */
+
+import {
+  PREVIEW_CAPTURE_REQUEST,
+  PREVIEW_CAPTURE_RESULT,
+  PREVIEW_LOCATION_MESSAGE,
+} from '@launch/shared/launch-sessions'
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  capturePreview,
+  PREVIEW_CAPTURE_TIMEOUT_MS,
   PREVIEW_LOAD_DEADLINE_MS,
   PreviewFrame,
-  screenshotViewport,
 } from '@/ui/pages/sessions/components/PreviewFrame'
 import { renderWithProviders, stubFetch } from './helpers/renderWithProviders'
 import { SESSION_ID, sessionRow } from './helpers/sessions'
@@ -62,12 +69,58 @@ function post(data: unknown, { origin = ORIGIN, source = frameWindow() as Window
 
 const address = () => screen.getByTestId('preview-address')
 
-describe('screenshotViewport', () => {
-  it('is the frame’s rendered size, rounded and clamped to the route’s bounds', () => {
-    expect(screenshotViewport(1024.4, 700.6)).toEqual({ width: 1024, height: 701 })
-    expect(screenshotViewport(0, 0)).toEqual({ width: 320, height: 240 })
-    expect(screenshotViewport(5000, 3000)).toEqual({ width: 2560, height: 1600 })
-    expect(screenshotViewport(Number.NaN, 800)).toEqual({ width: 320, height: 800 })
+describe('capturePreview — the camera, in the browser', () => {
+  const frameAt = () => {
+    const frame = document.createElement('iframe')
+    document.body.appendChild(frame)
+    const target = frame.contentWindow as Window
+    const sent: { data: { type: string; id: string }; origin: string }[] = []
+    vi.spyOn(target, 'postMessage').mockImplementation(((data: never, origin: string) => {
+      sent.push({ data, origin })
+    }) as never)
+    const reply = (data: unknown, opts: { origin?: string; source?: Window | null } = {}) =>
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data,
+          origin: opts.origin ?? ORIGIN,
+          source: opts.source === undefined ? target : opts.source,
+        })
+      )
+    return { frame, sent, reply }
+  }
+
+  it('asks the frame at the preview’s origin and resolves to the PNG its bridge answers with', async () => {
+    const { frame, sent, reply } = frameAt()
+    const shot = capturePreview(frame, ORIGIN)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.origin).toBe(ORIGIN)
+    expect(sent[0]?.data.type).toBe(PREVIEW_CAPTURE_REQUEST)
+    const id = sent[0]?.data.id as string
+    const png = new Blob(['png'], { type: 'image/png' })
+    // Another window, another origin, another id: not the answer.
+    reply({ type: PREVIEW_CAPTURE_RESULT, id, image: new Blob(['x']) }, { source: window })
+    reply(
+      { type: PREVIEW_CAPTURE_RESULT, id, image: new Blob(['x']) },
+      { origin: 'https://evil.test' }
+    )
+    reply({ type: PREVIEW_CAPTURE_RESULT, id: 'another', image: new Blob(['x']) })
+    reply({ type: PREVIEW_CAPTURE_RESULT, id, image: png })
+    await expect(shot).resolves.toBe(png)
+    frame.remove()
+  })
+
+  it('rejects with the bridge’s reason, or when the frame never answers', async () => {
+    const { frame, sent, reply } = frameAt()
+    const refused = capturePreview(frame, ORIGIN)
+    reply({ type: PREVIEW_CAPTURE_RESULT, id: sent[0]?.data.id, error: 'The page blocked it' })
+    await expect(refused).rejects.toThrow('The page blocked it')
+
+    vi.useFakeTimers()
+    const silent = capturePreview(frame, ORIGIN)
+    vi.advanceTimersByTime(PREVIEW_CAPTURE_TIMEOUT_MS + 1)
+    await expect(silent).rejects.toThrow('The preview did not answer')
+    vi.useRealTimers()
+    frame.remove()
   })
 })
 
@@ -169,5 +222,36 @@ describe('PreviewFrame’s load deadline', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('the camera', () => {
+  it('shows once the bridge has reported a page — the bridge is what captures — and hands over a capture', async () => {
+    stubFetch({
+      [`POST ${BASE}/preview-grant`]: () => ({
+        url: `${ORIGIN}/__launch/grant?g=1`,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    })
+    const onScreenshot = vi.fn()
+    const session = sessionRow() as unknown as Parameters<typeof PreviewFrame>[0]['session']
+    renderWithProviders(
+      <PreviewFrame
+        session={session}
+        steps={[]}
+        canManage
+        onResume={() => {}}
+        resuming={false}
+        changeSeq={1}
+        onScreenshot={onScreenshot}
+      />
+    )
+    await waitFor(() => expect(screen.getByTitle('App preview')).toBeInTheDocument())
+    const camera = () =>
+      screen.queryByRole('button', { name: 'Screenshot the preview into the next message' })
+    expect(camera()).toBeNull()
+    post({ type: PREVIEW_LOCATION_MESSAGE, path: '/login' })
+    fireEvent.click(await waitFor(() => camera() as HTMLElement))
+    expect(onScreenshot).toHaveBeenCalledWith(expect.any(Function), '/login')
   })
 })

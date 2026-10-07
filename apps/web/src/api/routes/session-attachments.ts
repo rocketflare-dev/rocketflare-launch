@@ -18,33 +18,17 @@
  *   `storage_not_configured` without `FILES`.
  * - `GET /:id/attachments/:aid` → the image, streamed: `Content-Type` as stored, `nosniff`,
  *   `inline`, `Cache-Control: private` (an id names one immutable object). Read like the session's
- *   other read routes (`read Session`, issue #5's reviewer included). 404 `attachment_not_found`
- *   — also while a preview screenshot is still being taken — and 422 `screenshot_failed` (its
- *   sentence as the message) once one could not be.
- * - `POST /:id/preview-screenshot` `previewScreenshotRequestSchema` `{ path?, port?, width,
- *   height }` → 202 `{ attachmentId }`: reserves an image id and enqueues
- *   `session.preview_screenshot` on `JOBS_QUEUE` (`services/sessions/preview-screenshot.ts` does
- *   the capture); the client polls the image's `GET`. The upload's right (no kit upgrade's), and a session whose
- *   preview runs (`ready`, `working` — else 409 `preview_not_running`). 503
- *   `previews_not_configured` (no `SESSION_PREVIEW_URL`), `screenshots_not_configured` (no
- *   `BROWSER`) and `storage_not_configured` (no `FILES`) before the enqueue; a missing
- *   `JOBS_QUEUE` throws `JobsQueueNotConfiguredError`, as every enqueue does.
+ *   other read routes (`read Session`, issue #5's reviewer included). 404 `attachment_not_found`.
  *
  * Nothing here runs a turn: the ids go into `POST /:id/turns`' `attachments`, and the turn copies
  * the bytes into the container (`stageAttachments`).
  */
-import {
-  type PreviewScreenshotResponse,
-  previewScreenshotRequestSchema,
-  type SessionAttachmentUploadResponse,
-} from '@launch/shared/launch-sessions'
+import type { SessionAttachmentUploadResponse } from '@launch/shared/launch-sessions'
 import { uploadBodyLimit } from '../middleware/body-limit'
 import { guardPermission } from '../middleware/permissions'
-import { enqueueJob } from '../services/jobs'
 import { getVisibleSession, sessionViewerOf } from '../services/sessions/access'
 import {
   requireSessionStorage,
-  SCREENSHOT_FAILED_SUFFIX,
   sessionAttachmentKey,
   storeSessionAttachment,
 } from '../services/sessions/attachments'
@@ -54,17 +38,9 @@ import {
   TURN_ACCEPTING_STATUSES,
 } from '../services/sessions/chat'
 import type { AppContext } from '../types'
-import {
-  ApiError,
-  BadRequestError,
-  ConflictError,
-  NotFoundError,
-  ServiceUnavailableError,
-} from '../utils/core/errors'
-import { newId } from '../utils/core/ids'
+import { BadRequestError, ConflictError, NotFoundError } from '../utils/core/errors'
 import { uuidParam, withAuthAndDb } from '../utils/routes/route-helpers'
 import { createRouter } from '../utils/routes/router'
-import { validate } from '../utils/routes/validate'
 
 export const sessionAttachmentsRouter = createRouter()
 
@@ -112,12 +88,6 @@ sessionAttachmentsRouter.get('/:id/attachments/:aid', async c => {
   const key = sessionAttachmentKey(row.id, attachmentId)
   const object = await storage.get(key)
   if (!object) {
-    // A preview screenshot that could not be taken leaves its sentence beside the key.
-    const failed = await storage.get(`${key}${SCREENSHOT_FAILED_SUFFIX}`)
-    if (failed) {
-      const reason = await new Response(failed.body).text()
-      throw new ApiError(422, reason || 'The screenshot could not be taken', 'screenshot_failed')
-    }
     throw new NotFoundError('Image not found', 'attachment_not_found')
   }
   return c.body(object.body, 200, {
@@ -129,51 +99,3 @@ sessionAttachmentsRouter.get('/:id/attachments/:aid', async c => {
     ETag: object.etag,
   })
 })
-
-// ---- POST /api/sessions/:id/preview-screenshot -----------------------------------------------
-
-/** Statuses whose sandbox serves the preview. */
-const PREVIEW_RUNNING = ['ready', 'working'] as const
-
-sessionAttachmentsRouter.post(
-  '/:id/preview-screenshot',
-  validate('json', previewScreenshotRequestSchema),
-  async c => {
-    const { cfg, tenantId, user, row } = await visibleSession(c, 'update')
-    // A screenshot is an image for the next message: none on a kit upgrade.
-    assertTakesMessages(row)
-    assertCredentialOwner(row, user.id)
-    if (!cfg.SESSION_PREVIEW_URL) {
-      throw new ServiceUnavailableError(
-        'Session previews are not configured on this deployment (SESSION_PREVIEW_URL)',
-        'previews_not_configured'
-      )
-    }
-    if (!c.env.BROWSER) {
-      throw new ServiceUnavailableError(
-        'Screenshots need Browser Rendering (the BROWSER binding) on this deployment',
-        'screenshots_not_configured'
-      )
-    }
-    requireSessionStorage(c.env)
-    if (!(PREVIEW_RUNNING as readonly string[]).includes(row.status)) {
-      throw new ConflictError('The preview is not running', 'preview_not_running')
-    }
-    const { path, port, width, height } = c.req.valid('json')
-    const attachmentId = newId()
-    await enqueueJob(c.env.JOBS_QUEUE, {
-      type: 'session.preview_screenshot',
-      payload: {
-        tenantId,
-        sessionId: row.id,
-        userId: user.id,
-        attachmentId,
-        path: path ?? null,
-        port,
-        width,
-        height,
-      },
-    })
-    return c.json<PreviewScreenshotResponse>({ attachmentId }, 202)
-  }
-)

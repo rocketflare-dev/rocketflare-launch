@@ -78,11 +78,6 @@ const INPUT_ROUTES: [
       }),
   ],
   ['POST /attachments', (row, cookie, e) => upload(row.id, cookie, e)],
-  [
-    'POST /preview-screenshot',
-    (row, cookie, e) =>
-      post(`/api/sessions/${row.id}/preview-screenshot`, cookie, e, { width: 1024, height: 700 }),
-  ],
 ]
 
 describe('a kit upgrade session refuses a person’s input', () => {

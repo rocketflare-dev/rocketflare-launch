@@ -16,8 +16,8 @@
  * so an app behind sign-in shows its login page), a 1280×800 viewport, `goto` until `load` within
  * the timeout (a failure here THROWS: the job retries), then up to the rest of the budget for the
  * network to go quiet (a page that polls never does — it is captured as it stands), then one WebP
- * of the viewport (or a PNG, `format: 'png'` — a session's preview screenshot,
- * `services/sessions/preview-screenshot.ts`, which reuses this port). The browser is closed in `finally`, whatever happened, so a failed capture never
+ * of the viewport (or a PNG, `format: 'png'`). The browser is closed in `finally`, whatever
+ * happened, so a failed capture never
  * holds a session until its keep-alive runs out.
  */
 import type { AppBindings } from '../../../types'

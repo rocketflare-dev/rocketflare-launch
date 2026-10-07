@@ -404,7 +404,6 @@ describe('the closed sets a plugin opens', () => {
       | 'chat.compact'
       | 'tenant.purge'
       | 'app.thumbnail'
-      | 'session.preview_screenshot'
       | 'github.event'
     >()
     // A plugin may only WIDEN the kit's set — the property the whole "variants are data" change

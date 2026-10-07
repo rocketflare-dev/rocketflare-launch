@@ -79,7 +79,14 @@ import {
   verifyGrant,
 } from '../services/sessions/preview'
 import type { AppBindings } from '../types'
-import { bridgeResponse, injectBridge, PREVIEW_BRIDGE_PATH, shouldInjectBridge } from './bridge'
+import {
+  bridgeResponse,
+  captureLibResponse,
+  injectBridge,
+  PREVIEW_BRIDGE_PATH,
+  PREVIEW_CAPTURE_PATH,
+  shouldInjectBridge,
+} from './bridge'
 
 /** The cookie a grant is exchanged for; host-only by construction (`__Host-`). */
 export const PREVIEW_COOKIE = '__Host-launch-preview'
@@ -427,6 +434,12 @@ export async function handlePreview(
   }
   if (pathname === PREVIEW_BRIDGE_PATH && (request.method === 'GET' || request.method === 'HEAD')) {
     return bridgeResponse(new URL(cfg.APP_URL).origin)
+  }
+  if (
+    pathname === PREVIEW_CAPTURE_PATH &&
+    (request.method === 'GET' || request.method === 'HEAD')
+  ) {
+    return captureLibResponse()
   }
 
   const claims = await verifyCookie(

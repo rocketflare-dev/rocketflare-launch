@@ -19,11 +19,24 @@
  *   through untouched.
  * - **Where**: first thing in `<head>`, so it runs before the app's own scripts patch `history`;
  *   with no `<head>`, first in `<body>`; with neither (a fragment), at the end of the document.
+ *
+ * **The camera** is the bridge too, and never leaves the browser: on a `PREVIEW_CAPTURE_REQUEST`
+ * from Launch's window (its origin checked like the target), it loads `modern-screenshot` from
+ * `/__launch/capture.js` (served from `capture-lib.generated.ts` — the preview's own origin, so
+ * `'self'` covers it as above), renders the page at `devicePixelRatio` — the pixels the person
+ * sees, never scaled down — crops to the visible viewport and posts the PNG back as a `Blob`.
  */
-import { PREVIEW_LOCATION_MESSAGE } from '@launch/shared/launch-sessions'
+import {
+  PREVIEW_CAPTURE_REQUEST,
+  PREVIEW_CAPTURE_RESULT,
+  PREVIEW_LOCATION_MESSAGE,
+} from '@launch/shared/launch-sessions'
+import { CAPTURE_LIB_SOURCE } from './capture-lib.generated'
 
 /** Where the gateway serves the script. Namespaced with the grant, never an app route. */
 export const PREVIEW_BRIDGE_PATH = '/__launch/bridge.js'
+/** Where it serves the screenshot library the bridge loads on the first capture. */
+export const PREVIEW_CAPTURE_PATH = '/__launch/capture.js'
 /** The tag injected into HTML pages. */
 export const PREVIEW_BRIDGE_TAG = `<script src="${PREVIEW_BRIDGE_PATH}"></script>`
 /** The script only changes with `APP_URL` (a deploy); a few minutes in the browser is plenty. */
@@ -56,8 +69,81 @@ export function bridgeScript(targetOrigin: string): string {
   window.addEventListener('popstate', post);
   window.addEventListener('hashchange', post);
   post();
+
+  var loading = null;
+  function captureLib() {
+    if (window.modernScreenshot) return Promise.resolve(window.modernScreenshot);
+    if (!loading) {
+      loading = new Promise(function (resolve, reject) {
+        var script = document.createElement('script');
+        script.src = ${JSON.stringify(PREVIEW_CAPTURE_PATH)};
+        script.onload = function () {
+          if (window.modernScreenshot) resolve(window.modernScreenshot);
+          else reject(new Error('The screenshot library did not load'));
+        };
+        script.onerror = function () {
+          loading = null;
+          reject(new Error('The page blocked the screenshot library'));
+        };
+        (document.head || document.documentElement).appendChild(script);
+      });
+    }
+    return loading;
+  }
+  function shoot() {
+    var scale = window.devicePixelRatio || 1;
+    var width = window.innerWidth;
+    var height = window.innerHeight;
+    var left = window.scrollX || window.pageXOffset || 0;
+    var top = window.scrollY || window.pageYOffset || 0;
+    return captureLib().then(function (lib) {
+      return lib.domToCanvas(document.documentElement, { scale: scale });
+    }).then(function (page) {
+      var out = document.createElement('canvas');
+      out.width = Math.round(width * scale);
+      out.height = Math.round(height * scale);
+      var ctx = out.getContext('2d');
+      var bg = getComputedStyle(document.body || document.documentElement).backgroundColor;
+      ctx.fillStyle = bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#ffffff';
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(page, Math.round(left * scale), Math.round(top * scale), out.width, out.height, 0, 0, out.width, out.height);
+      return new Promise(function (resolve, reject) {
+        out.toBlob(function (blob) {
+          if (blob) resolve(blob);
+          else reject(new Error('The screenshot could not be encoded'));
+        }, 'image/png');
+      });
+    });
+  }
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent || event.origin !== target) return;
+    var data = event.data;
+    if (!data || data.type !== ${JSON.stringify(PREVIEW_CAPTURE_REQUEST)} || typeof data.id !== 'string') return;
+    var id = data.id;
+    function reply(message) {
+      message.type = ${JSON.stringify(PREVIEW_CAPTURE_RESULT)};
+      message.id = id;
+      try { window.parent.postMessage(message, target); } catch (e) {}
+    }
+    shoot().then(function (blob) {
+      reply({ image: blob });
+    }, function (err) {
+      reply({ error: String((err && err.message) || err || 'The screenshot failed').slice(0, 300) });
+    });
+  });
 })();
 `
+}
+
+/** `GET /__launch/capture.js`: the screenshot library, the same for every preview. */
+export function captureLibResponse(): Response {
+  return new Response(CAPTURE_LIB_SOURCE, {
+    headers: {
+      'Content-Type': 'text/javascript; charset=utf-8',
+      'Cache-Control': `private, max-age=${PREVIEW_BRIDGE_MAX_AGE_S}`,
+      'X-Content-Type-Options': 'nosniff',
+    },
+  })
 }
 
 /** `GET /__launch/bridge.js`: the script for Launch at `appOrigin`. */

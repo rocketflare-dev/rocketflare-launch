@@ -88,6 +88,7 @@
       "!**/.claude",
       "!apps/web/migrations",
       "!apps/web/worker-configuration.d.ts",
+      "!apps/web/src/api/preview/capture-lib.generated.ts",
       "!**/dist"
     ]
   },

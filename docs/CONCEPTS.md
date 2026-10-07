@@ -2468,29 +2468,21 @@ shows it in the address pill, hands it to `onPathChange`, and mints every reload
 control character, nothing parsing to another origin, not `/__launch/…`); the route answers a bad
 one with a 400, the gateway with `/`.
 
-**Screenshot preview** (the pane's camera, `services/sessions/preview-screenshot.ts`): `POST
-/:id/preview-screenshot { path?, port?, width, height }` (the upload's right; a `ready` or
-`working` session, else 409 `preview_not_running`; `port` one of `SESSION_PREVIEW_PORTS`, the
-viewport within `PREVIEW_SCREENSHOT_BOUNDS` — 320–2560 × 240–1600) only reserves an image id and
-enqueues `session.preview_screenshot` on `JOBS_QUEUE`, answering 202 `{ attachmentId }`; 503
-`screenshots_not_configured` without `BROWSER` (and `previews_not_configured`,
-`storage_not_configured`) before the enqueue. The job mints a fresh grant for the person who
-asked (`previewGrantUrl` with `to=` the page the bridge last reported), so a fresh Browser
-Rendering browser exchanges it for the preview cookie and lands on their page, and captures one
-PNG at the pane's rendered size through the app thumbnails' `ScreenshotPort` (`format: 'png'` —
-thumbnails keep WebP) into the image's key (`sessions/<id>/attachments/<aid>`). A capture that
-fails — no browser, the preview not running, a page that will not load, a non-PNG answer, over
-5 MB — writes `<key>.failed` holding a sentence instead and the job RETURNS (acked: the person is
-watching a spinner, and a retry 30 s later would land after they gave up); the image's `GET`
-answers it as 422 `screenshot_failed`. The UI adds a chip at once and `HEAD`s the image every
-second, for up to 25 s (`takePreviewScreenshot`): 404 while the job runs. The camera shows only
-when the grant says so — `POST /:id/preview-grant` answers `screenshots: Boolean(BROWSER)`, the
-one place the pane learns the deployment's preview capabilities. **Locally**, `wrangler dev`'s
-`BROWSER` is a LOCAL headless Chrome (miniflare downloads Chrome for Testing on first use and
-launches it on the laptop), and Chrome resolves every `*.localhost` name to loopback itself, so
-it can reach `http://<label>.localhost:3001`'s grant and gateway — the button shows and should
-work; with `remote = true` under `[browser]` the browser is Cloudflare's, which cannot reach a
-laptop, and every capture fails with the marker.
+**Screenshot preview** (the pane's camera) happens in the browser, never on a server: Launch
+posts `{ type: 'launch.preview.capture', id }` to the frame at the preview's origin, and the
+bridge (`api/preview/bridge.ts`) loads `modern-screenshot` from `/__launch/capture.js` — served by
+the gateway from `capture-lib.generated.ts` (`scripts/preview-capture-lib.mjs`; a config test
+fails while it and the installed package differ), the preview's own origin, so `'self'` covers it
+— renders the page at `devicePixelRatio`, crops to the visible viewport and posts the PNG back as a
+`Blob` (`previewCaptureResultSchema`; `capturePreview` in `PreviewFrame.tsx` waits up to 20 s).
+The composer adds a chip at once and uploads the PNG like any image (`POST /:id/attachments`,
+`uploadPreviewScreenshot`) at the pixels it was captured at — it is downscaled to
+`SESSION_ATTACHMENT_MAX_EDGE` only past the 5 MB cap. The camera shows once the bridge has reported
+a page (no bridge, no capture), on any deployment: it needs no Browser Rendering.
+**Known gaps:** a DOM render, not the screen — an element the library cannot read (a
+cross-origin iframe inside the app, a tainted canvas, a video frame) comes out blank, fixed
+elements are drawn where they sit in the document's flow at the scroll position, and an app whose
+CSP blocks `'self'` scripts gets "The page blocked the screenshot library".
 
 **Unclaimed hosts.** The `*.<domain>/*` route brings EVERY host under the preview zone to this
 Worker, not only previews (an app's custom domain wins, so its slug never arrives). After the
@@ -4218,8 +4210,8 @@ session's push token may change the app's CI workflows (§18.10), so nobody may 
 route that adds a person's input refuses it with 403 `upgrade_session_read_only` and the shared
 sentence ("Launch is running this kit upgrade on its own; it can't take messages because it can
 change the app's CI workflows."), before any write: `POST /:id/turns` (queued or interrupting),
-`POST /:id/queued/withdraw` (the waiting message is Launch's prompt), `POST /:id/attachments` and
-`POST /:id/preview-screenshot`. The start route takes no body, so there is no "extra instructions"
+`POST /:id/queued/withdraw` (the waiting message is Launch's prompt) and `POST /:id/attachments`.
+The start route takes no body, so there is no "extra instructions"
 input either. Launch's own input still runs — the upgrade prompt, a ship's fix turns
 (`requestTurn` with no sender) — and Ship, End, Stop and the budget stay the owner's. The session
 page shows that sentence and what to do if it stops in the composer's place (no starter prompts,

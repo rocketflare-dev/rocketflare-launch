@@ -33,9 +33,9 @@ import {
   type LandingRetryRequest,
   MOVING_LANDING_STAGES,
   type PreviewGrantRequest,
-  type PreviewScreenshotRequestInput,
   previewGrantResponseSchema,
-  previewScreenshotResponseSchema,
+  SESSION_ATTACHMENT_MAX_BYTES,
+  SESSION_ATTACHMENT_MAX_EDGE,
   type Session,
   type SessionAttachment,
   type SessionListQuery,
@@ -45,7 +45,6 @@ import {
   type SessionSummary,
   type SessionTurnRequestInput,
   type ShipLandingStage,
-  sessionAttachmentPath,
   sessionAttachmentUploadResponseSchema,
   sessionCancelResponseSchema,
   sessionDetailResponseSchema,
@@ -54,7 +53,8 @@ import {
 } from '@launch/shared/launch-sessions'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
-import { ApiError, api } from '@/ui/lib/api-client'
+import { api } from '@/ui/lib/api-client'
+import { downscaleImage } from '@/ui/lib/images'
 import { queryKeys } from '@/ui/lib/query-keys'
 import { useRealtimeConnected } from '@/ui/stores/websocketStore'
 import { useApprovals } from './useApprovals'
@@ -397,41 +397,29 @@ export function uploadSessionAttachment(id: string, file: File) {
   })
 }
 
-/** How often a queued preview screenshot is looked for, and for how long. */
-export const SCREENSHOT_POLL_MS = 1000
-export const SCREENSHOT_WAIT_MS = 25_000
-
 /**
- * The preview pane's camera: `POST /:id/preview-screenshot` (202, an image id reserved and the
- * capture queued), then `HEAD` the image until it lands — 404 while the job runs, 422 once it
- * could not be taken — for at most `SCREENSHOT_WAIT_MS`. A plain function the composer's chip
- * waits on (`useComposerAttachments.addPending`), not a query: it is one bounded wait for one job,
- * and nothing about it belongs in the cache. Throws a sentence for the chip.
+ * The preview pane's camera, after the bridge rendered the page in the browser (`capturePreview`):
+ * the PNG uploads like any attached image (`POST /:id/attachments`) at the pixels it was captured
+ * at — never downscaled for the model's sake, so text stays sharp — unless it is past the
+ * per-image cap, when it is shrunk to `SESSION_ATTACHMENT_MAX_EDGE` first. A plain function the
+ * composer's chip waits on (`useComposerAttachments.addPending`). Throws a sentence for the chip.
  */
-export async function takePreviewScreenshot(
+export async function uploadPreviewScreenshot(
   id: string,
-  body: PreviewScreenshotRequestInput,
-  opts: { pollMs?: number; waitMs?: number } = {}
+  capture: () => Promise<Blob>
 ): Promise<SessionAttachment> {
-  const { attachmentId } = await api.post(`${sessionPath(id)}/preview-screenshot`, body, {
-    schema: previewScreenshotResponseSchema,
-    showErrorToast: false,
-  })
-  const pollMs = opts.pollMs ?? SCREENSHOT_POLL_MS
-  const deadline = Date.now() + (opts.waitMs ?? SCREENSHOT_WAIT_MS)
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, pollMs))
-    try {
-      await api.head(sessionAttachmentPath(id, attachmentId))
-      return { id: attachmentId, contentType: 'image/png' }
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 422) {
-        throw new Error('The screenshot could not be taken. Check that the page loads.')
-      }
-      if (!(err instanceof ApiError && err.status === 404)) throw err
-    }
+  const blob = await capture()
+  let file = new File([blob], 'preview-screenshot.png', { type: 'image/png' })
+  if (file.size > SESSION_ATTACHMENT_MAX_BYTES) {
+    file = await downscaleImage(file, SESSION_ATTACHMENT_MAX_EDGE)
   }
-  throw new Error('The screenshot took too long. Try again.')
+  if (file.size > SESSION_ATTACHMENT_MAX_BYTES) {
+    throw new Error(
+      'The screenshot is too large to attach. Make the preview smaller and try again.'
+    )
+  }
+  const stored = await uploadSessionAttachment(id, file)
+  return { id: stored.id, contentType: stored.contentType }
 }
 
 /** `POST /:id/cancel` — the turn polls `cancel_requested_at` and stops within a couple of seconds. */

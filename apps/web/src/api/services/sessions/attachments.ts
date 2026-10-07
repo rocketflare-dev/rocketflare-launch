@@ -14,9 +14,8 @@
  *   `SESSION_ATTACHMENT_DIR/<id>.<ext>`, beside the checkout (`/workspace/app`), never in it, so a
  *   checkpoint can never commit one. What the runtime's command reads (`RuntimeAttachment`).
  *
- * A preview screenshot (`session.preview_screenshot`) writes the same key; when the capture fails
- * it writes `<key>.failed` instead (`SCREENSHOT_FAILED_SUFFIX`), which `GET` answers as 422
- * `screenshot_failed` — and which no turn can name, because an id is a bare UUID.
+ * A preview screenshot is one of these too: the preview's bridge renders it in the browser and
+ * the composer uploads it like any image.
  *
  * Nothing deletes these objects: like the transcript (`sessions/<id>/claude.jsonl`) they outlive
  * the session, so its transcript's thumbnails keep working (`docs/CONCEPTS.md` §18, known gaps).
@@ -36,9 +35,6 @@ import type { SandboxPort } from './sandbox-port'
 
 /** Where a turn's images land in the container — outside the checkout, so never committed. */
 export const SESSION_ATTACHMENT_DIR = `${SESSION_LAUNCH_DIR}/attachments`
-
-/** What a failed preview capture leaves beside the key it would have written. */
-export const SCREENSHOT_FAILED_SUFFIX = '.failed'
 
 /** The R2 key of one session image. */
 export function sessionAttachmentKey(sessionId: string, attachmentId: string): string {

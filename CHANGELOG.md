@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The preview's camera works in the browser.** "Screenshot into the next message" no longer
+  queues a server capture through Browser Rendering: the preview's bridge renders the page itself
+  (`modern-screenshot`, served from the preview's own host at `/__launch/capture.js`) at the
+  screen's pixel ratio, crops it to what is on screen and hands Launch the PNG, which uploads like
+  a pasted image at full resolution (it is only shrunk past the 5 MB cap). It shows on every
+  deployment once the bridge has reported a page. `POST /:id/preview-screenshot`, the
+  `session.preview_screenshot` job, the grant's `screenshots` flag and `screenshot_failed` are
+  gone; app thumbnails still use Browser Rendering.
 - **The app page's header says what each button does.** "Open ↗" is **Open Live**, an outlined
   button with an external-link icon, so it reads as the production site and stands out on the
   page; "Change it" with a play icon is **Build it** with a rocket (it starts a coding session).

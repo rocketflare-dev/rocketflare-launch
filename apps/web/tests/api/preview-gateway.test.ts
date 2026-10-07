@@ -8,8 +8,9 @@
  */
 import { previewLabel, previewUrl } from '@launch/shared/launch-sessions'
 import { and, eq } from 'drizzle-orm'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { bridgeScript, PREVIEW_BRIDGE_TAG } from '@/api/preview/bridge'
+import { CAPTURE_LIB_SOURCE } from '@/api/preview/capture-lib.generated'
 import {
   bumpPreviewActivity,
   clearPreviewStatusCache,
@@ -576,6 +577,103 @@ describe('the preview bridge', () => {
       { ...history }
     )
     expect(alone).toEqual([])
+  })
+
+  it('serves capture.js — the screenshot library the bridge loads — without a cookie', async () => {
+    const { row, ports, host } = await seeded()
+    const res = await gateway(previewEnv(), ports, `http://${host}/__launch/capture.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('text/javascript; charset=utf-8')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(await res.text()).toBe(CAPTURE_LIB_SOURCE)
+    expect(CAPTURE_LIB_SOURCE).toContain('modernScreenshot')
+    expect(ports.sandboxes.get(row.id)?.fetches ?? []).toHaveLength(0)
+  })
+
+  it('the script captures on Launch’s request only, at the screen’s pixel ratio, cropped to the viewport', async () => {
+    const posted: Array<[Record<string, unknown>, string]> = []
+    const listeners = new Map<string, (event: unknown) => void>()
+    const parent = {
+      postMessage: (message: Record<string, unknown>, target: string) =>
+        posted.push([message, target]),
+    }
+    const drawn: number[][] = []
+    const png = { kind: 'png' }
+    const canvas = () => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        fillRect: () => {},
+        drawImage: (...args: unknown[]) => drawn.push(args.slice(1) as number[]),
+      }),
+      toBlob: (done: (blob: unknown) => void) => done(png),
+    })
+    const scripts: Array<Record<string, () => void>> = []
+    const document = {
+      createElement: (tag: string) =>
+        tag === 'canvas' ? canvas() : ({} as Record<string, () => void>),
+      head: { appendChild: (el: Record<string, () => void>) => scripts.push(el) },
+      documentElement: {},
+      body: {},
+    }
+    const libCalls: unknown[] = []
+    const win: Record<string, unknown> = {
+      parent,
+      addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn),
+      devicePixelRatio: 2,
+      innerWidth: 800,
+      innerHeight: 600,
+      scrollX: 0,
+      scrollY: 100,
+    }
+    new Function(
+      'window',
+      'location',
+      'history',
+      'document',
+      'getComputedStyle',
+      bridgeScript('http://localhost:3001')
+    )(win, { pathname: '/', search: '', hash: '' }, {}, document, () => ({
+      backgroundColor: 'rgb(255, 255, 255)',
+    }))
+    posted.length = 0
+    const ask = (event: Record<string, unknown>) => listeners.get('message')?.(event)
+    const request = { type: 'launch.preview.capture', id: 'shot-1' }
+
+    // Another window or another origin: nothing happens.
+    ask({ source: win, origin: 'http://localhost:3001', data: request })
+    ask({ source: parent, origin: 'https://evil.test', data: request })
+    expect(scripts).toHaveLength(0)
+
+    // The library loads on the first request; the page blocking it is said plainly.
+    ask({ source: parent, origin: 'http://localhost:3001', data: request })
+    expect(scripts[0]?.src).toBe('/__launch/capture.js')
+    scripts[0]?.onerror?.()
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toEqual([
+      {
+        type: 'launch.preview.captured',
+        id: 'shot-1',
+        error: 'The page blocked the screenshot library',
+      },
+      'http://localhost:3001',
+    ])
+
+    // Loaded: the page at devicePixelRatio, cropped to what is on screen, as a PNG.
+    win.modernScreenshot = {
+      domToCanvas: (node: unknown, options: unknown) => {
+        libCalls.push([node, options])
+        return Promise.resolve({})
+      },
+    }
+    ask({ source: parent, origin: 'http://localhost:3001', data: { ...request, id: 'shot-2' } })
+    await vi.waitFor(() => expect(posted).toHaveLength(2))
+    expect(libCalls).toEqual([[document.documentElement, { scale: 2 }]])
+    expect(drawn[0]).toEqual([0, 200, 1600, 1200, 0, 0, 1600, 1200])
+    expect(posted[1]).toEqual([
+      { type: 'launch.preview.captured', id: 'shot-2', image: png },
+      'http://localhost:3001',
+    ])
   })
 
   it('bridge.js is still behind the host: an unknown host is a 404, an ended session a 410', async () => {
