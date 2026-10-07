@@ -4,6 +4,7 @@ node_modules/
 
 # Build outputs
 **/dist/
+apps/cli/.npm/
 **/.wrangler/
 
 # Secrets — never commit. `.dev.vars.example` and `.env.test` (dummy values) ARE committed.

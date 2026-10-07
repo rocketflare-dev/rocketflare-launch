@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The CLI is on npm as `@rocketflare-dev/launch`** (`npm i -g @rocketflare-dev/launch`, bin
+  `launch`). `.github/workflows/publish.yml` publishes it with provenance on each `X.Y.Z` release
+  tag (repository secret `NPM_TOKEN`); `pnpm cli:publish [--dry-run]` does it by hand. The CLI's
+  version now moves with the root version (`cli-version.test.ts`).
+
 - **The CLI keeps several servers signed in at once.** `~/.launch/config.json` holds named servers
   (profiles) and a default: `launch login --server <url> [--name <server>]` stores each one,
   `--profile <name>`, `--server <name|url>` or `LAUNCH_PROFILE` picks one per command, and `launch

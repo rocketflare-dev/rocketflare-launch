@@ -8,7 +8,12 @@ paths:
 
 A commander CLI that talks to the web API with an API key. Dev: `pnpm cli <command>` from the root
 (runs `tsx src/cli.ts` inside `apps/cli`); build: `pnpm --filter @launch/cli build` → `dist/cli.js`
-(the `bin`). The package is **private**; publishing it is an app decision (docs/DEPLOY.md). What it
+(the `bin`). The workspace package is **private**; its bundle is published to npm as
+`@rocketflare-dev/launch` by `scripts/publish-cli.mjs` (`pnpm cli:publish`, and
+`.github/workflows/publish.yml` on a release tag) — never publish `@launch/cli` or
+`@launch/shared` themselves. A runtime dependency must be one of the bundle's externals
+(`chalk`, `commander`, `open`, `zod`) or be bundled; adding an external means adding it to
+`RUNTIME_DEPS` there (docs/DEPLOY.md). What it
 covers and why: `docs/CONCEPTS.md` §11. The live command tree: `pnpm cli commands`.
 
 ## Shape

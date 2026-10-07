@@ -652,7 +652,7 @@ paid step under the skill. An instance never touches the committed tomls: its id
 the GitHub Actions release dance in `deploy.yml`. It is the manual reference behind that shape and
 what CI deploys; it is **not** how an instance from `launch.deploy.env` is deployed, and the two
 don't mix (`docs/DEPLOYMENT.md` § 9 says what CI for an instance still lacks). Only `apps/web` is
-deployed; the CLI is built by CI but not published. Reference: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+deployed; the CLI is published to npm as `@rocketflare-dev/launch` on each release tag (`publish.yml`). Reference: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 You need Cloudflare on **Workers Paid** with your domain as a zone, Neon, and (for email) Resend —
 `docs/DEPLOYMENT.md` § 0 has the detail.
 

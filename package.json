@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "Elastic-2.0",
-  "description": "Launch \u2014 multi-tenant SaaS starter kit \u2014 pnpm workspace: apps/web (Hono API + React UI on Cloudflare Workers), apps/cli, packages/shared",
+  "description": "Launch — multi-tenant SaaS starter kit — pnpm workspace: apps/web (Hono API + React UI on Cloudflare Workers), apps/cli, packages/shared",
   "type": "module",
   "packageManager": "pnpm@10.18.0",
   "engines": {
@@ -50,7 +50,8 @@
     "cli": "pnpm --filter @launch/cli exec tsx src/cli.ts",
     "deploy": "pnpm --filter @launch/web deploy",
     "deploy:staging": "pnpm --filter @launch/web deploy:staging",
-    "provision": "pnpm --filter @launch/web provision"
+    "provision": "pnpm --filter @launch/web provision",
+    "cli:publish": "node scripts/publish-cli.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.11",

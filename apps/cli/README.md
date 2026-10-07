@@ -1,6 +1,16 @@
-# @launch/cli
+# Rocketflare Launch CLI
 
-`launch` — the command line for a Launch server. Everything the web app can do or show, it can do
+`launch` — the command line for Rocketflare Launch, the control plane for your company's apps.
+
+```bash
+npm i -g @rocketflare-dev/launch      # Node 22+
+launch login --server https://launch.example.com --name prod
+```
+
+Published from this repository's `apps/cli` (the workspace package `@launch/cli`) on every release
+tag. The rest of this page also applies inside the repository, where `pnpm cli` runs the source.
+
+`launch` is the command line for a Launch server. Everything the web app can do or show, it can do
 or show too. It signs in through the browser (D26 handoff) and stores an API key per server under
 `~/.launch/`.
 

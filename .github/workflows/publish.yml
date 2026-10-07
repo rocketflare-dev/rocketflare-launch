@@ -1,0 +1,63 @@
+name: Publish CLI
+
+# Publishes the `launch` CLI to npm as @rocketflare-dev/launch (scripts/publish-cli.mjs) when a
+# release tag is pushed — the same `X.Y.Z` tag that deploys apps/web (deploy.yml), because one tag
+# ships both and must equal the root package.json version. `workflow_dispatch` re-runs it from a
+# tag ref (Actions → Publish CLI → Use workflow from: <tag>); a version already on npm is skipped.
+#
+# Needs the repository secret NPM_TOKEN: an npm granular access token with publish rights on the
+# @rocketflare-dev scope. Provenance links the package to this workflow run (public repo).
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tag matches the root version
+        if: github.ref_type == 'tag'
+        run: |
+          expected=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "$expected" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version $expected"
+            exit 1
+          fi
+      - name: Refuse a branch
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::run Publish CLI from a release tag, not ${GITHUB_REF_NAME}"
+          exit 1
+
+      # The CLI's own checks (no database): what ships must typecheck and pass its tests.
+      - run: pnpm --filter @launch/cli typecheck
+      - run: pnpm --filter @launch/cli test
+
+      - name: Publish @rocketflare-dev/launch
+        run: node scripts/publish-cli.mjs --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "Published [@rocketflare-dev/launch@$v](https://www.npmjs.com/package/@rocketflare-dev/launch/v/$v) — \`npm i -g @rocketflare-dev/launch\`" >> "$GITHUB_STEP_SUMMARY"

@@ -72,6 +72,7 @@ pnpm lint · pnpm typecheck · pnpm build  # workspace-wide
 pnpm web <script>  # any apps/web script (test:api, db:check…)
 pnpm db:generate · pnpm db:studio · pnpm deploy[:staging]  # deploy = the committed tomls (CI path)
 pnpm provision check · pnpm provision all  # an instance from launch.deploy.env (docs/DEPLOYMENT.md; one phase: --help)
+pnpm cli:publish [--dry-run]  # the CLI → npm as @rocketflare-dev/launch (publish.yml does it on a release tag)
 pnpm plugin list · pnpm plugin check · pnpm plugin upgrade analytics [--apply]  # installed plugins (/launch-plugin)
 ```
 
@@ -170,7 +171,8 @@ code-quality.md · cloudflare.md. Runbooks: `docs/DEPLOYMENT.md` (deploy an inst
 - **Secrets** never in a toml, git or a response (`hasCredential`); `.dev.vars` comments hold no other
   credentials; the CLI never prints a full key; `gitleaks` in CI
 - **No `process.env` / Node-only APIs in `apps/web/src/`** (`pg`, `ws`, `node:fs`…); `build:api` catches it
-- **Release = root version**: git tag == root `package.json` `version` (ships web + cli)
+- **Release = root version**: git tag == root `package.json` `version` == `apps/cli` version (ships
+  web + the npm CLI `@rocketflare-dev/launch`, `publish.yml`)
 - **Docs in sync**: a behaviour change updates CONCEPTS / SETUP / DEPLOY / rules in the same PR,
   and gets a line under `## Unreleased` in `CHANGELOG.md`
 - **A plugin composes, it never redefines** (D31): it namespaces everything with its id (tables

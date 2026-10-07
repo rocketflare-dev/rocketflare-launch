@@ -20,10 +20,14 @@ Everything below about the two files describes the templates and that CI path.
 either `pnpm --filter @launch/web exec wrangler …` from the root (shorthand `pnpm web exec wrangler …`)
 or the root scripts that delegate there (`pnpm deploy`, `pnpm deploy:staging`, `pnpm provision`,
 `pnpm types`). `pnpm exec wrangler` at the workspace root does not resolve. Only `apps/web` is
-deployed. **The CLI (`apps/cli`) is not deployed**: CI builds it (`pnpm build` → `apps/cli/dist`) as
-a compile check, and it is distributed through the repo (`pnpm cli …`, or `pnpm --filter @launch/cli
-build` and run `dist/cli.js`) or an internal registry — publishing the CLI is an app decision; the
-package is private by default (`"private": true`, like `packages/shared`, which must stay private).
+deployed. **The CLI (`apps/cli`) is published, not deployed**: the workspace package `@launch/cli`
+stays private (`packages/shared`, which it inlines, must), and `scripts/publish-cli.mjs` stages its
+esbuild bundle as **`@rocketflare-dev/launch`** on npm (`npm i -g @rocketflare-dev/launch`, bin
+`launch`). `.github/workflows/publish.yml` runs it on the same `X.Y.Z` release tag as the deploy
+(tag == root version == `apps/cli/package.json` version, `cli-version.test.ts`), with npm
+provenance and the `NPM_TOKEN` repository secret; a version already on npm is skipped. By hand:
+`npm login`, then `pnpm cli:publish --dry-run` and `pnpm cli:publish`. A release bump changes the
+root and `apps/cli` versions together.
 
 ## Topology
 
