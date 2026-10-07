@@ -114,7 +114,7 @@ The ONE input module; a command never reads stdin, prompts or writes a download 
 | Code | Constant | Meaning |
 |---|---|---|
 | 0 | `EXIT_OK` | success |
-| 1 | `EXIT_ERROR` | API non-2xx other than 401/403, network failure, local validation, a refused confirm, a failed follow. (Commander usage errors take commander's default exit; `cli.ts` sets no `exitOverride`) |
+| 1 | `EXIT_ERROR` | API non-2xx other than 401/403, network failure, local validation, a refused confirm, a failed follow. (Commander usage errors take commander's default exit; `cli.ts` sets no `exitOverride`. Bare `launch` is not one: it prints the help to stdout and exits 0 — `isBareInvocation`) |
 | 2 | `EXIT_NOT_LOGGED_IN` | no key, or the server answered 401 (`hint`: run `launch login`) |
 | 3 | `EXIT_FORBIDDEN` | 403 — the key's role (or scope) does not allow the action |
 
