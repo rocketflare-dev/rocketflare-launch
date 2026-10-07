@@ -358,6 +358,38 @@ async function exchangeGrant(
   })
 }
 
+/**
+ * Put the preview's public scheme back on a same-host `Origin` / `Referer`. Local `wrangler dev`
+ * behind a tunnel serves `http://` and rewrites a browser's `Origin: https://<preview host>` to
+ * `http://` on the way in; forwarded as-is, the app's CSRF check compared it with its
+ * `APP_URL=https://<preview host>` and refused every POST ("Invalid request origin"). Only a
+ * header naming THIS host is touched, and only its scheme, taken from `SESSION_PREVIEW_URL`.
+ */
+export function restorePreviewScheme(headers: Headers, requestUrl: string, cfg: AppConfig): void {
+  if (!cfg.SESSION_PREVIEW_URL) return
+  let scheme: string
+  let host: string
+  try {
+    scheme = new URL(cfg.SESSION_PREVIEW_URL.replace('{label}', 'x')).protocol
+    host = new URL(requestUrl).host
+  } catch {
+    return
+  }
+  for (const name of ['Origin', 'Referer'] as const) {
+    const value = headers.get(name)
+    if (!value) continue
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      continue
+    }
+    if (url.host !== host || url.protocol === scheme) continue
+    url.protocol = scheme
+    headers.set(name, name === 'Origin' ? url.origin : url.toString())
+  }
+}
+
 async function proxy(
   req: Request,
   env: AppBindings,
@@ -370,6 +402,7 @@ async function proxy(
   const cookie = withoutCookie(req.headers.get('Cookie'), cookieName(cfg))
   if (cookie) headers.set('Cookie', cookie)
   else headers.delete('Cookie')
+  restorePreviewScheme(headers, req.url, cfg)
   const forwarded = new Request(req.url, {
     method: req.method,
     headers,

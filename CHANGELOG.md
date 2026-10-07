@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A local Launch's session previews accept POSTs again.** Behind a tunnel, `wrangler dev` turned
+  the browser's `Origin: https://<preview host>` into `http://`, and the app's CSRF check refused
+  every form and button in the preview ("Invalid request origin"). The preview gateway now puts
+  the preview's public scheme back on a same-host `Origin` / `Referer` before proxying.
+
 - **Build it picks the coding agent.** On an app page, Build it and the Sessions tab's Start
   session are now one split button: one click starts a session on your current agent ("Build it
   with Pi"), and the caret lists every agent on offer with who pays for it ("Launch pays · Workers
