@@ -103,7 +103,11 @@ describe('refreshFactTable', () => {
     ])
   })
 
-  it('refreshAllFactTables walks every registry entry over every tenant', async () => {
+  // Walks every tenant in a test database other files fill concurrently: its time grows with the
+  // run, so it gets more than the 5 s default (a timeout here is load, not a regression).
+  it('refreshAllFactTables walks every registry entry over every tenant', {
+    timeout: 20_000,
+  }, async () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'owner')
     await db.insert(activityEvents).values({ tenantId: tenant.id, userId: user.id, type: 'q' })
     const summary = await refreshAllFactTables(db)

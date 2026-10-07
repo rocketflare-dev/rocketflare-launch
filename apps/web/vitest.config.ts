@@ -143,6 +143,11 @@ export default defineConfig({
         test: {
           name: 'config',
           environment: 'node',
+          // No database, but the end-to-end ones (`plugin-skills`, the plugin and bootstrap
+          // scripts, the generated-file checks) spawn node, git and pnpm, which under a full
+          // parallel run on a loaded machine crossed the 5 s default. A pure test here is
+          // milliseconds either way, so the longer budget hides nothing.
+          testTimeout: 20_000,
           include: [
             'tests/config/**/*.{test,spec}.ts',
             'src/plugins/*/tests/config/**/*.{test,spec}.ts',

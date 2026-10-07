@@ -52,7 +52,11 @@ describe('scheduled: fact-table refresh', () => {
     ])
   })
 
-  it('is actually dispatched by the host when that expression fires', async () => {
+  // Walks every tenant in a test database other files fill concurrently: its time grows with the
+  // run, so it gets more than the 5 s default (a timeout here is load, not a regression).
+  it('is actually dispatched by the host when that expression fires', {
+    timeout: 20_000,
+  }, async () => {
     const ctx = createExecutionContext()
     const reports = await dispatchScheduled(manifest.crons[0] ?? '', createTestEnv(), ctx)
     await waitOnExecutionContext(ctx)
@@ -61,7 +65,9 @@ describe('scheduled: fact-table refresh', () => {
     )
   })
 
-  it('rebuilds the fact table for seeded activity when the task runs', async () => {
+  it('rebuilds the fact table for seeded activity when the task runs', {
+    timeout: 20_000,
+  }, async () => {
     const { user, tenant } = await createTestTenantWithUser(db, 'owner')
     await db.insert(activityEvents).values([
       { tenantId: tenant.id, userId: user.id, type: 'cron.a' },
