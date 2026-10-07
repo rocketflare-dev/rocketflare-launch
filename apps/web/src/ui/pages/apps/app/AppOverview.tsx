@@ -27,7 +27,7 @@
  * App page P3: `main  N commits ahead  [Release to staging ▸]` sits above Staging
  * (`useReleaseCompare`, the default branch against the latest release tag), hidden when main is
  * not ahead, when a release is already on its way to staging, or when GitHub could not say. Its
- * button is a plain one — Ship (or Change it) stays the view's one hero — and opens the release
+ * button is a plain one — Ship (or Build it) stays the view's one hero — and opens the release
  * dialog (patch by default) with the commits it carries. The Live row says when a rollback put
  * its version there ("v1.4.1 (rolled back from v1.4.2)"), and a rollback waiting for approval
  * is its in-flight line.

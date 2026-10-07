@@ -296,11 +296,21 @@ export default function CataloguePage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [view, setView] = useLocalStoragePreference<View>('launch.apps.view', 'cards')
-  const apps = data?.items ?? []
+  // Archived apps are history: hidden unless the reader asks, and never in the fleet's counts.
+  const [showArchived, setShowArchived] = useLocalStoragePreference<boolean>(
+    'launch.apps.showArchived',
+    false,
+    String,
+    value => value === 'true'
+  )
+  const allApps = data?.items ?? []
+  const archivedCount = allApps.filter(app => app.status === 'archived').length
+  const current = useMemo(() => allApps.filter(app => app.status !== 'archived'), [allApps])
+  const apps = showArchived ? allApps : current
   const shown = useMemo(() => apps.filter(app => matchesSearch(app, search)), [apps, search])
 
   const importButton = (
-    <button type="button" className="btn gap-1.5" onClick={() => setImportOpen(true)}>
+    <button type="button" className="btn btn-outline gap-1.5" onClick={() => setImportOpen(true)}>
       <ArrowDownTrayIcon className="w-4 h-4" />
       Import app
     </button>
@@ -327,7 +337,7 @@ export default function CataloguePage() {
       <PageHeader
         title="Apps"
         description="Every Rocketflare app the company runs, and whether it is answering."
-        actions={apps.length > 0 ? actions || undefined : undefined}
+        actions={allApps.length > 0 ? actions || undefined : undefined}
       />
 
       {error ? (
@@ -337,7 +347,7 @@ export default function CataloguePage() {
         </div>
       ) : isLoading ? (
         <CardSkeletons />
-      ) : apps.length === 0 ? (
+      ) : allApps.length === 0 ? (
         <EmptyStateCard
           size="lg"
           icon={RocketLaunchIcon}
@@ -358,7 +368,7 @@ export default function CataloguePage() {
         />
       ) : (
         <>
-          <FleetSummary apps={apps} />
+          <FleetSummary apps={current} />
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <SearchInput
               value={search}
@@ -369,6 +379,17 @@ export default function CataloguePage() {
               aria-label="Find an app"
               className="w-full sm:w-72"
             />
+            {archivedCount > 0 && (
+              <label className="label cursor-pointer gap-2 text-sm sm:mr-auto">
+                <input
+                  type="checkbox"
+                  className="toggle toggle-sm"
+                  checked={showArchived}
+                  onChange={event => setShowArchived(event.target.checked)}
+                />
+                Show archived ({archivedCount})
+              </label>
+            )}
             <div className="join" role="group" aria-label="Layout">
               {(
                 [
@@ -393,8 +414,14 @@ export default function CataloguePage() {
           {shown.length === 0 ? (
             <EmptyStateCard
               icon={Squares2X2Icon}
-              message={`No apps match “${search.trim()}”`}
-              description="Search looks at the name, slug, team and repository."
+              message={
+                search.trim() ? `No apps match “${search.trim()}”` : 'Every app here is archived'
+              }
+              description={
+                search.trim()
+                  ? 'Search looks at the name, slug, team and repository.'
+                  : 'Turn on “Show archived” to see them.'
+              }
             />
           ) : view === 'table' ? (
             <AppTable apps={shown} />

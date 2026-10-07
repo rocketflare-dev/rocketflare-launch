@@ -112,7 +112,7 @@ describe("Home's setup checklist", () => {
   const steps = (status: Record<string, string>) =>
     CONNECTION_ORDER.map(id => ({ id, status: (status[id] ?? 'ok') as 'ok' }))
 
-  it('counts ok and warning as done, in the menu order, and is complete only when all are', () => {
+  it('counts only ok as done (a warning is something to do), in the menu order', () => {
     const list = setupChecklist(steps({ neon: 'todo', resend: 'failed', identity: 'warning' }))
     expect(list.rows.map(r => r.label)).toEqual([
       'Domain',
@@ -123,11 +123,12 @@ describe("Home's setup checklist", () => {
       'Sign-in',
       'Public URL',
     ])
-    expect(list.done).toBe(5)
+    expect(list.done).toBe(4)
     expect(list.total).toBe(7)
     expect(list.complete).toBe(false)
     expect(list.rows.find(r => r.id === 'resend')?.path).toBe('/settings/email')
-    expect(setupChecklist(steps({ identity: 'warning' })).complete).toBe(true)
+    expect(setupChecklist(steps({ identity: 'warning' })).complete).toBe(false)
+    expect(setupChecklist(steps({})).complete).toBe(true)
   })
 
   it("says what is wrong in the worst probe's words, from the overview's checks", () => {

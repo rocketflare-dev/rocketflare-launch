@@ -1,7 +1,7 @@
 /**
  * The registry pages (spec/06): the catalogue's empty state and cards (health dots with their
  * labels, the fleet summary, search), the Import modal's validation and its in-modal refusal, and
- * the app page — the Overview's environment rows, the header's Change it, what a member does NOT
+ * the app page — the Overview's environment rows, the header's Build it, what a member does NOT
  * see, Settings (General, Shipping, Access & sign-in with the OIDC secret shown ONCE) and the old
  * `/access` link's redirect.
  */
@@ -130,6 +130,36 @@ describe('CataloguePage', () => {
     expect(await screen.findByRole('table')).toBeInTheDocument()
   })
 
+  it('hides archived apps unless the reader asks, and leaves them out of the fleet counts', async () => {
+    localStorage.removeItem('launch.apps.showArchived')
+    stubFetch({
+      '/api/apps': {
+        appsDomain: null,
+        items: [
+          summary(),
+          summary({
+            id: '99999999-9999-4999-8999-999999999999',
+            slug: 'old-thing',
+            displayName: 'Old Thing',
+            status: 'archived',
+            environments: [],
+          }),
+        ],
+      },
+    })
+    renderWithProviders(<CataloguePage />, { session: member() })
+    expect(await screen.findByText('Expense Tracker')).toBeInTheDocument()
+    expect(screen.queryByText('Old Thing')).not.toBeInTheDocument()
+    expect(screen.getByText('Apps', { selector: 'dt' }).nextElementSibling).toHaveTextContent('1')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show archived (1)' }))
+    expect(await screen.findByText('Old Thing')).toBeInTheDocument()
+    // The choice is remembered; the fleet summary still counts only the current apps.
+    expect(localStorage.getItem('launch.apps.showArchived')).toBe('true')
+    expect(screen.getByText('Apps', { selector: 'dt' }).nextElementSibling).toHaveTextContent('1')
+    localStorage.removeItem('launch.apps.showArchived')
+  })
+
   it('validates the repo with the shared schema, then renders a refusal inside the modal', async () => {
     const fetchMock = stubFetch({
       '/api/apps': { items: [], appsDomain: null },
@@ -218,14 +248,14 @@ describe('App page', () => {
     expect(screen.getByText('Degraded')).toBeInTheDocument()
   })
 
-  it('puts Change it in the header for anyone who may start a session, and the list on Sessions (P3)', async () => {
+  it('puts Build it in the header for anyone who may start a session, and the list on Sessions (P3)', async () => {
     renderDetail(
       member(),
       { [`/api/apps/${APP_ID}/sessions`]: { items: [] } },
       '/apps/expenses/sessions'
     )
     expect(await screen.findByRole('heading', { name: 'Coding sessions' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Change it' })).toHaveClass('btn-flame')
+    expect(screen.getByRole('button', { name: 'Build it' })).toHaveClass('btn-flame')
     expect(screen.getByRole('button', { name: 'Start session' })).not.toHaveClass('btn-flame')
     expect(await screen.findByText('No sessions running')).toBeInTheDocument()
   })

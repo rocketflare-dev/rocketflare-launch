@@ -302,7 +302,8 @@ re-uploads leave the old object; no listing endpoint, quotas or presigned URLs; 
   `<select>`. It replaced `/settings?tab=`, `/settings/platform/*` and `/admin/*`, and every old
   address — the setup wizard's `#setup-<step>` anchors, `/audit`, `/activity` included — redirects
   (`components/SettingsRoutes.tsx`). While a connection is unfinished, a platform admin's Home
-  leads with "Finish setting up Launch — n of 7 working" (a warning counts as finished).
+  leads with "Finish setting up Launch": a 7-segment bar ("n of 7 ready") and a row, with its
+  reason and a Fix link, only for each connection not ready (only `ok` is ready).
 - **Data**: `api-client.ts` parses with shared schemas, there is one hook file per resource, and
   keys come from `queryKeys`. zustand holds only websocket state. Detail: `.claude/rules/ui.md`,
   `apps/web/src/ui/CLAUDE.md`.
@@ -1540,7 +1541,7 @@ reload) is restarted as `<id>-rN` from the row.
   `session_limit` (`maxConcurrentPerApp` active) or `session_budget_exhausted` (the app's month);
   then the row with the policy SNAPSHOTTED onto it, audit `session.created`, the instance.
 - **Warm on intent** (issue #17, `warm.ts`): Launch has no separate new-session composer — the
-  app page's Start session / Change it IS opening it: it creates the session WARM (`warm: true`,
+  app page's Start session / Build it IS opening it: it creates the session WARM (`warm: true`,
   `useWarmStartSession`, once per press — a second press while the first is in flight sends
   nothing) and goes to the session page, whose composer takes the first message while `claim` →
   `db` ‖ `sandbox.start` → `repo` → `bootstrap` → `dev` run (a message that arrives first waits on
@@ -3459,8 +3460,8 @@ once)", "When an admin or owner asks", "When an owner asks" or "Never (a person 
 with "An automatic approval is still recorded and audited." **The app page** (`/apps/:slug/*`, `pages/apps/AppPage.tsx`; `docs/DESIGN.md`) is an
 Overview and tabs — Sessions · Releases (+ `/releases/:version`) · Activity · Settings
 (`/settings/:section?`: General · Config & secrets · Access & sign-in · Shipping · Danger zone) —
-each its own sub-route under one layout. The header: name · `v1.4.1 live` · Open ↗ (Live) ·
-**Change it** (starts a coding session; the hero unless Ship is on offer) · ⋯ (edit, check
+each its own sub-route under one layout. The header: name · `v1.4.1 live` · Open Live ↗ ·
+**Build it** (starts a coding session; the hero unless Ship is on offer) · ⋯ (edit, check
 health, the repository, archive — each for whoever may use it). The UI calls the environments
 **Staging** and **Live**; GitHub and wrangler keep staging/production. **The Overview**, top to
 bottom: **Needs you**, shown only when something needs a person (a failed release — which job, its

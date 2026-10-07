@@ -1,6 +1,6 @@
 /**
  * An app's coding sessions (Launch P3, spec/07) — the app page's Sessions tab: "Start session" (the
- * header's "Change it" does the same, and is the page's hero) and the sessions already running or
+ * header's "Build it" does the same, and is the page's hero) and the sessions already running or
  * recently finished.
  *
  * - **Start** posts `POST /api/apps/:id/sessions` WARM (issue #17, `useWarmStartSession`: it boots

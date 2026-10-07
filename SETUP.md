@@ -429,7 +429,7 @@ coding agents **Settings → Coding agents**, and the access-request queue **Set
 Access requests**. In single mode every organisation owner and admin can open these; in multi mode
 only global admins. The **Operator** group (users, feature flags, all sessions; organisations in
 multi mode) stays global-admin only. Until every connection works, a platform admin's Home lists
-them under "Finish setting up Launch — n of 7". The old `/settings/platform/*` and `/admin/*`
+the ones not ready under "Finish setting up Launch". The old `/settings/platform/*` and `/admin/*`
 links redirect. Verify: `/settings/domain` opens as the first admin.
 
 **Kit version.** Settings → **Kit version** is the Rocketflare kit every new app is cut from:

@@ -151,8 +151,5 @@ export const setupOverview: SetupOverview = {
 /** The same overview with every connection working. */
 export const setupComplete: SetupOverview = {
   ...setupOverview,
-  steps: setupOverview.steps.map(step => ({
-    ...step,
-    status: step.id === 'identity' ? 'warning' : 'ok',
-  })),
+  steps: setupOverview.steps.map(step => ({ ...step, status: 'ok' })),
 }

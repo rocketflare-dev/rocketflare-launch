@@ -194,8 +194,12 @@ describe('the flow', () => {
     renderOverview({})
     const ship = await shipButton()
     expect(ship).toHaveClass('btn-flame')
-    // One hero per view: Change it steps down while Ship is on offer.
-    expect(screen.getByRole('button', { name: 'Change it' })).not.toHaveClass('btn-flame')
+    // Opening the app names which one: the header's (first) and the Live row's both say Live.
+    const [headerOpen] = screen.getAllByRole('link', { name: 'Open Live' })
+    expect(headerOpen).toHaveTextContent('Open Live')
+    expect(headerOpen).toHaveAttribute('href', 'https://expenses.apps.test')
+    // One hero per view: Build it steps down while Ship is on offer.
+    expect(screen.getByRole('button', { name: 'Build it' })).not.toHaveClass('btn-flame')
     expect(within(row('staging')).getByText('v1.4.2')).toBeInTheDocument()
     expect(within(row('production')).getByText('v1.4.1')).toBeInTheDocument()
     expect(screen.getByText('2 changes not live')).toBeInTheDocument()
@@ -496,9 +500,9 @@ describe('the first build', () => {
     }
     expect(screen.getByTestId('tab-activity').tagName).toBe('A')
     expect(screen.getByTestId('tab-settings').tagName).toBe('A')
-    // No flow, no Change it, and nothing asked of the promotion view while it launches.
+    // No flow, no Build it, and nothing asked of the promotion view while it launches.
     expect(screen.queryByTestId('env-staging')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Change it' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Build it' })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/promotion'))).toBe(false)
   })
 })

@@ -1,7 +1,7 @@
 /**
  * `/apps/:slug/*` — the frame of one app's page (decisions 2, 5, 10, 11 of the app page plan):
  *
- * - the header: thumbnail · name · `v1.4.2 live` · Open ↗ (Live) · Change it ▸ (start a coding session) · ⋯
+ * - the header: thumbnail · name · `v1.4.2 live` · Open Live ↗ · Build it (start a coding session) · ⋯
  *   (edit, check health, the repository, archive — each only for whoever may use it);
  * - the tabs, each its own sub-route: Overview · Sessions · Releases · Activity · Settings. Until
  *   the first build is live, Sessions and Releases are disabled with a hint, and the Overview is
@@ -9,15 +9,16 @@
  * - the create and teardown pipelines, owned HERE (`usePipeline`, polled only while a run is owed)
  *   so every tab reads one query: a teardown in progress shows above whatever tab is open.
  *
- * One hero action per view (`docs/DESIGN.md`): Change it carries `.btn-flame`, except on the
+ * One hero action per view (`docs/DESIGN.md`): Build it carries `.btn-flame`, except on the
  * Overview while Ship is on offer — then Ship does. Everybody sees the same page; an action the
  * reader cannot use is hidden, never disabled.
  */
 import {
   ArchiveBoxIcon,
+  ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
-  PlayIcon,
+  RocketLaunchIcon,
   Squares2X2Icon,
 } from '@heroicons/react/24/outline'
 import type { PipelineKind, PipelineView } from '@launch/shared/launch-pipeline'
@@ -276,15 +277,16 @@ export default function AppLayout() {
                   href={liveUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm btn-ghost"
+                  className="btn btn-outline gap-1.5"
                 >
-                  Open ↗
+                  Open Live
+                  <ArrowTopRightOnSquareIcon className="w-4 h-4" aria-hidden="true" />
                 </a>
               )}
               {canStart && (
                 <button
                   type="button"
-                  className={`btn btn-sm gap-1.5 ${heroHere ? 'btn-primary btn-flame' : ''}`}
+                  className={`btn gap-1.5 ${heroHere ? 'btn-primary btn-flame' : ''}`}
                   disabled={startSession.isPending}
                   onClick={() =>
                     startSession.startWarm({}, session =>
@@ -295,12 +297,12 @@ export default function AppLayout() {
                   {startSession.isPending ? (
                     <span className="loading loading-spinner loading-xs" />
                   ) : (
-                    <PlayIcon className="w-4 h-4" />
+                    <RocketLaunchIcon className="w-4 h-4" aria-hidden="true" />
                   )}
-                  Change it
+                  Build it
                 </button>
               )}
-              <MoreMenu items={menu} />
+              <MoreMenu items={menu} size="md" />
             </>
           }
         />

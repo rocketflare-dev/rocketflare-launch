@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The app page's header says what each button does.** "Open ↗" is **Open Live**, an outlined
+  button with an external-link icon, so it reads as the production site and stands out on the
+  page; "Change it" with a play icon is **Build it** with a rocket (it starts a coding session).
+  Both are full-size, like the Apps page's buttons, and Import app is outlined the same way. The
+  Apps page hides archived apps unless "Show archived" is on (remembered per browser), and the
+  fleet counts never include them. The session composer's text is centred against its buttons.
+  Home's "Finish setting up Launch" is a compact panel: a 7-segment bar ("6 of 7 ready") and a row,
+  with its reason and a Fix link, only for what is not ready.
 - **A session whose idle timer died no longer sits "Ready" for ever.** A `wrangler dev` reload
   could kill the Workflow's idle wait, so the 30-minute suspend never came and the page showed
   Ready, End and Ship over a preview spinning on a sleeping container (one session for 18 hours).
@@ -78,9 +86,10 @@
   (never "Workspace"), and a global admin reads as "Global admin" in the sidebar footer and the
   user menu instead of their membership role.
 - **The setup wizard is a checklist on Home.** Its seven steps are each a Platform page now;
-  while any is unfinished, a platform admin's Home leads with "Finish setting up Launch — n of 7",
-  one line per connection with its state in words and a link to its page, and it disappears once
-  every one works.
+  while any is not ready, a platform admin's Home leads with a compact "Finish setting up Launch"
+  panel: a 7-segment bar ("6 of 7 ready") and a row only for each connection not ready, saying
+  what is wrong with a Fix link to its page. Only OK counts as ready, and the panel disappears once
+  all seven are.
 - **The organisations list says when it could not load.** In single mode its API answers 404, and
   the list read that as "No organisations match"; single mode no longer lists organisations at all
   (the one organisation's settings are General), and a failed load says so.

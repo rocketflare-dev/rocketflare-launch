@@ -284,6 +284,26 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
         onDrop={onDrop}
         data-testid="session-composer-form"
       >
+        {/* The model is a choice made before writing, so it sits above the box, out of the hint's way. */}
+        {models.length > 1 && (
+          <div className="mb-1.5 flex items-center justify-end gap-1.5 px-1 text-xs text-muted">
+            <label htmlFor="session-composer-model">Model</label>
+            <select
+              id="session-composer-model"
+              aria-label="Model for the next message"
+              className="select select-xs select-ghost w-auto"
+              value={model ?? ''}
+              onChange={event => onModelChange(event.target.value || null)}
+              title="Model for the next message"
+            >
+              {models.map(option => (
+                <option key={option ?? ''} value={option ?? ''}>
+                  {sessionModelLabel(session.runtime, option)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div
           className={`rounded-xl border bg-base-100 px-3 py-2 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 ${
             dragging
@@ -332,7 +352,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
               id="session-composer"
               ref={textarea}
               rows={1}
-              className="flex-1 resize-none bg-transparent text-sm leading-6 outline-none placeholder:text-muted"
+              className="flex-1 resize-none bg-transparent py-1 text-sm leading-6 outline-none placeholder:text-muted"
               placeholder={
                 running
                   ? `${agentName(session.runtime)} is working — write the next message`
@@ -430,26 +450,6 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
               <span className={`tabular-nums ${tooLong ? 'text-error' : ''}`}>
                 {trimmed.length.toLocaleString()} / {SESSION_MESSAGE_MAX.toLocaleString()}
               </span>
-            )}
-            {models.length > 1 && (
-              <>
-                <label htmlFor="session-composer-model" className="sr-only">
-                  Model for the next message
-                </label>
-                <select
-                  id="session-composer-model"
-                  className="select select-xs select-ghost w-auto"
-                  value={model ?? ''}
-                  onChange={event => onModelChange(event.target.value || null)}
-                  title="Model for the next message"
-                >
-                  {models.map(option => (
-                    <option key={option ?? ''} value={option ?? ''}>
-                      {sessionModelLabel(session.runtime, option)}
-                    </option>
-                  ))}
-                </select>
-              </>
             )}
           </span>
         </div>

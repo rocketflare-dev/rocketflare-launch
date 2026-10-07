@@ -92,7 +92,7 @@ export interface SetupChecklistRow {
   label: string
   path: string
   status: SetupStepStatus
-  /** Working: `ok`, or `warning` — a choice the server flags but that works (magic link only). */
+  /** Ready: `ok`. A `warning` is something to act on (setup's rule), so it is not done. */
   done: boolean
   /** What is wrong, in the check's own words — its worst probe's detail, else its label. */
   reason: string | null
@@ -107,10 +107,9 @@ export interface SetupChecklist {
 }
 
 /**
- * Home's setup checklist from the setup overview's steps, in the Platform menu's order. A
- * `warning` counts as done — the count the old wizard's "n of 7 steps" made — because some are
- * deliberate (no SSO provider: people sign in by magic link) and the list must be able to go away;
- * the Platform menu still shows its dot. Pure.
+ * Home's setup checklist from the setup overview's steps, in the Platform menu's order. Only `ok`
+ * is done: a choice (magic link only) or something Launch cannot test is `ok` with a note, so a
+ * `warning` always has something to do and the list goes away once it is done. Pure.
  */
 export function setupChecklist(
   steps: readonly SetupStep[],
@@ -124,7 +123,7 @@ export function setupChecklist(
       label: CONNECTION_LABELS[id],
       path: CONNECTION_PATHS[id],
       status,
-      done: status === 'ok' || status === 'warning',
+      done: status === 'ok',
       reason: status === 'ok' ? null : worstCheck(checks[id] ?? []),
     }
   })

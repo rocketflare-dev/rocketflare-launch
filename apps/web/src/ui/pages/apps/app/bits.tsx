@@ -91,13 +91,25 @@ export type MenuItem =
 
 const MENU_ITEM = 'block w-full text-left text-sm px-2.5 py-1.5 rounded hover:bg-base-200'
 
-export function MoreMenu({ items, label = 'More actions' }: { items: MenuItem[]; label?: string }) {
+export function MoreMenu({
+  items,
+  label = 'More actions',
+  size = 'sm',
+}: {
+  items: MenuItem[]
+  label?: string
+  /** `md` beside a page header's full-size buttons; `sm` in a row. */
+  size?: 'sm' | 'md'
+}) {
   const ref = useRef<HTMLDetailsElement>(null)
   if (items.length === 0) return null
   const close = () => ref.current?.removeAttribute('open')
   return (
     <details ref={ref} className="dropdown dropdown-end">
-      <summary className="btn btn-sm btn-ghost btn-square list-none" aria-label={label}>
+      <summary
+        className={`btn ${size === 'sm' ? 'btn-sm' : ''} btn-ghost btn-square list-none`}
+        aria-label={label}
+      >
         <EllipsisHorizontalIcon className="w-5 h-5" />
       </summary>
       <ul className="dropdown-content popover-surface z-50 mt-1 w-56 p-1.5 space-y-0.5">

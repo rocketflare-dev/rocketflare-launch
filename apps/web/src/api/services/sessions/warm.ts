@@ -39,7 +39,7 @@ export function warmMinutesLeft(
 // ---- warm starts (issue #17) -------------------------------------------------------------------
 
 /**
- * Warm on intent (issue #17): the app page's Start / Change it creates the session the moment the
+ * Warm on intent (issue #17): the app page's Start / Build it creates the session the moment the
  * person opens the composer (`warm: true` on the request), so `claim` → `db` ‖ `sandbox.start` →
  * `repo` → `bootstrap` → `dev` run while they type, and their first message finds it `ready` (or
  * waits on the row for it). Until that first message the session is an UNPROMPTED warm start

@@ -251,41 +251,33 @@ describe('Home — finish setting up Launch', () => {
     })
   const singleOwner = () => makeSession({ tenancyMode: 'single' })
 
-  it('lists every connection with its state in words, linking to its page, while one is unfinished', async () => {
+  it('shows only what is not ready, each with its reason and one Fix link, under a 7-segment bar', async () => {
     withSetup(setupOverview)
     renderWithProviders(<Home />, { session: singleOwner() })
-    // domain ok, cloudflare warning (working), identity ok → 3 of 7.
+    // domain and identity ok; cloudflare warning, neon not set, github and public URL
+    // unchecked, email failed → 2 of 7 ready.
     expect(
-      await screen.findByRole('heading', {
-        level: 2,
-        name: 'Finish setting up Launch — 3 of 7 working',
-      })
+      await screen.findByRole('heading', { level: 2, name: 'Finish setting up Launch' })
     ).toBeInTheDocument()
-    const list = screen.getByRole('list', { name: 'Platform' })
+    expect(screen.getByTestId('home-setup-count')).toHaveTextContent('2 of 7 ready')
+    const list = screen.getByRole('list', { name: 'Not ready yet' })
     const rows = within(list).getAllByRole('listitem')
-    expect(rows.map(row => within(row).getByRole('link').textContent)).toEqual([
-      'Domain',
-      'Cloudflare',
-      'Neon',
-      'GitHub',
-      'Email',
-      'Sign-in',
-      'Public URL',
+    // A ready connection gets no row; the order is the Platform menu's.
+    expect(rows.map(row => within(row).getByRole('link').getAttribute('aria-label'))).toEqual([
+      'Fix Cloudflare',
+      'Fix Neon',
+      'Fix GitHub',
+      'Fix Email',
+      'Fix Public URL',
     ])
-    expect(within(list).getByRole('link', { name: 'Public URL' })).toHaveAttribute(
-      'href',
-      '/settings/public-url'
-    )
-    expect(within(list).getByRole('link', { name: 'Email' })).toHaveAttribute(
+    expect(within(list).queryByText('Domain')).toBeNull()
+    expect(within(list).getByRole('link', { name: 'Fix Email' })).toHaveAttribute(
       'href',
       '/settings/email'
     )
-    // The state in words, at the end of the row.
-    expect(rows[4]?.lastElementChild).toHaveTextContent('Failed')
-    expect(rows[2]?.lastElementChild).toHaveTextContent('Not set')
-    expect(rows[1]?.lastElementChild).toHaveTextContent('Needs a look')
-    // What is wrong, in the failing probe's own words, under the name.
-    expect(rows[4]).toHaveTextContent('notifications.company-apps.test is not a Resend domain yet.')
+    // What is wrong, in the failing probe's own words; a step with no probe says its state.
+    expect(rows[3]).toHaveTextContent('notifications.company-apps.test is not a Resend domain yet.')
+    expect(rows[1]).toHaveTextContent('Not set')
   })
 
   it('is gone once every connection works', async () => {

@@ -73,7 +73,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `useDeployProduction`; and `useDeployProgress(appId)` — the app Overview's in-flight lines and the release page's milestones, each environment's latest deploy and phase, polled every `DEPLOY_PROGRESS_POLL_MS` while `deployProgressPollInterval` says one runs and does not wait on a person (the catalogue's `useApps` polls on the same decision over `latestDeploy`), refreshing the rest of the `apps` family once when it settles; what the stepper and the catalogue line SAY is `pages/apps/components/deployProgressModel.ts`).
   Launch P3 (coding sessions): `useSessions` (`useSession(id)` / `useAppSessions(appId, scope)` /
   `useAdminSessions(scope)` polling `SESSION_POLL_MS` only while `sessionOwesAnswer` — `ready`,
-  `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession` (the app page's Start / Change it go through
+  `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession` (the app page's Start / Build it go through
   `useWarmStartSession`: `warm: true`, once per press — issue #17), `useSendTurn`,
   `useCancelTurn`, `useShipSession`, `useEndSession`, `useResumeSession`, `useExtendBudget` write
   the returned row into the cache; `usePreviewGrant` is a mutation — every iframe load mints a fresh
@@ -596,12 +596,14 @@ A `CUSTOM kit.notice` renders
   last reported (`healthVersion`) — the catalogue row carries no `lastDeployVersion` and no
   releases, so a release that failed before any deploy shows on the app page, not here.
   `UiPlugin.homeLinks` render last as one line of links. Tests: `home`, `app-thumbnails`.
-- **"Finish setting up Launch — n of 7 working"** (`home/SetupChecklistSection.tsx`, `platformAdmin`)
-  leads the page while any connection is unfinished: one row per connection in the Platform
-  menu's order — its dot (`aria-hidden`; the state is spelled out), its name linking to its
-  Settings page, its state in words — from `setupChecklist(steps)` in `homeModel.ts`. A `warning`
-  counts as done (magic-link-only sign-in is a choice), so the section can go away; it renders
-  nothing while loading, on an error, or once complete. It replaced the setup wizard page.
+- **"Finish setting up Launch"** (`home/SetupChecklistSection.tsx`, `platformAdmin`) leads the page
+  while any connection is not ready, as one compact panel: the heading, a 7-segment bar in the
+  Platform menu's order (state colours, `aria-hidden`; "n of 7 ready" is spelled out beside it),
+  then a row ONLY for each connection not ready — dot, name, what is wrong in its worst probe's
+  words, one "Fix" link to its Settings page — from `setupChecklist(steps, connectionChecks(…))` in
+  `homeModel.ts`. Only `ok` is ready: a choice or an untestable fact is `ok` with a note, so a
+  `warning` is always something to do. Renders nothing while loading, on an error, or once all
+  seven are ready. It replaced the setup wizard page.
 
 ## Shared config and grants (Launch P5) — "Secrets" in the UI
 

@@ -253,7 +253,7 @@ export function useStartSession(appId: string) {
 }
 
 /**
- * Issue #17, warm on intent: the app page's Start session / Change it opens the composer, and the
+ * Issue #17, warm on intent: the app page's Start session / Build it opens the composer, and the
  * session starts WARM (`warm: true`) there and then, so it boots while the person writes their
  * first message. Once per press: a second press (or a double click) while the first is in flight
  * sends nothing, and the server hands back the person's own warm session on the app instead of a

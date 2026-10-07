@@ -2,7 +2,7 @@
  * Rollback and main-ahead on the app page (app page P3, plan decisions 5 and 8):
  *
  * - the Overview's `main  N commits ahead  [Release to staging ▸]` row above Staging — a plain
- *   button (Ship or Change it stays the one hero), opening the release dialog with the commits,
+ *   button (Ship or Build it stays the one hero), opening the release dialog with the commits,
  *   patch by default; hidden when main is not ahead or a release is already on its way to
  *   staging; no button for somebody who may not deploy;
  * - the Live row says "(rolled back from v1.4.2)", and a rollback waiting for approval is its

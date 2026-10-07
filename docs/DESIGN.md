@@ -22,7 +22,7 @@ reference implementation, and a new screen follows it.
 ## Actions
 
 - **One hero action per view.** `.btn-flame` (on `btn btn-primary`) marks the single thing the
-  view exists for — on the app page, Ship when changes are waiting and Change it otherwise.
+  view exists for — on the app page, Ship when changes are waiting and Build it otherwise.
   Everything else is a plain or ghost button, or sits in the row's or header's ⋯ menu.
 - **Labels say what happens.** "Ship v1.4.2 live", "Request approval", "Deploy main to Live…" —
   never "Submit", "OK" or "Go". A button that leaves Launch is marked ↗.
