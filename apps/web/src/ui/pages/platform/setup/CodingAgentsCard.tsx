@@ -17,6 +17,7 @@ import {
   AGENT_RUNTIME_DEFAULT_MODEL,
   AGENT_RUNTIMES,
   type AgentRuntimeId,
+  agentModelLabel,
   type SessionCredentialMode,
 } from '@launch/shared/launch-agents'
 import type { SessionAgentStatus, SessionAgentsStatus } from '@launch/shared/launch-setup'
@@ -69,6 +70,12 @@ interface Draft {
   /** Null: no model pinned — the agent's own default. */
   model: string | null
   credentialMode: SessionCredentialMode
+}
+
+/** The model select's first option: the model Launch pins (Pi), else the agent's own choice. */
+function defaultModelOption(runtime: AgentRuntimeId, label: string): string {
+  const fixed = AGENT_RUNTIME_DEFAULT_MODEL[runtime]
+  return fixed ? `Default — ${agentModelLabel(fixed)}` : `Default — ${label} picks`
 }
 
 function draftsOf(status: SessionAgentsStatus): Record<AgentRuntimeId, Draft> {
@@ -238,18 +245,14 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
                       </label>
                       <select
                         id={`${id}-model`}
-                        className="select select-sm w-full font-mono"
+                        className="select select-sm w-full"
                         value={draft.model ?? ''}
                         onChange={e => set(agent.runtime, { model: e.target.value || null })}
                       >
-                        <option value="">
-                          {AGENT_RUNTIME_DEFAULT_MODEL[agent.runtime]
-                            ? `Default — ${AGENT_RUNTIME_DEFAULT_MODEL[agent.runtime]}`
-                            : `Default — ${agent.label} picks`}
-                        </option>
+                        <option value="">{defaultModelOption(agent.runtime, agent.label)}</option>
                         {agent.models.map(m => (
-                          <option key={m} value={m}>
-                            {m}
+                          <option key={m} value={m} title={m}>
+                            {agentModelLabel(m)}
                           </option>
                         ))}
                       </select>

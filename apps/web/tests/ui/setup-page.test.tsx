@@ -503,7 +503,7 @@ describe('Settings → Coding agents', () => {
     expect(within(card).getByLabelText('Pi')).toBeChecked()
     expect(card.querySelector('#coding-agent-pi-pays')).toBeNull()
     expect(card.querySelector('#coding-agent-pi-model option')?.textContent).toBe(
-      'Default — @cf/moonshotai/kimi-k2.7-code'
+      'Default — Kimi K2.7 Code'
     )
     expect(within(card).getByText(/through this account's Workers AI/)).toBeInTheDocument()
     cleanup()
