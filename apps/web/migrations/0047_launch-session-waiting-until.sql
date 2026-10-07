@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "waiting_until" timestamp with time zone;

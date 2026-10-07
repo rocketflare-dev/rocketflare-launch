@@ -1845,7 +1845,27 @@ reload) is restarted as `<id>-rN` from the row.
   now (End, Ship, Resume, a message). A `queued` instance is left alone; a live one is terminated;
   the status is NOT changed and nothing fails — a fresh instance runs the owed work from the row
   (`claim` salvages a `ready`/`blocked` container first, so an End still checkpoints). Reading the
-  session page (or the cron) is enough to unstick it. **A ship, a landing, a release** (a
+  session page (or the cron) is enough to unstick it. **An idle session whose timer died** (session
+  7291f986 sat "Ready" for 18 hours: a `wrangler dev` reload killed the local engine's `wait#14`
+  timer, so the 30-minute idle suspend never fired, and its preview spun on a sleeping container):
+  `inspect#N` writes the deadline of the wait it begins as `sessions.waiting_until` (null when it
+  decides anything else). Only the Workflow writes it — the preview's activity stamps move
+  `last_activity_at`, never this — so a `ready`/`blocked` row owing nothing whose `waiting_until`
+  is more than 10 minutes past (`SESSION_IDLE_OVERDUE_GRACE_MS`: one default step attempt, the
+  idle suspend's checkpoint, after the timeout) was left by an instance that no longer runs. With
+  no wait recorded (a row from before the column, or a step between waits) the idle policy counted
+  from `last_activity_at` stands in, and a row more than `maxSessionHours` plus one idle window old
+  is overdue however fresh its stamps (claimed only after 3 quiet minutes, so the instance this
+  starts is not taken for the dead one). The claim clears `waiting_until` and moves
+  `last_activity_at` (a compare-and-set); then the owed-work rescue — `queued` left, a live
+  instance terminated, a fresh one started whose `claim` salvages the container (checkpoint, kept
+  warm) and settles `suspended`. **Opened vs swept**: `GET /api/sessions/:id` by someone who drives
+  the session starts it with `salvage: 'resume'` (`SessionWorkflowParams`), so opening it brings
+  it back (a warm resume); the `*/5` sweep, a reader, `GET /:id/pr` and a drain start it with
+  `salvage: 'suspend'` — asleep with no resume asked, the page offering Resume. Past
+  `maxSessionHours` it is never resumed: the loop's `inspect` ends it after the salvage.
+  Audited `session.reconciled` with `overdue` (`idle` · `max_session_hours`), `basis` and
+  `salvage`. **A ship, a landing, a release** (a
   `wrangler dev` reload during a landing's CI wait left session 7a679a43 `shipping` at stage `ci`
   for ever, its PR green and unmerged, every wake going to an instance "running" in name only):
   every ship step, Phase A land step and Phase B step (and a merged landing's `cleanup`) beats
@@ -1887,7 +1907,11 @@ transcript on SIGTERM, need a real container. The salvaged turn itself is not co
 sends the message again. A container that answers but whose kill script fails is destroyed, so its
 unsaved edits are still lost then. An owed SHIP that the reconcile restarts is dropped: the salvage swaps
 `requested_action = 'ship'` for the `resume` it needs, so the session comes back `ready` and the
-person ships again. A `shipping` session whose instance died mid-GATE is restarted
+person ships again. An idle session whose timer died is noticed only 10 minutes after its wait's
+deadline (40 minutes of quiet under the default policy), and only by a read or the `*/5` sweep; a
+row with no wait recorded whose preview keeps moving `last_activity_at` is noticed only past
+`maxSessionHours`. Until then its preview pane stops spinning after 30 s ("The preview isn't
+answering", with Reload) rather than bringing the session back. A `shipping` session whose instance died mid-GATE is restarted
 after 5 minutes of quiet and salvaged, but its ship is dropped (the person ships again), a gate
 command still running in a kept container runs on to its deadline, and its gate branch (issue #1)
 is deleted by the next ship's `ship.db`, the session's cleanup or, after three hours,
@@ -2412,7 +2436,13 @@ session's edits (HMR only ever fetches fresh `?t=` URLs, which hid it while the 
 session moves `last_activity_at` (the idle clock, §18.9) in `waitUntil`, at most once a minute per
 session per isolate and only on a stamp older than a minute in the database, so a Vite page's
 hundred module requests cost one write. Never for `working`: there the stamp is the turn's
-heartbeat, which the reconcile reads, and a preview must not hide a dead turn.
+heartbeat, which the reconcile reads, and a preview must not hide a dead turn. Nor can it hide a
+dead idle wait: the reconcile judges that by `waiting_until`, which only the Workflow writes.
+
+**A load has a deadline**: `PreviewFrame` gives each grant's frame 30 s
+(`PREVIEW_LOAD_DEADLINE_MS`) to fire `load`; after that the spinner becomes "The preview isn't
+answering" with Reload (a fresh grant, a fresh deadline), the frame left underneath so a late
+answer still shows.
 
 **The preview bridge** (`api/preview/bridge.ts`) tells Launch which page the cross-origin frame is
 on. The gateway serves `/__launch/bridge.js` — like the grant, after the host lookup and before the

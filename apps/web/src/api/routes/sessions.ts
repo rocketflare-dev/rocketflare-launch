@@ -52,8 +52,14 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
 sessionsRouter.get('/:id', async c => {
   const { db, logger, realtime, session, canManage } = await visibleSession(c, 'read')
   // A boot or turn whose Workflow died under it is settled here, throttled (`reconcile.ts`): a
-  // quiet session costs one compare-and-set per window, a fresh one nothing.
-  const reconciled = await reconcileSessionSafely(db, c.env, session, { logger, realtime })
+  // quiet session costs one compare-and-set per window, a fresh one nothing. An idle session
+  // whose Workflow's timer died is brought back when someone who drives it opens it; a reader
+  // (a merge's reviewer) only leaves it asleep.
+  const reconciled = await reconcileSessionSafely(db, c.env, session, {
+    logger,
+    realtime,
+    overdueIdle: canManage ? 'resume' : 'suspend',
+  })
   const current =
     reconciled.outcome === 'settled'
       ? await getSessionRow(db, session.tenantId, session.id)

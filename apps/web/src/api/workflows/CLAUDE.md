@@ -87,7 +87,8 @@ Worker in that same step and returns ids only.
 
 `SessionWorkflow` (`SESSION_WORKFLOW`, `launch-session[-staging]`) drives one coding session — on
 the sandbox host frozen on its row (`sessions.sandbox_host`, read once per step to build the
-ports); params `SessionWorkflowParams` (`{ sessionId, tenantId }`, `@launch/shared/launch-sessions`), the
+ports); params `SessionWorkflowParams` (`{ sessionId, tenantId, salvage? }`, `@launch/shared/launch-sessions` —
+`salvage` only on a reconcile's restart, for what the salvage settles), the
 instance id is the session id (`<id>-rN` after a restart — `wakeOrRestart`,
 `services/sessions/lifecycle.ts`). The class wires names and configs only; the bodies are plain
 functions in `../services/sessions/steps.ts` over a `StepScope` (one DB client, the ports, the
@@ -103,7 +104,9 @@ timings collected from the earlier RESULTS and writes ONE `boot.timing` event, i
 one of
 `wait#N` (`waitForEvent(SESSION_WAKE_EVENT)`, timeout = what is left of the idle policy counted
 from `last_activity_at`, or the suspended expiry; on an idle timeout `suspend#N` re-reads the stamp
-and does nothing when the preview moved it meanwhile — the next round waits out the rest),
+and does nothing when the preview moved it meanwhile — the next round waits out the rest;
+`inspect#N` writes the wait's deadline as `sessions.waiting_until`, null for any other decision —
+the reconcile's "overdue idle" clock, which the preview cannot move),
 `turn#N` (3c's `runTurn`, `turnStepConfig`: `retries: 0`) → `rollout#N` (`containerGone`: a
 rollout or `container_lost` — the session is already `suspended`) | `checkpoint#N` (only
 when the session has held unsaved changes for `SESSION_CHECKPOINT_MAX_DEFER_MS`, or the turn step
@@ -144,7 +147,8 @@ straight to `cleanup` — which is how the reconcile's fresh instance cleans up 
 retry, 15 min) before the loop: with the container still carrying its boot marker, stop the
 orphaned turn (`runtime.cancel` — a process runtime: by `TURN_PID_FILE`, `turnKillScript`), checkpoint (`reason: 'salvage'`,
 transcript included), KEEP the container when the process is confirmed stopped (the loop's
-`resume#N` then goes warm), else destroy it; then `suspended` + `resume` and close a `working` turn
+`resume#N` then goes warm), else destroy it; then `suspended` + `resume` (no resume when the
+params say `salvage: 'suspend'` — the reconcile's sweep of an overdue idle session) and close a `working` turn
 saying whether the work was saved (`turn.failed`, or `turn.interrupted { cancelled }` for a pending
 Stop). It writes the heartbeat while it runs, and catches every sandbox error — a salvage never fails
 the session. A `booting` row under a lost instance is destroyed and resumed as before. The

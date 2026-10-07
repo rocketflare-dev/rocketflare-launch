@@ -29,6 +29,11 @@
  * size (`screenshotViewport`, clamped to `PREVIEW_SCREENSHOT_BOUNDS`), on the server, into the
  * next message's images — `onScreenshot` hands the request to the page, which adds a chip at once.
  *
+ * **A load has a deadline.** A frame that has not loaded {@link PREVIEW_LOAD_DEADLINE_MS} after its
+ * grant (a dev server that is not running behind the gateway — a container left asleep under a
+ * session whose Workflow died, before the reconcile catches it) stops spinning and says the
+ * preview is not answering, with Reload. The frame stays underneath: a late load still shows.
+ *
  * With no sandbox there is nothing to frame, and the pane says why in one line with the one thing
  * to do: booting shows `BootProgress`, asleep offers Resume, shipped points at the PR.
  */
@@ -58,6 +63,8 @@ import { BootProgress } from './BootProgress'
 
 /** How long the "Updated" mark stays after an automatic reload. */
 const UPDATED_MARK_MS = 2500
+/** How long a frame may take to load before the pane stops spinning and offers a reload. */
+export const PREVIEW_LOAD_DEADLINE_MS = 30_000
 
 /** The preview's origin, which the bridge's messages must come from. Pure. */
 export function previewOriginOf(url: string | null): string | null {
@@ -171,6 +178,7 @@ export function PreviewFrame({
   const [src, setSrc] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const [frameLoaded, setFrameLoaded] = useState(false)
+  const [stalled, setStalled] = useState(false)
   const [updated, setUpdated] = useState(false)
   const [path, setPath] = useState<string | null>(null)
   // The grant says whether this deployment can take screenshots (it has `BROWSER`).
@@ -236,6 +244,14 @@ export function PreviewFrame({
   useEffect(() => {
     onPathChangeRef.current?.(path)
   }, [path])
+
+  // Each load (a fresh grant, so a new `src`) gets the deadline afresh; a load that lands clears it.
+  useEffect(() => {
+    setStalled(false)
+    if (!src || frameLoaded) return
+    const timer = setTimeout(() => setStalled(true), PREVIEW_LOAD_DEADLINE_MS)
+    return () => clearTimeout(timer)
+  }, [src, frameLoaded])
 
   useEffect(() => {
     if (!updated) return
@@ -434,13 +450,33 @@ export function PreviewFrame({
               onLoad={() => setFrameLoaded(true)}
             />
           ) : null}
-          {(!src || !frameLoaded) && (
-            <div className="absolute inset-0 flex items-center justify-center bg-base-100">
-              <span className="flex items-center gap-2 text-sm text-muted">
-                <span className="loading loading-spinner loading-sm" />
-                Loading the preview…
-              </span>
+          {src && !frameLoaded && stalled ? (
+            <div className="absolute inset-0 bg-base-100">
+              <PaneState
+                icon={ExclamationTriangleIcon}
+                message="The preview isn't answering"
+                description={`The app's dev server did not respond within ${PREVIEW_LOAD_DEADLINE_MS / 1000} seconds.`}
+                action={
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => load('manual', changeSeq ?? 0)}
+                    disabled={grant.isPending}
+                  >
+                    Reload
+                  </button>
+                }
+              />
             </div>
+          ) : (
+            (!src || !frameLoaded) && (
+              <div className="absolute inset-0 flex items-center justify-center bg-base-100">
+                <span className="flex items-center gap-2 text-sm text-muted">
+                  <span className="loading loading-spinner loading-sm" />
+                  Loading the preview…
+                </span>
+              </div>
+            )
           )}
         </div>
       </div>

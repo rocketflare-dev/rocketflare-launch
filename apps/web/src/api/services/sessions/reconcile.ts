@@ -60,6 +60,28 @@
  * replaces `requested_action = 'ship'` with the `resume` it needs, so the session comes back
  * `ready` with no ship asked — the person ships again. Audited `session.reconciled` with `owed`.
  *
+ * **An idle session whose timer died.** A `ready` / `blocked` row that owes nothing is still owed
+ * something by its Workflow: the idle wait (`wait#N`) times out and the session suspends — or, past
+ * `maxSessionHours`, ends. A `wrangler dev` reload that kills that timer leaves the row `ready` for
+ * ever (session 7291f986: 18 hours, its preview spinning on a sleeping container). `inspect#N`
+ * writes the deadline of the wait it begins as `waiting_until` (null for anything else), and only
+ * the Workflow writes it — the preview gateway moves `last_activity_at` on every visit, so that
+ * stamp cannot tell a dead wait from a watched one. Overdue (`overdueIdleOf`) is the earliest of:
+ * `waiting_until`; with none recorded (a row from before the column, a step between waits), the
+ * idle policy counted from `last_activity_at`; and `maxSessionHours` plus one idle window from
+ * creation — each plus {@link SESSION_IDLE_OVERDUE_GRACE_MS}. A healthy instance always acts first:
+ * no wait is longer than the idle window, a timeout is acted on within seconds (and the step that
+ * follows, the suspend's checkpoint, runs inside the grace), and the first `inspect` past
+ * `maxSessionHours` ends the session. The claim is a compare-and-set on the clocks it was judged by
+ * that clears `waiting_until` and moves `last_activity_at` (the age clock is claimed only after
+ * {@link SESSION_STALL_MS} of quiet, so the fresh instance's own beats are never taken for the
+ * dead one's); then the owed-work rescue, with what the salvage settles passed in the params
+ * (`SessionWorkflowParams.salvage`): `resume` when someone who drives the session opened it
+ * (`GET /api/sessions/:id` passes `overdueIdle: 'resume'`) — opening it brings it back — else
+ * `suspend`: the cron leaves it asleep, the page offering Resume. A `blocked` row, a drain, or a
+ * session past `maxSessionHours` is never resumed — the last ends at the loop's `inspect`. Audited
+ * `session.reconciled` with `overdue` (`idle` · `max_session_hours`), `basis` and `salvage`.
+ *
  * **A ship, a landing, a release.** A `shipping` session runs steps, then waits between them — a
  * landing waits on CI for a round at a time (`land.wait#N`, a `waitForEvent`) — and a `wrangler
  * dev` reload in that wait left a landing at stage `ci` for ever: every wake went to an instance
@@ -96,7 +118,12 @@
  */
 
 import { agentStepEventDataSchema } from '@launch/shared/ai/agents'
-import { type SessionStatus, TERMINAL_SESSION_STATUSES } from '@launch/shared/launch-sessions'
+import {
+  resolveSessionPolicy,
+  type SessionStatus,
+  type SessionWorkflowParams,
+  TERMINAL_SESSION_STATUSES,
+} from '@launch/shared/launch-sessions'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Database } from '../../../db/client'
 import { type SessionRow, sessionEvents, sessions } from '../../../db/schema'
@@ -144,6 +171,13 @@ export const SESSION_END_STALL_MS = 75_000
  * (`TURN_HEARTBEAT_MS`, 10 s) say the turn step that should act on it is gone.
  */
 export const SESSION_CANCEL_STALL_MS = 30_000
+/**
+ * An idle `ready` / `blocked` session is overdue this long after its wait's deadline (see the
+ * header): a healthy instance acts within seconds of a timeout, and the longest it can then stay
+ * `ready` without writing is one attempt of the step that follows — the idle suspend's
+ * checkpoint, at the platform's default step timeout of 10 minutes.
+ */
+export const SESSION_IDLE_OVERDUE_GRACE_MS = 10 * 60_000
 
 // ---- shipping: the windows (see the header) ------------------------------------------------------
 
@@ -201,6 +235,8 @@ const LIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'waitingForPause'
 const QUIET_STATUSES: readonly SessionStatus[] = ['requested', 'booting', 'working', 'ending']
 /** Where a session waits on its Workflow with nothing running — and may owe it work. */
 const IDLE_STATUSES: readonly SessionStatus[] = ['ready', 'suspended', 'blocked']
+/** The idle statuses a live container sits in — whose wait ends in a suspend, or an end. */
+const LIVE_IDLE_STATUSES: readonly SessionStatus[] = ['ready', 'blocked']
 
 /** What an idle session asked its Workflow for that has not started (see the header). */
 type OwedWork = 'end' | 'ship' | 'turn' | 'resume'
@@ -254,6 +290,12 @@ export interface ReconcileSessionOptions {
   realtime?: Realtime
   /** The quiet window for `booting` (the end route passes {@link SESSION_END_STALL_MS}). */
   stallMs?: number
+  /**
+   * What an overdue idle session comes back as (see the header): `resume` when someone who drives
+   * it just opened it (`GET /api/sessions/:id`), else `suspend` — asleep, with Resume on the page.
+   * Past `maxSessionHours` it ends either way.
+   */
+  overdueIdle?: 'resume' | 'suspend'
 }
 
 const isTerminal = (status: string) =>
@@ -326,10 +368,11 @@ async function restart(
   db: Database,
   workflow: SessionWorkflowBinding,
   session: SessionRow,
-  logger?: ReconcileLogger
+  logger?: ReconcileLogger,
+  salvage?: SessionWorkflowParams['salvage']
 ): Promise<string | null> {
   try {
-    return (await restartSessionInstance(db, workflow, session)).instanceId
+    return (await restartSessionInstance(db, workflow, session, { salvage })).instanceId
   } catch (err) {
     logger?.error({ err, sessionId: session.id }, 'session reconcile: could not start a cleanup')
     return null
@@ -376,6 +419,10 @@ export async function reconcileSession(
   // ---- an idle session whose request never reached a running Workflow
   const owed = owedWorkOf(session)
   if (owed) return reconcileIdleOwed(db, workflow, session, owed, quietSince, now, options)
+
+  // ---- an idle session whose wait should have ended long ago (its timer died with the instance)
+  const overdue = overdueIdleOf(session, now)
+  if (overdue) return reconcileOverdueIdle(db, workflow, session, overdue, now, options)
 
   // ---- a quiet boot, turn or end
   if (!QUIET_STATUSES.includes(session.status)) return SKIPPED
@@ -546,7 +593,12 @@ async function restartQuietInstance(
   workflow: SessionWorkflowBinding,
   session: SessionRow,
   options: ReconcileSessionOptions,
-  what: { quiet: string; audit: Record<string, unknown>; message: string }
+  what: {
+    quiet: string
+    audit: Record<string, unknown>
+    message: string
+    salvage?: SessionWorkflowParams['salvage']
+  }
 ): Promise<SessionReconcileResult> {
   const instanceId = session.instanceId ?? session.id
   const status = await instanceStatus(workflow, instanceId, options.logger)
@@ -567,7 +619,9 @@ async function restartQuietInstance(
     .select()
     .from(sessions)
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
-  const restartedAs = current ? await restart(db, workflow, current, options.logger) : null
+  const restartedAs = current
+    ? await restart(db, workflow, current, options.logger, what.salvage)
+    : null
   await recordAudit(db, {
     ...SYSTEM_ACTOR,
     tenantId: session.tenantId,
@@ -598,6 +652,105 @@ async function restartQuietInstance(
     what.message
   )
   return { outcome: 'settled', status: session.status, instanceStatus: status, restartedAs }
+}
+
+/** Why an idle session is overdue (see the header). */
+interface OverdueIdle {
+  /** The deadline the Workflow should have acted by. */
+  dueAt: Date
+  /** Which clock set it: its wait's, the idle policy's, or `maxSessionHours`. */
+  basis: 'wait' | 'quiet' | 'age'
+  /** Older than `maxSessionHours`: the fresh instance ends it rather than resuming it. */
+  pastMaxHours: boolean
+}
+
+/**
+ * A `ready` / `blocked` session owing nothing whose Workflow should have acted on it more than
+ * {@link SESSION_IDLE_OVERDUE_GRACE_MS} ago, or null (see the header). The deadline is the
+ * earliest of: its wait's (`waiting_until`, which only `inspect` writes — opening the preview
+ * cannot move it); with no wait recorded, the idle policy counted from `last_activity_at`; and
+ * `maxSessionHours` plus one idle window from its creation. A healthy instance has always acted
+ * before any of them — its waits are never longer than the idle window, and it ends a session
+ * past `maxSessionHours` at the first `inspect` after it.
+ */
+function overdueIdleOf(session: SessionRow, now: Date): OverdueIdle | null {
+  if (!LIVE_IDLE_STATUSES.includes(session.status)) return null
+  const policy = resolveSessionPolicy(session.policy)
+  const idleMs = policy.idleSuspendMinutes * 60_000
+  const maxEnd = session.createdAt.getTime() + policy.maxSessionHours * 3_600_000
+  const own: { at: number; basis: OverdueIdle['basis'] } = session.waitingUntil
+    ? { at: session.waitingUntil.getTime(), basis: 'wait' }
+    : { at: (session.lastActivityAt ?? session.updatedAt).getTime() + idleMs, basis: 'quiet' }
+  const due = maxEnd + idleMs < own.at ? { at: maxEnd + idleMs, basis: 'age' as const } : own
+  if (now.getTime() - due.at <= SESSION_IDLE_OVERDUE_GRACE_MS) return null
+  return { dueAt: new Date(due.at), basis: due.basis, pastMaxHours: now.getTime() >= maxEnd }
+}
+
+/**
+ * An overdue idle session (see the header): claimed by a compare-and-set on the clocks it was
+ * judged by (`waiting_until` cleared, `last_activity_at` moved to now — so the next read or sweep
+ * finds nothing overdue), then the owed-work rescue — `queued` left alone, any other live status
+ * terminated, a FRESH instance started. Its `claim` salvages the container (checkpoint, keep it
+ * warm) and settles `suspended`: with a resume when someone who drives the session just opened it
+ * ({@link ReconcileSessionOptions.overdueIdle}), without one otherwise; past `maxSessionHours`
+ * the loop's `inspect` then ends it.
+ */
+async function reconcileOverdueIdle(
+  db: Database,
+  workflow: SessionWorkflowBinding,
+  session: SessionRow,
+  overdue: OverdueIdle,
+  now: Date,
+  options: ReconcileSessionOptions
+): Promise<SessionReconcileResult> {
+  // Past `maxSessionHours` there is nothing to come back to, and a drain holds every resume.
+  const resume =
+    options.overdueIdle === 'resume' &&
+    session.status === 'ready' &&
+    !overdue.pastMaxHours &&
+    !(await sessionsPaused(db))
+  // A read timestamp is whole milliseconds; the stored one may carry microseconds.
+  const notAfter = (at: Date) => new Date(at.getTime() + 1)
+  const [claimed] = await db
+    .update(sessions)
+    .set({ lastActivityAt: now, waitingUntil: null })
+    .where(
+      and(
+        eq(sessions.tenantId, session.tenantId),
+        eq(sessions.id, session.id),
+        inArray(sessions.status, [...LIVE_IDLE_STATUSES]),
+        session.waitingUntil
+          ? lt(sessions.waitingUntil, notAfter(session.waitingUntil))
+          : isNull(sessions.waitingUntil),
+        overdue.basis === 'quiet' && session.lastActivityAt
+          ? lt(sessions.lastActivityAt, notAfter(session.lastActivityAt))
+          : undefined,
+        // Past `maxSessionHours` the clock never stops being overdue, so the fresh instance this
+        // starts (its `claim` and its salvage beat `last_activity_at`) must not be taken for the
+        // dead one: the age is only acted on after a quiet window, as a quiet boot is.
+        overdue.basis === 'age'
+          ? or(
+              isNull(sessions.lastActivityAt),
+              lt(sessions.lastActivityAt, new Date(now.getTime() - SESSION_STALL_MS))
+            )
+          : undefined
+      )
+    )
+    .returning({ id: sessions.id })
+  if (!claimed) return SKIPPED
+  const lateMs = now.getTime() - overdue.dueAt.getTime()
+  const late = Math.max(60_000, Math.round(lateMs / 60_000) * 60_000)
+  const salvage = resume ? 'resume' : 'suspend'
+  return restartQuietInstance(db, workflow, session, options, {
+    quiet: `its idle wait was due ${quietFor(late)} ago`,
+    audit: {
+      overdue: overdue.pastMaxHours ? 'max_session_hours' : 'idle',
+      basis: overdue.basis,
+      salvage,
+    },
+    salvage,
+    message: 'session reconcile: an idle session outlived its wait; restarted it to settle',
+  })
 }
 
 /** Which window a ship, a landing or a release is judged by (see the header), or null. */
@@ -683,7 +836,8 @@ export async function reconcileSessionSafely(
 
 /**
  * The cron's sweep (`sessions.expire`): every quiet boot, turn or end, every idle session owing
- * work nobody started, every quiet ship, landing or release, and every settled session never
+ * work nobody started or overdue past its wait (left asleep — the sweep never asks a resume),
+ * every quiet ship, landing or release, and every settled session never
  * cleaned up, across organisations — each reconciled inside its own tenant.
  */
 export async function reconcileStaleSessions(
@@ -706,6 +860,11 @@ export async function reconcileStaleSessions(
       )
   )
   const releaseCutoff = new Date(now.getTime() - SESSION_RELEASE_STALL_MS)
+  // An overdue idle session: a superset by the shortest windows a policy allows (one idle
+  // minute, one `maxSessionHours` hour); `reconcileSession` judges each by its own policy.
+  const overdueCutoff = new Date(now.getTime() - SESSION_IDLE_OVERDUE_GRACE_MS)
+  const overdueQuietCutoff = new Date(overdueCutoff.getTime() - 60_000)
+  const overdueAgeCutoff = new Date(overdueQuietCutoff.getTime() - 3_600_000)
   const quietSince = sql`coalesce(${sessions.lastActivityAt}, ${sessions.updatedAt})`
   const candidates = await db
     .select()
@@ -743,6 +902,18 @@ export async function reconcileStaleSessions(
               and(eq(sessions.status, 'suspended'), eq(sessions.requestedAction, 'resume'))
             ),
             sql`${quietSince} < ${owedCutoff.toISOString()}::timestamptz`
+          ),
+          // An idle session whose wait should have ended long ago (see the header).
+          and(
+            inArray(sessions.status, [...LIVE_IDLE_STATUSES]),
+            or(
+              sql`${sessions.waitingUntil} < ${overdueCutoff.toISOString()}::timestamptz`,
+              and(
+                isNull(sessions.waitingUntil),
+                sql`${quietSince} < ${overdueQuietCutoff.toISOString()}::timestamptz`
+              ),
+              sql`${sessions.createdAt} < ${overdueAgeCutoff.toISOString()}::timestamptz`
+            )
           ),
           // A ship or a landing whose instance died, and a merged landing's release (see the
           // header): an End asked of a landing is judged from the request, sooner.

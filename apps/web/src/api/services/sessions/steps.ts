@@ -24,13 +24,14 @@ import {
   type SessionKind,
   type SessionLanding,
   type SessionStatus,
+  type SessionWorkflowParams,
   type SessionWorkspaceBackupData,
   type ShipLandingStage,
   sessionLandingSchema,
   TERMINAL_SESSION_STATUSES,
 } from '@launch/shared/launch-sessions'
 import { UPGRADE_SESSION_REASONS } from '@launch/shared/launch-upgrades'
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
 import {
@@ -135,7 +136,7 @@ export interface StepScope {
   realtime: Realtime
   logger: Logger
   now: () => Date
-  params: { sessionId: string; tenantId: string }
+  params: SessionWorkflowParams
   /** The deadlines and poll intervals (`deadline.ts`); tests pass smaller ones. */
   limits?: SessionCallLimits
   /** The boot step running (its checklist label) — what a timeout names. Set by `withProgress`. */
@@ -807,7 +808,8 @@ async function stopOrphanedTurn(
  *    — whether or not the checkpoint worked, because when it did not, the workspace is the only
  *    copy of the work — and the loop's resume finds its boot marker and goes WARM (`dev#K` only,
  *    the dev server reused when it answers; `warm.ts`). Anything else is destroyed, as before.
- * 5. **Settle** `→ suspended` with a `resume` (an `end` the person asked for stays asked), and
+ * 5. **Settle** `→ suspended` with a `resume` (an `end` the person asked for stays asked; none
+ *    when the reconcile's restart said `salvage: 'suspend'` — the session stays asleep), and
  *    close a `working` turn with what happened: `turn.interrupted { cancelled }` when a Stop was
  *    pending, else `turn.failed` ({@link lostTurnMessage}) — either way saying whether the work
  *    was saved.
@@ -852,9 +854,15 @@ export async function salvageStep(
 
   const keep = outcome !== 'lost'
   const now = scope.now()
+  // An end the person asked for stays asked; otherwise a resume — unless the reconcile that
+  // started this instance asked it to stay asleep (an overdue idle session nobody is looking at).
+  let after: 'end' | 'resume' | null = 'resume'
+  if (session.requestedAction === 'end') after = 'end'
+  else if (scope.params.salvage === 'suspend') after = null
   const moved = await transition(scope, [session.status], 'suspended', {
     suspendedAt: now,
-    requestedAction: session.requestedAction === 'end' ? 'end' : 'resume',
+    requestedAction: after,
+    waitingUntil: null,
     cancelRequestedAt: null,
     containerKeptAt: keep ? now : null,
   })
@@ -1588,12 +1596,42 @@ export function checkpointDueInMs(
  * matters: an end beats everything, a drain suspends a live session, a ship beats a turn, a turn
  * beats a due checkpoint, and nothing to do is a wait — whose timeout is the idle policy (live),
  * the expiry (suspended), or, while the workspace holds unsaved changes, what is left of the
- * checkpoint debounce when that is sooner (`debounce: true`).
+ * checkpoint debounce when that is sooner (`debounce: true`). A wait's deadline is written as
+ * `waiting_until` ({@link recordWaitDeadline}).
  */
 export async function inspectStep(
   scope: StepScope,
   dirty: DirtyState | null = null
 ): Promise<NextAction> {
+  const next = await nextActionOf(scope, dirty)
+  if (next.action !== 'done') await recordWaitDeadline(scope, next)
+  return next
+}
+
+/**
+ * `waiting_until` (the reconcile's "overdue idle" clock, `reconcile.ts`): when the wait `inspect`
+ * just decided on times out, or null when it decided on anything else. Only the Workflow writes
+ * it, so the preview's activity stamps cannot make a dead instance look alive. Nothing is written
+ * when it is already null and stays null.
+ */
+async function recordWaitDeadline(scope: StepScope, next: NextAction): Promise<void> {
+  const until =
+    next.action === 'wait'
+      ? new Date(scope.now().getTime() + Math.max(1, Math.ceil(next.timeoutSeconds)) * 1000)
+      : null
+  await scope.db
+    .update(sessions)
+    .set({ waitingUntil: until })
+    .where(
+      and(
+        eq(sessions.tenantId, scope.params.tenantId),
+        eq(sessions.id, scope.params.sessionId),
+        until === null ? isNotNull(sessions.waitingUntil) : undefined
+      )
+    )
+}
+
+async function nextActionOf(scope: StepScope, dirty: DirtyState | null): Promise<NextAction> {
   const session = await loadSession(scope)
   const policy = resolveSessionPolicy(session.policy)
   const status = session.status

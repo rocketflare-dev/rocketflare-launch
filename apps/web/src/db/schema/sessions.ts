@@ -265,6 +265,13 @@ export const sessions = pgTable(
     /** Why the session failed, for the page. Never a vendor body with a secret in it. */
     error: text('error'),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+    /**
+     * When the Workflow's current idle wait (`wait#N`) times out — written by `inspect#N` (null
+     * when it did not decide to wait). Unlike `last_activity_at`, nothing but the Workflow moves
+     * it (not the preview), so a `ready` / `blocked` row whose stamp is long past was left by an
+     * instance that is no longer running (`reconcile.ts`, "an overdue idle session").
+     */
+    waitingUntil: timestamp('waiting_until', { withTimezone: true }),
     readyAt: timestamp('ready_at', { withTimezone: true }),
     suspendedAt: timestamp('suspended_at', { withTimezone: true }),
     endedAt: timestamp('ended_at', { withTimezone: true }),

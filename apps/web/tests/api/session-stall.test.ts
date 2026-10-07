@@ -151,14 +151,15 @@ async function drive(
   h: Harness,
   onWait: () => unknown,
   limits: Partial<SessionCallLimits> = FAST,
-  hookOverrides: Partial<SessionStepHooks> = {}
+  hookOverrides: Partial<SessionStepHooks> = {},
+  params: { salvage?: 'resume' | 'suspend' } = {}
 ): Promise<{ names: string[] }> {
   const fake = createFakeWorkflowStep({ onWait })
   const workflow = new SessionWorkflow(createExecutionContext(), h.env)
   workflow.overrides = { ports: h.ports, hooks: { ...hooks, ...hookOverrides }, limits }
   await workflow.run(
     {
-      payload: { sessionId: h.row.id, tenantId: h.row.tenantId },
+      payload: { sessionId: h.row.id, tenantId: h.row.tenantId, ...params },
       timestamp: new Date(),
       instanceId: h.row.id,
       workflowName: 'launch-session',
@@ -656,9 +657,10 @@ describe('reconcile (an idle session owing work its Workflow never started)', ()
 
   it('nothing owed — ready with no request, or a message to a blocked session — costs nothing', async () => {
     const h = await harness()
-    const ready = await idle(h, 3600)
+    // Quiet for 10 minutes: inside the idle window, so not overdue either (the next describe).
+    const ready = await idle(h, 600)
     expect(await reconcileSession(db, h.env, ready)).toEqual({ outcome: 'skipped' })
-    const blocked = await idle(h, 3600, { status: 'blocked', pendingMessage: 'go on' })
+    const blocked = await idle(h, 600, { status: 'blocked', pendingMessage: 'go on' })
     expect(await reconcileSession(db, h.env, blocked)).toEqual({ outcome: 'skipped' })
     expect(workflowOf(h).statusCalls).toEqual([])
   })
@@ -697,6 +699,175 @@ describe('reconcile (an idle session owing work its Workflow never started)', ()
     expect(settled).toBe(1)
     expect(workflowOf(h).created.map(c => c.id)).toEqual([`${owed.id}-r1`])
     expect((await reload(fresh)).instanceId).toBe(fresh.instanceId)
+  })
+})
+
+describe('reconcile (an idle session whose Workflow’s timer died — overdue idle)', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+  const secondsAgo = (n: number) => new Date(Date.now() - n * 1000)
+  const workflowOf = (h: Harness) => stubs(h.env).sessionWorkflow as RecordingWorkflow
+  const BOOT_ID = 'boot-before-the-reload'
+
+  /**
+   * A booted `ready` session whose Workflow decided to wait until `waitedUntil` minutes ago (a
+   * reload then killed the timer) — and whose preview was opened 30 s ago, which moves
+   * `last_activity_at` but must not keep it alive. Its container outlived the instance.
+   */
+  async function asleepInName(h: Harness, set: Partial<SessionRow> = {}) {
+    const cfg = loadConfig(h.env)
+    await patch(h.row, {
+      status: 'ready',
+      instanceId: h.row.id,
+      turnCount: 1,
+      baseSha: BASE_SHA,
+      sandboxId: h.sandbox().id,
+      dbUriSealed: await encryptToken(
+        cfg,
+        'postgresql://session_owner:pw@ep-x.us-east-2.aws.neon.tech/session_app'
+      ),
+      waitingUntil: minutesAgo(20),
+      lastActivityAt: secondsAgo(30),
+      ...set,
+    })
+    h.sandbox().files.set(SESSION_BOOT_MARKER, BOOT_ID)
+    return reload(h.row)
+  }
+  /** At the first wait: note the row, then End so the run finishes. */
+  const endOnFirstWait = (h: Harness, seen: { row?: SessionRow }) => async () => {
+    seen.row ??= await reload(h.row)
+    await patch(h.row, { requestedAction: 'end' })
+    return WAKE
+  }
+
+  it('the cron sweep: a ready session 20 minutes past its wait, opened in the preview 30 s ago — terminated, salvaged and left ASLEEP (no resume)', async () => {
+    const h = await harness()
+    const row = await asleepInName(h)
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'running' })
+
+    expect(await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })).toBe(1)
+    expect(wf.terminated).toEqual([row.id])
+    expect(wf.created).toEqual([
+      {
+        id: `${row.id}-r1`,
+        params: { sessionId: row.id, tenantId: row.tenantId, salvage: 'suspend' },
+      },
+    ])
+    // Claimed: the clock it was judged by is cleared, so the next sweep finds nothing overdue.
+    const claimed = await reload(row)
+    expect(claimed).toMatchObject({ status: 'ready', waitingUntil: null })
+    expect(await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })).toBe(0)
+
+    const seen: { row?: SessionRow } = {}
+    const run = await drive(h, endOnFirstWait(h, seen), FAST, {}, { salvage: 'suspend' })
+    expect(run.names.slice(0, 3)).toEqual(['claim', 'salvage', 'inspect#0'])
+    expect(run.names).not.toContain('resume#0')
+    // Asleep with its container kept warm, and nothing asked of it: the page offers Resume.
+    expect(seen.row).toMatchObject({ status: 'suspended', requestedAction: null })
+    expect(seen.row?.containerKeptAt).toBeInstanceOf(Date)
+    // The suspended wait is recorded too (its expiry or warm window).
+    expect(seen.row?.waitingUntil?.getTime()).toBeGreaterThan(Date.now())
+  })
+
+  it('GET on open by someone who drives it: the same rescue, but it comes back — a warm resume, then a fresh wait recorded', async () => {
+    const h = await harness()
+    const row = await asleepInName(h)
+    const wf = workflowOf(h)
+    wf.setStatus(row.id, { status: 'running' })
+
+    const res = await request(`/api/sessions/${row.id}`, { headers: h.f.cookie }, { env: h.env })
+    expect(res.status).toBe(200)
+    expect(wf.terminated).toEqual([row.id])
+    expect(wf.created.map(c => c.params)).toEqual([
+      { sessionId: row.id, tenantId: row.tenantId, salvage: 'resume' },
+    ])
+    const [audit] = (
+      await db
+        .select({ action: auditEvents.action, summary: auditEvents.summary })
+        .from(auditEvents)
+        .where(and(eq(auditEvents.tenantId, row.tenantId), eq(auditEvents.targetId, row.id)))
+    ).filter(a => a.action === 'session.reconciled')
+    expect(audit?.summary).toMatchObject({
+      after: { overdue: 'idle', basis: 'wait', salvage: 'resume', instanceStatus: 'running' },
+    })
+
+    const seen: { row?: SessionRow } = {}
+    const run = await drive(h, endOnFirstWait(h, seen), FAST, {}, { salvage: 'resume' })
+    expect(run.names.slice(0, 7)).toEqual([
+      'claim',
+      'salvage',
+      'inspect#0',
+      'resume#0',
+      'sandbox.start#1',
+      'dev#1',
+      'inspect#1',
+    ])
+    expect(seen.row?.status).toBe('ready')
+    // `inspect#1` recorded the idle wait it began: 30 minutes (the default policy) from now.
+    const until = seen.row?.waitingUntil?.getTime() ?? 0
+    expect(until).toBeGreaterThan(Date.now() + 25 * 60_000)
+    expect(until).toBeLessThanOrEqual(Date.now() + 30 * 60_000 + 1000)
+  })
+
+  it('not overdue yet: a wait still pending, or past due by less than the grace, is never disturbed', async () => {
+    const h = await harness()
+    const wf = workflowOf(h)
+    // A healthy instance mid-wait: its deadline is ahead, however old the last activity looks.
+    const pending = await asleepInName(h, {
+      waitingUntil: new Date(Date.now() + 10 * 60_000),
+      lastActivityAt: minutesAgo(25),
+    })
+    wf.setStatus(pending.id, { status: 'waiting' })
+    expect(await reconcileSession(db, h.env, pending)).toEqual({ outcome: 'skipped' })
+    // Its timer fired 5 minutes ago and the suspend's checkpoint is still running.
+    const late = await asleepInName(h, { waitingUntil: minutesAgo(5) })
+    expect(await reconcileSession(db, h.env, late, { overdueIdle: 'resume' })).toEqual({
+      outcome: 'skipped',
+    })
+    // No wait recorded (a row from before `waiting_until`): judged by the idle policy instead.
+    const legacy = await asleepInName(h, { waitingUntil: null, lastActivityAt: minutesAgo(35) })
+    expect(await reconcileSession(db, h.env, legacy)).toEqual({ outcome: 'skipped' })
+    expect(await reconcileStaleSessions(db, h.env, { tenantIds: [h.f.tenant.id] })).toBe(0)
+    expect(wf.statusCalls).toEqual([])
+    expect(wf.terminated).toEqual([])
+    expect(wf.created).toEqual([])
+  })
+
+  it('no wait recorded and quiet past the idle window plus the grace: restarted to sleep', async () => {
+    const h = await harness()
+    const row = await asleepInName(h, { waitingUntil: null, lastActivityAt: minutesAgo(45) })
+    const result = await reconcileSession(db, h.env, row)
+    expect(result).toMatchObject({
+      outcome: 'settled',
+      status: 'ready',
+      instanceStatus: 'not found',
+      restartedAs: `${row.id}-r1`,
+    })
+    expect(workflowOf(h).created.map(c => c.params)).toEqual([
+      { sessionId: row.id, tenantId: row.tenantId, salvage: 'suspend' },
+    ])
+  })
+
+  it('past maxSessionHours: never resumed, even on open — the fresh instance salvages and ENDS it', async () => {
+    const h = await harness()
+    // Kept "active" by the preview, with no wait recorded: only its age gives it away.
+    const row = await asleepInName(h, {
+      createdAt: minutesAgo(9 * 60),
+      waitingUntil: null,
+      lastActivityAt: minutesAgo(5),
+    })
+    workflowOf(h).setStatus(row.id, { status: 'running' })
+    const res = await request(`/api/sessions/${row.id}`, { headers: h.f.cookie }, { env: h.env })
+    expect(res.status).toBe(200)
+    expect(workflowOf(h).terminated).toEqual([row.id])
+    expect(workflowOf(h).created.map(c => c.params)).toEqual([
+      { sessionId: row.id, tenantId: row.tenantId, salvage: 'suspend' },
+    ])
+
+    const run = await drive(h, noWait, FAST, {}, { salvage: 'suspend' })
+    expect(run.names.slice(0, 4)).toEqual(['claim', 'salvage', 'inspect#0', 'end#0'])
+    expect(run.names).toContain('cleanup')
+    expect(await reload(row)).toMatchObject({ status: 'ended' })
   })
 })
 

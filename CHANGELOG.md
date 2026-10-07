@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A session whose idle timer died no longer sits "Ready" for ever.** A `wrangler dev` reload
+  could kill the Workflow's idle wait, so the 30-minute suspend never came and the page showed
+  Ready, End and Ship over a preview spinning on a sleeping container (one session for 18 hours).
+  The Workflow now records when each idle wait ends (`sessions.waiting_until`, migration 0047 —
+  run `pnpm db:migrate`), which opening the preview cannot move, and a `ready` or `blocked`
+  session more than 10 minutes past it (or past `maxSessionHours`) is rescued like owed work: the
+  dead instance is terminated and a fresh one saves the work and keeps the container warm. Opened
+  by someone who drives it, it comes straight back; found by the five-minute sweep, it is left
+  asleep with Resume on the page; past `maxSessionHours` it ends. The preview pane also stops
+  spinning after 30 seconds: "The preview isn't answering", with Reload.
 - **Shipping replaces the preview with a plain-language timeline** (issue #22). While a session
   ships — the gate, the pull request, its checks, a review, the release and the staging deploy —
   the preview pane shows one ordered timeline instead: checking your change (lint, types and tests

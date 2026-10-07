@@ -330,6 +330,13 @@
       "when": 1791288987746,
       "tag": "0046_launch-app-prebuilds",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791350901144,
+      "tag": "0047_launch-session-waiting-until",
+      "breakpoints": true
     }
   ]
 }

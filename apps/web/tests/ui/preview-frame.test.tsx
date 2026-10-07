@@ -6,7 +6,11 @@
  */
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PreviewFrame, screenshotViewport } from '@/ui/pages/sessions/components/PreviewFrame'
+import {
+  PREVIEW_LOAD_DEADLINE_MS,
+  PreviewFrame,
+  screenshotViewport,
+} from '@/ui/pages/sessions/components/PreviewFrame'
 import { renderWithProviders, stubFetch } from './helpers/renderWithProviders'
 import { SESSION_ID, sessionRow } from './helpers/sessions'
 
@@ -123,5 +127,47 @@ describe('PreviewFrame and the preview bridge', () => {
     )
     expect(bodies[2]).toEqual({ path: '/settings' })
     expect(address().textContent).toBe(`${HOST}/settings`)
+  })
+})
+
+describe('PreviewFrame’s load deadline', () => {
+  it('a frame that has not loaded after 30 s stops spinning and offers Reload; a load clears it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderFrame()
+      const frame = await screen.findByTitle('App preview')
+      expect(screen.getByText('Loading the preview…')).toBeInTheDocument()
+      expect(screen.queryByText("The preview isn't answering")).toBeNull()
+
+      act(() => {
+        vi.advanceTimersByTime(PREVIEW_LOAD_DEADLINE_MS - 1000)
+      })
+      expect(screen.getByText('Loading the preview…')).toBeInTheDocument()
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(screen.getByText("The preview isn't answering")).toBeInTheDocument()
+      expect(screen.queryByText('Loading the preview…')).toBeNull()
+      // The frame stays underneath, so a late answer still shows.
+      expect(frame).toBeInTheDocument()
+
+      // Reload asks for a fresh grant and starts the deadline again.
+      fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+      await waitFor(() =>
+        expect(screen.getByTitle('App preview').getAttribute('src')).toMatch(/g=2$/)
+      )
+      expect(screen.getByText('Loading the preview…')).toBeInTheDocument()
+      expect(screen.queryByText("The preview isn't answering")).toBeNull()
+
+      // A load that lands before the deadline: no spinner, and no stall after it.
+      fireEvent.load(screen.getByTitle('App preview'))
+      act(() => {
+        vi.advanceTimersByTime(PREVIEW_LOAD_DEADLINE_MS * 2)
+      })
+      expect(screen.queryByText('Loading the preview…')).toBeNull()
+      expect(screen.queryByText("The preview isn't answering")).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

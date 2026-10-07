@@ -154,10 +154,17 @@ export const SESSION_WAKE_EVENT = 'session_wake'
  * `SESSION_WORKFLOW.create({ id, params })` — one instance per session (id = the session id,
  * `<id>-rN` after a restart; a prepare run is a session row of kind `prepare`). Ids only: the
  * Workflow re-reads everything else from the row, so a retried step sees what is true now.
+ *
+ * `salvage` is the one exception, and only on a reconcile's restart: what the fresh instance's
+ * `salvage` step asks for once the container is saved — `resume` (absent: the default, so the
+ * session comes straight back) or `suspend` (it stays asleep until someone presses Resume). The
+ * cron restarting an overdue idle session nobody is looking at passes `suspend`
+ * (`services/sessions/reconcile.ts`).
  */
 export const sessionWorkflowParamsSchema = z.object({
   sessionId: z.string().uuid(),
   tenantId: z.string().uuid(),
+  salvage: z.enum(['resume', 'suspend']).optional(),
 })
 export type SessionWorkflowParams = z.infer<typeof sessionWorkflowParamsSchema>
 

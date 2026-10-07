@@ -45,6 +45,7 @@ import {
   type SessionAction,
   type SessionPolicy,
   type SessionStatus,
+  type SessionWorkflowParams,
   sessionBranchName,
 } from '@launch/shared/launch-sessions'
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
@@ -181,21 +182,25 @@ export async function wakeOrRestart(
 /**
  * Start a fresh instance (`<id>-rN`) for `session` and record its id — without waking the old one
  * first. What `wakeOrRestart` falls back to, and what the reconcile (`reconcile.ts`) uses after it
- * terminated an instance that was alive in name only.
+ * terminated an instance that was alive in name only. `options.salvage` is what the fresh
+ * instance's salvage asks for (`SessionWorkflowParams`); absent, a resume.
  */
 export async function restartSessionInstance(
   db: Database,
   workflow: Workflow,
-  session: SessionRow
+  session: SessionRow,
+  options: { salvage?: SessionWorkflowParams['salvage'] } = {}
 ): Promise<SessionRow> {
   let lastError: unknown
   let candidate = nextSessionInstanceId(session.id, session.instanceId)
+  const params: SessionWorkflowParams = {
+    sessionId: session.id,
+    tenantId: session.tenantId,
+    ...(options.salvage ? { salvage: options.salvage } : {}),
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const instance = await workflow.create({
-        id: candidate,
-        params: { sessionId: session.id, tenantId: session.tenantId },
-      })
+      const instance = await workflow.create({ id: candidate, params })
       const [updated] = await db
         .update(sessions)
         .set({ instanceId: instance.id })
