@@ -1,7 +1,7 @@
 /**
  * One connection (or one credential that is not a step — the Anthropic and OpenAI keys, §18.22-B):
  * a card with its title, what it is for and its status dot. Each connection is its own page under
- * Settings → Connections; the `id` stays an anchor (`setup-<id>`) so a card can still be linked.
+ * Settings → Platform; the `id` stays an anchor (`setup-<id>`) so a card can still be linked.
  */
 import type { SetupStepId, SetupStepStatus } from '@launch/shared/launch-setup'
 import type { ReactNode } from 'react'

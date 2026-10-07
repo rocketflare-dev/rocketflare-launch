@@ -242,7 +242,7 @@ needs, beyond the bindings above:
   its own `LAUNCH_DOMAIN` (`docs/DEPLOYMENT.md` § 8).
 - **Secrets.** No new Worker secret: the Anthropic key is Settings → Coding agents' `anthropic_api_key`
   credential, falling back to `ANTHROPIC_API_KEY`. The GitHub App needs `checks: read` and
-  `statuses: read` on top of P2's permissions (the Connections → GitHub check fails without them).
+  `statuses: read` on top of P2's permissions (the Platform → GitHub check fails without them).
 - **Egress.** `SESSION_EGRESS` in `[vars]` (both tomls, and the sandbox host's) picks the mode.
   `allowlist` (missing = this): internet OFF and an allow-list (`registry.npmjs.org`, `github.com`,
   `codeload.github.com`, `api.anthropic.com`, plus the session's Neon endpoint). `open` (what the

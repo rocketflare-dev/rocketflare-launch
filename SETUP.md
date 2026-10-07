@@ -171,7 +171,7 @@ pnpm seed --demo      # the same, plus each installed plugin's demo data (what t
 for `invited@example.test`, the global admin `admin@clewro.com` and one API key. Launch runs
 `TENANCY_MODE=single` (`.dev.vars`), so the one tenant is named after `APP_NAME` with slug
 `default`, and `admin@clewro.com` is also its owner; under `multi` it is `Acme` (`acme`). In single
-mode `owner@` and `admin@example.test` reach Settings → Connections on their role alone. `--demo` additionally runs every installed plugin's
+mode `owner@` and `admin@example.test` reach Settings → Platform on their role alone. `--demo` additionally runs every installed plugin's
 `seedDemo` hook — the analytics plugin seeds its dashboards and rebuilds its fact table. Every demo
 row has a fixed id and is inserted `onConflictDoNothing`, so re-running adds nothing. Local
 database only — it is a `tsx` script over `DATABASE_URL`.
@@ -316,7 +316,7 @@ Webhook URL at `<the tunnel URL>/api/github/webhook` and set its secret as `GITH
 
 **Creating apps needs it.** The scaffold and deploy jobs run on GitHub and call Launch back at
 `APP_URL`, so `POST /api/apps` refuses with 409 `launch_not_reachable` while Launch is at
-`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Settings → Connections →
+`http://localhost:3000`. With the tunnel up and `pnpm dev` restarted, open Settings → Platform →
 Public URL (`/settings/public-url`; Home's "Finish setting up Launch" links it) and click "Check now": Launch fetches its own `/ci/ping` through the tunnel and the step
 turns green.
 Verify: the printed `https://…` host opens the app; `/auth/methods` there reports the same providers
@@ -421,7 +421,7 @@ with nobody to approve it (Launch's tomls set `SIGNUP_MODE=approval`; the kit de
 `invite_only`).
 
 **Where setup lives.** Everything is under the one **Settings** item in the sidebar. Launch's
-credentials and domain are **Settings → Connections** — one page each: Domain, Cloudflare, Neon,
+credentials and domain are **Settings → Platform** — one page each: Domain, Cloudflare, Neon,
 GitHub, Email (Resend), Sign-in (the upstream identity provider and the OIDC issuer's keys) and
 Public URL, each with its status dot in the menu (`/settings/domain`, `/cloudflare`, `/neon`,
 `/github`, `/email`, `/sign-in`, `/public-url`). The kit pin is **Settings → Kit version**, the
@@ -444,7 +444,7 @@ Launch's pin. Apps already launched keep their kit; a re-scaffold uses the pin a
 Verify: the card shows the tag (or `Unreleased commit`) with the short SHA you pinned, and for
 Follow latest "Checked …" and "Latest".
 
-**The GitHub App's Administration permission also writes rulesets.** Connections → GitHub already requires
+**The GitHub App's Administration permission also writes rulesets.** Platform → GitHub already requires
 Repository › Administration: write (environments). From issue #5 Launch uses it for one more thing:
 it protects each app's default branch with a repository ruleset named `launch` — `Gate` (the kit's
 CI job) required, pull requests only, no force-push or deletion, and the App itself allowed to
@@ -642,7 +642,7 @@ themes and logo are still the kit's.
 fresh clone: fill one git-ignored file at the repo root (`launch.deploy.env`, from
 `launch.deploy.env.example`), then type **`/launch-deploy`** in Claude Code or run
 `pnpm provision all`. It creates the GitHub App, the Neon project, the Cloudflare resources, the
-DNS, deploys, puts every Worker secret and writes the Connections credentials, pausing before each
+DNS, deploys, puts every Worker secret and writes the Platform credentials, pausing before each
 paid step under the skill. An instance never touches the committed tomls: its ids live in
 `.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
 `wrangler.toml`. Updating it is a rerun. `pnpm provision --help` lists the phases.

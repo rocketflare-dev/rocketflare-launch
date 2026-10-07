@@ -45,7 +45,7 @@ export interface SettingsSection {
   /** Absolute path; the section owns it and everything under it. */
   path: string
   guard: NavGuard
-  /** A Connections page: its setup step, whose status dot the menu shows. */
+  /** A Platform page: its setup step, whose status dot the menu shows. */
   step?: SetupStepId
   /** People: the pending access-request count rides on it. */
   badge?: 'accessRequests'
@@ -137,7 +137,7 @@ export function settingsGroups({
       ],
     },
     {
-      label: 'Connections',
+      label: 'Platform',
       sections: CONNECTION_ORDER.map(step => ({
         id: `connection:${step}` as const,
         label: CONNECTION_LABELS[step],

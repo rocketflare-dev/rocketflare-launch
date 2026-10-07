@@ -164,7 +164,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   hidden, not disabled. `useAuth().logout` follows a `200 { endSessionUrl }` with `hardNavigate`,
   else lands on `/login?signedOut=1`. `settings/SettingsLayout.tsx`
   is EVERY setting (`/settings/*`, see "Settings" below); `admin/` (Users, Feature flags, All
-  sessions, Organisations) and `platform/` (Connections via `Connection.tsx` + `setup/` cards, Kit,
+  sessions, Organisations) and `platform/` (Platform via `Connection.tsx` + `setup/` cards, Kit,
   Coding agents, the issuer keys in `Identity.tsx`, Access requests) are the pages it mounts —
   they keep their directories, no longer their own layouts; `chat/ChatPage.tsx` is
   `/chat/:conversationId?` (D17, guard `read Conversation`, lazy — its chunk carries the markdown
@@ -214,7 +214,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
 - No active tenant → `noTenantRoute(session)`: access request → `/pending`; memberships →
   `/select-tenant`; `signupMode === 'approval'` → `/pending`; else `/no-access`. Exception: a
   global admin opens `/settings/*` (and the old `/admin/*`) with no membership (the bootstrap admin
-  must be able to approve the first request and finish the Connections), and `/pending` /
+  must be able to approve the first request and finish the Platform settings), and `/pending` /
   `/no-access` show them an "Open Settings" link. In that state `useNavGuard` allows ONLY
   `'globalAdmin'` and `'platformAdmin'` guards (every tenant page and Settings section hides),
   `OrgSwitcher` reads "No organisation", `NotificationsBell` and the Profile / Notifications
@@ -544,7 +544,7 @@ A `CUSTOM kit.notice` renders
     Approval policies (`admin` + `manage ApprovalPolicy`), API keys (`admin`)
   - **Building apps** — Coding agents (`platformAdmin`), AI & models (`admin`; tabs Providers and
     Agent models, `+ manage AiConfig`), Prompts (`admin`), Kit version (`platformAdmin`)
-  - **Connections** (`platformAdmin`) — Domain, Cloudflare, Neon, GitHub, Email, Sign-in, Public URL:
+  - **Platform** (`platformAdmin`) — Domain, Cloudflare, Neon, GitHub, Email, Sign-in, Public URL:
     one `platform/Connection.tsx` told its `step`, reusing the `setup/` cards; Sign-in is the
     upstream `IdentityCard` plus `Identity.tsx`'s issuer keys. The menu shows each one's `StatusDot`
     from `useSetupOverview` (fetched only for a platform admin)
@@ -597,7 +597,7 @@ A `CUSTOM kit.notice` renders
   releases, so a release that failed before any deploy shows on the app page, not here.
   `UiPlugin.homeLinks` render last as one line of links. Tests: `home`, `app-thumbnails`.
 - **"Finish setting up Launch — n of 7 working"** (`home/SetupChecklistSection.tsx`, `platformAdmin`)
-  leads the page while any connection is unfinished: one row per connection in the Connections
+  leads the page while any connection is unfinished: one row per connection in the Platform
   menu's order — its dot (`aria-hidden`; the state is spelled out), its name linking to its
   Settings page, its state in words — from `setupChecklist(steps)` in `homeModel.ts`. A `warning`
   counts as done (magic-link-only sign-in is a choice), so the section can go away; it renders

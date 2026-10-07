@@ -261,7 +261,7 @@ describe('Home — finish setting up Launch', () => {
         name: 'Finish setting up Launch — 3 of 7 working',
       })
     ).toBeInTheDocument()
-    const list = screen.getByRole('list', { name: 'Connections' })
+    const list = screen.getByRole('list', { name: 'Platform' })
     const rows = within(list).getAllByRole('listitem')
     expect(rows.map(row => within(row).getByRole('link').textContent)).toEqual([
       'Domain',

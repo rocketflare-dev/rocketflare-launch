@@ -61,10 +61,10 @@ import {
   type SetupStep,
   type SetupStepStatus,
 } from '@launch/shared/launch-setup'
-import { inArray } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray } from 'drizzle-orm'
 import { type AppConfig, hasOidc, isOidcOnly } from '../../../config'
 import type { Database } from '../../../db/client'
-import { users } from '../../../db/schema'
+import { apps, users } from '../../../db/schema'
 import { configuredProviders } from '../../auth/providers'
 import { NotFoundError } from '../../utils/core/errors'
 import { type SandboxHostBindings, sessionSandboxStatus } from '../sessions/sandbox-host'
@@ -244,15 +244,15 @@ export async function checkCloudflare(
     }))
   )
 
-  checks.push(
-    warn(
-      'token.write',
-      'Write permissions',
-      'Write scope unverified: Launch cannot prove it may create Workers, KV, Queues, R2, DNS or routes without creating one. Check the token has Workers Scripts, KV, Queues, R2 and Workflows (Edit) on the account and DNS + Workers Routes (Edit) on the zone.'
-    )
-  )
+  // Not a warning: nothing the admin can do makes it provable short of a create, so it would sit
+  // amber for ever. `setupOverview` says "proven" once Launch has created an app with this token.
+  checks.push(ok('token.write', 'Write permissions', TOKEN_WRITE_UNPROVEN))
   return { checks, metadata, settings: {}, effects }
 }
+
+/** The write probe's detail until an app created with the token proves it (`withProvenWrite`). */
+export const TOKEN_WRITE_UNPROVEN =
+  "Proven when Launch creates its first app: a missing permission fails that launch with Cloudflare's error. The token needs Workers Scripts, KV, Queues, R2 and Workflows (Edit) on the account and DNS + Workers Routes (Edit) on the zone."
 
 /** The zone probes (spec/04): in this account, a proxied `*` record, routes readable. */
 async function checkZone(
@@ -433,10 +433,11 @@ export async function checkNeon(
 /**
  * `region`: never from `GET /regions` (see the header). A pinned id Launch knows is `ok`; one it
  * does not is a `warning` — Neon adds regions, and it validates the id itself on the first create.
- * Unset, it pins where most of the org's projects are, else `DEFAULT_NEON_REGION`, and warns
- * either way so the admin looks before the first app (S3: the implicit default moves).
+ * Unset, it pins where most of the org's projects are, else `DEFAULT_NEON_REGION` (S3: the implicit
+ * default moves), and says so — `ok`, because the pin IS the choice and the page's select changes
+ * it. The overview re-reads this probe from the current setting (`withCurrentRegion`).
  */
-function neonRegionCheck(
+export function neonRegionCheck(
   pinned: string | null,
   projects: readonly NeonProject[],
   discovered: CheckOutcome['settings']
@@ -457,12 +458,12 @@ function neonRegionCheck(
   discovered.neon_region_id = regionId
   const name = neonRegionLabel(regionId)
   const where = name ? `${regionId} (${name})` : regionId
-  return warn(
+  return ok(
     'region',
     label,
     common
-      ? `Pinned ${where}, where ${common.count} of the org's ${projects.length} projects are. Change it before the first app if your apps belong elsewhere.`
-      : `Pinned ${where}, Neon's default for new projects — the org has no project to learn a region from. Change it before the first app if your apps belong elsewhere.`
+      ? `${where}, where ${common.count} of the org's ${projects.length} projects are. Change it above if your apps belong elsewhere.`
+      : `${where}, Neon's default for new projects. Change it above if your apps belong elsewhere.`
   )
 }
 
@@ -765,14 +766,15 @@ export function identityStatus(cfg: AppConfig): SetupIdentity {
       }
     : null
   const checks: CredentialCheck[] = []
+  // Magic link alone is a valid choice, not a fault: `ok` either way, the detail says which.
   checks.push(
-    providers.length > 0
-      ? ok('providers', 'Single sign-on configured', providers.join(', '))
-      : warn(
-          'providers',
-          'Single sign-on configured',
-          'No SSO provider: people sign in by magic link only. Set GOOGLE_*, MICROSOFT_* or OIDC_* on the Worker.'
-        )
+    ok(
+      'providers',
+      'Sign-in methods',
+      providers.length > 0
+        ? `Magic link and ${providers.join(', ')}`
+        : 'Magic link only. Single sign-on (Google, Microsoft or any OIDC issuer) is optional: SETUP.md 2.3b.'
+    )
   )
   if (oidc) {
     checks.push(
@@ -944,8 +946,62 @@ export function stepStatuses(
   })
 }
 
+/** The newest app Launch created (and got live) since `since` — proof the token could write. */
+async function appCreatedSince(
+  db: Database,
+  tenantId: string,
+  since: Date
+): Promise<string | null> {
+  const [row] = await db
+    .select({ name: apps.displayName })
+    .from(apps)
+    .where(
+      and(
+        eq(apps.tenantId, tenantId),
+        eq(apps.source, 'created'),
+        eq(apps.status, 'live'),
+        gte(apps.createdAt, since)
+      )
+    )
+    .orderBy(desc(apps.createdAt))
+    .limit(1)
+  return row?.name ?? null
+}
+
 /**
- * Everything the Settings pages over the setup API render (Connections, Coding agents, Kit
+ * Two stored probes re-read at overview time, so a result stored before a change (or by an older
+ * Launch that warned on them) never leaves a dot amber for something already settled: Neon's
+ * `region` follows the current pinned setting, and Cloudflare's `token.write` says "proven" once
+ * an app created with the token went live. The credential's status is re-derived from its probes.
+ */
+export function withLiveFacts(
+  credentials: SetupCredential[],
+  settings: SetupSettings,
+  provenBy: string | null
+): SetupCredential[] {
+  return credentials.map(credential => {
+    if (!credential.lastCheck) return credential
+    const lastCheck = credential.lastCheck.map(check => {
+      if (credential.kind === 'neon_org_api_key' && check.id === 'region') {
+        const pinned = settings.neon_region_id
+        const known = pinned ? neonRegionLabel(pinned) : null
+        return pinned && known ? ok('region', check.label, `${pinned} — ${known}`) : check
+      }
+      if (credential.kind === 'cloudflare_api_token' && check.id === 'token.write') {
+        return ok(
+          'token.write',
+          check.label,
+          provenBy ? `Proven: Launch created ${provenBy} with this token.` : TOKEN_WRITE_UNPROVEN
+        )
+      }
+      return check
+    })
+    return { ...credential, lastCheck, lastCheckStatus: overallCheckStatus(lastCheck) }
+  })
+}
+
+/**
+ * Everything the Settings pages over the setup API render (Platform, Coding agents, Kit
  * version). `tenantId` is the organisation the admin acts for (the session's, else the
  * deployment's one) — only the Coding agents card's count of connected
  * personal accounts reads it; without one that count is 0.
@@ -957,7 +1013,7 @@ export async function setupOverview(
   /** The Worker's bindings — what the Session sandbox section's availability is read from. */
   env?: SandboxHostBindings
 ): Promise<SetupOverview> {
-  const [settings, credentials, publicUrl, templatePin, sessionSandbox] = await Promise.all([
+  let [settings, credentials, publicUrl, templatePin, sessionSandbox] = await Promise.all([
     readSettings(db),
     setupCredentials(db),
     publicUrlOverview(db, cfg),
@@ -966,6 +1022,10 @@ export async function setupOverview(
   ])
   const sessionAgents = await sessionAgentsStatus(db, cfg, credentials, tenantId)
   const identity = identityStatus(cfg)
+  const cloudflare = credentials.find(c => c.kind === 'cloudflare_api_token')
+  const provenBy =
+    tenantId && cloudflare?.setAt ? await appCreatedSince(db, tenantId, cloudflare.setAt) : null
+  credentials = withLiveFacts(credentials, settings, provenBy)
   return {
     steps: stepStatuses(settings, credentials, identity, publicUrl),
     publicUrl,

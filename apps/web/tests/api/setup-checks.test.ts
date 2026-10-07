@@ -26,6 +26,7 @@ import {
   mostCommonRegion,
   scrub,
   stepStatuses,
+  withLiveFacts,
 } from '@/api/services/launch/setup'
 import { loadConfig } from '@/config'
 import {
@@ -61,7 +62,7 @@ const byId = (checks: { id: string; status: string }[]) =>
   Object.fromEntries(checks.map(c => [c.id, c.status]))
 
 describe('checkCloudflare', () => {
-  it('passes every probe on a correct account, and reports write scope as unverified', async () => {
+  it('passes every probe on a correct account, and says write scope is proven by the first app', async () => {
     const fake = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
     const out = await checkCloudflare({ apiToken: TOKEN }, settings, { fetch: fake.fetch })
     expect(byId(out.checks)).toEqual({
@@ -73,8 +74,10 @@ describe('checkCloudflare', () => {
       'zone.account': 'ok',
       'zone.wildcard': 'ok',
       'zone.routes': 'ok',
-      'token.write': 'warning',
+      'token.write': 'ok',
     })
+    // Not provable without creating something, so not a warning nobody can clear.
+    expect(out.checks.find(c => c.id === 'token.write')?.detail).toContain('first app')
     expect(out.metadata).toMatchObject({
       accountId: ACCOUNT_ID,
       tokenId: 'tok123',
@@ -275,7 +278,7 @@ describe('checkNeon', () => {
       ...neonProjects('aws-eu-central-1', 'aws-us-east-2', 'aws-eu-central-1'),
     })
     const out = await checkNeon({ apiKey: KEY }, {}, { fetch: fake.fetch })
-    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'warning' })
+    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'ok' })
     expect(out.settings).toEqual({
       neon_org_id: 'org-test-12345',
       neon_region_id: 'aws-eu-central-1',
@@ -288,7 +291,7 @@ describe('checkNeon', () => {
     ])
   })
 
-  it("pins Neon's default for new projects when the org has none, with a warning", async () => {
+  it("pins Neon's default for new projects when the org has none, and says so", async () => {
     const fake = fakeVendorFetch({
       ...happyVendors({ domain: DOMAIN, org: ORG }),
       ...neonProjects(),
@@ -298,11 +301,9 @@ describe('checkNeon', () => {
       { neon_org_id: 'org-test-12345' },
       { fetch: fake.fetch }
     )
-    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'warning' })
+    expect(byId(out.checks)).toEqual({ 'projects.list': 'ok', org: 'ok', region: 'ok' })
     expect(out.settings).toEqual({ neon_region_id: DEFAULT_NEON_REGION })
-    expect(out.checks.find(c => c.id === 'region')?.detail).toContain(
-      'Change it before the first app'
-    )
+    expect(out.checks.find(c => c.id === 'region')?.detail).toContain("Neon's default")
     expect(fake.calls.some(c => c.url.includes('/regions'))).toBe(false)
   })
 
@@ -605,6 +606,75 @@ describe('identity and steps', () => {
     expect(identity.checks.find(c => c.id === 'providers')?.status).toBe('ok')
     expect(identity.oidc).toBeNull()
     expect(JSON.stringify(identity)).not.toContain('test_google_client_secret')
+  })
+
+  it('reads magic link alone as a choice, not a fault', () => {
+    const cfg = loadConfig(
+      createTestEnv({
+        GOOGLE_CLIENT_ID: '',
+        GOOGLE_CLIENT_SECRET: '',
+        MICROSOFT_CLIENT_ID: '',
+        MICROSOFT_CLIENT_SECRET: '',
+      })
+    )
+    const identity = identityStatus(cfg)
+    expect(identity.providers).toEqual([])
+    expect(identity.checks.find(c => c.id === 'providers')).toMatchObject({
+      status: 'ok',
+      detail: expect.stringContaining('Magic link only'),
+    })
+  })
+
+  it('re-reads a stored region and write probe, so an old warning does not stick', () => {
+    const base = {
+      set: true,
+      setAt: new Date('2026-10-01'),
+      setByUserId: null,
+      setByEmail: null,
+      rotatedAt: null,
+      metadata: {},
+      lastCheckedAt: null,
+      lastCheckStatus: 'warning' as const,
+    }
+    const settings = {
+      apps_domain: DOMAIN,
+      cloudflare_account_id: ACCOUNT_ID,
+      neon_org_id: 'org-test-12345',
+      neon_region_id: 'aws-eu-central-1',
+      notifications_domain: null,
+      github_org: null,
+    }
+    const stored = [
+      {
+        ...base,
+        kind: 'cloudflare_api_token' as const,
+        lastCheck: [
+          { id: 'zone.account', label: 'z', status: 'ok' as const },
+          { id: 'token.write', label: 'Write permissions', status: 'warning' as const },
+        ],
+      },
+      {
+        ...base,
+        kind: 'neon_org_api_key' as const,
+        lastCheck: [{ id: 'region', label: 'Region pinned', status: 'warning' as const }],
+      },
+    ]
+    const [cloudflare, neon] = withLiveFacts(stored, settings, 'hola world')
+    expect(cloudflare).toMatchObject({ lastCheckStatus: 'ok' })
+    expect(cloudflare?.lastCheck?.[1]?.detail).toBe(
+      'Proven: Launch created hola world with this token.'
+    )
+    expect(neon?.lastCheckStatus).toBe('ok')
+    expect(neon?.lastCheck?.[0]?.detail).toContain('Frankfurt')
+
+    // An unknown pinned id keeps its stored warning; no proof keeps the "first app" note.
+    const [unproven, unknown] = withLiveFacts(
+      stored,
+      { ...settings, neon_region_id: 'aws-mars-1' },
+      null
+    )
+    expect(unproven?.lastCheck?.[1]?.detail).toContain('first app')
+    expect(unknown?.lastCheckStatus).toBe('warning')
   })
 
   it('derives each step from the settings and the stored checks', () => {

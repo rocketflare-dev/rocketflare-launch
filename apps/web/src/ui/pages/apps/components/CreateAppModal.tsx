@@ -44,7 +44,7 @@ export function notReachable(error: unknown): LaunchNotReachableDetails | null {
   return parsed.success ? parsed.data : { url: '', checks: [] }
 }
 
-/** Settings → Connections → Public URL, where the reachability check lives. */
+/** Settings → Platform → Public URL, where the reachability check lives. */
 export const PUBLIC_URL_SETUP_PATH = SETTINGS_PATHS.publicUrl
 
 /**

@@ -28,7 +28,7 @@ export const SETTINGS_PATHS = {
   agentModels: `${SETTINGS_PATH}/ai/agent-models`,
   prompts: `${SETTINGS_PATH}/prompts`,
   kit: `${SETTINGS_PATH}/kit`,
-  // Connections — one per setup step
+  // Platform — one per setup step
   domain: `${SETTINGS_PATH}/domain`,
   cloudflare: `${SETTINGS_PATH}/cloudflare`,
   neon: `${SETTINGS_PATH}/neon`,
@@ -61,7 +61,7 @@ export const pluginSettingsPath = (tabId: string) =>
  */
 export const SETTINGS_GUARD: NavGuard = { anyOf: ['admin', 'platformAdmin'] }
 
-/** Each setup step's Connections page, in the order the menu (and Home's checklist) lists them. */
+/** Each setup step's Platform page, in the order the menu (and Home's checklist) lists them. */
 export const CONNECTION_PATHS: Record<SetupStepId, string> = {
   domain: SETTINGS_PATHS.domain,
   cloudflare: SETTINGS_PATHS.cloudflare,

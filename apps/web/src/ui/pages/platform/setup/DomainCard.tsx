@@ -1,5 +1,5 @@
 /**
- * Connections → Domain: the dedicated apps domain (spec/04) and the notifications sending domain
+ * Platform → Domain: the dedicated apps domain (spec/04) and the notifications sending domain
  * beneath it. The zone itself is probed with the Cloudflare token, so this card shows the `zone.*`
  * probes from that credential's last check, and re-runs it after a change when a token is set.
  */

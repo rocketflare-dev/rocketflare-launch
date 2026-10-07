@@ -48,7 +48,7 @@ suites on vitest 4, §9 — never part of the gate).
   `role === 'owner'` check. The matrix lives in `apps/web/src/permissions/` (+ its `CLAUDE.md`).
 - **One admin in single mode: `canAdministerPlatform`.** Two surfaces administer more than one
   organisation's data. **`/api/platform/*`** is the DEPLOYMENT — in the UI the Settings sections
-  Connections, Coding agents and Kit version (credentials, apps domain, public URL, template pin —
+  Platform, Coding agents and Kit version (credentials, apps domain, public URL, template pin —
   every `launch_settings` / `admin_credentials` write), Sign-in's issuer keys and People's
   access-request queue. Its gate
   is `canAdministerPlatform(auth, config)` (`@launch/shared/permissions`, wrapped by
@@ -64,12 +64,12 @@ suites on vitest 4, §9 — never part of the gate).
   sessions — Settings' **Operator** group, shown only to global admins. Both are cookie-only (a
   tenant API key never passes), and a global admin with no membership reaches both (`/settings/*`
   needs no membership for them), so there is always someone to approve the first request and
-  finish the Connections. **The UI is ONE Settings** (§7): every section keeps exactly its API's
+  finish the Platform settings. **The UI is ONE Settings** (§7): every section keeps exactly its API's
   gate, and the menu lists only what the reader may open. A single-mode reviewer who is not a global admin approves only into
   their own organisation, and grants `owner` only as an owner. The first admin (a
   `BOOTSTRAP_ADMIN_EMAILS` address on a verified login, and the seed's platform admin) is the
   organisation's **owner** in single mode (`admitBootstrapAdmin`: created as it, joined as it, or
-  promoted to it), so the Connections are theirs on the tenant role, not only the global flag.
+  promoted to it), so the Platform pages are theirs on the tenant role, not only the global flag.
 - **Deleting a tenant has two halves.** The `tenantRef()` FK cascade removes everything in
   Postgres; the **`tenant.purge`** job (§5) removes the R2 prefix and runs each plugin's
   `onTenantDeleted`. The queue binding is checked *before* the `DELETE`.
@@ -294,7 +294,7 @@ re-uploads leave the old object; no listing endpoint, quotas or presigned URLs; 
   (`pages/settings/SettingsLayout.tsx`, paths in `lib/settings-paths.ts`, who sees what in the pure
   `settingsModel.ts`) is a grouped menu with a real path per section — **Organisation** (General,
   People = members + groups + access requests, Approval policies, API keys) · **Building apps**
-  (Coding agents, AI & models, Prompts, Kit version) · **Connections** (Domain, Cloudflare, Neon,
+  (Coding agents, AI & models, Prompts, Kit version) · **Platform** (Domain, Cloudflare, Neon,
   GitHub, Email, Sign-in, Public URL — each its own page, its setup dot in the menu) ·
   **Activity** (Audit, Usage) · **Operator** (global admins: Users, Feature flags, All sessions,
   and Organisations in multi mode) · **Plugins** (`UiPlugin.settingsTabs`). Each section keeps the
@@ -498,7 +498,7 @@ single gate, which `deploy.yml` calls.
 runs the same phases one at a time and pauses before each paid one: `check` (read-only, names only)
 → `github-app` (a manifest flow: the user clicks Create, then Install) → `email create` → `neon` →
 `cloudflare` → `migrate` → `route` (the proxied wildcard) → `render` → `deploy` (drain guard on a
-session-image change) → `secrets` → `setup` (the Connections settings and credentials, sealed with
+session-image change) → `secrets` → `setup` (the Platform settings and credentials, sealed with
 the instance key and audited) → `email verify`. The committed tomls stay templates: the ids live in
 `.launch/state.json` and every wrangler call uses `apps/web/wrangler.deploy.toml`, rendered from
 `wrangler.toml`. Idempotent, so rerunning `all` is how an instance is updated; a second instance
@@ -876,7 +876,7 @@ surfaced, unlike an awaited `recordAudit`.
 
 ### 18.2 Admin credentials and setup checks
 
-Settings → Connections (one page per step — `/settings/domain`, `/cloudflare`, `/neon`,
+Settings → Platform (one page per step — `/settings/domain`, `/cloudflare`, `/neon`,
 `/github`, `/email`, `/sign-in`, `/public-url`; `routes/setup.ts` at `/api/platform/setup`;
 `canAdministerPlatform` — a global admin, or in single mode the organisation's owner/admin, §1;
 the old wizard at `/settings/platform/setup` and `/admin/setup` redirects, a `#setup-<step>`
@@ -902,9 +902,9 @@ organization keys (404): a pinned id is checked against the static `NEON_REGIONS
 (`@launch/shared/launch-setup`; an unknown one is a warning, Neon validates it on the first
 create), and an unset one is pinned to where most of the org's projects already are, else
 `DEFAULT_NEON_REGION` (`aws-us-east-2`, Neon's default for a new project), with a warning either
-way. Connections → Neon offers the list as a select with an "Other…" free-text fallback.
+way. Platform → Neon offers the list as a select with an "Other…" free-text fallback.
 
-**The public URL (Connections → Public URL).** The scaffold job and every app's deploy job run on GitHub's runners
+**The public URL (Platform → Public URL).** The scaffold job and every app's deploy job run on GitHub's runners
 and call Launch BACK (`/ci/scaffold/*`, `/ci/deploy/*`) at the URL they were dispatched with —
 Launch's `APP_URL` (`issuerOf(cfg)`, the same value that is the jobs' OIDC audience, every app's
 `DEPLOYER_URL` and `OIDC_ISSUER`; under `pnpm dev` it is `.dev.vars`' `http://localhost:3000`,
@@ -917,7 +917,7 @@ expects the nonce back with an HMAC of it under its own `OAUTH_ENCRYPTION_KEY`, 
 hostname routes to THIS Launch (through the tunnel locally), not merely to something. A wrong
 proof or a non-ping answer fails; unreachable fails under `APP_ENV=development` and is a
 `warning` in a deployment (see the gap). The result is stored as `launch_settings.public_url_check`
-for the URL it ran against. Its Connections page shows it (the static half alone until someone clicks
+for the URL it ran against. Its Platform page shows it (the static half alone until someone clicks
 "Check now", `POST /api/platform/setup/public-url/check`, audited `public_url.checked`; the overview
 still never probes). **The gate**: `POST /api/apps`, a create run's retry and "Deploy to
 production" call `requirePublicUrl` first and refuse with 409 `launch_not_reachable` (`details`:
@@ -925,9 +925,17 @@ the URL and the probes) — before any write. It reuses a passing result for 10 
 failing one for 30 seconds (so starting the tunnel shows up quickly), and probes again otherwise;
 a static failure never probes. The Create modal shows the reason and links to the step.
 
-**Known gaps:** Cloudflare write scope is a standing `warning` — nothing proves it short of
-creating a Worker; `NEON_REGIONS` is a hand-kept list (a region Neon adds later is only a
-warning until it is added); saving the apps domain through the API alone (not Connections → Domain)
+**A warning is something to act on.** A setting that is a choice (magic link as the only sign-in,
+the auto-pinned Neon region) or a fact Launch cannot test (Cloudflare write scope) is `ok` with a
+detail saying so, never a dot that stays amber for ever. The overview re-reads two stored probes
+(`withLiveFacts`): Neon's `region` follows the current pinned setting, and Cloudflare's
+`token.write` reads "Proven: Launch created <app> with this token" once a created app went live
+since the token was set.
+
+**Known gaps:** Cloudflare write scope is only proven by the first app's create (a missing
+permission fails that launch with Cloudflare's error) — the token's policies are not readable
+without an extra API Tokens Read grant; `NEON_REGIONS` is a hand-kept list (a region Neon adds later is only a
+warning until it is added); saving the apps domain through the API alone (not Platform → Domain)
 does not re-check, so the wildcard is created on the next save or check; checks run only when a credential is saved or re-checked, not on a schedule;
 one row per kind for the whole deployment, so a suite that needs credentials mocks the module
 over an in-memory store (`tests/helpers/credential-store.ts`) rather than racing the setup suite.
@@ -955,7 +963,7 @@ APP_URL`, since Launch's own `OIDC_*` is its UPSTREAM login). Public, outside `/
 - **Keys** (`services/oidc/keys.ts`): `next → active → retiring → retired`; the next key is
   published before it signs, a retiring one stays in the JWKS until the longest token plus a
   cache margin has passed. Private JWKs are sealed; `/api/platform/oidc` lists and rotates
-  (`oidc.key.rotated`) — Settings → Connections → Sign-in, below the upstream identity provider,
+  (`oidc.key.rotated`) — Settings → Platform → Sign-in, below the upstream identity provider,
   `canAdministerPlatform` (§1).
 - **Access policy** (`services/oidc/policy.ts`): the person must be a member of the client's
   tenant; app owners (named or the owner group) always pass; `company` admits every member,

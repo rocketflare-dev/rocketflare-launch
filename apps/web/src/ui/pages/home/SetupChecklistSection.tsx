@@ -1,12 +1,12 @@
 /**
  * Home: "Finish setting up Launch — 5 of 7 working", for whoever administers the platform, while any
- * connection Launch runs on is not working yet. One line per connection in the Connections menu's
+ * connection Launch runs on is not working yet. One line per connection in the Platform menu's
  * order — its dot, its name linking to its Settings page, its state in words, and what is wrong in the words of
  * its worst probe — on one panel.
  * Once every one works the section is gone; the Settings menu keeps the dots.
  *
  * It replaced the seven-step wizard page: the steps are each their own page under Settings →
- * Connections now, and this is where an unfinished one is noticed. It reads the same setup
+ * Platform now, and this is where an unfinished one is noticed. It reads the same setup
  * overview (`useSetupOverview`) those pages and the menu read — `canAdministerPlatform` on the
  * server, the `platformAdmin` guard here — and decides nothing itself (`setupChecklist`).
  */
@@ -28,7 +28,7 @@ export function SetupChecklistSection() {
       id="home-setup"
       title={`Finish setting up Launch — ${checklist.done} of ${checklist.total} working`}
     >
-      <ul className="surface-panel p-0 divide-y divide-base-300" aria-label="Connections">
+      <ul className="surface-panel p-0 divide-y divide-base-300" aria-label="Platform">
         {checklist.rows.map(row => (
           <li key={row.id} className="flex items-baseline justify-between gap-4 px-5 py-3">
             <span className="flex flex-1 items-baseline gap-2 min-w-0">

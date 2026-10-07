@@ -1,5 +1,5 @@
 /**
- * Settings → Connections (spec/03): each connection is its own page showing the server's status, a
+ * Settings → Platform (spec/03): each connection is its own page showing the server's status, a
  * set credential is write-only ("Set — hidden" + Replace, never an input holding a value), Replace
  * opens an EMPTY field and PUTs only what was typed, and a bad settings value is refused with the
  * server's own schema message before any request. Kit version and Coding agents are their own
@@ -26,7 +26,7 @@ const checkResponse = {
   checks: overview.credentials[0]?.lastCheck ?? [],
 }
 
-/** One Connections page, as `SettingsLayout` mounts it. */
+/** One Platform page, as `SettingsLayout` mounts it. */
 const page = (step: SetupOverview['steps'][number]['id']) =>
   function ConnectionPage() {
     return <Connection step={step} />
@@ -65,7 +65,7 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = pag
   return fetchMock
 }
 
-describe('Settings → Connections', () => {
+describe('Settings → Platform', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('renders each connection on its own page, with its status', async () => {

@@ -1,5 +1,5 @@
 /**
- * Settings → Connections → Sign-in, its second half (spec/05): Launch as the company's OIDC issuer
+ * Settings → Platform → Sign-in, its second half (spec/05): Launch as the company's OIDC issuer
  * — the issuer URL every app is configured with, its discovery and JWKS links, the signing keys
  * (next, active, retiring, retired) and key rotation. `canAdministerPlatform` (the section's guard).
  *

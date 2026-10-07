@@ -316,7 +316,7 @@ const CORE_QUERY_KEYS = {
   /**
    * `/api/platform/*` — administering the deployment (`canAdministerPlatform`: a global admin, or in
    * single mode the organisation's owner/admin). One root, so `platform.all` covers every screen
-   * that reads it (Connections, Coding agents, Kit version, access requests).
+   * that reads it (Platform, Coding agents, Kit version, access requests).
    */
   platform: {
     all: ['platform'] as const,

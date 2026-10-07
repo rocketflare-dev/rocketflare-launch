@@ -4,7 +4,7 @@
  * their containers run (`SessionSandboxCard`, `session_sandbox_host`), then the Anthropic and
  * OpenAI keys sessions on Launch's account spend. Not a connection (Claude Code on the Worker
  * secret works with nothing set), so Home's setup checklist never asks for it. Reads the same setup
- * overview as the Connections pages; `canAdministerPlatform` (the section's guard).
+ * overview as the Platform pages; `canAdministerPlatform` (the section's guard).
  */
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'

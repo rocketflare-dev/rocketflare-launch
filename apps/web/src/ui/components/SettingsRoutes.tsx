@@ -48,7 +48,7 @@ export const MOVED_SETTINGS_ROUTES: { path: string; to: Parameters<typeof Moved>
   { path: '/admin/sessions', to: SETTINGS_PATHS.sessions },
 ]
 
-/** The setup wizard's three addresses, each to a Connections page by its `#setup-<step>` anchor. */
+/** The setup wizard's three addresses, each to a Platform page by its `#setup-<step>` anchor. */
 export const MOVED_SETUP_PATHS = ['/settings/platform', '/settings/platform/setup', '/admin/setup']
 
 export function settingsRoutes() {

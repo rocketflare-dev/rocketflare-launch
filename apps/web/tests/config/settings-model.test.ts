@@ -27,7 +27,7 @@ describe('settingsGroups', () => {
     expect(labels(settingsGroups({ single: false }))).toEqual({
       Organisation: ['General', 'People', 'Approval policies', 'API keys'],
       'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
-      Connections: ['Domain', 'Cloudflare', 'Neon', 'GitHub', 'Email', 'Sign-in', 'Public URL'],
+      Platform: ['Domain', 'Cloudflare', 'Neon', 'GitHub', 'Email', 'Sign-in', 'Public URL'],
       Activity: ['Audit', 'Usage'],
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],
       Plugins: [],
@@ -52,7 +52,7 @@ describe('settingsGroups', () => {
   })
 
   it('puts each connection behind platformAdmin and carries its setup step for the menu dot', () => {
-    const connections = settingsGroups({ single: true }).find(g => g.label === 'Connections')
+    const connections = settingsGroups({ single: true }).find(g => g.label === 'Platform')
     expect(connections?.sections.map(s => s.step)).toEqual([...CONNECTION_ORDER])
     expect(connections?.sections.every(s => s.guard === 'platformAdmin')).toBe(true)
   })

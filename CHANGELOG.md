@@ -12,6 +12,12 @@
   by someone who drives it, it comes straight back; found by the five-minute sweep, it is left
   asleep with Resume on the page; past `maxSessionHours` it ends. The preview pane also stops
   spinning after 30 seconds: "The preview isn't answering", with Reload.
+- **Setup warnings are only things to act on.** Magic link as the only sign-in, the Neon region
+  Launch pinned (Frankfurt, say) and Cloudflare write scope (which nothing proves short of creating
+  an app) were standing amber "needs a look" dots no admin could clear; they are `ok` now, with a
+  line saying what they mean. Stored results from before re-read on the overview, so no re-check is
+  needed, and Cloudflare's reads "Proven: Launch created <app> with this token" once an app went
+  live.
 - **Shipping replaces the preview with a plain-language timeline** (issue #22). While a session
   ships — the gate, the pull request, its checks, a review, the release and the staging deploy —
   the preview pane shows one ordered timeline instead: checking your change (lint, types and tests
@@ -62,7 +68,7 @@
 - **Settings is one place.** The nav's Settings, Audit, Setup and Admin items are one Settings
   item, opening one layout with a grouped menu and a real path per section: Organisation (General,
   People — members, groups and access requests — Approval policies, API keys), Building apps
-  (Coding agents, AI & models, Prompts, Kit version), Connections (Domain, Cloudflare, Neon,
+  (Coding agents, AI & models, Prompts, Kit version), Platform (Domain, Cloudflare, Neon,
   GitHub, Email, Sign-in, Public URL, each with its status dot), Activity (Audit, Usage), Operator
   (global admins: Users, Feature flags, All sessions, and Organisations in multi mode) and the
   installed plugins' tabs. Each section keeps exactly the guard its page had, a group with nothing
@@ -71,7 +77,7 @@
   `/audit`, `/activity` — redirects to its section. Single mode says "Organisation" throughout
   (never "Workspace"), and a global admin reads as "Global admin" in the sidebar footer and the
   user menu instead of their membership role.
-- **The setup wizard is a checklist on Home.** Its seven steps are each a Connections page now;
+- **The setup wizard is a checklist on Home.** Its seven steps are each a Platform page now;
   while any is unfinished, a platform admin's Home leads with "Finish setting up Launch — n of 7",
   one line per connection with its state in words and a link to its page, and it disappears once
   every one works.

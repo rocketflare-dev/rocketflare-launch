@@ -1,5 +1,5 @@
 /**
- * Connections → Public URL: is Launch reachable from the internet at its public URL (`APP_URL`)?
+ * Platform → Public URL: is Launch reachable from the internet at its public URL (`APP_URL`)?
  * The scaffold job and every app's deploy job run on GitHub and call Launch back there, so
  * creating an app (and a create's retry, and "Deploy to production") is refused while this step
  * has FAILED. The URL is the Worker's own config, so this card only reports and re-checks it;

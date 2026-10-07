@@ -4,7 +4,7 @@
  * must render WITHOUT a tenant (those three) pass `requireTenant={false}`. One exemption: a global
  * admin may open `/settings/*` (and the old `/admin/*` addresses that redirect into it) with no
  * membership at all (`isAdminPath`) — otherwise the bootstrap admin of an invite-only deployment
- * could never approve anyone or finish the Connections (SETUP.md 2.4). Inside, `useNavGuard`
+ * could never approve anyone or finish the Platform settings (SETUP.md 2.4). Inside, `useNavGuard`
  * passes only their `platformAdmin` / `globalAdmin` sections, so nothing tenant-scoped opens. Cosmetic — the server enforces on every request (`/api/admin/*` and
  * `/api/platform/*` resolve a global admin without a tenant by design).
  */

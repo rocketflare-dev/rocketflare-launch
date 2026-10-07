@@ -13,7 +13,7 @@
  *
  * A platform admin sees "Finish setting up Launch" first while any connection Launch runs on is
  * unfinished (`home/SetupChecklistSection.tsx`), one line per connection linking to its page under
- * Settings → Connections; it disappears once every one works.
+ * Settings → Platform; it disappears once every one works.
  *
  * Installed plugins' quick links (`UiPlugin.homeLinks`, D31) close the page as one quiet line,
  * each filtered by its route's own guard.
@@ -42,7 +42,7 @@ export interface QuickLink {
 /** The same guards as `/approvals` and `/apps` (and their nav items). */
 const APPROVALS_GUARD: NavGuard = { action: 'read', subject: 'Approval' }
 const APPS_GUARD: NavGuard = { action: 'read', subject: 'App' }
-/** The same guard as the Connections pages it links to. */
+/** The same guard as the Platform pages it links to. */
 const SETUP_GUARD: NavGuard = 'platformAdmin'
 
 const PLUGIN_LINKS: QuickLink[] = uiPlugins.flatMap(p => p.homeLinks ?? [])

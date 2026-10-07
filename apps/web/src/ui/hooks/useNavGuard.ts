@@ -18,7 +18,7 @@ export type NavGuard =
   | 'admin'
   | 'globalAdmin'
   /**
-   * Administering the deployment (Settings → Connections, Coding agents, Kit, access requests):
+   * Administering the deployment (Settings → Platform, Coding agents, Kit, access requests):
    * `canAdministerPlatform` from
    * `@launch/shared/permissions`, the SAME function the server's `platformAdminMiddleware` calls —
    * a global admin (membership or not), or in single mode the organisation's owner/admin.

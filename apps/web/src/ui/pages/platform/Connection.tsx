@@ -1,5 +1,5 @@
 /**
- * Settings → Connections (spec/03, spec/04): one page per thing Launch runs on — the apps domain
+ * Settings → Platform (spec/03, spec/04): one page per thing Launch runs on — the apps domain
  * and zone, then the Cloudflare, Neon, GitHub App and Resend credentials Launch acts with, then how
  * people sign in (the upstream IdP, read-only, and Launch's own OIDC issuer keys), then whether
  * Launch's own public URL is reachable from the internet (the CI jobs call it back). Each is a

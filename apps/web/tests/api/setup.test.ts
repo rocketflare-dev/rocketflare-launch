@@ -265,15 +265,15 @@ describe('credentials', () => {
     )
     expect(put.status).toBe(200)
     const result = put.body as SetupCheckResponse
-    // Write scope can never be proved, so the best Cloudflare gets is a warning.
-    expect(result.status).toBe('warning')
+    // Write scope cannot be proved without a create; that is a note, not a warning.
+    expect(result.status).toBe('ok')
     expect(result.checks.filter(c => c.status === 'failed')).toEqual([])
     expect(result.credential).toMatchObject({
       kind: 'cloudflare_api_token',
       set: true,
       setByUserId: admin.userId,
       setByEmail: expect.stringContaining('@'),
-      lastCheckStatus: 'warning',
+      lastCheckStatus: 'ok',
       metadata: expect.objectContaining({
         accountId: ACCOUNT_ID,
         tokenId: 'tok123',
@@ -291,7 +291,7 @@ describe('credentials', () => {
 
     const [set] = await auditRows('credential.set')
     expect(set).toMatchObject({ targetType: 'Credential', targetId: 'cloudflare_api_token' })
-    expect(set?.summary.after).toMatchObject({ value: 'set', checkStatus: 'warning' })
+    expect(set?.summary.after).toMatchObject({ value: 'set', checkStatus: 'ok' })
 
     // Rotate into an account whose zone lives elsewhere: stored, but the zone probe fails.
     vendors = fakeVendorFetch({
@@ -313,14 +313,14 @@ describe('credentials', () => {
     expect(overview.steps.find(s => s.id === 'domain')?.status).toBe('failed')
     expect(overview.steps.find(s => s.id === 'cloudflare')?.status).toBe('failed')
 
-    // Fixed upstream → re-check goes back to a warning, and is audited.
+    // Fixed upstream → re-check goes back to ok, and is audited.
     vendors = fakeVendorFetch(happyVendors({ domain: DOMAIN, org: ORG }))
     const check = await call('/api/platform/setup/credentials/cloudflare_api_token/check', {
       method: 'POST',
     })
-    expect(check.body).toMatchObject({ status: 'warning' })
+    expect(check.body).toMatchObject({ status: 'ok' })
     const [checked] = await auditRows('credential.checked')
-    expect(checked?.summary.after).toMatchObject({ checkStatus: 'warning', failed: [] })
+    expect(checked?.summary.after).toMatchObject({ checkStatus: 'ok', failed: [] })
     // The fetch saw the ROTATED token, as a Bearer header, only on Cloudflare's API.
     expect(vendors.calls.every(c => c.authorization === `Bearer ${CF_TOKEN}2`)).toBe(true)
 
@@ -415,7 +415,7 @@ describe('credentials', () => {
     )
     expect(put.status).toBe(200)
     expect(put.body).toMatchObject({
-      status: 'warning',
+      status: 'ok',
       credential: { metadata: { orgId: 'org-test-12345' } },
     })
     const settings = await db.select().from(launchSettings)

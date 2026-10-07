@@ -110,7 +110,7 @@ describe('Settings — what each role sees', () => {
     expect(await menu()).toEqual({
       Organisation: ORGANISATION,
       'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
-      Connections: CONNECTIONS,
+      Platform: CONNECTIONS,
       Activity: ['Audit', 'Usage'],
     })
   })
@@ -118,7 +118,7 @@ describe('Settings — what each role sees', () => {
   it('single-mode admin: the same sections as the owner', async () => {
     renderAt('/settings/general', admin('single'))
     const seen = await menu()
-    expect(seen.Connections).toEqual(CONNECTIONS)
+    expect(seen.Platform).toEqual(CONNECTIONS)
     expect(seen.Organisation).toEqual(ORGANISATION)
     expect(seen.Operator).toBeUndefined()
   })
@@ -139,7 +139,7 @@ describe('Settings — what each role sees', () => {
     expect(await menu()).toEqual({
       Organisation: ORGANISATION,
       'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
-      Connections: CONNECTIONS,
+      Platform: CONNECTIONS,
       Activity: ['Audit', 'Usage'],
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],
     })
@@ -155,7 +155,7 @@ describe('Settings — what each role sees', () => {
     expect(await menu()).toEqual({
       Organisation: ['People'],
       'Building apps': ['Coding agents', 'Kit version'],
-      Connections: CONNECTIONS,
+      Platform: CONNECTIONS,
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],
     })
     // `/settings` → People → the one tab they may open.
@@ -220,7 +220,7 @@ describe('Settings — the menu', () => {
     expect(select).toHaveValue('/settings/general')
     expect(
       Array.from(select.querySelectorAll('optgroup')).map(g => g.getAttribute('label'))
-    ).toEqual(['Organisation', 'Building apps', 'Connections', 'Activity'])
+    ).toEqual(['Organisation', 'Building apps', 'Platform', 'Activity'])
     fireEvent.change(select, { target: { value: '/settings/kit' } })
     await waitFor(() => expect(where()).toBe('/settings/kit'))
   })

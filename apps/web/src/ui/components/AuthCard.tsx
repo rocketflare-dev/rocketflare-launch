@@ -76,7 +76,7 @@ export function SignedInAs({ email, onSignOut }: { email: string; onSignOut: () 
 
 /**
  * A global admin parked on a no-tenant page can still run the platform: Settings needs no
- * membership (`ProtectedRoute`'s one exemption) and shows them its Connections, the access-request
+ * membership (`ProtectedRoute`'s one exemption) and shows them its Platform pages, the access-request
  * queue where they approve the next person, and the operator's sections.
  */
 export function AdminAreaLink({ className = '' }: { className?: string }) {

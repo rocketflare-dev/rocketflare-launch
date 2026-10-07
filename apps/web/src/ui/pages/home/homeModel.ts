@@ -107,10 +107,10 @@ export interface SetupChecklist {
 }
 
 /**
- * Home's setup checklist from the setup overview's steps, in the Connections menu's order. A
+ * Home's setup checklist from the setup overview's steps, in the Platform menu's order. A
  * `warning` counts as done — the count the old wizard's "n of 7 steps" made — because some are
  * deliberate (no SSO provider: people sign in by magic link) and the list must be able to go away;
- * the Connections menu still shows its dot. Pure.
+ * the Platform menu still shows its dot. Pure.
  */
 export function setupChecklist(
   steps: readonly SetupStep[],
@@ -132,7 +132,7 @@ export function setupChecklist(
   return { rows, done, total: rows.length, complete: done === rows.length }
 }
 
-/** Each connection's last probes, as its Connections page lists them. */
+/** Each connection's last probes, as its Platform page lists them. */
 export type ConnectionChecks = Partial<Record<SetupStepId, readonly CredentialCheck[]>>
 
 const STEP_CREDENTIAL: Partial<Record<SetupStepId, CredentialKind>> = {

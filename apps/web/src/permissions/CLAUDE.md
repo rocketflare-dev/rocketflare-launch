@@ -50,7 +50,7 @@ vocabulary in `packages/shared/src/permissions.ts`). Built once per request by t
 
 `canAdministerPlatform(auth, config)` (`platform.ts`, over the pure `canAdministerPlatform` +
 `PLATFORM_ADMIN_ROLES` in `@launch/shared/permissions`) is the ONE rule for the deployment's own
-administration — Settings → Connections, Coding agents and Kit version, every `launch_settings` / `admin_credentials` write, the OIDC
+administration — Settings → Platform, Coding agents and Kit version, every `launch_settings` / `admin_credentials` write, the OIDC
 issuer's keys, the access-request queue:
 
 | | global admin | owner | admin | support | member |

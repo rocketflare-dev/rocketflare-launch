@@ -1,7 +1,7 @@
 /**
  * `/settings/*`: every setting in Launch, in one place — a grouped menu on the left, one section
  * at a time on the right, each at a real path (`lib/settings-paths.ts`) so links, bookmarks and the
- * back button work. The groups are Organisation · Building apps · Connections · Activity · Operator
+ * back button work. The groups are Organisation · Building apps · Platform · Activity · Operator
  * (global admins) · Plugins (D31); WHAT each offers and who sees it is the pure `settingsModel.ts`.
  *
  * It replaced three areas — the tabbed `/settings?tab=`, the deployment's `/settings/platform/*`
@@ -11,7 +11,7 @@
  * group they empty. A global admin with no membership may open this layout (`ProtectedRoute`'s
  * `isAdminPath`); `useNavGuard` then passes only their `platformAdmin` / `globalAdmin` sections.
  *
- * Connections carry their setup status as a dot in the menu (the same `useSetupOverview` the pages
+ * Platform pages carry their setup status as a dot in the menu (the same `useSetupOverview` the pages
  * read), and People the count of access requests waiting. Below `lg` the menu collapses into one
  * `<select>` of the same groups, so a phone keeps the whole page width for the section.
  */
@@ -286,7 +286,7 @@ function SettingsIndex({
   return <Navigate to={`${target}${hash}`} replace />
 }
 
-/** Each section's page, by id. A Connections page is one component, told which step it is. */
+/** Each section's page, by id. A Platform page is one component, told which step it is. */
 function sectionPage(section: SettingsSection, pendingRequests: number, pluginTabs: TabConfig[]) {
   if (section.step) return <Connection step={section.step} />
   switch (section.id) {
