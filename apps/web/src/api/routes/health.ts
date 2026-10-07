@@ -8,11 +8,16 @@ import { createRouter } from '../utils/routes/router'
 
 export const healthRouter = createRouter()
 
+/** Liveness probe: reports the deployed version and environment. Public. */
 healthRouter.get('/health', c => {
   const cfg = c.get('config')
   return c.json({ status: 'ok', version: cfg.RELEASE_VERSION, env: cfg.APP_ENV })
 })
 
+/**
+ * Readiness probe: runs `SELECT 1` through the request's database handle. Public; returns 503
+ * `database_unavailable` when the database is unreachable.
+ */
 healthRouter.get('/ready', async c => {
   try {
     await c.get('db').execute(sql`SELECT 1`)

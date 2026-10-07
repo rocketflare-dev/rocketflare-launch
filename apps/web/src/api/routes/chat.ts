@@ -86,6 +86,7 @@ async function ownConversation(
 
 // ---- GET /api/chat/conversations -------------------------------------------------------------------
 
+/** Lists the caller's own conversations, newest by last message first. Requires `read Conversation`. */
 chatRouter.get('/conversations', validate('query', conversationListQuerySchema), async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Conversation')
@@ -107,6 +108,10 @@ chatRouter.get('/conversations', validate('query', conversationListQuerySchema),
 
 // ---- POST /api/chat/conversations ------------------------------------------------------------------
 
+/**
+ * Creates a new conversation for the caller. Requires `create Conversation`; returns 503
+ * `ai_not_configured` if the tenant has no AI provider configured yet.
+ */
 chatRouter.post('/conversations', validate('json', createConversationRequestSchema), async c => {
   const { db, tenantId, user, cfg, defer } = withAuthAndDb(c)
   guardPermission(c, 'create', 'Conversation')
@@ -138,6 +143,10 @@ chatRouter.post('/conversations', validate('json', createConversationRequestSche
 
 // ---- GET /api/chat/conversations/:id ---------------------------------------------------------------
 
+/**
+ * Returns one of the caller's own conversations with its full message history. Requires
+ * `read Conversation`; another member's conversation answers the same 404 as a missing one.
+ */
 chatRouter.get('/conversations/:id', async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Conversation')
@@ -159,6 +168,10 @@ chatRouter.get('/conversations/:id', async c => {
 // `manage AiConfig` is the gate because the panel is about cost and model configuration — the same
 // thing Settings → Usage is gated on.
 
+/**
+ * Returns cost, token and model usage stats for one of the caller's own conversations. Requires
+ * `read Conversation` and `manage AiConfig` (admin+); another member's conversation is still a 404.
+ */
 chatRouter.get('/conversations/:id/stats', async c => {
   const { db, tenantId, user, cfg, auth } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Conversation')
@@ -187,6 +200,11 @@ chatRouter.get('/conversations/:id/stats', async c => {
 // Nothing pending is a 409 rather than a cheerful 202: enqueuing a job that is guaranteed to no-op
 // looks identical to one that worked, and the panel would show "queued" forever.
 
+/**
+ * Enqueues a `chat.compact` job to summarise the messages outside the history window for one of
+ * the caller's own conversations. Requires `read Conversation` and `manage AiConfig`; returns 409
+ * `nothing_to_compact` when nothing is outside the window yet.
+ */
 chatRouter.post('/conversations/:id/compact', async c => {
   const { db, tenantId, user, cfg, logger } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Conversation')
@@ -221,6 +239,10 @@ chatRouter.post('/conversations/:id/compact', async c => {
 
 // ---- DELETE /api/chat/conversations/:id ------------------------------------------------------------
 
+/**
+ * Deletes one of the caller's own conversations and its messages. Requires `delete Conversation`;
+ * another member's conversation is a 404.
+ */
 chatRouter.delete('/conversations/:id', async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   guardPermission(c, 'delete', 'Conversation')
@@ -233,6 +255,10 @@ chatRouter.delete('/conversations/:id', async c => {
 
 // ---- POST /api/chat/conversations/:id/messages (AG-UI stream) -------------------------------------
 
+/**
+ * Sends a message in one of the caller's own conversations and streams the assistant's reply as
+ * AG-UI events. Requires `update Conversation`; another member's conversation is a 404.
+ */
 chatRouter.post(
   '/conversations/:id/messages',
   validate('json', sendMessageRequestSchema),

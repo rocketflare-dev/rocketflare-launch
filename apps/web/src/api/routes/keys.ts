@@ -23,6 +23,7 @@ function toDto(row: ApiKey): ApiKeyDto {
     name: row.name,
     keyPrefix: row.keyPrefix,
     scopes: row.scopes as ApiKeyDto['scopes'],
+    scope: row.scope,
     createdByUserId: row.createdByUserId,
     lastUsedAt: row.lastUsedAt,
     expiresAt: row.expiresAt,
@@ -31,6 +32,7 @@ function toDto(row: ApiKey): ApiKeyDto {
   }
 }
 
+/** Lists the tenant's API keys (never the plaintext). Requires `manage ApiKey` (admin+); paginated. */
 keysRouter.get('/', validate('query', paginationQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'ApiKey')
@@ -49,6 +51,7 @@ keysRouter.get('/', validate('query', paginationQuerySchema), async c => {
   return c.json({ items: rows.map(toDto), pagination: paginationMeta(page, pageSize, total) })
 })
 
+/** Creates a new tenant API key and returns its plaintext exactly once. Requires `manage ApiKey` (admin+). */
 keysRouter.post('/', validate('json', createApiKeyRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'ApiKey')
@@ -73,6 +76,10 @@ keysRouter.post('/', validate('json', createApiKeyRequestSchema), async c => {
   return c.json({ ...toDto(row), key: plaintext }, 201)
 })
 
+/**
+ * Revokes an API key (soft — sets `revokedAt`, never deletes the row). Requires `manage ApiKey`
+ * (admin+); an unknown key is 404.
+ */
 keysRouter.delete('/:id', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'ApiKey')

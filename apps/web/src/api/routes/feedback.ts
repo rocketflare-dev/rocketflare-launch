@@ -38,6 +38,10 @@ function actorOf(c: AppContext): FeedbackActor {
   return { tenantId, userId: user.id, isAdmin: isAdminLevel(auth) }
 }
 
+/**
+ * Records the caller's thumbs up/down on an assistant message or agent run, replacing any
+ * earlier vote. Requires `create Feedback`; a target the caller cannot read is 404.
+ */
 feedbackRouter.post('/', validate('json', createFeedbackRequestSchema), async c => {
   const { db, tracer } = withAuthAndDb(c)
   guardPermission(c, 'create', 'Feedback')
@@ -45,6 +49,10 @@ feedbackRouter.post('/', validate('json', createFeedbackRequestSchema), async c 
   return c.json(feedbackSchema.parse(feedback), 201)
 })
 
+/**
+ * Withdraws the caller's own vote on a target. Requires `create Feedback`; idempotent (204 even
+ * when there was no vote).
+ */
 feedbackRouter.delete(
   '/:target/:targetId',
   validate('param', feedbackTargetParamSchema),
@@ -57,6 +65,7 @@ feedbackRouter.delete(
   }
 )
 
+/** Returns the caller's own votes on the given targets, for the thumbs' UI state. Requires `create Feedback`. */
 feedbackRouter.get('/mine', validate('query', feedbackMineQuerySchema), async c => {
   const { db } = withAuthAndDb(c)
   guardPermission(c, 'create', 'Feedback')
@@ -66,6 +75,10 @@ feedbackRouter.get('/mine', validate('query', feedbackMineQuerySchema), async c 
   )
 })
 
+/**
+ * Lists every feedback vote in the tenant, the promotion queue behind `launch feedback list`.
+ * Requires `read Feedback` (admin+).
+ */
 feedbackRouter.get('/', validate('query', feedbackListQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Feedback')

@@ -4,6 +4,7 @@
  * (neither reference app checked expiry), creator blocked, membership gone, tenant suspended.
  * `lastUsedAt` is stamped at most every 5 minutes, through `waitUntil`.
  */
+import type { ApiKeyAccessScope } from '@launch/shared/api-keys'
 import type { MembershipRole, TenantStatus } from '@launch/shared/tenants'
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Database } from '../../db/client'
@@ -13,7 +14,7 @@ import { generateApiKey, hashToken } from '../utils/core/hash'
 export type ApiKeyValidation =
   | {
       ok: true
-      key: Pick<ApiKey, 'id' | 'tenantId' | 'scopes' | 'lastUsedAt'>
+      key: Pick<ApiKey, 'id' | 'tenantId' | 'scopes' | 'scope' | 'lastUsedAt'>
       user: User
       role: MembershipRole
       tenant: { id: string; name: string; slug: string; status: TenantStatus }
@@ -29,6 +30,7 @@ export async function validateApiKey(db: Database, plaintext: string): Promise<A
         id: apiKeys.id,
         tenantId: apiKeys.tenantId,
         scopes: apiKeys.scopes,
+        scope: apiKeys.scope,
         lastUsedAt: apiKeys.lastUsedAt,
         revokedAt: apiKeys.revokedAt,
         expiresAt: apiKeys.expiresAt,
@@ -61,6 +63,7 @@ export async function validateApiKey(db: Database, plaintext: string): Promise<A
       id: row.key.id,
       tenantId: row.key.tenantId,
       scopes: row.key.scopes,
+      scope: row.key.scope,
       lastUsedAt: row.key.lastUsedAt,
     },
     user: row.user,
@@ -87,6 +90,8 @@ export interface MintApiKeyInput {
   createdByUserId: string
   name: string
   scopes: string[]
+  /** What the key may reach — `tenant` unless the CLI handoff minted an admin key. */
+  scope?: ApiKeyAccessScope
   expiresAt?: Date | null
 }
 
@@ -102,6 +107,7 @@ export async function mintApiKey(db: Database, input: MintApiKeyInput) {
       keyHash: generated.keyHash,
       keyPrefix: generated.keyPrefix,
       scopes: input.scopes,
+      scope: input.scope ?? 'tenant',
       expiresAt: input.expiresAt ?? null,
     })
     .returning()

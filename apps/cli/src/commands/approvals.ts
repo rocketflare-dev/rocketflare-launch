@@ -10,6 +10,8 @@
  * - `approve <id> [--comment]` / `reject <id> [--comment]` — `POST /:id/decide`. A 409
  *   (`not_pending`, `already_decided`) is somebody else getting there first: it still exits 1, but
  *   with a sentence that says so and a pointer at `show`, not a raw envelope.
+ * - `count` (the nav badge) and `withdraw <id> [--reason] [--yes]` (`POST /:id/cancel`, asks
+ *   first) — issue #6.
  *
  * Slice 4f owns this file. `cli.ts` calls `registerApprovalsCommands(program, action)` once, after
  * the kit's own commands, so this file adds its `program.command(...)` entries and never edits
@@ -27,17 +29,19 @@ import {
   type ApprovalPolicy,
   type ApprovalRequest,
   type ApprovalWhyNot,
+  approvalCountSchema,
   approvalDetailSchema,
   approvalListResponseSchema,
   approvalPath,
 } from '@launch/shared/launch-approvals'
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import chalk from 'chalk'
-import { type Command, InvalidArgumentError } from 'commander'
+import type { Command } from 'commander'
 import { type ApiResponse, CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
+import { type ConfirmOptions, confirmConsequence, oneOf } from '../utils/input'
 import { formatDate, renderTable } from '../utils/output'
 
 const approvalApiPath = (id: string) => `/api/approvals/${encodeURIComponent(id)}`
@@ -365,15 +369,61 @@ export async function runApprovalsDecide(
   })
 }
 
-// ---- registration --------------------------------------------------------------------------
+// ---- count / withdraw (issue #6) -------------------------------------------------------------
 
-function oneOf<T extends string>(flag: string, values: readonly T[]) {
-  return (value: string): T => {
-    if (!(values as readonly string[]).includes(value))
-      throw new InvalidArgumentError(`${flag} must be one of ${values.join(', ')}`)
-    return value as T
-  }
+/** `approvals count` — the nav badge: pending requests waiting on you. */
+export async function runApprovalsCount(ctx: CommandContext): Promise<void> {
+  const { data, raw } = await requireClient(ctx).request('GET', '/api/approvals/count', {
+    schema: approvalCountSchema,
+  })
+  ctx.out.data(raw, () =>
+    data.count === 0
+      ? 'Nothing is waiting on you.'
+      : `${data.count} request${data.count === 1 ? '' : 's'} waiting on you — \`${ctx.binName} approvals ls\`.`
+  )
 }
+
+/**
+ * `approvals withdraw <id> [--reason]` — `POST /:id/cancel` (the requester, or an admin). Asks
+ * first, in the page's words; `--yes` skips it. A 409 is somebody deciding first: exit 1.
+ */
+export async function runApprovalsWithdraw(
+  ctx: CommandContext,
+  id: string,
+  options: { reason?: string } & ConfirmOptions = {}
+): Promise<void> {
+  const fullId = await resolveApprovalId(ctx, id)
+  if (
+    !(await confirmConsequence(
+      ctx,
+      options,
+      'Withdraw this request?',
+      'Nobody will be asked to decide it any more. You can ask again later.'
+    ))
+  )
+    return
+  const reason = options.reason?.trim()
+  let result: ApiResponse<ApprovalDetail>
+  try {
+    result = await requireClient(ctx).request('POST', `${approvalApiPath(fullId)}/cancel`, {
+      schema: approvalDetailSchema,
+      body: reason ? { reason } : {},
+    })
+  } catch (error) {
+    if (error instanceof CliApiError && error.status === 409) {
+      throw new CliError('This request has already been decided — nothing was changed.', {
+        hint: `See where it stands: \`${ctx.binName} approvals show ${fullId}\`.`,
+      })
+    }
+    throw error
+  }
+  ctx.out.data(
+    result.raw,
+    () => `${chalk.green('✓')} Withdrawn: ${describeApproval(result.data)}. Nothing was changed.`
+  )
+}
+
+// ---- registration --------------------------------------------------------------------------
 
 export function registerApprovalsCommands(program: Command, action: ActionWrapper): void {
   const approvals = program
@@ -407,4 +457,14 @@ export function registerApprovalsCommands(program: Command, action: ActionWrappe
     .description('reject a request (one rejection is final)')
     .option('--comment <text>', 'a note recorded with your decision')
     .action(action((ctx, cmd) => runApprovalsDecide(ctx, cmd.args[0] ?? '', 'reject', cmd.opts())))
+  approvals
+    .command('count')
+    .description('how many requests are waiting on you')
+    .action(action(ctx => runApprovalsCount(ctx)))
+  approvals
+    .command('withdraw <id>')
+    .description('withdraw a request you made (admins: anyone’s) — it closes without a decision')
+    .option('--reason <text>', 'recorded with the withdrawal')
+    .option('-y, --yes', 'do not ask first')
+    .action(action((ctx, cmd) => runApprovalsWithdraw(ctx, cmd.args[0] ?? '', cmd.opts())))
 }

@@ -21,12 +21,14 @@ export const meRouter = createRouter()
 // §18.22: `/agent-credentials` and `/agent-logins` — the person's own AI accounts.
 meRouter.route('/', meAgentsRouter)
 
+/** Returns the caller's profile and, within a tenant, their preferences. */
 meRouter.get('/', async c => {
   const { db, user, tenantId } = withAuth(c)
   const preferences = tenantId ? (await getUserPreferences(db, tenantId, user.id)).preferences : {}
   return c.json({ ...toPublicUser(user), preferences })
 })
 
+/** Updates the caller's own name and/or avatar URL. */
 meRouter.patch('/', validate('json', updateProfileRequestSchema), async c => {
   const { db, user } = withAuth(c)
   const patch = c.req.valid('json')
@@ -41,11 +43,13 @@ meRouter.patch('/', validate('json', updateProfileRequestSchema), async c => {
   return c.json(toPublicUser(updated ?? user))
 })
 
+/** Returns the caller's preferences for the current tenant. */
 meRouter.get('/preferences', async c => {
   const { db, user, tenantId } = withAuthAndDb(c)
   return c.json(await getUserPreferences(db, tenantId, user.id))
 })
 
+/** Updates the caller's preferences for the current tenant. */
 meRouter.patch('/preferences', validate('json', updateTenantUserSettingsRequestSchema), async c => {
   const { db, user, tenantId } = withAuthAndDb(c)
   return c.json(await updateUserPreferences(db, tenantId, user.id, c.req.valid('json').preferences))

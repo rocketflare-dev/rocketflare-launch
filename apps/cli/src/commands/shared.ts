@@ -14,6 +14,8 @@
  *   named for what the owner team is doing).
  * - `pushes <slug> [--env] [--wait]` — the push history (owners and admins); `--wait` follows the
  *   running one to the end and exits 1 when it partly or wholly failed, naming the apps.
+ * - `retry <slug> <push> [--wait]` (issue #6) — retry the apps a push failed on.
+ * - `create|edit|archive` (issue #6) — the resource itself, in `shared-manage.ts`.
  *
  * Following POLLS the push (`GET …/pushes/:id`) — `api.ts` stays the one fetch site — with an
  * injectable `sleep` / `pollMs`, the sessions and releases pattern. With `--json` a follow prints
@@ -45,13 +47,15 @@ import type { ApiClient } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
+import { promptHiddenOnTerminal, readAllStdin } from '../utils/input'
 import { formatDate, renderTable } from '../utils/output'
+import { registerSharedManageCommands } from './shared-manage'
 
 const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const base = '/api/shared-resources'
-const resourceApiPath = (id: string) => `${base}/${encodeURIComponent(id)}`
+const resourceApiPath = (id: string) => `/api/shared-resources/${encodeURIComponent(id)}`
 
 /** The web page for a resource. */
 export function sharedResourceUrl(ctx: CommandContext, id: string): string {
@@ -170,47 +174,6 @@ export function parseValuesInput(text: string, keys: readonly string[]): Record<
     if (value !== '') values[key] = value
   }
   return values
-}
-
-/** Read the whole of stdin (piped values). */
-async function readAllStdin(): Promise<string> {
-  const chunks: Buffer[] = []
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk))
-  return Buffer.concat(chunks).toString('utf8')
-}
-
-/** Ask for one value on the terminal WITHOUT echoing it (raw mode; Enter ends, Ctrl-C aborts). */
-async function promptHiddenOnTerminal(question: string): Promise<string> {
-  const stdin = process.stdin
-  process.stderr.write(question)
-  return new Promise<string>((resolve, reject) => {
-    let value = ''
-    const finish = () => {
-      stdin.off('data', onData)
-      stdin.setRawMode(false)
-      stdin.pause()
-      process.stderr.write('\n')
-    }
-    const onData = (chunk: Buffer | string) => {
-      for (const char of chunk.toString('utf8')) {
-        if (char === '\r' || char === '\n' || char === '\u0004') {
-          finish()
-          resolve(value)
-          return
-        }
-        if (char === '\u0003') {
-          finish()
-          reject(new CliError('Cancelled — nothing was set'))
-          return
-        }
-        if (char === '\u007f' || char === '\b') value = value.slice(0, -1)
-        else value += char
-      }
-    }
-    stdin.setRawMode(true)
-    stdin.resume()
-    stdin.on('data', onData)
-  })
 }
 
 // ---- following a push ----------------------------------------------------------------------
@@ -353,7 +316,8 @@ async function readValues(
   const keys = detail.items.map(item => item.key)
   const tty = options.isTTY ?? Boolean(process.stdin.isTTY)
   if (!tty) return parseValuesInput(await (options.readStdin ?? readAllStdin)(), keys)
-  const ask = options.promptHidden ?? promptHiddenOnTerminal
+  const ask =
+    options.promptHidden ?? (q => promptHiddenOnTerminal(q, 'Cancelled — nothing was set'))
   const set = new Set(envOf(detail, options.env)?.keysSet ?? [])
   ctx.log.info(
     `Values for ${detail.displayName} in ${options.env}. Nothing you type is shown; Enter on a set key keeps it.`
@@ -460,6 +424,57 @@ export async function runSharedPushes(
   reportPush(ctx, push)
 }
 
+/**
+ * `shared retry <slug> <push> [--wait]` (issue #6): retry the apps a push failed on — the
+ * resource page's Retry. `<push>` is a push id or its first 8 characters (from `shared pushes`).
+ * Owners and admins; a push with nothing to retry is the server's 409 sentence (exit 1).
+ */
+export async function runSharedRetry(
+  ctx: CommandContext,
+  ref: string,
+  pushRef: string,
+  options: FollowOptions & { wait?: boolean } = {}
+): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveResource(client, ref)
+  const wanted = pushRef.trim()
+  if (wanted.length < 8) throw new CliError('Give a push id or its first 8 characters')
+  let pushId = wanted
+  if (!UUID.test(wanted)) {
+    const list = await client.get(`${resourceApiPath(detail.id)}/pushes`, {
+      schema: grantPushListResponseSchema,
+      query: { limit: 100 },
+    })
+    const matches = list.items.filter(p => p.id.startsWith(wanted))
+    if (matches.length > 1)
+      throw new CliError(`"${wanted}" matches more than one push; give more of the id`)
+    if (!matches[0])
+      throw new CliError(`No push "${wanted}" on ${detail.slug}`, {
+        hint: `List them with \`${ctx.binName} shared pushes ${detail.slug}\`.`,
+      })
+    pushId = matches[0].id
+  }
+  const { data, raw } = await client.request(
+    'POST',
+    `${resourceApiPath(detail.id)}/pushes/${encodeURIComponent(pushId)}/retry`,
+    { schema: grantPushSchema }
+  )
+  if (!options.wait) {
+    ctx.out.data(raw, () =>
+      [
+        `${chalk.green('✓')} Retrying the ${data.environment} push of ${detail.slug}: ${pushLine(data)}.`,
+        chalk.dim(
+          `  Follow it: ${ctx.binName} shared pushes ${detail.slug} --env ${data.environment} --wait`
+        ),
+      ].join('\n')
+    )
+    return
+  }
+  const push = await followPush(ctx, client, detail.id, data.id, options)
+  if (ctx.json) ctx.out.data(push, () => '')
+  reportPush(ctx, push)
+}
+
 // ---- registration --------------------------------------------------------------------------
 
 function envOption(value: string): AppEnvironmentName {
@@ -499,4 +514,13 @@ export function registerSharedCommands(program: Command, action: ActionWrapper):
     .option('--env <env>', 'staging | production', envOption)
     .option('--wait', 'wait for the running push to finish')
     .action(action((ctx, cmd) => runSharedPushes(ctx, cmd.args[0] ?? '', cmd.opts())))
+  shared
+    .command('retry <slug> <push>')
+    .description('retry the apps a push failed on (push id or 8-char prefix; owners and admins)')
+    .option('--wait', 'follow the push to its end')
+    .action(
+      action((ctx, cmd) => runSharedRetry(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+    )
+  // Issue #6: create, edit and archive (`shared-manage.ts`).
+  registerSharedManageCommands(shared, action)
 }

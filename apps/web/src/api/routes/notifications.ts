@@ -15,6 +15,10 @@ import { validate } from '../utils/routes/validate'
 
 export const notificationsRouter = createRouter()
 
+/**
+ * Lists the caller's notifications in the current tenant, optionally unread only
+ * (`?unreadOnly=true`). Paginated.
+ */
 notificationsRouter.get('/', validate('query', notificationListQuerySchema), async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   const query = c.req.valid('query')
@@ -37,6 +41,7 @@ notificationsRouter.get('/', validate('query', notificationListQuerySchema), asy
   return c.json(paginated(items, asCount(count?.count), query))
 })
 
+/** Returns the caller's unread notification count in the current tenant. */
 notificationsRouter.get('/unread-count', async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   const [row] = await db
@@ -52,6 +57,7 @@ notificationsRouter.get('/unread-count', async c => {
   return c.json({ count: asCount(row?.count) })
 })
 
+/** Marks the caller's notifications as read, by id or all unread ones. Returns the number updated. */
 notificationsRouter.post('/read', validate('json', markNotificationsReadRequestSchema), async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   const body = c.req.valid('json')

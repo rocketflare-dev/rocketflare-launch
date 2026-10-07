@@ -105,6 +105,11 @@ function optionalStorage(c: AppContext): StorageService | null {
 
 // ---- POST /api/ai/documents/ingest ----------------------------------------------------------------
 
+/**
+ * Ingests pasted text as a new document, chunked and embedded for search. Requires
+ * `create Document`; small texts index inline (`indexed`), larger ones queue a `document.index`
+ * job (`pending`).
+ */
 aiDocumentsRouter.post('/ingest', validate('json', ingestTextRequestSchema), async c => {
   const { db, tenantId, user, cfg, auth, defer } = withAuthAndDb(c)
   guardPermission(c, 'create', 'Document')
@@ -145,6 +150,12 @@ aiDocumentsRouter.post('/ingest', validate('json', ingestTextRequestSchema), asy
 
 // ---- POST /api/ai/documents/upload ----------------------------------------------------------------
 
+/**
+ * Uploads a file (PDF, Office, HTML, XML, CSV, JSON, Markdown or text) as a new document,
+ * converting and indexing it. Requires `create Document`; returns 413 `payload_too_large` over the
+ * upload limit, 415 `unsupported_media_type` for other types, and 503 `storage_not_configured` or
+ * `conversion_not_configured` when the binding or converter is missing.
+ */
 aiDocumentsRouter.post('/upload', uploadBodyLimit, async c => {
   const { db, tenantId, user, cfg, auth, defer } = withAuthAndDb(c)
   guardPermission(c, 'create', 'Document')
@@ -256,6 +267,10 @@ function stringField(form: FormData | null, name: string): string | undefined {
 
 // ---- GET /api/ai/documents ------------------------------------------------------------------------
 
+/**
+ * Lists documents visible to the caller, optionally filtered by `status`. Requires `read Document`;
+ * paginated.
+ */
 aiDocumentsRouter.get('/', validate('query', documentListQuerySchema), async c => {
   const { db, tenantId, auth } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Document')
@@ -295,6 +310,7 @@ aiDocumentsRouter.get('/', validate('query', documentListQuerySchema), async c =
 
 // ---- POST /api/ai/documents/search ----------------------------------------------------------------
 
+/** Runs a hybrid search over the tenant's visible document chunks. Requires `read Document`. */
 aiDocumentsRouter.post('/search', validate('json', searchRequestSchema), async c => {
   const { db, cfg, auth } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Document')
@@ -306,6 +322,10 @@ aiDocumentsRouter.post('/search', validate('json', searchRequestSchema), async c
 
 // ---- GET /api/ai/documents/:id --------------------------------------------------------------------
 
+/**
+ * Returns one document's metadata and sharing groups. Requires `read Document`; an invisible or
+ * unknown document is a 404.
+ */
 aiDocumentsRouter.get('/:id', async c => {
   const { db, tenantId, auth } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Document')
@@ -370,6 +390,11 @@ aiDocumentsRouter.get('/:id/card', async c => {
 
 // ---- DELETE /api/ai/documents/:id -----------------------------------------------------------------
 
+/**
+ * Deletes a document, its chunks and its original file. Requires `read Document`; only the
+ * document's owner or an admin with `delete Document` may delete it (403 otherwise), and an
+ * invisible document is a 404.
+ */
 aiDocumentsRouter.delete('/:id', async c => {
   const { db, tenantId, user, auth, defer, logger } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Document')

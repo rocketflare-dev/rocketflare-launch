@@ -1,5 +1,5 @@
 /**
- * `launch sessions start|say|ship|end|ls|show|preview-url` — coding sessions (Launch P3, spec/07)
+ * `launch sessions start|say|ship|end|ls|preview-url` — coding sessions (Launch P3, spec/07)
  * from a terminal: start one on an app, talk to it, ship it, end it. The same routes and the same
  * `@launch/shared/launch-sessions` schemas as the web page.
  *
@@ -19,9 +19,8 @@
  *   `--wait` is still accepted and changes nothing.
  * - `end <id>`, `ls <app> [--all]`, `preview-url <id> [--open]` (a 60-second grant URL — it is a
  *   credential for that preview, so it is printed only when asked for and never logged).
- * - `show <id>` (issue #8): the session and every boot it has had — each `boot.timing` row's
- *   phases, and how long the first turn after it took to answer (`turn.end` `firstTokenMs`). With
- *   `--json`: `{ session, boots }`.
+ * - `show`, `logs` and the debug actions (`resume`, `cancel`, `landing-retry`, `budget`,
+ *   `withdraw`, `attachments`, `attachment`) live in `sessions-debug.ts`.
  *
  * Polling, not SSE: the rows are the contract, `api.ts` is the one `fetch` site and speaks JSON,
  * and a CLI tailing a turn every second is cheap. `sleep` and `pollMs` are injectable so the tests
@@ -38,7 +37,6 @@ import {
   isShipGateRunning,
   previewGrantResponseSchema,
   type Session,
-  type SessionBootTimingData,
   type SessionEvent,
   type SessionShipReopenedData,
   type SessionStatus,
@@ -46,7 +44,6 @@ import {
   SHIP_GATE_STEP_LABELS,
   sessionBootTimingDataSchema,
   sessionDetailResponseSchema,
-  sessionEventsResponseSchema,
   sessionListResponseSchema,
   sessionPrResponseSchema,
   sessionShipCiDataSchema,
@@ -80,7 +77,17 @@ import chalk from 'chalk'
 import { type ApiClient, CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
+import { type ConfirmOptions, confirmConsequence } from '../utils/input'
 import { formatDate, renderTable } from '../utils/output'
+import { uploadSessionImages } from './sessions-attach'
+import {
+  defaultSleep,
+  getSession,
+  readEventsAfter,
+  secs,
+  sessionPath,
+  usd,
+} from './sessions-common'
 
 export interface SessionPollOptions {
   /** Between polls. Default 1 s. */
@@ -92,20 +99,11 @@ export interface SessionPollOptions {
   now?: () => number
 }
 
-const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
-
-const sessionPath = (id: string) => `/api/sessions/${encodeURIComponent(id)}`
-
-const usd = (microcents: number) => `$${(microcents / 100_000_000).toFixed(2)}`
-
-/** `0.4s`, `12.3s` — a boot phase's duration. Pure. */
-const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
-
 /** `v1.4.2`. Pure. */
-const versionLabel = (version: string) => (version.startsWith('v') ? version : `v${version}`)
+export const versionLabel = (version: string) => (version.startsWith('v') ? version : `v${version}`)
 
 /** The last lines of a red CI check's log (redacted by the server) a follow prints. */
-const CI_TAIL_LINES = 20
+export const CI_TAIL_LINES = 20
 
 function sessionUrl(ctx: CommandContext, appSlug: string, id: string): string {
   return `${ctx.config.serverUrl.replace(/\/+$/, '')}/apps/${appSlug}/sessions/${id}`
@@ -113,10 +111,6 @@ function sessionUrl(ctx: CommandContext, appSlug: string, id: string): string {
 
 async function resolveApp(client: ApiClient, app: string) {
   return client.get(`/api/apps/${encodeURIComponent(app)}`, { schema: appDetailSchema })
-}
-
-async function getSession(client: ApiClient, id: string): Promise<Session> {
-  return (await client.get(sessionPath(id), { schema: sessionDetailResponseSchema })).session
 }
 
 // ---- start / ls / end ----------------------------------------------------------------------
@@ -192,7 +186,19 @@ export async function runSessionsList(
   )
 }
 
-export async function runSessionsEnd(ctx: CommandContext, id: string): Promise<void> {
+export async function runSessionsEnd(
+  ctx: CommandContext,
+  id: string,
+  options: ConfirmOptions = {}
+): Promise<void> {
+  // The page's dialog, in words: the branch survives, the sandbox does not.
+  const go = await confirmConsequence(
+    ctx,
+    options,
+    'End this session?',
+    'The sandbox and its database are deleted, and the chat can no longer continue. Every change so far stays on its branch.'
+  )
+  if (!go) return
   const { data, raw } = await requireClient(ctx).request('POST', `${sessionPath(id)}/end`, {
     schema: sessionDetailResponseSchema,
   })
@@ -221,96 +227,14 @@ export async function runSessionsPreviewUrl(
   )
 }
 
-// ---- show: the session and its boots (issue #8) -------------------------------------------
-
-/** One boot as `sessions show` reports it. */
-export interface SessionBootReport extends SessionBootTimingData {
-  seq: number
-  at: Date
-  /** How long the first turn after this boot took to answer, when one has ended since. */
-  firstTokenMs?: number
-}
-
-/** Every `boot.timing` row, oldest first, each with the first turn that ended after it. Pure. */
-export function sessionBoots(events: readonly SessionEvent[]): SessionBootReport[] {
-  const boots: SessionBootReport[] = []
-  let open: SessionBootReport | null = null
-  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
-    if (event.type === 'boot.timing') {
-      const parsed = sessionBootTimingDataSchema.safeParse(event.data)
-      if (!parsed.success) continue
-      open = { ...parsed.data, seq: event.seq, at: event.at }
-      boots.push(open)
-    } else if (event.type === 'turn.end' && open) {
-      const ms = sessionTurnEndDataSchema.safeParse(event.data).data?.firstTokenMs
-      if (ms !== undefined) open.firstTokenMs = ms
-      open = null
-    }
-  }
-  return boots
-}
-
-const BOOT_KIND_WORDS: Record<SessionBootTimingData['kind'], string> = {
-  boot: 'first boot',
-  warm: 'warm resume',
-  cold: 'cold resume',
-}
-
-export async function runSessionsShow(ctx: CommandContext, id: string): Promise<void> {
-  const client = requireClient(ctx)
-  const session = await getSession(client, id)
-  const boots = sessionBoots((await readEventsAfter(client, id, 0)).items)
-  ctx.out.data({ session, boots }, () => {
-    const lines = [
-      `${chalk.bold(session.title)} ${chalk.dim(session.id)}`,
-      `  ${session.status} · ${session.turnCount} turns · ${usd(session.costMicrocents)}`,
-    ]
-    if (boots.length === 0) lines.push(chalk.dim('  No boot timing recorded yet.'))
-    for (const boot of boots) {
-      const reply =
-        boot.firstTokenMs !== undefined ? ` · first reply after ${secs(boot.firstTokenMs)}` : ''
-      lines.push(
-        '',
-        `${BOOT_KIND_WORDS[boot.kind]} ${chalk.dim(formatDate(boot.at))} · ${secs(boot.totalMs)}${reply}`,
-        renderTable(boot.phases, [
-          { header: 'Phase', value: p => p.phase },
-          { header: 'Start', value: p => `+${secs(p.startMs)}` },
-          { header: 'Took', value: p => secs(p.ms) },
-        ])
-      )
-      if (boot.traceId) lines.push(chalk.dim(`  ${ctx.binName} traces show ${boot.traceId}`))
-    }
-    return lines.join('\n')
-  })
-}
-
 // ---- following the event log ---------------------------------------------------------------
 
-/** Every row after `afterSeq`, all pages. */
-async function readEventsAfter(
-  client: ApiClient,
-  id: string,
-  afterSeq: number
-): Promise<{ items: SessionEvent[]; nextSeq: number }> {
-  let cursor = afterSeq
-  const items: SessionEvent[] = []
-  for (let page = 0; page < 100; page++) {
-    const batch = await client.get(`${sessionPath(id)}/events`, {
-      schema: sessionEventsResponseSchema,
-      query: { afterSeq: cursor },
-    })
-    if (batch.items.length === 0 || batch.nextSeq <= cursor) break
-    items.push(...batch.items)
-    cursor = batch.nextSeq
-  }
-  return { items, nextSeq: cursor }
-}
-
 /** "Running the tests" → "running the tests", inside a sentence. */
-const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
+export const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 
 /** Who fixes a red gate step, as the session page names it. */
-const agentOf = (runtime: AgentRuntimeId | undefined) => (runtime === 'codex' ? 'Codex' : 'Claude')
+export const agentOf = (runtime: AgentRuntimeId | undefined) =>
+  runtime === 'codex' ? 'Codex' : 'Claude'
 
 /**
  * One row as a human line, or null for rows a terminal reader does not need. The ship's rows are
@@ -513,7 +437,7 @@ function emit(
 const TURN_SETTLED = new Set(['turn.end', 'turn.failed', 'turn.interrupted', 'budget.reached'])
 
 /** Statuses in which the session is not going to write more rows for this wait. */
-const SETTLED_FOR_TURN: readonly SessionStatus[] = [
+export const SETTLED_FOR_TURN: readonly SessionStatus[] = [
   'ready',
   'blocked',
   'suspended',
@@ -539,6 +463,10 @@ function upgradeRefusal(ctx: CommandContext, id: string, err: unknown): unknown 
 
 export interface SessionsSayOptions extends SessionPollOptions {
   follow?: boolean
+  /** Image files to upload and send with the message (`sessions-attach.ts`). */
+  attach?: string[]
+  /** Images already uploaded with `sessions attach`. */
+  attachId?: string[]
 }
 
 export async function runSessionsSay(
@@ -549,14 +477,21 @@ export async function runSessionsSay(
 ): Promise<void> {
   const client = requireClient(ctx)
   const text = message.trim()
-  if (!text) throw new CliError('The message is empty')
+  const files = options.attach ?? []
+  if (!text && files.length === 0 && !options.attachId?.length)
+    throw new CliError('The message is empty')
+  // Images first, as the composer uploads them before it sends: a bad file sends nothing.
+  const attachments = [
+    ...(options.attachId ?? []),
+    ...(files.length ? (await uploadSessionImages(client, id, files)).map(a => a.id) : []),
+  ]
 
   // Where the log is now, so --follow prints only what this turn writes.
   const start = options.follow ? (await readEventsAfter(client, id, 0)).nextSeq : 0
   const { data, raw } = await client
     .request('POST', `${sessionPath(id)}/turns`, {
       schema: sessionDetailResponseSchema,
-      body: { message: text },
+      body: attachments.length ? { message: text, attachments } : { message: text },
     })
     .catch(err => {
       throw upgradeRefusal(ctx, id, err)

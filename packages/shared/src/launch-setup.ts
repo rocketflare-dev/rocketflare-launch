@@ -41,6 +41,9 @@ export const CREDENTIAL_KINDS = [
 export const credentialKindSchema = z.enum(CREDENTIAL_KINDS)
 export type CredentialKind = z.infer<typeof credentialKindSchema>
 
+/** `/api/platform/setup/credentials/:kind`'s path param. */
+export const credentialKindParamSchema = z.object({ kind: credentialKindSchema })
+
 export const CREDENTIAL_CHECK_STATUSES = ['ok', 'warning', 'failed'] as const
 export const credentialCheckStatusSchema = z.enum(CREDENTIAL_CHECK_STATUSES)
 export type CredentialCheckStatus = z.infer<typeof credentialCheckStatusSchema>

@@ -13,6 +13,11 @@ import { validate } from '../utils/routes/validate'
 
 export const aiUsageRouter = createRouter()
 
+/**
+ * Returns token usage totals per provider, model and feature for the tenant (`from`/`to`, default
+ * the last 30 days). Requires `manage AiConfig` (admin+); 400 `invalid_range` when `from` is not
+ * before `to`.
+ */
 aiUsageRouter.get('/summary', validate('query', aiUsageSummaryQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'AiConfig')

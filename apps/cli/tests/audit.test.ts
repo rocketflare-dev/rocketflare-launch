@@ -10,7 +10,12 @@ import { join } from 'node:path'
 import { auditVerifySchema } from '@launch/shared/launch-audit'
 import { Command } from 'commander'
 import { afterEach, describe, expect, it } from 'vitest'
-import { registerAuditCommands, runAuditExport, runAuditVerify } from '../src/commands/audit'
+import {
+  registerAuditCommands,
+  runAuditExport,
+  runAuditList,
+  runAuditVerify,
+} from '../src/commands/audit'
 import { EXIT_ERROR, EXIT_FORBIDDEN, EXIT_NOT_LOGGED_IN, exitCodeFor } from '../src/errors'
 import {
   captureError,
@@ -248,16 +253,79 @@ describe('audit export', () => {
 })
 
 describe('registerAuditCommands', () => {
-  it('adds `audit verify` and `audit export` (with a required --out and a checked --format)', () => {
+  it('adds `audit ls`, `audit verify` and `audit export` (with a required --out and a checked --format)', () => {
     const program = new Command()
     registerAuditCommands(program, handler => async () => handler as never)
     const audit = program.commands.find(c => c.name() === 'audit')
-    expect(audit?.commands.map(c => c.name()).sort()).toEqual(['export', 'verify'])
+    expect(audit?.commands.map(c => c.name()).sort()).toEqual(['export', 'ls', 'verify'])
     const exportCmd = audit?.commands.find(c => c.name() === 'export')
     const out = exportCmd?.options.find(o => o.long === '--out')
     expect(out?.mandatory).toBe(true)
     const format = exportCmd?.options.find(o => o.long === '--format')
     expect(format?.defaultValue).toBe('json')
     expect(() => format?.parseArg?.('xml', undefined)).toThrow(/--format must be one of/)
+  })
+})
+
+const auditRow = (seq: number, over: Record<string, unknown> = {}) => ({
+  id: `0f0e0d0c-0b0a-4908-8706-0504030201${String(seq).padStart(2, '0')}`,
+  tenantId: TENANT_ID,
+  at: new Date(Date.UTC(2026, 8, 30, 0, 0, 0) - seq * 3_600_000).toISOString(),
+  actorType: 'user',
+  actorUserId: null,
+  actorEmail: seq % 2 ? 'ada@example.com' : 'bob@example.com',
+  action: 'app.imported',
+  targetType: 'App',
+  targetId: 'x',
+  appId: null,
+  summary: {},
+  requestId: null,
+  approvalId: null,
+  ip: null,
+  userAgent: null,
+  ...over,
+})
+
+describe('audit ls', () => {
+  it('forwards app/action/limit and --json prints { items, nextCursor }', async () => {
+    const store = await loggedInStore()
+    const body = { items: [auditRow(1), auditRow(2)], nextCursor: 'c2' }
+    const { fetch, calls } = mockFetch({ '/api/audit': () => jsonResponse(body) })
+    const { ctx, out } = await testContext({ store, fetch, json: true })
+    await runAuditList(ctx, { app: EVENT, action: 'app', limit: 2 })
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({
+      appId: EVENT,
+      action: 'app',
+      limit: '2',
+    })
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(out.content())).toEqual(body)
+  })
+
+  it('--actor and --from filter here, walking cursor pages until the log is older than --from', async () => {
+    const store = await loggedInStore()
+    const pages: Record<string, unknown> = {
+      first: { items: [auditRow(1), auditRow(2)], nextCursor: 'p2' },
+      p2: { items: [auditRow(3), auditRow(4), auditRow(30)], nextCursor: 'p3' },
+    }
+    const { fetch, calls } = mockFetch({
+      '/api/audit': url => jsonResponse(pages[url.searchParams.get('cursor') ?? 'first']),
+    })
+    const { ctx, out } = await testContext({ store, fetch })
+    await runAuditList(ctx, { actor: 'ADA@example.com', from: '2026-09-29T12:00:00Z' })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.url.searchParams.get('limit')).toBe('200')
+    const text = out.content()
+    expect(text.match(/ada@example\.com/g)).toHaveLength(2)
+    expect(text).not.toContain('bob@example.com')
+  })
+
+  it('403 → exit 3', async () => {
+    const store = await loggedInStore()
+    const { fetch } = mockFetch({
+      '/api/audit': () => jsonResponse({ error: 'Forbidden', statusCode: 403 }, 403),
+    })
+    const { ctx } = await testContext({ store, fetch })
+    expect(exitCodeFor(await captureError(runAuditList(ctx)))).toBe(EXIT_FORBIDDEN)
   })
 })

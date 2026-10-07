@@ -47,11 +47,18 @@ function grantViewer(c: AppContext) {
   return { ...ctx, viewer: approvalViewerOf({ ...ctx.auth, tenantId: ctx.tenantId }) }
 }
 
+/** Return an app's shared config view. Requires `read App`. */
 appConfigRouter.get('/:id/config', async c => {
   const { db, viewer } = grantViewer(c)
   return c.json(appConfigSchema.parse(await appConfigView(db, viewer, uuidParam(c, 'id'))))
 })
 
+/**
+ * Request a grant of a shared resource for an app's environment. The app's owners and admins may
+ * call it (the service's own check; the route only guards `read App`). 503
+ * `grants_not_configured` before any row; 409 `grant_already_held`, `values_not_set` or
+ * `shared_resource_archived`.
+ */
 appConfigRouter.post('/:id/grants', validate('json', requestGrantSchema), async c => {
   const { viewer } = grantViewer(c)
   const result = await requestGrant(
@@ -64,6 +71,10 @@ appConfigRouter.post('/:id/grants', validate('json', requestGrantSchema), async 
   return c.json(requestGrantResponseSchema.parse(result), 202)
 })
 
+/**
+ * Revoke a grant of a shared resource from an app. The app's owners, the resource's owners or
+ * admins may call it (the service's own check). 404 for a grant of another app.
+ */
 appConfigRouter.delete('/:id/grants/:gid', validate('json', revokeGrantSchema), async c => {
   const { db, tenantId, viewer } = grantViewer(c)
   const app = await getAppRow(db, tenantId, uuidParam(c, 'id'))
@@ -83,6 +94,10 @@ appConfigRouter.delete('/:id/grants/:gid', validate('json', revokeGrantSchema), 
   return c.json(grantActionResponseSchema.parse(body), 202)
 })
 
+/**
+ * Re-push a grant's values to the app's deployment. Requires `read App` (the service checks
+ * further).
+ */
 appConfigRouter.post('/:id/grants/:gid/repush', async c => {
   const { viewer } = grantViewer(c)
   const result = await repushGrant(

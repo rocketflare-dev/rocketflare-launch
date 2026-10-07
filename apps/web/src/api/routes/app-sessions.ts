@@ -32,6 +32,14 @@ import { validate } from '../utils/routes/validate'
 
 export const appSessionsRouter = createRouter()
 
+/**
+ * Start a new coding session on an app, optionally seeded from a failed release to fix it.
+ * Requires `read App` and `create Session`. 409 `sessions_paused`, `session_limit`,
+ * `session_budget_exhausted`, `session_runtime_disabled`, `agent_credential_not_allowed` or
+ * `agent_credential_required`; 503 `sessions_not_configured` without `SESSION_WORKFLOW`; 404 for
+ * another app's release, 409 `release_not_retryable` for one that is not failing. Audits
+ * `session.created` and enqueues the session's Workflow.
+ */
 appSessionsRouter.post('/:id/sessions', validate('json', createSessionRequestSchema), async c => {
   guardPermission(c, 'read', 'App')
   guardPermission(c, 'create', 'Session')
@@ -59,6 +67,10 @@ appSessionsRouter.post('/:id/sessions', validate('json', createSessionRequestSch
   return c.json({ session: toSessionDetail(session, true) }, 202)
 })
 
+/**
+ * List an app's coding sessions. Requires `read App` and `read Session`. An ordinary member sees
+ * only their own sessions; the app's owners and admins see every session on it.
+ */
 appSessionsRouter.get('/:id/sessions', validate('query', sessionListQuerySchema), async c => {
   guardPermission(c, 'read', 'App')
   const auth = guardPermission(c, 'read', 'Session')

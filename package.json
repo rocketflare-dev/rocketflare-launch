@@ -23,6 +23,7 @@
     "test:db:up": "pnpm --filter @launch/web test:db:up",
     "test:neon": "pnpm --filter @launch/web test:neon",
     "test:db:down": "pnpm --filter @launch/web test:db:down",
+    "api:catalog": "pnpm --filter @launch/web api:catalog",
     "db:generate": "pnpm --filter @launch/web db:generate",
     "db:migrate": "pnpm --filter @launch/web db:migrate",
     "db:migrate:ci": "pnpm --filter @launch/web db:migrate:ci",

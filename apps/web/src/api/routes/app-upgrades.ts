@@ -23,6 +23,12 @@ import { deployableApp } from './app-deploys'
 
 export const appUpgradesRouter = createRouter()
 
+/**
+ * Start a kit upgrade session for an app. Requires `mayDeployApp` (the app's owners and admins)
+ * and `create Session`. 409 `app_archived`, `app_has_no_repo`, `upgrade_no_pin_tag`,
+ * `upgrade_not_behind` or `upgrade_open`, plus any ordinary session-start refusal
+ * (`session_limit`, `session_budget_exhausted`, `sessions_paused`…). Audits `app.upgrade.started`.
+ */
 appUpgradesRouter.post('/:id/upgrade', async c => {
   guardPermission(c, 'create', 'Session')
   const { db, cfg, tenantId, user, realtime, app } = await deployableApp(c)
@@ -42,6 +48,7 @@ appUpgradesRouter.post('/:id/upgrade', async c => {
   return c.json(body, 202)
 })
 
+/** List an app's kit upgrade history. Requires `read App`. */
 appUpgradesRouter.get('/:id/upgrades', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)

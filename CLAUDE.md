@@ -12,7 +12,7 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
 > before assuming a capability exists; update it when you change one.**
 > **Setup**: asked for setup help → run `/launch-setup` (it drives `scripts/bootstrap.sh --no-dev`, then
 > starts the server): show each `✔ n/10` line, stop on failure. By hand: `SETUP.md` Part 1.
-> `/launch-setup`, `/launch-preflight`, `/launch-traces`, `/launch-evals`, `/launch-how-do-i` and
+> `/launch-setup`, `/launch-preflight`, `/launch-cli`, `/launch-traces`, `/launch-evals`, `/launch-how-do-i` and
 > `/launch-plugin` you may run yourself; **`/launch-deploy` is user-invoked only** (it creates paid resources) — asked to
 > deploy, point the user at `docs/DEPLOYMENT.md` and tell them to type `/launch-deploy`. An instance is one git-ignored
 > root file, `launch.deploy.env` (values never read by an agent: `pnpm provision check` reports names only), its ids in
@@ -50,7 +50,7 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
 - **Analytics**: not core — the `analytics` PLUGIN (D31, committed and recorded in
   `launch.plugins.json`): drizzle-cube at `/cubejs-api`+`/mcp`, fact tables on the `:15` cron, dashboards
 - **UI**: React 18 + Vite, DaisyUI 5 / Tailwind v4, React Router 6, TanStack Query 5; served as `ASSETS`
-- **CLI**: commander + chalk + open; `tsx` in dev, `tsc` → `dist/cli.js` (bin `launch`)
+- **CLI**: commander + chalk + open; `tsx` in dev, esbuild → `dist/cli.js` (bin `launch`)
 - **Tests**: vitest projects `api` · `api-isolated` · `driver` · `ui` · `config` (Postgres :5499 — not the kit's :5433; `postgres`
   in the gate, `pnpm test:neon` / CI `test-neon` through the local Neon proxy); cli; the
   eval kit's unit tests (`apps/evals/tests`). Evals themselves are `pnpm eval`, outside the gate
@@ -64,6 +64,7 @@ pnpm dev:db:up && pnpm db:migrate  # Postgres on the first free port from :5432 
 pnpm seed [--demo] && pnpm dev  # tenant/users/key (+ plugins' demo rows); wrangler :3001 + vite :3000 (strict ports)
 pnpm dev:stop · pnpm dev:status · pnpm dev:db:status  # kill this repo's dev tree / port holders / every dev database
 pnpm cli login --server http://localhost:3001  # browser → ~/.launch/config.json, then whoami
+pnpm api:catalog  # regenerate the CLI's API catalog + zod registry after changing a route
 pnpm test:db:up && pnpm test  # every package; web loads .env.test (postgres driver)
 pnpm test:neon · pnpm dev:db:up --neon|--postgres  # D35: the suite / local dev on the neon driver via the proxy
 pnpm eval [suite] [--model x] [--compare] · pnpm eval:baseline · pnpm eval:view  # real-model evals (D33, docs/EVALS.md)
@@ -112,7 +113,8 @@ spec/ · spikes/    the product spec and the feasibility spikes behind it
                    launch-how-do-i (+ example-orders.md) ·
                    launch-plugin (+ reference.md — install/upgrade/remove a plugin, D31) ·
                    launch-traces (debug a run from its span tree; pick a tracing backend, D32) ·
-                   launch-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33)
+                   launch-evals (+ reference.md — author, run, compare, harvest, baseline, improve; D33) ·
+                   launch-cli (+ reference.md — drive and debug any Launch server from the terminal)
 ```
 
 **`packages/shared`.** Private, no build: `@launch/shared/<module>` → `./src/<module>.ts` (incl. `ai/*`,
@@ -122,10 +124,11 @@ protocol's own schemas on both sides, which a mirror cannot give. A fifth depend
 written justification, and `apps/web/tests/config/shared-imports.test.ts` enforces the list.
 
 **`apps/cli`.** `login` opens `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback`; the server
-mints a tenant API key `cli:<host>` → `?key=&tenant_id=&tenant_name=`; stored `0600` in
-`~/.launch/config.json` (`LAUNCH_API_KEY`/`LAUNCH_URL` for CI). Also `logout|whoami|status|config`,
-`groups|features|traces|feedback|evals`, and Launch's `sessions` (P3), `approvals|releases|audit`
-(P4), `shared|grants` (P5) and `apps show|upgrade` (P6 6c) (`--json` for raw output; `.claude/rules/cli.md`)
+mints a tenant API key `cli:<host>` (`--admin`: an admin-scoped `cli-admin:<host>` for `admin`/`platform`)
+→ stored `0600` in `~/.launch/config.json` as a named server (`servers`, `--profile`/`LAUNCH_PROFILE`;
+`LAUNCH_API_KEY`/`LAUNCH_URL` for CI). Every UI action has a command (`--json` for raw output): the
+tree is `launch commands`, the routes `launch api ls|show|schema|call`; `docs/CONCEPTS.md` §11,
+`.claude/rules/cli.md`
 
 ## Config model
 
@@ -153,6 +156,10 @@ code-quality.md · cloudflare.md. Runbooks: `docs/DEPLOYMENT.md` (deploy an inst
   table calls `tenantIsolation()` (RLS inert; `rls-coverage.test.ts` enforces), a plugin's tables
   included — and a plugin adding a query surface of its own (the analytics plugin's cubes) owns the
   test that proves it scopes, because the kit cannot
+- **CLI parity** (issue #6): what a user can do or see in the app, an agent can do or see with `launch` — a
+  new `/api` route ships with its command (or a reasoned entry in `cli-parity-exclusions.ts`) and a
+  one-line summary comment; `cli-parity.test.ts` + `api-catalog.test.ts` enforce it, a PostToolUse hook
+  (`scripts/cli-parity-nudge.mjs`) reminds. Debugging from a terminal: the `launch-cli` skill
 - **Contracts first**: zod schema in `packages/shared/src/` → route `validate()` → UI/CLI parse the same
   schema; errors are `{ error, statusCode, code?, details? }`
 - **shared is private** — never publish it; never import `apps/web` from `packages/shared` or `apps/cli`

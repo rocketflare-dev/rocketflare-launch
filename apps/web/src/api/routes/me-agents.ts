@@ -57,6 +57,10 @@ export const meAgentsRouter = createRouter()
 
 // ---- GET /api/me/agent-credentials ---------------------------------------------------------------
 
+/**
+ * Returns the runtimes this deployment offers, the caller's own connected accounts and any logins
+ * in flight. Requires `read Session`.
+ */
 meAgentsRouter.get('/agent-credentials', async c => {
   guardPermission(c, 'read', 'Session')
   const { db, tenantId, user } = withAuthAndDb(c)
@@ -74,6 +78,11 @@ meAgentsRouter.get('/agent-credentials', async c => {
 
 // ---- DELETE /api/me/agent-credentials/:runtime ---------------------------------------------------
 
+/**
+ * Disconnects the caller's own credential for one agent runtime. Requires `create Session`;
+ * returns 404 `agent_credential_not_found` when nothing is connected. Audited as
+ * `agent_credential.removed`.
+ */
 meAgentsRouter.delete(
   '/agent-credentials/:runtime',
   validate('param', agentRuntimeParamSchema),
@@ -96,6 +105,12 @@ meAgentsRouter.delete(
 
 // ---- POST /api/me/agent-logins -------------------------------------------------------------------
 
+/**
+ * Starts an interactive login for the caller to connect one agent runtime, via
+ * `AGENT_LOGIN_WORKFLOW`. Requires `create Session`; returns 409 `agent_logins_disabled`, 503
+ * `agent_logins_not_configured`, 409 `session_sandbox_unavailable` or 409
+ * `agent_login_in_progress` before any row is written.
+ */
 meAgentsRouter.post('/agent-logins', validate('json', startAgentLoginRequestSchema), async c => {
   guardPermission(c, 'create', 'Session')
   const { db, cfg, tenantId, user } = withAuthAndDb(c)
@@ -116,6 +131,7 @@ meAgentsRouter.post('/agent-logins', validate('json', startAgentLoginRequestSche
 
 // ---- GET /api/me/agent-logins/:id ----------------------------------------------------------------
 
+/** Returns the status of one of the caller's own agent logins, for the modal to poll. Requires `read Session`. */
 meAgentsRouter.get('/agent-logins/:id', async c => {
   guardPermission(c, 'read', 'Session')
   const { db, tenantId, user } = withAuthAndDb(c)
@@ -125,6 +141,11 @@ meAgentsRouter.get('/agent-logins/:id', async c => {
 
 // ---- POST /api/me/agent-logins/:id/code ----------------------------------------------------------
 
+/**
+ * Submits the verification code for one of the caller's own in-progress agent logins. Requires
+ * `create Session`; returns 409 `agent_login_not_waiting` if the login isn't waiting for a code.
+ * The code itself is never echoed back or logged.
+ */
 meAgentsRouter.post(
   '/agent-logins/:id/code',
   validate('json', submitAgentLoginCodeRequestSchema),
@@ -141,6 +162,10 @@ meAgentsRouter.post(
 
 // ---- POST /api/me/agent-logins/:id/cancel --------------------------------------------------------
 
+/**
+ * Cancels one of the caller's own in-progress agent logins. Requires `create Session`; returns 409
+ * `agent_login_finished` if it already finished.
+ */
 meAgentsRouter.post('/agent-logins/:id/cancel', async c => {
   guardPermission(c, 'create', 'Session')
   const { db, tenantId, user, logger } = withAuthAndDb(c)

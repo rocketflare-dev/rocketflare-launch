@@ -24,6 +24,8 @@ import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/rocketflare-dev'
 import { loadConfig } from '@/config'
 import { aiUsage, apps, auditEvents, sessions } from '@/db/schema'
 import {
+  bearerHeader,
+  createTestApiKey,
   createTestGlobalAdmin,
   createTestSession,
   createTestUser,
@@ -311,6 +313,30 @@ describe('drain and undrain', () => {
       .from(auditEvents)
       .where(and(eq(auditEvents.tenantId, f.tenant.id), eq(auditEvents.targetType, 'deployment')))
     expect(audit.map(a => a.action).sort()).toEqual(['sessions.drained', 'sessions.undrained'])
+  })
+})
+
+describe('drain through an admin API key (launch admin drain)', () => {
+  it('an admin-scoped Bearer key drains and undrains with no cookie, Origin or CSRF header', async () => {
+    const f = await seedSessionApp(db, createFakeCloud())
+    const admin = await createTestGlobalAdmin(db)
+    await linkUserToTenant(db, admin.id, f.tenant.id, 'owner')
+    const { key } = await createTestApiKey(db, f.tenant.id, admin.id, { scope: 'admin' })
+    const bearer = bearerHeader(key)
+    const drained = await post('/api/admin/sessions/drain', bearer)
+    expect(drained.status).toBe(200)
+    expect(drainResponseSchema.parse(await json(drained)).paused).toBe(true)
+    const undrained = await post('/api/admin/sessions/undrain', bearer)
+    expect(drainResponseSchema.parse(await json(undrained))).toEqual({
+      paused: false,
+      suspended: 0,
+    })
+
+    // The same person's ordinary key cannot.
+    const tenantKey = await createTestApiKey(db, f.tenant.id, admin.id)
+    const refused = await post('/api/admin/sessions/drain', bearerHeader(tenantKey.key))
+    expect(refused.status).toBe(403)
+    expect(await json(refused)).toMatchObject({ code: 'admin_key_required' })
   })
 })
 

@@ -16,11 +16,16 @@ import { validate } from '../utils/routes/validate'
 
 export const tenantsRouter = createRouter()
 
+/** Lists the caller's tenant summaries, for the organisation switcher. Tenant-free. */
 tenantsRouter.get('/', async c => {
   const { db, user } = withAuth(c)
   return c.json(await listTenantSummaries(db, user.id))
 })
 
+/**
+ * Creates a new organisation with the caller as its owner and switches the session to it.
+ * Tenant-free; 404 `tenancy_mode_single` in single-tenant mode.
+ */
 tenantsRouter.post('/', validate('json', createTenantRequestSchema), async c => {
   const { db, cfg, user, auth } = withAuth(c)
   requireMultiTenant(cfg)

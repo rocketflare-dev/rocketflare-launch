@@ -36,6 +36,10 @@ import { validate } from '../utils/routes/validate'
 
 export const auditRouter = createRouter()
 
+/**
+ * Lists the tenant's audit log, newest first, filterable by `appId` and `action`. Requires `read
+ * AuditEvent` (admin+ and support); cursor-paginated via `nextCursor`.
+ */
 auditRouter.get('/', validate('query', auditListQuerySchema), async c => {
   guardPermission(c, 'read', 'AuditEvent')
   const { db, tenantId } = withAuthAndDb(c)
@@ -43,6 +47,10 @@ auditRouter.get('/', validate('query', auditListQuerySchema), async c => {
   return c.json(await listAudit(db, tenantId, filters, cursor))
 })
 
+/**
+ * Recomputes and verifies the tenant's audit hash chain. Requires `read AuditEvent` (admin+ and
+ * support); reports `ok`, rows checked, the last sealed `seq`, and the first broken link if any.
+ */
 auditRouter.get('/verify', async c => {
   guardPermission(c, 'read', 'AuditEvent')
   const { db, tenantId } = withAuthAndDb(c)
@@ -54,6 +62,11 @@ const EXPORT_TYPES: Record<AuditExportFormat, { contentType: string; extension: 
   csv: { contentType: 'text/csv; charset=utf-8', extension: 'csv' },
 }
 
+/**
+ * Streams the tenant's audit log as JSON Lines or CSV (`format=json|csv`), filterable by `appId`,
+ * `action`, `from`/`to`. Requires `read AuditEvent` (admin+ and support); records an
+ * `audit.exported` audit event before the stream opens.
+ */
 auditRouter.get('/export', validate('query', auditExportQuerySchema), async c => {
   guardPermission(c, 'read', 'AuditEvent')
   const { db, tenantId, logger } = withAuthAndDb(c)

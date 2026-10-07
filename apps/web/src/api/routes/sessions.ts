@@ -49,6 +49,10 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
   return { ...ctx, session, canManage }
 }
 
+/**
+ * Return a coding session's detail, reconciling a boot or turn whose Workflow died under it
+ * first. Requires `read Session`; a pending merge's reviewer may read but not drive it.
+ */
 sessionsRouter.get('/:id', async c => {
   const { db, logger, realtime, session, canManage } = await visibleSession(c, 'read')
   // A boot or turn whose Workflow died under it is settled here, throttled (`reconcile.ts`): a

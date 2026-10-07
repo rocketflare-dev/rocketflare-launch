@@ -230,7 +230,7 @@ describe('releases retry / cancel', () => {
         ),
     })
     const { ctx, out } = await testContext({ store: await store(), fetch })
-    await runReleasesCancel(ctx, 'expenses', '1.4.0')
+    await runReleasesCancel(ctx, 'expenses', '1.4.0', { yes: true })
     expect(calls[2]?.init.method).toBe('POST')
     expect(out.content()).toContain('Cancelled the deploy run of 1.4.0')
     expect(out.content()).toContain('releases retry expenses 1.4.0')
@@ -292,7 +292,7 @@ describe('releases rollback and main ahead (app page P3)', () => {
         ),
     })
     const { ctx, out } = await testContext({ store: await store(), fetch })
-    await runReleasesRollback(ctx, 'expenses', '1.4.0', { reason: 'Broke checkout' })
+    await runReleasesRollback(ctx, 'expenses', '1.4.0', { reason: 'Broke checkout', yes: true })
     expect(calls[2]?.url.pathname).toBe(`${releases}/${RELEASE_ID}/rollback`)
     expect(JSON.parse(String(calls[2]?.init.body))).toEqual({ reason: 'Broke checkout' })
     expect(out.content()).toContain('Asked to roll production back from 1.4.1 to 1.4.0')
@@ -300,7 +300,7 @@ describe('releases rollback and main ahead (app page P3)', () => {
     expect(out.content()).toContain('Migrations and secrets do not revert')
 
     const json = await testContext({ store: await store(), fetch, json: true })
-    await runReleasesRollback(json.ctx, 'expenses', '1.4.0')
+    await runReleasesRollback(json.ctx, 'expenses', '1.4.0', { yes: true })
     expect(JSON.parse(json.out.content())).toMatchObject({
       from: '1.4.1',
       approvalStatus: 'pending',
@@ -322,7 +322,7 @@ describe('releases rollback and main ahead (app page P3)', () => {
         ),
     })
     const { ctx } = await testContext({ store: await store(), fetch })
-    const error = await captureError(runReleasesRollback(ctx, 'expenses', '1.4.0'))
+    const error = await captureError(runReleasesRollback(ctx, 'expenses', '1.4.0', { yes: true }))
     expect(exitCodeFor(error)).toBe(EXIT_ERROR)
     expect(error.message).toMatch(/only an earlier release/)
   })

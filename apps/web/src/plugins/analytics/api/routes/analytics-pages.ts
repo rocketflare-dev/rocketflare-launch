@@ -67,6 +67,10 @@ function guardFactTables(ctx: RequestCtx, action: string): void {
 }
 export const analyticsPagesRouter = createRouter()
 
+/**
+ * Lists dashboard pages visible to the caller, first ensuring the tenant's template pages exist.
+ * Every member; row visibility (D29) restricts which pages they see.
+ */
 analyticsPagesRouter.get('/pages', async c => {
   const ctx: RequestCtx = requestCtx(c)
   await ensureDefaultDashboards(ctx.db, ctx.tenantId, ctx.userId, ctx.features)
@@ -82,6 +86,7 @@ analyticsPagesRouter.get('/pages', async c => {
   return c.json({ items: rows.map(row => toAnalyticsPageDto(row, grants.get(row.id) ?? [])) })
 })
 
+/** Creates a new, empty user-created dashboard page. Requires `manage Dashboard` (admin+). */
 analyticsPagesRouter.post('/pages', validate('json', createAnalyticsPageRequestSchema), async c => {
   const ctx: RequestCtx = requestCtx(c)
   ctx.guard('manage', DASHBOARD_SUBJECT)
@@ -113,6 +118,7 @@ analyticsPagesRouter.post('/pages', validate('json', createAnalyticsPageRequestS
   return c.json(toAnalyticsPageDto(row), 201)
 })
 
+/** Returns one dashboard page's config. Every member; an invisible or unknown page is a 404. */
 analyticsPagesRouter.get('/pages/:id', async c => {
   const ctx: RequestCtx = requestCtx(c)
   const id = ctx.uuid('id')
@@ -189,6 +195,10 @@ analyticsPagesRouter.put(
   }
 )
 
+/**
+ * Updates a dashboard page's name, description, config, order or default flag. Requires `manage
+ * Dashboard` (admin+); an unknown page is a 404.
+ */
 analyticsPagesRouter.patch(
   '/pages/:id',
   validate('json', updateAnalyticsPageRequestSchema),
@@ -223,6 +233,10 @@ analyticsPagesRouter.patch(
   }
 )
 
+/**
+ * Deletes a user-created dashboard page. Requires `manage Dashboard` (admin+); a template page
+ * cannot be deleted (403 `template_page` — reset it instead), and an unknown page is a 404.
+ */
 analyticsPagesRouter.delete('/pages/:id', async c => {
   const ctx: RequestCtx = requestCtx(c)
   ctx.guard('manage', DASHBOARD_SUBJECT)
@@ -254,6 +268,7 @@ analyticsPagesRouter.delete('/pages/:id', async c => {
   return c.body(null, 204)
 })
 
+/** Resets a template dashboard page back to its template definition. Requires `manage Dashboard` (admin+). */
 analyticsPagesRouter.post('/pages/:id/reset', async c => {
   const ctx: RequestCtx = requestCtx(c)
   ctx.guard('manage', DASHBOARD_SUBJECT)
@@ -271,6 +286,7 @@ analyticsPagesRouter.post('/pages/:id/reset', async c => {
   return c.json(toAnalyticsPageDto(row))
 })
 
+/** Lists the available dashboard templates (`{ key, name, description }`). Every member. */
 analyticsPagesRouter.get('/templates', c => {
   const ctx: RequestCtx = requestCtx(c)
   return c.json({
@@ -282,12 +298,17 @@ analyticsPagesRouter.get('/templates', c => {
   })
 })
 
+/**
+ * Creates any missing template dashboard pages and resets the existing ones to their templates.
+ * Requires `manage Dashboard` (admin+).
+ */
 analyticsPagesRouter.post('/templates/recreate', async c => {
   const ctx: RequestCtx = requestCtx(c)
   ctx.guard('manage', DASHBOARD_SUBJECT)
   return c.json(await recreateTemplates(ctx.db, ctx.tenantId, ctx.userId, ctx.features))
 })
 
+/** Reports each fact table's freshness for this tenant. Admin+ only (403 otherwise). */
 analyticsPagesRouter.get('/facts/status', async c => {
   const ctx: RequestCtx = requestCtx(c)
   guardFactTables(ctx, 'read fact-table status')

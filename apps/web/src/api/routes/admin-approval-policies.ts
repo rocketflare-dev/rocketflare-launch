@@ -28,6 +28,10 @@ import { validate } from '../utils/routes/validate'
 
 export const adminApprovalPoliciesRouter = createRouter()
 
+/**
+ * List approval policies for a kind, scope and scope id, filled in with code defaults. Requires
+ * `manage ApprovalPolicy` (the organisation's admins).
+ */
 adminApprovalPoliciesRouter.get('/', validate('query', approvalPolicyListQuerySchema), async c => {
   guardPermission(c, 'manage', 'ApprovalPolicy')
   const { db, tenantId } = withAuthAndDb(c)
@@ -35,6 +39,10 @@ adminApprovalPoliciesRouter.get('/', validate('query', approvalPolicyListQuerySc
   return c.json(body)
 })
 
+/**
+ * Upsert an approval policy on `(kind, scopeType, scopeId)`. Requires `manage ApprovalPolicy`. A
+ * group or app scope must belong to this organisation (404 otherwise). Audits `approval.policy.set`.
+ */
 adminApprovalPoliciesRouter.put('/', validate('json', putApprovalPolicySchema), async c => {
   guardPermission(c, 'manage', 'ApprovalPolicy')
   const { db, tenantId, user } = withAuthAndDb(c)
@@ -53,6 +61,7 @@ adminApprovalPoliciesRouter.put('/', validate('json', putApprovalPolicySchema), 
   return c.json(row)
 })
 
+/** Remove an approval policy by id. Requires `manage ApprovalPolicy`. Audits `approval.policy.removed`. */
 adminApprovalPoliciesRouter.delete('/:id', async c => {
   guardPermission(c, 'manage', 'ApprovalPolicy')
   const { db, tenantId } = withAuthAndDb(c)

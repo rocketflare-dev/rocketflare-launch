@@ -11,6 +11,11 @@ export interface Output {
   data(raw: unknown, human: () => string): void
   /** Print a human-only line (skipped under `--json`). */
   text(line: string): void
+  /**
+   * Write a chunk to stdout as-is, in either mode — for a STREAM (`chat send`), where the command
+   * decides what `--json` means (one compact JSON document per line).
+   */
+  write(chunk: string): void
 }
 
 export interface OutputOptions {
@@ -27,6 +32,7 @@ export function createOutput(options: OutputOptions = {}): Output {
     text: line => {
       if (!json) write(`${line}\n`)
     },
+    write,
   }
 }
 

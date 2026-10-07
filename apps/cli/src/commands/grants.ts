@@ -10,6 +10,8 @@
  *   each approval's page. The CLI never approves: the requester is excluded.
  * - `revoke <app> <grant>` — `<grant>` is a grant id, its first 8 characters, or the resource slug
  *   with `--env`. The secrets are removed from the app's Worker; the push carries it out.
+ * - `repush <app> <grant>` (issue #6) — push a held grant to the app's Worker again (the page's
+ *   "Push again" after a failed push); the grant is found as `revoke` finds it.
  *
  * The app is addressed by slug (`GET /api/apps/:slug`), the resource by slug (the list every
  * member may read). Values never appear: an app's owners hold a grant, they never see inside it.
@@ -25,6 +27,7 @@ import {
 } from '@launch/shared/launch-apps'
 import {
   type AppConfigMatch,
+  type AppConfigView,
   type AppGrant,
   appConfigSchema,
   grantActionResponseSchema,
@@ -38,6 +41,7 @@ import type { ApiClient } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
+import { type ConfirmOptions, confirmConsequence } from '../utils/input'
 import { formatDate, renderTable } from '../utils/output'
 import { approvalUrl } from './approvals'
 
@@ -79,37 +83,40 @@ function matchLine(match: AppConfigMatch): string {
   return `${chalk.bold(match.resource.slug)}${archived}  ${envs.join('  ')}\n  ${chalk.dim(match.keys.join(', '))}`
 }
 
+/** What the last scan found, in lines — `needs` and `apps config-scan` print the same. Pure. */
+export function needsLines(ctx: CommandContext, slug: string, data: AppConfigView): string[] {
+  const lines: string[] = []
+  if (!data.scan) lines.push(chalk.dim('Not scanned yet.'))
+  else {
+    const where = [data.scan.ref, data.scan.sha?.slice(0, 7)].filter(Boolean).join(' @ ')
+    lines.push(chalk.dim(`Scanned ${where} on ${formatDate(data.scan.scannedAt)}`))
+    if (data.scan.error) lines.push(chalk.yellow(`The last scan failed: ${data.scan.error}`))
+  }
+  if (data.matched.length === 0) lines.push('No declared key matches a secret.')
+  else for (const match of data.matched) lines.push(matchLine(match))
+  if (data.unmatched.length > 0)
+    lines.push(
+      '',
+      `Keys no secret matches: ${data.unmatched.join(', ')}`,
+      chalk.dim('  Ask an admin to add them, or set them on the app yourself.')
+    )
+  if (data.needs.length > 0 && data.canRequest) {
+    const first = data.matched.find(m => data.needs.includes(m.resource.id))
+    lines.push(
+      '',
+      chalk.cyan(
+        `Request it: ${ctx.binName} grants request ${slug} ${first?.resource.slug ?? '<resource>'} --reason "…"`
+      )
+    )
+  }
+  return lines
+}
+
 export async function runGrantsNeeds(ctx: CommandContext, app: string): Promise<void> {
   const client = requireClient(ctx)
   const detail = await resolveApp(client, app)
   const { data, raw } = await readConfig(client, detail.id)
-  ctx.out.data(raw, () => {
-    const lines: string[] = []
-    if (!data.scan) lines.push(chalk.dim('Not scanned yet.'))
-    else {
-      const where = [data.scan.ref, data.scan.sha?.slice(0, 7)].filter(Boolean).join(' @ ')
-      lines.push(chalk.dim(`Scanned ${where} on ${formatDate(data.scan.scannedAt)}`))
-      if (data.scan.error) lines.push(chalk.yellow(`The last scan failed: ${data.scan.error}`))
-    }
-    if (data.matched.length === 0) lines.push('No declared key matches a secret.')
-    else for (const match of data.matched) lines.push(matchLine(match))
-    if (data.unmatched.length > 0)
-      lines.push(
-        '',
-        `Keys no secret matches: ${data.unmatched.join(', ')}`,
-        chalk.dim('  Ask an admin to add them, or set them on the app yourself.')
-      )
-    if (data.needs.length > 0 && data.canRequest) {
-      const first = data.matched.find(m => data.needs.includes(m.resource.id))
-      lines.push(
-        '',
-        chalk.cyan(
-          `Request it: ${ctx.binName} grants request ${detail.slug} ${first?.resource.slug ?? '<resource>'} --reason "…"`
-        )
-      )
-    }
-    return lines.join('\n')
-  })
+  ctx.out.data(raw, () => needsLines(ctx, detail.slug, data).join('\n'))
 }
 
 export async function runGrantsList(ctx: CommandContext, app: string): Promise<void> {
@@ -193,7 +200,7 @@ export async function runGrantsRequest(
   })
 }
 
-export interface GrantsRevokeOptions {
+export interface GrantsRevokeOptions extends ConfirmOptions {
   env?: AppEnvironmentName
   reason?: string
 }
@@ -235,6 +242,13 @@ export async function runGrantsRevoke(
   const detail = await resolveApp(client, app)
   const { data: config } = await readConfig(client, detail.id)
   const grant = findGrant(config.grants, ref, options.env)
+  const go = await confirmConsequence(
+    ctx,
+    options,
+    `Revoke ${grant.resource.slug} on ${detail.slug} (${grant.environment})?`,
+    `The ${grant.resource.displayName} secrets are removed from the app’s ${grant.environment} Worker. Anything that reads them answers “not configured” until it is granted again.`
+  )
+  if (!go) return
   const reason = options.reason?.trim()
   const { data, raw } = await client.request(
     'DELETE',
@@ -245,6 +259,39 @@ export async function runGrantsRevoke(
     [
       `${chalk.green('✓')} Revoking ${grant.resource.slug} on ${detail.slug} (${grant.environment}): ${data.grant.status}.`,
       chalk.dim('  Its secrets are being removed from the app’s Worker.'),
+    ].join('\n')
+  )
+}
+
+/**
+ * `grants repush <app> <grant>` (issue #6): push a held grant's current version to the app's
+ * Worker again — the app page's "Push again" after a failed push. The app's owners and admins.
+ */
+export async function runGrantsRepush(
+  ctx: CommandContext,
+  app: string,
+  ref: string,
+  options: { env?: AppEnvironmentName } = {}
+): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const { data: config } = await readConfig(client, detail.id)
+  const grant = findGrant(config.grants, ref, options.env)
+  const { data, raw } = await client.request(
+    'POST',
+    `${appApiPath(detail.id)}/grants/${encodeURIComponent(grant.id)}/repush`,
+    { schema: grantActionResponseSchema }
+  )
+  ctx.out.data(raw, () =>
+    [
+      `${chalk.green('✓')} Pushing ${grant.resource.slug} to ${detail.slug} (${grant.environment}) again.`,
+      ...(data.pushId
+        ? [
+            chalk.dim(
+              `  Follow it: ${ctx.binName} shared pushes ${grant.resource.slug} --env ${grant.environment} --wait`
+            ),
+          ]
+        : []),
     ].join('\n')
   )
 }
@@ -289,7 +336,15 @@ export function registerGrantsCommands(program: Command, action: ActionWrapper):
     .description('remove a grant (id, id prefix, or resource slug with --env)')
     .option('--env <env>', 'staging | production', envOption)
     .option('--reason <text>', 'recorded in the audit log')
+    .option('-y, --yes', 'do not ask for confirmation')
     .action(
       action((ctx, cmd) => runGrantsRevoke(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+    )
+  grants
+    .command('repush <app> <grant>')
+    .description('push a grant to the app again (id, id prefix, or resource slug with --env)')
+    .option('--env <env>', 'staging | production', envOption)
+    .action(
+      action((ctx, cmd) => runGrantsRepush(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
     )
 }

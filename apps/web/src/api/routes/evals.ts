@@ -13,6 +13,11 @@ import { validate } from '../utils/routes/validate'
 
 export const evalsRouter = createRouter()
 
+/**
+ * Turns one real answer into a draft `EvalCase` for `launch evals promote`. Requires `read
+ * Feedback` (admin+); the response marks `containsTenantData: true` since it carries another
+ * member's question and answer.
+ */
 evalsRouter.get('/export', validate('query', evalExportQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Feedback')

@@ -87,7 +87,12 @@ export default function ApiKeys() {
                   <tr key={key.id} className={revoked ? 'opacity-60' : ''}>
                     <td className="font-medium">{key.name}</td>
                     <td className="font-mono text-xs">{key.keyPrefix}…</td>
-                    <td className="text-secondary text-xs">{key.scopes.join(', ')}</td>
+                    <td className="text-secondary text-xs">
+                      {key.scope === 'admin' && (
+                        <span className="font-medium text-base-content">admin · </span>
+                      )}
+                      {key.scopes.join(', ')}
+                    </td>
                     <td className="text-secondary whitespace-nowrap">
                       {formatDate(key.createdAt)}
                     </td>

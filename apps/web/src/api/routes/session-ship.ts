@@ -128,6 +128,11 @@ function mergingConflict(): ConflictError {
   )
 }
 
+/**
+ * Ship a ready session: run the gate, fix on red, and open the PR. Requires `update Session` and
+ * being the session's credential owner on a personal account. 409 `turn_in_progress` or
+ * `session_not_ready`. Audits `session.ship_requested`.
+ */
 sessionShipRouter.post('/:id/ship', async c => {
   const { db, tenantId, logger, realtime, user, row } = await visible(c, 'update')
   const workflow = requireSessionWorkflow(c.env)
@@ -181,6 +186,11 @@ const ENDABLE = [
   'shipping',
 ] as const
 
+/**
+ * End a session from any live status, stopping its running turn or ship if any. Requires `update
+ * Session`. 409 `session_merging` while its PR merge is in progress, `session_not_endable`
+ * otherwise if it is already ending or ended.
+ */
 sessionShipRouter.post('/:id/end', async c => {
   const { db, logger, realtime, row } = await visible(c, 'update')
   const workflow = requireSessionWorkflow(c.env)
@@ -233,6 +243,11 @@ sessionShipRouter.post('/:id/end', async c => {
   return c.json({ session: toSessionDetail(current, true) } satisfies SessionDetailResponse, 202)
 })
 
+/**
+ * Retry a landing stalled before its release: re-run the merge commit's failed CI, or cut the
+ * release anyway past a red default-branch gate. Requires `update Session`. 409
+ * `landing_not_retryable`. A double press retries once.
+ */
 sessionShipRouter.post(
   '/:id/landing/retry',
   validate('json', landingRetryRequestSchema),
@@ -274,6 +289,11 @@ async function previewGrantRequest(c: AppContext): Promise<PreviewGrantRequest> 
   return parsed.data
 }
 
+/**
+ * Issue a short-lived HMAC grant for a session's preview iframe. Requires `read Session`; a
+ * pending merge's reviewer may call it too. 503 `previews_not_configured` without
+ * `SESSION_PREVIEW_URL`; 409 `session_ended` once the session has settled.
+ */
 sessionShipRouter.post('/:id/preview-grant', async c => {
   const { path } = await previewGrantRequest(c)
   const { cfg, user, row } = await visible(c, 'read')
@@ -290,6 +310,10 @@ sessionShipRouter.post('/:id/preview-grant', async c => {
   return c.json({ url, expiresAt } satisfies PreviewGrantResponse)
 })
 
+/**
+ * Return a session's pull request number, URL and checks, refreshing the checks from the repo
+ * host when stale. Requires `read Session`; a pending merge's reviewer may call it too.
+ */
 sessionShipRouter.get('/:id/pr', async c => {
   const { db, cfg, logger, realtime, row } = await visible(c, 'read')
   let checks = row.prChecks ?? null

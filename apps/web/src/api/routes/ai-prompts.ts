@@ -29,18 +29,30 @@ function keyParam(c: AppContext): RegistryPromptKey {
   return key
 }
 
+/**
+ * Lists every prompt registry entry with its tenant override (if any) and effective text.
+ * Requires `read Prompt`.
+ */
 aiPromptsRouter.get('/', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Prompt')
   return c.json({ items: await listPrompts(db, tenantId) })
 })
 
+/**
+ * Returns one prompt's registry entry, tenant override and effective text. Requires `read
+ * Prompt`; an unknown key is 404 `prompt_not_found`.
+ */
 aiPromptsRouter.get('/:key', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Prompt')
   return c.json(await getPrompt(db, tenantId, keyParam(c)))
 })
 
+/**
+ * Sets a tenant override for one prompt's text. Requires `manage Prompt` (admin+); an unknown key
+ * is 404 `prompt_not_found`.
+ */
 aiPromptsRouter.put('/:key', validate('json', updatePromptRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Prompt')
@@ -58,6 +70,10 @@ aiPromptsRouter.put('/:key', validate('json', updatePromptRequestSchema), async 
   return c.json(result)
 })
 
+/**
+ * Reverts one prompt to its default text, clearing the tenant override. Requires `manage Prompt`
+ * (admin+); an unknown key is 404 `prompt_not_found`.
+ */
 aiPromptsRouter.delete('/:key', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Prompt')

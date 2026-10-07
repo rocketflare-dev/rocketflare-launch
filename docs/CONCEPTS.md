@@ -61,8 +61,8 @@ suites on vitest 4, §9 — never part of the gate).
   **`/api/admin/*`** behind `globalAdminMiddleware` stays the operator's cross-tenant
   surface in every mode — organisations (list, suspend, enter as `support`, which creates a real
   membership; multi mode only), users (the global flag, blocking), feature flags and live coding
-  sessions — Settings' **Operator** group, shown only to global admins. Both are cookie-only (a
-  tenant API key never passes), and a global admin with no membership reaches both (`/settings/*`
+  sessions — Settings' **Operator** group, shown only to global admins. Both take the cookie or an
+  ADMIN-scoped API key (§2; a tenant key is 403 `admin_key_required`), and a global admin with no membership reaches both (`/settings/*`
   needs no membership for them), so there is always someone to approve the first request and
   finish the Platform settings. **The UI is ONE Settings** (§7): every section keeps exactly its API's
   gate, and the menu lists only what the reader may open. A single-mode reviewer who is not a global admin approves only into
@@ -96,7 +96,14 @@ are always `tenant`; no personal API keys (tenant keys only).
 - **Sessions are rows**: `user_sessions`, 30-day sliding TTL (`SESSION_TTL_MS`), cookie `__Host-session` (`HttpOnly`,
   `SameSite=Lax`, `Secure` outside development). `authMiddleware` resolves session → user →
   membership → groups → features in one query. The second strategy is a Bearer tenant API key
-  (hashed, expiry, soft revoke).
+  (hashed, expiry, soft revoke). A key has a `scope` (`api_keys.scope`, distinct from the
+  read/write `scopes`): `tenant` (every key by default) or `admin`. **Only an `admin` key — or the
+  cookie — passes `globalAdminMiddleware` / `platformAdminMiddleware`**, and only while its creator
+  still passes that gate: `isGlobalAdmin` / `canAdministerPlatform` are re-read with the key on
+  every request, so demoting someone disables their admin keys with nothing to revoke. A tenant
+  key there is 403 `admin_key_required`. An admin key still works on the tenant routes as its
+  creator. Support mode (`/api/admin/tenants/:id/support/*`) pins a browser session and refuses a
+  key (400 `support_needs_session`).
 - **Magic link** is the zero-credential path: a 256-bit, 15-minute, single-use, SHA-256-hashed
   token. With no `RESEND_API_KEY` the URL is logged. Dev-login exists and 404s in production.
 - **OAuth is a registry** (D11): one generic `/auth/:provider` router over `ProviderDefinition`s
@@ -128,10 +135,18 @@ are always `tenant`; no personal API keys (tenant keys only).
   gets. Dev-login bypasses `admitUser`, so it grants neither.
 - **CLI handoff (D26)**: `GET /auth/cli?redirect_uri=http://127.0.0.1:<port>/callback` only allows
   loopback redirects. It mints a revocable tenant key `cli:<hostname>` and 302s back with it.
+  `&scope=admin` (`launch login --admin`) asks for an admin key instead: minted only when the
+  signed-in person passes `canAdministerPlatform`, named `cli-admin:<hostname>`, expiring after 30
+  days (`ADMIN_API_KEY_TTL_DAYS`), recorded as `api_key.created` with `scope: 'admin'` (activity +
+  audit chain); anyone else is redirected back with `?error=admin_key_forbidden` and nothing is
+  minted. The keys list shows the scope, so an organisation admin can see and revoke one.
   Details: `.claude/rules/api.md`.
 
 **Known gaps:** no provider token refresh; the rate limit is approximate; no session management UI
-beyond "log out everywhere"; CLI keys differ from other keys only by name. OIDC: one issuer per
+beyond "log out everywhere"; CLI tenant keys differ from other keys only by name. Admin keys are
+minted only through the CLI handoff (no UI to create one), live in the creator's organisation (a
+global admin with no membership cannot get one), and an admin key on `/api/admin/*` is as strong as
+the browser session — scoped by the key's lifetime, not by route. OIDC: one issuer per
 deployment; the `groups` claim is read into the profile but **not stored or mapped** to kit groups
 or roles; no `id_token_hint` on logout (id_tokens are not kept, so the issuer may ask to confirm);
 no back-channel or front-channel logout; `OIDC_TRUST_EMAIL=true` trusts every email the issuer
@@ -526,26 +541,105 @@ approval on a runner (fine for minutes, wasteful for hours — there is no re-di
 
 ## 11. CLI
 
-A thin client over `/api/*` using a tenant API key. It parses with shared schemas and never keeps
-a second copy of the contract (D26). `api.ts` is the only `fetch` site. Config lives in
-`~/.launch/config.json` (0600); `LAUNCH_API_KEY`/`LAUNCH_URL` override it for CI.
-`--json` is available on every read. `traces list|show` reads the local AI trace store (D32);
-`feedback list` is the thumbs queue and `evals promote <id> --dataset <name>` appends a draft eval
-case to `apps/evals/datasets/` (D33, both admin+). `sessions start|say|ship|end|ls|show|preview-url`
-drives Launch P3 coding sessions (§18.14; `start --runtime` picks the coding agent, §18.22) — `ship` follows the ship to live on staging by default,
-printing each stage, and exits 1 on a reopen, a stall, or a session ended while its landing waited
-(`--no-wait` returns at once; `--wait` is a no-op alias); `approvals ls|show|approve|reject` and `releases
-ls|create|promote [--wait]|retry|cancel|rollback` are the P4 inbox and shipping (§18.19; `retry` is the
-stage-aware Retry, `cancel` stops a release's run in flight, `rollback` asks to put an earlier
-release back on production, and `ls` says how far main is ahead of the latest tag, §18.17); `audit verify|export` the
-hash-chained log (§18.18); `apps show <app>` names the kit against the template pin and `apps
-upgrade <app>` starts its kit upgrade session (§18.23). Exit codes: 0 ok · 1 error · 2 not logged in ·
-3 forbidden.
-No command prints a full key. Plugins register top-level commands named after their id.
-Detail: `.claude/rules/cli.md`.
+**What it is (D26).** `launch` (`apps/cli`) is a thin client over `/api/*`: each command is options →
+`api.ts` → output, and every response is parsed with the `@launch/shared` schema the server
+validated with, so there is never a second copy of a contract. `api.ts` is the only `fetch` site —
+JSON requests, multipart uploads (a `FormData` body), streamed downloads (`ApiClient.download`)
+and streamed responses (`ApiClient.stream`, the chat turn's SSE) all go through it. Whatever a
+person can do or see in the web app, an agent can do or see with `launch` (issue #6, the parity
+guard below). The full command tree is `launch commands`; the working rules are
+`.claude/rules/cli.md`; how an agent should use it is the `launch-cli` skill.
 
-**Known gaps:** no device-code flow; one profile at a time; `logout` does not revoke the key; no
-shell completion; not published.
+**Servers and admin keys.** `~/.launch/config.json` (`0600`) holds named servers (profiles: a URL
+plus its key, tenant and user) and a default; `--profile <name>`, `--server <name|url>` or
+`LAUNCH_PROFILE` picks one per command, so one shell reaches local dev and production without
+re-logging in (`servers ls|use|add|rm|rename`, `status --all`, `logout --all`). A URL alone uses
+the key of the server stored at that URL, never another's. A pre-profiles flat file loads as the
+server `default`. `LAUNCH_API_KEY` / `LAUNCH_URL` override it for CI. `/api/admin/*` and
+`/api/platform/*` take only an ADMIN-scoped key (§2): `launch login --admin` (platform
+administrators) stores one as `<server>-admin`, and every `admin` / `platform` command uses it; a
+403 there exits 3 with the `login --admin` hint.
+
+**Discovery for agents.** An agent learns the CLI and the API from the CLI, never from the server's
+source:
+
+- `launch commands [--json]` — every command with its arguments and options, walked from
+  commander at run time, so it cannot drift
+- `launch api ls [filter]` · `api show <METHOD> <path>` (a pattern or a concrete path: fields,
+  types, enums, an example body, the covering command) · `api schema <METHOD> <path>` (the full
+  JSON Schema: params, query, body, response) · `api call <METHOD> <path> [--data] [--query k=v]`
+  (any route, with the active key — the escape hatch)
+- they read two GENERATED files, `apps/cli/src/generated/api-catalog.json` (each route's summary —
+  the doc comment above its registration —, coarse auth, params / query / body as JSON Schema, its
+  source and covering CLI file) and `api-schemas.ts` (a zod registry: per route, the SAME
+  `@launch/shared` objects its `validate()` uses). `pnpm api:catalog` rewrites both;
+  `api-catalog.test.ts` fails the gate when either is stale
+- `api call` validates path params, `--query` and `--data` with that registry before sending —
+  exit 1 listing `path: message`, nothing sent; `--no-validate` sends it anyway. Responses are
+  best effort: 40 of the 238 routes carry a response schema (where the handler's response type
+  pairs with a shared one)
+
+**The command areas.**
+
+| Area | Commands | Notable behaviour |
+|---|---|---|
+| Sign-in, servers | `login [--admin]`, `logout`, `whoami`, `status [--all] [--ready]`, `servers`, `config` | `status` also reads `GET /api/ready`; `--ready` exits 1 when the database does not answer |
+| Coding sessions (§18.14) | `sessions start\|say\|ship\|end\|ls\|show\|logs\|preview-url\|resume\|cancel\|withdraw\|landing-retry\|budget\|attach\|attachments\|attachment` | `start --runtime` picks the agent (§18.22). `ship` follows to live on Staging by default and exits 1 on a reopen, a stall, or a session ended while its landing waited (`--no-wait`). `show` names the status, model, branch, PR, ship stage, budget, last error and the failing gate step with its output tail; "merged" only from `landing.mergeSha` (open/closed is not on the row). `logs` prints every durable row. Images: the composer's types and limits, never downscaled; listed from the `user.message` rows (no list route) |
+| Approvals, releases, deploys (§18.17, §18.19) | `approvals`, `releases ls\|show\|chain\|promotion\|create\|promote\|retry\|cancel\|rollback`, `deploys ls\|latest\|production\|approve\|reject` | `retry` re-runs exactly the failed stage; `ls` says how far main is ahead of the latest tag; `promote --wait` follows approval then deploy. The promoter never decides its own promote |
+| Apps (§18.5, §18.23) | `apps ls\|show\|health\|health-check\|operations\|pipeline [retry\|cancel]\|rescaffold\|upgrades\|upgrade\|config-scan\|create\|import\|set\|ship-settings\|branch-protection\|teardown\|sign-in\|thumbnail` | `show` names the kit against the template pin, each environment's health and where Staging → Live stands. `create --follow` / `teardown --follow` follow the pipeline. The sign-in client secret is printed once, never logged |
+| Secrets (§18.20) | `shared ls\|show\|set\|rotate\|pushes\|retry\|create\|edit\|archive`, `grants needs\|ls\|request\|revoke\|repush` | A value never travels in argv: hidden prompt, or stdin |
+| Audit, activity | `audit ls\|verify\|export` (§18.18), `activity ls`, `notifications` | `audit ls` applies `--actor`/`--from`/`--to` client-side over the cursor pages; `export` streams to a `0600` file |
+| AI (§9) | `agents`, `ai status\|usage\|providers\|set\|rm\|test\|prompts\|models`, `chat`, `docs`, `traces` (D32), `feedback`, `evals promote` (D33) | `agents run` adds the trace's tokens and id when the key may read traces (no per-run cost: `ai_usage` has no run column); `agents logs --follow` polls the AG-UI projection, never the SSE stream; `agents answer` builds the payload per kind and checks it with `interruptPayloadSchema(spec)`. Provider keys only through `--key` (hidden or stdin; `--data` with an `apiKey` is refused). `docs search` prints each hit's fused rank, score and which signal found it. `chat send` streams a turn (below). `evals promote` appends a draft case to `apps/evals/datasets/` |
+| The organisation | `members`, `invites`, `keys`, `groups`, `tenant`, `me`, `policies`, `access`, `files`, `features`, `agent-accounts` | People and content are named by id, id prefix, name or email. A write that narrows access says who loses what and asks; a group delete refused as `group_in_use` needs `--force` (`?force=1`, fail-closed). `policies set` edits one field over the row at that scope (or the default). `agent-accounts login` relays the Claude / Codex sign-in as the web dialog does |
+| The deployment (admin key) | `admin sessions\|drain\|undrain\|tenants\|users\|flags`, `platform setup\|settings\|credentials\|public-url\|kit\|agents\|sandbox\|oidc\|access-requests` | `platform setup` shows presence booleans and probe sentences, never a value. Credentials come from a hidden prompt, stdin or a file — never argv, never printed; a failed check exits 1 after its probes |
+| Plugins (§16) | one top-level command per plugin, named after its id — `analytics pages\|templates\|check-facts\|refresh-facts` | registered after every kit command, so a plugin never shadows one |
+
+**`chat send`.** `chat send <id> <message>` or `chat send --new <message>` (`-` reads stdin) is one
+chat turn: the POST's AG-UI SSE reply read through `ApiClient.stream` and validated frame by frame
+with `kitAguiEventSchema` — the text streamed to stdout, tool calls as dim stderr lines, then the
+model, tokens and the `traces list --conversation` hint. A `RUN_ERROR`, or a stream that ends
+with no `RUN_FINISHED`, exits 1.
+
+**Conventions.**
+
+- `--json` on every read prints the parsed body only. A follow prints either one JSON document per
+  event as it arrives (`sessions logs --follow`, `chat send` — NDJSON) or one document at the end
+  (`sessions say --follow`, `agents logs --follow`, `releases promote --wait`, `apps create
+  --follow`)
+- Input goes through one module (`apps/cli/src/utils/input.ts`): a body is the flags plus `--data
+  <json|@file|->` (a flag wins), checked with the route's shared schema before anything is sent
+- Whatever the web UI confirms, the CLI confirms in the dialog's words; `-y, --yes` skips it, and
+  with no terminal and no `--yes` it refuses (exit 1). `ls` and `list` are aliases in every group
+- Secrets never pass through argv and are never printed, except the one-time reveal of a new API
+  key (`keys create`) or OIDC client secret (`apps sign-in register|rotate-secret`) — to stdout, the
+  only time the server returns it. Downloads land in `0600` files, never overwriting without
+  `--force`
+- Exit codes: 0 ok · 1 error · 2 not logged in · 3 forbidden
+
+**The parity guard.** `apps/web/tests/config/cli-parity.test.ts` fails the gate on any `/api` route
+(plugins' included) that no CLI file names literally and that is not in
+`cli-parity-exclusions.ts` with a reason; a stale exclusion fails too. `api-catalog.test.ts`
+holds every route to three rules: a one-line `/** … */` summary above its registration; every
+`validate()` schema an export of `@launch/shared`; and a route that reads its body validates it,
+takes multipart, or is listed with its reason in `api-catalog-manual-bodies.ts`. A Claude Code
+PostToolUse hook (`scripts/cli-parity-nudge.mjs`) reminds once per session when an edit adds a
+route or a UI call site; the tests are the hard check.
+
+**The Rocketflare header** (`apps/cli/src/utils/banner.ts`). The root help shows a rocket and a
+"Rocketflare Launch — the control plane" wordmark (Launch in the flame-to-violet gradient); before a command, one line on stderr names the server it is
+about to talk to — orange when it is not this machine, so production never looks like local dev.
+Humans on a terminal only: never with `--json`, when either stream is not a TTY (an agent, a
+pipe) or with `NO_COLOR`; it does not animate in CI; `LAUNCH_BANNER=off|static` turns it off or
+keeps it still.
+
+**Known gaps:** no device-code flow; `logout` does not revoke the key; no shell completion; not
+published. Left in the browser on purpose (`cli-parity-exclusions.ts`): support mode (it pins a
+BROWSER session's organisation and a key has none — 400 `support_needs_session`), deleting or
+creating an organisation, the no-organisation access request, accepting an invitation, and the
+SSE streams the CLI reads as rows instead. The catalog's `auth` is the mount's, not the route's
+own role check, and most routes have no response schema yet. The analytics plugin's summary
+comments live in its copied tree, so `pnpm plugin upgrade analytics` drops them unless they are
+upstreamed to the plugin repository.
 
 ## 12. Shared package
 
@@ -2927,8 +3021,9 @@ whose `inspect#N` cools (destroys) it; `/undrain` clears it and people resume th
 session page `/apps/:slug/sessions/:id` (its own lazy chunk: chat, composer, preview, header with
 cost against the cap and Ship / End / Resume / Extend budget, boot checklist, ship panel), the
 "Coding sessions" card on the app page, Settings → All sessions. **CLI**: `launch sessions start
-[--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|preview-url` (§11; `show` prints each
-boot's `boot.timing`, §18.9). §18.22 adds the session card's
+[--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|logs|preview-url` and the debug actions
+`resume|cancel|withdraw|landing-retry|budget|attachments|attachment` (§11, issue #6; `show` prints
+each boot's `boot.timing`, §18.9, and the failing gate step). §18.22 adds the session card's
 agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the

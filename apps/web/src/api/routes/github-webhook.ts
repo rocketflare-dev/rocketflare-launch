@@ -30,6 +30,12 @@ import { createRouter } from '../utils/routes/router'
 
 export const githubWebhookRouter = createRouter()
 
+/**
+ * Receives GitHub's webhook delivery and enqueues a `github.event` job. Public — verified by its
+ * own HMAC signature instead of a session. Returns 401 `github_signature_invalid` for a bad
+ * signature, 503 `github_webhook_not_configured` without a secret, and 202 `reason: duplicate`
+ * for a delivery id already claimed.
+ */
 githubWebhookRouter.post('/webhook', async c => {
   const cfg = c.get('config')
   const secret = cfg.GITHUB_WEBHOOK_SECRET

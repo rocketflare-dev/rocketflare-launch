@@ -81,6 +81,7 @@ async function managedApp(c: AppContext) {
 
 // ---- The requester's side ------------------------------------------------------------------
 
+/** Return an app's basic info and where the caller stands with requesting access to it. */
 appAccessRouter.get(
   '/request-context',
   validate('query', appAccessRequestContextQuerySchema),
@@ -92,6 +93,10 @@ appAccessRouter.get(
   }
 )
 
+/**
+ * Ask an app's owners for access, opening (or joining) its `app.access` approval. Audits
+ * `app.access.requested` when a new request is created (201); returns 200 for an existing one.
+ */
 appAccessRouter.post('/requests', validate('json', createAppAccessRequestSchema), async c => {
   const { db, tenantId, user, auth } = withAuthAndDb(c)
   const body = c.req.valid('json')
@@ -121,6 +126,10 @@ appAccessRouter.post('/requests', validate('json', createAppAccessRequestSchema)
 
 // ---- The owner's side ----------------------------------------------------------------------
 
+/**
+ * Return an app's sign-in access policy. Requires being the app's owner or the organisation's
+ * admin (same 404 as a missing app otherwise).
+ */
 appAccessRouter.get('/:app/policy', async c => {
   const { app, client } = await managedApp(c)
   return c.json({
@@ -131,6 +140,11 @@ appAccessRouter.get('/:app/policy', async c => {
   })
 })
 
+/**
+ * Set an app's sign-in access policy (`company` or `restricted`). Requires being the app's owner
+ * or the organisation's admin. 409 `oidc_client_missing` without an OIDC client. Audits
+ * `app.access.policy_changed`.
+ */
 appAccessRouter.put('/:app/policy', validate('json', updateAppAccessPolicySchema), async c => {
   const ctx = await managedApp(c)
   const client = requireClient(ctx.client)
@@ -155,11 +169,20 @@ appAccessRouter.put('/:app/policy', validate('json', updateAppAccessPolicySchema
   })
 })
 
+/**
+ * List an app's sign-in access grants (groups and people). Requires being the app's owner or the
+ * organisation's admin. 409 `oidc_client_missing` without an OIDC client.
+ */
 appAccessRouter.get('/:app/grants', async c => {
   const ctx = await managedApp(c)
   return c.json({ items: await listGrants(ctx.db, requireClient(ctx.client)) })
 })
 
+/**
+ * Grant a group or person sign-in access to an app. Requires being the app's owner or the
+ * organisation's admin. 409 `oidc_client_missing` without an OIDC client. Audits
+ * `app.access.policy_changed`.
+ */
 appAccessRouter.post('/:app/grants', validate('json', createAppAccessGrantSchema), async c => {
   const ctx = await managedApp(c)
   const client = requireClient(ctx.client)
@@ -180,6 +203,10 @@ appAccessRouter.post('/:app/grants', validate('json', createAppAccessGrantSchema
   return c.json({ items: await listGrants(ctx.db, client) }, 201)
 })
 
+/**
+ * Remove a sign-in access grant from an app. Requires being the app's owner or the organisation's
+ * admin. Audits `app.access.policy_changed`.
+ */
 appAccessRouter.delete('/:app/grants/:grantId', async c => {
   const ctx = await managedApp(c)
   const client = requireClient(ctx.client)
@@ -200,6 +227,10 @@ appAccessRouter.delete('/:app/grants/:grantId', async c => {
   return c.body(null, 204)
 })
 
+/**
+ * List an app's access requests, filterable by status (their ids are the approval ids). Requires
+ * being the app's owner or the organisation's admin.
+ */
 appAccessRouter.get(
   '/:app/requests',
   validate('query', appAccessRequestListQuerySchema),

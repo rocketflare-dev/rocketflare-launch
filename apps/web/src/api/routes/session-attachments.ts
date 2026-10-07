@@ -61,6 +61,13 @@ async function visibleSession(c: AppContext, action: 'read' | 'update') {
 
 // ---- POST /api/sessions/:id/attachments ------------------------------------------------------
 
+/**
+ * Upload an image for a session's next message (PNG, JPEG, GIF or WebP, checked by magic bytes).
+ * Requires `update Session` on a session the caller drives, its credential owner on a personal
+ * account. 403 `upgrade_session_read_only` on a kit upgrade session; 409
+ * `session_credential_owner_only` or `session_not_active`; 413 over
+ * `SESSION_ATTACHMENT_MAX_BYTES`; 415 `unsupported_media_type`; 503 `storage_not_configured`.
+ */
 sessionAttachmentsRouter.post('/:id/attachments', uploadBodyLimit, async c => {
   const { user, row } = await visibleSession(c, 'update')
   // The same checks as `/turns`: an image is only ever half of a message.
@@ -81,6 +88,10 @@ sessionAttachmentsRouter.post('/:id/attachments', uploadBodyLimit, async c => {
 
 // ---- GET /api/sessions/:id/attachments/:aid --------------------------------------------------
 
+/**
+ * Stream one of a session's attached images. Requires `read Session`; a pending merge's reviewer
+ * may call it too. 404 `attachment_not_found`.
+ */
 sessionAttachmentsRouter.get('/:id/attachments/:aid', async c => {
   const { row } = await visibleSession(c, 'read')
   const attachmentId = uuidParam(c, 'aid')

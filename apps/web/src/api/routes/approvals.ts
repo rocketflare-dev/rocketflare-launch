@@ -48,6 +48,10 @@ function viewer(c: AppContext) {
   return { ...ctx, viewer: approvalViewerOf({ ...ctx.auth, tenantId: ctx.tenantId }) }
 }
 
+/**
+ * List approval requests, filterable by box, status, kind and app. Requires `read Approval`;
+ * `box=all` is admin+, everyone else gets `box=mine`.
+ */
 approvalsRouter.get('/', validate('query', approvalListQuerySchema), async c => {
   const { db, viewer: who } = viewer(c)
   const body: ApprovalListResponse = {
@@ -56,17 +60,31 @@ approvalsRouter.get('/', validate('query', approvalListQuerySchema), async c => 
   return c.json(body)
 })
 
+/**
+ * Return the nav badge's counts: pending approvals, and how many wait on the caller. Requires
+ * `read Approval`.
+ */
 approvalsRouter.get('/count', async c => {
   const { db, viewer: who } = viewer(c)
   const body: ApprovalCount = { count: await count({ db }, { viewer: who }) }
   return c.json(body)
 })
 
+/**
+ * Return an approval request's detail, with its decisions and whether the caller may decide or
+ * cancel it. Requires `read Approval`. A request the caller may not see is the same 404 as a
+ * missing one.
+ */
 approvalsRouter.get('/:id', async c => {
   const { db, viewer: who } = viewer(c)
   return c.json(await detail({ db }, { requestId: uuidParam(c, 'id'), viewer: who }))
 })
 
+/**
+ * Approve or reject an approval request. Requires `read Approval`; who may decide is the engine's
+ * own eligibility check, not a CASL action. 403 `not_an_approver` or `self_approval`; 409
+ * `already_decided` or `not_pending`.
+ */
 approvalsRouter.post('/:id/decide', validate('json', decideApprovalSchema), async c => {
   const { viewer: who } = viewer(c)
   const body = c.req.valid('json')
@@ -80,6 +98,10 @@ approvalsRouter.post('/:id/decide', validate('json', decideApprovalSchema), asyn
   return c.json(result)
 })
 
+/**
+ * Cancel an approval request. Requires `read Approval`; only the requester or an admin may
+ * cancel.
+ */
 approvalsRouter.post('/:id/cancel', validate('json', cancelApprovalSchema), async c => {
   const { viewer: who } = viewer(c)
   const body = c.req.valid('json')

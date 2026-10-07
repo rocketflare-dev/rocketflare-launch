@@ -2,8 +2,8 @@
  * `launch features list` (D30) — `GET /api/features`, any member.
  *
  * The EFFECTIVE flags for the key's organisation, not the platform rollout state. Administering a
- * flag is a global-admin act and `/api/admin/*` resolves the session cookie only, so a tenant API
- * key cannot reach it — by design, and not something to work around here.
+ * flag is a global-admin act: `/api/admin/*` takes the session cookie or an ADMIN-scoped key
+ * (`launch login --admin`), so that lives under `launch admin`, never here with a tenant key.
  */
 import { effectiveFeaturesResponseSchema } from '@launch/shared/features'
 import { type CommandContext, requireClient } from '../context'

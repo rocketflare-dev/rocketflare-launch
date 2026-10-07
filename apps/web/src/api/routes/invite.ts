@@ -13,12 +13,17 @@ import { createRouter } from '../utils/routes/router'
 
 export const inviteRouter = createRouter()
 
+/** Returns an invitation's accept-page details (no ids, no other members) by its token. Public. */
 inviteRouter.get('/:token', async c => {
   const details = await getInvitationDetails(c.get('db'), c.req.param('token'))
   if (!details) throw new NotFoundError('Invitation not found')
   return c.json(details)
 })
 
+/**
+ * Accepts an invitation for the signed-in user whose email matches it, and returns a fresh
+ * session. Requires a signed-in cookie session; an unknown or non-matching invitation is a 404.
+ */
 inviteRouter.post('/:token/accept', async c => {
   const db = c.get('db')
   const cfg = c.get('config')

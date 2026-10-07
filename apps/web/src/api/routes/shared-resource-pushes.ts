@@ -30,6 +30,10 @@ function viewer(c: AppContext) {
   return { ...ctx, viewer: approvalViewerOf({ ...ctx.auth, tenantId: ctx.tenantId }) }
 }
 
+/**
+ * Lists a shared resource's pushes, newest first. Requires `read SharedResource`; visible only to
+ * the resource's owners and admins — everyone else gets the same 404 as a missing push.
+ */
 sharedResourcePushesRouter.get(
   '/:id/pushes',
   validate('query', grantPushListQuerySchema),
@@ -39,11 +43,21 @@ sharedResourcePushesRouter.get(
   }
 )
 
+/**
+ * Returns one push with every target's result. Requires `read SharedResource`; the resource's
+ * owners and admins only.
+ */
 sharedResourcePushesRouter.get('/:id/pushes/:pushId', async c => {
   const { db, viewer: who } = viewer(c)
   return c.json(await getPush(db, who, uuidParam(c, 'id'), uuidParam(c, 'pushId')))
 })
 
+/**
+ * Retries a partial or failed push as a new attempt (`<pushId>-rN`). Requires `read
+ * SharedResource`; the resource's owners and admins only. Returns 409 `push_in_progress` while one
+ * is running, 409 `push_not_retryable` for a push that already succeeded, and 503
+ * `grants_not_configured` without the binding.
+ */
 sharedResourcePushesRouter.post('/:id/pushes/:pushId/retry', async c => {
   const { viewer: who } = viewer(c)
   const push = await retryPush(

@@ -95,6 +95,7 @@ async function readableApp(c: Parameters<typeof withAuthAndDb>[0]) {
   return { ...ctx, app }
 }
 
+/** List an app's releases, newest first. Requires `read App`. */
 appReleasesRouter.get('/:id/releases', async c => {
   const { db, tenantId, app } = await readableApp(c)
   const rows = await listReleases({ db }, { tenantId, appId: app.id })
@@ -102,6 +103,12 @@ appReleasesRouter.get('/:id/releases', async c => {
   return c.json(body)
 })
 
+/**
+ * Cut a new release: bump the version, tag it and record the PRs since the last one. Requires
+ * `mayDeployApp` (the app's owners and admins). 409 `release_in_progress` while another release of
+ * this app is being cut, `release_version_unreadable` or `release_tag_exists`; 502
+ * `release_github_failed`.
+ */
 appReleasesRouter.post('/:id/releases', validate('json', createReleaseSchema), async c => {
   const ctx = await deployableApp(c)
   const deps = approvalDepsOf(c)
@@ -128,7 +135,11 @@ appReleasesRouter.post('/:id/releases', validate('json', createReleaseSchema), a
   return c.json(await toRelease(deps.db, outcome.value), 201)
 })
 
-// Before `/:id/releases/:rid`, which would read `compare` as a release id.
+/**
+ * Compare the default branch against the latest release tag's commits. Requires `read App`.
+ * Registered before `/:id/releases/:rid`, which would otherwise read `compare` as a release id. A
+ * GitHub failure answers `aheadBy: null` with `error`, never a 5xx.
+ */
 appReleasesRouter.get('/:id/releases/compare', async c => {
   const { db, cfg, tenantId, app } = await readableApp(c)
   const body: ReleaseCompare = releaseCompareSchema.parse(
@@ -137,12 +148,18 @@ appReleasesRouter.get('/:id/releases/compare', async c => {
   return c.json(body)
 })
 
+/** Return one of an app's releases. Requires `read App`. */
 appReleasesRouter.get('/:id/releases/:rid', async c => {
   const { db, tenantId, app } = await readableApp(c)
   const row = await getRelease({ db }, { tenantId, appId: app.id, releaseId: uuidParam(c, 'rid') })
   return c.json(await toRelease(db, row))
 })
 
+/**
+ * Promote a release from staging towards production, opening the `deploy.production` approval.
+ * Requires `mayDeployApp` (the app's owners and admins). 409 `release_not_on_staging`,
+ * `release_staging_unhealthy` or `release_not_promotable`.
+ */
 appReleasesRouter.post(
   '/:id/releases/:rid/promote',
   validate('json', promoteReleaseSchema),
@@ -165,6 +182,11 @@ appReleasesRouter.post(
   }
 )
 
+/**
+ * Retry a release at the stage it failed: re-run the failed GitHub run, re-push a lost tag, or
+ * probe health and request approval again. Requires `mayDeployApp`. 409 `release_not_retryable`,
+ * `release_stage_changed` or `release_run_in_progress`; 502 `release_github_failed`.
+ */
 appReleasesRouter.post(
   '/:id/releases/:rid/retry',
   validate('json', retryReleaseSchema),
@@ -194,6 +216,10 @@ appReleasesRouter.post(
   }
 )
 
+/**
+ * Cancel a release's deploy run in flight on GitHub. Requires `mayDeployApp`. 409
+ * `release_not_cancellable`.
+ */
 appReleasesRouter.post('/:id/releases/:rid/cancel', async c => {
   const ctx = await deployableApp(c)
   const deps = approvalDepsOf(c)
@@ -211,6 +237,11 @@ appReleasesRouter.post('/:id/releases/:rid/cancel', async c => {
   return c.json(answer, 202)
 })
 
+/**
+ * Put an earlier release back on Live through the same `deploy.production` approval as Ship.
+ * Requires `mayDeployApp`. 409 `release_not_rollbackable`, `release_production_busy` or
+ * `release_in_progress`.
+ */
 appReleasesRouter.post(
   '/:id/releases/:rid/rollback',
   validate('json', rollbackReleaseSchema),
@@ -235,6 +266,10 @@ appReleasesRouter.post(
   }
 )
 
+/**
+ * Return a release's chain of events: PR, merge, tag, staging, approval, production. Requires
+ * `read App`.
+ */
 appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
   const { db, tenantId, app } = await readableApp(c)
   const releaseId = uuidParam(c, 'rid')
@@ -244,6 +279,11 @@ appReleasesRouter.get('/:id/releases/:rid/chain', async c => {
   return c.json(body)
 })
 
+/**
+ * Return the app page's pipeline strip: the newest release, what each environment runs, the PRs
+ * between with their sessions' titles, the pending production approval with who it waits on, and
+ * the candidate's deploy run on GitHub while tagged or staging. Requires `read App`.
+ */
 appReleasesRouter.get('/:id/promotion', async c => {
   const { db, cfg, tenantId, logger, realtime, app } = await readableApp(c)
   const body: AppPromotion = appPromotionSchema.parse(

@@ -37,7 +37,7 @@
  */
 import {
   type CredentialKind,
-  credentialKindSchema,
+  credentialKindParamSchema,
   credentialPayloadSchemas,
   kitTagsQuerySchema,
   sessionAgentsUpdateSchema,
@@ -46,7 +46,6 @@ import {
   type TemplatePin,
   templatePinRequestSchema,
 } from '@launch/shared/launch-setup'
-import { z } from 'zod'
 import type { Database } from '../../db/client'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import {
@@ -80,8 +79,6 @@ import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 
 export const setupRouter = createRouter()
-
-const kindParamSchema = z.object({ kind: credentialKindSchema })
 
 /** The tenant an audit row for a platform action goes to — see the header. */
 async function auditTenant(db: Database, sessionTenantId: string | null): Promise<string> {
@@ -138,11 +135,16 @@ async function overviewTenant(db: Database, sessionTenantId: string | null) {
   return sessionTenantId ?? (await getSingleTenant(db))?.id ?? null
 }
 
+/** Return the setup wizard's overview: every step, settings, credential status and identity. */
 setupRouter.get('/', async c => {
   const { db, cfg, tenantId } = withAuth(c)
   return c.json(await setupOverview(db, cfg, await overviewTenant(db, tenantId), c.env))
 })
 
+/**
+ * Update the platform's own settings (apps domain, account id, Neon org/region, notifications
+ * domain, org). Audits `setting.changed` per changed key.
+ */
 setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
@@ -164,7 +166,12 @@ setupRouter.put('/settings', validate('json', setupSettingsUpdateSchema), async 
   return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 
-setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async c => {
+/**
+ * Set (or rotate) a platform credential, then check it. Audits `credential.set` or
+ * `credential.rotated`, plus one row per upstream change the check made (e.g.
+ * `dns.wildcard.created`). 400 for an invalid payload for the credential's kind.
+ */
+setupRouter.put('/credentials/:kind', validate('param', credentialKindParamSchema), async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const { kind } = c.req.valid('param')
   const parsed = credentialPayloadSchemas[kind].safeParse(await c.req.json().catch(() => null))
@@ -187,19 +194,25 @@ setupRouter.put('/credentials/:kind', validate('param', kindParamSchema), async 
   return c.json({ credential: await setupCredential(db, kind), status, checks })
 })
 
-setupRouter.post('/credentials/:kind/check', validate('param', kindParamSchema), async c => {
-  const { db, cfg, user, tenantId } = withAuth(c)
-  const { kind } = c.req.valid('param')
-  const auditTenantId = await auditTenant(db, tenantId)
-  const { status, checks, effects } = await runCredentialCheck(db, cfg, kind, user.id)
-  await auditEffects(c, db, auditTenantId, effects)
-  await audit(c, db, auditTenantId, 'credential.checked', kind, {
-    checkStatus: status,
-    failed: checks.filter(ch => ch.status === 'failed').map(ch => ch.id),
-  })
-  return c.json({ credential: await setupCredential(db, kind), status, checks })
-})
+/** Re-run a platform credential's probes. Audits `credential.checked`. */
+setupRouter.post(
+  '/credentials/:kind/check',
+  validate('param', credentialKindParamSchema),
+  async c => {
+    const { db, cfg, user, tenantId } = withAuth(c)
+    const { kind } = c.req.valid('param')
+    const auditTenantId = await auditTenant(db, tenantId)
+    const { status, checks, effects } = await runCredentialCheck(db, cfg, kind, user.id)
+    await auditEffects(c, db, auditTenantId, effects)
+    await audit(c, db, auditTenantId, 'credential.checked', kind, {
+      checkStatus: status,
+      failed: checks.filter(ch => ch.status === 'failed').map(ch => ch.id),
+    })
+    return c.json({ credential: await setupCredential(db, kind), status, checks })
+  }
+)
 
+/** Probe whether `APP_URL` is reachable from the internet right now. Audits `public_url.checked`. */
 setupRouter.post('/public-url/check', async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
@@ -221,7 +234,11 @@ setupRouter.post('/public-url/check', async c => {
   return c.json(result)
 })
 
-setupRouter.delete('/credentials/:kind', validate('param', kindParamSchema), async c => {
+/**
+ * Remove a platform credential. 404 `credential_not_set` if none is set. Audits
+ * `credential.removed`.
+ */
+setupRouter.delete('/credentials/:kind', validate('param', credentialKindParamSchema), async c => {
   const { db, tenantId } = withAuth(c)
   const { kind } = c.req.valid('param')
   const auditTenantId = await auditTenant(db, tenantId)
@@ -234,6 +251,7 @@ setupRouter.delete('/credentials/:kind', validate('param', kindParamSchema), asy
 
 // ---- the kit pin (`launch_settings.template_pin`) ------------------------------------------------
 
+/** List the kit repo's tags, for the Kit version card's picker. */
 setupRouter.get('/template-pin/tags', validate('query', kitTagsQuerySchema), async c => {
   const { db, cfg } = withAuth(c)
   return c.json(await listKitTags(db, cfg, c.req.valid('query').repo))
@@ -257,6 +275,10 @@ async function auditPinChange(
   })
 }
 
+/**
+ * Set the kit template pin (a tag, a commit, or Follow latest), resolved through GitHub. Audits
+ * `setting.changed`.
+ */
 setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)

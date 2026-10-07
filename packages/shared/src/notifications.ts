@@ -38,3 +38,7 @@ export const markNotificationsReadRequestSchema = z.union([
   z.object({ all: z.literal(true) }),
 ])
 export type MarkNotificationsReadRequest = z.infer<typeof markNotificationsReadRequestSchema>
+
+/** `POST /api/notifications/read` → how many unread notifications this call marked read. */
+export const markNotificationsReadResponseSchema = z.object({ updated: z.number().int().min(0) })
+export type MarkNotificationsReadResponse = z.infer<typeof markNotificationsReadResponseSchema>

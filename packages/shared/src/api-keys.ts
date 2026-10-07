@@ -9,11 +9,28 @@ import { paginatedResponse } from './pagination'
 export const apiKeyScopeSchema = z.enum(['read', 'write', '*'])
 export type ApiKeyScope = z.infer<typeof apiKeyScopeSchema>
 
+/**
+ * What a key may REACH (`api_keys.scope`; distinct from `scopes`, the read/write list). `tenant`:
+ * the tenant routes only. `admin`: also `/api/admin/*` and `/api/platform/*` while its creator is
+ * still a platform administrator — minted only by `GET /auth/cli?scope=admin` (`launch login
+ * --admin`), named `cli-admin:<host>`, expiring after `ADMIN_API_KEY_TTL_DAYS`.
+ */
+export const apiKeyAccessScopeSchema = z.enum(['tenant', 'admin'])
+export type ApiKeyAccessScope = z.infer<typeof apiKeyAccessScopeSchema>
+
+/** An admin key's lifetime: the CLI handoff sets `expiresAt` this far ahead. */
+export const ADMIN_API_KEY_TTL_DAYS = 30
+
+/** 403 `code` on `/api/admin/*` and `/api/platform/*` for a Bearer key that is not admin-scoped. */
+export const ADMIN_KEY_REQUIRED_CODE = 'admin_key_required'
+
 export const apiKeySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   keyPrefix: z.string(),
   scopes: z.array(apiKeyScopeSchema),
+  /** Additive: a server before admin keys omits it, which means `tenant`. */
+  scope: apiKeyAccessScopeSchema.default('tenant'),
   createdByUserId: z.string().uuid(),
   lastUsedAt: z.coerce.date().nullable(),
   expiresAt: z.coerce.date().nullable(),

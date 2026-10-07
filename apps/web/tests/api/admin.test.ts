@@ -38,7 +38,7 @@ describe('globalAdminMiddleware', () => {
     expect(await json(res)).toMatchObject({ pagination: expect.objectContaining({ pageSize: 5 }) })
   })
 
-  it('401 without a cookie; 403 for a non-admin owner; Bearer keys are not accepted', async () => {
+  it('401 without a cookie; 403 for a non-admin owner; a tenant-scoped Bearer key is 403', async () => {
     expect((await request('/api/admin/users')).status).toBe(401)
     const { user, tenant } = await createTestTenantWithUser(db, 'owner')
     const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
@@ -47,9 +47,9 @@ describe('globalAdminMiddleware', () => {
     expect(await json(res)).toMatchObject({ statusCode: 403, code: 'forbidden' })
     const { createTestApiKey } = await import('../helpers/auth')
     const { key } = await createTestApiKey(db, tenant.id, user.id)
-    expect(
-      (await request('/api/admin/users', { headers: { Authorization: `Bearer ${key}` } })).status
-    ).toBe(401)
+    const keyed = await request('/api/admin/users', { headers: { Authorization: `Bearer ${key}` } })
+    expect(keyed.status).toBe(403)
+    expect(await json(keyed)).toMatchObject({ code: 'admin_key_required' })
   })
 })
 

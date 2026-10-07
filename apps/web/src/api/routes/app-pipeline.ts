@@ -76,6 +76,13 @@ import { approvalDepsOf } from './approvals'
 
 export const appPipelineRouter = createRouter()
 
+/**
+ * Request a new app, launching it at once if the creator is at or above
+ * `launch_settings.app_create_role` (default admin), else opening an `app.create` approval.
+ * Requires `read App` (any member may ask). 400 for an invalid, reserved or `launch-` slug, 409
+ * `slug_taken`, 503 `launch_not_set_up` or `app_pipeline_not_configured`, 409 `launch_not_reachable`
+ * when Launch is not reachable from the internet. Audits `app.create.requested`.
+ */
 appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c => {
   // Every member may ASK; whether the ask is granted at once is the `app.create` policy's.
   const auth = guardPermission(c, 'read', 'App')
@@ -127,6 +134,10 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
   return c.json(body, 202)
 })
 
+/**
+ * Return the create or teardown pipeline's current view, polling an open wait and reconciling a
+ * stale running run against its Workflow instance first. Requires `read App`.
+ */
 appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId, cfg, logger } = withAuthAndDb(c)
@@ -137,6 +148,11 @@ appPipelineRouter.get('/:id/pipeline', validate('query', pipelineQuerySchema), a
   return c.json(await readPipeline(db, c.env, deps, tenantId, id, kind, { logger }))
 })
 
+/**
+ * Retry the latest run of the given kind after reconciling it, when it is `failed`. Requires
+ * `manage App`. 409 `run_not_failed`; a create retry is refused like a create while Launch is not
+ * reachable (409 `launch_not_reachable`). Audits `app.pipeline.retried`.
+ */
 appPipelineRouter.post(
   '/:id/pipeline/retry',
   validate('json', retryPipelineRequestSchema),
@@ -154,6 +170,12 @@ appPipelineRouter.post(
   }
 )
 
+/**
+ * Re-scaffold an app that never deployed, from the current kit pin, keeping its repository,
+ * database, storage, Workers, sign-in client and secrets. Requires `manage App`. 409
+ * `run_not_failed`, `app_live`, `app_archived`, `app_already_deployed` or `no_run`; also refused
+ * (409 `launch_not_reachable`) while Launch is not reachable. Audits `app.pipeline.rescaffolded`.
+ */
 appPipelineRouter.post('/:id/pipeline/rescaffold', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId, logger } = withAuthAndDb(c)
@@ -173,6 +195,10 @@ appPipelineRouter.post('/:id/pipeline/rescaffold', async c => {
   return c.json(result, 202)
 })
 
+/**
+ * Cancel a create run that is still running (a stuck wait), so it can be retried. Requires `manage
+ * App`. 409 `run_not_running`. Audits `app.pipeline.cancelled`.
+ */
 appPipelineRouter.post('/:id/pipeline/cancel', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -186,6 +212,10 @@ appPipelineRouter.post('/:id/pipeline/cancel', async c => {
   return c.json(result)
 })
 
+/**
+ * Start tearing an app down, after the caller confirms its slug. Requires `manage App`. 400
+ * `confirm_slug_mismatch` for a wrong slug. Audits `app.teardown.requested`.
+ */
 appPipelineRouter.post('/:id/teardown', validate('json', teardownRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)

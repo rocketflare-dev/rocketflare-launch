@@ -79,6 +79,7 @@ function nudgeAccessChanged(c: AppContext, tenantId: string, userIds: string[]) 
 
 // ---- Mine (every member) ------------------------------------------------------------------
 
+/** List the groups the caller belongs to. Any member may call it. */
 groupsRouter.get('/mine', async c => {
   const { db, tenantId, user } = withAuthAndDb(c)
   return c.json({ items: await listUserGroups(db, tenantId, user.id) })
@@ -86,12 +87,14 @@ groupsRouter.get('/mine', async c => {
 
 // ---- Group types --------------------------------------------------------------------------
 
+/** List the organisation's group types. Requires `manage Group`. */
 groupsRouter.get('/types', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
   return c.json({ items: await listGroupTypes(db, tenantId) })
 })
 
+/** Create a group type. Requires `manage Group`. */
 groupsRouter.post('/types', validate('json', createGroupTypeRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -110,6 +113,7 @@ groupsRouter.post('/types', validate('json', createGroupTypeRequestSchema), asyn
   return c.json(row, 201)
 })
 
+/** Rename a group type. Requires `manage Group`. */
 groupsRouter.patch('/types/:id', validate('json', updateGroupTypeRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -129,6 +133,11 @@ groupsRouter.patch('/types/:id', validate('json', updateGroupTypeRequestSchema),
   return c.json(row)
 })
 
+/**
+ * Delete a group type and all its groups. Requires `manage Group`. 409 `group_in_use` while any
+ * of its groups still grants access, unless `?force=1` (which narrows visibility rather than
+ * opening it).
+ */
 groupsRouter.delete('/types/:id', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -154,12 +163,14 @@ groupsRouter.delete('/types/:id', async c => {
 
 // ---- Groups -------------------------------------------------------------------------------
 
+/** List the organisation's groups, optionally filtered by type. Requires `manage Group`. */
 groupsRouter.get('/', validate('query', groupListQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
   return c.json({ items: await listGroups(db, tenantId, c.req.valid('query')) })
 })
 
+/** Create a group. Requires `manage Group`. */
 groupsRouter.post('/', validate('json', createGroupRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -178,12 +189,14 @@ groupsRouter.post('/', validate('json', createGroupRequestSchema), async c => {
   return c.json(row, 201)
 })
 
+/** Return a group with its members. Requires `manage Group`. */
 groupsRouter.get('/:id', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
   return c.json(await getGroup(db, tenantId, uuidParam(c, 'id')))
 })
 
+/** Rename a group. Requires `manage Group`. */
 groupsRouter.patch('/:id', validate('json', updateGroupRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -203,6 +216,10 @@ groupsRouter.patch('/:id', validate('json', updateGroupRequestSchema), async c =
   return c.json(row)
 })
 
+/**
+ * Delete a group. Requires `manage Group`. 409 `group_in_use` while it still grants access, unless
+ * `?force=1` (which narrows visibility rather than opening it).
+ */
 groupsRouter.delete('/:id', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -228,6 +245,10 @@ groupsRouter.delete('/:id', async c => {
 
 // ---- Membership ---------------------------------------------------------------------------
 
+/**
+ * Add members to a group. Requires `manage Group`. Every id must already be a tenant member, and
+ * each one's content access is nudged live.
+ */
 groupsRouter.post('/:id/members', validate('json', addGroupMembersRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')
@@ -250,6 +271,10 @@ groupsRouter.post('/:id/members', validate('json', addGroupMembersRequestSchema)
   return c.json(await getGroup(db, tenantId, id))
 })
 
+/**
+ * Remove a member from a group. Requires `manage Group`. Nudges the removed member's content
+ * access.
+ */
 groupsRouter.delete('/:id/members/:userId', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')

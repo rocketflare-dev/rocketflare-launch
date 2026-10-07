@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **The CLI keeps several servers signed in at once.** `~/.launch/config.json` holds named servers
+  (profiles) and a default: `launch login --server <url> [--name <server>]` stores each one,
+  `--profile <name>`, `--server <name|url>` or `LAUNCH_PROFILE` picks one per command, and `launch
+  servers ls|use|add|rm|rename` manages them (`status --all` checks every one, `logout --all` signs
+  out of all). An existing config file loads as the server `default` and is rewritten in the new
+  shape on the next save.
+- **Debug Launch from the terminal (issue #6).** `launch sessions show` names the status, model,
+  branch, PR, ship stage, budget, last error and the failing gate step with its output tail;
+  `sessions logs [--follow]` prints the whole durable event log; `apps ls|health|operations|
+  pipeline`, `deploys ls|latest`, `releases show|chain|promotion`, `agents runs|run|logs
+  [--follow]|interrupts`, `ai status|usage`, `chat ls|show|stats`, `activity ls`, `notifications`
+  and `audit ls` show what apps, releases, agents and the organisation are doing; `status` reports
+  readiness (`--ready` exits 1 when the database is down).
+- **Everything the web app does, the CLI does (issue #6).** Sessions (`resume`, `cancel`,
+  `withdraw`, `landing-retry`, `budget`, image attachments), apps (`create [--follow]`, `import`,
+  `set`, `ship-settings`, `branch-protection`, `teardown`, `sign-in`, `thumbnail`, pipeline retry),
+  `deploys production|approve|reject`, secrets (`shared create|edit|archive|retry`, `grants
+  repush`), AI (`ai providers|set|rm|test|prompts|models`, `docs`, `chat new|send|rm|compact` —
+  `send` streams the reply, `--json` as one AG-UI event per line —, `agents start|answer|steer`),
+  the organisation (`members`, `invites`, `keys`, group writes, `tenant`, `me`, `policies`,
+  `access`, `files`, `feedback give|rm|mine`, `agent-accounts`) and the analytics plugin's
+  dashboards and templates. Bodies take `--data <json|@file|->`, checked with the shared schema
+  before anything is sent; secrets come from a hidden prompt or stdin, never argv; a new API key
+  or client secret is printed once. `ls` and `list` work in every group and every `--yes` takes
+  `-y`.
+- **Admin-scoped API keys; operate the deployment from the CLI (issue #6).** `launch login --admin`
+  mints an ADMIN key for a platform administrator (`GET /auth/cli?scope=admin`, named
+  `cli-admin:<host>`, 30 days, valid only while its creator is still an administrator); it is the
+  only key `/api/admin/*` and `/api/platform/*` accept. **An ordinary tenant key there is now 403
+  `admin_key_required` (was 401).** New commands on it: `launch admin sessions|drain|undrain|
+  tenants|users|flags` and `launch platform setup|settings|credentials|public-url|kit|agents|
+  sandbox|oidc|access-requests`. The API keys list shows each key's scope; migration
+  `0048_launch-api-key-scope` adds `api_keys.scope`. **Scripts may need `--yes`**: commands the
+  web UI confirms now confirm too and refuse without a terminal — including `sessions end`,
+  `grants revoke`, `releases cancel|rollback`, `apps rescaffold`, `servers rm` and `ai models
+  reset`. `agents start` takes `--data` (`--input` stays, hidden and deprecated).
+- **Agents discover the CLI and the API from the CLI (issue #6).** `launch commands [--json]` lists
+  every command with its arguments and options; `launch api ls|show|schema <METHOD> <path>` read a
+  generated catalog (each route's summary, auth, and params / query / body as JSON Schema, with an
+  example), and `launch api call` calls any route, first validating params, `--query` and `--data`
+  with the route's own zod schema (`--no-validate` skips). Both files —
+  `apps/cli/src/generated/api-catalog.json` and the zod registry `api-schemas.ts` — are rebuilt
+  by `pnpm api:catalog` and diff-checked in the gate.
+- **A parity guard keeps the CLI complete (issue #6).** `cli-parity.test.ts` fails the gate on an
+  `/api` route no command calls and no entry in `cli-parity-exclusions.ts` explains;
+  `api-catalog.test.ts` fails a route with no one-line summary comment, a `validate()` schema that
+  is not an `@launch/shared` export (the setup route's `kindParamSchema` moved to
+  `credentialKindParamSchema`), or a body read without `validate('json')` that is neither multipart
+  nor listed in `api-catalog-manual-bodies.ts`. A Claude Code PostToolUse hook
+  (`scripts/cli-parity-nudge.mjs`) reminds when an edit adds a route or UI call site.
+- **The CLI has a Rocketflare header.** The root help shows a rocket and the "Rocketflare Launch — the control plane" wordmark, and
+  each command prints one stderr line naming the server — orange when it is not this machine. It
+  appears only for a person at a terminal: never with `--json`, in a pipe or with `NO_COLOR`, and
+  static in CI; `LAUNCH_BANNER=off|static`.
 - **Settings' section tabs render as tabs again.** People (Members · Groups · Access requests) and
   AI & models showed their tabs as run-together text: each link sat in a list item, and DaisyUI
   styles a tab only as a direct child of `.tabs`.

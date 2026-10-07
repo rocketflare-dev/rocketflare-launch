@@ -8,6 +8,7 @@ import {
   logoutFlow,
   startCallbackServer,
 } from '../src/auth'
+import { adminProfileName } from '../src/commands/login'
 import { createMemoryLogger } from '../src/utils/logger'
 import { jsonResponse, mockFetch, TENANT_ID, TEST_KEY, tempStore, USER_ID } from './helpers'
 
@@ -37,6 +38,18 @@ describe('buildAuthUrl', () => {
     expect(buildAuthUrl(`${SERVER}/`, 'http://127.0.0.1:8765/callback')).toBe(
       `${SERVER}/auth/cli?redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback`
     )
+  })
+
+  it('asks for an admin-scoped key with scope=admin', () => {
+    const url = new URL(buildAuthUrl(SERVER, 'http://127.0.0.1:8765/callback', { admin: true }))
+    expect(url.searchParams.get('scope')).toBe('admin')
+  })
+})
+
+describe('adminProfileName', () => {
+  it('stores an admin key beside the ordinary login, never over it', () => {
+    expect(adminProfileName('prod')).toBe('prod-admin')
+    expect(adminProfileName('prod-admin')).toBe('prod-admin')
   })
 })
 
@@ -125,6 +138,7 @@ describe('loginFlow', () => {
 
     const result = await loginFlow({
       serverUrl: SERVER,
+      profile: 'default',
       store: t.store,
       log,
       open: b.open,
@@ -139,11 +153,16 @@ describe('loginFlow', () => {
     )
 
     expect(await t.store.load()).toEqual({
-      serverUrl: SERVER,
-      apiKey: TEST_KEY,
-      tenantId: TENANT_ID,
-      tenantName: 'Acme',
-      user: { email: 'alice@example.com', name: 'Alice' },
+      defaultProfile: 'default',
+      profiles: {
+        default: {
+          serverUrl: SERVER,
+          apiKey: TEST_KEY,
+          tenantId: TENANT_ID,
+          tenantName: 'Acme',
+          user: { email: 'alice@example.com', name: 'Alice' },
+        },
+      },
     })
     expect(result).toMatchObject({
       tenantId: TENANT_ID,
@@ -167,13 +186,14 @@ describe('loginFlow', () => {
     await expect(
       loginFlow({
         serverUrl: SERVER,
+        profile: 'default',
         store: t.store,
         log: createMemoryLogger(),
         open: b.open,
         fetch: api.fetch,
       })
     ).rejects.toMatchObject({ status: 401 })
-    expect(await t.store.load()).toEqual({})
+    expect(await t.store.load()).toEqual({ profiles: {} })
   })
 
   it('still logs in when /api/me is unavailable (404), with a warning and no user', async () => {
@@ -182,8 +202,18 @@ describe('loginFlow', () => {
     const api = mockFetch({})
     const b = browser({ key: TEST_KEY, tenant_id: TENANT_ID })
     const log = createMemoryLogger()
-    await loginFlow({ serverUrl: SERVER, store: t.store, log, open: b.open, fetch: api.fetch })
-    expect(await t.store.load()).toMatchObject({ apiKey: TEST_KEY, tenantId: TENANT_ID })
+    await loginFlow({
+      serverUrl: SERVER,
+      profile: 'local',
+      store: t.store,
+      log,
+      open: b.open,
+      fetch: api.fetch,
+    })
+    expect((await t.store.load()).profiles.local).toMatchObject({
+      apiKey: TEST_KEY,
+      tenantId: TENANT_ID,
+    })
     expect(log.lines.join('\n')).toMatch(/Could not load your profile/)
   })
 
@@ -194,23 +224,27 @@ describe('loginFlow', () => {
     await expect(
       loginFlow({
         serverUrl: SERVER,
+        profile: 'default',
         store: t.store,
         log: createMemoryLogger(),
         open: b.open,
         fetch: mockFetch({}).fetch,
       })
     ).rejects.toThrow(/access_denied/)
-    expect(await t.store.load()).toEqual({})
+    expect(await t.store.load()).toEqual({ profiles: {} })
   })
 
   it('logout keeps serverUrl and is a no-op when not logged in', async () => {
     const t = await tempStore()
     cleanups.push(t.cleanup)
     const log = createMemoryLogger()
-    await logoutFlow({ store: t.store, log })
+    await logoutFlow({ store: t.store, log, profiles: ['default'] })
     expect(log.lines.join('\n')).toMatch(/Not logged in/)
     await t.store.save({ serverUrl: SERVER, apiKey: TEST_KEY, tenantId: TENANT_ID })
-    await logoutFlow({ store: t.store, log })
-    expect(await t.store.load()).toEqual({ serverUrl: SERVER })
+    expect(await logoutFlow({ store: t.store, log, profiles: ['default'] })).toEqual(['default'])
+    expect(await t.store.load()).toEqual({
+      defaultProfile: 'default',
+      profiles: { default: { serverUrl: SERVER } },
+    })
   })
 })

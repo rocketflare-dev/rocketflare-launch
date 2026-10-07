@@ -3,7 +3,14 @@
  * only `keyHash` (SHA-256) is stored, `keyPrefix` is the human-readable handle in lists. A key acts
  * AS its creator: validation requires the creator to still be an unblocked member of the tenant,
  * so removing a member revokes their keys' access. Soft-revoked via `revokedAt`, never deleted.
+ *
+ * `scope` (not to be confused with `scopes`, the read/write list) is what the key may REACH:
+ * `tenant` (every key before it existed) stops at the tenant routes; `admin` — minted only by the
+ * CLI handoff for a platform administrator (`GET /auth/cli?scope=admin`), with a 30-day expiry —
+ * also passes `globalAdminMiddleware` / `platformAdminMiddleware`, which re-check that its creator
+ * is STILL an administrator on every request.
  */
+import type { ApiKeyAccessScope } from '@launch/shared/api-keys'
 import { relations } from 'drizzle-orm'
 import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { tenantRef } from './_helpers'
@@ -25,6 +32,8 @@ export const apiKeys = pgTable(
     keyHash: text('key_hash').notNull().unique(),
     /** `apiKeyScopeSchema` values; CASL on the creator's role is the real authorisation. */
     scopes: text('scopes').array().notNull().default(['read', 'write']),
+    /** `apiKeyAccessScopeSchema` — `tenant` | `admin` (see the header). */
+    scope: text('scope').$type<ApiKeyAccessScope>().notNull().default('tenant'),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     /** `validateApiKey` MUST check this (D12 — neither reference app did). */
     expiresAt: timestamp('expires_at', { withTimezone: true }),

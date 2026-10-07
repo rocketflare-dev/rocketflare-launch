@@ -21,6 +21,11 @@ import { approvalDepsOf } from './approvals'
 
 export const appConfigScanRouter = createRouter()
 
+/**
+ * Re-scan an app's repo for declared config, matching and recording it and notifying on new
+ * grants needed, then return the config view. Requires `mayDeployApp` (the app's owners and
+ * admins). A scan failure is recorded on the scan row rather than failing the request.
+ */
 appConfigScanRouter.post('/:id/config/scan', async c => {
   const ctx = await deployableApp(c)
   await scanAppConfig(approvalDepsOf(c), {

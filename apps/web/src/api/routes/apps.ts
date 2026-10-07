@@ -87,6 +87,7 @@ appsRouter.route('/', appThumbnailRouter)
 // P6 6c: `POST /:id/upgrade` (a kit upgrade session) and `GET /:id/upgrades`.
 appsRouter.route('/', appUpgradesRouter)
 
+/** List the organisation's apps with each one's latest deploy per environment, and the apps domain. */
 appsRouter.get('/', async c => {
   guardPermission(c, 'read', 'App')
   const { db, cfg, tenantId, logger } = withAuthAndDb(c)
@@ -103,6 +104,10 @@ appsRouter.get('/', async c => {
   return c.json(body)
 })
 
+/**
+ * Import an existing repo as a new app. Requires `manage App`. Triggers a config scan whose
+ * `grant_needed` notification nudges the bell live.
+ */
 appsRouter.post('/import', validate('json', importAppRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
   const { db, cfg, tenantId, realtime } = withAuthAndDb(c)
@@ -113,12 +118,14 @@ appsRouter.post('/import', validate('json', importAppRequestSchema), async c => 
   return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)), 201)
 })
 
+/** Return one app's detail, looked up by slug. Requires `read App`. */
 appsRouter.get('/:slug', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
   return c.json(await getAppDetail(db, tenantId, c.req.param('slug'), appViewer(c)))
 })
 
+/** Update an app's own fields (name, description, etc). Requires `manage App`. */
 appsRouter.patch('/:id', validate('json', updateAppRequestSchema), async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -126,16 +133,17 @@ appsRouter.patch('/:id', validate('json', updateAppRequestSchema), async c => {
   return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)))
 })
 
-// Issue #5 (plan §1.10): where a session's Ship ends and who reviews its merge — the app's owners
-// and admins (`mayDeployApp`, the same rule as its deploys). Answers the app detail.
+/**
+ * Set where a session's Ship ends and who reviews its merge. Requires `mayDeployApp` (the app's
+ * owners and admins, the same rule as its deploys). Returns the app detail.
+ */
 appsRouter.put('/:id/ship-settings', validate('json', putAppShipSettingsRequestSchema), async c => {
   const { db, tenantId, app } = await deployableApp(c)
   const updated = await updateShipSettings(db, tenantId, app, c.req.valid('json'), auditActor(c))
   return c.json(await getAppDetail(db, tenantId, updated.slug, appViewer(c)))
 })
 
-// Issue #5 (plan §1.13): how GitHub protects the default branch (`appBranchProtectionSchema`),
-// read by any member; applying Launch's `launch` ruleset is the admins' (`manage App`).
+/** Return how GitHub protects the app's default branch. Requires `read App`. */
 appsRouter.get('/:id/branch-protection', async c => {
   guardPermission(c, 'read', 'App')
   const { db, cfg, tenantId } = withAuthAndDb(c)
@@ -143,6 +151,7 @@ appsRouter.get('/:id/branch-protection', async c => {
   return c.json(await getAppBranchProtection(db, cfg, app))
 })
 
+/** Apply Launch's branch protection ruleset to the app's default branch. Requires `manage App`. */
 appsRouter.post('/:id/branch-protection', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, cfg, tenantId } = withAuthAndDb(c)
@@ -150,6 +159,7 @@ appsRouter.post('/:id/branch-protection', async c => {
   return c.json(await applyAppBranchProtection(db, cfg, tenantId, app, auditActor(c)))
 })
 
+/** List an app's health-check history over the given window of hours. Requires `read App`. */
 appsRouter.get('/:id/health', validate('query', appHealthQuerySchema), async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -157,6 +167,10 @@ appsRouter.get('/:id/health', validate('query', appHealthQuerySchema), async c =
   return c.json(await listHealthHistory(db, tenantId, app.id, c.req.valid('query').hours))
 })
 
+/**
+ * Run an on-demand health check against each of an app's environments and return the results.
+ * Requires `manage App`. Probes inline (two GETs per environment, five-second cap), not enqueued.
+ */
 appsRouter.post('/:id/health-check', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -165,6 +179,7 @@ appsRouter.post('/:id/health-check', async c => {
   return c.json({ environments: rows.sort(byEnvironmentOrder).map(toEnvironmentSummary) })
 })
 
+/** List an app's operations log (deploys, imports and other changes). Requires `read App`. */
 appsRouter.get('/:id/operations', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -172,6 +187,7 @@ appsRouter.get('/:id/operations', async c => {
   return c.json({ items: await listOperations(db, tenantId, app.id) })
 })
 
+/** Return an app's OIDC client, or null if it has none yet. Requires `read App`. */
 appsRouter.get('/:id/oidc-client', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -180,6 +196,10 @@ appsRouter.get('/:id/oidc-client', async c => {
   return c.json({ client: row ? toAppOidcClient(row) : null })
 })
 
+/**
+ * Create an OIDC client for an app so it can let its own users sign in through Launch. Requires
+ * `manage App`.
+ */
 appsRouter.post('/:id/oidc-client', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, cfg, tenantId } = withAuthAndDb(c)
@@ -187,6 +207,7 @@ appsRouter.post('/:id/oidc-client', async c => {
   return c.json(await createAppOidcClient(db, cfg, tenantId, app, auditActor(c)), 201)
 })
 
+/** Rotate an app's OIDC client secret, invalidating the old one. Requires `manage App`. */
 appsRouter.post('/:id/oidc-client/rotate-secret', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, cfg, tenantId } = withAuthAndDb(c)
@@ -194,6 +215,7 @@ appsRouter.post('/:id/oidc-client/rotate-secret', async c => {
   return c.json(await rotateAppOidcSecret(db, cfg, tenantId, app, auditActor(c)))
 })
 
+/** Update an app's OIDC client's allowed redirect URIs. Requires `manage App`. */
 appsRouter.patch(
   '/:id/oidc-client/redirect-uris',
   validate('json', updateAppRedirectUrisRequestSchema),

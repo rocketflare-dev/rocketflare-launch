@@ -18,10 +18,9 @@ import {
   runSessionsPreviewUrl,
   runSessionsSay,
   runSessionsShip,
-  runSessionsShow,
   runSessionsStart,
-  sessionBoots,
 } from '../src/commands/sessions'
+import { runSessionsShow, sessionBoots } from '../src/commands/sessions-debug'
 import { EXIT_ERROR, EXIT_FORBIDDEN, exitCodeFor } from '../src/errors'
 import {
   captureError,
@@ -204,7 +203,7 @@ describe('sessions start / ls / end / preview-url', () => {
         jsonResponse({ session: session({ status: 'ending' }) }, 202),
     })
     const first = await testContext({ store: await loggedInStore(), fetch: ok.fetch })
-    await runSessionsEnd(first.ctx, ID)
+    await runSessionsEnd(first.ctx, ID, { yes: true })
     expect(first.out.content()).toContain('session/abcdefghijkl')
 
     const denied = mockFetch({
@@ -212,7 +211,9 @@ describe('sessions start / ls / end / preview-url', () => {
         jsonResponse({ error: 'Forbidden', statusCode: 403, code: 'forbidden' }, 403),
     })
     const second = await testContext({ store: await loggedInStore(), fetch: denied.fetch })
-    expect(exitCodeFor(await captureError(runSessionsEnd(second.ctx, ID)))).toBe(EXIT_FORBIDDEN)
+    expect(exitCodeFor(await captureError(runSessionsEnd(second.ctx, ID, { yes: true })))).toBe(
+      EXIT_FORBIDDEN
+    )
   })
 
   it('prints a preview grant URL and opens it on --open', async () => {
@@ -307,6 +308,34 @@ describe('sessions show (issue #8)', () => {
 })
 
 describe('sessions say', () => {
+  it('--attach uploads the images first and sends their ids with the message', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'launch-say-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true }))
+    const png = join(dir, 'shot.png')
+    await writeFile(png, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    const AID = 'a7700000-0000-4000-8000-000000000001'
+    const PRE = 'a7700000-0000-4000-8000-000000000002'
+    const { fetch, calls } = mockFetch({
+      [`/api/sessions/${ID}/attachments`]: () =>
+        jsonResponse({ id: AID, contentType: 'image/png', bytes: 8 }, 201),
+      [`/api/sessions/${ID}/turns`]: () =>
+        jsonResponse({ session: session({ pendingMessage: true }) }, 202),
+    })
+    const { ctx } = await testContext({ store: await loggedInStore(), fetch })
+    await runSessionsSay(ctx, ID, 'Like this', { attach: [png], attachId: [PRE] })
+    expect(calls.map(c => c.url.pathname)).toEqual([
+      `/api/sessions/${ID}/attachments`,
+      `/api/sessions/${ID}/turns`,
+    ])
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({
+      message: 'Like this',
+      attachments: [PRE, AID],
+    })
+  })
+
   it('--follow prints the turn and stops when it ends', async () => {
     const log = [event(1, 'turn.end', { turn: 0 }, 0)]
     let polls = 0

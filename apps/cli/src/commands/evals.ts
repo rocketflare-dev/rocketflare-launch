@@ -14,11 +14,11 @@
 import { existsSync } from 'node:fs'
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { createInterface } from 'node:readline/promises'
 import { type EvalCase, evalCaseSchema, evalExportResponseSchema } from '@launch/shared/ai/evals'
 import { CliApiError } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
+import { confirmAction } from '../utils/input'
 
 export const DATASETS_DIR = path.join('apps', 'evals', 'datasets')
 const DATASET_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/
@@ -80,15 +80,6 @@ async function existingIds(file: string): Promise<Set<string>> {
   return ids
 }
 
-async function askOnTerminal(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr })
-  try {
-    return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim())
-  } finally {
-    rl.close()
-  }
-}
-
 export async function runEvalsPromote(
   ctx: CommandContext,
   id: string,
@@ -124,17 +115,12 @@ export async function runEvalsPromote(
   ctx.log.hint(
     'Review and redact it before committing, and correct expected.output — it is the OBSERVED answer, not a gold one.'
   )
-  if (!options.yes) {
-    const ask = options.confirm ?? (process.stdin.isTTY ? askOnTerminal : undefined)
-    if (!ask) {
-      throw new CliError('Refusing to write tenant data without confirmation', {
-        hint: 'Re-run with --yes once you have decided the case belongs in the repository.',
-      })
-    }
-    if (!(await ask(`Append "${evalCase.id}" to ${path.relative(process.cwd(), file) || file}?`))) {
-      ctx.log.info('Nothing written.')
-      return
-    }
+  const question = `Append "${evalCase.id}" to ${path.relative(process.cwd(), file) || file}?`
+  if (
+    !(await confirmAction(question, options, 'Refusing to write tenant data without confirmation'))
+  ) {
+    ctx.log.info('Nothing written.')
+    return
   }
 
   await mkdir(dir, { recursive: true })

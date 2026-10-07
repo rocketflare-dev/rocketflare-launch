@@ -21,12 +21,17 @@ import { validate } from '../utils/routes/validate'
 
 export const tenantRouter = createRouter()
 
+/** Returns the current tenant. Requires `read Tenant`. */
 tenantRouter.get('/', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Tenant')
   return c.json(await getTenant(db, tenantId))
 })
 
+/**
+ * Updates the current tenant's name or slug. Admin+ only (403 otherwise); changing the slug
+ * additionally requires the owner role.
+ */
 tenantRouter.patch('/', validate('json', updateTenantRequestSchema), async c => {
   const { db, tenantId, auth, user, defer, realtime } = withAuthAndDb(c)
   const patch = c.req.valid('json')
@@ -46,6 +51,10 @@ tenantRouter.patch('/', validate('json', updateTenantRequestSchema), async c => 
   return c.json(tenant)
 })
 
+/**
+ * Deletes the current tenant and its data. Owner only, confirmed by typing the tenant's slug (400
+ * `confirmation_mismatch` otherwise); 404 `tenancy_mode_single` in single-tenant mode.
+ */
 tenantRouter.delete('/', validate('json', deleteTenantRequestSchema), async c => {
   const { db, tenantId, cfg, realtime } = withAuthAndDb(c)
   requireMultiTenant(cfg)
@@ -63,12 +72,14 @@ tenantRouter.delete('/', validate('json', deleteTenantRequestSchema), async c =>
   return c.body(null, 204)
 })
 
+/** Returns the current tenant's settings. Requires `read Tenant`. */
 tenantRouter.get('/settings', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Tenant')
   return c.json(await getTenantSettings(db, tenantId))
 })
 
+/** Updates the current tenant's settings. Admin+ only (403 otherwise). */
 tenantRouter.patch('/settings', validate('json', updateTenantSettingsRequestSchema), async c => {
   const { db, tenantId, auth, user, defer } = withAuthAndDb(c)
   if (!isAdminLevel(auth)) throw new ForbiddenError('Only admins can update settings')

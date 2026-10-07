@@ -19,7 +19,7 @@ import {
   updateFeatureFlagRequestSchema,
 } from '@launch/shared/features'
 import type { FeatureName } from '@launch/shared/permissions'
-import { resolveCookieAuth } from '../middleware/auth'
+import { isApiKeySession, resolveCookieAuth } from '../middleware/auth'
 import {
   enterSupport,
   getAdminTenant,
@@ -41,6 +41,7 @@ import {
 } from '../services/features'
 import { nudge, realtimeEvent } from '../services/realtime'
 import {
+  BadRequestError,
   ForbiddenError,
   NotFoundError,
   UnauthorizedError,
@@ -55,6 +56,7 @@ export const adminRouter = createRouter()
 
 // ---- Tenants --------------------------------------------------------------------------------
 
+/** List organisations across the platform, paginated. 404 `tenancy_mode_single` outside multi-tenant. */
 adminRouter.get('/tenants', validate('query', adminTenantListQuerySchema), async c => {
   const { db, cfg } = withAuth(c)
   requireMultiTenant(cfg)
@@ -63,27 +65,47 @@ adminRouter.get('/tenants', validate('query', adminTenantListQuerySchema), async
   return c.json(paginated(items, total, query))
 })
 
+/** Return one organisation's admin detail. */
 adminRouter.get('/tenants/:id', async c => {
   const { db, user } = withAuth(c)
   return c.json(await getAdminTenant(db, uuidParam(c, 'id'), user.id))
 })
 
+/** Suspend or unsuspend an organisation. */
 adminRouter.post('/tenants/:id/suspend', validate('json', suspendTenantRequestSchema), async c => {
   const { db, user } = withAuth(c)
   const row = await setTenantSuspended(db, uuidParam(c, 'id'), c.req.valid('json').suspended, user)
   return c.json({ id: row.id, status: row.status })
 })
 
+/** Support mode pins the BROWSER session's tenant; an admin API key has no session to pin. */
+function supportNeedsBrowser(auth: Parameters<typeof isApiKeySession>[0]) {
+  if (isApiKeySession(auth)) {
+    throw new BadRequestError(
+      'Support mode is entered from the browser; an admin API key has no session to pin',
+      'support_needs_session'
+    )
+  }
+}
+
+/**
+ * Enter support mode for an organisation, pinning the browser session's tenant to it and
+ * returning the refreshed session. 400 `support_needs_session` for an admin API key, which has
+ * no browser session to pin.
+ */
 adminRouter.post('/tenants/:id/support/enter', async c => {
   const { db, cfg, user, auth } = withAuth(c)
+  supportNeedsBrowser(auth)
   await enterSupport(db, uuidParam(c, 'id'), user, auth.session.id)
   const refreshed = await resolveCookieAuth(c)
   if (!refreshed) throw new UnauthorizedError()
   return c.json(await buildSessionResponse(db, cfg, refreshed))
 })
 
+/** Leave support mode for an organisation and return the refreshed session. */
 adminRouter.post('/tenants/:id/support/leave', async c => {
   const { db, cfg, user, auth } = withAuth(c)
+  supportNeedsBrowser(auth)
   await leaveSupport(db, uuidParam(c, 'id'), user, auth.session.id)
   const refreshed = await resolveCookieAuth(c)
   if (!refreshed) throw new UnauthorizedError()
@@ -92,6 +114,7 @@ adminRouter.post('/tenants/:id/support/leave', async c => {
 
 // ---- Users ----------------------------------------------------------------------------------
 
+/** List users across the platform, paginated. */
 adminRouter.get('/users', validate('query', adminUserListQuerySchema), async c => {
   const { db } = withAuth(c)
   const query = c.req.valid('query')
@@ -99,11 +122,13 @@ adminRouter.get('/users', validate('query', adminUserListQuerySchema), async c =
   return c.json(paginated(items, total, query))
 })
 
+/** Return one user's admin detail. */
 adminRouter.get('/users/:id', async c => {
   const { db } = withAuth(c)
   return c.json(await getAdminUser(db, uuidParam(c, 'id')))
 })
 
+/** Grant or revoke a user's global-admin flag. */
 adminRouter.post(
   '/users/:id/global-admin',
   validate('json', setGlobalAdminRequestSchema),
@@ -118,6 +143,7 @@ adminRouter.post(
   }
 )
 
+/** Block or unblock a user's sign-in. 403 if the caller targets themself. */
 adminRouter.post('/users/:id/block', validate('json', blockUserRequestSchema), async c => {
   const { db, user } = withAuth(c)
   const id = uuidParam(c, 'id')
@@ -138,11 +164,17 @@ function featureParam(c: Parameters<typeof withAuth>[0]): FeatureName {
   return key
 }
 
+/** List every feature flag and its current state. */
 adminRouter.get('/feature-flags', async c => {
   const { db, cfg } = withAuth(c)
   return c.json({ items: await listFeatureFlags(db, cfg) })
 })
 
+/**
+ * Update a feature flag's rollout state. 404 for an unknown key. 400 `ValidationError` for a
+ * percentage rollout in single-tenant mode unless counted by `user`, since a single organisation
+ * makes an organisation-counted rollout all-or-nothing.
+ */
 adminRouter.patch(
   '/feature-flags/:key',
   validate('json', updateFeatureFlagRequestSchema),
@@ -165,6 +197,7 @@ adminRouter.patch(
   }
 )
 
+/** List every organisation's override for a feature flag. 404 `tenancy_mode_single` in single mode. */
 adminRouter.get('/feature-flags/:key/overrides', async c => {
   const { db, cfg } = withAuth(c)
   // One organisation means the platform state already IS that organisation's answer.
@@ -172,6 +205,10 @@ adminRouter.get('/feature-flags/:key/overrides', async c => {
   return c.json({ items: await listFlagOverrides(db, featureParam(c)) })
 })
 
+/**
+ * Set one organisation's override for a feature flag and nudge its session so the change takes
+ * effect on the next fetch. 404 `tenancy_mode_single` in single mode.
+ */
 adminRouter.put(
   '/feature-flags/:key/overrides/:tenantId',
   validate('json', setTenantOverrideRequestSchema),
@@ -189,6 +226,10 @@ adminRouter.put(
   }
 )
 
+/**
+ * Clear one organisation's override for a feature flag, reverting it to the platform default, and
+ * nudge its session. 404 `tenancy_mode_single` in single mode.
+ */
 adminRouter.delete('/feature-flags/:key/overrides/:tenantId', async c => {
   const { db, cfg, realtime } = withAuth(c)
   requireMultiTenant(cfg)

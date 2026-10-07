@@ -64,6 +64,7 @@ export async function deployableApp(c: AppContext) {
   return { ...ctx, app }
 }
 
+/** List an app's deploy tickets, newest first. Requires `read App`. */
 appDeploysRouter.get('/:id/deploys', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -71,7 +72,11 @@ appDeploysRouter.get('/:id/deploys', async c => {
   return c.json({ items: await listDeploys(db, tenantId, app.id) })
 })
 
-// Registered before `/:id/deploys/:ticketId/…`: `latest` is a word, not a ticket id.
+/**
+ * Return each of an app's environments' newest deploy, as the overview's stepper reads it,
+ * polling the GitHub run of an in-progress deploy first. Requires `read App`. Registered before
+ * `/:id/deploys/:ticketId/…`: `latest` is a word, not a ticket id.
+ */
 appDeploysRouter.get('/:id/deploys/latest', async c => {
   guardPermission(c, 'read', 'App')
   const { db, cfg, tenantId, logger } = withAuthAndDb(c)
@@ -82,6 +87,12 @@ appDeploysRouter.get('/:id/deploys/latest', async c => {
   return c.json(body)
 })
 
+/**
+ * Approve or reject a production deploy run waiting on GitHub, deciding its `deploy.production`
+ * approval. Requires `read App`; who may decide is the approval's own policy (by default the app's
+ * owners and the organisation's admins, never the run's own authors). 403 `not_an_approver` or
+ * `self_approval`; 409 `already_decided`, `not_pending` or `deploy_run_gone`.
+ */
 appDeploysRouter.post(
   '/:id/deploys/:ticketId/decide',
   validate('json', deployDecisionSchema),
@@ -102,6 +113,12 @@ appDeploysRouter.post(
   }
 )
 
+/**
+ * Deploy the app's current staging state straight to production with no release, opening a
+ * `deploy.production` approval (pre-approved on the spot by some policies). Requires
+ * `mayDeployApp` (the app's owners and admins). 409 `launch_not_reachable` while Launch's public
+ * URL fails its check, since the dispatched run calls Launch back.
+ */
 appDeploysRouter.post('/:id/deploys/production', async c => {
   const ctx = await deployableApp(c)
   // The dispatched `deploy.yml` calls Launch back at `/ci/deploy`: refuse while it cannot.

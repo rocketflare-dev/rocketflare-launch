@@ -58,6 +58,8 @@ Changing behaviour changes the doc in the same PR:
 | a plugin slot, the plugin contract or the reference plugin (D31) | `docs/CONCEPTS.md` §16 + the matching `.claude/rules/*.md` + `apps/web/src/plugins/CLAUDE.md` |
 | a MEMBER of a declared plugin API entry — `@/plugins/api`, `@/db/schema/kit`, `@/plugins/api/ui{,-wiring}`, `@launch/shared/plugins/*`, the CLI entry, `@testkit/*` (D31) | `node scripts/plugin-api-doc.mjs` and commit `docs/plugin-api.md` — the same shape as the `worker-configuration.d.ts` step beside it. There is no version to bump: the file's `## Surface ledger` block IS the contract, and a plugin naming a symbol it no longer carries fails `pnpm plugin check` by name, with its replacement import |
 | a CLI command, flag or exit code | `docs/CONCEPTS.md` → CLI, `.claude/rules/cli.md` |
+| a UI action or an /api route | its `launch` command in the same PR (`apps/cli/src/commands/`, path named literally at the call site), or an entry in `apps/web/tests/config/cli-parity-exclusions.ts` with a one-line reason — `cli-parity.test.ts` fails the gate otherwise; and the `launch-cli` skill when it changes how an agent debugs |
+| an /api route or its schema (or which CLI file calls one) | a one-line `/** … */` summary above the registration; `pnpm api:catalog` and commit `apps/cli/src/generated/api-catalog.json` |
 | a rename target | `docs/ADAPTING.md` |
 
 A superseded doc is deleted in the same PR that supersedes it — git history is the archive. Never

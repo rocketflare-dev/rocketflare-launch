@@ -109,6 +109,12 @@ function messagesSnapshot(rows: MessageRow[]): KitAguiEvent {
   }
 }
 
+/**
+ * Runs one AG-UI turn (`RunAgentInput`): adopts or resumes a conversation, replays an existing
+ * turn idempotently, and streams the reply through the same path as `/api/chat`. Requires `update
+ * Conversation`; 400 `agui_client_tools_unsupported` if the client offers tools, 404
+ * `agui_thread_not_found` for a thread id that belongs to someone else.
+ */
 aguiRouter.post('/run', validate('json', kitRunAgentInputSchema), async c => {
   const { db, tenantId, user, cfg } = withAuthAndDb(c)
   guardPermission(c, 'update', 'Conversation')

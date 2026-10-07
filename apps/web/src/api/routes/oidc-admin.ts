@@ -21,6 +21,10 @@ import { createRouter } from '../utils/routes/router'
 
 export const oidcAdminRouter = createRouter()
 
+/**
+ * List the OIDC issuer's signing keys with their status and dates, plus the issuer and discovery
+ * URLs. Never returns key material.
+ */
 oidcAdminRouter.get('/keys', async c => {
   const { db, cfg } = withAuth(c)
   await ensureKeys(db, cfg)
@@ -45,6 +49,10 @@ async function auditTenantId(db: Database, tenantId: string | null): Promise<str
   return oldest?.id ?? null
 }
 
+/**
+ * Rotate the OIDC issuer's signing keys: the published `next` key starts signing, the old one
+ * stays in the JWKS until every token it signed has expired. Audits `oidc.key.rotated`.
+ */
 oidcAdminRouter.post('/keys/rotate', async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const now = new Date()

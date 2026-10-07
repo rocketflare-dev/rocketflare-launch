@@ -44,6 +44,10 @@ export function toAssignment(row: AgentModelRow): AgentModelAssignment {
   }
 }
 
+/**
+ * Lists every registry prompt key with its model assignment (if any) and what the resolver would
+ * actually pick for it. Requires `read AiConfig`.
+ */
 aiAgentModelsRouter.get('/', async c => {
   const { db, tenantId, cfg } = withAuthAndDb(c)
   guardPermission(c, 'read', 'AiConfig')
@@ -74,6 +78,10 @@ aiAgentModelsRouter.get('/', async c => {
   return c.json({ items })
 })
 
+/**
+ * Pins a chat config and/or model for one prompt key. Requires `manage AiConfig` (admin+); an
+ * unknown or foreign `aiConfigId` is 404 `ai_config_not_found`.
+ */
 aiAgentModelsRouter.put('/:promptKey', validate('json', upsertAgentModelRequestSchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'AiConfig')
@@ -106,6 +114,10 @@ aiAgentModelsRouter.put('/:promptKey', validate('json', upsertAgentModelRequestS
   return c.json(toAssignment(row))
 })
 
+/**
+ * Reverts one prompt key to the default model resolution, removing its assignment. Requires
+ * `manage AiConfig` (admin+); idempotent.
+ */
 aiAgentModelsRouter.delete('/:promptKey', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'AiConfig')

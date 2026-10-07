@@ -20,6 +20,8 @@ export interface ApiClientOptions {
 
 export type QueryValue = string | number | boolean | undefined | null
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
 export interface RequestOptions<T> {
   /**
    * The contract to validate a success body with. `T` is its OUTPUT type: the input is `unknown`,
@@ -76,7 +78,14 @@ function defaultHint(status: number): string | undefined {
   return undefined
 }
 
-/** A streamed success body (`ApiClient.download`): read it once, chunk by chunk. */
+/** A success body as text (`ApiClient.raw`), for `launch api call`. */
+export interface RawResponse {
+  status: number
+  contentType: string | null
+  text: string
+}
+
+/** A streamed success body (`ApiClient.download` / `stream`): read it once, chunk by chunk. */
 export interface DownloadResponse {
   status: number
   contentType: string | null
@@ -95,8 +104,28 @@ export interface ApiClient {
     path: string,
     options?: { query?: Record<string, QueryValue> }
   ): Promise<DownloadResponse>
+  /**
+   * Any method with a JSON body whose success body is a STREAM (`chat send`: an AG-UI SSE body
+   * from a POST). Same `CliApiError`s as `request` for a non-2xx; the timeout covers reaching the
+   * server and the headers, never the length of the stream. `accept` defaults to
+   * `text/event-stream`.
+   */
+  stream(
+    method: HttpMethod,
+    path: string,
+    options?: { query?: Record<string, QueryValue>; body?: unknown; accept?: string }
+  ): Promise<DownloadResponse>
+  /**
+   * Any method and path with no contract (`launch api call`, the escape hatch): the success body
+   * comes back as text. A non-2xx is the same `CliApiError` as `request`, its `body` the envelope.
+   */
+  raw(
+    method: HttpMethod,
+    path: string,
+    options?: { query?: Record<string, QueryValue | QueryValue[]>; body?: unknown }
+  ): Promise<RawResponse>
   request<T = unknown>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: HttpMethod,
     path: string,
     options?: RequestOptions<T>
   ): Promise<ApiResponse<T>>
@@ -105,10 +134,17 @@ export interface ApiClient {
   del<T = unknown>(path: string, options?: RequestOptions<T>): Promise<T>
 }
 
-export function buildUrl(serverUrl: string, path: string, query?: Record<string, QueryValue>) {
+export function buildUrl(
+  serverUrl: string,
+  path: string,
+  query?: Record<string, QueryValue | QueryValue[]>
+) {
   const url = new URL(`${serverUrl.replace(/\/+$/, '')}${path.startsWith('/') ? path : `/${path}`}`)
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const v of value)
+        if (v !== undefined && v !== null) url.searchParams.append(key, String(v))
+    } else if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
   }
   return url.toString()
 }
@@ -142,18 +178,25 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   async function request<T>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: HttpMethod,
     path: string,
     reqOptions: RequestOptions<T> = {}
   ): Promise<ApiResponse<T>> {
     const url = buildUrl(serverUrl, path, reqOptions.query)
     const headers = baseHeaders('application/json')
-    if (reqOptions.body !== undefined) headers['Content-Type'] = 'application/json'
+    // A `FormData` body (an upload) goes as multipart: fetch sets the boundary's Content-Type.
+    const multipart = reqOptions.body instanceof FormData
+    if (reqOptions.body !== undefined && !multipart) headers['Content-Type'] = 'application/json'
 
     const response = await send(url, {
       method,
       headers,
-      body: reqOptions.body === undefined ? undefined : JSON.stringify(reqOptions.body),
+      body:
+        reqOptions.body === undefined
+          ? undefined
+          : multipart
+            ? (reqOptions.body as FormData)
+            : JSON.stringify(reqOptions.body),
       signal: AbortSignal.timeout(timeoutMs),
     })
 
@@ -176,26 +219,52 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     return { status: response.status, raw, data: parsed.data }
   }
 
-  async function download(
+  async function raw(
+    method: HttpMethod,
     path: string,
-    downloadOptions: { query?: Record<string, QueryValue> } = {}
+    rawOptions: { query?: Record<string, QueryValue | QueryValue[]>; body?: unknown } = {}
+  ): Promise<RawResponse> {
+    const headers = baseHeaders('application/json')
+    if (rawOptions.body !== undefined) headers['Content-Type'] = 'application/json'
+    const response = await send(buildUrl(serverUrl, path, rawOptions.query), {
+      method,
+      headers,
+      body: rawOptions.body === undefined ? undefined : JSON.stringify(rawOptions.body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok)
+      throw errorFromResponse(response.status, await readBody(response), method, path)
+    return {
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      text: response.status === 204 ? '' : await response.text(),
+    }
+  }
+
+  /** Send, then hand the success body back unread; the timeout stops once the headers are in. */
+  async function streamed(
+    method: HttpMethod,
+    path: string,
+    init: { query?: Record<string, QueryValue>; body?: unknown; accept: string }
   ): Promise<DownloadResponse> {
-    // The timeout guards reaching the server; once the headers are in, the body takes as long as
-    // it takes (an abort mid-body would cut a large export short).
+    // An abort mid-body would cut a long stream short, so the timer is cleared at the headers.
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error('timed out')), timeoutMs)
+    const headers = baseHeaders(init.accept)
+    if (init.body !== undefined) headers['Content-Type'] = 'application/json'
     let response: Response
     try {
-      response = await send(buildUrl(serverUrl, path, downloadOptions.query), {
-        method: 'GET',
-        headers: baseHeaders('*/*'),
+      response = await send(buildUrl(serverUrl, path, init.query), {
+        method,
+        headers,
+        body: init.body === undefined ? undefined : JSON.stringify(init.body),
         signal: controller.signal,
       })
     } finally {
       clearTimeout(timer)
     }
     if (!response.ok)
-      throw errorFromResponse(response.status, await readBody(response), 'GET', path)
+      throw errorFromResponse(response.status, await readBody(response), method, path)
     return {
       status: response.status,
       contentType: response.headers.get('content-type'),
@@ -203,10 +272,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     }
   }
 
+  function download(
+    path: string,
+    downloadOptions: { query?: Record<string, QueryValue> } = {}
+  ): Promise<DownloadResponse> {
+    return streamed('GET', path, { query: downloadOptions.query, accept: '*/*' })
+  }
+
+  function stream(
+    method: HttpMethod,
+    path: string,
+    streamOptions: { query?: Record<string, QueryValue>; body?: unknown; accept?: string } = {}
+  ): Promise<DownloadResponse> {
+    return streamed(method, path, {
+      query: streamOptions.query,
+      body: streamOptions.body,
+      accept: streamOptions.accept ?? 'text/event-stream',
+    })
+  }
+
   return {
     serverUrl,
     request,
+    raw,
     download,
+    stream,
     get: (path, o) => request('GET', path, o).then(r => r.data),
     post: (path, o) => request('POST', path, o).then(r => r.data),
     del: (path, o) => request('DELETE', path, o).then(r => r.data),

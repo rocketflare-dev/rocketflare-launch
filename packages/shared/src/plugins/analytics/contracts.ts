@@ -17,7 +17,7 @@
  * consumed through `drizzle-cube/client`, not through schemas here.
  */
 import { z } from 'zod'
-import { groupRefSchema, resourceVisibilitySchema } from '../../groups'
+import { groupRefSchema, resourceVisibilitySchema, setVisibilityRequestSchema } from '../../groups'
 
 /** A drizzle-cube `DashboardConfig`; must at least carry a `portlets` array. */
 export const dashboardConfigSchema = z
@@ -83,6 +83,19 @@ export type DashboardTemplateSummary = z.infer<typeof dashboardTemplateSummarySc
 export const dashboardTemplateListResponseSchema = z.object({
   items: z.array(dashboardTemplateSummarySchema),
 })
+
+/** `POST /api/analytics/templates/recreate` — pages created, and existing template pages reset. */
+export const recreateTemplatesResponseSchema = z.object({
+  created: z.number().int().min(0),
+  reset: z.number().int(),
+})
+export type RecreateTemplatesResponse = z.infer<typeof recreateTemplatesResponseSchema>
+
+/**
+ * `PUT /api/analytics/pages/:id/visibility` — the kit's resource-visibility body (D29), named here
+ * so the plugin's CLI half validates with it without importing a core module.
+ */
+export const setDashboardVisibilityRequestSchema = setVisibilityRequestSchema
 
 /** One fact table's freshness (`GET /api/analytics/facts/status`, admin+). */
 export const factTableStatusSchema = z.object({

@@ -100,6 +100,13 @@ function changed(c: AppContext, tenantId: string, sessionId: string) {
 
 // ---- POST /api/sessions/:id/turns ----------------------------------------------------------------
 
+/**
+ * Send a message to a coding session: queue it behind a running turn, interrupt the running turn,
+ * or wake the session to run it now. Requires `update Session`. 400 `model_not_offered` or
+ * `attachment_not_found`; 403 `upgrade_session_read_only` on a kit upgrade session; 409
+ * `turn_in_progress`, `session_budget_exhausted`, `session_not_active` or
+ * `session_credential_owner_only`; 503 `sessions_not_configured` or `storage_not_configured`.
+ */
 sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema), async c => {
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, logger, realtime, user, row } = await visibleSession(c)
@@ -135,6 +142,10 @@ sessionChatRouter.post('/:id/turns', validate('json', sessionTurnRequestSchema),
 
 // ---- POST /api/sessions/:id/queued/withdraw ------------------------------------------------------
 
+/**
+ * Withdraw a session's waiting message before it runs. Requires `update Session`. 403
+ * `upgrade_session_read_only` on a kit upgrade session; 409 `nothing_queued` when nothing waits.
+ */
 sessionChatRouter.post('/:id/queued/withdraw', async c => {
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, user, row } = await visibleSession(c)
@@ -149,6 +160,10 @@ sessionChatRouter.post('/:id/queued/withdraw', async c => {
 
 // ---- POST /api/sessions/:id/cancel ---------------------------------------------------------------
 
+/**
+ * Cancel a session's running turn, or withdraw a message waiting behind one. Requires `update
+ * Session`. 409 `no_turn_in_progress`.
+ */
 sessionChatRouter.post('/:id/cancel', async c => {
   guardPermission(c, 'update', 'Session')
   const { db, tenantId, logger, realtime, row } = await visibleSession(c)
@@ -165,6 +180,10 @@ sessionChatRouter.post('/:id/cancel', async c => {
 
 // ---- GET /api/sessions/:id/events ----------------------------------------------------------------
 
+/**
+ * Page a session's durable event log from `afterSeq`, up to 500 rows at a time. Requires `read
+ * Session`; a pending merge's reviewer may read it too.
+ */
 sessionChatRouter.get('/:id/events', validate('query', sessionEventsQuerySchema), async c => {
   guardPermission(c, 'read', 'Session')
   // Issue #5: a pending merge's reviewer reads the log too (`access.ts`).
@@ -209,6 +228,12 @@ function resolveStreamCursor(c: AppContext): number {
 
 // ---- POST /api/sessions/:id/budget ---------------------------------------------------------------
 
+/**
+ * Ask to raise a session's budget cap, opening (or joining) a `session.budget` approval in the
+ * creator's name. Requires `update Session`. When the caller is an eligible approver other than
+ * the creator, their approval is recorded in the same call (200, cap already raised); otherwise
+ * 202 and it waits in the approvals inbox.
+ */
 sessionChatRouter.post('/:id/budget', validate('json', extendBudgetSchema), async c => {
   guardPermission(c, 'update', 'Session')
   const { tenantId, auth, row } = await visibleSession(c)

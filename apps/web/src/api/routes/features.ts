@@ -17,6 +17,10 @@ import { createRouter } from '../utils/routes/router'
 
 export const featuresRouter = createRouter()
 
+/**
+ * Returns which feature flags are enabled for the current tenant. Any signed-in member; answers
+ * from the auth context's already-resolved features, so it costs no query.
+ */
 featuresRouter.get('/', c => {
   const { auth } = withAuth(c)
   const features = auth.features

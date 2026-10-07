@@ -229,3 +229,33 @@ export const presetsFor = (provider: AiProvider): ProviderPreset[] =>
 
 /** Display form of a model id: the last path segment (Fireworks ids are long paths). */
 export const shortModelName = (model: string): string => model.split('/').pop() || model
+
+/**
+ * `GET /api/ai/config/providers` — the static catalog the settings form (and `launch ai providers`)
+ * is built from: what each provider needs and the models it suggests. `passthrough` because the
+ * catalog is server code and may grow fields a client does not read yet.
+ */
+export const aiProviderInfoSchema = z
+  .object({
+    id: aiProviderSchema,
+    name: z.string(),
+    scopes: z.array(aiScopeSchema),
+    needsApiKey: z.boolean(),
+    needsBaseUrl: z.boolean(),
+    supportsThinking: z.boolean(),
+    supportsServiceTier: z.boolean(),
+    defaultModel: z.string(),
+    suggestedModels: z.record(z.string(), z.array(z.string())).default({}),
+    /** The suggested list is the whole catalog — no free-text model. */
+    modelsFixed: z.boolean().default(false),
+  })
+  .passthrough()
+export type AiProviderInfo = z.infer<typeof aiProviderInfoSchema>
+
+export const aiProvidersResponseSchema = z
+  .object({
+    items: z.array(aiProviderInfoSchema),
+    defaultMaxOutputTokens: z.number().int().positive().optional(),
+  })
+  .passthrough()
+export type AiProvidersResponse = z.infer<typeof aiProvidersResponseSchema>

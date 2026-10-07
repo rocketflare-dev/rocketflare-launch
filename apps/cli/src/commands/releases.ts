@@ -25,6 +25,9 @@
  *   never live. `ls` also says how far the default branch is ahead of the latest release tag
  *   (`GET …/releases/compare`; `--json` carries it as `mainAhead`).
  *
+ * - `show <app> <release>`, `chain <app> <release>`, `promotion <app>` (issue #6) — one release,
+ *   its audit chain, and where Staging → Live stands (`promotionSentence`, the app page's words).
+ *
  * Slice 4f owns this file. `cli.ts` calls `registerReleasesCommands(program, action)` once, after
  * the kit's own commands, so this file adds its `program.command(...)` entries and never edits
  * `cli.ts` (the plugin `register` shape, `plugins/types.ts`).
@@ -37,17 +40,25 @@ import {
 } from '@launch/shared/launch-approvals'
 import { appDetailSchema } from '@launch/shared/launch-apps'
 import {
+  type AppPromotion,
+  appPromotionSchema,
+  candidateRunFailed,
+  compareReleaseVersions,
+} from '@launch/shared/launch-promotion'
+import {
   cancelReleaseResponseSchema,
   parseReleaseVersion,
   promoteReleaseResponseSchema,
   RELEASE_BUMPS,
   RELEASE_RETRY_LABELS,
   RELEASE_STAGE_LABELS,
+  RELEASE_STAGING_TIMEOUT_MINUTES,
   type Release,
   type ReleaseBump,
   type ReleaseCompare,
   type ReleaseStatus,
   type RetryReleaseResponse,
+  releaseChainSchema,
   releaseCompareSchema,
   releaseListResponseSchema,
   releaseSchema,
@@ -60,14 +71,16 @@ import type { ApiClient } from '../api'
 import { type CommandContext, requireClient } from '../context'
 import { CliError } from '../errors'
 import type { ActionWrapper } from '../plugins/types'
+import { type ConfirmOptions, confirmConsequence } from '../utils/input'
 import { formatDate, renderTable } from '../utils/output'
+import { ENVIRONMENT_LABELS, healthLine, v } from './app-words'
 import { approvalUrl } from './approvals'
 
 const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 const releasesPath = (appId: string) => `/api/apps/${encodeURIComponent(appId)}/releases`
 const releasePath = (appId: string, releaseId: string) =>
-  `${releasesPath(appId)}/${encodeURIComponent(releaseId)}`
+  `/api/apps/${encodeURIComponent(appId)}/releases/${encodeURIComponent(releaseId)}`
 
 async function resolveApp(client: ApiClient, app: string) {
   return client.get(`/api/apps/${encodeURIComponent(app)}`, { schema: appDetailSchema })
@@ -87,7 +100,7 @@ async function resolveRelease(client: ApiClient, appId: string, ref: string): Pr
 }
 
 /** A release's status in words. */
-const STATUS_WORDS: Record<ReleaseStatus, string> = {
+export const STATUS_WORDS: Record<ReleaseStatus, string> = {
   tagged: 'tagged',
   staging: 'deploying to staging',
   staging_active: 'live on staging',
@@ -314,11 +327,19 @@ export async function runReleasesRetry(
 export async function runReleasesCancel(
   ctx: CommandContext,
   app: string,
-  ref: string
+  ref: string,
+  options: ConfirmOptions = {}
 ): Promise<void> {
   const client = requireClient(ctx)
   const detail = await resolveApp(client, app)
   const release = await resolveRelease(client, detail.id, ref)
+  const go = await confirmConsequence(
+    ctx,
+    options,
+    `Cancel v${release.version}?`,
+    'Launch cancels the deploy run on GitHub and marks the release failed. Nothing that already went live is undone; Retry runs it again later.'
+  )
+  if (!go) return
   const { data, raw } = await client.request(
     'POST',
     `${releasePath(detail.id, release.id)}/cancel`,
@@ -344,11 +365,18 @@ export async function runReleasesRollback(
   ctx: CommandContext,
   app: string,
   ref: string,
-  options: { reason?: string } = {}
+  options: { reason?: string } & ConfirmOptions = {}
 ): Promise<void> {
   const client = requireClient(ctx)
   const detail = await resolveApp(client, app)
   const release = await resolveRelease(client, detail.id, ref)
+  const go = await confirmConsequence(
+    ctx,
+    options,
+    `Roll Live back to v${release.version}?`,
+    `Once the app’s approvers agree, Launch runs the repository’s own deploy workflow at the ${release.tag ?? `v${release.version}`} tag. Migrations and secrets don’t revert: database changes made since v${release.version} stay, and it runs with today’s config and secrets.`
+  )
+  if (!go) return
   const reason = options.reason?.trim()
   const { data, raw } = await client.request(
     'POST',
@@ -370,6 +398,202 @@ export async function runReleasesRollback(
   })
 }
 
+// ---- show, chain, promotion (issue #6) -----------------------------------------------------
+
+/** A release in a few lines: status, commit, tag, PRs, error. Pure. */
+export function releaseLines(release: Release): string[] {
+  const status = release.failedStage
+    ? `${STATUS_WORDS[release.status]} (${RELEASE_STAGE_LABELS[release.failedStage].toLowerCase()})`
+    : release.rolledBackFrom && release.status === 'production_active'
+      ? `${STATUS_WORDS[release.status]} (rolled back from ${release.rolledBackFrom})`
+      : STATUS_WORDS[release.status]
+  const lines = [
+    `${chalk.bold(v(release.version))} · ${status}`,
+    `  Tag       ${release.tag} at ${release.sha.slice(0, 7)}${release.previousTag ? ` (after ${release.previousTag})` : ''}`,
+    `  Created   ${formatDate(release.createdAt)}`,
+  ]
+  if (release.approvalId) lines.push(`  Approval  ${release.approvalId}`)
+  if (release.error) lines.push(chalk.red(`  ${release.error}`))
+  lines.push(`  ${release.prs.length} pull request${release.prs.length === 1 ? '' : 's'}`)
+  for (const pr of release.prs) lines.push(chalk.dim(`    #${pr.number} ${pr.title}`))
+  return lines
+}
+
+export async function runReleasesShow(ctx: CommandContext, app: string, ref: string) {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const release = await resolveRelease(client, detail.id, ref)
+  const { data, raw } = await client.request('GET', releasePath(detail.id, release.id), {
+    schema: releaseSchema,
+  })
+  ctx.out.data(raw, () => {
+    const lines = releaseLines(data)
+    if (data.failedStage && detail.viewerCanDeploy)
+      lines.push(
+        chalk.dim(
+          `  ${RELEASE_RETRY_LABELS[data.failedStage]}: ${ctx.binName} releases retry ${detail.slug} ${data.version}`
+        )
+      )
+    lines.push(
+      chalk.dim(`  How it got here: ${ctx.binName} releases chain ${detail.slug} ${data.version}`)
+    )
+    return lines.join('\n')
+  })
+}
+
+export async function runReleasesChain(ctx: CommandContext, app: string, ref: string) {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const release = await resolveRelease(client, detail.id, ref)
+  const { data, raw } = await client.request('GET', `${releasePath(detail.id, release.id)}/chain`, {
+    schema: releaseChainSchema,
+  })
+  ctx.out.data(raw, () =>
+    [
+      `${chalk.bold(v(data.release.version))} · ${STATUS_WORDS[data.release.status]}`,
+      '',
+      renderTable(data.events, [
+        { header: 'When', value: e => formatDate(e.at) },
+        { header: 'What', value: e => e.action },
+        { header: 'Who', value: e => e.actorEmail ?? e.actorType },
+        { header: 'Approval', value: e => e.approvalId?.slice(0, 8) ?? null },
+      ]),
+    ].join('\n')
+  )
+}
+
+/** "Ana", "Ana and Ben", "Ana, Ben and 3 others". */
+function people(list: readonly { name: string | null; email: string }[], shown = 3): string {
+  const names = list.map(p => p.name?.trim() || p.email)
+  if (names.length <= 1) return names[0] ?? ''
+  if (names.length <= shown) return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+  const rest = names.length - shown
+  return `${names.slice(0, shown).join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
+}
+
+/**
+ * Where Staging → Live stands, worded as the app page's strip words it (`promotionModel.ts`):
+ * "Ready to promote v1.4.2 to Live", "v1.4.2 is waiting for approval from Ana", "Deploying v1.4.2
+ * to staging…", "v1.4.2 did not deploy: ci / Gate failed", "Live already runs v1.4.2". Pure.
+ */
+export function promotionSentence(view: AppPromotion, now: Date = new Date()): string {
+  const release = view.candidate
+  if (!release) return 'Nothing on staging yet'
+  const ver = v(release.version)
+  const run = view.candidateRun ?? null
+  const didNotDeploy = () =>
+    run && candidateRunFailed(run) && run.failedJob
+      ? `${ver} did not deploy: ${run.failedJob} failed`
+      : `${ver} did not deploy`
+  switch (release.status) {
+    case 'tagged':
+    case 'staging': {
+      if (run && candidateRunFailed(run)) return didNotDeploy()
+      const inFlight = run && run.status !== 'completed'
+      const stuck =
+        now.getTime() - release.createdAt.getTime() >= RELEASE_STAGING_TIMEOUT_MINUTES * 60_000
+      const job = run?.currentJob ? ` (running: ${run.currentJob})` : ''
+      if (release.status === 'staging' && (inFlight || !stuck))
+        return `Deploying ${ver} to staging…${job}`
+      if (inFlight)
+        return `${ver} is tagged — GitHub is checking it before it deploys to staging${job}`
+      return stuck ? `${ver} never reached staging` : 'Staging is still deploying'
+    }
+    case 'awaiting_approval': {
+      const who = view.approval?.approvers.length ? ` from ${people(view.approval.approvers)}` : ''
+      return `${ver} is waiting for approval${who}`
+    }
+    case 'promoting':
+      return `Deploying ${ver} to Live…`
+    case 'production_active':
+      return `${ver} is Live`
+    case 'rolled_back':
+      return `${ver} was rolled back; release a fix to ship again`
+    case 'failed':
+      return didNotDeploy()
+    case 'staging_active':
+    case 'rejected': {
+      const production = view.production?.version ?? null
+      if (production && compareReleaseVersions(production, release.version) >= 0)
+        return `Live already runs ${v(production)}`
+      const staging = view.staging
+      if (!staging?.version) return 'Nothing on staging yet'
+      if (staging.version !== release.version)
+        return `Staging runs ${v(staging.version)}, not ${ver}`
+      if (staging.healthStatus === 'unknown')
+        return 'Staging has not been checked since it was deployed'
+      if (staging.healthStatus !== 'up') return 'Staging is unhealthy'
+      return `Ready to promote ${ver} to Live${release.status === 'rejected' ? ' (asked before, rejected)' : ''}`
+    }
+  }
+}
+
+/** The strip in lines: each environment, the candidate's state, the changes, a pending rollback. */
+export function promotionLines(view: AppPromotion, now: Date = new Date()): string[] {
+  const lines: string[] = []
+  for (const [name, env] of [
+    ['staging', view.staging],
+    ['production', view.production],
+  ] as const) {
+    if (!env) continue
+    const version = env.version ? v(env.version) : 'nothing deployed'
+    const back = env.rolledBackFrom ? ` (rolled back from ${v(env.rolledBackFrom)})` : ''
+    const health = healthLine({
+      healthStatus: env.healthStatus,
+      healthVersion: null,
+      healthLatencyMs: null,
+      healthError: null,
+    })
+    const when = env.deployedAt ? ` · since ${formatDate(env.deployedAt)}` : ''
+    lines.push(`  ${ENVIRONMENT_LABELS[name].padEnd(8)}${version}${back} · ${health}${when}`)
+  }
+  lines.push(`  ${promotionSentence(view, now)}`)
+  if (view.candidateRun?.url) lines.push(chalk.dim(`    ${view.candidateRun.url}`))
+  if (view.rollback) {
+    const who = view.rollback.approval.approvers.length
+      ? ` from ${people(view.rollback.approval.approvers)}`
+      : ''
+    lines.push(
+      `  Rollback to ${v(view.rollback.version)}${view.rollback.from ? ` (from ${v(view.rollback.from)})` : ''} is waiting for approval${who}`
+    )
+  }
+  if (view.changes.length > 0) {
+    const n = view.changes.length
+    lines.push(
+      `  ${n}${view.changesTruncated ? '+' : ''} ${n === 1 && !view.changesTruncated ? 'change' : 'changes'} not live:`
+    )
+    for (const c of view.changes)
+      lines.push(chalk.dim(`    ${v(c.version)} #${c.number} ${c.sessionTitle ?? c.title}`))
+  }
+  return lines
+}
+
+export async function runReleasesPromotion(ctx: CommandContext, app: string): Promise<void> {
+  const client = requireClient(ctx)
+  const detail = await resolveApp(client, app)
+  const { data, raw } = await client.request(
+    'GET',
+    `/api/apps/${encodeURIComponent(detail.id)}/promotion`,
+    { schema: appPromotionSchema }
+  )
+  ctx.out.data(raw, () => {
+    const lines = [
+      `${chalk.bold(detail.displayName)} ${chalk.dim(`(${detail.slug})`)}`,
+      ...promotionLines(data),
+    ]
+    const sentence = promotionSentence(data)
+    if (data.candidate && sentence.startsWith('Ready to promote') && detail.viewerCanDeploy)
+      lines.push(
+        chalk.dim(
+          `  Promote it: ${ctx.binName} releases promote ${detail.slug} ${data.candidate.version}`
+        )
+      )
+    if (data.approval?.status === 'pending')
+      lines.push(chalk.dim(`  ${approvalUrl(ctx, data.approval.id)}`))
+    return lines.join('\n')
+  })
+}
+
 // ---- registration --------------------------------------------------------------------------
 
 function bumpOption(value: string): ReleaseBump {
@@ -386,6 +610,22 @@ export function registerReleasesCommands(program: Command, action: ActionWrapper
     .command('ls <app>')
     .description('list an app’s releases (by slug)')
     .action(action((ctx, cmd) => runReleasesList(ctx, cmd.args[0] ?? '')))
+  releases
+    .command('show <app> <release>')
+    .description('one release (id or version): status, tag, pull requests, where it is stuck')
+    .action(action((ctx, cmd) => runReleasesShow(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '')))
+  releases
+    .command('chain <app> <release>')
+    .description(
+      'how a release (id or version) got where it is: PR → tag → staging → approval → Live'
+    )
+    .action(action((ctx, cmd) => runReleasesChain(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '')))
+  releases
+    .command('promotion <app>')
+    .description(
+      'Staging → Live: what each runs, the newest release and whether it can be promoted'
+    )
+    .action(action((ctx, cmd) => runReleasesPromotion(ctx, cmd.args[0] ?? '')))
   releases
     .command('create <app>')
     .description('bump the version, tag it and deploy it to staging (owners and admins)')
@@ -412,6 +652,7 @@ export function registerReleasesCommands(program: Command, action: ActionWrapper
     .command('rollback <app> <release>')
     .description('roll production back to an earlier release (id or version) (owners and admins)')
     .option('--reason <text>', 'why — shown to the approvers')
+    .option('-y, --yes', 'do not ask for confirmation')
     .action(
       action((ctx, cmd) =>
         runReleasesRollback(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts())
@@ -419,6 +660,11 @@ export function registerReleasesCommands(program: Command, action: ActionWrapper
     )
   releases
     .command('cancel <app> <release>')
-    .description('cancel a release’s deploy run in flight on GitHub (owners and admins)')
-    .action(action((ctx, cmd) => runReleasesCancel(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '')))
+    .description(
+      'cancel a release’s deploy run in flight on GitHub (owners and admins; asks first)'
+    )
+    .option('-y, --yes', 'do not ask for confirmation')
+    .action(
+      action((ctx, cmd) => runReleasesCancel(ctx, cmd.args[0] ?? '', cmd.args[1] ?? '', cmd.opts()))
+    )
 }

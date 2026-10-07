@@ -142,6 +142,7 @@ async function settleOnRead(
 
 // ---- GET /api/agents ------------------------------------------------------------------------------
 
+/** List the registered agents and their metadata. Requires `read AgentRun`. */
 agentsRouter.get('/', async c => {
   withAuthAndDb(c)
   guardPermission(c, 'read', 'AgentRun')
@@ -150,6 +151,10 @@ agentsRouter.get('/', async c => {
 
 // ---- GET /api/agents/runs -------------------------------------------------------------------------
 
+/**
+ * List agent runs, newest first, filterable by agent key and status. Requires `read AgentRun`. A
+ * member sees only the runs they requested; admin+ see every run in the tenant.
+ */
 agentsRouter.get('/runs', validate('query', agentRunListQuerySchema), async c => {
   const { db, tenantId, user, auth } = withAuthAndDb(c)
   guardPermission(c, 'read', 'AgentRun')
@@ -176,6 +181,11 @@ agentsRouter.get('/runs', validate('query', agentRunListQuerySchema), async c =>
 
 // ---- POST /api/agents/runs ------------------------------------------------------------------------
 
+/**
+ * Enqueue a new agent run; the route never runs the agent itself. Requires `create AgentRun`. An
+ * exclusive agent with an active run instead answers that run with `deduplicated: true` (409
+ * `agent_run_active` only with `?strict=1`).
+ */
 agentsRouter.post('/runs', validate('json', createAgentRunRequestSchema), async c => {
   const { db, tenantId, user, defer, realtime } = withAuthAndDb(c)
   guardPermission(c, 'create', 'AgentRun')
@@ -212,6 +222,11 @@ agentsRouter.post('/runs', validate('json', createAgentRunRequestSchema), async 
 
 // ---- GET /api/agents/runs/:id ---------------------------------------------------------------------
 
+/**
+ * Return a run with its durable events, asks and artifacts, settling a stale active row first.
+ * Requires `read AgentRun`; a member sees only runs they requested, admin+ any run. `?events=0`
+ * answers the bare row (no log, no asks, no artifacts).
+ */
 agentsRouter.get('/runs/:id', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'AgentRun')
@@ -315,6 +330,10 @@ function resolveStreamCursor(c: AppContext): number {
 
 // ---- POST /api/agents/runs/:id/cancel -------------------------------------------------------------
 
+/**
+ * Ask a run to cancel. Requires `update AgentRun`; a member may cancel only a run they requested,
+ * admin+ any run (404 otherwise).
+ */
 agentsRouter.post('/runs/:id/cancel', async c => {
   const { db, tenantId, user, auth, defer, realtime } = withAuthAndDb(c)
   guardPermission(c, 'update', 'AgentRun')

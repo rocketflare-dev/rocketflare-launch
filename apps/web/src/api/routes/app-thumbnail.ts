@@ -22,6 +22,10 @@ import { createRouter } from '../utils/routes/router'
 
 export const appThumbnailRouter = createRouter()
 
+/**
+ * Stream an app's thumbnail picture (Live's, else Staging's), honouring `If-None-Match`. Requires
+ * `read App`. 404 `thumbnail_not_found` if none has been captured yet.
+ */
 appThumbnailRouter.get('/:id/thumbnail', async c => {
   guardPermission(c, 'read', 'App')
   const { db, tenantId } = withAuthAndDb(c)
@@ -45,6 +49,10 @@ appThumbnailRouter.get('/:id/thumbnail', async c => {
   return c.body(object.body, 200, headers)
 })
 
+/**
+ * Queue a refresh of an app's thumbnail. Requires `manage App`. 409 for an archived app or one
+ * with no URL; 429 if asked again within a minute.
+ */
 appThumbnailRouter.post('/:id/thumbnail/refresh', async c => {
   guardPermission(c, 'manage', 'App')
   const { db, tenantId } = withAuthAndDb(c)

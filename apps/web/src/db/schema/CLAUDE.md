@@ -27,7 +27,7 @@ closes a cycle back through `plugins/schema.ts`.
 | `tenants` | `tenants.ts` | `id` | `tenantIsolation('tenants', sql\`id\`)` | `status` enum, `seedDataCreated`, `lastAccessedAt` |
 | `tenant_users` | `tenant-users.ts` | `tenant_id` | ✓ | PK `(tenant_id, user_id)`; `role` text enum `MEMBERSHIP_ROLES` |
 | `team_invitations` | `team-invitations.ts` | `tenant_id` | ✓ | `tokenHash`; partial unique pending `(tenant_id, lower(email))` |
-| `api_keys` | `api-keys.ts` | `tenant_id` | ✓ | `keyHash` unique, `keyPrefix`, `scopes[]`, soft `revokedAt` |
+| `api_keys` | `api-keys.ts` | `tenant_id` | ✓ | `keyHash` unique, `keyPrefix`, `scopes[]`, `scope` (`tenant`\|`admin` — what it may reach), soft `revokedAt` |
 | `tenant_settings` | `tenant-settings.ts` | `tenant_id` (PK) | ✓ | `timezone`, `notificationsEnabled`, `settings` jsonb |
 | `tenant_user_settings` | `tenant-user-settings.ts` | `tenant_id` | ✓ | PK `(tenant_id, user_id)`; `preferences` jsonb |
 | `notifications` | `notifications.ts` | `tenant_id` | ✓ | per user; `readAt`; `data` jsonb |

@@ -114,6 +114,12 @@ function checkContentType(scope: FileScope, contentType: string): void {
 
 // ---- POST /api/files?scope= --------------------------------------------------------------
 
+/**
+ * Uploads a file into one storage scope (`uploads`, `avatars`, …) and returns its stored-file
+ * record; an `avatars` upload also sets the caller's `avatarUrl`. Requires `create File`; 413
+ * `payload_too_large` over the upload limit, 415 `unsupported_media_type` for a disallowed avatar
+ * type, 503 `storage_not_configured` without the `FILES` binding.
+ */
 filesRouter.post('/', uploadBodyLimit, validate('query', uploadQuerySchema), async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'create', 'File')
@@ -176,6 +182,11 @@ filesRouter.post('/', uploadBodyLimit, validate('query', uploadQuerySchema), asy
 
 // ---- GET /api/files/:id ----------------------------------------------------------------
 
+/**
+ * Streams a stored file's bytes, inline for images and PDFs and as an attachment otherwise.
+ * Requires `read File`; a `documents`-scope file additionally inherits its document's visibility,
+ * and either an unknown file or one the caller cannot see is a 404.
+ */
 filesRouter.get('/:id', async c => {
   const { db, tenantId, auth, logger } = withAuthAndDb(c)
   guardPermission(c, 'read', 'File')
@@ -225,6 +236,11 @@ filesRouter.get('/:id', async c => {
 
 // ---- DELETE /api/files/:id -------------------------------------------------------------
 
+/**
+ * Deletes a stored file and its object. Requires `read File`; only the uploader or an admin with
+ * `delete File` may delete it (403 otherwise), and a `documents`-scope file is 409
+ * `owned_by_document` — delete the document instead.
+ */
 filesRouter.delete('/:id', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'read', 'File')

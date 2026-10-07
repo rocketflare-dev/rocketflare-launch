@@ -76,11 +76,16 @@ function nudgeResource(c: AppContext, id: string): void {
   )
 }
 
+/** Lists shared resources (`?archived=true` includes archived ones). Requires `read SharedResource`. */
 sharedResourcesRouter.get('/', validate('query', sharedResourceListQuerySchema), async c => {
   const { db, cfg, viewer } = asking(c, 'read')
   return c.json(await listResources(db, cfg, viewer, c.req.valid('query')))
 })
 
+/**
+ * Creates a new shared resource bundle. Requires `create SharedResource`; returns 409
+ * `shared_resource_slug_taken` if the slug is already in use.
+ */
 sharedResourcesRouter.post('/', validate('json', createSharedResourceSchema), async c => {
   const { db, cfg, viewer } = asking(c, 'create')
   const detail = await createResource(db, cfg, viewer, c.req.valid('json'), auditActor(c))
@@ -88,11 +93,20 @@ sharedResourcesRouter.post('/', validate('json', createSharedResourceSchema), as
   return c.json(detail, 201)
 })
 
+/**
+ * Returns one shared resource's detail, including its holders and (for owners and admins) its
+ * values. Requires `read SharedResource`.
+ */
 sharedResourcesRouter.get('/:id', async c => {
   const { db, cfg, viewer } = asking(c, 'read')
   return c.json(await getResource(db, cfg, viewer, uuidParam(c, 'id')))
 })
 
+/**
+ * Updates a shared resource's name, description or items; admins may also change its owner group
+ * and policies. Requires `read SharedResource` at the gate — the service enforces the owner/admin
+ * split, returning 403 `not_resource_admin` for an admin-only change made by a non-admin.
+ */
 sharedResourcesRouter.patch('/:id', validate('json', patchSharedResourceSchema), async c => {
   const { db, cfg, viewer } = asking(c, 'read')
   const id = uuidParam(c, 'id')
@@ -101,6 +115,11 @@ sharedResourcesRouter.patch('/:id', validate('json', patchSharedResourceSchema),
   return c.json(detail)
 })
 
+/**
+ * Sets a shared resource's values for one environment. Requires `read SharedResource` at the
+ * gate; the service restricts the write to the resource's owners and admins (403
+ * `not_resource_owner` otherwise) and returns 202 when a push starts or 200 once applied directly.
+ */
 sharedResourcesRouter.put(
   '/:id/values/:env',
   validate('param', sharedResourceEnvParamSchema),
@@ -120,6 +139,10 @@ sharedResourcesRouter.put(
   }
 )
 
+/**
+ * Archives a shared resource. Requires `delete SharedResource`; returns 409
+ * `resource_has_holders` if it still has holders.
+ */
 sharedResourcesRouter.delete('/:id', async c => {
   const { db, viewer } = asking(c, 'delete')
   const id = uuidParam(c, 'id')

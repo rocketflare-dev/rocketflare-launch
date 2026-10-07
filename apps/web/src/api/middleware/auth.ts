@@ -10,11 +10,15 @@
  * with NO tenant passes with `tenantId: null` — `withAuthAndDb` turns that into 403 `no_tenant` /
  * `pending_approval`, while tenant-free routes (`withAuth`) keep working.
  *
- * `globalAdminMiddleware` (`/api/admin/*`): cookie session with `users.isGlobalAdmin`, tenant-free
+ * `globalAdminMiddleware` (`/api/admin/*`): a cookie session with `users.isGlobalAdmin`, tenant-free
  * by design — the only cross-tenant auth path. `platformAdminMiddleware` (`/api/platform/*`): the
- * same cookie-only resolution, gated on `canAdministerPlatform` — the global flag, or in single
- * mode the organisation's owner/admin.
+ * same resolution, gated on `canAdministerPlatform` — the global flag, or in single mode the
+ * organisation's owner/admin. Both also take an ADMIN-scoped API key (`api_keys.scope = 'admin'`,
+ * minted only by `GET /auth/cli?scope=admin` for a platform administrator) and re-check its
+ * creator against the same gate on every request, so demoting someone disables their admin keys
+ * with nothing to revoke. An ordinary (`tenant`) key there is 403 `admin_key_required`.
  */
+import { ADMIN_KEY_REQUIRED_CODE, type ApiKeyAccessScope } from '@launch/shared/api-keys'
 import { ERROR_CODES } from '@launch/shared/errors'
 import { createMiddleware } from 'hono/factory'
 import { buildAbility, canAdministerPlatform, resolveFeatures } from '../../permissions'
@@ -110,7 +114,13 @@ export async function resolveCookieAuth(
   }
 }
 
-async function resolveBearerAuth(c: AppContext, plaintext: string): Promise<AuthContext> {
+interface BearerAuth {
+  auth: AuthContext
+  /** What the key may reach — only `admin` passes the admin/platform middlewares. */
+  scope: ApiKeyAccessScope
+}
+
+async function resolveBearerAuth(c: AppContext, plaintext: string): Promise<BearerAuth> {
   const db = c.get('db')
   const result = await validateApiKey(db, plaintext)
   if (!result.ok) throw new UnauthorizedError('Invalid API key')
@@ -130,7 +140,7 @@ async function resolveBearerAuth(c: AppContext, plaintext: string): Promise<Auth
     tenantId: result.tenant.id,
     userId: result.user.id,
   })
-  return {
+  const auth: AuthContext = {
     user: result.user,
     tenantId: result.tenant.id,
     tenantUser: { role: result.role },
@@ -149,6 +159,7 @@ async function resolveBearerAuth(c: AppContext, plaintext: string): Promise<Auth
     groups,
     accessRequestStatus: null,
   }
+  return { auth, scope: result.key.scope }
 }
 
 function bearerToken(c: AppContext): string | undefined {
@@ -158,14 +169,33 @@ function bearerToken(c: AppContext): string | undefined {
 
 export const authMiddleware = createMiddleware<AppEnv>(async (c, next) => {
   const bearer = bearerToken(c)
-  const auth = bearer ? await resolveBearerAuth(c, bearer) : await resolveCookieAuth(c)
+  const auth = bearer ? (await resolveBearerAuth(c, bearer)).auth : await resolveCookieAuth(c)
   if (!auth) throw new UnauthorizedError('Authentication required')
   c.set('auth', auth)
   await next()
 })
 
+/**
+ * Who is asking on an administrative mount: a Bearer key wins over the cookie (as in
+ * `authMiddleware`), and must be admin-scoped. The CALLER then applies its gate to the returned
+ * context — whose `isGlobalAdmin` and role were read from the database on THIS request — so an
+ * admin key is only ever as strong as its creator is right now.
+ */
+async function resolveAdminAuth(c: AppContext): Promise<AuthContext | null> {
+  const bearer = bearerToken(c)
+  if (!bearer) return resolveCookieAuth(c)
+  const { auth, scope } = await resolveBearerAuth(c, bearer)
+  if (scope !== 'admin') {
+    throw new ForbiddenError(
+      'This needs an admin API key (launch login --admin); a tenant key cannot reach it',
+      ADMIN_KEY_REQUIRED_CODE
+    )
+  }
+  return auth
+}
+
 export const globalAdminMiddleware = createMiddleware<AppEnv>(async (c, next) => {
-  const auth = await resolveCookieAuth(c)
+  const auth = await resolveAdminAuth(c)
   if (!auth) throw new UnauthorizedError('Authentication required')
   if (!auth.isGlobalAdmin) throw new ForbiddenError('Global admin access required')
   c.set('auth', auth)
@@ -176,11 +206,12 @@ export const globalAdminMiddleware = createMiddleware<AppEnv>(async (c, next) =>
  * `/api/platform/*`: administering the Launch deployment itself — setup credentials, the OIDC
  * issuer's keys, the access-request queue. `canAdministerPlatform` decides: a global admin (with or
  * without a membership, as on `/api/admin/*`), or in `TENANCY_MODE=single` the one organisation's
- * owner or admin. Cookie session only, like `globalAdminMiddleware` — a tenant API key never writes
- * a deployment-wide credential. In multi mode this is `globalAdminMiddleware` exactly.
+ * owner or admin. A cookie session or an ADMIN-scoped key, like `globalAdminMiddleware` — a tenant
+ * API key never writes a deployment-wide credential. In multi mode this is `globalAdminMiddleware`
+ * exactly.
  */
 export const platformAdminMiddleware = createMiddleware<AppEnv>(async (c, next) => {
-  const auth = await resolveCookieAuth(c)
+  const auth = await resolveAdminAuth(c)
   if (!auth) throw new UnauthorizedError('Authentication required')
   if (!canAdministerPlatform(auth, c.get('config'))) {
     throw new ForbiddenError('Platform administrator access required')

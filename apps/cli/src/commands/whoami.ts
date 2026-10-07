@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import { whoAmI } from '../auth'
 import { redactKey } from '../config'
 import { type CommandContext, requireClient } from '../context'
+import { serverLabel } from './servers'
 
 export async function runWhoami(ctx: CommandContext): Promise<void> {
   const client = requireClient(ctx)
@@ -13,6 +14,7 @@ export async function runWhoami(ctx: CommandContext): Promise<void> {
     {
       user: raw.me,
       tenant: raw.tenant,
+      profile: ctx.config.profile ?? null,
       serverUrl: ctx.config.serverUrl,
       apiKey: redactKey(ctx.config.apiKey),
       apiKeySource: ctx.config.apiKeySource,
@@ -21,7 +23,7 @@ export async function runWhoami(ctx: CommandContext): Promise<void> {
       [
         `${chalk.bold('User:')}    ${user.name ?? '-'} <${user.email ?? '-'}>${user.isGlobalAdmin ? chalk.magenta(' (global admin)') : ''}`,
         `${chalk.bold('Tenant:')}  ${tenantName ?? '-'}${tenantId ? chalk.dim(` (${tenantId})`) : ''}`,
-        `${chalk.bold('Server:')}  ${ctx.config.serverUrl}`,
+        `${chalk.bold('Server:')}  ${serverLabel(ctx)}`,
         `${chalk.bold('API key:')} ${redactKey(ctx.config.apiKey)} ${chalk.dim(`(from ${ctx.config.apiKeySource})`)}`,
       ].join('\n')
   )

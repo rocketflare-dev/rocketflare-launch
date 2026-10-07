@@ -11,7 +11,7 @@ import { tenantSchema } from '@launch/shared/tenants'
 import { meResponseSchema as sharedMeResponseSchema } from '@launch/shared/user-settings'
 import type { z } from 'zod'
 import { type ApiClient, CliApiError, createApiClient, type FetchLike } from './api'
-import { type CliConfig, type ConfigStore, redactKey } from './config'
+import { type ConfigStore, type Profile, redactKey } from './config'
 import type { OpenLike } from './context'
 import { CliError } from './errors'
 import { BIN_NAME } from './package-info'
@@ -38,27 +38,32 @@ export interface CallbackData {
 
 export interface LoginOptions {
   serverUrl: string
+  /** The server (profile) name the credentials are stored under. */
+  profile: string
   store: ConfigStore
   log: Logger
   open: OpenLike
   fetch?: FetchLike
   timeoutMs?: number
+  /** Ask for an admin-scoped key (`/auth/cli?scope=admin`): it also reaches `/api/admin` and `/api/platform`. */
+  admin?: boolean
 }
 
 export interface LoginResult {
+  profile: string
   serverUrl: string
   keyPrefix: string
   tenantId: string
   tenantName?: string
-  user?: CliConfig['user']
+  user?: Profile['user']
 }
 
 export async function loginFlow(options: LoginOptions): Promise<LoginResult> {
-  const { serverUrl, store, log } = options
+  const { serverUrl, profile, store, log } = options
   const callback = await startCallbackServer(options.timeoutMs ?? LOGIN_TIMEOUT_MS)
   try {
-    const authUrl = buildAuthUrl(serverUrl, callback.url)
-    log.info(`Opening your browser to sign in at ${serverUrl}`)
+    const authUrl = buildAuthUrl(serverUrl, callback.url, { admin: options.admin })
+    log.info(`Opening your browser to sign in at ${serverUrl} (server "${profile}")`)
     log.hint(`If it does not open, visit: ${authUrl}`)
     try {
       await options.open(authUrl)
@@ -73,7 +78,7 @@ export async function loginFlow(options: LoginOptions): Promise<LoginResult> {
     const client = createApiClient({ serverUrl, apiKey: data.key, fetch: options.fetch })
     const user = await fetchUser(client, log)
 
-    await store.update({
+    await store.updateProfile(profile, {
       serverUrl,
       apiKey: data.key,
       tenantId: data.tenantId,
@@ -85,23 +90,43 @@ export async function loginFlow(options: LoginOptions): Promise<LoginResult> {
     log.success(`Signed in${user?.email ? ` as ${user.email}` : ''}`)
     if (data.tenantName) log.hint(`Tenant: ${data.tenantName} (${data.tenantId})`)
     else log.hint(`Tenant: ${data.tenantId}`)
-    log.hint(`Server: ${serverUrl}`)
+    log.hint(`Server: ${profile} · ${serverUrl}`)
     log.hint(`API key: ${keyPrefix} (stored in ${store.file})`)
-    return { serverUrl, keyPrefix, tenantId: data.tenantId, tenantName: data.tenantName, user }
+    return {
+      profile,
+      serverUrl,
+      keyPrefix,
+      tenantId: data.tenantId,
+      tenantName: data.tenantName,
+      user,
+    }
   } finally {
     callback.close()
   }
 }
 
-export async function logoutFlow(options: { store: ConfigStore; log: Logger }): Promise<void> {
-  const config = await options.store.load()
-  if (!config.apiKey) {
-    options.log.info('Not logged in — nothing to do')
-    return
+/**
+ * Drop the stored key, tenant and user of `profiles` (the selected server, or every server with
+ * `--all`); their URLs stay so `login` can sign in again.
+ */
+export async function logoutFlow(options: {
+  store: ConfigStore
+  log: Logger
+  profiles: readonly string[]
+}): Promise<string[]> {
+  const cleared: string[] = []
+  for (const name of options.profiles) {
+    if (await options.store.clearCredentials(name)) cleared.push(name)
   }
-  await options.store.clearCredentials()
-  options.log.success('Logged out; credentials removed')
-  options.log.hint(`Server URL kept in ${options.store.file}`)
+  if (cleared.length === 0) {
+    options.log.info('Not logged in — nothing to do')
+    return cleared
+  }
+  options.log.success(
+    `Logged out of ${cleared.map(name => `"${name}"`).join(', ')}; credentials removed`
+  )
+  options.log.hint(`Server URLs kept in ${options.store.file}`)
+  return cleared
 }
 
 /** `{ user, tenant }` for whoami — tenant is null when the request is refused or the route is missing. */
@@ -123,13 +148,18 @@ export async function whoAmI(client: ApiClient): Promise<{
   return { user: me.data, tenant, raw: { me: me.raw, tenant: tenantRaw } }
 }
 
-export function buildAuthUrl(serverUrl: string, callbackUrl: string): string {
+export function buildAuthUrl(
+  serverUrl: string,
+  callbackUrl: string,
+  options: { admin?: boolean } = {}
+): string {
   const url = new URL(AUTH_CLI_PATH, `${serverUrl.replace(/\/+$/, '')}/`)
   url.searchParams.set('redirect_uri', callbackUrl)
+  if (options.admin) url.searchParams.set('scope', 'admin')
   return url.toString()
 }
 
-async function fetchUser(client: ApiClient, log: Logger): Promise<CliConfig['user'] | undefined> {
+async function fetchUser(client: ApiClient, log: Logger): Promise<Profile['user'] | undefined> {
   try {
     const me = await client.get('/api/me', { schema: meResponseSchema })
     return { email: me.email, name: me.name }
@@ -203,7 +233,13 @@ function handleCallback(
       `The server reported: ${escapeHtml(error)}. Return to the terminal and try again.`
     )
     settle?.reject(
-      new CliError(`Sign-in failed: ${error}`, { hint: `Run \`${BIN_NAME} login\` to try again.` })
+      error === 'admin_key_forbidden'
+        ? new CliError('Sign-in failed: an admin key needs a platform administrator.', {
+            hint: `Sign in as one, or run \`${BIN_NAME} login\` for an ordinary key.`,
+          })
+        : new CliError(`Sign-in failed: ${error}`, {
+            hint: `Run \`${BIN_NAME} login\` to try again.`,
+          })
     )
     return
   }

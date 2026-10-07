@@ -1,9 +1,12 @@
 /**
- * `launch groups list` / `groups members <id>` (D29) — `GET /api/groups` and
- * `GET /api/groups/:id`, both `manage Group` (admin+), parsed with the shared schemas.
+ * `launch groups list|members|mine|create|set|rm|add|remove` and `groups types ls|create|set|rm`
+ * (D29) — `/api/groups`, `manage Group` (admin+) except `mine`, parsed with the shared schemas.
  *
- * Read-only on purpose: creating a group is a decision about who sees what, and the confirmation
- * the web UI gives before a delete narrows access has no honest one-line equivalent here.
+ * Writes (issue #6) state who loses access before they act: `rm` names the group's members and,
+ * when the server answers 409 `group_in_use`, the documents and dashboards that would narrow to
+ * their owner and admins — `--force` is the web page's "Delete anyway" (it sends `?force=1`, which
+ * fails CLOSED: nothing becomes tenant-wide). Every narrowing write asks; `--yes` skips the prompt
+ * and is required without a terminal. The writes live in `groups-write.ts`.
  */
 import { groupDetailSchema, groupListResponseSchema } from '@launch/shared/groups'
 import { type CommandContext, requireClient } from '../context'

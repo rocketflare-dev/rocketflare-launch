@@ -14,7 +14,7 @@ export type OpenLike = (url: string) => Promise<unknown>
 
 export interface CommandContext {
   store: ConfigStore
-  /** Config merged with env and `--server` — what the command should use. */
+  /** Config merged with env, `--profile` and `--server` — what the command should use. */
   config: ResolvedConfig
   json: boolean
   log: Logger
@@ -25,8 +25,10 @@ export interface CommandContext {
 }
 
 export interface ContextOptions {
-  /** `--server <url>` */
+  /** `--server <name|url>` */
   server?: string
+  /** `--profile <name>` */
+  profile?: string
   json?: boolean
   store?: ConfigStore
   env?: Env
@@ -42,7 +44,7 @@ export async function createContext(options: ContextOptions = {}): Promise<Comma
   const json = options.json ?? false
   return {
     store,
-    config: await store.resolve({ serverUrl: options.server }),
+    config: await store.resolve({ serverUrl: options.server, profile: options.profile }),
     json,
     log: options.log ?? createLogger({ debug: Boolean(env[ENV.debug]) }),
     out: options.out ?? createOutput({ json }),

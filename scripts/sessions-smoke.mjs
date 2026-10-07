@@ -42,7 +42,10 @@ function storedConfig() {
   const file = path.join(os.homedir(), '.launch', 'config.json')
   if (!existsSync(file)) return {}
   try {
-    return JSON.parse(readFileSync(file, 'utf8'))
+    const config = JSON.parse(readFileSync(file, 'utf8'))
+    // Named servers (profiles): the default one; a pre-profiles file is flat.
+    const name = process.env.LAUNCH_PROFILE ?? config.defaultProfile
+    return (name && config.profiles?.[name]) || config
   } catch {
     return {}
   }

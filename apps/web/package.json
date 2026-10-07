@@ -49,6 +49,7 @@
     "test:driver": "NODE_ENV=test dotenv -e .env.test -- vitest run --project driver",
     "test:ui": "NODE_ENV=test dotenv -e .env.test -- vitest run --project ui",
     "test:config": "NODE_ENV=test dotenv -e .env.test -- vitest run --project config",
+    "api:catalog": "NODE_ENV=test API_CATALOG_WRITE=1 dotenv -e .env.test -- vitest run --project config tests/config/api-catalog.test.ts",
     "test:coverage": "NODE_ENV=test dotenv -e .env.test -- vitest run --coverage",
     "test:db:up": "docker compose -f docker-compose.test.yml up -d",
     "test:db:up:neon": "docker compose -f docker-compose.test.yml --profile neon up -d --wait",

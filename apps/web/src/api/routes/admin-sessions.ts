@@ -28,6 +28,7 @@ import { validate } from '../utils/routes/validate'
 
 export const adminSessionsRouter = createRouter()
 
+/** List every live coding session across the deployment, and whether new sessions are paused. */
 adminSessionsRouter.get('/', validate('query', sessionListQuerySchema), async c => {
   const { db } = withAuth(c)
   const rows = await listAllSessions(db, c.req.valid('query').scope)
@@ -37,6 +38,10 @@ adminSessionsRouter.get('/', validate('query', sessionListQuerySchema), async c 
   })
 })
 
+/**
+ * Pause new coding sessions and ask every live session to suspend, ahead of a deploy that touches
+ * the session image or `[[containers]]`. Audits `sessions.drained` in each affected organisation.
+ */
 adminSessionsRouter.post('/drain', async c => {
   const { db, user, tenantId, logger } = withAuth(c)
   return c.json(
@@ -49,6 +54,7 @@ adminSessionsRouter.post('/drain', async c => {
   )
 })
 
+/** Clear the session pause so people can resume their coding sessions. Audits `sessions.undrained`. */
 adminSessionsRouter.post('/undrain', async c => {
   const { db, tenantId } = withAuth(c)
   return c.json(await undrainSessions(db, { actor: auditActor(c), actorTenantId: tenantId }))

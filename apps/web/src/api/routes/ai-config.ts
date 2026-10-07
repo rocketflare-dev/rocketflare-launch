@@ -122,6 +122,10 @@ async function hasDefault(tx: Database, tenantId: string, scope: AiScope): Promi
 
 // ---- GET /api/ai/config ------------------------------------------------------------------------
 
+/**
+ * Lists the tenant's AI provider configs (credentials never included, only `hasCredential`).
+ * Requires `read AiConfig`.
+ */
 aiConfigRouter.get('/', async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'AiConfig')
@@ -142,6 +146,10 @@ aiConfigRouter.get('/providers', async c => {
   })
 })
 
+/**
+ * Reports whether chat and agents have a usable AI provider configured, for the Home setup
+ * checklist. Requires `read AiConfig`.
+ */
 aiConfigRouter.get('/readiness', async c => {
   const { db, tenantId, cfg } = withAuthAndDb(c)
   guardPermission(c, 'read', 'AiConfig')
@@ -150,6 +158,10 @@ aiConfigRouter.get('/readiness', async c => {
 
 // ---- POST /api/ai/config/test --------------------------------------------------------------------
 
+/**
+ * Tests a provider configuration with a live call, without saving it. Requires `manage AiConfig`
+ * (admin+); rate-limited to 10 calls per minute per IP since each spends provider money.
+ */
 aiConfigRouter.post(
   '/test',
   aiTestRateLimit,
@@ -163,6 +175,11 @@ aiConfigRouter.post(
 
 // ---- POST /api/ai/config (upsert) -----------------------------------------------------------------
 
+/**
+ * Creates or updates an AI provider config for the tenant, keyed by scope and label. Requires
+ * `manage AiConfig`; omitting `apiKey` on a re-save keeps the stored credential, and the first
+ * config created in a scope becomes its default automatically.
+ */
 aiConfigRouter.post('/', validate('json', upsertAiConfigRequestSchema), async c => {
   const { db, tenantId, user, cfg, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'AiConfig')
@@ -230,6 +247,7 @@ aiConfigRouter.post('/', validate('json', upsertAiConfigRequestSchema), async c 
 
 // ---- DELETE /api/ai/config/:id --------------------------------------------------------------------
 
+/** Deletes an AI provider config. Requires `manage AiConfig`; an unknown config is a 404. */
 aiConfigRouter.delete('/:id', async c => {
   const { db, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'AiConfig')

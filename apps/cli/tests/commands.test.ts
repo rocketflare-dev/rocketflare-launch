@@ -178,7 +178,7 @@ describe('config commands', () => {
     await expect(runConfigSet(c2, 'serverUrl', 'not a url')).rejects.toThrow(/not a valid URL/)
     await expect(runConfigSet(c2, 'bogus', 'x')).rejects.toThrow(/Unknown config key/)
     await runConfigSet(c2, 'serverUrl', 'https://app.example.com/')
-    expect((await store.load()).serverUrl).toBe('https://app.example.com')
+    expect((await store.load()).profiles.default?.serverUrl).toBe('https://app.example.com')
 
     const { ctx: c3, out: o3 } = await testContext({ store })
     await runConfigPath(c3)

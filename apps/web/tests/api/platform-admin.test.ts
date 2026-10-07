@@ -107,7 +107,7 @@ describe('/api/platform/* — single mode', () => {
       expect(res.status, path).toBe(403)
       expect(await json(res)).toMatchObject({ statusCode: 403, code: 'forbidden' })
     }
-    // An OWNER's key: the role qualifies, the credential does not (cookie only, like /api/admin).
+    // An OWNER's TENANT key: the role qualifies, the credential does not (admin keys only).
     await db
       .update(tenantUsers)
       .set({ role: 'owner' })
@@ -115,7 +115,9 @@ describe('/api/platform/* — single mode', () => {
     const { key } = await createTestApiKey(db, tenant.id, user.id)
     const bearer = { Authorization: `Bearer ${key}` }
     for (const path of READS) {
-      expect((await request(path, { headers: bearer }, { env: singleEnv })).status, path).toBe(401)
+      const res = await request(path, { headers: bearer }, { env: singleEnv })
+      expect(res.status, path).toBe(403)
+      expect(await json(res)).toMatchObject({ code: 'admin_key_required' })
     }
   })
 

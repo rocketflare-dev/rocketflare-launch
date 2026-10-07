@@ -19,6 +19,10 @@ import { validate } from '../utils/routes/validate'
 
 export const tracesRouter = createRouter()
 
+/**
+ * Lists trace runs (`?runId|conversationId|since|agent|status`), paginated. Requires `read
+ * Trace` (admin+ and support — a span carries other people's prompts).
+ */
 tracesRouter.get('/', validate('query', traceListQuerySchema), async c => {
   const { db, cfg, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Trace')
@@ -27,6 +31,10 @@ tracesRouter.get('/', validate('query', traceListQuerySchema), async c => {
   )
 })
 
+/**
+ * Returns one trace's full span tree, by trace id, agent run id or assistant message id.
+ * Requires `read Trace` (admin+ and support).
+ */
 tracesRouter.get('/:id', validate('param', traceLookupParamSchema), async c => {
   const { db, cfg, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Trace')

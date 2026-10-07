@@ -44,6 +44,16 @@ describe('createApiClient', () => {
     expect(init?.body).toBe('{"a":1}')
   })
 
+  it('sends a FormData body as multipart, leaving Content-Type to fetch', async () => {
+    const { fetch, calls } = mockFetch({ '/api/up': () => jsonResponse({ ok: true }) })
+    const client = createApiClient({ serverUrl: SERVER, apiKey: TEST_KEY, fetch })
+    const form = new FormData()
+    form.append('file', new Blob(['hi'], { type: 'text/plain' }), 'a.txt')
+    await client.request('POST', '/api/up', { body: form })
+    expect(calls[0]?.init?.body).toBe(form)
+    expect(headersOf(calls)['Content-Type']).toBeUndefined()
+  })
+
   it('maps the 401 envelope to CliApiError → exit 2 with a login hint', async () => {
     const { fetch } = mockFetch({
       '/api/me': () =>

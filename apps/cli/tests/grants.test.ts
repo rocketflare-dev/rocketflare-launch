@@ -130,11 +130,28 @@ describe('grants revoke', () => {
         jsonResponse({ grant: grant({ status: 'revoking' }), pushId: null }, 202),
     })
     const { ctx, out } = await testContext({ store: await store(), fetch })
-    await runGrantsRevoke(ctx, 'expenses', 'm365', { reason: 'Not used any more' })
+    await runGrantsRevoke(ctx, 'expenses', 'm365', { reason: 'Not used any more', yes: true })
     const del = calls.find(c => c.init.method === 'DELETE')
     expect(del?.url.pathname).toBe(`${grantsPath}/${GRANT_ID}`)
     expect(JSON.parse(String(del?.init.body))).toEqual({ reason: 'Not used any more' })
     expect(out.content()).toContain('Revoking m365 on expenses (staging): revoking')
+  })
+
+  it('asks first with the page’s words; a no sends nothing, no terminal refuses', async () => {
+    const { fetch, calls } = server({})
+    const { ctx, log } = await testContext({ store: await store(), fetch })
+    let question = ''
+    await runGrantsRevoke(ctx, 'expenses', 'm365', {
+      confirm: async q => {
+        question = q
+        return false
+      },
+    })
+    expect(question).toBe('Revoke m365 on expenses (staging)?')
+    expect(log.lines.join('\n')).toContain('answers “not configured” until it is granted again')
+    expect(calls.some(c => c.init.method === 'DELETE')).toBe(false)
+    const refused = await captureError(runGrantsRevoke(ctx, 'expenses', 'm365'))
+    expect(refused.message).toMatch(/Refusing without confirmation/)
   })
 
   it('an id prefix works; a slug held in both environments needs --env', () => {

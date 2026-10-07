@@ -26,6 +26,7 @@ import { validate } from '../utils/routes/validate'
 
 export const membersRouter = createRouter()
 
+/** Lists the tenant's members, including `support` rows. Requires `read TenantMember`; paginated. */
 membersRouter.get('/', validate('query', paginationQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'TenantMember')
@@ -34,6 +35,10 @@ membersRouter.get('/', validate('query', paginationQuerySchema), async c => {
   return c.json(paginated(items, total, query))
 })
 
+/**
+ * Changes a member's role. Requires `manage TenantMember`; ownership invariants (such as never
+ * leaving a tenant without an owner) are enforced by the service.
+ */
 membersRouter.patch('/:userId', validate('json', updateMemberRoleRequestSchema), async c => {
   const { db, tenantId, auth, realtime } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'TenantMember')
@@ -47,6 +52,10 @@ membersRouter.patch('/:userId', validate('json', updateMemberRoleRequestSchema),
   return c.json({ userId: membership.userId, role: membership.role })
 })
 
+/**
+ * Removes a member from the tenant. Requires `manage TenantMember`; ownership invariants are
+ * enforced by the service.
+ */
 membersRouter.delete('/:userId', async c => {
   const { db, tenantId, auth, realtime } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'TenantMember')
@@ -59,6 +68,10 @@ membersRouter.delete('/:userId', async c => {
   return c.body(null, 204)
 })
 
+/**
+ * Replaces one member's group memberships wholesale. Requires `manage Group`; 404 if the member
+ * or any group id does not belong to this tenant.
+ */
 membersRouter.put('/:userId/groups', validate('json', setMemberGroupsRequestSchema), async c => {
   const { db, tenantId, user, realtime, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Group')

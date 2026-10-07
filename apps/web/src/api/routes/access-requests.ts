@@ -11,6 +11,10 @@ import { validate } from '../utils/routes/validate'
 
 export const accessRequestsRouter = createRouter()
 
+/**
+ * Asks to join an organisation as the signed-in caller, creating or updating the one pending
+ * request for their email. Tenant-free.
+ */
 accessRequestsRouter.post('/', validate('json', createAccessRequestSchema), async c => {
   const { db, user } = withAuth(c)
   const body = c.req.valid('json')

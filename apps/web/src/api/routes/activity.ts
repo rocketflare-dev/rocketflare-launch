@@ -14,6 +14,10 @@ import { validate } from '../utils/routes/validate'
 
 export const activityRouter = createRouter()
 
+/**
+ * Lists the tenant's activity feed with each event's actor resolved, filterable by type, subject
+ * and time range. Admin+ only (403 otherwise); paginated.
+ */
 activityRouter.get('/', validate('query', activityListQuerySchema), async c => {
   const { db, tenantId, auth } = withAuthAndDb(c)
   if (!isAdminLevel(auth)) throw new ForbiddenError('Only admins can read the activity log')

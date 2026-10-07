@@ -25,6 +25,10 @@ import { validate } from '../utils/routes/validate'
 
 export const platformAccessRequestsRouter = createRouter()
 
+/**
+ * List the sign-up review queue, filtered and paged. Requires `canAdministerPlatform` (a global
+ * admin, or in single mode the organisation's owner/admin).
+ */
 platformAccessRequestsRouter.get('/', validate('query', accessRequestListQuerySchema), async c => {
   const { db } = withAuth(c)
   const query = c.req.valid('query')
@@ -32,6 +36,12 @@ platformAccessRequestsRouter.get('/', validate('query', accessRequestListQuerySc
   return c.json(paginated(items, total, query))
 })
 
+/**
+ * Approve (joining an organisation or minting a new one) or reject a sign-up request. Requires
+ * `canAdministerPlatform`. A single-mode owner/admin may only approve into their own organisation,
+ * and may hand out `owner` only if they are one themself; 403 otherwise. `new_org` requires
+ * multi-tenant mode.
+ */
 platformAccessRequestsRouter.post(
   '/:id/decide',
   validate('json', decideAccessRequestSchema),

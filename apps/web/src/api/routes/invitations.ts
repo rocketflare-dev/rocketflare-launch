@@ -23,11 +23,16 @@ import { validate } from '../utils/routes/validate'
 export const invitationsRouter = createRouter()
 
 // Tenant-free, before `/:id` so "pending" is never parsed as an id.
+/**
+ * Lists invitations addressed to the caller's own email across every tenant, for the
+ * login-prologue banner. Tenant-free.
+ */
 invitationsRouter.get('/pending', async c => {
   const { db, user } = withAuth(c)
   return c.json({ items: await listPendingForEmail(db, user.email) })
 })
 
+/** Lists the tenant's pending invitations. Requires `read Invitation`; paginated. */
 invitationsRouter.get('/', validate('query', paginationQuerySchema), async c => {
   const { db, tenantId } = withAuthAndDb(c)
   guardPermission(c, 'read', 'Invitation')
@@ -36,6 +41,7 @@ invitationsRouter.get('/', validate('query', paginationQuerySchema), async c => 
   return c.json(paginated(items, total, query))
 })
 
+/** Invites one person to the tenant by email, enqueuing the invite email. Requires `manage Invitation`. */
 invitationsRouter.post('/', validate('json', inviteMemberRequestSchema), async c => {
   const { db, cfg, logger, tenantId, user, defer, realtime } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Invitation')
@@ -60,6 +66,10 @@ invitationsRouter.post('/', validate('json', inviteMemberRequestSchema), async c
   return c.json(invitation, 201)
 })
 
+/**
+ * Invites many people by email in one call, enqueuing each invite email. Requires `manage
+ * Invitation`; returns a per-email result list.
+ */
 invitationsRouter.post('/bulk', validate('json', bulkInviteRequestSchema), async c => {
   const { db, cfg, logger, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Invitation')
@@ -86,6 +96,7 @@ invitationsRouter.post('/bulk', validate('json', bulkInviteRequestSchema), async
   return c.json({ results })
 })
 
+/** Resends a pending invitation's email. Requires `manage Invitation`. */
 invitationsRouter.post('/:id/resend', async c => {
   const { db, cfg, logger, tenantId, user, defer } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Invitation')
@@ -107,6 +118,7 @@ invitationsRouter.post('/:id/resend', async c => {
   return c.json(invitation)
 })
 
+/** Revokes a pending invitation. Requires `manage Invitation`. */
 invitationsRouter.delete('/:id', async c => {
   const { db, tenantId, user, defer, realtime } = withAuthAndDb(c)
   guardPermission(c, 'manage', 'Invitation')
