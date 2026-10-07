@@ -1,9 +1,14 @@
 /**
  * The agent-runtime CONTRACT (rocketflare-launch#13): what every `AgentRuntime` must do, whatever
- * runs its agent loop — a CLI process in the container (`processRuntime`: Claude Code, Codex) or,
- * later, something else (Pi on a Durable Object, #14). `describeRuntimeContract(harness)` is the
- * suite; a runtime joins it with a {@link RuntimeHarness} that knows how to script ITS agent (a
- * process's stdout, a fake model) and how its container answers its own lookups.
+ * runs its agent loop — a CLI process in the container (`processRuntime`: Claude Code, Codex) or
+ * a Durable Object (Pi, #14). `describeRuntimeContract(harness)` is the suite; a runtime joins it
+ * with a {@link RuntimeHarness} that knows how to script ITS agent (a process's stdout, a fake
+ * model), how its container answers its own lookups, and — for a runtime that is not a process —
+ * what it is handed besides the container (`context`) and how its start or its output stream
+ * fails (`failNextStart`, `dropOutputNext`). Tests only a container process can have (a dropped log
+ * stream, the SDK's rollout error on start) run `runIf(placement === 'container')`; their
+ * Durable Object equivalents (the object's drain failing and coming back, the container replaced
+ * under a turn) run for `durable-object`.
  *
  * It drives `runtime.runTurn` directly — no database, no Workflow — with a recording sink, and
  * pins only what `turn.ts` relies on: the normalised output reaches the sink, a resume that cannot
@@ -12,12 +17,14 @@
  * an OUTCOME, never a throw.
  */
 import { describe, expect, it } from 'vitest'
+import { SESSION_BOOT_MARKER } from '@/api/services/sessions/boot-marker'
 import { PLATFORM_CREDENTIALS } from '@/api/services/sessions/credentials/lease'
 import { PROXIED_EGRESS, SandboxInterruptedError } from '@/api/services/sessions/ports'
 import { SESSION_HOME, SESSION_WORKSPACE } from '@/api/services/sessions/rocketflare-dev'
 import { runtimeFor } from '@/api/services/sessions/runtimes'
 import type {
   AgentRuntime,
+  RuntimeContext,
   RuntimeLineMapping,
   TurnContext,
   TurnInput,
@@ -38,12 +45,23 @@ export interface ScriptedTurn {
 
 export interface RuntimeHarness {
   runtime: AgentRuntime
-  /** A conversation id this runtime accepts as a resume id. */
+  /** A conversation id this runtime accepts as a resume id (for the contract's session row). */
   resumeId: string
-  /** Make `sandbox` answer this runtime's own lookups the way its container would. */
-  container(sandbox: FakeSandbox): void
+  /**
+   * Make `sandbox` answer this runtime's own lookups the way its container would — and, for a
+   * runtime that is not a process, set up whatever it runs in beside it (Pi: its object).
+   */
+  container(sandbox: FakeSandbox): void | Promise<void>
   /** Script the agent's next turn: it names `resumeId`, says `text`, and ends with a result. */
   scriptTurn(sandbox: FakeSandbox, turn: ScriptedTurn): void
+  /** What every runtime call is handed besides the session and the container (Pi: its object). */
+  context?(sandbox: FakeSandbox): Partial<RuntimeContext>
+  /** A conversation in this runtime's own format (default: one JSONL line). */
+  conversation?: string
+  /** Make the turn's next START fail with `error` (default: the container's `startProcess`). */
+  failNextStart?(sandbox: FakeSandbox, error: Error): void
+  /** Make the turn's output stream drop `count` times, then come back (`durable-object` only). */
+  dropOutputNext?(sandbox: FakeSandbox, count: number): void
 }
 
 /** What a recording sink saw. */
@@ -137,11 +155,24 @@ const input = (message = 'Add a button'): TurnInput => ({
 
 export function describeRuntimeContract(harness: RuntimeHarness): void {
   const { runtime } = harness
-  const container = () => {
+  const container = async () => {
     const sandbox = new FakeSandbox()
-    harness.container(sandbox)
+    await harness.container(sandbox)
     return sandbox
   }
+  const extra = (sandbox: FakeSandbox) => harness.context?.(sandbox) ?? {}
+  const runtimeCtx = (session: SessionRow, sandbox: FakeSandbox): RuntimeContext => ({
+    session,
+    sandbox,
+    ...extra(sandbox),
+  })
+  const turnCtx = (session: SessionRow, sandbox: FakeSandbox, over: Partial<TurnContext> = {}) =>
+    turnContext(session, sandbox, { ...extra(sandbox), ...over })
+  const failNextStart = (sandbox: FakeSandbox, error: Error) =>
+    harness.failNextStart
+      ? harness.failNextStart(sandbox, error)
+      : sandbox.failNext('startProcess', error)
+  const conversation = harness.conversation ?? '{"type":"conversation"}\n'
 
   describe(`the runtime contract: ${runtime.label}`, () => {
     it('is the registry’s runtime for its id, with a label, a provider and a placement', () => {
@@ -168,34 +199,33 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
     })
 
     it('reads back the conversation it restored (the checkpoint after a cold resume)', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       const session = sessionRow(runtime, harness.resumeId)
-      const content = '{"type":"conversation"}\n'
-      expect(await runtime.state.restore({ session, sandbox }, content)).toBe(true)
+      expect(await runtime.state.restore(runtimeCtx(session, sandbox), conversation)).toBe(true)
       expect(
-        await runtime.state.read(
-          { session, sandbox },
-          { cwd: SESSION_WORKSPACE, home: SESSION_HOME }
-        )
-      ).toBe(content)
+        await runtime.state.read(runtimeCtx(session, sandbox), {
+          cwd: SESSION_WORKSPACE,
+          home: SESSION_HOME,
+        })
+      ).toBe(conversation)
     })
 
     it('reads nothing when there is no conversation', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       expect(
-        await runtime.state.read(
-          { session: sessionRow(runtime, null), sandbox },
-          { cwd: SESSION_WORKSPACE, home: SESSION_HOME }
-        )
+        await runtime.state.read(runtimeCtx(sessionRow(runtime, null), sandbox), {
+          cwd: SESSION_WORKSPACE,
+          home: SESSION_HOME,
+        })
       ).toBeNull()
     })
 
     it('runs a turn: its output reaches the sink, normalised, and it ends with a result', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Added the button.' })
       const sink = recordingSink()
       const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, null), sandbox),
+        turnCtx(sessionRow(runtime, null), sandbox),
         input(),
         sink
       )
@@ -209,22 +239,22 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
     })
 
     it('resumes a conversation it holds without forgetting it', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       const session = sessionRow(runtime, harness.resumeId)
-      await runtime.state.restore({ session, sandbox }, '{"type":"conversation"}\n')
+      await runtime.state.restore(runtimeCtx(session, sandbox), conversation)
       harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Again.' })
       const sink = recordingSink()
-      const outcome = await runtime.runTurn(turnContext(session, sandbox), input(), sink)
+      const outcome = await runtime.runTurn(turnCtx(session, sandbox), input(), sink)
       expect(outcome.result?.text).toBe('Again.')
       expect(sink.forgotten).toBe(0)
     })
 
     it('forgets a conversation it cannot resume, and runs the turn as a new one', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Fresh.' })
       const sink = recordingSink()
       const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, harness.resumeId), sandbox),
+        turnCtx(sessionRow(runtime, harness.resumeId), sandbox),
         input(),
         sink
       )
@@ -238,13 +268,13 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
       'outlives a dropped log stream: the same output, each mapping once',
       async () => {
         const run = async (drop: boolean) => {
-          const sandbox = container()
+          const sandbox = await container()
           harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Added the button.' })
           if (drop) sandbox.dropStreamNext({ after: 1 }).dropStreamNext({ after: 2 })
           const sink = recordingSink()
           const outcome = await runtime.runTurn(
             // The re-attach's backoff, shortened.
-            turnContext(sessionRow(runtime, null), sandbox, { sleep: () => sleep(1) }),
+            turnCtx(sessionRow(runtime, null), sandbox, { sleep: () => sleep(1) }),
             input(),
             sink
           )
@@ -261,12 +291,56 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
       }
     )
 
+    // A runtime whose agent runs in a Durable Object: its output is drained from the object.
+    it.runIf(runtime.placement === 'durable-object')(
+      'outlives its object restarting under a turn: the same output, each mapping once',
+      async () => {
+        const run = async (drop: boolean) => {
+          const sandbox = await container()
+          harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Added the button.' })
+          if (drop) harness.dropOutputNext?.(sandbox, 3)
+          const sink = recordingSink()
+          const outcome = await runtime.runTurn(
+            turnCtx(sessionRow(runtime, null), sandbox),
+            input(),
+            sink
+          )
+          return { sink, outcome }
+        }
+        const clean = await run(false)
+        const dropped = await run(true)
+        expect(dropped.outcome).toMatchObject({ stop: null, failure: null })
+        expect(dropped.outcome.result?.text).toBe('Added the button.')
+        const shape = (sink: RecordedSink) =>
+          sink.mappings
+            .map(m => ({ resumeId: m.resumeId, events: m.events.map(e => e.type) }))
+            .filter(m => m.resumeId || m.events.length > 0)
+        expect(shape(dropped.sink)).toEqual(shape(clean.sink))
+      }
+    )
+
+    it.runIf(runtime.placement === 'durable-object')(
+      'notices its container replaced under a turn: `container_lost`, no throw',
+      async () => {
+        const sandbox = await container()
+        sandbox.files.set(SESSION_BOOT_MARKER, 'boot-1')
+        harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Working…', hang: true })
+        setTimeout(() => sandbox.recreate(), 20)
+        const outcome = await runtime.runTurn(
+          turnCtx(sessionRow(runtime, null), sandbox, { bootId: 'boot-1', probeMs: 5 }),
+          input(),
+          recordingSink()
+        )
+        expect(outcome).toMatchObject({ stop: 'container_lost', result: null })
+      }
+    )
+
     it('stops on a Stop: `cancelled`, no throw', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Working…', hang: true })
       let asked = 0
       const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, null), sandbox, {
+        turnCtx(sessionRow(runtime, null), sandbox, {
           cancelRequested: async () => ++asked >= 2,
         }),
         input(),
@@ -276,32 +350,36 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
     })
 
     it('stops at its timeout: `timeout`, no throw', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       harness.scriptTurn(sandbox, { resumeId: harness.resumeId, text: 'Working…', hang: true })
       const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, null), sandbox, { timeoutMs: 20 }),
+        turnCtx(sessionRow(runtime, null), sandbox, { timeoutMs: 20 }),
         input(),
         recordingSink()
       )
       expect(outcome.stop).toBe('timeout')
     })
 
-    it('reports a replaced container as `rollout`, no throw', async () => {
-      const sandbox = container()
-      sandbox.failNext('startProcess', new SandboxInterruptedError())
-      const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, null), sandbox),
-        input(),
-        recordingSink()
-      )
-      expect(outcome).toMatchObject({ stop: 'rollout', result: null })
-    })
+    // The SDK's own "replaced while a command was running", thrown at the process's start.
+    it.runIf(runtime.placement === 'container')(
+      'reports a replaced container as `rollout`, no throw',
+      async () => {
+        const sandbox = await container()
+        failNextStart(sandbox, new SandboxInterruptedError())
+        const outcome = await runtime.runTurn(
+          turnCtx(sessionRow(runtime, null), sandbox),
+          input(),
+          recordingSink()
+        )
+        expect(outcome).toMatchObject({ stop: 'rollout', result: null })
+      }
+    )
 
     it('fails a turn that cannot start with a sentence naming the agent, no throw', async () => {
-      const sandbox = container()
-      sandbox.failNext('startProcess', new Error('boom'))
+      const sandbox = await container()
+      failNextStart(sandbox, new Error('boom'))
       const outcome = await runtime.runTurn(
-        turnContext(sessionRow(runtime, null), sandbox),
+        turnCtx(sessionRow(runtime, null), sandbox),
         input(),
         recordingSink()
       )
@@ -310,9 +388,9 @@ export function describeRuntimeContract(harness: RuntimeHarness): void {
     })
 
     it('cancels a turn nobody reads — and resolves when there is none', async () => {
-      const sandbox = container()
+      const sandbox = await container()
       await expect(
-        runtime.cancel({ session: sessionRow(runtime, null), sandbox })
+        runtime.cancel(runtimeCtx(sessionRow(runtime, null), sandbox))
       ).resolves.toBeUndefined()
     })
   })

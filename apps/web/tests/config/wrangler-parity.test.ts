@@ -265,6 +265,23 @@ describe('wrangler parity: coding sessions (Launch P3)', () => {
   it('the image the tomls name exists (the dry-run build refuses a missing Dockerfile)', () => {
     expect(fs.existsSync(path.join(WEB_DIR, 'containers/session/Dockerfile'))).toBe(true)
   })
+
+  it.each([
+    ['production', prod],
+    ['staging', staging],
+  ] as const)('%s binds the Pi session object, SQLite-backed, beside Workers AI', (_l, config) => {
+    // rocketflare-launch#14: one PiSessionAgent per Pi session; pi keeps its transcript in the
+    // object's SQLite (a `new_sqlite_classes` migration), and its model is the `[ai]` binding.
+    expect(rows(config, 'durable_objects.bindings')).toContainEqual({
+      name: 'PI_SESSION_AGENT',
+      class_name: 'PiSessionAgent',
+    })
+    expect(rows(config, 'migrations')).toContainEqual({
+      tag: 'v3',
+      new_sqlite_classes: ['PiSessionAgent'],
+    })
+    expect(get(config, 'ai.binding')).toBe('AI')
+  })
 })
 
 describe('wrangler parity: shared config and grants (Launch P5)', () => {

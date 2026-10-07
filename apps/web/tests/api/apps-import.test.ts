@@ -182,6 +182,7 @@ describe('the Rocketflare manifest and tomls', () => {
       durableObjects: [
         { binding: 'NOTIFICATIONS_HUB', className: 'NotificationsHub' },
         { binding: 'SESSION_SANDBOX', className: 'SessionSandbox' },
+        { binding: 'PI_SESSION_AGENT', className: 'PiSessionAgent' },
       ],
       workflows: [
         { binding: 'AGENT_RUN_WORKFLOW', name: 'launch-agent-run', className: 'AgentRunWorkflow' },

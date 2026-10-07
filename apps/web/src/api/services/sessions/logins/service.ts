@@ -53,7 +53,7 @@ export function toAgentLogin(row: AgentLoginRow): AgentLogin {
     status: row.status,
     verificationUrl: row.verificationUrl,
     userCode: row.userCode,
-    needsCode: AGENT_LOGIN_NEEDS_CODE[row.runtime],
+    needsCode: AGENT_LOGIN_NEEDS_CODE[row.runtime] === true,
     error: row.error,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,

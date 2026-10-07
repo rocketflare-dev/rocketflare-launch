@@ -1,6 +1,6 @@
 /**
  * Agent runtimes and personal AI accounts (`docs/CONCEPTS.md` §18.22): which coding agent a session
- * runs (`AGENT_RUNTIMES` — Claude Code, Codex), whose account it bills (`SESSION_CREDENTIAL_SOURCES`:
+ * runs (`AGENT_RUNTIMES` — Claude Code, Codex, Pi), whose account it bills (`SESSION_CREDENTIAL_SOURCES`:
  * Launch's own key, or the session creator's personal account), and the relayed sign-in that
  * connects a personal account (`agent_logins`, driven by `AgentLoginWorkflow`).
  *
@@ -12,7 +12,8 @@
  * - Which runtimes sessions may run, their models and whose account they bill is a PLATFORM
  *   SETTING — `launch_settings.session_policy.runtimes`, edited on Settings → Coding agents'
  *   card (`PUT /api/platform/setup/session-agents`), never a deployment var. It fails closed: with
- *   nothing stored, Claude Code on Launch's key and nothing else (`runtimePolicyOf`).
+ *   nothing stored, Claude Code on Launch's key, plus Pi (rocketflare-launch#14) wherever the
+ *   Worker has Workers AI bound — it needs no key at all (`runtimePolicyOf`, `credentials/resolve.ts`).
  * - `AGENT_LOGIN_CODE_EVENT` is golden-tested against Cloudflare's event-type rule
  *   (`/^[A-Za-z0-9_-]{1,100}$/` — a `.` is `workflow.invalid_event_type`).
  */
@@ -22,7 +23,7 @@ import { priceFor } from './ai/pricing'
 // ---- runtimes ----------------------------------------------------------------------------------
 
 /** The coding agents a session can run. Mirrors `sessions.runtime` — append-only. */
-export const AGENT_RUNTIMES = ['claude_code', 'codex'] as const
+export const AGENT_RUNTIMES = ['claude_code', 'codex', 'pi'] as const
 export const agentRuntimeSchema = z.enum(AGENT_RUNTIMES)
 export type AgentRuntimeId = z.infer<typeof agentRuntimeSchema>
 
@@ -33,12 +34,30 @@ export const DEFAULT_AGENT_RUNTIME: AgentRuntimeId = 'claude_code'
 export const AGENT_RUNTIME_LABELS: Record<AgentRuntimeId, string> = {
   claude_code: 'Claude Code',
   codex: 'Codex',
+  pi: 'Pi',
 }
 
-/** Whose API a runtime's sessions on Launch's account spend — the pricing table's provider. */
-export const AGENT_RUNTIME_PROVIDERS: Record<AgentRuntimeId, 'anthropic' | 'openai'> = {
+/**
+ * What a transcript calls the agent in a sentence ("Claude is working", "Pi stopped"): Claude Code
+ * has always been "Claude" there.
+ */
+export const AGENT_RUNTIME_SHORT_NAMES: Record<AgentRuntimeId, string> = {
+  claude_code: 'Claude',
+  codex: 'Codex',
+  pi: 'Pi',
+}
+
+/**
+ * Whose API a runtime's sessions on Launch's account spend — the pricing table's provider. Pi
+ * (rocketflare-launch#14) runs on the Worker's own Workers AI binding.
+ */
+export const AGENT_RUNTIME_PROVIDERS: Record<
+  AgentRuntimeId,
+  'anthropic' | 'openai' | 'workers_ai'
+> = {
   claude_code: 'anthropic',
   codex: 'openai',
+  pi: 'workers_ai',
 }
 
 /**
@@ -49,6 +68,25 @@ export const AGENT_RUNTIME_PROVIDERS: Record<AgentRuntimeId, 'anthropic' | 'open
 export const AGENT_RUNTIME_MODELS: Record<AgentRuntimeId, readonly string[]> = {
   claude_code: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'],
+  // Workers AI coding models. Pi has no default of its own: a session with no pinned model runs
+  // the first of these (`AGENT_RUNTIME_DEFAULT_MODEL`, `DEFAULT_PI_MODEL`).
+  pi: [
+    '@cf/moonshotai/kimi-k2.7-code',
+    '@cf/zai-org/glm-5.3',
+    '@cf/deepseek-ai/deepseek-v4-pro-0813',
+    '@cf/qwen/qwen3.8-27b',
+  ],
+}
+
+/**
+ * The model a session runs when none is pinned, for a runtime with no default of its own — Pi:
+ * Launch names the first Workers AI coding model it offers. Null: the agent picks (Claude Code,
+ * Codex).
+ */
+export const AGENT_RUNTIME_DEFAULT_MODEL: Record<AgentRuntimeId, string | null> = {
+  claude_code: null,
+  codex: null,
+  pi: AGENT_RUNTIME_MODELS.pi[0] ?? null,
 }
 
 /**
@@ -62,6 +100,10 @@ export const AGENT_MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-haiku-4-5': 'Haiku 4.5',
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-opus-4-1': 'Opus 4.1',
+  '@cf/moonshotai/kimi-k2.7-code': 'Kimi K2.7 Code',
+  '@cf/zai-org/glm-5.3': 'GLM 5.3',
+  '@cf/deepseek-ai/deepseek-v4-pro-0813': 'DeepSeek V4 Pro',
+  '@cf/qwen/qwen3.8-27b': 'Qwen 3.8 27B',
 }
 
 /** {@link AGENT_MODEL_LABELS}' name for `model`, else the id itself. Pure. */
@@ -74,9 +116,11 @@ export function agentModelLabel(model: string): string {
  * (Claude Code's choice)") and a pinned id reads as {@link agentModelLabel}. Pure.
  */
 export function sessionModelLabel(runtime: AgentRuntimeId, model: string | null): string {
-  return model === null
-    ? `Default (${AGENT_RUNTIME_LABELS[runtime]}’s choice)`
-    : agentModelLabel(model)
+  if (model !== null) return agentModelLabel(model)
+  const fixed = AGENT_RUNTIME_DEFAULT_MODEL[runtime]
+  return fixed
+    ? `Default (${agentModelLabel(fixed)})`
+    : `Default (${AGENT_RUNTIME_LABELS[runtime]}’s choice)`
 }
 
 /** A model a runtime may be set to: one the pricing table can put a price on. */
@@ -84,19 +128,35 @@ export function isPricedRuntimeModel(runtime: AgentRuntimeId, model: string): bo
   return priceFor(AGENT_RUNTIME_PROVIDERS[runtime], model) !== null
 }
 
-/** The personal account each runtime can bill. */
-export const AGENT_ACCOUNT_LABELS: Record<AgentRuntimeId, string> = {
+/**
+ * The personal account each runtime can bill; null for a runtime with no personal accounts (Pi
+ * runs on the Worker's Workers AI binding only, so nothing of a person's can pay for it).
+ */
+export const AGENT_ACCOUNT_LABELS: Record<AgentRuntimeId, string | null> = {
   claude_code: 'Claude subscription',
   codex: 'ChatGPT plan',
+  pi: null,
+}
+
+/** {@link AGENT_ACCOUNT_LABELS} for a runtime that has one — the sentence-safe form. */
+export function agentAccountLabel(runtime: AgentRuntimeId): string {
+  return AGENT_ACCOUNT_LABELS[runtime] ?? 'personal account'
 }
 
 /**
  * Whether the runtime's sign-in hands the person a code to paste BACK into Launch (Claude's
- * `setup-token`), or only shows them a code to type at the provider (Codex's device flow).
+ * `setup-token`), or only shows them a code to type at the provider (Codex's device flow). Null:
+ * the runtime has no sign-in at all (Pi).
  */
-export const AGENT_LOGIN_NEEDS_CODE: Record<AgentRuntimeId, boolean> = {
+export const AGENT_LOGIN_NEEDS_CODE: Record<AgentRuntimeId, boolean | null> = {
   claude_code: true,
   codex: false,
+  pi: null,
+}
+
+/** Does the runtime have a personal account a person can connect (a sign-in)? */
+export function agentRuntimeHasAccounts(runtime: AgentRuntimeId): boolean {
+  return AGENT_ACCOUNT_LABELS[runtime] !== null
 }
 
 /**
@@ -259,13 +319,18 @@ export const agentRuntimeParamSchema = z.object({ runtime: agentRuntimeSchema })
 export const agentRuntimeOptionSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
-  accountLabel: z.string(),
-  /** The session policy (Settings → Coding agents) has it on. */
+  /** The personal account it can bill; null when it has none (Pi). */
+  accountLabel: z.string().nullable(),
+  /**
+   * The session policy (Settings → Coding agents) has it on — and, for Pi, the Worker has Workers
+   * AI bound (its only way to a model).
+   */
   enabled: z.boolean(),
   /** The policy's mode: who may pay for its sessions. */
   credentialMode: sessionCredentialModeSchema,
   /** A personal account may be connected for it: enabled, and its mode allows one. */
   userCredentials: z.boolean(),
+  /** Its sign-in has the person paste a code back; false for a runtime with no sign-in. */
   needsCode: z.boolean(),
 })
 export type AgentRuntimeOption = z.infer<typeof agentRuntimeOptionSchema>

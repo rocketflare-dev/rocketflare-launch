@@ -5,8 +5,9 @@
  *
  * - `sessionAgentsStatus` — every runtime as the card draws it: the resolved policy (fail-closed
  *   defaults filled in, `isDefault` when nothing is stored for it) plus readiness: whether Launch's
- *   key for it is set (the sealed credential, else the Worker secret — never the value), how many
- *   people have connected a personal account, and the image it needs. Both sandbox hosts run
+ *   key for it is set (the sealed credential, else the Worker secret — never the value; for Pi,
+ *   whether the Worker has Workers AI bound, its only "key"), how many people have connected a
+ *   personal account, and the image it needs. Both sandbox hosts run
  *   every agent on either account, so the host is not a readiness question
  *   (`sessions/sandbox-host.ts` is the Session sandbox section beside it).
  * - `updateSessionAgents` — merges whole per-runtime entries into the stored policy, keeping every
@@ -34,6 +35,7 @@ import {
 import {
   AGENT_RUNTIME_MIN_IMAGE,
   AGENT_RUNTIME_PLATFORM_KEY,
+  type AgentPlatformKeyKind,
   SESSION_AGENTS_NONE_ENABLED,
   type SessionAgentStatus,
   type SessionAgentsStatus,
@@ -51,6 +53,18 @@ import { getSetting, putSetting } from './credentials'
 /** The Worker secret each platform key falls back to — only whether it is set is ever read. */
 function secretSet(cfg: AppConfig, kind: 'anthropic_api_key' | 'openai_api_key'): boolean {
   return kind === 'anthropic_api_key' ? Boolean(cfg.ANTHROPIC_API_KEY) : Boolean(cfg.OPENAI_API_KEY)
+}
+
+/** Where a runtime's platform account comes from now (`platformKey.source`), never its value. */
+function platformKeySource(
+  cfg: AppConfig,
+  credentials: readonly SetupCredential[],
+  kind: AgentPlatformKeyKind,
+  bindings: { workersAi: boolean }
+): SessionAgentStatus['platformKey']['source'] {
+  if (kind === 'workers_ai') return bindings.workersAi ? 'binding' : null
+  if (credentials.some(c => c.kind === kind && c.set)) return 'credential'
+  return secretSet(cfg, kind) ? 'secret' : null
 }
 
 /** People with a personal account per runtime, in the organisation the admin is acting for. */
@@ -76,7 +90,9 @@ export async function sessionAgentsStatus(
   db: Database,
   cfg: AppConfig,
   credentials: readonly SetupCredential[],
-  tenantId: string | null
+  tenantId: string | null,
+  /** The Worker's bindings, as far as the card reads them: is Workers AI bound (Pi)? */
+  bindings: { workersAi: boolean } = { workersAi: false }
 ): Promise<SessionAgentsStatus> {
   const stored = await getSetting(db, 'session_policy')
   const policy = resolveSessionPolicy(stored)
@@ -84,7 +100,6 @@ export async function sessionAgentsStatus(
   const runtimes = AGENT_RUNTIMES.map((runtime): SessionAgentStatus => {
     const rp = runtimePolicyOf(policy, runtime)
     const keyKind = AGENT_RUNTIME_PLATFORM_KEY[runtime]
-    const credentialSet = credentials.some(c => c.kind === keyKind && c.set)
     const offered = AGENT_RUNTIME_MODELS[runtime]
     return {
       runtime,
@@ -98,7 +113,7 @@ export async function sessionAgentsStatus(
         rp.model === null || offered.includes(rp.model) ? [...offered] : [rp.model, ...offered],
       platformKey: {
         kind: keyKind,
-        source: credentialSet ? 'credential' : secretSet(cfg, keyKind) ? 'secret' : null,
+        source: platformKeySource(cfg, credentials, keyKind, bindings),
       },
       connectedAccounts: accounts[runtime],
       minImage: AGENT_RUNTIME_MIN_IMAGE[runtime],
@@ -117,7 +132,9 @@ export interface SessionAgentsChange {
 export async function updateSessionAgents(
   db: Database,
   update: SessionAgentsUpdate,
-  userId: string
+  userId: string,
+  /** Is Workers AI bound — does a Pi left on count as an agent people can start? */
+  bindings: { workersAi: boolean } = { workersAi: false }
 ): Promise<SessionAgentsChange | null> {
   const stored = await getSetting(db, 'session_policy')
   const current = resolveSessionPolicy(stored)
@@ -145,7 +162,13 @@ export async function updateSessionAgents(
     runtimes,
     ...(runtimes.claude_code ? { model: runtimes.claude_code.model } : {}),
   }
-  if (!AGENT_RUNTIMES.some(r => runtimeOffer(policy, r).enabled)) {
+  const readiness = Object.fromEntries(
+    AGENT_RUNTIMES.map(r => [
+      r,
+      AGENT_RUNTIME_PLATFORM_KEY[r] !== 'workers_ai' || bindings.workersAi,
+    ])
+  )
+  if (!AGENT_RUNTIMES.some(r => runtimeOffer(policy, r, readiness).enabled)) {
     throw new ConflictError(
       'Keep at least one coding agent on, or nobody can start a session.',
       SESSION_AGENTS_NONE_ENABLED

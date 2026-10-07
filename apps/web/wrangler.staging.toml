@@ -168,6 +168,19 @@ class_name = "SessionSandbox"
 tag = "v2"
 new_sqlite_classes = ["SessionSandbox"]
 
+# Pi coding sessions (rocketflare-launch#14): the agent loop of a `pi` session runs in this Durable
+# Object, ONE per session (`idFromName(sessionId)`), on Cloudflare's Pi harness over its own SQLite
+# (pi's transcript, tasks and wake job); its model is Workers AI through `[ai]` below, its tools run
+# in the session's SessionSandbox container. No key, nothing to create; a Worker without `[ai]` simply
+# does not offer Pi.
+[[durable_objects.bindings]]
+name = "PI_SESSION_AGENT"
+class_name = "PiSessionAgent"
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["PiSessionAgent"]
+
 # File storage (D23): R2 behind `services/storage.ts`. Create: wrangler r2 bucket create launch-files-staging
 [[r2_buckets]]
 binding = "FILES"

@@ -16,7 +16,7 @@
  *
  * Nothing here logs, returns or emits the file's contents.
  */
-import { AGENT_ACCOUNT_LABELS } from '@launch/shared/launch-agents'
+import { agentAccountLabel } from '@launch/shared/launch-agents'
 import type { AgentCredentialRow } from '../../../../../db/schema'
 import { CredentialBusyError, CredentialNeedsLoginError } from '../../credentials/errors'
 import {
@@ -32,7 +32,7 @@ import type { TurnCredentialLease, UserLeaseContext } from '../types'
 import { type CodexAuthJson, lastRefreshMs, parseCodexAuthJson, sameTokens } from './auth-json'
 import { CODEX_AUTH_PATH } from './config'
 
-const ACCOUNT = AGENT_ACCOUNT_LABELS.codex
+const ACCOUNT = agentAccountLabel('codex')
 
 /** What the lease's `release` is told went into the container. */
 interface Leased {

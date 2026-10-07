@@ -77,7 +77,9 @@ export function setupWarnings(data: SetupOverview): string[] {
   for (const agent of data.sessionAgents.runtimes) {
     if (agent.enabled && agent.credentialMode === 'platform' && agent.platformKey.source === null) {
       out.push(
-        `${agent.label}: enabled on Launch's account, but no ${agent.platformKey.kind} is set`
+        agent.platformKey.kind === 'workers_ai'
+          ? `${agent.label}: enabled, but this Worker has no Workers AI binding ([ai]), so it is not offered`
+          : `${agent.label}: enabled on Launch's account, but no ${agent.platformKey.kind} is set`
       )
     }
   }

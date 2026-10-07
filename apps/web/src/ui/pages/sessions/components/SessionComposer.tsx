@@ -31,7 +31,11 @@
  */
 import { PaperClipIcon, PhotoIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
-import { AGENT_RUNTIME_MODELS, sessionModelLabel } from '@launch/shared/launch-agents'
+import {
+  AGENT_RUNTIME_MODELS,
+  AGENT_RUNTIME_SHORT_NAMES,
+  sessionModelLabel,
+} from '@launch/shared/launch-agents'
 import {
   SESSION_ATTACHMENT_MIME_TYPES,
   SESSION_MESSAGE_MAX,
@@ -108,7 +112,7 @@ const MAX_HEIGHT_PX = 240
 
 /** What the transcript calls the agent running a session's turns. */
 export function agentName(runtime: Session['runtime']): string {
-  return runtime === 'codex' ? 'Codex' : 'Claude'
+  return AGENT_RUNTIME_SHORT_NAMES[runtime] ?? AGENT_RUNTIME_SHORT_NAMES.claude_code
 }
 
 const ACCEPT = SESSION_ATTACHMENT_MIME_TYPES.join(',')

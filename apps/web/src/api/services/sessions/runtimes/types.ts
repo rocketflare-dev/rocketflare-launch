@@ -20,8 +20,9 @@
  * Claude Code and Codex are ONE implementation of it: `processRuntime(cli)` (`process/`), the CLI
  * process in the container — start it, read its stdout, watch it, kill it — driven by a
  * `CliAdapter` (the CLI's command, environment, parser and files; the interface this seam was
- * before #13). A runtime that runs no CLI (Pi on a Durable Object, #14) implements `AgentRuntime`
- * directly.
+ * before #13). A runtime that runs no CLI implements `AgentRuntime` directly: Pi (#14,
+ * `runtimes/pi/`), whose agent loop runs in the session's `PiSessionAgent` Durable Object, reached
+ * through {@link RuntimeContext.piAgent}.
  *
  * **No secret crosses this seam into an event, a step result or a log.** A lease's `env` and
  * `files` go into the turn and nowhere else; `turnEnv` is placeholders by construction.
@@ -44,6 +45,7 @@ import type { StorageService } from '../../storage'
 import type { ClaudeMessageUsage, ClaudeModelUsage, ClaudeTurnResult } from '../claude-stream'
 import type { SessionEgressPort } from '../ports'
 import type { SandboxPort } from '../sandbox-port'
+import type { PiAgentPort } from './pi/protocol'
 
 // ---- one turn's output ---------------------------------------------------------------------------
 
@@ -289,9 +291,9 @@ export interface CliAdapter {
 // ---- the runtime ---------------------------------------------------------------------------------
 
 /**
- * Where a runtime's agent loop runs. `container`: a process in the session's container (every
- * runtime today — `processRuntime`). `durable-object`: in Launch's own Workers, reaching the
- * checkout through the sandbox (Pi, #14) — designed for, not built.
+ * Where a runtime's agent loop runs. `container`: a process in the session's container (Claude
+ * Code and Codex — `processRuntime`). `durable-object`: in Launch's own Durable Object, reaching
+ * the checkout through the sandbox (Pi, #14 — `runtimes/pi/`).
  */
 export type RuntimePlacement = 'container' | 'durable-object'
 
@@ -300,6 +302,11 @@ export interface RuntimeContext {
   session: SessionRow
   /** The session's container (`ports.sandbox(session.id)`). */
   sandbox: SandboxPort
+  /**
+   * The session's `PiSessionAgent` Durable Object (`ports.piAgent(session.id)`) — what a
+   * `durable-object` runtime (Pi) runs its loop in; absent where none is bound (or in a fixture).
+   */
+  piAgent?: PiAgentPort | null
   logger?: Logger
 }
 

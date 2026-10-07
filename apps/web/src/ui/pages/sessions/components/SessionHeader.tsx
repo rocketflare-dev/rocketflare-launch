@@ -30,7 +30,7 @@ import {
   StopCircleIcon,
   StopIcon,
 } from '@heroicons/react/24/outline'
-import { AGENT_ACCOUNT_LABELS, AGENT_RUNTIME_LABELS } from '@launch/shared/launch-agents'
+import { AGENT_RUNTIME_LABELS, agentAccountLabel } from '@launch/shared/launch-agents'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import type { AppShipSettings } from '@launch/shared/launch-apps'
 import {
@@ -75,7 +75,7 @@ export function sessionRuntimeLine(
   const personal = session.credentialSource === 'user'
   if (runtime === 'claude_code' && !personal) return null
   const parts = [AGENT_RUNTIME_LABELS[runtime]]
-  if (personal) parts.push(`billed to the creator’s ${AGENT_ACCOUNT_LABELS[runtime]}`)
+  if (personal) parts.push(`billed to the creator’s ${agentAccountLabel(runtime)}`)
   return parts.join(' · ')
 }
 

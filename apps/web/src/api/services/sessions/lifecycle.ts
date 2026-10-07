@@ -59,7 +59,7 @@ import { getSetting, putSetting } from '../launch/credentials'
 import type { Realtime } from '../realtime'
 import { appMonthSpend } from './budget'
 import { requireSessionWorkflow, type WarnLogger, wakeSession } from './chat'
-import { resolveSessionCredential } from './credentials/resolve'
+import { resolveSessionCredential, runtimeReadiness } from './credentials/resolve'
 import { nudgeSession } from './events'
 import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
 import { resolveNewSandboxHost } from './sandbox-host'
@@ -281,6 +281,8 @@ export async function createSession(
     tenantId,
     userId: input.userId,
     request: { runtime: input.request.runtime, credential: input.request.credential },
+    // What this Worker can run (Pi needs Workers AI bound); a fixture without `cfg` offers no Pi.
+    ...(input.cfg ? { readiness: await runtimeReadiness(db, input.cfg, env) } : {}),
     now: input.now,
   })
   const policy = resolved.policy

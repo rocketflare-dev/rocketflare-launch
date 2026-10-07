@@ -92,6 +92,7 @@ import type { CheckpointReason, SessionStepContext, SessionStepHooks, TurnOutcom
 import { sessionsPaused } from './lifecycle'
 import {
   egressFor,
+  piAgentFor,
   type SandboxExecResult,
   SandboxInterruptedError,
   type SandboxPort,
@@ -784,7 +785,12 @@ async function stopOrphanedTurn(
   sandbox: SandboxPort
 ): Promise<boolean> {
   try {
-    await runtimeOf(session).cancel({ session, sandbox, logger: scope.logger })
+    await runtimeOf(session).cancel({
+      session,
+      sandbox,
+      piAgent: piAgentFor(scope.ports, session.id),
+      logger: scope.logger,
+    })
     return true
   } catch (err) {
     scope.logger.warn({ err }, 'session salvage: could not stop the orphaned turn')
@@ -1320,7 +1326,10 @@ export async function restoreTranscriptStep(
     const text = await object.text()
     const sandbox = sandboxFor(scope, session)
     const there = await inOurContainer(scope, sandbox, bootId, () =>
-      state.restore({ session, sandbox, logger: scope.logger }, text)
+      state.restore(
+        { session, sandbox, piAgent: piAgentFor(scope.ports, session.id), logger: scope.logger },
+        text
+      )
     )
     if (there) return { restored: true }
   }

@@ -44,6 +44,7 @@ import { NeonSessionDb } from './db/neon-session-db'
 import { HostEgress } from './egress/host'
 import { GitHubRepoHost } from './repo/github-repo-host'
 import { LocalRepoHost } from './repo/local-repo-host'
+import type { PiAgentPort } from './runtimes/pi/protocol'
 import type { SessionCredentialPort } from './runtimes/types'
 import { CloudflareSandbox } from './sandbox/cloudflare-sandbox'
 import { RemoteSandbox } from './sandbox/remote-sandbox'
@@ -397,6 +398,20 @@ export interface SessionPorts {
   egress?(db: Database): SessionEgressPort
   /** §18.22: each turn's credential lease; absent = platform only (see `credentialsFor`). */
   credentials?(db: Database): SessionCredentialPort
+  /**
+   * rocketflare-launch#14: the session's `PiSessionAgent` Durable Object (`idFromName(sessionId)`)
+   * — where a Pi session's agent loop runs. Null (or absent) where the Worker binds none; tests
+   * hand in the in-process core (`tests/helpers/pi.ts`).
+   */
+  piAgent?(sessionId: string): PiAgentPort | null
+}
+
+/** The session's Pi object through `ports`, or null (see {@link SessionPorts.piAgent}). */
+export function piAgentFor(
+  ports: Pick<SessionPorts, 'piAgent'>,
+  sessionId: string
+): PiAgentPort | null {
+  return ports.piAgent?.(sessionId) ?? null
 }
 
 /** What a caller needs besides the ports to act on a session: the policy it runs under. */
@@ -443,6 +458,12 @@ export function defaultSessionPorts(
           })
         : PROXIED_EGRESS,
     credentials: db => createSessionCredentialPort(db, cfg),
+    piAgent: sessionId => {
+      const namespace = env.PI_SESSION_AGENT
+      if (!namespace) return null
+      // The RPC stub's methods ARE the port (`runtimes/pi/agent.ts` implements it).
+      return namespace.get(namespace.idFromName(sessionId)) as unknown as PiAgentPort
+    },
   }
 }
 

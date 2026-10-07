@@ -14,6 +14,7 @@
  * background refetch of the same settings does not wipe an edit in progress.
  */
 import {
+  AGENT_RUNTIME_DEFAULT_MODEL,
   AGENT_RUNTIMES,
   type AgentRuntimeId,
   type SessionCredentialMode,
@@ -32,27 +33,35 @@ const WHO_PAYS: Record<SessionCredentialMode, string> = {
   user_or_platform: 'Either',
 }
 
-/** One plain sentence on each vendor's terms for personal accounts in a hosted service. */
-export const PERSONAL_ACCOUNT_TERMS: Record<AgentRuntimeId, string> = {
+/**
+ * One plain sentence on each vendor's terms for personal accounts in a hosted service; null for
+ * an agent with no personal accounts (Pi runs on this account's Workers AI only).
+ */
+export const PERSONAL_ACCOUNT_TERMS: Record<AgentRuntimeId, string | null> = {
   claude_code:
     "Anthropic's terms restrict storing Claude subscription tokens for use by another service, so letting people connect theirs is your organisation's decision and responsibility.",
   codex:
     "OpenAI requires approval before ChatGPT plans are used through a hosted service like Launch, so letting people connect theirs is your organisation's decision and responsibility.",
+  pi: null,
 }
 
 const KEY_LABEL: Record<SessionAgentStatus['platformKey']['kind'], string> = {
   anthropic_api_key: 'an Anthropic key',
   openai_api_key: 'an OpenAI key',
+  workers_ai: 'the Workers AI binding',
 }
 
 const KEY_SECRET: Record<SessionAgentStatus['platformKey']['kind'], string> = {
   anthropic_api_key: 'ANTHROPIC_API_KEY',
   openai_api_key: 'OPENAI_API_KEY',
+  workers_ai: 'AI',
 }
 
-const KEY_ANCHOR: Record<SessionAgentStatus['platformKey']['kind'], string> = {
+/** Where to set it; null: not a setting — `[ai]` in the Worker's config (docs/DEPLOY.md). */
+const KEY_ANCHOR: Record<SessionAgentStatus['platformKey']['kind'], string | null> = {
   anthropic_api_key: stepAnchor('anthropic'),
   openai_api_key: stepAnchor('openai'),
+  workers_ai: null,
 }
 
 interface Draft {
@@ -92,12 +101,20 @@ function AgentStatus({ agent, draft }: { agent: SessionAgentStatus; draft: Draft
     headline = 'Off'
     tone = 'text-muted'
   } else if (keyMissing) {
+    const anchor = KEY_ANCHOR[kind]
     headline = (
       <>
-        Needs {KEY_LABEL[kind]}{' '}
-        <a className="link" href={`#${KEY_ANCHOR[kind]}`}>
-          Set it
-        </a>
+        Needs {KEY_LABEL[kind]}
+        {anchor ? (
+          <>
+            {' '}
+            <a className="link" href={`#${anchor}`}>
+              Set it
+            </a>
+          </>
+        ) : (
+          ' (`[ai]` in the Worker config)'
+        )}
       </>
     )
     tone = 'text-warning'
@@ -110,8 +127,10 @@ function AgentStatus({ agent, draft }: { agent: SessionAgentStatus; draft: Draft
     details.push(`Launch pays with the ${KEY_SECRET[kind]} secret`)
   } else if (usesLaunchKey && agent.platformKey.source === 'credential') {
     details.push('Launch pays with the saved key')
+  } else if (usesLaunchKey && agent.platformKey.source === 'binding') {
+    details.push("Launch pays through this account's Workers AI — no key needed")
   }
-  if (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0) {
+  if (agent.accountLabel && (allowsPersonal(draft.credentialMode) || agent.connectedAccounts > 0)) {
     const n = agent.connectedAccounts
     details.push(
       n === 0
@@ -223,7 +242,11 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
                         value={draft.model ?? ''}
                         onChange={e => set(agent.runtime, { model: e.target.value || null })}
                       >
-                        <option value="">Default — {agent.label} picks</option>
+                        <option value="">
+                          {AGENT_RUNTIME_DEFAULT_MODEL[agent.runtime]
+                            ? `Default — ${AGENT_RUNTIME_DEFAULT_MODEL[agent.runtime]}`
+                            : `Default — ${agent.label} picks`}
+                        </option>
                         {agent.models.map(m => (
                           <option key={m} value={m}>
                             {m}
@@ -232,23 +255,30 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
                       </select>
                     </td>
                     <td className="py-3">
-                      <label htmlFor={`${id}-pays`} className="sr-only">
-                        Who pays
-                      </label>
-                      <select
-                        id={`${id}-pays`}
-                        className="select select-sm w-full"
-                        value={draft.credentialMode}
-                        onChange={e =>
-                          chooseMode(agent.runtime, e.target.value as SessionCredentialMode)
-                        }
-                      >
-                        {(['platform', 'user', 'user_or_platform'] as const).map(mode => (
-                          <option key={mode} value={mode}>
-                            {WHO_PAYS[mode]}
-                          </option>
-                        ))}
-                      </select>
+                      {agent.accountLabel === null ? (
+                        // No personal accounts (Pi): Launch pays, there is nothing to choose.
+                        <span className="text-sm">{WHO_PAYS.platform}</span>
+                      ) : (
+                        <>
+                          <label htmlFor={`${id}-pays`} className="sr-only">
+                            Who pays
+                          </label>
+                          <select
+                            id={`${id}-pays`}
+                            className="select select-sm w-full"
+                            value={draft.credentialMode}
+                            onChange={e =>
+                              chooseMode(agent.runtime, e.target.value as SessionCredentialMode)
+                            }
+                          >
+                            {(['platform', 'user', 'user_or_platform'] as const).map(mode => (
+                              <option key={mode} value={mode}>
+                                {WHO_PAYS[mode]}
+                              </option>
+                            ))}
+                          </select>
+                        </>
+                      )}
                     </td>
                     <td className="py-3">
                       <AgentStatus agent={agent} draft={draft} />
@@ -301,7 +331,7 @@ export function CodingAgentsCard({ sessionAgents }: { sessionAgents: SessionAgen
         title={
           confirming ? `Let people use their own ${confirming.accountLabel}?` : 'Personal accounts'
         }
-        message={confirm ? PERSONAL_ACCOUNT_TERMS[confirm.runtime] : ''}
+        message={confirm ? (PERSONAL_ACCOUNT_TERMS[confirm.runtime] ?? '') : ''}
         confirmText="Accept and allow"
         confirmButtonClass="btn-warning"
         onCancel={() => setConfirm(null)}

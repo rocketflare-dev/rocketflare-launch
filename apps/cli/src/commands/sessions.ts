@@ -3,7 +3,7 @@
  * from a terminal: start one on an app, talk to it, ship it, end it. The same routes and the same
  * `@launch/shared/launch-sessions` schemas as the web page.
  *
- * - `start <app> [--runtime <claude_code|codex>]` resolves the app by slug (`GET /api/apps/:slug`),
+ * - `start <app> [--runtime <claude_code|codex|pi>]` resolves the app by slug (`GET /api/apps/:slug`),
  *   then `POST /api/apps/:id/sessions`, and prints the session id and its page's URL. `--runtime`
  *   (§18.22) picks the coding agent; an unknown name is a usage error before any request, and one
  *   the deployment does not run is the server's 409 `session_runtime_disabled`.
@@ -27,6 +27,7 @@
  * run in-process without waiting.
  */
 import {
+  AGENT_RUNTIME_SHORT_NAMES,
   AGENT_RUNTIMES,
   type AgentRuntimeId,
   agentRuntimeSchema,
@@ -234,7 +235,7 @@ export const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.
 
 /** Who fixes a red gate step, as the session page names it. */
 export const agentOf = (runtime: AgentRuntimeId | undefined) =>
-  runtime === 'codex' ? 'Codex' : 'Claude'
+  AGENT_RUNTIME_SHORT_NAMES[runtime ?? 'claude_code']
 
 /**
  * One row as a human line, or null for rows a terminal reader does not need. The ship's rows are

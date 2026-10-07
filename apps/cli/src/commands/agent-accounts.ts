@@ -23,6 +23,7 @@ import {
   type AgentRuntimeId,
   agentAccountsResponseSchema,
   agentLoginResponseSchema,
+  agentRuntimeHasAccounts,
   isActiveAgentLoginStatus,
   submitAgentLoginCodeRequestSchema,
 } from '@launch/shared/launch-agents'
@@ -44,14 +45,25 @@ const loginPath = (id: string) => `/api/me/agent-logins/${encodeURIComponent(id)
 const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const DAY_MS = 24 * 60 * 60 * 1000
 
-const PROVIDERS: Record<AgentRuntimeId, string> = { claude_code: 'Anthropic', codex: 'OpenAI' }
+const PROVIDERS: Record<AgentRuntimeId, string> = {
+  claude_code: 'Anthropic',
+  codex: 'OpenAI',
+  pi: 'Workers AI',
+}
+
+/** The runtimes a person can connect an account for (Pi has none: it runs on Workers AI). */
+const ACCOUNT_RUNTIMES = AGENT_RUNTIMES.filter(agentRuntimeHasAccounts)
 /** Codex's device page, when the row has not got one yet. */
 const CODEX_DEVICE_PAGE = 'https://auth.openai.com/codex/device'
 
 function runtimeArg(value: string): AgentRuntimeId {
   if (!(AGENT_RUNTIMES as readonly string[]).includes(value))
     throw new CliError(`Unknown runtime "${value}"`, {
-      hint: `One of: ${AGENT_RUNTIMES.join(', ')}.`,
+      hint: `One of: ${ACCOUNT_RUNTIMES.join(', ')}.`,
+    })
+  if (!agentRuntimeHasAccounts(value as AgentRuntimeId))
+    throw new CliError(`${value} has no personal account`, {
+      hint: `Its sessions run on Launch's own account. Accounts: ${ACCOUNT_RUNTIMES.join(', ')}.`,
     })
   return value as AgentRuntimeId
 }
@@ -123,7 +135,7 @@ export async function runAgentAccountsList(ctx: CommandContext): Promise<void> {
       renderTable(rows, [
         { header: 'Runtime', value: r => r.option.runtime },
         { header: 'Agent', value: r => r.option.label },
-        { header: 'Account', value: r => r.option.accountLabel },
+        { header: 'Account', value: r => r.option.accountLabel ?? '—' },
         {
           header: 'Personal account',
           value: r =>
@@ -338,7 +350,7 @@ export function registerAgentAccountsCommands(program: Command, action: ActionWr
   accounts
     .command('login <runtime>')
     .description(
-      `connect your account (${AGENT_RUNTIMES.join(' | ')}): sign in on the provider’s page; Claude’s code is read hidden or from stdin`
+      `connect your account (${ACCOUNT_RUNTIMES.join(' | ')}): sign in on the provider’s page; Claude’s code is read hidden or from stdin`
     )
     .option('--open', 'open the provider’s page in your browser')
     .action(action((ctx, cmd) => runAgentAccountsLogin(ctx, cmd.args[0] ?? '', cmd.opts())))

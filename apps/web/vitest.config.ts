@@ -21,6 +21,12 @@ const alias = {
   // (`durable-objects/session-sandbox.ts`, `services/sessions/sandbox/cloudflare-sandbox.ts`) load
   // this stub instead; tests drive a session through `FakeSandbox` (tests/helpers/fake-sandbox.ts).
   '@cloudflare/sandbox': path.resolve(__dirname, './tests/mocks/cloudflare-sandbox.ts'),
+  // rocketflare-launch#14: the Pi session object's three `agents` entries extend workerd classes.
+  // Their one importer (`runtimes/pi/agent.ts`) loads this stub; a Pi turn under test drives the
+  // in-process core over pi-durable's MemoryStorage (tests/helpers/pi.ts) instead.
+  'agents/harness/pi': path.resolve(__dirname, './tests/mocks/agents.ts'),
+  'agents/lifecycle': path.resolve(__dirname, './tests/mocks/agents.ts'),
+  'agents/models/pi-ai': path.resolve(__dirname, './tests/mocks/agents.ts'),
 }
 
 // Forks are capped because each holds its own Postgres connections (test DB runs

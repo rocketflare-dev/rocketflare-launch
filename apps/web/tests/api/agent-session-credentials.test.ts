@@ -111,10 +111,17 @@ async function admin(tenantId: string) {
   return { user, cookie: sessionCookieHeader(await createTestSession(db, user.id, tenantId)) }
 }
 
+/** A deployment with Launch's own keys set (the Worker secrets). */
+const keyedEnv = () =>
+  createTestEnv({
+    ANTHROPIC_API_KEY: 'sk-ant-api03-test-secret-value',
+    OPENAI_API_KEY: `sk-proj-${'x'.repeat(30)}`,
+  })
+
 describe('creating a session', () => {
-  it('a default deployment creates exactly what it always did', async () => {
+  it('a default deployment with Launch’s key creates exactly what it always did', async () => {
     const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
-    const res = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, createTestEnv())
+    const res = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, keyedEnv())
     expect(res.status).toBe(202)
     const { session } = sessionDetailResponseSchema.parse(await json(res))
     expect(session).toMatchObject({
@@ -156,12 +163,43 @@ describe('creating a session', () => {
     expect(claude.status).toBe(409)
     expect(await json(claude)).toMatchObject({ code: 'session_runtime_disabled' })
 
-    const res = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, createTestEnv())
+    const res = await post(`/api/apps/${f.app.id}/sessions`, f.cookie, keyedEnv())
     expect(res.status).toBe(202)
     const [row] = await sessionRows(f.app.id, f.tenant.id)
     expect(row).toMatchObject({ runtime: 'codex', credentialSource: 'platform' })
     // The frozen policy names the chosen runtime's model — the only one its egress lets through.
     expect(row?.policy.model).toBe('gpt-6.1-sol')
+  })
+
+  it('a zero-key deployment with Workers AI starts Pi (rocketflare-launch#14) — on the platform, on its default model', async () => {
+    const f = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
+    const res = await post(
+      `/api/apps/${f.app.id}/sessions`,
+      f.cookie,
+      createTestEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' })
+    )
+    expect(res.status).toBe(202)
+    const [row] = await sessionRows(f.app.id, f.tenant.id)
+    expect(row).toMatchObject({ runtime: 'pi', credentialSource: 'platform' })
+    // No model pinned: the turn runs Pi's default (`DEFAULT_PI_MODEL`).
+    expect(row?.policy.model).toBeNull()
+    // Without the binding there is no Pi to fall back to: Claude Code, as before.
+    const g = await seedSessionApp(db, createFakeCloud(), { role: 'member' })
+    const bare = await post(
+      `/api/apps/${g.app.id}/sessions`,
+      g.cookie,
+      createTestEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', AI: undefined })
+    )
+    expect(bare.status).toBe(202)
+    expect((await sessionRows(g.app.id, g.tenant.id))[0]).toMatchObject({ runtime: 'claude_code' })
+    const named = await post(
+      `/api/apps/${g.app.id}/sessions`,
+      g.cookie,
+      createTestEnv({ AI: undefined }),
+      { runtime: 'pi' }
+    )
+    expect(named.status).toBe(409)
+    expect(await json(named)).toMatchObject({ code: 'session_runtime_disabled' })
   })
 
   it('409 agent_credential_not_allowed for a personal account where none may be used', async () => {

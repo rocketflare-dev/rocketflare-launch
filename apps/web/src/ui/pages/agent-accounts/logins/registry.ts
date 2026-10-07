@@ -17,7 +17,10 @@ export interface AgentLoginBodyProps {
   submitError: string | null
 }
 
-export const AGENT_LOGIN_BODIES: Record<AgentRuntimeId, ComponentType<AgentLoginBodyProps>> = {
-  claude_code: ClaudeLogin,
-  codex: CodexLogin,
-}
+export const AGENT_LOGIN_BODIES: Record<AgentRuntimeId, ComponentType<AgentLoginBodyProps> | null> =
+  {
+    claude_code: ClaudeLogin,
+    codex: CodexLogin,
+    // Pi has no personal account, so no sign-in (rocketflare-launch#14).
+    pi: null,
+  }

@@ -89,6 +89,7 @@ import {
   WRANGLER_TOML,
 } from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
+import type { PiAgentPort } from './runtimes/pi/protocol'
 
 /** Where the Workflow clones the app's repo inside the sandbox (`SESSION_WORKSPACE`). */
 export const SESSION_REPO_DIR = SESSION_WORKSPACE
@@ -308,6 +309,8 @@ export interface CheckpointDeps {
   maxFileBytes?: number
   /** `host` (a remote sandbox): the host is granted a fresh token before the push. Absent = `proxied`. */
   egress?: SessionEgressPort
+  /** rocketflare-launch#14: the session's Pi object, where a Pi session's conversation lives. */
+  piAgent?: PiAgentPort | null
 }
 
 export interface CheckpointOptions {
@@ -640,7 +643,7 @@ export async function checkpoint(
   const transcript =
     deps.storage && session.claudeSessionId
       ? await state.read(
-          { session, sandbox: deps.sandbox },
+          { session, sandbox: deps.sandbox, piAgent: deps.piAgent ?? null },
           { cwd, home: opts.claudeHome ?? SESSION_CLAUDE_HOME }
         )
       : null

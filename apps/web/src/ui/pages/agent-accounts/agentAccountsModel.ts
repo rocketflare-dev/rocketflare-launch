@@ -43,10 +43,11 @@ export function connectableRuntimes(runtimes: readonly AgentRuntimeOption[]) {
   return runtimes.filter(r => r.enabled && r.userCredentials)
 }
 
-/** One line on what connecting each account gives you. */
-export const AGENT_ACCOUNT_PITCH: Record<AgentRuntimeId, string> = {
+/** One line on what connecting each account gives you; null: no personal account (Pi). */
+export const AGENT_ACCOUNT_PITCH: Record<AgentRuntimeId, string | null> = {
   claude_code: 'Run Claude Code sessions on your Claude Pro or Max subscription.',
   codex: 'Run Codex sessions on your ChatGPT Plus, Pro or Business plan.',
+  pi: null,
 }
 
 export interface AgentAccountRow {

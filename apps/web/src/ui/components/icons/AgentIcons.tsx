@@ -1,7 +1,7 @@
 /**
  * The coding agents' own marks (§18.22) — Claude's (Simple Icons, CC0) and Codex's (LobeHub icons,
- * MIT) — drawn in `currentColor` like the sign-in providers' (`ProviderIcons.tsx`): no brand hex in
- * the UI (ui.md "tokens, not raw colours").
+ * MIT); Pi's (rocketflare-launch#14) is a plain π drawn here — all in `currentColor` like the
+ * sign-in providers' (`ProviderIcons.tsx`): no brand hex in the UI (ui.md "tokens, not raw colours").
  */
 import type { AgentRuntimeId } from '@launch/shared/launch-agents'
 import type { ComponentType } from 'react'
@@ -30,7 +30,16 @@ export function CodexIcon({ className = 'w-5 h-5' }: IconProps) {
   )
 }
 
+export function PiIcon({ className = 'w-5 h-5' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15a1.5 1.5 0 0 1 0 3H16v9.25c0 .69.56 1.25 1.25 1.25h.25a1.5 1.5 0 0 1 0 3h-.25A4.25 4.25 0 0 1 13 16.25V7h-3v5.5c0 3.2-1.2 5.9-3.4 7.9a1.5 1.5 0 1 1-2-2.2C6.2 16.7 7 14.8 7 12.5V7H4.5A1.5 1.5 0 0 1 3 5.5Z" />
+    </svg>
+  )
+}
+
 export const AGENT_ICONS: Record<AgentRuntimeId, ComponentType<IconProps>> = {
   claude_code: ClaudeIcon,
   codex: CodexIcon,
+  pi: PiIcon,
 }

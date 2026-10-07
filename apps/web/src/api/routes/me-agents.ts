@@ -34,7 +34,7 @@ import {
 } from '@launch/shared/launch-agents'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import { runtimeOptions } from '../services/sessions/credentials/resolve'
+import { runtimeOptions, runtimeReadiness } from '../services/sessions/credentials/resolve'
 import { listPublic, removeForUser } from '../services/sessions/credentials/store'
 import { loadSessionPolicy } from '../services/sessions/lifecycle'
 import {
@@ -63,14 +63,15 @@ export const meAgentsRouter = createRouter()
  */
 meAgentsRouter.get('/agent-credentials', async c => {
   guardPermission(c, 'read', 'Session')
-  const { db, tenantId, user } = withAuthAndDb(c)
+  const { db, cfg, tenantId, user } = withAuthAndDb(c)
   const policy = await loadSessionPolicy(db)
-  const [credentials, logins] = await Promise.all([
+  const [credentials, logins, readiness] = await Promise.all([
     listPublic(db, tenantId, user.id),
     listActiveLogins(db, tenantId, user.id),
+    runtimeReadiness(db, cfg, c.env),
   ])
   return c.json<AgentAccountsResponse>({
-    runtimes: runtimeOptions(policy),
+    runtimes: runtimeOptions(policy, readiness),
     credentials,
     logins: logins.map(toAgentLogin),
   })

@@ -119,6 +119,26 @@ describe('the overview', () => {
     expect(claude_code?.models).toContain('claude-opus-5-5')
   })
 
+  it('Pi (rocketflare-launch#14): on by default on Launch’s account, ready when Workers AI is bound', async () => {
+    const { pi } = await agents(await call('GET'))
+    expect(pi).toMatchObject({
+      label: 'Pi',
+      accountLabel: null,
+      enabled: true,
+      model: null,
+      credentialMode: 'platform',
+      isDefault: true,
+      platformKey: { kind: 'workers_ai', source: 'binding' },
+      connectedAccounts: 0,
+      minImage: null,
+    })
+    expect(pi?.models[0]).toBe('@cf/moonshotai/kimi-k2.7-code')
+    const unbound = await agents(
+      await call('GET', undefined, { env: noSecrets({ AI: undefined }) })
+    )
+    expect(unbound.pi?.platformKey).toEqual({ kind: 'workers_ai', source: null })
+  })
+
   it('an old stored policy (no runtimes) still reads as Claude Code on its own model', async () => {
     store.settings.set('session_policy', { model: 'claude-opus-4-1', maxTurns: 10 })
     const { claude_code, codex } = await agents(await call('GET'))
@@ -253,21 +273,25 @@ describe('PUT /session-agents', () => {
   })
 
   it('409 session_agents_none_enabled when nothing would be left on', async () => {
+    const claudeOff = {
+      claude_code: { enabled: false, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
+    } as const
     const res = await call('PUT', {
-      runtimes: {
-        claude_code: { enabled: false, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
-      },
+      runtimes: { ...claudeOff, pi: { enabled: false, model: null, credentialMode: 'platform' } },
     })
     expect(res.status).toBe(409)
     expect(await json(res)).toMatchObject({ code: 'session_agents_none_enabled' })
+    // Pi left on counts only where Workers AI is bound: without it, nobody could start one.
+    const unbound = await call(
+      'PUT',
+      { runtimes: claudeOff },
+      { env: noSecrets({ AI: undefined }) }
+    )
+    expect(unbound.status).toBe(409)
     expect(store.settings.has('session_policy')).toBe(false)
     // Codex on first, then Claude off: allowed.
-    await call('PUT', { runtimes: { codex: codexOn } })
-    const ok = await call('PUT', {
-      runtimes: {
-        claude_code: { enabled: false, model: 'claude-sonnet-4-5', credentialMode: 'platform' },
-      },
-    })
+    await call('PUT', { runtimes: { codex: codexOn } }, { env: noSecrets({ AI: undefined }) })
+    const ok = await call('PUT', { runtimes: claudeOff }, { env: noSecrets({ AI: undefined }) })
     expect(ok.status).toBe(200)
   })
 

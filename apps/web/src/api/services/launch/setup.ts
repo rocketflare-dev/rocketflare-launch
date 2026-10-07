@@ -66,7 +66,9 @@ import { type AppConfig, hasOidc, isOidcOnly } from '../../../config'
 import type { Database } from '../../../db/client'
 import { apps, users } from '../../../db/schema'
 import { configuredProviders } from '../../auth/providers'
+import type { AppBindings } from '../../types'
 import { NotFoundError } from '../../utils/core/errors'
+import { workersAiBound } from '../sessions/credentials/resolve'
 import { type SandboxHostBindings, sessionSandboxStatus } from '../sessions/sandbox-host'
 import { CloudflareApiError, CloudflareClient } from './cloudflare'
 import {
@@ -1010,8 +1012,11 @@ export async function setupOverview(
   db: Database,
   cfg: AppConfig,
   tenantId: string | null = null,
-  /** The Worker's bindings — what the Session sandbox section's availability is read from. */
-  env?: SandboxHostBindings
+  /**
+   * The Worker's bindings — what the Session sandbox section's availability is read from, and
+   * whether Workers AI is bound (Pi's readiness on the Coding agents card).
+   */
+  env?: SandboxHostBindings & Partial<Pick<AppBindings, 'AI'>>
 ): Promise<SetupOverview> {
   let [settings, credentials, publicUrl, templatePin, sessionSandbox] = await Promise.all([
     readSettings(db),
@@ -1020,7 +1025,9 @@ export async function setupOverview(
     templatePinStatus(db),
     sessionSandboxStatus(db, env, cfg),
   ])
-  const sessionAgents = await sessionAgentsStatus(db, cfg, credentials, tenantId)
+  const sessionAgents = await sessionAgentsStatus(db, cfg, credentials, tenantId, {
+    workersAi: workersAiBound(env),
+  })
   const identity = identityStatus(cfg)
   const cloudflare = credentials.find(c => c.kind === 'cloudflare_api_token')
   const provenBy =

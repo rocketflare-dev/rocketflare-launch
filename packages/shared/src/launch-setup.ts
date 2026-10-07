@@ -12,6 +12,7 @@ import {
   AGENT_RUNTIME_LABELS,
   AGENT_RUNTIMES,
   type AgentRuntimeId,
+  agentRuntimeHasAccounts,
   agentRuntimeSchema,
   isPricedRuntimeModel,
   sessionCredentialModeSchema,
@@ -581,31 +582,43 @@ export const publicUrlCheckResponseSchema = publicUrlCheckSchema
 /**
  * The session image a runtime needs at least — documentation for the card, not a check: Launch
  * cannot see which image the `SessionSandbox` container was deployed with. Codex arrived in
- * `session-6`; Claude Code has been in every image.
+ * `session-6`; Claude Code has been in every image. Pi runs in a Durable Object and only uses
+ * the container's shell, so any image does.
  */
 export const AGENT_RUNTIME_MIN_IMAGE: Record<AgentRuntimeId, string | null> = {
   claude_code: null,
   codex: 'session-6',
+  pi: null,
 }
 
-/** The platform credential a runtime's sessions on Launch's account spend. */
+/**
+ * What a runtime's sessions on Launch's account spend: a platform credential (`CredentialKind`),
+ * or — Pi (rocketflare-launch#14) — the Worker's own Workers AI binding (`[ai]`), which needs no
+ * key at all: it is ready exactly when the binding is bound.
+ */
 export const AGENT_RUNTIME_PLATFORM_KEY = {
   claude_code: 'anthropic_api_key',
   codex: 'openai_api_key',
-} as const satisfies Record<AgentRuntimeId, CredentialKind>
+  pi: 'workers_ai',
+} as const satisfies Record<AgentRuntimeId, CredentialKind | 'workers_ai'>
+
+/** What {@link AGENT_RUNTIME_PLATFORM_KEY} holds: a credential kind, or `workers_ai`. */
+export type AgentPlatformKeyKind = (typeof AGENT_RUNTIME_PLATFORM_KEY)[AgentRuntimeId]
 
 /**
  * One runtime's entry in `PUT /session-agents`: a pinned model must have a price (budgets need
  * one); null leaves the choice to the agent.
  */
 function sessionAgentSettingSchema(runtime: AgentRuntimeId) {
-  return runtimePolicySchema.refine(
-    v => v.model === null || isPricedRuntimeModel(runtime, v.model),
-    {
+  return runtimePolicySchema
+    .refine(v => v.model === null || isPricedRuntimeModel(runtime, v.model), {
       path: ['model'],
       message: `Launch has no price for that model, so ${AGENT_RUNTIME_LABELS[runtime]} sessions could not be held to a budget`,
-    }
-  )
+    })
+    .refine(v => agentRuntimeHasAccounts(runtime) || v.credentialMode === 'platform', {
+      path: ['credentialMode'],
+      message: `${AGENT_RUNTIME_LABELS[runtime]} has no personal accounts: its sessions run on Launch's own account`,
+    })
 }
 
 /**
@@ -635,8 +648,8 @@ export const SESSION_AGENTS_NONE_ENABLED = 'session_agents_none_enabled'
 export const sessionAgentStatusSchema = z.object({
   runtime: agentRuntimeSchema,
   label: z.string(),
-  /** The personal account it can bill ("Claude subscription", "ChatGPT plan"). */
-  accountLabel: z.string(),
+  /** The personal account it can bill ("Claude subscription", "ChatGPT plan"); null: none (Pi). */
+  accountLabel: z.string().nullable(),
   enabled: z.boolean(),
   /** Null: the agent's own default (no model flag). */
   model: z.string().nullable(),
@@ -646,12 +659,13 @@ export const sessionAgentStatusSchema = z.object({
   /** The models the card offers (all priced), plus the current one when it is not among them. */
   models: z.array(z.string()),
   /**
-   * The key its sessions on Launch's account spend: the sealed credential, else the Worker secret
-   * (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), else none (`source` null).
+   * What its sessions on Launch's account spend: for a key, the sealed credential, else the Worker
+   * secret (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), else none (`source` null); for Pi
+   * (`workers_ai`), the Worker's `AI` binding (`binding`), else none.
    */
   platformKey: z.object({
-    kind: z.enum(['anthropic_api_key', 'openai_api_key']),
-    source: z.enum(['credential', 'secret']).nullable(),
+    kind: z.enum(['anthropic_api_key', 'openai_api_key', 'workers_ai']),
+    source: z.enum(['credential', 'secret', 'binding']).nullable(),
   }),
   /** People with a personal account connected for it (any status). */
   connectedAccounts: z.number().int().nonnegative(),

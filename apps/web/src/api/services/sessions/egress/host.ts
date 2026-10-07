@@ -20,6 +20,7 @@
  *   | Claude Code × user      | `anthropic` — the creator's subscription token, `oauth` (`usableClaudeCredential`, the proxy's own rule) |
  *   | Codex × platform        | `openai` — Launch's OpenAI key (`resolveOpenAiKey`)           |
  *   | Codex × user            | `chatgptRefresh` — the token refresh only; revoked again by {@link HostEgress.endTurn} |
+ *   | Pi (platform only)      | nothing — its model calls leave from Launch's own Durable Object over the `AI` binding, never from the container, and its turn never asks (`runtimes/pi/`) |
  *
  *   It returns NO environment: each runtime's own `turnEnv` already gives the process its
  *   placeholder (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, or none on a
@@ -79,6 +80,8 @@ export class HostEgress implements SessionEgressPort {
   private async modelGrant(session: SessionRow): Promise<EgressGrantUpdate> {
     const model = resolveSessionPolicy(session.policy).model
     const user = session.credentialSource === 'user'
+    // Pi's model calls never leave the container: nothing to grant (its turn does not ask).
+    if (session.runtime === 'pi') return {}
     if (session.runtime === 'codex') {
       // `chatgpt.com` is reached directly (ChatGPT blocks the Workers runtime): the host passes
       // only the plan's token refresh on `auth.openai.com`, and only while a turn holds it.
@@ -119,6 +122,8 @@ export class HostEgress implements SessionEgressPort {
 
   /** Before a login sandbox's CLI starts: let exactly that runtime's sign-in through. */
   async prepareLogin(sandbox: SandboxPort, runtime: AgentRuntimeId): Promise<void> {
+    // A runtime with no personal accounts (Pi) has no sign-in to let through.
+    if (runtime === 'pi') throw new Error('Pi has no sign-in')
     await this.grant(sandbox, { login: { runtime } })
   }
 

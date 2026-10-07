@@ -10799,7 +10799,8 @@
             "type": "string",
             "enum": [
               "claude_code",
-              "codex"
+              "codex",
+              "pi"
             ]
           },
           "credential": {
@@ -13030,14 +13031,18 @@
                   "type": "string",
                   "enum": [
                     "claude_code",
-                    "codex"
+                    "codex",
+                    "pi"
                   ]
                 },
                 "label": {
                   "type": "string"
                 },
                 "accountLabel": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "enabled": {
                   "type": "boolean"
@@ -13082,7 +13087,8 @@
                   "type": "string",
                   "enum": [
                     "claude_code",
-                    "codex"
+                    "codex",
+                    "pi"
                   ]
                 },
                 "kind": {
@@ -13172,7 +13178,8 @@
                   "type": "string",
                   "enum": [
                     "claude_code",
-                    "codex"
+                    "codex",
+                    "pi"
                   ]
                 },
                 "status": {
@@ -13273,7 +13280,8 @@
             "type": "string",
             "enum": [
               "claude_code",
-              "codex"
+              "codex",
+              "pi"
             ]
           }
         },
@@ -13303,7 +13311,8 @@
             "type": "string",
             "enum": [
               "claude_code",
-              "codex"
+              "codex",
+              "pi"
             ]
           }
         },
@@ -13326,7 +13335,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ]
               },
               "status": {
@@ -13432,7 +13442,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ]
               },
               "status": {
@@ -13537,7 +13548,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ]
               },
               "status": {
@@ -13656,7 +13668,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ]
               },
               "status": {
@@ -14443,6 +14456,40 @@
                   "credentialMode"
                 ],
                 "additionalProperties": false
+              },
+              "pi": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "model": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "credentialMode": {
+                    "type": "string",
+                    "enum": [
+                      "platform",
+                      "user",
+                      "user_or_platform"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "model",
+                  "credentialMode"
+                ],
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -14928,7 +14975,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -15154,7 +15202,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -15195,6 +15244,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {
@@ -15963,7 +16046,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -16189,7 +16273,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -16230,6 +16315,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {
@@ -17096,7 +17215,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -17322,7 +17442,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -17363,6 +17484,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {
@@ -18299,7 +18454,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -18525,7 +18681,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -18566,6 +18723,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {
@@ -19321,7 +19512,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -19547,7 +19739,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -19588,6 +19781,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {
@@ -20373,7 +20600,8 @@
                 "type": "string",
                 "enum": [
                   "claude_code",
-                  "codex"
+                  "codex",
+                  "pi"
                 ],
                 "default": "claude_code"
               },
@@ -20599,7 +20827,8 @@
                     "type": "string",
                     "enum": [
                       "claude_code",
-                      "codex"
+                      "codex",
+                      "pi"
                     ]
                   },
                   "runtimes": {
@@ -20640,6 +20869,40 @@
                         "additionalProperties": false
                       },
                       "codex": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "credentialMode": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "user",
+                              "user_or_platform"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "model",
+                          "credentialMode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "pi": {
                         "type": "object",
                         "properties": {
                           "enabled": {

@@ -31,6 +31,7 @@ import {
   agentToolStartEventDataSchema,
 } from './ai/agents'
 import {
+  AGENT_RUNTIME_DEFAULT_MODEL,
   AGENT_RUNTIMES,
   type AgentRuntimeId,
   agentRuntimeSchema,
@@ -966,18 +967,28 @@ export const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol'
 export const DEFAULT_CLAUDE_CODE_MODEL = 'claude-opus-5-5'
 
 /**
+ * Pi's model when the session pins none (rocketflare-launch#14): Pi has no default of its own, so
+ * Launch names one — the first Workers AI coding model the Setup page offers.
+ */
+export const DEFAULT_PI_MODEL: string = AGENT_RUNTIME_DEFAULT_MODEL.pi as string
+
+/**
  * The policy for one runtime, defaults filled in. FAIL-CLOSED: with no `runtimes` entry Claude Code
  * runs on Launch's key only (on the policy's own `model` — so every policy stored before runtimes
- * existed is unchanged in effect) and every other runtime is OFF. Turning a runtime on, or letting
- * people bill their own account, is an admin's explicit choice on the Setup page, which stores an
- * entry; an entry is then taken as it stands.
+ * existed is unchanged in effect) and Codex is OFF. Pi (rocketflare-launch#14) is ON by default,
+ * on Launch's account: it spends nothing but the Worker's own Workers AI binding, so it is the one
+ * agent a zero-key install can run — and the server offers it only where that binding is bound
+ * (`runtimeOffer`, `services/sessions/credentials/resolve.ts`). Turning a runtime on or off, or
+ * letting people bill their own account, is an admin's explicit choice on the Setup page, which
+ * stores an entry; an entry is then taken as it stands.
  */
 export function runtimePolicyOf(policy: SessionPolicy, runtime: AgentRuntimeId): RuntimePolicy {
   const stored = policy.runtimes?.[runtime]
   if (stored) return stored
-  return runtime === 'claude_code'
-    ? { enabled: true, model: policy.model, credentialMode: 'platform' }
-    : { enabled: false, model: null, credentialMode: 'platform' }
+  if (runtime === 'claude_code') {
+    return { enabled: true, model: policy.model, credentialMode: 'platform' }
+  }
+  return { enabled: runtime === 'pi', model: null, credentialMode: 'platform' }
 }
 
 /** The runtime a new session runs when the request names none. */

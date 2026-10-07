@@ -5,8 +5,12 @@
  * server's own schema message before any request. Kit version and Coding agents are their own
  * sections too.
  */
-import { DEFAULT_TEMPLATE_PIN, type SetupOverview } from '@launch/shared/launch-setup'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import {
+  DEFAULT_TEMPLATE_PIN,
+  type SessionAgentStatus,
+  type SetupOverview,
+} from '@launch/shared/launch-setup'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import CodingAgents from '@/ui/pages/platform/CodingAgents'
 import Connection from '@/ui/pages/platform/Connection'
@@ -469,6 +473,44 @@ describe('Settings → Coding agents', () => {
         apiKey: key,
       })
     )
+  })
+
+  it('Pi (rocketflare-launch#14): Launch pays through Workers AI, no account to choose', async () => {
+    const pi: SessionAgentStatus = {
+      runtime: 'pi',
+      label: 'Pi',
+      accountLabel: null,
+      enabled: true,
+      model: null,
+      credentialMode: 'platform',
+      isDefault: true,
+      models: ['@cf/moonshotai/kimi-k2.7-code', '@cf/zai-org/glm-5.3'],
+      platformKey: { kind: 'workers_ai', source: 'binding' },
+      connectedAccounts: 0,
+      minImage: null,
+    }
+    const withPi = (source: 'binding' | null) => ({
+      ...overview,
+      sessionAgents: {
+        runtimes: [
+          ...overview.sessionAgents.runtimes,
+          { ...pi, platformKey: { kind: 'workers_ai' as const, source } },
+        ],
+      },
+    })
+    render(withPi('binding'), CodingAgents)
+    const card = await screen.findByRole('region', { name: 'Coding agents' })
+    expect(within(card).getByLabelText('Pi')).toBeChecked()
+    expect(card.querySelector('#coding-agent-pi-pays')).toBeNull()
+    expect(card.querySelector('#coding-agent-pi-model option')?.textContent).toBe(
+      'Default — @cf/moonshotai/kimi-k2.7-code'
+    )
+    expect(within(card).getByText(/through this account's Workers AI/)).toBeInTheDocument()
+    cleanup()
+
+    render(withPi(null), CodingAgents)
+    const unbound = await screen.findByRole('region', { name: 'Coding agents' })
+    expect(within(unbound).getByText(/Needs the Workers AI binding/)).toBeInTheDocument()
   })
 
   it('a server that reports no OpenAI credential shows no OpenAI card', async () => {

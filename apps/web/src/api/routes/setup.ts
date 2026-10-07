@@ -70,6 +70,7 @@ import {
   setupOverview,
   updateSettings,
 } from '../services/launch/setup'
+import { workersAiBound } from '../services/sessions/credentials/resolve'
 import { updateSessionSandboxHost } from '../services/sessions/sandbox-host'
 import type { AppContext } from '../types'
 import { ConflictError, NotFoundError, ValidationError } from '../utils/core/errors'
@@ -336,7 +337,9 @@ setupRouter.delete('/template-pin', async c => {
 setupRouter.put('/session-agents', validate('json', sessionAgentsUpdateSchema), async c => {
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
-  const change = await updateSessionAgents(db, c.req.valid('json'), user.id)
+  const change = await updateSessionAgents(db, c.req.valid('json'), user.id, {
+    workersAi: workersAiBound(c.env),
+  })
   if (change) {
     await recordAudit(db, {
       tenantId: auditTenantId,

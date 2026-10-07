@@ -39,7 +39,7 @@ import type { StorageService } from '../storage'
 import { checkpoint } from './checkpoint'
 import type { SessionEmitter } from './events'
 import { landHealth, landRelease, landStaging } from './land-release'
-import { egressFor, type SandboxPort, type SessionPorts } from './ports'
+import { egressFor, piAgentFor, type SandboxPort, type SessionPorts } from './ports'
 import { type ShipSummaryInput, type ShipSummaryResult, summarizeShip } from './ship'
 import {
   createShipTurnRunner,
@@ -162,6 +162,7 @@ export const defaultSessionStepHooks: SessionStepHooks = {
         now: ctx.now,
         emit: events => ctx.emit(events),
         egress: egressFor(ctx.ports, ctx.db),
+        piAgent: piAgentFor(ctx.ports, ctx.session.id),
       },
       ctx.ref,
       reason === 'turn' ? {} : { message: CHECKPOINT_MESSAGES[reason](ctx.session.shortId) }

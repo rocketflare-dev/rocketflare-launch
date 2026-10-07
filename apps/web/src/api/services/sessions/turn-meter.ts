@@ -21,12 +21,19 @@
  *   turn is still paid for.
  * - **A personal account** (`billing: 'subscription'`): the same rows with a null cost and the
  *   session's money total unmoved, as the proxies record it — and no budget to watch.
+ * - **Pi** (rocketflare-launch#14) ALWAYS meters itself this way: its model calls go from Launch's
+ *   own Durable Object over the Workers AI binding, past no proxy at all (`runtimes/pi/`), each
+ *   response's usage priced under `workers_ai`.
  */
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { AiProvider } from '@launch/shared/ai/config'
 import { estimateCostMicrocents } from '@launch/shared/ai/pricing'
 import type { AiUsageBilling } from '@launch/shared/ai/usage'
-import { DEFAULT_CLAUDE_CODE_MODEL, DEFAULT_CODEX_MODEL } from '@launch/shared/launch-sessions'
+import {
+  DEFAULT_CLAUDE_CODE_MODEL,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_PI_MODEL,
+} from '@launch/shared/launch-sessions'
 import type { Database } from '../../../db/client'
 import type { SessionRow } from '../../../db/schema'
 import type { ClaudeLineMapping, ClaudeModelUsage } from './claude-stream'
@@ -61,6 +68,7 @@ export interface TurnMeterOptions {
 const AGENT_DEFAULT_MODEL: Partial<Record<AiProvider, string>> & { anthropic: string } = {
   anthropic: DEFAULT_CLAUDE_CODE_MODEL,
   openai: DEFAULT_CODEX_MODEL,
+  workers_ai: DEFAULT_PI_MODEL,
 }
 
 const isEmpty = (u: TokenUsage) =>

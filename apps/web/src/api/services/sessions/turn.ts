@@ -110,7 +110,7 @@ import {
 import { checkBudget } from './budget'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
 import { redactModelKeyText } from './model-key'
-import { credentialsFor, egressFor, type SessionPorts } from './ports'
+import { credentialsFor, egressFor, piAgentFor, type SessionPorts } from './ports'
 import { runtimeOf } from './runtimes'
 import type {
   AgentRuntime,
@@ -648,6 +648,7 @@ async function executeTurn(
     db,
     session: row,
     sandbox: ports.sandbox(row.id),
+    piAgent: piAgentFor(ports, row.id),
     logger: opts.logger,
     turn,
     egress: egressFor(ports, db),
