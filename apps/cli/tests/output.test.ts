@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'node:util'
 import chalk from 'chalk'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { renderTable, visibleWidth } from '../src/utils/output'
@@ -23,7 +24,7 @@ describe('renderTable', () => {
         { header: 'URL', value: r => r.url },
       ]
     )
-    const lines = table.split('\n').map(line => line.replace(/\x1b\[[0-9;]*m/g, ''))
+    const lines = table.split('\n').map(line => stripVTControlCharacters(line))
     const urlColumn = lines.map(line => line.indexOf('https://'))
     expect(urlColumn[1]).toBe(urlColumn[2])
     expect(lines[0]?.indexOf('URL')).toBe(urlColumn[1])
