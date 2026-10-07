@@ -38,7 +38,11 @@ A **pnpm workspace**: Hono API + React UI in one Cloudflare Worker (`apps/web`),
 - **Coding sessions (Launch P3, `docs/plans/p3-sessions.md`)**: Cloudflare Sandbox containers
   (`@cloudflare/sandbox` 0.12.10 stable, `[[containers]]` `SessionSandbox` = `SESSION_SANDBOX`) driven
   by `SESSION_WORKFLOW`; everything outside Launch sits behind the four ports in
-  `services/sessions/ports.ts` (`defaultSessionPorts`); tests use `FakeSandbox` / fake Anthropic
+  `services/sessions/ports.ts` (`defaultSessionPorts`); tests use `FakeSandbox` / fake Anthropic.
+  Three agent runtimes (§18.22): Claude Code and Codex as CLI processes in the container, and Pi
+  (#14) in a `PiSessionAgent` Durable Object (`PI_SESSION_AGENT`) on Workers AI — `agents` 0.27.0 +
+  `@earendil-works/pi-durable`/`pi-ai` 1.0.4, pinned, beta; tests drive its core over pi-durable's
+  `MemoryStorage` with pi-ai's faux provider
 - **AI**: `services/ai/resolve` (`agent_models` → tenant `ai_configs` → platform key → Workers AI via
   `[ai]`, zero key → 503); Anthropic / OpenAI-compatible / Workers AI chat streamed as **AG-UI**
   (`@ag-ui/core` pinned; SSE or protobuf; `POST /api/agui/run` is the protocol endpoint), chat calls

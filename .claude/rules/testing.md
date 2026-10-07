@@ -49,6 +49,14 @@ vitest 3 resolves `isolate` per run, not per project.
   `Sandbox` base class with the egress fields and a static `outboundByHost`, `ContainerProxy`, and
   `getSandbox(ns, name)` = `ns.get(ns.idFromName(name))`. Enough for the two SDK importers to load
   under Node; nothing drives a container through it
+- `agents/harness/pi`, `agents/lifecycle` and `agents/models/pi-ai` (rocketflare-launch#14) are
+  aliased to `apps/web/tests/mocks/agents.ts` the same way: only `runtimes/pi/agent.ts` (the Pi
+  Durable Object shell) imports them. A Pi turn under test drives `PiSessionCore` in-process —
+  `createFakePi({ sandbox })` (`tests/helpers/pi.ts`): pi-durable over `MemoryStorage`, pi-ai's
+  faux provider registered as `cloudflare` (fake Workers AI: `pi.faux.setResponses([...])`,
+  `hangUntilAborted()`), the real `launch-workspace` tools over a `FakeSandbox`
+  (`checkoutReady(sandbox)` answers their readiness check), and `pi.port` the `PiAgentPort` the
+  runtime is handed (`ctx.piAgent`, `ports.piAgent`) with `failNextStart` / `failDrains`
 - `cloudflare:workers` is aliased to `apps/web/tests/mocks/cloudflare-workers.ts` (stub `DurableObject`,
   `WorkflowEntrypoint`, plus `createFakeWorkflowStep(options)` → `{ step, calls, waits, names }` —
   runs each `step.do` callback inline and records `{ name, config? }`; `waitForEvent` is a RECORDER,

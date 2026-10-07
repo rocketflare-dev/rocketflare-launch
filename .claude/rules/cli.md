@@ -163,7 +163,9 @@ for `--json`, a non-TTY stdout or stderr, or `NO_COLOR`; `static` in CI or with
 
 What `launch <group> --help` says is not repeated here; these are the rules that are not obvious.
 
-- **Sessions** — `start` resolves the slug, and refuses an unknown `--runtime` before any request.
+- **Sessions** — `start` resolves the slug, and refuses an unknown `--runtime` before any request
+  (`claude_code`, `codex`, `pi`). `agent-accounts login|rm` refuse a runtime with no personal
+  account (`pi`, rocketflare-launch#14) the same way, before any request.
   `ship` WAITS by default (`--no-wait` returns once started; `--wait` is accepted and does nothing;
   `shipFollowState` is the pure decision): one line per stage row worded as the session page's
   timeline (`@launch/shared/launch-ship-progress`), plus lines for stages that write no row, until

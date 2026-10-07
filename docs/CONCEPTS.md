@@ -3862,7 +3862,7 @@ list and detail). Service: `services/launch/thumbnails/` — `thumbnails.ts` is 
 ### 18.22 Agent runtimes and personal AI accounts
 
 A session runs ONE coding agent and bills ONE account, both fixed when it is created: the
-**runtime** (`sessions.runtime` — `claude_code`, or `codex`) and the **credential source**
+**runtime** (`sessions.runtime` — `claude_code`, `codex` or `pi`) and the **credential source**
 (`sessions.credential_source` — `platform`, Launch's key swapped in at the egress as since P3, or
 `user`, the creator's own Claude subscription / ChatGPT plan, `sessions.agent_credential_id`).
 Contracts: `@launch/shared/launch-agents`; the session policy gains `runtime?` (the default a
@@ -3870,15 +3870,16 @@ session starts with) and `runtimes?` (`{ enabled, model, credentialMode }` per r
 null — the code default for both — is the agent's own choice, the Coding agents tab's "Default —
 Claude Code picks", and a stored pin stays until an admin changes it), and the frozen
 `policy.model` is the CHOSEN runtime's model, so the model allow-list never learns about
-runtimes. **A default deployment is exactly P3**: Claude Code on Launch's key, every stored policy
-and row reading as before (the 0036 migration defaults both columns), and every `session-*` test
-unchanged.
+runtimes. **A default deployment with Launch's Anthropic key is exactly P3**: Claude Code on
+Launch's key, every stored policy and row reading as before (the 0036 migration defaults both
+columns). A deployment with NO key and Workers AI bound starts Pi sessions instead (18.22-C).
 
 **The seam** (`services/sessions/runtimes/`, rocketflare-launch#13): `AgentRuntime { id, label,
 provider, placement, workspaceFiles, runTurn(ctx, input, sink), cancel, state, login?, userLease? }`
 — "run a turn, hand me normalised output", reached only through `runtimeFor(id)` /
-`runtimeOf(row)`. `placement` is `container` for every runtime today (`durable-object` is reserved
-for Pi, #14, not built). `runTurn` gets a `TurnContext` (the claimed row, its container, the
+`runtimeOf(row)`. `placement` is `container` for Claude Code and Codex (a CLI process in the
+session's container) and `durable-object` for Pi (its agent loop in a `PiSessionAgent` Durable
+Object, reached through `RuntimeContext.piAgent` — 18.22-C). `runTurn` gets a `TurnContext` (the claimed row, its container, the
 egress and credential ports, the turn's clocks, and two row callbacks: the heartbeat and "was a
 Stop asked for?"), a `TurnInput` (the message, the model, the images still in R2, the system note
 on demand) and a `TurnSink` that `turn.ts` owns — each `RuntimeLineMapping` (events, resume id,
@@ -3899,8 +3900,12 @@ self-metered budget stop, the resume check and once-only retry, and the kill by 
 processRuntime(claudeCli)` wraps `claude-stream.ts` byte for byte
 (`tests/config/agent-runtime-claude.test.ts` pins the command, the environment, the parsed
 events, the workspace file and the transcript paths), `codexRuntime = processRuntime(codexCli)`;
-every runtime passes the contract suite (`tests/helpers/runtime-contract.ts`, run against both by
-`tests/config/agent-runtime-contract.test.ts`). `sessions.claude_session_id` is the generic resume
+`piRuntime` implements `AgentRuntime` directly (18.22-C). Every runtime passes the contract suite
+(`tests/helpers/runtime-contract.ts`, run against all three by
+`tests/config/agent-runtime-contract.test.ts`; a container-only case — a dropped log stream, the
+SDK's rollout error on start — runs only for `container`, and its Durable Object equivalents — the
+object's drain failing and coming back, the container replaced under the turn — only for
+`durable-object`). `sessions.claude_session_id` is the generic resume
 id (`resumeIdOf(row)` — Claude's session id, Codex's thread id; the column kept its name).
 
 **Where the switches live**: a PLATFORM SETTING, not a deployment var — the session policy's
@@ -3918,14 +3923,18 @@ never the value), people with a connected account in the admin's organisation, t
 needs (Codex: `session-6`, documented, not checked). Both sandbox hosts run every agent on either
 account, so the host is no part of readiness (its own section sits below the table, §18.10).
 **Fail-closed**: with no entry for a runtime (`runtimePolicyOf`), Claude Code runs on Launch's key
-on the policy's own `model` and every other runtime is OFF — so a policy stored before runtimes
-existed reads exactly as it always did. A change reaches NEW sessions only; each session froze its
+on the policy's own `model` and Codex is OFF — so a policy stored before runtimes existed reads
+exactly as it always did. Pi is the exception: ON by default on Launch's account, because it
+spends no key — and offered only where the Worker has Workers AI bound (18.22-C). A change reaches NEW sessions only; each session froze its
 policy at create.
 
 **Deciding at create** (`credentials/resolve.ts`), narrowest wins: the policy's `runtimes`
 (nothing about runtimes is a deployment var, and the sandbox host narrows nothing); then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the session
 card's picker, `launch sessions start --runtime`). A request naming no runtime gets the policy's
-default runtime, or the first enabled one when that is off (`defaultRuntimeFor`). Starting a
+default runtime when it can RUN for the caller — Launch's key for it is set (or, Pi, Workers AI is
+bound) or the caller's own account for it is connected (`runtimeReadiness`) — else the first
+enabled runtime that can (Pi, on a zero-key install), else the old rule: the default while
+enabled, else the first enabled (`defaultRuntimeFor`). Starting a
 personal sign-in (`POST /api/me/agent-logins`) for a runtime whose policy bills Launch only is 409
 `agent_logins_disabled`; the Profile panel shows only runtimes that allow one. Refusals before any
 row: 409 `session_runtime_disabled`, `agent_credential_not_allowed`, `agent_credential_required`
@@ -4150,6 +4159,91 @@ own token: no path or model allow-list, and it needs `SESSION_EGRESS=open` — u
 container interception re-fetches it from the Worker and ChatGPT blocks it (no exemption exists in
 the SDK). That ChatGPT blocks deployed Workers as well as `wrangler dev` is inferred from the
 local experiment, not observed on a deployed Worker.
+
+#### 18.22-C Pi
+
+**Wired** (rocketflare-launch#14, `services/sessions/runtimes/pi/`): Cloudflare's Pi harness
+(`@earendil-works/pi-durable` 1.0.4, `@earendil-works/pi-ai` 1.0.4, `agents` 0.27.0 — all
+pinned exactly, all beta) as the third runtime, and the only one of `placement: 'durable-object'`.
+It needs NO key: its model is Workers AI through the Worker's `AI` binding, so it is ON by default
+(`runtimePolicyOf`) and the agent a zero-key install starts.
+
+- **Where it runs.** One `PiSessionAgent` Durable Object per session (`PI_SESSION_AGENT`,
+  `idFromName(session.id)`, SQLite-backed — migration tag `v3` in both tomls, exported from
+  `src/worker.ts`). `agent.ts` is the only file that imports `agents` or `cloudflare:workers`: a
+  plain `DurableObject` with `Lifecycle.install(this).use(piHarness)` (not the `Agent` base
+  class) — `PiHarness` keeps pi's transcript, tasks and inbox in the object's SQLite and its
+  Lifecycle job wakes the object while pi has work, so a turn survives an eviction. Everything
+  else is `PiSessionCore` (`core.ts`), written against pi-durable alone and tested in Node over
+  `MemoryStorage`. The runtime reaches the object through a port (`ports.piAgent(sessionId)`,
+  `RuntimeContext.piAgent`, the RPC surface in `protocol.ts`); tests hand in the in-process core
+  (`tests/helpers/pi.ts`).
+- **The model**: `createAI({ binding: env.AI })` from `agents/models/pi-ai` as pi's `cloudflare`
+  provider; the session's pinned model (`policy.model`, one of `AGENT_RUNTIME_MODELS.pi` — Kimi
+  K2.7 Code, GLM 5.3, DeepSeek V4 Pro, Qwen 3.8 27B, all priced under `workers_ai`) else
+  `DEFAULT_PI_MODEL` (`@cf/moonshotai/kimi-k2.7-code`). Pi has no default of its own, so the card
+  and the composer name it ("Default (Kimi K2.7 Code)", `AGENT_RUNTIME_DEFAULT_MODEL`). pi retries a
+  rate-limited model for about 30 s; tool calls run one at a time (`PI_HARNESS_SETTINGS`).
+- **A turn** (`index.ts`): `startTurn` on the object (idempotent on `<sessionId>:<turn>`, pi's
+  request id) configures the conversation — the model, the `session-system-note` as its
+  instructions, the checkout as its `cwd` — and submits the message; the step then DRAINS the
+  object every `flushMs`. pi has no event cursor, so the drain reads pi's own committed transcript
+  entries after the turn's start: their ids are strictly increasing and durable, which makes them
+  the cursor (`drain(operation, afterSeq)`), and each entry maps onto the same `session_events`
+  Claude Code's turn writes (`events.ts`: `text`, `tool.start`/`tool.end` with Claude's tool names,
+  `error` for a provider failure). The turn step keeps every rule: the timeout, the Stop (each
+  aborts the object's run, then drains once more), the heartbeat, the boot-marker probe
+  (`container_lost`/`rollout`), and a drain that fails is retried (failing for a minute fails the turn).
+- **Metering**: Pi's calls go from the object to Workers AI past no proxy, so a Pi turn ALWAYS
+  meters itself (`turn-meter.ts`, provider `workers_ai`, billing `metered`): each response's usage
+  is priced as it lands, held against the budget headroom read at the start (stopped with the same
+  `budget.reached` event and sentence as a self-metered CLI turn), and recorded through
+  `recordSessionUsage` at the end, whatever ended the turn — so `ai_usage` and the session's
+  running cost stay exact.
+- **The tools** (`workspace.ts`, the `launch-workspace` extension): `bash`, `read`, `write`,
+  `edit`, `grep` over `SandboxPort` in the session's checkout — so the container's egress
+  allow-list, its placeholder-only environment and the git proxy's branch rule apply as for
+  Claude Code. Each waits (bounded, abortable) for the checkout before it runs; each honours pi's
+  abort signal (`bash` kills its process); `read`/`grep` replay after an eviction, the writers do
+  not; `bash` refuses `git push` (Launch pushes) and runs under `timeout`; output is bounded.
+- **The conversation lives in the object.** The row's resume id is the marker `pi:<sessionId>`;
+  the checkpoint copies the object's active transcript to R2 (`sessions/<id>/pi.json`, JSON
+  `launch-pi-transcript` v1) and `transcript#K` imports it back only into an object that holds
+  nothing; a row with no resume id starts the object's conversation over, and a row naming one the
+  object lost is forgotten (`forgetConversation`), as for a CLI. A Pi turn never asks the egress
+  for a model grant (`host` mode grants its git only). No login, no personal account
+  (`AGENT_ACCOUNT_LABELS.pi` is null; the Setup card shows "Launch" and no Who-pays choice, and a
+  stored entry cannot set another mode).
+- **Readiness and the default** (`credentials/resolve.ts`): Pi is on offer only where the Worker
+  has `AI` bound (`runtimeReadiness`, `platformKey { kind: 'workers_ai', source: 'binding' }` on the
+  card); a session naming no runtime skips one that can run for nobody — no Launch key and no
+  connected account for the caller — and falls back to Pi. An admin who turned Pi off keeps it off.
+
+**Known gaps (Pi):**
+
+- *Beta packages*: `agents`, `pi-durable` and `pi-ai` are pinned exactly and marked beta upstream;
+  an upgrade is a deliberate change with the contract suite as its check. They add about 2.7 MB to
+  the Worker bundle (about 480 KB gzipped): pi-ai brings its own OpenAI and Anthropic SDK copies
+  and TypeBox, reached even though only the Workers AI path runs.
+- *Never run under workerd*: the object's logic is proven in Node over `MemoryStorage` with pi-ai's
+  faux provider (the contract suite, `pi-core`, `pi-runtime` tests); `PiHarness`'s SQLite store,
+  its wake job, eviction recovery and a real Workers AI stream have not run in Launch.
+- *Workers AI only*: the model is the binding, not the `agent_models` → `ai_configs` → platform key
+  chain of `services/ai/resolve`; a tenant's own provider cannot drive Pi yet.
+- *The first turn still waits for `dev`*: Pi turns keep the workflow's ordering (the first turn
+  runs after the boot), so the issue's "answers before `dev` is ready" is a follow-up — the tools'
+  own readiness wait is in place for it.
+- *Long model streams*: an alarm invocation has a 15-minute wall limit, and so does one outbound
+  model stream; `PiHarness` waits across alarms, but a single response that streams for longer is
+  at the platform's mercy.
+- *No tool approval*: pi-durable has no approval primitive, so Pi's tools run unasked, as Claude
+  Code's do in bypass mode.
+- *Images*: a message with images fails its turn, saying so; Pi reads text only.
+- *The transcript format is Launch's* (`launch-pi-transcript` v1 over pi's entry drafts): a pi
+  upgrade that changes its entries may not import an older copy (the turn then starts fresh).
+- *The object's storage outlives the session*: nothing deletes a `PiSessionAgent`'s SQLite when the
+  session ends or its tenant is purged (one object per row cannot be enumerated — §16's purge
+  rule).
 
 **Known gaps:**
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Pi: a third coding agent that needs no key** (rocketflare-launch#14). Coding sessions can run
+  Cloudflare's Pi harness on Workers AI (Kimi K2.7 Code by default; GLM 5.3, DeepSeek V4 Pro and
+  Qwen 3.8 27B on offer), its agent loop in a new `PiSessionAgent` Durable Object (`PI_SESSION_AGENT`,
+  migration `v3`, in both tomls) and its five tools — `bash`, `read`, `write`, `edit`, `grep` —
+  in the session's container. Pi is on by default wherever the Worker has Workers AI bound, and a
+  session started without naming an agent falls back to it when no Claude Code or Codex key or
+  login exists, so a zero-key install gets working sessions. Every turn meters itself under
+  `workers_ai` against the session's budget. Selectable per session (`launch sessions start
+  --runtime pi`) and on Settings → Coding agents, where it shows "Launch" and the binding as its
+  key. Beta packages, pinned; its first turn still waits for the dev server (`docs/CONCEPTS.md`
+  §18.22-C, known gaps).
 - **The CLI is on npm as `@rocketflare-dev/launch`** (`npm i -g @rocketflare-dev/launch`, bin
   `launch`). `.github/workflows/publish.yml` publishes it with provenance on each `X.Y.Z` release
   tag through npm trusted publishing (no stored token); `pnpm cli:publish [--dry-run]` does it by hand. The CLI's

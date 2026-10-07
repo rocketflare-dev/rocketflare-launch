@@ -43,7 +43,10 @@ and `pnpm types`).
   `agent_logins_not_configured` before any row) — which agents run and who pays is a platform
   setting (Settings → Coding agents), deliberately NOT a `[vars]` entry; its sign-in
   sandboxes are the existing
-  `SessionSandbox` class, so no new container block. The analytics PLUGIN (D19, D31) adds **no binding**:
+  `SessionSandbox` class, so no new container block. rocketflare-launch#14: `PI_SESSION_AGENT`
+  (class `PiSessionAgent`, SQLite-backed, migration `v3`) — one per Pi session, its model the `AI`
+  binding; a Worker without `PI_SESSION_AGENT` fails a Pi turn by name, one without `AI` offers no
+  Pi at all. The analytics PLUGIN (D19, D31) adds **no binding**:
   its cubes read through the request's database handle, its fact tables rebuild on a cron, and the optional `ANALYTICS_ENGINE`
   dataset is deliberately NOT wired (the toml comment is the only trace). App thumbnails:
   `BROWSER` (`[browser] binding = "BROWSER"`, Browser Rendering — no resource to create, Workers
