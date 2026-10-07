@@ -9,7 +9,7 @@
  * The version is the ROOT `package.json` version (release = root version: one tag ships web and
  * CLI) and must equal `apps/cli/package.json`'s, which the bundle prints for `--version`
  * (`cli-version.test.ts` keeps them in step). Run by hand after `npm login`, and by
- * `.github/workflows/publish.yml` on a release tag (`--provenance`, `NODE_AUTH_TOKEN`). A version
+ * `.github/workflows/publish.yml` on a release tag (`--provenance`, npm trusted publishing — no token). A version
  * already on npm is skipped, not an error, so re-running a tag's job is safe.
  */
 import { execFileSync } from 'node:child_process'

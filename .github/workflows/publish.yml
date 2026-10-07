@@ -5,8 +5,10 @@ name: Publish CLI
 # ships both and must equal the root package.json version. `workflow_dispatch` re-runs it from a
 # tag ref (Actions → Publish CLI → Use workflow from: <tag>); a version already on npm is skipped.
 #
-# Needs the repository secret NPM_TOKEN: an npm granular access token with publish rights on the
-# @rocketflare-dev scope. Provenance links the package to this workflow run (public repo).
+# Trusted publishing (OIDC): npm trusts THIS workflow file in this repository (configured on the
+# package's npm settings page), so there is no token to store or rotate; the job's id-token is the
+# credential, and npm attaches provenance linking the package to the run. Renaming this file or
+# moving the repo means updating the trusted publisher on npm.
 
 on:
   push:
@@ -23,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # trusted publishing (OIDC) + provenance
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,6 +35,8 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
+      # Trusted publishing needs npm ≥ 11.5.1; the runner's Node may bundle an older one.
+      - run: npm install -g npm@latest && npm --version
 
       - name: Tag matches the root version
         if: github.ref_type == 'tag'
@@ -54,8 +58,6 @@ jobs:
 
       - name: Publish @rocketflare-dev/launch
         run: node scripts/publish-cli.mjs --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
         run: |

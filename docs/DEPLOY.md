@@ -24,8 +24,10 @@ deployed. **The CLI (`apps/cli`) is published, not deployed**: the workspace pac
 stays private (`packages/shared`, which it inlines, must), and `scripts/publish-cli.mjs` stages its
 esbuild bundle as **`@rocketflare-dev/launch`** on npm (`npm i -g @rocketflare-dev/launch`, bin
 `launch`). `.github/workflows/publish.yml` runs it on the same `X.Y.Z` release tag as the deploy
-(tag == root version == `apps/cli/package.json` version, `cli-version.test.ts`), with npm
-provenance and the `NPM_TOKEN` repository secret; a version already on npm is skipped. By hand:
+(tag == root version == `apps/cli/package.json` version, `cli-version.test.ts`), through npm
+trusted publishing (OIDC: npm trusts `publish.yml` in this repository — no token stored) with
+provenance; a version already on npm is skipped. npm may hold a release as a staged version until
+a maintainer releases it on npmjs.com. By hand:
 `npm login`, then `pnpm cli:publish --dry-run` and `pnpm cli:publish`. A release bump changes the
 root and `apps/cli` versions together.
 
