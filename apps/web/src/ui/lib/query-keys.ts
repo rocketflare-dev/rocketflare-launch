@@ -39,7 +39,8 @@ const CORE_QUERY_KEYS = {
   },
   /**
    * §18.22: `/api/me/agent-credentials` and `/api/me/agent-logins/:id` — the person's own AI
-   * accounts (the Profile panel, the session picker) and a sign-in in flight (the modal polls it).
+   * accounts (Home's accounts section, the start buttons' agent menu) and a sign-in in flight
+   * (the modal polls it).
    */
   agentAccounts: {
     all: ['agent-accounts'] as const,

@@ -43,7 +43,7 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   `useAccessRequests`, `useAdminAccessRequests`, `useAdminTenants`, `useAdminUsers`,
   `useAuthMethods`) exporting `xQueryOptions()` + `useX()` + mutation hooks; `useProfile` also
   holds the avatar upload (`useUploadAvatar`, `validateAvatarFile`, `AVATAR_ACCEPT` — D23);
-  `useAppInfo`, `useDebounce`, `useModalState`, `useLocalStoragePreference`;
+  `useAppInfo`, `useDebounce`, `useModalState`, `useLocalStoragePreference` (two components on one key stay in step — a set announces itself, another tab's write arrives as `storage`);
   `useGroups` (D29: `useGroupTypes`, `useGroups(typeId?)`, `useGroup(id)`, `useMyGroups` — the only
   one a plain member may call — the type/group/member mutations, `useSetMemberGroups`,
   `useSetDocumentVisibility`, `useSetPageVisibility`; one `['groups']` family so a single
@@ -74,7 +74,11 @@ React 18 + Vite + React Router 6 + TanStack Query 5 + zustand; DaisyUI 5 on Tail
   Launch P3 (coding sessions): `useSessions` (`useSession(id)` / `useAppSessions(appId, scope)` /
   `useAdminSessions(scope)` polling `SESSION_POLL_MS` only while `sessionOwesAnswer` — `ready`,
   `blocked` and `suspended` wait on a person; the 202 mutations `useStartSession` (the app page's Start / Build it go through
-  `useWarmStartSession`: `warm: true`, once per press — issue #17), `useSendTurn`,
+  `useWarmStartSession`: `warm: true`, once per press — issue #17 — and are ONE component,
+  `pages/apps/components/StartSessionButton.tsx`: with a choice of agent (`agentPickerVisible`) a
+  split button whose caret lists each enabled agent with who pays; the pick is remembered per
+  person through `useLocalStoragePreference` and shared by both, falling back to the server's
+  `defaultRuntime`; the pure decision is `agentChoice.ts`, `tests/config/agent-choice.test.ts`), `useSendTurn`,
   `useCancelTurn`, `useShipSession`, `useEndSession`, `useResumeSession`, `useExtendBudget` write
   the returned row into the cache; `usePreviewGrant` is a mutation — every iframe load mints a fresh
   grant, with the page the preview bridge last reported as `path`; `useSessionPr`, `useDrainSessions`/`useUndrainSessions`) and `useSessionStream(session)`:

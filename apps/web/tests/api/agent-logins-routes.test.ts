@@ -96,6 +96,23 @@ describe('GET /api/me/agent-credentials', () => {
     expect(body.logins).toEqual([])
   })
 
+  it('names the runtime a session naming none would run for the caller (`defaultRuntime`)', async () => {
+    const p = await person()
+    const read = async (env: TestEnv) =>
+      agentAccountsResponseSchema.parse(
+        await json(await send('GET', '/api/me/agent-credentials', p.cookie, env))
+      ).defaultRuntime
+    // Launch's Anthropic key is set: the policy's default.
+    expect(await read(createTestEnv({ ANTHROPIC_API_KEY: 'sk-ant-test' }))).toBe('claude_code')
+    // A zero-key install with Workers AI bound: Pi, as `defaultRuntimeFor` decides at create.
+    expect(await read(createTestEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' }))).toBe('pi')
+    // No key, but the caller's own Claude subscription may pay and is connected: Claude Code.
+    await seedAgentCredential(db, p)
+    expect(await read(enabledEnv({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' }))).toBe(
+      'claude_code'
+    )
+  })
+
   it('never lists another person’s, or another organisation’s, accounts', async () => {
     const a = await person()
     const b = await person()

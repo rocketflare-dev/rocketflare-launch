@@ -4,7 +4,9 @@
  * with `@launch/shared/launch-agents`. The same flow as the web's "Connect your account" dialog:
  *
  * - `ls` — each runtime this deployment offers, whether a personal account may be connected, and
- *   the connected one's state ("Connected · in use", "Needs reconnecting", "Expires …").
+ *   the connected one's state ("Connected · in use", "Needs reconnecting", "Expires …"); then the
+ *   runtime a session naming none runs for you (`defaultRuntime` — the web's start buttons fall
+ *   back to the same one).
  * - `login <runtime>` — start the relayed sign-in (or resume the one in flight), wait for the
  *   provider's page, print it (and Codex's one-time code to type there), then for Claude read the
  *   code Anthropic shows from a HIDDEN prompt or, when stdin is not a terminal, its first line —
@@ -151,6 +153,12 @@ export async function runAgentAccountsList(ctx: CommandContext): Promise<void> {
         { header: 'Sign-in', value: r => (r.login ? r.login.status : null) },
       ]),
     ]
+    const fallback = data.runtimes.find(r => r.runtime === data.defaultRuntime)
+    lines.push(
+      chalk.dim(
+        `  A new session runs ${fallback?.label ?? data.defaultRuntime} unless you name one: ${ctx.binName} sessions start <app> --runtime <runtime>`
+      )
+    )
     const connectable = rows.filter(r => r.option.enabled && r.option.userCredentials)
     for (const r of connectable)
       if (!r.credential || r.credential.status === 'needs_login')

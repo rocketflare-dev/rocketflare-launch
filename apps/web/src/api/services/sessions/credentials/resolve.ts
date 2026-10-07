@@ -124,7 +124,7 @@ export function runtimeOffer(
   }
 }
 
-/** Every runtime, for `GET /api/me/agent-credentials` (the Profile panel and the session picker). */
+/** Every runtime, for `GET /api/me/agent-credentials` (Home and the start buttons' agent menu). */
 export function runtimeOptions(
   policy: SessionPolicy,
   readiness: Partial<RuntimeReadiness> = {}
@@ -274,8 +274,11 @@ function usableCredential(
   )
 }
 
-/** The runtimes the caller has a usable personal account for (the default-runtime choice). */
-async function connectedRuntimes(
+/**
+ * The runtimes the caller has a usable personal account for (the default-runtime choice, here and
+ * in `GET /api/me/agent-credentials`'s `defaultRuntime`).
+ */
+export async function connectedRuntimes(
   db: Database,
   tenantId: string,
   userId: string,

@@ -1,8 +1,10 @@
 /**
  * `/apps/:slug/*` — the frame of one app's page (decisions 2, 5, 10, 11 of the app page plan):
  *
- * - the header: thumbnail · name · `v1.4.2 live` · Open Live ↗ · Build it (start a coding session) · ⋯
- *   (edit, check health, the repository, archive — each only for whoever may use it);
+ * - the header: thumbnail · name · `v1.4.2 live` · Open Live ↗ · Build it (start a coding session —
+ *   `StartSessionButton`, a split button whose caret picks the coding agent when there is a choice,
+ *   remembered and shared with the Sessions tab's Start session) · ⋯ (edit, check health, the
+ *   repository, archive — each only for whoever may use it);
  * - the tabs, each its own sub-route: Overview · Sessions · Releases · Activity · Settings. Until
  *   the first build is live, Sessions and Releases are disabled with a hint, and the Overview is
  *   the takeover (`AppOverview`);
@@ -45,6 +47,7 @@ import { EditAppModal } from '../components/EditAppModal'
 import { PipelineProgress } from '../components/PipelineProgress'
 import { promotionState, v } from '../components/promotionModel'
 import { startRefusal } from '../components/SessionsCard'
+import { StartSessionButton } from '../components/StartSessionButton'
 import {
   APP_TABS,
   type AppTab,
@@ -284,23 +287,17 @@ export default function AppLayout() {
                 </a>
               )}
               {canStart && (
-                <button
-                  type="button"
-                  className={`btn gap-1.5 ${heroHere ? 'btn-primary btn-flame' : ''}`}
-                  disabled={startSession.isPending}
-                  onClick={() =>
-                    startSession.startWarm({}, session =>
+                <StartSessionButton
+                  label="Build it"
+                  icon={RocketLaunchIcon}
+                  hero={heroHere}
+                  pending={startSession.isPending}
+                  onStart={request =>
+                    startSession.startWarm(request, session =>
                       navigate(`${appPath(slug)}/sessions/${session.id}`)
                     )
                   }
-                >
-                  {startSession.isPending ? (
-                    <span className="loading loading-spinner loading-xs" />
-                  ) : (
-                    <RocketLaunchIcon className="w-4 h-4" aria-hidden="true" />
-                  )}
-                  Build it
-                </button>
+                />
               )}
               <MoreMenu items={menu} size="md" />
             </>

@@ -335,12 +335,19 @@ export const agentRuntimeOptionSchema = z.object({
 })
 export type AgentRuntimeOption = z.infer<typeof agentRuntimeOptionSchema>
 
-/** `GET /api/me/agent-credentials` — what the Profile panel and the session picker draw. */
+/** `GET /api/me/agent-credentials` — what Home's accounts section and the start button draw. */
 export const agentAccountsResponseSchema = z.object({
   runtimes: z.array(agentRuntimeOptionSchema),
   credentials: z.array(agentCredentialSchema),
   /** The caller's logins still in flight (at most one per runtime). */
   logins: z.array(agentLoginSchema),
+  /**
+   * The runtime a session naming none would run for the caller RIGHT NOW (`defaultRuntimeFor`:
+   * the policy's default when Launch's account for it is ready or the caller's own is connected,
+   * else the first enabled one that can — Pi on a zero-key install). The start button's choice
+   * when the person has not made one.
+   */
+  defaultRuntime: agentRuntimeSchema,
 })
 export type AgentAccountsResponse = z.infer<typeof agentAccountsResponseSchema>
 
@@ -349,7 +356,7 @@ export const agentLoginResponseSchema = z.object({ login: agentLoginSchema })
 export type AgentLoginResponse = z.infer<typeof agentLoginResponseSchema>
 
 /**
- * The session picker's decision, pure: show it only when there is a choice to make — more than
+ * The start buttons' agent menu, pure: offer it only when there is a choice to make — more than
  * one enabled runtime, or one that may bill a personal account.
  */
 export function agentPickerVisible(runtimes: readonly AgentRuntimeOption[]): boolean {

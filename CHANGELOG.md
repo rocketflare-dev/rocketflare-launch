@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Build it picks the coding agent.** On an app page, Build it and the Sessions tab's Start
+  session are now one split button: one click starts a session on your current agent ("Build it
+  with Pi"), and the caret lists every agent on offer with who pays for it ("Launch pays · Workers
+  AI", "Billed to your Claude subscription"). Your pick is remembered for both buttons; until you
+  make one — or once it is no longer offered — it is what the server would choose for you, now
+  answered as `defaultRuntime` by `GET /api/me/agent-credentials` and printed by `launch
+  agent-accounts ls`. The Sessions tab's picker above the list is gone.
 - **Pi: a third coding agent that needs no key** (rocketflare-launch#14). Coding sessions can run
   Cloudflare's Pi harness on Workers AI (Kimi K2.7 Code by default; GLM 5.3, DeepSeek V4 Pro and
   Qwen 3.8 27B on offer), its agent loop in a new `PiSessionAgent` Durable Object (`PI_SESSION_AGENT`,

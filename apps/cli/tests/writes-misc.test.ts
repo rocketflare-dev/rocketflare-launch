@@ -269,6 +269,7 @@ const accounts = (over: Record<string, unknown> = {}) => ({
   runtimes: [option('claude_code'), option('codex')],
   credentials: [],
   logins: [],
+  defaultRuntime: 'claude_code',
   ...over,
 })
 const loginBase = `/api/me/agent-logins/${LOGIN_ID}`
@@ -293,6 +294,7 @@ describe('agent-accounts ls / rm / cancel', () => {
     })
     expect(r.out.content()).toContain('Connected · in use')
     expect(r.out.content()).toContain('agent-accounts login codex')
+    expect(r.out.content()).toContain('A new session runs Claude Code unless you name one')
     const json = await run(
       ctx => runAgentAccountsList(ctx),
       { '/api/me/agent-credentials': () => jsonResponse(body) },

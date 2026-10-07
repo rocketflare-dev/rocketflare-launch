@@ -3023,8 +3023,9 @@ cost against the cap and Ship / End / Resume / Extend budget, boot checklist, sh
 "Coding sessions" card on the app page, Settings → All sessions. **CLI**: `launch sessions start
 [--runtime]|say [--follow]|ship [--no-wait]|end|ls|show|logs|preview-url` and the debug actions
 `resume|cancel|withdraw|landing-retry|budget|attachments|attachment` (§11, issue #6; `show` prints
-each boot's `boot.timing`, §18.9, and the failing gate step). §18.22 adds the session card's
-agent / "Bill to" picker (only when there is a choice) and a muted runtime line in the header.
+each boot's `boot.timing`, §18.9, and the failing gate step). §18.22 makes the app page's two
+start buttons (Build it, Start session) split buttons with a coding-agent menu when there is a
+choice, and adds a muted runtime line in the session header.
 
 **Ship to staging, in the UI and the CLI (issue #5).** The ship panel walks the landing from the
 pure `landingTimeline(events, session.landing, session.status)` (`sessionChatModel.ts`): gate → PR → CI (the
@@ -3929,12 +3930,27 @@ spends no key — and offered only where the Worker has Workers AI bound (18.22-
 policy at create.
 
 **Deciding at create** (`credentials/resolve.ts`), narrowest wins: the policy's `runtimes`
-(nothing about runtimes is a deployment var, and the sandbox host narrows nothing); then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the session
-card's picker, `launch sessions start --runtime`). A request naming no runtime gets the policy's
+(nothing about runtimes is a deployment var, and the sandbox host narrows nothing); then the request (`POST /api/apps/:id/sessions { runtime?, credential? }`, the start
+buttons' agent menu, `launch sessions start --runtime`). A request naming no runtime gets the policy's
 default runtime when it can RUN for the caller — Launch's key for it is set (or, Pi, Workers AI is
 bound) or the caller's own account for it is connected (`runtimeReadiness`) — else the first
 enabled runtime that can (Pi, on a zero-key install), else the old rule: the default while
-enabled, else the first enabled (`defaultRuntimeFor`). Starting a
+enabled, else the first enabled (`defaultRuntimeFor`). `GET /api/me/agent-credentials` answers the
+same function's result for the caller as `defaultRuntime` (`launch agent-accounts ls` prints it).
+
+**Choosing a runtime in the UI**: the app page's Build it (header, the hero) and the Sessions
+tab's Start session are one `StartSessionButton` (`ui/pages/apps/components/`). With no choice to
+make (`agentPickerVisible`: one enabled runtime billing Launch only) it is a plain button and the
+request is `{}`. Otherwise it is a split button: the main part starts a session on the current
+choice in one click (named for it, "Build it with Pi"), and the caret ("Choose coding agent") lists
+every enabled runtime once per account that may pay — "Launch pays · Workers AI", "Billed to your
+Claude subscription" — and picking one starts the session on it and REMEMBERS it. The choice is one
+localStorage value per person (and per server, storage being per origin), shared by both buttons,
+validated on read: a remembered runtime no longer on offer falls back to `defaultRuntime` (never to
+the first in the list), and where either account may pay the default is the person's own once it
+is connected, else Launch's. What the menu says and sends is the pure `agentChoice.ts`
+(`tests/config/agent-choice.test.ts`). There is no picker above the session list — one there read
+as a filter on it. Starting a
 personal sign-in (`POST /api/me/agent-logins`) for a runtime whose policy bills Launch only is 409
 `agent_logins_disabled`; the Profile panel shows only runtimes that allow one. Refusals before any
 row: 409 `session_runtime_disabled`, `agent_credential_not_allowed`, `agent_credential_required`
@@ -3987,7 +4003,7 @@ allows (with the agent's own mark, `components/icons/AgentIcons.tsx`), saying wh
 works, one quiet line, still first (state, Reconnect, Disconnect, Connect the other); absent when
 no runtime allows personal accounts. A polling modal whose body is the runtime's component
 (`ui/pages/agent-accounts/logins/`), the
-session card's agent / "Bill to" picker (only when there is a choice), and one muted line in the
+start buttons' agent menu (only when there is a choice, above), and one muted line in the
 session header for a non-default agent or billing.
 
 **Egress** (`egress/registry.ts`): `SESSION_OUTBOUND_HANDLERS` is the one table of hosts Launch
@@ -4271,6 +4287,9 @@ It needs NO key: its model is Workers AI through the Worker's `AI` binding, so i
 - *Login sandboxes* count against the containers' `max_instances`.
 - *A personal-account session has no money budget*; the ship's PR summary always spends Launch's
   key.
+- *The remembered agent is per browser*: it lives in localStorage, so a second browser or device
+  starts on the server's default until the person picks again there; the server keeps no
+  per-person preference.
 - *The policy's `runtimes` has no editor yet*: it is set in `launch_settings.session_policy`.
 - *The login drivers are unverified against the real CLIs.* Both exist — Claude's relayed
   `claude setup-token` (18.22-A) and Codex's `codex login --device-auth` (18.22-B) — and the

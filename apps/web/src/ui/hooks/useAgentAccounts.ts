@@ -1,7 +1,7 @@
 /**
- * Personal AI accounts (§18.22): `GET /api/me/agent-credentials` (what this deployment offers and
- * what the person has connected — the Profile panel and the session picker both read it), and the
- * relayed sign-in: start it, poll it while the server still owes an answer, paste a code back,
+ * Personal AI accounts (§18.22): `GET /api/me/agent-credentials` (what this deployment offers,
+ * what the person has connected and their default runtime — Home's accounts section and the app
+ * page's start buttons read it), and the relayed sign-in: start it, poll it while the server still owes an answer, paste a code back,
  * cancel it, disconnect. Routes START a sign-in; a Workflow runs it in a sandbox — so the modal
  * polls the login row, never a stream.
  *

@@ -13016,7 +13016,7 @@
     {
       "method": "GET",
       "path": "/api/me/agent-credentials",
-      "summary": "Returns the runtimes this deployment offers, the caller's own connected accounts and any logins in flight.",
+      "summary": "Returns the runtimes this deployment offers, the caller's own connected accounts, any logins in flight and the runtime a session naming none would run for them.",
       "auth": "signed-in",
       "description": "Requires `read Session`.",
       "response": {
@@ -13250,12 +13250,21 @@
               ],
               "additionalProperties": false
             }
+          },
+          "defaultRuntime": {
+            "type": "string",
+            "enum": [
+              "claude_code",
+              "codex",
+              "pi"
+            ]
           }
         },
         "required": [
           "runtimes",
           "credentials",
-          "logins"
+          "logins",
+          "defaultRuntime"
         ],
         "additionalProperties": false
       },

@@ -2,8 +2,9 @@
  * Personal AI accounts in the UI (§18.22): Home's coding agents section is absent on a default
  * deployment, LEADS the page while nothing usable is connected (Connect starts a sign-in whose modal
  * relays the provider's URL out and the pasted code in), and drops to one quiet line once an
- * account is connected; the app's Sessions card offers a picker
- * ONLY when there is a choice, and sends exactly the P3 request when there is not; the session
+ * account is connected; the app's Sessions card's Start session splits into an agent menu ONLY
+ * when there is a choice, and sends exactly the P3 request when there is not
+ * (`start-session-button.test.tsx` has the menu itself); the session
  * header names a non-default agent or billing in one muted line. The pure decisions are tested
  * directly.
  */
@@ -27,7 +28,8 @@ import {
   connectableRuntimes,
   credentialStatusText,
 } from '@/ui/pages/agent-accounts/agentAccountsModel'
-import { SessionsCard, startRequestFor } from '@/ui/pages/apps/components/SessionsCard'
+import { startRequestFor } from '@/ui/pages/apps/components/agentChoice'
+import { SessionsCard } from '@/ui/pages/apps/components/SessionsCard'
 import Home from '@/ui/pages/Home'
 import { sessionRuntimeLine } from '@/ui/pages/sessions/components/SessionHeader'
 import {
@@ -69,6 +71,7 @@ const accounts = (overrides: Partial<AgentAccountsResponse> = {}): AgentAccounts
   runtimes: [option(), codex()],
   credentials: [],
   logins: [],
+  defaultRuntime: 'claude_code',
   ...overrides,
 })
 
@@ -307,7 +310,7 @@ describe('Home: coding agents section', () => {
   })
 })
 
-describe('SessionsCard and the agent picker', () => {
+describe('SessionsCard and the agent menu', () => {
   function renderCard(agentAccounts: AgentAccountsResponse | null) {
     const fetchMock = stubFetch({
       [`/api/apps/${APP_ID}/sessions`]: { items: [] },
@@ -331,38 +334,28 @@ describe('SessionsCard and the agent picker', () => {
     return fetchMock
   }
 
-  it('with no choice to make there is no picker and Start sends the P3 request, warm', async () => {
+  it('with no choice to make there is no menu and Start sends the P3 request, warm', async () => {
     const fetchMock = renderCard(accounts())
     await screen.findByText('No sessions running')
-    expect(screen.queryByText('Bill to')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Choose coding agent')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
     expect(await screen.findByText('session page')).toBeInTheDocument()
     expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/sessions`)).toEqual({ warm: true })
   })
 
-  it('offers "Bill to" when a personal account may be used, and sends the choice', async () => {
+  it('offers both accounts when either may pay, and sends the one picked', async () => {
     const fetchMock = renderCard(
       accounts({
         runtimes: [option({ credentialMode: 'user_or_platform', userCredentials: true }), codex()],
-        credentials: [
-          {
-            id: 'c0000000-0000-4000-8000-000000000001',
-            runtime: 'claude_code',
-            kind: 'claude_oauth_token',
-            status: 'active',
-            metadata: {},
-            expiresAt: null,
-            lastUsedAt: null,
-            inUse: false,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-        ],
       })
     )
-    const billTo = await screen.findByLabelText('Bill to')
-    fireEvent.change(billTo, { target: { value: 'user' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Start session' }))
+    fireEvent.click(await screen.findByLabelText('Choose coding agent'))
+    // Not connected yet: the line says where to connect it.
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Claude Code — Billed to your Claude subscription · connect it on Home first',
+      })
+    )
     expect(await screen.findByText('session page')).toBeInTheDocument()
     expect(requestBody(fetchMock, `POST /api/apps/${APP_ID}/sessions`)).toEqual({
       runtime: 'claude_code',

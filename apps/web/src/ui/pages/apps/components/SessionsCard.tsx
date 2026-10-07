@@ -17,33 +17,29 @@
  *   whatever its status — after the merge it is `shipped` while it releases and deploys — and its
  *   row says where the ship stands ("Waiting for a review", "Deploying v1.4.2 to staging").
  * - Freshness is the `['session']` nudge, plus a poll only while a listed session is moving.
- * - §18.22: when the deployment offers a CHOICE — more than one coding agent, or a runtime that may
- *   bill your own account — a compact picker sits above the list (`agentPickerVisible`): the agent,
- *   and "Bill to: Launch / my <account>". With no choice to make (the default) there is no picker
- *   and Start sends exactly what it always did.
+ * - §18.22: Start session is the same `StartSessionButton` as the header's Build it — with a
+ *   choice to make (more than one coding agent, or a runtime that may bill your own account) a
+ *   split button whose caret lists each agent and who pays for it; the choice is remembered and
+ *   shared by both buttons. With no choice to make (the default) it is the plain button and
+ *   Start sends exactly what it always did. Nothing sits above the list: a picker there read as a
+ *   filter on it.
  */
 import {
   ArrowTopRightOnSquareIcon,
   ChatBubbleLeftRightIcon,
   PlayIcon,
 } from '@heroicons/react/24/outline'
-import {
-  AGENT_RUNTIME_LABELS,
-  type AgentAccountsResponse,
-  type AgentRuntimeId,
-  agentPickerVisible,
-  type SessionCredentialSource,
-} from '@launch/shared/launch-agents'
-import type { CreateSessionRequest, SessionSummary } from '@launch/shared/launch-sessions'
+import { AGENT_RUNTIME_LABELS } from '@launch/shared/launch-agents'
+import type { SessionSummary } from '@launch/shared/launch-sessions'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { EmptyState, SectionPanel, SkeletonRows } from '@/ui/components/shared'
-import { useAgentAccounts } from '@/ui/hooks/useAgentAccounts'
 import { useAppSessions, useWarmStartSession } from '@/ui/hooks/useSessions'
 import { ApiError } from '@/ui/lib/api-client'
 import { timeAgo } from '@/ui/lib/format'
 import { SessionStatusBadge } from '@/ui/pages/sessions/components/SessionStatusBadge'
 import { ShippingLine } from '@/ui/pages/sessions/components/ShippingLine'
+import { StartSessionButton } from './StartSessionButton'
 
 /** A start refusal → what the card says about it. Pure. */
 export function startRefusal(error: unknown): { tone: 'info' | 'warning'; message: string } {
@@ -88,100 +84,6 @@ export function startRefusal(error: unknown): { tone: 'info' | 'warning'; messag
 }
 
 const usd = (microcents: number) => `$${(microcents / 100_000_000).toFixed(2)}`
-
-/** The picker's choice, when there is one to make. */
-interface StartChoice {
-  runtime: AgentRuntimeId
-  credential: SessionCredentialSource
-}
-
-/**
- * The start request for the picker's choice — `{}` when there is no picker (the P3 request,
- * unchanged), else the runtime and, when the person may choose, whose account. Pure.
- */
-export function startRequestFor(
-  accounts: AgentAccountsResponse | undefined,
-  choice: StartChoice | null
-): CreateSessionRequest {
-  if (!accounts || !choice || !agentPickerVisible(accounts.runtimes)) return {}
-  const option = accounts.runtimes.find(r => r.runtime === choice.runtime && r.enabled)
-  if (!option) return {}
-  if (option.credentialMode === 'platform') return { runtime: option.runtime }
-  if (option.credentialMode === 'user') return { runtime: option.runtime, credential: 'user' }
-  return { runtime: option.runtime, credential: choice.credential }
-}
-
-function StartPicker({
-  accounts,
-  choice,
-  onChange,
-}: {
-  accounts: AgentAccountsResponse
-  choice: StartChoice
-  onChange: (choice: StartChoice) => void
-}) {
-  const enabled = accounts.runtimes.filter(r => r.enabled)
-  const option = enabled.find(r => r.runtime === choice.runtime) ?? enabled[0]
-  if (!option) return null
-  const connected = accounts.credentials.some(
-    c => c.runtime === option.runtime && c.status === 'active'
-  )
-  return (
-    <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
-      {enabled.length > 1 && (
-        <div className="flex flex-col gap-1">
-          <label htmlFor="session-start-runtime" className="text-xs text-muted">
-            Coding agent
-          </label>
-          <select
-            id="session-start-runtime"
-            className="select select-sm"
-            value={option.runtime}
-            onChange={e => onChange({ ...choice, runtime: e.target.value as AgentRuntimeId })}
-          >
-            {enabled.map(r => (
-              <option key={r.runtime} value={r.runtime}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      {option.credentialMode === 'user_or_platform' && (
-        <div className="flex flex-col gap-1">
-          <label htmlFor="session-start-billing" className="text-xs text-muted">
-            Bill to
-          </label>
-          <select
-            id="session-start-billing"
-            className="select select-sm"
-            value={choice.credential}
-            onChange={e =>
-              onChange({ ...choice, credential: e.target.value as SessionCredentialSource })
-            }
-          >
-            <option value="platform">Launch</option>
-            <option value="user">My {option.accountLabel}</option>
-          </select>
-        </div>
-      )}
-      {option.credentialMode === 'user' && (
-        <span className="text-xs text-muted">Billed to your {option.accountLabel}</span>
-      )}
-      {option.credentialMode !== 'platform' &&
-        (choice.credential === 'user' || option.credentialMode === 'user') &&
-        !connected && (
-          <span className="text-xs text-warning">
-            Connect your {option.accountLabel} on{' '}
-            <Link to="/" className="link">
-              Home
-            </Link>{' '}
-            first.
-          </span>
-        )}
-    </div>
-  )
-}
 
 function SessionRow({ appSlug, session }: { appSlug: string; session: SessionSummary }) {
   const title = session.title?.trim() || `Session ${session.shortId.slice(0, 6)}`
@@ -245,20 +147,9 @@ export function SessionsCard({
   const [showAll, setShowAll] = useState(false)
   const list = useAppSessions(appId, showAll ? 'all' : 'active')
   const start = useWarmStartSession(appId)
-  const accounts = useAgentAccounts(canStart)
-  const [choice, setChoice] = useState<StartChoice | null>(null)
   const navigate = useNavigate()
   const items = list.data?.items ?? []
   const refusal = start.isError ? startRefusal(start.error) : null
-  const picker = canStart && accounts.data && agentPickerVisible(accounts.data.runtimes)
-  const firstEnabled = accounts.data?.runtimes.find(r => r.enabled)?.runtime ?? 'claude_code'
-  const current: StartChoice = choice ?? { runtime: firstEnabled, credential: 'platform' }
-
-  // Issue #17: the session starts warm, so it boots while the person writes on its page.
-  const onStart = () =>
-    start.startWarm(startRequestFor(accounts.data, picker ? current : null), session =>
-      navigate(`/apps/${appSlug}/sessions/${session.id}`)
-    )
 
   return (
     <SectionPanel
@@ -276,26 +167,22 @@ export function SessionsCard({
             Show finished
           </label>
           {canStart && (
-            <button
-              type="button"
-              className="btn btn-sm gap-1.5"
-              onClick={onStart}
-              disabled={start.isPending}
-            >
-              {start.isPending ? (
-                <span className="loading loading-spinner loading-xs" />
-              ) : (
-                <PlayIcon className="h-4 w-4" />
-              )}
-              Start session
-            </button>
+            <StartSessionButton
+              label="Start session"
+              icon={PlayIcon}
+              size="sm"
+              pending={start.isPending}
+              // Issue #17: the session starts warm, so it boots while the person writes on its page.
+              onStart={request =>
+                start.startWarm(request, session =>
+                  navigate(`/apps/${appSlug}/sessions/${session.id}`)
+                )
+              }
+            />
           )}
         </>
       }
     >
-      {picker && accounts.data && (
-        <StartPicker accounts={accounts.data} choice={current} onChange={setChoice} />
-      )}
       {refusal && (
         <div
           className={`alert alert-soft mb-3 text-sm ${refusal.tone === 'info' ? 'alert-info' : 'alert-warning'}`}

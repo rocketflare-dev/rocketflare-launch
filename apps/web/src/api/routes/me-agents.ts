@@ -6,8 +6,9 @@
  *
  * - `GET /agent-credentials` → `agentAccountsResponseSchema`: the runtimes this deployment offers
  *   (the session policy's `runtimes` — Settings → Coding agents), the caller's connected
- *   accounts (value-free) and their logins in flight. The Profile panel and the session picker
- *   both read it.
+ *   accounts (value-free), their logins in flight, and `defaultRuntime` — what a start naming no
+ *   runtime would run for them now (`defaultRuntimeFor`). Home's accounts section and the
+ *   app page's start buttons (Build it, Start session) read it.
  * - `DELETE /agent-credentials/:runtime` → 204: disconnect (audited `agent_credential.removed`);
  *   404 when nothing was connected.
  * - `POST /agent-logins` `startAgentLoginRequestSchema` → 202 `agentLoginResponseSchema`: a
@@ -34,7 +35,12 @@ import {
 } from '@launch/shared/launch-agents'
 import { guardPermission } from '../middleware/permissions'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import { runtimeOptions, runtimeReadiness } from '../services/sessions/credentials/resolve'
+import {
+  connectedRuntimes,
+  defaultRuntimeFor,
+  runtimeOptions,
+  runtimeReadiness,
+} from '../services/sessions/credentials/resolve'
 import { listPublic, removeForUser } from '../services/sessions/credentials/store'
 import { loadSessionPolicy } from '../services/sessions/lifecycle'
 import {
@@ -58,22 +64,25 @@ export const meAgentsRouter = createRouter()
 // ---- GET /api/me/agent-credentials ---------------------------------------------------------------
 
 /**
- * Returns the runtimes this deployment offers, the caller's own connected accounts and any logins
- * in flight. Requires `read Session`.
+ * Returns the runtimes this deployment offers, the caller's own connected accounts, any logins in
+ * flight and the runtime a session naming none would run for them. Requires `read Session`.
  */
 meAgentsRouter.get('/agent-credentials', async c => {
   guardPermission(c, 'read', 'Session')
   const { db, cfg, tenantId, user } = withAuthAndDb(c)
   const policy = await loadSessionPolicy(db)
-  const [credentials, logins, readiness] = await Promise.all([
+  const [credentials, logins, readiness, connected] = await Promise.all([
     listPublic(db, tenantId, user.id),
     listActiveLogins(db, tenantId, user.id),
     runtimeReadiness(db, cfg, c.env),
+    connectedRuntimes(db, tenantId, user.id),
   ])
   return c.json<AgentAccountsResponse>({
     runtimes: runtimeOptions(policy, readiness),
     credentials,
     logins: logins.map(toAgentLogin),
+    // What a start naming no runtime would get — the same function `resolveSessionCredential` uses.
+    defaultRuntime: defaultRuntimeFor(policy, { readiness, connected }),
   })
 })
 
