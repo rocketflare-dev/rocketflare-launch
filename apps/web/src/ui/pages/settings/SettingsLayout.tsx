@@ -176,28 +176,25 @@ function SectionTabs({
 }) {
   if (tabs.length < 2) return null
   return (
-    <nav aria-label={label} className="mb-6 border-b border-[color:var(--border-default)]">
-      <ul className="tabs tabs-border">
-        {tabs.map(tab => (
-          <li key={tab.path} className="contents">
-            <NavLink
-              to={tab.path}
-              end
-              className={({ isActive }) =>
-                `tab gap-2 ${isActive ? 'tab-active font-semibold' : ''}`
-              }
-            >
-              {tab.label}
-              {tab.badge === 'accessRequests' && pendingRequests > 0 && (
-                <span className="badge badge-sm badge-warning tabular-nums">
-                  {pendingRequests}
-                  <span className="sr-only"> waiting</span>
-                </span>
-              )}
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+    // DaisyUI styles a `.tab` only as a direct child of `.tabs`, so the links sit in the nav itself
+    // (as the app page's tabs do) — a list item around each left them unstyled and run together.
+    <nav aria-label={label} className="tabs tabs-border mb-6">
+      {tabs.map(tab => (
+        <NavLink
+          key={tab.path}
+          to={tab.path}
+          end
+          className={({ isActive }) => `tab gap-2 ${isActive ? 'tab-active' : ''}`}
+        >
+          {tab.label}
+          {tab.badge === 'accessRequests' && pendingRequests > 0 && (
+            <span className="badge badge-sm badge-warning tabular-nums">
+              {pendingRequests}
+              <span className="sr-only"> waiting</span>
+            </span>
+          )}
+        </NavLink>
+      ))}
     </nav>
   )
 }

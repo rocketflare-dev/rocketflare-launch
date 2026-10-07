@@ -186,6 +186,12 @@ describe('Settings — the menu', () => {
       ])
     )
     expect(links[1]).toHaveAttribute('aria-current', 'page')
+    // DaisyUI styles a `.tab` only as a direct child of `.tabs`: wrapped, they render as run-on text.
+    expect(tabs).toHaveClass('tabs')
+    for (const link of links) {
+      expect(link).toHaveClass('tab')
+      expect(link.parentElement).toBe(tabs)
+    }
   })
 
   it('shows each connection with its status dot, and the access-request count on People', async () => {

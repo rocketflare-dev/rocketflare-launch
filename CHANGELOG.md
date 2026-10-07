@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Settings' section tabs render as tabs again.** People (Members · Groups · Access requests) and
+  AI & models showed their tabs as run-together text: each link sat in a list item, and DaisyUI
+  styles a tab only as a direct child of `.tabs`.
 - **The preview's camera works in the browser.** "Screenshot into the next message" no longer
   queues a server capture through Browser Rendering: the preview's bridge renders the page itself
   (`modern-screenshot`, served from the preview's own host at `/__launch/capture.js`) at the
