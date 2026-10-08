@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
+  Object four times a second from the turn's Workflow step; an 8-minute turn died with
+  `WorkflowInternalError` and recorded none of its usage. The drain is now a long poll (the object
+  answers when it has news, or after 3 s), and each response's usage is recorded as it is drained,
+  claimed on the row so a retried step never charges it twice.
+
 - **A local Launch's session previews accept POSTs again.** Behind a tunnel, `wrangler dev` turned
   the browser's `Origin: https://<preview host>` into `http://`, and the app's CSRF check refused
   every form and button in the preview ("Invalid request origin"). The preview gateway now puts

@@ -144,6 +144,34 @@ describe('PiSessionCore', () => {
     expect(settled?.status).toBe('unanswered')
   })
 
+  it('a long-poll drain waits for news: empty after its wait, early once the turn settles', async () => {
+    const { pi } = await setup()
+    pi.faux.setResponses([hangUntilAborted()])
+    await pi.core.startTurn(request(1))
+    // Read what the turn writes up front (the person's message, pi's bookkeeping) until a long
+    // poll finds nothing: the model never answers, so that one waits out its whole 300 ms.
+    let cursor = 0
+    let quiet: PiDrainResult | null = null
+    let quietMs = 0
+    for (let i = 0; i < 20 && !quiet; i++) {
+      const from = Date.now()
+      const drained = await pi.core.drain('pi-core:1', cursor, 300)
+      cursor = drained.items.at(-1)?.seq ?? cursor
+      if (drained.items.length === 0) {
+        quiet = drained
+        quietMs = Date.now() - from
+      }
+    }
+    expect(quiet).toEqual({ items: [], settled: null })
+    expect(quietMs).toBeGreaterThanOrEqual(250)
+    // Settled while the call waits: it answers then, not at the end of its 10 s.
+    const settledFrom = Date.now()
+    setTimeout(() => void pi.core.abort(), 50)
+    const waited = await pi.core.drain('pi-core:1', cursor, 10_000)
+    expect(waited.settled?.status).toBe('unanswered')
+    expect(Date.now() - settledFrom).toBeLessThan(5_000)
+  })
+
   it('drains an operation it never started as unanswered', async () => {
     const { pi } = await setup()
     expect(await pi.core.drain('nope:1', 0)).toEqual({

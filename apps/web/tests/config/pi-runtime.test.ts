@@ -243,7 +243,11 @@ describe('a Pi turn', () => {
     expect(ledger.recorded).toHaveLength(2)
     for (const entry of ledger.recorded) {
       expect(entry.model).toBe('@cf/moonshotai/kimi-k2.7-code')
-      expect(entry.opts).toEqual({ provider: 'workers_ai', billing: 'metered' })
+      expect(entry.opts).toEqual({
+        provider: 'workers_ai',
+        billing: 'metered',
+        claim: expect.any(Function),
+      })
     }
     expect(ledger.recorded.map(r => r.usage)).toEqual(usage.map(u => u.usage))
     const tokensOut = usage.reduce((n, u) => n + u.usage.outputTokens, 0)

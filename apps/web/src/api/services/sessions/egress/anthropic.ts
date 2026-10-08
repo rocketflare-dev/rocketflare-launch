@@ -416,13 +416,23 @@ export async function recordSessionUsage(
    * and `ai_usage.feature`. Default: the session's own Anthropic call, feature `session`.
    * `billing: 'subscription'` (§18.22): a personal account paid — recorded with a null cost.
    */
-  opts: { provider?: AiProvider; feature?: string; billing?: AiUsageBilling } = {}
-): Promise<void> {
+  opts: {
+    provider?: AiProvider
+    feature?: string
+    billing?: AiUsageBilling
+    /**
+     * Run first, in the same transaction: false → record nothing. A caller that may record the
+     * same usage twice (a retried Workflow step re-reading Pi's transcript) claims it here.
+     */
+    claim?: (tx: Database) => Promise<boolean>
+  } = {}
+): Promise<boolean> {
   const provider = opts.provider ?? 'anthropic'
   // §18.22: a person's own plan paid — the tokens count, the cost is null and the total unmoved.
   const billing = opts.billing ?? 'metered'
   const cost = billing === 'subscription' ? null : estimateCostMicrocents(provider, model, usage)
-  await db.transaction(async tx => {
+  return db.transaction(async tx => {
+    if (opts.claim && !(await opts.claim(tx))) return false
     await recordUsage(tx, {
       tenantId: session.tenantId,
       userId: session.createdByUserId,
@@ -445,5 +455,6 @@ export async function recordSessionUsage(
         lastActivityAt: new Date(),
       })
       .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
+    return true
   })
 }

@@ -12,9 +12,13 @@
  *    session's Workers AI model (`policy.model`, else `DEFAULT_PI_MODEL`), the system note as the
  *    conversation's instructions, the checkout. A message with images fails the turn, saying so:
  *    Pi cannot read them yet.
- * 2. **Drain** what pi committed every `flushMs` (`drain(operation, cursor)` — pi's entry ids are
- *    the cursor), each mapping into the sink exactly as a CLI's line would be: `text`, `tool.start`,
- *    `tool.end`, `error` — the same `session_events` Claude Code's turn writes.
+ * 2. **Drain** what pi committed (`drain(operation, cursor, waitMs)` — pi's entry ids are the
+ *    cursor), each mapping into the sink exactly as a CLI's line would be: `text`, `tool.start`,
+ *    `tool.end`, `error` — the same `session_events` Claude Code's turn writes. A LONG POLL: the
+ *    object holds the call up to {@link PI_DRAIN_WAIT_MS} until it has something, so a model that
+ *    thinks for a minute costs a few calls, not 240. Every call is a subrequest and CPU charged
+ *    to the turn's Workflow step, which `cpu_ms` bounds PER STEP: polling every `flushMs` killed
+ *    an 8-minute turn with `WorkflowInternalError` on launch.rocketflare.dev.
  * 3. **Watch**, between drains: the timeout (→ `timeout`), the cancel flag every `cancelPollMs`
  *    (→ `cancelled`), the heartbeat, the boot marker every `probeMs` (a container gone under the
  *    turn → `container_lost` / `rollout`) — each stop ABORTS the object's run, then drains once
@@ -22,8 +26,11 @@
  * 4. **Meter**: Pi's model calls go from the object to Workers AI past no proxy, so a Pi turn
  *    ALWAYS meters itself (`turn-meter.ts`, provider `workers_ai`): every response's usage priced as
  *    it lands, checked against the budget headroom read at the start, and the turn stopped with
- *    the same `budget.reached` event and sentence as a self-metered CLI turn; recorded at the end
- *    (`recordSessionUsage`, feature `session`), whatever ended it.
+ *    the same `budget.reached` event and sentence as a self-metered CLI turn. Each response is
+ *    RECORDED as soon as it is drained (`recordSessionUsage`, feature `session`) — never only at
+ *    the end, which a step killed mid-turn never reaches (it lost a whole turn's spend) — under a
+ *    claim on the row (`runtime_state.piMetered`: the turn's operation and the last entry
+ *    recorded), so a retried step that drains the turn again does not charge it twice.
  *
  * The conversation lives in the object, so a Pi turn never resumes "a file": the row's resume id
  * is a marker (`pi:<sessionId>`) that says there is one, which is what lets the checkpoint copy it
@@ -31,13 +38,19 @@
  * (`state.restore` → `importTranscript` — a no-op when the object still holds it). A turn on a row
  * with no resume id starts the object's conversation over. No login, no personal account.
  */
+
+import type { TokenUsage } from '@launch/shared/ai/chat'
 import { DEFAULT_PI_MODEL, type SessionUsage } from '@launch/shared/launch-sessions'
+import { and, eq, sql } from 'drizzle-orm'
+import type { Database } from '../../../../../db/client'
+import { type SessionRow, sessions } from '../../../../../db/schema'
 import { checkContainer } from '../../boot-marker'
 import { type BudgetHeadroom, budgetHeadroom } from '../../budget'
 import { CLAUDE_RESULT_TEXT_MAX, clipStrings, SESSION_WORKDIR } from '../../claude-stream'
+import { recordSessionUsage } from '../../egress/anthropic'
 import { redactModelKeys, redactModelKeyText } from '../../model-key'
 import { SandboxInterruptedError } from '../../ports'
-import { createTurnMeter, recordTurnUsage, type TurnMeter } from '../../turn-meter'
+import { createTurnMeter, type TurnMeter } from '../../turn-meter'
 import type {
   AgentRuntime,
   RuntimeContext,
@@ -49,7 +62,7 @@ import type {
   TurnInput,
   TurnSink,
 } from '../types'
-import { type PiAgentPort, type PiSettlement, piOperationId } from './protocol'
+import { type PiAgentPort, type PiDrainItem, type PiSettlement, piOperationId } from './protocol'
 
 /** The resume id a Pi session's row carries once it has a conversation (in the object). */
 export const piResumeId = (sessionId: string) => `pi:${sessionId}`
@@ -63,6 +76,39 @@ export const piTranscriptKeyFor = (sessionId: string) => `sessions/${sessionId}/
  * finds everything it missed.
  */
 export const PI_DRAIN_GIVE_UP_MS = 60_000
+
+/** How long one `drain` may wait in the object for something new (the turn's long poll). */
+export const PI_DRAIN_WAIT_MS = 3_000
+
+const isEmptyUsage = (u: TokenUsage) =>
+  !u.inputTokens && !u.outputTokens && !u.cacheReadTokens && !u.cacheWriteTokens
+
+/**
+ * Claim entry `seq` of `operationId` as metered, in the usage write's transaction: false when this
+ * turn already recorded it or a later entry (a retried step draining the turn again).
+ */
+export async function claimPiMetered(
+  tx: Database,
+  row: Pick<SessionRow, 'tenantId' | 'id'>,
+  operationId: string,
+  seq: number
+): Promise<boolean> {
+  const state = sessions.runtimeState
+  const claimed = await tx
+    .update(sessions)
+    .set({
+      runtimeState: sql`coalesce(${state}, '{}'::jsonb) || jsonb_build_object('piMetered', jsonb_build_object('op', ${operationId}::text, 'seq', ${seq}::int))`,
+    })
+    .where(
+      and(
+        eq(sessions.tenantId, row.tenantId),
+        eq(sessions.id, row.id),
+        sql`not (coalesce(${state}->'piMetered'->>'op', '') = ${operationId} and coalesce((${state}->'piMetered'->>'seq')::int, 0) >= ${seq})`
+      )
+    )
+    .returning({ id: sessions.id })
+  return claimed.length > 0
+}
 
 /** Why Pi has nothing to run on. */
 export const PI_NOT_BOUND_MESSAGE =
@@ -171,20 +217,38 @@ export async function runPiTurn(
     }
   }
 
-  /** One drain: apply what it brought; false when the object could not be asked. */
-  const drainOnce = async (): Promise<boolean> => {
+  /** Record each drained response's usage now, claimed so a retried step never charges it twice. */
+  const record = async (items: PiDrainItem[]) => {
+    for (const { seq, mapping } of items) {
+      const usage = mapping.messageUsage
+      if (!usage || isEmptyUsage(usage.usage)) continue
+      await recordSessionUsage(ctx.db, row, usage.model ?? model, usage.usage, {
+        provider: 'workers_ai',
+        billing: 'metered',
+        claim: tx => claimPiMetered(tx, row, operationId, seq),
+      }).catch(err =>
+        ctx.logger?.error({ err, sessionId: row.id }, 'session turn: could not record Pi usage')
+      )
+    }
+  }
+
+  /** One drain (waiting up to `waitMs` for news): apply what it brought; false when it failed. */
+  const drainOnce = async (waitMs: number): Promise<boolean> => {
+    let items: PiDrainItem[]
     try {
-      const drained = await agent.drain(operationId, cursor)
+      const drained = await agent.drain(operationId, cursor, waitMs)
       drainFailingSince = null
-      await apply(drained.items.map(item => item.mapping))
-      cursor = drained.items.at(-1)?.seq ?? cursor
+      items = drained.items
+      await apply(items.map(item => item.mapping))
+      cursor = items.at(-1)?.seq ?? cursor
       if (drained.settled) settled = drained.settled
-      return true
     } catch (err) {
       drainFailingSince ??= ctx.now()
       ctx.logger?.warn({ err, sessionId: row.id }, 'session turn: Pi drain failed')
       return false
     }
+    await record(items)
+    return true
   }
 
   /** Stop the object's run (a Stop, the timeout, the budget, a lost container). */
@@ -213,7 +277,8 @@ export async function runPiTurn(
 
   let stop: RuntimeTurnStop | null = null
   for (;;) {
-    await drainOnce()
+    const askedAt = ctx.now()
+    await drainOnce(PI_DRAIN_WAIT_MS)
     // A turn pi already finished is over, whatever it cost: the next one meets the budget check.
     if (settled) break
     if (meter.runningCostMicrocents() >= headroom.microcents) {
@@ -225,7 +290,8 @@ export async function runPiTurn(
       break
     }
     if (sink.pending > 0) await sink.flush()
-    await ctx.sleep(ctx.flushMs)
+    // A drain that came straight back (news, or an object that does not wait) paces the loop.
+    if (ctx.now() - askedAt < ctx.flushMs) await ctx.sleep(ctx.flushMs)
     const now = ctx.now()
     if (now - startedAt >= ctx.timeoutMs) {
       stop = 'timeout'
@@ -261,14 +327,11 @@ export async function runPiTurn(
     // Whatever stopped the turn, the object's run stops too — then one last drain, so what it had
     // already done is in the log and what it had already spent is metered.
     await halt()
-    await drainOnce()
+    await drainOnce(0)
   }
   out.stop = stop
   if (sink.pending > 0) await sink.flush()
-  // Before `turn.ts` reads the row's total back: the turn's cost IS this write.
-  await recordTurnUsage(ctx.db, row, meter).catch(err =>
-    ctx.logger?.error({ err, sessionId: row.id }, 'session turn: could not record usage')
-  )
+  // Every response was recorded as it was drained (`record`), before `turn.ts` reads the total.
   if (stop || overBudget || out.failure) return out
 
   const verdict = settled as PiSettlement | null

@@ -109,7 +109,13 @@ export interface PiSessionCoreOptions {
   provider?: string
   /** Called when a turn starts: the tools' readiness check starts over. */
   onTurnStart?(record: PiTurnRecord): void
+  /** Test hooks for `drain`'s wait: default real time. */
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
 }
+
+/** How often a waiting `drain` looks at the object's own SQLite again (local reads, no I/O out). */
+export const PI_DRAIN_RECHECK_MS = 250
 
 /** The exported transcript's envelope. */
 export const PI_TRANSCRIPT_FORMAT = 'launch-pi-transcript'
@@ -156,12 +162,16 @@ export class PiSessionCore implements PiAgentPort {
   readonly #store: PiTurnStore
   readonly #provider: string
   readonly #onTurnStart?: (record: PiTurnRecord) => void
+  readonly #now: () => number
+  readonly #sleep: (ms: number) => Promise<void>
 
   constructor(options: PiSessionCoreOptions) {
     this.#driver = options.driver
     this.#store = options.store
     this.#provider = options.provider ?? PI_WORKERS_AI_PROVIDER
     this.#onTurnStart = options.onTurnStart
+    this.#now = options.now ?? (() => Date.now())
+    this.#sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
   }
 
   /** The turn in progress (or the last one) — what the tools find their container through. */
@@ -230,7 +240,22 @@ export class PiSessionCore implements PiAgentPort {
     return { status: 'done', text: assistantText(answer?.entry) }
   }
 
-  async drain(operationId: string, afterSeq: number): Promise<PiDrainResult> {
+  /**
+   * `waitMs` (a long poll): with nothing new yet, keep looking — at the object's own SQLite, every
+   * {@link PI_DRAIN_RECHECK_MS} — until something is, the turn settles or the wait is up. The
+   * caller (a Workflow step) then makes one call per few seconds while the model thinks, not four
+   * a second: every call is a subrequest and CPU on the step's budget (rocketflare-launch#14).
+   */
+  async drain(operationId: string, afterSeq: number, waitMs = 0): Promise<PiDrainResult> {
+    const until = this.#now() + Math.max(0, waitMs)
+    for (;;) {
+      const result = await this.#drainNow(operationId, afterSeq)
+      if (result.items.length > 0 || result.settled || this.#now() >= until) return result
+      await this.#sleep(Math.min(PI_DRAIN_RECHECK_MS, Math.max(0, until - this.#now())))
+    }
+  }
+
+  async #drainNow(operationId: string, afterSeq: number): Promise<PiDrainResult> {
     const record = this.#store.get()
     if (record?.operationId !== operationId) {
       return { items: [], settled: { status: 'unanswered', reason: 'not_found' } }

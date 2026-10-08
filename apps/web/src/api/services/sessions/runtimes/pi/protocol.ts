@@ -81,8 +81,11 @@ export interface PiDrainResult {
 export interface PiAgentPort {
   /** Submit the turn (idempotent on `operationId`); resolves once pi holds it durably. */
   startTurn(request: PiTurnRequest): Promise<PiTurnStarted>
-  /** What the turn produced after `afterSeq`, and whether it is over. */
-  drain(operationId: string, afterSeq: number): Promise<PiDrainResult>
+  /**
+   * What the turn produced after `afterSeq`, and whether it is over. `waitMs`: with nothing new,
+   * wait up to that long for something (a long poll); absent or 0, answer at once.
+   */
+  drain(operationId: string, afterSeq: number, waitMs?: number): Promise<PiDrainResult>
   /** Stop whatever runs in the conversation (withdraws queued input too). Idempotent. */
   abort(): Promise<void>
   /** The conversation (the active transcript's entries) as JSON — the checkpoint's copy; null: none. */

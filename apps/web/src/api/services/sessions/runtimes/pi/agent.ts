@@ -113,9 +113,9 @@ export class PiSessionAgent extends DurableObject<AppBindings> implements PiAgen
     return this.#core.startTurn(request)
   }
 
-  async drain(operationId: string, afterSeq: number): Promise<PiDrainResult> {
+  async drain(operationId: string, afterSeq: number, waitMs?: number): Promise<PiDrainResult> {
     await this.#lifecycle.start()
-    return this.#core.drain(operationId, afterSeq)
+    return this.#core.drain(operationId, afterSeq, waitMs)
   }
 
   async abort(): Promise<void> {

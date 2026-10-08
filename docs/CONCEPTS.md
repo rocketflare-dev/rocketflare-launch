@@ -4203,9 +4203,12 @@ It needs NO key: its model is Workers AI through the Worker's `AI` binding, so i
 - **A turn** (`index.ts`): `startTurn` on the object (idempotent on `<sessionId>:<turn>`, pi's
   request id) configures the conversation — the model, the `session-system-note` as its
   instructions, the checkout as its `cwd` — and submits the message; the step then DRAINS the
-  object every `flushMs`. pi has no event cursor, so the drain reads pi's own committed transcript
-  entries after the turn's start: their ids are strictly increasing and durable, which makes them
-  the cursor (`drain(operation, afterSeq)`), and each entry maps onto the same `session_events`
+  object as a LONG POLL: `drain(operation, afterSeq, waitMs)` waits in the object (re-reading its
+  own SQLite, no I/O out) up to `PI_DRAIN_WAIT_MS` (3 s) until there is news. Every call is a
+  subrequest and CPU on the turn's Workflow step, which `cpu_ms` bounds PER STEP: a drain every
+  `flushMs` (250 ms) killed an 8-minute turn with `WorkflowInternalError`. pi has no event cursor,
+  so the drain reads pi's own committed transcript entries after the turn's start: their ids are
+  strictly increasing and durable, which makes them the cursor, and each entry maps onto the same `session_events`
   Claude Code's turn writes (`events.ts`: `text`, `tool.start`/`tool.end` with Claude's tool names,
   `error` for a provider failure). The turn step keeps every rule: the timeout, the Stop (each
   aborts the object's run, then drains once more), the heartbeat, the boot-marker probe
@@ -4213,9 +4216,12 @@ It needs NO key: its model is Workers AI through the Worker's `AI` binding, so i
 - **Metering**: Pi's calls go from the object to Workers AI past no proxy, so a Pi turn ALWAYS
   meters itself (`turn-meter.ts`, provider `workers_ai`, billing `metered`): each response's usage
   is priced as it lands, held against the budget headroom read at the start (stopped with the same
-  `budget.reached` event and sentence as a self-metered CLI turn), and recorded through
-  `recordSessionUsage` at the end, whatever ended the turn — so `ai_usage` and the session's
-  running cost stay exact.
+  `budget.reached` event and sentence as a self-metered CLI turn), and RECORDED as soon as it is
+  drained (`recordSessionUsage`) — never only at the end, which a step killed mid-turn never
+  reaches. A retried step drains the turn again, so each write first claims the entry on the row
+  (`recordSessionUsage`'s `claim` hook → `claimPiMetered`: `runtime_state.piMetered` = the turn's
+  operation and the last entry recorded, moved forward only) — `ai_usage` and the session's
+  running cost stay exact, charged once.
 - **The tools** (`workspace.ts`, the `launch-workspace` extension): `bash`, `read`, `write`,
   `edit`, `grep` over `SandboxPort` in the session's checkout — so the container's egress
   allow-list, its placeholder-only environment and the git proxy's branch rule apply as for
