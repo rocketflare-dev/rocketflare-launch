@@ -229,7 +229,10 @@ What `launch <group> --help` says is not repeated here; these are the rules that
   /api/platform/setup` (the PUT takes each runtime whole). Support enter/leave has no command (it
   pins a browser session; a key gets 400 `support_needs_session`). `kits ls|show|add|check|pin|default|rm`
   (D36 K1, `/api/platform/kits`): `--tag|--commit|--latest`, exactly one; a kit whose check comes
-  back `failed` prints its problems, then exits 1; `rm` asks first
+  back `failed` prints its problems, then exits 1; `rm` asks first; `show` prints what the
+  manifest declares (`kitManifestSummary`). The kits a new app may be cut from are NOT an admin
+  read: `apps kits` (`GET /api/kits`, any member, D36 K5) beside `apps create --kit <slug>` and
+  `apps import --dry-run` (`POST /api/apps/import/detect`, the kit the repo was built from)
 - **Agent accounts** — `login` resumes the sign-in in flight or starts one; Claude's `code#state`
   is read hidden or from stdin's first line, checked, then sent once; a bad one or Ctrl-C cancels
   the sign-in. No token is ever in these responses

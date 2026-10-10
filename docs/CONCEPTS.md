@@ -48,7 +48,7 @@ suites on vitest 4, §9 — never part of the gate).
   `role === 'owner'` check. The matrix lives in `apps/web/src/permissions/` (+ its `CLAUDE.md`).
 - **One admin in single mode: `canAdministerPlatform`.** Two surfaces administer more than one
   organisation's data. **`/api/platform/*`** is the DEPLOYMENT — in the UI the Settings sections
-  Platform, Coding agents and Kit version (credentials, apps domain, public URL, template pin —
+  Platform, Coding agents and Kits (credentials, apps domain, public URL, template pin —
   every `launch_settings` / `admin_credentials` write), Sign-in's issuer keys and People's
   access-request queue. Its gate
   is `canAdministerPlatform(auth, config)` (`@launch/shared/permissions`, wrapped by
@@ -309,7 +309,7 @@ re-uploads leave the old object; no listing endpoint, quotas or presigned URLs; 
   (`pages/settings/SettingsLayout.tsx`, paths in `lib/settings-paths.ts`, who sees what in the pure
   `settingsModel.ts`) is a grouped menu with a real path per section — **Organisation** (General,
   People = members + groups + access requests, Approval policies, API keys) · **Building apps**
-  (Coding agents, AI & models, Prompts, Kit version) · **Platform** (Domain, Cloudflare, Neon,
+  (Coding agents, AI & models, Prompts, Kits) · **Platform** (Domain, Cloudflare, Neon,
   GitHub, Email, Sign-in, Public URL — each its own page, its setup dot in the menu) ·
   **Activity** (Audit, Usage) · **Operator** (global admins: Users, Feature flags, All sessions,
   and Organisations in multi mode) · **Plugins** (`UiPlugin.settingsTabs`). Each section keeps the
@@ -586,7 +586,7 @@ source:
 | Sign-in, servers | `login [--admin]`, `logout`, `whoami`, `status [--all] [--ready]`, `servers`, `config` | `status` also reads `GET /api/ready`; `--ready` exits 1 when the database does not answer |
 | Coding sessions (§18.14) | `sessions start\|say\|ship\|end\|ls\|show\|logs\|preview-url\|resume\|cancel\|withdraw\|landing-retry\|budget\|attach\|attachments\|attachment` | `start --runtime` picks the agent (§18.22). `ship` follows to live on Staging by default and exits 1 on a reopen, a stall, or a session ended while its landing waited (`--no-wait`). `show` names the status, model, branch, PR, ship stage, budget, last error and the failing gate step with its output tail; "merged" only from `landing.mergeSha` (open/closed is not on the row). `logs` prints every durable row. Images: the composer's types and limits, never downscaled; listed from the `user.message` rows (no list route) |
 | Approvals, releases, deploys (§18.17, §18.19) | `approvals`, `releases ls\|show\|chain\|promotion\|create\|promote\|retry\|cancel\|rollback`, `deploys ls\|latest\|production\|approve\|reject` | `retry` re-runs exactly the failed stage; `ls` says how far main is ahead of the latest tag; `promote --wait` follows approval then deploy. The promoter never decides its own promote |
-| Apps (§18.5, §18.23) | `apps ls\|show\|health\|health-check\|operations\|pipeline [retry\|cancel]\|rescaffold\|upgrades\|upgrade\|config-scan\|create\|import\|set\|ship-settings\|branch-protection\|teardown\|sign-in\|thumbnail` | `show` names the kit against the template pin, each environment's health and where Staging → Live stands. `create --follow` / `teardown --follow` follow the pipeline. The sign-in client secret is printed once, never logged |
+| Apps (§18.5, §18.23) | `apps ls\|show\|health\|health-check\|operations\|pipeline [retry\|cancel]\|rescaffold\|upgrades\|upgrade\|config-scan\|create\|import\|kits\|set\|ship-settings\|branch-protection\|teardown\|sign-in\|thumbnail` | `show` names the kit against the template pin, each environment's health and where Staging → Live stands. `create --follow` / `teardown --follow` follow the pipeline; `create --kit <slug>` picks the kit (`apps kits` lists those on offer, any member — §18.24); `import --dry-run` says which kit the repo was built from, writing nothing. The sign-in client secret is printed once, never logged |
 | Secrets (§18.20) | `shared ls\|show\|set\|rotate\|pushes\|retry\|create\|edit\|archive`, `grants needs\|ls\|request\|revoke\|repush` | A value never travels in argv: hidden prompt, or stdin |
 | Audit, activity | `audit ls\|verify\|export` (§18.18), `activity ls`, `notifications` | `audit ls` applies `--actor`/`--from`/`--to` client-side over the cursor pages; `export` streams to a `0600` file |
 | AI (§9) | `agents`, `ai status\|usage\|providers\|set\|rm\|test\|prompts\|models`, `chat`, `docs`, `traces` (D32), `feedback`, `evals promote` (D33) | `agents run` adds the trace's tokens and id when the key may read traces (no per-run cost: `ai_usage` has no run column); `agents logs --follow` polls the AG-UI projection, never the SSE stream; `agents answer` builds the payload per kind and checks it with `interruptPayloadSchema(spec)`. Provider keys only through `--key` (hidden or stdin; `--data` with an `apiKey` is refused). `docs search` prints each hit's fused rank, score and which signal found it. `chat send` streams a turn (below). `evals promote` appends a draft case to `apps/evals/datasets/` |
@@ -1088,15 +1088,22 @@ parties (a cross-site POST with the cookie is refused by CSRF).
 ### 18.4 Registry, health and OIDC clients
 
 - **Import** (`POST /api/apps/import {repo, ref?, ownerGroupId?}`, admin+): the GitHub App token is
-  narrowed to the one repo and `contents: read`; Launch reads the default kit's app manifest
-  (its adapter's `paths.manifests` — Rocketflare's `.rocketflare.json`, else `launch.plugins.json`;
-  §18.24) and both wrangler tomls, parsed by `kits/app-manifest.ts` — the
+  narrowed to the one repo and `contents: read`; Launch first **detects the kit** the repo was built
+  from (D36 K5, `kits/detect.ts`, §18.24: its `launch.kit.json`, else its app manifest's
+  `kit.id`/`kit.name`, a pre-contract Rocketflare copy by its file — an unregistered kit is 422
+  `kit_not_registered`), then reads THAT kit's app manifest (its adapter's `paths.manifests` —
+  Rocketflare's `.rocketflare.json`, else `launch.plugins.json`) and both wrangler tomls, parsed by
+  `kits/app-manifest.ts` — the
   manifest leniently (a zod passthrough: `app {slug, display, domain}`, the kit version from
   `kit.version` or `kitVersion`, the kit from `kit.id` or a legacy copy's `kit.name`), the tomls
   with `smol-toml` (name, the kit's app-URL var — `APP_URL` —, binding ids; a kit
   `<PLACEHOLDER>` is not an id). The slug must follow spec/04 (a letter first, not `*-staging`, not
-  reserved) and is globally unique. `apps`, one `app_environments` row per toml, the
-  `app_operations` steps and `app.imported` are written in one transaction.
+  reserved) and is globally unique. `apps` (with the kit's id and manifest snapshot), one
+  `app_environments` row per toml, the `app_operations` steps and `app.imported` (its summary names
+  the kit and how it was detected) are written in one transaction. **`POST /api/apps/import/detect
+  {repo, ref?}`** (admin+) is the same read, detection and slug check writing nothing — the Import
+  dialog's preview ("Kit: Acme kit 1.2.0 · Imports as Shop `shop`", or the refusal and its hint,
+  once the repository field settles for half a second) and `launch apps import --dry-run`.
 - **Catalogue and app page** (`/apps`, `/apps/:slug/*`; members read): the catalogue shows name,
   team, kit version and a status dot per environment with its last check. One app is an Overview
   and tabs (§18.19, `docs/DESIGN.md`): the Overview's Staging and Live rows carry the health dot;
@@ -1202,7 +1209,9 @@ by the next Apply; existing apps are not protected until an admin presses Apply.
 ### 18.5 Creating an app (the launch pipeline)
 
 `POST /api/apps` (any member; `routes/app-pipeline.ts`) checks the slug (spec/04 plus no
-`launch-` prefix), writes `apps` (`source='created'`, `status='requested'`, a reserved run id),
+`launch-` prefix) and the kit (`kitId`, an id or slug — D36 K5, `kits/options.ts`: absent is the
+default kit; unknown is 422 `kit_not_found`; one neither `verified` nor the default is 409
+`kit_not_verified`), writes `apps` (the kit's id and manifest snapshot on it) (`source='created'`, `status='requested'`, a reserved run id),
 both `app_environments` rows, the creator as owner and `app.create.requested` in one transaction
 (`requestApp`), then opens an `app.create` approval (P4). A creator at or above
 `launch_settings.app_create_role` (default admin) is auto-approved and the kind's `applyAfter`
@@ -1379,7 +1388,9 @@ step that mints one puts it on the Worker itself.
   `queued|running`: an attempt is capped at 5 minutes and every retry re-claims the row, so that
   is the local engine keeping its persisted `running` after a reload killed the step; it is failed
   the same way and the instance terminated (best effort).
-- **UI**: "Create app" (a live slug check and a preview of `<slug>-staging.<apps domain>`, the
+- **UI**: "Create app" (with two or more kits on offer, `GET /api/kits`, a **Kit** radio list first
+  — each kit's name, pinned version and description, the default preselected and called "default";
+  with one, no picker and the request names no kit; the intro names the kit; a live slug check and a preview of `<slug>-staging.<apps domain>`, the
   domain from `GET /api/apps`' `appsDomain`; a 409 `launch_not_reachable` says why and links to
   Setup › Public URL), the step list polled while a run is owed — running, done and failed each
   with its own glyph, a job's "View run" link to its GitHub Actions run, the failed step's error
@@ -1477,8 +1488,8 @@ DEFAULT KIT's pin overrides it (D36 K1, §18.24: `kits.pin` on the default row; 
 Rocketflare row with no stored pin follows the code default) — the ONE source of the pin; there is
 no env var. `launch_settings.template_pin` is now its mirror, kept for one release.
 
-**Kit version (Settings → Kit version).** A platform admin sets the pin on its own section,
-Settings → Building apps → Kit version (`/settings/kit`, `pages/platform/Kit.tsx` →
+**Kit version (Settings → Kits).** A platform admin sets the DEFAULT kit's pin on its own section,
+Settings → Building apps → Kits (`/settings/kit`, `pages/platform/Kit.tsx` →
 `KitVersionCard`; not a connection — it has a default — so Home's setup checklist never asks). The card shows the pin new apps get (repo, "Release X", "Latest release,
 now X" or "Unreleased commit", short SHA; Default or Overridden) and takes one of three modes:
 **Follow latest**, a **release tag** (a combobox — `components/Combobox.tsx`, ARIA combobox with a
@@ -4475,12 +4486,13 @@ not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocket
 `kit.repo` is not the pin's repo (a fork) is refused the fetch. `notesUrl` assumes the kit's
 `docs/upgrades/<version>.md` exists at the tag.
 
-### 18.24 The kit catalogue and the manifest adapter (D36 K1, K2)
+### 18.24 The kit catalogue and the manifest adapter (D36 K1, K2, K5)
 
 `docs/plans/multi-kit.md` (D36): Launch supports any kit that conforms to the **Launch kit
 contract**, declared by the kit in a root `launch.kit.json` (`@launch/shared/kit-manifest`,
 `kitManifestSchema` — readers tolerate unknown fields; `schema: 1`). K1 is the catalogue and the
-contract; K2 drives every app through an adapter built from its kit's manifest (below); the
+contract; K2 drives every app through an adapter built from its kit's manifest (below); K5 lets
+Create app pick the kit, Import detect it and Settings → Kits manage the catalogue (below); the
 scaffold job (K3) and sessions (K4) still use Rocketflare's own constants.
 
 **`kits`** (`db/schema/kits.ts`, migration 0049) is platform configuration like `launch_settings`
@@ -4495,8 +4507,8 @@ lookup), `is_default` — at most one, `kits_one_default_idx` (partial unique) �
 row follows `DEFAULT_TEMPLATE_PIN` and moves with Launch, as an unset setting did.
 `ensureDefaultKit` recreates it when the table is empty (a fresh or truncated database). **`apps.kit_id`**
 (→ `kits`, set null) is the kit an app was created from or imported into, for life; the migration
-backfilled it to the default, and `requestApp` / `importApp` set it to the default kit (the
-picker is K5). `apps.template` stays as history.
+backfilled it to the default; `requestApp` sets it to the kit the request names (else the
+default) and `importApp` to the kit it detects (K5, below). `apps.template` stays as history.
 
 **The template pin is the default kit's pin** (`kit-pin.ts`): `templatePinStatus`,
 `loadPipelineSettings`, the scaffold plan, the upgrade target and the session kit fetch all read
@@ -4544,9 +4556,46 @@ Audited `kit.added | kit.checked | kit.pinned | kit.default_set | kit.removed` (
 Follow latest move of a non-default kit is `kit.pinned` with `after.by`, the default's stays
 `setting.changed` on `template_pin`. The cron's `kit.followLatest` walks every kit (each throttled
 on its own `latest_check`), and a pin move resets the kit to `unchecked`. CLI: `launch kits ls | show |
-add | check | pin | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1). UI:
-Settings → Kit version's **Kits** list below the Kit version card (`KitsCard`: each kit's pin,
-result and problems, apps, Check, Make default, and an Add form).
+add | check | pin | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1; `show`
+prints what the manifest declares, `kitManifestSummary`). UI: Settings → **Kits** (`/settings/kit`):
+the Kit version card (the DEFAULT kit's pin, named) over the **Kits** list (`KitsCard`) — per kit its
+repo and pin, the check's result (its problems listed), the apps made from it, and Check, Re-pin (a
+tag from the repo's tags, a commit or branch, or Follow latest — `PUT /:id/pin`), Make default,
+Details (what the manifest snapshot declares: its source, init, release workflow, required check,
+upgrades supported or not, default plugins) and Remove (asks first; disabled, the reason in a
+tooltip and the accessible description, for the default and for a kit with apps); below, an Add
+form (repo + Follow latest | tag | commit).
+
+**Choosing a kit for a new app (K5)** (`kits/options.ts`). **`GET /api/kits`** (`routes/kit-options.ts`,
+any member who may read apps — every member may ASK for an app) answers the kits a new app may be
+cut from — every `verified` kit plus the DEFAULT whatever its status (a request without a kit uses
+it anyway, and the built-in row is `unchecked` until an admin runs Check), the default first — as
+`kitOptionSchema`: id, slug, name, description, icon (the manifest's, display only) and the
+pinned tag; never the problems, repo or manifest. `POST /api/apps`' optional **`kitId`** (an id or
+a slug) is checked before any write: unknown → 422 `kit_not_found`, neither verified nor the default
+→ 409 `kit_not_verified`, absent → the default. The app stores that kit's id and manifest snapshot,
+`app.create.requested` names it, and an `app.create` approval's context carries `kitName` (the
+inbox's "Kit" row). Create app's **`KitPicker`** (`pages/apps/components/KitPicker.tsx`) is a radio
+list shown only with two or more kits, the default preselected; it is self-contained (value, kits,
+onChange) so it can become the first field of the create-app interview's brief, whose "kit
+defaults" layer is the chosen kit's manifest. `pinForApp(db, app)` (same file) is the pin an app's
+scaffold should be cut at — its own kit's, else the default's — for K3's scaffold. CLI: `launch
+apps kits`, `launch apps create --kit <slug>`.
+
+**Import detects the kit (K5)** (`kits/detect.ts`, pure over a file reader and the catalogue's
+rows): the repo's root **`launch.kit.json`** (a copy of a contract kit keeps it) — its `kit.id`,
+else `kit.repo` — or else the first **app manifest** found among every registered kit's
+`scaffold.appManifest` then Rocketflare's `.rocketflare.json` / `launch.plugins.json`: its `kit.id`,
+else a pre-contract copy's `kit.name`; a Rocketflare file naming no kit is a Rocketflare copy
+(`legacy`), any other kit-declared file that kit's. A row answers to its slug, its manifest's
+`kit.id` and `kit.repo`, and its repo (the built-in row before any check answers to `rocketflare`
+by its repo); several → the default, then a verified one. A kit the catalogue lacks is 422
+`kit_not_registered` naming it; neither file, 422 `manifest_missing`. Import accepts any registered
+kit whatever its check status — the app exists already, nothing is scaffolded. **App pages** name
+the app's kit: `AppSummary.kitSlug` / `kitName` (the kit row's, joined on `apps.kit_id`, else the
+snapshot's `kit.name`) — the catalogue's kit column and card meta ("Rocketflare 0.15.0"), Settings'
+About "Kit" row, and the Overview's upgrade line ("on Rocketflare 0.15.0"). Copy that named
+Rocketflare (the catalogue, Create app, Import, the Kit version card) names the kit instead.
 
 **Private kits.** Every kit lookup (`withKitToken`) finds the GitHub App's installation on the
 repo's OWNER (`GET /app/installations`) and narrows the token to that one repo; with none it uses
@@ -4607,9 +4656,11 @@ files, `.rocketflare.json`) and plans from the DEFAULT kit's pin, so an app of a
 created end to end yet (K3); sessions (dev server, bootstrap, gate, the session database's RLS role,
 `LAUNCH_GATE_APP_ID`) still use Rocketflare's names (K4); the upgrade answer's marker is still the
 shared `LAUNCH-UPGRADE:` (the manifest's `doneMarker` is only written into the prompt). An app's
-upgrade TARGET is its own kit's pin, but the upgrade session still fetches the default kit (K4/K5).
-Create app has no kit picker and Import does not detect the kit (K5); the full Platform → Kits
-page (pin, remove, the manifest) is K5 — K1's UI is the list above. **The scaffold job clones the
+upgrade TARGET is its own kit's pin, but the upgrade session still fetches the default kit (K4).
+Create app records the CHOSEN kit, but the scaffold still plans from the default kit's pin
+(`loadPipelineSettings().templatePin`) until K3 reads `pinForApp` — so picking a non-default kit
+is only end to end once K3 lands. The kit's `icon` is passed to the picker but not drawn (a repo
+path in a private kit cannot be shown without a proxy). **The scaffold job clones the
 kit anonymously** (`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but
 cannot yet scaffold an app (K3); an upgrade session's kit fetch is anonymous too (§18.23). The YAML
 outline does not read flow mappings over several lines, anchors or multi-document files (a kit
