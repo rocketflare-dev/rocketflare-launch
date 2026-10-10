@@ -17,7 +17,8 @@
  *   retry's check even when the step that failed is one of those re-opened. Its prior
  *   `scaffoldTicketId` is the old, `finished` ticket, so the step opens a FRESH ticket, re-commits
  *   the job files the previous job deleted (`commitFilesIfChanged`) and dispatches the job, which
- *   builds its plan from the pin as it is NOW.
+ *   builds its plan from the pin as it is NOW — the app's OWN kit's (D36 K3), whose manifest
+ *   snapshot the app takes again here when the kit has one.
  * - Every other one becomes `pending` (no error, no times): a run with a `pending` row derives
  *   `running`, so while the new instance works the page shows it running, not failed — a failed
  *   row downstream would read as a failed run until the instance reached it. `runStep` claims a
@@ -37,10 +38,13 @@ import type { RescaffoldPipelineResponse } from '@launch/shared/launch-pipeline'
 import { templatePinLabel } from '@launch/shared/launch-setup'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
-import { appOperations } from '../../../../db/schema'
+import { appOperations, apps } from '../../../../db/schema'
 import { ConflictError } from '../../../utils/core/errors'
 import { getAppRow } from '../apps'
 import { type AuditActor, recordAudit } from '../audit'
+import { appKitPin } from '../kit-pin'
+import { kitManifestOf } from '../kits/adapter'
+import { getKit } from '../kits/store'
 import type { NeonClient } from '../neon'
 import { loadPipelineSettings } from './context'
 import { requireWorkflow } from './create'
@@ -87,7 +91,17 @@ export async function rescaffoldPipeline(
   }
   // Refuse before any row is touched when there is nothing to start the run on.
   requireWorkflow(workflows.APP_LAUNCH_WORKFLOW, 'APP_LAUNCH_WORKFLOW')
-  const pin = (await loadPipelineSettings(db)).templatePin
+  // D36 K3: the app's OWN kit at its current pin (the default kit's for an app with none). The app
+  // takes that kit's manifest snapshot too when the kit has one, as a new app would: the job files
+  // `scaffold.start` re-commits are generated from it, and the copy will be that release.
+  const pin = await appKitPin(db, app, (await loadPipelineSettings(db)).templatePin)
+  const kit = app.kitId ? await getKit(db, app.kitId) : null
+  if (kit?.manifest) {
+    await db
+      .update(apps)
+      .set({ kitManifest: kitManifestOf(kit), updatedAt: new Date() })
+      .where(and(eq(apps.tenantId, tenantId), eq(apps.id, app.id)))
+  }
 
   const now = new Date()
   await db.transaction(async tx => {

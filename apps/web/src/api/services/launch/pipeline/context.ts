@@ -34,7 +34,10 @@ export interface PipelineSettings {
   appsDomain: string | null
   /** `notifications_domain`, else `notifications.<apps domain>`. */
   notificationsDomain: string | null
-  /** The DEFAULT kit's pin (D36 K1, `kit-pin.ts`) — what a new app is cut from. */
+  /**
+   * The DEFAULT kit's pin (D36 K1, `kit-pin.ts`). An app is scaffolded at its OWN kit's pin
+   * (`appKitPin`, D36 K3), which is this one for an app of the default kit (or of none).
+   */
   templatePin: TemplatePin
   appCreateRole: AppCreateRole
   githubOrg: string | null

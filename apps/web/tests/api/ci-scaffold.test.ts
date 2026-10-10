@@ -15,10 +15,10 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { commitFiles, createOrgRepo } from '@/api/services/launch/github-app'
-import { scaffoldFiles } from '@/api/services/launch/rocketflare/scaffold-job'
 import { GitHubActionsScaffoldRunner } from '@/api/services/launch/scaffold/github-actions-runner'
+import { scaffoldFiles } from '@/api/services/launch/scaffold/job'
 import { ScaffoldNotReadyError } from '@/api/services/launch/scaffold/runner'
-import { apps, auditEvents, deployTickets } from '@/db/schema'
+import { appOperations, apps, auditEvents, deployTickets } from '@/db/schema'
 import { createTestTenant } from '../helpers/auth'
 import { storeCredential } from '../helpers/credential-store'
 import { setupTestDatabase } from '../helpers/db'
@@ -181,7 +181,11 @@ describe('POST /ci/scaffold/token', () => {
       kitRepo: 'rocketflare-dev/rocketflare',
       tag: '0.16.0',
       commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
+      // D36 K3: the kit the job's script was generated for (an app with no kit: the fallback's).
+      kitId: 'rocketflare',
     })
+    // A public kit (the App is not installed on rocketflare-dev): no kit token, an anonymous clone.
+    expect(body).not.toHaveProperty('kitToken')
 
     // The token GitHub minted is narrowed to this repository and contents + workflows write.
     const minted = cloud.github.tokens.get(body.token)
@@ -252,6 +256,71 @@ describe('POST /ci/scaffold/token', () => {
         kit: `rocketflare-dev/rocketflare@${commit}`,
         kitCommit: commit,
       })
+    } finally {
+      store.settings.delete('template_pin')
+    }
+  })
+
+  it('hands the job the pin its launch run planned, not the kit’s pin of the moment (D36 K3)', async () => {
+    const created = await createdApp()
+    const planned = {
+      kitRepo: 'rocketflare-dev/rocketflare',
+      kitTag: '0.15.4',
+      kitCommit: 'b'.repeat(40),
+    }
+    await db.insert(appOperations).values({
+      tenantId: created.tenant.id,
+      appId: created.app.id,
+      runId: created.launchRunId,
+      kind: 'create',
+      step: 'scaffold.start',
+      status: 'succeeded',
+      externalIds: { scaffoldTicketId: created.ticket.id, ...planned },
+    })
+    const res = await call('token', await jobToken(created))
+    expect(res.status).toBe(200)
+    expect(scaffoldTokenResponseSchema.parse(await json(res)).plan).toMatchObject({
+      kitRepo: planned.kitRepo,
+      tag: planned.kitTag,
+      commit: planned.kitCommit,
+    })
+  })
+
+  it('a private kit (the App is installed on its owner): a read token for that repo alone', async () => {
+    const commit = 'c'.repeat(40)
+    const kitRepo = `${cloud.opts.org}/company-kit-${crypto.randomUUID().slice(0, 8)}`
+    await createOrgRepo(
+      cloud.github.issueToken().token,
+      cloud.opts.org,
+      { name: kitRepo.split('/')[1] ?? '' },
+      { fetch: cloud.fetch }
+    )
+    store.settings.set('template_pin', { repo: kitRepo, tag: '1.0.0', commit })
+    try {
+      const created = await createdApp()
+      const res = await call('token', await jobToken(created))
+      expect(res.status).toBe(200)
+      const body = scaffoldTokenResponseSchema.parse(await json(res))
+      expect(body.plan).toMatchObject({ kitRepo, tag: '1.0.0', commit })
+      expect(body.kitToken).toEqual(expect.any(String))
+      expect(cloud.github.tokens.get(body.kitToken ?? '')).toMatchObject({
+        repositories: [kitRepo.split('/')[1]],
+        permissions: { contents: 'read' },
+        revoked: false,
+      })
+      const [audit] = await db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.appId, created.app.id),
+            eq(auditEvents.action, 'app.scaffold.token_issued')
+          )
+        )
+      expect(audit?.summary.after).toMatchObject({
+        kitToken: { repository: kitRepo, permissions: { contents: 'read' } },
+      })
+      expect(JSON.stringify(audit?.summary)).not.toContain(body.kitToken)
     } finally {
       store.settings.delete('template_pin')
     }

@@ -21,7 +21,7 @@ import {
   type GitHubWorkflowRun,
   listWorkflowRuns,
 } from '../github-app'
-import { SCAFFOLD_WORKFLOW_FILE } from '../rocketflare/scaffold-job'
+import { SCAFFOLD_WORKFLOW_FILE } from './job'
 import {
   type ScaffoldExternalIds,
   ScaffoldNotReadyError,

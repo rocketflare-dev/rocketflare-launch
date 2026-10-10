@@ -12,7 +12,7 @@
  * | `names(slug, env, domain)`  | `adapter.names` (`kits/names.ts` `appNames`) — plan §1's naming table |
  * | `writeConfig(toml, env, v)` | `adapter.writeConfig` (`kits/toml.ts`, the kit's `launchProvides`) |
  * | `placeholderScript(toml)`   | `adapter.placeholderScript` (`placeholder/worker.ts`, the kit's live route) |
- * | `scaffoldFiles()`           | `adapter.scaffold.files` (`rocketflare/scaffold-job.ts` until K3) |
+ * | `scaffoldFiles()`           | `adapter.scaffold.files` (`scaffold/job.ts`, the script generated from the kit manifest) |
  * | `scaffoldRunner`            | `scaffold/github-actions-runner.ts` `GitHubActionsScaffoldRunner` (dispatches `launch-scaffold.yml` on `main` with `launch_url`; `poll` reads its run) |
  *
  * Tests never reach `defaultPorts()`: the Workflow classes take `overrides.ports`, and the route

@@ -572,16 +572,25 @@ export const scaffoldPlanSchema = z.object({
   tag: z.string().nullable(),
   /** The full kit commit SHA the job must end up on. */
   commit: z.string(),
+  /**
+   * The app's kit (`kit.id`, D36 K3). The job's script was generated for one kit and refuses a plan
+   * for another (stale job files). Absent in a plan from before K3.
+   */
+  kitId: z.string().optional(),
 })
 export type ScaffoldPlan = z.infer<typeof scaffoldPlanSchema>
 
 /**
  * `POST /ci/scaffold/token` → 200 once per ticket (a second call is 409): a one-hour installation
- * token scoped to the one repo (`contents` + `workflows` write), and the plan.
+ * token scoped to the one repo (`contents` + `workflows` write), and the plan. `kitToken` (D36 K3)
+ * is a read-only token for the KIT repo alone (`contents: read`), minted when the GitHub App is
+ * installed on the kit's owner — a private kit; absent, the job clones the kit anonymously. The
+ * job revokes both. `/ci/kit-check/token` answers the same shape (`ticketId` is the check's id).
  */
 export const scaffoldTokenResponseSchema = z.object({
   ticketId: z.string().uuid(),
   token: z.string(),
+  kitToken: z.string().optional(),
   expiresAt: z.string(),
   plan: scaffoldPlanSchema,
 })

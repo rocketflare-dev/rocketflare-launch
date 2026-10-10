@@ -64,6 +64,7 @@ import {
   compareAndSetKitPin,
   ensureDefaultKit,
   getDefaultKit,
+  getKit,
   type KitRow,
   listKits,
   updateKit,
@@ -129,6 +130,22 @@ export async function defaultKitPin(
 export async function kitPin(db: Database, row: KitRow): Promise<EffectiveKitPin> {
   const legacy = row.isDefault && !row.pin ? await getSetting(db, 'template_pin') : null
   return effectiveKitPin(row, legacy)
+}
+
+/**
+ * The pin an app is (re-)scaffolded at (D36 K3): its OWN kit's — `apps.kit_id` → that kit row's
+ * effective pin. An app with no kit (created before K1), or whose kit is the default, gets the
+ * default kit's: `defaultPin` when the caller has it resolved already (the pipeline's settings),
+ * else read here.
+ */
+export async function appKitPin(
+  db: Database,
+  app: { kitId: string | null },
+  defaultPin?: TemplatePin
+): Promise<TemplatePin> {
+  const row = app.kitId ? await getKit(db, app.kitId) : null
+  if (row && !row.isDefault) return (await kitPin(db, row)).pin
+  return defaultPin ?? (await defaultKitPin(db)).pin
 }
 
 /** The pin new apps are cut from, and whether it is the code default. */

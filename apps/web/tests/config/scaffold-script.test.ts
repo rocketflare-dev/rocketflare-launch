@@ -25,13 +25,15 @@ import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { rocketflareFallbackManifest } from '@/api/services/launch/kits/rocketflare-fallback'
 import {
   SCAFFOLD_SCRIPT,
   SCAFFOLD_SCRIPT_PATH,
   SCAFFOLD_WORKFLOW_PATH,
   SCAFFOLD_WORKFLOW_YAML,
   scaffoldFiles,
-} from '@/api/services/launch/rocketflare/scaffold-job'
+  scaffoldJobKit,
+} from '@/api/services/launch/scaffold/job'
 
 const FIXTURES = path.resolve(__dirname, '../fixtures/rocketflare-0.15')
 const KIT_COMMIT_TAG = '0.15.0'
@@ -378,11 +380,15 @@ describe('the workflow file', () => {
   })
 
   it('never lets pnpm install run frozen: the rename changes the workspace names (CI=true)', () => {
+    // The legacy plugin loop's own install, and the fallback manifest's postInit (embedded as KIT).
     const installs = SCAFFOLD_SCRIPT.match(/run\('pnpm', \['install'[^\]]*\]/g) ?? []
-    expect(installs.length).toBe(2)
+    expect(installs.length).toBe(1)
     for (const call of installs) expect(call).toContain("'--no-frozen-lockfile'")
+    const kit = scaffoldJobKit(rocketflareFallbackManifest())
+    expect(SCAFFOLD_SCRIPT).toContain(`const KIT = ${JSON.stringify(kit, null, 2)}`)
+    expect(kit.postInit).toEqual(['pnpm install --no-frozen-lockfile', 'pnpm lint:fix'])
     // The rename's own install would be frozen on a runner, so it is always skipped.
-    expect(SCAFFOLD_SCRIPT).toMatch(/'--force', '--skip-install'\]/)
+    expect(kit.init).toMatch(/ --force --skip-install$/)
   })
 })
 

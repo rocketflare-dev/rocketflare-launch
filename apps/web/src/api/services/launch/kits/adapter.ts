@@ -17,7 +17,7 @@
  * | the config an app declares (P5) | `declaredConfig` | `declared-config.ts` |
  * | a kit upgrade session's messages (P6 6c) | `upgrade` (none: never upgraded) | `upgrade-prompt.ts` |
  * | the placeholder script | — (Launch's own) | `placeholder/worker.ts` |
- * | the scaffold job's files | — (K3 makes it generic) | `rocketflare/scaffold-job.ts` |
+ * | the scaffold job's files | `scaffold`, `ci.gateList`/`gateRun`, `plugins` (embedded in the script) | `scaffold/job.ts` |
  *
  * **Resolution, per app** ({@link adapterFor}): the manifest snapshot ON THE APP
  * (`apps.kit_manifest`, written when it is created or imported and refreshed when a Release records
@@ -37,7 +37,7 @@ import type { Database } from '../../../../db/client'
 import { type AppRow, apps } from '../../../../db/schema'
 import type { CommitFile } from '../github-app'
 import { placeholderScript } from '../placeholder/worker'
-import { SCAFFOLD_WORKFLOW_FILE, scaffoldFiles } from '../rocketflare/scaffold-job'
+import { SCAFFOLD_WORKFLOW_FILE, scaffoldFiles } from '../scaffold/job'
 import {
   type AppManifestIdentity,
   ManifestError,
@@ -119,7 +119,7 @@ export interface TemplateAdapter {
   scaffold: {
     /** The workflow file the scaffold job's OIDC token must come from. */
     workflowFile: string
-    /** The two files to commit before dispatching the job. */
+    /** The two files to commit before dispatching the job, the script generated from the manifest. */
     files: () => CommitFile[]
     /** Why a scaffold is not the app Launch asked for ({@link scaffoldProblems}). */
     problems: (files: ScaffoldedFiles, expected: ScaffoldExpectation) => string[]
@@ -254,7 +254,7 @@ export function manifestAdapter(manifest: KitManifest): TemplateAdapter {
     paths: { manifest: manifest.scaffold.appManifest, manifests, tomls: manifest.worker.tomls },
     scaffold: {
       workflowFile: SCAFFOLD_WORKFLOW_FILE,
-      files: scaffoldFiles,
+      files: () => scaffoldFiles(manifest),
       problems: (files, expected) => scaffoldProblemsFor(manifest, files, expected),
     },
     names: (slug, env, appsDomain) => appNames(slug, env, appsDomain, manifest),

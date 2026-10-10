@@ -8,7 +8,9 @@
  *
  * - `POST /token` → 200 `scaffoldTokenResponseSchema`, ONCE per ticket: claims the waiting scaffold
  *   ticket for this run, mints a one-hour installation token scoped to the one repo (`contents` +
- *   `workflows` write) and returns it with the plan. Nothing waiting, or already issued → 409
+ *   `workflows` write) and returns it with the plan — the app's kit at the pin its launch run
+ *   planned (D36 K3) — and, for a kit repo the GitHub App is installed on (a private kit), a
+ *   `kitToken` narrowed to that repo and `contents: read`. Nothing waiting, or already issued → 409
  *   `scaffold_token_unavailable`; GitHub refusing the mint → 502 (the ticket is then `failed`).
  *   Audit `app.scaffold.token_issued` — never the token. `Cache-Control: no-store`.
  * - `POST /done` `{ commit }` → 200: the ticket `finished` with `sha` = the pushed commit (the
@@ -20,10 +22,11 @@ import type { Context } from 'hono'
 import { auditActor, recordAudit } from '../services/launch/audit'
 import { resolveCaller } from '../services/launch/ci/caller'
 import { bearerToken, verifyGitHubOidc } from '../services/launch/ci/github-oidc'
-import { SCAFFOLD_WORKFLOW_FILE } from '../services/launch/rocketflare/scaffold-job'
+import { SCAFFOLD_WORKFLOW_FILE } from '../services/launch/scaffold/job'
 import {
   completeScaffold,
   issueScaffoldToken,
+  KIT_TOKEN_PERMISSIONS,
   SCAFFOLD_TOKEN_PERMISSIONS,
 } from '../services/launch/scaffold/service'
 import { SCAFFOLD_ENVIRONMENT } from '../services/launch/scaffold/tickets'
@@ -72,6 +75,11 @@ ciScaffoldRouter.post('/token', async c => {
         // A release: repo@tag; an unreleased commit (no tag): repo@<full sha>.
         kit: `${response.plan.kitRepo}@${response.plan.tag ?? response.plan.commit}`,
         kitCommit: response.plan.commit,
+        kitId: response.plan.kitId ?? null,
+        // D36 K3: a private kit's read token — whether one was handed out, never the token.
+        kitToken: response.kitToken
+          ? { repository: response.plan.kitRepo, permissions: KIT_TOKEN_PERMISSIONS }
+          : null,
       },
     },
   })

@@ -56,6 +56,7 @@ import {
   upsertRepoVariable,
 } from '../github-app'
 import { checkAppHealth, type HealthPollOptions } from '../health'
+import { appKitPin } from '../kit-pin'
 import { type AdapterApp, adapterFor, type TemplateAdapter } from '../kits/adapter'
 import type { WranglerEnvironment } from '../kits/app-manifest'
 import {
@@ -65,7 +66,8 @@ import {
   rotateAppOidcSecret,
 } from '../oidc-clients'
 import { publicUrlProblem } from '../public-url'
-import { SCAFFOLD_JOB_COMMIT_MESSAGES } from '../rocketflare/scaffold-job'
+import { SCAFFOLD_JOB_COMMIT_MESSAGES } from '../scaffold/job'
+import { scaffoldPinIds, scaffoldPinOf } from '../scaffold/service'
 import {
   cloudflareClient,
   loadPipelineVendors,
@@ -417,7 +419,11 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
       )
       if (refreshed.changed) await ctx.record({ scaffoldFilesCommit: refreshed.sha })
     }
-    const pin = vendors.settings.templatePin
+    // D36 K3: the APP's kit at its pin (the default kit's for an app with none), recorded on this
+    // row — the token route hands the job this pin, and `scaffold.verify` checks against it.
+    const pin = await appKitPin(d.db, app, vendors.settings.templatePin)
+    const pinIds = scaffoldPinIds(pin)
+    await ctx.record(pinIds)
     const plan: ScaffoldPlan = {
       slug: app.slug,
       displayName: app.displayName,
@@ -426,12 +432,13 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
       kitRepo: pin.repo,
       tag: pin.tag ?? null,
       commit: pin.commit,
+      kitId: (await d.adapterFor(app)).id,
     }
     const runner = ports.scaffoldRunner
     const ids = await runner.start(await scaffoldContext(d, app, ticketId, ctx), plan)
     // The job is on its way: its wait shows running from now, with no ids of an earlier job.
     await openWait(d.db, launchKey(params, 'scaffold.wait'))
-    return { scaffoldTicketId: ticketId, runner: runner.id, ...ids }
+    return { scaffoldTicketId: ticketId, runner: runner.id, ...pinIds, ...ids }
   })
 }
 
@@ -507,8 +514,12 @@ export function scaffoldWaitStep(d: PipelineDeps, params: AppLaunchParams) {
 export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'scaffold.verify'), async ctx => {
     const vendors = await d.vendors()
-    const pin = vendors.settings.templatePin
     const app = await loadApp(d.db, params)
+    // The pin `scaffold.start` planned (and the job was handed); a run from before D36 K3 recorded
+    // none, so the app's kit's pin then.
+    const pin =
+      scaffoldPinOf(await stepIds(d.db, launchKey(params, 'scaffold.start'))) ??
+      (await appKitPin(d.db, app, vendors.settings.templatePin))
     const adapter = await d.adapterFor(app)
     const repo = repoOf(app)
     const { token, owner } = await repoToken(vendors, repo.name, { contents: 'read' }, ctx)

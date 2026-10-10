@@ -34,6 +34,7 @@ import {
   apps,
   auditEvents,
   deployTickets,
+  kits,
   notifications,
   oidcClients,
 } from '@/db/schema'
@@ -785,6 +786,42 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
         )
       }
     })
+  })
+
+  it('an app of another kit is scaffolded at ITS kit’s pin, recorded for the token and verify (D36 K3)', async () => {
+    const kitPin = { tag: '2.0.0', commit: 'e'.repeat(40) }
+    const [kit] = await db
+      .insert(kits)
+      .values({
+        slug: `k3-company-kit-${crypto.randomUUID().slice(0, 8)}`,
+        name: 'Company kit',
+        repo: 'acme/company-kit',
+        pin: kitPin,
+        isDefault: false,
+      })
+      .returning()
+    if (!kit) throw new Error('kits insert returned no row')
+    try {
+      const launch = await h.request()
+      await db.update(apps).set({ kitId: kit.id }).where(eq(apps.id, launch.params.appId))
+      // The scaffold reports the default kit's version: verify holds it to the APP's kit's pin.
+      const { outcome } = await h.run(launch)
+      expect(outcome.status).toBe('failed')
+      expect(launch.ports.started[0]?.plan).toMatchObject({
+        kitRepo: 'acme/company-kit',
+        tag: kitPin.tag,
+        commit: kitPin.commit,
+      })
+      const byStep = await rows(launch)
+      expect(byStep['scaffold.start']?.externalIds).toMatchObject({
+        kitRepo: 'acme/company-kit',
+        kitTag: kitPin.tag,
+        kitCommit: kitPin.commit,
+      })
+      expect(byStep['scaffold.verify']?.error).toContain(`not ${kitPin.tag}`)
+    } finally {
+      await db.delete(kits).where(eq(kits.id, kit.id))
+    }
   })
 
   it('without deployStaging, records the deploy and health as skipped and still goes live', async () => {
