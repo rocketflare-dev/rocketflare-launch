@@ -1,0 +1,333 @@
+name: Deploy
+
+# Deployer protocol v1 (docs/DEPLOYER.md; launch.kit.json → release). DO NOT change the triggers,
+# the `environment` input, the `id-token: write` permissions or the deployer steps: Launch drives
+# releases through exactly these, and its deployer only accepts an OIDC token whose
+# `job_workflow_ref` is THIS file (.github/workflows/deploy.yml) in this repository.
+#
+#   push a tag X.Y.Z (== root package.json version)  → `staging`     apps/web/wrangler.staging.toml
+#   publish a GitHub Release on that tag              → `production`  apps/web/wrangler.toml, the
+#                                                       bytes staging built when it attached a bundle
+#   workflow_dispatch environment=staging|production  → that environment, from the ref dispatched
+#
+# Two paths, picked by the repository variable DEPLOYER_URL:
+#
+# - set (an app Launch deploys): CI holds NO Cloudflare token and NO database credential. Each job
+#   proves who it is with GitHub's OIDC token and `scripts/deployer.mjs` runs start (wait for
+#   approval) → build (`wrangler deploy --dry-run`, no credentials) → upload (the deployer checks
+#   every binding, stores an undeployed version, and only then returns short-lived migration
+#   credentials) → `pnpm db:migrate:ci` with them → activate → finish (always).
+# - unset (standalone, no Launch): migrate with the environment's DATABASE_URL secret and
+#   `wrangler deploy` with CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID secrets.
+#
+# Build once (deployer path, docs/DEPLOYER.md → Build once): on a tag, staging packs what it built
+# (`scripts/bundle.mjs pack`) and `release-bundle` attaches it to a DRAFT release; publishing the
+# draft deploys exactly those bytes to production.
+#
+# Nothing to deploy in the kit itself: its tomls keep <PLACEHOLDER> ids, so `guard` skips every job
+# unless this is a copy (.launch-app.json exists). A copy that was never provisioned fails loudly
+# at the provisioned check.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy (uses the ref you dispatch from)"
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Anything to deploy?
+    runs-on: ubuntu-latest
+    outputs:
+      deployable: ${{ steps.check.outputs.deployable }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -f .launch-app.json ]; then echo "deployable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deployable=false" >> "$GITHUB_OUTPUT"
+            echo "The kit itself has nothing to deploy (no .launch-app.json): every job is skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # A tag has not necessarily been through a pull request: gate it before staging.
+  ci:
+    needs: guard
+    if: |
+      needs.guard.outputs.deployable == 'true' && (
+        (github.event_name == 'push' && github.ref_type == 'tag') ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      )
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+
+  staging:
+    name: Deploy to staging
+    needs: [guard, ci]
+    if: |
+      needs.guard.outputs.deployable == 'true' && needs.ci.result == 'success' && (
+        (github.event_name == 'push' && github.ref_type == 'tag') ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      )
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOYER_URL: ${{ vars.DEPLOYER_URL }}
+      DEPLOYER_AUDIENCE: ${{ vars.DEPLOYER_AUDIENCE }}
+      TOML: apps/web/wrangler.staging.toml
+      DEPLOYER_OUTDIR: apps/web/dist/deploy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then VERSION="$GITHUB_REF_NAME"
+          else VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Tag matches the root version
+        if: github.ref_type == 'tag'
+        run: node -e "const v=require('./package.json').version; if (v !== process.env.TAG) { console.error('tag ' + process.env.TAG + ' != package.json version ' + v); process.exit(1) }"
+        env:
+          TAG: ${{ steps.version.outputs.version }}
+
+      - name: Both tomls are provisioned (no <PLACEHOLDER> left)
+        run: node scripts/kit-check.mjs --provisioned
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run database migrations (no deployer)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Ask the deployer to deploy (waits for approval)
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs start
+
+      - name: Build UI
+        run: pnpm --filter ./apps/web build:ui
+
+      - name: Build the Worker (dry run, no credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm --filter ./apps/web exec wrangler deploy --dry-run --outdir dist/deploy -c wrangler.staging.toml
+
+      - name: Pack the build for production (build once)
+        id: bundle
+        if: vars.DEPLOYER_URL != '' && github.ref_type == 'tag'
+        run: node scripts/bundle.mjs pack
+        env:
+          BUNDLE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Hand the build to the deployer
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs upload
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Run database migrations (deployer credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ env.MIGRATOR_URL }}
+
+      - name: "Deploy: activate the uploaded version"
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs activate
+
+      - name: Keep the bundle for the release
+        if: vars.DEPLOYER_URL != '' && github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-bundle
+          path: ${{ steps.bundle.outputs.file }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Deploy with wrangler (no deployer)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm --filter ./apps/web exec wrangler deploy -c wrangler.staging.toml --var "RELEASE_VERSION:${{ steps.version.outputs.version }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Always, even after a failure or a rejection: revokes the migration credentials and closes
+      # the ticket. A no-op when `start` never opened one.
+      - name: Tell the deployer the deploy is over
+        if: always() && vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs finish
+
+  # Its own job so `contents: write` is never held by a job that installs and builds third-party
+  # code. A DRAFT release, never a published one: publishing fires `release: published`, which is
+  # production's trigger. Never fails the run: staging is already live.
+  release-bundle:
+    name: Attach the staging bundle to the release (draft)
+    needs: staging
+    if: |
+      !cancelled() && needs.staging.result == 'success' &&
+      vars.DEPLOYER_URL != '' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TOML: apps/web/wrangler.staging.toml
+      BUNDLE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: launch-bundle
+          path: bundle
+      - name: Verify and attach the bundle
+        id: attach
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
+        run: node scripts/bundle.mjs attach "bundle/launch-bundle-$BUNDLE_TAG.tgz"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Production will build from the tag (the bundle was not attached)
+        if: steps.attach.outcome != 'success'
+        run: echo "::warning title=Build once::The bundle was not attached; publishing the release builds production from the tag."
+      - name: Prune unpromoted bundle drafts
+        if: steps.attach.outcome == 'success'
+        continue-on-error: true
+        run: node scripts/bundle.mjs prune
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUNDLE_KEEP_DRAFTS: ${{ vars.BUNDLE_KEEP_DRAFTS }}
+
+  production:
+    name: Deploy to production
+    needs: guard
+    if: |
+      needs.guard.outputs.deployable == 'true' && (
+        github.event_name == 'release' ||
+        (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+      )
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOYER_URL: ${{ vars.DEPLOYER_URL }}
+      DEPLOYER_AUDIENCE: ${{ vars.DEPLOYER_AUDIENCE }}
+      TOML: apps/web/wrangler.toml
+      DEPLOYER_OUTDIR: apps/web/dist/deploy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then VERSION="${{ github.event.release.tag_name }}"
+          else VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Release tag matches the root version
+        if: github.event_name == 'release'
+        run: node -e "const v=require('./package.json').version; if (v !== process.env.TAG) { console.error('tag ' + process.env.TAG + ' != package.json version ' + v); process.exit(1) }"
+        env:
+          TAG: ${{ steps.version.outputs.version }}
+
+      - name: Both tomls are provisioned (no <PLACEHOLDER> left)
+        run: node scripts/kit-check.mjs --provisioned
+
+      - name: Use the staging bundle when the release carries one
+        id: bundle
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/bundle.mjs fetch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUNDLE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name || '') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run database migrations (no deployer)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Ask the deployer to deploy (waits for approval)
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs start
+
+      - name: Build UI
+        if: vars.DEPLOYER_URL == '' || steps.bundle.outputs.source != 'bundle'
+        run: pnpm --filter ./apps/web build:ui
+
+      - name: Build the Worker (dry run, no credentials)
+        if: vars.DEPLOYER_URL != '' && steps.bundle.outputs.source != 'bundle'
+        run: pnpm --filter ./apps/web exec wrangler deploy --dry-run --outdir dist/deploy
+
+      - name: Hand the build to the deployer
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs upload
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          DEPLOYER_SOURCE: ${{ steps.bundle.outputs.source }}
+
+      - name: Run database migrations (deployer credentials)
+        if: vars.DEPLOYER_URL != ''
+        run: pnpm db:migrate:ci
+        env:
+          DATABASE_URL: ${{ env.MIGRATOR_URL }}
+
+      - name: "Deploy: activate the uploaded version"
+        if: vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs activate
+
+      - name: Deploy with wrangler (no deployer)
+        if: vars.DEPLOYER_URL == ''
+        run: pnpm --filter ./apps/web exec wrangler deploy --var "RELEASE_VERSION:${{ steps.version.outputs.version }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Tell the deployer the deploy is over
+        if: always() && vars.DEPLOYER_URL != ''
+        run: node scripts/deployer.mjs finish

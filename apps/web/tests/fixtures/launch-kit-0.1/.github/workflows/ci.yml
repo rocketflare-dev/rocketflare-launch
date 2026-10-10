@@ -1,0 +1,60 @@
+name: CI
+
+# The quality gate, in ONE job named `Gate` — the check Launch requires before it merges
+# (launch.kit.json → ci.requiredCheck). It runs the secrets scan, then `pnpm gate`: lint, typecheck,
+# test, build — the same command a person runs before committing and Launch's ship gate runs in a
+# session. `pnpm test` starts the test Postgres itself (docker-compose.test.yml).
+#
+# Verified once (for an app Launch ships): with the repository variable LAUNCH_GATE_APP_ID set to
+# Launch's GitHub App id, the first step asks whether Launch already gated this exact tree — a
+# `launch/gate` check run from THAT app whose external_id is `tree:<tree sha>`
+# (scripts/gate-verified.mjs, rules in scripts/lib/gate-verified-lib.mjs). If so, `Gate` runs only
+# what the session does not: gitleaks and `pnpm gate build`. Variable unset: the full gate.
+#
+# deploy.yml calls this file (`workflow_call`) to gate a tag before staging.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for the gitleaks scan
+      - name: Verified by Launch?
+        id: verified
+        if: vars.LAUNCH_GATE_APP_ID != ''
+        run: node scripts/gate-verified.mjs
+        env:
+          LAUNCH_GATE_APP_ID: ${{ vars.LAUNCH_GATE_APP_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --exit-code 1 --verbose .
+      - name: pnpm gate build (the rest passed in Launch on this tree)
+        if: steps.verified.outputs.verified == 'true'
+        run: pnpm gate build
+      - if: steps.verified.outputs.verified != 'true'
+        run: pnpm gate

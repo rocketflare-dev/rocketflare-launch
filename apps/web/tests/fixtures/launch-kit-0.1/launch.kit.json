@@ -1,0 +1,116 @@
+{
+  "$comment": "The Launch kit contract (schema 1). Says what this kit calls things and how Launch drives it. FORKING.md says which fields you may change. Check it with: node scripts/kit-check.mjs",
+  "schema": 1,
+  "kit": {
+    "id": "launch-kit",
+    "name": "Launch Kit",
+    "description": "The smallest app that passes the Launch kit contract: a Hono Worker, Neon Postgres, OIDC sign-in and one page. Fork it and fill it in.",
+    "repo": "https://github.com/rocketflare-dev/launch-kit.git",
+    "version": {
+      "file": "package.json",
+      "field": "version"
+    },
+    "tagPattern": "^\\d+\\.\\d+\\.\\d+$"
+  },
+  "scaffold": {
+    "init": "node scripts/init.mjs {slug} {display} --domain {domain} --force --skip-install",
+    "kitOnly": [
+      ".github/workflows/kit.yml",
+      "FORKING.md",
+      "docs/upgrades/**",
+      "scripts/tests/kit-only/**"
+    ],
+    "postInit": ["pnpm install --no-frozen-lockfile", "pnpm lint:fix"],
+    "appManifest": ".launch-app.json",
+    "$tokens": "Not read by Launch. The literal strings scripts/init.mjs replaces in a copy: the kit slug (also every resource name prefix), display name and domain. Change them here if you rename them in the files.",
+    "tokens": {
+      "slug": "launch-kit",
+      "display": "Launch Kit",
+      "domain": "launch-kit.dev"
+    }
+  },
+  "worker": {
+    "tomls": {
+      "production": "apps/web/wrangler.toml",
+      "staging": "apps/web/wrangler.staging.toml"
+    },
+    "naming": {
+      "pattern": "{slug}-{suffix}",
+      "stagingSuffix": "-staging"
+    }
+  },
+  "launchProvides": {
+    "appUrl": "APP_URL",
+    "databaseUrl": "DATABASE_URL",
+    "databaseDriver": {
+      "name": "DATABASE_DRIVER",
+      "value": "neon"
+    },
+    "oidc": {
+      "issuer": "OIDC_ISSUER",
+      "clientId": "OIDC_CLIENT_ID",
+      "clientSecret": "OIDC_CLIENT_SECRET",
+      "only": "AUTH_OIDC_ONLY"
+    },
+    "bootstrapAdmins": "BOOTSTRAP_ADMIN_EMAILS",
+    "generated": [
+      {
+        "name": "SESSION_SECRET",
+        "kind": "hex64"
+      }
+    ],
+    "vars": {}
+  },
+  "declaredConfig": {
+    "optional": []
+  },
+  "database": {
+    "roles": {
+      "migrator": "migrator",
+      "app": "app"
+    },
+    "extensions": [],
+    "migrate": "pnpm db:migrate:ci"
+  },
+  "health": {
+    "live": "/api/health",
+    "ready": "/api/ready"
+  },
+  "ci": {
+    "requiredCheck": "Gate",
+    "gateList": "pnpm gate --list --json",
+    "gateRun": "pnpm gate {step}",
+    "verifiedVariable": "LAUNCH_GATE_APP_ID",
+    "testEnv": {
+      "branch": "TEST_DATABASE_BRANCH",
+      "endpoint": "TEST_DATABASE_ENDPOINT"
+    }
+  },
+  "release": {
+    "workflow": "deploy.yml",
+    "environmentInput": "environment",
+    "deployerProtocol": 1
+  },
+  "session": {
+    "install": "pnpm install --frozen-lockfile --prefer-offline",
+    "bootstrap": "node scripts/bootstrap.mjs --db-url {dbUrl} --driver neon --no-install --no-dev --yes",
+    "devStart": "node scripts/dev.mjs start",
+    "devStop": "node scripts/dev.mjs stop",
+    "ports": {
+      "ui": "DEV_UI_PORT",
+      "api": "DEV_API_PORT",
+      "allowedHosts": "DEV_ALLOWED_HOSTS"
+    },
+    "writes": ["apps/web/.dev.vars"],
+    "env": {
+      "skip": "KIT_BOOTSTRAP_SKIP",
+      "allowRoot": "KIT_ALLOW_ROOT"
+    }
+  },
+  "upgrade": {
+    "command": "node scripts/upgrade.mjs --to {to} --apply",
+    "skill": ".claude/skills/upgrade/SKILL.md",
+    "notes": "docs/upgrades/{version}.md",
+    "doneMarker": "LAUNCH-UPGRADE:"
+  }
+}

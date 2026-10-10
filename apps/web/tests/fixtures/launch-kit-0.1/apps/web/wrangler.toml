@@ -1,0 +1,34 @@
+# The production Worker. wrangler.toml and wrangler.staging.toml have the SAME shape: same bindings,
+# same keys, same compatibility settings. Only account-scoped names differ (`-staging`) and the
+# ids, which stay `<PLACEHOLDER>`s in the kit and in a copy until Launch provisions it
+# (launch.kit.json → worker). `node scripts/kit-check.mjs` holds both files to that.
+#
+# Only binding kinds Launch can provision: KV, Queues, R2, Durable Objects, Workflows, AI, assets.
+# No routes: Launch owns the app's hostnames. Secrets (DATABASE_URL, SESSION_SECRET,
+# OIDC_CLIENT_SECRET) never go here — Launch sets them as Worker secrets.
+name = "launch-kit"
+main = "src/worker.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ENV = "production"
+APP_URL = "https://app.launch-kit.dev"
+APP_NAME = "Launch Kit"
+RELEASE_VERSION = "dev"
+DATABASE_DRIVER = "neon"
+AUTH_OIDC_ONLY = "true"
+
+[observability]
+enabled = true
+
+[assets]
+directory = "./dist/ui"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/auth/*"]
+
+# Sign-in attempts per client, per minute (src/rate-limit.ts).
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "<RATE_LIMIT_KV_ID>"

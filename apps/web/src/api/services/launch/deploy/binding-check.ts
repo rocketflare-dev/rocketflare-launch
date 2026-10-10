@@ -112,6 +112,16 @@ const INERT_KEYS = new Set([
   'env',
 ])
 
+/**
+ * The top-level keys of a wrangler config (a parsed toml, or the JSON a build emits) that this
+ * check would refuse — any binding kind Launch does not provision, a route, or a key it does not
+ * know. The kit conformance check (D36, `kits/conformance.ts`) reads a kit's committed tomls
+ * through this, so "provisionable" means exactly what the deploy gateway lets through.
+ */
+export function unprovisionableKeys(config: Record<string, unknown>): string[] {
+  return Object.keys(config).filter(key => !ALLOWED_BINDING_KEYS.has(key) && !INERT_KEYS.has(key))
+}
+
 /** Refused outright, with the field that best names what the binding points at. */
 const REFUSED_KINDS: Record<string, string[]> = {
   services: ['service'],

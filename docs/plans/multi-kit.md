@@ -1,6 +1,7 @@
 # Several kits, one contract: design
 
-**Status:** proposed, 2026-10-10. Not started. Proposes decision **D36**. It supersedes in part
+**Status:** accepted, 2026-10-10. **K1 built** (2026-10-10, `docs/CONCEPTS.md` §18.24); K2–K6 not
+started. Decision **D36**. It supersedes in part
 [spec/02](../../spec/02-template-contract.md), which says Rocketflare is the only template. Open
 questions are in §9.
 
@@ -90,20 +91,21 @@ that thing.
 | Block | Declares | Replaces in Launch today |
 |---|---|---|
 | `schema` | `1` | — |
-| `kit` | `id`, `name`, `description`, `icon`; version source (root `package.json` `version`); release tag pattern (`X.Y.Z`) | `id: 'rocketflare'`; `latestKitTag`'s tag rule in `kit-pin.ts` |
+| `kit` | `id`, `name`, `description`, `icon`, `repo` (where a copy's upgrade fetches the kit); version source (root `package.json` `version`); release tag pattern (`X.Y.Z`) | `id: 'rocketflare'`; `latestKitTag`'s tag rule in `kit-pin.ts` |
 | `scaffold.init` | A non-interactive command template, with `{slug}`, `{display}` and `{domain}` substituted. Its exit codes are 0 for ok, 1 for an error and 2 for a usage error | the `rename.mjs` call in `scaffold-job.ts` |
 | `scaffold.kitOnly` | Paths deleted from a copy | `KIT_ONLY_FILES` in `scaffold-job.ts` |
 | `scaffold.postInit` | Commands run after init (install, lint:fix) | the hardcoded `pnpm install` / `pnpm lint:fix` |
 | `scaffold.appManifest` | The path where a copy records `app {slug, display, domain}` and `kit {id, version, commit}` | `MANIFEST_PATHS` (`.rocketflare.json`, `launch.plugins.json`), `stampKitCommit` |
 | `worker.tomls` | The toml path per environment | `WRANGLER_PATHS` |
 | `worker.naming` | Resources are named `<slug>-<suffix>[-staging]`; ids are `<NAME_ID>` placeholders | `names.ts`, `KIT_BINDINGS`, the binding checks in `scaffoldProblems` |
+| `worker.titles` (optional) | A KV namespace's title suffix per binding (a KV has no name in the toml, only an id); absent, the binding name lowercased with `_` → `-` (`kvTitleSuffix`) | `kvTitle` in `names.ts` |
 | `launchProvides` | Launch's vocabulary mapped to the kit's own names: `appUrl`, `emailFrom`, `databaseUrl`, `databaseDriver`, `oidc.{issuer,clientId,clientSecret,only}`, `bootstrapAdmins`, `emailApiKey`; `generated: [{ name, kind: 'hex64' }]`; fixed `vars` (`TENANCY_MODE`, …) | `ROCKETFLARE_WORKER_SECRETS`, `launchVars` in `toml.ts`, `adapter.auth` |
 | `declaredConfig` | Optional secrets and vars; where plugin manifests live, if the kit has plugins | `KIT_OPTIONAL_CONFIG` in `declared-config.ts` |
 | `database` | `roles` (`migrator`, `app`); `extensions` (`vector`); the CI migrate command; the rule for naming the app's RLS role | `provision-neon.ts`, `deploy/migrator.ts`, `appRlsRoleFor` |
-| `health` | `live` and `ready` paths | `adapter.health` |
-| `ci` | The required check (`Gate`); the gate-list command (gate schema 1); the gate-verified variable; the gate's test env names | `KIT_REQUIRED_CHECK`, `sessions/gate.ts`, `gate-branch.ts`, `gate-variable.ts` |
-| `release` | The workflow file; the name of its environment input; `deployerProtocol: 1` | `deploy.yml` in three places (`adapter.ts`, `pipeline/ports.ts`, `releases/github.ts`) |
-| `session` | `install`; `bootstrap` (with `{dbUrl}`); `devStart` and `devStop`; the env names for the dev ports; the files Launch may write; the env names for skipping steps and allowing root | `sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, `BOOTSTRAP_COMMAND`, the preload, the ports, `SESSION_KIT_TAG`) |
+| `health` | `live` and `ready` paths; `live` SHOULD answer JSON including `version` (not checked) | `adapter.health` |
+| `ci` | The required check (`Gate`); the gate-list command (gate schema 1 — its output may follow a package manager's header lines; readers take the outermost `{…}`); the gate-verified variable; the gate's test env names | `KIT_REQUIRED_CHECK`, `sessions/gate.ts`, `gate-branch.ts`, `gate-variable.ts` |
+| `release` | The workflow file; the name of its environment input (which must offer `staging` and `production`); `deployerProtocol: 1` | `deploy.yml` in three places (`adapter.ts`, `pipeline/ports.ts`, `releases/github.ts`) |
+| `session` | `install`; `bootstrap` (with `{dbUrl}`, which Launch fills with the shell reference `"$LAUNCH_DB_URL"` — the URL travels only in the environment); `devStart` and `devStop`; the env names for the dev ports; the files Launch may write; the env names for skipping steps and allowing root | `sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, `BOOTSTRAP_COMMAND`, the preload, the ports, `SESSION_KIT_TAG`) |
 | `upgrade` (optional) | The command (`{to}`); the skill path; the pattern for the notes path; the done marker | `rocketflare/upgrade-prompt.ts`, `launch-upgrades.ts` notes URL |
 | `plugins` (optional) | Default plugins and a catalogue ref | the scaffold's `default-plugins.mjs` step; [create-app-interview](create-app-interview.md) §2.2 |
 | `modules` (optional) | Core modules an app may drop, for the interview's panel | create-app-interview §1 |
@@ -212,6 +214,26 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
     installation. Today the code assumes the repo is public (`kit-pin.ts:20-23`), and the scaffold
     job clones anonymously.
   - `/api/platform/kits`, with `launch kits ls|add|check|pin|default` (CLI parity).
+  - **Built (2026-10-10).** As above, plus `launch kits show|rm` and a minimal Kits list on
+    Settings → Kit version (Check, Make default, Add). Where it differs from this section:
+    - the built-in Rocketflare row may hold NO pin — it then follows `DEFAULT_TEMPLATE_PIN`, as an
+      unset `template_pin` did — so "Reset to default" keeps its meaning; the migration copies a
+      stored `template_pin` into it, and the setting stays as a mirror (and a fallback read) for
+      one release so a rollback reads the same pin;
+    - `kits` also carries `description`, `manifest_source` (`repo` | `fallback`), `latest_check`
+      (each kit's Follow latest lookup) and `created_by_user_id`;
+    - `verified` means the STATIC check passed: the dynamic check (§7) is K3's, with the scaffold
+      job; the scaffold still clones the kit anonymously, so a private kit registers and checks but
+      cannot scaffold until K3;
+    - the contract gained, from building the meta-kit: `kit.repo`, `worker.titles` (+ the shared
+      `kvTitleSuffix` helper), `launchProvides.oidc.label` (Launch writes `OIDC_LABEL`), and the
+      notes on `{dbUrl}`, `ci.gateList`, `release.environmentInput` and `health.live` above;
+      `database.roles` is an object (`{ migrator, app }`) — Appendix A is now the shipped fallback
+      verbatim, and a test holds the two equal;
+    - Launch's static check is a subset of the meta-kit's `scripts/kit-check.mjs` (it does not yet
+      check the deployer's start → upload → activate → finish steps, the deploy jobs'
+      environments, the commands' entry points, the version file or the gate-verified variable);
+      a test runs it over the meta-kit 0.1.0 (`tests/fixtures/launch-kit-0.1/`).
 - **K2: an adapter built from the manifest.**
   - `manifestAdapter(manifest)` builds a `TemplateAdapter`, and `adapterFor(app)` resolves it. `id`
     widens to `string`.
@@ -265,7 +287,9 @@ pointer to this doc.
 
 ## Appendix A: Rocketflare 0.18 expressed as a manifest
 
-Values are taken from the kit and from Launch's current constants.
+Values are taken from the kit and from Launch's current constants. This is, verbatim, the built-in
+fallback Launch ships (`services/launch/kits/rocketflare-fallback.ts`);
+`tests/config/kit-manifest.test.ts` parses this block and holds the two equal.
 
 ```json
 {
@@ -274,7 +298,11 @@ Values are taken from the kit and from Launch's current constants.
     "id": "rocketflare",
     "name": "Rocketflare",
     "description": "Multi-tenant SaaS starter for internal tools and B2B products",
-    "version": { "file": "package.json", "field": "version" },
+    "repo": "https://github.com/rocketflare-dev/rocketflare.git",
+    "version": {
+      "file": "package.json",
+      "field": "version"
+    },
     "tagPattern": "^\\d+\\.\\d+\\.\\d+$"
   },
   "scaffold": {
@@ -285,56 +313,114 @@ Values are taken from the kit and from Launch's current constants.
       ".github/workflows/plugin-ci.yml",
       ".github/workflows/notify-plugins.yml"
     ],
-    "postInit": ["pnpm install --no-frozen-lockfile", "pnpm lint:fix"],
+    "postInit": [
+      "pnpm install --no-frozen-lockfile",
+      "pnpm lint:fix"
+    ],
     "appManifest": ".rocketflare.json"
   },
   "worker": {
-    "tomls": { "production": "apps/web/wrangler.toml", "staging": "apps/web/wrangler.staging.toml" },
-    "naming": { "pattern": "{slug}-{suffix}", "stagingSuffix": "-staging" }
+    "tomls": {
+      "production": "apps/web/wrangler.toml",
+      "staging": "apps/web/wrangler.staging.toml"
+    },
+    "naming": {
+      "pattern": "{slug}-{suffix}",
+      "stagingSuffix": "-staging"
+    },
+    "titles": {
+      "RATE_LIMIT_KV": "rate-limit"
+    }
   },
   "launchProvides": {
     "appUrl": "APP_URL",
     "emailFrom": "EMAIL_FROM",
     "databaseUrl": "DATABASE_URL",
-    "databaseDriver": { "name": "DATABASE_DRIVER", "value": "neon" },
+    "databaseDriver": {
+      "name": "DATABASE_DRIVER",
+      "value": "neon"
+    },
     "oidc": {
       "issuer": "OIDC_ISSUER",
       "clientId": "OIDC_CLIENT_ID",
       "clientSecret": "OIDC_CLIENT_SECRET",
+      "label": "OIDC_LABEL",
       "only": "AUTH_OIDC_ONLY"
     },
     "bootstrapAdmins": "BOOTSTRAP_ADMIN_EMAILS",
     "emailApiKey": "RESEND_API_KEY",
-    "generated": [{ "name": "OAUTH_ENCRYPTION_KEY", "kind": "hex64" }],
-    "vars": { "TENANCY_MODE": "single", "SIGNUP_MODE": "open" }
+    "generated": [
+      {
+        "name": "OAUTH_ENCRYPTION_KEY",
+        "kind": "hex64"
+      }
+    ],
+    "vars": {
+      "TENANCY_MODE": "single",
+      "SIGNUP_MODE": "open"
+    }
   },
   "declaredConfig": {
-    "optional": ["ANTHROPIC_API_KEY", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "OTEL_EXPORTER_OTLP_HEADERS"],
+    "optional": [
+      "ANTHROPIC_API_KEY",
+      "EMBEDDINGS_API_KEY",
+      "FIREWORKS_API_KEY",
+      "GEMINI_API_KEY",
+      "LANGFUSE_PUBLIC_KEY",
+      "LANGFUSE_SECRET_KEY",
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "OTEL_EXPORTER_OTLP_HEADERS"
+    ],
     "pluginManifests": "apps/web/src/plugins/*/plugin.json"
   },
   "database": {
-    "roles": ["migrator", "app"],
-    "extensions": ["vector"],
+    "roles": {
+      "migrator": "migrator",
+      "app": "app"
+    },
+    "extensions": [
+      "vector"
+    ],
     "migrate": "pnpm db:migrate:ci",
     "rlsRole": "{slug_snake}_app"
   },
-  "health": { "live": "/api/health", "ready": "/api/ready" },
+  "health": {
+    "live": "/api/health",
+    "ready": "/api/ready"
+  },
   "ci": {
     "requiredCheck": "Gate",
     "gateList": "pnpm gate --list --json",
     "gateRun": "pnpm gate {step}",
     "verifiedVariable": "LAUNCH_GATE_APP_ID",
-    "testEnv": { "branch": "TEST_DATABASE_BRANCH", "endpoint": "TEST_DATABASE_ENDPOINT" }
+    "testEnv": {
+      "branch": "TEST_DATABASE_BRANCH",
+      "endpoint": "TEST_DATABASE_ENDPOINT"
+    }
   },
-  "release": { "workflow": "deploy.yml", "environmentInput": "environment", "deployerProtocol": 1 },
+  "release": {
+    "workflow": "deploy.yml",
+    "environmentInput": "environment",
+    "deployerProtocol": 1
+  },
   "session": {
-    "install": "pnpm install --frozen-lockfile --prefer-offline",
+    "install": "pnpm install --frozen-lockfile --prefer-offline --reporter=silent",
     "bootstrap": "node scripts/bootstrap.mjs --db-url {dbUrl} --driver neon --offline --no-dev --no-open --no-plugins --yes",
     "devStart": "node apps/web/scripts/dev-server.mjs --start",
     "devStop": "pnpm dev:stop",
-    "ports": { "ui": "DEV_UI_PORT", "api": "DEV_API_PORT", "allowedHosts": "DEV_ALLOWED_HOSTS" },
-    "writes": ["apps/web/.dev.vars", "apps/web/wrangler.session.toml"],
-    "env": { "skip": "ROCKETFLARE_BOOTSTRAP_SKIP", "allowRoot": "ROCKETFLARE_ALLOW_ROOT" }
+    "ports": {
+      "ui": "DEV_UI_PORT",
+      "api": "DEV_API_PORT",
+      "allowedHosts": "DEV_ALLOWED_HOSTS"
+    },
+    "writes": [
+      "apps/web/.dev.vars",
+      "apps/web/wrangler.session.toml"
+    ],
+    "env": {
+      "skip": "ROCKETFLARE_BOOTSTRAP_SKIP",
+      "allowRoot": "ROCKETFLARE_ALLOW_ROOT"
+    }
   },
   "upgrade": {
     "command": "pnpm kit:upgrade --to {to} --apply",
