@@ -24,6 +24,16 @@
   upgrade is never shown as behind. A kit can now mark optional config as plain (`plain`) and
   generate its secret as hex or base64; the built-in Rocketflare manifest's `plugins.add` now
   passes the plugin's ref and subdir.
+- **Coding sessions follow the app's kit (D36 K4).** A session now brings an app up with its kit's
+  own commands (`session.install`, `session.bootstrap`, `session.devStart` / `devStop`), writes
+  Launch's ports under the kit's names into the `.dev.vars` the kit allows, runs the ship gate from
+  the kit's `ci.gateList` / `ci.gateRun` with its test variable names, gives the session database
+  the kit's RLS role and extensions (none when it declares none), sets the gate-verified variable
+  the kit names (or none), reads the upgrade answer by the kit's done marker, and lets an upgrade
+  session fetch its app's kit — a private kit through a read-only token Launch adds in its git
+  proxy, never in the container. Rocketflare sessions run exactly as before; other kits install
+  their packages cold (the session image warms Rocketflare's only). The session system note's ports
+  are now `{{uiPort}}` / `{{apiPort}}`; `sessions/rocketflare-dev.ts` is `sessions/kit-dev.ts`.
 
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with

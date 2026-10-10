@@ -13,7 +13,7 @@ import {
   claudeTurnEnv,
   createClaudeStreamParser,
 } from '../../claude-stream'
-import { claudeSettingsLocal, SESSION_WORKSPACE } from '../../rocketflare-dev'
+import { claudeSettingsLocal, SESSION_WORKSPACE } from '../../kit-dev'
 import { processRuntime } from '../process'
 import type { CliAdapter, RuntimeRunSummary } from '../types'
 import { leaseClaudeUserCredential } from './credentials'

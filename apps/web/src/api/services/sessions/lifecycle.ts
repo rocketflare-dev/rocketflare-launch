@@ -61,7 +61,7 @@ import { appMonthSpend } from './budget'
 import { requireSessionWorkflow, type WarnLogger, wakeSession } from './chat'
 import { resolveSessionCredential, runtimeReadiness } from './credentials/resolve'
 import { nudgeSession } from './events'
-import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
+import { SESSION_IMAGE_VERSION } from './kit-dev'
 import { resolveNewSandboxHost } from './sandbox-host'
 
 // ---- settings ----------------------------------------------------------------------------------

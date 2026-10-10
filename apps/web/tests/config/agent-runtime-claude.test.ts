@@ -17,7 +17,7 @@ import {
   claudeTranscriptPath,
   SESSION_HOME,
   SESSION_WORKSPACE,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
 import { resumeIdOf, runtimeFor, runtimeOf } from '@/api/services/sessions/runtimes'
 import { claudeCodeRuntime } from '@/api/services/sessions/runtimes/claude-code'
 import { codexRuntime } from '@/api/services/sessions/runtimes/codex'

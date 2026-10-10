@@ -1,7 +1,38 @@
 /**
- * How a Rocketflare checkout (kit 0.15) is brought up inside a session's sandbox — the
- * `devBootstrap` of spec/02, as Launch drives it (plan §3b, S7). Everything here goes through the
- * `SandboxPort`, so it runs the same against a real container and a `FakeSandbox`.
+ * How an app's checkout is brought up inside a session's sandbox — the `devBootstrap` of spec/02,
+ * as Launch drives it (plan §3b, S7; D36 K4). Everything here goes through the `SandboxPort`, so it
+ * runs the same against a real container and a `FakeSandbox`.
+ *
+ * **Driven by the app's kit manifest** (`launch.kit.json` `session`, D36 K4 — {@link SessionKit},
+ * {@link sessionKitOf}): the install, the bootstrap (`{dbUrl}` → the shell reference
+ * `"$LAUNCH_DB_URL"`; the URL only ever in the command's environment), the dev start and stop, the
+ * env names the ports (and the preview's allowed hosts) are written under, the file they are written
+ * to (`session.writes`' `.dev.vars`), and the kit's skip and allow-root variables. The PORTS are
+ * Launch's choice ({@link SESSION_UI_PORT} / {@link SESSION_API_PORT}); the kit only names them.
+ * A step reaches the kit through `SessionDevEnv.kit` (absent: the Rocketflare fallback's).
+ *
+ * **Rocketflare is the legacy path** (`kit.id === 'rocketflare'`, {@link SessionKit.legacy}), with
+ * pieces the contract has no field for, kept exactly as they were before D36 (multi-kit.md §4,
+ * "two things Launch does to Rocketflare have no field"):
+ *
+ * - the bootstrap PRELOAD ({@link NOT_ROOT_PRELOAD}: the root stand-in, the `db:migrate` / `seed` /
+ *   `whoami` / `db:check` rewrites, the tracked-file guard) and its feature detection of the kit's
+ *   own flags ({@link checkoutTakesKitFlags}, 0.17.4+);
+ * - the `[ai]` toggle the kit's `--offline` makes, the session's own `wrangler.session.toml` and
+ *   wrangler's redirect ({@link SESSION_WRANGLER_SCRIPT}), and the repair of what an earlier Launch
+ *   committed ({@link healDevSetup});
+ * - the direct dev-server start ({@link DEV_START_COMMAND}) with `pnpm dev` as its fallback, and
+ *   `NEON_LOCAL_PROXY` emptied in `.dev.vars`;
+ * - the resume's migrate decision by the hash of `apps/web/migrations` ({@link MIGRATIONS_DIR});
+ * - the image's warm pnpm store ({@link SESSION_KIT_TAG}, `containers/session/Dockerfile`).
+ *
+ * Any other kit gets the generic path ({@link sessionBootstrap}, {@link startDevServer}): its own
+ * commands as written, the ports in the environment and in its `.dev.vars`, `session.env.allowRoot`
+ * `=1` and `session.env.skip` with Launch's step names ({@link GENERIC_SKIP_STEP}); it installs cold
+ * (the image's store is Rocketflare's) and migrates on every bootstrap (the contract names no
+ * migrations directory to hash).
+ *
+ * The Rocketflare path, step by step —
  *
  * `sessionBootstrap(ctx)` — the `bootstrap` step (and a `prepare` run's migrate + seed):
  *
@@ -63,6 +94,12 @@
  * bootstrap command and in the checkout's git-ignored `.dev.vars`; never in an argument, a step
  * result or an event.
  */
+
+import { fillTemplate, type KitManifest } from '@launch/shared/kit-manifest'
+import {
+  ROCKETFLARE_KIT_ID,
+  rocketflareFallbackManifest,
+} from '../launch/kits/rocketflare-fallback'
 import {
   BackgroundCommandTimeoutError,
   formatDuration,
@@ -80,6 +117,95 @@ export const SESSION_KIT_TAG = '0.16.0'
 export const SESSION_UI_PORT = 5173
 /** The app's `wrangler dev` API, behind Vite's `/api` proxy. */
 export const SESSION_API_PORT = 8787
+
+// ---- the kit's session contract (D36 K4) -------------------------------------------------------
+
+/** What `{dbUrl}` becomes in `session.bootstrap`: a shell REFERENCE, never the URL itself. */
+export const BOOTSTRAP_DB_URL_REF = '"$LAUNCH_DB_URL"'
+
+/**
+ * Launch's step names in `session.env.skip` (generic kits): what a bootstrap leaves out, by
+ * {@link BootstrapSkip}. `install`: Launch ran `session.install` itself (or a prebuild did);
+ * `database`: the database check, on a resume against a database Launch already prepared;
+ * `migrate`: unused today (the contract names no migrations directory, so a generic kit migrates
+ * on every bootstrap). There is no `seed`: a kit's seed must be idempotent, as its bootstrap runs
+ * again on a cold resume. A kit's bootstrap must accept each of these names (the meta-kit's
+ * `KIT_BOOTSTRAP_SKIP` does: `install, database, devvars, migrate`).
+ */
+export const GENERIC_SKIP_STEP: Partial<Record<BootstrapSkip, string>> = {
+  install: 'install',
+  'db-check': 'database',
+  migrate: 'migrate',
+}
+
+/**
+ * How Launch drives one kit's checkout in a session — the manifest's `session` block (plus the
+ * names it needs from `launchProvides` and `health`), resolved once. {@link sessionKitOf}.
+ */
+export interface SessionKit {
+  /** `kit.id`. */
+  id: string
+  /** The Rocketflare legacy path (see the header): `kit.id === 'rocketflare'`. */
+  legacy: boolean
+  /** `session.install`. */
+  install: string
+  /** `session.bootstrap`, `{dbUrl}` filled with {@link BOOTSTRAP_DB_URL_REF}. */
+  bootstrap: string
+  /** `session.devStart`. */
+  devStart: string
+  /** `session.devStop`; null: Launch stops the dev server by its pid. */
+  devStop: string | null
+  /** The env names the dev servers read Launch's ports (and the preview's hosts) from. */
+  ports: { ui: string; api: string; allowedHosts: string | null }
+  /** Where the dev-server keys are written (a `.dev.vars` in `session.writes`); null: nowhere. */
+  devVarsFile: string | null
+  /** The var the Worker reads its own URL from (`launchProvides.appUrl`). */
+  appUrlVar: string
+  /** The var (and value) that puts the app on Neon's serverless driver, when the kit has one. */
+  driver: { name: string; value: string } | null
+  /** `session.env.skip`: the kit's variable naming steps to leave out. */
+  skipEnv: string | null
+  /** `session.env.allowRoot`: the kit's variable that lets its bootstrap run as uid 0. */
+  allowRootEnv: string | null
+  /** The API's liveness path (`health.live`) — the dev stack's readiness probe. */
+  healthPath: string
+}
+
+/** The `.dev.vars` a kit lets Launch write: the first `session.writes` entry named `.dev.vars`. */
+function devVarsFileOf(writes: readonly string[]): string | null {
+  return writes.find(w => w === '.dev.vars' || w.endsWith('/.dev.vars')) ?? null
+}
+
+/** A manifest's {@link SessionKit}. Pure; throws for a placeholder the template does not take. */
+export function sessionKitOf(manifest: KitManifest): SessionKit {
+  const session = manifest.session
+  return {
+    id: manifest.kit.id,
+    legacy: manifest.kit.id === ROCKETFLARE_KIT_ID,
+    install: session.install,
+    bootstrap: fillTemplate(session.bootstrap, { dbUrl: BOOTSTRAP_DB_URL_REF }),
+    devStart: session.devStart,
+    devStop: session.devStop ?? null,
+    ports: {
+      ui: session.ports.ui,
+      api: session.ports.api,
+      allowedHosts: session.ports.allowedHosts ?? null,
+    },
+    devVarsFile: devVarsFileOf(session.writes),
+    appUrlVar: manifest.launchProvides.appUrl,
+    driver: manifest.launchProvides.databaseDriver ?? null,
+    skipEnv: session.env.skip ?? null,
+    allowRootEnv: session.env.allowRoot ?? null,
+    healthPath: manifest.health.live,
+  }
+}
+
+/** The Rocketflare fallback's {@link SessionKit} — every session whose app names no other kit. */
+export const ROCKETFLARE_SESSION_KIT: SessionKit = sessionKitOf(rocketflareFallbackManifest())
+
+/** The kit a dev step drives: the env's, else the Rocketflare fallback's. */
+export const kitOf = (dev: Pick<SessionDevEnv, 'kit'>): SessionKit =>
+  dev.kit ?? ROCKETFLARE_SESSION_KIT
 
 /**
  * Where the checkout lives in the container — THE one definition: the repo step clones here, the
@@ -127,6 +253,11 @@ export interface SessionDevEnv {
    * near it. Deployed containers are native amd64 and get neither.
    */
   emulated?: boolean
+  /**
+   * The app's kit (D36 K4, {@link sessionKitOf}); absent: the Rocketflare fallback. The session's
+   * steps attach it (`kitDevEnvFor` in `steps.ts`) — `devEnvFor` alone, being synchronous, cannot.
+   */
+  kit?: SessionKit
 }
 
 /**
@@ -168,33 +299,56 @@ export const NODE_COMPILE_CACHE_DIR = `${SESSION_WORKSPACE}/node_modules/.cache/
  * ({@link NODE_COMPILE_CACHE_DIR}).
  */
 export function sessionProcessEnv(dev: SessionDevEnv): Record<string, string> {
+  const kit = kitOf(dev)
   return {
     ...sessionSharedEnv(),
     CI: '1',
     WRANGLER_SEND_METRICS: 'false',
     CLOUDFLARE_CF_FETCH_ENABLED: 'false',
     NODE_COMPILE_CACHE: NODE_COMPILE_CACHE_DIR,
-    DATABASE_DRIVER: 'neon',
-    DEV_UI_PORT: String(SESSION_UI_PORT),
-    DEV_API_PORT: String(SESSION_API_PORT),
-    ...(dev.previewHostSuffix ? { DEV_ALLOWED_HOSTS: dev.previewHostSuffix } : {}),
+    ...(kit.driver ? { [kit.driver.name]: kit.driver.value } : {}),
+    ...sessionPortVars(dev, kit),
     ...(dev.emulated ? { GOGC: 'off', GOMEMLIMIT: '1536MiB' } : {}),
   }
 }
 
+/** Launch's ports (and the preview's host suffix) under the kit's names (`session.ports`). */
+function sessionPortVars(dev: SessionDevEnv, kit: SessionKit): Record<string, string> {
+  return {
+    [kit.ports.ui]: String(SESSION_UI_PORT),
+    [kit.ports.api]: String(SESSION_API_PORT),
+    ...(dev.previewHostSuffix && kit.ports.allowedHosts
+      ? { [kit.ports.allowedHosts]: dev.previewHostSuffix }
+      : {}),
+  }
+}
+
 /**
- * The keys `apps/web/.dev.vars` must carry for `pnpm dev` to serve the preview — and the neon
- * driver, straight to the branch: `NEON_LOCAL_PROXY` is emptied, so nothing routes it anywhere else.
+ * The keys the kit's `.dev.vars` ({@link SessionKit.devVarsFile} — Rocketflare's
+ * `apps/web/.dev.vars`) must carry for its dev server to serve the preview: the app's URL, the
+ * ports, and the neon driver straight to the branch. Rocketflare's `NEON_LOCAL_PROXY` is emptied
+ * too (legacy: no other kit has the switch), so nothing routes it anywhere else.
  */
 export function sessionDevVars(dev: SessionDevEnv): Record<string, string> {
+  const kit = kitOf(dev)
+  const ports = sessionPortVars(dev, kit)
   return {
-    DATABASE_DRIVER: 'neon',
-    NEON_LOCAL_PROXY: '',
-    DEV_UI_PORT: String(SESSION_UI_PORT),
-    DEV_API_PORT: String(SESSION_API_PORT),
-    APP_URL: dev.previewOrigin ?? `http://localhost:${SESSION_UI_PORT}`,
-    ...(dev.previewHostSuffix ? { DEV_ALLOWED_HOSTS: dev.previewHostSuffix } : {}),
+    ...(kit.driver ? { [kit.driver.name]: kit.driver.value } : {}),
+    ...(kit.legacy ? { NEON_LOCAL_PROXY: '' } : {}),
+    [kit.ports.ui]: ports[kit.ports.ui] as string,
+    [kit.ports.api]: ports[kit.ports.api] as string,
+    [kit.appUrlVar]: dev.previewOrigin ?? `http://localhost:${SESSION_UI_PORT}`,
+    ...(kit.ports.allowedHosts && ports[kit.ports.allowedHosts] !== undefined
+      ? { [kit.ports.allowedHosts]: ports[kit.ports.allowedHosts] as string }
+      : {}),
   }
+}
+
+/** Write {@link sessionDevVars} where the kit lets Launch write them; nowhere when it names none. */
+export async function writeSessionDevVars(sandbox: SandboxPort, dev: SessionDevEnv): Promise<void> {
+  const file = kitOf(dev).devVarsFile
+  if (!file) return
+  await writeDevVars(sandbox, `${SESSION_WORKSPACE}/${file}`, sessionDevVars(dev))
 }
 
 /** The preview origin's host suffix: `https://{label}.clewro.com` → `.clewro.com`. */
@@ -378,6 +532,30 @@ export function bootstrapInvocation(
     env: {
       [KIT_ALLOW_ROOT_ENV]: '1',
       ...(steps.length > 0 ? { [KIT_BOOTSTRAP_SKIP_ENV]: steps.join(',') } : {}),
+    },
+    kitFlags: true,
+  }
+}
+
+/**
+ * A GENERIC kit's bootstrap (any kit but Rocketflare): `session.bootstrap` as the kit wrote it
+ * (`{dbUrl}` already the shell reference), `session.env.allowRoot=1` (a sandbox runs as root), and
+ * `session.env.skip` naming what it leaves out in Launch's step names ({@link GENERIC_SKIP_STEP}):
+ * always `install` (Launch's own `session.install` ran first), plus each of `skip` the vocabulary
+ * has. A kit with no skip variable is told nothing — its bootstrap must then be cheap to repeat.
+ */
+export function genericBootstrapInvocation(
+  kit: SessionKit,
+  skip: readonly BootstrapSkip[] = []
+): BootstrapInvocation {
+  const steps = [...new Set<BootstrapSkip>(['install', ...skip])]
+    .map(part => GENERIC_SKIP_STEP[part])
+    .filter((s): s is string => !!s)
+  return {
+    command: kit.bootstrap,
+    env: {
+      ...(kit.allowRootEnv ? { [kit.allowRootEnv]: '1' } : {}),
+      ...(kit.skipEnv && steps.length > 0 ? { [kit.skipEnv]: [...new Set(steps)].join(',') } : {}),
     },
     kitFlags: true,
   }
@@ -622,6 +800,22 @@ export const DEV_LOG_FILE = `${SESSION_LAUNCH_DIR}/dev.log`
  * recorded (the shell `exec`s into it, so `$$` IS the dev server) and its output kept in a file.
  */
 export const DEV_START_COMMAND = `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${DEV_PID_FILE} && if [ -f ${DEV_SERVER_SCRIPT} ]; then exec ${DEV_COMMAND} > ${DEV_LOG_FILE} 2>&1; else node ${SESSION_WRANGLER_SCRIPT_PATH} > ${DEV_LOG_FILE} 2>&1 && exec ${DEV_FALLBACK_COMMAND} >> ${DEV_LOG_FILE} 2>&1; fi`
+
+/** One shell word: `'…'`, with any `'` closed, escaped and reopened. */
+const shellWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
+
+/**
+ * A GENERIC kit's dev start: `session.devStart` under `sh -c`, with the same pid and log files as
+ * Rocketflare's ({@link DEV_START_COMMAND}) — the shell `exec`s into `sh`, so `$$` is the dev
+ * server's supervisor whatever the kit's command is.
+ */
+export function genericDevStartCommand(kit: Pick<SessionKit, 'devStart'>): string {
+  return `mkdir -p ${SESSION_LAUNCH_DIR} && echo $$ > ${DEV_PID_FILE} && exec sh -c ${shellWord(kit.devStart)} > ${DEV_LOG_FILE} 2>&1`
+}
+
+/** What the dev step runs for `kit`: Rocketflare's legacy start, else the kit's own. */
+export const devStartCommandFor = (kit: SessionKit): string =>
+  kit.legacy ? DEV_START_COMMAND : genericDevStartCommand(kit)
 
 /**
  * Started in the background once the dev stack is ready: one GET of the UI's `/`, so Vite's
@@ -916,38 +1110,50 @@ export async function sessionBootstrap(ctx: SessionBootstrapContext): Promise<Bo
   }
 
   const t1 = Date.now()
-  await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
-  // The database check, the kit's second install and its wrangler login check never run in a
-  // sandbox: through the kit's own flags when its bootstrap takes them, else the preload's.
-  const invocation = bootstrapInvocation(await checkoutTakesKitFlags(sandbox), ctx.skip)
+  const kit = kitOf(dev)
+  let invocation: BootstrapInvocation
+  let keep: Record<string, string> = {}
+  if (kit.legacy) {
+    await sandbox.writeFile(NOT_ROOT_PRELOAD, NOT_ROOT_PRELOAD_SCRIPT)
+    // The database check, the kit's second install and its wrangler login check never run in a
+    // sandbox: through the kit's own flags when its bootstrap takes them, else the preload's.
+    invocation = bootstrapInvocation(await checkoutTakesKitFlags(sandbox), ctx.skip)
+    keep = bootstrapKeepEnv()
+  } else {
+    invocation = genericBootstrapInvocation(kit, ctx.skip)
+  }
   await show(BOOTSTRAP_PROGRESS)
   // The bootstrap prints its own `✖ n/10` line and the failing child's output under it.
   await runPhase(progressCtx, 'bootstrap', {
     command: invocation.command,
     timeoutMs: BOOTSTRAP_TIMEOUTS.bootstrapMs,
-    env: { ...env, ...invocation.env, ...bootstrapKeepEnv(), LAUNCH_DB_URL: ctx.dbUri },
+    env: { ...env, ...invocation.env, ...keep, LAUNCH_DB_URL: ctx.dbUri },
     what: "The app's bootstrap",
     progressOf: bootstrapProgressOf,
   })
   const t2 = Date.now()
 
-  await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
+  await writeSessionDevVars(sandbox, dev)
   return { installMs: t1 - t0, bootstrapMs: t2 - t1, installed }
 }
 
 /**
- * Step 1 of {@link sessionBootstrap} on its own: `pnpm install` in the checkout, as a polled
+ * Step 1 of {@link sessionBootstrap} on its own: `session.install` (Rocketflare: `pnpm install`;
+ * from the image's warm store — any other kit installs COLD, the image carries Rocketflare's store
+ * only) in the checkout, as a polled
  * background command under the bootstrap lock. What a `prebuild` run installs with (issue #16) —
  * the same command, so the prebuild's `node_modules` is exactly what a session's install makes.
  */
 export async function installDependencies(
   ctx: Omit<SessionBootstrapContext, 'dbUri'> & { dbUri?: string }
 ): Promise<void> {
+  const kit = kitOf(ctx.dev)
   await runPhase({ ...ctx, dbUri: ctx.dbUri ?? '' }, 'install', {
-    command: INSTALL_COMMAND,
+    // Rocketflare's is `INSTALL_COMMAND` (its fallback's `session.install`, verbatim).
+    command: kit.install,
     timeoutMs: BOOTSTRAP_TIMEOUTS.installMs,
     env: sessionProcessEnv(ctx.dev),
-    what: 'pnpm install',
+    what: kit.legacy ? 'pnpm install' : `The app's install (\`${kit.install}\`)`,
   })
 }
 
@@ -1024,6 +1230,11 @@ export const DEV_READY_PROBE = {
   followedBy: [{ port: SESSION_UI_PORT, tcp: true }],
 } as const
 
+/** {@link DEV_READY_PROBE} for `kit`: the API's liveness path is the kit's (`health.live`). */
+export function devReadyProbeFor(kit: Pick<SessionKit, 'healthPath'>) {
+  return { ...DEV_READY_PROBE, path: kit.healthPath }
+}
+
 /** How long the dev stack gets to answer {@link DEV_READY_PROBE}, all chunks together. */
 export const DEV_READY_TIMEOUT_MS = BOOTSTRAP_TIMEOUTS.apiMs + BOOTSTRAP_TIMEOUTS.uiMs
 
@@ -1040,15 +1251,16 @@ export async function startDevServer(
   dev: SessionDevEnv,
   opts: StartDevServerOptions = {}
 ): Promise<{ processId: string }> {
-  // The dev server runs on the session's own, git-ignored config — never on an edited tracked
-  // toml. The script that writes it runs inside the dev start (`DEV_COMMAND`'s preload).
-  await writeSessionWranglerScript(sandbox)
-  const proc = await sandbox.startProcess(DEV_START_COMMAND, {
+  const kit = kitOf(dev)
+  // Rocketflare: the dev server runs on the session's own, git-ignored config — never on an edited
+  // tracked toml. The script that writes it runs inside the dev start (`DEV_COMMAND`'s preload).
+  if (kit.legacy) await writeSessionWranglerScript(sandbox)
+  const proc = await sandbox.startProcess(devStartCommandFor(kit), {
     cwd: SESSION_WORKSPACE,
     env: sessionProcessEnv(dev),
   })
   const chunkMs = opts.chunkMs ?? DEV_WAIT_CHUNK_MS
-  const { port, path, followedBy } = DEV_READY_PROBE
+  const { port, path, followedBy } = devReadyProbeFor(kit)
   const deadline = Date.now() + DEV_READY_TIMEOUT_MS
   try {
     for (;;) {
@@ -1098,11 +1310,15 @@ export const DEV_STOP_COMMAND = 'pnpm dev:stop'
 export const DEV_PROBE_MS = 3_000
 
 /** The dev stack answers now ({@link DEV_READY_PROBE}: the API's health, then Vite) — one call. */
-export async function devServerAnswers(sandbox: SandboxPort): Promise<boolean> {
+export async function devServerAnswers(
+  sandbox: SandboxPort,
+  kit: Pick<SessionKit, 'healthPath'> = ROCKETFLARE_SESSION_KIT
+): Promise<boolean> {
+  const probe = devReadyProbeFor(kit)
   try {
-    await sandbox.waitForPort(DEV_READY_PROBE.port, {
-      path: DEV_READY_PROBE.path,
-      followedBy: DEV_READY_PROBE.followedBy,
+    await sandbox.waitForPort(probe.port, {
+      path: probe.path,
+      followedBy: probe.followedBy,
       timeoutMs: DEV_PROBE_MS,
     })
     return true
@@ -1112,17 +1328,25 @@ export async function devServerAnswers(sandbox: SandboxPort): Promise<boolean> {
 }
 
 /**
+ * How the dev server is stopped for `kit`: Rocketflare's `pnpm dev:stop`, a kit's
+ * `session.devStop`, else (none declared) its pid politely ({@link DEV_GRACEFUL_STOP_COMMAND}).
+ */
+export const devStopCommandFor = (kit: SessionKit): string =>
+  kit.legacy ? DEV_STOP_COMMAND : (kit.devStop ?? DEV_GRACEFUL_STOP_COMMAND)
+
+/**
  * The dev step of a WARM resume (`warm.ts`): the kept container's dev server is reused when both
  * ports still answer; otherwise whatever is left of it is stopped (`pnpm dev:stop` — a half-dead
- * tree would hold the strict ports) and it is started again.
+ * tree would hold the strict ports; the kit's `session.devStop`) and it is started again.
  */
 export async function resumeDevServer(
   sandbox: SandboxPort,
   dev: SessionDevEnv,
   opts: StartDevServerOptions = {}
 ): Promise<{ reused: boolean }> {
-  if (await devServerAnswers(sandbox)) return { reused: true }
-  await sandbox.exec(DEV_STOP_COMMAND, {
+  const kit = kitOf(dev)
+  if (await devServerAnswers(sandbox, kit)) return { reused: true }
+  await sandbox.exec(devStopCommandFor(kit), {
     cwd: SESSION_WORKSPACE,
     env: sessionProcessEnv(dev),
     timeoutMs: 60_000,

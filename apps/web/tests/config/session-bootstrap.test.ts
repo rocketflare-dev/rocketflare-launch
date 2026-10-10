@@ -13,11 +13,6 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { describe, expect, it } from 'vitest'
 import { sessionDbEgressHosts } from '@/api/services/sessions/db/neon-session-db'
 import {
-  SandboxInterruptedError,
-  SESSION_BASE_ALLOWED_HOSTS,
-  sessionAllowedHosts,
-} from '@/api/services/sessions/ports'
-import {
   ALWAYS_SKIPPED,
   BOOTSTRAP_COMMAND,
   BOOTSTRAP_SKIP_ENV,
@@ -41,7 +36,12 @@ import {
   sessionBootstrap,
   sessionDevVars,
   sessionProcessEnv,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
+import {
+  SandboxInterruptedError,
+  SESSION_BASE_ALLOWED_HOSTS,
+  sessionAllowedHosts,
+} from '@/api/services/sessions/ports'
 import {
   inSubshell,
   mapSandboxError,

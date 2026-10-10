@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { putSetting } from '@/api/services/launch/credentials'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { expireSuspendedSessions } from '@/api/services/sessions/expire'
-import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/rocketflare-dev'
+import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/kit-dev'
 import { loadConfig } from '@/config'
 import { aiUsage, apps, auditEvents, sessions } from '@/db/schema'
 import {

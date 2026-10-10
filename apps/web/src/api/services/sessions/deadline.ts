@@ -113,7 +113,7 @@ export async function withDeadline<T>(
 
 /**
  * The first two words of what a command RUNS, for a timeout's sentence: past the `mkdir -p … &&`
- * and `flock -w N <lock>` wrappers (`serialised` in `rocketflare-dev.ts`), so a stuck install
+ * and `flock -w N <lock>` wrappers (`serialised` in `kit-dev.ts`), so a stuck install
  * reads `exec pnpm install`, not `exec mkdir -p`.
  */
 export function commandName(command: string): string {

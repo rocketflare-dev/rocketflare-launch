@@ -41,7 +41,6 @@ import {
 import { SESSION_CALL_LIMITS, type SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
-import type { SandboxExecResult, SessionDbPort } from '@/api/services/sessions/ports'
 import {
   BOOTSTRAP_PROGRESS,
   claudeTranscriptPath,
@@ -54,7 +53,8 @@ import {
   SESSION_HOME,
   SESSION_IMAGE_VERSION,
   SESSION_WORKSPACE,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
+import type { SandboxExecResult, SessionDbPort } from '@/api/services/sessions/ports'
 import {
   BOOT_RESTART_DETAIL,
   BOOT_STEP_LABELS,

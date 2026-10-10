@@ -19,8 +19,8 @@ import {
 import { describe, expect, it } from 'vitest'
 import { OPENAI_EGRESS_HOSTS } from '@/api/services/sessions/egress/refuse'
 import { CODEX_EGRESS_HOSTS } from '@/api/services/sessions/egress/registry'
+import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/kit-dev'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeyText } from '@/api/services/sessions/model-key'
-import { SESSION_IMAGE_VERSION } from '@/api/services/sessions/rocketflare-dev'
 import { runtimeFor } from '@/api/services/sessions/runtimes'
 import { codexRuntime } from '@/api/services/sessions/runtimes/codex'
 import {

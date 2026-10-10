@@ -46,7 +46,7 @@ import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
 import { cancelMergeApproval } from '../approvals/kinds/session-merge'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
-import { adapterForAppId } from '../launch/kits/adapter'
+import { adapterFor, adapterForAppId } from '../launch/kits/adapter'
 import {
   type AutoShipVerdict,
   autoShipVerdict,
@@ -81,7 +81,7 @@ import {
   workspaceChanged,
 } from './checkpoint'
 import { shellQuote } from './claude-stream'
-import { devIsCurrent, sessionDbEgressHosts } from './db/neon-session-db'
+import { devIsCurrent, sessionDatabaseKitOf, sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
   SESSION_CALL_LIMITS,
@@ -90,6 +90,26 @@ import {
 } from './deadline'
 import { createSessionEmitter, nudgeSession, type SessionEmitter, safeErrorMessage } from './events'
 import type { CheckpointReason, SessionStepContext, SessionStepHooks, TurnOutcome } from './hooks'
+import {
+  type BootstrapSkip,
+  healDevSetup,
+  migrationsHash,
+  prereadHotFiles,
+  previewHostSuffix,
+  resumeDevServer,
+  SESSION_DEV_EXCLUDES,
+  SESSION_IMAGE_VERSION,
+  SESSION_LAUNCH_DIR,
+  SESSION_UI_PORT,
+  SESSION_WORKSPACE,
+  type SessionDevEnv,
+  type SessionKit,
+  sessionBootstrap,
+  sessionKitOf,
+  startDevServer,
+  stopDevServerGracefully,
+  writeSessionDevVars,
+} from './kit-dev'
 import { sessionsPaused } from './lifecycle'
 import {
   egressFor,
@@ -104,25 +124,6 @@ import {
   sessionAllowedHosts,
 } from './ports'
 import { followUpPrebuild, releasePrebuildClaim } from './prebuild'
-import {
-  type BootstrapSkip,
-  healDevSetup,
-  migrationsHash,
-  prereadHotFiles,
-  previewHostSuffix,
-  resumeDevServer,
-  SESSION_DEV_EXCLUDES,
-  SESSION_IMAGE_VERSION,
-  SESSION_LAUNCH_DIR,
-  SESSION_UI_PORT,
-  SESSION_WORKSPACE,
-  type SessionDevEnv,
-  sessionBootstrap,
-  sessionDevVars,
-  startDevServer,
-  stopDevServerGracefully,
-  writeDevVars,
-} from './rocketflare-dev'
 import { runtimeOf } from './runtimes'
 import { CONVERSATION_LOST_MESSAGE, containerGone, TURN_HEARTBEAT_MS } from './turn'
 import { isUnpromptedWarmStart, warmMinutesLeft, warmStartMinutes } from './warm'
@@ -278,6 +279,8 @@ export async function loadAppRef(scope: StepScope, appId: string): Promise<Sessi
     defaultBranch: app.defaultBranch ?? 'main',
     ...(await loadAppNeon(scope.db, tenantId, appId)),
     sessionDb: app.sessionDb ?? null,
+    // D36 K4: the app kit's roles, RLS role and extensions (`database`).
+    database: sessionDatabaseKitOf((await adapterFor(scope.db, app)).manifest),
   }
 }
 
@@ -456,6 +459,22 @@ export function devEnvFor(cfg: AppConfig, session: Pick<SessionRow, 'shortId' | 
     emulated: cfg.APP_ENV === 'development',
   }
   return dev
+}
+
+/** D36 K4: the session's app's kit, as its dev steps drive it (`kit-dev.ts` `SessionKit`). */
+export async function sessionKitFor(
+  db: Database,
+  session: Pick<SessionRow, 'tenantId' | 'appId'>
+): Promise<SessionKit> {
+  return sessionKitOf((await adapterForAppId(db, session.tenantId, session.appId)).manifest)
+}
+
+/** {@link devEnvFor} with the app's kit attached (`SessionDevEnv.kit`) — what every dev step runs. */
+export async function kitDevEnvFor(
+  scope: Pick<StepScope, 'db' | 'cfg'>,
+  session: Pick<SessionRow, 'tenantId' | 'appId' | 'shortId' | 'previewToken'>
+): Promise<SessionDevEnv> {
+  return { ...devEnvFor(scope.cfg, session), kit: await sessionKitFor(scope.db, session) }
 }
 
 /** The clone URL the container uses. Always GitHub's: the git egress handler (3d) routes it. */
@@ -1127,11 +1146,12 @@ export async function prepareStep(scope: StepScope, bootId?: string): Promise<{ 
       port.devUriFor({ ...app, sessionDb: dev })
     )
     const sandbox = sandboxFor(scope, session)
+    const devEnv = await kitDevEnvFor(scope, session)
     hash = await inOurContainer(scope, sandbox, bootId, async () => {
       await sessionBootstrap({
         sandbox,
         dbUri: uri,
-        dev: devEnvFor(scope.cfg, session),
+        dev: devEnv,
         ...bootstrapPolling(scope, sandbox, bootId),
       })
       return migrationsHash(sandbox)
@@ -1216,19 +1236,23 @@ export async function bootstrapStep(
   const uri = await decryptToken(scope.cfg, session.dbUriSealed)
   if (!uri) throw new Error('The session has no database')
   const sandbox = sandboxFor(scope, session)
+  const dev = await kitDevEnvFor(scope, session)
+  const legacy = dev.kit?.legacy !== false
   return inOurContainer(scope, sandbox, bootId, async () => {
     const hash = await migrationsHash(sandbox)
     const prepared = session.migrationsHash !== null
-    const migrate = !prepared || hash === null || hash !== session.migrationsHash
-    const dev = devEnvFor(scope.cfg, session)
+    // D36 K4: only Rocketflare's migrations directory is known (`MIGRATIONS_DIR`); any other kit
+    // migrates on every bootstrap (its migrator is idempotent, and the contract names no directory).
+    const migrate = !legacy || !prepared || hash === null || hash !== session.migrationsHash
     // A branch an earlier Launch checkpointed may carry the kit's offline `[ai]` toggle: put the
     // tracked files back (against the session's base) — the next checkpoint commits the repair.
-    const heal = () => healDevSetup(sandbox, session.baseSha)
+    // Rocketflare's legacy alone: no other kit's setup ever toggled a tracked file.
+    const heal = async () => (legacy ? healDevSetup(sandbox, session.baseSha) : [])
     if (opts.restored && prepared && !migrate) {
       // The restored workspace IS the last bootstrap's result: only the allow-list (this
       // container's) and the dev-server keys (non-secret, re-derived) are put back.
       await sandbox.setAllowedHosts(sessionAllowedHosts(sessionDbEgressHosts(uri)))
-      await writeDevVars(sandbox, `${SESSION_WORKSPACE}/apps/web/.dev.vars`, sessionDevVars(dev))
+      await writeSessionDevVars(sandbox, dev)
       const healed = await heal()
       return {
         installMs: 0,
@@ -1279,7 +1303,7 @@ export async function devStep(
       }
     },
   }
-  const dev = devEnvFor(scope.cfg, session)
+  const dev = await kitDevEnvFor(scope, session)
   // A warm resume reuses the kept container's dev server when it still answers.
   await inOurContainer(scope, sandbox, bootId, async () => {
     if (warm) await resumeDevServer(sandbox, dev, startOpts)
@@ -1871,15 +1895,17 @@ async function autoShipAfterTurn(
           ? await checkoutKitVersion(scope, row)
           : { manifestVersion: null }),
       }
+      // D36 K4: the answer's last line is the app kit's `upgrade.doneMarker` (`LAUNCH-UPGRADE:`).
+      const marker = (await adapterForAppId(scope.db, row.tenantId, row.appId)).upgrade?.doneMarker
       // The turn never ran the upgrade (no marker, nothing changed): send it back ONCE, and leave
       // `auto_ship` set so the next turn is decided here as this one would have been.
       if (
-        upgradeFollowUpDue(evidence, upgrade.followUpSentAt !== null) &&
+        upgradeFollowUpDue(evidence, upgrade.followUpSentAt !== null, marker) &&
         (await followUpUpgrade(scope, row, upgrade))
       ) {
         return
       }
-      verdict = autoShipVerdict(evidence, upgrade.toVersion)
+      verdict = autoShipVerdict(evidence, upgrade.toVersion, marker)
     }
   } catch (err) {
     scope.logger.warn({ err, sessionId: row.id }, 'session: could not check the upgrade turn')

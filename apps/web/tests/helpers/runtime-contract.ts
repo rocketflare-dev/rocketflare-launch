@@ -19,8 +19,8 @@
 import { describe, expect, it } from 'vitest'
 import { SESSION_BOOT_MARKER } from '@/api/services/sessions/boot-marker'
 import { PLATFORM_CREDENTIALS } from '@/api/services/sessions/credentials/lease'
+import { SESSION_HOME, SESSION_WORKSPACE } from '@/api/services/sessions/kit-dev'
 import { PROXIED_EGRESS, SandboxInterruptedError } from '@/api/services/sessions/ports'
-import { SESSION_HOME, SESSION_WORKSPACE } from '@/api/services/sessions/rocketflare-dev'
 import { runtimeFor } from '@/api/services/sessions/runtimes'
 import type {
   AgentRuntime,

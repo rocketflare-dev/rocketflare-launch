@@ -1,6 +1,6 @@
 /**
  * A long command in a session's container, run in the BACKGROUND and polled — never one blocking
- * `exec` (Launch P3; the kit's install and bootstrap, `rocketflare-dev.ts` `sessionBootstrap`).
+ * `exec` (Launch P3; the kit's install and bootstrap, `kit-dev.ts` `sessionBootstrap`).
  *
  * Why (measured on real Cloudflare containers, 2026-09-29, docs/CONCEPTS.md §18.10):
  *

@@ -39,7 +39,7 @@ import {
   sessionBootstrap,
   startDevServer,
   WRANGLER_REDIRECT,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
 import { checkoutScript } from '@/api/services/sessions/steps'
 import { toggleAiBlock } from '../../../../scripts/lib/bootstrap-lib.mjs'
 import { FakeSandbox } from '../helpers/fake-sandbox'

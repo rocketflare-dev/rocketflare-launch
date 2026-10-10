@@ -1696,7 +1696,8 @@ reload) is restarted as `<id>-rN` from the row.
   → `dev` (the kit's `node apps/web/scripts/dev-server.mjs --start` directly — what `pnpm dev`
   runs, without its two pnpm startups; `pnpm dev` when the checkout has no such script — UI :5173,
   API :8787, never :3000) → `ready` + `preview.ready`. **The dev start is tuned for a 2-vCPU
-  container** (`rocketflare-dev.ts`): ready is ONE in-container wait per chunk
+  container** (`kit-dev.ts`; this paragraph is Rocketflare's path — another kit's commands,
+  port names and health path come from its manifest, §18.24 "Sessions (K4)"): ready is ONE in-container wait per chunk
   (`DEV_READY_PROBE`, `waitForPort` with `followedBy`) — `:8787/api/health` 2xx FIRST (curl `-m 5`),
   then a bare TCP connect to `:5173`, polled every 0.2 s — never a GET of the UI's `/` while
   `wrangler dev` boots (that made Vite transform the whole UI graph on the same CPUs: -30 % wall
@@ -1719,7 +1720,7 @@ reload) is restarted as `<id>-rN` from the row.
   changed. The prepare records its checkout's hash on `apps.session_db.migrationsHash`, and a
   session branched from a `ready` `dev` STARTS from it (`branchStep`; `unknown` for a `dev`
   prepared before it was recorded — then it migrates once), so its first boot is a resume's too — through the bootstrap preload, which answers the kit's `pnpm seed` / `db:migrate` /
-  `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `rocketflare-dev.ts`): a kit before 0.17.4 has
+  `web db:check` children (`LAUNCH_BOOTSTRAP_SKIP`, `kit-dev.ts`): a kit before 0.17.4 has
   no flag for it. On EVERY boot the preload skips `db:check`, the kit's own second `pnpm install
   --prefer-offline` (step 2, right after Launch's; the kit then checks only the exit code and that
   wrangler's bin exists) and step 8's `pnpm web exec wrangler whoami` (answered with wrangler's "You
@@ -1756,7 +1757,8 @@ reload) is restarted as `<id>-rN` from the row.
   page shows the boot as one quiet line and the first turn after it with "first reply after Ns",
   and `launch sessions show <id> [--json]` lists every boot with its phases and that first reply.
   A failure to record the timing is logged, never a failed boot; a boot that fails writes none.
-- **A session never changes a tracked file for its dev setup** (`rocketflare-dev.ts`). The kit's
+- **A session never changes a tracked file for its dev setup** (`kit-dev.ts`, Rocketflare's legacy
+  path). The kit's
   `bootstrap --offline` (a sandbox has no Cloudflare login, so `[ai]` must be off) comments the
   `[ai]` block out of BOTH wrangler tomls in place, and the checkpoint commits the whole tree — so
   the first real ship (hola-world PR #2) carried the toggle and a `worker-configuration.d.ts`
@@ -2206,7 +2208,7 @@ Claude Code, a pinned Codex (§18.22-B) and a warm pnpm store for the default pi
 `SESSION_KIT_TAG`; image `session-6`) — an app on another kit gets its `node_modules` from the app's
 prebuild instead once one exists (§18.9, issue #16; a prebuild is only restored on the image it
 was built on, so an image bump rebuilds each app's on its next boot). The checkout is `/workspace/app` and `$HOME` is
-`/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `rocketflare-dev.ts`, the one definition). The
+`/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `kit-dev.ts`, the one definition). The
 turn and the checkpoint's git set `HOME` to it explicitly. A turn runs `claude -p` with
 `--permission-mode bypassPermissions` and `IS_SANDBOX=1`, the container being the boundary.
 `.claude/settings.local.json` holds only deny rules (`git push`, `git remote`, `git config`),
@@ -2232,7 +2234,7 @@ git server, still through the git handler) — procedure and timings in `docs/SE
 Under `APP_ENV=development` (every `wrangler dev` container, whatever the backend) each command
 runs with `GOGC=off GOMEMLIMIT=1536MiB` (`SessionDevEnv.emulated`). Every process in the
 container — each dev step and each agent turn, Claude Code or Codex, on either sandbox host —
-also gets `TEST_LATENCY_FACTOR=4` (`sessionSharedEnv`, `rocketflare-dev.ts`): a test an agent runs
+also gets `TEST_LATENCY_FACTOR=4` (`sessionSharedEnv`, `kit-dev.ts`): a test an agent runs
 by hand outside the gate scales the kit's vitest limits for the container's slower CPU instead of
 timing out at 5 s (kit rocketflare-dev/rocketflare#62; the kit keeps the larger of it and its own
 factor, so the gate's 12 stands, and an older kit ignores it). The allow-list is widened at
@@ -4480,8 +4482,8 @@ not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocket
 `docs/plans/multi-kit.md` (D36): Launch supports any kit that conforms to the **Launch kit
 contract**, declared by the kit in a root `launch.kit.json` (`@launch/shared/kit-manifest`,
 `kitManifestSchema` — readers tolerate unknown fields; `schema: 1`). K1 is the catalogue and the
-contract; K2 drives every app through an adapter built from its kit's manifest (below); the
-scaffold job (K3) and sessions (K4) still use Rocketflare's own constants.
+contract; K2 drives every app through an adapter built from its kit's manifest (below); K4 drives
+coding sessions by it too (below); the scaffold job (K3) still uses Rocketflare's own constants.
 
 **`kits`** (`db/schema/kits.ts`, migration 0049) is platform configuration like `launch_settings`
 (no tenant, `RLS_REVOKED_TABLES`; only `services/launch/kits/store.ts` touches it): `slug` (unique),
@@ -4600,18 +4602,50 @@ K3's and K4's). What it reads from where:
   prompt; `tests/api/kit-adapter-resolution.test.ts` the resolution and its readers against the
   database.
 
+**Sessions (K4).** A coding session is driven by its APP's manifest (`adapterForAppId`), with
+Rocketflare's own pieces kept as a legacy path gated on `kit.id === 'rocketflare'`:
+
+| Session piece | Manifest | Where | Rocketflare legacy (no contract field) |
+|---|---|---|---|
+| install, bootstrap, dev start / stop | `session.install`, `session.bootstrap` (`{dbUrl}` → `"$LAUNCH_DB_URL"`), `session.devStart`, `session.devStop` (none: the dev server's pid is stopped) | `sessions/kit-dev.ts` (`SessionKit`, `sessionKitOf`; a step attaches it to `SessionDevEnv.kit` through `kitDevEnvFor`) | the root preload and its `db:migrate` / `seed` / `whoami` / `db:check` stand-ins, the kit-flag detection (0.17.4+), the direct `dev-server.mjs` start with `pnpm dev` behind it, `wrangler.session.toml` + the `[ai]` heal, `NEON_LOCAL_PROXY=` |
+| the ports | `session.ports.{ui, api, allowedHosts}` name Launch's 5173 / 8787 and the preview's host suffix — in the environment and in `session.writes`' `.dev.vars` (none: not written); the app's URL under `launchProvides.appUrl`, the driver under `launchProvides.databaseDriver`; the readiness probe is `health.live` | `sessionProcessEnv`, `sessionDevVars`, `devReadyProbeFor` | — |
+| what a bootstrap leaves out | `session.env.skip` gets Launch's step names (`GENERIC_SKIP_STEP`): `install` always, `database` on a prepared database; `session.env.allowRoot=1` | `genericBootstrapInvocation` | `ROCKETFLARE_BOOTSTRAP_SKIP` step names, `--no-install`, `LAUNCH_BOOTSTRAP_SKIP` |
+| the resume's migrate decision | — (no migrations directory in the contract) | `bootstrapStep`: any other kit migrates on every bootstrap | the hash of `apps/web/migrations` |
+| the ship gate | `ci.gateList`, `ci.gateRun` (`{step}`), the test step's `launchProvides.databaseUrl` + `ci.testEnv.{branch, endpoint}` | `sessions/gate.ts` (`GateKit`, `gateKitOf`), `ship-steps.ts` `shipKitStep` | the `GATE_KIT_PROBE` / `test:ephemeral` path (0.15.7 / 0.16.0) and `--silent` on the list |
+| the session database | `database.rlsRole` (`{slug_snake}`; absent: no per-app role made or granted, nothing recorded), `database.roles.migrator` (the admin borrowed for the grant), `database.extensions` | `NeonSessionDb` (`sessionDatabaseKitOf`, `sessionAppRoleFor`; `SessionAppRef.database`, filled by `loadAppRef`) | — |
+| the gate-verified variable | `ci.verifiedVariable` (absent: nothing written — `skipped`, recorded so the sweep does not return — and no diagnosis) | `launch/gate-variable.ts`, `branch-protection.ts` | — |
+| an upgrade | the kit repo FETCHED is the app's kit's pin (`appKitPin`; the default kit's for an app with none); the answer's marker is `upgrade.doneMarker` (`upgradeResultOf(text, marker)`); a landing's CI verdict and its change detection read `ci.requiredCheck` | `egress/github.ts` (`upgradeReadOnlyRepos`), `egress/host.ts`, `steps.ts` `autoShipAfterTurn`, `ship.ts` `prChecksChanged` | — |
+| the session system note | `{{uiPort}}` / `{{apiPort}}` (Launch's ports) | `prompts.ts`, `turn.ts` | — |
+
+**A private kit in an upgrade session**: the proxy first fetches the kit with no credential (a public
+kit, as before); GitHub's 401/404 sends the SAME request again with a read-only installation token
+for the kit repo (`mintKitToken` in `kit-pin.ts`: `contents: read`, narrowed to the repo through the
+App's installation on its owner; not revoked — it expires in the hour), with the fresh-token
+retries. On the remote sandbox host the token goes in the egress grant (`readOnlyRepos[].token`),
+minted at `prepareGit` for any kit but the built-in Rocketflare row. The container never holds it.
+Tests: `tests/config/kit-session.test.ts` (the meta-kit and a variant whose every name differs:
+commands, env, `.dev.vars`, the bootstrap, the dev start, the gate plan and variables, the database
+roles, the marker) and `tests/api/kit-session-workflow.test.ts` (a whole boot of a meta-kit app; the
+upgrade proxy on its app's kit, public and private, locally and on the host);
+`session-ship-gate.test.ts` ships an app on another kit through its own gate.
+
 **Known gaps:** the DYNAMIC conformance check (the scaffold job against a throwaway repo: init →
 postInit → the gate's lint and typecheck) is not built — `verified` means the static check passed
 (K3). The scaffold job is still Rocketflare's (`rocketflare/scaffold-job.ts`: rename, its kit-only
 files, `.rocketflare.json`) and plans from the DEFAULT kit's pin, so an app of another kit cannot be
-created end to end yet (K3); sessions (dev server, bootstrap, gate, the session database's RLS role,
-`LAUNCH_GATE_APP_ID`) still use Rocketflare's names (K4); the upgrade answer's marker is still the
-shared `LAUNCH-UPGRADE:` (the manifest's `doneMarker` is only written into the prompt). An app's
-upgrade TARGET is its own kit's pin, but the upgrade session still fetches the default kit (K4/K5).
+created end to end yet (K3). **Sessions of another kit install COLD**: the session image carries
+Rocketflare's pnpm store only (`containers/session/Dockerfile`, `KIT_TAG`), so `session.install`
+fetches every package (a per-kit store cached in R2 is the follow-up); the resume of another kit
+always migrates (no migrations directory in the contract) and its seed must be idempotent (Launch's
+skip vocabulary has no `seed`); the gate's database probe (`gate-db-probe.ts`) reads `DATABASE_URL`
+and runs in `apps/web`, so a kit with another URL name or layout skips it; the checkpoint's `[ai]`
+guard and the `wrangler.session.toml` excludes are Rocketflare's (inert elsewhere); the pipeline's
+`github_env` step still sets `LAUNCH_GATE_APP_ID` by name for a new app (K3 owns the pipeline).
 Create app has no kit picker and Import does not detect the kit (K5); the full Platform → Kits
 page (pin, remove, the manifest) is K5 — K1's UI is the list above. **The scaffold job clones the
 kit anonymously** (`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but
-cannot yet scaffold an app (K3); an upgrade session's kit fetch is anonymous too (§18.23). The YAML
+cannot yet scaffold an app (K3); an upgrade session's fetch of a private kit is authenticated (K4,
+above). The YAML
 outline does not read flow mappings over several lines, anchors or multi-document files (a kit
 written that way reads as missing its triggers). The `template_pin` mirror and fallback read go in
 the release after this one. Who may register kits is platform admins only (design §9.4). An app

@@ -16,8 +16,6 @@ import {
   SessionStepTimeoutError,
   withDeadline,
 } from '@/api/services/sessions/deadline'
-import { SandboxProcessExitedError } from '@/api/services/sessions/ports'
-import { PREBUILD_EXCLUDES } from '@/api/services/sessions/prebuild'
 import {
   BOOTSTRAP_LOCK,
   DEV_COMMAND,
@@ -44,7 +42,9 @@ import {
   startDevServer,
   stopDevServerGracefully,
   tailOf,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
+import { SandboxProcessExitedError } from '@/api/services/sessions/ports'
+import { PREBUILD_EXCLUDES } from '@/api/services/sessions/prebuild'
 import {
   PROCESS_EXITED_CODE,
   waitForPortScript,

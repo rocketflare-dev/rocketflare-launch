@@ -55,6 +55,7 @@ import {
 import { and, eq, sql } from 'drizzle-orm'
 import { apps, type SessionRow, sessionEvents, sessions, users } from '../../../db/schema'
 import { scanShipConfig } from '../grants/detect'
+import { adapterForAppId } from '../launch/kits/adapter'
 import { reviewPolicyFor } from '../launch/ship-settings'
 import { upgradeNeedsAttention } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
@@ -73,8 +74,11 @@ import {
   GATE_KIT_TOO_OLD_MESSAGE,
   GATE_LIST_COMMAND,
   GATE_LIST_UNREADABLE_MESSAGE,
+  type GateKit,
   gateBaseEnv,
   gateEgressHosts,
+  gateKitOf,
+  gateListUnreadableMessage,
   gateOutputTail,
   gateTestEnv,
   gateTestTarget,
@@ -99,13 +103,13 @@ import {
   gateSetupRetryNote,
   isSetupConnectionFailure,
 } from './gate-db-probe'
+import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './kit-dev'
 import {
   type GateBranch,
   SandboxInterruptedError,
   type SandboxPort,
   sessionAllowedHosts,
 } from './ports'
-import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './rocketflare-dev'
 import {
   clipDiffStat,
   DEFAULT_SHIP_ATTEMPTS,
@@ -333,6 +337,10 @@ export async function shipKitStep(
   const sandbox = sandboxFor({ ...scope, phase: 'Ship gate (kit)' }, session)
   if (await lostContainer(scope, sandbox, bootId)) return { ok: false, stop: 'container_lost' }
 
+  // D36 K4: the app's kit's gate (`ci`). Any kit but Rocketflare: its own list, no probe.
+  const kit = gateKitOf((await adapterForAppId(scope.db, session.tenantId, session.appId)).manifest)
+  if (!kit.legacy) return planKitGate(scope, session, attempt, sandbox, kit)
+
   const probe = await sandbox.exec(GATE_KIT_PROBE, { cwd: SESSION_WORKSPACE, timeoutMs: 30_000 })
   const answer = probe.exitCode === 0 ? probe.stdout.trim() : ''
   if (answer === 'legacy') return { ok: true, kit: 'legacy', commands: shipGateCommands('legacy') }
@@ -355,6 +363,28 @@ export async function shipKitStep(
   const plan = planGateFromList(list)
   if (!plan.ok) {
     await unfixable(scope, session, attempt, plan.message, GATE_LIST_COMMAND)
+    return { ok: false, stop: 'unfixable' }
+  }
+  return { ok: true, kit: 'gate', commands: plan.commands }
+}
+
+/** A non-Rocketflare kit's `ship.kit`: `ci.gateList`, planned with `ci.gateRun` (see `gate.ts`). */
+async function planKitGate(
+  scope: StepScope,
+  session: SessionRow,
+  attempt: number,
+  sandbox: SandboxPort,
+  kit: GateKit
+): Promise<ShipKitResult> {
+  const listed = await sandbox.exec(kit.listCommand, { cwd: SESSION_WORKSPACE, timeoutMs: 60_000 })
+  const list = listed.exitCode === 0 ? parseGateList(listed.stdout) : null
+  if (!list) {
+    await unfixable(scope, session, attempt, gateListUnreadableMessage(kit), kit.listCommand)
+    return { ok: false, stop: 'unfixable' }
+  }
+  const plan = planGateFromList(list, kit)
+  if (!plan.ok) {
+    await unfixable(scope, session, attempt, plan.message, kit.listCommand)
     return { ok: false, stop: 'unfixable' }
   }
   return { ok: true, kit: 'gate', commands: plan.commands }
@@ -572,7 +602,11 @@ export async function shipGateStep(
       scope.ports.sessionDb(scope.db).gateBranchUri(app, branch)
     )
     secrets.push(...uriSecrets(uri))
-    return gateTestEnv(dev, branch, uri)
+    // D36 K4: the variable names are the app kit's (`launchProvides.databaseUrl`, `ci.testEnv`).
+    const kit = gateKitOf(
+      (await adapterForAppId(scope.db, session.tenantId, session.appId)).manifest
+    )
+    return gateTestEnv(dev, branch, uri, kit.testEnv)
   }
   const env = (): Promise<Record<string, string>> => {
     minted ??= mint()

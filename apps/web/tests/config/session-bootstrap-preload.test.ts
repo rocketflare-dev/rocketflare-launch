@@ -17,7 +17,7 @@ import {
   BOOTSTRAP_SKIP_ENV,
   MIGRATIONS_HASH_COMMAND,
   NOT_ROOT_PRELOAD_SCRIPT,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'launch-preload-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))

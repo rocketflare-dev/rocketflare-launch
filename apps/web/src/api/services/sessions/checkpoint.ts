@@ -44,7 +44,7 @@
  *   wrangler tomls and `worker-configuration.d.ts` for the kit's offline `[ai]` toggle; a hit
  *   throws `CheckpointError('guard', …)` before the commit — nothing is committed or pushed, and a
  *   ship stops at its save. The session's dev setup lives in git-ignored files
- *   (`rocketflare-dev.ts`), so this only fires on a regression; the exclude file also carries
+ *   (`kit-dev.ts`), so this only fires on a regression; the exclude file also carries
  *   {@link SESSION_DEV_EXCLUDES}.
  * - **Never a workflow file from an ordinary session.** Its push token has no `workflows: write`
  *   (only a kit upgrade's does, `egress/github.ts`), so after the dev-setup guard
@@ -75,19 +75,19 @@ import { NotFoundError } from '../../utils/core/errors'
 import type { StorageService } from '../storage'
 import { appendSessionEvents } from './event-log'
 import {
-  type SandboxExecResult,
-  SandboxInterruptedError,
-  type SandboxPort,
-  type SessionEgressPort,
-} from './ports'
-import {
   SESSION_DEV_EXCLUDES,
   SESSION_HOME,
   SESSION_WORKSPACE,
   WORKER_TYPES,
   WRANGLER_STAGING_TOML,
   WRANGLER_TOML,
-} from './rocketflare-dev'
+} from './kit-dev'
+import {
+  type SandboxExecResult,
+  SandboxInterruptedError,
+  type SandboxPort,
+  type SessionEgressPort,
+} from './ports'
 import { runtimeOf } from './runtimes'
 import type { PiAgentPort } from './runtimes/pi/protocol'
 
@@ -149,7 +149,7 @@ export function checkpointScanScript(maxBytes = CHECKPOINT_MAX_FILE_BYTES): stri
  * whose staged content carries the kit's OFFLINE `[ai]` toggle where HEAD's does not — a wrangler
  * toml whose live `[ai]` became the kit's commented `# [ai]`, and `worker-configuration.d.ts`
  * losing its `AI: Ai;` while the staged `wrangler.toml` still declares `[ai]` (types generated
- * from a toggled toml). A session's dev setup never writes those files (`rocketflare-dev.ts`), so
+ * from a toggled toml). A session's dev setup never writes those files (`kit-dev.ts`), so
  * a hit is a regression, and the checkpoint refuses it rather than let it reach a PR — merging the
  * toggle would take Workers AI out of the app's production.
  */

@@ -10,8 +10,9 @@
  * harmless, because the marker is then missing, which is exactly the signal. A read that does
  * not answer is bounded by the caller and is NOT evidence either way (`unknown`).
  */
+
+import { SESSION_LAUNCH_DIR } from './kit-dev'
 import { SandboxInterruptedError, type SandboxPort } from './ports'
-import { SESSION_LAUNCH_DIR } from './rocketflare-dev'
 
 /** Where `sandbox.start` writes this boot's id. */
 export const SESSION_BOOT_MARKER = `${SESSION_LAUNCH_DIR}/boot-id`

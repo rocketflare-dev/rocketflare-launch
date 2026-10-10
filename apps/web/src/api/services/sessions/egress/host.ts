@@ -46,15 +46,17 @@ import { and, eq } from 'drizzle-orm'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { apps, type SessionRow } from '../../../../db/schema'
+import { mintKitToken } from '../../launch/kit-pin'
+import { ROCKETFLARE_KIT_ID } from '../../launch/kits/rocketflare-fallback'
 import { CredentialNeedsLoginError } from '../credentials/errors'
 import { getById, openSecret } from '../credentials/store'
 import { ModelKeyMissingError, resolveModelKey, resolveOpenAiKey } from '../model-key'
 import type { RepoHostPort, SessionEgressPort } from '../ports'
 import { CLAUDE_ACCOUNT_LABEL, usableClaudeCredential } from '../runtimes/claude-code/credentials'
 import { unwrap } from '../sandbox/remote-sandbox'
-import type { EgressGrantUpdate, SandboxHostRpc } from '../sandbox-host/protocol'
+import type { EgressGrantUpdate, GitEgressGrant, SandboxHostRpc } from '../sandbox-host/protocol'
 import type { SandboxPort } from '../sandbox-port'
-import { sessionGitToken, upgradeReadOnlyRepos } from './github'
+import { sessionGitToken, upgradeKitOf } from './github'
 
 export { ModelKeyMissingError }
 
@@ -69,7 +71,14 @@ export class HostEgress implements SessionEgressPort {
     private readonly cfg: AppConfig,
     private readonly repoHost: RepoHostPort,
     private readonly host: EgressGrantSink,
-    private readonly now: () => Date = () => new Date()
+    private readonly now: () => Date = () => new Date(),
+    /**
+     * D36 K4: a read-only installation token for a PRIVATE kit repo (`mintKitToken`; tests pass a
+     * fake) — put in the git grant for an upgrade session whose app is not on the built-in kit.
+     */
+    private readonly kitToken: (
+      repo: string
+    ) => Promise<{ token: string; expiresAt: Date }> = repo => mintKitToken(db, cfg, repo)
   ) {}
 
   private async grant(sandbox: SandboxPort, grant: EgressGrantUpdate): Promise<void> {
@@ -127,6 +136,23 @@ export class HostEgress implements SessionEgressPort {
     await this.grant(sandbox, { login: { runtime } })
   }
 
+  /**
+   * The read-only kit repo of an upgrade session, for the git grant (D36 K4). The host cannot call
+   * back for a token, so a kit that may be PRIVATE — any kit but the built-in Rocketflare row — gets
+   * a read-only installation token minted NOW (`contents: read`, narrowed to the kit repo), which
+   * the host sends only when GitHub refuses the fetch without one. Best-effort: a mint that fails
+   * leaves the public path. The token stays on the host's Durable Object, never in the container.
+   */
+  private async kitRepos(
+    session: SessionRow
+  ): Promise<NonNullable<GitEgressGrant['readOnlyRepos']>> {
+    const { repo, kit } = await upgradeKitOf(this.db, session)
+    if (!repo) return []
+    if (!kit || kit.slug === ROCKETFLARE_KIT_ID) return [repo]
+    const minted = await this.kitToken(`${repo.owner}/${repo.repo}`).catch(() => null)
+    return [minted ? { ...repo, token: minted.token, expiresAt: minted.expiresAt.getTime() } : repo]
+  }
+
   async prepareGit(sandbox: SandboxPort, session: SessionRow): Promise<void> {
     const [app] = await this.db
       .select({ repoOwner: apps.repoOwner, repoName: apps.repoName })
@@ -138,8 +164,8 @@ export class HostEgress implements SessionEgressPort {
     const token = await sessionGitToken(this.db, this.cfg, this.repoHost, session, repo, this.now())
     // The host's handler has no other way to authenticate: no token is a failure, not a skip.
     if (!token) throw new Error('Launch could not get a GitHub token for this repository')
-    // P6 6c: a kit upgrade session may also fetch the pinned kit, read-only (`forwardGit`).
-    const readOnlyRepos = session.kind === 'upgrade' ? await upgradeReadOnlyRepos(this.db) : []
+    // P6 6c: a kit upgrade session may also fetch its app's kit, read-only (`forwardGit`).
+    const readOnlyRepos = session.kind === 'upgrade' ? await this.kitRepos(session) : []
     await this.grant(sandbox, {
       git: {
         ...repo,

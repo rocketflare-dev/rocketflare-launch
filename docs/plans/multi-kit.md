@@ -278,6 +278,27 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - The session image keeps Rocketflare's warm pnpm store (`containers/session/Dockerfile:56-58`).
     Any other kit installs cold, which is a stated gap. A per-kit store cached in R2 can follow
     later.
+  - **Built (2026-10-10).** `kit-dev.ts` (`SessionKit` / `sessionKitOf`, attached to
+    `SessionDevEnv.kit` by `kitDevEnvFor`), `gate.ts` (`GateKit` / `gateKitOf`),
+    `neon-session-db.ts` (`sessionDatabaseKitOf`, `SessionAppRef.database`), `gate-variable.ts`
+    (`ci.verifiedVariable`), the upgrade proxy (`appKitPin`, `mintKitToken`) and the marker
+    (`upgradeResultOf(text, marker)`); CONCEPTS §18.24 "Sessions (K4)". Where it differs from
+    this section:
+    - **Rocketflare keeps a legacy path, keyed on `kit.id`**, for what the contract has no field
+      for: the bootstrap preload and its stand-ins, the 0.17.4 kit-flag detection, the direct
+      `dev-server.mjs` start, `wrangler.session.toml` and the `[ai]` heal, `NEON_LOCAL_PROXY`, the
+      migrations-hash resume, and the gate's probe / `test:ephemeral` path (0.15.7 / 0.16.0).
+      `gate-branch.ts` needed nothing: `gate-<short>-<n>` is Launch's name, the meta-kit's
+      `GATE_BRANCH_RE` is the same.
+    - **Launch's skip vocabulary** for `session.env.skip` is `install` (always) and `database` (on a
+      prepared database) — the meta-kit accepts both; there is no `seed`, and another kit migrates
+      on every bootstrap (the contract names no migrations directory). Both belong in the contract
+      if a kit needs them.
+    - **A private kit in an upgrade session** is fetched with no credential first and, on GitHub's
+      401/404, again with a read-only installation token Launch mints (`mintKitToken`, not revoked
+      — it expires); on the remote sandbox host the token rides the egress grant.
+    - The session system note's ports became prompt variables (`{{uiPort}}`, `{{apiPort}}`); the
+      gate's database probe still reads `DATABASE_URL` (a gap for a kit with another name).
 - **K5: UI.**
   - Platform → Kits: list, add, check, pin, set default.
   - A kit picker in Create app, which is the first field of the interview's brief. The chosen

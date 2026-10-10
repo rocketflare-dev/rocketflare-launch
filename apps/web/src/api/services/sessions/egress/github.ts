@@ -28,9 +28,13 @@
  *    buffered, and a 401/404 means GitHub did nothing with it. A token that has been valid for a
  *    while gets no retry — its 404 is real.
  *
- * 7. **P6 6c: a kit upgrade session** (`kind = 'upgrade'`) may also FETCH the template pin's repo —
- *    upload-pack only, to `https://github.com`, with no token minted or injected (the kit is
- *    public); pushing to it is a 403. Every other session gains nothing.
+ * 7. **P6 6c: a kit upgrade session** (`kind = 'upgrade'`) may also FETCH its APP's kit repo (the
+ *    app's kit row's pin, D36 K4 — `appKitPin`; the default kit's for an app with no kit row) —
+ *    upload-pack only, to `https://github.com`, with no token minted or injected for a public kit;
+ *    pushing to it is a 403. Every other session gains nothing. **A private kit** answers that
+ *    401/404, and the request is sent again with a read-only installation token for the kit repo
+ *    (`mintKitToken`: `contents: read`, narrowed to it), minted by Launch here and never seen by
+ *    the container (`forwardReadOnly` in `forward-git.ts`).
  *
  * Steps 2, 3, 5, 6 and 7 are `forwardGit` (`forward-git.ts`, no database), which the sandbox host's
  * `HostedSessionSandbox` runs too, over the egress grant local Launch stores on it instead of
@@ -47,7 +51,8 @@ import { type Database, type DatabaseHandle, openDatabase } from '../../../../db
 import { apps, type SessionRow, sessions } from '../../../../db/schema'
 import { decryptToken, encryptToken } from '../../../auth/oauth-encryption'
 import type { AppBindings } from '../../../types'
-import { templatePinStatus } from '../../launch/kit-pin'
+import { appKitPin, mintKitToken } from '../../launch/kit-pin'
+import type { KitRow } from '../../launch/kits/store'
 import { defaultSessionPorts, type RepoHostPort, type RepoRef } from '../ports'
 import {
   type EgressContext,
@@ -55,6 +60,7 @@ import {
   type GitRepo,
   type GitToken,
   isFreshToken,
+  type ReadOnlyGitRepo,
   refuseGit,
 } from './forward-git'
 
@@ -82,6 +88,11 @@ export interface GitHubEgressDeps {
   now: () => Date
   /** The backoff between a fresh token's retries (tests pass a recorder). */
   sleep: (ms: number) => Promise<void>
+  /**
+   * D36 K4: a read-only installation token for a PRIVATE kit repo (`owner/name`) — `mintKitToken`
+   * over the handler's own database; tests pass a fake.
+   */
+  kitToken?: (db: Database, cfg: AppConfig, repo: string) => Promise<{ token: string }>
 }
 
 const defaultDeps = (env: AppBindings): GitHubEgressDeps => ({
@@ -223,14 +234,44 @@ export async function sessionGitToken(
   return { token: auth.token, fresh: true, expiresAt: auth.expiresAt }
 }
 
-/**
- * The repositories a kit upgrade session may fetch read-only: the template pin's (the kit it is
- * upgrading to). Also what the `host` egress mode puts in a remote sandbox's git grant.
- */
-export async function upgradeReadOnlyRepos(db: Database): Promise<GitRepo[]> {
-  const { pin } = await templatePinStatus(db)
+/** The kit an upgrade session's app is on: its repo (`owner/name`) and its catalogue row. */
+export async function upgradeKitOf(
+  db: Database,
+  session: Pick<SessionRow, 'tenantId' | 'appId'>
+): Promise<{ repo: GitRepo | null; kit: KitRow | null }> {
+  const [app] = await db
+    .select({ kitId: apps.kitId })
+    .from(apps)
+    .where(and(eq(apps.tenantId, session.tenantId), eq(apps.id, session.appId)))
+    .limit(1)
+  const { pin, kit } = await appKitPin(db, { kitId: app?.kitId ?? null })
   const [owner, repo] = pin.repo.split('/')
-  return owner && repo ? [{ owner, repo }] : []
+  return { repo: owner && repo ? { owner, repo } : null, kit }
+}
+
+/**
+ * The repositories a kit upgrade session may fetch read-only: its APP's kit's pin (D36 K4 — the
+ * kit it is upgrading to; the default kit's for an app with no kit row). Also what the `host`
+ * egress mode puts in a remote sandbox's git grant. `token`: how a private kit's fetch is
+ * authenticated (see the header, step 7) — absent, a 401 is passed back as it is.
+ */
+export async function upgradeReadOnlyRepos(
+  db: Database,
+  session: Pick<SessionRow, 'tenantId' | 'appId'>,
+  token?: (repo: string) => Promise<{ token: string }>
+): Promise<ReadOnlyGitRepo[]> {
+  const { repo } = await upgradeKitOf(db, session)
+  if (!repo) return []
+  if (!token) return [repo]
+  return [
+    {
+      ...repo,
+      token: async () => ({
+        token: (await token(`${repo.owner}/${repo.repo}`)).token,
+        fresh: true,
+      }),
+    },
+  ]
 }
 
 export async function handleGitHub(
@@ -255,8 +296,14 @@ export async function handleGitHub(
       app?.repoOwner && app.repoName ? { owner: app.repoOwner, repo: app.repoName } : null
 
     const host = deps.repoHost(handle.db, cfg)
-    // P6 6c: a kit upgrade session may also fetch the pinned kit (public, read-only, no token).
-    const readOnlyRepos = session.kind === 'upgrade' ? await upgradeReadOnlyRepos(handle.db) : []
+    // P6 6c: a kit upgrade session may also fetch its app's kit (read-only; a public kit with no
+    // token, a private one with a read-only token minted only once GitHub refuses without one).
+    const kitToken =
+      deps.kitToken ?? ((db: Database, c: AppConfig, r: string) => mintKitToken(db, c, r))
+    const readOnlyRepos =
+      session.kind === 'upgrade'
+        ? await upgradeReadOnlyRepos(handle.db, session, r => kitToken(handle.db, cfg, r))
+        : []
     return await forwardGit(req, {
       readOnlyRepos,
       repo,

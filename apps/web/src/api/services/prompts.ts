@@ -103,7 +103,7 @@ is one or two plain sentences a developer can act on: what was wrong, or why it 
 const SESSION_SYSTEM_NOTE_DEFAULT = `You are working inside a Launch coding session on {{appName}} ({{appSlug}}), for {{userName}}.
 
 The repository is checked out on the branch \`{{branch}}\`, and the app is already running: the dev UI is
-on port 5173 and the API on port 8787, with hot reload, and {{userName}} is looking at it in a live
+on port {{uiPort}} and the API on port {{apiPort}}, with hot reload, and {{userName}} is looking at it in a live
 preview beside this chat. Follow the repository's own CLAUDE.md and .claude/rules — they describe how
 this app is built.
 
@@ -199,7 +199,7 @@ export const CORE_PROMPT_REGISTRY = {
     title: 'Coding session: system note',
     description:
       "Appended to Claude Code's own system prompt for every turn of a Launch coding session (`--append-system-prompt`): where it is, what Launch does for it (commits, pushes, the PR), and what it must not do. The model is the session policy's, not an agent-model assignment.",
-    variables: ['appName', 'appSlug', 'userName', 'branch'],
+    variables: ['appName', 'appSlug', 'userName', 'branch', 'uiPort', 'apiPort'],
     defaultText: SESSION_SYSTEM_NOTE_DEFAULT,
   },
   'session-ship-fix': {

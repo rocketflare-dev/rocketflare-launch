@@ -24,8 +24,8 @@ import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
+import { DEV_LOG_FILE } from '@/api/services/sessions/kit-dev'
 import { reconcileSession, reconcileStaleSessions } from '@/api/services/sessions/reconcile'
-import { DEV_LOG_FILE } from '@/api/services/sessions/rocketflare-dev'
 import {
   BOOT_STEP_LABELS,
   lostTurnMessage,

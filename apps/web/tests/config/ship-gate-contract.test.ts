@@ -60,7 +60,7 @@ import {
   isGateBranch,
   isGateBranchOf,
 } from '@/api/services/sessions/gate-branch'
-import { SESSION_KIT_TAG } from '@/api/services/sessions/rocketflare-dev'
+import { SESSION_KIT_TAG } from '@/api/services/sessions/kit-dev'
 import { DEFAULT_SHIP_ATTEMPTS } from '@/api/services/sessions/ship'
 
 /** `a.b.c` as numbers, for a release comparison. */

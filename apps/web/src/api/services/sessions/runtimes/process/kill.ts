@@ -6,8 +6,8 @@
  * (rocketflare-launch#13), which re-exports the names its importers always used.
  */
 import type { Logger } from '../../../../utils/core/logger'
+import { SESSION_LAUNCH_DIR } from '../../kit-dev'
 import { SandboxInterruptedError, type SandboxPort } from '../../ports'
-import { SESSION_LAUNCH_DIR } from '../../rocketflare-dev'
 
 /**
  * The turn's CLI pid: the command writes `$$` and `exec`s into the CLI, so it IS that pid (the dev
