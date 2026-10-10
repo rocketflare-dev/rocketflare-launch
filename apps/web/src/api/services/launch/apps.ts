@@ -30,6 +30,7 @@ import {
   appOperations,
   apps,
   groups,
+  kits,
 } from '../../../db/schema'
 import { BadRequestError, NotFoundError } from '../../utils/core/errors'
 import { isAppOwner } from '../oidc/policy'
@@ -74,11 +75,20 @@ export function toEnvironment(row: AppEnvironmentRow): AppEnvironment {
   }
 }
 
+/** The kit row's slug and name, joined on `apps.kit_id` (the platform table; no tenant). */
+interface KitNames {
+  kitSlug: string | null
+  kitName: string | null
+}
+
+const kitColumns = { kitSlug: kits.slug, kitName: kits.name }
+
 function toSummary(
   app: AppRow,
   ownerGroup: AppOwnerGroup | null,
   environments: AppEnvironmentRow[],
-  kit: KitStatus | null
+  kit: KitStatus | null,
+  names: KitNames
 ): AppSummary {
   return {
     id: app.id,
@@ -96,6 +106,9 @@ function toSummary(
     createdAt: app.createdAt,
     thumbnail: thumbnailOf(app.id, environments),
     kit,
+    // D36 K5: the app's own kit — its catalogue row, else the name its manifest snapshot carries.
+    kitSlug: names.kitSlug,
+    kitName: names.kitName ?? app.kitManifest?.kit.name ?? null,
   }
 }
 
@@ -122,12 +135,13 @@ function ownerGroupOf(row: { groupId: string | null; groupName: string | null })
 /** The whole catalogue, by display name. */
 export async function listApps(db: Database, tenantId: string): Promise<AppSummary[]> {
   const rows = await db
-    .select({ app: apps, groupId: groups.id, groupName: groups.name })
+    .select({ app: apps, groupId: groups.id, groupName: groups.name, ...kitColumns })
     .from(apps)
     .leftJoin(groups, and(eq(groups.id, apps.ownerGroupId), eq(groups.tenantId, tenantId)))
+    .leftJoin(kits, eq(kits.id, apps.kitId))
     .where(eq(apps.tenantId, tenantId))
     .orderBy(asc(apps.displayName), asc(apps.slug))
-  const [envs, kits] = await Promise.all([
+  const [envs, kitByApp] = await Promise.all([
     environmentsOf(
       db,
       tenantId,
@@ -140,7 +154,7 @@ export async function listApps(db: Database, tenantId: string): Promise<AppSumma
     ),
   ])
   return rows.map(r =>
-    toSummary(r.app, ownerGroupOf(r), envs.get(r.app.id) ?? [], kits.get(r.app.id) ?? null)
+    toSummary(r.app, ownerGroupOf(r), envs.get(r.app.id) ?? [], kitByApp.get(r.app.id) ?? null, r)
   )
 }
 
@@ -173,16 +187,17 @@ export async function getAppDetail(
   viewer: AppViewer
 ): Promise<AppDetail> {
   const [row] = await db
-    .select({ app: apps, groupId: groups.id, groupName: groups.name })
+    .select({ app: apps, groupId: groups.id, groupName: groups.name, ...kitColumns })
     .from(apps)
     .leftJoin(groups, and(eq(groups.id, apps.ownerGroupId), eq(groups.tenantId, tenantId)))
+    .leftJoin(kits, eq(kits.id, apps.kitId))
     .where(and(eq(apps.tenantId, tenantId), eq(apps.slug, slug)))
   if (!row) throw new NotFoundError('App not found', 'app_not_found')
   const envs = (await environmentsOf(db, tenantId, [row.app.id])).get(row.app.id) ?? []
   const sorted = [...envs].sort(byEnvironmentOrder)
   const kit = (await kitStatuses(db, tenantId, [row.app])).get(row.app.id) ?? null
   return {
-    ...toSummary(row.app, ownerGroupOf(row), sorted, kit),
+    ...toSummary(row.app, ownerGroupOf(row), sorted, kit, row),
     templateContractVersion: row.app.templateContractVersion,
     defaultBranch: row.app.defaultBranch,
     environments: sorted.map(toEnvironment),

@@ -26,7 +26,7 @@ describe('settingsGroups', () => {
   it('lays out the five kit groups, in order, with every section', () => {
     expect(labels(settingsGroups({ single: false }))).toEqual({
       Organisation: ['General', 'People', 'Approval policies', 'API keys'],
-      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
+      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kits'],
       Platform: ['Domain', 'Cloudflare', 'Neon', 'GitHub', 'Email', 'Sign-in', 'Public URL'],
       Activity: ['Audit', 'Usage'],
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],

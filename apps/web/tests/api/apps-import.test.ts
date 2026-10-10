@@ -8,12 +8,14 @@
  * exercised for its auth and validation, which never reach GitHub.
  */
 import { generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { type KitManifest, parseKitManifest } from '@launch/shared/kit-manifest'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
-import { type ImportGitHub, importApp } from '@/api/services/launch/import'
+import { detectImport, type ImportGitHub, importApp } from '@/api/services/launch/import'
 import { parseManifest, parseWranglerToml } from '@/api/services/launch/kits/app-manifest'
-import { getDefaultKit } from '@/api/services/launch/kits/store'
+import { deleteKit, getDefaultKit, insertKit, type KitRow } from '@/api/services/launch/kits/store'
 import { ApiError } from '@/api/utils/core/errors'
 import { loadConfig } from '@/config'
 import { appEnvironments, appOperations, apps, auditEvents, groups, groupTypes } from '@/db/schema'
@@ -579,5 +581,178 @@ describe('POST /api/apps/import', () => {
     )
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ statusCode: 400 })
+  })
+})
+
+// ---- D36 K5: the kit is detected from the repo -------------------------------------------------
+
+const kitFixture = (path: string) =>
+  readFileSync(new URL(`../fixtures/launch-kit-0.1/${path}`, import.meta.url), 'utf8')
+
+/** Kits this file registered; removed after its apps (an app's kit_id is set null anyway). */
+const kitIds: string[] = []
+afterAll(async () => {
+  for (const id of kitIds) await deleteKit(db, id)
+})
+
+/**
+ * A verified copy of the meta-kit under a kit id no other suite uses — the catalogue is shared,
+ * and another file registers `launch-kit` itself.
+ */
+async function registerMetaKit(): Promise<{ row: KitRow; manifest: KitManifest }> {
+  const id = uniqueSlug('acmekit')
+  const manifest = parseKitManifest(kitFixture('launch.kit.json'))
+  manifest.kit.id = id
+  manifest.kit.repo = `https://github.com/acme/${id}.git`
+  const row = await insertKit(db, {
+    slug: id,
+    name: 'Acme kit',
+    repo: `acme/${id}`,
+    pin: { tag: '0.1.0', commit: 'c'.repeat(40) },
+    manifest,
+    manifestSource: 'repo',
+    contractVersion: '1',
+    status: 'verified',
+    isDefault: false,
+  })
+  kitIds.push(row.id)
+  return { row, manifest }
+}
+
+/** A copy of the meta-kit named `slug`: its tomls renamed, its `.launch-app.json` stamped. */
+function metaKitApp(
+  slug: string,
+  kit: Record<string, unknown>,
+  extra: Record<string, string> = {}
+) {
+  const renamed = (file: string) => kitFixture(file).replaceAll('launch-kit', slug)
+  return {
+    '.launch-app.json': JSON.stringify({ app: { slug, display: 'Shop' }, kit }),
+    'apps/web/wrangler.toml': renamed('apps/web/wrangler.toml'),
+    'apps/web/wrangler.staging.toml': renamed('apps/web/wrangler.staging.toml'),
+    ...extra,
+  }
+}
+
+describe('importApp detects the kit (D36 K5)', () => {
+  it("records the kit the repo's launch.kit.json names, with that kit's manifest", async () => {
+    const { tenant, actor } = await adminActor()
+    const { row, manifest } = await registerMetaKit()
+    const slug = uniqueSlug('shop')
+    const gh = fakeGitHub(
+      metaKitApp(
+        slug,
+        { version: '0.1.0' },
+        {
+          'launch.kit.json': JSON.stringify({ ...manifest, kit: { ...manifest.kit } }),
+        }
+      )
+    )
+    const { app } = await importApp(db, cfg, tenant.id, { repo: `acme/${slug}` }, actor, {
+      fetch: gh.fetch,
+      github: github(),
+    })
+    expect(app).toMatchObject({
+      slug,
+      displayName: 'Shop',
+      kitId: row.id,
+      template: manifest.kit.id,
+      templateVersion: '0.1.0',
+    })
+    expect(app.kitManifest?.kit.id).toBe(manifest.kit.id)
+    // The kit's adapter chose the files: `.launch-app.json`, never `.rocketflare.json`.
+    const read = gh.calls.map(c => new URL(c.url).pathname)
+    expect(read.some(p => p.endsWith('/contents/.launch-app.json'))).toBe(true)
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.tenantId, tenant.id), eq(auditEvents.action, 'app.imported')))
+    expect(audit?.summary).toMatchObject({ after: { kit: row.slug, kitDetectedBy: 'kit-file' } })
+  })
+
+  it("reads the app manifest's kit.id when the repo has no launch.kit.json", async () => {
+    const { tenant } = await adminActor()
+    const { row, manifest } = await registerMetaKit()
+    const slug = uniqueSlug('shop')
+    const gh = fakeGitHub(metaKitApp(slug, { id: manifest.kit.id, version: '0.1.0' }))
+    const preview = await detectImport(
+      db,
+      cfg,
+      { repo: `acme/${slug}` },
+      {
+        fetch: gh.fetch,
+        github: github(),
+      }
+    )
+    expect(preview).toEqual({
+      repo: `acme/${slug}`,
+      ref: 'main',
+      manifest: '.launch-app.json',
+      slug,
+      displayName: 'Shop',
+      kitVersion: '0.1.0',
+      kit: { id: row.id, slug: row.slug, name: 'Acme kit', detectedBy: 'app-manifest' },
+    })
+    // A dry run writes nothing.
+    expect(await appsIn(tenant.id)).toEqual([])
+  })
+
+  it('refuses a repo built from a kit Launch has not registered, writing nothing', async () => {
+    const { tenant, actor } = await adminActor()
+    const slug = uniqueSlug('shop')
+    const gh = fakeGitHub(
+      metaKitApp(
+        slug,
+        {},
+        { 'launch.kit.json': JSON.stringify({ kit: { id: 'acme-internal-kit' } }) }
+      )
+    )
+    const err = await rejection(
+      importApp(db, cfg, tenant.id, { repo: `acme/${slug}` }, actor, {
+        fetch: gh.fetch,
+        github: github(),
+      })
+    )
+    expect(err).toMatchObject({ statusCode: 422, code: 'kit_not_registered' })
+    expect(err.message).toContain('"acme-internal-kit"')
+    expect(await appsIn(tenant.id)).toEqual([])
+  })
+
+  it('a Rocketflare copy from before the contract is a Rocketflare app (the dry run says legacy)', async () => {
+    const slug = uniqueSlug('expenses')
+    const gh = fakeGitHub(repoFiles({ '.rocketflare.json': rocketflareJson(slug) }))
+    const preview = await detectImport(
+      db,
+      cfg,
+      { repo: 'acme/expense-tracker' },
+      { fetch: gh.fetch, github: github() }
+    )
+    expect(preview.kit).toMatchObject({ slug: 'rocketflare', detectedBy: 'legacy' })
+    expect(preview).toMatchObject({ slug, manifest: '.rocketflare.json', kitVersion: '0.15.0' })
+  })
+})
+
+describe('POST /api/apps/import/detect', () => {
+  it('is 401 without a session, 403 for a member, 400 for a bad repo', async () => {
+    const anonymous = await request(
+      '/api/apps/import/detect',
+      { method: 'POST' },
+      { json: { repo: 'acme/app' } }
+    )
+    expect(anonymous.status).toBe(401)
+    for (const [role, status, repo] of [
+      ['member', 403, 'acme/app'],
+      ['admin', 400, 'not a repo'],
+    ] as const) {
+      const { user, tenant } = await createTestTenantWithUser(db, role)
+      tenantIds.push(tenant.id)
+      const cookie = sessionCookieHeader(await createTestSession(db, user.id, tenant.id))
+      const res = await request(
+        '/api/apps/import/detect',
+        { method: 'POST', headers: { ...cookie, 'X-Requested-With': 'fetch' } },
+        { json: { repo } }
+      )
+      expect(res.status).toBe(status)
+    }
   })
 })

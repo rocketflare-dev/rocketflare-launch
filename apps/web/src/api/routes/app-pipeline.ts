@@ -91,7 +91,7 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
   const actor = auditActor(c)
   // Before any write: the jobs this launch dispatches must be able to call Launch back.
   await requirePublicUrl(db, c.get('config'))
-  const { app, runId } = await requestApp(
+  const { app, runId, kit } = await requestApp(
     db,
     c.env.APP_LAUNCH_WORKFLOW,
     defaultPorts,
@@ -118,6 +118,7 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
         displayName: app.displayName,
         description: app.description,
         ownerGroupId: app.ownerGroupId,
+        kitName: kit.name,
       },
       actor,
     })

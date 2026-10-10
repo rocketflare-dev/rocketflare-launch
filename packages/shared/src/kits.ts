@@ -10,7 +10,7 @@
  * default (`DEFAULT_TEMPLATE_PIN`), exactly as an unset `template_pin` setting did — `pinIsCodeDefault`.
  */
 import { z } from 'zod'
-import { kitManifestSchema } from './kit-manifest'
+import { type KitManifest, kitManifestSchema } from './kit-manifest'
 import { kitLatestCheckSchema, kitRepoSchema, templatePinSchema } from './launch-setup'
 
 /** `unchecked` (never checked at this pin) · `verified` (the checks passed) · `failed`. */
@@ -113,3 +113,60 @@ export const kitListResponseSchema = z.object({ kits: z.array(kitSchema) })
 export type KitListResponse = z.infer<typeof kitListResponseSchema>
 
 export const kitRemoveResponseSchema = z.object({ removed: z.literal(true) })
+
+// ---- What a member sees: the kits an app can be created from (D36 K5) ---------------------------
+
+/**
+ * One kit as Create app's picker offers it — `GET /api/kits`, for anyone who may read apps. Only
+ * what choosing needs: never the problems, the repo's pin history or the manifest. `version` is
+ * the pinned release tag (null on a commit pin); `icon` is the manifest's display-only mark.
+ */
+export const kitOptionSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  icon: z.string().nullable(),
+  version: z.string().nullable(),
+  isDefault: z.boolean(),
+})
+export type KitOption = z.infer<typeof kitOptionSchema>
+
+/**
+ * `GET /api/kits` — the kits a new app may be cut from: every `verified` kit, plus the default
+ * (which a request without `kitId` uses anyway, checked or not), the default first.
+ */
+export const kitOptionsResponseSchema = z.object({ kits: z.array(kitOptionSchema) })
+export type KitOptionsResponse = z.infer<typeof kitOptionsResponseSchema>
+
+/** `kitId` in `POST /api/apps` names a kit the catalogue does not have (422). */
+export const KIT_NOT_FOUND = 'kit_not_found'
+/** `kitId` names a kit that has not passed its check (409): only verified kits are offered. */
+export const KIT_NOT_VERIFIED = 'kit_not_verified'
+/** An import's repo was built from a kit Launch has not registered (422). */
+export const KIT_NOT_REGISTERED = 'kit_not_registered'
+
+/** What a kit's manifest declares, in the words Platform → Kits and `launch kits show` use. */
+export interface KitManifestSummary {
+  /** The scaffold's init command (`scaffold.init`). */
+  init: string
+  /** The release workflow under `.github/workflows/` (`release.workflow`). */
+  releaseWorkflow: string
+  /** The CI check branch protection requires (`ci.requiredCheck`). */
+  requiredCheck: string
+  /** Whether the kit declares an `upgrade` block — without one, its apps are never behind. */
+  upgrades: boolean
+  /** The plugins a new app gets (`plugins.defaults`, by id). */
+  plugins: string[]
+}
+
+/** The {@link KitManifestSummary} of a manifest snapshot. Pure. */
+export function kitManifestSummary(manifest: KitManifest): KitManifestSummary {
+  return {
+    init: manifest.scaffold.init,
+    releaseWorkflow: manifest.release.workflow,
+    requiredCheck: manifest.ci.requiredCheck,
+    upgrades: Boolean(manifest.upgrade),
+    plugins: (manifest.plugins?.defaults ?? []).map(p => p.id),
+  }
+}

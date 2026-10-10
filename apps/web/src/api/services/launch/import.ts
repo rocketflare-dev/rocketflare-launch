@@ -1,6 +1,6 @@
 /**
- * Import an existing app of the default kit (Rocketflare until K5 detects the kit) into the registry (spec/06 "Importing existing apps"). The
- * phase-1 way an app enters Launch: nothing is provisioned, the repo is only READ.
+ * Import an existing app of a registered kit into the registry (spec/06 "Importing existing
+ * apps"). The phase-1 way an app enters Launch: nothing is provisioned, the repo is only READ.
  *
  * 1. **Find the GitHub App installation** that can read the repo. The installation id the setup
  *    check stored in the `github_app` credential's metadata is used when the repo belongs to the
@@ -8,9 +8,13 @@
  *    resolved from `GET /app/installations` by the repo owner's login.
  * 2. **Mint a token narrowed to this one repo and `contents: read`** — an import never needs the
  *    installation's write set.
- * 3. **Read the app manifest** (the kit adapter's `paths.manifests` — Rocketflare's
- *    `.rocketflare.json`, else `launch.plugins.json`) and **both tomls** (`paths.tomls`), parsed by
- *    `kits/app-manifest.ts`. The app records that kit and its manifest (`kit_id`, `kit_manifest`).
+ * 3. **Detect the kit** (D36 K5, `kits/detect.ts`): the repo's `launch.kit.json`, else its app
+ *    manifest's `kit.id` / `kit.name`, matched to a registered kit (a Rocketflare copy from before
+ *    the contract is Rocketflare's); a kit Launch has not registered is 422 `kit_not_registered`.
+ *    Then **read the app manifest** (that kit adapter's `paths.manifests`) and **both tomls**
+ *    (`paths.tomls`), parsed by `kits/app-manifest.ts`. The app records that kit and its manifest
+ *    (`kit_id`, `kit_manifest`). `detectImport` is steps 1–3 and the slug check alone, writing
+ *    nothing — the Import dialog's preview and `launch apps import --dry-run`.
  * 4. **Check the slug** against spec/04's rules, then write `apps` (imported, live), one
  *    `app_environments` row per toml and the run's `app_operations` steps, plus the
  *    `app.imported` audit row — **in one transaction**, so a failed import leaves nothing behind.
@@ -25,7 +29,11 @@
  * There is no Cloudflare verification in P1: the ids are recorded as the tomls declare them.
  * Every GitHub call goes through `opts.fetch`, so tests never reach GitHub.
  */
-import type { ImportAppRequest } from '@launch/shared/launch-apps'
+import type {
+  ImportAppRequest,
+  ImportDetectRequest,
+  ImportDetectResponse,
+} from '@launch/shared/launch-apps'
 import { appSlugProblem } from '@launch/shared/launch-apps'
 import type { AppConfig } from '../../../config'
 import type { Database } from '../../../db/client'
@@ -56,7 +64,9 @@ import {
   type TemplateAdapter,
 } from './kits/adapter'
 import { type AppIdentity, ManifestError, type WranglerEnvironment } from './kits/app-manifest'
-import { ensureDefaultKit } from './kits/store'
+import { type DetectedKit, detectRepoKit } from './kits/detect'
+import type { KitFileReader } from './kits/manifest'
+import { ensureDefaultKit, listKits } from './kits/store'
 
 /** The Rocketflare fallback's contract version — defined by the adapter, re-exported here. */
 export { ROCKETFLARE_CONTRACT_VERSION }
@@ -152,16 +162,21 @@ interface RepoSnapshot {
   ref: string
 }
 
-/** Everything the import reads, through a token that can read nothing else. */
-async function readRepo(
+/** The repo at one ref, through a token that can read nothing else; each file fetched once. */
+interface OpenRepo {
+  read: KitFileReader
+  ref: string
+  /** `owner/repo@ref`, for the refusals. */
+  label: string
+}
+
+async function openRepo(
   github: ImportGitHub,
   owner: string,
   repo: string,
   requestedRef: string | undefined,
-  adapter: TemplateAdapter,
   opts: ImportOptions
-): Promise<RepoSnapshot> {
-  const { manifests, tomls } = adapter.paths
+): Promise<OpenRepo> {
   const installationId = await resolveInstallation(github, owner, opts)
   let token: string
   try {
@@ -184,11 +199,28 @@ async function readRepo(
     throw err
   }
   const ref = requestedRef ?? (await repoDefaultBranch(token, owner, repo, opts))
+  const files = new Map<string, Promise<string | null>>()
+  const read: KitFileReader = path => {
+    let file = files.get(path)
+    if (!file) {
+      file = getRepoFile(token, owner, repo, path, ref, opts)
+      files.set(path, file)
+    }
+    return file
+  }
+  return { read, ref, label: `${owner}/${repo}@${ref}` }
+}
 
+/** The app manifest and both tomls, as the detected kit's adapter names them. */
+async function readSnapshot(
+  { read, ref, label }: OpenRepo,
+  adapter: TemplateAdapter
+): Promise<RepoSnapshot> {
+  const { manifests, tomls } = adapter.paths
   let manifestText: string | null = null
   let manifestPath: string = adapter.paths.manifest
   for (const path of manifests) {
-    manifestText = await getRepoFile(token, owner, repo, path, ref, opts)
+    manifestText = await read(path)
     if (manifestText !== null) {
       manifestPath = path
       break
@@ -196,27 +228,20 @@ async function readRepo(
   }
   if (manifestText === null) {
     throw unprocessable(
-      `${owner}/${repo}@${ref} has no ${manifests.join(' or ')} — is it a ${adapter.name} app?`,
+      `${label} has no ${manifests.join(' or ')} — is it a ${adapter.name} app?`,
       'manifest_missing',
       { files: [...manifests] }
     )
   }
-  const [production, staging] = await Promise.all([
-    getRepoFile(token, owner, repo, tomls.production, ref, opts),
-    getRepoFile(token, owner, repo, tomls.staging, ref, opts),
-  ])
+  const [production, staging] = await Promise.all([read(tomls.production), read(tomls.staging)])
   const missing = [
     production === null ? tomls.production : null,
     staging === null ? tomls.staging : null,
   ].filter(f => f !== null)
   if (missing.length > 0 || production === null || staging === null) {
-    throw unprocessable(
-      `${owner}/${repo}@${ref} is missing ${missing.join(' and ')}`,
-      'wrangler_config_missing',
-      {
-        files: missing,
-      }
-    )
+    throw unprocessable(`${label} is missing ${missing.join(' and ')}`, 'wrangler_config_missing', {
+      files: missing,
+    })
   }
   try {
     return {
@@ -236,6 +261,67 @@ async function readRepo(
   }
 }
 
+interface ReadForImport {
+  owner: string
+  repo: string
+  detected: DetectedKit
+  adapter: TemplateAdapter
+  snapshot: RepoSnapshot
+  slug: string
+}
+
+/**
+ * Open the repo, detect its kit (`kits/detect.ts`) and read it with that kit's adapter: what both
+ * the import and its dry run (`detectImport`) start with. Writes nothing.
+ */
+async function readForImport(
+  db: Database,
+  github: ImportGitHub,
+  input: Pick<ImportAppRequest, 'repo' | 'ref'>,
+  opts: ImportOptions
+): Promise<ReadForImport> {
+  const [owner = '', repo = ''] = input.repo.split('/')
+  const opened = await openRepo(github, owner, repo, input.ref, opts)
+  await ensureDefaultKit(db)
+  const detected = await detectRepoKit(opened.read, await listKits(db), opened.label)
+  const adapter = adapterForKit(detected.kit)
+  const snapshot = await readSnapshot(opened, adapter)
+  const slug = snapshot.identity.slug ?? repo.toLowerCase()
+  const problem = appSlugProblem(slug)
+  if (problem) {
+    throw unprocessable(`Cannot import as "${slug}": ${problem}`, 'invalid_slug', { slug })
+  }
+  return { owner, repo, detected, adapter, snapshot, slug }
+}
+
+/**
+ * What importing `input.repo` would record — the slug, the name, the kit it was built from — with
+ * every refusal the import itself would give, and nothing written (`POST /api/apps/import/detect`).
+ */
+export async function detectImport(
+  db: Database,
+  cfg: AppConfig,
+  input: ImportDetectRequest,
+  opts: ImportOptions = {}
+): Promise<ImportDetectResponse> {
+  const github = opts.github ?? (await loadImportGitHub(db, cfg))
+  const { owner, repo, detected, snapshot, slug } = await readForImport(db, github, input, opts)
+  return {
+    repo: `${owner}/${repo}`,
+    ref: snapshot.ref,
+    manifest: snapshot.manifestPath,
+    slug,
+    displayName: snapshot.identity.displayName ?? slug,
+    kitVersion: snapshot.identity.kitVersion ?? null,
+    kit: {
+      id: detected.kit.id,
+      slug: detected.kit.slug,
+      name: detected.kit.name,
+      detectedBy: detected.detectedBy,
+    },
+  }
+}
+
 export interface ImportResult {
   app: AppRow
   runId: string
@@ -250,24 +336,22 @@ export async function importApp(
   actor: AuditActor,
   opts: ImportOptions = {}
 ): Promise<ImportResult> {
-  const [owner = '', repo = ''] = input.repo.split('/')
   if (input.ownerGroupId) await assertGroupInTenant(db, tenantId, input.ownerGroupId)
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const now = opts.clock ?? (() => new Date())
   const startedAt = now()
-  // D36 K1: an imported app joins the default kit (K5 detects it from the copy's manifest); K2:
-  // that kit's adapter decides which files are read, and the app keeps its manifest.
-  const kit = await ensureDefaultKit(db)
+  // D36 K5: the app joins the kit it was built from — detected from the repo (`kits/detect.ts`),
+  // refused when the catalogue does not have it — and keeps that kit's manifest (K2); the kit's
+  // adapter decides which files are read.
+  const { owner, repo, detected, adapter, snapshot, slug } = await readForImport(
+    db,
+    github,
+    input,
+    opts
+  )
+  const { kit } = detected
   const kitManifest = kitManifestOf(kit)
-  const adapter = adapterForKit(kit)
-  const snapshot = await readRepo(github, owner, repo, input.ref, adapter, opts)
   const { identity, environments } = snapshot
-
-  const slug = identity.slug ?? repo.toLowerCase()
-  const problem = appSlugProblem(slug)
-  if (problem) {
-    throw unprocessable(`Cannot import as "${slug}": ${problem}`, 'invalid_slug', { slug })
-  }
 
   const runId = newId()
   const finishedAt = now()
@@ -364,6 +448,8 @@ export async function importApp(
             repo: `${owner}/${repo}`,
             ref: snapshot.ref,
             kitVersion: identity.kitVersion,
+            kit: kit.slug,
+            kitDetectedBy: detected.detectedBy,
             environments: envNames.filter(n => environments[n].url).length,
           },
         },
