@@ -12,6 +12,18 @@
   owner. The template pin is now the default kit's pin; the `template_pin` setting is kept as its
   mirror for one release. New apps still build from the default kit (the picker comes later), and a
   private kit cannot be scaffolded yet.
+- **Apps are driven by their kit's manifest (D36 K2).** Launch now builds an adapter from each
+  app's kit manifest — the files it reads, the names it gives resources, the vars and secrets it
+  writes, the database roles, the release workflow, the health routes, the required CI check, the
+  declared config and the upgrade prompt — instead of Rocketflare's constants. Each app keeps the
+  manifest it was created or imported with (`apps.kit_manifest`, migration 0050) until a release
+  reaches its kit's pinned version, so a re-pin never changes an app mid-flight. Rocketflare apps
+  behave exactly as before. Creating an app now provisions every KV namespace, queue and R2 bucket
+  its tomls declare (a plugin's own included); the scaffold check judges names by the kit's naming
+  rule; Settings → Shipping names the app kit's required check; an app whose kit declares no
+  upgrade is never shown as behind. A kit can now mark optional config as plain (`plain`) and
+  generate its secret as hex or base64; the built-in Rocketflare manifest's `plugins.add` now
+  passes the plugin's ref and subdir.
 
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with

@@ -77,8 +77,10 @@ Worker in that same step and returns ids only.
   `launch_failed` (status `failed`, `app.launch_failed` with the failed row's SCRUBBED error) and
   the run returns.
 - **Adapter ports** (`services/launch/pipeline/ports.ts`): the names, `writeConfig`, the
-  placeholder Worker, the scaffold files and runner come from slice 2b through `defaultPorts()`.
-- **Tests** set `workflow.overrides = { ports, vendors, sleep, health }` — the credentials are
+  placeholder Worker, the scaffold files and runner come from the APP's `TemplateAdapter` (built from
+  its kit manifest, D36 K2 — `PipelineDeps.adapterFor` / `portsFor`) through `defaultPorts(adapter)`.
+- **Tests** set `workflow.overrides = { ports, vendors, sleep, health }` (and `adapter`, else it is
+  resolved from the app) — the credentials are
   handed in because `admin_credentials` is global — and drive `run()` with
   `createFakeWorkflowStep({ onWait })` playing the scaffold job and the deploy
   (`tests/helpers/launch-pipeline.ts` `LaunchHarness`, the FakeCloud as the global fetch).

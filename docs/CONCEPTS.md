@@ -1088,10 +1088,12 @@ parties (a cross-site POST with the cookie is refused by CSRF).
 ### 18.4 Registry, health and OIDC clients
 
 - **Import** (`POST /api/apps/import {repo, ref?, ownerGroupId?}`, admin+): the GitHub App token is
-  narrowed to the one repo and `contents: read`; Launch reads `.rocketflare.json` (else
-  `launch.plugins.json`) and both wrangler tomls, parsed by `rocketflare-manifest.ts` — the
+  narrowed to the one repo and `contents: read`; Launch reads the default kit's app manifest
+  (its adapter's `paths.manifests` — Rocketflare's `.rocketflare.json`, else `launch.plugins.json`;
+  §18.24) and both wrangler tomls, parsed by `kits/app-manifest.ts` — the
   manifest leniently (a zod passthrough: `app {slug, display, domain}`, the kit version from
-  `kit.version` or `kitVersion`), the tomls with `smol-toml` (name, `APP_URL`, binding ids; a kit
+  `kit.version` or `kitVersion`, the kit from `kit.id` or a legacy copy's `kit.name`), the tomls
+  with `smol-toml` (name, the kit's app-URL var — `APP_URL` —, binding ids; a kit
   `<PLACEHOLDER>` is not an id). The slug must follow spec/04 (a letter first, not `*-staging`, not
   reserved) and is globally unique. `apps`, one `app_environments` row per toml, the
   `app_operations` steps and `app.imported` are written in one transaction.
@@ -1213,20 +1215,24 @@ succeeded row skipped with its stored ids, failures scrubbed. No step result car
 step that mints one puts it on the Worker itself.
 
 - **Steps**: `reserve` → `repo` (private repo + the two scaffold files) → `scaffold.start|wait|
-  verify` (§18.6; `.rocketflare.json` and the toml names must match `names.ts`) → `neon` (project;
-  then, as `neondb_owner` over the HTTP SQL endpoint with a password minted for the step, one
-  statement per call: roles `migrator` (LOGIN CREATEROLE) and `app` (LOGIN) created IN SQL,
-  database `app` owned by `migrator` through the API, `CREATE EXTENSION IF NOT EXISTS vector` in
-  it, `GRANT migrator TO app`; a `staging` branch with both passwords reset) → `cloudflare` (KV, queue, R2 per
-  environment) → `oidc_client` → `write_config` (both tomls, one commit: the ids, `APP_URL`,
-  `EMAIL_FROM`, `TENANCY_MODE=single`, `SIGNUP_MODE=open`, Launch as `OIDC_ISSUER`,
-  `AUTH_OIDC_ONLY`, `workers_dev=false`) → `placeholders` (a stub Worker per environment applying
+  verify` (§18.6; the app manifest must name the app and the pinned kit, and every account-scoped
+  name in the tomls must follow the kit's naming rule, `kits/names.ts` `namingProblems`) → `neon`
+  (project; then, as `neondb_owner` over the HTTP SQL endpoint with a password minted for the step,
+  one statement per call: the kit's roles — `migrator` (LOGIN CREATEROLE) and `app` (LOGIN) — created
+  IN SQL, database `app` owned by `migrator` through the API, `CREATE EXTENSION IF NOT EXISTS` each
+  of the kit's extensions (`vector`) in it, `GRANT migrator TO app`; a `staging` branch with both
+  passwords reset) → `cloudflare` (every KV namespace, queue and R2 bucket the scaffolded tomls
+  declare, per environment — Rocketflare's one of each; a KV under its title, `kvTitleOf`) →
+  `oidc_client` → `write_config` (both tomls, one commit, every var named by the kit's
+  `launchProvides`: the KV ids, `APP_URL`, `EMAIL_FROM`, its fixed vars `TENANCY_MODE=single`,
+  `SIGNUP_MODE=open`, Launch as `OIDC_ISSUER`, `AUTH_OIDC_ONLY`; and `workers_dev=false`) →
+  `placeholders` (a stub Worker per environment applying
   the toml's DO migrations, its workflows, queue consumers and `<host>/*` route; it exports a `queue`
   handler that retries every message and a no-op `scheduled`, since Cloudflare refuses a consumer on a
   script without one — 11001; its `fetch` is a 503 with `Retry-After: 60` — plain text, except
   that a browser (`GET`/`HEAD` accepting `text/html`, outside `/api/`) gets the uncached animated
-  launching page, `rocketflare/placeholder-page.ts`, with the app's escaped display name; the page
-  polls `/api/health` every 12 s and reloads into the app on its first 200. Preview it with
+  launching page, `placeholder/page.ts`, with the app's escaped display name; the page
+  polls the kit's live route (`/api/health`) every 12 s and reloads into the app on its first 200. Preview it with
   `pnpm web preview:placeholder`) → `github_env`
   (environments — a token with `administration: write`, GitHub's permission for creating one —, `DEPLOYER_URL=${APP_URL}/ci`, `DEPLOYER_AUDIENCE=${APP_URL}`,
   issue #10's `LAUNCH_GATE_APP_ID` = the App id (written only when it differs, §18.4),
@@ -1234,8 +1240,11 @@ step that mints one puts it on the Worker itself.
   created or rewritten BY NAME so a retry never duplicates it, its id recorded as `rulesetId`; a
   plan without rulesets — GitHub's 403/404, a private repository outside GitHub Team — is recorded
   `branchProtection: unavailable` with GitHub's message and the launch goes on) →
-  `worker_secrets` → `email` (non-blocking; skipped with its reason while Setup has no Resend key or
-  no verified notifications domain) → `deploy_staging.start|wait|check` → `health` (up to
+  `worker_secrets` (the kit's names: its one generated secret — `OAUTH_ENCRYPTION_KEY`, kept sealed
+  and never rotated —, the OIDC client secret, the bootstrap admin, `DATABASE_URL`) → `email`
+  (non-blocking; skipped with its reason while Setup has no Resend key or no verified notifications
+  domain, or when the kit maps no email key) → `deploy_staging.start|wait|check` (`workflow_dispatch`
+  of the kit's release workflow, `deploy.yml`, with its environment input) → `health` (up to
   20 probes, 30 s apart) → `production` (skipped) → `live` (`app.launched`, a notification).
   The deploy wait and check succeed only on an ACTIVATED staging ticket (`activated_at`, §18.7) —
   never on `finished` + a version: a job that died between upload and activate (its
@@ -1258,9 +1267,10 @@ step that mints one puts it on the Worker itself.
   database `app` deleted through the API — only when it has no table in `public` — and those roles
   deleted through the API, then recreated in SQL; with tables, or a `staging` branch already cut
   from them, the step fails saying so and deletes nothing.
-- **The adapter** is `pipeline/ports.ts` `defaultPorts()`: `rocketflare/{names,toml,
-  placeholder-worker,scaffold-job}.ts` and `scaffold/github-actions-runner.ts`. The Workflow
-  depends on the ports only.
+- **The adapter** is the app's `TemplateAdapter`, built from its kit's manifest (§18.24, D36 K2):
+  every step resolves it from the app (`PipelineDeps.adapterFor` / `portsFor`, the snapshot on
+  `apps.kit_manifest`), and `pipeline/ports.ts` `defaultPorts(adapter)` binds the ports to it and to
+  `scaffold/github-actions-runner.ts`. The Workflow depends on the ports and the adapter only.
 - **Waits are rounds**: `…poll#N` reads the ticket row (the truth) and asks whether the job
   itself died, then `…wait#N` parks on the event for one round (30 × 1 min for the scaffold, 15 ×
   3 min for the deploy). The event is a nudge — it only ever says SUCCESS, so a round is how long a
@@ -1416,7 +1426,8 @@ wait).
 ### 18.6 The scaffold job
 
 Launch cannot run the kit's rename, plugin install and gate in a Worker, so the `repo` step commits
-`.github/workflows/launch-scaffold.yml` and `.launch/scaffold.mjs` (`rocketflare/scaffold-job.ts`)
+`.github/workflows/launch-scaffold.yml` and `.launch/scaffold.mjs` (`rocketflare/scaffold-job.ts`,
+still Rocketflare's own until D36 K3 makes it the manifest's `scaffold` block)
 and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
 (`GitHubActionsScaffoldRunner`, behind the `ScaffoldRunner` seam a P3 sandbox will also fill). The
 job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
@@ -2588,7 +2599,7 @@ Worker, not only previews (an app's custom domain wins, so its slug never arrive
 preview check `worker.ts` asks `unclaimedHostOf` (`api/preview/unclaimed-host.ts`): a host under
 the zone — the suffix after `{label}.` in `SESSION_PREVIEW_URL`, any depth — that is not
 `APP_URL`'s gets a 404 instead of the Launch app. A browser (`GET`/`HEAD` accepting `text/html`)
-sees the launching page's scene (`scenePage`, shared with `placeholder-page.ts`) saying nothing
+sees the launching page's scene (`scenePage`, shared with `placeholder/page.ts`) saying nothing
 has launched there, the escaped host and a link to `APP_URL`; no script at all (CSP
 `default-src 'none'; style-src 'unsafe-inline'`), no polling. Anything else gets
 `Nothing is launched at this address.` Both are never cached — `Cache-Control: no-store` and
@@ -3727,9 +3738,12 @@ shipping the var) and records them as `shadowedVars` on the ticket and in `deplo
 after the upload began, because the version holds the secrets as of its upload and activating it
 would undo a newer rotation.
 
-**Detecting declared needs (5e — `rocketflare/declared-config.ts`, `detect.ts`).** Spec/02's
-`declaredConfig`: `launch.plugins.json` `surfaces[]` → each `anchor` (`plugin.json`) → `vars[]`
-(parsed as `plugin-lib.mjs` validates them), plus the kit's optional secrets under plugin `kit`.
+**Detecting declared needs (5e — `kits/declared-config.ts`, `detect.ts`).** Spec/02's
+`declaredConfig`, from the app's kit manifest (D36 `declaredConfig`): the app manifest's
+`surfaces[]` (`.rocketflare.json` / `launch.plugins.json`) → each `anchor` (`plugin.json`; absent,
+the kit's `pluginManifests` glob with the plugin's id) → `vars[]` (parsed as `plugin-lib.mjs`
+validates them), plus the kit's optional config (`optional`; secret unless in `plain`) under
+plugin `kit`.
 Keys match resource items by exact name; archived resources match nothing; a matched resource is
 NEEDED when no environment holds a live grant of it. `scanAppConfig` runs after commit on import
 (the route hands it `realtime`, so the bell nudges live), on a Release (at the new tag) and on
@@ -4317,7 +4331,8 @@ The single-app half of P6 slice 6c (`docs/plans/p6-fleet.md` §1 items 1–6): t
 behind it say so, one click upgrades one, and the next Release records it. "Upgrade all" (the
 fleet run) is the other half and is not built.
 
-**The target is the template pin** (§18.6), never the kit's latest tag: an app **requires upgrade**
+**The target is the pin of the app's own kit** (the template pin for the default kit, §18.6; D36 K2,
+§18.24 — a kit with no `upgrade` block has none), never the kit's latest tag: an app **requires upgrade**
 when `apps.template_version` is semver-below the pin's tag (`kitVersionBehind`,
 `@launch/shared/launch-upgrades`; a leading `v` is ignored). It is computed on READ
 (`services/launch/upgrades.ts` `kitStatuses`: the pin read once per request, the open upgrades in
@@ -4341,7 +4356,9 @@ session; `routes/app-upgrades.ts`), the Overview's Upgrade, or `launch apps upgr
 before any write: `app_archived`, `app_has_no_repo`, `upgrade_no_pin_tag`, `upgrade_not_behind`,
 `upgrade_open` (with the open one's id and status). Then a `running` row and a coding session of
 kind **`upgrade`** (`session_kind` gained it; `sessions.upgrade_id`, `sessions.auto_ship`) whose
-first message is the adapter's **`upgradePrompt`** (`rocketflare/upgrade-prompt.ts`), run as its
+first message is the app's adapter's **`upgrade.prompt`** (`kits/upgrade-prompt.ts`, from the kit's
+`upgrade` block — Rocketflare's carries its legacy text; a kit with no `upgrade` block is never
+behind and its apps are refused 409 `upgrade_not_supported`), run as its
 first turn the moment it is ready (§18.9). The prompt also says where the porting notes are
 before the apply — `.upgrade/work/<to>/notes/X.Y.Z.md` (and `plan.md`); the app's
 `docs/upgrades/` gets its new note only after `--apply`, though an older copy's script prints
@@ -4458,12 +4475,13 @@ not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocket
 `kit.repo` is not the pin's repo (a fork) is refused the fetch. `notesUrl` assumes the kit's
 `docs/upgrades/<version>.md` exists at the tag.
 
-### 18.24 The kit catalogue (D36 K1)
+### 18.24 The kit catalogue and the manifest adapter (D36 K1, K2)
 
 `docs/plans/multi-kit.md` (D36): Launch supports any kit that conforms to the **Launch kit
 contract**, declared by the kit in a root `launch.kit.json` (`@launch/shared/kit-manifest`,
 `kitManifestSchema` — readers tolerate unknown fields; `schema: 1`). K1 is the catalogue and the
-contract; nothing that builds, develops or upgrades an app reads a manifest yet (K2–K4).
+contract; K2 drives every app through an adapter built from its kit's manifest (below); the
+scaffold job (K3) and sessions (K4) still use Rocketflare's own constants.
 
 **`kits`** (`db/schema/kits.ts`, migration 0049) is platform configuration like `launch_settings`
 (no tenant, `RLS_REVOKED_TABLES`; only `services/launch/kits/store.ts` touches it): `slug` (unique),
@@ -4501,7 +4519,7 @@ tomls and `CLAUDE.md` or `AGENTS.md` exist; `ci.yml` runs on `pull_request` and 
 check name (its `name:`, else its id) is `ci.requiredCheck`; the release workflow has `push.tags`,
 `release: published`, `workflow_dispatch` with the environment input (a `choice` must offer
 `staging` and `production`), and `id-token: write`; both tomls parse
-(`rocketflare/toml.ts` `resources()`), every KV id is a `<PLACEHOLDER>`, every top-level key is one
+(`kits/toml.ts` `resources()`), every KV id is a `<PLACEHOLDER>`, every top-level key is one
 the deploy gateway lets through (`deploy/binding-check.ts` `unprovisionableKeys`), every
 account-scoped name shares the production Worker's name as its prefix (`{slug}-…`, plus the
 staging suffix — in the kit itself the slug is its own pre-rename one), and the two tomls bind the
@@ -4534,15 +4552,68 @@ result and problems, apps, Check, Make default, and an Add form).
 repo's OWNER (`GET /app/installations`) and narrows the token to that one repo; with none it uses
 the stored installation, which reads any public repo.
 
+**The manifest adapter (K2).** Launch drives an app through a `TemplateAdapter`
+(`services/launch/kits/adapter.ts`) BUILT from a kit manifest — `manifestAdapter(manifest)` — so
+nothing outside `kits/` imports a Rocketflare constant (the scaffold job and the session code are
+K3's and K4's). What it reads from where:
+
+| Adapter | Manifest | Used by |
+|---|---|---|
+| `paths.manifest` / `manifests`, `paths.tomls`, `parseManifest`, `parseToml` | `scaffold.appManifest` (+ Rocketflare's legacy `launch.plugins.json`), `worker.tomls`, `launchProvides.appUrl` | `scaffold.verify`, the pipeline's toml steps, import, the Release's version read, an upgrade's checkout check |
+| `names`, `kvTitle`, `namingProblems` | `worker.naming`, `worker.titles` (`kits/names.ts`) | create, `cloudflare`, `scaffold.verify` |
+| `writeConfig` | `launchProvides` (`kits/toml.ts`) | `write_config` |
+| `secrets`, `secretTargets` | `launchProvides.{databaseUrl, oidc.clientSecret, bootstrapAdmins, emailApiKey, generated}` | `worker_secrets`, `email` |
+| `database` | `database.{roles, extensions}` | `neon` (`provision-neon.ts`) |
+| `release`, `health`, `requiredCheck` | `release`, `health`, `ci.requiredCheck` | the staging deploy, Deploy to production, the tag/release runs, `/ci/deploy`'s caller check; the health poll and the launching page; the `launch` ruleset, its diagnosis, the app detail (`AppDetail.requiredCheck`, Settings → Shipping's copy) and a landing's CI verdict |
+| `declaredConfig` | `declaredConfig.{optional, plain, pluginManifests}` | grants detection (§18.20) |
+| `upgrade` (null without the block) | `upgrade` | kit status, `POST /:id/upgrade`, the follow-up turn |
+
+- **Resolution, per app** (`adapterFor`): the manifest snapshot ON the app (**`apps.kit_manifest`**,
+  migration 0050), else its kit row's snapshot (`kits.manifest`), else the Rocketflare fallback.
+  `requestApp` and `importApp` store the kit's manifest (the fallback for a kit row with none read
+  yet), and a Release that records the app reaching its kit's PINNED version takes the kit's
+  snapshot then (`recordKitVersionAtRelease`). Nothing in it reads GitHub, so a Workflow step
+  resolves the same adapter on every retry, and an app on kit 0.16 keeps 0.16's contract while the
+  kit is pinned at 0.18. Apps from before K2 have no snapshot (no backfill): they follow their kit
+  row's, which for the built-in Rocketflare row is the fallback until a check stores one.
+- **Byte-for-byte for Rocketflare**: the fallback reproduces every value Launch used, and the
+  adapter keeps the old record keys (the first KV/queue/bucket of an environment keeps
+  `kv.<env>` / `queue.<env>` / `r2.<env>`), the Rocketflare upgrade prompt (a legacy text keyed on
+  `kit.id`, since its rules name `pnpm kit:upgrade`'s flags and exit codes — they belong in the
+  kit's `rf-upgrade` skill) and the base64 `OAUTH_ENCRYPTION_KEY` (the contract's generated-secret
+  kind `base64-32`, beside the meta-kit's `hex64`). Two Rocketflare-only checks went: the scaffold
+  check's fixed bindings (`JOBS_QUEUE`, `FILES`, `AGENT_RUN_WORKFLOW`, `RATE_LIMIT_KV`) and its
+  `APP_ENV` var — the naming rule catches every name a rename got wrong, and a misnamed one is
+  still reported with the name it should have had.
+- **Provisioning follows the toml**: `cloudflare` creates what the scaffolded tomls declare (each
+  KV binding under `kvTitleOf`, each queue and bucket by the toml's name), so a kit with one KV and
+  nothing else gets exactly that, and a Rocketflare plugin's own queue or bucket is now created too
+  (it used to be refused at `placeholders`).
+- **Contract additions** (Appendix A updated with them): `declaredConfig.plain` (the optional names
+  that are not secrets), the `base64-32` generated kind, at most ONE generated secret (a
+  conformance problem otherwise — it is sealed on `app_environments.encryption_key_sealed`), and
+  the app manifest's `kit.id` (a Rocketflare copy made before it has only `kit.name`, which is read
+  in its place).
+- Tests: `tests/config/kit-adapter.test.ts` drives the meta-kit `launch-kit` 0.1.0 (its own
+  `launch.kit.json`: `.launch-app.json`, no `EMAIL_FROM`, `SESSION_SECRET` generated as hex, no email
+  key) through names, `writeConfig`, secrets, declared config, the scaffold check and the upgrade
+  prompt; `tests/api/kit-adapter-resolution.test.ts` the resolution and its readers against the
+  database.
+
 **Known gaps:** the DYNAMIC conformance check (the scaffold job against a throwaway repo: init →
 postInit → the gate's lint and typecheck) is not built — `verified` means the static check passed
-(K3). Nothing reads the manifest to build, develop in, ship or upgrade an app yet: the pipeline,
-scaffold, sessions and upgrades still use the Rocketflare constants and the DEFAULT kit's pin, and
-an app on another kit is upgraded towards the default kit's pin (K2, K4, K5). Create app has no kit
-picker and Import does not detect the kit (K5); the full Platform → Kits page (pin, remove, the
-manifest) is K5 — K1's UI is the list above. **The scaffold job clones the kit anonymously**
-(`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but cannot yet
-scaffold an app (K3); an upgrade session's kit fetch is anonymous too (§18.23). The YAML outline
-does not read flow mappings over several lines, anchors or multi-document files (a kit written that
-way reads as missing its triggers). The `template_pin` mirror and fallback read go in the release
-after this one. Who may register kits is platform admins only (design §9.4).
+(K3). The scaffold job is still Rocketflare's (`rocketflare/scaffold-job.ts`: rename, its kit-only
+files, `.rocketflare.json`) and plans from the DEFAULT kit's pin, so an app of another kit cannot be
+created end to end yet (K3); sessions (dev server, bootstrap, gate, the session database's RLS role,
+`LAUNCH_GATE_APP_ID`) still use Rocketflare's names (K4); the upgrade answer's marker is still the
+shared `LAUNCH-UPGRADE:` (the manifest's `doneMarker` is only written into the prompt). An app's
+upgrade TARGET is its own kit's pin, but the upgrade session still fetches the default kit (K4/K5).
+Create app has no kit picker and Import does not detect the kit (K5); the full Platform → Kits
+page (pin, remove, the manifest) is K5 — K1's UI is the list above. **The scaffold job clones the
+kit anonymously** (`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but
+cannot yet scaffold an app (K3); an upgrade session's kit fetch is anonymous too (§18.23). The YAML
+outline does not read flow mappings over several lines, anchors or multi-document files (a kit
+written that way reads as missing its triggers). The `template_pin` mirror and fallback read go in
+the release after this one. Who may register kits is platform admins only (design §9.4). An app
+that reaches a kit version other than the pinned one (upgraded outside Launch) keeps the manifest
+it had: Launch holds no snapshot of that release.
