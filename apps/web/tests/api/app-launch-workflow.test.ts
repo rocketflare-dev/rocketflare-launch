@@ -23,6 +23,7 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
+import { rocketflareFallbackManifest } from '@/api/services/launch/kits/rocketflare-fallback'
 import { NeonClient } from '@/api/services/launch/neon'
 import { rescaffoldPipeline } from '@/api/services/launch/pipeline/rescaffold'
 import { retryPipeline } from '@/api/services/launch/pipeline/retry'
@@ -822,6 +823,26 @@ describe('AppLaunchWorkflow — a whole launch against the FakeCloud', () => {
     } finally {
       await db.delete(kits).where(eq(kits.id, kit.id))
     }
+  })
+
+  it('writes the gate variable the app’s kit names, and none when it names none (D36 K3)', async () => {
+    const launch = await h.request()
+    const fallback = rocketflareFallbackManifest()
+    const { verifiedVariable: _none, ...ci } = fallback.ci
+    await db
+      .update(apps)
+      .set({ kitManifest: { ...fallback, ci } })
+      .where(eq(apps.id, launch.params.appId))
+    const { outcome } = await h.run(launch)
+    expect(outcome.status).toBe('live')
+    expect((await rows(launch)).github_env?.externalIds.variables).toBe(
+      'DEPLOYER_URL,DEPLOYER_AUDIENCE'
+    )
+    const repo = cloud.github.repo(cloud.opts.org, launch.slug)
+    expect([...(repo?.variables.keys() ?? [])].sort()).toEqual([
+      'DEPLOYER_AUDIENCE',
+      'DEPLOYER_URL',
+    ])
   })
 
   it('without deployStaging, records the deploy and health as skipped and still goes live', async () => {
