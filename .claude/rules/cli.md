@@ -227,7 +227,9 @@ What `launch <group> --help` says is not repeated here; these are the rules that
   `--data @file|-` (inline `--data` refused); a check that comes back `failed` prints its probes,
   then exits 1. `agents set --runtime` fills the rest of that runtime's entry from `GET
   /api/platform/setup` (the PUT takes each runtime whole). Support enter/leave has no command (it
-  pins a browser session; a key gets 400 `support_needs_session`)
+  pins a browser session; a key gets 400 `support_needs_session`). `kits ls|show|add|check|pin|default|rm`
+  (D36 K1, `/api/platform/kits`): `--tag|--commit|--latest`, exactly one; a kit whose check comes
+  back `failed` prints its problems, then exits 1; `rm` asks first
 - **Agent accounts** — `login` resumes the sign-in in flight or starts one; Claude's `code#state`
   is read hidden or from stdin's first line, checked, then sent once; a bad one or Ctrl-C cancels
   the sign-in. No token is ever in these responses

@@ -52,6 +52,7 @@ takes `--json`; ids accept an 8-character prefix where noted in `--help`.
 |---|---|
 | `admin` | `sessions [--scope]` · `drain` · `undrain` · `tenants list\|show\|suspend\|reinstate` · `users list\|show\|block\|unblock\|grant-admin\|revoke-admin` · `flags list\|set\|overrides\|override\|clear` |
 | `platform` | `setup` · `settings [set]` · `credentials set\|check\|remove <kind>` · `public-url check` · `kit tags\|pin\|check\|reset` · `agents set` · `sandbox set` · `oidc keys\|rotate` · `access-requests list\|approve\|reject` |
+| `kits` | `ls` · `show <kit>` · `add <owner/name> --tag\|--commit\|--latest [--slug --name --description]` · `check <kit>` · `pin <kit> --tag\|--commit\|--latest` · `default <kit>` · `rm <kit>` (admin key; D36 K1) |
 
 ## Input conventions
 

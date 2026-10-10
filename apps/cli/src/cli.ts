@@ -29,6 +29,7 @@ import { registerGrantsCommands } from './commands/grants'
 import { runGroupMembers, runGroupsList } from './commands/groups'
 import { registerGroupsWriteCommands } from './commands/groups-write'
 import { registerKeysCommands } from './commands/keys'
+import { registerKitsCommands } from './commands/kits'
 import { runLogin } from './commands/login'
 import { runLogout } from './commands/logout'
 import { registerMembersCommands } from './commands/members'
@@ -412,6 +413,10 @@ registerGrantsCommands(program, action)
 
 registerAppsCommands(program, action)
 registerDeploysCommands(program, action)
+
+// ---- D36 K1: the kit catalogue -----------------------------------------------------------------
+
+registerKitsCommands(program, action)
 
 // ---- issue #6: what agents, AI and the organisation are doing ---------------------------------
 
