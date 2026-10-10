@@ -14152,6 +14152,311 @@
     },
     {
       "method": "GET",
+      "path": "/api/platform/kits",
+      "summary": "List every registered kit, the default first, with its pin, check status and app count.",
+      "auth": "platform-admin",
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/platform/kits",
+      "summary": "Register a kit: resolve its pin, read its manifest, check conformance.",
+      "auth": "platform-admin",
+      "description": "Audits `kit.added`.",
+      "body": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "tag"
+                  },
+                  "tag": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "tag"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "commit"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ref"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "latest"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,38}[a-z0-9]$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "repo",
+          "pin"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "body": "@launch/shared/kits#kitAddRequestSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/platform/kits/:id",
+      "summary": "Show one kit (by id or slug) with the manifest snapshot read at its pin.",
+      "auth": "platform-admin",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/platform/kits/:id",
+      "summary": "Remove a kit that is not the default and has no apps.",
+      "auth": "platform-admin",
+      "description": "Audits `kit.removed`.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/platform/kits/:id/check",
+      "summary": "Re-read a kit's manifest and re-run the conformance check at its pin.",
+      "auth": "platform-admin",
+      "description": "Audits `kit.checked`.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/platform/kits/:id/default",
+      "summary": "Make a kit the default new apps are cut from.",
+      "auth": "platform-admin",
+      "description": "Audits `kit.default_set`.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/platform/kits/:id/pin",
+      "summary": "Re-pin a kit to a tag, a commit or Follow latest, checked at the new pin.",
+      "auth": "platform-admin",
+      "description": "Audits `kit.pinned`.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "body": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "tag"
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$"
+              }
+            },
+            "required": [
+              "kind",
+              "tag"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "commit"
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$"
+              }
+            },
+            "required": [
+              "kind",
+              "ref"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "latest"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema",
+        "body": "@launch/shared/kits#kitPinRequestSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/platform/oidc/keys",
       "summary": "List the OIDC issuer's signing keys with their status and dates, plus the issuer and discovery URLs.",
       "auth": "platform-admin",
@@ -14721,8 +15026,9 @@
     {
       "method": "DELETE",
       "path": "/api/platform/setup/template-pin",
-      "summary": "Reset to the code default: the row is deleted, so the default moves with Launch again.",
+      "summary": "Reset the default kit's pin to the code default: the stored pin and the mirrored setting are cleared, so the default moves with Launch again. 409 `default_kit_not_builtin` when the default kit is not the built-in Rocketflare one (it has no code default).",
       "auth": "platform-admin",
+      "description": "Audits `setting.changed`.",
       "source": "apps/web/src/api/routes/setup.ts",
       "cli": [
         "commands/platform-setup.ts"

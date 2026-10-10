@@ -17,11 +17,7 @@ import {
   type ScaffoldPlan,
   type ScaffoldTokenResponse,
 } from '@launch/shared/launch-pipeline'
-import {
-  DEFAULT_TEMPLATE_PIN,
-  type TemplatePin,
-  templatePinSchema,
-} from '@launch/shared/launch-setup'
+import type { TemplatePin } from '@launch/shared/launch-setup'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import type { DeployTicketRow } from '../../../../db/schema'
@@ -35,16 +31,16 @@ import {
   listInstallations,
 } from '../github-app'
 import { loadImportGitHub } from '../import'
+import { defaultKitPin } from '../kit-pin'
 import { launchInstanceOf } from '../pipeline/instance'
 import { claimScaffoldTicket, failScaffoldTicket, finishScaffoldTicket } from './tickets'
 
 /** The permissions the scaffold job's token carries — and nothing else. */
 export const SCAFFOLD_TOKEN_PERMISSIONS = { contents: 'write', workflows: 'write' } as const
 
-/** The kit a new app is cut from: `launch_settings.template_pin`, else `DEFAULT_TEMPLATE_PIN`. */
+/** The kit a new app is cut from: the DEFAULT kit's pin (D36 K1, `kit-pin.ts`). */
 export async function resolveTemplatePin(db: Database): Promise<TemplatePin> {
-  const parsed = templatePinSchema.safeParse(await getSetting(db, 'template_pin'))
-  return parsed.success ? parsed.data : DEFAULT_TEMPLATE_PIN
+  return (await defaultKitPin(db)).pin
 }
 
 /** The scaffold plan for the caller's app. No secret. */

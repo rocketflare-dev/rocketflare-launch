@@ -15,6 +15,7 @@ import {
 } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getDefaultKit } from '@/api/services/launch/kits/store'
 import type { PipelineSettings } from '@/api/services/launch/pipeline/context'
 import {
   appEnvironments,
@@ -134,6 +135,9 @@ describe('POST /api/apps', () => {
     // The run id is reserved on the row for when it is approved.
     const [app] = await db.select().from(apps).where(eq(apps.id, body.app.id))
     expect(app?.launchRunId).toBe(body.runId)
+    // D36 K1: the app belongs to the kit it is cut from — the default one, until the picker.
+    expect(app?.kitId).toBe((await getDefaultKit(db))?.id)
+    expect(app?.kitId).toEqual(expect.any(String))
   })
 
   it('below launch_settings.app_create_role an admin asks too; at it, the launch starts at once', async () => {

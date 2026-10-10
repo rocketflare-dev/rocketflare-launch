@@ -1,27 +1,36 @@
 /**
- * The kit pin (`launch_settings.template_pin`) as Settings → Kit version edits it. The
- * pin has ONE source of truth — the setting, else `DEFAULT_TEMPLATE_PIN` — and this module is the
- * only writer besides a hand-edited row:
+ * Kit pins (D36 K1): each kit in the catalogue (`kits`, `kits/store.ts`) is a repo pinned to a
+ * release tag, a commit or Follow latest. The DEFAULT kit's pin is what Settings → Kit version
+ * edits (`/api/platform/setup/template-pin`, kept for compatibility) and what new apps are cut
+ * from; `/api/platform/kits/:id/pin` moves any kit's.
  *
- * - `templatePinStatus` — the pin new apps get, whether it is the code default, and the last
- *   newest-release lookup (`template_pin_check`).
- * - `resolveTemplatePinRequest` — the admin's choice (`templatePinRequestSchema`) → a full pin, looked up
- *   in the kit repo through GitHub: a release TAG is resolved to its commit (an annotated tag is
- *   dereferenced through `GET …/git/tags/{sha}`), a COMMIT — a SHA, short or full, or a branch
- *   (`main` = "latest main") — to its full SHA through `GET …/commits/{ref}`, which also proves the
- *   commit exists in that repo, and FOLLOW LATEST to the newest release tag (`latestKitTag` over
- *   `GET …/tags`), resolved as a tag. Nothing the admin typed is stored unresolved.
- * - `refreshFollowLatest` — a Follow latest pin moved to the newest release when one appeared:
- *   compare-and-set on the row it read, audited `setting.changed` with `after.by`. Nothing else moves —
- *   apps are not upgraded, they show as behind (`services/launch/upgrades.ts`). Run by the five-minute
- *   cron (`kitFollowLatest`, at most hourly unless the last lookup failed) and by Check now.
- * - `listKitTags` — the repo's tags for the card's picker, newest release first.
+ * - **Where a pin lives.** On the kit row (`kits.pin`, `{ tag?, commit, follow? }` — the repo is the
+ *   row's). The built-in Rocketflare row may have NONE: it then follows `DEFAULT_TEMPLATE_PIN`, as
+ *   an unset `template_pin` setting did. **The `template_pin` setting is a fallback read for one
+ *   release** (the default kit with no stored pin reads it before the code default), and **is
+ *   mirrored** on every write of the default kit's pin (as `template_pin_check` mirrors its last
+ *   lookup), so rolling Launch back one release reads the same pin. Both go in the release after.
+ * - `templatePinStatus` — the default kit's pin, whether it is the code default, the last lookup.
+ * - `resolveKitPinRequest` — an admin's choice → a full pin, looked up in the kit repo through
+ *   GitHub: a release TAG is resolved to its commit (an annotated tag is dereferenced through
+ *   `GET …/git/tags/{sha}`), a COMMIT — a SHA, short or full, or a branch (`main` = "latest main") —
+ *   to its full SHA through `GET …/commits/{ref}`, which also proves the commit exists in that repo,
+ *   and FOLLOW LATEST to the newest release tag (`latestKitTag` over `GET …/tags`), resolved as a
+ *   tag. Nothing the admin typed is stored unresolved.
+ * - `refreshKitFollowLatest` — a Follow latest pin moved to the newest release when one appeared:
+ *   compare-and-set on the row it read, audited. Nothing else moves — apps are not upgraded, they
+ *   show as behind (`services/launch/upgrades.ts`). Run per kit by the five-minute cron
+ *   (`kitFollowLatest`, at most hourly per kit unless its last lookup failed) and by Check now.
+ * - `listKitTags` — a repo's tags for the card's picker, newest release first.
  *
- * GitHub is reached as the connected GitHub App: an installation token narrowed to `contents:
- * read`, revoked when the lookup is done. The kit repo is public, so it need not be one the App is
- * installed on. No App connected → 409 `github_app_not_configured` (resetting to the default
- * needs no GitHub at all).
+ * GitHub is reached as the connected GitHub App, with an installation token narrowed to `contents:
+ * read` and revoked when the lookup is done. **A private kit repo** is read through the App's
+ * installation on the repo's OWNER (found by login in `GET /app/installations`, the token narrowed
+ * to that one repo); a public kit repo the App is not installed on is read with the stored
+ * installation, as before. No App connected → 409 `github_app_not_configured` (resetting to the
+ * default needs no GitHub at all).
  */
+import type { KitPinRequest, KitStoredPin } from '@launch/shared/kits'
 import {
   DEFAULT_TEMPLATE_PIN,
   isFollowLatestPin,
@@ -41,7 +50,7 @@ import type { ScheduledTask } from '../../scheduled'
 import { ApiError, ConflictError } from '../../utils/core/errors'
 import { getSingleTenant } from '../../utils/db/tenant-helpers'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from './audit'
-import { compareAndSetSetting, getCredential, getSetting, putSetting } from './credentials'
+import { getCredential, getSetting, putSetting } from './credentials'
 import {
   GitHubApiError,
   type GitHubOptions,
@@ -50,20 +59,47 @@ import {
   listInstallations,
   revokeInstallationToken,
 } from './github-app'
+import { ROCKETFLARE_KIT_ID } from './kits/rocketflare-fallback'
+import {
+  compareAndSetKitPin,
+  ensureDefaultKit,
+  getDefaultKit,
+  type KitRow,
+  listKits,
+  updateKit,
+} from './kits/store'
 
-/** The pin new apps are cut from, and whether it is the code default (no valid setting row). */
-export async function templatePinStatus(db: Database): Promise<TemplatePinStatus> {
-  const [stored, check] = await Promise.all([
-    getSetting(db, 'template_pin'),
-    getSetting(db, 'template_pin_check'),
-  ])
-  const parsed = templatePinSchema.safeParse(stored)
-  return {
-    pin: parsed.success ? parsed.data : DEFAULT_TEMPLATE_PIN,
-    isDefault: !parsed.success,
-    default: DEFAULT_TEMPLATE_PIN,
-    latestCheck: latestCheckOf(check),
+// ---- the effective pin ----------------------------------------------------------------------------
+
+export interface EffectiveKitPin {
+  /** What the kit is cut from now. */
+  pin: TemplatePin
+  /** As stored: the row's, else (default kit only) the legacy setting's; null = the code default. */
+  stored: TemplatePin | null
+  /** No pin stored anywhere: `DEFAULT_TEMPLATE_PIN` applies (and moves with Launch). */
+  isCodeDefault: boolean
+}
+
+/** A `TemplatePin` without its repo — the shape a kit row stores. */
+export function storedPinOf(pin: TemplatePin): KitStoredPin {
+  const { repo: _repo, ...rest } = pin
+  return rest
+}
+
+/**
+ * A kit row's effective pin. `legacy` is the `template_pin` setting, consulted only for the
+ * default kit with no stored pin (see the header).
+ */
+export function effectiveKitPin(row: KitRow | null, legacy: unknown): EffectiveKitPin {
+  if (row?.pin) {
+    const parsed = templatePinSchema.safeParse({ repo: row.repo, ...row.pin })
+    if (parsed.success) return { pin: parsed.data, stored: parsed.data, isCodeDefault: false }
   }
+  if (!row || row.isDefault) {
+    const parsed = templatePinSchema.safeParse(legacy)
+    if (parsed.success) return { pin: parsed.data, stored: parsed.data, isCodeDefault: false }
+  }
+  return { pin: DEFAULT_TEMPLATE_PIN, stored: null, isCodeDefault: true }
 }
 
 function latestCheckOf(value: unknown): KitLatestCheck | null {
@@ -71,21 +107,99 @@ function latestCheckOf(value: unknown): KitLatestCheck | null {
   return parsed.success ? parsed.data : null
 }
 
+/** A kit's last newest-release lookup (the default kit falls back to `template_pin_check`). */
+export async function kitLatestCheck(
+  db: Database,
+  row: KitRow | null
+): Promise<KitLatestCheck | null> {
+  const own = latestCheckOf(row?.latestCheck)
+  if (own || (row && !row.isDefault)) return own
+  return latestCheckOf(await getSetting(db, 'template_pin_check'))
+}
+
+/** The default kit's effective pin (no write: a missing row reads as the built-in one). */
+export async function defaultKitPin(
+  db: Database
+): Promise<EffectiveKitPin & { kit: KitRow | null }> {
+  const [kit, legacy] = await Promise.all([getDefaultKit(db), getSetting(db, 'template_pin')])
+  return { ...effectiveKitPin(kit, legacy), kit }
+}
+
+/** The effective pin of any kit row (the legacy setting read only for the default). */
+export async function kitPin(db: Database, row: KitRow): Promise<EffectiveKitPin> {
+  const legacy = row.isDefault && !row.pin ? await getSetting(db, 'template_pin') : null
+  return effectiveKitPin(row, legacy)
+}
+
+/** The pin new apps are cut from, and whether it is the code default. */
+export async function templatePinStatus(db: Database): Promise<TemplatePinStatus> {
+  const { pin, isCodeDefault, kit } = await defaultKitPin(db)
+  return {
+    pin,
+    isDefault: isCodeDefault,
+    default: DEFAULT_TEMPLATE_PIN,
+    latestCheck: await kitLatestCheck(db, kit),
+  }
+}
+
+/** What a pin move resets: the manifest at the new pin is unknown until it is checked. */
+export const UNCHECKED_KIT = {
+  status: 'unchecked' as const,
+  problems: [],
+  manifest: null,
+  manifestSource: null,
+  contractVersion: null,
+  checkedAt: null,
+}
+
+/**
+ * Set the DEFAULT kit's pin (a resolved pin), or reset it to the code default (`null` — the
+ * built-in Rocketflare kit only: 409 `default_kit_not_builtin` otherwise). The legacy setting is
+ * mirrored. Returns the stored pin before (null: none) and the kit row after.
+ */
+export async function setDefaultKitPin(
+  db: Database,
+  pin: TemplatePin | null,
+  userId: string | null
+): Promise<{ before: TemplatePin | null; kit: KitRow }> {
+  const kit = await ensureDefaultKit(db)
+  const { stored: before } = await kitPin(db, kit)
+  if (pin === null && kit.slug !== ROCKETFLARE_KIT_ID) {
+    throw new ConflictError(
+      `The default kit is ${kit.name}, which has no code default: pin it on Platform → Kits instead`,
+      'default_kit_not_builtin'
+    )
+  }
+  const next = pin
+    ? { repo: pin.repo, pin: storedPinOf(pin) }
+    : { repo: DEFAULT_TEMPLATE_PIN.repo, pin: null }
+  const after = (await updateKit(db, kit.id, { ...next, ...UNCHECKED_KIT })) ?? kit
+  await putSetting(db, 'template_pin', pin, userId)
+  return { before, kit: after }
+}
+
+// ---- GitHub ---------------------------------------------------------------------------------------
+
 export type KitLookupOptions = Pick<GitHubOptions, 'fetch' | 'apiBase'>
 
 function kitRefNotFound(message: string, details: Record<string, unknown>): ApiError {
   return new ApiError(422, message, 'kit_ref_not_found', details)
 }
 
-function githubFailed(err: unknown): ApiError {
+export function githubFailed(err: unknown): ApiError {
   const reason = err instanceof Error ? err.message : String(err)
   return new ApiError(502, `GitHub could not answer: ${reason}`, 'github_lookup_failed')
 }
 
-/** A read-only installation token for the lookup, and its revocation. */
-async function withKitToken<T>(
+/**
+ * A read-only installation token for a lookup in `repo`, and its revocation. The App's
+ * installation on the repo's owner when there is one (a private kit — the token narrowed to the
+ * repo); else the stored installation (a public kit anywhere).
+ */
+export async function withKitToken<T>(
   db: Database,
   cfg: AppConfig,
+  repo: string,
   opts: KitLookupOptions,
   fn: (token: string) => Promise<T>
 ): Promise<T> {
@@ -97,18 +211,24 @@ async function withKitToken<T>(
     )
   }
   const raw = stored.metadata.installationId ?? stored.metadata.installation_id ?? null
+  const [owner = '', name = ''] = repo.split('/')
   let token: string
   try {
-    let installationId = typeof raw === 'number' || typeof raw === 'string' ? raw : null
+    const installations = await listInstallations(stored.secret, opts)
+    const own = installations.find(i => i.account?.login.toLowerCase() === owner.toLowerCase())
+    let installationId: number | string | null = own?.id ?? null
     if (installationId === null) {
-      const [first] = await listInstallations(stored.secret, opts)
+      installationId = typeof raw === 'number' || typeof raw === 'string' ? raw : null
+    }
+    if (installationId === null) {
+      const [first] = installations
       if (!first) throw new Error('The GitHub App is not installed anywhere')
       installationId = first.id
     }
     const minted = await installationToken(
       stored.secret,
       installationId,
-      { permissions: { contents: 'read' } },
+      { permissions: { contents: 'read' }, ...(own ? { repositories: [name] } : {}) },
       opts
     )
     token = minted.token
@@ -195,7 +315,7 @@ async function commitSha(
   }
 }
 
-/** Tags GitHub lists per page, and the most pages read (1000 tags: far more than the kit has). */
+/** Tags GitHub lists per page, and the most pages read (1000 tags: far more than a kit has). */
 const TAGS_PER_PAGE = 100
 const TAGS_MAX_PAGES = 10
 
@@ -237,35 +357,72 @@ async function latestRelease(
   return { tag, commit: await tagCommit(token, repo, tag, opts) }
 }
 
-/** The admin's choice → a full pin, looked up in the kit repo. */
+/** An admin's choice for `repo` → a full pin, looked up in the repo with an open token. */
+export async function resolvePinWithToken(
+  token: string,
+  repo: string,
+  request: KitPinRequest,
+  opts: KitLookupOptions = {}
+): Promise<TemplatePin> {
+  if (request.kind === 'tag') {
+    const commit = await tagCommit(token, repo, request.tag, opts)
+    return templatePinSchema.parse({ repo, tag: request.tag, commit })
+  }
+  if (request.kind === 'latest') {
+    const { tag, commit } = await latestRelease(token, repo, opts)
+    return templatePinSchema.parse({ repo, tag, commit, follow: 'latest' })
+  }
+  const commit = await commitSha(token, repo, request.ref, opts)
+  return templatePinSchema.parse({ repo, commit })
+}
+
+/** An admin's choice for `repo` → a full pin, looked up in the repo. */
+export async function resolveKitPinRequest(
+  db: Database,
+  cfg: AppConfig,
+  repo: string,
+  request: KitPinRequest,
+  opts: KitLookupOptions = {}
+): Promise<TemplatePin> {
+  return withKitToken(db, cfg, repo, opts, token => resolvePinWithToken(token, repo, request, opts))
+}
+
+/** The Kit version card's choice → a full pin (`repo` defaults to the default kit's). */
 export async function resolveTemplatePinRequest(
   db: Database,
   cfg: AppConfig,
   request: TemplatePinRequest,
   opts: KitLookupOptions = {}
 ): Promise<TemplatePin> {
-  const repo = request.repo ?? (await templatePinStatus(db)).pin.repo
-  return withKitToken(db, cfg, opts, async token => {
-    if (request.kind === 'tag') {
-      const commit = await tagCommit(token, repo, request.tag, opts)
-      return templatePinSchema.parse({ repo, tag: request.tag, commit })
-    }
-    if (request.kind === 'latest') {
-      const { tag, commit } = await latestRelease(token, repo, opts)
-      return templatePinSchema.parse({ repo, tag, commit, follow: 'latest' })
-    }
-    const commit = await commitSha(token, repo, request.ref, opts)
-    return templatePinSchema.parse({ repo, commit })
-  })
+  const repo = request.repo ?? (await defaultKitPin(db)).pin.repo
+  return resolveKitPinRequest(db, cfg, repo, request, opts)
 }
 
-/** Record a newest-release lookup (`template_pin_check`) — what the card's "Checked …" reads. */
+// ---- Follow latest ------------------------------------------------------------------------------
+
+/**
+ * Record a kit's newest-release lookup (what the card's "Checked …" reads); for the default kit
+ * also into `template_pin_check`, the mirror (see the header).
+ */
+export async function recordKitLatestCheck(
+  db: Database,
+  kit: KitRow,
+  check: { repo: string; latest: string | null; error: string | null },
+  now: Date = new Date()
+): Promise<void> {
+  const value = { ...check, checkedAt: now.toISOString() }
+  // Stored as JSON (the date a string); read back through `kitLatestCheckSchema`.
+  await updateKit(db, kit.id, { latestCheck: value as unknown as KitLatestCheck })
+  if (kit.isDefault) await putSetting(db, 'template_pin_check', value, null)
+}
+
+/** Record the DEFAULT kit's newest-release lookup (the Kit version card's Follow latest). */
 export async function recordLatestCheck(
   db: Database,
   check: { repo: string; latest: string | null; error: string | null },
   now: Date = new Date()
 ): Promise<void> {
-  await putSetting(db, 'template_pin_check', { ...check, checkedAt: now.toISOString() }, null)
+  await recordKitLatestCheck(db, await ensureDefaultKit(db), check, now)
 }
 
 export type FollowLatestResult =
@@ -286,30 +443,31 @@ export interface FollowLatestOptions extends KitLookupOptions {
 }
 
 /**
- * Move a Follow latest pin to the kit's newest release when that is not the pinned tag. A pin
- * that does not follow is left alone without a GitHub call. The lookup is recorded either way
- * (`template_pin_check`; a failure keeps the last known `latest` and records the error, then
- * rethrows — the 502 `github_lookup_failed` / 422 `kit_ref_not_found` the route answers). The write
- * is compare-and-set on the exact row read, so a second run (or a concurrent re-pin) writes
- * nothing; only a write is audited.
+ * Move a kit's Follow latest pin to its newest release when that is not the pinned tag. A pin
+ * that does not follow is left alone without a GitHub call. The lookup is recorded either way (a
+ * failure keeps the last known `latest` and records the error, then rethrows — the 502
+ * `github_lookup_failed` / 422 `kit_ref_not_found` the route answers). The write is
+ * compare-and-set on the exact row read, so a second run (or a concurrent re-pin) writes nothing;
+ * only a write is audited — `setting.changed` on `template_pin` for the default kit (as before
+ * D36), `kit.pinned` for any other.
  */
-export async function refreshFollowLatest(
+export async function refreshKitFollowLatest(
   db: Database,
   cfg: AppConfig,
+  kit: KitRow,
   options: FollowLatestOptions
 ): Promise<FollowLatestResult> {
   const now = options.now ?? new Date()
   // Only the GitHub half reaches GitHub (its own `now` is a clock, not this run's date).
   const lookup: KitLookupOptions = { fetch: options.fetch, apiBase: options.apiBase }
-  const stored = await getSetting(db, 'template_pin')
-  const parsed = templatePinSchema.safeParse(stored)
-  if (!parsed.success || !isFollowLatestPin(parsed.data)) return { status: 'not_following' }
-  const pin = parsed.data
-  const previous = latestCheckOf(await getSetting(db, 'template_pin_check'))
+  const { stored } = await kitPin(db, kit)
+  if (!stored || !isFollowLatestPin(stored)) return { status: 'not_following' }
+  const pin = stored
+  const previous = await kitLatestCheck(db, kit)
 
   let latest: { tag: string; commit: string }
   try {
-    latest = await withKitToken(db, cfg, lookup, async token => {
+    latest = await withKitToken(db, cfg, pin.repo, lookup, async token => {
       const tag = latestKitTag((await fetchKitTags(token, pin.repo, lookup)).map(t => t.name))
       if (!tag) throw kitRefNotFound(`${pin.repo} has no release tag (X.Y.Z)`, { repo: pin.repo })
       // The same tag: no second lookup, and nothing to write.
@@ -319,10 +477,10 @@ export async function refreshFollowLatest(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     const kept = previous?.repo === pin.repo ? previous.latest : null
-    await recordLatestCheck(db, { repo: pin.repo, latest: kept, error }, now)
+    await recordKitLatestCheck(db, kit, { repo: pin.repo, latest: kept, error }, now)
     throw err
   }
-  await recordLatestCheck(db, { repo: pin.repo, latest: latest.tag, error: null }, now)
+  await recordKitLatestCheck(db, kit, { repo: pin.repo, latest: latest.tag, error: null }, now)
   if (latest.tag === pin.tag) return { status: 'unchanged', pin }
 
   const next = templatePinSchema.parse({
@@ -332,22 +490,47 @@ export async function refreshFollowLatest(
     follow: 'latest',
   })
   const actor = options.actor ?? SYSTEM_ACTOR
-  if (!(await compareAndSetSetting(db, 'template_pin', stored, next, actor.actorUserId))) {
-    return { status: 'conflict' }
-  }
+  // The row's pin as read (null: the default kit still on the legacy setting).
+  const moved = await compareAndSetKitPin(
+    db,
+    kit.id,
+    kit.pin ?? null,
+    storedPinOf(next),
+    UNCHECKED_KIT
+  )
+  if (!moved) return { status: 'conflict' }
+  if (kit.isDefault) await putSetting(db, 'template_pin', next, actor.actorUserId)
   await recordAudit(db, {
     tenantId: options.auditTenantId,
     ...actor,
-    action: 'setting.changed',
-    targetType: 'Setting',
-    targetId: 'template_pin',
-    summary: {
-      before: { template_pin: stored },
-      // Who moved it: the cron, or an admin's Check now (the summary has no third key).
-      after: { template_pin: next, by: options.by },
-    },
+    ...(kit.isDefault
+      ? {
+          action: 'setting.changed',
+          targetType: 'Setting',
+          targetId: 'template_pin',
+          // Who moved it: the cron, or an admin's Check now (the summary has no third key).
+          summary: {
+            before: { template_pin: stored },
+            after: { template_pin: next, by: options.by },
+          },
+        }
+      : {
+          action: 'kit.pinned',
+          targetType: 'Kit',
+          targetId: kit.id,
+          summary: { before: { pin: stored }, after: { pin: next, by: options.by } },
+        }),
   })
   return { status: 'updated', before: pin, pin: next }
+}
+
+/** The DEFAULT kit's Follow latest refresh (the Kit version card's Check now). */
+export async function refreshFollowLatest(
+  db: Database,
+  cfg: AppConfig,
+  options: FollowLatestOptions
+): Promise<FollowLatestResult> {
+  return refreshKitFollowLatest(db, cfg, await ensureDefaultKit(db), options)
 }
 
 /** A good lookup is repeated after an hour; a failed one on the next tick. */
@@ -361,49 +544,64 @@ export interface FollowLatestTaskOptions extends KitLookupOptions {
 }
 
 /**
- * The five-minute cron's Follow latest refresh. Skips without a GitHub call when the pin does not follow,
- * or when the last lookup for this repo succeeded under `minIntervalMs` ago. Never throws: a
- * GitHub failure is logged (and recorded on the check) and retried on the next tick.
+ * The five-minute cron's Follow latest refresh, over EVERY kit. A kit is skipped without a GitHub
+ * call when its pin does not follow, or when its last lookup for this repo succeeded under
+ * `minIntervalMs` ago. Never throws: a GitHub failure is logged (and recorded on the kit's check)
+ * and retried on the next tick; one kit's failure never stops the next.
  */
 export function kitFollowLatestTask(opts: FollowLatestTaskOptions = {}): ScheduledTask {
   return {
     name: 'kit.followLatest',
     async run({ db, config, logger }) {
       const now = opts.clock?.() ?? new Date()
-      const parsed = templatePinSchema.safeParse(await getSetting(db, 'template_pin'))
-      if (!parsed.success || !isFollowLatestPin(parsed.data)) return
-      const last = latestCheckOf(await getSetting(db, 'template_pin_check'))
       const interval = opts.minIntervalMs ?? FOLLOW_LATEST_INTERVAL_MS
+      let rows = await listKits(db)
+      // No catalogue row yet: the default kit may still follow through the legacy setting.
       if (
-        last &&
-        last.repo === parsed.data.repo &&
-        last.error === null &&
-        now.getTime() - last.checkedAt.getTime() < interval
+        rows.length === 0 &&
+        templatePinSchema.safeParse(await getSetting(db, 'template_pin')).success
       ) {
-        return
+        rows = [await ensureDefaultKit(db)]
       }
-      const auditTenantId = opts.auditTenantId ?? (await getSingleTenant(db))?.id
-      if (!auditTenantId) {
-        // A change Launch cannot record is never made (the pin routes refuse the same way).
-        logger.warn({}, 'kit.followLatest: no organisation to audit in; the pin is left as is')
-        return
-      }
-      try {
-        const result = await refreshFollowLatest(db, config, {
-          fetch: opts.fetch,
-          apiBase: opts.apiBase,
-          auditTenantId,
-          by: 'cron',
-          now,
-        })
-        if (result.status === 'updated') {
-          logger.info(
-            { from: result.before.tag, to: result.pin.tag },
-            'kit.followLatest: the kit pin moved to the newest release'
+      let auditTenantId: string | null = opts.auditTenantId ?? null
+      for (const kit of rows) {
+        const { stored } = await kitPin(db, kit)
+        if (!stored || !isFollowLatestPin(stored)) continue
+        const last = await kitLatestCheck(db, kit)
+        if (
+          last &&
+          last.repo === stored.repo &&
+          last.error === null &&
+          now.getTime() - last.checkedAt.getTime() < interval
+        ) {
+          continue
+        }
+        auditTenantId ??= (await getSingleTenant(db))?.id ?? null
+        if (!auditTenantId) {
+          // A change Launch cannot record is never made (the pin routes refuse the same way).
+          logger.warn({}, 'kit.followLatest: no organisation to audit in; the pin is left as is')
+          return
+        }
+        try {
+          const result = await refreshKitFollowLatest(db, config, kit, {
+            fetch: opts.fetch,
+            apiBase: opts.apiBase,
+            auditTenantId,
+            by: 'cron',
+            now,
+          })
+          if (result.status === 'updated') {
+            logger.info(
+              { kit: kit.slug, from: result.before.tag, to: result.pin.tag },
+              'kit.followLatest: the kit pin moved to the newest release'
+            )
+          }
+        } catch (err) {
+          logger.warn(
+            { err, kit: kit.slug },
+            'kit.followLatest: the newest release could not be looked up'
           )
         }
-      } catch (err) {
-        logger.warn({ err }, 'kit.followLatest: the newest release could not be looked up')
       }
     },
   }
@@ -411,15 +609,15 @@ export function kitFollowLatestTask(opts: FollowLatestTaskOptions = {}): Schedul
 
 export const kitFollowLatest: ScheduledTask = kitFollowLatestTask()
 
-/** The kit repo's tags, newest release first, each with its commit; and which is the latest. */
+/** A kit repo's tags, newest release first, each with its commit; and which is the latest. */
 export async function listKitTags(
   db: Database,
   cfg: AppConfig,
   repoParam: string | undefined,
   opts: KitLookupOptions = {}
 ): Promise<KitTagsResponse> {
-  const repo = repoParam ?? (await templatePinStatus(db)).pin.repo
-  return withKitToken(db, cfg, opts, async token => {
+  const repo = repoParam ?? (await defaultKitPin(db)).pin.repo
+  return withKitToken(db, cfg, repo, opts, async token => {
     const tags = sortKitTagsNewestFirst(await fetchKitTags(token, repo, opts))
     return { repo, tags, latest: latestKitTag(tags.map(t => t.name)) }
   })

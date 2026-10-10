@@ -41,6 +41,7 @@ import {
 import { newId } from '../../../utils/core/ids'
 import { assertGroupInTenant, getAppRow } from '../apps'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from '../audit'
+import { ensureDefaultKit } from '../kits/store'
 import {
   loadPipelineSettings,
   missingSetup,
@@ -137,6 +138,8 @@ export async function requestApp(
 
   const runId = newId()
   const options = { deployStaging: input.options.deployStaging }
+  // D36 K1: the app belongs to the kit it is cut from, for life — the default kit until K5's picker.
+  const kit = await ensureDefaultKit(db)
   let app: AppRow
   try {
     app = await db.transaction(async tx => {
@@ -150,6 +153,7 @@ export async function requestApp(
           ownerGroupId: input.ownerGroupId ?? null,
           source: 'created',
           template: 'rocketflare',
+          kitId: kit.id,
           status: 'requested',
           launchRunId: runId,
           launchInstanceId: runId,

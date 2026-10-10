@@ -12,6 +12,7 @@ import { and, eq } from 'drizzle-orm'
 import { afterAll, describe, expect, it } from 'vitest'
 import { SYSTEM_ACTOR } from '@/api/services/launch/audit'
 import { type ImportGitHub, importApp } from '@/api/services/launch/import'
+import { getDefaultKit } from '@/api/services/launch/kits/store'
 import { parseManifest, parseWranglerToml } from '@/api/services/launch/rocketflare-manifest'
 import { ApiError } from '@/api/utils/core/errors'
 import { loadConfig } from '@/config'
@@ -275,6 +276,9 @@ describe('importApp', () => {
       defaultBranch: 'main',
       createdByUserId: user.id,
     })
+    // D36 K1: an import joins the default kit.
+    expect(app.kitId).toBe((await getDefaultKit(db))?.id)
+    expect(app.kitId).not.toBeNull()
 
     const envs = await db
       .select()

@@ -19,7 +19,10 @@
  *                                     → setting.changed
  *   POST   /template-pin/check        Follow latest's Check now: move to the newest release if
  *                                     there is a newer one → setting.changed (`by: check_now`)
- *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the row deleted) → setting.changed
+ *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the pin cleared) → setting.changed
+ *
+ * The template pin is the DEFAULT KIT's pin since D36 K1 (`kits`, `/api/platform/kits` for the
+ * catalogue); these routes stay for the Kit version card and `launch platform kit …`.
  *   PUT    /session-agents            coding agents: on/off, model, who pays — merged into
  *                                     `session_policy.runtimes` → setting.changed (§18.22)
  *   PUT    /session-sandbox           where new sessions' containers run (`session_sandbox_host`:
@@ -48,17 +51,13 @@ import {
 } from '@launch/shared/launch-setup'
 import type { Database } from '../../db/client'
 import { auditActor, recordAudit } from '../services/launch/audit'
-import {
-  getSetting,
-  putCredential,
-  putSetting,
-  removeCredential,
-} from '../services/launch/credentials'
+import { putCredential, removeCredential } from '../services/launch/credentials'
 import {
   listKitTags,
   recordLatestCheck,
   refreshFollowLatest,
   resolveTemplatePinRequest,
+  setDefaultKitPin,
 } from '../services/launch/kit-pin'
 import { runPublicUrlCheck } from '../services/launch/public-url'
 import { updateSessionAgents } from '../services/launch/session-agents'
@@ -250,7 +249,7 @@ setupRouter.delete('/credentials/:kind', validate('param', credentialKindParamSc
   return c.json({ removed: true as const })
 })
 
-// ---- the kit pin (`launch_settings.template_pin`) ------------------------------------------------
+// ---- the kit pin (the default kit's, D36 K1; `template_pin` is its mirror) -----------------------
 
 /** List the kit repo's tags, for the Kit version card's picker. */
 setupRouter.get('/template-pin/tags', validate('query', kitTagsQuerySchema), async c => {
@@ -284,8 +283,8 @@ setupRouter.put('/template-pin', validate('json', templatePinRequestSchema), asy
   const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
   const pin = await resolveTemplatePinRequest(db, cfg, c.req.valid('json'))
-  const before = await getSetting(db, 'template_pin')
-  await putSetting(db, 'template_pin', pin, user.id)
+  // The DEFAULT kit's pin (D36 K1), the `template_pin` setting mirrored (`kit-pin.ts`).
+  const { before } = await setDefaultKitPin(db, pin, user.id)
   // Follow latest just looked the newest release up: that is the card's "Checked" from now.
   if (pin.follow === 'latest') {
     await recordLatestCheck(db, { repo: pin.repo, latest: pin.tag ?? null, error: null })
@@ -315,15 +314,16 @@ setupRouter.post('/template-pin/check', async c => {
   return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 
-/** Reset to the code default: the row is deleted, so the default moves with Launch again. */
+/**
+ * Reset the default kit's pin to the code default: the stored pin and the mirrored setting are
+ * cleared, so the default moves with Launch again. 409 `default_kit_not_builtin` when the
+ * default kit is not the built-in Rocketflare one (it has no code default). Audits `setting.changed`.
+ */
 setupRouter.delete('/template-pin', async c => {
-  const { db, cfg, tenantId } = withAuth(c)
+  const { db, cfg, user, tenantId } = withAuth(c)
   const auditTenantId = await auditTenant(db, tenantId)
-  const before = await getSetting(db, 'template_pin')
-  if (before !== null) {
-    await putSetting(db, 'template_pin', null, null)
-    await auditPinChange(c, db, auditTenantId, before, null)
-  }
+  const { before } = await setDefaultKitPin(db, null, user.id)
+  if (before !== null) await auditPinChange(c, db, auditTenantId, before, null)
   return c.json(await setupOverview(db, cfg, auditTenantId, c.env))
 })
 

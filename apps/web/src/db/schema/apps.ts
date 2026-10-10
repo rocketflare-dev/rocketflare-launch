@@ -31,6 +31,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { tenantRef, timestamps } from './_helpers'
 import { groups } from './groups'
+import { kits } from './kits'
 import { tenantIsolation } from './rls'
 import { tenantUsers } from './tenant-users'
 import { tenants } from './tenants'
@@ -53,8 +54,17 @@ export const apps = pgTable(
     description: text('description'),
     ownerGroupId: uuid('owner_group_id').references(() => groups.id, { onDelete: 'set null' }),
     source: appSourceEnum('source').notNull(),
-    /** The template adapter (spec/02). Only `rocketflare` exists. */
+    /**
+     * The template adapter (spec/02) — `rocketflare` on every row. Kept as history since D36:
+     * `kit_id` is the kit an app belongs to.
+     */
     template: text('template').notNull().default('rocketflare'),
+    /**
+     * D36 K1: the kit (`kits`) the app was created from or imported into, for its whole life —
+     * upgrades move it forward within this kit. Set null if the kit row is ever deleted (the API
+     * refuses that while apps use it). Backfilled to the default kit by migration 0049.
+     */
+    kitId: uuid('kit_id').references(() => kits.id, { onDelete: 'set null' }),
     templateContractVersion: text('template_contract_version'),
     /** The kit version the app was cut from, e.g. `0.15.0`. */
     templateVersion: text('template_version'),
@@ -66,7 +76,7 @@ export const apps = pgTable(
      * `owner/name`, it survives a rename — so it is what `/ci/*` maps a job to an app by.
      */
     githubRepoId: text('github_repo_id'),
-    /** The kit tag and commit a created app was scaffolded from (P2, `launch_settings.template_pin`). */
+    /** The kit tag and commit a created app was scaffolded from (P2; the default kit's pin, D36). */
     templateRef: text('template_ref'),
     templateCommit: text('template_commit'),
     /** The latest launch pipeline run (`app_operations.run_id`, the Workflow instance's base id). */

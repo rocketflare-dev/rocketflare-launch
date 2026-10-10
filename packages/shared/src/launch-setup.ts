@@ -145,6 +145,8 @@ export type SetupSettingKey = z.infer<typeof setupSettingKeySchema>
  * - `template_pin` — `{ repo, tag?, commit, follow? }`, the kit a new app is cut from
  *   (`DEFAULT_TEMPLATE_PIN`): a release tag, an unreleased commit (no tag), or the newest release
  *   (`follow: 'latest'`, kept current by the five-minute cron). Set on Settings → Kit version.
+ *   Since D36 K1 the default kit's row holds the pin; this key is its mirror and a fallback read,
+ *   for one release (as is `template_pin_check`).
  * - `app_create_role` — the lowest tenant role that may create an app (`DEFAULT_APP_CREATE_ROLE`).
  *
  * And P3's two (`@launch/shared/launch-sessions`):
@@ -179,14 +181,15 @@ export const LAUNCH_SETTING_KEYS = [
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
 
-const kitRepoSchema = z
+export const kitRepoSchema = z
   .string()
   .trim()
   .regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name')
 
 /**
- * `launch_settings.template_pin` — the ONE source of the kit a new app is cut from (absent:
- * `DEFAULT_TEMPLATE_PIN`). Two kinds:
+ * A kit pin — since D36 K1 the DEFAULT KIT's (`kits.pin` + its repo, `@launch/shared/kits`), what
+ * a new app is cut from (the built-in kit with none stored: `DEFAULT_TEMPLATE_PIN`);
+ * `launch_settings.template_pin` mirrors it for one release. Two kinds:
  *
  * - a **release pin** (`tag` set): the scaffold job clones `repo` at `tag` and refuses to go on
  *   unless the tag resolves to `commit` — a moved tag is a different kit.

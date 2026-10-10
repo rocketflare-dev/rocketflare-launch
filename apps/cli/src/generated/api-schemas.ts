@@ -69,6 +69,7 @@ import {
   updateGroupRequestSchema,
   updateGroupTypeRequestSchema,
 } from '@launch/shared/groups'
+import { kitAddRequestSchema, kitIdParamSchema, kitPinRequestSchema } from '@launch/shared/kits'
 import {
   agentAccountsResponseSchema,
   agentLoginResponseSchema,
@@ -317,6 +318,12 @@ export const API_SCHEMAS = {
   'POST /api/notifications/read': { body: markNotificationsReadRequestSchema },
   'GET /api/platform/access-requests': { query: accessRequestListQuerySchema },
   'POST /api/platform/access-requests/:id/decide': { body: decideAccessRequestSchema },
+  'POST /api/platform/kits': { body: kitAddRequestSchema },
+  'GET /api/platform/kits/:id': { params: kitIdParamSchema },
+  'DELETE /api/platform/kits/:id': { params: kitIdParamSchema },
+  'POST /api/platform/kits/:id/check': { params: kitIdParamSchema },
+  'PUT /api/platform/kits/:id/default': { params: kitIdParamSchema },
+  'PUT /api/platform/kits/:id/pin': { params: kitIdParamSchema, body: kitPinRequestSchema },
   'PUT /api/platform/setup/credentials/:kind': { params: credentialKindParamSchema, bodyByParam: { param: 'kind', schemas: credentialPayloadSchemas } },
   'DELETE /api/platform/setup/credentials/:kind': { params: credentialKindParamSchema },
   'POST /api/platform/setup/credentials/:kind/check': { params: credentialKindParamSchema },

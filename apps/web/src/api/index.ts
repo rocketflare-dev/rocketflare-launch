@@ -47,6 +47,7 @@ import { healthRouter } from './routes/health'
 import { invitationsRouter } from './routes/invitations'
 import { inviteRouter } from './routes/invite'
 import { keysRouter } from './routes/keys'
+import { kitsRouter } from './routes/kits'
 import { meRouter } from './routes/me'
 import { membersRouter } from './routes/members'
 import { notificationsRouter } from './routes/notifications'
@@ -137,6 +138,7 @@ app.route('/api/invite', inviteRouter)
 // the one organisation runs Launch — its owner or admin. Multi mode: global admins only, as before.
 app.use('/api/platform/*', platformAdminMiddleware)
 app.route('/api/platform/setup', setupRouter)
+app.route('/api/platform/kits', kitsRouter)
 app.route('/api/platform/oidc', oidcAdminRouter)
 app.route('/api/platform/access-requests', platformAccessRequestsRouter)
 // The operator's cross-tenant surface: organisations, users, feature flags, live sessions.

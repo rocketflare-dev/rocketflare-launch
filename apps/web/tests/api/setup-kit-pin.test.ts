@@ -21,12 +21,14 @@ import {
   DEFAULT_TEMPLATE_PIN,
   kitTagsResponseSchema,
   setupOverviewSchema,
+  type TemplatePin,
 } from '@launch/shared/launch-setup'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { kitFollowLatestTask } from '@/api/services/launch/kit-pin'
-import { auditEvents } from '@/db/schema'
+import { kitFollowLatestTask, storedPinOf } from '@/api/services/launch/kit-pin'
+import { ensureDefaultKit, updateKit } from '@/api/services/launch/kits/store'
+import { auditEvents, type KitRow } from '@/db/schema'
 import {
   createTestGlobalAdmin,
   createTestSession,
@@ -47,6 +49,14 @@ const store = vi.hoisted(() => ({
 }))
 vi.mock('@/api/services/launch/credentials', async importOriginal =>
   (await import('../helpers/credential-store')).mockCredentialsModule(await importOriginal(), store)
+)
+// D36 K1: the template pin is the DEFAULT KIT's pin — a platform-wide row the shared run reads.
+const kitStore = vi.hoisted(() => ({
+  kits: new Map<string, KitRow>(),
+  appCounts: new Map<string, number>(),
+}))
+vi.mock('@/api/services/launch/kits/store', async importOriginal =>
+  (await import('../helpers/kit-store')).mockKitStoreModule(await importOriginal(), kitStore)
 )
 
 const db = setupTestDatabase()
@@ -102,7 +112,21 @@ afterAll(() => restoreFetch())
 beforeEach(() => {
   store.settings.delete('template_pin')
   store.settings.delete('template_pin_check')
+  kitStore.kits.clear()
 })
+
+/**
+ * The admin's pin as it stands: the default kit's row and its mirrored setting (what a PUT
+ * writes). A pin stored before D36 — the setting alone, no kit row yet — is `legacyPin`.
+ */
+async function seedPin(pin: TemplatePin) {
+  const kit = await ensureDefaultKit(db)
+  await updateKit(db, kit.id, { repo: pin.repo, pin: storedPinOf(pin) })
+  store.settings.set('template_pin', pin)
+}
+function legacyPin(pin: TemplatePin) {
+  store.settings.set('template_pin', pin)
+}
 
 function call(path: string, method: string, body?: unknown, cookie = admin.cookie) {
   return request(
@@ -198,6 +222,23 @@ describe('the kit pin', () => {
     })
   })
 
+  it('is the DEFAULT KIT’s pin (D36): the row holds it, the setting mirrors it', async () => {
+    const res = await call('/template-pin', 'PUT', { kind: 'tag', tag: '0.15.4' })
+    expect(res.status).toBe(200)
+    const kit = [...kitStore.kits.values()].find(k => k.isDefault)
+    expect(kit).toMatchObject({
+      slug: 'rocketflare',
+      repo: 'rocketflare-dev/rocketflare',
+      pin: { tag: '0.15.4', commit: release },
+      status: 'unchecked',
+    })
+    expect(store.settings.get('template_pin')).toEqual({
+      repo: 'rocketflare-dev/rocketflare',
+      tag: '0.15.4',
+      commit: release,
+    })
+  })
+
   it('refuses a tag or a commit the repo does not have, storing nothing (422)', async () => {
     for (const body of [
       { kind: 'tag', tag: '9.9.9' },
@@ -225,6 +266,8 @@ describe('the kit pin', () => {
     expect(res.status).toBe(200)
     expect(setupOverviewSchema.parse(await json(res)).templatePin.isDefault).toBe(true)
     expect(store.settings.has('template_pin')).toBe(false)
+    // The default kit's stored pin is cleared: it follows Launch's code default again.
+    expect([...kitStore.kits.values()].find(k => k.isDefault)?.pin).toBeNull()
     const reset = (await pinAudits()).find(
       r => (r.summary.after as { template_pin?: unknown }).template_pin === null
     )
@@ -280,7 +323,7 @@ describe('the kit pin', () => {
 
 // ---- Follow latest -------------------------------------------------------------------------------
 
-const FOLLOW_5 = () => ({
+const FOLLOW_5 = (): TemplatePin => ({
   repo: 'rocketflare-dev/rocketflare',
   tag: '0.15.5',
   commit: annotated,
@@ -322,8 +365,8 @@ describe('Follow latest', () => {
     expect(chosen?.summary.after).toEqual({ template_pin: FOLLOW_5() })
   })
 
-  it('a stored pin from before follow (and before commit pins) still parses', async () => {
-    store.settings.set('template_pin', {
+  it('a stored pin from before follow (and before commit pins, and before D36) still parses', async () => {
+    legacyPin({
       repo: 'rocketflare-dev/rocketflare',
       tag: '0.15.4',
       commit: release,
@@ -337,7 +380,7 @@ describe('Follow latest', () => {
   })
 
   it('Check now is 409 unless the pin follows latest, with no GitHub call', async () => {
-    store.settings.set('template_pin', {
+    await seedPin({
       repo: 'rocketflare-dev/rocketflare',
       tag: '0.15.4',
       commit: release,
@@ -350,7 +393,7 @@ describe('Follow latest', () => {
   })
 
   it('Check now with nothing newer writes no pin and no audit, but records the check', async () => {
-    store.settings.set('template_pin', FOLLOW_5())
+    await seedPin(FOLLOW_5())
     const audits = (await followAudits()).length
     const res = await call('/template-pin/check', 'POST')
     expect(res.status).toBe(200)
@@ -363,7 +406,7 @@ describe('Follow latest', () => {
   })
 
   it('a GitHub failure is a clear 502, recorded on the check; the pin is untouched', async () => {
-    store.settings.set('template_pin', FOLLOW_5())
+    await seedPin(FOLLOW_5())
     cloud.failNext(/GET .*\/repos\/rocketflare-dev\/rocketflare\/tags/, 500)
     const res = await call('/template-pin/check', 'POST')
     expect(res.status).toBe(502)
@@ -380,7 +423,7 @@ describe('Follow latest', () => {
   describe('the cron (kit.followLatest)', () => {
     it('leaves a pin that does not follow alone, without a GitHub call', async () => {
       const pinned = { repo: 'rocketflare-dev/rocketflare', tag: '0.15.4', commit: release }
-      store.settings.set('template_pin', pinned)
+      await seedPin(pinned)
       const before = cloud.callsTo('github').length
       const reports = await runCron()
       expect(reports.map(r => [r.task, r.status])).toEqual([['kit.followLatest', 'ok']])
@@ -390,7 +433,7 @@ describe('Follow latest', () => {
     })
 
     it('writes nothing when the newest release is the pinned one', async () => {
-      store.settings.set('template_pin', FOLLOW_5())
+      await seedPin(FOLLOW_5())
       const audits = (await followAudits()).length
       await runCron()
       expect(store.settings.get('template_pin')).toEqual(FOLLOW_5())
@@ -402,7 +445,7 @@ describe('Follow latest', () => {
     })
 
     it('a failure is logged, recorded and not thrown; the next tick retries', async () => {
-      store.settings.set('template_pin', FOLLOW_5())
+      await seedPin(FOLLOW_5())
       cloud.failNext(/GET .*\/repos\/rocketflare-dev\/rocketflare\/tags/, 503)
       const reports = await runCron(60 * 60 * 1000)
       expect(reports.map(r => [r.task, r.status])).toEqual([['kit.followLatest', 'ok']])
@@ -424,7 +467,7 @@ describe('Follow latest', () => {
 
     // Last: it adds a newer release to the kit repo.
     it('moves the pin to a newer release, audited by the cron, once; Check now does the same', async () => {
-      store.settings.set('template_pin', FOLLOW_5())
+      await seedPin(FOLLOW_5())
       cloud.github.pushCommit(KIT.owner, KIT.name, { 'CHANGELOG.md': '0.15.6\n' }, 'Release 0.15.6')
       const newer = cloud.github.tag(KIT.owner, KIT.name, '0.15.6')
       const audits = (await followAudits()).length
@@ -451,7 +494,7 @@ describe('Follow latest', () => {
       expect(await followAudits()).toHaveLength(audits + 1)
 
       // Check now from an older follow pin: the same move, audited as the admin's.
-      store.settings.set('template_pin', FOLLOW_5())
+      await seedPin(FOLLOW_5())
       const res = await call('/template-pin/check', 'POST')
       expect(res.status).toBe(200)
       expect(setupOverviewSchema.parse(await json(res)).templatePin.pin).toEqual(moved)

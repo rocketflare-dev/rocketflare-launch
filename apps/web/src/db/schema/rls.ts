@@ -95,6 +95,9 @@ export const RLS_REVOKED_TABLES = [
   'oidc_signing_keys',
   'admin_credentials',
   'launch_settings',
+  // D36 K1: the kit catalogue — platform configuration like `launch_settings`, no tenant at all.
+  // Only `services/launch/kits/store.ts` reads it, on the owner connection.
+  'kits',
   // Issue #19: the GitHub webhook's delivery claims — taken before any app or tenant is known.
   'github_webhook_deliveries',
 ] as const

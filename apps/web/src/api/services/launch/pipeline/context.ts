@@ -16,9 +16,7 @@ import {
   type AppCreateRole,
   appCreateRoleSchema,
   DEFAULT_APP_CREATE_ROLE,
-  DEFAULT_TEMPLATE_PIN,
   type TemplatePin,
-  templatePinSchema,
 } from '@launch/shared/launch-setup'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
@@ -26,6 +24,8 @@ import { ServiceUnavailableError } from '../../../utils/core/errors'
 import { CloudflareClient } from '../cloudflare'
 import { credentialStatus, getCredential, getSettings } from '../credentials'
 import type { GitHubAppAuth } from '../github-app'
+import { effectiveKitPin } from '../kit-pin'
+import { getDefaultKit } from '../kits/store'
 import { NeonClient } from '../neon'
 import { ResendClient } from '../resend'
 
@@ -34,6 +34,7 @@ export interface PipelineSettings {
   appsDomain: string | null
   /** `notifications_domain`, else `notifications.<apps domain>`. */
   notificationsDomain: string | null
+  /** The DEFAULT kit's pin (D36 K1, `kit-pin.ts`) — what a new app is cut from. */
   templatePin: TemplatePin
   appCreateRole: AppCreateRole
   githubOrg: string | null
@@ -58,15 +59,14 @@ function scalar(value: unknown): string | null {
 
 /** The settings alone — what `POST /api/apps` needs before any credential is touched. */
 export async function loadPipelineSettings(db: Database): Promise<PipelineSettings> {
-  const settings = await getSettings(db)
+  const [settings, kit] = await Promise.all([getSettings(db), getDefaultKit(db)])
   const appsDomain = text(settings.apps_domain)
-  const pin = templatePinSchema.safeParse(settings.template_pin)
   const role = appCreateRoleSchema.safeParse(settings.app_create_role)
   return {
     appsDomain,
     notificationsDomain:
       text(settings.notifications_domain) ?? (appsDomain ? `notifications.${appsDomain}` : null),
-    templatePin: pin.success ? pin.data : DEFAULT_TEMPLATE_PIN,
+    templatePin: effectiveKitPin(kit, settings.template_pin).pin,
     appCreateRole: role.success ? role.data : DEFAULT_APP_CREATE_ROLE,
     githubOrg: text(settings.github_org),
   }

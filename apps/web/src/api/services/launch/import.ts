@@ -48,6 +48,7 @@ import {
   installationToken,
   listInstallations,
 } from './github-app'
+import { ensureDefaultKit } from './kits/store'
 import { ROCKETFLARE_CONTRACT_VERSION } from './rocketflare/adapter'
 import {
   type AppIdentity,
@@ -265,6 +266,8 @@ export async function importApp(
 
   const runId = newId()
   const finishedAt = now()
+  // D36 K1: an imported app joins the default kit (K5 detects it from the copy's manifest).
+  const kit = await ensureDefaultKit(db)
   const envNames = ['staging', 'production'] as const
   try {
     const app = await db.transaction(async tx => {
@@ -277,6 +280,7 @@ export async function importApp(
           ownerGroupId: input.ownerGroupId ?? null,
           source: 'imported',
           template: 'rocketflare',
+          kitId: kit.id,
           templateContractVersion: ROCKETFLARE_CONTRACT_VERSION,
           templateVersion: identity.kitVersion,
           repoOwner: owner,
