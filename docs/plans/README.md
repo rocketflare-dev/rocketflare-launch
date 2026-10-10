@@ -29,6 +29,7 @@ main → phase-0-seed → phase-1-foundation → … → phase-5-grants
 | P4 | [p4-approvals](p4-approvals.md) | Built. Production promote through an approval is **proven** on hola-world. |
 | P5 | [p5-grants](p5-grants.md) | Built. The exit test passes against fakes; not yet run on real accounts. |
 | P6 | [p6-fleet](p6-fleet.md) | Planned. The open questions are decided (see its §7). The admin collapse it depends on is done. Not started. |
+| — | [multi-kit](multi-kit.md) | Proposed (2026-10-10), D36. Several kits in a catalogue with Rocketflare as the default, one declared contract (`launch.kit.json`) proved by a conformance check, and a forkable meta-kit (`rocketflare-dev/launch-kit`). Phases K1–K6; its open questions are in §9. |
 
 Known gaps for each subsystem are in [docs/CONCEPTS.md](../CONCEPTS.md) §18. Kit issues are in [upstream-kit-issues.md](upstream-kit-issues.md).
 

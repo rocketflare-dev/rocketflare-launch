@@ -2,6 +2,11 @@
 
 Status: spec, not built.
 
+> **Proposed change (D36, 2026-10-10).** [docs/plans/multi-kit.md](../docs/plans/multi-kit.md)
+> proposes several kits behind one declared contract (`launch.kit.json`), which would supersede
+> "Rocketflare is the only template" below. This page will be rewritten when that design is
+> accepted.
+
 The contract is the **only** coupling between Launch and the kind of app it manages. Launch
 drives apps through a `TemplateAdapter`. **Rocketflare is the only template Launch supports.** The
 interface exists to keep the pipeline independent of kit internals and to version the contract
