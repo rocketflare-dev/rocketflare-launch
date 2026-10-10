@@ -41,8 +41,9 @@ import {
   insertIntent,
 } from '../../launch/deploy/tickets'
 import { dispatchWorkflow } from '../../launch/github-app'
+import { adapterFor } from '../../launch/kits/adapter'
 import { verifyBundleAsset } from '../../launch/releases/bundle-manifest'
-import { DEPLOY_WORKFLOW_FILE, withRepoToken } from '../../launch/releases/github'
+import { withRepoToken } from '../../launch/releases/github'
 import { moveRelease } from '../../launch/releases/lifecycle'
 import {
   BUNDLE_DRAFT_WAIT_MINUTES,
@@ -174,6 +175,7 @@ async function dispatchProduction(
     )
     .limit(1)
   if (sent) return
+  const { release } = await adapterFor(db, app)
   await withRepoToken(
     db,
     deps.cfg,
@@ -184,8 +186,8 @@ async function dispatchProduction(
         token,
         owner,
         repo,
-        DEPLOY_WORKFLOW_FILE,
-        { ref, inputs: { environment: 'production' } },
+        release.workflowFile,
+        { ref, inputs: { [release.environmentInput]: 'production' } },
         { fetch: deps.fetch }
       ),
     { fetch: deps.fetch }
@@ -198,7 +200,7 @@ async function dispatchProduction(
     targetId: intent.id,
     appId: app.id,
     approvalId: request.id,
-    summary: { after: { workflow: DEPLOY_WORKFLOW_FILE, ref: intent.ref } },
+    summary: { after: { workflow: release.workflowFile, ref: intent.ref } },
   })
 }
 

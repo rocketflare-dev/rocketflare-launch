@@ -17,9 +17,15 @@ import {
   revokeInstallationToken,
 } from '../github-app'
 import { type ImportGitHub, loadImportGitHub } from '../import'
+import { type AdapterApp, adapterFor } from '../kits/adapter'
 
-/** The workflow file every deploy runs (DEPLOYER.md; `resolveCaller` checks the same name). */
-export const DEPLOY_WORKFLOW_FILE = 'deploy.yml'
+/**
+ * The workflow file an app's deploys run (DEPLOYER.md; `resolveCaller` checks the same name): its
+ * kit's `release.workflow` (Rocketflare's `deploy.yml`, D36), through the app's adapter.
+ */
+export async function deployWorkflowOf(db: Database, app: AdapterApp): Promise<string> {
+  return (await adapterFor(db, app)).release.workflowFile
+}
 
 /** What a caller may inject: a test's `fetch` / `apiBase`, or the App credentials themselves. */
 export interface RepoGitHubOptions extends Pick<GitHubOptions, 'fetch' | 'apiBase'> {

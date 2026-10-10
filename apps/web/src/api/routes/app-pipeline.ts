@@ -94,7 +94,7 @@ appPipelineRouter.post('/', validate('json', createAppRequestSchema), async c =>
   const { app, runId } = await requestApp(
     db,
     c.env.APP_LAUNCH_WORKFLOW,
-    defaultPorts(),
+    defaultPorts,
     tenantId,
     input,
     actor

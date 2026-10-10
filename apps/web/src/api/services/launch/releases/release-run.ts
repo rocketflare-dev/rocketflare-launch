@@ -22,7 +22,7 @@ import {
   listWorkflowRunJobs,
   listWorkflowRuns,
 } from '../github-app'
-import { DEPLOY_WORKFLOW_FILE } from './github'
+import { adapterForAppId } from '../kits/adapter'
 
 export type ReleaseEnvironment = 'staging' | 'production'
 
@@ -76,11 +76,12 @@ export async function findReleaseRun(
   let runId = ticket?.runId ?? null
   let run: GitHubWorkflowRun | null = null
   if (!runId && environment === 'staging') {
+    const { release: kitRelease } = await adapterForAppId(db, release.tenantId, release.appId)
     const runs = await listWorkflowRuns(
       token,
       repo.owner,
       repo.repo,
-      DEPLOY_WORKFLOW_FILE,
+      kitRelease.workflowFile,
       { branch: release.tag, event: 'push', perPage: 5 },
       gh
     )

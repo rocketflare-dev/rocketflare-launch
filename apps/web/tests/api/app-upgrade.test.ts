@@ -25,7 +25,7 @@ import {
 } from '@launch/shared/launch-upgrades'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { upgradePrompt } from '@/api/services/launch/rocketflare/upgrade-prompt'
+import { upgradePrompt } from '@/api/services/launch/kits/upgrade-prompt'
 import { apps, appUpgrades, auditEvents, sessions } from '@/db/schema'
 import { setupTestDatabase } from '../helpers/db'
 import { fillDeployCredentials } from '../helpers/deploy-gateway'

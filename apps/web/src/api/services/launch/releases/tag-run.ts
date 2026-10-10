@@ -51,7 +51,7 @@ import {
   listWorkflowRuns,
 } from '../github-app'
 import type { ImportGitHub } from '../import'
-import { DEPLOY_WORKFLOW_FILE, withRepoToken } from './github'
+import { deployWorkflowOf, withRepoToken } from './github'
 import { moveRelease } from './lifecycle'
 import { nudgeRelease } from './release'
 
@@ -61,7 +61,7 @@ export const TAG_RUN_POLL_WINDOW_MS = 20_000
 /** The statuses whose tag run is still worth reading: no staging job has gone live yet. */
 export const TAG_RUN_FOLLOWED: readonly ReleaseStatus[] = ['tagged', 'staging']
 
-type RepoOf = Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch'>
+type RepoOf = Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch' | 'kitId' | 'kitManifest'>
 
 interface TagRunLogger {
   warn(obj: object, msg?: string): void
@@ -123,7 +123,7 @@ export function toCandidateRun(
 }
 
 /**
- * The newest `push` run of `deploy.yml` on `tag`, with its jobs, or null when GitHub has none.
+ * The newest `push` run of the app's deploy workflow (`deploy.yml`) on `tag`, with its jobs, or null when GitHub has none.
  * Throws on any GitHub error (the caller decides what that means).
  */
 export async function readTagRun(
@@ -134,6 +134,7 @@ export async function readTagRun(
   options: TagRunOptions = {}
 ): Promise<CandidateRun | null> {
   const http = { fetch: options.fetch, apiBase: options.apiBase }
+  const workflow = await deployWorkflowOf(db, app)
   return withRepoToken(
     db,
     cfg,
@@ -144,7 +145,7 @@ export async function readTagRun(
         token,
         repo.owner,
         repo.repo,
-        DEPLOY_WORKFLOW_FILE,
+        workflow,
         { branch: tag, event: 'push', perPage: 5 },
         http
       )

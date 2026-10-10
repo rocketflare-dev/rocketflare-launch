@@ -12,7 +12,7 @@
  * | `POST /:id/finish`       | 200 `{ id, status, error? }`, idempotent, on any ticket this run owns; `error: 'finished before activate'` when it closed an unactivated deploy |
  *
  * Every call: `verifyGitHubOidc(bearer, { audience: APP_URL })` (401) → `resolveCaller(…, {
- * workflowFile: 'deploy.yml' })` (403) → for a ticket, the run attempt and environment that opened
+ * workflowFile: <the app kit's deploy workflow> })` (403) → for a ticket, the run attempt and environment that opened
  * it (403) — see `services/launch/deploy/gateway.ts`. Non-2xx bodies are the shared envelope,
  * whose `error` is what the job prints. Mounted by `routes/ci.ts`; public by design.
  *
@@ -26,7 +26,6 @@ import { deployStartSchema, deployUploadSchema } from '@launch/shared/launch-pip
 import { auditActor } from '../services/launch/audit'
 import { resolveCaller } from '../services/launch/ci/caller'
 import { bearerToken, verifyGitHubOidc } from '../services/launch/ci/github-oidc'
-import { DEPLOY_WORKFLOW_FILE } from '../services/launch/deploy/decisions'
 import {
   activateDeploy,
   assertRunOwnsTicket,
@@ -41,6 +40,7 @@ import {
 } from '../services/launch/deploy/gateway'
 import { getTicketById, isDeployed } from '../services/launch/deploy/tickets'
 import { checkAppHealth } from '../services/launch/health'
+import { deployWorkflowOf } from '../services/launch/releases/github'
 import { enqueueThumbnailAfterDeploy } from '../services/launch/thumbnails/thumbnails'
 import type { AppContext } from '../types'
 import { loggerFor } from '../utils/core/logger'
@@ -80,7 +80,8 @@ async function proveJob(c: AppContext): Promise<GatewayContext> {
   const claims = await verifyGitHubOidc(bearerToken(c.req.header('authorization')), {
     audience: cfg.APP_URL,
   })
-  const caller = await resolveCaller(db, claims, { workflowFile: DEPLOY_WORKFLOW_FILE })
+  // The app's kit names its deploy workflow (D36 `release.workflow`).
+  const caller = await resolveCaller(db, claims, { workflowFile: app => deployWorkflowOf(db, app) })
   const logger = c.get('logger')
   return {
     db,

@@ -4,8 +4,8 @@
  * metadata are covered against the kit's real tomls in `rocketflare-adapter.test.ts`.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { escapeHtml, launchingPage } from '@/api/services/launch/rocketflare/placeholder-page'
-import { placeholderScript } from '@/api/services/launch/rocketflare/placeholder-worker'
+import { escapeHtml, launchingPage } from '@/api/services/launch/placeholder/page'
+import { placeholderScript } from '@/api/services/launch/placeholder/worker'
 
 const TOML = `
 name = "shop"

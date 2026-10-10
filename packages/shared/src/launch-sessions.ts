@@ -1103,7 +1103,8 @@ export function launchGateExternalId(tree: string): string {
 }
 
 /**
- * Issue #9: the verdict a landing acts on — the REQUIRED check (`KIT_REQUIRED_CHECK`, `Gate`), not
+ * Issue #9: the verdict a landing acts on — the REQUIRED check (the app kit's `ci.requiredCheck`,
+ * D36; `KIT_REQUIRED_CHECK`, `Gate`, by default), not
  * the fold of every check (`PrChecks.state`, which stays what the panel shows): a red optional
  * check (an evals run) beside a green `Gate` does not stop a landing. Any `Gate` red → `failure`;
  * any still running → `pending`; all green → `success`. No `Gate` at all (an app on an older kit
@@ -1112,10 +1113,13 @@ export function launchGateExternalId(tree: string): string {
  * a repo with no CI). Launch's own `launch/gate` is never CI here — it neither counts as `Gate`
  * nor as "something reported".
  */
-export function requiredCheckState(checks: PrChecks['checks']): PrCheckState {
+export function requiredCheckState(
+  checks: PrChecks['checks'],
+  requiredCheck: string = KIT_REQUIRED_CHECK
+): PrCheckState {
   const reported = checks.filter(c => c.name !== LAUNCH_GATE_CHECK)
   if (reported.length === 0) return 'none'
-  const gate = reported.filter(c => c.name === KIT_REQUIRED_CHECK)
+  const gate = reported.filter(c => c.name === requiredCheck)
   const decides = gate.length > 0 ? gate : reported
   if (decides.some(c => c.state === 'failure')) return 'failure'
   if (decides.some(c => c.state !== 'success')) return 'pending'

@@ -101,6 +101,10 @@ const workerBlock = z
   })
   .passthrough()
 
+/** How Launch writes a generated secret's 32 random bytes. */
+export const GENERATED_SECRET_KINDS = ['hex64', 'base64-32'] as const
+export type GeneratedSecretKind = (typeof GENERATED_SECRET_KINDS)[number]
+
 /** Launch's vocabulary → the kit's own var/secret names. */
 const launchProvidesBlock = z
   .object({
@@ -122,9 +126,14 @@ const launchProvidesBlock = z
       .passthrough(),
     bootstrapAdmins: envNameSchema.optional(),
     emailApiKey: envNameSchema.optional(),
-    /** Secrets Launch generates once per environment and never rotates blindly. */
+    /**
+     * Secrets Launch generates once per environment and never rotates blindly — 32 random bytes,
+     * written as 64 hex characters (`hex64`) or as standard base64 (`base64-32`, 44 characters).
+     * Launch keeps ONE generated secret per environment today (sealed on the environment row), so
+     * a manifest naming more fails conformance.
+     */
     generated: z
-      .array(z.object({ name: envNameSchema, kind: z.literal('hex64') }).passthrough())
+      .array(z.object({ name: envNameSchema, kind: z.enum(GENERATED_SECRET_KINDS) }).passthrough())
       .default([]),
     /** Fixed `[vars]` Launch writes into both tomls. */
     vars: z.record(envNameSchema, z.string()).default({}),
@@ -135,6 +144,8 @@ const declaredConfigBlock = z
   .object({
     /** Optional secret/var names the app reads when set (they feed grants, spec/09). */
     optional: z.array(envNameSchema).default([]),
+    /** The names in `optional` that are NOT secrets (shown as plain vars); absent: all secret. */
+    plain: z.array(envNameSchema).default([]),
     /** A glob of plugin manifests whose `vars[]` the app also declares. */
     pluginManifests: z.string().min(1).max(300).optional(),
   })

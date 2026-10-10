@@ -42,8 +42,8 @@ import { enqueueJob, type JobsQueue } from '../../jobs'
 import { nudge, type Realtime, realtimeEvent } from '../../realtime'
 import { type StorageService, tenantStoragePrefix } from '../../storage'
 import { getSetting } from '../credentials'
+import { appHost } from '../kits/names'
 import { isLocalHostname } from '../public-url'
-import { appResourceNames } from '../rocketflare/names'
 import type { ScreenshotPort } from './screenshot'
 
 /** The capture's budget: navigation to `load` plus waiting for the network to go quiet. */
@@ -97,7 +97,7 @@ export function captureTarget(
     return { url: null, problem: 'the recorded host is not a public hostname' }
   }
   if (app.source === 'created' && appsDomain) {
-    const provisioned = appResourceNames(app.slug, env, appsDomain).host
+    const provisioned = appHost(app.slug, env, appsDomain)
     if (host !== provisioned) {
       return { url: null, problem: `the recorded host is not ${provisioned}` }
     }

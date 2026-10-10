@@ -1,9 +1,8 @@
 # Several kits, one contract: design
 
-**Status:** accepted, 2026-10-10. **K1 built** (2026-10-10, `docs/CONCEPTS.md` §18.24); K2–K6 not
-started. Decision **D36**. It supersedes in part
-[spec/02](../../spec/02-template-contract.md), which says Rocketflare is the only template. Open
-questions are in §9.
+**Status:** accepted, 2026-10-10. **K1 and K2 built** (2026-10-10, `docs/CONCEPTS.md` §18.24);
+K3–K6 not started. Decision **D36**. [spec/02](../../spec/02-template-contract.md) was rewritten
+with K2 to describe the contract as built. Open questions are in §9.
 
 ## 1. Why
 
@@ -240,6 +239,33 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - `pipeline/ports.ts` carries the whole adapter. The ~30 direct importers move behind it.
   - `scaffoldProblems` checks names from `worker.naming` rather than `KIT_BINDINGS`.
   - What is left of `rocketflare/` is the fallback manifest and the legacy steps in K3.
+  - **Built (2026-10-10).** `services/launch/kits/adapter.ts` (`manifestAdapter`, `adapterFor`,
+    `adapterForKit`, `adaptersFor`); the Rocketflare modules moved into `kits/` (`names`, `toml`,
+    `app-manifest`, `declared-config`, `upgrade-prompt`), the placeholder into `placeholder/`, and
+    `rocketflare/adapter.ts` was deleted; `rocketflare/` holds only `scaffold-job.ts` (K3). Where it
+    differs from this section:
+    - **The app keeps its manifest**: `apps.kit_manifest` (migration 0050), written at create and
+      import from the kit's snapshot (the fallback when the kit row has none) and refreshed when a
+      Release records the app reaching its kit's PINNED version. `adapterFor` reads it, else the
+      kit row's, else the fallback — never GitHub, so a Workflow step resolves the same adapter on
+      a retry, and an app on 0.16 keeps 0.16's contract while the kit is pinned at 0.18. No backfill.
+    - `pipeline/ports.ts` does not carry the adapter: `PipelineDeps.adapterFor(app)` /
+      `portsFor(app)` resolve it per step, and `defaultPorts(adapter)` binds the ports to it.
+    - The `cloudflare` step provisions what the scaffolded tomls declare (each KV under
+      `kvTitleOf`, each queue and bucket by its toml name) instead of Rocketflare's fixed three; the
+      first of each kind keeps its pre-K2 record key.
+    - `scaffoldProblems` lost the four fixed-binding checks and `APP_ENV` (the fallback cannot
+      express them); the naming rule catches a wrong name and reports the name it should be.
+    - Contract additions: `declaredConfig.plain`, the `base64-32` generated kind (Rocketflare's
+      key was always base64), at most one generated secret (conformance), `kit.id` in a copy's
+      manifest (a pre-contract copy's `kit.name` read in its place), and the fallback's
+      `plugins.add` fixed to `pnpm plugin add {repo}@{ref} --subdir {subdir} …`.
+    - The Rocketflare upgrade prompt stays a legacy text keyed on `kit.id` (its rules name
+      `pnpm kit:upgrade`'s flags and exit codes); every other kit gets a generic prompt built from
+      `upgrade`. A kit with no `upgrade` block is never behind (409 `upgrade_not_supported`), and an
+      app's upgrade target is its own kit's pin.
+    - The required check reaches the UI as `AppDetail.requiredCheck`; the session landing's CI
+      verdict reads it too.
 - **K3: a generic scaffold.**
   - `scaffold-job.ts` runs `init` → delete `kitOnly` → stamp `appManifest` → `postInit` →
     `plugins` → the gate's lint and typecheck.
@@ -266,8 +292,7 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - Rocketflare's `launch.kit.json`.
   - `kit-check.mjs` in Rocketflare's CI.
 
-`docs/CONCEPTS.md` §13 and §18.6, and spec/02, are rewritten with K2. Until then spec/02 carries a
-pointer to this doc.
+`docs/CONCEPTS.md` §18.5, §18.6 and §18.24 and spec/02 were rewritten with K2.
 
 ## 9. Known gaps and open questions
 
@@ -352,7 +377,7 @@ fallback Launch ships (`services/launch/kits/rocketflare-fallback.ts`);
     "generated": [
       {
         "name": "OAUTH_ENCRYPTION_KEY",
-        "kind": "hex64"
+        "kind": "base64-32"
       }
     ],
     "vars": {
@@ -370,6 +395,10 @@ fallback Launch ships (`services/launch/kits/rocketflare-fallback.ts`);
       "LANGFUSE_SECRET_KEY",
       "OTEL_EXPORTER_OTLP_ENDPOINT",
       "OTEL_EXPORTER_OTLP_HEADERS"
+    ],
+    "plain": [
+      "LANGFUSE_PUBLIC_KEY",
+      "OTEL_EXPORTER_OTLP_ENDPOINT"
     ],
     "pluginManifests": "apps/web/src/plugins/*/plugin.json"
   },
@@ -437,7 +466,7 @@ fallback Launch ships (`services/launch/kits/rocketflare-fallback.ts`);
         "subdir": "plugins/analytics"
       }
     ],
-    "add": "pnpm plugin add {repo} --apply --allow-dirty"
+    "add": "pnpm plugin add {repo}@{ref} --subdir {subdir} --apply --allow-dirty"
   }
 }
 ```

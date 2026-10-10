@@ -187,7 +187,13 @@ export const rocketflareManifestSchema = z
       .passthrough()
       .optional(),
     kit: z
-      .object({ version: z.string().optional(), commit: z.string().optional() })
+      .object({
+        /** The kit's id (D36 contract); a copy made before it records only `name`. */
+        id: z.string().optional(),
+        name: z.string().optional(),
+        version: z.string().optional(),
+        commit: z.string().optional(),
+      })
       .passthrough()
       .optional(),
     kitVersion: z.string().optional(),
@@ -446,8 +452,10 @@ export type ShipReviewSetBy = z.infer<typeof shipReviewSetBySchema>
  * — the owner's plan has no rulesets on this repo; `unknown` — GitHub could not be asked.
  */
 /**
- * The status check Launch's ruleset requires and the landing waits on: the kit's `ci.yml` job
- * `gate` is named `Gate` (decision §0.5; `tests/config/kit-required-check.test.ts` pins it).
+ * The Rocketflare fallback's required check (`ci.requiredCheck`): its `ci.yml` job `gate` is named
+ * `Gate` (decision §0.5; `tests/config/kit-required-check.test.ts` pins it). Since D36 K2 an app's
+ * own check is its kit's (`TemplateAdapter.requiredCheck`, `AppDetail.requiredCheck`); this is
+ * the default where none is known (an older server's answer, a caller with no app).
  */
 export const KIT_REQUIRED_CHECK = 'Gate'
 
@@ -516,6 +524,11 @@ export const appDetailSchema = appSummarySchema.extend({
   shipSettings: appShipSettingsSchema.default(DEFAULT_APP_SHIP_SETTINGS),
   /** `policy`: an admin `session.merge` policy row decides review, and the setting is read-only. */
   shipReviewSetBy: shipReviewSetBySchema.default('app'),
+  /**
+   * D36 K2: the CI check the app's kit requires (`ci.requiredCheck`) — what branch protection
+   * requires and a landing waits for. Absent from an older server: {@link KIT_REQUIRED_CHECK}.
+   */
+  requiredCheck: z.string().min(1).optional(),
 })
 export type AppDetail = z.infer<typeof appDetailSchema>
 

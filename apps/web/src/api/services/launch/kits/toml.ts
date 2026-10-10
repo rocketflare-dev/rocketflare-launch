@@ -1,6 +1,7 @@
 /**
- * The Rocketflare adapter's toml half (spec/02 `resources` + `writeConfig`): what an app's two
- * wrangler tomls DECLARE, and the patch that writes Launch's answers back into them.
+ * The adapter's toml half (spec/02 `resources` + `writeConfig`, D36 `launchProvides`): what an
+ * app's two wrangler tomls DECLARE, and the patch that writes Launch's answers back into them.
+ * The reading is the same for every kit; the WRITING names the kit's vars from its manifest.
  *
  * The patcher is a port of the PURE half of the kit's `apps/web/scripts/provision/patch-toml.ts`
  * (kit 0.15) — that file imports `node:fs` and runs as a CLI, so it cannot be imported into the
@@ -10,20 +11,29 @@
  * the value already there is a no-op, and a DIFFERENT real (non-placeholder) id throws unless
  * `force` — an environment's KV id is not something to overwrite by accident.
  *
- * `writeConfig(tomlText, env, values)` is the pipeline's `write_config` step for one file
- * (plan §0.4): every KV `<PLACEHOLDER>` filled, `APP_URL` / `EMAIL_FROM`, the Launch sign-in vars
- * (`TENANCY_MODE="single"`, `SIGNUP_MODE="open"`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`,
- * `AUTH_OIDC_ONLY="true"`), `DATABASE_DRIVER="neon"` and `workers_dev = false` (Launch owns the
- * app's routes, spec/04). It refuses to return a file that still carries a placeholder. Both
- * files get the same KEYS, so the kit's parity test stays green.
+ * `writeConfig(tomlText, env, values, manifest)` is the pipeline's `write_config` step for one file
+ * (plan §0.4), every var named by the kit's `launchProvides`: every KV `<PLACEHOLDER>` filled, the
+ * app URL (`appUrl`) and sender (`emailFrom`, when the kit has one), the kit's fixed `vars`
+ * (Rocketflare: `TENANCY_MODE="single"`, `SIGNUP_MODE="open"`), the Launch sign-in vars (`oidc.issuer`,
+ * `oidc.clientId`, `oidc.label`, `oidc.only="true"`) and the database driver var (`databaseDriver`).
+ * Platform behaviour, for every kit: `workers_dev = false` (Launch owns the app's routes, spec/04)
+ * and no `[[hyperdrive]]` HYPERDRIVE block (the app reaches Neon directly). It refuses to return a
+ * file that still carries a placeholder. Both files get the same KEYS, so the kit's parity test
+ * stays green. The manifest defaults to the Rocketflare fallback.
  *
  * `resources(tomlText)` reads the declarations with `smol-toml` (through `parseWranglerToml` for
  * the parts the import already understands): what the pipeline must create, register and route.
  */
+import type { KitManifest } from '@launch/shared/kit-manifest'
 import type { AppEnvironmentName } from '@launch/shared/launch-apps'
 import { parse as parseToml } from 'smol-toml'
 import type { CloudflareQueueConsumerSettings } from '../cloudflare'
-import { ManifestError, parseWranglerToml } from '../rocketflare-manifest'
+import { ManifestError, parseWranglerToml } from './app-manifest'
+import { rocketflareFallbackManifest } from './rocketflare-fallback'
+
+type Provides = Pick<KitManifest, 'launchProvides'>
+
+const FALLBACK: Provides = rocketflareFallbackManifest()
 
 // ---- the patcher (ported from the kit's patch-toml.ts) --------------------------------------------
 
@@ -58,14 +68,23 @@ export interface MigrationBlock {
 }
 
 export interface TomlPatch {
-  /** `neon` sets `DATABASE_DRIVER = "neon"` and removes any `[[hyperdrive]]` HYPERDRIVE block. */
-  databaseDriver?: 'neon'
+  /**
+   * `neon` sets `DATABASE_DRIVER = "neon"` and removes any `[[hyperdrive]]` HYPERDRIVE block; a
+   * `{ name, value }` sets the kit's own driver var to its value, and removes the block the same.
+   */
+  databaseDriver?: 'neon' | { name: string; value: string }
+  /** Remove any `[[hyperdrive]]` HYPERDRIVE block (implied by `databaseDriver`). */
+  dropHyperdrive?: boolean
   /** Value for `[[kv_namespaces]] id` by binding name (placeholder or the same id only). */
   kvIds?: Record<string, string>
-  /** `[vars] APP_URL`. */
+  /** `[vars] APP_URL` (or the var `appUrlVar` names). */
   appUrl?: string
-  /** `[vars] EMAIL_FROM`. */
+  /** The app-URL var's name; `APP_URL` when absent. */
+  appUrlVar?: string
+  /** `[vars] EMAIL_FROM` (or the var `emailFromVar` names). */
   emailFrom?: string
+  /** The sender var's name; `EMAIL_FROM` when absent. */
+  emailFromVar?: string
   /** `[vars]` keys SET — replaced when present, appended when absent. */
   setVars?: Array<{ key: string; value: string }>
   /** Comment line(s) written above the keys `setVars` appends, once. */
@@ -355,16 +374,21 @@ function appendMigration(text: string, block: MigrationBlock): string {
   return insertBlock(text, header, lines.join('\n'))
 }
 
-/** `DATABASE_DRIVER = "neon"` (inserted after `TENANT_SCOPE_MODE` when absent), no Hyperdrive. */
-function patchNeonDriver(text: string): string {
+/**
+ * `<name> = "<value>"` (`DATABASE_DRIVER = "neon"`; inserted after `TENANT_SCOPE_MODE` when absent,
+ * else appended to `[vars]`).
+ */
+function patchDriverVar(text: string, name: string, value: string): string {
+  if (hasVar(text, name)) return patchVar(text, name, tomlEscape(value))
+  const anchor = /^TENANT_SCOPE_MODE\s*=[^\n]*\n/m.exec(text)
+  return anchor
+    ? `${text.slice(0, anchor.index + anchor[0].length)}${name} = "${tomlEscape(value)}"\n${text.slice(anchor.index + anchor[0].length)}`
+    : appendVar(text, name, value)
+}
+
+/** No `[[hyperdrive]]` block binding `HYPERDRIVE`: a Launch app reaches Neon directly. */
+function dropHyperdrive(text: string): string {
   let out = text
-  if (hasVar(out, 'DATABASE_DRIVER')) out = patchVar(out, 'DATABASE_DRIVER', 'neon')
-  else {
-    const anchor = /^TENANT_SCOPE_MODE\s*=[^\n]*\n/m.exec(out)
-    out = anchor
-      ? `${out.slice(0, anchor.index + anchor[0].length)}DATABASE_DRIVER = "neon"\n${out.slice(anchor.index + anchor[0].length)}`
-      : appendVar(out, 'DATABASE_DRIVER', 'neon')
-  }
   const declared = /^binding\s*=\s*"HYPERDRIVE"\s*(?:#.*)?$/m
   const blocks = blockRanges(out, '[[hyperdrive]]').filter(r =>
     declared.test(out.slice(r.start, r.end))
@@ -399,12 +423,23 @@ function patchWorkersDev(text: string, value: boolean): string {
 export function patchToml(text: string, patch: TomlPatch): string {
   let out = text
   const force = patch.force ?? false
-  if (patch.databaseDriver === 'neon') out = patchNeonDriver(out)
+  if (patch.databaseDriver) {
+    const driver =
+      patch.databaseDriver === 'neon'
+        ? { name: 'DATABASE_DRIVER', value: 'neon' }
+        : patch.databaseDriver
+    out = patchDriverVar(out, driver.name, driver.value)
+  }
+  if (patch.databaseDriver || patch.dropHyperdrive) out = dropHyperdrive(out)
   for (const [binding, id] of Object.entries(patch.kvIds ?? {})) {
     out = patchBindingKey(out, binding, 'id', id, force)
   }
-  if (patch.appUrl !== undefined) out = patchVar(out, 'APP_URL', tomlEscape(patch.appUrl))
-  if (patch.emailFrom !== undefined) out = patchVar(out, 'EMAIL_FROM', tomlEscape(patch.emailFrom))
+  if (patch.appUrl !== undefined) {
+    out = patchVar(out, patch.appUrlVar ?? 'APP_URL', tomlEscape(patch.appUrl))
+  }
+  if (patch.emailFrom !== undefined) {
+    out = patchVar(out, patch.emailFromVar ?? 'EMAIL_FROM', tomlEscape(patch.emailFrom))
+  }
   if (patch.setVars?.length) out = setVars(out, patch.setVars, patch.setVarsComment)
   if (patch.workersDev !== undefined) out = patchWorkersDev(out, patch.workersDev)
   for (const block of patch.bindings ?? []) out = upsertBindingBlock(out, block, force)
@@ -435,9 +470,9 @@ export function tomlPlaceholders(text: string): string[] {
 
 /** What Launch writes into one environment's toml. No secret — secrets go on the Worker. */
 export interface ConfigValues {
-  /** `https://<slug>[-staging].<apps_domain>` (`appResourceNames(...).url`). */
+  /** `https://<slug>[-staging].<apps_domain>` (`appNames(...).url`). */
   appUrl: string
-  /** `Display Name <noreply@<notifications domain>>`. */
+  /** `Display Name <noreply@<notifications domain>>`; not written when the kit sends no email. */
   emailFrom: string
   /** The KV namespace id for EVERY KV binding the toml declares, by binding name. */
   kvIds: Record<string, string>
@@ -446,17 +481,24 @@ export interface ConfigValues {
 }
 
 /**
- * The `[vars]` Launch sets in both files (plan §0.4). One tenant, anyone the issuer lets in may
- * sign up, and sign-in goes straight to Launch: the app's own login methods are hidden.
+ * The `[vars]` Launch sets in both files (plan §0.4), by the kit's names: its fixed `vars` (for
+ * Rocketflare one tenant, and anyone the issuer lets in may sign up), then sign-in through Launch —
+ * the issuer, the client id, the button's label and the OIDC-only switch, each when the kit maps
+ * it — so the app's own login methods are hidden.
  */
-export function launchVars(values: ConfigValues): Array<{ key: string; value: string }> {
+export function launchVars(
+  values: ConfigValues,
+  manifest: Provides = FALLBACK
+): Array<{ key: string; value: string }> {
+  const p = manifest.launchProvides
   return [
-    { key: 'TENANCY_MODE', value: 'single' },
-    { key: 'SIGNUP_MODE', value: 'open' },
-    { key: 'OIDC_ISSUER', value: values.oidc.issuer },
-    { key: 'OIDC_CLIENT_ID', value: values.oidc.clientId },
-    { key: 'OIDC_LABEL', value: values.oidc.label ?? 'Sign in with Launch' },
-    { key: 'AUTH_OIDC_ONLY', value: 'true' },
+    ...Object.entries(p.vars).map(([key, value]) => ({ key, value })),
+    { key: p.oidc.issuer, value: values.oidc.issuer },
+    { key: p.oidc.clientId, value: values.oidc.clientId },
+    ...(p.oidc.label
+      ? [{ key: p.oidc.label, value: values.oidc.label ?? 'Sign in with Launch' }]
+      : []),
+    ...(p.oidc.only ? [{ key: p.oidc.only, value: 'true' }] : []),
   ]
 }
 
@@ -468,8 +510,10 @@ export function launchVars(values: ConfigValues): Array<{ key: string; value: st
 export function writeConfig(
   tomlText: string,
   env: AppEnvironmentName,
-  values: ConfigValues
+  values: ConfigValues,
+  manifest: Provides = FALLBACK
 ): string {
+  const p = manifest.launchProvides
   const declared = resources(tomlText)
   const missing = declared.kv.filter(kv => values.kvIds[kv.binding] === undefined)
   if (missing.length > 0) {
@@ -479,14 +523,15 @@ export function writeConfig(
   }
   const kvIds = Object.fromEntries(declared.kv.map(kv => [kv.binding, values.kvIds[kv.binding]]))
   const out = patchToml(tomlText, {
-    databaseDriver: 'neon',
+    ...(p.databaseDriver ? { databaseDriver: p.databaseDriver } : { dropHyperdrive: true }),
     kvIds,
     appUrl: values.appUrl,
-    emailFrom: values.emailFrom,
-    setVars: launchVars(values),
+    appUrlVar: p.appUrl,
+    ...(p.emailFrom ? { emailFrom: values.emailFrom, emailFromVar: p.emailFrom } : {}),
+    setVars: launchVars(values, manifest),
     setVarsComment:
       'Launch (spec/05): sign-in goes through Launch, the OIDC issuer this app is registered with.\n' +
-      'Written by Launch; the client secret is the OIDC_CLIENT_SECRET Worker secret.',
+      `Written by Launch; the client secret is the ${p.oidc.clientSecret} Worker secret.`,
     workersDev: false,
   })
   const left = tomlPlaceholders(out)

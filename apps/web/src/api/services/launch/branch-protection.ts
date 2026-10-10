@@ -3,8 +3,8 @@
  * protection (`docs/plans/i5-ship-to-staging.md` §1.13, CONCEPTS §18.4).
  *
  * The ruleset protects the default branch with `pull_request` (0 reviews: the review is Launch's
- * `session.merge` approval, not GitHub's), `required_status_checks` (`Gate`, the kit's CI job —
- * `KIT_REQUIRED_CHECK`), `non_fast_forward` and `deletion`, and names Launch's GitHub App as an
+ * `session.merge` approval, not GitHub's), `required_status_checks` (the app kit's required CI
+ * check, `ci.requiredCheck` — Rocketflare's `Gate`, D36), `non_fast_forward` and `deletion`, and names Launch's GitHub App as an
  * `Integration` bypass actor with `bypass_mode: 'always'`. That bypass is the point: classic
  * required checks cannot be bypassed by an App, so the release bump (a direct ref update of the
  * default branch, `releases/release.ts`) could never land under them.
@@ -44,6 +44,7 @@ import {
   updateRuleset,
 } from './github-app'
 import { loadImportGitHub } from './import'
+import { type AdapterApp, adapterFor } from './kits/adapter'
 import { type RepoGitHubOptions, withRepoToken } from './releases/github'
 
 /** The rulesets half of the diagnosis; the routes add `gateVariable`. */
@@ -70,8 +71,17 @@ const PUSH_BLOCKING_RULES = new Set([
   'workflows',
 ])
 
-/** What Launch writes, given its GitHub App's numeric id. */
-export function launchRulesetInput(appId: number): GitHubRulesetInput {
+/** The check a ruleset requires: the app kit's `ci.requiredCheck`. */
+export interface RequiredCheckOption {
+  /** `KIT_REQUIRED_CHECK` (`Gate`, the Rocketflare fallback's) when absent. */
+  requiredCheck?: string
+}
+
+/** What Launch writes, given its GitHub App's numeric id and the kit's required check. */
+export function launchRulesetInput(
+  appId: number,
+  requiredCheck: string = KIT_REQUIRED_CHECK
+): GitHubRulesetInput {
   return {
     name: LAUNCH_RULESET_NAME,
     target: 'branch',
@@ -94,7 +104,7 @@ export function launchRulesetInput(appId: number): GitHubRulesetInput {
         parameters: {
           strict_required_status_checks_policy: false,
           do_not_enforce_on_create: false,
-          required_status_checks: [{ context: KIT_REQUIRED_CHECK }],
+          required_status_checks: [{ context: requiredCheck }],
         },
       },
       { type: 'non_fast_forward' },
@@ -123,9 +133,9 @@ export async function applyLaunchRuleset(
   owner: string,
   repo: string,
   appId: number,
-  opts: GitHubOptions = {}
+  opts: GitHubOptions & RequiredCheckOption = {}
 ): Promise<{ rulesetId: number; created: boolean }> {
-  const input = launchRulesetInput(appId)
+  const input = launchRulesetInput(appId, opts.requiredCheck)
   const existing = (await listRulesets(token, owner, repo, opts)).find(isLaunchRuleset)
   if (existing) {
     const updated = await updateRuleset(token, owner, repo, existing.id, input, opts)
@@ -211,8 +221,9 @@ export async function diagnoseBranchProtection(
   owner: string,
   repo: string,
   branch: string,
-  opts: GitHubOptions = {}
+  opts: GitHubOptions & RequiredCheckOption = {}
 ): Promise<RulesetDiagnosis> {
+  const required = opts.requiredCheck ?? KIT_REQUIRED_CHECK
   let listed: GitHubRuleset[]
   try {
     listed = await listRulesets(token, owner, repo, opts)
@@ -280,7 +291,7 @@ export async function diagnoseBranchProtection(
       detail: blockers.join(' '),
     }
   }
-  if (requiredChecks.has(KIT_REQUIRED_CHECK)) {
+  if (requiredChecks.has(required)) {
     return { state: 'ok', requiredChecks: checks, appCanBypass: true, rulesetId, detail: null }
   }
   return {
@@ -288,7 +299,7 @@ export async function diagnoseBranchProtection(
     requiredChecks: checks,
     appCanBypass: true,
     rulesetId,
-    detail: `Nothing on GitHub requires the ${KIT_REQUIRED_CHECK} check on ${branch}, so a pull request can merge with CI red. Apply adds Launch's ruleset.`,
+    detail: `Nothing on GitHub requires the ${required} check on ${branch}, so a pull request can merge with CI red. Apply adds Launch's ruleset.`,
   }
 }
 
@@ -300,11 +311,12 @@ export async function diagnoseBranchProtection(
 export async function getAppBranchProtection(
   db: Database,
   cfg: AppConfig,
-  app: Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch'>,
+  app: Pick<AppRow, 'repoOwner' | 'repoName' | 'defaultBranch'> & AdapterApp,
   opts: RepoGitHubOptions = {}
 ): Promise<AppBranchProtection> {
   if (!app.repoOwner || !app.repoName) return unknown('This app has no repository.')
   try {
+    const { requiredCheck } = await adapterFor(db, app)
     const github = opts.github ?? (await loadImportGitHub(db, cfg))
     return await withRepoToken(
       db,
@@ -312,7 +324,10 @@ export async function getAppBranchProtection(
       app,
       { ...GITHUB_TOKEN_PERMISSIONS.rulesetsRead, ...GITHUB_TOKEN_PERMISSIONS.gateVariableRead },
       async (token, repo) => ({
-        ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, opts)),
+        ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, {
+          ...opts,
+          requiredCheck,
+        })),
         gateVariable: await diagnoseGateVariable(
           token,
           repo.owner,
@@ -339,10 +354,11 @@ export async function applyAppBranchProtection(
   db: Database,
   cfg: AppConfig,
   tenantId: string,
-  app: Pick<AppRow, 'id' | 'repoOwner' | 'repoName' | 'defaultBranch'>,
+  app: Pick<AppRow, 'id' | 'repoOwner' | 'repoName' | 'defaultBranch'> & AdapterApp,
   actor: AuditActor,
   opts: RepoGitHubOptions = {}
 ): Promise<AppBranchProtection> {
+  const { requiredCheck } = await adapterFor(db, app)
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const appId = Number(github.auth.appId)
   const { applied, protection, gateVariable } = await withRepoToken(
@@ -354,9 +370,15 @@ export async function applyAppBranchProtection(
       try {
         // First, so a plan without rulesets (the 409 below) still gets the variable.
         const gateVariable = await ensureGateVariable(token, repo.owner, repo.repo, appId, opts)
-        const applied = await applyLaunchRuleset(token, repo.owner, repo.repo, appId, opts)
+        const applied = await applyLaunchRuleset(token, repo.owner, repo.repo, appId, {
+          ...opts,
+          requiredCheck,
+        })
         const protection: AppBranchProtection = {
-          ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, opts)),
+          ...(await diagnoseBranchProtection(token, repo.owner, repo.repo, repo.branch, {
+            ...opts,
+            requiredCheck,
+          })),
           gateVariable: await diagnoseGateVariable(token, repo.owner, repo.repo, appId, opts),
         }
         return { applied, protection, gateVariable }
@@ -392,7 +414,7 @@ export async function applyAppBranchProtection(
       before: { rulesetId: applied.created ? null : applied.rulesetId },
       after: {
         rulesetId: applied.rulesetId,
-        requiredChecks: [KIT_REQUIRED_CHECK],
+        requiredChecks: [requiredCheck],
         bypassAppId: appId,
         state: protection.state,
         gateVariable,

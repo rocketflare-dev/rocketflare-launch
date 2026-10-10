@@ -16,7 +16,7 @@ import {
   upgradeFollowUpPrompt,
   upgradePrompt,
   upgradeTitle,
-} from '@/api/services/launch/rocketflare/upgrade-prompt'
+} from '@/api/services/launch/kits/upgrade-prompt'
 import {
   autoShipVerdict,
   type UpgradeTurnEvidence,

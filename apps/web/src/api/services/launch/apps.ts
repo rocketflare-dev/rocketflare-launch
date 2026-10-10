@@ -34,6 +34,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../utils/core/errors'
 import { isAppOwner } from '../oidc/policy'
 import { type AuditActor, recordAudit } from './audit'
+import { adapterFor } from './kits/adapter'
 import { shipReviewSetByFor } from './ship-settings'
 import { thumbnailOf } from './thumbnails/thumbnails'
 import { kitStatuses } from './upgrades'
@@ -190,6 +191,7 @@ export async function getAppDetail(
     // Issue #5: an admin `session.merge` policy row decides review → `policy` (shown read-only).
     shipSettings: resolveAppShipSettings(row.app.shipSettings),
     shipReviewSetBy: await shipReviewSetByFor(db, tenantId, row.app),
+    requiredCheck: (await adapterFor(db, row.app)).requiredCheck,
   }
 }
 

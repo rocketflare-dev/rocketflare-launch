@@ -54,6 +54,9 @@ const CORE_UNSCOPED_ALLOWLIST: Record<string, string> = {
     'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
   'src/api/services/launch/deploy/tickets.ts':
     'pre-tenant GitHub OIDC path: repository_id / ticket id lookups before any session; the tenant is then taken from the row',
+  // D36 K1: the kit catalogue is platform configuration, administered by platform admins only.
+  'src/api/services/launch/kits/store.ts':
+    'kitAppCounts counts apps per kit across every organisation — the platform catalogue’s app count and the guard on removing a kit with apps; counts only, never a row',
   // Launch P3: a session's egress handlers get the platform's container id and nothing else, and a
   // preview host names the session by short id (then its signed cookie) — no session cookie, no
   // tenant, until the row is found.

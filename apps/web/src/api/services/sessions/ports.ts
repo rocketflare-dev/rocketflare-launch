@@ -220,7 +220,11 @@ export interface RepoHostPort {
    * null when nothing failed. **`logTail` is NOT redacted**: the caller redacts it (the gate's
    * redaction) before it reaches an event. Tokens: `checks`/`statuses: read`, `actions: read`.
    */
-  failedCheckLog(repo: RepoRef, input: { headSha: string }): Promise<FailedCheckLog | null>
+  /** `requiredCheck`: the app kit's (D36 `ci.requiredCheck`), preferred among the failures. */
+  failedCheckLog(
+    repo: RepoRef,
+    input: { headSha: string; requiredCheck?: string }
+  ): Promise<FailedCheckLog | null>
   /**
    * Issue #9: post a COMPLETED check run on `input.headSha` from Launch's own GitHub App — the
    * `launch/gate` attestation a green ship leaves on its pushed head. **Idempotent per

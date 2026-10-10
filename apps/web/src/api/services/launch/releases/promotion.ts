@@ -215,7 +215,7 @@ export async function appPromotion(
   cfg: AppConfig,
   input: {
     tenantId: string
-    app: Pick<AppRow, 'id' | 'repoOwner' | 'repoName' | 'defaultBranch'>
+    app: Pick<AppRow, 'id' | 'repoOwner' | 'repoName' | 'defaultBranch' | 'kitId' | 'kitManifest'>
   },
   options: TagRunOptions = {}
 ): Promise<AppPromotion> {

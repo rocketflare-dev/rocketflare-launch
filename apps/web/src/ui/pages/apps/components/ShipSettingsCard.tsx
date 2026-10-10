@@ -94,8 +94,14 @@ export function shipSettingsSentences(
   }
 }
 
-/** One plain sentence per branch-protection state, and whether Apply can help. Pure. */
-export function protectionSentence(protection: AppBranchProtection): {
+/**
+ * One plain sentence per branch-protection state, and whether Apply can help. Pure.
+ * `requiredCheck` is the app kit's (`AppDetail.requiredCheck`, D36).
+ */
+export function protectionSentence(
+  protection: AppBranchProtection,
+  requiredCheck: string = KIT_REQUIRED_CHECK
+): {
   title: string
   text: string
   tone: 'ok' | 'warning' | 'muted'
@@ -105,7 +111,7 @@ export function protectionSentence(protection: AppBranchProtection): {
     case 'ok':
       return {
         title: 'Protected',
-        text: `Changes reach the main branch only through a pull request with “${KIT_REQUIRED_CHECK}” passing, and Launch can still merge and release.`,
+        text: `Changes reach the main branch only through a pull request with “${requiredCheck}” passing, and Launch can still merge and release.`,
         tone: 'ok',
         canApply: false,
       }
@@ -182,7 +188,7 @@ function ProtectionLine({ app }: { app: AppDetail }) {
       </p>
     )
   }
-  const said = protectionSentence(protection.data)
+  const said = protectionSentence(protection.data, app.requiredCheck)
   const Icon = said.tone === 'ok' ? ShieldCheckIcon : ShieldExclamationIcon
   const iconClass =
     said.tone === 'ok' ? 'text-success' : said.tone === 'warning' ? 'text-warning' : 'text-muted'
@@ -213,7 +219,7 @@ function BranchProtection({ app, canApply }: { app: AppDetail; canApply: boolean
       </p>
     )
   } else {
-    const said = protectionSentence(protection.data)
+    const said = protectionSentence(protection.data, app.requiredCheck)
     const gate = gateVariableSentence(protection.data)
     // Apply sets the variable too; on a plan without rulesets it would answer 409, so not there.
     const offerApply = said.canApply || (gate !== null && protection.data.state === 'ok')

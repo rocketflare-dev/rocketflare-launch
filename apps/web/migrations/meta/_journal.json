@@ -351,6 +351,13 @@
       "when": 1791631434016,
       "tag": "0049_launch-kits",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791634318755,
+      "tag": "0050_launch-app-kit-manifest",
+      "breakpoints": true
     }
   ]
 }

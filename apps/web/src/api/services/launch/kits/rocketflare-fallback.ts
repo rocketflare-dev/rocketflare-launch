@@ -4,23 +4,22 @@
  * holds knowledge of a particular kit. `readKitManifest` answers it for a repo whose
  * `.rocketflare.json` says it IS the Rocketflare kit (`kit.name: rocketflare`, no `app`).
  *
- * Every value is what Launch hardcodes today — `tests/config/kit-manifest.test.ts` parses this
- * through `kitManifestSchema` and checks each against its source constant, so the two cannot drift
- * while K2–K4 move those call sites onto the manifest:
+ * Every value is what Launch did for Rocketflare before D36 — `tests/config/kit-manifest.test.ts`
+ * parses this through `kitManifestSchema` and checks each against the constant or the adapter it
+ * replaced. Since K2 the adapter (`kits/adapter.ts`) is BUILT from this manifest for every app
+ * without a manifest of its own, so where each block is read:
  *
- * | Block | Source in Launch today |
+ * | Block | Read by |
  * |---|---|
- * | `scaffold.init` / `postInit` | `rocketflare/scaffold-job.ts` (the rename call, install, lint:fix) |
- * | `scaffold.kitOnly` | the kit's own `.rocketflare.json` `kitOnly` (0.16.0+) |
- * | `worker.tomls` | `rocketflare-manifest.ts` `WRANGLER_PATHS` |
- * | `worker.naming`, `worker.titles` | `rocketflare/names.ts` (`environmentSuffix`, `kvTitle`) |
- * | `launchProvides` | `rocketflare/toml.ts` `launchVars` + `writeConfig`, `adapter.ts` `ROCKETFLARE_WORKER_SECRETS` / `auth` |
- * | `declaredConfig.optional` | `rocketflare/declared-config.ts` `KIT_OPTIONAL_CONFIG` |
- * | `database` | `pipeline/provision-neon.ts` (`MIGRATOR_ROLE`, `APP_ROLE`, the `vector` extension) |
- * | `health`, `release` | `adapter.ts` (`health`, `release`) |
- * | `ci` | `@launch/shared/launch-apps` `KIT_REQUIRED_CHECK`, `sessions/gate.ts` |
- * | `session` | `sessions/rocketflare-dev.ts` (`INSTALL_COMMAND`, the bootstrap, the dev server, the ports, the env) |
- * | `upgrade` | `rocketflare/upgrade-prompt.ts`, `kitUpgradeNotesUrl` |
+ * | `scaffold.init` / `postInit` / `kitOnly` | `rocketflare/scaffold-job.ts` still hardcodes them (K3) |
+ * | `scaffold.appManifest`, `worker.tomls` | `adapter.paths` (+ `launch.plugins.json`, {@link ROCKETFLARE_LEGACY_APP_MANIFESTS}) |
+ * | `worker.naming`, `worker.titles` | `kits/names.ts` (`workerNameOf`, `kvTitleOf`, `namingProblems`) |
+ * | `launchProvides` | `kits/toml.ts` `writeConfig` / `launchVars`, `adapter.secrets` / `secretTargets` / `auth` |
+ * | `declaredConfig` | `kits/declared-config.ts` |
+ * | `database` | `pipeline/provision-neon.ts` (roles, extensions; `rlsRole` is K4's) |
+ * | `health`, `release`, `ci.requiredCheck` | `adapter.health` / `release` / `requiredCheck` |
+ * | `ci` (the rest), `session` | `sessions/gate.ts`, `sessions/rocketflare-dev.ts` still hardcode them (K4) |
+ * | `upgrade` | `kits/upgrade-prompt.ts`, `kitUpgradeNotesUrl` |
  *
  * Two things Launch does to Rocketflare have no field, on purpose (Appendix A): the bootstrap's
  * root preload and the scaffold's test/preserved-org patches — legacy steps, not contract.
@@ -78,7 +77,9 @@ export const ROCKETFLARE_FALLBACK_INPUT = {
     },
     bootstrapAdmins: 'BOOTSTRAP_ADMIN_EMAILS',
     emailApiKey: 'RESEND_API_KEY',
-    generated: [{ name: 'OAUTH_ENCRYPTION_KEY', kind: 'hex64' }],
+    // `pipeline/worker-secrets.ts` has always written this key as base64, the form the kit's
+    // `importKey` prefers; existing apps keep theirs (it is sealed on the environment row).
+    generated: [{ name: 'OAUTH_ENCRYPTION_KEY', kind: 'base64-32' }],
     vars: { TENANCY_MODE: 'single', SIGNUP_MODE: 'open' },
   },
   declaredConfig: {
@@ -92,6 +93,7 @@ export const ROCKETFLARE_FALLBACK_INPUT = {
       'OTEL_EXPORTER_OTLP_ENDPOINT',
       'OTEL_EXPORTER_OTLP_HEADERS',
     ],
+    plain: ['LANGFUSE_PUBLIC_KEY', 'OTEL_EXPORTER_OTLP_ENDPOINT'],
     pluginManifests: 'apps/web/src/plugins/*/plugin.json',
   },
   database: {
@@ -134,7 +136,7 @@ export const ROCKETFLARE_FALLBACK_INPUT = {
         subdir: 'plugins/analytics',
       },
     ],
-    add: 'pnpm plugin add {repo} --apply --allow-dirty',
+    add: 'pnpm plugin add {repo}@{ref} --subdir {subdir} --apply --allow-dirty',
   },
 } satisfies KitManifestInput
 
@@ -145,3 +147,9 @@ export function rocketflareFallbackManifest(): KitManifest {
 
 /** The Rocketflare kit's `id` (`kit.id`) — the slug of the built-in catalogue row. */
 export const ROCKETFLARE_KIT_ID = 'rocketflare'
+
+/**
+ * The app-manifest names a Rocketflare copy may carry besides `scaffold.appManifest`: a renamed
+ * Launch-style copy records its app in `launch.plugins.json`. Read after `.rocketflare.json`.
+ */
+export const ROCKETFLARE_LEGACY_APP_MANIFESTS: readonly string[] = ['launch.plugins.json']

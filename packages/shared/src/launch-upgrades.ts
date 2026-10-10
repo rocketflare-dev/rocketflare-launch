@@ -89,6 +89,8 @@ export const UPGRADE_ERROR_CODES = {
   open: 'upgrade_open',
   /** The pin is an unreleased commit: there is no version to upgrade to. */
   noPinTag: 'upgrade_no_pin_tag',
+  /** The app's kit declares no upgrade (D36 `upgrade`): Launch never upgrades its apps. */
+  notSupported: 'upgrade_not_supported',
 } as const
 
 // ---- versions ------------------------------------------------------------------------------------
@@ -168,11 +170,20 @@ export const kitStatusSchema = z.object({
 })
 export type KitStatus = z.infer<typeof kitStatusSchema>
 
-/** The kit's porting note for `tag` — `docs/upgrades/<version>.md` at the tag, on GitHub. Pure. */
-export function kitUpgradeNotesUrl(repo: string, tag: string): string | null {
+/**
+ * The kit's porting note for `tag` on GitHub, at the tag: `notes` is the kit's path pattern
+ * (`upgrade.notes`, D36), `{version}` substituted — Rocketflare's `docs/upgrades/{version}.md`
+ * by default. Pure.
+ */
+export function kitUpgradeNotesUrl(
+  repo: string,
+  tag: string,
+  notes = 'docs/upgrades/{version}.md'
+): string | null {
   const version = kitVersionOf(tag)
   if (!version || !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo)) return null
-  return `https://github.com/${repo}/blob/${encodeURIComponent(tag)}/docs/upgrades/${version}.md`
+  const path = notes.replaceAll('{version}', version).split('/').map(encodeURIComponent).join('/')
+  return `https://github.com/${repo}/blob/${encodeURIComponent(tag)}/${path}`
 }
 
 /**

@@ -23,10 +23,8 @@ import { ConflictError, NotFoundError } from '../../../utils/core/errors'
 import { decide, open } from '../../approvals/engine'
 import type { ApprovalDeps, ApprovalViewer } from '../../approvals/types'
 import type { AuditActor } from '../audit'
-import { DEPLOY_WORKFLOW_FILE, repoOf } from '../releases/github'
+import { deployWorkflowOf, repoOf } from '../releases/github'
 import { findApprovalIntent, findOpenIntent, getAppTicket, listAppTickets } from './tickets'
-
-export { DEPLOY_WORKFLOW_FILE }
 
 /** A row as the app page shows it. */
 export function toDeployTicket(
@@ -182,7 +180,7 @@ export async function requestProductionDeploy(
     subject: { type: 'app', id: app.id },
     appId: app.id,
     requester: { userId: input.user.id, email: input.user.email, role: input.user.role },
-    reason: input.reason ?? `Deploy ${branch} to production (${DEPLOY_WORKFLOW_FILE})`,
+    reason: input.reason ?? `Deploy ${branch} to production (${await deployWorkflowOf(db, app)})`,
     context: {
       kind: 'deploy.production',
       environment: 'production',

@@ -41,6 +41,7 @@ import {
 import { newId } from '../../../utils/core/ids'
 import { assertGroupInTenant, getAppRow } from '../apps'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from '../audit'
+import { adapterForKit, kitManifestOf, type TemplateAdapter } from '../kits/adapter'
 import { ensureDefaultKit } from '../kits/store'
 import {
   loadPipelineSettings,
@@ -116,7 +117,7 @@ export async function createApp(
 export async function requestApp(
   db: Database,
   workflow: WorkflowStarter<AppLaunchParams> | undefined,
-  ports: PipelinePorts,
+  portsOf: PipelinePorts | ((adapter: TemplateAdapter) => PipelinePorts),
   tenantId: string,
   input: CreateAppRequest,
   actor: AuditActor,
@@ -139,7 +140,10 @@ export async function requestApp(
   const runId = newId()
   const options = { deployStaging: input.options.deployStaging }
   // D36 K1: the app belongs to the kit it is cut from, for life — the default kit until K5's picker.
+  // K2: and it keeps that kit's manifest (`apps.kit_manifest`), the one its adapter is built from.
   const kit = await ensureDefaultKit(db)
+  const kitManifest = kitManifestOf(kit)
+  const ports = typeof portsOf === 'function' ? portsOf(adapterForKit(kit)) : portsOf
   let app: AppRow
   try {
     app = await db.transaction(async tx => {
@@ -152,8 +156,9 @@ export async function requestApp(
           description: input.description || null,
           ownerGroupId: input.ownerGroupId ?? null,
           source: 'created',
-          template: 'rocketflare',
+          template: kitManifest.kit.id,
           kitId: kit.id,
+          kitManifest,
           status: 'requested',
           launchRunId: runId,
           launchInstanceId: runId,

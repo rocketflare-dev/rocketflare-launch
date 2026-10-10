@@ -1,6 +1,6 @@
 /**
  * Detecting what an app needs (Launch P5, plan §1.14–§1.15, §4 5e) — read-only, through the
- * adapter's `declaredConfig` (`launch/rocketflare/declared-config.ts`):
+ * app's kit adapter's `declaredConfig` (`launch/kits/declared-config.ts`, D36 `declaredConfig`):
  *
  * - `scanAppConfig`: read the repo at `ref` (`withRepoToken(…, { contents: 'read' })` +
  *   `getRepoFile`), match each declared key to resource items by exact name, upsert
@@ -49,8 +49,8 @@ import {
 import { getAppRow } from '../launch/apps'
 import { getRepoFile } from '../launch/github-app'
 import type { ImportGitHub } from '../launch/import'
+import { adapterFor } from '../launch/kits/adapter'
 import { withRepoToken } from '../launch/releases/github'
-import { declaredConfig } from '../launch/rocketflare/declared-config'
 import { notifyMany } from '../notifications'
 import { nudge, realtimeEvent } from '../realtime'
 import { safeErrorMessage } from '../sessions/events'
@@ -106,6 +106,7 @@ async function readDeclared(
   ref: string | null
 ): Promise<{ ref: string; declared: DeclaredConfigItem[] }> {
   const gh = { fetch: deps.fetch }
+  const adapter = await adapterFor(deps.db, app)
   return withRepoToken(
     deps.db,
     deps.cfg,
@@ -113,7 +114,9 @@ async function readDeclared(
     { contents: 'read' },
     async (token, { owner, repo, branch }) => {
       const at = ref ?? branch
-      const declared = await declaredConfig(path => getRepoFile(token, owner, repo, path, at, gh))
+      const declared = await adapter.declaredConfig(path =>
+        getRepoFile(token, owner, repo, path, at, gh)
+      )
       return { ref: at, declared }
     },
     { ...gh, github: deps.github }

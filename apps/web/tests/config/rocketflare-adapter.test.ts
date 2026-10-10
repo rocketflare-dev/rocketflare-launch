@@ -13,9 +13,8 @@ import {
   ROCKETFLARE_CONTRACT_VERSION,
   rocketflareAdapter,
   scaffoldProblems,
-} from '@/api/services/launch/rocketflare/adapter'
-import { accountScopedNames, appResourceNames } from '@/api/services/launch/rocketflare/names'
-import { placeholderScript } from '@/api/services/launch/rocketflare/placeholder-worker'
+} from '@/api/services/launch/kits/adapter'
+import { accountScopedNames, appResourceNames } from '@/api/services/launch/kits/names'
 import {
   type ConfigValues,
   patchToml,
@@ -23,7 +22,8 @@ import {
   TomlPatchError,
   tomlPlaceholders,
   writeConfig,
-} from '@/api/services/launch/rocketflare/toml'
+} from '@/api/services/launch/kits/toml'
+import { placeholderScript } from '@/api/services/launch/placeholder/worker'
 import { applyReplacements, deriveNames } from '../../../../scripts/lib/rename-lib.mjs'
 
 const FIXTURES = path.resolve(__dirname, '../fixtures/rocketflare-0.15')

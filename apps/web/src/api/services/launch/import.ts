@@ -1,5 +1,5 @@
 /**
- * Import an existing Rocketflare app into the registry (spec/06 "Importing existing apps"). The
+ * Import an existing app of the default kit (Rocketflare until K5 detects the kit) into the registry (spec/06 "Importing existing apps"). The
  * phase-1 way an app enters Launch: nothing is provisioned, the repo is only READ.
  *
  * 1. **Find the GitHub App installation** that can read the repo. The installation id the setup
@@ -8,8 +8,9 @@
  *    resolved from `GET /app/installations` by the repo owner's login.
  * 2. **Mint a token narrowed to this one repo and `contents: read`** — an import never needs the
  *    installation's write set.
- * 3. **Read the manifest** (`.rocketflare.json`, else `launch.plugins.json`) and **both tomls**,
- *    parsed by `rocketflare-manifest.ts`.
+ * 3. **Read the app manifest** (the kit adapter's `paths.manifests` — Rocketflare's
+ *    `.rocketflare.json`, else `launch.plugins.json`) and **both tomls** (`paths.tomls`), parsed by
+ *    `kits/app-manifest.ts`. The app records that kit and its manifest (`kit_id`, `kit_manifest`).
  * 4. **Check the slug** against spec/04's rules, then write `apps` (imported, live), one
  *    `app_environments` row per toml and the run's `app_operations` steps, plus the
  *    `app.imported` audit row — **in one transaction**, so a failed import leaves nothing behind.
@@ -48,19 +49,16 @@ import {
   installationToken,
   listInstallations,
 } from './github-app'
-import { ensureDefaultKit } from './kits/store'
-import { ROCKETFLARE_CONTRACT_VERSION } from './rocketflare/adapter'
 import {
-  type AppIdentity,
-  MANIFEST_PATHS,
-  ManifestError,
-  parseManifest,
-  parseWranglerToml,
-  WRANGLER_PATHS,
-  type WranglerEnvironment,
-} from './rocketflare-manifest'
+  adapterForKit,
+  kitManifestOf,
+  ROCKETFLARE_CONTRACT_VERSION,
+  type TemplateAdapter,
+} from './kits/adapter'
+import { type AppIdentity, ManifestError, type WranglerEnvironment } from './kits/app-manifest'
+import { ensureDefaultKit } from './kits/store'
 
-/** The adapter contract version an import records — defined by the adapter, re-exported here. */
+/** The Rocketflare fallback's contract version — defined by the adapter, re-exported here. */
 export { ROCKETFLARE_CONTRACT_VERSION }
 
 /** The GitHub App credentials an import acts with; tests hand them in directly. */
@@ -160,8 +158,10 @@ async function readRepo(
   owner: string,
   repo: string,
   requestedRef: string | undefined,
+  adapter: TemplateAdapter,
   opts: ImportOptions
 ): Promise<RepoSnapshot> {
+  const { manifests, tomls } = adapter.paths
   const installationId = await resolveInstallation(github, owner, opts)
   let token: string
   try {
@@ -186,8 +186,8 @@ async function readRepo(
   const ref = requestedRef ?? (await repoDefaultBranch(token, owner, repo, opts))
 
   let manifestText: string | null = null
-  let manifestPath: string = MANIFEST_PATHS[0]
-  for (const path of MANIFEST_PATHS) {
+  let manifestPath: string = adapter.paths.manifest
+  for (const path of manifests) {
     manifestText = await getRepoFile(token, owner, repo, path, ref, opts)
     if (manifestText !== null) {
       manifestPath = path
@@ -196,18 +196,18 @@ async function readRepo(
   }
   if (manifestText === null) {
     throw unprocessable(
-      `${owner}/${repo}@${ref} has no ${MANIFEST_PATHS.join(' or ')} — is it a Rocketflare app?`,
+      `${owner}/${repo}@${ref} has no ${manifests.join(' or ')} — is it a ${adapter.name} app?`,
       'manifest_missing',
-      { files: [...MANIFEST_PATHS] }
+      { files: [...manifests] }
     )
   }
   const [production, staging] = await Promise.all([
-    getRepoFile(token, owner, repo, WRANGLER_PATHS.production, ref, opts),
-    getRepoFile(token, owner, repo, WRANGLER_PATHS.staging, ref, opts),
+    getRepoFile(token, owner, repo, tomls.production, ref, opts),
+    getRepoFile(token, owner, repo, tomls.staging, ref, opts),
   ])
   const missing = [
-    production === null ? WRANGLER_PATHS.production : null,
-    staging === null ? WRANGLER_PATHS.staging : null,
+    production === null ? tomls.production : null,
+    staging === null ? tomls.staging : null,
   ].filter(f => f !== null)
   if (missing.length > 0 || production === null || staging === null) {
     throw unprocessable(
@@ -220,11 +220,11 @@ async function readRepo(
   }
   try {
     return {
-      identity: parseManifest(manifestText, manifestPath),
+      identity: adapter.parseManifest(manifestText, manifestPath),
       manifestPath,
       environments: {
-        production: parseWranglerToml(production, WRANGLER_PATHS.production),
-        staging: parseWranglerToml(staging, WRANGLER_PATHS.staging),
+        production: adapter.parseToml(production, tomls.production),
+        staging: adapter.parseToml(staging, tomls.staging),
       },
       ref,
     }
@@ -255,7 +255,12 @@ export async function importApp(
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const now = opts.clock ?? (() => new Date())
   const startedAt = now()
-  const snapshot = await readRepo(github, owner, repo, input.ref, opts)
+  // D36 K1: an imported app joins the default kit (K5 detects it from the copy's manifest); K2:
+  // that kit's adapter decides which files are read, and the app keeps its manifest.
+  const kit = await ensureDefaultKit(db)
+  const kitManifest = kitManifestOf(kit)
+  const adapter = adapterForKit(kit)
+  const snapshot = await readRepo(github, owner, repo, input.ref, adapter, opts)
   const { identity, environments } = snapshot
 
   const slug = identity.slug ?? repo.toLowerCase()
@@ -266,8 +271,6 @@ export async function importApp(
 
   const runId = newId()
   const finishedAt = now()
-  // D36 K1: an imported app joins the default kit (K5 detects it from the copy's manifest).
-  const kit = await ensureDefaultKit(db)
   const envNames = ['staging', 'production'] as const
   try {
     const app = await db.transaction(async tx => {
@@ -279,9 +282,10 @@ export async function importApp(
           displayName: identity.displayName ?? slug,
           ownerGroupId: input.ownerGroupId ?? null,
           source: 'imported',
-          template: 'rocketflare',
+          template: adapter.id,
           kitId: kit.id,
-          templateContractVersion: ROCKETFLARE_CONTRACT_VERSION,
+          kitManifest,
+          templateContractVersion: adapter.contractVersion,
           templateVersion: identity.kitVersion,
           repoOwner: owner,
           repoName: repo,

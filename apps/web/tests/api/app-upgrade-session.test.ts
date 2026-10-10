@@ -26,7 +26,7 @@ import { SESSION_WAKE_EVENT, sessionBranchName } from '@launch/shared/launch-ses
 import { UPGRADE_SESSION_REASONS } from '@launch/shared/launch-upgrades'
 import { and, eq } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
-import { upgradePrompt } from '@/api/services/launch/rocketflare/upgrade-prompt'
+import { upgradePrompt } from '@/api/services/launch/kits/upgrade-prompt'
 import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { listSessionEvents } from '@/api/services/sessions/event-log'

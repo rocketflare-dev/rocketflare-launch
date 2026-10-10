@@ -10,7 +10,7 @@
  */
 import { createServer } from 'node:http'
 import { parseArgs } from 'node:util'
-import { placeholderScript } from '../src/api/services/launch/rocketflare/placeholder-worker'
+import { placeholderScript } from '../src/api/services/launch/placeholder/worker'
 
 const { values } = parseArgs({
   options: {

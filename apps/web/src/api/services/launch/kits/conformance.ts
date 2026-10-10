@@ -39,8 +39,8 @@ import type { KitManifest } from '@launch/shared/kit-manifest'
 import type { KitManifestSource } from '@launch/shared/kits'
 import { parse as parseToml } from 'smol-toml'
 import { unprovisionableKeys } from '../deploy/binding-check'
-import { resources, type TomlResources } from '../rocketflare/toml'
 import { type KitFileReader, KitManifestError, readKitManifest } from './manifest'
+import { resources, type TomlResources } from './toml'
 
 export interface KitConformance {
   ok: boolean
@@ -352,6 +352,12 @@ export async function checkKitConformance(read: KitFileReader): Promise<KitConfo
   ])
 
   if (init && initScript === null) problems.push(`The init script ${init} is missing`)
+  // D36 K2: Launch keeps ONE generated secret per environment (sealed on its row).
+  if (manifest.launchProvides.generated.length > 1) {
+    problems.push(
+      `launchProvides.generated names ${manifest.launchProvides.generated.length} secrets; Launch generates at most one per environment`
+    )
+  }
   if (claude === null && agents === null) {
     problems.push(
       'There is no CLAUDE.md or AGENTS.md telling session agents how to work in the kit'

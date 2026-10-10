@@ -3,8 +3,11 @@
  * 1–6, `docs/CONCEPTS.md` §18.27). The ONE module that writes `app_upgrades`:
  *
  * - **"Requires upgrade" is read, not stored** ({@link kitStatusOf}): `apps.template_version`
- *   semver-below the template pin's tag (`kit-pin.ts`, read once per request). Moving the pin is
- *   what "the kit bumped" means, so it flags every app behind it at once, with no cron.
+ *   semver-below the pin's tag OF THE APP'S KIT (`kit-pin.ts`, read once per kit per request — the
+ *   default kit's is the template pin). Moving the pin is what "the kit bumped" means, so it flags
+ *   every app behind it at once, with no cron. **An app whose kit declares no `upgrade`** (D36,
+ *   `TemplateAdapter.upgrade` null) has no target: it is never behind, and starting an upgrade is
+ *   409 `upgrade_not_supported`.
  * - **Starting one** ({@link startAppUpgrade}, `POST /api/apps/:id/upgrade`): the refusals, then a
  *   `running` row and a coding session of kind `upgrade` whose first message is the adapter's
  *   `upgradePrompt`, with `auto_ship` set. A refusal of the session itself (the limit, the budget,
@@ -16,10 +19,13 @@
  *   {@link upgradeNeedsAttention} when a ship settles without a PR (`ship-steps.ts`),
  *   {@link upgradePrOpened} when the PR opens (`ship.ts`), and {@link settleUpgradeAtCleanup} when
  *   the session is cleaned up (failed → `failed`, ended without a PR → `cancelled`).
- * - **Recording the new version** ({@link recordKitVersionAtRelease}): every Release re-reads
- *   `.rocketflare.json` at its tag, updates `template_version` / `template_commit` (audit
- *   `app.kit_version_changed`) and settles an open upgrade the version now reaches as `released`.
- *   An upgrade done outside Launch is recorded the same way, at its first Release.
+ * - **Recording the new version** ({@link recordKitVersionAtRelease}): every Release re-reads the
+ *   app manifest (the adapter's — Rocketflare's `.rocketflare.json`) at its tag, updates
+ *   `template_version` / `template_commit` (audit `app.kit_version_changed`) and settles an open
+ *   upgrade the version now reaches as `released`. When the new version IS the kit's pinned one,
+ *   the app takes the kit's manifest snapshot too (`apps.kit_manifest`, D36 K2): the app now runs
+ *   that release's contract. An upgrade done outside Launch is recorded the same way, at its first
+ *   Release.
  *
  * Every status write is a compare-and-set on the statuses it may move from, so a late writer never
  * moves a settled upgrade back. Every query names the tenant.
@@ -56,10 +62,11 @@ import { createSession } from '../sessions/lifecycle'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from './audit'
 import { ensureAppGateVariable, type GateVariableWrite } from './gate-variable'
 import { getRepoFile } from './github-app'
-import { templatePinStatus } from './kit-pin'
+import { defaultKitPin, kitPin } from './kit-pin'
+import { type AdapterApp, adapterFor, adaptersFor, kitManifestOf } from './kits/adapter'
+import { ManifestError } from './kits/app-manifest'
+import { getKit, type KitRow } from './kits/store'
 import { withRepoToken } from './releases/github'
-import { rocketflareAdapter } from './rocketflare/adapter'
-import { MANIFEST_PATHS, ManifestError, parseManifest } from './rocketflare-manifest'
 
 const OPEN = [...OPEN_APP_UPGRADE_STATUSES] as AppUpgradeStatus[]
 
@@ -85,20 +92,55 @@ export function toAppUpgrade(row: AppUpgradeRow): AppUpgrade {
   }
 }
 
-/** What the template pin targets: its tag as `X.Y.Z` (null for a commit pin) and the notes URL. */
+/** What a kit's pin targets: its tag as `X.Y.Z` (null for a commit pin) and the notes URL. */
 export interface KitTarget {
   version: string | null
   notesUrl: string | null
 }
 
-/** The version the template pin names, read once per request (`kit-pin.ts`). */
-export async function kitTarget(db: Database): Promise<KitTarget> {
-  const { pin } = await templatePinStatus(db)
+/** No target: a kit with no `upgrade` block (or a commit pin) never makes an app "behind". */
+const NO_TARGET: KitTarget = { version: null, notesUrl: null }
+
+/** The kit row an app belongs to (its `kit_id`), or null — the default kit's pin then applies. */
+async function kitRowOf(db: Database, app: Pick<AppRow, 'kitId'>): Promise<KitRow | null> {
+  return app.kitId ? getKit(db, app.kitId) : null
+}
+
+/** The effective pin of an app's kit: its kit row's, else (no kit) the default kit's. */
+async function pinOfKit(db: Database, kit: KitRow | null) {
+  return kit ? (await kitPin(db, kit)).pin : (await defaultKitPin(db)).pin
+}
+
+/**
+ * The version an app's kit's pin names, and the porting note — `NO_TARGET` when the kit declares
+ * no upgrade. `notes` is the kit's `upgrade.notes` pattern.
+ */
+async function kitTargetOf(
+  db: Database,
+  kit: KitRow | null,
+  notes: string | null | undefined
+): Promise<KitTarget> {
+  if (notes === undefined) return NO_TARGET
+  const pin = await pinOfKit(db, kit)
   const version = kitVersionOf(pin.tag ?? null)
   return {
     version,
-    notesUrl: version && pin.tag ? kitUpgradeNotesUrl(pin.repo, pin.tag) : null,
+    notesUrl: version && pin.tag && notes ? kitUpgradeNotesUrl(pin.repo, pin.tag, notes) : null,
   }
+}
+
+/** The target of one app: its kit's pin, through its adapter's `upgrade` block. */
+export async function kitTargetFor(db: Database, app: AdapterApp): Promise<KitTarget> {
+  const adapter = await adapterFor(db, app)
+  return kitTargetOf(db, await kitRowOf(db, app), upgradeNotesOf(adapter))
+}
+
+/** `undefined`: no upgrade at all; null: an upgrade with no notes; else the notes pattern. */
+function upgradeNotesOf(
+  adapter: Awaited<ReturnType<typeof adapterFor>>
+): string | null | undefined {
+  if (!adapter.upgrade) return undefined
+  return adapter.manifest.upgrade?.notes ?? null
 }
 
 /** The kit status an app summary carries. Pure. */
@@ -139,21 +181,38 @@ export async function openUpgradesByApp(
   return byApp
 }
 
-/** The kit status of each app, by id: the pin read once, the open upgrades in one query. */
+/**
+ * The kit status of each app, by id: each kit's pin read once, the open upgrades in one query. An
+ * app's target is its own kit's pin (`apps.kit_id`; none — the default kit's), through its
+ * adapter: a kit with no `upgrade` block has none.
+ */
 export async function kitStatuses(
   db: Database,
   tenantId: string,
-  list: readonly Pick<AppRow, 'id' | 'templateVersion'>[]
+  list: readonly Pick<AppRow, 'id' | 'templateVersion' | 'kitId' | 'kitManifest'>[]
 ): Promise<Map<string, KitStatus>> {
-  const [target, open] = await Promise.all([
-    kitTarget(db),
+  const [adapters, open] = await Promise.all([
+    adaptersFor(db, list),
     openUpgradesByApp(
       db,
       tenantId,
       list.map(a => a.id)
     ),
   ])
-  return new Map(list.map(app => [app.id, kitStatusOf(app, target, open.get(app.id) ?? null)]))
+  const targets = new Map<string, Promise<KitTarget>>()
+  const out = new Map<string, KitStatus>()
+  for (const app of list) {
+    const adapter = adapters.get(app)
+    const notes = adapter ? upgradeNotesOf(adapter) : undefined
+    const key = `${app.kitId ?? ''}\u0000${notes === undefined ? '-' : (notes ?? '')}`
+    let target = targets.get(key)
+    if (!target) {
+      target = kitRowOf(db, app).then(kit => kitTargetOf(db, kit, notes))
+      targets.set(key, target)
+    }
+    out.set(app.id, kitStatusOf(app, await target, open.get(app.id) ?? null))
+  }
+  return out
 }
 
 /** An app's upgrades, newest first (`GET /api/apps/:id/upgrades`). */
@@ -273,7 +332,15 @@ export async function startAppUpgrade(
   if (!app.repoOwner || !app.repoName) {
     throw new ConflictError('This app has no repository to upgrade', 'app_has_no_repo')
   }
-  const { pin } = await templatePinStatus(db)
+  const adapter = await adapterFor(db, app)
+  const upgrader = adapter.upgrade
+  if (!upgrader) {
+    throw new ConflictError(
+      `This app's kit (${adapter.name}) declares no upgrade, so Launch cannot upgrade it`,
+      UPGRADE_ERROR_CODES.notSupported
+    )
+  }
+  const pin = await pinOfKit(db, await kitRowOf(db, app))
   const target = kitVersionOf(pin.tag ?? null)
   if (!target) {
     throw new ConflictError(
@@ -321,10 +388,10 @@ export async function startAppUpgrade(
       tenantId,
       app,
       userId: input.userId,
-      request: { title: rocketflareAdapter.upgradeTitle(prompt) },
+      request: { title: upgrader.title(prompt) },
       actor: input.actor,
       realtime: input.realtime,
-      firstMessage: rocketflareAdapter.upgradePrompt(prompt),
+      firstMessage: upgrader.prompt(prompt),
       upgrade: { upgradeId: upgrade.id, autoShip: true },
       ...(input.cfg ? { cfg: input.cfg } : {}),
     })
@@ -379,8 +446,10 @@ export interface UpgradeTurnEvidence {
   changed?: boolean
   /** The turn called `AskUserQuestion` (it stopped to ask, whatever it said after). */
   askedQuestion: boolean
-  /** `.rocketflare.json`'s `kit.version` in the checkout after the turn; null when unreadable. */
+  /** The app manifest's `kit.version` in the checkout after the turn; null when unreadable. */
   manifestVersion: string | null
+  /** That manifest's path, for the sentence (`.rocketflare.json` when absent). */
+  manifestPath?: string
 }
 
 export type AutoShipVerdict = { ship: true } | { ship: false; reason: string }
@@ -395,8 +464,9 @@ export type AutoShipVerdict = { ship: true } | { ship: false; reason: string }
  * 2. it did not call `AskUserQuestion`, and its final answer ends `LAUNCH-UPGRADE: DONE` — a turn
  *    that ends asking a question, or explaining why it stopped, does not (`upgradeResultOf`);
  * 3. the workspace changed;
- * 4. the checkout's `.rocketflare.json` says the target version — the upgrade script writes it
- *    last, and only after a clean apply, so this is the checkout's own word, not the agent's.
+ * 4. the checkout's app manifest (`.rocketflare.json`) says the target version — the upgrade
+ *    script writes it last, and only after a clean apply, so this is the checkout's own word, not
+ *    the agent's.
  */
 export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string): AutoShipVerdict {
   const notClean = (reason: string): AutoShipVerdict => ({ ship: false, reason })
@@ -413,7 +483,7 @@ export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string
   if (evidence.changed !== true) return notClean('The upgrade changed nothing in the app.')
   if (!kitVersionReached(evidence.manifestVersion, toVersion)) {
     return notClean(
-      `.rocketflare.json says kit ${evidence.manifestVersion ?? '(unreadable)'}, not ${toVersion}.`
+      `${evidence.manifestPath ?? '.rocketflare.json'} says kit ${evidence.manifestVersion ?? '(unreadable)'}, not ${toVersion}.`
     )
   }
   return { ship: true }
@@ -456,6 +526,13 @@ export async function sendUpgradeFollowUp(
   upgrade: Pick<AppUpgradeRow, 'id' | 'toVersion'>,
   now: Date = new Date()
 ): Promise<SessionRow | null> {
+  const [app] = await db
+    .select({ kitId: apps.kitId, kitManifest: apps.kitManifest })
+    .from(apps)
+    .where(and(eq(apps.tenantId, session.tenantId), eq(apps.id, session.appId)))
+    .limit(1)
+  const upgrader = app ? (await adapterFor(db, app)).upgrade : null
+  if (!upgrader) return null
   return db.transaction(async raw => {
     const tx = raw as unknown as Database
     const [claimed] = await tx
@@ -471,7 +548,7 @@ export async function sendUpgradeFollowUp(
       )
       .returning({ id: appUpgrades.id })
     if (!claimed) return null
-    const message = rocketflareAdapter.upgradeFollowUpPrompt({ to: upgrade.toVersion })
+    const message = upgrader.followUp({ to: upgrade.toVersion })
     return requestTurn(tx, session, { message }, now)
   })
 }
@@ -576,11 +653,13 @@ export interface KitVersionDeps {
 }
 
 /**
- * At a Release (`releases/release.ts`, beside the config scan): read `.rocketflare.json` AT THE TAG,
- * and when its kit differs from the app's record, update `template_version` / `template_commit`
- * and audit `app.kit_version_changed`; then settle every open kit upgrade the recorded version now
- * reaches as `released` (audit `app.upgrade.released`). A repo with no readable manifest changes
- * nothing. Throws on a GitHub failure — the caller never lets that fail the Release.
+ * At a Release (`releases/release.ts`, beside the config scan): read the app manifest (the
+ * adapter's `paths.manifest` — `.rocketflare.json`) AT THE TAG, and when its kit differs from the
+ * app's record, update `template_version` / `template_commit` and audit `app.kit_version_changed`
+ * — and when the new version is the one the app's kit is pinned to, take that kit's manifest
+ * snapshot as the app's (`kit_manifest`); then settle every open kit upgrade the recorded version
+ * now reaches as `released` (audit `app.upgrade.released`). A repo with no readable manifest
+ * changes nothing. Throws on a GitHub failure — the caller never lets that fail the Release.
  */
 export async function recordKitVersionAtRelease(
   deps: KitVersionDeps,
@@ -588,19 +667,21 @@ export async function recordKitVersionAtRelease(
 ): Promise<{ version: string | null; changed: boolean; released: number }> {
   const { db } = deps
   const { tenantId, app, tag } = input
+  const adapter = await adapterFor(db, app)
+  const manifestPath = adapter.paths.manifest
   const text = await withRepoToken(
     db,
     deps.cfg,
     app,
     { contents: 'read' },
     (token, { owner, repo }) =>
-      getRepoFile(token, owner, repo, MANIFEST_PATHS[0], tag, { fetch: deps.fetch }),
+      getRepoFile(token, owner, repo, manifestPath, tag, { fetch: deps.fetch }),
     { fetch: deps.fetch }
   )
   if (text === null) return { version: null, changed: false, released: 0 }
-  let identity: ReturnType<typeof parseManifest>
+  let identity: ReturnType<typeof adapter.parseManifest>
   try {
-    identity = parseManifest(text, MANIFEST_PATHS[0])
+    identity = adapter.parseManifest(text, manifestPath)
   } catch (err) {
     if (err instanceof ManifestError) return { version: null, changed: false, released: 0 }
     throw err
@@ -611,9 +692,19 @@ export async function recordKitVersionAtRelease(
   const commit = identity.kitCommit ?? app.templateCommit
   const changed = version !== app.templateVersion || commit !== app.templateCommit
   if (changed) {
+    // D36 K2: the app reached its kit's pinned release → it now runs that release's manifest. Any
+    // other version (an upgrade done outside Launch, to a release the kit is not pinned at) keeps
+    // the manifest the app has: Launch holds no snapshot of that release.
+    const kit = version !== app.templateVersion ? await kitRowOf(db, app) : null
+    const pinned = kit?.manifest ? kitVersionOf((await kitPin(db, kit)).pin.tag ?? null) : null
+    const kitManifest = kit && pinned === version ? kitManifestOf(kit) : undefined
     await db
       .update(apps)
-      .set({ templateVersion: version, templateCommit: commit })
+      .set({
+        templateVersion: version,
+        templateCommit: commit,
+        ...(kitManifest ? { kitManifest } : {}),
+      })
       .where(and(eq(apps.tenantId, tenantId), eq(apps.id, app.id)))
     if (version !== app.templateVersion) {
       await recordAudit(db, {

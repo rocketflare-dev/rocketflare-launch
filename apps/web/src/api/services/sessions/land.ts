@@ -100,7 +100,7 @@ import { redactModelKeyText } from './model-key'
 import type { FailedCheckLog, RepoPullRequest } from './ports'
 import { FAILED_CHECK_LOG_LINES } from './repo/github-repo-host'
 import { tailOf } from './rocketflare-dev'
-import { prChecksChanged, sessionRepo } from './ship'
+import { prChecksChanged, sessionRepo, sessionRequiredCheck } from './ship'
 import {
   backupWorkspace,
   emitterFor,
@@ -468,8 +468,10 @@ export async function landCiStep(
     .update(sessions)
     .set({ prChecks: checks })
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
-  // Issue #9: the landing acts on `Gate`, not on the fold of every check (`checks.state`).
-  const state = requiredCheckState(checks.checks)
+  // Issue #9: the landing acts on `Gate` (the kit's required check), not on the fold of every
+  // check (`checks.state`).
+  const requiredCheck = await sessionRequiredCheck(scope.db, session)
+  const state = requiredCheckState(checks.checks, requiredCheck)
   const ci: SessionShipCiData = {
     state,
     headSha: landing.gateSha,
@@ -483,10 +485,12 @@ export async function landCiStep(
   const elapsedMs = sinceMs(scope, landing.stageAt)
 
   if (state === 'failure') {
-    const failed = await host.failedCheckLog(repo, { headSha: landing.gateSha }).catch(err => {
-      scope.logger.warn({ err }, 'session landing: could not read the failed check')
-      return null
-    })
+    const failed = await host
+      .failedCheckLog(repo, { headSha: landing.gateSha, requiredCheck })
+      .catch(err => {
+        scope.logger.warn({ err }, 'session landing: could not read the failed check')
+        return null
+      })
     const failedCheck = failed
       ? {
           name: failed.name,
@@ -778,7 +782,9 @@ export async function landMergeStep(
     prNumber: landing.prNumber,
     headSha: landing.gateSha,
   })
-  if (requiredCheckState(checks.checks) !== 'success') {
+  if (
+    requiredCheckState(checks.checks, await sessionRequiredCheck(scope.db, session)) !== 'success'
+  ) {
     return {
       next: 'reopen',
       reason: 'ci_failed',
@@ -995,10 +1001,11 @@ export async function landMainCiStep(scope: StepScope): Promise<LandMainCiResult
     if (elapsedMs >= SHIP_MAIN_CI_MAX_MINUTES * 60_000) return record('timeout')
     throw err
   }
-  const state = requiredCheckState(checks.checks)
+  const requiredCheck = await sessionRequiredCheck(scope.db, session)
+  const state = requiredCheckState(checks.checks, requiredCheck)
   if (state === 'success') return record('success')
   if (state === 'failure') {
-    const failed = await host.failedCheckLog(repo, { headSha: sha }).catch(err => {
+    const failed = await host.failedCheckLog(repo, { headSha: sha, requiredCheck }).catch(err => {
       scope.logger.warn({ err }, 'session landing: could not read the failed main check')
       return null
     })

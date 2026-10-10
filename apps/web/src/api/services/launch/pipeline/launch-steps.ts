@@ -56,7 +56,8 @@ import {
   upsertRepoVariable,
 } from '../github-app'
 import { checkAppHealth, type HealthPollOptions } from '../health'
-import { ROCKETFLARE_CONTRACT_VERSION } from '../import'
+import { type AdapterApp, adapterFor, type TemplateAdapter } from '../kits/adapter'
+import type { WranglerEnvironment } from '../kits/app-manifest'
 import {
   createAppOidcClient,
   getAppOidcClient,
@@ -64,15 +65,7 @@ import {
   rotateAppOidcSecret,
 } from '../oidc-clients'
 import { publicUrlProblem } from '../public-url'
-import { KIT_BINDINGS } from '../rocketflare/names'
 import { SCAFFOLD_JOB_COMMIT_MESSAGES } from '../rocketflare/scaffold-job'
-import {
-  MANIFEST_PATHS,
-  parseManifest,
-  parseWranglerToml,
-  WRANGLER_PATHS,
-  type WranglerEnvironment,
-} from '../rocketflare-manifest'
 import {
   cloudflareClient,
   loadPipelineVendors,
@@ -93,22 +86,35 @@ import {
   skipStep,
 } from './operations'
 import {
-  DEPLOY_WORKFLOW_FILE,
   type PipelinePorts,
   SCAFFOLD_TICKET_ENVIRONMENT,
   type ScaffoldRunnerContext,
 } from './ports'
-import { idKey, provisionStorage, putPlaceholder } from './provision-cloudflare'
+import {
+  idKey,
+  provisionStorage,
+  putPlaceholder,
+  recordedStorage,
+  type StoragePlan,
+  storagePlan,
+} from './provision-cloudflare'
 import { ensureRepo, readRepoFiles, repoToken } from './provision-github'
 import { environmentNeon, freshAppDatabaseUrl, type NeonIds, provisionNeon } from './provision-neon'
 import { mintSendingKey } from './provision-resend'
-import { generateEncryptionKey, putWorkerSecrets } from './worker-secrets'
+import { generateSecret, putWorkerSecrets } from './worker-secrets'
 
 /** What every step body acts with. `vendors()` unseals the credentials on first use in a step. */
 export interface PipelineDeps {
   db: Database
   cfg: AppConfig
-  ports: PipelinePorts
+  /**
+   * The app's `TemplateAdapter` (D36 K2): built from the manifest snapshot ON the app
+   * (`apps.kit_manifest`), else its kit's — never fetched mid-run, so a retried step resolves the
+   * same one.
+   */
+  adapterFor: (app: AdapterApp) => Promise<TemplateAdapter>
+  /** The ports of the app's adapter (or a test's). */
+  portsFor: (app: AdapterApp) => Promise<PipelinePorts>
   vendors: () => Promise<PipelineVendors>
   /** Neon's 423 / operation-poll wait (tests: resolve at once). */
   sleep?: (ms: number) => Promise<void>
@@ -253,6 +259,28 @@ function repoOf(app: AppRow): { owner: string; name: string; branch: string } {
   return { owner: app.repoOwner, name: app.repoName, branch: app.defaultBranch ?? 'main' }
 }
 
+/** The scaffolded toml of each environment, read at the default branch's head. */
+async function readTomls(
+  token: string,
+  owner: string,
+  repo: string,
+  adapter: TemplateAdapter
+): Promise<Record<AppEnvironmentName, { path: string; text: string }>> {
+  const { tomls } = adapter.paths
+  const files = await readRepoFiles(token, owner, repo, [tomls.staging, tomls.production])
+  const read = (env: AppEnvironmentName) => {
+    const text = files[tomls[env]]
+    if (!text) throw new Error(`${tomls[env]} is missing`)
+    return { path: tomls[env], text }
+  }
+  return { staging: read('staging'), production: read('production') }
+}
+
+/** What `cloudflare` creates for one environment's toml (the same plan every later step reads). */
+function storageOf(adapter: TemplateAdapter, slug: string, env: AppEnvironmentName, toml: string) {
+  return storagePlan(adapter.resources(toml), binding => adapter.kvTitle(slug, binding, env))
+}
+
 function emailFrom(app: AppRow, notificationsDomain: string | null): string {
   if (!notificationsDomain) throw new Error('No notifications domain: set the apps domain in Setup')
   return `${app.displayName.replace(/[<>"]/g, '')} <${app.slug}@${notificationsDomain}>`
@@ -283,6 +311,7 @@ export function repoStep(d: PipelineDeps, params: AppLaunchParams) {
       githubRepoId: String(repo.id),
     })
     if (!ctx.prior.scaffoldFilesCommit) {
+      const ports = await d.portsFor(app)
       const { token, owner } = await repoToken(
         vendors,
         repo.name,
@@ -294,7 +323,7 @@ export function repoStep(d: PipelineDeps, params: AppLaunchParams) {
         owner,
         repo.name,
         repo.default_branch,
-        d.ports.scaffoldFiles(),
+        ports.scaffoldFiles(),
         SCAFFOLD_JOB_COMMIT_MESSAGES.add
       )
       await ctx.record({ scaffoldFilesCommit: commit.sha })
@@ -325,6 +354,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'scaffold.start'), async ctx => {
     const vendors = await d.vendors()
     const app = await loadApp(d.db, params)
+    const ports = await d.portsFor(app)
     const envs = await loadEnvironments(d.db, params)
     const repo = repoOf(app)
     // An earlier attempt's ticket is reused only while no job has claimed it; a retry after a
@@ -382,7 +412,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
         owner,
         repo.name,
         repo.branch,
-        d.ports.scaffoldFiles(),
+        ports.scaffoldFiles(),
         SCAFFOLD_JOB_COMMIT_MESSAGES.update
       )
       if (refreshed.changed) await ctx.record({ scaffoldFilesCommit: refreshed.sha })
@@ -397,7 +427,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
       tag: pin.tag ?? null,
       commit: pin.commit,
     }
-    const runner = d.ports.scaffoldRunner
+    const runner = ports.scaffoldRunner
     const ids = await runner.start(await scaffoldContext(d, app, ticketId, ctx), plan)
     // The job is on its way: its wait shows running from now, with no ids of an earlier job.
     await openWait(d.db, launchKey(params, 'scaffold.wait'))
@@ -438,7 +468,7 @@ export async function scaffoldPoll(d: PipelineDeps, params: AppLaunchParams): Pr
   const waitIds = await stepIds(d.db, waitKey)
   if (waitIds.runId) runIds.runId = waitIds.runId
   const context = await scaffoldContext(d, app, ticketId)
-  const state = await d.ports.scaffoldRunner.poll(context, runIds)
+  const state = await (await d.portsFor(app)).scaffoldRunner.poll(context, runIds)
   if (state.runId && (state.runId !== waitIds.runId || (state.url && !waitIds.runUrl))) {
     await recordRunningIds(d.db, waitKey, {
       runId: state.runId,
@@ -474,50 +504,20 @@ export function scaffoldWaitStep(d: PipelineDeps, params: AppLaunchParams) {
   )
 }
 
-/** Every name the scaffolded toml must carry, against the adapter's naming (plan §1). */
-function nameProblems(
-  env: AppEnvironmentName,
-  toml: WranglerEnvironment,
-  names: ReturnType<PipelinePorts['names']>
-): string[] {
-  const problems: string[] = []
-  const expect = (what: string, found: readonly string[], wanted: string) => {
-    if (!found.includes(wanted)) {
-      problems.push(`${env} ${what} is ${found.join(', ') || 'missing'}, expected ${wanted}`)
-    }
-  }
-  expect('Worker name', toml.workerName ? [toml.workerName] : [], names.workerName)
-  expect(
-    'queue',
-    (toml.resources.queues ?? []).map(q => q.queue),
-    names.queue
-  )
-  expect(
-    'R2 bucket',
-    (toml.resources.r2 ?? []).map(b => b.bucketName),
-    names.r2Bucket
-  )
-  expect(
-    'workflow',
-    (toml.resources.workflows ?? []).map(w => w.name),
-    names.workflow
-  )
-  return problems
-}
-
 export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'scaffold.verify'), async ctx => {
     const vendors = await d.vendors()
-    const domain = requireAppsDomain(vendors.settings)
     const pin = vendors.settings.templatePin
     const app = await loadApp(d.db, params)
+    const adapter = await d.adapterFor(app)
     const repo = repoOf(app)
     const { token, owner } = await repoToken(vendors, repo.name, { contents: 'read' }, ctx)
-    const manifestPath = MANIFEST_PATHS[0]
+    const manifestPath = adapter.paths.manifest
+    const { tomls } = adapter.paths
     const files = await readRepoFiles(token, owner, repo.name, [
       manifestPath,
-      WRANGLER_PATHS.staging,
-      WRANGLER_PATHS.production,
+      tomls.staging,
+      tomls.production,
     ])
     const problems: string[] = []
     const manifestText = files[manifestPath]
@@ -528,7 +528,7 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
     if (!manifestText) {
       problems.push(`${manifestPath} is missing`)
     } else {
-      const identity = parseManifest(manifestText, manifestPath)
+      const identity = adapter.parseManifest(manifestText, manifestPath)
       kitVersion = identity.kitVersion
       if (identity.slug !== app.slug) {
         problems.push(`${manifestPath} names the app ${identity.slug ?? 'nothing'}`)
@@ -547,14 +547,14 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
         )
       }
     }
+    // Every account-scoped name by the kit's naming rule (`kits/names.ts` `namingProblems`).
     for (const env of ENVIRONMENTS) {
-      const text = files[WRANGLER_PATHS[env]]
+      const text = files[tomls[env]]
       if (!text) {
-        problems.push(`${WRANGLER_PATHS[env]} is missing`)
+        problems.push(`${tomls[env]} is missing`)
         continue
       }
-      const toml = parseWranglerToml(text, WRANGLER_PATHS[env])
-      problems.push(...nameProblems(env, toml, d.ports.names(app.slug, env, domain)))
+      problems.push(...adapter.namingProblems(tomls[env], env, adapter.resources(text), app.slug))
     }
     if (problems.length) {
       throw new Error(`The scaffold does not match the plan: ${problems.join('; ')}`)
@@ -565,7 +565,7 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
       templateRef: templatePinRef(pin),
       templateCommit: pin.commit,
       templateVersion: pin.tag ?? kitVersion,
-      templateContractVersion: ROCKETFLARE_CONTRACT_VERSION,
+      templateContractVersion: adapter.contractVersion,
     })
     return { scaffoldCommit: head.object.sha }
   })
@@ -576,12 +576,14 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
 export function neonStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'neon'), async ctx => {
     const app = await loadApp(d.db, params)
+    const { database } = await d.adapterFor(app)
     const envs = await loadEnvironments(d.db, params)
     const ids = await provisionNeon(neonClient(await d.vendors(), { sleep: d.sleep }), ctx, {
       slug: app.slug,
+      database,
     })
     for (const env of ENVIRONMENTS) {
-      await updateEnvironment(d.db, envs[env], { neon: environmentNeon(ids, env) })
+      await updateEnvironment(d.db, envs[env], { neon: environmentNeon(ids, env, database) })
     }
     return {
       neonProjectId: ids.projectId,
@@ -615,11 +617,16 @@ async function claimedByAnotherApp(
 export function cloudflareStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'cloudflare'), async ctx => {
     const vendors = await d.vendors()
-    const domain = requireAppsDomain(vendors.settings)
     const app = await loadApp(d.db, params)
+    const adapter = await d.adapterFor(app)
+    const repo = repoOf(app)
     const cf = cloudflareClient(vendors)
+    // What the scaffolded tomls declare is what gets created (D36: the kit's bindings).
+    const { token, owner } = await repoToken(vendors, repo.name, { contents: 'read' }, ctx)
+    const tomls = await readTomls(token, owner, repo.name, adapter)
     for (const env of ENVIRONMENTS) {
-      await provisionStorage(cf, ctx, env, d.ports.names(app.slug, env, domain), (kind, id) =>
+      const plan = storageOf(adapter, app.slug, env, tomls[env].text)
+      await provisionStorage(cf, ctx, env, plan, (kind, id) =>
         claimedByAnotherApp(d.db, params, kind, id)
       )
     }
@@ -652,30 +659,31 @@ export function writeConfigStep(d: PipelineDeps, params: AppLaunchParams) {
     const storage = await stepIds(d.db, launchKey(params, 'cloudflare'))
     const client = await getAppOidcClient(d.db, params.tenantId, app.id)
     if (!client) throw new Error('The app has no OIDC client yet')
+    const adapter = await d.adapterFor(app)
+    const ports = await d.portsFor(app)
     const { token, owner } = await repoToken(vendors, repo.name, { contents: 'write' }, ctx)
-    const current = await readRepoFiles(token, owner, repo.name, [
-      WRANGLER_PATHS.staging,
-      WRANGLER_PATHS.production,
-    ])
+    const current = await readTomls(token, owner, repo.name, adapter)
+    const sendsEmail = Boolean(adapter.manifest.launchProvides.emailFrom)
 
     const changed: { path: string; content: string }[] = []
     for (const env of ENVIRONMENTS) {
-      const path = WRANGLER_PATHS[env]
-      const before = current[path]
-      if (!before) throw new Error(`${path} is missing`)
-      const names = d.ports.names(app.slug, env, domain)
-      const kvId = storage[idKey('kv', env)]
-      if (!kvId) throw new Error(`No ${env} KV namespace was recorded`)
-      // The pipeline creates the kit's one KV namespace; a toml declaring another is refused by
-      // `writeConfig` (no id for it) rather than left with a placeholder.
-      const written = d.ports.writeConfig(before, env, {
+      const { path, text: before } = current[env]
+      const names = ports.names(app.slug, env, domain)
+      const plan = storageOf(adapter, app.slug, env, before)
+      const made = recordedStorage(storage, env, plan)
+      // Every KV namespace the toml declares was created by `cloudflare`; one with no recorded id
+      // is refused by `writeConfig` (no id for it) rather than left with a placeholder.
+      if (plan.kv.length > 0 && made.kv.length === 0) {
+        throw new Error(`No ${env} KV namespace was recorded`)
+      }
+      const written = ports.writeConfig(before, env, {
         appUrl: names.url,
-        emailFrom: emailFrom(app, vendors.settings.notificationsDomain),
-        kvIds: { [KIT_BINDINGS.rateLimitKv]: kvId },
+        emailFrom: sendsEmail ? emailFrom(app, vendors.settings.notificationsDomain) : '',
+        kvIds: Object.fromEntries(made.kv.map(k => [k.binding, k.id])),
         oidcIssuer: issuerOf(d.cfg),
         oidcClientId: client.clientId,
       })
-      const parsed = parseWranglerToml(written, path)
+      const parsed = adapter.parseToml(written, path)
       if (parsed.placeholders.length) {
         throw new Error(`${path} still has placeholders: ${parsed.placeholders.join(', ')}`)
       }
@@ -683,7 +691,7 @@ export function writeConfigStep(d: PipelineDeps, params: AppLaunchParams) {
       await updateEnvironment(d.db, envs[env], {
         url: names.url,
         workerName: names.workerName,
-        resources: recordedResources(parsed, storage, env),
+        resources: recordedResources(parsed, recordedStorage(storage, env, plan)),
       })
     }
     if (changed.length === 0) return { configCommit: 'unchanged' }
@@ -699,23 +707,21 @@ export function writeConfigStep(d: PipelineDeps, params: AppLaunchParams) {
   })
 }
 
-/** The toml's bindings, with the KV title and queue ids the pipeline recorded added. */
+/** The toml's bindings, with the KV titles and queue ids the pipeline recorded added. */
 function recordedResources(
   toml: WranglerEnvironment,
-  storage: AppOperationExternalIds,
-  env: AppEnvironmentName
+  made: ReturnType<typeof recordedStorage>
 ): AppEnvironmentResources {
-  const kvTitle = storage[idKey('kvTitle', env)]
-  const queueId = storage[idKey('queue', env)]
-  const queueName = storage[idKey('queueName', env)]
   return {
     ...toml.resources,
-    kv: toml.resources.kv?.map(k =>
-      k.id === storage[idKey('kv', env)] && kvTitle ? { ...k, title: kvTitle } : k
-    ),
-    queues: toml.resources.queues?.map(q =>
-      q.queue === queueName && queueId ? { ...q, id: queueId } : q
-    ),
+    kv: toml.resources.kv?.map(k => {
+      const title = made.kv.find(m => m.id === k.id)?.title
+      return title ? { ...k, title } : k
+    }),
+    queues: toml.resources.queues?.map(q => {
+      const id = made.queues.find(m => m.name === q.queue)?.id
+      return id ? { ...q, id } : q
+    }),
   }
 }
 
@@ -730,30 +736,27 @@ export function placeholdersStep(d: PipelineDeps, params: AppLaunchParams) {
     const repo = repoOf(app)
     const cf = cloudflareClient(vendors)
     const storage = await stepIds(d.db, launchKey(params, 'cloudflare'))
+    const adapter = await d.adapterFor(app)
+    const ports = await d.portsFor(app)
     const { token, owner } = await repoToken(vendors, repo.name, { contents: 'read' }, ctx)
-    const tomls = await readRepoFiles(token, owner, repo.name, [
-      WRANGLER_PATHS.staging,
-      WRANGLER_PATHS.production,
-    ])
+    const tomls = await readTomls(token, owner, repo.name, adapter)
     for (const env of ENVIRONMENTS) {
-      const path = WRANGLER_PATHS[env]
-      const tomlText = tomls[path]
-      if (!tomlText) throw new Error(`${path} is missing`)
-      const toml = parseWranglerToml(tomlText, path)
-      const queueName = storage[idKey('queueName', env)]
-      const queueId = storage[idKey('queue', env)]
+      const { path, text: tomlText } = tomls[env]
+      const toml = adapter.parseToml(tomlText, path)
+      const plan: StoragePlan = storageOf(adapter, app.slug, env, tomlText)
+      const made = recordedStorage(storage, env, plan)
       const result = await putPlaceholder(cf, ctx, {
         env,
-        names: d.ports.names(app.slug, env, domain),
+        names: ports.names(app.slug, env, domain),
         tomlText,
         toml,
         // A retry after the script PUT: its DO migrations are already applied.
-        script: d.ports.placeholderScript(tomlText, {
+        script: ports.placeholderScript(tomlText, {
           appliedTag:
             ctx.prior[idKey('migrationTag', env)] ?? envs[env].resources?.doMigrationTag ?? null,
           appName: app.displayName,
         }),
-        queueIds: queueName && queueId ? { [queueName]: queueId } : {},
+        queueIds: Object.fromEntries(made.queues.map(q => [q.name, q.id])),
       })
       const current = envs[env].resources ?? {}
       await updateEnvironment(d.db, envs[env], {
@@ -802,7 +805,10 @@ export function githubEnvStep(d: PipelineDeps, params: AppLaunchParams) {
     // updates rather than duplicates; a plan without rulesets is recorded, never fatal.
     const appId = Number(githubAppId)
     try {
-      const { rulesetId } = await applyLaunchRuleset(token, owner, repo.name, appId)
+      const { requiredCheck } = await d.adapterFor(app)
+      const { rulesetId } = await applyLaunchRuleset(token, owner, repo.name, appId, {
+        requiredCheck,
+      })
       return { ...done, rulesetId: String(rulesetId), branchProtection: 'ok' }
     } catch (err) {
       if (!isRulesetsUnavailable(err)) throw err
@@ -817,6 +823,14 @@ export function workerSecretsStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'worker_secrets'), async ctx => {
     const vendors = await d.vendors()
     const app = await loadApp(d.db, params)
+    const adapter = await d.adapterFor(app)
+    const secretNames = adapter.secrets
+    if (secretNames.generated.length > 1) {
+      throw new Error(
+        `The kit names ${secretNames.generated.length} generated secrets; Launch generates at most one per environment`
+      )
+    }
+    const generated = secretNames.generated[0] ?? null
     const envs = await loadEnvironments(d.db, params)
     const cf = cloudflareClient(vendors)
     const neon = neonClient(vendors, { sleep: d.sleep })
@@ -845,21 +859,34 @@ export function workerSecretsStep(d: PipelineDeps, params: AppLaunchParams) {
     for (const env of ENVIRONMENTS) {
       const row = envs[env]
       if (!row.workerName) throw new Error(`The ${env} environment has no Worker`)
-      let encryptionKey = await decryptToken(d.cfg, row.encryptionKeySealed)
-      if (!encryptionKey) {
-        encryptionKey = generateEncryptionKey()
-        // Sealed and stored BEFORE the put, so a retry puts the same key back.
-        await updateEnvironment(d.db, row, {
-          encryptionKeySealed: await encryptToken(d.cfg, encryptionKey),
-        })
+      // The kit's generated secret (Rocketflare's OAUTH_ENCRYPTION_KEY): kept, never rotated.
+      let kept: Record<string, string> = {}
+      if (generated) {
+        let value = await decryptToken(d.cfg, row.encryptionKeySealed)
+        if (!value) {
+          value = generateSecret(generated.kind)
+          // Sealed and stored BEFORE the put, so a retry puts the same value back.
+          await updateEnvironment(d.db, row, {
+            encryptionKeySealed: await encryptToken(d.cfg, value),
+          })
+        }
+        ctx.redact(value)
+        kept = { [generated.name]: value }
       }
-      ctx.redact(encryptionKey)
       const branchId = env === 'production' ? ids.mainBranchId : ids.stagingBranchId
       const secrets: Record<string, string> = {
-        OAUTH_ENCRYPTION_KEY: encryptionKey,
-        OIDC_CLIENT_SECRET: rotated.clientSecret,
-        ...(creator?.email ? { BOOTSTRAP_ADMIN_EMAILS: creator.email } : {}),
-        DATABASE_URL: await freshAppDatabaseUrl(neon.client, ctx, ids.projectId, branchId),
+        ...kept,
+        [secretNames.oidcClientSecret]: rotated.clientSecret,
+        ...(creator?.email && secretNames.bootstrapAdmins
+          ? { [secretNames.bootstrapAdmins]: creator.email }
+          : {}),
+        [secretNames.databaseUrl]: await freshAppDatabaseUrl(
+          neon.client,
+          ctx,
+          ids.projectId,
+          branchId,
+          adapter.database.appRole
+        ),
       }
       const names = await putWorkerSecrets(cf, ctx, row.workerName, secrets)
       put.push(...names.map(n => `${env}:${n}`))
@@ -885,9 +912,13 @@ function emailUnavailable(vendors: PipelineVendors): string | null {
 }
 
 export async function emailStep(d: PipelineDeps, params: AppLaunchParams) {
-  const unavailable = emailUnavailable(await d.vendors())
-  if (unavailable) {
-    await skipStep(d.db, launchKey(params, 'email'), unavailable)
+  const adapter = await d.adapterFor(await loadApp(d.db, params))
+  const keyName = adapter.secrets.emailApiKey
+  const unavailable = keyName
+    ? emailUnavailable(await d.vendors())
+    : `The ${adapter.name} kit sends no email, so there is no sending key to mint`
+  if (unavailable || !keyName) {
+    await skipStep(d.db, launchKey(params, 'email'), unavailable ?? 'No email')
     return
   }
   return runStep(d.db, launchKey(params, 'email'), async ctx => {
@@ -896,6 +927,7 @@ export async function emailStep(d: PipelineDeps, params: AppLaunchParams) {
     const resend = resendClient(vendors)
     const cf = cloudflareClient(vendors)
     const app = await loadApp(d.db, params)
+    const ports = await d.portsFor(app)
     const envs = await loadEnvironments(d.db, params)
     for (const env of ENVIRONMENTS) {
       const row = envs[env]
@@ -906,11 +938,11 @@ export async function emailStep(d: PipelineDeps, params: AppLaunchParams) {
         ctx,
         {
           env,
-          keyName: d.ports.names(app.slug, env, domain).resendKeyName,
+          keyName: ports.names(app.slug, env, domain).resendKeyName,
           confirmedKeyId: row.resendKeyId,
         },
         async token => {
-          await putWorkerSecrets(cf, ctx, workerName, { RESEND_API_KEY: token })
+          await putWorkerSecrets(cf, ctx, workerName, { [keyName]: token })
         }
       )
       if (minted) await updateEnvironment(d.db, row, { resendKeyId: keyId })
@@ -924,16 +956,17 @@ export function deployStartStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'deploy_staging.start'), async ctx => {
     const vendors = await d.vendors()
     const app = await loadApp(d.db, params)
+    const { release } = await d.adapterFor(app)
     const repo = repoOf(app)
     const { token, owner } = await repoToken(vendors, repo.name, { actions: 'write' }, ctx)
     const dispatchedAt = new Date().toISOString()
     await ctx.record({ dispatchedAt })
-    await dispatchWorkflow(token, owner, repo.name, DEPLOY_WORKFLOW_FILE, {
+    await dispatchWorkflow(token, owner, repo.name, release.workflowFile, {
       ref: repo.branch,
-      inputs: { environment: 'staging' },
+      inputs: { [release.environmentInput]: 'staging' },
     })
     await openWait(d.db, launchKey(params, 'deploy_staging.wait'))
-    return { dispatchedAt, deployWorkflowFile: DEPLOY_WORKFLOW_FILE }
+    return { dispatchedAt, deployWorkflowFile: release.workflowFile }
   })
 }
 
@@ -1019,11 +1052,12 @@ export async function deployPoll(d: PipelineDeps, params: AppLaunchParams): Prom
   const started = await stepIds(d.db, launchKey(params, 'deploy_staging.start'))
   if (started.dispatchedAt) {
     const app = await loadApp(d.db, params)
+    const { release } = await d.adapterFor(app)
     const repo = repoOf(app)
     const { token, owner } = await repoToken(await d.vendors(), repo.name, { actions: 'read' })
     const since = new Date(started.dispatchedAt).getTime() - DISPATCH_SKEW_MS
     const run = (
-      await listWorkflowRuns(token, owner, repo.name, DEPLOY_WORKFLOW_FILE, {
+      await listWorkflowRuns(token, owner, repo.name, release.workflowFile, {
         event: 'workflow_dispatch',
       })
     ).find(r => !r.created_at || Date.parse(r.created_at) >= since)
@@ -1206,6 +1240,8 @@ export async function launchFailedStep(d: PipelineDeps, params: AppLaunchParams)
 /** What a Workflow class may replace (tests only): the adapter, the credentials, the waits. */
 export interface PipelineOverrides {
   ports?: PipelinePorts
+  /** The app's adapter; absent, it is resolved from the app (`kits/adapter.ts` `adapterFor`). */
+  adapter?: TemplateAdapter
   vendors?: PipelineVendors
   sleep?: (ms: number) => Promise<void>
   health?: HealthPollOptions
@@ -1216,15 +1252,15 @@ export function pipelineDeps(
   db: Database,
   cfg: AppConfig,
   overrides: PipelineOverrides,
-  defaults: { ports: () => PipelinePorts }
+  defaults: { ports: (adapter: TemplateAdapter) => PipelinePorts }
 ): PipelineDeps {
   let vendors: Promise<PipelineVendors> | null = null
+  const resolve = async (app: AdapterApp) => overrides.adapter ?? adapterFor(db, app)
   return {
     db,
     cfg,
-    get ports() {
-      return overrides.ports ?? defaults.ports()
-    },
+    adapterFor: resolve,
+    portsFor: async app => overrides.ports ?? defaults.ports(await resolve(app)),
     vendors: () => {
       vendors ??= overrides.vendors
         ? Promise.resolve(overrides.vendors)

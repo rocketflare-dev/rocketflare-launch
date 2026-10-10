@@ -1,7 +1,7 @@
 /**
- * Health polling for every registered app environment (spec/02 `health`, spec/06): the template's
- * two probes — `GET {url}/api/health` (liveness) and `GET {url}/api/ready` (readiness, a
- * `SELECT 1`) — each with a five-second timeout, on the `*\/5 * * * *` cron in `api/scheduled.ts`
+ * Health polling for every registered app environment (spec/02 `health`, spec/06): the app kit's
+ * two probes (D36 `health`; Rocketflare's `GET {url}/api/health` for liveness and `GET
+ * {url}/api/ready` for readiness, a `SELECT 1`) — each with a five-second timeout, on the `*\/5 * * * *` cron in `api/scheduled.ts`
  * and on demand from `POST /api/apps/:id/health-check`.
  *
  * - **Status**: `up` when both answer 200, `degraded` when health does and ready does not (the
@@ -29,7 +29,8 @@ import {
 } from '../../../db/schema'
 import type { ScheduledTask } from '../../scheduled'
 import { recordAudit, SYSTEM_ACTOR } from './audit'
-import { PLACEHOLDER_HEADER } from './rocketflare/placeholder-worker'
+import { type AdapterApp, adaptersFor } from './kits/adapter'
+import { PLACEHOLDER_HEADER } from './placeholder/worker'
 
 /** Per-probe timeout (spec/06). */
 export const HEALTH_TIMEOUT_MS = 5000
@@ -164,6 +165,23 @@ export function verdictOf(health: ProbeResult, ready: ProbeResult): EnvironmentV
 interface PolledEnvironment {
   env: AppEnvironmentRow
   appSlug: string
+  /** What the app's adapter is resolved from — its kit decides the two probes' paths. */
+  kit: AdapterApp
+}
+
+/** Each target with its kit's `health` routes (D36), one kit read per kit. */
+async function withHealthPaths(
+  db: Database,
+  targets: PolledEnvironment[]
+): Promise<Array<PolledEnvironment & { paths: { live: string; ready: string } }>> {
+  const adapters = await adaptersFor(
+    db,
+    targets.map(t => t.kit)
+  )
+  return targets.map(t => ({
+    ...t,
+    paths: adapters.get(t.kit)?.health ?? { live: '/api/health', ready: '/api/ready' },
+  }))
 }
 
 /**
@@ -172,7 +190,7 @@ interface PolledEnvironment {
  */
 async function pollEnvironment(
   db: Database,
-  target: PolledEnvironment,
+  target: PolledEnvironment & { paths: { live: string; ready: string } },
   doFetch: typeof fetch,
   timeoutMs: number,
   now: Date
@@ -180,8 +198,8 @@ async function pollEnvironment(
   const { env } = target
   const base = (env.url ?? '').replace(/\/+$/, '')
   const [health, ready] = await Promise.all([
-    probe(`${base}/api/health`, doFetch, timeoutMs),
-    probe(`${base}/api/ready`, doFetch, timeoutMs),
+    probe(`${base}${target.paths.live}`, doFetch, timeoutMs),
+    probe(`${base}${target.paths.ready}`, doFetch, timeoutMs),
   ])
   const verdict = verdictOf(health, ready)
   const previous = env.healthStatus
@@ -254,7 +272,11 @@ async function pollableEnvironments(
   appId?: string
 ): Promise<PolledEnvironment[]> {
   const rows = await db
-    .select({ env: appEnvironments, appSlug: apps.slug })
+    .select({
+      env: appEnvironments,
+      appSlug: apps.slug,
+      kit: { kitId: apps.kitId, kitManifest: apps.kitManifest },
+    })
     .from(appEnvironments)
     .innerJoin(apps, and(eq(apps.id, appEnvironments.appId), eq(apps.tenantId, tenantId)))
     .where(
@@ -288,7 +310,7 @@ export async function runHealthPoll(
     const perTenant = await Promise.all(
       batch.map(({ id: tenantId }) => pollableEnvironments(db, tenantId))
     )
-    const targets = perTenant.flat()
+    const targets = await withHealthPaths(db, perTenant.flat())
     const outcomes = await pool(targets, ENVIRONMENT_CONCURRENCY, target =>
       pollEnvironment(db, target, doFetch, timeoutMs, now)
     )
@@ -323,7 +345,7 @@ export async function checkAppHealth(
   const doFetch = opts.fetch ?? fetch
   const now = opts.now ?? new Date()
   const timeoutMs = opts.timeoutMs ?? HEALTH_TIMEOUT_MS
-  const targets = await pollableEnvironments(db, tenantId, appId)
+  const targets = await withHealthPaths(db, await pollableEnvironments(db, tenantId, appId))
   const outcomes = await pool(targets, ENVIRONMENT_CONCURRENCY, target =>
     pollEnvironment(db, target, doFetch, timeoutMs, now)
   )

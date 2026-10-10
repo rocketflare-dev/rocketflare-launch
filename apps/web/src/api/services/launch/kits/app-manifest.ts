@@ -1,16 +1,20 @@
 /**
- * The Rocketflare adapter's READ side (spec/02): what an app's own repo says about it. Pure
- * functions over file text — the import service fetches the files, this module understands them —
- * so the parsing is testable against real tomls with no GitHub in the way.
+ * The adapter's READ side (spec/02, D36): what an app's own repo says about it. Pure functions over
+ * file text — the import service and the pipeline fetch the files, this module understands them —
+ * so the parsing is testable against real tomls with no GitHub in the way. Which FILES to read is
+ * the app's kit's business (`TemplateAdapter.paths`: the manifest's `scaffold.appManifest` and
+ * `worker.tomls`); how to read them is the same for every kit.
  *
- * - **The manifest is read leniently.** `.rocketflare.json` carries `app {slug, display, domain}`
- *   and `kit {version, commit}`; the older `launch.plugins.json` shape carries the same `app` block
- *   and a top-level `kitVersion`. Either is accepted, unknown keys are ignored, and a file that is
- *   not JSON (or not an object) is a `ManifestError` the caller turns into a 422.
- * - **The tomls are parsed with `smol-toml`**, never a regex: the name, `[vars]` `APP_URL` /
- *   `APP_ENV`, and the ids of every binding the Worker declares. A kit placeholder
- *   (`<KV_RATE_LIMIT_ID>`) is NOT an id — it is reported in `placeholders` and left out of the
- *   resources, because spec/06 records ids so they can be acted on later, and a placeholder cannot.
+ * - **The app manifest is read leniently.** It carries `app {slug, display, domain}` and
+ *   `kit {version, commit}` (`scaffold.appManifest` — Rocketflare's `.rocketflare.json`); the older
+ *   Launch-style `launch.plugins.json` carries the same `app` block and a top-level `kitVersion`.
+ *   Either shape is accepted, unknown keys are ignored, and a file that is not JSON (or not an
+ *   object) is a `ManifestError` the caller turns into a 422.
+ * - **The tomls are parsed with `smol-toml`**, never a regex: the name, the app-URL var
+ *   (`launchProvides.appUrl`, `APP_URL` by default) and `APP_ENV`, and the ids of every binding the
+ *   Worker declares. A kit placeholder (`<KV_RATE_LIMIT_ID>`) is NOT an id — it is reported in
+ *   `placeholders` and left out of the resources, because spec/06 records ids so they can be acted
+ *   on later, and a placeholder cannot.
  */
 import {
   type AppEnvironmentResources,
@@ -19,10 +23,14 @@ import {
 } from '@launch/shared/launch-apps'
 import { parse as parseToml } from 'smol-toml'
 
-/** The manifest's file names, in the order the import tries them. */
+/**
+ * The Rocketflare fallback's app-manifest names, in the order the import tries them — its
+ * `scaffold.appManifest` and the legacy Launch-style file (`rocketflare-fallback.ts`). Launch's code
+ * reads `TemplateAdapter.paths.manifests`; this constant spells out the fallback's for its tests.
+ */
 export const MANIFEST_PATHS = ['.rocketflare.json', 'launch.plugins.json'] as const
 
-/** Where the kit keeps each environment's Worker config (spec/02). */
+/** The Rocketflare fallback's `worker.tomls` (code reads `TemplateAdapter.paths.tomls`). */
 export const WRANGLER_PATHS = {
   production: 'apps/web/wrangler.toml',
   staging: 'apps/web/wrangler.staging.toml',
@@ -52,8 +60,31 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
 }
 
-/** Parse either manifest shape. Throws `ManifestError` on anything that is not a JSON object. */
-export function parseManifest(text: string, file: string = MANIFEST_PATHS[0]): AppIdentity {
+/** {@link AppIdentity} plus the kit the copy says it came from. */
+export interface AppManifestIdentity extends AppIdentity {
+  /** `kit.id`, else `kit.name` (a Rocketflare copy made before the kit wrote `id`); null if none. */
+  kitId: string | null
+}
+
+/**
+ * Parse either manifest shape. Throws `ManifestError` on anything that is not a JSON object;
+ * `kitName` only words that error (the adapter passes its kit's `kit.name`).
+ */
+export function parseManifest(
+  text: string,
+  file: string = MANIFEST_PATHS[0],
+  kitName = 'Rocketflare'
+): AppIdentity {
+  const { kitId: _, ...identity } = parseAppManifest(text, file, kitName)
+  return identity
+}
+
+/** {@link parseManifest}, with the copy's `kit.id` (or legacy `kit.name`). */
+export function parseAppManifest(
+  text: string,
+  file: string = MANIFEST_PATHS[0],
+  kitName = 'Rocketflare'
+): AppManifestIdentity {
   let json: unknown
   try {
     json = JSON.parse(text)
@@ -62,7 +93,7 @@ export function parseManifest(text: string, file: string = MANIFEST_PATHS[0]): A
   }
   const parsed = rocketflareManifestSchema.safeParse(json)
   if (!parsed.success || typeof json !== 'object' || json === null || Array.isArray(json)) {
-    throw new ManifestError(file, `${file} is not a Rocketflare manifest`)
+    throw new ManifestError(file, `${file} is not a ${kitName} manifest`)
   }
   const manifest: RocketflareManifest = parsed.data
   return {
@@ -71,13 +102,14 @@ export function parseManifest(text: string, file: string = MANIFEST_PATHS[0]): A
     domain: nonEmpty(manifest.app?.domain),
     kitVersion: nonEmpty(manifest.kit?.version) ?? nonEmpty(manifest.kitVersion),
     kitCommit: nonEmpty(manifest.kit?.commit),
+    kitId: nonEmpty(manifest.kit?.id) ?? nonEmpty(manifest.kit?.name),
   }
 }
 
 export interface WranglerEnvironment {
   /** The Worker's `name`. */
   workerName: string | null
-  /** `[vars].APP_URL`, normalised to an origin-ish URL with no trailing slash; null if absent. */
+  /** The app-URL var, normalised to an origin-ish URL with no trailing slash; null if absent. */
   url: string | null
   /** `[vars].APP_ENV`, as written. */
   appEnv: string | null
@@ -116,8 +148,15 @@ function normaliseUrl(value: string | null): string | null {
   }
 }
 
-/** Parse one wrangler toml. Throws `ManifestError` when the text is not TOML. */
-export function parseWranglerToml(text: string, file: string): WranglerEnvironment {
+/**
+ * Parse one wrangler toml. Throws `ManifestError` when the text is not TOML. `appUrlVar` is the
+ * kit's name for the app's URL (`launchProvides.appUrl`).
+ */
+export function parseWranglerToml(
+  text: string,
+  file: string,
+  appUrlVar = 'APP_URL'
+): WranglerEnvironment {
   let doc: Table
   try {
     doc = parseToml(text) as Table
@@ -183,7 +222,7 @@ export function parseWranglerToml(text: string, file: string): WranglerEnvironme
 
   return {
     workerName: real(str(doc, 'name')),
-    url: normaliseUrl(real(str(vars, 'APP_URL'))),
+    url: normaliseUrl(real(str(vars, appUrlVar))),
     appEnv: str(vars, 'APP_ENV'),
     resources,
     placeholders,

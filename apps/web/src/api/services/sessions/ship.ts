@@ -63,6 +63,7 @@ import { resolveChat } from '../ai/resolve'
 import type { AiEnv, ChatClient } from '../ai/types'
 import type { ScanShipConfigInput } from '../grants/detect'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
+import { adapterForAppId } from '../launch/kits/adapter'
 import { upgradePrOpened } from '../launch/upgrades'
 import { resolvePrompt } from '../prompts'
 import type { Realtime } from '../realtime'
@@ -375,6 +376,14 @@ export async function sessionRepo(
     defaultBranch: app.defaultBranch ?? 'main',
     displayName: app.displayName,
   }
+}
+
+/** The CI check the session's app's kit requires (D36 `ci.requiredCheck`; Rocketflare's `Gate`). */
+export async function sessionRequiredCheck(
+  db: Database,
+  session: Pick<SessionRow, 'tenantId' | 'appId'>
+): Promise<string> {
+  return (await adapterForAppId(db, session.tenantId, session.appId)).requiredCheck
 }
 
 // ---- checks ------------------------------------------------------------------------------------

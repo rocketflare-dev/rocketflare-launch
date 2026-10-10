@@ -13,10 +13,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { KIT_CONFIG_PLUGIN_ID } from '@launch/shared/launch-grants'
 import { describe, expect, it } from 'vitest'
-import {
-  declaredConfig,
-  KIT_OPTIONAL_CONFIG,
-} from '@/api/services/launch/rocketflare/declared-config'
+import { declaredConfig, KIT_OPTIONAL_CONFIG } from '@/api/services/launch/kits/declared-config'
 
 const M365_PLUGIN_JSON = readFileSync(
   path.resolve(__dirname, '../fixtures/plugins/m365-connector/plugin.json'),

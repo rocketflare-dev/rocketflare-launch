@@ -317,12 +317,16 @@ export class GitHubRepoHost implements RepoHostPort {
     })
   }
 
-  failedCheckLog(repo: RepoRef, input: { headSha: string }): Promise<FailedCheckLog | null> {
+  failedCheckLog(
+    repo: RepoRef,
+    input: { headSha: string; requiredCheck?: string }
+  ): Promise<FailedCheckLog | null> {
     const permissions = { ...GITHUB_TOKEN_PERMISSIONS.checks, ...GITHUB_TOKEN_PERMISSIONS.jobLogs }
     return this.withToken(repo, permissions, async token => {
       const runs = await listCheckRuns(token, repo.owner, repo.repo, input.headSha, this.opts)
       const failing = runs.filter(run => checkRunState(run) === 'failure')
-      const run = failing.find(r => r.name === KIT_REQUIRED_CHECK) ?? failing[0]
+      const required = input.requiredCheck ?? KIT_REQUIRED_CHECK
+      const run = failing.find(r => r.name === required) ?? failing[0]
       if (run) {
         return {
           name: run.name,

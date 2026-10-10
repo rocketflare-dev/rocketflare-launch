@@ -14,15 +14,15 @@
  * Its `fetch` answers 503 "being set up" with `Retry-After`, so the host is honest until the first
  * deploy replaces the code (the version keeps the Worker's secrets: `keep_bindings`). A browser
  * (`GET`/`HEAD` accepting `text/html`, outside `/api/`) gets the same 503 as the animated launching
- * page (`placeholder-page.ts`), which polls `/api/health` and reloads into the app once it is live;
+ * page (`page.ts`), which polls the kit's live route and reloads into the app once it is live;
  * everything else — Launch's health probe, `curl`, API clients — gets the plain-text body.
  *
  * Adapted from the spikes' `echoWorker` / `uploadWorker` (`spikes/lib/worker.mjs`), which is
  * reference only and never imported.
  */
 import type { WorkerMetadata, WorkerModule } from '../cloudflare'
-import { LAUNCHING_PAGE_CSP, launchingPage } from './placeholder-page'
-import { type DeclaredMigration, resources } from './toml'
+import { type DeclaredMigration, resources } from '../kits/toml'
+import { LAUNCHING_PAGE_CSP, launchingPage } from './page'
 
 /**
  * Every answer of the placeholder's `fetch` carries this header, so Launch's health probe can tell
@@ -54,6 +54,8 @@ export interface PlaceholderOptions {
   appliedTag?: string | null
   /** The app's display name, shown on the launching page (escaped there). */
   appName?: string
+  /** The kit's live route the launching page polls (`health.live`); `/api/health` when absent. */
+  healthPath?: string
 }
 
 /** A string as a JS literal: JSON, plus the two line separators older parsers reject. */
@@ -96,13 +98,14 @@ function checkIdentifier(name: string): string {
 function placeholderSource(
   doClasses: string[],
   workflowClasses: string[],
-  appName: string
+  appName: string,
+  healthPath: string | undefined
 ): string {
   const lines = [
     '// Placeholder Worker, uploaded by Launch until the first deploy replaces it.',
     "import { DurableObject, WorkflowEntrypoint } from 'cloudflare:workers'",
     '',
-    `const PAGE = ${jsString(launchingPage(appName))}`,
+    `const PAGE = ${jsString(launchingPage(appName, healthPath))}`,
     '',
   ]
   for (const name of doClasses) {
@@ -212,7 +215,7 @@ export function placeholderScript(
     modules: [
       {
         name: MAIN_MODULE,
-        content: placeholderSource(doClasses, workflowClasses, opts.appName ?? ''),
+        content: placeholderSource(doClasses, workflowClasses, opts.appName ?? '', opts.healthPath),
       },
     ],
     migrationTag: newTag ?? applied,

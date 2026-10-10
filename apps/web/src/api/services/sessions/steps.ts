@@ -46,7 +46,7 @@ import type { AppBindings } from '../../types'
 import type { Logger } from '../../utils/core/logger'
 import { cancelMergeApproval } from '../approvals/kinds/session-merge'
 import { recordAudit, SYSTEM_ACTOR } from '../launch/audit'
-import { MANIFEST_PATHS, parseManifest } from '../launch/rocketflare-manifest'
+import { adapterForAppId } from '../launch/kits/adapter'
 import {
   type AutoShipVerdict,
   autoShipVerdict,
@@ -80,6 +80,7 @@ import {
   SESSION_CHECKPOINT_MAX_DEFER_MS,
   workspaceChanged,
 } from './checkpoint'
+import { shellQuote } from './claude-stream'
 import { devIsCurrent, sessionDbEgressHosts } from './db/neon-session-db'
 import {
   boundedSandbox,
@@ -1866,7 +1867,9 @@ async function autoShipAfterTurn(
         ...('result' in outcome && outcome.result ? { result: outcome.result } : {}),
         ...(changed !== undefined ? { changed } : {}),
         askedQuestion: completed ? await turnAskedQuestion(scope, row, turn) : false,
-        manifestVersion: completed && changed ? await checkoutKitVersion(scope, row) : null,
+        ...(completed && changed
+          ? await checkoutKitVersion(scope, row)
+          : { manifestVersion: null }),
       }
       // The turn never ran the upgrade (no marker, nothing changed): send it back ONCE, and leave
       // `auto_ship` set so the next turn is decided here as this one would have been.
@@ -1996,17 +1999,26 @@ async function turnAskedQuestion(
   return hit !== undefined
 }
 
-/** `.rocketflare.json`'s `kit.version` in the session's checkout, or null when it cannot be read. */
-async function checkoutKitVersion(scope: StepScope, row: SessionRow): Promise<string | null> {
-  const result = await sandboxFor(scope, row).exec(
-    `cat ${SESSION_WORKSPACE}/${MANIFEST_PATHS[0]}`,
-    { timeoutMs: 30_000 }
-  )
-  if (result.exitCode !== 0) return null
+/**
+ * The app manifest's `kit.version` in the session's checkout (its kit adapter's `paths.manifest` —
+ * Rocketflare's `.rocketflare.json`), or null when it cannot be read; with the path, for the reason.
+ */
+async function checkoutKitVersion(
+  scope: StepScope,
+  row: SessionRow
+): Promise<{ manifestVersion: string | null; manifestPath: string }> {
+  const adapter = await adapterForAppId(scope.db, row.tenantId, row.appId)
+  const manifestPath = adapter.paths.manifest
+  // A plain path stays a plain word; anything else a kit names is single-quoted.
+  const file = /^[A-Za-z0-9._/-]+$/.test(manifestPath) ? manifestPath : shellQuote(manifestPath)
+  const result = await sandboxFor(scope, row).exec(`cat ${SESSION_WORKSPACE}/${file}`, {
+    timeoutMs: 30_000,
+  })
+  if (result.exitCode !== 0) return { manifestVersion: null, manifestPath }
   try {
-    return parseManifest(result.stdout).kitVersion
+    return { manifestVersion: adapter.parseManifest(result.stdout).kitVersion, manifestPath }
   } catch {
-    return null
+    return { manifestVersion: null, manifestPath }
   }
 }
 

@@ -23,8 +23,11 @@ import { ForbiddenError } from '../../../utils/core/errors'
 import type { GitHubOidcClaims } from './github-oidc'
 
 export interface ResolveCallerOptions {
-  /** The workflow file the job must be defined in, e.g. `deploy.yml` or `launch-scaffold.yml`. */
-  workflowFile: string
+  /**
+   * The workflow file the job must be defined in, e.g. `launch-scaffold.yml` — or, for a file the
+   * app's kit names (its deploy workflow, D36 `release.workflow`), a function of the app.
+   */
+  workflowFile: string | ((app: AppRow) => string | Promise<string>)
   /** Used when the token carries no `environment` claim. Omit to require one. */
   defaultEnvironment?: AppEnvironmentName
 }
@@ -84,9 +87,11 @@ export async function resolveCaller(
   const environment = await findEnvironment(db, app.id, envName as AppEnvironmentName)
   if (!environment) refuse(`The app has no ${envName} environment`)
 
-  const workflowPrefix = `${claims.repository}/.github/workflows/${opts.workflowFile}@`
+  const workflowFile =
+    typeof opts.workflowFile === 'function' ? await opts.workflowFile(app) : opts.workflowFile
+  const workflowPrefix = `${claims.repository}/.github/workflows/${workflowFile}@`
   if (!claims.job_workflow_ref.startsWith(workflowPrefix)) {
-    refuse(`Only ${opts.workflowFile} may call this (the job ran ${claims.job_workflow_ref})`)
+    refuse(`Only ${workflowFile} may call this (the job ran ${claims.job_workflow_ref})`)
   }
 
   const branchRef = `refs/heads/${app.defaultBranch ?? 'main'}`

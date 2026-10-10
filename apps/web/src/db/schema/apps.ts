@@ -12,6 +12,7 @@
  *   as `group_members`, so a person who leaves the organisation stops owning its apps in the
  *   DATABASE rather than in service code.
  */
+import type { KitManifest } from '@launch/shared/kit-manifest'
 import { APP_SOURCES, APP_STATUSES, type AppShipSettings } from '@launch/shared/launch-apps'
 import type { ReleaseCompare } from '@launch/shared/launch-releases'
 import type { AppSessionDb } from '@launch/shared/launch-sessions'
@@ -65,6 +66,15 @@ export const apps = pgTable(
      * refuses that while apps use it). Backfilled to the default kit by migration 0049.
      */
     kitId: uuid('kit_id').references(() => kits.id, { onDelete: 'set null' }),
+    /**
+     * D36 K2: the kit manifest (`launch.kit.json`, parsed) this app is driven by — its kit's
+     * snapshot when it was created or imported, refreshed when a Release records an upgrade to the
+     * kit's pinned version. Launch's adapter reads THIS, so an app on kit 0.16 keeps 0.16's
+     * contract while the kit's pin moves on, and a Workflow step resolves the same adapter on every
+     * retry. Null (an app from before K2): its kit's snapshot, else the Rocketflare fallback
+     * (`kits/adapter.ts` `adapterFor`). Non-secret.
+     */
+    kitManifest: jsonb('kit_manifest').$type<KitManifest>(),
     templateContractVersion: text('template_contract_version'),
     /** The kit version the app was cut from, e.g. `0.15.0`. */
     templateVersion: text('template_version'),

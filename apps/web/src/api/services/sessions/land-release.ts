@@ -61,6 +61,7 @@ import { getAppRow } from '../launch/apps'
 import { SYSTEM_ACTOR } from '../launch/audit'
 import { getRef, listCheckRuns } from '../launch/github-app'
 import { checkAppHealth } from '../launch/health'
+import { adapterFor } from '../launch/kits/adapter'
 import { type ReleaseClaimOutcome, withReleaseClaim } from '../launch/releases/claim'
 import { withRepoToken } from '../launch/releases/github'
 import {
@@ -237,6 +238,7 @@ async function bumpParentGate(
   if (gated?.verdict !== 'success' || !landing.mergeSha) return null
   let read: { head: string; state: PrCheckState } | null
   try {
+    const { requiredCheck } = await adapterFor(ctx.db, app)
     read = await withRepoToken(
       ctx.db,
       ctx.cfg,
@@ -255,7 +257,7 @@ async function bumpParentGate(
               ? 'success'
               : 'failure') as PrCheckState,
         }))
-        return { head, state: requiredCheckState(checks as PrChecks['checks']) }
+        return { head, state: requiredCheckState(checks as PrChecks['checks'], requiredCheck) }
       }
     )
   } catch (err) {

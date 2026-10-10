@@ -20,25 +20,22 @@ import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { UPGRADE_RESULT_MARKER } from '@launch/shared/launch-upgrades'
 import { describe, expect, it } from 'vitest'
 import { unprovisionableKeys } from '@/api/services/launch/deploy/binding-check'
+import { ROCKETFLARE_WORKER_SECRETS, rocketflareAdapter } from '@/api/services/launch/kits/adapter'
+import { WRANGLER_PATHS } from '@/api/services/launch/kits/app-manifest'
+import { KIT_OPTIONAL_CONFIG } from '@/api/services/launch/kits/declared-config'
 import {
   isRocketflareKit,
   KitManifestError,
   readKitManifest,
 } from '@/api/services/launch/kits/manifest'
+import { accountScopedNames } from '@/api/services/launch/kits/names'
 import {
   ROCKETFLARE_FALLBACK_INPUT,
   ROCKETFLARE_KIT_ID,
   rocketflareFallbackManifest,
 } from '@/api/services/launch/kits/rocketflare-fallback'
+import { launchVars } from '@/api/services/launch/kits/toml'
 import { APP_ROLE, MIGRATOR_ROLE } from '@/api/services/launch/pipeline/provision-neon'
-import {
-  ROCKETFLARE_WORKER_SECRETS,
-  rocketflareAdapter,
-} from '@/api/services/launch/rocketflare/adapter'
-import { KIT_OPTIONAL_CONFIG } from '@/api/services/launch/rocketflare/declared-config'
-import { accountScopedNames } from '@/api/services/launch/rocketflare/names'
-import { launchVars } from '@/api/services/launch/rocketflare/toml'
-import { WRANGLER_PATHS } from '@/api/services/launch/rocketflare-manifest'
 import {
   INSTALL_COMMAND,
   KIT_ALLOW_ROOT_ENV,

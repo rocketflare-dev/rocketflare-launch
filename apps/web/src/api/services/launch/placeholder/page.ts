@@ -3,7 +3,8 @@
  * Worker serves it, still as a 503, to any `GET`/`HEAD` that accepts `text/html`.
  *
  * A rocket idles on a pad with the app's name on the tower, a mission-control checklist ticks
- * through, and every 12 s the page asks the same host's `/api/health`. The placeholder answers
+ * through, and every 12 s the page asks the same host's live route (`/api/health`, the kit's
+ * `health.live`). The placeholder answers
  * that 503 (plain text), so the first 200 is the real app: the page plays the lift-off and reloads
  * into it. Under `prefers-reduced-motion` the scene is still and the reload is immediate.
  *
@@ -121,7 +122,8 @@ const LAUNCHING_CSS = `
 @keyframes blink{50%{opacity:.25}}
 `
 
-// The script holds no data of the app's: it reads the page it is in and polls its own origin.
+// The script holds no data of the app's: it reads the page it is in and polls its own origin, at
+// the kit's live path (`health.live`), which `launchingPage` writes over `"/api/health"`.
 const SCRIPT = `
 (function(){
 var d=document,still=matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -199,8 +201,11 @@ ${page.main}
 ${page.script ? `<script>${page.script}</script>\n` : ''}</body></html>`
 }
 
-/** The whole page, with the app's display name escaped into its three text nodes. */
-export function launchingPage(displayName: string): string {
+/**
+ * The whole page, with the app's display name escaped into its three text nodes. `healthPath` is
+ * the app kit's live route (`health.live`), the one the page polls for its first 200.
+ */
+export function launchingPage(displayName: string, healthPath = '/api/health'): string {
   const name = escapeHtml(displayName.trim() || 'Your app')
   return scenePage({
     title: `${name} is launching`,
@@ -215,6 +220,10 @@ export function launchingPage(displayName: string): string {
 <ol class="checks" aria-hidden="true"><li>Fuelling the database</li><li>Attaching storage</li><li>Writing the flight plan</li><li>Polishing the fins</li><li>Waiting for the first deploy</li></ol>
 <p class="quip" id="quip" aria-hidden="true">T-minus one deploy.</p>
 <p class="status" id="status" role="status" aria-live="polite">Still on the pad. This page checks again every few seconds.</p>`,
-    script: SCRIPT,
+    // JSON-quoted, with `<` escaped, so a path can neither end the string nor the script.
+    script: SCRIPT.replace(
+      'fetch("/api/health"',
+      () => `fetch(${JSON.stringify(healthPath).replace(/</g, '\\u003c')}`
+    ),
   })
 }

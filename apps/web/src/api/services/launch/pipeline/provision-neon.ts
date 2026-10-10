@@ -25,6 +25,9 @@
  * the API roles through the API, and continues as above; with tables, or with a `staging` branch
  * already cut from those roles, it refuses rather than destroy anything.
  *
+ * **The roles and extensions are the kit's** (D36 `database`: `roles.migrator`, `roles.app`,
+ * `extensions`), Rocketflare's `migrator` / `app` / `vector` by default ({@link DEFAULT_DATABASE}).
+ *
  * Every write is idempotent on a retry: each role, the membership and the database is checked
  * before it is created (an API 409 is taken as done), and the project and branch ids come back
  * from `ctx.prior`. Every password is used at once and dropped — none is recorded or returned.
@@ -47,13 +50,28 @@ export const OWNER_ROLE = 'neondb_owner'
 export const OWNER_DATABASE = 'neondb'
 /** The group Neon's role API puts every role it creates in. */
 export const NEON_SUPERUSER = 'neon_superuser'
-/** The only extension the kit's migrations create. */
-const EXTENSIONS = ['vector'] as const
+
+/** The kit's database (D36 `database`): its two roles and the extensions its migrations create. */
+export interface NeonDatabasePlan {
+  migratorRole: string
+  appRole: string
+  extensions: readonly string[]
+}
+
+/** The Rocketflare fallback's: `migrator`, `app`, `vector`. */
+export const DEFAULT_DATABASE: NeonDatabasePlan = {
+  migratorRole: MIGRATOR_ROLE,
+  appRole: APP_ROLE,
+  extensions: ['vector'],
+}
+
 /** `CREATE ROLE <name> <attributes>` for each role the step creates, in order. */
-const ROLES: readonly { name: string; attributes: string }[] = [
-  { name: MIGRATOR_ROLE, attributes: 'LOGIN CREATEROLE' },
-  { name: APP_ROLE, attributes: 'LOGIN' },
-]
+function rolesOf(plan: NeonDatabasePlan): readonly { name: string; attributes: string }[] {
+  return [
+    { name: plan.migratorRole, attributes: 'LOGIN CREATEROLE' },
+    { name: plan.appRole, attributes: 'LOGIN' },
+  ]
+}
 
 export interface NeonIds {
   projectId: string
@@ -143,11 +161,14 @@ export async function ownerSession(
 }
 
 /** Which of the step's roles exist, and whether each is a `neon_superuser` member (API-made). */
-async function readRoles(owner: OwnerSession): Promise<Map<string, { superuser: boolean }>> {
+async function readRoles(
+  owner: OwnerSession,
+  plan: NeonDatabasePlan
+): Promise<Map<string, { superuser: boolean }>> {
   const result = await owner.sql(
     OWNER_DATABASE,
     `SELECT r.rolname AS name, EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid WHERE m.member = r.oid AND g.rolname = '${NEON_SUPERUSER}') AS superuser FROM pg_roles r WHERE r.rolname IN ($1, $2)`,
-    ROLES.map(r => r.name)
+    rolesOf(plan).map(r => r.name)
   )
   return new Map(
     result.rows.map(row => [String(row.name), { superuser: isTrue(row.superuser) }] as const)
@@ -216,20 +237,21 @@ async function repairApiRoles(
 export async function provisionNeon(
   neon: { client: NeonClient; orgId: string | null; regionId: string },
   ctx: StepContext,
-  input: { slug: string }
+  input: { slug: string; database?: NeonDatabasePlan }
 ): Promise<NeonIds> {
   const { client } = neon
+  const plan = input.database ?? DEFAULT_DATABASE
   const { projectId, mainBranchId } = await ensureProject(neon, ctx, input.slug)
   const owner = await ownerSession(client, ctx, projectId, mainBranchId)
 
   // Roles, in SQL — after repairing any the API created.
-  let roles = await readRoles(owner)
+  let roles = await readRoles(owner, plan)
   const apiRoles = [...roles].filter(([, r]) => r.superuser).map(([name]) => name)
   if (apiRoles.length > 0) {
     await repairApiRoles(client, owner, projectId, mainBranchId, apiRoles)
-    roles = await readRoles(owner)
+    roles = await readRoles(owner, plan)
   }
-  for (const role of ROLES) {
+  for (const role of rolesOf(plan)) {
     if (roles.has(role.name)) continue
     const password = throwawayPassword()
     ctx.redact(password)
@@ -240,14 +262,20 @@ export async function provisionNeon(
   }
 
   const database = await unlessExists(() =>
-    client.createDatabase(projectId, mainBranchId, { name: APP_DATABASE, ownerName: MIGRATOR_ROLE })
+    client.createDatabase(projectId, mainBranchId, {
+      name: APP_DATABASE,
+      ownerName: plan.migratorRole,
+    })
   )
   if (database) await client.waitForOperations(projectId, database.operations)
-  for (const extension of EXTENSIONS) {
+  for (const extension of plan.extensions) {
     await owner.sql(APP_DATABASE, `CREATE EXTENSION IF NOT EXISTS ${quoteIdent(extension)}`)
   }
-  if (!(await hasMembership(owner, MIGRATOR_ROLE, APP_ROLE))) {
-    await owner.sql(OWNER_DATABASE, `GRANT ${quoteIdent(MIGRATOR_ROLE)} TO ${quoteIdent(APP_ROLE)}`)
+  if (!(await hasMembership(owner, plan.migratorRole, plan.appRole))) {
+    await owner.sql(
+      OWNER_DATABASE,
+      `GRANT ${quoteIdent(plan.migratorRole)} TO ${quoteIdent(plan.appRole)}`
+    )
   }
 
   let stagingBranchId = ctx.prior.neonStagingBranchId
@@ -267,7 +295,7 @@ export async function provisionNeon(
   }
 
   // The branch inherited main's passwords: give staging its own.
-  for (const role of [MIGRATOR_ROLE, APP_ROLE]) {
+  for (const role of [plan.migratorRole, plan.appRole]) {
     const fresh = await client.resetRolePassword(projectId, stagingBranchId, role)
     ctx.redact(fresh.role.password)
     await client.waitForOperations(projectId, fresh.operations)
@@ -307,14 +335,18 @@ async function findBranch(client: NeonClient, projectId: string, name: string): 
 }
 
 /** The Neon ids an environment runs on, as `app_environments.neon` records them. */
-export function environmentNeon(ids: NeonIds, env: AppEnvironmentName) {
+export function environmentNeon(
+  ids: NeonIds,
+  env: AppEnvironmentName,
+  plan: NeonDatabasePlan = DEFAULT_DATABASE
+) {
   return {
     projectId: ids.projectId,
     branchId: env === 'production' ? ids.mainBranchId : ids.stagingBranchId,
     databaseName: APP_DATABASE,
-    roleName: APP_ROLE,
-    migratorRole: MIGRATOR_ROLE,
-    appRole: APP_ROLE,
+    roleName: plan.appRole,
+    migratorRole: plan.migratorRole,
+    appRole: plan.appRole,
   }
 }
 
@@ -326,15 +358,16 @@ export async function freshAppDatabaseUrl(
   client: NeonClient,
   ctx: Pick<StepContext, 'redact'>,
   projectId: string,
-  branchId: string
+  branchId: string,
+  appRole: string = APP_ROLE
 ): Promise<string> {
-  const reset = await client.resetRolePassword(projectId, branchId, APP_ROLE)
+  const reset = await client.resetRolePassword(projectId, branchId, appRole)
   ctx.redact(reset.role.password)
   await client.waitForOperations(projectId, reset.operations)
   const uri = await client.connectionUri(projectId, {
     branchId,
     databaseName: APP_DATABASE,
-    roleName: APP_ROLE,
+    roleName: appRole,
     pooled: true,
   })
   ctx.redact(uri)

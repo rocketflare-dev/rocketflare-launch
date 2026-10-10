@@ -15,7 +15,7 @@
  * request's — attacker-controlled — so it is HTML-escaped and lands only in text nodes.
  */
 import { type AppConfig, loadConfig } from '../../config'
-import { escapeHtml, scenePage } from '../services/launch/rocketflare/placeholder-page'
+import { escapeHtml, scenePage } from '../services/launch/placeholder/page'
 import type { AppBindings } from '../types'
 
 /** No script, no fetch, no frames: only the inline styles the scene is made of. */

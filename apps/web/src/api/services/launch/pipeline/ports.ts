@@ -1,17 +1,18 @@
 /**
- * The pipeline's PORTS (Launch P2): what the create-an-app Workflow needs from the Rocketflare
- * adapter and the scaffold runner, which slice 2b builds (`services/launch/rocketflare/*`,
- * `services/launch/scaffold/*`). Slice 2c depends on these interfaces only, so the two slices can
- * be built in parallel; `defaultPorts()` is the ONE place that binds them to 2b's modules.
+ * The pipeline's PORTS (Launch P2): what the create-an-app Workflow needs from the app's
+ * `TemplateAdapter` (`services/launch/kits/adapter.ts`, built from its kit's manifest — D36 K2)
+ * and the scaffold runner (`services/launch/scaffold/*`). The steps depend on these interfaces
+ * only; `defaultPorts(adapter)` is the ONE place that binds them to an adapter, and the steps get
+ * them per app (`PipelineDeps.portsFor(app)` → the adapter `adapterFor(app)` resolves).
  *
- * `defaultPorts()` binds them to 2b's modules; argument order is adapted HERE, never in the callers:
+ * `defaultPorts(adapter)` binds them; argument order is adapted HERE, never in the callers:
  *
  * | Port                        | Module                                                  |
  * |-----------------------------|---------------------------------------------------------|
- * | `names(slug, env, domain)`  | `rocketflare/names.ts` `appResourceNames` — plan §1's naming table |
- * | `writeConfig(toml, env, v)` | `rocketflare/toml.ts` `writeConfig(tomlText, env, ConfigValues)` |
- * | `placeholderScript(toml)`   | `rocketflare/placeholder-worker.ts` `placeholderScript(toml, { appliedTag, appName })` |
- * | `scaffoldFiles()`           | `rocketflare/scaffold-job.ts` `scaffoldFiles()` (the workflow + `.launch/scaffold.mjs`) |
+ * | `names(slug, env, domain)`  | `adapter.names` (`kits/names.ts` `appNames`) — plan §1's naming table |
+ * | `writeConfig(toml, env, v)` | `adapter.writeConfig` (`kits/toml.ts`, the kit's `launchProvides`) |
+ * | `placeholderScript(toml)`   | `adapter.placeholderScript` (`placeholder/worker.ts`, the kit's live route) |
+ * | `scaffoldFiles()`           | `adapter.scaffold.files` (`rocketflare/scaffold-job.ts` until K3) |
  * | `scaffoldRunner`            | `scaffold/github-actions-runner.ts` `GitHubActionsScaffoldRunner` (dispatches `launch-scaffold.yml` on `main` with `launch_url`; `poll` reads its run) |
  *
  * Tests never reach `defaultPorts()`: the Workflow classes take `overrides.ports`, and the route
@@ -21,24 +22,22 @@ import type { AppEnvironmentName } from '@launch/shared/launch-apps'
 import type { ScaffoldPlan } from '@launch/shared/launch-pipeline'
 import type { WorkerMetadata, WorkerModule } from '../cloudflare'
 import type { CommitFile } from '../github-app'
-import { appResourceNames } from '../rocketflare/names'
-import { placeholderScript } from '../rocketflare/placeholder-worker'
-import { scaffoldFiles } from '../rocketflare/scaffold-job'
-import { writeConfig } from '../rocketflare/toml'
+import type { TemplateAdapter } from '../kits/adapter'
 import { GitHubActionsScaffoldRunner } from '../scaffold/github-actions-runner'
 
-/** Every account-scoped name one environment of an app uses (plan §1 "Naming"). */
+/** The names of one environment of an app that the pipeline itself uses (plan §1 "Naming"). */
 export interface AppResourceNames {
-  /** `<slug>[-staging]` */
+  /** `<slug>[-staging]` — the kit's naming rule. */
   workerName: string
-  /** `<slug>-rate-limit[-staging]` — the KV namespace TITLE (the toml holds only its id). */
-  kvTitle: string
-  /** `<slug>-jobs[-staging]` */
-  queue: string
-  /** `<slug>-files[-staging]` */
-  r2Bucket: string
-  /** `<slug>-agent-run[-staging]` */
-  workflow: string
+  /**
+   * Rocketflare's KV title, queue, bucket and Workflow names (`<slug>-rate-limit|jobs|files|
+   * agent-run[-staging]`). Since D36 K2 the pipeline reads those from the scaffolded toml (KV titles
+   * from `adapter.kvTitle`) and no longer from here; a port may still answer them.
+   */
+  kvTitle?: string
+  queue?: string
+  r2Bucket?: string
+  workflow?: string
   /** `<slug>[-staging]` — the Resend sending key's name. */
   resendKeyName: string
   /** `<slug>[-staging].<apps domain>` */
@@ -47,20 +46,20 @@ export interface AppResourceNames {
   url: string
 }
 
-/** What `write_config` fills into one environment's toml (plan §0.4 and step 7). */
+/** What `write_config` fills into one environment's toml (plan §0.4 and step 7), by meaning. */
 export interface WriteConfigValues {
-  /** `[vars].APP_URL`. */
+  /** The app-URL var (`launchProvides.appUrl`, Rocketflare's `APP_URL`). */
   appUrl: string
-  /** `[vars].EMAIL_FROM`, e.g. `Shop <shop@notifications.clewro.com>`. */
+  /** The sender var (`launchProvides.emailFrom`), e.g. `Shop <shop@notifications.clewro.com>`. */
   emailFrom: string
   /**
    * The id of every KV namespace the pipeline created, by the toml BINDING it answers (kit 0.15
    * has one: `RATE_LIMIT_KV`). A declared binding with no id here is an error, not a placeholder.
    */
   kvIds: Record<string, string>
-  /** `[vars].OIDC_ISSUER` — Launch's own origin. */
+  /** The issuer var (`launchProvides.oidc.issuer`) — Launch's own origin. */
   oidcIssuer: string
-  /** `[vars].OIDC_CLIENT_ID`. */
+  /** The client-id var (`launchProvides.oidc.clientId`). */
   oidcClientId: string
 }
 
@@ -132,25 +131,19 @@ export interface PipelinePorts {
  */
 export const SCAFFOLD_TICKET_ENVIRONMENT: AppEnvironmentName = 'production'
 
-/** The scaffold job's workflow file, as `resolveCaller` and the dispatch name it. */
-export { SCAFFOLD_WORKFLOW_FILE } from '../rocketflare/scaffold-job'
-
-/** The kit's deploy workflow (`workflow_dispatch` with `inputs.environment`). */
-export const DEPLOY_WORKFLOW_FILE = 'deploy.yml'
-
-/** The Rocketflare adapter and the GitHub Actions scaffold runner (plan §1). */
-export function defaultPorts(): PipelinePorts {
+/** The ports of one app's adapter and the GitHub Actions scaffold runner (plan §1). */
+export function defaultPorts(adapter: TemplateAdapter): PipelinePorts {
   return {
-    names: appResourceNames,
+    names: adapter.names,
     writeConfig: (tomlText, env, v) =>
-      writeConfig(tomlText, env, {
+      adapter.writeConfig(tomlText, env, {
         appUrl: v.appUrl,
         emailFrom: v.emailFrom,
         kvIds: v.kvIds,
         oidc: { issuer: v.oidcIssuer, clientId: v.oidcClientId },
       }),
-    placeholderScript: (tomlText, opts) => placeholderScript(tomlText, opts),
-    scaffoldFiles,
+    placeholderScript: (tomlText, opts) => adapter.placeholderScript(tomlText, opts),
+    scaffoldFiles: adapter.scaffold.files,
     scaffoldRunner: new GitHubActionsScaffoldRunner(),
   }
 }
