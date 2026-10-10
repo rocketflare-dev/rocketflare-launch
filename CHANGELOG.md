@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A kit catalogue (D36 K1).** Launch now keeps a catalogue of kits — `kits`, with the built-in
+  Rocketflare kit as the default, created from your `template_pin` (migration 0049) — and every app
+  records the kit it was made from (`apps.kit_id`). A platform admin registers another kit by repo
+  and tag, commit or Follow latest (`/api/platform/kits`, `launch kits ls|show|add|check|pin|default|rm`,
+  and a Kits list on Settings → Kit version): Launch reads its `launch.kit.json` (Rocketflare
+  releases without one get a built-in manifest) and runs a static conformance check, showing one
+  sentence per problem. Private kit repos are read through the GitHub App's installation on their
+  owner. The template pin is now the default kit's pin; the `template_pin` setting is kept as its
+  mirror for one release. New apps still build from the default kit (the picker comes later), and a
+  private kit cannot be scaffolded yet.
+
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with
   `WorkflowInternalError` and recorded none of its usage. The drain is now a long poll (the object

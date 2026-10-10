@@ -591,7 +591,7 @@ source:
 | Audit, activity | `audit ls\|verify\|export` (§18.18), `activity ls`, `notifications` | `audit ls` applies `--actor`/`--from`/`--to` client-side over the cursor pages; `export` streams to a `0600` file |
 | AI (§9) | `agents`, `ai status\|usage\|providers\|set\|rm\|test\|prompts\|models`, `chat`, `docs`, `traces` (D32), `feedback`, `evals promote` (D33) | `agents run` adds the trace's tokens and id when the key may read traces (no per-run cost: `ai_usage` has no run column); `agents logs --follow` polls the AG-UI projection, never the SSE stream; `agents answer` builds the payload per kind and checks it with `interruptPayloadSchema(spec)`. Provider keys only through `--key` (hidden or stdin; `--data` with an `apiKey` is refused). `docs search` prints each hit's fused rank, score and which signal found it. `chat send` streams a turn (below). `evals promote` appends a draft case to `apps/evals/datasets/` |
 | The organisation | `members`, `invites`, `keys`, `groups`, `tenant`, `me`, `policies`, `access`, `files`, `features`, `agent-accounts` | People and content are named by id, id prefix, name or email. A write that narrows access says who loses what and asks; a group delete refused as `group_in_use` needs `--force` (`?force=1`, fail-closed). `policies set` edits one field over the row at that scope (or the default). `agent-accounts login` relays the Claude / Codex sign-in as the web dialog does |
-| The deployment (admin key) | `admin sessions\|drain\|undrain\|tenants\|users\|flags`, `platform setup\|settings\|credentials\|public-url\|kit\|agents\|sandbox\|oidc\|access-requests` | `platform setup` shows presence booleans and probe sentences, never a value. Credentials come from a hidden prompt, stdin or a file — never argv, never printed; a failed check exits 1 after its probes |
+| The deployment (admin key) | `admin sessions\|drain\|undrain\|tenants\|users\|flags`, `platform setup\|settings\|credentials\|public-url\|kit\|agents\|sandbox\|oidc\|access-requests`, `kits ls\|show\|add\|check\|pin\|default\|rm` (§18.24) | `platform setup` shows presence booleans and probe sentences, never a value. Credentials come from a hidden prompt, stdin or a file — never argv, never printed; a failed check exits 1 after its probes; so does a kit that fails conformance, after its problems |
 | Plugins (§16) | one top-level command per plugin, named after its id — `analytics pages\|templates\|check-facts\|refresh-facts` | registered after every kit command, so a plugin never shadows one |
 
 **`chat send`.** `chat send <id> <message>` or `chat send --new <message>` (`-` reads stdin) is one
@@ -1461,8 +1461,10 @@ workflows (`kit.yml`, `plugin-ci.yml`, `notify-plugins.yml`) `kitOnly`, so the r
 (0.16.0; the ship gate's contract, `SHIP_GATE_KIT_VERSION`, §18.13). Launch's scaffold still deletes
 `notify-plugins.yml`, `plugin-ci.yml` and the old `tests/config/plugin-ci.test.ts` — a no-op from
 0.16.0, kept for an older pin — and gates with `pnpm gate lint typecheck` + `pnpm web test:config`
-on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). A
-`launch_settings.template_pin` row overrides it — the ONE source of the pin; there is no env var.
+on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). The
+DEFAULT KIT's pin overrides it (D36 K1, §18.24: `kits.pin` on the default row; the built-in
+Rocketflare row with no stored pin follows the code default) — the ONE source of the pin; there is
+no env var. `launch_settings.template_pin` is now its mirror, kept for one release.
 
 **Kit version (Settings → Kit version).** A platform admin sets the pin on its own section,
 Settings → Building apps → Kit version (`/settings/kit`, `pages/platform/Kit.tsx` →
@@ -1474,14 +1476,16 @@ opens, newest release first; a tag not listed can still be typed) or a **commit*
 branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
 (`templatePinRequestSchema`: `tag` | `commit` | `latest`) resolves it SERVER-side through GitHub as
 the connected GitHub App (a `contents: read` installation token, revoked after; the kit repo is
-public, so it need not be installed there; no App → 409 `github_app_not_configured`): a tag through
+public, so it need not be installed there — a PRIVATE kit is read through the App's installation
+on its owner, §18.24; no App → 409 `github_app_not_configured`): a tag through
 `GET …/git/ref/tags/{tag}`, an annotated tag dereferenced through `GET …/git/tags/{sha}`; a commit
 through `GET …/commits/{ref}`, which also proves it is in that repo. A ref the repo lacks is 422
 `kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). Moving the pin is also
 what "the kit bumped" means for the apps that already exist: every app whose `template_version` is
 below the pin's tag reads "Requires upgrade → X.Y.Z" at once (computed on read, §18.23); a commit
-pin flags nothing. "Reset to default" is `DELETE …/template-pin` (the row deleted, so the default
-moves with Launch again). All of them audit `setting.changed` with the pin before and after. A
+pin flags nothing. "Reset to default" is `DELETE …/template-pin` (the default kit's stored pin
+cleared, so the default moves with Launch again; 409 `default_kit_not_builtin` when the default kit
+is not the built-in Rocketflare one, which has no code default). All of them audit `setting.changed` with the pin before and after. A
 commit pin shows "Unreleased commit — for development".
 
 **Follow latest** (`template_pin.follow = 'latest'`, `isFollowLatestPin`): the pin tracks the kit's
@@ -1495,12 +1499,13 @@ unchanged, and a row stored before `follow` existed parses as before. The five-m
 hourly — a failed lookup is retried on the next tick — and Check now
 (`POST …/template-pin/check`, 409 `template_pin_not_following` otherwise) runs the same
 `refreshFollowLatest`: when the newest release differs from the pinned tag it resolves the commit
-and replaces the row by compare-and-set on the value it read (`compareAndSetSetting` — a
+and replaces the pin by compare-and-set on the value it read (`compareAndSetKitPin` on the kit row — a
 concurrent re-pin wins, and a second run writes nothing), audited `setting.changed` with
 `after.by` = `cron` (system actor, in the deployment's one organisation, `getSingleTenant`; none
 → nothing moves) or `check_now` (the admin). Nothing else happens: apps are NOT upgraded — they
-show as behind and the existing upgrade path offers it. Every lookup is recorded as
-`launch_settings.template_pin_check` (`kitLatestCheckSchema`: `checkedAt`, `latest`, `error`),
+show as behind and the existing upgrade path offers it. Since D36 K1 the cron does this for EVERY
+kit with a follow pin (§18.24). Every lookup is recorded on the kit (`kits.latest_check`; for the
+default kit mirrored to `launch_settings.template_pin_check`) (`kitLatestCheckSchema`: `checkedAt`, `latest`, `error`),
 which the card shows as "Checked <relative time>" / "Latest: X" and, after a failure, the error; a
 GitHub failure is logged by the cron (never thrown out of `scheduled`) and 502
 `github_lookup_failed` from Check now.
@@ -4453,3 +4458,91 @@ not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocket
 `kit.repo` is not the pin's repo (a fork) is refused the fetch. `notesUrl` assumes the kit's
 `docs/upgrades/<version>.md` exists at the tag.
 
+### 18.24 The kit catalogue (D36 K1)
+
+`docs/plans/multi-kit.md` (D36): Launch supports any kit that conforms to the **Launch kit
+contract**, declared by the kit in a root `launch.kit.json` (`@launch/shared/kit-manifest`,
+`kitManifestSchema` — readers tolerate unknown fields; `schema: 1`). K1 is the catalogue and the
+contract; nothing that builds, develops or upgrades an app reads a manifest yet (K2–K4).
+
+**`kits`** (`db/schema/kits.ts`, migration 0049) is platform configuration like `launch_settings`
+(no tenant, `RLS_REVOKED_TABLES`; only `services/launch/kits/store.ts` touches it): `slug` (unique),
+`name`, `description`, `repo` (`owner/name`), `pin` (`{ tag?, commit, follow? }`,
+`kitStoredPinSchema` — the repo is the row's), the manifest snapshot read at the pin with its
+`manifest_source` (`repo` | `fallback`) and `contract_version`, `status` (`unchecked | verified |
+failed`), `problems` (one sentence each), `checked_at`, `latest_check` (Follow latest's last
+lookup), `is_default` — at most one, `kits_one_default_idx` (partial unique) — and
+`created_by_user_id`. The migration creates the built-in **Rocketflare** row as the default from the
+`template_pin` setting (its repo on the row, the rest as the pin) or, with none, with NO pin: that
+row follows `DEFAULT_TEMPLATE_PIN` and moves with Launch, as an unset setting did.
+`ensureDefaultKit` recreates it when the table is empty (a fresh or truncated database). **`apps.kit_id`**
+(→ `kits`, set null) is the kit an app was created from or imported into, for life; the migration
+backfilled it to the default, and `requestApp` / `importApp` set it to the default kit (the
+picker is K5). `apps.template` stays as history.
+
+**The template pin is the default kit's pin** (`kit-pin.ts`): `templatePinStatus`,
+`loadPipelineSettings`, the scaffold plan, the upgrade target and the session kit fetch all read
+it; `PUT|DELETE /api/platform/setup/template-pin` (the Kit version card, `launch platform kit …`)
+write it. The `template_pin` / `template_pin_check` settings are **a fallback read and a mirror for
+one release**: the default kit with no stored pin reads the setting before the code default, and
+every write of the default kit's pin (and Make default) writes the setting too, so a rollback to the
+previous Launch reads the same pin. Both go in the release after.
+
+**The Rocketflare fallback** (`kits/rocketflare-fallback.ts`, the design's Appendix A) is the one
+manifest Launch's code holds: `readKitManifest` (`kits/manifest.ts`) answers `launch.kit.json` when
+the kit has one (a broken one is `kit_manifest_invalid`, never papered over), else the fallback for a
+repo whose `.rocketflare.json` says it IS the kit (`kit.name: rocketflare`, no `app` — a copy is
+not), else `kit_manifest_missing`. `tests/config/kit-manifest.test.ts` pins every fallback value to
+the constant Launch hardcodes today.
+
+**Static conformance** (`kits/conformance.ts`, pure over a file reader, never throws): the manifest
+resolves; the init script (`node <path> …`), `.github/workflows/ci.yml`, the release workflow, both
+tomls and `CLAUDE.md` or `AGENTS.md` exist; `ci.yml` runs on `pull_request` and has a job whose
+check name (its `name:`, else its id) is `ci.requiredCheck`; the release workflow has `push.tags`,
+`release: published`, `workflow_dispatch` with the environment input (a `choice` must offer
+`staging` and `production`), and `id-token: write`; both tomls parse
+(`rocketflare/toml.ts` `resources()`), every KV id is a `<PLACEHOLDER>`, every top-level key is one
+the deploy gateway lets through (`deploy/binding-check.ts` `unprovisionableKeys`), every
+account-scoped name shares the production Worker's name as its prefix (`{slug}-…`, plus the
+staging suffix — in the kit itself the slug is its own pre-rename one), and the two tomls bind the
+same things. One sentence per problem. No YAML dependency: a small indentation outline
+(`yamlOutline`) reads the workflows' keys. Rocketflare as it ships passes, and so does the
+meta-kit, `rocketflare-dev/launch-kit` 0.1.0 (`tests/config/kit-conformance.test.ts`, over each
+kit's own workflows and tomls); the meta-kit's own `scripts/kit-check.mjs` checks a superset (the
+deployer's steps and environments, the commands' entry points, the version file, the gate-verified
+variable). The contract also names `kit.repo`, `worker.titles` (a KV's title suffix per binding;
+absent, `kvTitleSuffix` derives it: `RATE_LIMIT_KV` → `rate-limit-kv`), and fills `{dbUrl}` in
+`session.bootstrap` with the shell reference `"$LAUNCH_DB_URL"` — the URL travels only in the
+environment.
+
+**`/api/platform/kits`** (`routes/kits.ts`, platform admins) — `GET /` (the default first, each with
+its effective pin, `pinIsCodeDefault`, status, problems and app count), `GET /:id` (uuid or slug, with
+the manifest), `POST /` (`kitAddRequestSchema`: repo + `tag | commit | latest`; resolved through
+GitHub, read and checked over ONE installation token; a kit that fails the check is stored
+`failed`; slug/name default to the manifest's `kit.id`/`kit.name`; 409 `kit_slug_taken`),
+`POST /:id/check`, `PUT /:id/pin` (checked at the NEW pin, compare-and-set — 409
+`kit_pin_conflict`), `PUT /:id/default`, `DELETE /:id` (409 `kit_is_default`, 409 `kit_has_apps`).
+Audited `kit.added | kit.checked | kit.pinned | kit.default_set | kit.removed` (target `Kit`); a
+Follow latest move of a non-default kit is `kit.pinned` with `after.by`, the default's stays
+`setting.changed` on `template_pin`. The cron's `kit.followLatest` walks every kit (each throttled
+on its own `latest_check`), and a pin move resets the kit to `unchecked`. CLI: `launch kits ls | show |
+add | check | pin | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1). UI:
+Settings → Kit version's **Kits** list below the Kit version card (`KitsCard`: each kit's pin,
+result and problems, apps, Check, Make default, and an Add form).
+
+**Private kits.** Every kit lookup (`withKitToken`) finds the GitHub App's installation on the
+repo's OWNER (`GET /app/installations`) and narrows the token to that one repo; with none it uses
+the stored installation, which reads any public repo.
+
+**Known gaps:** the DYNAMIC conformance check (the scaffold job against a throwaway repo: init →
+postInit → the gate's lint and typecheck) is not built — `verified` means the static check passed
+(K3). Nothing reads the manifest to build, develop in, ship or upgrade an app yet: the pipeline,
+scaffold, sessions and upgrades still use the Rocketflare constants and the DEFAULT kit's pin, and
+an app on another kit is upgraded towards the default kit's pin (K2, K4, K5). Create app has no kit
+picker and Import does not detect the kit (K5); the full Platform → Kits page (pin, remove, the
+manifest) is K5 — K1's UI is the list above. **The scaffold job clones the kit anonymously**
+(`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but cannot yet
+scaffold an app (K3); an upgrade session's kit fetch is anonymous too (§18.23). The YAML outline
+does not read flow mappings over several lines, anchors or multi-document files (a kit written that
+way reads as missing its triggers). The `template_pin` mirror and fallback read go in the release
+after this one. Who may register kits is platform admins only (design §9.4).
