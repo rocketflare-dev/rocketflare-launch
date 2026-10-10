@@ -45,7 +45,7 @@ import { notify } from '../../notifications'
 import { recordAudit, SYSTEM_ACTOR } from '../audit'
 import { applyLaunchRuleset, isRulesetsUnavailable } from '../branch-protection'
 import { FINISHED_BEFORE_ACTIVATE, isDeployed } from '../deploy/tickets'
-import { ensureGateVariable, LAUNCH_GATE_APP_ID_VARIABLE } from '../gate-variable'
+import { ensureGateVariable } from '../gate-variable'
 import {
   commitFiles,
   commitFilesIfChanged,
@@ -511,6 +511,16 @@ export function scaffoldWaitStep(d: PipelineDeps, params: AppLaunchParams) {
   )
 }
 
+/**
+ * The scaffold is the app Launch asked for, read through the app's adapter: the app manifest
+ * (`scaffold.appManifest`) names the app, the app's kit, the pinned version and commit; both tomls
+ * name every resource by the kit's naming rule and declare only bindings Launch provisions.
+ *
+ * D36 K3: the kit's STATIC conformance check is NOT re-run on the copy. A kit is proven once per
+ * pin (the static check, and the dynamic one — which runs this same job and these same checks on
+ * a throwaway copy); a copy of a pre-contract Rocketflare has no `launch.kit.json` to check, and a
+ * copy's own changes are its CI's business from the first PR on.
+ */
 export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
   return runStep(d.db, launchKey(params, 'scaffold.verify'), async ctx => {
     const vendors = await d.vendors()
@@ -544,6 +554,10 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
       if (identity.slug !== app.slug) {
         problems.push(`${manifestPath} names the app ${identity.slug ?? 'nothing'}`)
       }
+      // D36 K3: the copy is of the app's kit (a pre-contract Rocketflare copy names it by kit.name).
+      if (identity.kitId && identity.kitId !== adapter.id) {
+        problems.push(`${manifestPath} says kit ${identity.kitId}, not ${adapter.id}`)
+      }
       if (pin.tag && identity.kitVersion !== pin.tag) {
         problems.push(
           `${manifestPath} says kit ${identity.kitVersion ?? 'unknown'}, not ${pin.tag}`
@@ -565,7 +579,11 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
         problems.push(`${tomls[env]} is missing`)
         continue
       }
-      problems.push(...adapter.namingProblems(tomls[env], env, adapter.resources(text), app.slug))
+      const declared = adapter.resources(text)
+      problems.push(...adapter.namingProblems(tomls[env], env, declared, app.slug))
+      if (declared.unsupported.length > 0) {
+        problems.push(`${tomls[env]}: Launch cannot provision ${declared.unsupported.join(', ')}`)
+      }
     }
     if (problems.length) {
       throw new Error(`The scaffold does not match the plan: ${problems.join('; ')}`)
@@ -804,19 +822,29 @@ export function githubEnvStep(d: PipelineDeps, params: AppLaunchParams) {
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_URL', `${issuer}/ci`)
     await upsertRepoVariable(token, owner, repo.name, 'DEPLOYER_AUDIENCE', issuer)
     // Issue #10: the kit's `verified` CI job trusts a `launch/gate` check run from this App id
-    // only. Written only when it differs, so a retry is a read.
+    // only, read from the kit's `ci.verifiedVariable` (D36 K3; Rocketflare's LAUNCH_GATE_APP_ID).
+    // A kit that declares none trusts no Launch gate: nothing is written. Written only when it
+    // differs, so a retry is a read.
     const githubAppId = requireVendor(vendors, 'github').auth.appId
-    await ensureGateVariable(token, owner, repo.name, githubAppId)
+    const adapter = await d.adapterFor(app)
+    const gateVariable = adapter.manifest.ci.verifiedVariable ?? null
+    if (gateVariable) {
+      await ensureGateVariable(token, owner, repo.name, githubAppId, { variable: gateVariable })
+    }
     const done = {
       environments: ENVIRONMENTS.join(','),
-      variables: `DEPLOYER_URL,DEPLOYER_AUDIENCE,${LAUNCH_GATE_APP_ID_VARIABLE}`,
+      variables: [
+        'DEPLOYER_URL',
+        'DEPLOYER_AUDIENCE',
+        ...(gateVariable ? [gateVariable] : []),
+      ].join(','),
     }
     // Issue #5 (plan §1.13): Launch's `launch` ruleset on the default branch — `Gate` required,
     // the App a bypass actor so the release bump still lands. Idempotent by name, so a retry
     // updates rather than duplicates; a plan without rulesets is recorded, never fatal.
     const appId = Number(githubAppId)
     try {
-      const { requiredCheck } = await d.adapterFor(app)
+      const { requiredCheck } = adapter
       const { rulesetId } = await applyLaunchRuleset(token, owner, repo.name, appId, {
         requiredCheck,
       })

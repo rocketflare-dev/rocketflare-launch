@@ -14163,9 +14163,23 @@
     {
       "method": "POST",
       "path": "/api/platform/kits",
-      "summary": "Register a kit: resolve its pin, read its manifest, check conformance.",
+      "summary": "Register a kit: resolve its pin, read its manifest, check it (`?dynamic=1`: run it too).",
       "auth": "platform-admin",
-      "description": "Audits `kit.added`.",
+      "query": {
+        "type": "object",
+        "properties": {
+          "dynamic": {
+            "type": "string",
+            "enum": [
+              "1",
+              "0",
+              "true",
+              "false"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "body": {
         "type": "object",
         "properties": {
@@ -14251,6 +14265,7 @@
         "additionalProperties": false
       },
       "zod": {
+        "query": "@launch/shared/kits#kitCheckQuerySchema",
         "body": "@launch/shared/kits#kitAddRequestSchema"
       },
       "source": "apps/web/src/api/routes/kits.ts",
@@ -14316,9 +14331,8 @@
     {
       "method": "POST",
       "path": "/api/platform/kits/:id/check",
-      "summary": "Re-read a kit's manifest and re-run the conformance check at its pin.",
+      "summary": "Re-read a kit's manifest and re-check it at its pin (`?dynamic=1`: run the kit too).",
       "auth": "platform-admin",
-      "description": "Audits `kit.checked`.",
       "params": {
         "type": "object",
         "properties": {
@@ -14333,8 +14347,24 @@
         ],
         "additionalProperties": false
       },
+      "query": {
+        "type": "object",
+        "properties": {
+          "dynamic": {
+            "type": "string",
+            "enum": [
+              "1",
+              "0",
+              "true",
+              "false"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "zod": {
-        "params": "@launch/shared/kits#kitIdParamSchema"
+        "params": "@launch/shared/kits#kitIdParamSchema",
+        "query": "@launch/shared/kits#kitCheckQuerySchema"
       },
       "source": "apps/web/src/api/routes/kits.ts",
       "cli": [
@@ -14372,9 +14402,8 @@
     {
       "method": "PUT",
       "path": "/api/platform/kits/:id/pin",
-      "summary": "Re-pin a kit to a tag, a commit or Follow latest, checked at the new pin.",
+      "summary": "Re-pin a kit to a tag, a commit or Follow latest, checked there (`?dynamic=1`: run it too).",
       "auth": "platform-admin",
-      "description": "Audits `kit.pinned`.",
       "params": {
         "type": "object",
         "properties": {
@@ -14387,6 +14416,21 @@
         "required": [
           "id"
         ],
+        "additionalProperties": false
+      },
+      "query": {
+        "type": "object",
+        "properties": {
+          "dynamic": {
+            "type": "string",
+            "enum": [
+              "1",
+              "0",
+              "true",
+              "false"
+            ]
+          }
+        },
         "additionalProperties": false
       },
       "body": {
@@ -14448,6 +14492,7 @@
       },
       "zod": {
         "params": "@launch/shared/kits#kitIdParamSchema",
+        "query": "@launch/shared/kits#kitCheckQuerySchema",
         "body": "@launch/shared/kits#kitPinRequestSchema"
       },
       "source": "apps/web/src/api/routes/kits.ts",

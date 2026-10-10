@@ -7,6 +7,7 @@
  *
  * - `/ci/deploy/*` — the external deployer protocol v1 (the kit's `docs/DEPLOYER.md`), slice 2d.
  * - `/ci/scaffold/*` — the one-shot scaffold job's token and done calls, slice 2b.
+ * - `/ci/kit-check/*` — the same job's calls when it runs a kit's dynamic conformance check (D36 K3).
  * - `GET /ci/ping?nonce=` — the public-URL probe's target (`services/launch/public-url.ts`): the
  *   nonce back with an HMAC of it under this deployment's key. No token: it proves only that this
  *   hostname routes to this Launch, and gives nothing away.
@@ -20,6 +21,7 @@ import { pingProof } from '../services/launch/public-url'
 import { createRouter } from '../utils/routes/router'
 import { validate } from '../utils/routes/validate'
 import { ciDeployRouter } from './ci-deploy'
+import { ciKitCheckRouter } from './ci-kit-check'
 import { ciScaffoldRouter } from './ci-scaffold'
 
 export const ciRouter = createRouter()
@@ -32,3 +34,4 @@ ciRouter.get('/ping', validate('query', publicUrlPingQuerySchema), async c => {
 
 ciRouter.route('/deploy', ciDeployRouter)
 ciRouter.route('/scaffold', ciScaffoldRouter)
+ciRouter.route('/kit-check', ciKitCheckRouter)

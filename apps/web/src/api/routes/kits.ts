@@ -10,6 +10,11 @@
  *                            conformance checked, stored (failed kits too) → kit.added
  *   POST   /:id/check        re-read and re-check at the current pin → kit.checked
  *   PUT    /:id/pin          re-pin (resolved, checked at the new pin) → kit.pinned
+ *
+ * `?dynamic=1` on add, check and pin (D36 K3): when the static check passes, a DYNAMIC check is
+ * enqueued (`kit.check` on `JOBS_QUEUE` — the scaffold job against a throwaway repo,
+ * `kits/dynamic-check.ts`) and the kit answers `checking`; its result lands on the row (and in a
+ * `kit.checked` audit) minutes later.
  *   PUT    /:id/default      make it the kit new apps are cut from → kit.default_set
  *   DELETE /:id              409 for the default and for a kit with apps → kit.removed
  *
@@ -18,7 +23,12 @@
  * admin's session tenant, else the deployment's one (`setup.ts` "Audit tenant"); with neither,
  * the change is refused (409 `no_audit_tenant`) before anything is written.
  */
-import { kitAddRequestSchema, kitIdParamSchema, kitPinRequestSchema } from '@launch/shared/kits'
+import {
+  kitAddRequestSchema,
+  kitCheckQuerySchema,
+  kitIdParamSchema,
+  kitPinRequestSchema,
+} from '@launch/shared/kits'
 import type { Database } from '../../db/client'
 import { auditActor } from '../services/launch/audit'
 import {
@@ -55,7 +65,13 @@ async function auditTenant(db: Database, sessionTenantId: string | null): Promis
 
 async function actionContext(c: AppContext): Promise<KitActionContext> {
   const { db, cfg, tenantId } = withAuth(c)
-  return { db, cfg, actor: auditActor(c), auditTenantId: await auditTenant(db, tenantId) }
+  return {
+    db,
+    cfg,
+    actor: auditActor(c),
+    auditTenantId: await auditTenant(db, tenantId),
+    queue: c.env.JOBS_QUEUE,
+  }
 }
 
 /** List every registered kit, the default first, with its pin, check status and app count. */
@@ -70,26 +86,39 @@ kitsRouter.get('/:id', validate('param', kitIdParamSchema), async c => {
   return c.json(await showKit(db, c.req.valid('param').id))
 })
 
-/** Register a kit: resolve its pin, read its manifest, check conformance. Audits `kit.added`. */
-kitsRouter.post('/', validate('json', kitAddRequestSchema), async c => {
-  const ctx = await actionContext(c)
-  return c.json(await addKit(ctx, c.req.valid('json')), 201)
-})
+/** Register a kit: resolve its pin, read its manifest, check it (`?dynamic=1`: run it too). */
+kitsRouter.post(
+  '/',
+  validate('query', kitCheckQuerySchema),
+  validate('json', kitAddRequestSchema),
+  async c => {
+    const ctx = await actionContext(c)
+    return c.json(await addKit(ctx, c.req.valid('json'), c.req.valid('query')), 201)
+  }
+)
 
-/** Re-read a kit's manifest and re-run the conformance check at its pin. Audits `kit.checked`. */
-kitsRouter.post('/:id/check', validate('param', kitIdParamSchema), async c => {
-  const ctx = await actionContext(c)
-  return c.json(await checkKit(ctx, c.req.valid('param').id))
-})
+/** Re-read a kit's manifest and re-check it at its pin (`?dynamic=1`: run the kit too). */
+kitsRouter.post(
+  '/:id/check',
+  validate('param', kitIdParamSchema),
+  validate('query', kitCheckQuerySchema),
+  async c => {
+    const ctx = await actionContext(c)
+    return c.json(await checkKit(ctx, c.req.valid('param').id, c.req.valid('query')))
+  }
+)
 
-/** Re-pin a kit to a tag, a commit or Follow latest, checked at the new pin. Audits `kit.pinned`. */
+/** Re-pin a kit to a tag, a commit or Follow latest, checked there (`?dynamic=1`: run it too). */
 kitsRouter.put(
   '/:id/pin',
   validate('param', kitIdParamSchema),
+  validate('query', kitCheckQuerySchema),
   validate('json', kitPinRequestSchema),
   async c => {
     const ctx = await actionContext(c)
-    return c.json(await pinKit(ctx, c.req.valid('param').id, c.req.valid('json')))
+    return c.json(
+      await pinKit(ctx, c.req.valid('param').id, c.req.valid('json'), c.req.valid('query'))
+    )
   }
 )
 

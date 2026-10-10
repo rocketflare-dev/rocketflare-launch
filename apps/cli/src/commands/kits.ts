@@ -8,7 +8,9 @@
  * - `kits add <owner/name> --tag|--commit|--latest [--slug --name --description]` — register; the
  *   pin is resolved and the kit checked server-side. A kit that FAILS the check is still stored;
  *   its problems are printed and the command exits 1, so a script notices.
- * - `kits check <kit>` — re-read and re-check at the current pin (failed → exit 1).
+ * - `kits check <kit> [--dynamic]` — re-read and re-check at the current pin (failed → exit 1).
+ *   `--dynamic` (D36 K3, also on `add` and `pin`) runs the kit too: the scaffold job against a
+ *   throwaway repo, enqueued — the kit answers `checking`; `kits show` has the result later.
  * - `kits pin <kit> --tag|--commit|--latest` — re-pin, checked at the new pin.
  * - `kits default <kit>` — the kit new apps are cut from.
  * - `kits rm <kit>` (asks first) — refused for the default and for a kit apps were made from.
@@ -46,7 +48,24 @@ export function kitPinLine(kit: Pick<Kit, 'pin' | 'pinIsCodeDefault'>): string {
 function statusWord(status: Kit['status']): string {
   if (status === 'verified') return chalk.green('verified')
   if (status === 'failed') return chalk.red('failed')
+  if (status === 'checking') return chalk.yellow('checking')
   return chalk.dim('not checked')
+}
+
+/** The last dynamic check (D36 K3): its state, where it ran, and what became of the repo. */
+function dynamicLine(kit: Kit): string | null {
+  const check = kit.dynamicCheck
+  if (!check) return null
+  const state =
+    check.status === 'passed'
+      ? chalk.green('passed')
+      : check.status === 'failed'
+        ? chalk.red('failed')
+        : chalk.yellow(check.status === 'queued' ? 'queued' : 'running')
+  const where = check.repo ? ` in ${check.repo}` : ''
+  const cleanup = check.cleanup ? ` (repo ${check.cleanup})` : ''
+  const when = check.finishedAt ? ` · ${formatDate(check.finishedAt)}` : ''
+  return `Dynamic   ${state} at ${check.commit.slice(0, 7)}${where}${cleanup}${when}${check.runUrl ? `\n          ${check.runUrl}` : ''}`
 }
 
 function detailLines(kit: KitDetail): string[] {
@@ -58,6 +77,8 @@ function detailLines(kit: KitDetail): string[] {
     `Manifest  ${kit.manifestSource === 'fallback' ? "Launch's built-in Rocketflare manifest" : kit.manifestSource === 'repo' ? `launch.kit.json (schema ${kit.contractVersion})` : chalk.dim('not read yet')}`,
     `Apps      ${kit.appCount}`,
   ]
+  const dynamic = dynamicLine(kit)
+  if (dynamic) lines.push(dynamic)
   if (kit.latestCheck?.error)
     lines.push(chalk.yellow(`Last lookup failed: ${kit.latestCheck.error}`))
   if (kit.problems.length > 0) {
@@ -68,6 +89,15 @@ function detailLines(kit: KitDetail): string[] {
     )
   }
   return lines
+}
+
+/** A dynamic check was started: where its result will be. */
+function runningHint(kit: Kit): string[] {
+  if (kit.status !== 'checking') return []
+  return [
+    '',
+    `Running the kit now: \`launch kits show ${kit.slug}\` has the result in a few minutes.`,
+  ]
 }
 
 /** After printing: a failed check is exit 1, so a script notices. */
@@ -83,7 +113,13 @@ export interface KitPinOptions {
   tag?: string
   commit?: string
   latest?: boolean
+  /** Also run the kit (D36 K3): `?dynamic=1`. */
+  dynamic?: boolean
 }
+
+/** `?dynamic=1` when asked for, else no query at all. */
+const dynamicQuery = (options: { dynamic?: boolean }) =>
+  options.dynamic ? { query: { dynamic: '1' } } : {}
 
 /** `--tag|--commit|--latest` → the shared pin request (exactly one). */
 function pinRequest(options: KitPinOptions): unknown {
@@ -145,18 +181,33 @@ export async function runKitsAdd(
   )
   const client = requireClient(ctx)
   const { data, raw } = await withAdminKey(ctx, () =>
-    client.request('POST', '/api/platform/kits', { schema: kitDetailSchema, body })
+    client.request('POST', '/api/platform/kits', {
+      schema: kitDetailSchema,
+      body,
+      ...dynamicQuery(options),
+    })
   )
-  ctx.out.data(raw, () => [`${chalk.green('✓')} Registered`, ...detailLines(data)].join('\n'))
+  ctx.out.data(raw, () =>
+    [`${chalk.green('✓')} Registered`, ...detailLines(data), ...runningHint(data)].join('\n')
+  )
   failIfFailed(data)
 }
 
-export async function runKitsCheck(ctx: CommandContext, kit: string): Promise<void> {
+export async function runKitsCheck(
+  ctx: CommandContext,
+  kit: string,
+  options: { dynamic?: boolean } = {}
+): Promise<void> {
   const client = requireClient(ctx)
   const { data, raw } = await withAdminKey(ctx, () =>
-    client.request('POST', `${kitPath(kit)}/check`, { schema: kitDetailSchema })
+    client.request('POST', `${kitPath(kit)}/check`, {
+      schema: kitDetailSchema,
+      ...dynamicQuery(options),
+    })
   )
-  ctx.out.data(raw, () => [`${chalk.green('✓')} Checked`, ...detailLines(data)].join('\n'))
+  ctx.out.data(raw, () =>
+    [`${chalk.green('✓')} Checked`, ...detailLines(data), ...runningHint(data)].join('\n')
+  )
   failIfFailed(data)
 }
 
@@ -168,9 +219,15 @@ export async function runKitsPin(
   const body = parseBody(kitPinRequestSchema, pinRequest(options), 'kit pin')
   const client = requireClient(ctx)
   const { data, raw } = await withAdminKey(ctx, () =>
-    client.request('PUT', `${kitPath(kit)}/pin`, { schema: kitDetailSchema, body })
+    client.request('PUT', `${kitPath(kit)}/pin`, {
+      schema: kitDetailSchema,
+      body,
+      ...dynamicQuery(options),
+    })
   )
-  ctx.out.data(raw, () => [`${chalk.green('✓')} Pinned`, ...detailLines(data)].join('\n'))
+  ctx.out.data(raw, () =>
+    [`${chalk.green('✓')} Pinned`, ...detailLines(data), ...runningHint(data)].join('\n')
+  )
   failIfFailed(data)
 }
 
@@ -227,19 +284,26 @@ export function registerKitsCommands(program: Command, action: ActionWrapper): v
     .option('--slug <slug>', "the catalogue key (default: the manifest's kit.id)")
     .option('--name <name>', "the display name (default: the manifest's kit.name)")
     .option('--description <text>', 'a one-line description')
+    .option('--dynamic', 'also run the kit: the scaffold job against a throwaway repo (minutes)')
     .action(
       action((ctx, cmd) => runKitsAdd(ctx, cmd.args[0] as string, cmd.opts<KitsAddOptions>()))
     )
   kits
     .command('check <kit>')
     .description('re-read the manifest and re-run the conformance check at the pin')
-    .action(action((ctx, cmd) => runKitsCheck(ctx, cmd.args[0] as string)))
+    .option('--dynamic', 'also run the kit: the scaffold job against a throwaway repo (minutes)')
+    .action(
+      action((ctx, cmd) =>
+        runKitsCheck(ctx, cmd.args[0] as string, cmd.opts<{ dynamic?: boolean }>())
+      )
+    )
   kits
     .command('pin <kit>')
     .description('pin a release tag, a commit or branch, or follow the latest release')
     .option('--tag <tag>', 'a release tag')
     .option('--commit <ref>', 'a commit SHA or a branch name')
     .option('--latest', 'follow the newest release')
+    .option('--dynamic', 'also run the kit at the new pin (minutes)')
     .action(action((ctx, cmd) => runKitsPin(ctx, cmd.args[0] as string, cmd.opts<KitPinOptions>())))
   kits
     .command('default <kit>')

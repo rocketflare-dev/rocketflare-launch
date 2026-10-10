@@ -139,6 +139,37 @@ describe('kits add / check / pin', () => {
     expect(r.out.content()).toContain('! deploy.yml is missing')
   })
 
+  it('--dynamic asks the server to run the kit too, and says where the result will be (D36 K3)', async () => {
+    const checking = {
+      ...detail,
+      status: 'checking',
+      dynamicCheck: {
+        id: '00000000-0000-4000-8000-0000000000d1',
+        status: 'queued',
+        commit: 'a'.repeat(40),
+        repo: null,
+        runUrl: null,
+        problems: [],
+        cleanup: null,
+        startedAt: at,
+        finishedAt: null,
+      },
+    }
+    const r = await run(c => runKitsCheck(c, 'acme-kit', { dynamic: true }), {
+      '/api/platform/kits/acme-kit/check': () => jsonResponse(checking),
+    })
+    expect(r.error).toBeNull()
+    expect(String(r.calls[0]?.url)).toContain('/api/platform/kits/acme-kit/check?dynamic=1')
+    expect(r.out.content()).toContain('checking')
+    expect(r.out.content()).toContain('Dynamic   queued at aaaaaaa')
+    expect(r.out.content()).toContain('launch kits show acme-kit')
+
+    const plain = await run(c => runKitsCheck(c, 'acme-kit'), {
+      '/api/platform/kits/acme-kit/check': () => jsonResponse(detail),
+    })
+    expect(String(plain.calls[0]?.url)).not.toContain('dynamic')
+  })
+
   it('pin sends the discriminated body; the server’s 422 is exit 1 with its sentence', async () => {
     const r = await run(c => runKitsPin(c, 'acme-kit', { commit: 'main' }), {
       '/api/platform/kits/acme-kit/pin': () => jsonResponse(detail),
