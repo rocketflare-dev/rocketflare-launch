@@ -42,7 +42,7 @@ import { appOperations, apps } from '../../../../db/schema'
 import { ConflictError } from '../../../utils/core/errors'
 import { getAppRow } from '../apps'
 import { type AuditActor, recordAudit } from '../audit'
-import { appKitPin } from '../kit-pin'
+import { appScaffoldPin } from '../kit-pin'
 import { kitManifestOf } from '../kits/adapter'
 import { getKit } from '../kits/store'
 import type { NeonClient } from '../neon'
@@ -94,7 +94,7 @@ export async function rescaffoldPipeline(
   // D36 K3: the app's OWN kit at its current pin (the default kit's for an app with none). The app
   // takes that kit's manifest snapshot too when the kit has one, as a new app would: the job files
   // `scaffold.start` re-commits are generated from it, and the copy will be that release.
-  const pin = await appKitPin(db, app, (await loadPipelineSettings(db)).templatePin)
+  const pin = await appScaffoldPin(db, app, (await loadPipelineSettings(db)).templatePin)
   const kit = app.kitId ? await getKit(db, app.kitId) : null
   if (kit?.manifest) {
     await db

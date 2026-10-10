@@ -52,6 +52,7 @@ function rowOf(values: NewKitRow): KitRow {
     problems: values.problems ?? [],
     checkedAt: values.checkedAt ?? null,
     latestCheck: values.latestCheck ?? null,
+    dynamicCheck: values.dynamicCheck ?? null,
     createdByUserId: values.createdByUserId ?? null,
     createdAt: now,
     updatedAt: now,
@@ -135,6 +136,34 @@ export function mockKitStoreModule(_real: typeof KitStore, state: KitStoreState)
       if (!target) return null
       for (const k of all()) k.isDefault = k.id === id
       return structuredClone(target)
+    },
+    compareAndSetDynamicCheck: async (_db, id, expectedId, next, patch = {}, expectedStatus) => {
+      const row = state.kits.get(id)
+      if (!row || (expectedId !== null && row.dynamicCheck?.id !== expectedId)) return null
+      if (expectedStatus !== undefined && row.dynamicCheck?.status !== expectedStatus) return null
+      Object.assign(row, JSON.parse(JSON.stringify(patch)), {
+        ...(patch.checkedAt !== undefined ? { checkedAt: patch.checkedAt } : {}),
+        dynamicCheck: next ? structuredClone(next) : null,
+        updatedAt: new Date(),
+      })
+      return structuredClone(row)
+    },
+    findKitByCheckRepoId: async (_db, repoId) =>
+      copy(all().find(k => k.dynamicCheck?.repoId === repoId)),
+    claimKitCheckToken: async (_db, id, checkId, now) => {
+      const row = state.kits.get(id)
+      const check = row?.dynamicCheck
+      if (
+        !row ||
+        !check ||
+        check.id !== checkId ||
+        check.status !== 'running' ||
+        check.tokenIssuedAt
+      ) {
+        return null
+      }
+      row.dynamicCheck = { ...check, tokenIssuedAt: now.toISOString() }
+      return structuredClone(row)
     },
     deleteKit: async (_db, id) => state.kits.delete(id),
     kitAppCounts: async () => new Map(state.appCounts),

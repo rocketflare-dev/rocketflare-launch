@@ -13,6 +13,10 @@
  * - **Pin**: resolves, checks at the NEW pin, then compare-and-sets the pin with the result. The
  *   default kit's pin is mirrored into `template_pin` (`kit-pin.ts` header).
  * - **Default**: one transaction; the mirror follows the new default's pin.
+ * - **Dynamic** (D36 K3, `dynamic-check.ts`): add, check and pin take `dynamic` — when the static
+ *   check passes, a dynamic check (the scaffold job against a throwaway repo) is ENQUEUED and the
+ *   kit answers `checking`; its result lands on the row later. A static check never clears a
+ *   dynamic result at the same pin: a failed one keeps the kit `failed` until a new run passes.
  * - **Remove**: never the default (409 `kit_is_default`), never a kit with apps (409
  *   `kit_has_apps`).
  *
@@ -32,6 +36,7 @@ import type { TemplatePin } from '@launch/shared/launch-setup'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { ConflictError, NotFoundError } from '../../../utils/core/errors'
+import type { JobsQueue } from '../../jobs'
 import { type AuditActor, recordAudit } from '../audit'
 import { putSetting } from '../credentials'
 import {
@@ -44,6 +49,7 @@ import {
   withKitToken,
 } from '../kit-pin'
 import { checkKitConformance } from './conformance'
+import { publicDynamicCheck, startDynamicCheck, statusAfterStatic } from './dynamic-check'
 import { kitFileReader } from './manifest'
 import {
   compareAndSetKitPin,
@@ -67,6 +73,8 @@ export interface KitInspection {
   contractVersion: string | null
   checkedAt: Date
 }
+
+type StaticInspection = { status: 'verified' | 'failed'; problems: string[] }
 
 /** Read the manifest and run the static checks at `commit`, with an open token. */
 export async function inspectWithToken(
@@ -104,6 +112,7 @@ export async function toKit(db: Database, row: KitRow, appCount: number): Promis
     manifestSource: row.manifestSource,
     checkedAt: row.checkedAt,
     latestCheck: await kitLatestCheck(db, row),
+    dynamicCheck: publicDynamicCheck(row.dynamicCheck),
     appCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -149,6 +158,32 @@ export interface KitActionContext {
   actor: AuditActor
   auditTenantId: string
   opts?: KitLookupOptions
+  /** `JOBS_QUEUE`, for a dynamic check. */
+  queue?: JobsQueue
+}
+
+/** What add / check / pin may also do (D36 K3). */
+export interface KitCheckOptions {
+  /** Start a dynamic check when the static one passes. */
+  dynamic?: boolean
+}
+
+/** A dynamic check of `row` at `pin`, when asked for and the static check passed. */
+async function maybeDynamic(
+  ctx: KitActionContext,
+  row: KitRow,
+  pin: TemplatePin,
+  options: KitCheckOptions
+): Promise<KitRow> {
+  if (!options.dynamic || row.status !== 'verified') return row
+  return startDynamicCheck({
+    db: ctx.db,
+    queue: ctx.queue,
+    kit: row,
+    pin,
+    auditTenantId: ctx.auditTenantId,
+    actor: ctx.actor,
+  })
 }
 
 async function auditKit(
@@ -168,7 +203,11 @@ async function auditKit(
 }
 
 /** Register a kit (see the header). */
-export async function addKit(ctx: KitActionContext, input: KitAddRequest): Promise<KitDetail> {
+export async function addKit(
+  ctx: KitActionContext,
+  input: KitAddRequest,
+  options: KitCheckOptions = {}
+): Promise<KitDetail> {
   const { db, cfg, opts = {} } = ctx
   await ensureDefaultKit(db)
   const { pin, inspection } = await withKitToken(db, cfg, input.repo, opts, async token => {
@@ -199,11 +238,15 @@ export async function addKit(ctx: KitActionContext, input: KitAddRequest): Promi
   await auditKit(ctx, 'kit.added', row, {
     after: { slug: row.slug, repo: row.repo, pin, status: row.status },
   })
-  return toDetail(db, row)
+  return toDetail(db, await maybeDynamic(ctx, row, pin, options))
 }
 
 /** Re-read the manifest and re-run the checks at the kit's current pin. */
-export async function checkKit(ctx: KitActionContext, idOrSlug: string): Promise<KitDetail> {
+export async function checkKit(
+  ctx: KitActionContext,
+  idOrSlug: string,
+  options: KitCheckOptions = {}
+): Promise<KitDetail> {
   const { db, cfg, opts = {} } = ctx
   await ensureDefaultKit(db)
   const row = await requireKit(db, idOrSlug)
@@ -211,18 +254,33 @@ export async function checkKit(ctx: KitActionContext, idOrSlug: string): Promise
   const inspection = await withKitToken(db, cfg, pin.repo, opts, token =>
     inspectWithToken(token, pin.repo, pin.commit, opts)
   )
-  const after = (await updateKit(db, row.id, inspection)) ?? row
+  // A dynamic check at this pin still counts (D36 K3): running → checking, failed → failed.
+  const after =
+    (await updateKit(db, row.id, {
+      ...inspection,
+      ...statusAfterStatic(inspection as StaticInspection, row.dynamicCheck, pin.commit),
+    })) ?? row
   await auditKit(ctx, 'kit.checked', after, {
-    after: { pin, status: after.status, problems: after.problems },
+    after: {
+      pin,
+      status: after.status,
+      problems: after.problems,
+      dynamic: options.dynamic === true,
+    },
   })
-  return toDetail(db, after)
+  // A new dynamic run starts from the static result alone.
+  const staticRow =
+    inspection.status === 'verified' ? { ...after, status: 'verified' as const } : after
+  const dynamic = await maybeDynamic(ctx, staticRow, pin, options)
+  return toDetail(db, dynamic === staticRow ? after : dynamic)
 }
 
 /** Re-pin a kit: resolve, check at the new pin, compare-and-set (409 `kit_pin_conflict`). */
 export async function pinKit(
   ctx: KitActionContext,
   idOrSlug: string,
-  request: KitPinRequest
+  request: KitPinRequest,
+  options: KitCheckOptions = {}
 ): Promise<KitDetail> {
   const { db, cfg, opts = {} } = ctx
   await ensureDefaultKit(db)
@@ -236,6 +294,8 @@ export async function pinKit(
   const moved = await compareAndSetKitPin(db, row.id, row.pin ?? null, storedPinOf(pin), {
     repo,
     ...inspection,
+    // A dynamic check of the old pin says nothing about the new one (its phases only clean up).
+    dynamicCheck: null,
     ...(pin.follow === 'latest'
       ? {
           latestCheck: {
@@ -259,7 +319,7 @@ export async function pinKit(
     before: { pin: before },
     after: { pin, status: after.status },
   })
-  return toDetail(db, after)
+  return toDetail(db, await maybeDynamic(ctx, after, pin, options))
 }
 
 /** Make a kit the one new apps are cut from. */

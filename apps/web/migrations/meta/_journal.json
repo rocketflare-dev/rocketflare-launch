@@ -358,6 +358,13 @@
       "when": 1791634318755,
       "tag": "0050_launch-app-kit-manifest",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791636861360,
+      "tag": "0051_launch-kit-dynamic-check",
+      "breakpoints": true
     }
   ]
 }

@@ -105,6 +105,20 @@ export const appThumbnailPayloadSchema = z.object({
 })
 export type AppThumbnailPayload = z.infer<typeof appThumbnailPayloadSchema>
 
+/**
+ * D36 K3: one phase of a kit's DYNAMIC conformance check (`services/launch/kits/dynamic-check.ts`):
+ * `start` creates the throwaway repo and dispatches the scaffold job, `poll` re-enqueues itself
+ * (delayed) until the job ends, `finish` checks the copy, deletes the repo and writes the result.
+ * `repo` (`owner/name`, once created) rides along so a superseded check still cleans up.
+ */
+export const kitCheckPayloadSchema = z.object({
+  kitId: z.string().uuid(),
+  checkId: z.string().uuid(),
+  phase: z.enum(['start', 'poll', 'finish']),
+  repo: z.string().max(200).optional(),
+})
+export type KitCheckPayload = z.infer<typeof kitCheckPayloadSchema>
+
 // ---- Envelope ------------------------------------------------------------------------------
 
 /**
@@ -121,6 +135,7 @@ export const CORE_JOB_VARIANTS = [
   z.object({ type: z.literal('app.thumbnail'), payload: appThumbnailPayloadSchema }),
   // Issue #19: one GitHub App webhook delivery, reduced to its subject (`launch-github.ts`).
   z.object({ type: z.literal('github.event'), payload: githubEventPayloadSchema }),
+  z.object({ type: z.literal('kit.check'), payload: kitCheckPayloadSchema }),
 ] as const
 
 type PluginJobVariant = NonNullable<DeclaredBy<(typeof SHARED_PLUGINS)[number], 'jobs'>>[number]

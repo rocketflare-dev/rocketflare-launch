@@ -27,6 +27,7 @@ import { handleDocumentConvert } from './handlers/document-convert'
 import { handleDocumentIndex } from './handlers/document-index'
 import { handleEmailSend } from './handlers/email-send'
 import { handleGitHubEvent } from './handlers/github-event'
+import { handleKitCheck } from './handlers/kit-check'
 import { handleTenantPurge } from './handlers/tenant-purge'
 
 /** What every handler receives: the bindings, validated config, a job-scoped logger and a DB. */
@@ -71,6 +72,7 @@ const coreHandlers: { [T in CoreJobType]: JobHandler<T> } = {
   'tenant.purge': handleTenantPurge,
   'app.thumbnail': handleAppThumbnail,
   'github.event': handleGitHubEvent,
+  'kit.check': handleKitCheck,
 }
 
 /**

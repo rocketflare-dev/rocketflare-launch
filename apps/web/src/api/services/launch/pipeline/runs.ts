@@ -30,7 +30,7 @@ import {
   appOperations,
   auditEvents,
 } from '../../../../db/schema'
-import { appKitPin } from '../kit-pin'
+import { appScaffoldPin } from '../kit-pin'
 import { loadPipelineSettings } from './context'
 import { rescaffoldVerdict } from './rescaffold-check'
 
@@ -161,7 +161,7 @@ export async function pipelineView(
   const allowed = verdict !== null && verdict.block === null
   const checksDatabase = verdict?.block === null && verdict.checkDatabases.length > 0
   const templateTag = allowed
-    ? templatePinLabel(await appKitPin(db, app, (await loadPipelineSettings(db)).templatePin))
+    ? templatePinLabel(await appScaffoldPin(db, app, (await loadPipelineSettings(db)).templatePin))
     : null
   const labels = new Map(PIPELINE_STEPS[kind].map(def => [def.step, def.label]))
   const partOf = (step: string): PipelineStep => {

@@ -11,17 +11,26 @@
  *   swaps it in one transaction (clear, then set — never two defaults, even for a moment).
  * - **A pin moves by compare-and-set** ({@link compareAndSetKitPin}) on the exact jsonb read, so a
  *   cron tick and an admin's re-pin cannot both win.
+ * - **A dynamic check moves by its id** ({@link compareAndSetDynamicCheck}): a newer check, or a
+ *   re-pin that cleared it, makes the older one's writes no-ops. Its job's token is claimed once
+ *   ({@link claimKitCheckToken}), the caller matched by the throwaway repo's GitHub id.
  */
 
 import type { KitStoredPin } from '@launch/shared/kits'
 import { DEFAULT_TEMPLATE_PIN } from '@launch/shared/launch-setup'
 import { and, asc, desc, eq, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Database } from '../../../../db/client'
-import { apps, type KitRow, kits, type NewKitRow } from '../../../../db/schema'
+import {
+  apps,
+  type KitDynamicCheckRecord,
+  type KitRow,
+  kits,
+  type NewKitRow,
+} from '../../../../db/schema'
 import { ConflictError, isUniqueViolation } from '../../../utils/core/errors'
 import { ROCKETFLARE_KIT_ID, rocketflareFallbackManifest } from './rocketflare-fallback'
 
-export type { KitRow }
+export type { KitDynamicCheckRecord, KitRow }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -146,6 +155,74 @@ export async function compareAndSetKitPin(
     .where(and(eq(kits.id, id), same))
     .returning({ id: kits.id })
   return rows.length === 1
+}
+
+/**
+ * Write a kit's `dynamic_check` (and any other columns in `patch`) only while the check on the row
+ * is still `expectedId` (`null`: whatever is there — a new check replaces it) and, when given, in
+ * `expectedStatus`. The row after, or null when the check was superseded or the kit is gone.
+ */
+export async function compareAndSetDynamicCheck(
+  db: Database,
+  id: string,
+  expectedId: string | null,
+  next: KitDynamicCheckRecord | null,
+  patch: Partial<Omit<NewKitRow, 'id' | 'dynamicCheck' | 'isDefault' | 'createdAt'>> = {},
+  /** And only while the check is still in this status. */
+  expectedStatus?: KitDynamicCheckRecord['status']
+): Promise<KitRow | null> {
+  const same = expectedId === null ? sql`true` : sql`${kits.dynamicCheck}->>'id' = ${expectedId}`
+  const status =
+    expectedStatus === undefined
+      ? sql`true`
+      : sql`${kits.dynamicCheck}->>'status' = ${expectedStatus}`
+  const [row] = await db
+    .update(kits)
+    .set({ ...patch, dynamicCheck: next, updatedAt: new Date() })
+    .where(and(eq(kits.id, id), same, status))
+    .returning()
+  return row ?? null
+}
+
+/**
+ * The kit whose RUNNING dynamic check owns the GitHub repository `repoId` — the `/ci/kit-check`
+ * caller's lookup (a kit is platform-scoped: there is no tenant to filter by).
+ */
+export async function findKitByCheckRepoId(db: Database, repoId: string): Promise<KitRow | null> {
+  const [row] = await db
+    .select()
+    .from(kits)
+    .where(sql`${kits.dynamicCheck}->>'repoId' = ${repoId}`)
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * Claim the one token a dynamic check's job may have: `tokenIssuedAt` set on the running check
+ * `checkId` only if it is unset (compare-and-set). The row after, or null when already claimed.
+ */
+export async function claimKitCheckToken(
+  db: Database,
+  id: string,
+  checkId: string,
+  now: Date
+): Promise<KitRow | null> {
+  const [row] = await db
+    .update(kits)
+    .set({
+      dynamicCheck: sql`${kits.dynamicCheck} || jsonb_build_object('tokenIssuedAt', ${now.toISOString()}::text)`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(kits.id, id),
+        sql`${kits.dynamicCheck}->>'id' = ${checkId}`,
+        sql`${kits.dynamicCheck}->>'status' = 'running'`,
+        sql`${kits.dynamicCheck}->>'tokenIssuedAt' IS NULL`
+      )
+    )
+    .returning()
+  return row ?? null
 }
 
 /** Make `id` the one default kit (one transaction); the row after, or null when it is gone. */

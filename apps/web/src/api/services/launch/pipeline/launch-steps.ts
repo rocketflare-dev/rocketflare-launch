@@ -56,7 +56,7 @@ import {
   upsertRepoVariable,
 } from '../github-app'
 import { checkAppHealth, type HealthPollOptions } from '../health'
-import { appKitPin } from '../kit-pin'
+import { appScaffoldPin } from '../kit-pin'
 import { type AdapterApp, adapterFor, type TemplateAdapter } from '../kits/adapter'
 import type { WranglerEnvironment } from '../kits/app-manifest'
 import {
@@ -421,7 +421,7 @@ export function scaffoldStartStep(d: PipelineDeps, params: AppLaunchParams) {
     }
     // D36 K3: the APP's kit at its pin (the default kit's for an app with none), recorded on this
     // row — the token route hands the job this pin, and `scaffold.verify` checks against it.
-    const pin = await appKitPin(d.db, app, vendors.settings.templatePin)
+    const pin = await appScaffoldPin(d.db, app, vendors.settings.templatePin)
     const pinIds = scaffoldPinIds(pin)
     await ctx.record(pinIds)
     const plan: ScaffoldPlan = {
@@ -519,7 +519,7 @@ export function scaffoldVerifyStep(d: PipelineDeps, params: AppLaunchParams) {
     // none, so the app's kit's pin then.
     const pin =
       scaffoldPinOf(await stepIds(d.db, launchKey(params, 'scaffold.start'))) ??
-      (await appKitPin(d.db, app, vendors.settings.templatePin))
+      (await appScaffoldPin(d.db, app, vendors.settings.templatePin))
     const adapter = await d.adapterFor(app)
     const repo = repoOf(app)
     const { token, owner } = await repoToken(vendors, repo.name, { contents: 'read' }, ctx)

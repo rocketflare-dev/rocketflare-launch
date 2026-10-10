@@ -18,7 +18,7 @@
  * ({@link scaffoldPinIds}); the token route hands the job THAT pin, read through the ticket's
  * launch run, so a kit re-pinned between the dispatch and the job's call cannot change what the
  * job builds (and `scaffold.verify` checks against the same record). A ticket with no recorded
- * pin (a run from before K3) gets the app's kit's current pin (`appKitPin`).
+ * pin (a run from before K3) gets the app's kit's current pin (`appScaffoldPin`).
  */
 import type { AppOperationExternalIds } from '@launch/shared/launch-apps'
 import {
@@ -41,7 +41,7 @@ import {
   listInstallations,
 } from '../github-app'
 import { loadImportGitHub } from '../import'
-import { appKitPin, defaultKitPin } from '../kit-pin'
+import { appScaffoldPin, defaultKitPin } from '../kit-pin'
 import { adapterFor } from '../kits/adapter'
 import { launchInstanceOf } from '../pipeline/instance'
 import { claimScaffoldTicket, failScaffoldTicket, finishScaffoldTicket } from './tickets'
@@ -98,7 +98,7 @@ async function ticketPin(
     const recorded = row ? scaffoldPinOf(row.externalIds) : null
     if (recorded) return recorded
   }
-  return appKitPin(db, app)
+  return appScaffoldPin(db, app)
 }
 
 /** The apps domain, or 409 — every name in the plan is built from it. */
@@ -121,7 +121,7 @@ export async function scaffoldPlanFor(
 ): Promise<ScaffoldPlan> {
   const domain = await appsDomain(db)
   const { app } = caller
-  const kitPin = pin ?? (await appKitPin(db, app))
+  const kitPin = pin ?? (await appScaffoldPin(db, app))
   const adapter = await adapterFor(db, app)
   return {
     slug: app.slug,

@@ -138,7 +138,7 @@ export async function kitPin(db: Database, row: KitRow): Promise<EffectiveKitPin
  * default kit's: `defaultPin` when the caller has it resolved already (the pipeline's settings),
  * else read here.
  */
-export async function appKitPin(
+export async function appScaffoldPin(
   db: Database,
   app: { kitId: string | null },
   defaultPin?: TemplatePin
@@ -167,6 +167,8 @@ export const UNCHECKED_KIT = {
   manifestSource: null,
   contractVersion: null,
   checkedAt: null,
+  // A dynamic check ran (or runs) at the OLD pin: cleared, so its phases only clean up (D36 K3).
+  dynamicCheck: null,
 }
 
 /**

@@ -13,8 +13,11 @@ import { z } from 'zod'
 import { kitManifestSchema } from './kit-manifest'
 import { kitLatestCheckSchema, kitRepoSchema, templatePinSchema } from './launch-setup'
 
-/** `unchecked` (never checked at this pin) · `verified` (the checks passed) · `failed`. */
-export const KIT_CHECK_STATUSES = ['unchecked', 'verified', 'failed'] as const
+/**
+ * `unchecked` (never checked at this pin) · `checking` (a dynamic check is running, D36 K3) ·
+ * `verified` (the static check passed, and no dynamic check at this pin failed) · `failed`.
+ */
+export const KIT_CHECK_STATUSES = ['unchecked', 'checking', 'verified', 'failed'] as const
 export const kitCheckStatusSchema = z.enum(KIT_CHECK_STATUSES)
 export type KitCheckStatus = z.infer<typeof kitCheckStatusSchema>
 
@@ -77,6 +80,47 @@ export type KitAddRequest = z.infer<typeof kitAddRequestSchema>
 /** `:id` in `/api/platform/kits/:id` — the uuid, or the slug. */
 export const kitIdParamSchema = z.object({ id: z.string().trim().min(1).max(100) })
 
+/**
+ * The DYNAMIC conformance check (D36 K3, `docs/plans/multi-kit.md` §7): the scaffold job run for
+ * real against a throwaway private repo in the apps organisation (`launch-kit-check-<slug>-<id>`)
+ * — init, kitOnly, the app manifest, postInit, the gate's lint and typecheck — then the copy's app
+ * manifest and tomls checked, and the repo deleted (archived when the GitHub App may not delete).
+ * Opt-in (`?dynamic=1`, `launch kits check --dynamic`): it takes minutes and a runner.
+ *
+ * `queued` → `running` (the job dispatched) → `passed` | `failed`. `cleanup` is what became of the
+ * throwaway repo: `deleted`, `archived` (the App lacks the administration permission to delete),
+ * or `failed` (neither worked — the repo is named so an admin can remove it).
+ */
+export const KIT_DYNAMIC_CHECK_STATUSES = ['queued', 'running', 'passed', 'failed'] as const
+export const kitDynamicCheckSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(KIT_DYNAMIC_CHECK_STATUSES),
+  /** The kit commit the check ran at (the pin when it started). */
+  commit: z.string(),
+  /** The throwaway repo, `owner/name`, once created. */
+  repo: z.string().nullable(),
+  /** The job's GitHub Actions run, once listed. */
+  runUrl: z.string().nullable(),
+  /** One sentence per problem; empty when it passed. */
+  problems: z.array(z.string()),
+  cleanup: z.enum(['deleted', 'archived', 'failed']).nullable(),
+  startedAt: z.coerce.date(),
+  finishedAt: z.coerce.date().nullable(),
+})
+export type KitDynamicCheck = z.infer<typeof kitDynamicCheckSchema>
+
+/**
+ * `?dynamic=1` on `POST /api/platform/kits`, `POST …/:id/check` and `PUT …/:id/pin`: when the
+ * static check passes, also start a dynamic check (enqueued; the kit answers `checking`).
+ */
+export const kitCheckQuerySchema = z.object({
+  dynamic: z
+    .enum(['1', '0', 'true', 'false'])
+    .optional()
+    .transform(v => v === '1' || v === 'true'),
+})
+export type KitCheckQuery = z.infer<typeof kitCheckQuerySchema>
+
 /** One kit as the catalogue lists it. */
 export const kitSchema = z.object({
   id: z.string().uuid(),
@@ -98,6 +142,8 @@ export const kitSchema = z.object({
   checkedAt: z.coerce.date().nullable(),
   /** The last newest-release lookup (Follow latest). */
   latestCheck: kitLatestCheckSchema.nullable(),
+  /** The last dynamic conformance check at this pin (D36 K3); null (or absent) when none ran. */
+  dynamicCheck: kitDynamicCheckSchema.nullish(),
   /** Apps created from (or imported into) this kit. */
   appCount: z.number().int().nonnegative(),
   createdAt: z.coerce.date(),

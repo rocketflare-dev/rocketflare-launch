@@ -14,14 +14,44 @@
  * - `manifest` / `manifest_source` / `contract_version` / `status` / `problems` / `checked_at` are
  *   the last check at the pin; re-pinning clears them to `unchecked` until the check runs.
  * - `latest_check` is the last newest-release lookup of a Follow latest pin (`kitLatestCheckSchema`).
+ * - `dynamic_check` is the last DYNAMIC conformance check (D36 K3, `kits/dynamic-check.ts`): the
+ *   scaffold job run against a throwaway repo. The API shows its public half
+ *   (`kitDynamicCheckSchema`); the rest is the job's bookkeeping — the repo's GitHub id the
+ *   `/ci/kit-check` caller is matched by, the one-time token claim, the run. Its `id` is the
+ *   compare-and-set key: a re-pin clears it, and a check that finds another id was superseded.
  */
 import type { KitManifest } from '@launch/shared/kit-manifest'
-import type { KitCheckStatus, KitManifestSource, KitStoredPin } from '@launch/shared/kits'
+import type {
+  KitCheckStatus,
+  KitDynamicCheck,
+  KitManifestSource,
+  KitStoredPin,
+} from '@launch/shared/kits'
 import type { KitLatestCheck } from '@launch/shared/launch-setup'
 import { sql } from 'drizzle-orm'
 import { boolean, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { timestamps } from './_helpers'
 import { users } from './users'
+
+/** `kits.dynamic_check` (see the header): dates are ISO strings in jsonb. */
+export interface KitDynamicCheckRecord extends Omit<KitDynamicCheck, 'startedAt' | 'finishedAt'> {
+  startedAt: string
+  finishedAt: string | null
+  /** The pin the check runs at (`commit` is its SHA). */
+  kitRepo: string
+  tag: string | null
+  /** The throwaway repo's GitHub id — what the job's OIDC `repository_id` must be. */
+  repoId: string | null
+  runId: string | null
+  dispatchedAt: string | null
+  /** When `/ci/kit-check/token` answered (once). */
+  tokenIssuedAt: string | null
+  /** The commit the job pushed (`/ci/kit-check/done`). */
+  scaffoldCommit: string | null
+  /** Where the result is audited, and who asked. */
+  auditTenantId: string
+  actorUserId: string | null
+}
 
 export const kits = pgTable(
   'kits',
@@ -43,6 +73,7 @@ export const kits = pgTable(
     problems: jsonb('problems').$type<string[]>().notNull().default([]),
     checkedAt: timestamp('checked_at', { withTimezone: true }),
     latestCheck: jsonb('latest_check').$type<KitLatestCheck>(),
+    dynamicCheck: jsonb('dynamic_check').$type<KitDynamicCheckRecord>(),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
