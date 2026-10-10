@@ -1,6 +1,7 @@
 /**
- * The kit version every new app (and every re-scaffold) is cut from — `launch_settings.template_pin`,
- * else Launch's code default. Settings → Kit version.
+ * The kit version every new app (and every re-scaffold) is cut from — the DEFAULT kit's pin (D36
+ * K1; the built-in Rocketflare kit with none stored follows Launch's code default). Settings → Kit
+ * version.
  *
  * Three ways to pin it, each resolved by the SERVER through GitHub (it refuses what the repo does
  * not have, so the page never stores what it cannot prove):

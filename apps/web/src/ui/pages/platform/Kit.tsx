@@ -1,11 +1,13 @@
 /**
  * Settings → Kit version (`/settings/kit`): the kit every new app (and every re-scaffold) is cut
- * from — the Kit version card over `launch_settings.template_pin`. Not a connection (it has a
+ * from — the Kit version card over the DEFAULT kit's pin — and, below it, the kit catalogue
+ * (D36 K1, `KitsCard`). Not a connection (it has a
  * default), and Follow latest makes it something an admin comes back to. Reads the same setup
  * overview as the Platform pages; `canAdministerPlatform` (the section's guard).
  */
 import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
 import { useSetupOverview } from '@/ui/hooks/useSetup'
+import { KitsCard } from './kit/KitsCard'
 import { KitVersionCard } from './kit/KitVersionCard'
 
 export default function Kit() {
@@ -25,5 +27,10 @@ export default function Kit() {
       </SectionPanel>
     )
   }
-  return <KitVersionCard templatePin={data.templatePin} />
+  return (
+    <div className="space-y-6">
+      <KitVersionCard templatePin={data.templatePin} />
+      <KitsCard />
+    </div>
+  )
 }

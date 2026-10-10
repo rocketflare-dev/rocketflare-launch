@@ -24,6 +24,48 @@ import {
 } from './helpers/renderWithProviders'
 import { setupOverview as overview, unsetCredential as unset } from './helpers/setup'
 
+/** D36 K1: the catalogue under the Kit version card — the built-in default and a failing kit. */
+const KITS = [
+  {
+    id: '11111111-2222-4333-8444-555555555555',
+    slug: 'rocketflare',
+    name: 'Rocketflare',
+    description: null,
+    repo: 'rocketflare-dev/rocketflare',
+    pin: DEFAULT_TEMPLATE_PIN,
+    pinIsCodeDefault: true,
+    isDefault: true,
+    status: 'verified',
+    problems: [],
+    contractVersion: '1',
+    manifestSource: 'fallback',
+    checkedAt: '2026-10-01T00:00:00.000Z',
+    latestCheck: null,
+    appCount: 3,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  },
+  {
+    id: '22222222-3333-4444-8555-666666666666',
+    slug: 'acme-kit',
+    name: 'Acme kit',
+    description: null,
+    repo: 'acme/acme-kit',
+    pin: { repo: 'acme/acme-kit', tag: '1.0.0', commit: 'a'.repeat(40) },
+    pinIsCodeDefault: false,
+    isDefault: false,
+    status: 'failed',
+    problems: ['.github/workflows/deploy.yml is missing'],
+    contractVersion: '1',
+    manifestSource: 'repo',
+    checkedAt: '2026-10-01T00:00:00.000Z',
+    latestCheck: null,
+    appCount: 0,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  },
+] as const
+
 const checkResponse = {
   credential: overview.credentials[0],
   status: 'warning',
@@ -50,6 +92,14 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = pag
         { name: '0.15.5', commit: 'c'.repeat(40) },
       ],
       latest: '0.17.1',
+    },
+    '/api/platform/kits': { kits: KITS },
+    'POST /api/platform/kits': { ...KITS[1], manifest: null },
+    [`POST /api/platform/kits/${KITS[1]?.id}/check`]: { ...KITS[1], manifest: null },
+    [`PUT /api/platform/kits/${KITS[1]?.id}/default`]: {
+      ...KITS[1],
+      isDefault: true,
+      manifest: null,
     },
     'PUT /api/platform/setup/credentials/cloudflare_api_token': checkResponse,
     'PUT /api/platform/setup/credentials/openai_api_key': checkResponse,
@@ -590,5 +640,62 @@ describe('Settings → Coding agents: the Session sandbox section', () => {
     )
     const section = await screen.findByRole('region', { name: 'Session sandbox' })
     expect(within(section).queryByLabelText('Remote sandbox host')).toBeNull()
+  })
+})
+
+describe('Settings → Kit version → Kits (D36 K1)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('lists each kit with its pin, check result, problems and apps', async () => {
+    render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    const rows = await within(card).findAllByRole('listitem')
+    expect(within(card).getByText('Rocketflare')).toBeInTheDocument()
+    expect(within(card).getByText('Default')).toBeInTheDocument()
+    expect(
+      within(card).getByText(/rocketflare-dev\/rocketflare · .*Launch's default/)
+    ).toBeInTheDocument()
+    expect(within(card).getByText('Conforms')).toBeInTheDocument()
+    expect(within(card).getByText('1 problem')).toBeInTheDocument()
+    expect(within(card).getByText('.github/workflows/deploy.yml is missing')).toBeInTheDocument()
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    // The default kit cannot be made default again; the other can.
+    expect(within(card).getAllByRole('button', { name: 'Make default' })).toHaveLength(1)
+  })
+
+  it('checks a kit and makes it the default', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    fireEvent.click(within(card).getAllByRole('button', { name: 'Check' })[1] as HTMLElement)
+    fireEvent.click(within(card).getByRole('button', { name: 'Make default' }))
+    await waitFor(() => {
+      const paths = fetchMock.mock.calls.map(
+        ([input, init]) => `${init?.method ?? 'GET'} ${new URL(String(input), 'http://x').pathname}`
+      )
+      expect(paths).toContain(`POST /api/platform/kits/${KITS[1].id}/check`)
+      expect(paths).toContain(`PUT /api/platform/kits/${KITS[1].id}/default`)
+    })
+  })
+
+  it('adds a kit: a version is a tag, nothing is the latest release, a bad repo never leaves', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    const repo = within(card).getByRole('textbox', { name: 'Kit repository' })
+    const ref = within(card).getByRole('textbox', { name: 'Tag or commit' })
+    fireEvent.change(repo, { target: { value: 'not a repo' } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Add kit' }))
+    expect(await within(card).findByText('owner/name')).toBeInTheDocument()
+    expect(requestBody(fetchMock, 'POST /api/platform/kits')).toBeUndefined()
+
+    fireEvent.change(repo, { target: { value: 'acme/acme-kit' } })
+    fireEvent.change(ref, { target: { value: '1.0.0' } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Add kit' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'POST /api/platform/kits')).toEqual({
+        repo: 'acme/acme-kit',
+        pin: { kind: 'tag', tag: '1.0.0' },
+      })
+    )
   })
 })

@@ -33,7 +33,12 @@ export function useSetupOverview(enabled = true) {
 
 function useInvalidateSetup() {
   const queryClient = useQueryClient()
-  return () => queryClient.invalidateQueries({ queryKey: queryKeys.setup.all })
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.setup.all }),
+      // The template pin IS the default kit's (D36 K1): the catalogue shows it too.
+      queryClient.invalidateQueries({ queryKey: queryKeys.kits.all }),
+    ])
 }
 
 export function useUpdateSetupSettings() {

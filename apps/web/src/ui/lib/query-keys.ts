@@ -332,6 +332,11 @@ const CORE_QUERY_KEYS = {
     status: ['platform', 'setup', 'status'] as const,
     kitTags: (repo: string) => ['platform', 'setup', 'kit-tags', repo] as const,
   },
+  /** D36 K1: `/api/platform/kits` — the kit catalogue, under `platform` too. */
+  kits: {
+    all: ['platform', 'kits'] as const,
+    list: ['platform', 'kits', 'list'] as const,
+  },
   /** Launch: `/api/platform/oidc` — the issuer's signing keys (spec/05); under `platform` too */
   oidcAdmin: {
     all: ['platform', 'oidc'] as const,
