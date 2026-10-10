@@ -1,12 +1,15 @@
 /**
  * "Create app" (Launch P2): name the app, and Launch does the rest — a private repo scaffolded from
  * the pinned kit, a database, storage, sign-in, both Workers, and (unless unticked) a first staging
- * deploy. The slug is checked as it is typed with `newAppSlugProblem`, the rule the server applies,
+ * deploy. D36 K5: with two or more kits to choose from (`GET /api/kits` — the verified ones and
+ * the default) the first field is the kit (`KitPicker`, the default preselected); with one, the
+ * dialog is unchanged and the request names no kit (the server's default). The slug is checked as it is typed with `newAppSlugProblem`, the rule the server applies,
  * and the host it will answer on is previewed when the apps domain is known. On success the app's
  * page opens and shows the launch as it happens — or, from P4, for someone below the organisation's
  * `app.create` auto-approve role, the `app.create` request it is waiting on (202 `approvalId`).
  */
 import { RocketLaunchIcon } from '@heroicons/react/24/outline'
+import { KIT_NOT_FOUND, KIT_NOT_VERIFIED } from '@launch/shared/kits'
 import { APP_SLUG_MAX_LENGTH } from '@launch/shared/launch-apps'
 import { createAppRequestSchema, newAppSlugProblem } from '@launch/shared/launch-pipeline'
 import {
@@ -18,10 +21,12 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { FieldError, fieldErrorFor, Modal, showToast } from '@/ui/components/shared'
 import { useGroups } from '@/ui/hooks/useGroups'
+import { useKitOptions } from '@/ui/hooks/useKits'
 import { usePermissions } from '@/ui/hooks/usePermissions'
 import { useAppsDomain, useCreateApp } from '@/ui/hooks/usePipeline'
 import { ApiError } from '@/ui/lib/api-client'
 import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
+import { hasKitChoice, initialKitId, KitPicker, kitPhrase } from './KitPicker'
 
 /**
  * What to do next, for the refusals a person can act on — keyed on the HTTP status, since that is
@@ -32,6 +37,12 @@ const HINTS: Record<number, string> = {
   409: 'Pick another slug — slugs name hostnames, so each is used once.',
   403: 'Creating apps is limited to a higher role (set in Setup).',
   503: 'An administrator finishes Setup first: the credentials and the apps domain.',
+}
+
+/** D36 K5: the kit refusals, by code — a 409 that is not about the slug. */
+const KIT_HINTS: Record<string, string> = {
+  [KIT_NOT_VERIFIED]: 'Pick another kit: this one has to pass its check first.',
+  [KIT_NOT_FOUND]: 'Pick another kit: this one is no longer in the catalogue.',
 }
 
 /**
@@ -78,6 +89,9 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
   const canListGroups = can('manage', 'Group')
   const groups = useGroups(undefined, open && canListGroups)
   const domain = useAppsDomain()
+  const kitOptions = useKitOptions(open)
+  const kits = kitOptions.data?.kits
+  const choosing = hasKitChoice(kits)
 
   const [displayName, setDisplayName] = useState('')
   const [slug, setSlug] = useState('')
@@ -86,6 +100,8 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
   const [description, setDescription] = useState('')
   const [ownerGroupId, setOwnerGroupId] = useState('')
   const [deployStaging, setDeployStaging] = useState(true)
+  // '' until the person picks: the default kit (`initialKitId`) is what the picker shows.
+  const [pickedKitId, setPickedKitId] = useState('')
   const [issues, setIssues] = useState<{ path: PropertyKey[]; message: string }[]>()
 
   const close = () => {
@@ -96,6 +112,7 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
     setDescription('')
     setOwnerGroupId('')
     setDeployStaging(true)
+    setPickedKitId('')
     setIssues(undefined)
     create.reset()
     onClose()
@@ -110,6 +127,9 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
   const liveSlugProblem = slug || slugTouched ? newAppSlugProblem(slug) : null
   const slugMessage = liveSlugProblem ?? fieldErrorFor(issues, 'slug')
   const preview = hostPreview(slug, domain)
+  const kitId = choosing ? pickedKitId || initialKitId(kits) : undefined
+  // The kit the copy names: the one picked, else the only (or default) one, else none known yet.
+  const kitName = (kits?.find(k => k.id === kitId) ?? kits?.find(k => k.isDefault))?.name
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -119,6 +139,7 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
       displayName,
       description: description.trim() || undefined,
       ownerGroupId: ownerGroupId || undefined,
+      kitId,
       options: { deployStaging },
     })
     if (!parsed.success) return setIssues(parsed.error.issues)
@@ -140,7 +161,10 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
 
   const error = create.error
   const unreachable = notReachable(error)
-  const hint = error instanceof ApiError && !unreachable ? HINTS[error.status] : undefined
+  const hint =
+    error instanceof ApiError && !unreachable
+      ? (KIT_HINTS[error.code ?? ''] ?? HINTS[error.status])
+      : undefined
 
   return (
     <Modal
@@ -175,8 +199,8 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
       }
     >
       <p className="mb-4">
-        Launch creates a private repository from the Rocketflare template, then its database,
-        storage, sign-in and Workers. You can follow every step on the app’s page.
+        Launch creates a private repository from {kitName ? kitPhrase(kitName) : 'the kit'}, then
+        its database, storage, sign-in and Workers. You can follow every step on the app’s page.
       </p>
       {error && (
         <div className="alert alert-error alert-soft text-sm mb-4 items-start" role="alert">
@@ -216,6 +240,15 @@ export function CreateAppModal({ open, onClose }: { open: boolean; onClose: () =
         </div>
       )}
       <form id="create-app-form" onSubmit={submit} className="space-y-4" noValidate>
+        {choosing && (
+          <KitPicker
+            kits={kits}
+            value={kitId ?? ''}
+            onChange={setPickedKitId}
+            disabled={create.isPending}
+          />
+        )}
+
         <div>
           <label htmlFor="create-name" className="label text-sm">
             Name

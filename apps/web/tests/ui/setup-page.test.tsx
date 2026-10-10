@@ -5,6 +5,8 @@
  * server's own schema message before any request. Kit version and Coding agents are their own
  * sections too.
  */
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   DEFAULT_TEMPLATE_PIN,
   type SessionAgentStatus,
@@ -66,6 +68,11 @@ const KITS = [
   },
 ] as const
 
+/** D36 K5: what Details shows — the meta-kit's own manifest (upgrades, no default plugins). */
+const LAUNCH_KIT_MANIFEST = JSON.parse(
+  readFileSync(path.join(__dirname, '../fixtures/launch-kit-0.1/launch.kit.json'), 'utf8')
+)
+
 const checkResponse = {
   credential: overview.credentials[0],
   status: 'warning',
@@ -96,6 +103,9 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = pag
     '/api/platform/kits': { kits: KITS },
     'POST /api/platform/kits': { ...KITS[1], manifest: null },
     [`POST /api/platform/kits/${KITS[1]?.id}/check`]: { ...KITS[1], manifest: null },
+    [`/api/platform/kits/${KITS[1]?.id}`]: { ...KITS[1], manifest: LAUNCH_KIT_MANIFEST },
+    [`PUT /api/platform/kits/${KITS[1]?.id}/pin`]: { ...KITS[1], manifest: LAUNCH_KIT_MANIFEST },
+    [`DELETE /api/platform/kits/${KITS[1]?.id}`]: { removed: true },
     [`PUT /api/platform/kits/${KITS[1]?.id}/default`]: {
       ...KITS[1],
       isDefault: true,
@@ -678,24 +688,78 @@ describe('Settings → Kit version → Kits (D36 K1)', () => {
     })
   })
 
-  it('adds a kit: a version is a tag, nothing is the latest release, a bad repo never leaves', async () => {
+  it('adds a kit: Follow latest by default, a tag when asked, a bad repo never leaves', async () => {
     const fetchMock = render(overview, Kit)
     const card = await screen.findByRole('region', { name: 'Kits' })
-    const repo = within(card).getByRole('textbox', { name: 'Kit repository' })
-    const ref = within(card).getByRole('textbox', { name: 'Tag or commit' })
+    const form = within(card).getByRole('form', { name: 'Add a kit' })
+    const repo = within(form).getByRole('textbox', { name: 'Kit repository' })
     fireEvent.change(repo, { target: { value: 'not a repo' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Add kit' }))
+    fireEvent.click(within(form).getByRole('button', { name: 'Add kit' }))
     expect(await within(card).findByText('owner/name')).toBeInTheDocument()
     expect(requestBody(fetchMock, 'POST /api/platform/kits')).toBeUndefined()
 
     fireEvent.change(repo, { target: { value: 'acme/acme-kit' } })
-    fireEvent.change(ref, { target: { value: '1.0.0' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Add kit' }))
+    fireEvent.click(within(form).getByRole('radio', { name: 'A release tag' }))
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Tag' }), {
+      target: { value: '1.0.0' },
+    })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add kit' }))
     await waitFor(() =>
       expect(requestBody(fetchMock, 'POST /api/platform/kits')).toEqual({
         repo: 'acme/acme-kit',
         pin: { kind: 'tag', tag: '1.0.0' },
       })
     )
+  })
+
+  it('re-pins a kit to a release tag, checked by the server', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    fireEvent.click(within(card).getAllByRole('button', { name: 'Re-pin' })[1] as HTMLElement)
+    const form = within(card).getByRole('form', { name: 'Re-pin Acme kit' })
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Tag' }), {
+      target: { value: '1.1.0' },
+    })
+    fireEvent.click(within(form).getByRole('button', { name: 'Pin' }))
+    await waitFor(() =>
+      expect(requestBody(fetchMock, `PUT /api/platform/kits/${KITS[1].id}/pin`)).toEqual({
+        kind: 'tag',
+        tag: '1.1.0',
+      })
+    )
+  })
+
+  it('shows what a kit declares: init, release workflow, check, upgrades, plugins', async () => {
+    render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    fireEvent.click(within(card).getAllByRole('button', { name: 'Details' })[1] as HTMLElement)
+    const list = await within(card).findByLabelText('What Acme kit declares')
+    expect(list).toHaveTextContent('launch.kit.json, contract 1')
+    expect(list).toHaveTextContent(LAUNCH_KIT_MANIFEST.scaffold.init)
+    expect(list).toHaveTextContent(`.github/workflows/${LAUNCH_KIT_MANIFEST.release.workflow}`)
+    expect(list).toHaveTextContent(LAUNCH_KIT_MANIFEST.ci.requiredCheck)
+    expect(list).toHaveTextContent(
+      LAUNCH_KIT_MANIFEST.upgrade ? 'Supported' : 'Not declared: its apps are never shown as behind'
+    )
+  })
+
+  it('removes a kit after asking; never the default, and says why', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    const [defaultRemove, acmeRemove] = within(card).getAllByRole('button', { name: 'Remove' })
+    expect(defaultRemove).toBeDisabled()
+    expect(defaultRemove).toHaveAccessibleDescription(/make another kit the default first/)
+    expect(acmeRemove).toBeEnabled()
+    fireEvent.click(acmeRemove as HTMLElement)
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove kit' }))
+    await waitFor(() => {
+      const paths = fetchMock.mock.calls.map(
+        ([input, init]) => `${init?.method ?? 'GET'} ${new URL(String(input), 'http://x').pathname}`
+      )
+      expect(paths).toContain(`DELETE /api/platform/kits/${KITS[1].id}`)
+    })
   })
 })

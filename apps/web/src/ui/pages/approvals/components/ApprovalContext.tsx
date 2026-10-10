@@ -355,6 +355,7 @@ export function ApprovalContext({
                 <span className="whitespace-pre-wrap">{context.description}</span>
               </Row>
             )}
+            {context.kitName && <Row label="Kit">{context.kitName}</Row>}
             <Row label="Team">
               {context.ownerGroupId ? (
                 (groupNames.get(context.ownerGroupId) ?? 'A team you can’t see')

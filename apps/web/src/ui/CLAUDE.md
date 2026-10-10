@@ -547,7 +547,7 @@ A `CUSTOM kit.notice` renders
     Groups `admin` + `manage Group`, Access requests `platformAdmin`, with the pending count),
     Approval policies (`admin` + `manage ApprovalPolicy`), API keys (`admin`)
   - **Building apps** — Coding agents (`platformAdmin`), AI & models (`admin`; tabs Providers and
-    Agent models, `+ manage AiConfig`), Prompts (`admin`), Kit version (`platformAdmin`)
+    Agent models, `+ manage AiConfig`), Prompts (`admin`), Kits (`platformAdmin`)
   - **Platform** (`platformAdmin`) — Domain, Cloudflare, Neon, GitHub, Email, Sign-in, Public URL:
     one `platform/Connection.tsx` told its `step`, reusing the `setup/` cards; Sign-in is the
     upstream `IdentityCard` plus `Identity.tsx`'s issuer keys. The menu shows each one's `StatusDot`

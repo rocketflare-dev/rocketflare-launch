@@ -1,7 +1,7 @@
 /**
  * The kit version every new app (and every re-scaffold) is cut from — the DEFAULT kit's pin (D36
- * K1; the built-in Rocketflare kit with none stored follows Launch's code default). Settings → Kit
- * version.
+ * K1; the built-in Rocketflare kit with none stored follows Launch's code default). Settings → Kits,
+ * above the catalogue; it names the default kit (K5).
  *
  * Three ways to pin it, each resolved by the SERVER through GitHub (it refuses what the repo does
  * not have, so the page never stores what it cannot prove):
@@ -42,7 +42,14 @@ function modeOf(pin: TemplatePinStatus['pin']): Mode {
   return isCommitPin(pin) ? 'commit' : 'tag'
 }
 
-export function KitVersionCard({ templatePin }: { templatePin: TemplatePinStatus }) {
+export function KitVersionCard({
+  templatePin,
+  kitName,
+}: {
+  templatePin: TemplatePinStatus
+  /** The default kit's name (D36 K5); absent while the catalogue loads. */
+  kitName?: string
+}) {
   const { pin, isDefault, latestCheck } = templatePin
   const setPin = useSetTemplatePin()
   const reset = useResetTemplatePin()
@@ -100,8 +107,9 @@ export function KitVersionCard({ templatePin }: { templatePin: TemplatePinStatus
             Kit version
           </h2>
           <div className="text-sm text-secondary mt-0.5">
-            The Rocketflare kit every new app, and every re-scaffold, is cut from. Apps already
-            launched keep theirs until they are upgraded.
+            The version of {kitName ? `${kitName}, the default kit` : 'the default kit'}: what a new
+            app is cut from unless Create app names another kit. Apps already launched keep theirs
+            until they are upgraded.
           </div>
         </div>
         <span className={`badge badge-sm ${isDefault ? 'badge-ghost' : 'badge-info'}`}>

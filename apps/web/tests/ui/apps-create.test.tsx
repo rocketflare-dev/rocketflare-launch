@@ -359,6 +359,96 @@ describe('CreateAppModal', () => {
       fetchMock.mock.calls.some(([input]) => String(input).includes('/api/platform/setup'))
     ).toBe(false)
   })
+
+  // ---- D36 K5: the kit picker -----------------------------------------------------------------
+
+  const ROCKETFLARE_KIT = {
+    id: '11111111-2222-4333-8444-555555555555',
+    slug: 'rocketflare',
+    name: 'Rocketflare',
+    description: 'Multi-tenant SaaS starter',
+    icon: null,
+    version: '0.18.0',
+    isDefault: true,
+  }
+  const ACME_KIT = {
+    id: '22222222-3333-4444-8555-666666666666',
+    slug: 'acme-kit',
+    name: 'Acme kit',
+    description: 'The company kit',
+    icon: null,
+    version: '1.2.0',
+    isDefault: false,
+  }
+  const created = () =>
+    jsonResponse({ app: summary({ status: 'requested', slug: 'shop' }), runId: RUN_ID }, 202)
+
+  async function openCreate(kits: unknown[]) {
+    const fetchMock = renderCatalogue({ '/api/kits': { kits }, 'POST /api/apps': created })
+    fireEvent.click(await screen.findByRole('button', { name: /Create app/ }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Shop' } })
+    return { fetchMock, dialog }
+  }
+
+  it('shows no kit picker when there is one kit, names it, and sends no kit', async () => {
+    const { fetchMock, dialog } = await openCreate([ROCKETFLARE_KIT])
+    expect(await within(dialog).findByText(/from the Rocketflare kit/)).toBeInTheDocument()
+    expect(within(dialog).queryByRole('radiogroup', { name: 'Kit' })).not.toBeInTheDocument()
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    await waitFor(() => expect(requestBody(fetchMock, 'POST /api/apps')).toBeDefined())
+    expect(requestBody(fetchMock, 'POST /api/apps')).not.toHaveProperty('kitId')
+  })
+
+  it('offers each kit with two or more, the default preselected, and sends the one picked', async () => {
+    const { fetchMock, dialog } = await openCreate([ROCKETFLARE_KIT, ACME_KIT])
+    const picker = await within(dialog).findByRole('radiogroup', { name: 'Kit' })
+    const rocketflare = within(picker).getByRole('radio', { name: /Rocketflare/ })
+    const acme = within(picker).getByRole('radio', { name: /Acme kit/ })
+    expect(rocketflare).toBeChecked()
+    expect(acme).not.toBeChecked()
+    expect(within(picker).getByText('default')).toBeInTheDocument()
+    expect(within(picker).getByText('The company kit')).toBeInTheDocument()
+    expect(within(picker).getByText('1.2.0')).toBeInTheDocument()
+
+    fireEvent.click(acme)
+    expect(acme).toBeChecked()
+    expect(within(dialog).getByText(/from the Acme kit,/)).toBeInTheDocument()
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'POST /api/apps')).toMatchObject({ kitId: ACME_KIT.id })
+    )
+  })
+
+  it('sends the default kit when the picker is left alone', async () => {
+    const { fetchMock } = await openCreate([ROCKETFLARE_KIT, ACME_KIT])
+    await screen.findByRole('radiogroup', { name: 'Kit' })
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    await waitFor(() =>
+      expect(requestBody(fetchMock, 'POST /api/apps')).toMatchObject({
+        kitId: ROCKETFLARE_KIT.id,
+      })
+    )
+  })
+
+  it('says what to do when the kit has not passed its check', async () => {
+    const fetchMock = renderCatalogue({
+      '/api/kits': { kits: [ROCKETFLARE_KIT, ACME_KIT] },
+      'POST /api/apps': errorResponse(
+        409,
+        'Acme kit failed its last check, so apps cannot be created from it yet',
+        'kit_not_verified'
+      ),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /Create app/ }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Shop' } })
+    fireEvent.click(await within(dialog).findByRole('radio', { name: /Acme kit/ }))
+    fireEvent.submit(document.getElementById('create-app-form') as HTMLFormElement)
+    expect(await within(dialog).findByText(/failed its last check/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/has to pass its check first/)).toBeInTheDocument()
+    expect(requestBody(fetchMock, 'POST /api/apps')).toMatchObject({ kitId: ACME_KIT.id })
+  })
 })
 
 describe('App page — the first build takes the Overview over', () => {

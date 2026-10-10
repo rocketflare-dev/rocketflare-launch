@@ -109,7 +109,7 @@ describe('Settings — what each role sees', () => {
     renderAt('/settings/general', owner('single'))
     expect(await menu()).toEqual({
       Organisation: ORGANISATION,
-      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
+      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kits'],
       Platform: CONNECTIONS,
       Activity: ['Audit', 'Usage'],
     })
@@ -138,7 +138,7 @@ describe('Settings — what each role sees', () => {
     renderAt('/settings/general', globalAdmin('multi'))
     expect(await menu()).toEqual({
       Organisation: ORGANISATION,
-      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kit version'],
+      'Building apps': ['Coding agents', 'AI & models', 'Prompts', 'Kits'],
       Platform: CONNECTIONS,
       Activity: ['Audit', 'Usage'],
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],
@@ -154,7 +154,7 @@ describe('Settings — what each role sees', () => {
     renderAt('/settings', globalAdminAlone())
     expect(await menu()).toEqual({
       Organisation: ['People'],
-      'Building apps': ['Coding agents', 'Kit version'],
+      'Building apps': ['Coding agents', 'Kits'],
       Platform: CONNECTIONS,
       Operator: ['Users', 'Feature flags', 'All sessions', 'Organisations'],
     })

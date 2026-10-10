@@ -133,7 +133,7 @@ export function settingsGroups({
         },
         { id: 'ai', label: 'AI & models', path: SETTINGS_PATHS.ai, guard: ADMIN },
         { id: 'prompts', label: 'Prompts', path: SETTINGS_PATHS.prompts, guard: ADMIN },
-        { id: 'kit', label: 'Kit version', path: SETTINGS_PATHS.kit, guard: PLATFORM },
+        { id: 'kit', label: 'Kits', path: SETTINGS_PATHS.kit, guard: PLATFORM },
       ],
     },
     {
