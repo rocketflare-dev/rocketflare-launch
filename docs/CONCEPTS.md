@@ -1425,21 +1425,74 @@ wait).
 
 ### 18.6 The scaffold job
 
-Launch cannot run the kit's rename, plugin install and gate in a Worker, so the `repo` step commits
-`.github/workflows/launch-scaffold.yml` and `.launch/scaffold.mjs` (`rocketflare/scaffold-job.ts`,
-still Rocketflare's own until D36 K3 makes it the manifest's `scaffold` block)
-and `scaffold.start` opens an `approved` scaffold ticket and dispatches the job
-(`GitHubActionsScaffoldRunner`, behind the `ScaffoldRunner` seam a P3 sandbox will also fill). The
-job trades its GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token
-scoped to that repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files)
-and the plan, once per ticket; clones the pinned kit at its tag and checks the commit (a commit
-pin: fetches the SHA itself, below); patches
-around rocketflare#37 (kits before 0.15.2 only — from 0.15.2 `KIT.preservedPattern` keeps the org and the
-patch is skipped); runs `rename.mjs --skip-install` and then `pnpm install
---no-frozen-lockfile` itself (on a runner `CI=true` makes the rename's own install frozen, and it
-fails on the workspace names the rename just changed); installs the default plugins; deletes the kit-only
-workflows and `.launch/`; runs `lint`, `typecheck` and `test:config`; pushes `main`; revokes its
-token; and calls `POST /ci/scaffold/done {commit}`.
+Launch cannot run a kit's init, plugin install and gate in a Worker, so the `repo` step commits
+`.github/workflows/launch-scaffold.yml` and `.launch/scaffold.mjs` (`scaffold/job.ts`), and
+`scaffold.start` opens an `approved` scaffold ticket and dispatches the job
+(`GitHubActionsScaffoldRunner`, behind the `ScaffoldRunner` seam a P3 sandbox will also fill).
+
+**The job is generated from the app's kit manifest (D36 K3).** `scaffoldScript(manifest)` embeds
+the part of the app's manifest snapshot (`apps.kit_manifest`, §18.24) the job drives as `KIT` —
+`scaffold.{init, kitOnly, postInit, appManifest}`, `ci.{gateList, gateRun}`, `plugins`, `kit.{id,
+name, version}` — so the job never refetches the manifest and a retry runs what Launch planned (the
+same manifest is the same script: `commitFilesIfChanged` commits nothing). The job trades its
+GitHub OIDC token at `POST /ci/scaffold/token` for a one-hour installation token scoped to that
+repo (`contents` + `workflows` write — `GITHUB_TOKEN` can never push workflow files), the plan
+(with `kitId`: a plan for another kit than the script's is refused — stale job files) and, for a
+PRIVATE kit, a kit read token (below), once per ticket; clones the pinned kit at its tag and checks
+the commit (a commit pin: fetches the SHA itself, below), and refuses a kit whose own
+`launch.kit.json` names another `kit.id`; replaces the tree; runs `scaffold.init` with `{slug}`,
+`{display}`, `{domain}` substituted, each value single-quoted for `sh -c` (a display name with a
+quote or `&` is one argument); deletes the `kitOnly` globs; **stamps the app manifest** —
+`kit.commit` always, `kit.version` (from `kit.version`'s file and field) and `kit.id` when init left
+them out; the `app` block is init's, and a slug other than the plan's fails the job; runs
+`postInit` (strictly — a non-zero exit stops the job) and then `plugins.defaults` through
+`plugins.add` (`{id}`, `{repo}`, `{ref}`, `{subdir}`) when the kit declares both; deletes
+`.launch/` and the scaffold workflow; commits "Start from <kit name> <tag>" as Launch; runs the
+gate — `ci.gateList`, the outermost `{…}` of its output parsed as gate list schema 1 (a package
+manager's header lines before it are fine), then `ci.gateRun` for `lint` and `typecheck` (a list
+missing either fails the job); pushes `main`; revokes its tokens; and calls
+`POST /ci/scaffold/done {commit}`. `--skip-install` skips `postInit` and the plugins.
+
+**Pre-contract Rocketflare** (`kit.id` `rocketflare` and NO `launch.kit.json` at the pin — every
+release up to 0.17.x, driven by the built-in fallback manifest) keeps the steps the contract has no
+field for, in `scaffold/rocketflare-legacy.ts`, each gated on the versions its upstream issue
+(`docs/plans/upstream-kit-issues.md`) applies to: the `KIT.preserved` patch before the rename
+(rocketflare#37, `< 0.15.2`; from 0.15.2 `KIT.preservedPattern` keeps the org); the kit's own
+`default-plugins.mjs --tsv` loop with a `db:generate` per plugin, the plugin declarations written
+into BOTH tomls by a comment-aware append (issue 1), `docs/plugin-api.md` regenerated and a matching
+lockfile — instead of `plugins.add`, since those releases list their plugins in `.rocketflare.json`
+(the fallback's `plugins.defaults` is 0.17.8's); `apps/web/tests/config/plugin-ci.test.ts` removed
+(`< 0.15.8`, issue 5); the kit test patches (`update-check-lib.test.ts` `< 0.15.2`, issue 3; the
+analytics allow-list entry while the plugin still deletes unscoped, plugins#8; `patch-toml.test.ts`
+on every pre-contract release, issue 2); `pnpm lint:fix` allowed to fail; and its old gate (`pnpm
+gate lint typecheck` on 0.16.0+, else `pnpm lint` + `pnpm typecheck`, then `pnpm web test:config`).
+A patch whose anchor is gone is skipped with a warning. A Rocketflare that ships `launch.kit.json`
+gets the generic job alone.
+
+**The pin is the APP's kit's** (`appScaffoldPin`, `kit-pin.ts`): `apps.kit_id` → that kit row's
+effective pin; the default kit's for an app of the default kit or of none. `scaffold.start`
+records the pin it planned on its row (`kitRepo`, `kitTag`, `kitCommit` — `scaffoldPinIds`), the
+token route hands the job THAT pin (read through the ticket's launch run), and `scaffold.verify`
+checks against it — so a kit re-pinned between the dispatch and the job's call cannot change what
+is built. A re-scaffold (§18.5) re-plans from the app's kit's pin of the moment and takes the kit's
+manifest snapshot again (when the kit has one), so the re-committed job is that release's.
+
+**A private kit.** When the GitHub App is installed on the kit repo's OWNER, `/ci/scaffold/token`
+also mints `kitToken`: an installation token narrowed to the kit repo alone with `contents: read`
+(`mintKitReadToken`, `scaffold/service.ts`). The job hands git each token only through
+`GIT_CONFIG_*` env (`http.<server>/.extraheader`) on that repo's own commands — never an argv,
+masked, never printed — and revokes both at the end. No installation there: the kit is taken to be
+public and cloned anonymously (a token over an unrelated installation would not be narrowed to the
+kit, so none is minted). The audit (`app.scaffold.token_issued`) records whether one was issued, its
+repository and permissions — never the token.
+
+**`scaffold.verify`** reads the copy through the app's adapter: the app manifest names the app, the
+app's KIT (`kit.id`, or a pre-contract copy's `kit.name`), the pinned version and commit; both tomls
+name every resource by the naming rule and declare only provisionable bindings. The kit's static
+conformance check is NOT re-run on the copy: a kit is proven once per pin (statically, and by the
+dynamic check, which runs this same job and these same checks on a throwaway copy, §18.24); a copy
+of a pre-contract Rocketflare has no `launch.kit.json` to check; and a copy's own changes are its
+CI's business from the first PR.
 
 The job needs Launch reachable at `APP_URL` from GitHub's runners — `POST /api/apps` refuses
 while it is not (§18.2). If it dies anyway (a red gate, a moved tag, Launch unreachable after all),
@@ -1469,10 +1522,9 @@ the kit's version chain once the app releases a version of its own (0.15.8), the
 lint, typecheck, test, build defined once and a copy's ONE CI job, `pnpm test` the one full run (on
 a Neon gate branch when `TEST_DATABASE_BRANCH` is set), `test:ephemeral` removed, and the kit's own
 workflows (`kit.yml`, `plugin-ci.yml`, `notify-plugins.yml`) `kitOnly`, so the rename strips them
-(0.16.0; the ship gate's contract, `SHIP_GATE_KIT_VERSION`, §18.13). Launch's scaffold still deletes
-`notify-plugins.yml`, `plugin-ci.yml` and the old `tests/config/plugin-ci.test.ts` — a no-op from
-0.16.0, kept for an older pin — and gates with `pnpm gate lint typecheck` + `pnpm web test:config`
-on a kit that has `pnpm gate` (`pnpm lint`, `pnpm typecheck` by name on one that does not). The
+(0.16.0; the ship gate's contract, `SHIP_GATE_KIT_VERSION`, §18.13). The fallback manifest's
+`kitOnly` deletes `notify-plugins.yml`, `plugin-ci.yml` and `kit.yml` (a no-op from 0.16.0, whose
+rename strips them; the old `tests/config/plugin-ci.test.ts` is a legacy step, above). The
 DEFAULT KIT's pin overrides it (D36 K1, §18.24: `kits.pin` on the default row; the built-in
 Rocketflare row with no stored pin follows the code default) — the ONE source of the pin; there is
 no env var. `launch_settings.template_pin` is now its mirror, kept for one release.
@@ -1525,8 +1577,10 @@ GitHub failure is logged by the cron (never thrown out of `scheduled`) and 502
 testing a kit fix without cutting a release each time. The plan's `tag` is then `null`
 (`scaffoldPlanSchema`); the job `git init`s the kit, `fetch --depth 1 origin <sha>` (GitHub serves
 any reachable commit) and `checkout FETCH_HEAD`, refuses unless HEAD is the pinned SHA, and logs
-"Kit <repo> @ <sha> (unreleased commit)"; its commit is "Start from Rocketflare @<short sha>". The
-#37 patch is unchanged (it keys off the kit's own rename-lib). `scaffold.verify` then demands no
+"Kit <repo> @ <sha> (unreleased commit)"; its commit is "Start from <kit name> @<short sha>". The
+legacy steps' version gates read the kit's version at that commit (`kit.version`'s file, else the
+kit's own app manifest), and an unknown version applies them all (each skips itself when its anchor
+is gone). `scaffold.verify` then demands no
 version equal to a tag — only that `.rocketflare.json` records one — and requires `kit.commit` to
 be the pinned SHA (a release pin checks the commit too when the manifest records one). The app
 records `template_ref` = the SHA, `template_commit` = the SHA and `template_version` = the kit
@@ -1546,7 +1600,12 @@ and the commit-pin fetch are proven against the FakeCloud and local git repos on
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
 SHA that is not a branch tip, are unconfirmed; the catalogue still shows a commit-pinned app by
 its `template_version` alone (the SHA is on `template_ref`); `.launch/scaffold.mjs` is not itself
-Biome-clean — `[skip ci]` is what keeps it off the app's CI.
+Biome-clean — `[skip ci]` is what keeps it off the app's CI. The generic job (D36 K3) is proven
+against the meta-kit's manifest with a stand-in init and `pnpm` (`scaffold-generic.test.ts`), not
+yet on a real runner with the real meta-kit; `plugins.add` gets `{subdir}` as an empty quoted
+argument for a plugin without one; the kit read token is minted only where the App is installed on
+the kit's owner (a private kit elsewhere cannot be cloned); the session image's warm pnpm store is
+Rocketflare's, so another kit's `postInit` installs cold on the runner too.
 
 ### 18.7 The deploy gateway
 
@@ -4477,21 +4536,22 @@ not detected before the deploy refuses it (P6 §1 item 7). An app whose `.rocket
 `kit.repo` is not the pin's repo (a fork) is refused the fetch. `notesUrl` assumes the kit's
 `docs/upgrades/<version>.md` exists at the tag.
 
-### 18.24 The kit catalogue and the manifest adapter (D36 K1, K2)
+### 18.24 The kit catalogue and the manifest adapter (D36 K1, K2, K3)
 
 `docs/plans/multi-kit.md` (D36): Launch supports any kit that conforms to the **Launch kit
 contract**, declared by the kit in a root `launch.kit.json` (`@launch/shared/kit-manifest`,
 `kitManifestSchema` — readers tolerate unknown fields; `schema: 1`). K1 is the catalogue and the
-contract; K2 drives every app through an adapter built from its kit's manifest (below); K4 drives
-coding sessions by it too (below); the scaffold job (K3) still uses Rocketflare's own constants.
+contract; K2 drives every app through an adapter built from its kit's manifest (below); K3 makes
+the scaffold job the manifest's and adds the dynamic conformance check (below, and §18.6); K4
+drives coding sessions by it too (below).
 
 **`kits`** (`db/schema/kits.ts`, migration 0049) is platform configuration like `launch_settings`
 (no tenant, `RLS_REVOKED_TABLES`; only `services/launch/kits/store.ts` touches it): `slug` (unique),
 `name`, `description`, `repo` (`owner/name`), `pin` (`{ tag?, commit, follow? }`,
 `kitStoredPinSchema` — the repo is the row's), the manifest snapshot read at the pin with its
-`manifest_source` (`repo` | `fallback`) and `contract_version`, `status` (`unchecked | verified |
-failed`), `problems` (one sentence each), `checked_at`, `latest_check` (Follow latest's last
-lookup), `is_default` — at most one, `kits_one_default_idx` (partial unique) — and
+`manifest_source` (`repo` | `fallback`) and `contract_version`, `status` (`unchecked | checking |
+verified | failed`), `problems` (one sentence each), `checked_at`, `latest_check` (Follow latest's last
+lookup), `dynamic_check` (the last dynamic check, migration 0051, below), `is_default` — at most one, `kits_one_default_idx` (partial unique) — and
 `created_by_user_id`. The migration creates the built-in **Rocketflare** row as the default from the
 `template_pin` setting (its repo on the row, the rest as the pin) or, with none, with NO pin: that
 row follows `DEFAULT_TEMPLATE_PIN` and moves with Launch, as an unset setting did.
@@ -4552,7 +4612,37 @@ result and problems, apps, Check, Make default, and an Add form).
 
 **Private kits.** Every kit lookup (`withKitToken`) finds the GitHub App's installation on the
 repo's OWNER (`GET /app/installations`) and narrows the token to that one repo; with none it uses
-the stored installation, which reads any public repo.
+the stored installation, which reads any public repo. The scaffold job clones a private kit with a
+read token minted the same way and handed over at `/ci/scaffold/token` (§18.6).
+
+**The dynamic check (K3, `kits/dynamic-check.ts`).** The static check reads files; the dynamic one
+RUNS the kit: `?dynamic=1` on `POST /`, `POST /:id/check` and `PUT /:id/pin` (`kitCheckQuerySchema`;
+`launch kits add|check|pin --dynamic`) starts one when the static check passed — opt-in, since it
+takes minutes and a runner. The route only ENQUEUES (`kit.check` on `JOBS_QUEUE`) and the kit
+answers `checking`, with `dynamicCheck` (`kitDynamicCheckSchema`: `queued | running | passed |
+failed`, the commit, the throwaway repo, the run, the problems, `cleanup`). Its phases: `start`
+creates the private repo `<apps org>/launch-kit-check-<kit slug>-<check id>` (recording its GitHub
+id at once), commits the scaffold job generated for the kit with `endpoint: '/ci/kit-check'`, and
+dispatches it (GitHub not having registered the workflow yet is the queue's retry); `poll`, every
+60 seconds as a delayed message, ends the check when the run failed or after 45 minutes; `finish`
+reads the copy the job pushed (its app manifest and tomls, through the kit's adapter —
+`adapter.scaffold.problems` for the app `kit-check`: the app, the kit version and commit, every name
+by the naming rule, only provisionable bindings), DELETES the repo — or ARCHIVES it when the App may
+not delete (403), recorded as `cleanup: archived` (`failed` when neither worked: the repo's name is
+on the check) — and writes the result by compare-and-set on the check's id: `verified` when it
+passed, else `failed` with each problem as "Dynamic check: …". Audited `kit.checked` with
+`after.dynamic`. The job's calls are `/ci/kit-check/token|done` (`routes/ci-kit-check.ts`), the
+scaffold's twins: a verified OIDC token whose `repository_id` is a RUNNING check's repo, from
+`launch-scaffold.yml` on `main` (403 `ci_caller_refused` otherwise), gets ONE one-hour token for
+that repo (`contents` + `workflows` write; 409 `scaffold_token_unavailable` after), a kit read
+token for a private kit and the plan (audited `kit.check_token_issued`, never a token); `done`
+records the pushed commit and enqueues `finish`. **A kit is `verified` when its static check
+passed and no dynamic check at the same pin failed**: a static re-check keeps a failed dynamic
+result's problems (and `checking` while one runs at that pin); a re-pin clears `dynamic_check`
+(`UNCHECKED_KIT`), and a superseded check's phases only remove its repo (its name rides in the job
+payload). Tests: `tests/api/kit-dynamic-check.test.ts` (a private meta-kit fork in the FakeCloud:
+start, the token once and only to that repo's workflow on `main`, a good copy, a bad copy, the
+archive fallback, a failed run, a re-pin).
 
 **The manifest adapter (K2).** Launch drives an app through a `TemplateAdapter`
 (`services/launch/kits/adapter.ts`) BUILT from a kit manifest — `manifestAdapter(manifest)` — so
@@ -4629,23 +4719,24 @@ roles, the marker) and `tests/api/kit-session-workflow.test.ts` (a whole boot of
 upgrade proxy on its app's kit, public and private, locally and on the host);
 `session-ship-gate.test.ts` ships an app on another kit through its own gate.
 
-**Known gaps:** the DYNAMIC conformance check (the scaffold job against a throwaway repo: init →
-postInit → the gate's lint and typecheck) is not built — `verified` means the static check passed
-(K3). The scaffold job is still Rocketflare's (`rocketflare/scaffold-job.ts`: rename, its kit-only
-files, `.rocketflare.json`) and plans from the DEFAULT kit's pin, so an app of another kit cannot be
-created end to end yet (K3). **Sessions of another kit install COLD**: the session image carries
+**Known gaps:** the dynamic check is opt-in, so a kit only checked statically is `verified` without
+ever having run; it has not run against real GitHub (the FakeCloud only), so whether the App may
+delete a repo it created under a given org policy is unconfirmed (the archive fallback covers a
+403); a Follow latest move resets the kit to `unchecked` with NO manifest snapshot, so an app created
+from that kit before an admin's Check takes the Rocketflare fallback as its manifest (`kitManifestOf`)
+— its scaffold then refuses at once (the kit's `launch.kit.json` names another `kit.id`), but the
+cron should re-check after a move. **Sessions of another kit install COLD**: the session image carries
 Rocketflare's pnpm store only (`containers/session/Dockerfile`, `KIT_TAG`), so `session.install`
 fetches every package (a per-kit store cached in R2 is the follow-up); the resume of another kit
 always migrates (no migrations directory in the contract) and its seed must be idempotent (Launch's
 skip vocabulary has no `seed`); the gate's database probe (`gate-db-probe.ts`) reads `DATABASE_URL`
 and runs in `apps/web`, so a kit with another URL name or layout skips it; the checkpoint's `[ai]`
-guard and the `wrangler.session.toml` excludes are Rocketflare's (inert elsewhere); the pipeline's
-`github_env` step still sets `LAUNCH_GATE_APP_ID` by name for a new app (K3 owns the pipeline).
+guard and the `wrangler.session.toml` excludes are Rocketflare's (inert elsewhere). The pipeline's
+`github_env` step writes the variable the kit names (`ci.verifiedVariable`), none when it names
+none (K3).
 Create app has no kit picker and Import does not detect the kit (K5); the full Platform → Kits
-page (pin, remove, the manifest) is K5 — K1's UI is the list above. **The scaffold job clones the
-kit anonymously** (`git clone https://github.com/<repo>`), so a PRIVATE kit registers and checks but
-cannot yet scaffold an app (K3); an upgrade session's fetch of a private kit is authenticated (K4,
-above). The YAML
+page (pin, remove, the manifest) is K5 — K1's UI is the list above, which shows `checking` as "not
+checked" and no dynamic result yet. The YAML
 outline does not read flow mappings over several lines, anchors or multi-document files (a kit
 written that way reads as missing its triggers). The `template_pin` mirror and fallback read go in
 the release after this one. Who may register kits is platform admins only (design §9.4). An app

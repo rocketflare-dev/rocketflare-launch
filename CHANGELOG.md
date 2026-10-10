@@ -34,6 +34,23 @@
   proxy, never in the container. Rocketflare sessions run exactly as before; other kits install
   their packages cold (the session image warms Rocketflare's only). The session system note's ports
   are now `{{uiPort}}` / `{{apiPort}}`; `sessions/rocketflare-dev.ts` is `sessions/kit-dev.ts`.
+- **The scaffold job is the kit's own (D36 K3).** Launch now generates the job that builds a new
+  app from the app's kit manifest: it runs the kit's `scaffold.init` (values shell-quoted), deletes
+  its `kitOnly` files, stamps the app manifest with the kit's id, version and commit (and fails when
+  init did not record the app), runs `postInit` and the kit's default plugins through `plugins.add`,
+  and gates on the kit's own `lint` and `typecheck` steps (`ci.gateList` / `ci.gateRun`). An app is
+  scaffolded at ITS kit's pin, recorded on the run so the job and the check agree. A private kit is
+  cloned with a read-only token for that one repo, handed to the job through the scaffold token
+  exchange and only ever in git's environment. Rocketflare releases without a `launch.kit.json`
+  keep their workarounds (the preserved-org patch, the default-plugins loop and declarations, the
+  kit test patches, the old gate), each limited to the versions its upstream issue affects.
+  `scaffold.verify` also checks the copy names the app's kit and binds only what Launch provisions,
+  and new apps get the gate-verified variable their kit names (none when it names none).
+- **Kits can be checked by running them (D36 K3).** `launch kits check <kit> --dynamic` (also on
+  `add` and `pin`; `?dynamic=1` on the API) runs the kit's scaffold job against a throwaway private
+  repo in the apps organisation, checks the copy, and deletes the repo — archiving it when the
+  GitHub App may not delete. The kit shows `checking` meanwhile; it is `verified` only when the
+  static check passed and no dynamic check at its pin failed (migration 0051, `kits.dynamic_check`).
 
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with

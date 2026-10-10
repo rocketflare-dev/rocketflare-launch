@@ -12,6 +12,13 @@ numbers refer to those trees. Where Launch works around an item, the workaround 
 Repros assume a checkout of the kit at `0.15.0` with `pnpm install` done, run from the repo root.
 Config tests run with `pnpm --dir apps/web exec vitest run --project config <file>`.
 
+**D36 K3.** The scaffold job is now generated from the app's kit manifest (`scaffold/job.ts`).
+Every workaround below that Launch still applies at scaffold time lives in
+`scaffold/rocketflare-legacy.ts` and runs only for a PRE-CONTRACT Rocketflare (`kit.id`
+`rocketflare` and no `launch.kit.json` at the pin), gated on the versions given with each item. A
+Rocketflare release that ships `launch.kit.json` must not need them: its own tests pass on a fresh
+copy, which the dynamic conformance check proves.
+
 ## Summary
 
 | # | Issue | Repo | Status |
@@ -33,7 +40,7 @@ Related issues already filed, not repeated below:
 
 - **rocketflare#37**: `rename.mjs` rewrites `rocketflare-dev` org references. **Fixed by PR #39 (merged 2026-09-28, ships in 0.15.2)**; Launch's patch now skips a kit with `KIT.preservedPattern`. Launch patches
   `KIT.preserved` in the scaffold job (`PRESERVED_ORG_REFS` in
-  `apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`).
+  `apps/web/src/api/services/launch/scaffold/rocketflare-legacy.ts`), for kits before 0.15.2 only.
 - **rocketflare#38** (fixed by PR #39, 0.15.2): the test DB compose project is always `web`, so copies of the kit replace
   each other's test Postgres.
 - **rocketflare-plugins#8**: analytics 3.4.1's `dashboard-visibility.test.ts` fails the host kit's
@@ -95,7 +102,8 @@ Note that the lazy `[\s\S]*?\]` match would also end early at a `]` inside a com
 line by line fixes both.
 
 **Launch workaround.** The scaffold job writes the crons and prefixes with its own comment-aware
-append (`apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`, step 6).
+append (`apps/web/src/api/services/launch/scaffold/rocketflare-legacy.ts`, `PLUGIN_DECLARATIONS_TS`),
+on every pre-contract Rocketflare release (still present in 0.17.8).
 
 **Status.** Not filed.
 
@@ -159,7 +167,7 @@ Or: put any 32-hex id in `RATE_LIMIT_KV` in `apps/web/wrangler.toml` and run
 - (b) Have `unprovision()` also remove any `workers_dev` line (and the provision note) from the
   production text, or build the `workers_dev` test from a fixture rather than the disk file.
 
-**Launch workaround.** `kitTestPatches()` in `scaffold-job.ts` (around lines 559-590) anchors the
+**Launch workaround.** `kitTestPatches()` in `scaffold/rocketflare-legacy.ts` (every pre-contract release; still present in 0.17.8) anchors the
 regex and drops Launch's `workers_dev = false` from the production text in `unprovision()`.
 
 **Status.** Not filed.
@@ -219,7 +227,7 @@ pnpm --dir apps/web exec vitest run --project config tests/config/upgrade-lib.te
 there. That tests the predicate without depending on the host repo's history.
 
 **Launch workaround.** The scaffold job commits before it runs the gate, so the kit tests see at
-least the app's first commit and the scaffold commit (`scaffold-job.ts`, step 8).
+least the app's first commit and the scaffold commit (`scaffold/job.ts`, step 8 — for every kit).
 
 **Status.** Not filed.
 
@@ -249,8 +257,9 @@ pnpm --dir apps/web exec vitest run --project config tests/config/plugin-ci.test
 rename and the app never carry. Also consider listing `plugin-ci.yml` and `notify-plugins.yml` as
 kit-only files that `install.sh` or `rename.mjs` can drop, with their tests.
 
-**Launch workaround.** The scaffold job deletes both kit-only workflows and this test
-(`KIT_ONLY_WORKFLOWS` in `scaffold-job.ts`, step 7).
+**Launch workaround.** The scaffold job deletes both kit-only workflows (the fallback manifest's
+`scaffold.kitOnly`) and this test (`legacyRemoveFiles` in `scaffold/rocketflare-legacy.ts`, before
+0.15.8, which moved it to `tests/kit-only/`).
 
 **Status.** Not filed.
 
@@ -506,7 +515,9 @@ rewrite the lockfile. Anywhere `CI=true` is set (every GitHub Actions runner), p
 lockfile's inputs, so a frozen install can never succeed.
 
 **Launch workaround.** The scaffold job passes `--skip-install`, then runs `pnpm install
---no-frozen-lockfile` and `pnpm lint:fix` itself (`apps/web/src/api/services/launch/rocketflare/scaffold-job.ts`).
+--no-frozen-lockfile` and `pnpm lint:fix` itself — since D36 K3 the fallback manifest's
+`scaffold.init` (with `--skip-install`) and `scaffold.postInit`, so a kit with a contract states its
+own.
 
 **Status.** Not filed.
 

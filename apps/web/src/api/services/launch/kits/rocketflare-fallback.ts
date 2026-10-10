@@ -11,7 +11,7 @@
  *
  * | Block | Read by |
  * |---|---|
- * | `scaffold.init` / `postInit` / `kitOnly` | `rocketflare/scaffold-job.ts` still hardcodes them (K3) |
+ * | `scaffold`, `ci.gateList` / `gateRun`, `plugins` | embedded in the scaffold job (`scaffold/job.ts`, K3); pre-contract Rocketflare keeps legacy steps (`scaffold/rocketflare-legacy.ts`) |
  * | `scaffold.appManifest`, `worker.tomls` | `adapter.paths` (+ `launch.plugins.json`, {@link ROCKETFLARE_LEGACY_APP_MANIFESTS}) |
  * | `worker.naming`, `worker.titles` | `kits/names.ts` (`workerNameOf`, `kvTitleOf`, `namingProblems`) |
  * | `launchProvides` | `kits/toml.ts` `writeConfig` / `launchVars`, `adapter.secrets` / `secretTargets` / `auth` |
@@ -23,8 +23,9 @@
  *
  * Two things Launch does to Rocketflare have no field, on purpose (Appendix A): the bootstrap's
  * root preload and the scaffold's test/preserved-org patches — legacy steps, not contract.
- * `plugins.defaults` is the kit's `defaultPlugins` at 0.17.8; the scaffold job still reads the
- * kit's own list (`default-plugins.mjs`) until K3.
+ * `plugins.defaults` is the kit's `defaultPlugins` at 0.17.8; for a pre-contract release (no
+ * `launch.kit.json` at the pin) the scaffold job reads the kit's own list (`default-plugins.mjs`)
+ * instead, a legacy step (K3).
  */
 import {
   type KitManifest,

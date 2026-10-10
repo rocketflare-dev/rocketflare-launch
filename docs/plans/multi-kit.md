@@ -1,7 +1,7 @@
 # Several kits, one contract: design
 
-**Status:** accepted, 2026-10-10. **K1 and K2 built** (2026-10-10, `docs/CONCEPTS.md` §18.24);
-K3–K6 not started. Decision **D36**. [spec/02](../../spec/02-template-contract.md) was rewritten
+**Status:** accepted, 2026-10-10. **K1, K2, K3 and K4 built** (2026-10-10, `docs/CONCEPTS.md`
+§18.6, §18.24); K5–K6 not started. Decision **D36**. [spec/02](../../spec/02-template-contract.md) was rewritten
 with K2 to describe the contract as built. Open questions are in §9.
 
 ## 1. Why
@@ -222,8 +222,7 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
     - `kits` also carries `description`, `manifest_source` (`repo` | `fallback`), `latest_check`
       (each kit's Follow latest lookup) and `created_by_user_id`;
     - `verified` means the STATIC check passed: the dynamic check (§7) is K3's, with the scaffold
-      job; the scaffold still clones the kit anonymously, so a private kit registers and checks but
-      cannot scaffold until K3;
+      job (built: opt-in, see K3); the scaffold cloned the kit anonymously until K3;
     - the contract gained, from building the meta-kit: `kit.repo`, `worker.titles` (+ the shared
       `kvTitleSuffix` helper), `launchProvides.oidc.label` (Launch writes `OIDC_LABEL`), and the
       notes on `{dbUrl}`, `ci.gateList`, `release.environmentInput` and `health.live` above;
@@ -242,7 +241,7 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - **Built (2026-10-10).** `services/launch/kits/adapter.ts` (`manifestAdapter`, `adapterFor`,
     `adapterForKit`, `adaptersFor`); the Rocketflare modules moved into `kits/` (`names`, `toml`,
     `app-manifest`, `declared-config`, `upgrade-prompt`), the placeholder into `placeholder/`, and
-    `rocketflare/adapter.ts` was deleted; `rocketflare/` holds only `scaffold-job.ts` (K3). Where it
+    `rocketflare/adapter.ts` was deleted; `rocketflare/` held only `scaffold-job.ts` (gone in K3). Where it
     differs from this section:
     - **The app keeps its manifest**: `apps.kit_manifest` (migration 0050), written at create and
       import from the kit's snapshot (the fallback when the kit row has none) and refreshed when a
@@ -272,6 +271,43 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - `patchPreserved`, `kitTestPatches` and the plugin declarations stay as Rocketflare-legacy
     steps, gated on kit id and version, until their fixes land upstream
     ([upstream-kit-issues](upstream-kit-issues.md)).
+  - **Built (2026-10-10).** `scaffold/job.ts` (moved out of `rocketflare/`, which is gone):
+    `scaffoldScript(manifest)` embeds the manifest's `scaffold`, `ci.gateList`/`gateRun`, `plugins`
+    and `kit.{id, name, version}` in `.launch/scaffold.mjs` as `KIT` — the app's snapshot, at plan
+    time; `scaffold/rocketflare-legacy.ts` holds the legacy steps. The dynamic check is
+    `kits/dynamic-check.ts` (CONCEPTS §18.24). Where it differs from this section:
+    - **The order** is init → kitOnly → stamp → postInit → plugins → commit → gate: the commit
+      comes before the gate (kits' tests read HEAD~1, as before), and init runs before the stamp,
+      which VERIFIES init's `app` block (a wrong slug fails the job) and adds only the kit's
+      `commit`, `version` and `id` (no `id` beside a pre-contract copy's `kit.name`).
+    - **Legacy = pre-contract Rocketflare**: `kit.id` `rocketflare` AND no `launch.kit.json` at the
+      pin, then each step's own version range (`ROCKETFLARE_LEGACY_BEFORE`; an unknown version
+      applies them, a gone anchor skips itself). Besides the three named above it keeps the kit's
+      own `default-plugins.mjs` loop (those releases list plugins in `.rocketflare.json`, not
+      `plugins.defaults`), the old `plugin-ci.test.ts` removal (`< 0.15.8`), a soft `lint:fix` and
+      the old gate (`pnpm gate lint typecheck` / by name, then `web test:config`) — so a
+      Rocketflare that ships `launch.kit.json` gets the generic job alone, gate list included.
+    - **The pin is the app's kit's** (`appScaffoldPin`; the default kit's for an app with none),
+      recorded on `scaffold.start` (`kitRepo`/`kitTag`/`kitCommit`) and read back by the token
+      route and `scaffold.verify`; a re-scaffold re-plans at the kit's current pin and takes its
+      snapshot again. The plan carries `kitId`, and the job refuses a plan, or a kit at the pin
+      (its `launch.kit.json`), for another kit.
+    - **Private kits**: `/ci/scaffold/token` adds `kitToken` — `contents: read`, narrowed to the kit
+      repo, minted only through the App's installation on the kit's OWNER (a token over another
+      installation would not be narrowed; without one the kit is cloned anonymously); git gets it
+      through `GIT_CONFIG_*` env only, and the job revokes it.
+    - **The dynamic check is opt-in** (`?dynamic=1` on add, check and pin; `--dynamic` in the CLI):
+      a `kit.check` job on `JOBS_QUEUE` in three phases (start, a delayed self-re-enqueuing poll,
+      finish), the throwaway repo named `launch-kit-check-<slug>-<check id>`, its own OIDC calls
+      `/ci/kit-check/token|done`, the result on `kits.dynamic_check` (migration 0051) by
+      compare-and-set on the check's id, the repo deleted or — when the App may not — archived.
+      `verified` = the static check passed and no dynamic check at the same pin failed; `checking`
+      while one runs. A static-only check therefore still verifies (an always-on dynamic check
+      would make every check minutes long and need a runner).
+    - **`scaffold.verify`** gained the copy's kit id and the binding kinds; it does not re-run the
+      static conformance check on the copy (a pre-contract copy has no `launch.kit.json`, and the
+      dynamic check proves the kit's copies once per pin). The pipeline's `github_env` writes the
+      kit's `ci.verifiedVariable` (none when it names none).
 - **K4: sessions.**
   - `sessions/rocketflare-dev.ts` becomes `kit-dev.ts`, driven by `manifest.session`.
   - `sessions/gate.ts` and `gate-branch.ts` read `ci`, and `neon-session-db.ts` reads `database`.

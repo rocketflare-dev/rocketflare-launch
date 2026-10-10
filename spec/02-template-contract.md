@@ -59,7 +59,8 @@ environment input, `id-token: write`); both tomls with placeholder ids, names th
 naming rule and only binding kinds Launch provisions (KV, Queues, R2, Durable Objects, Workflows,
 AI, assets); the `live` and `ready` routes; sign-in driven by the mapped OIDC vars; a `CLAUDE.md`
 or `AGENTS.md`. The static conformance check (`services/launch/kits/conformance.ts`) proves the
-files; the dynamic check (scaffold a throwaway copy) is K3.
+files; the dynamic check (`services/launch/kits/dynamic-check.ts`, opt-in) runs the kit's
+scaffold job against a throwaway private repo and checks the copy (D36 K3, CONCEPTS §18.24).
 
 ## What Launch deliberately does not reuse
 
@@ -70,8 +71,9 @@ against the vendor REST APIs itself ([06](06-registry-and-pipeline.md)); the ada
 
 ## Known gaps
 
-- The scaffold job and coding sessions still use Rocketflare's own steps (D36 K3, K4), so an app
-  of another kit registers, checks and resolves its adapter but cannot yet be created end to end.
+- The scaffold job is generated from the app's kit manifest (D36 K3) and sessions follow it (K4);
+  pre-contract Rocketflare releases keep legacy steps the contract has no field for. A kit is
+  picked at Create app only with K5; until then new apps are cut from the default kit.
 - The resource kinds are fixed: a kit that needs D1, Hyperdrive, Vectorize or a service binding
   fails conformance. Moving a kit's `schema` under existing apps is an open question
   ([multi-kit.md §9](../docs/plans/multi-kit.md)).
