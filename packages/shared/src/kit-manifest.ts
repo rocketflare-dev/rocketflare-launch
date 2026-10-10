@@ -209,7 +209,7 @@ const sessionBlock = z
     /**
      * Brings a fresh checkout up against `{dbUrl}` (a Neon branch); no Docker, no prompts. Launch
      * substitutes `{dbUrl}` with the SHELL REFERENCE `"$LAUNCH_DB_URL"`, never the URL itself: the
-     * URL travels only in the command's environment (`sessions/rocketflare-dev.ts`), so it is in
+     * URL travels only in the command's environment (`sessions/kit-dev.ts`), so it is in
      * no argument list, log line or step result.
      */
     bootstrap: commandSchema,

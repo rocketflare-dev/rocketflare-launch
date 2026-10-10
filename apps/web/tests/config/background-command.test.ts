@@ -1,7 +1,7 @@
 /**
  * A long command in a session's container, in the background and polled
  * (`services/sessions/background-command.ts`), and the kit bootstrap on top of it
- * (`rocketflare-dev.ts` `sessionBootstrap`). Against `FakeSandbox`, which speaks the runner's file
+ * (`kit-dev.ts` `sessionBootstrap`). Against `FakeSandbox`, which speaks the runner's file
  * protocol; the runner script itself runs under a real bash where `setsid` exists (Linux, CI).
  */
 import { spawn, spawnSync } from 'node:child_process'
@@ -32,7 +32,7 @@ import {
   SESSION_LAUNCH_DIR,
   SessionBootstrapError,
   sessionBootstrap,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
 import { FakeSandbox } from '../helpers/fake-sandbox'
 
 const DIR = SESSION_LAUNCH_DIR

@@ -20,8 +20,8 @@
 import { Type } from '@earendil-works/pi-ai'
 import type { ToolRegistration } from '@earendil-works/pi-durable'
 import { shellQuote } from '../../claude-stream'
+import { sessionSharedEnv } from '../../kit-dev'
 import type { SandboxPort } from '../../ports'
-import { sessionSharedEnv } from '../../rocketflare-dev'
 
 /** The extension's name in pi's registry. */
 export const LAUNCH_WORKSPACE_EXTENSION = 'launch-workspace'

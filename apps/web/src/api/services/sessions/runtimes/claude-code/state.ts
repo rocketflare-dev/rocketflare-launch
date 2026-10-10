@@ -6,7 +6,7 @@
  * unchanged (`checkpoint.ts` re-exports the two helpers it always exported).
  */
 import type { SessionRow } from '../../../../../db/schema'
-import { claudeTranscriptPath } from '../../rocketflare-dev'
+import { claudeTranscriptPath } from '../../kit-dev'
 import type { RuntimeStateFiles } from '../types'
 
 /** Claude Code's per-project directory name for `cwd`. */

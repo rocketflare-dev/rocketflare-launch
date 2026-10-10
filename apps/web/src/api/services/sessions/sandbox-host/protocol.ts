@@ -61,10 +61,12 @@ export interface GitEgressGrant {
   /** ms since the epoch. */
   expiresAt: number
   /**
-   * P6 6c: public repos a kit upgrade session may FETCH (upload-pack only, no credential) — the
-   * pinned kit. Absent for every other session (`forwardGit`'s `readOnlyRepos`).
+   * P6 6c: repos a kit upgrade session may FETCH (upload-pack only) — its app's kit. Absent for
+   * every other session (`forwardGit`'s `readOnlyRepos`). `token` (a SECRET, D36 K4): a read-only
+   * installation token for a kit that may be private, sent only when GitHub refuses the fetch
+   * without one; `expiresAt` (ms since the epoch) says when it was minted, for the fresh retries.
    */
-  readOnlyRepos?: { owner: string; repo: string }[]
+  readOnlyRepos?: { owner: string; repo: string; token?: string; expiresAt?: number }[]
 }
 
 /**

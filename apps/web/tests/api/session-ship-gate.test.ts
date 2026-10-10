@@ -16,6 +16,8 @@
  * sweep); and no database URL or password reaches an event or a step result.
  */
 import { generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { type KitManifest, parseKitManifest } from '@launch/shared/kit-manifest'
 import {
   isShipGateRunning,
   LAUNCH_GATE_CHECK,
@@ -29,6 +31,7 @@ import { WORKSPACE_CHANGED_SCRIPT } from '@/api/services/sessions/checkpoint'
 import { NeonSessionDb } from '@/api/services/sessions/db/neon-session-db'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import {
+  GATE_KIT_PROBE,
   GATE_KIT_TOO_OLD_MESSAGE,
   GATE_LIST_COMMAND,
   GATE_LIST_UNREADABLE_MESSAGE,
@@ -146,6 +149,8 @@ async function harness(
     trees?: Parameters<typeof scriptKitGate>[3]
     /** Issue #9: the checkpoint moves the session's head to the commit it pushed (the real one does). */
     trackHead?: boolean
+    /** D36 K4: the app's own kit manifest snapshot (default: none — the Rocketflare fallback). */
+    kitManifest?: KitManifest
   } = {}
 ): Promise<Harness> {
   const env = createTestEnv()
@@ -155,7 +160,10 @@ async function harness(
   // `pr` mode: the ship ends at the open PR, as before issue #5 (the landing: session-land.test.ts).
   await db
     .update(apps)
-    .set({ shipSettings: { sessionShip: 'pr', review: { mode: 'none', groupIds: [] } } })
+    .set({
+      shipSettings: { sessionShip: 'pr', review: { mode: 'none', groupIds: [] } },
+      ...(opts.kitManifest ? { kitManifest: opts.kitManifest } : {}),
+    })
     .where(eq(apps.id, f.app.id))
   const row = await insertSession(db, f, { status: 'requested', title: null })
   const runs: GateRun[] = []
@@ -207,6 +215,18 @@ async function harness(
           ' src/ui/pages/Home.tsx | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)\n',
       })
       .onProcess(/exec pnpm dev /, { lines: ['ready'], ports: [5173, 8787], hang: true })
+      // D36 K4: another kit's dev start (`session.devStart`) and its own gate (`ci.gateRun`).
+      .onProcess(/exec sh -c 'node scripts\/dev\.mjs start'/, {
+        lines: ['ready'],
+        ports: [5173, 8787],
+        hang: true,
+      })
+      .onExec('node scripts/gate.mjs --list --json', {
+        stdout: `> kit@0.1.0 gate\n${opts.gateList ?? KIT_GATE_LIST_JSON}\n`,
+      })
+      .onBackground(/scripts\/gate\.mjs run lint/, gateScript('lint'))
+      .onBackground(/scripts\/gate\.mjs run typecheck/, gateScript('typecheck'))
+      .onBackground(/scripts\/gate\.mjs run test/, gateScript('test'))
       // The database probe before the tests (`gate-db-probe.ts`): its env and allow-list recorded.
       .onBackground(/gate-db-probe\.cjs/, (_command, procOpts) => {
         const sandbox = ports.sandbox(row.id) as FakeSandbox
@@ -1092,6 +1112,57 @@ describe('the ship gate: which kit', () => {
   it('a gate that prints no list (or a schema Launch cannot read) is refused', async () => {
     const h = await harness({ gateList: JSON.stringify({ schema: 2, steps: [] }) })
     await expectRefused(h, GATE_LIST_UNREADABLE_MESSAGE, GATE_LIST_COMMAND)
+  })
+})
+
+describe('the ship gate: an app on another kit (D36 K4)', () => {
+  /** The meta-kit with its own gate commands and test variable names — nothing Rocketflare's. */
+  function otherKit(): KitManifest {
+    const doc = JSON.parse(
+      readFileSync(new URL('../fixtures/launch-kit-0.1/launch.kit.json', import.meta.url), 'utf8')
+    )
+    doc.launchProvides.databaseUrl = 'PG_URL'
+    doc.ci.gateList = 'node scripts/gate.mjs --list --json'
+    doc.ci.gateRun = 'node scripts/gate.mjs run {step}'
+    doc.ci.testEnv = { branch: 'GATE_BRANCH' }
+    return parseKitManifest(JSON.stringify(doc))
+  }
+
+  it('lists and runs the kit’s own gate — no probe — and hands the tests its variable names', async () => {
+    const h = await harness({ kitManifest: otherKit() })
+    const run = await drive(h)
+    expect(run.outcome.status).toBe('shipped')
+    const commands = h.sandbox().commands
+    expect(commands).not.toContain(GATE_KIT_PROBE)
+    expect(commands).not.toContain(GATE_LIST_COMMAND)
+    expect(commands).toContain('node scripts/gate.mjs --list --json')
+    expect((await gateEvents(h)).map(g => g.command)).toEqual([
+      'node scripts/gate.mjs run lint',
+      'node scripts/gate.mjs run typecheck',
+      'node scripts/gate.mjs run test',
+    ])
+    const test = h.runs.find(r => r.step === 'test')
+    expect(test?.env).toHaveProperty('GATE_BRANCH', gateBranchName(h.row.shortId, 1))
+    expect(test?.env?.PG_URL).toMatch(/^postgres(ql)?:\/\//)
+    for (const name of ['DATABASE_URL', 'TEST_DATABASE_BRANCH', 'TEST_DATABASE_ENDPOINT']) {
+      expect(test?.env).not.toHaveProperty(name)
+    }
+    expect(gateBranchesLeft(h)).toEqual([])
+  })
+
+  it('a kit list that does not parse is refused with the kit’s own command named', async () => {
+    const h = await harness({ kitManifest: otherKit(), gateList: '{"schema":2,"steps":[]}' })
+    const run = await drive(h)
+    expect(run.names).toContain('ship.kit#1')
+    expect(h.runs).toEqual([])
+    expect(await gateEvents(h)).toEqual([
+      expect.objectContaining({
+        step: 'test',
+        passed: false,
+        command: 'node scripts/gate.mjs --list --json',
+        output: expect.stringContaining('`node scripts/gate.mjs --list --json` did not print'),
+      }),
+    ])
   })
 })
 

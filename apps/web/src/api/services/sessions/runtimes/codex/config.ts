@@ -27,8 +27,8 @@
  * leased `auth.json`.
  */
 import type { SessionCredentialSource } from '@launch/shared/launch-agents'
+import { SESSION_HOME } from '../../kit-dev'
 import { MODEL_KEY_PLACEHOLDER } from '../../model-key'
-import { SESSION_HOME } from '../../rocketflare-dev'
 import type { RuntimeFile } from '../types'
 
 /** Codex's home in the session image: config, rules, the system note, the rollouts, `auth.json`. */

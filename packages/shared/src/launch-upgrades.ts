@@ -218,12 +218,20 @@ export const UPGRADE_RESULT_MARKER = 'LAUNCH-UPGRADE:'
 export const UPGRADE_RESULTS = ['DONE', 'STOPPED'] as const
 export type UpgradeResult = (typeof UPGRADE_RESULTS)[number]
 
-/** The LAST `LAUNCH-UPGRADE: DONE|STOPPED` line of `text`, or null when it has none. Pure. */
-export function upgradeResultOf(text: string | null | undefined): UpgradeResult | null {
+/**
+ * The LAST `<marker> DONE|STOPPED` line of `text`, or null when it has none. Pure. `marker` is the
+ * app kit's `upgrade.doneMarker` (D36 K4; Rocketflare's and the default: `LAUNCH-UPGRADE:`).
+ */
+export function upgradeResultOf(
+  text: string | null | undefined,
+  marker: string = UPGRADE_RESULT_MARKER
+): UpgradeResult | null {
   if (!text) return null
+  const escaped = marker.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const line = new RegExp(`^\\s*\\**\\s*${escaped}\\s*(DONE|STOPPED)\\s*\\**\\s*$`)
   let found: UpgradeResult | null = null
-  for (const line of text.split('\n')) {
-    const match = /^\s*\**\s*LAUNCH-UPGRADE:\s*(DONE|STOPPED)\s*\**\s*$/.exec(line)
+  for (const each of text.split('\n')) {
+    const match = line.exec(each)
     if (match) found = match[1] as UpgradeResult
   }
   return found

@@ -20,7 +20,7 @@ import {
   workflowsGuardScript,
 } from '@/api/services/sessions/checkpoint'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
-import { SESSION_HOME } from '@/api/services/sessions/rocketflare-dev'
+import { SESSION_HOME } from '@/api/services/sessions/kit-dev'
 import { createR2Storage } from '@/api/services/storage'
 import { loadConfig } from '@/config'
 import { sessions } from '@/db/schema'

@@ -57,8 +57,8 @@
 import type { TokenUsage } from '@launch/shared/ai/chat'
 import type { SessionCredentialSource } from '@launch/shared/launch-agents'
 import type { SessionEventInput, SessionUsage } from '@launch/shared/launch-sessions'
+import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './kit-dev'
 import { MODEL_KEY_PLACEHOLDER, redactModelKeys } from './model-key'
-import { SESSION_HOME, SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './rocketflare-dev'
 
 // ---- the command ---------------------------------------------------------------------------------
 

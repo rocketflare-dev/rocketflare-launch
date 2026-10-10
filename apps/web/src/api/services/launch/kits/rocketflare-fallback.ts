@@ -16,9 +16,9 @@
  * | `worker.naming`, `worker.titles` | `kits/names.ts` (`workerNameOf`, `kvTitleOf`, `namingProblems`) |
  * | `launchProvides` | `kits/toml.ts` `writeConfig` / `launchVars`, `adapter.secrets` / `secretTargets` / `auth` |
  * | `declaredConfig` | `kits/declared-config.ts` |
- * | `database` | `pipeline/provision-neon.ts` (roles, extensions; `rlsRole` is K4's) |
+ * | `database` | `pipeline/provision-neon.ts` (roles, extensions); `sessions/db/neon-session-db.ts` (`rlsRole`, K4) |
  * | `health`, `release`, `ci.requiredCheck` | `adapter.health` / `release` / `requiredCheck` |
- * | `ci` (the rest), `session` | `sessions/gate.ts`, `sessions/rocketflare-dev.ts` still hardcode them (K4) |
+ * | `ci` (the rest), `session` | `sessions/gate.ts` (`gateKitOf`), `sessions/kit-dev.ts` (`sessionKitOf`) — K4; Rocketflare keeps a legacy path there |
  * | `upgrade` | `kits/upgrade-prompt.ts`, `kitUpgradeNotesUrl` |
  *
  * Two things Launch does to Rocketflare have no field, on purpose (Appendix A): the bootstrap's

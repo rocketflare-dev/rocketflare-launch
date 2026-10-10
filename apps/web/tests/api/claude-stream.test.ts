@@ -24,8 +24,8 @@ import {
   mapClaudeLine,
   shellQuote,
 } from '@/api/services/sessions/claude-stream'
+import { CLAUDE_PROJECT_DIR, SESSION_HOME } from '@/api/services/sessions/kit-dev'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
-import { CLAUDE_PROJECT_DIR, SESSION_HOME } from '@/api/services/sessions/rocketflare-dev'
 import { claudeStreamJsonLines } from '../helpers/fake-anthropic'
 
 const fixture = (name: string) =>

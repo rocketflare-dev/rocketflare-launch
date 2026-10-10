@@ -107,7 +107,23 @@ export async function hostedGitHub(
     upstream: git.upstream,
     fetch: deps.fetch,
     sleep: deps.sleep,
-    ...(git.readOnlyRepos?.length ? { readOnlyRepos: git.readOnlyRepos } : {}),
+    ...(git.readOnlyRepos?.length
+      ? {
+          // A private kit's read-only token stays here: `forwardGit` sends it only on GitHub's 401.
+          readOnlyRepos: git.readOnlyRepos.map(({ owner, repo, token, expiresAt }) => ({
+            owner,
+            repo,
+            ...(token
+              ? {
+                  token: async () => ({
+                    token,
+                    fresh: isFreshToken(expiresAt ?? 0, deps.now()),
+                  }),
+                }
+              : {}),
+          })),
+        }
+      : {}),
   })
 }
 

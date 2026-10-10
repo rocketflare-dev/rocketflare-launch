@@ -25,8 +25,8 @@ import {
 } from '@/api/services/sessions/credentials/store'
 import { handleOpenAi } from '@/api/services/sessions/egress/openai'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
+import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/kit-dev'
 import { MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/model-key'
-import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/rocketflare-dev'
 import { parseCodexAuthJson } from '@/api/services/sessions/runtimes/codex/auth-json'
 import {
   CODEX_AGENTS_PATH,

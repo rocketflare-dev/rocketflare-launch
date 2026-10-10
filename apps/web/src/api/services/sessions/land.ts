@@ -95,11 +95,11 @@ import { checkContainer, SESSION_BOOT_MARKER } from './boot-marker'
 import { type WarnLogger, wakeSession } from './chat'
 import { nudgeSession, safeErrorMessage } from './events'
 import type { LandHealthResult, LandReleaseResult, LandStagingResult } from './hooks'
+import { tailOf } from './kit-dev'
 import { restartSessionInstance, sessionsPaused } from './lifecycle'
 import { redactModelKeyText } from './model-key'
 import type { FailedCheckLog, RepoPullRequest } from './ports'
 import { FAILED_CHECK_LOG_LINES } from './repo/github-repo-host'
-import { tailOf } from './rocketflare-dev'
 import { prChecksChanged, sessionRepo, sessionRequiredCheck } from './ship'
 import {
   backupWorkspace,
@@ -481,7 +481,7 @@ export async function landCiStep(
     ...(checks.queued ? { queued: checks.queued } : {}),
   }
   const emit = emitterFor(scope)
-  const changed = prChecksChanged(session.prChecks ?? null, checks)
+  const changed = prChecksChanged(session.prChecks ?? null, checks, requiredCheck)
   const elapsedMs = sinceMs(scope, landing.stageAt)
 
   if (state === 'failure') {

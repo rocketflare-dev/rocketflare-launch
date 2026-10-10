@@ -62,8 +62,8 @@ import {
   liveContainerCount,
   PREBUILD_CONTAINER_HEADROOM,
 } from './container-capacity'
+import { SESSION_IMAGE_VERSION } from './kit-dev'
 import { loadSessionPolicy, sessionsPaused } from './lifecycle'
-import { SESSION_IMAGE_VERSION } from './rocketflare-dev'
 import { type WorkspaceBackupMode, workspaceBackupMode } from './workspace-backup'
 
 /**

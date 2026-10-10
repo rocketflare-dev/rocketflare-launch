@@ -41,7 +41,7 @@ import {
   KIT_ALLOW_ROOT_ENV,
   KIT_BOOTSTRAP_SKIP_ENV,
   SESSION_WRANGLER_CONFIG,
-} from '@/api/services/sessions/rocketflare-dev'
+} from '@/api/services/sessions/kit-dev'
 
 const manifest = rocketflareFallbackManifest()
 

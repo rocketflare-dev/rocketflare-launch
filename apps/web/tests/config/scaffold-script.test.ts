@@ -242,7 +242,7 @@ beforeAll(async () => {
     analyticsKitSha[branch] = git(kit, 'rev-parse', 'HEAD')
   }
   git(kit, 'checkout', '--quiet', 'main')
-  mkdirSync(path.join(root, 'server/rocketflare-dev'), { recursive: true })
+  mkdirSync(path.join(root, 'server/kit-dev'), { recursive: true })
   git(root, 'clone', '--quiet', '--bare', kit, 'server/rocketflare-dev/rocketflare.git')
 
   // ---- Launch, the Actions OIDC endpoint and GitHub's API, on one local server

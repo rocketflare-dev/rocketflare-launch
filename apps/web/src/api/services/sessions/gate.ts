@@ -15,6 +15,14 @@
  * memory (it is what killed session d9124cbb) — and proves nothing lint + typecheck + the tests have
  * not, beyond what the PR's CI (which runs it) proves minutes later on a machine sized for it.
  *
+ * **Driven by the app's kit manifest** (D36 K4, {@link GateKit} / {@link gateKitOf}): the list
+ * command (`ci.gateList`), each step's command (`ci.gateRun`, `{step}` filled) and the test step's
+ * variable names (`launchProvides.databaseUrl`, `ci.testEnv`). Everything below about versions —
+ * the probe, `test:ephemeral`, 0.15.7 / 0.16.0 — is ROCKETFLARE's legacy ({@link GateKit.legacy}):
+ * any other kit has no probe and no legacy commands; its list is asked for directly, and a list
+ * that does not parse is refused the same way. The steps Launch runs and skips are the same for
+ * every kit (`SHIP_GATE_STEPS`, {@link SHIP_GATE_SKIPPED}).
+ *
  * **Which kit** ({@link GATE_KIT_PROBE}, `ship.kit#N`, before the first step): a root `gate` script
  * means the steps come from the kit's own list — `pnpm gate --list --json`, parsed with the kit's
  * schema shape ({@link kitGateListSchema}) and planned by {@link planGateFromList}: Launch's steps
@@ -69,23 +77,28 @@
  * on exit behind the egress interceptor's WebSocket bug (docs/plans/sandbox-websocket-close.md),
  * and the kit's scripts `process.exit` for that reason, but vitest's own exit is not theirs.
  */
+import { fillTemplate, type KitManifest } from '@launch/shared/kit-manifest'
 import { SHIP_GATE_STEPS, type ShipGateStep } from '@launch/shared/launch-sessions'
 import { z } from 'zod'
+import {
+  ROCKETFLARE_KIT_ID,
+  rocketflareFallbackManifest,
+} from '../launch/kits/rocketflare-fallback'
 import { neonSqlEndpoint } from '../launch/neon'
 import {
   BackgroundCommandTimeoutError,
   formatDuration,
   runInBackground,
 } from './background-command'
-import { redactModelKeyText } from './model-key'
-import type { GateBranch, SandboxPort } from './ports'
 import {
   redactLog,
   SESSION_LAUNCH_DIR,
   SESSION_WORKSPACE,
   type SessionDevEnv,
   tailOf,
-} from './rocketflare-dev'
+} from './kit-dev'
+import { redactModelKeyText } from './model-key'
+import type { GateBranch, SandboxPort } from './ports'
 
 /** The kit release whose `pnpm gate` (and `--list --json`) this contract is written against. */
 export const SHIP_GATE_KIT_VERSION = '0.16.0'
@@ -190,6 +203,55 @@ export function parseGateList(stdout: string): KitGateList | null {
   }
 }
 
+// ---- the kit's gate (D36 K4) --------------------------------------------------------------------
+
+/** The gate as an app's kit declares it (`ci`). {@link gateKitOf}. */
+export interface GateKit {
+  /** Rocketflare's legacy probe and versions (`kit.id === 'rocketflare'`, see the header). */
+  legacy: boolean
+  /** What prints the step list (gate list schema 1). Rocketflare: {@link GATE_LIST_COMMAND}. */
+  listCommand: string
+  /** One step's command line (`ci.gateRun`, `{step}` filled). */
+  runCommand: (step: ShipGateStep) => string
+  /** The test step's variable names; null: the kit takes no such variable. */
+  testEnv: { url: string; branch: string | null; endpoint: string | null }
+}
+
+/** A manifest's {@link GateKit}. Pure. */
+export function gateKitOf(manifest: KitManifest): GateKit {
+  const legacy = manifest.kit.id === ROCKETFLARE_KIT_ID
+  const { gateList, gateRun, testEnv } = manifest.ci
+  return {
+    legacy,
+    // Rocketflare's own list command is `pnpm gate --list --json`; Launch has always run it with
+    // `--silent` (no pnpm banner), which the generic reader does not need (`parseGateList`).
+    listCommand: legacy ? GATE_LIST_COMMAND : gateList,
+    runCommand: step => fillTemplate(gateRun, { step }),
+    testEnv: {
+      url: manifest.launchProvides.databaseUrl,
+      branch: testEnv?.branch ?? null,
+      endpoint: testEnv?.endpoint ?? null,
+    },
+  }
+}
+
+/** The Rocketflare fallback's {@link GateKit}. */
+export const ROCKETFLARE_GATE_KIT: GateKit = gateKitOf(rocketflareFallbackManifest())
+
+/** The steps a kit's list plans to, each `kit.runCommand(step)` (Rocketflare: `pnpm gate <step>`). */
+export const kitGateCommands = (kit: GateKit): Record<ShipGateStep, ShipGateCommand> =>
+  commandsOf(kit.runCommand)
+
+/** A kit whose list command did not print a step list (Rocketflare: {@link GATE_LIST_UNREADABLE_MESSAGE}). */
+export function gateListUnreadableMessage(kit: GateKit): string {
+  if (kit.legacy) return GATE_LIST_UNREADABLE_MESSAGE
+  return (
+    `\`${kit.listCommand}\` did not print the kit's gate step list (gate list schema 1), so ` +
+    "Launch cannot tell which checks to run. Compare the app's gate script with its kit's, then " +
+    'ship again.'
+  )
+}
+
 export type GatePlan = { ok: true; commands: ShipGateCommand[] } | { ok: false; message: string }
 
 const isShipGateStep = (id: string): id is ShipGateStep =>
@@ -204,7 +266,8 @@ const quoted = (ids: readonly string[]) => ids.map(id => `\`${id}\``).join(', ')
  * {@link SHIP_GATE_SKIPPED}: running less than the app's CI and calling it green is what this gate
  * exists to stop, so an unknown step is Launch's to learn, never one to skip quietly.
  */
-export function planGateFromList(list: KitGateList): GatePlan {
+export function planGateFromList(list: KitGateList, kit: GateKit = ROCKETFLARE_GATE_KIT): GatePlan {
+  const byStep = kit.legacy ? SHIP_GATE_COMMANDS : kitGateCommands(kit)
   const ids = list.steps.map(s => s.id)
   const unknown = ids.filter(id => !isShipGateStep(id) && !isSkipped(id))
   if (unknown.length > 0) {
@@ -229,7 +292,7 @@ export function planGateFromList(list: KitGateList): GatePlan {
   const commands: ShipGateCommand[] = []
   for (const id of ids) {
     if (isShipGateStep(id) && !commands.some(c => c.step === id)) {
-      commands.push(SHIP_GATE_COMMANDS[id])
+      commands.push(byStep[id])
     }
   }
   return { ok: true, commands }
@@ -287,7 +350,7 @@ export function gateEgressHosts(branch: Pick<GateBranch, 'host'>): string[] {
 /**
  * What every gate command runs with: no credential, no telemetry, and — on a laptop's emulated
  * amd64 — the Go garbage-collector switches esbuild (under vitest and tsx) needs to survive
- * (`SessionDevEnv.emulated`, `rocketflare-dev.ts`).
+ * (`SessionDevEnv.emulated`, `kit-dev.ts`).
  */
 export function gateBaseEnv(dev: Pick<SessionDevEnv, 'emulated'>): Record<string, string> {
   return {
@@ -305,7 +368,9 @@ export function gateBaseEnv(dev: Pick<SessionDevEnv, 'emulated'>): Record<string
 export function gateTestEnv(
   dev: Pick<SessionDevEnv, 'emulated'>,
   branch: GateBranch,
-  uri: string
+  uri: string,
+  /** The kit's names (D36 K4 `GateKit.testEnv`); absent: Rocketflare's ({@link GATE_TEST_ENV_VARS}). */
+  names: GateKit['testEnv'] = ROCKETFLARE_GATE_KIT.testEnv
 ): Record<string, string> {
   let host: string
   try {
@@ -318,9 +383,9 @@ export function gateTestEnv(
   }
   return {
     ...gateBaseEnv(dev),
-    [GATE_TEST_ENV_VARS.url]: uri,
-    [GATE_TEST_ENV_VARS.branch]: branch.name,
-    [GATE_TEST_ENV_VARS.endpoint]: branch.endpointId,
+    [names.url]: uri,
+    ...(names.branch ? { [names.branch]: branch.name } : {}),
+    ...(names.endpoint ? { [names.endpoint]: branch.endpointId } : {}),
   }
 }
 

@@ -14,7 +14,7 @@
 # **The base MUST stay on the same stable line as the Worker's `@cloudflare/sandbox` (0.12.10).**
 # Bumping either, or anything in this file, replaces running containers on deploy: DRAIN sessions
 # first (docs/DEPLOY.md § Coding sessions), and bump SESSION_IMAGE_VERSION below together with
-# `SESSION_IMAGE_VERSION` in `src/api/services/sessions/rocketflare-dev.ts` (a config test pins it).
+# `SESSION_IMAGE_VERSION` in `src/api/services/sessions/kit-dev.ts` (a config test pins it).
 FROM docker.io/cloudflare/sandbox:0.12.10
 
 # Recorded on every session row (`sessions.image_version`) so a drain can tell who ran on what.
@@ -53,6 +53,7 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
 # `pnpm install --frozen-lockfile --prefer-offline` resolves from here, not the registry. Only the
 # STORE is kept, so no lifecycle script needs to run (`ignore-scripts`): the kit's fetch runs
 # esbuild's postinstall, whose Go binary segfaults under amd64 emulation on an ARM Mac.
+# ROCKETFLARE's store only (D36 K4): an app on any other kit installs cold (`session.install`).
 ARG KIT_TAG=0.16.0
 RUN git clone --depth 1 --branch "${KIT_TAG}" https://github.com/rocketflare-dev/rocketflare /tmp/kit \
  && cd /tmp/kit && pnpm fetch --frozen-lockfile --config.ignore-scripts=true \

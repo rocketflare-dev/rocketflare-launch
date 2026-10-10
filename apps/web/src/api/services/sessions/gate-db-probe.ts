@@ -30,7 +30,7 @@
  * globalSetup dying on a connection error, with no test having failed, is run ONCE more — a
  * connection that dropped between the probe and the suite. A real test failure is never retried.
  */
-import { SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './rocketflare-dev'
+import { SESSION_LAUNCH_DIR, SESSION_WORKSPACE } from './kit-dev'
 
 /** Where the probe script is written in the container. */
 export const GATE_DB_PROBE_PATH = `${SESSION_LAUNCH_DIR}/gate-db-probe.cjs`

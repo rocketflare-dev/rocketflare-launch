@@ -37,6 +37,7 @@ import {
   CredentialNeedsLoginError,
   CredentialPortMissingError,
 } from '../../credentials/errors'
+import { sessionSharedEnv } from '../../kit-dev'
 import { ModelKeyMissingError, redactModelKeyText } from '../../model-key'
 import {
   NotWiredError,
@@ -44,7 +45,6 @@ import {
   type SandboxPort,
   type SessionEgressPort,
 } from '../../ports'
-import { sessionSharedEnv } from '../../rocketflare-dev'
 import { createTurnMeter, recordTurnUsage, type TurnMeter } from '../../turn-meter'
 import type {
   AgentRuntime,

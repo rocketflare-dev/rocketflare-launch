@@ -316,7 +316,10 @@ export async function getAppBranchProtection(
 ): Promise<AppBranchProtection> {
   if (!app.repoOwner || !app.repoName) return unknown('This app has no repository.')
   try {
-    const { requiredCheck } = await adapterFor(db, app)
+    const adapter = await adapterFor(db, app)
+    const { requiredCheck } = adapter
+    // D36 K4: the kit's `ci.verifiedVariable`; none — the kit's CI trusts no Launch gate.
+    const variable = adapter.manifest.ci.verifiedVariable ?? null
     const github = opts.github ?? (await loadImportGitHub(db, cfg))
     return await withRepoToken(
       db,
@@ -328,13 +331,12 @@ export async function getAppBranchProtection(
           ...opts,
           requiredCheck,
         })),
-        gateVariable: await diagnoseGateVariable(
-          token,
-          repo.owner,
-          repo.repo,
-          github.auth.appId,
-          opts
-        ),
+        gateVariable: variable
+          ? await diagnoseGateVariable(token, repo.owner, repo.repo, github.auth.appId, {
+              ...opts,
+              variable,
+            })
+          : null,
       }),
       { ...opts, github }
     )
@@ -358,7 +360,9 @@ export async function applyAppBranchProtection(
   actor: AuditActor,
   opts: RepoGitHubOptions = {}
 ): Promise<AppBranchProtection> {
-  const { requiredCheck } = await adapterFor(db, app)
+  const adapter = await adapterFor(db, app)
+  const { requiredCheck } = adapter
+  const variable = adapter.manifest.ci.verifiedVariable ?? null
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const appId = Number(github.auth.appId)
   const { applied, protection, gateVariable } = await withRepoToken(
@@ -369,7 +373,9 @@ export async function applyAppBranchProtection(
     async (token, repo) => {
       try {
         // First, so a plan without rulesets (the 409 below) still gets the variable.
-        const gateVariable = await ensureGateVariable(token, repo.owner, repo.repo, appId, opts)
+        const gateVariable = variable
+          ? await ensureGateVariable(token, repo.owner, repo.repo, appId, { ...opts, variable })
+          : ('skipped' as const)
         const applied = await applyLaunchRuleset(token, repo.owner, repo.repo, appId, {
           ...opts,
           requiredCheck,
@@ -379,7 +385,9 @@ export async function applyAppBranchProtection(
             ...opts,
             requiredCheck,
           })),
-          gateVariable: await diagnoseGateVariable(token, repo.owner, repo.repo, appId, opts),
+          gateVariable: variable
+            ? await diagnoseGateVariable(token, repo.owner, repo.repo, appId, { ...opts, variable })
+            : null,
         }
         return { applied, protection, gateVariable }
       } catch (err) {

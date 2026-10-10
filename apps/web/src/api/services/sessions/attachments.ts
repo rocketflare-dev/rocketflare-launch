@@ -29,7 +29,7 @@ import {
 import { ApiError, BadRequestError, ServiceUnavailableError } from '../../utils/core/errors'
 import { newId } from '../../utils/core/ids'
 import { createR2Storage, type StorageService } from '../storage'
-import { SESSION_LAUNCH_DIR } from './rocketflare-dev'
+import { SESSION_LAUNCH_DIR } from './kit-dev'
 import type { RuntimeAttachment } from './runtimes/types'
 import type { SandboxPort } from './sandbox-port'
 

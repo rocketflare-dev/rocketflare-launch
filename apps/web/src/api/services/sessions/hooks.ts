@@ -17,7 +17,7 @@
  * `cfg`, `ports`, `sandbox`, `storage`, `emit`, `realtime`, `logger`, the ids), so each binding
  * in `defaultSessionStepHooks` is one call.
  *
- * Paths the three agree on, defined ONCE in `rocketflare-dev.ts`: the checkout is
+ * Paths the three agree on, defined ONCE in `kit-dev.ts`: the checkout is
  * `SESSION_WORKSPACE` (`/workspace/app`; `SESSION_REPO_DIR` in `checkpoint.ts` and `SESSION_WORKDIR`
  * in `claude-stream.ts` are aliases of it), commands run as root with `SESSION_HOME` (`/root`), so
  * Claude Code's transcripts are under `CLAUDE_PROJECT_DIR` (`/root/.claude/projects/-workspace-app/`).

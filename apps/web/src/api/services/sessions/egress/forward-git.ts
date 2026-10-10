@@ -18,9 +18,15 @@
  *
  * **A read-only repo** (P6 6c, `ForwardGitOptions.readOnlyRepos`): a kit upgrade session may also
  * FETCH the kit — `info/refs?service=git-upload-pack` and `POST …/git-upload-pack` on exactly the
- * repos listed, forwarded to `https://github.com` with NO credential at all (the kit is public, so
- * nothing is minted and nothing is injected). Its receive-pack is a 403, advertisement included.
- * Every other session passes no list and gains nothing.
+ * repos listed, forwarded to `https://github.com` with NO credential first (a public kit: nothing is
+ * minted and nothing is injected). Its receive-pack is a 403, advertisement included. Every other
+ * session passes no list and gains nothing.
+ *
+ * **A private kit** (D36 K4): when that unauthenticated request answers 401 or 404 — GitHub's answer
+ * to a private repo — and the entry carries a `token` getter, the same request is sent again with a
+ * READ-ONLY installation token for the kit repo (`contents: read`, narrowed to it — `mintKitToken`),
+ * with the fresh-token retries. The token is Launch's (or the egress grant's, on the sandbox host):
+ * it is never in the container, which sent no credential that is forwarded.
  */
 
 /** A GitHub installation token's lifetime (fixed by GitHub). */
@@ -47,6 +53,14 @@ export interface EgressContext {
 export interface GitRepo {
   owner: string
   repo: string
+}
+
+/**
+ * A repository a session may only FETCH (a kit upgrade's kit). `token`: a read-only credential for
+ * it, asked for only when GitHub refuses the unauthenticated fetch (a private kit, D36 K4).
+ */
+export interface ReadOnlyGitRepo extends GitRepo {
+  token?: () => Promise<GitToken | null>
 }
 
 /** The token to inject, and whether GitHub may not accept it yet. */
@@ -154,10 +168,11 @@ export interface ForwardGitOptions {
   /** The backoff between a fresh token's retries (tests pass a recorder). */
   sleep: (ms: number) => Promise<void>
   /**
-   * Public repositories this session may FETCH and never push — a kit upgrade's kit (P6 6c). No
-   * credential is ever sent to them. Absent or empty for every other session.
+   * Repositories this session may FETCH and never push — a kit upgrade's kit (P6 6c). No
+   * credential is sent to them unless GitHub refuses the fetch without one and the entry has a
+   * `token` getter (a private kit, D36 K4). Absent or empty for every other session.
    */
-  readOnlyRepos?: readonly GitRepo[]
+  readOnlyRepos?: readonly ReadOnlyGitRepo[]
 }
 
 /** Where a read-only (public) repository is fetched from: GitHub itself, whatever the session's host. */
@@ -179,7 +194,8 @@ export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise
 
   const { repo } = opts
   if (!sameRepo(repo, git)) {
-    if (opts.readOnlyRepos?.some(r => sameRepo(r, git))) return forwardReadOnly(req, git, opts)
+    const readOnly = opts.readOnlyRepos?.find(r => sameRepo(r, git))
+    if (readOnly) return forwardReadOnly(req, git, readOnly, opts)
     return refuseGit(403, "Launch sessions may only reach their own app's repository")
   }
 
@@ -247,14 +263,16 @@ export async function forwardGit(req: Request, opts: ForwardGitOptions): Promise
 }
 
 /**
- * A fetch from a read-only (public) repository: upload-pack only, to {@link READ_ONLY_GIT_UPSTREAM},
- * with the allow-listed headers and no `Authorization` — whatever the sandbox sent is dropped like
- * every other header. A push (its advertisement included) is a 403.
+ * A fetch from a read-only repository: upload-pack only, to {@link READ_ONLY_GIT_UPSTREAM}, with the
+ * allow-listed headers and no `Authorization` — whatever the sandbox sent is dropped like every
+ * other header. A push (its advertisement included) is a 403. A 401/404 on a repo with a `token`
+ * getter (a private kit) is sent again with that token, and retried while it is fresh.
  */
 async function forwardReadOnly(
   req: Request,
   git: GitRequest,
-  opts: Pick<ForwardGitOptions, 'fetch'>
+  repo: ReadOnlyGitRepo,
+  opts: Pick<ForwardGitOptions, 'fetch' | 'sleep'>
 ): Promise<Response> {
   if (git.service !== 'git-upload-pack') {
     return refuseGit(
@@ -275,14 +293,39 @@ async function forwardReadOnly(
     const value = req.headers.get(name)
     if (value) headers.set(name, value)
   }
-  let res: Response
-  try {
-    res = await opts.fetch(upstream.toString(), {
+  const send = (auth: Headers) =>
+    opts.fetch(upstream.toString(), {
       method: req.method,
-      headers,
+      headers: auth,
       body: body ?? undefined,
       redirect: 'manual',
     })
+  let res: Response
+  try {
+    res = await send(headers)
+    // A private kit: GitHub answers an unauthenticated fetch 401 (or 404). Again, with its token.
+    if ((res.status === 401 || res.status === 404) && repo.token) {
+      let token: GitToken | null
+      try {
+        token = await repo.token()
+      } catch {
+        token = null
+      }
+      if (token) {
+        await res.body?.cancel()
+        const authed = new Headers(headers)
+        authed.set('Authorization', `Basic ${btoa(`x-access-token:${token.token}`)}`)
+        res = await send(authed)
+        if (token.fresh) {
+          for (const delay of FRESH_TOKEN_RETRY_DELAYS_MS) {
+            if (res.status !== 401 && res.status !== 404) break
+            await res.body?.cancel()
+            await opts.sleep(delay)
+            res = await send(authed)
+          }
+        }
+      }
+    }
   } catch {
     return refuseGit(502, `Launch could not reach the git server at ${upstream.origin}`)
   }

@@ -109,6 +109,7 @@ import {
 } from './boot-marker'
 import { checkBudget } from './budget'
 import { createSessionEventWriter, type SessionEventWriter } from './event-log'
+import { SESSION_API_PORT, SESSION_UI_PORT } from './kit-dev'
 import { redactModelKeyText } from './model-key'
 import { credentialsFor, egressFor, piAgentFor, type SessionPorts } from './ports'
 import { runtimeOf } from './runtimes'
@@ -1010,6 +1011,9 @@ export async function sessionSystemNote(db: Database, row: SessionRow): Promise<
     appSlug: app?.slug,
     userName: creator?.name ?? 'the person in this session',
     branch: `session/${row.shortId}`,
+    // Launch's choice of ports, whatever the kit calls them (`kit-dev.ts`).
+    uiPort: String(SESSION_UI_PORT),
+    apiPort: String(SESSION_API_PORT),
   })
   const failure = await latestCiFailure(db, row)
   return failure ? `${note}\n\n${ciFailureNote(failure)}` : note

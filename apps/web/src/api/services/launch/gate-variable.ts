@@ -15,6 +15,11 @@
  * - {@link diagnoseGateVariable}: `ok | missing | wrong | unknown`, reported beside the
  *   branch-protection diagnosis (`gateVariable`).
  *
+ * **The variable's name is the app kit's** (`ci.verifiedVariable`, D36 K4; Rocketflare's
+ * `LAUNCH_GATE_APP_ID`), passed as `opts.variable` ({@link gateVariableOf}). A kit that declares
+ * none has no `verified` job to trust Launch's gate: {@link ensureAppGateVariable} writes nothing
+ * (`skipped`, still recorded so the sweep does not come back) and the diagnosis is null.
+ *
  * Detaching an app is deleting the variable in the repo's settings: CI then runs the full gate on
  * every push, as it did before Launch. Launch has no detach flow that removes it.
  */
@@ -32,11 +37,22 @@ import {
   upsertRepoVariable,
 } from './github-app'
 import { type ImportGitHub, loadImportGitHub } from './import'
+import { type AdapterApp, adapterFor } from './kits/adapter'
 import { type RepoGitHubOptions, withRepoToken } from './releases/github'
 
 export { LAUNCH_GATE_APP_ID_VARIABLE }
 
 export type GateVariableWrite = 'created' | 'updated' | 'unchanged'
+
+/** Which repo variable a kit's CI reads Launch's App id from (`opts.variable`; default Rocketflare's). */
+export interface GateVariableOptions extends GitHubOptions {
+  variable?: string
+}
+
+/** The app kit's `ci.verifiedVariable`, or null when its CI trusts no Launch gate (D36 K4). */
+export async function gateVariableOf(db: Database, app: AdapterApp): Promise<string | null> {
+  return (await adapterFor(db, app)).manifest.ci.verifiedVariable ?? null
+}
 
 /** The value Launch writes: its App id as GitHub shows it (a plain decimal integer). */
 export function gateAppIdValue(appId: string | number): string {
@@ -51,12 +67,13 @@ export async function ensureGateVariable(
   owner: string,
   repo: string,
   appId: string | number,
-  opts: GitHubOptions = {}
+  opts: GateVariableOptions = {}
 ): Promise<GateVariableWrite> {
+  const { variable = LAUNCH_GATE_APP_ID_VARIABLE, ...gh } = opts
   const expected = gateAppIdValue(appId)
-  const current = await getRepoVariable(token, owner, repo, LAUNCH_GATE_APP_ID_VARIABLE, opts)
+  const current = await getRepoVariable(token, owner, repo, variable, gh)
   if (current?.trim() === expected) return 'unchanged'
-  await upsertRepoVariable(token, owner, repo, LAUNCH_GATE_APP_ID_VARIABLE, expected, opts)
+  await upsertRepoVariable(token, owner, repo, variable, expected, gh)
   return current === null ? 'created' : 'updated'
 }
 
@@ -66,8 +83,9 @@ export async function diagnoseGateVariable(
   owner: string,
   repo: string,
   appId: string | number,
-  opts: GitHubOptions = {}
+  opts: GateVariableOptions = {}
 ): Promise<AppGateVariable> {
+  const { variable = LAUNCH_GATE_APP_ID_VARIABLE, ...gh } = opts
   let expected: string
   try {
     expected = gateAppIdValue(appId)
@@ -76,13 +94,13 @@ export async function diagnoseGateVariable(
   }
   let value: string | null
   try {
-    value = await getRepoVariable(token, owner, repo, LAUNCH_GATE_APP_ID_VARIABLE, opts)
+    value = await getRepoVariable(token, owner, repo, variable, gh)
   } catch (err) {
     return {
       state: 'unknown',
       value: null,
       expected,
-      detail: `GitHub could not read the ${LAUNCH_GATE_APP_ID_VARIABLE} variable: ${(err as Error).message}`,
+      detail: `GitHub could not read the ${variable} variable: ${(err as Error).message}`,
     }
   }
   if (value === null) {
@@ -90,7 +108,7 @@ export async function diagnoseGateVariable(
       state: 'missing',
       value: null,
       expected,
-      detail: `${owner}/${repo} has no ${LAUNCH_GATE_APP_ID_VARIABLE} variable, so CI runs the full gate again on a change Launch already gated. Apply sets it.`,
+      detail: `${owner}/${repo} has no ${variable} variable, so CI runs the full gate again on a change Launch already gated. Apply sets it.`,
     }
   }
   if (value.trim() !== expected) {
@@ -98,7 +116,7 @@ export async function diagnoseGateVariable(
       state: 'wrong',
       value,
       expected,
-      detail: `${owner}/${repo}'s ${LAUNCH_GATE_APP_ID_VARIABLE} is ${value}, not Launch's GitHub App (${expected}), so CI does not trust Launch's gate. Apply sets it.`,
+      detail: `${owner}/${repo}'s ${variable} is ${value}, not Launch's GitHub App (${expected}), so CI does not trust Launch's gate. Apply sets it.`,
     }
   }
   return { state: 'ok', value, expected, detail: null }
@@ -120,21 +138,28 @@ export async function markGateVariableSet(
  * Set the variable on `app`'s repo with a token narrowed to it — the start of a kit upgrade, an
  * import, the sweep — and record it (`markGateVariableSet`). Throws whatever GitHub or the token
  * mint refused (an installation without `actions_variables: write`); callers that must not fail
- * catch it.
+ * catch it. `skipped`: the app's kit declares no `ci.verifiedVariable` — nothing to write, and it
+ * is recorded all the same, so the sweep does not try again.
  */
 export async function ensureAppGateVariable(
   db: Database,
   cfg: AppConfig,
-  app: Pick<AppRow, 'id' | 'tenantId' | 'repoOwner' | 'repoName' | 'defaultBranch'>,
+  app: Pick<AppRow, 'id' | 'tenantId' | 'repoOwner' | 'repoName' | 'defaultBranch'> & AdapterApp,
   opts: RepoGitHubOptions = {}
-): Promise<GateVariableWrite> {
+): Promise<GateVariableWrite | 'skipped'> {
+  const variable = await gateVariableOf(db, app)
+  if (!variable) {
+    await markGateVariableSet(db, app)
+    return 'skipped'
+  }
   const github = opts.github ?? (await loadImportGitHub(db, cfg))
   const write = await withRepoToken(
     db,
     cfg,
     app,
     GITHUB_TOKEN_PERMISSIONS.gateVariableWrite,
-    (token, repo) => ensureGateVariable(token, repo.owner, repo.repo, github.auth.appId, opts),
+    (token, repo) =>
+      ensureGateVariable(token, repo.owner, repo.repo, github.auth.appId, { ...opts, variable }),
     { ...opts, github }
   )
   await markGateVariableSet(db, app)

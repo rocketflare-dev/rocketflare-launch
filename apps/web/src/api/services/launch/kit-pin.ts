@@ -64,6 +64,7 @@ import {
   compareAndSetKitPin,
   ensureDefaultKit,
   getDefaultKit,
+  getKit,
   type KitRow,
   listKits,
   updateKit,
@@ -131,6 +132,20 @@ export async function kitPin(db: Database, row: KitRow): Promise<EffectiveKitPin
   return effectiveKitPin(row, legacy)
 }
 
+/**
+ * The effective pin of an APP's kit (D36 K4): its kit row's (`apps.kit_id`), else — an app with no
+ * kit row, or a row since deleted — the default kit's. What a kit upgrade session fetches.
+ */
+export async function appKitPin(
+  db: Database,
+  app: { kitId: string | null }
+): Promise<{ pin: TemplatePin; kit: KitRow | null }> {
+  const kit = app.kitId ? await getKit(db, app.kitId) : null
+  if (kit) return { pin: (await kitPin(db, kit)).pin, kit }
+  const fallback = await defaultKitPin(db)
+  return { pin: fallback.pin, kit: fallback.kit }
+}
+
 /** The pin new apps are cut from, and whether it is the code default. */
 export async function templatePinStatus(db: Database): Promise<TemplatePinStatus> {
   const { pin, isCodeDefault, kit } = await defaultKitPin(db)
@@ -192,17 +207,18 @@ export function githubFailed(err: unknown): ApiError {
 }
 
 /**
- * A read-only installation token for a lookup in `repo`, and its revocation. The App's
- * installation on the repo's owner when there is one (a private kit — the token narrowed to the
- * repo); else the stored installation (a public kit anywhere).
+ * A read-only (`contents: read`) installation token for `repo`, NOT revoked — {@link withKitToken}
+ * revokes its own; a kit upgrade session's git proxy (`sessions/egress/github.ts`, D36 K4) holds one
+ * for the fetch of a PRIVATE kit, which outlives any one call, and lets it expire (an hour). The
+ * App's installation on the repo's owner when there is one (the token narrowed to the repo); else
+ * the stored installation. Throws `github_app_not_configured` (409) or `github_lookup_failed` (502).
  */
-export async function withKitToken<T>(
+export async function mintKitToken(
   db: Database,
   cfg: AppConfig,
   repo: string,
-  opts: KitLookupOptions,
-  fn: (token: string) => Promise<T>
-): Promise<T> {
+  opts: KitLookupOptions = {}
+): Promise<{ token: string; expiresAt: Date }> {
   const stored = await getCredential(db, cfg, 'github_app')
   if (!stored) {
     throw new ConflictError(
@@ -212,7 +228,6 @@ export async function withKitToken<T>(
   }
   const raw = stored.metadata.installationId ?? stored.metadata.installation_id ?? null
   const [owner = '', name = ''] = repo.split('/')
-  let token: string
   try {
     const installations = await listInstallations(stored.secret, opts)
     const own = installations.find(i => i.account?.login.toLowerCase() === owner.toLowerCase())
@@ -231,10 +246,33 @@ export async function withKitToken<T>(
       { permissions: { contents: 'read' }, ...(own ? { repositories: [name] } : {}) },
       opts
     )
-    token = minted.token
+    const expiresAt = minted.expires_at ? new Date(minted.expires_at) : null
+    return {
+      token: minted.token,
+      // GitHub's installation tokens live an hour; a missing or unreadable expiry is taken as that.
+      expiresAt:
+        expiresAt && !Number.isNaN(expiresAt.getTime())
+          ? expiresAt
+          : new Date(Date.now() + 60 * 60 * 1000),
+    }
   } catch (err) {
     throw githubFailed(err)
   }
+}
+
+/**
+ * A read-only installation token for a lookup in `repo`, and its revocation. The App's
+ * installation on the repo's owner when there is one (a private kit — the token narrowed to the
+ * repo); else the stored installation (a public kit anywhere).
+ */
+export async function withKitToken<T>(
+  db: Database,
+  cfg: AppConfig,
+  repo: string,
+  opts: KitLookupOptions,
+  fn: (token: string) => Promise<T>
+): Promise<T> {
+  const { token } = await mintKitToken(db, cfg, repo, opts)
   try {
     return await fn(token)
   } finally {

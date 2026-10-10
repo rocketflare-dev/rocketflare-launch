@@ -24,6 +24,11 @@ import type { SessionCallLimits } from '@/api/services/sessions/deadline'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
 import type { SessionStepHooks } from '@/api/services/sessions/hooks'
 import {
+  PREREAD_COMMAND,
+  SESSION_IMAGE_VERSION,
+  WORKSPACE_FACTS_COMMAND,
+} from '@/api/services/sessions/kit-dev'
+import {
   claimPrebuild,
   loadPrebuild,
   PREBUILD_RETRY_AFTER_MS,
@@ -31,11 +36,6 @@ import {
   releasePrebuildClaim,
   requestPrebuild,
 } from '@/api/services/sessions/prebuild'
-import {
-  PREREAD_COMMAND,
-  SESSION_IMAGE_VERSION,
-  WORKSPACE_FACTS_COMMAND,
-} from '@/api/services/sessions/rocketflare-dev'
 import { SessionWorkflow } from '@/api/workflows/session'
 import { loadConfig } from '@/config'
 import { appPrebuilds, type SessionRow, sessions } from '@/db/schema'

@@ -65,11 +65,13 @@
  *   session's branch: Neon refuses to delete a parent) and `sweepGateBranches` (the cron, by the
  *   `gate-` prefix and `created_at`) — so no row has to remember them.
  */
+import { fillTemplate, type KitManifest } from '@launch/shared/kit-manifest'
 import type { AppSessionDb, AppSessionDevSource, SessionDb } from '@launch/shared/launch-sessions'
 import type { AppConfig } from '../../../../config'
 import type { Database } from '../../../../db/client'
 import { ServiceUnavailableError } from '../../../utils/core/errors'
 import { getCredential } from '../../launch/credentials'
+import { rocketflareFallbackManifest } from '../../launch/kits/rocketflare-fallback'
 import {
   isNeonNotFound,
   NeonApiError,
@@ -90,7 +92,13 @@ import {
   throwawayPassword,
 } from '../../launch/pipeline/provision-neon'
 import { GATE_BRANCH_PREFIX, isGateBranch, isGateBranchOf } from '../gate-branch'
-import type { GateBranch, SessionAppRef, SessionBranch, SessionDbPort } from '../ports'
+import type {
+  GateBranch,
+  SessionAppRef,
+  SessionBranch,
+  SessionDatabaseKit,
+  SessionDbPort,
+} from '../ports'
 
 /** The prepared parent every session branches from. */
 export const DEV_BRANCH_NAME = 'dev'
@@ -117,14 +125,43 @@ const SESSION_ROLE_ATTRIBUTES = 'LOGIN CREATEROLE'
  * GitHub here would put a GitHub token into the database port for that one corner; it is a known
  * gap instead (docs/CONCEPTS.md, the session database).
  */
-export function appRlsRoleFor(slug: string): string {
-  const role = `${slug.replaceAll('-', '_')}_app`
+export function appRlsRoleFor(slug: string, template = ROCKETFLARE_RLS_ROLE): string {
+  const role = fillTemplate(template, { slug_snake: slug.replaceAll('-', '_'), slug })
   // A slug is `[a-z][a-z0-9-]*`, at most 40 characters: this only guards that rule.
   quoteIdent(role)
   return role
 }
-/** The only extension the kit's migrations create. */
-const SESSION_EXTENSIONS = ['vector'] as const
+
+/** Rocketflare's `database.rlsRole` — what {@link appRlsRoleFor} names with no template. */
+const ROCKETFLARE_RLS_ROLE = '{slug_snake}_app'
+
+/** A manifest's `database` block, as the session database port reads it (D36 K4). Pure. */
+export function sessionDatabaseKitOf(manifest: Pick<KitManifest, 'database'>): SessionDatabaseKit {
+  return {
+    rlsRole: manifest.database.rlsRole ?? null,
+    migratorRole: manifest.database.roles.migrator,
+    extensions: manifest.database.extensions,
+  }
+}
+
+/** The Rocketflare fallback's: `{slug_snake}_app`, `migrator`, `vector`. */
+export const ROCKETFLARE_SESSION_DATABASE: SessionDatabaseKit = sessionDatabaseKitOf(
+  rocketflareFallbackManifest()
+)
+
+/** The kit `app` is on (`SessionAppRef.database`; absent: Rocketflare's). */
+const databaseKitOf = (app: Pick<SessionAppRef, 'database'>): SessionDatabaseKit =>
+  app.database ?? ROCKETFLARE_SESSION_DATABASE
+
+/**
+ * The app's RLS role by its kit (`database.rlsRole`, D36 K4), or null when the kit names none —
+ * then Launch makes and grants no per-app role (the launch-kit has none). Rocketflare's is
+ * {@link appRlsRoleFor}.
+ */
+export function sessionAppRoleFor(app: Pick<SessionAppRef, 'slug' | 'database'>): string | null {
+  const template = databaseKitOf(app).rlsRole
+  return template ? appRlsRoleFor(app.slug, template) : null
+}
 
 /**
  * Issue #15: the version of what `ensureDev` checks and repairs on `dev` — `session_owner` made in
@@ -140,14 +177,14 @@ export const SESSION_DEV_ROLE_VERSION = 1
  * password, runs the role and extension SQL and lists the branches: seconds of Neon calls). A
  * `dev` cut from staging must also have finished its scrub (`devSource`). Pure.
  */
-export function devIsCurrent(app: Pick<SessionAppRef, 'slug' | 'sessionDb'>): boolean {
+export function devIsCurrent(app: Pick<SessionAppRef, 'slug' | 'sessionDb' | 'database'>): boolean {
   const dev = app.sessionDb
   return (
     dev?.status === 'ready' &&
     !!dev.devBranchId &&
     dev.devSource !== undefined &&
     dev.roleVersion === SESSION_DEV_ROLE_VERSION &&
-    dev.appRole === appRlsRoleFor(app.slug)
+    (dev.appRole ?? null) === sessionAppRoleFor(app)
   )
 }
 
@@ -290,14 +327,15 @@ export class NeonSessionDb implements SessionDbPort {
     if (devSource === 'staging' && !scrubbed) await this.scrubDev(projectId, dev.id, owner)
     // Every call (each session's `db` step) re-checks the app's RLS role, so a `dev` prepared
     // before Launch granted the right one is repaired here, without a reset.
-    const repaired = await this.ensureSessionRole(projectId, dev.id, owner, appRlsRoleFor(app.slug))
+    const appRole = sessionAppRoleFor(app)
+    const repaired = await this.ensureSessionRole(projectId, dev.id, owner, app, appRole)
     const kept = app.sessionDb?.devBranchId === dev.id && !repaired ? app.sessionDb : null
     return {
       devBranchId: dev.id,
       database: SESSION_DB_NAME,
       // Issue #15: what just passed — a later session on a `ready` `dev` may trust it.
       roleVersion: SESSION_DEV_ROLE_VERSION,
-      appRole: appRlsRoleFor(app.slug),
+      ...(appRole ? { appRole } : {}),
       preparedCommit: kept?.preparedCommit ?? null,
       preparedAt: kept?.preparedAt ?? null,
       status: kept?.status ?? 'none',
@@ -406,7 +444,9 @@ export class NeonSessionDb implements SessionDbPort {
     projectId: string,
     devBranchId: string,
     owner: OwnerSession,
-    appRole: string
+    app: Pick<SessionAppRef, 'database'>,
+    /** The app's RLS role (`sessionAppRoleFor`); null: its kit has none, so none is made. */
+    appRole: string | null
   ): Promise<boolean> {
     const neon = await this.neon()
     const readRole = async () =>
@@ -441,7 +481,7 @@ export class NeonSessionDb implements SessionDbPort {
         `CREATE ROLE ${quoteIdent(SESSION_DB_ROLE)} ${SESSION_ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(throwawayPassword())}`
       )
     }
-    await ensureAppRole(owner, appRole)
+    if (appRole) await ensureAppRole(owner, appRole, databaseKitOf(app).migratorRole)
     try {
       const database = await neon.createDatabase(projectId, devBranchId, {
         name: SESSION_DB_NAME,
@@ -451,7 +491,7 @@ export class NeonSessionDb implements SessionDbPort {
     } catch (err) {
       if (!isConflict(err)) throw err
     }
-    for (const extension of SESSION_EXTENSIONS) {
+    for (const extension of databaseKitOf(app).extensions) {
       await owner.sql(SESSION_DB_NAME, `CREATE EXTENSION IF NOT EXISTS ${quoteIdent(extension)}`)
     }
     return repaired
@@ -534,7 +574,8 @@ export class NeonSessionDb implements SessionDbPort {
     let endpoint: { id: string; host: string } | undefined
     if (!branch) {
       const owner = await ownerSession(neon, { redact: () => {} }, projectId, parent.branchId)
-      await ensureAppRole(owner, appRlsRoleFor(app.slug))
+      const appRole = sessionAppRoleFor(app)
+      if (appRole) await ensureAppRole(owner, appRole, databaseKitOf(app).migratorRole)
       const created = await neon.createBranch(projectId, {
         name,
         parentId: parent.branchId,
@@ -625,13 +666,14 @@ export class NeonSessionDb implements SessionDbPort {
 /**
  * The roles holding `$1` WITH ADMIN OPTION — its creator among them: Postgres 16+ records a
  * creator's ADMIN as a membership row (grantor the bootstrap superuser, no INHERIT, no SET) —
- * other than `$2` (`session_owner`) and `$3` (`neondb_owner`). `migrator`, the creator of an app's
- * RLS role on every Launch project, first. (`neondb_owner`'s own creator row for `migrator` is
+ * other than `$2` (`session_owner`) and `$3` (`neondb_owner`). `$4`, the kit's migrator
+ * (`database.roles.migrator`, Rocketflare's `migrator`) — the creator of an app's RLS role on every
+ * Launch project — first. (`neondb_owner`'s own creator row for `migrator` is
  * exactly such an ADMIN-only row, which is why it may grant itself `migrator` but does not
  * inherit its ADMIN until it does.)
  */
 const APP_ROLE_ADMINS_SQL =
-  "SELECT h.rolname AS name FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles h ON h.oid = m.member WHERE g.rolname = $1 AND m.admin_option AND h.rolname NOT IN ($2, $3) ORDER BY h.rolname = 'migrator' DESC, h.rolname"
+  'SELECT h.rolname AS name FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles h ON h.oid = m.member WHERE g.rolname = $1 AND m.admin_option AND h.rolname NOT IN ($2, $3) ORDER BY h.rolname = $4 DESC, h.rolname'
 
 /** Postgres refusing a role GRANT for want of ADMIN (vanilla PG17, and Neon's wording). */
 const isGrantRefused = (err: unknown) =>
@@ -668,7 +710,12 @@ const isGrantRefused = (err: unknown) =>
  *
  * No admin `neondb_owner` can borrow (a role made by some other role) is an error naming the role.
  */
-async function ensureAppRole(owner: OwnerSession, appRole: string): Promise<void> {
+async function ensureAppRole(
+  owner: OwnerSession,
+  appRole: string,
+  /** The kit's `database.roles.migrator` — tried first as the admin to borrow. */
+  migratorRole: string
+): Promise<void> {
   const role = quoteIdent(appRole)
   const grant = () =>
     owner.sql(OWNER_DATABASE, `GRANT ${role} TO ${quoteIdent(SESSION_DB_ROLE)} WITH ADMIN OPTION`)
@@ -698,6 +745,7 @@ async function ensureAppRole(owner: OwnerSession, appRole: string): Promise<void
     appRole,
     SESSION_DB_ROLE,
     OWNER_ROLE,
+    migratorRole,
   ])
   for (const row of admins.rows) {
     const admin = quoteIdent(String(row.name))

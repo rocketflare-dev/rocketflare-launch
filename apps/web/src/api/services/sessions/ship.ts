@@ -388,13 +388,21 @@ export async function sessionRequiredCheck(
 
 // ---- checks ------------------------------------------------------------------------------------
 
-/** Whether `next` says something `prev` did not (the panel's `ship.ci` row is per change). */
-export function prChecksChanged(prev: PrChecks | null, next: PrChecks): boolean {
+/**
+ * Whether `next` says something `prev` did not (the panel's `ship.ci` row is per change).
+ * `requiredCheck`: the app kit's (`ci.requiredCheck`, D36; absent: Rocketflare's `Gate`).
+ */
+export function prChecksChanged(
+  prev: PrChecks | null,
+  next: PrChecks,
+  requiredCheck?: string
+): boolean {
   if (!prev || prev.headSha !== next.headSha) return true
   return (
     prev.state !== next.state ||
     // Issue #9: `Gate` reporting can leave the fold's counts as they were (`launch/gate` beside it).
-    requiredCheckState(prev.checks) !== requiredCheckState(next.checks) ||
+    requiredCheckState(prev.checks, requiredCheck) !==
+      requiredCheckState(next.checks, requiredCheck) ||
     prev.passed !== next.passed ||
     prev.failed !== next.failed ||
     prev.pending !== next.pending ||
@@ -434,7 +442,9 @@ export async function refreshChecks(
     .update(sessions)
     .set({ prChecks: checks })
     .where(and(eq(sessions.tenantId, session.tenantId), eq(sessions.id, session.id)))
-  if (prChecksChanged(stored ?? null, checks)) nudgeSession(opts.realtime, session)
+  if (prChecksChanged(stored ?? null, checks, await sessionRequiredCheck(db, session))) {
+    nudgeSession(opts.realtime, session)
+  }
   return checks
 }
 

@@ -27,6 +27,13 @@ import {
 } from '@launch/shared/launch-sessions'
 import type { AppPrebuildBackup, SessionRow } from '../../../db/schema'
 import { safeErrorMessage } from './events'
+import {
+  installDependencies,
+  prereadHotFiles,
+  SESSION_IMAGE_VERSION,
+  SESSION_WORKSPACE,
+  workspaceFacts,
+} from './kit-dev'
 import { SandboxRestartedError, sandboxHostOf, sessionAllowedHosts } from './ports'
 import {
   followUpPrebuild,
@@ -40,21 +47,14 @@ import {
   unusablePrebuild,
 } from './prebuild'
 import {
-  installDependencies,
-  prereadHotFiles,
-  SESSION_IMAGE_VERSION,
-  SESSION_WORKSPACE,
-  workspaceFacts,
-} from './rocketflare-dev'
-import {
   backupFailureReason,
   bootstrapPolling,
   checkOut,
   clearRestoredWorkspace,
   dbEgressHostsOf,
-  devEnvFor,
   emitterFor,
   inOurContainer,
+  kitDevEnvFor,
   loadAppRef,
   loadSession,
   type StepScope,
@@ -287,7 +287,7 @@ export async function prebuildBuildStep(
     await scope.progress?.('pnpm install')
     await installDependencies({
       sandbox,
-      dev: devEnvFor(scope.cfg, session),
+      dev: await kitDevEnvFor(scope, session),
       ...bootstrapPolling(scope, sandbox, bootId),
     })
     const facts = await workspaceFacts(sandbox)

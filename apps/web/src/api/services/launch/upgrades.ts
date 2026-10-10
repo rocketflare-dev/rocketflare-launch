@@ -468,7 +468,12 @@ export type AutoShipVerdict = { ship: true } | { ship: false; reason: string }
  *    script writes it last, and only after a clean apply, so this is the checkout's own word, not
  *    the agent's.
  */
-export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string): AutoShipVerdict {
+export function autoShipVerdict(
+  evidence: UpgradeTurnEvidence,
+  toVersion: string,
+  /** The app kit's `upgrade.doneMarker` (D36 K4); absent: `LAUNCH-UPGRADE:`. */
+  marker?: string
+): AutoShipVerdict {
   const notClean = (reason: string): AutoShipVerdict => ({ ship: false, reason })
   if (evidence.status !== 'completed' || !evidence.result) {
     return notClean('The upgrade turn did not run to its end.')
@@ -476,7 +481,7 @@ export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string
   if (evidence.result.isError || evidence.result.subtype !== 'success') {
     return notClean(`The upgrade turn ended with ${evidence.result.subtype}.`)
   }
-  const said: UpgradeResult | null = upgradeResultOf(evidence.result.tail)
+  const said: UpgradeResult | null = upgradeResultOf(evidence.result.tail, marker)
   if (evidence.askedQuestion || said !== 'DONE') {
     return notClean('The upgrade stopped to ask or explain something.')
   }
@@ -503,12 +508,17 @@ export function autoShipVerdict(evidence: UpgradeTurnEvidence, toVersion: string
  *    session's last checkpoint). A turn that changed files did some of the upgrade and stopped
  *    mid-way: that is its owner's to read, not Launch's to push on.
  */
-export function upgradeFollowUpDue(evidence: UpgradeTurnEvidence, followUpSent: boolean): boolean {
+export function upgradeFollowUpDue(
+  evidence: UpgradeTurnEvidence,
+  followUpSent: boolean,
+  /** The app kit's `upgrade.doneMarker` (D36 K4); absent: `LAUNCH-UPGRADE:`. */
+  marker?: string
+): boolean {
   if (followUpSent) return false
   if (evidence.status !== 'completed' || !evidence.result) return false
   if (evidence.result.isError || evidence.result.subtype !== 'success') return false
   if (evidence.askedQuestion) return false
-  if (upgradeResultOf(evidence.result.tail) !== null) return false
+  if (upgradeResultOf(evidence.result.tail, marker) !== null) return false
   return evidence.changed === false
 }
 

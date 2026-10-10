@@ -30,7 +30,7 @@ import { requestTurn } from '@/api/services/sessions/chat'
 import { CLAUDE_TURN_INPUT } from '@/api/services/sessions/claude-stream'
 import { handleAnthropic, MODEL_KEY_PLACEHOLDER } from '@/api/services/sessions/egress/anthropic'
 import { listSessionEvents } from '@/api/services/sessions/event-log'
-import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/rocketflare-dev'
+import { SESSION_TEST_LATENCY_FACTOR } from '@/api/services/sessions/kit-dev'
 import { turnAliveScript } from '@/api/services/sessions/runtimes/process/kill'
 import { TURN_LOG_REATTACHES } from '@/api/services/sessions/runtimes/process/logs'
 import {

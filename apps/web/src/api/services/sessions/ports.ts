@@ -96,6 +96,21 @@ export interface SessionAppRef {
   neonStagingBranchId: string | null
   /** `apps.session_db` as it stands. */
   sessionDb: AppSessionDb | null
+  /**
+   * D36 K4: the app kit's `database` block as a session's database needs it
+   * (`sessionDatabaseKitOf`); absent: the Rocketflare fallback's.
+   */
+  database?: SessionDatabaseKit
+}
+
+/** What the session database port reads of an app's kit (`database`). */
+export interface SessionDatabaseKit {
+  /** `database.rlsRole` (`{slug_snake}` substituted later); null: the kit has no per-app role. */
+  rlsRole: string | null
+  /** `database.roles.migrator`: the role that makes the app's RLS role in a deploy. */
+  migratorRole: string
+  /** `database.extensions`: made in `session_app` as the owner before any migration. */
+  extensions: readonly string[]
 }
 
 /** A session's database: the non-secret description and its connection string (a SECRET). */
