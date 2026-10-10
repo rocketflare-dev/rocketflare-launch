@@ -69,7 +69,12 @@ import {
   updateGroupRequestSchema,
   updateGroupTypeRequestSchema,
 } from '@launch/shared/groups'
-import { kitAddRequestSchema, kitIdParamSchema, kitPinRequestSchema } from '@launch/shared/kits'
+import {
+  kitAddRequestSchema,
+  kitIdParamSchema,
+  kitOptionsResponseSchema,
+  kitPinRequestSchema,
+} from '@launch/shared/kits'
 import {
   agentAccountsResponseSchema,
   agentLoginResponseSchema,
@@ -93,6 +98,8 @@ import {
   appListResponseSchema,
   appThumbnailRefreshResponseSchema,
   importAppRequestSchema,
+  importDetectRequestSchema,
+  importDetectResponseSchema,
   putAppShipSettingsRequestSchema,
   updateAppRedirectUrisRequestSchema,
   updateAppRequestSchema,
@@ -278,6 +285,7 @@ export const API_SCHEMAS = {
   'POST /api/apps/:id/upgrade': { response: startUpgradeResponseSchema },
   'GET /api/apps/:id/upgrades': { response: appUpgradeListResponseSchema },
   'POST /api/apps/import': { body: importAppRequestSchema },
+  'POST /api/apps/import/detect': { body: importDetectRequestSchema, response: importDetectResponseSchema },
   'GET /api/audit': { query: auditListQuerySchema },
   'GET /api/audit/export': { query: auditExportQuerySchema },
   'GET /api/chat/conversations': { query: conversationListQuerySchema },
@@ -303,6 +311,7 @@ export const API_SCHEMAS = {
   'POST /api/invitations/bulk': { body: bulkInviteRequestSchema },
   'GET /api/keys': { query: conversationListQuerySchema },
   'POST /api/keys': { body: createApiKeyRequestSchema },
+  'GET /api/kits': { response: kitOptionsResponseSchema },
   'PATCH /api/me': { body: updateProfileRequestSchema },
   'GET /api/me/agent-credentials': { response: agentAccountsResponseSchema },
   'DELETE /api/me/agent-credentials/:runtime': { params: agentRuntimeParamSchema },

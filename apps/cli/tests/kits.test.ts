@@ -3,6 +3,7 @@
  * are validated with the shared schema before any request; a kit that fails conformance prints
  * its problems and exits 1; `rm` asks first; `--json` prints the body as sent.
  */
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   runKitsAdd,
@@ -106,6 +107,25 @@ describe('kits ls / show', () => {
     expect(r.error).toBeNull()
     expect(r.out.content()).toContain('! .github/workflows/ci.yml is missing')
     expect(r.out.content()).toContain('launch.kit.json (schema 1)')
+  })
+
+  it('shows what the manifest declares (D36 K5): init, release, check, upgrades, plugins', async () => {
+    const manifest = JSON.parse(
+      readFileSync(
+        new URL('../../web/tests/fixtures/launch-kit-0.1/launch.kit.json', import.meta.url),
+        'utf8'
+      )
+    )
+    const r = await run(c => runKitsShow(c, 'acme-kit'), {
+      '/api/platform/kits/acme-kit': () => jsonResponse({ ...detail, manifest }),
+    })
+    expect(r.error).toBeNull()
+    const text = r.out.content()
+    expect(text).toContain(`Init      ${manifest.scaffold.init}`)
+    expect(text).toContain(`Release   .github/workflows/${manifest.release.workflow}`)
+    expect(text).toContain(`Check     ${manifest.ci.requiredCheck}`)
+    expect(text).toContain(manifest.upgrade ? 'Upgrades  yes' : 'Upgrades  no')
+    expect(text).toContain('Plugins   ')
   })
 })
 

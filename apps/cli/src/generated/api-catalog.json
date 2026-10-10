@@ -5133,6 +5133,12 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "kitName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
@@ -6257,6 +6263,20 @@
                   ],
                   "default": null
                 },
+                "kitSlug": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "kitName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
                 "latestDeploy": {
                   "anyOf": [
                     {
@@ -6480,6 +6500,11 @@
           "ownerGroupId": {
             "type": "string",
             "format": "uuid"
+          },
+          "kitId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           },
           "options": {
             "type": "object",
@@ -6891,6 +6916,20 @@
                   {
                     "type": "null"
                   }
+                ],
+                "default": null
+              },
+              "kitSlug": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "kitName": {
+                "type": [
+                  "string",
+                  "null"
                 ],
                 "default": null
               }
@@ -11326,6 +11365,105 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/apps/import/detect",
+      "summary": "Dry-run an import: read the repo, detect the kit it was built from (D36 K5) and check the slug, writing nothing — the Import dialog's preview.",
+      "auth": "signed-in",
+      "description": "Requires `manage App`. The same 422s as import.",
+      "body": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "kitVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kit": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "detectedBy": {
+                "type": "string",
+                "enum": [
+                  "kit-file",
+                  "app-manifest",
+                  "legacy"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "slug",
+              "name",
+              "detectedBy"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "repo",
+          "ref",
+          "manifest",
+          "slug",
+          "displayName",
+          "kitVersion",
+          "kit"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "body": "@launch/shared/launch-apps#importDetectRequestSchema",
+        "response": "@launch/shared/launch-apps#importDetectResponseSchema"
+      },
+      "source": "apps/web/src/api/routes/apps.ts",
+      "cli": [
+        "commands/apps-manage.ts"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/api/audit",
       "summary": "Lists the tenant's audit log, newest first, filterable by `appId` and `action`.",
@@ -12964,6 +13102,77 @@
       "source": "apps/web/src/api/routes/keys.ts",
       "cli": [
         "commands/keys.ts"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/kits",
+      "summary": "List the kits a new app may be created from (verified ones and the default), default first.",
+      "auth": "signed-in",
+      "response": {
+        "type": "object",
+        "properties": {
+          "kits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "slug": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "icon": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "isDefault": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "slug",
+                "name",
+                "description",
+                "icon",
+                "version",
+                "isDefault"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "kits"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "response": "@launch/shared/kits#kitOptionsResponseSchema"
+      },
+      "source": "apps/web/src/api/routes/kit-options.ts",
+      "cli": [
+        "commands/apps-manage.ts"
       ]
     },
     {
