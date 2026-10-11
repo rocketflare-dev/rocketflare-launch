@@ -18,7 +18,7 @@
 FROM docker.io/cloudflare/sandbox:0.12.10
 
 # Recorded on every session row (`sessions.image_version`) so a drain can tell who ran on what.
-LABEL dev.rocketflare.launch.session-image="session-6"
+LABEL dev.rocketflare.launch.session-image="session-7"
 
 # Node 24 FIRST on PATH (S7 finding 6): the base image ships Node 22 in /usr/local/bin, ahead of
 # /usr/bin, and the kit refuses anything below 24. The base's own server is not Node, so replacing
@@ -54,7 +54,7 @@ RUN npm install -g --allow-scripts=@anthropic-ai/claude-code \
 # STORE is kept, so no lifecycle script needs to run (`ignore-scripts`): the kit's fetch runs
 # esbuild's postinstall, whose Go binary segfaults under amd64 emulation on an ARM Mac.
 # ROCKETFLARE's store only (D36 K4): an app on any other kit installs cold (`session.install`).
-ARG KIT_TAG=0.16.0
+ARG KIT_TAG=0.18.1
 RUN git clone --depth 1 --branch "${KIT_TAG}" https://github.com/rocketflare-dev/rocketflare /tmp/kit \
  && cd /tmp/kit && pnpm fetch --frozen-lockfile --config.ignore-scripts=true \
  && rm -rf /tmp/kit

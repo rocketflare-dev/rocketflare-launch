@@ -397,8 +397,8 @@ export type KitTagsResponse = z.infer<typeof kitTagsResponseSchema>
  */
 export const DEFAULT_TEMPLATE_PIN: TemplatePin = {
   repo: 'rocketflare-dev/rocketflare',
-  tag: '0.16.0',
-  commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
+  tag: '0.18.1',
+  commit: '7a2b3d594194a55a3197c7760e451c9ed64bc3e5',
 }
 
 /**

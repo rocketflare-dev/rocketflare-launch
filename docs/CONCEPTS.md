@@ -1516,7 +1516,9 @@ commit fast-forwards `main` on the app's history (`scaffold-script.test.ts` cove
 Vite dev server now proxies `/ci` to wrangler (it did not, so a job calling the tunnel got the SPA's
 `index.html`).
 
-The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.16.0**: 0.15.0 plus the rename fixes a
+The default pin (`DEFAULT_TEMPLATE_PIN`) is kit **0.18.1** (commit `7a2b3d5`), the first default
+that declares its own `launch.kit.json` (D36), so a new app needs no fallback manifest. The road
+there from 0.15.0 began with the rename fixes a
 hyphenated slug needs — the evals script's `report.<slug>` identifier (0.15.1), then the API-key
 prefix (`<snake>_`), the `rocketflare-dev/` references, the test Compose project and a stale
 `docs/plugin-api.md` (0.15.2, whose CI now gates a copy renamed to `my-app`), then an app CI a
@@ -1610,7 +1612,7 @@ rename, install, plugins, gate, push), but that app's own CI then failed on the 
 fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon timeouts, fixed in
 0.15.3; the 0.15.3 deploy's gate went green and its deploy job failed at the parity step, fixed in
 0.15.4 — a staging deploy past the parity step is still unproven. The session image carries the pnpm store of the default pin's
-kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.16.0; a config test fails when they drift);
+kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.18.1; a config test fails when they drift);
 an app pinned to another kit still falls back to the registry for what differs. Follow latest
 reads at most 1000 tags (ten pages) and moves only on a newer TAG — a release tag force-moved to
 another commit is not noticed (the scaffold's tag-to-commit check refuses it). The kit pin's GitHub lookups
@@ -2165,7 +2167,7 @@ same instant can both pass (the headroom of two absorbs one), and a sign-in is c
 hosts (its row names none). Evicting an archive made on the OTHER host or mode goes through this host's
 bucket, so a `binding` archive left by a laptop's local session is the lifecycle rule's. A failed
 build holds requests off for 15 min, then the next boot tries again — one container per window
-while the default branch does not install. The image's kit-0.16.0 pnpm store pin is still there.
+while the default branch does not install. The image's kit pnpm store pin (0.18.1) is still there.
 
 ### 18.10 The sandbox and the local backend
 
@@ -2281,8 +2283,8 @@ for all of its operations. Polls and 423 retries back off from 200 ms ×1.5 to a
 pending operations read in parallel per round; a wait gives up (504) after 120 s slept, a 423
 after 33 retries (~30 s).
 The image (`containers/session/Dockerfile`) is the Sandbox base plus Node 24, pnpm 10, a pinned
-Claude Code, a pinned Codex (§18.22-B) and a warm pnpm store for the default pin's kit (0.16.0,
-`SESSION_KIT_TAG`; image `session-6`) — an app on another kit gets its `node_modules` from the app's
+Claude Code, a pinned Codex (§18.22-B) and a warm pnpm store for the default pin's kit (0.18.1,
+`SESSION_KIT_TAG`; image `session-7`) — an app on another kit gets its `node_modules` from the app's
 prebuild instead once one exists (§18.9, issue #16; a prebuild is only restored on the image it
 was built on, so an image bump rebuilds each app's on its next boot). The checkout is `/workspace/app` and `$HOME` is
 `/root` (`SESSION_WORKSPACE` / `SESSION_HOME` in `kit-dev.ts`, the one definition). The

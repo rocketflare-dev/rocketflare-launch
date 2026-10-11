@@ -179,8 +179,8 @@ describe('POST /ci/scaffold/token', () => {
       domain: APPS_DOMAIN,
       repo: created.repository,
       kitRepo: 'rocketflare-dev/rocketflare',
-      tag: '0.16.0',
-      commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
+      tag: '0.18.1',
+      commit: '7a2b3d594194a55a3197c7760e451c9ed64bc3e5',
       // D36 K3: the kit the job's script was generated for (an app with no kit: the fallback's).
       kitId: 'rocketflare',
     })
@@ -544,8 +544,8 @@ describe('GitHubActionsScaffoldRunner', () => {
       domain: APPS_DOMAIN,
       repo: created.repository,
       kitRepo: 'rocketflare-dev/rocketflare',
-      tag: '0.16.0',
-      commit: 'bc89e0e3ca6f24bb778adcd181ee9f030243af16',
+      tag: '0.18.1',
+      commit: '7a2b3d594194a55a3197c7760e451c9ed64bc3e5',
     }
   }
 })

@@ -544,7 +544,7 @@ describe('around the runtime', () => {
     expect(dockerfile).toContain('ARG CODEX_VERSION=0.160.0')
     expect(dockerfile).toContain(`"@openai/codex@\${CODEX_VERSION}"`)
     expect(dockerfile).toContain('codex --version')
-    expect(SESSION_IMAGE_VERSION).toBe('session-6')
+    expect(SESSION_IMAGE_VERSION).toBe('session-7')
     expect(dockerfile).toContain(
       `LABEL dev.rocketflare.launch.session-image="${SESSION_IMAGE_VERSION}"`
     )

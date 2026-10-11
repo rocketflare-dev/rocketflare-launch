@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **New apps are cut from Rocketflare 0.18.1** (`DEFAULT_TEMPLATE_PIN`, commit `7a2b3d5`), the
+  first default with its own `launch.kit.json`, so Launch drives a new app from the kit's declared
+  contract rather than the built-in fallback manifest. The session image warms its pnpm store from
+  0.18.1 too (`SESSION_KIT_TAG`, image `session-7`): deploying it replaces running session
+  containers (drain first), and each app's prebuild is rebuilt on its next boot. A Rocketflare kit
+  that follows latest or was re-pinned keeps its own pin; one on Launch's default moves with this.
 - **An app's sign-in redirect comes from its kit.** Launch registered every app's OIDC client with
   Rocketflare's callback (`/auth/oidc/callback`), so a meta-kit app's sign-in to `/auth/callback`
   was refused ("not one it registered"). The kit contract's `launchProvides.oidc` now has
