@@ -64,6 +64,14 @@
   or a kit with apps) and opened to see what its manifest declares; `launch kits show` prints the
   same. App pages, the catalogue and approvals name the app's kit (`kitSlug`/`kitName` on every app)
   instead of saying Rocketflare.
+- **Settings → Kits shows the scaffold check (D36 K3 + K5).** A kit whose scaffold check is running
+  now reads "Checking" instead of "Not checked", and each kit shows its last scaffold check —
+  passed, failed or running, at which commit, a link to the run, and whether its test repo was
+  deleted or needs deleting by hand. "Run the scaffold check" sits beside Check, Re-pin and Add
+  offer it as a checkbox, and the list refreshes while a check runs. A kit that is still being
+  checked is not offered for new apps (409 `kit_not_verified`), unless it is the default. After
+  Follow latest moves a kit to a new release, the cron that moved it now checks it there straight
+  away, so the kit has its manifest again before anyone creates an app from it.
 
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with

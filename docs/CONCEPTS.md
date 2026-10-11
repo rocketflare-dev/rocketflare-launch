@@ -4768,13 +4768,28 @@ roles, the marker) and `tests/api/kit-session-workflow.test.ts` (a whole boot of
 upgrade proxy on its app's kit, public and private, locally and on the host);
 `session-ship-gate.test.ts` ships an app on another kit through its own gate.
 
+**Settings → Kits and the dynamic check** (`KitsCard.tsx`): a row reads `Checking` while a scaffold
+check runs, and shows the last one — passed, failed or running, its commit, a link to its GitHub
+Actions run, and what became of its throwaway repo (deleted; archived, or not removed, with the
+repo named to delete by hand). **Run the scaffold check** sits beside Check (`?dynamic=1`), and Re-pin
+and Add carry it as a checkbox; the list re-reads every 15 s while any check runs (`kitsPollInterval`
+— no realtime event carries a kit). A non-default kit that is `checking` is not offered by Create app
+and is 409 `kit_not_verified` (its check may yet fail); the default is offered whatever its status.
+**After a Follow latest move** (`UNCHECKED_KIT`: no manifest snapshot) the same five-minute cron
+re-runs the STATIC check at the new pin (`recheckMovedKit`, `kit-pin.ts`): only for a following kit
+that is `unchecked` with no manifest, so once per move and no GitHub call otherwise; compare-and-set
+on the pin, audited `kit.checked` (`by: 'cron'`). GitHub unreachable keeps the kit `unchecked` with
+the reason as its one problem (shown on the row) and retries next tick; it never starts a dynamic
+check.
+
 **Known gaps:** the dynamic check is opt-in, so a kit only checked statically is `verified` without
-ever having run; it has not run against real GitHub (the FakeCloud only), so whether the App may
-delete a repo it created under a given org policy is unconfirmed (the archive fallback covers a
-403); a Follow latest move resets the kit to `unchecked` with NO manifest snapshot, so an app created
-from that kit before an admin's Check takes the Rocketflare fallback as its manifest (`kitManifestOf`)
-— its scaffold then refuses at once (the kit's `launch.kit.json` names another `kit.id`), but the
-cron should re-check after a move. **Sessions of another kit install COLD**: the session image carries
+ever having run, and the cron's re-check after a move is static only; it has not run against real
+GitHub (the FakeCloud only), so whether the App may delete a repo it created under a given org
+policy is unconfirmed (the archive fallback covers a 403); between a Follow latest move and the
+cron's re-check (the same tick, or the next when GitHub failed) the kit has no manifest snapshot,
+and the default kit — the only one offered while unchecked — would hand an app created in that
+window the Rocketflare fallback (`kitManifestOf`), whose scaffold then refuses at once if the kit's
+`launch.kit.json` names another `kit.id`. **Sessions of another kit install COLD**: the session image carries
 Rocketflare's pnpm store only (`containers/session/Dockerfile`, `KIT_TAG`), so `session.install`
 fetches every package (a per-kit store cached in R2 is the follow-up); the resume of another kit
 always migrates (no migrations directory in the contract) and its seed must be idempotent (Launch's

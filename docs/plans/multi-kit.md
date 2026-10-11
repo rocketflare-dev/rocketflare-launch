@@ -1,7 +1,8 @@
 # Several kits, one contract: design
 
-**Status:** accepted, 2026-10-10. **K1, K2, K3 and K4 built** (2026-10-10, `docs/CONCEPTS.md`
-§18.6, §18.24); K5–K6 not started. Decision **D36**. [spec/02](../../spec/02-template-contract.md) was rewritten
+**Status:** accepted, 2026-10-10. **K1–K6 built** (K1–K5 in Launch, 2026-10-10/11,
+`docs/CONCEPTS.md` §18.4–§18.6, §18.24; K6 kit-side: `launch-kit` 0.1.2 released, Rocketflare's
+PR #68 open). Decision **D36**. [spec/02](../../spec/02-template-contract.md) was rewritten
 with K2 to describe the contract as built. Open questions are in §9.
 
 ## 1. Why
@@ -363,10 +364,20 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
       helper; K5's interim `pinForApp` was folded into it at the merge), so a non-default pick is
       end to end;
     - the manifest's `icon` reaches the picker but is not drawn.
+  - **Joined to K3 at the merge (2026-10-11).** Settings → Kits shows `checking` (K1 read it as
+    "not checked") and the last scaffold check — passed, failed or running, its commit, a link to
+    its run and what became of its throwaway repo — offers **Run the scaffold check** beside Check
+    (and as a checkbox on Re-pin and Add), and re-reads every 15 s while a check runs (no realtime
+    event carries it). A non-default kit that is `checking` is not offered and is 409
+    `kit_not_verified`. After a Follow latest move resets a kit to `unchecked` with no manifest,
+    the same cron re-runs the STATIC check at the new pin (`recheckMovedKit`), once per move.
 - **K6: kit-side work, landed by PR.**
   - The `launch-kit` repo.
   - Rocketflare's `launch.kit.json`.
   - `kit-check.mjs` in Rocketflare's CI.
+  - **Built (2026-10-11).** `launch-kit` is released at 0.1.2. Rocketflare's `launch.kit.json`
+    and `kit-check.mjs` in its CI are rocketflare PR #68, still open: until a Rocketflare release
+    ships the file, Launch reads Rocketflare through the built-in fallback manifest (Appendix A).
 
 `docs/CONCEPTS.md` §18.5, §18.6 and §18.24 and spec/02 were rewritten with K2.
 
