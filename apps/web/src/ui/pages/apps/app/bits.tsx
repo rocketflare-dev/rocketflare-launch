@@ -4,7 +4,7 @@
  * tabular monospace, external links marked.
  */
 import { ArrowTopRightOnSquareIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline'
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { formatDateTime, timeAgo } from '@/ui/lib/format'
 
@@ -83,13 +83,48 @@ export function SectionHeading({
   )
 }
 
-/** One ⋯ entry: an action, an in-app link, or a link that leaves Launch. */
+/**
+ * One ⋯ entry: an action, an in-app link, or a link that leaves Launch. An action may be
+ * `destructive` (error text) or `disabledReason`-ed: shown, not runnable, the reason beneath it.
+ */
 export type MenuItem =
-  | { label: string; onSelect: () => void }
+  | { label: string; onSelect: () => void; destructive?: boolean; disabledReason?: string | null }
   | { label: string; to: string }
   | { label: string; href: string }
 
 const MENU_ITEM = 'block w-full text-left text-sm px-2.5 py-1.5 rounded hover:bg-base-200'
+
+function MenuAction({
+  item,
+  onDone,
+}: {
+  item: Extract<MenuItem, { onSelect: () => void }>
+  onDone: () => void
+}) {
+  const reasonId = useId()
+  const reason = item.disabledReason ?? null
+  return (
+    <>
+      <button
+        type="button"
+        className={`${MENU_ITEM} ${item.destructive ? 'text-error' : ''} disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-not-allowed`}
+        disabled={Boolean(reason)}
+        aria-describedby={reason ? reasonId : undefined}
+        onClick={() => {
+          onDone()
+          item.onSelect()
+        }}
+      >
+        {item.label}
+      </button>
+      {reason && (
+        <p id={reasonId} className="px-2.5 pb-1.5 text-xs text-muted">
+          {reason}
+        </p>
+      )}
+    </>
+  )
+}
 
 export function MoreMenu({
   items,
@@ -116,16 +151,7 @@ export function MoreMenu({
         {items.map(item => (
           <li key={item.label}>
             {'onSelect' in item ? (
-              <button
-                type="button"
-                className={MENU_ITEM}
-                onClick={() => {
-                  close()
-                  item.onSelect()
-                }}
-              >
-                {item.label}
-              </button>
+              <MenuAction item={item} onDone={close} />
             ) : 'to' in item ? (
               <Link to={item.to} className={MENU_ITEM} onClick={close}>
                 {item.label}

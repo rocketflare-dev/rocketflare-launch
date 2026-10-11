@@ -1,40 +1,20 @@
 /**
- * Settings → Kits (`/settings/kit`): the Kit version card over the DEFAULT kit's pin — what a new
- * app is cut from unless Create app's picker names another — and, below it, the kit catalogue
- * (D36 K1, K5, `KitsCard`: check, re-pin, make default, remove, what each declares, add). Not a
- * connection (it has a default), and Follow latest makes it something an admin comes back to.
- * Reads the same setup overview as the Platform pages; `canAdministerPlatform` (the section's
- * guard).
+ * Settings → Kits (`/settings/kit/*`, D36 K1, K3, K5): the kit catalogue (`KitList`) at the index
+ * — what new apps are cut from, the default first — and one kit's page at `:slug` (`KitDetail`):
+ * its pin and the pin editor (the Kit version card's, for any kit), its checks, and what its
+ * manifest declares. `canAdministerPlatform` (the section's guard).
  */
-import { SectionPanel, SkeletonRows } from '@/ui/components/shared'
-import { useKits } from '@/ui/hooks/useKits'
-import { useSetupOverview } from '@/ui/hooks/useSetup'
-import { KitsCard } from './kit/KitsCard'
-import { KitVersionCard } from './kit/KitVersionCard'
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { SETTINGS_PATHS } from '@/ui/lib/settings-paths'
+import { KitDetail } from './kit/KitDetail'
+import { KitList } from './kit/KitList'
 
 export default function Kit() {
-  const { data, isLoading, error } = useSetupOverview()
-  const kits = useKits()
-  const defaultKit = kits.data?.kits.find(k => k.isDefault)
-
-  if (isLoading) {
-    return (
-      <SectionPanel>
-        <SkeletonRows rows={4} />
-      </SectionPanel>
-    )
-  }
-  if (error || !data) {
-    return (
-      <SectionPanel>
-        <p className="text-sm text-error">Could not load the kit version.</p>
-      </SectionPanel>
-    )
-  }
   return (
-    <div className="space-y-6">
-      <KitVersionCard templatePin={data.templatePin} kitName={defaultKit?.name} />
-      <KitsCard />
-    </div>
+    <Routes>
+      <Route index element={<KitList />} />
+      <Route path=":slug" element={<KitDetail />} />
+      <Route path="*" element={<Navigate to={SETTINGS_PATHS.kit} replace />} />
+    </Routes>
   )
 }

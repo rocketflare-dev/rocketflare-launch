@@ -547,7 +547,13 @@ A `CUSTOM kit.notice` renders
     Groups `admin` + `manage Group`, Access requests `platformAdmin`, with the pending count),
     Approval policies (`admin` + `manage ApprovalPolicy`), API keys (`admin`)
   - **Building apps** — Coding agents (`platformAdmin`), AI & models (`admin`; tabs Providers and
-    Agent models, `+ manage AiConfig`), Prompts (`admin`), Kits (`platformAdmin`)
+    Agent models, `+ manage AiConfig`), Prompts (`admin`), Kits (`platformAdmin`: the list at
+    `/settings/kit` — `platform/kit/KitList.tsx`, one row per kit with Check and a ⋯ menu, Add a
+    kit in a `Modal` — and one kit's page at `/settings/kit/:slug` (`kitPath`), `KitDetail.tsx`,
+    which holds the pin editor the old Kit version card had, for any kit; the shared pieces and
+    the pure `kitStatus` / `kitVersion` are `kit/kitBits.tsx`, `tests/ui/settings-kits.test.tsx`).
+    `MoreMenu` (`pages/apps/app/bits.tsx`) items may be `destructive` (error text) or carry a
+    `disabledReason` shown under them
   - **Platform** (`platformAdmin`) — Domain, Cloudflare, Neon, GitHub, Email, Sign-in, Public URL:
     one `platform/Connection.tsx` told its `step`, reusing the `setup/` cards; Sign-in is the
     upstream `IdentityCard` plus `Identity.tsx`'s issuer keys. The menu shows each one's `StatusDot`

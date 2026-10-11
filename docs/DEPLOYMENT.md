@@ -259,7 +259,7 @@ email DNS record's presence when verification stalls.
      here is also the proof that the Worker can unseal what `setup` sealed;
    - run the **Public URL** check (GitHub's runners call Launch back at it, and creating an app is
      refused until it passes).
-3. **Settings → Kit version**: pin the kit version apps are created from — a release, **Follow
+3. **Settings → Kits** → the default kit: pin the kit version apps are created from — a release, **Follow
    latest** (the newest release, re-checked hourly) or, for development, a commit.
 4. **Settings → Coding agents**: turn on the coding agents sessions may run, and who
    pays. With nothing set, it's Claude Code on Launch's key only, which needs `ANTHROPIC_API_KEY`

@@ -1540,15 +1540,20 @@ DEFAULT KIT's pin overrides it (D36 K1, §18.24: `kits.pin` on the default row; 
 Rocketflare row with no stored pin follows the code default) — the ONE source of the pin; there is
 no env var. `launch_settings.template_pin` is now its mirror, kept for one release.
 
-**Kit version (Settings → Kits).** A platform admin sets the DEFAULT kit's pin on its own section,
-Settings → Building apps → Kits (`/settings/kit`, `pages/platform/Kit.tsx` →
-`KitVersionCard`; not a connection — it has a default — so Home's setup checklist never asks). The card shows the pin new apps get (repo, "Release X", "Latest release,
-now X" or "Unreleased commit", short SHA; Default or Overridden) and takes one of three modes:
+**Kit version (Settings → Kits → a kit's page).** A platform admin sets the DEFAULT kit's pin on
+its page, Settings → Building apps → Kits → the kit (`/settings/kit/<slug>`, `pages/platform/Kit.tsx`
+→ `kit/KitDetail.tsx`; not a connection — it has a default — so Home's setup checklist never asks).
+Its Version block shows the pin new apps get (repo, "Release X" — ", Launch's default" while the
+built-in kit follows the code default — "Latest release, now X" or "Unreleased commit", short SHA)
+and the pin editor (`PinForm`, `kit/kitBits.tsx`) takes one of three modes:
 **Follow latest**, a **release tag** (a combobox — `components/Combobox.tsx`, ARIA combobox with a
 listbox popup, full keyboard — over `GET /api/platform/setup/template-pin/tags`, loaded when it
 opens, newest release first; a tag not listed can still be typed) or a **commit** (a SHA on any
-branch, or "Pin latest main"). `PUT /api/platform/setup/template-pin`
-(`templatePinRequestSchema`: `tag` | `commit` | `latest`) resolves it SERVER-side through GitHub as
+branch, or "Pin latest main"). The page pins through `PUT /api/platform/kits/:id/pin` for every kit,
+the default included (checked at the new pin, mirrored into `template_pin`); `PUT
+/api/platform/setup/template-pin` (`templatePinRequestSchema`: `tag` | `commit` | `latest`, what
+`launch platform kit` drives) sets the default kit's the same way, without the check. Either
+resolves it SERVER-side through GitHub as
 the connected GitHub App (a `contents: read` installation token, revoked after; the kit repo is
 public, so it need not be installed there — a PRIVATE kit is read through the App's installation
 on its owner, §18.24; no App → 409 `github_app_not_configured`): a tag through
@@ -1557,10 +1562,12 @@ through `GET …/commits/{ref}`, which also proves it is in that repo. A ref the
 `kit_ref_not_found` and nothing is stored (`services/launch/kit-pin.ts`). Moving the pin is also
 what "the kit bumped" means for the apps that already exist: every app whose `template_version` is
 below the pin's tag reads "Requires upgrade → X.Y.Z" at once (computed on read, §18.23); a commit
-pin flags nothing. "Reset to default" is `DELETE …/template-pin` (the default kit's stored pin
+pin flags nothing. "Reset to Launch's default" (the built-in kit's page, once it is re-pinned) is
+`DELETE …/template-pin` (the default kit's stored pin
 cleared, so the default moves with Launch again; 409 `default_kit_not_builtin` when the default kit
-is not the built-in Rocketflare one, which has no code default). All of them audit `setting.changed` with the pin before and after. A
-commit pin shows "Unreleased commit — for development".
+is not the built-in Rocketflare one, which has no code default). The template-pin routes audit
+`setting.changed` with the pin before and after, the kit route `kit.pinned`. A
+commit pin shows "Unreleased commit, for development".
 
 **Follow latest** (`template_pin.follow = 'latest'`, `isFollowLatestPin`): the pin tracks the kit's
 newest RELEASE — the highest `X.Y.Z` tag by semver (`latestKitTag`, a leading `v` allowed;
@@ -1606,7 +1613,7 @@ fixed in 0.15.2, and its deploy then failed on the default-plugins gate and neon
 kit (`SESSION_KIT_TAG` = `DEFAULT_TEMPLATE_PIN.tag`, 0.16.0; a config test fails when they drift);
 an app pinned to another kit still falls back to the registry for what differs. Follow latest
 reads at most 1000 tags (ten pages) and moves only on a newer TAG — a release tag force-moved to
-another commit is not noticed (the scaffold's tag-to-commit check refuses it). The Kit version card's GitHub lookups
+another commit is not noticed (the scaffold's tag-to-commit check refuses it). The kit pin's GitHub lookups
 and the commit-pin fetch are proven against the FakeCloud and local git repos only — that an
 installation token reads a public repo outside the installation, and a real runner's `fetch` of a
 SHA that is not a branch tip, are unconfirmed; the catalogue still shows a commit-pinned app by
@@ -4574,7 +4581,7 @@ default) and `importApp` to the kit it detects (K5, below). `apps.template` stay
 
 **The template pin is the default kit's pin** (`kit-pin.ts`): `templatePinStatus`,
 `loadPipelineSettings`, the scaffold plan, the upgrade target and the session kit fetch all read
-it; `PUT|DELETE /api/platform/setup/template-pin` (the Kit version card, `launch platform kit …`)
+it; `PUT|DELETE /api/platform/setup/template-pin` (Reset to Launch's default, `launch platform kit …`)
 write it. The `template_pin` / `template_pin_check` settings are **a fallback read and a mirror for
 one release**: the default kit with no stored pin reads the setting before the code default, and
 every write of the default kit's pin (and Make default) writes the setting too, so a rollback to the
@@ -4619,14 +4626,22 @@ Follow latest move of a non-default kit is `kit.pinned` with `after.by`, the def
 `setting.changed` on `template_pin`. The cron's `kit.followLatest` walks every kit (each throttled
 on its own `latest_check`), and a pin move resets the kit to `unchecked`. CLI: `launch kits ls | show |
 add | check | pin | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1; `show`
-prints what the manifest declares, `kitManifestSummary`). UI: Settings → **Kits** (`/settings/kit`):
-the Kit version card (the DEFAULT kit's pin, named) over the **Kits** list (`KitsCard`) — per kit its
-repo and pin, the check's result (its problems listed), the apps made from it, and Check, Re-pin (a
-tag from the repo's tags, a commit or branch, or Follow latest — `PUT /:id/pin`), Make default,
-Details (what the manifest snapshot declares: its source, init, release workflow, required check,
-upgrades supported or not, default plugins) and Remove (asks first; disabled, the reason in a
-tooltip and the accessible description, for the default and for a kit with apps); below, an Add
-form (repo + Follow latest | tag | commit).
+prints what the manifest declares, `kitManifestSummary`). UI: Settings → **Kits** (`/settings/kit`, `kit/KitList.tsx`):
+one section, "Add a kit" its one primary action (a dialog: the repo — `owner/name` or a GitHub URL,
+validated on blur or submit, never while empty — Follow latest | tag | commit, and the scaffold-check
+option), then one row per kit: name (a link to its page) with a quiet "Default", the repo, the
+version in tabular mono with how it is pinned (Follows latest, Launch's default, Unreleased commit),
+the status as a dot and one word (`kitStatus`: Verified, Not checked, Checking or Scaffold check
+running with a spinner, Failed — its problems listed under the row), the apps made from it, an
+outlined **Check** and a ⋯ menu: Run the scaffold check, Re-pin… (the pin editor in a dialog —
+`PUT /:id/pin`), Make default, and Remove… (error text; asks first; disabled with the reason under
+it, which is also its accessible description, for the default and for a kit with apps). A kit's
+page (`/settings/kit/<slug>`, `kit/KitDetail.tsx`) — what the Kit version card was, for ANY kit,
+so the default is no longer shown twice — has Check and the same ⋯ in its header, then Version
+(above), Check (status, when, problems, the last scaffold check) and What it declares (the manifest
+snapshot: its source, init, release workflow, required check, upgrades supported or not, default
+plugins). Check now (the Follow latest refresh, `POST …/template-pin/check`) is offered on the
+default kit only; another following kit is moved by the cron alone.
 
 **Choosing a kit for a new app (K5)** (`kits/options.ts`). **`GET /api/kits`** (`routes/kit-options.ts`,
 any member who may read apps — every member may ASK for an app) answers the kits a new app may be
@@ -4657,7 +4672,7 @@ kit whatever its check status — the app exists already, nothing is scaffolded.
 the app's kit: `AppSummary.kitSlug` / `kitName` (the kit row's, joined on `apps.kit_id`, else the
 snapshot's `kit.name`) — the catalogue's kit column and card meta ("Rocketflare 0.15.0"), Settings'
 About "Kit" row, and the Overview's upgrade line ("on Rocketflare 0.15.0"). Copy that named
-Rocketflare (the catalogue, Create app, Import, the Kit version card) names the kit instead.
+Rocketflare (the catalogue, Create app, Import, a kit's page) names the kit instead.
 
 **Private kits.** Every kit lookup (`withKitToken`) finds the GitHub App's installation on the
 repo's OWNER (`GET /app/installations`) and narrows the token to that one repo; with none it uses
@@ -4768,10 +4783,10 @@ roles, the marker) and `tests/api/kit-session-workflow.test.ts` (a whole boot of
 upgrade proxy on its app's kit, public and private, locally and on the host);
 `session-ship-gate.test.ts` ships an app on another kit through its own gate.
 
-**Settings → Kits and the dynamic check** (`KitsCard.tsx`): a row reads `Checking` while a scaffold
-check runs, and shows the last one — passed, failed or running, its commit, a link to its GitHub
+**Settings → Kits and the dynamic check** (`kit/KitList.tsx`, `kit/KitDetail.tsx`): a row reads
+`Scaffold check running` while a scaffold check runs, and the kit's page shows the last one — passed, failed or running, its commit, a link to its GitHub
 Actions run, and what became of its throwaway repo (deleted; archived, or not removed, with the
-repo named to delete by hand). **Run the scaffold check** sits beside Check (`?dynamic=1`), and Re-pin
+repo named to delete by hand). **Run the scaffold check** is in the row's and the page's ⋯ menu (`?dynamic=1`), and Re-pin
 and Add carry it as a checkbox; the list re-reads every 15 s while any check runs (`kitsPollInterval`
 — no realtime event carries a kit). A non-default kit that is `checking` is not offered by Create app
 and is 409 `kit_not_verified` (its check may yet fail); the default is offered whatever its status.

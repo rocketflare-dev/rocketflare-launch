@@ -424,7 +424,7 @@ with nobody to approve it (Launch's tomls set `SIGNUP_MODE=approval`; the kit de
 credentials and domain are **Settings → Platform** — one page each: Domain, Cloudflare, Neon,
 GitHub, Email (Resend), Sign-in (the upstream identity provider and the OIDC issuer's keys) and
 Public URL, each with its status dot in the menu (`/settings/domain`, `/cloudflare`, `/neon`,
-`/github`, `/email`, `/sign-in`, `/public-url`). The kit pin is **Settings → Kit version**, the
+`/github`, `/email`, `/sign-in`, `/public-url`). The kit pin is **Settings → Kits** (the default kit's page), the
 coding agents **Settings → Coding agents**, and the access-request queue **Settings → People →
 Access requests**. In single mode every organisation owner and admin can open these; in multi mode
 only global admins. The **Operator** group (users, feature flags, all sessions; organisations in
@@ -432,7 +432,7 @@ multi mode) stays global-admin only. Until every connection works, a platform ad
 the ones not ready under "Finish setting up Launch". The old `/settings/platform/*` and `/admin/*`
 links redirect. Verify: `/settings/domain` opens as the first admin.
 
-**Kit version.** Settings → **Kit version** is the Rocketflare kit every new app is cut from:
+**Kit version.** Settings → **Kits** → the default kit (Rocketflare unless you change it) is what every new app is cut from:
 Launch's default release unless you change it. Choose **Follow latest** (the kit's newest release —
 the highest `X.Y.Z` tag, never a pre-release; Launch re-checks it hourly and moves the pin when a
 newer one appears, without upgrading existing apps; "Check now" checks at once), pin a **release

@@ -1,7 +1,7 @@
 /**
  * The kit catalogue (D36 K1): `/api/platform/kits` (`canAdministerPlatform`). Every mutation
  * answers with the kit, and invalidates the catalogue AND the setup overview — the default kit's
- * pin is the Kit version card's template pin. K5 adds the member-level list Create app's picker
+ * pin is the template pin. K5 adds the member-level list Create app's picker
  * reads (`GET /api/kits`, `useKitOptions`), one kit's detail, re-pin and remove. K3's dynamic
  * (scaffold) check is `dynamic: true` on add, check and re-pin (`?dynamic=1`); while a kit is
  * `checking` the list re-reads every {@link KITS_POLL_MS} (no realtime event carries it).

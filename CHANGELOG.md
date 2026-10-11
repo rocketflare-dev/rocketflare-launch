@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Settings → Kits is easier to scan.** One list, one row per kit — name, repo, version and how
+  it is pinned, a coloured status dot and word, apps — with Check and a ⋯ menu (Run the scaffold
+  check, Re-pin…, Make default, Remove…); Add a kit opens a dialog. Each kit has its own page
+  (`/settings/kit/<slug>`) with its pin editor, checks and manifest, which replaces the separate
+  Kit version card, so the default kit is no longer shown twice.
 - **A kit repository can be pasted as a URL.** Settings → Kits, `launch kits add` and the kit pin
   accept `https://github.com/owner/name` (with `.git`, a trailing slash or a `/tree/…` path) and
   `git@github.com:owner/name.git` as well as `owner/name`, and store `owner/name`

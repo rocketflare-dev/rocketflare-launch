@@ -14,7 +14,7 @@
  * check creates the apps zone's proxied `*` record when there is none, audited
  * `dns.wildcard.created` (target the zone) before the credential's own row. `GET /` never probes.
  *   DELETE /credentials/:kind         → audit credential.removed
- *   GET    /template-pin/tags[?repo]  the kit repo's tags (the Kit version card's picker)
+ *   GET    /template-pin/tags[?repo]  the kit repo's tags (the pin editor's picker)
  *   PUT    /template-pin              a tag, a commit or Follow latest, resolved through GitHub
  *                                     → setting.changed
  *   POST   /template-pin/check        Follow latest's Check now: move to the newest release if
@@ -22,7 +22,7 @@
  *   DELETE /template-pin              back to DEFAULT_TEMPLATE_PIN (the pin cleared) → setting.changed
  *
  * The template pin is the DEFAULT KIT's pin since D36 K1 (`kits`, `/api/platform/kits` for the
- * catalogue); these routes stay for the Kit version card and `launch platform kit …`.
+ * catalogue); these routes stay for Check now, Reset to Launch's default and `launch platform kit …`.
  *   PUT    /session-agents            coding agents: on/off, model, who pays — merged into
  *                                     `session_policy.runtimes` → setting.changed (§18.22)
  *   PUT    /session-sandbox           where new sessions' containers run (`session_sandbox_host`:
@@ -251,7 +251,7 @@ setupRouter.delete('/credentials/:kind', validate('param', credentialKindParamSc
 
 // ---- the kit pin (the default kit's, D36 K1; `template_pin` is its mirror) -----------------------
 
-/** List the kit repo's tags, for the Kit version card's picker. */
+/** List the kit repo's tags, for the pin editor's picker. */
 setupRouter.get('/template-pin/tags', validate('query', kitTagsQuerySchema), async c => {
   const { db, cfg } = withAuth(c)
   return c.json(await listKitTags(db, cfg, c.req.valid('query').repo))

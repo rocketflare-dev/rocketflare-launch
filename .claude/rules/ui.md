@@ -184,7 +184,7 @@ Components subscribe to query state, never to the socket; `WebSocketStatus` (hea
   needed — `useNavGuard` then passes only `'globalAdmin'` / `'platformAdmin'` guards, so nothing
   tenant-scoped is linked). `'platformAdmin'` is `canAdministerPlatform` from
   `@launch/shared/permissions` — the server's own function — so Settings' Platform pages, Coding
-  agents, Kit version and access requests show exactly to whom `/api/platform/*` answers. A guard
+  agents, Kits and access requests show exactly to whom `/api/platform/*` answers. A guard
   may be `{ anyOf: [...] }` (OR) — the Settings item is `SETTINGS_GUARD`, `admin` OR
   `platformAdmin`
 - **Settings is ONE layout** (`pages/settings/SettingsLayout.tsx`): a grouped menu, a real path

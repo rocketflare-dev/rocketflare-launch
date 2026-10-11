@@ -47,6 +47,8 @@ export const SETTINGS_PATHS = {
 } as const
 
 export const userPath = (id: string) => `${SETTINGS_PATHS.users}/${encodeURIComponent(id)}`
+/** One kit's page under Settings → Kits (D36): its pin, its checks, what it declares. */
+export const kitPath = (slug: string) => `${SETTINGS_PATHS.kit}/${encodeURIComponent(slug)}`
 export const organisationPath = (id: string) =>
   `${SETTINGS_PATHS.organisations}/${encodeURIComponent(id)}`
 /** A plugin's settings tab (D31), namespaced so its id can never shadow a kit section. */
