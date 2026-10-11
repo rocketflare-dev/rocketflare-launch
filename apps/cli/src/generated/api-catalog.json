@@ -14393,8 +14393,15 @@
         "type": "object",
         "properties": {
           "repo": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+            "allOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+              }
+            ]
           },
           "pin": {
             "anyOf": [
@@ -15210,8 +15217,15 @@
                 "const": "tag"
               },
               "repo": {
-                "type": "string",
-                "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                "allOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                  }
+                ]
               },
               "tag": {
                 "type": "string",
@@ -15234,8 +15248,15 @@
                 "const": "commit"
               },
               "repo": {
-                "type": "string",
-                "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                "allOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                  }
+                ]
               },
               "ref": {
                 "type": "string",
@@ -15258,8 +15279,15 @@
                 "const": "latest"
               },
               "repo": {
-                "type": "string",
-                "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                "allOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+                  }
+                ]
               }
             },
             "required": [
@@ -15301,14 +15329,21 @@
     {
       "method": "GET",
       "path": "/api/platform/setup/template-pin/tags",
-      "summary": "List the kit repo's tags, for the Kit version card's picker.",
+      "summary": "List the kit repo's tags, for the pin editor's picker.",
       "auth": "platform-admin",
       "query": {
         "type": "object",
         "properties": {
           "repo": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+            "allOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$"
+              }
+            ]
           }
         },
         "additionalProperties": false
