@@ -14,7 +14,8 @@
  * `kit.followLatest` move it when a newer release appears (compare-and-set, audited with
  * `after.by`), write nothing when the tag is the same, leave a pin that does not follow alone,
  * and record a GitHub failure on `template_pin_check` — the route answering 502, the cron not
- * throwing.
+ * throwing. A move leaves the kit `unchecked` with no manifest, so the same cron re-runs the
+ * static check at the new pin (once; a GitHub failure kept on the row and retried).
  */
 import { generateKeyPairSync } from 'node:crypto'
 import {
@@ -26,8 +27,14 @@ import {
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchScheduled } from '@/api/scheduled'
-import { kitFollowLatestTask, storedPinOf } from '@/api/services/launch/kit-pin'
-import { ensureDefaultKit, updateKit } from '@/api/services/launch/kits/store'
+import {
+  kitFollowLatestTask,
+  recheckMovedKit,
+  storedPinOf,
+  UNCHECKED_KIT,
+} from '@/api/services/launch/kit-pin'
+import { ensureDefaultKit, getKit, updateKit } from '@/api/services/launch/kits/store'
+import { loadConfig } from '@/config'
 import { auditEvents, type KitRow } from '@/db/schema'
 import {
   createTestGlobalAdmin,
@@ -337,6 +344,13 @@ async function followAudits() {
   >
 }
 
+async function kitCheckedAudits() {
+  return db
+    .select()
+    .from(auditEvents)
+    .where(and(eq(auditEvents.tenantId, admin.tenantId), eq(auditEvents.action, 'kit.checked')))
+}
+
 async function runCron(minIntervalMs = 0) {
   const ctx = createExecutionContext()
   const reports = await dispatchScheduled('*/5 * * * *', createTestEnv(), ctx, {
@@ -465,6 +479,32 @@ describe('Follow latest', () => {
       expect(cloud.callsTo('github')).toHaveLength(before)
     })
 
+    it('re-checks a kit a move left unchecked; a GitHub failure stays on the row and is retried', async () => {
+      await seedPin(FOLLOW_5())
+      const kit = await ensureDefaultKit(db)
+      await updateKit(db, kit.id, UNCHECKED_KIT)
+      const ctx = { auditTenantId: admin.tenantId }
+      cloud.failNext(/access_tokens/, 500)
+      expect(await recheckMovedKit(db, loadConfig(createTestEnv()), kit.id, ctx)).toBe('failed')
+      const failed = await getKit(db, kit.id)
+      expect(failed).toMatchObject({ status: 'unchecked', manifest: null })
+      expect(failed?.problems).toEqual([
+        expect.stringMatching(/^Launch could not check the kit at 0\.15\.5 after its pin moved: /),
+      ])
+      // The next tick retries.
+      await runCron(60 * 60 * 1000)
+      const checked = await getKit(db, kit.id)
+      expect(checked?.status).not.toBe('unchecked')
+      // This fake kit repo is no kit at all: the check ran and says so (a real kit gets its manifest).
+      expect(checked).toMatchObject({ status: 'failed', manifest: null })
+      expect(checked?.problems).toEqual([expect.stringMatching(/No launch\.kit\.json/)])
+      expect(checked?.checkedAt).toBeInstanceOf(Date)
+      // Idempotent: nothing left to re-check, no GitHub call.
+      const before = cloud.callsTo('github').length
+      expect(await recheckMovedKit(db, loadConfig(createTestEnv()), kit.id, ctx)).toBe('skipped')
+      expect(cloud.callsTo('github')).toHaveLength(before)
+    })
+
     // Last: it adds a newer release to the kit repo.
     it('moves the pin to a newer release, audited by the cron, once; Check now does the same', async () => {
       await seedPin(FOLLOW_5())
@@ -489,9 +529,20 @@ describe('Follow latest', () => {
           after: { template_pin: moved, by: 'cron' },
         },
       })
-      // Idempotent: a second tick has nothing to move.
+      // The move cleared the check; the same tick checked the kit at the new pin (this fake repo
+      // has no launch.kit.json, so it fails — the point is it is no longer unchecked).
+      const kit = await ensureDefaultKit(db)
+      expect(kit.status).toBe('failed')
+      expect(kit.checkedAt).toBeInstanceOf(Date)
+      const rechecks = await kitCheckedAudits()
+      type Checked = { after?: { pin?: { tag?: string }; by?: string } }
+      const atNew = rechecks.filter(r => (r.summary as Checked).after?.pin?.tag === '0.15.6')
+      expect(atNew).toHaveLength(1)
+      expect(atNew[0]?.summary).toMatchObject({ after: { pin: moved, by: 'cron' } })
+      // Idempotent: a second tick has nothing to move, and nothing to re-check.
       await runCron()
       expect(await followAudits()).toHaveLength(audits + 1)
+      expect(await kitCheckedAudits()).toHaveLength(rechecks.length)
 
       // Check now from an older follow pin: the same move, audited as the admin's.
       await seedPin(FOLLOW_5())

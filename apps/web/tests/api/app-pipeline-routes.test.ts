@@ -18,6 +18,7 @@ import {
 } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { isOfferedKit } from '@/api/services/launch/kits/options'
 import { deleteKit, getDefaultKit, insertKit, type KitRow } from '@/api/services/launch/kits/store'
 import type { PipelineSettings } from '@/api/services/launch/pipeline/context'
 import {
@@ -801,6 +802,7 @@ describe('the kit a new app is cut from (D36 K5)', () => {
     const verified = await registerKit('verified')
     const failed = await registerKit('failed')
     const unchecked = await registerKit('unchecked')
+    const checking = await registerKit('checking')
     const { headers } = await signedIn('member')
     const res = await request('/api/kits', { method: 'GET', headers })
     expect(res.status).toBe(200)
@@ -821,6 +823,7 @@ describe('the kit a new app is cut from (D36 K5)', () => {
     const ids = kits.map(k => k.id)
     expect(ids).not.toContain(failed.id)
     expect(ids).not.toContain(unchecked.id)
+    expect(ids).not.toContain(checking.id)
     // Only what choosing needs: never the problems, the repo or the manifest.
     expect(Object.keys(raw.kits[0] ?? {}).sort()).toEqual(
       ['description', 'icon', 'id', 'isDefault', 'name', 'slug', 'version'].sort()
@@ -865,7 +868,8 @@ describe('the kit a new app is cut from (D36 K5)', () => {
 
   it('refuses a kit that has not passed its check (409) and one that does not exist (422)', async () => {
     const { headers, tenant } = await signedIn('admin')
-    for (const status of ['failed', 'unchecked'] as const) {
+    // `checking`: its dynamic (scaffold) check still runs and may yet fail (D36 K3).
+    for (const status of ['failed', 'unchecked', 'checking'] as const) {
       const kit = await registerKit(status)
       const res = await post('/api/apps', headers, {
         slug: uniqueSlug(),
@@ -884,6 +888,12 @@ describe('the kit a new app is cut from (D36 K5)', () => {
     expect(await missing.json()).toMatchObject({ code: 'kit_not_found' })
     // Refused before any write.
     expect(await db.select().from(apps).where(eq(apps.tenantId, tenant.id))).toEqual([])
+  })
+
+  it('the default is offered and accepted while it is checking; another kit is not', () => {
+    expect(isOfferedKit({ status: 'checking', isDefault: true })).toBe(true)
+    expect(isOfferedKit({ status: 'checking', isDefault: false })).toBe(false)
+    expect(isOfferedKit({ status: 'verified', isDefault: false })).toBe(true)
   })
 
   it('no kitId is the default kit, whatever its check status', async () => {

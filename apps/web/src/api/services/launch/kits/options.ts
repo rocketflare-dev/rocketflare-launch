@@ -7,7 +7,8 @@
  *   admin runs Check), so offering it widens nothing. The default first, then by name.
  * - **Chosen**: no `kitId` → the default kit (created when the catalogue is empty); an id or slug
  *   the catalogue does not have → 422 `kit_not_found`; one that is neither verified nor the
- *   default → 409 `kit_not_verified`. Checked BEFORE any write, like every other refusal.
+ *   default → 409 `kit_not_verified` — `unchecked`, `failed`, and `checking` (a dynamic check
+ *   still running: it may yet fail). Checked BEFORE any write, like every other refusal.
  *
  * A member sees name, description, icon and the pinned tag — never the problems, the repo or the
  * manifest, which stay behind `/api/platform/kits`. The app is then scaffolded at ITS kit's pin
@@ -55,7 +56,9 @@ export async function kitForNewApp(db: Database, kitId: string | undefined): Pro
     throw new ConflictError(
       kit.status === 'failed'
         ? `${kit.name} failed its last check, so apps cannot be created from it yet`
-        : `${kit.name} has not been checked yet, so apps cannot be created from it`,
+        : kit.status === 'checking'
+          ? `${kit.name} is being checked (its scaffold check is running), so apps cannot be created from it yet`
+          : `${kit.name} has not been checked yet, so apps cannot be created from it`,
       KIT_NOT_VERIFIED,
       { kitId: kit.id, status: kit.status }
     )

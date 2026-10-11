@@ -21,6 +21,9 @@
  *   compare-and-set on the row it read, audited. Nothing else moves — apps are not upgraded, they
  *   show as behind (`services/launch/upgrades.ts`). Run per kit by the five-minute cron
  *   (`kitFollowLatest`, at most hourly per kit unless its last lookup failed) and by Check now.
+ * - `recheckMovedKit` — a move resets the kit to `unchecked` with no manifest snapshot, so the same
+ *   cron re-runs the STATIC check at the new pin ({@link recheckMovedKit}): the kit has its
+ *   manifest again before an app is cut from it.
  * - `listKitTags` — a repo's tags for the card's picker, newest release first.
  *
  * GitHub is reached as the connected GitHub App, with an installation token narrowed to `contents:
@@ -59,6 +62,8 @@ import {
   listInstallations,
   revokeInstallationToken,
 } from './github-app'
+import { checkKitConformance } from './kits/conformance'
+import { kitFileReader } from './kits/manifest'
 import { ROCKETFLARE_KIT_ID } from './kits/rocketflare-fallback'
 import {
   compareAndSetKitPin,
@@ -580,6 +585,63 @@ export async function refreshKitFollowLatest(
   return { status: 'updated', before: pin, pin: next }
 }
 
+export type RecheckResult = 'skipped' | 'checked' | 'failed' | 'conflict'
+
+/**
+ * Re-run the STATIC check of a kit a Follow latest move left `unchecked` with no manifest snapshot
+ * (`UNCHECKED_KIT`) — without it, an app created from the kit before an admin's Check would take
+ * the Rocketflare fallback as its manifest. Cheap and idempotent: a kit that is not `unchecked`, or
+ * has a manifest, is `skipped` with no GitHub call, so it runs once per move. The result is written
+ * by compare-and-set on the pin read (a concurrent re-pin wins: `conflict`) and audited
+ * `kit.checked` (`by: 'cron'`). A failure to reach GitHub at all keeps the kit `unchecked` with the
+ * reason as its one problem (shown on Settings → Kits) and is retried on the next tick; a manifest
+ * GitHub would not serve is a check problem like any other (`failed`). Never starts a dynamic check.
+ */
+export async function recheckMovedKit(
+  db: Database,
+  cfg: AppConfig,
+  kitId: string,
+  options: { auditTenantId: string; now?: Date } & KitLookupOptions
+): Promise<RecheckResult> {
+  const row = await getKit(db, kitId)
+  if (!row || row.status !== 'unchecked' || row.manifest) return 'skipped'
+  const { pin } = await kitPin(db, row)
+  const lookup: KitLookupOptions = { fetch: options.fetch, apiBase: options.apiBase }
+  const expected = row.pin ?? null
+  let result: Awaited<ReturnType<typeof checkKitConformance>>
+  try {
+    result = await withKitToken(db, cfg, pin.repo, lookup, token =>
+      checkKitConformance(kitFileReader(token, pin.repo, pin.commit, lookup))
+    )
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    const at = pin.tag ?? pin.commit.slice(0, 7)
+    await compareAndSetKitPin(db, row.id, expected, expected, {
+      problems: [`Launch could not check the kit at ${at} after its pin moved: ${reason}`],
+    })
+    return 'failed'
+  }
+  const status = result.ok ? ('verified' as const) : ('failed' as const)
+  const moved = await compareAndSetKitPin(db, row.id, expected, expected, {
+    status,
+    problems: result.problems,
+    manifest: result.manifest,
+    manifestSource: result.manifestSource,
+    contractVersion: result.manifest ? String(result.manifest.schema) : null,
+    checkedAt: options.now ?? new Date(),
+  })
+  if (!moved) return 'conflict'
+  await recordAudit(db, {
+    tenantId: options.auditTenantId,
+    ...SYSTEM_ACTOR,
+    action: 'kit.checked',
+    targetType: 'Kit',
+    targetId: row.id,
+    summary: { after: { pin, status, problems: result.problems, by: 'cron' } },
+  })
+  return 'checked'
+}
+
 /** The DEFAULT kit's Follow latest refresh (the Kit version card's Check now). */
 export async function refreshFollowLatest(
   db: Database,
@@ -602,8 +664,10 @@ export interface FollowLatestTaskOptions extends KitLookupOptions {
 /**
  * The five-minute cron's Follow latest refresh, over EVERY kit. A kit is skipped without a GitHub
  * call when its pin does not follow, or when its last lookup for this repo succeeded under
- * `minIntervalMs` ago. Never throws: a GitHub failure is logged (and recorded on the kit's check)
- * and retried on the next tick; one kit's failure never stops the next.
+ * `minIntervalMs` ago. Then a following kit a move left unchecked is re-checked statically
+ * ({@link recheckMovedKit}; a no-op once it has its manifest). Never throws: a GitHub failure is
+ * logged (and recorded on the kit) and retried on the next tick; one kit's failure never stops the
+ * next.
  */
 export function kitFollowLatestTask(opts: FollowLatestTaskOptions = {}): ScheduledTask {
   return {
@@ -624,39 +688,54 @@ export function kitFollowLatestTask(opts: FollowLatestTaskOptions = {}): Schedul
         const { stored } = await kitPin(db, kit)
         if (!stored || !isFollowLatestPin(stored)) continue
         const last = await kitLatestCheck(db, kit)
-        if (
+        const fresh =
           last &&
           last.repo === stored.repo &&
           last.error === null &&
           now.getTime() - last.checkedAt.getTime() < interval
-        ) {
-          continue
-        }
+        // Nothing to look up and nothing to re-check: no GitHub call, no database write.
+        if (fresh && (kit.status !== 'unchecked' || kit.manifest)) continue
         auditTenantId ??= (await getSingleTenant(db))?.id ?? null
         if (!auditTenantId) {
           // A change Launch cannot record is never made (the pin routes refuse the same way).
           logger.warn({}, 'kit.followLatest: no organisation to audit in; the pin is left as is')
           return
         }
+        if (!fresh) {
+          try {
+            const result = await refreshKitFollowLatest(db, config, kit, {
+              fetch: opts.fetch,
+              apiBase: opts.apiBase,
+              auditTenantId,
+              by: 'cron',
+              now,
+            })
+            if (result.status === 'updated') {
+              logger.info(
+                { kit: kit.slug, from: result.before.tag, to: result.pin.tag },
+                'kit.followLatest: the kit pin moved to the newest release'
+              )
+            }
+          } catch (err) {
+            logger.warn(
+              { err, kit: kit.slug },
+              'kit.followLatest: the newest release could not be looked up'
+            )
+          }
+        }
+        // A move left it unchecked with no manifest: check it at the new pin (D36 K3).
         try {
-          const result = await refreshKitFollowLatest(db, config, kit, {
+          const rechecked = await recheckMovedKit(db, config, kit.id, {
             fetch: opts.fetch,
             apiBase: opts.apiBase,
             auditTenantId,
-            by: 'cron',
             now,
           })
-          if (result.status === 'updated') {
-            logger.info(
-              { kit: kit.slug, from: result.before.tag, to: result.pin.tag },
-              'kit.followLatest: the kit pin moved to the newest release'
-            )
+          if (rechecked === 'failed') {
+            logger.warn({ kit: kit.slug }, 'kit.followLatest: the kit could not be re-checked')
           }
         } catch (err) {
-          logger.warn(
-            { err, kit: kit.slug },
-            'kit.followLatest: the newest release could not be looked up'
-          )
+          logger.warn({ err, kit: kit.slug }, 'kit.followLatest: the kit could not be re-checked')
         }
       }
     },
