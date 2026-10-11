@@ -10,12 +10,13 @@
  *   default → 409 `kit_not_verified`. Checked BEFORE any write, like every other refusal.
  *
  * A member sees name, description, icon and the pinned tag — never the problems, the repo or the
- * manifest, which stay behind `/api/platform/kits`.
+ * manifest, which stay behind `/api/platform/kits`. The app is then scaffolded at ITS kit's pin
+ * (`appScaffoldPin`, `kit-pin.ts`), the one pin helper every scaffold path reads.
  */
 import { KIT_NOT_FOUND, KIT_NOT_VERIFIED, type KitOption } from '@launch/shared/kits'
 import type { Database } from '../../../../db/client'
 import { ApiError, ConflictError } from '../../../utils/core/errors'
-import { defaultKitPin, type EffectiveKitPin, kitPin } from '../kit-pin'
+import { kitPin } from '../kit-pin'
 import { ensureDefaultKit, getKit, type KitRow, listKits } from './store'
 
 /** May a new app be cut from `kit`? */
@@ -60,18 +61,4 @@ export async function kitForNewApp(db: Database, kitId: string | undefined): Pro
     )
   }
   return kit
-}
-
-/**
- * The pin an app's scaffold (and re-scaffold) is cut at: its OWN kit's effective pin, else — no
- * kit row (a pre-K1 app, or a removed kit) — the default kit's. The create path stores the chosen
- * kit on the app; this is how the pipeline reads it back (D36 K5, for K3's scaffold).
- */
-export async function pinForApp(
-  db: Database,
-  app: { kitId: string | null }
-): Promise<EffectiveKitPin & { kit: KitRow | null }> {
-  const kit = app.kitId ? await getKit(db, app.kitId) : null
-  if (kit) return { ...(await kitPin(db, kit)), kit }
-  return defaultKitPin(db)
 }

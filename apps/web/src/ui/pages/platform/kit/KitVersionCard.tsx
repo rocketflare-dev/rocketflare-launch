@@ -1,6 +1,7 @@
 /**
- * The kit version every new app (and every re-scaffold) is cut from — the DEFAULT kit's pin (D36
- * K1; the built-in Rocketflare kit with none stored follows Launch's code default). Settings → Kits,
+ * The DEFAULT kit's version — what an app of the default kit (or of none) is cut and re-scaffolded
+ * from (D36 K1, K3; an app of another kit is cut at that kit's pin, `appScaffoldPin`; the built-in
+ * Rocketflare kit with none stored follows Launch's code default). Settings → Kits,
  * above the catalogue; it names the default kit (K5).
  *
  * Three ways to pin it, each resolved by the SERVER through GitHub (it refuses what the repo does

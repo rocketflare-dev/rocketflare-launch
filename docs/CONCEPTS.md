@@ -4640,8 +4640,8 @@ a slug) is checked before any write: unknown → 422 `kit_not_found`, neither ve
 inbox's "Kit" row). Create app's **`KitPicker`** (`pages/apps/components/KitPicker.tsx`) is a radio
 list shown only with two or more kits, the default preselected; it is self-contained (value, kits,
 onChange) so it can become the first field of the create-app interview's brief, whose "kit
-defaults" layer is the chosen kit's manifest. `pinForApp(db, app)` (same file) is the pin an app's
-scaffold should be cut at — its own kit's, else the default's — for K3's scaffold. CLI: `launch
+defaults" layer is the chosen kit's manifest. The app is then scaffolded at its own kit's pin
+(`appScaffoldPin`, §18.6 — the one pin helper the scaffold, re-scaffold and run views read). CLI: `launch
 apps kits`, `launch apps create --kit <slug>`.
 
 **Import detects the kit (K5)** (`kits/detect.ts`, pure over a file reader and the catalogue's

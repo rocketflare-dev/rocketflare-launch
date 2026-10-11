@@ -41,7 +41,7 @@ import {
   listInstallations,
 } from '../github-app'
 import { loadImportGitHub } from '../import'
-import { appScaffoldPin, defaultKitPin } from '../kit-pin'
+import { appScaffoldPin } from '../kit-pin'
 import { adapterFor } from '../kits/adapter'
 import { launchInstanceOf } from '../pipeline/instance'
 import { claimScaffoldTicket, failScaffoldTicket, finishScaffoldTicket } from './tickets'
@@ -51,11 +51,6 @@ export const SCAFFOLD_TOKEN_PERMISSIONS = { contents: 'write', workflows: 'write
 
 /** The permissions the kit read token carries: the kit repo's contents, read-only. */
 export const KIT_TOKEN_PERMISSIONS = { contents: 'read' } as const
-
-/** The DEFAULT kit's pin (D36 K1, `kit-pin.ts`) — what an app with no kit is cut from. */
-export async function resolveTemplatePin(db: Database): Promise<TemplatePin> {
-  return (await defaultKitPin(db)).pin
-}
 
 /** The ids `scaffold.start` records for the pin it planned (string values: `app_operations`). */
 export function scaffoldPinIds(pin: TemplatePin): Record<string, string> {

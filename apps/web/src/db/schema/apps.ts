@@ -86,7 +86,7 @@ export const apps = pgTable(
      * `owner/name`, it survives a rename — so it is what `/ci/*` maps a job to an app by.
      */
     githubRepoId: text('github_repo_id'),
-    /** The kit tag and commit a created app was scaffolded from (P2; the default kit's pin, D36). */
+    /** The kit tag and commit a created app was scaffolded from (P2; its kit's pin, D36 K3). */
     templateRef: text('template_ref'),
     templateCommit: text('template_commit'),
     /** The latest launch pipeline run (`app_operations.run_id`, the Workflow instance's base id). */

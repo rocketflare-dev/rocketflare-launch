@@ -10,7 +10,8 @@
  *   NULL only on the Rocketflare row Launch creates itself: that row follows `DEFAULT_TEMPLATE_PIN`
  *   (moving with Launch), exactly as an unset `template_pin` setting did.
  * - **At most one default** (`kits_one_default_idx`, partial unique on `is_default` WHERE true):
- *   new apps are cut from it until Create app has a picker (K5). Swapping it is one transaction.
+ *   Create app preselects it and a request naming no kit is cut from it (K5). Swapping it is one
+ *   transaction.
  * - `manifest` / `manifest_source` / `contract_version` / `status` / `problems` / `checked_at` are
  *   the last check at the pin; re-pinning clears them to `unchecked` until the check runs.
  * - `latest_check` is the last newest-release lookup of a Follow latest pin (`kitLatestCheckSchema`).

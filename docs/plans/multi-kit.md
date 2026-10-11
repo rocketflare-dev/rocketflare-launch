@@ -359,8 +359,9 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
       copy by its file; an unregistered kit is 422 `kit_not_registered`; any registered kit may be
       imported into, checked or not. `POST /api/apps/import/detect` (`launch apps import
       --dry-run`) is the dialog's preview;
-    - the scaffold still reads the DEFAULT kit's pin: K3 must cut a created app at its own kit's
-      pin (`kits/options.ts` `pinForApp`), so a non-default pick is end to end only with K3;
+    - a created app is cut at its OWN kit's pin (`appScaffoldPin`, `kit-pin.ts` — the one pin
+      helper; K5's interim `pinForApp` was folded into it at the merge), so a non-default pick is
+      end to end;
     - the manifest's `icon` reaches the picker but is not drawn.
 - **K6: kit-side work, landed by PR.**
   - The `launch-kit` repo.
