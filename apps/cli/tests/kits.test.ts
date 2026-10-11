@@ -9,6 +9,7 @@ import {
   runKitsAdd,
   runKitsCheck,
   runKitsDefault,
+  runKitsLatest,
   runKitsList,
   runKitsPin,
   runKitsRemove,
@@ -206,6 +207,30 @@ describe('kits add / check / pin', () => {
     })
     expect(exitCodeFor(missing.error)).toBe(EXIT_ERROR)
     expect(missing.error.message).toContain('has no tag 9.9.9')
+  })
+})
+
+describe('kits latest', () => {
+  it('posts to the kit and names where it is now; a kit that does not follow is exit 1', async () => {
+    const r = await run(c => runKitsLatest(c, 'acme-kit'), {
+      '/api/platform/kits/acme-kit/latest': () => jsonResponse(detail),
+    })
+    expect(r.error).toBeNull()
+    expect(r.calls[0]?.init.method).toBe('POST')
+    expect(r.out.content()).toContain('Acme kit is at')
+
+    const refused = await run(c => runKitsLatest(c, 'acme-kit'), {
+      '/api/platform/kits/acme-kit/latest': () =>
+        jsonResponse(
+          {
+            error: 'Acme kit does not follow the latest release: choose Follow latest first',
+            statusCode: 409,
+            code: 'kit_not_following',
+          },
+          409
+        ),
+    })
+    expect(exitCodeFor(refused.error)).toBe(EXIT_ERROR)
   })
 })
 

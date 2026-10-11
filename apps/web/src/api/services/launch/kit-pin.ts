@@ -601,7 +601,7 @@ export async function recheckMovedKit(
   db: Database,
   cfg: AppConfig,
   kitId: string,
-  options: { auditTenantId: string; now?: Date } & KitLookupOptions
+  options: { auditTenantId: string; now?: Date; by?: 'cron' | 'check_now' } & KitLookupOptions
 ): Promise<RecheckResult> {
   const row = await getKit(db, kitId)
   if (!row || row.status !== 'unchecked' || row.manifest) return 'skipped'
@@ -637,7 +637,7 @@ export async function recheckMovedKit(
     action: 'kit.checked',
     targetType: 'Kit',
     targetId: row.id,
-    summary: { after: { pin, status, problems: result.problems, by: 'cron' } },
+    summary: { after: { pin, status, problems: result.problems, by: options.by ?? 'cron' } },
   })
   return 'checked'
 }

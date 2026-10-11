@@ -251,6 +251,29 @@ describe('the catalogue', () => {
     })
     expect(kit.latestCheck).toMatchObject({ latest: '1.0.0', error: null })
   })
+
+  it('Check now moves a following kit to a newer release and checks it there', async () => {
+    const kit = await add({ repo: `${ACME.owner}/${ACME.name}`, pin: { kind: 'latest' } })
+    const same = await call(`/${kit.id}/latest`, 'POST')
+    expect(same.status).toBe(200)
+    expect(kitDetailSchema.parse(await json(same)).pin.tag).toBe('1.0.0')
+
+    const newer = cloud.github.tag(ACME.owner, ACME.name, '1.1.0')
+    const res = await call(`/${kit.slug}/latest`, 'POST')
+    expect(res.status).toBe(200)
+    const moved = kitDetailSchema.parse(await json(res))
+    expect(moved.pin).toMatchObject({ tag: '1.1.0', commit: newer, follow: 'latest' })
+    // Checked at the new pin, not left without a manifest.
+    expect(moved).toMatchObject({ status: 'verified', manifestSource: 'repo' })
+    expect(moved.latestCheck).toMatchObject({ latest: '1.1.0', error: null })
+    expect((await kitAudits('kit.pinned')).some(r => r.targetId === kit.id)).toBe(true)
+
+    // A kit pinned to a tag does not follow: 409, nothing looked up.
+    await call(`/${kit.id}/pin`, 'PUT', { kind: 'tag', tag: '1.0.0' })
+    const refused = await call(`/${kit.id}/latest`, 'POST')
+    expect(refused.status).toBe(409)
+    expect(await json(refused)).toMatchObject({ code: 'kit_not_following' })
+  })
 })
 
 describe('the default kit', () => {

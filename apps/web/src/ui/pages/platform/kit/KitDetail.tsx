@@ -5,8 +5,8 @@
  * - **Version** — the repo, what it is pinned to, the commit, and for Follow latest when Launch
  *   last looked and what it found (a failed lookup says so); the pin editor (`PinForm`: Follow
  *   latest, a release tag picked from the repo's tags or typed, a commit or `main`), checked by
- *   the server before it is stored. The default kit adds Check now while it follows latest, and
- *   the built-in Rocketflare kit, once re-pinned, Reset to Launch's default.
+ *   the server before it is stored. Any kit following latest adds Check now, and the
+ *   built-in Rocketflare kit, once re-pinned, Reset to Launch's default.
  * - **Check** — the status, when it was checked, the problems a failed check found, and the last
  *   scaffold check with its run and what became of its test repo.
  * - **What it declares** — the manifest snapshot (`kitManifestSummary`): its source, the init

@@ -14616,6 +14616,33 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/api/platform/kits/:id/latest",
+      "summary": "Look for a newer release of a kit that follows latest, and move to it (then check it there). 409 `kit_not_following` otherwise; a GitHub failure is 502 `github_lookup_failed`.",
+      "auth": "platform-admin",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "zod": {
+        "params": "@launch/shared/kits#kitIdParamSchema"
+      },
+      "source": "apps/web/src/api/routes/kits.ts",
+      "cli": [
+        "commands/kits.ts"
+      ]
+    },
+    {
       "method": "PUT",
       "path": "/api/platform/kits/:id/pin",
       "summary": "Re-pin a kit to a tag, a commit or Follow latest, checked there (`?dynamic=1`: run it too).",

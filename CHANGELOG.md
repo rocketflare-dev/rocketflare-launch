@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Check now on every kit that follows latest.** A kit's page offered Check now only for the
+  default kit; any kit following latest now has it (`POST /api/platform/kits/:id/latest`,
+  `launch kits latest <kit>`): it moves to a newer release if there is one and checks the kit
+  there, so it is never left without a manifest.
 - **A boot asks for a new prebuild even when the database clock runs behind the Worker.** Whether a
   prebuild "newer than the one this boot found" exists compared the prebuild's `built_at` (the
   Worker's clock) with the session's `created_at` (Postgres's `now()`); a database a few

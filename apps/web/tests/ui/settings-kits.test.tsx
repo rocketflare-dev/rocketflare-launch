@@ -3,8 +3,8 @@
  * version, status and apps; Check and a ⋯ menu (Run the scaffold check, Re-pin…, Make default,
  * Remove…) per row; Add a kit in a dialog — and one kit's page at `/settings/kit/:slug`, which
  * took over the Kit version card: the pin editor (Follow latest, a release tag, a commit) for any
- * kit, Check now and Reset to Launch's default for the default kit, the checks and what the
- * manifest declares.
+ * kit, Check now on any kit that follows latest, Reset to Launch's default for the default kit,
+ * the checks and what the manifest declares.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -93,7 +93,6 @@ function render(kits: readonly unknown[] = KITS, route = '/settings/kit') {
   const fetchMock = stubFetch({
     '/api/platform/setup': overview,
     'DELETE /api/platform/setup/template-pin': overview,
-    'POST /api/platform/setup/template-pin/check': overview,
     '/api/platform/setup/template-pin/tags': {
       repo: 'rocketflare-dev/rocketflare',
       tags: [
@@ -107,6 +106,8 @@ function render(kits: readonly unknown[] = KITS, route = '/settings/kit') {
     'POST /api/platform/kits': { ...ACME, manifest: null },
     [`/api/platform/kits/${ROCKETFLARE.id}`]: { ...ROCKETFLARE, manifest: null },
     [`PUT /api/platform/kits/${ROCKETFLARE.id}/pin`]: { ...ROCKETFLARE, manifest: null },
+    [`POST /api/platform/kits/${ROCKETFLARE.id}/latest`]: { ...ROCKETFLARE, manifest: null },
+    [`POST /api/platform/kits/${ACME.id}/latest`]: { ...ACME, manifest: null },
     [`POST /api/platform/kits/${ACME.id}/check`]: { ...ACME, manifest: null },
     [`/api/platform/kits/${ACME.id}`]: { ...ACME, manifest: LAUNCH_KIT_MANIFEST },
     [`PUT /api/platform/kits/${ACME.id}/pin`]: { ...ACME, manifest: LAUNCH_KIT_MANIFEST },
@@ -469,20 +470,23 @@ describe("Settings → Kits: a kit's page (the Kit version card's successor)", (
     expect(within(card).getByText('Latest').nextElementSibling).toHaveTextContent('0.17.1')
     fireEvent.click(within(card).getByRole('button', { name: 'Check now' }))
     await waitFor(() =>
-      expect(calls(fetchMock)).toContain('POST /api/platform/setup/template-pin/check')
+      expect(calls(fetchMock)).toContain(`POST /api/platform/kits/${ROCKETFLARE.id}/latest`)
     )
   })
 
-  it('offers Check now only on the default kit: another following kit is the cron’s', async () => {
+  it('offers Check now on any kit that follows latest, not only the default', async () => {
     const acmeFollowing = {
       ...ACME,
       pin: { repo: 'acme/acme-kit', tag: '1.2.0', commit: 'b'.repeat(40), follow: 'latest' },
     }
-    render([ROCKETFLARE, acmeFollowing], '/settings/kit/acme-kit')
+    const fetchMock = render([ROCKETFLARE, acmeFollowing], '/settings/kit/acme-kit')
     const card = await versionOf()
     expect(within(card).getByLabelText('Follow latest')).toBeChecked()
-    expect(within(card).queryByRole('button', { name: 'Check now' })).toBeNull()
     expect(within(card).queryByRole('button', { name: "Reset to Launch's default" })).toBeNull()
+    fireEvent.click(within(card).getByRole('button', { name: 'Check now' }))
+    await waitFor(() =>
+      expect(calls(fetchMock)).toContain(`POST /api/platform/kits/${ACME.id}/latest`)
+    )
   })
 
   it('says when the last Follow latest check failed', async () => {

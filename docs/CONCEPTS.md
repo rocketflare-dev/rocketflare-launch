@@ -4625,7 +4625,7 @@ Audited `kit.added | kit.checked | kit.pinned | kit.default_set | kit.removed` (
 Follow latest move of a non-default kit is `kit.pinned` with `after.by`, the default's stays
 `setting.changed` on `template_pin`. The cron's `kit.followLatest` walks every kit (each throttled
 on its own `latest_check`), and a pin move resets the kit to `unchecked`. CLI: `launch kits ls | show |
-add | check | pin | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1; `show`
+add | check | pin | latest | default | rm` (`apps/cli/src/commands/kits.ts`; a failed check exits 1; `show`
 prints what the manifest declares, `kitManifestSummary`). UI: Settings → **Kits** (`/settings/kit`, `kit/KitList.tsx`):
 one section, "Add a kit" its one primary action (a dialog: the repo — `owner/name` or a GitHub URL,
 validated on blur or submit, never while empty — Follow latest | tag | commit, and the scaffold-check
@@ -4640,8 +4640,11 @@ page (`/settings/kit/<slug>`, `kit/KitDetail.tsx`) — what the Kit version card
 so the default is no longer shown twice — has Check and the same ⋯ in its header, then Version
 (above), Check (status, when, problems, the last scaffold check) and What it declares (the manifest
 snapshot: its source, init, release workflow, required check, upgrades supported or not, default
-plugins). Check now (the Follow latest refresh, `POST …/template-pin/check`) is offered on the
-default kit only; another following kit is moved by the cron alone.
+plugins). Check now (the Follow latest refresh on demand) is offered on ANY kit that follows
+latest: `POST /api/platform/kits/:id/latest` (`checkKitLatest`, `launch kits latest <kit>`) runs
+`refreshKitFollowLatest` for that kit and, when the pin moved, the static check at the new pin
+(`recheckMovedKit`, `by: 'check_now'`), so the kit keeps a manifest; 409 `kit_not_following`
+otherwise. The older `POST …/template-pin/check` still answers for the default kit.
 
 **Choosing a kit for a new app (K5)** (`kits/options.ts`). **`GET /api/kits`** (`routes/kit-options.ts`,
 any member who may read apps — every member may ASK for an app) answers the kits a new app may be

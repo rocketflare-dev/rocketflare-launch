@@ -13,6 +13,7 @@
  *   `--dynamic` (D36 K3, also on `add` and `pin`) runs the kit too: the scaffold job against a
  *   throwaway repo, enqueued — the kit answers `checking`; `kits show` has the result later.
  * - `kits pin <kit> --tag|--commit|--latest` — re-pin, checked at the new pin.
+ * - `kits latest <kit>` — Follow latest's Check now: move to a newer release, checked there.
  * - `kits default <kit>` — the kit new apps are cut from.
  * - `kits rm <kit>` (asks first) — refused for the default and for a kit apps were made from.
  *
@@ -244,6 +245,14 @@ export async function runKitsPin(
   failIfFailed(data)
 }
 
+export async function runKitsLatest(ctx: CommandContext, kit: string): Promise<void> {
+  const client = requireClient(ctx)
+  const { data, raw } = await withAdminKey(ctx, () =>
+    client.request('POST', `${kitPath(kit)}/latest`, { schema: kitDetailSchema })
+  )
+  ctx.out.data(raw, () => `${chalk.green('✓')} ${data.name} is at ${kitPinLine(data)}`)
+}
+
 export async function runKitsDefault(ctx: CommandContext, kit: string): Promise<void> {
   const client = requireClient(ctx)
   const { data, raw } = await withAdminKey(ctx, () =>
@@ -320,6 +329,10 @@ export function registerKitsCommands(program: Command, action: ActionWrapper): v
     .option('--latest', 'follow the newest release')
     .option('--dynamic', 'also run the kit at the new pin (minutes)')
     .action(action((ctx, cmd) => runKitsPin(ctx, cmd.args[0] as string, cmd.opts<KitPinOptions>())))
+  kits
+    .command('latest <kit>')
+    .description('look for a newer release now and move to it (a kit that follows latest)')
+    .action(action((ctx, cmd) => runKitsLatest(ctx, cmd.args[0] as string)))
   kits
     .command('default <kit>')
     .description('make it the kit new apps are cut from')

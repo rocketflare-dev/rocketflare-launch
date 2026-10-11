@@ -6,9 +6,9 @@
  *
  * **Pinning** goes through `PUT /api/platform/kits/:id/pin` for every kit, the default included —
  * the server checks the kit at the new pin and mirrors the default kit's into `template_pin`. The
- * default kit alone has the template-pin extras: Follow latest's Check now (the cron's hourly
- * refresh on demand; another kit's is the cron's alone) and, for the built-in Rocketflare kit,
- * Reset to Launch's default.
+ * Follow latest's Check now (the cron's hourly refresh on demand) is `POST /:id/latest` for every
+ * kit; the default kit alone keeps one template-pin extra, the built-in Rocketflare kit's Reset to
+ * Launch's default.
  */
 import {
   type Kit,
@@ -23,11 +23,12 @@ import { ConfirmModal, FieldError } from '@/ui/components/shared'
 import {
   kitCheckRunning,
   useCheckKit,
+  useCheckKitLatest,
   useMakeDefaultKit,
   usePinKit,
   useRemoveKit,
 } from '@/ui/hooks/useKits'
-import { useCheckLatestKit, useKitTags } from '@/ui/hooks/useSetup'
+import { useKitTags } from '@/ui/hooks/useSetup'
 import { formatDateTime } from '@/ui/lib/format'
 import { Ago, ExternalLink, type MenuItem, StateDot } from '@/ui/pages/apps/app/bits'
 
@@ -335,12 +336,12 @@ export function PinModeFields({
 
 /**
  * Re-pin a kit: Follow latest, a release tag, or a commit or branch — resolved and checked by the
- * server before it is stored (a malformed ref never leaves: the server's own schema first). The
- * default kit following latest also gets Check now.
+ * server before it is stored (a malformed ref never leaves: the server's own schema first). A kit
+ * following latest also gets Check now.
  */
 export function PinForm({ kit, onDone }: { kit: Kit; onDone?: () => void }) {
   const pin = usePinKit()
-  const checkNow = useCheckLatestKit()
+  const checkNow = useCheckKitLatest()
   const following = isFollowLatestPin(kit.pin)
   const [mode, setMode] = useState<PinMode>(() => pinModeOf(kit.pin))
   const [value, setValue] = useState('')
@@ -397,7 +398,7 @@ export function PinForm({ kit, onDone }: { kit: Kit; onDone?: () => void }) {
           Pin latest main
         </button>
       )}
-      {mode === 'latest' && following && kit.isDefault && (
+      {mode === 'latest' && following && (
         <button
           type="button"
           className="btn btn-sm btn-outline"
@@ -405,7 +406,7 @@ export function PinForm({ kit, onDone }: { kit: Kit; onDone?: () => void }) {
           title="Look for a newer release now"
           onClick={() => {
             pin.reset()
-            checkNow.mutate()
+            checkNow.mutate(kit.id)
           }}
         >
           {checkNow.isPending ? 'Checking…' : 'Check now'}

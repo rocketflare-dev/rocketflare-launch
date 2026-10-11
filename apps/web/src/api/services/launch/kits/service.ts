@@ -12,6 +12,11 @@
  * - **Check**: re-reads at the current pin. A GitHub failure is 502 and changes nothing.
  * - **Pin**: resolves, checks at the NEW pin, then compare-and-sets the pin with the result. The
  *   default kit's pin is mirrored into `template_pin` (`kit-pin.ts` header).
+ * - **Check for a newer release** (Follow latest's Check now, any kit): the hourly cron's move on
+ *   demand (`refreshKitFollowLatest`), then — when the pin moved — the static check at the new
+ *   pin (`recheckMovedKit`), so the kit is never left without a manifest. 409
+ *   `kit_not_following` unless the kit follows latest; a GitHub failure is 502 and is recorded on
+ *   the kit's latest check.
  * - **Default**: one transaction; the mirror follows the new default's pin.
  * - **Dynamic** (D36 K3, `dynamic-check.ts`): add, check and pin take `dynamic` — when the static
  *   check passes, a dynamic check (the scaffold job against a throwaway repo) is ENQUEUED and the
@@ -44,6 +49,8 @@ import {
   type KitLookupOptions,
   kitLatestCheck,
   kitPin,
+  recheckMovedKit,
+  refreshKitFollowLatest,
   resolvePinWithToken,
   storedPinOf,
   withKitToken,
@@ -339,6 +346,33 @@ export async function makeDefaultKit(ctx: KitActionContext, idOrSlug: string): P
     after: { default: after.slug },
   })
   return toDetail(db, after)
+}
+
+/** Follow latest's Check now, for any kit (see the header). */
+export async function checkKitLatest(ctx: KitActionContext, idOrSlug: string): Promise<KitDetail> {
+  const { db, cfg, opts = {} } = ctx
+  await ensureDefaultKit(db)
+  const row = await requireKit(db, idOrSlug)
+  const result = await refreshKitFollowLatest(db, cfg, row, {
+    ...opts,
+    auditTenantId: ctx.auditTenantId,
+    actor: ctx.actor,
+    by: 'check_now',
+  })
+  if (result.status === 'not_following') {
+    throw new ConflictError(
+      `${row.name} does not follow the latest release: choose Follow latest first`,
+      'kit_not_following'
+    )
+  }
+  if (result.status === 'updated') {
+    await recheckMovedKit(db, cfg, row.id, {
+      ...opts,
+      auditTenantId: ctx.auditTenantId,
+      by: 'check_now',
+    })
+  }
+  return toDetail(db, await requireKit(db, row.id))
 }
 
 /** Remove a kit nothing depends on. */

@@ -10,6 +10,7 @@
  *                            conformance checked, stored (failed kits too) → kit.added
  *   POST   /:id/check        re-read and re-check at the current pin → kit.checked
  *   PUT    /:id/pin          re-pin (resolved, checked at the new pin) → kit.pinned
+ *   POST   /:id/latest       Follow latest's Check now: move to a newer release, check it there
  *
  * `?dynamic=1` on add, check and pin (D36 K3): when the static check passes, a DYNAMIC check is
  * enqueued (`kit.check` on `JOBS_QUEUE` — the scaffold job against a throwaway repo,
@@ -34,6 +35,7 @@ import { auditActor } from '../services/launch/audit'
 import {
   addKit,
   checkKit,
+  checkKitLatest,
   type KitActionContext,
   listCatalogue,
   makeDefaultKit,
@@ -121,6 +123,15 @@ kitsRouter.put(
     )
   }
 )
+
+/**
+ * Look for a newer release of a kit that follows latest, and move to it (then check it there).
+ * 409 `kit_not_following` otherwise; a GitHub failure is 502 `github_lookup_failed`.
+ */
+kitsRouter.post('/:id/latest', validate('param', kitIdParamSchema), async c => {
+  const ctx = await actionContext(c)
+  return c.json(await checkKitLatest(ctx, c.req.valid('param').id))
+})
 
 /** Make a kit the default new apps are cut from. Audits `kit.default_set`. */
 kitsRouter.put('/:id/default', validate('param', kitIdParamSchema), async c => {

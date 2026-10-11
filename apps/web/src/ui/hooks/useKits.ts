@@ -104,6 +104,20 @@ export function useCheckKit() {
   })
 }
 
+/**
+ * Follow latest's Check now, for any kit: move to a newer release if there is one, checked there.
+ * A failed lookup is recorded on the kit's latest check, so the page refetches either way.
+ */
+export function useCheckKitLatest() {
+  const invalidate = useInvalidateKits()
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post(`${BASE}/${id}/latest`, undefined, { schema: kitDetailSchema }),
+    onSuccess: () => invalidate(),
+    onError: () => invalidate(),
+  })
+}
+
 /** Make a kit the one new apps are cut from. */
 export function useMakeDefaultKit() {
   const invalidate = useInvalidateKits()

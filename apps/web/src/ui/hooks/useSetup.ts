@@ -142,18 +142,6 @@ export function useUpdateSessionSandbox() {
   })
 }
 
-/** Follow latest's Check now: move the pin to the kit's newest release if there is a newer one. */
-export function useCheckLatestKit() {
-  const invalidate = useInvalidateSetup()
-  return useMutation({
-    mutationFn: () =>
-      api.post(`${BASE}/template-pin/check`, undefined, { schema: setupOverviewSchema }),
-    onSuccess: () => invalidate(),
-    // A failed lookup is recorded on the check: the card shows it either way.
-    onError: () => invalidate(),
-  })
-}
-
 /** Back to the code default (`DEFAULT_TEMPLATE_PIN`). */
 export function useResetTemplatePin() {
   const invalidate = useInvalidateSetup()

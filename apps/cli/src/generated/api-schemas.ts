@@ -333,6 +333,7 @@ export const API_SCHEMAS = {
   'DELETE /api/platform/kits/:id': { params: kitIdParamSchema },
   'POST /api/platform/kits/:id/check': { params: kitIdParamSchema, query: kitCheckQuerySchema },
   'PUT /api/platform/kits/:id/default': { params: kitIdParamSchema },
+  'POST /api/platform/kits/:id/latest': { params: kitIdParamSchema },
   'PUT /api/platform/kits/:id/pin': { params: kitIdParamSchema, query: kitCheckQuerySchema, body: kitPinRequestSchema },
   'PUT /api/platform/setup/credentials/:kind': { params: credentialKindParamSchema, bodyByParam: { param: 'kind', schemas: credentialPayloadSchemas } },
   'DELETE /api/platform/setup/credentials/:kind': { params: credentialKindParamSchema },
