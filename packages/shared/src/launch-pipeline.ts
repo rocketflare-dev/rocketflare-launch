@@ -41,6 +41,12 @@ export const createAppRequestSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   description: z.string().trim().max(2000).optional(),
   ownerGroupId: z.string().uuid().optional(),
+  /**
+   * D36 K5: the kit to cut the app from — its id or slug (`GET /api/kits` lists them). Absent: the
+   * default kit. The server refuses an unknown kit (422 `kit_not_found`) and one that has not passed
+   * its check (409 `kit_not_verified`).
+   */
+  kitId: z.string().trim().min(1).max(100).optional(),
   options: z
     .object({
       /** Run the staging deploy (steps 12–13) as part of the launch. */

@@ -22,7 +22,9 @@
 import {
   type AppListResponse,
   appHealthQuerySchema,
+  type ImportDetectResponse,
   importAppRequestSchema,
+  importDetectRequestSchema,
   putAppShipSettingsRequestSchema,
   updateAppRedirectUrisRequestSchema,
   updateAppRequestSchema,
@@ -46,7 +48,7 @@ import {
 import { getSetting } from '../services/launch/credentials'
 import { withLatestDeploys } from '../services/launch/deploy/progress'
 import { checkAppHealth } from '../services/launch/health'
-import { importApp } from '../services/launch/import'
+import { detectImport, importApp } from '../services/launch/import'
 import {
   createAppOidcClient,
   getAppOidcClient,
@@ -116,6 +118,17 @@ appsRouter.post('/import', validate('json', importAppRequestSchema), async c => 
     realtime,
   })
   return c.json(await getAppDetail(db, tenantId, app.slug, appViewer(c)), 201)
+})
+
+/**
+ * Dry-run an import: read the repo, detect the kit it was built from (D36 K5) and check the slug,
+ * writing nothing — the Import dialog's preview. Requires `manage App`. The same 422s as import.
+ */
+appsRouter.post('/import/detect', validate('json', importDetectRequestSchema), async c => {
+  guardPermission(c, 'manage', 'App')
+  const { db, cfg } = withAuthAndDb(c)
+  const body: ImportDetectResponse = await detectImport(db, cfg, c.req.valid('json'))
+  return c.json(body)
 })
 
 /** Return one app's detail, looked up by slug. Requires `read App`. */

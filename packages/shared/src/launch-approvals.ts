@@ -268,6 +268,8 @@ export const appCreateContextSchema = z.object({
   displayName: z.string(),
   description: z.string().nullable().optional(),
   ownerGroupId: z.string().uuid().nullable(),
+  /** D36 K5: the kit the app is cut from, by name. Absent on a request from before it. */
+  kitName: z.string().nullable().optional(),
 })
 
 export const appAccessContextSchema = z.object({

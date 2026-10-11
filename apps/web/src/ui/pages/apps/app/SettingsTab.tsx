@@ -113,9 +113,10 @@ function General({ app, canManage }: { app: AppDetail; canManage: boolean }) {
           <AboutRow label="Branch">
             <span className="font-mono text-xs">{app.defaultBranch ?? '—'}</span>
           </AboutRow>
-          <AboutRow label="Template">
-            <span className="font-mono text-xs">
-              {app.template} {app.templateVersion ?? ''}
+          <AboutRow label="Kit">
+            {app.kitName ?? app.template}{' '}
+            <span className="font-mono text-xs tabular-nums">
+              {app.templateVersion ?? ''}
               {app.templateContractVersion ? ` · contract v${app.templateContractVersion}` : ''}
             </span>
             {app.kit && requiresUpgradeLabel(app.kit) && (

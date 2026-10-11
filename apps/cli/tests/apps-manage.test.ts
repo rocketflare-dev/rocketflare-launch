@@ -12,6 +12,7 @@ import {
   runAppsBranchProtection,
   runAppsCreate,
   runAppsImport,
+  runAppsKits,
   runAppsSet,
   runAppsShipSettings,
   runAppsSignInRedirectUris,
@@ -183,7 +184,108 @@ describe('apps create', () => {
   })
 })
 
+describe('apps create --kit / apps kits (D36 K5)', () => {
+  const KITS = {
+    kits: [
+      {
+        id: 'a1000000-0000-4000-8000-000000000001',
+        slug: 'rocketflare',
+        name: 'Rocketflare',
+        description: 'Multi-tenant SaaS starter',
+        icon: null,
+        version: '0.18.0',
+        isDefault: true,
+      },
+      {
+        id: 'a1000000-0000-4000-8000-000000000002',
+        slug: 'acme-kit',
+        name: 'Acme kit',
+        description: null,
+        icon: null,
+        version: null,
+        isDefault: false,
+      },
+    ],
+  }
+
+  it('--kit names the kit in the body; without it the server picks the default', async () => {
+    const created = { app: { ...appDetail, status: 'requested' }, runId: RUN_ID, approvalId: null }
+    const r = await run(ctx => runAppsCreate(ctx, 'Expenses', { kit: 'acme-kit' }), {
+      '/api/apps': () => jsonResponse(created, 202),
+    })
+    expect(r.error).toBeNull()
+    expect(bodyOf(r.calls[0]?.init as RequestInit)).toMatchObject({ kitId: 'acme-kit' })
+  })
+
+  it('an unverified kit is the server’s sentence, exit 1', async () => {
+    const r = await run(ctx => runAppsCreate(ctx, 'Expenses', { kit: 'acme-kit' }), {
+      '/api/apps': () =>
+        conflict(
+          'Acme kit failed its last check, so apps cannot be created from it yet',
+          'kit_not_verified'
+        ),
+    })
+    expect(exitCodeFor(r.error)).toBe(EXIT_ERROR)
+    expect(r.error.message).toContain('failed its last check')
+  })
+
+  it('apps kits lists what a new app can be cut from, the default marked; --json is the body', async () => {
+    const r = await run(ctx => runAppsKits(ctx), { '/api/kits': () => jsonResponse(KITS) })
+    expect(r.error).toBeNull()
+    expect(r.calls[0]?.url.pathname).toBe('/api/kits')
+    const text = r.out.content()
+    expect(text).toContain('rocketflare *')
+    expect(text).toContain('0.18.0')
+    expect(text).toContain('Acme kit')
+    expect(text).toContain('unreleased')
+    const json = await run(ctx => runAppsKits(ctx), { '/api/kits': () => jsonResponse(KITS) }, true)
+    expect(JSON.parse(json.out.content())).toEqual(KITS)
+  })
+})
+
 describe('apps import / set', () => {
+  it('--dry-run asks the detect route, prints the kit it found and writes nothing', async () => {
+    const detected = {
+      repo: 'acme/expenses',
+      ref: 'main',
+      manifest: '.rocketflare.json',
+      slug: 'expenses',
+      displayName: 'Expenses',
+      kitVersion: '0.15.0',
+      kit: {
+        id: 'a1000000-0000-4000-8000-000000000001',
+        slug: 'rocketflare',
+        name: 'Rocketflare',
+        detectedBy: 'legacy',
+      },
+    }
+    const r = await run(ctx => runAppsImport(ctx, 'acme/expenses', { dryRun: true }), {
+      '/api/apps/import/detect': () => jsonResponse(detected),
+    })
+    expect(r.error).toBeNull()
+    expect(r.calls.map(c => c.url.pathname)).toEqual(['/api/apps/import/detect'])
+    expect(bodyOf(r.calls[0]?.init as RequestInit)).toEqual({ repo: 'acme/expenses' })
+    expect(r.out.content()).toContain('Kit       Rocketflare (rocketflare) 0.15.0')
+    expect(r.out.content()).toContain('Nothing was written')
+  })
+
+  it('an import from an unregistered kit is the server’s sentence, exit 1', async () => {
+    const r = await run(ctx => runAppsImport(ctx, 'acme/shop'), {
+      '/api/apps/import': () =>
+        jsonResponse(
+          {
+            error:
+              'acme/shop@main was built from the kit "acme-internal", which Launch has not registered.',
+            statusCode: 422,
+            code: 'kit_not_registered',
+          },
+          422
+        ),
+    })
+    expect(exitCodeFor(r.error)).toBe(EXIT_ERROR)
+    expect(r.error.message).toContain('"acme-internal"')
+  })
+
   it('imports owner/name with a ref; --json is the app', async () => {
     const r = await run(
       ctx => runAppsImport(ctx, 'acme/expenses', { ref: 'main' }),

@@ -139,7 +139,8 @@ export function UpgradeCard({ kit }: { kit: KitStatus }) {
           {label}
           <span className="text-secondary">
             {' '}
-            · on <span className="font-mono tabular-nums">{kit.current}</span>
+            · on {app.kitName ? `${app.kitName} ` : ''}
+            <span className="font-mono tabular-nums">{kit.current}</span>
           </span>
           {kit.notesUrl && (
             <>

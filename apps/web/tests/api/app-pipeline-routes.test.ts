@@ -7,6 +7,9 @@
  * no vendor is reached. The settings and the "is Setup finished" check are mocked: both read
  * `launch_settings` / `admin_credentials`, which are global and owned by the setup suite.
  */
+import { readFileSync } from 'node:fs'
+import { parseKitManifest } from '@launch/shared/kit-manifest'
+import { kitOptionsResponseSchema } from '@launch/shared/kits'
 import {
   createAppResponseSchema,
   pipelineViewSchema,
@@ -15,7 +18,7 @@ import {
 } from '@launch/shared/launch-pipeline'
 import { and, eq } from 'drizzle-orm'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getDefaultKit } from '@/api/services/launch/kits/store'
+import { deleteKit, getDefaultKit, insertKit, type KitRow } from '@/api/services/launch/kits/store'
 import type { PipelineSettings } from '@/api/services/launch/pipeline/context'
 import {
   appEnvironments,
@@ -757,5 +760,137 @@ describe('POST /api/apps/:id/teardown', () => {
     const other = await signedIn('admin')
     const foreign = await post(`/api/apps/${app.id}/teardown`, other.headers, { confirmSlug: slug })
     expect(foreign.status).toBe(404)
+  })
+})
+
+// ---- D36 K5: the kit a new app is cut from ------------------------------------------------------
+
+const kitIds: string[] = []
+afterAll(async () => {
+  for (const id of kitIds) await deleteKit(db, id)
+})
+
+/** A kit row in the shared catalogue, never the default, under a slug no other suite uses. */
+async function registerKit(status: KitRow['status']): Promise<KitRow> {
+  const slug = uniqueSlug(`kit-${status}`)
+  const manifest = parseKitManifest(
+    readFileSync(new URL('../fixtures/launch-kit-0.1/launch.kit.json', import.meta.url), 'utf8')
+  )
+  manifest.kit.id = slug
+  const row = await insertKit(db, {
+    slug,
+    name: `Kit ${slug}`,
+    description: 'A kit for tests',
+    repo: `acme/${slug}`,
+    pin: { tag: '0.1.0', commit: 'd'.repeat(40) },
+    manifest,
+    manifestSource: 'repo',
+    contractVersion: '1',
+    status,
+    problems: status === 'failed' ? ['ci.yml is missing'] : [],
+    isDefault: false,
+  })
+  kitIds.push(row.id)
+  return row
+}
+
+describe('the kit a new app is cut from (D36 K5)', () => {
+  it('GET /api/kits: any member sees the verified kits and the default, nothing else', async () => {
+    const anonymous = await request('/api/kits', { method: 'GET' })
+    expect(anonymous.status).toBe(401)
+    const verified = await registerKit('verified')
+    const failed = await registerKit('failed')
+    const unchecked = await registerKit('unchecked')
+    const { headers } = await signedIn('member')
+    const res = await request('/api/kits', { method: 'GET', headers })
+    expect(res.status).toBe(200)
+    const raw = (await res.json()) as { kits: Record<string, unknown>[] }
+    const { kits } = kitOptionsResponseSchema.parse(raw)
+    const defaultKit = await getDefaultKit(db)
+    expect(kits[0]?.id).toBe(defaultKit?.id)
+    expect(kits[0]?.isDefault).toBe(true)
+    expect(kits.find(k => k.id === verified.id)).toEqual({
+      id: verified.id,
+      slug: verified.slug,
+      name: verified.name,
+      description: 'A kit for tests',
+      icon: null,
+      version: '0.1.0',
+      isDefault: false,
+    })
+    const ids = kits.map(k => k.id)
+    expect(ids).not.toContain(failed.id)
+    expect(ids).not.toContain(unchecked.id)
+    // Only what choosing needs: never the problems, the repo or the manifest.
+    expect(Object.keys(raw.kits[0] ?? {}).sort()).toEqual(
+      ['description', 'icon', 'id', 'isDefault', 'name', 'slug', 'version'].sort()
+    )
+  })
+
+  it('creates the app from the kit it names (by slug): its id, manifest and template', async () => {
+    const kit = await registerKit('verified')
+    const { headers, tenant } = await signedIn('admin')
+    const slug = uniqueSlug()
+    const res = await post('/api/apps', headers, { slug, displayName: 'Shop', kitId: kit.slug })
+    expect(res.status).toBe(202)
+    const body = createAppResponseSchema.parse(await res.json())
+    expect(body.app).toMatchObject({ kitSlug: kit.slug, kitName: kit.name })
+    const [app] = await db.select().from(apps).where(eq(apps.id, body.app.id))
+    expect(app).toMatchObject({ kitId: kit.id, template: kit.slug })
+    expect(app?.kitManifest?.kit.id).toBe(kit.slug)
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(eq(auditEvents.tenantId, tenant.id), eq(auditEvents.action, 'app.create.requested'))
+      )
+    expect(audit?.summary).toMatchObject({ after: { kit: kit.slug } })
+  })
+
+  it('names the kit on the approval a member asks for', async () => {
+    const kit = await registerKit('verified')
+    const { headers } = await signedIn('member')
+    const res = await post('/api/apps', headers, {
+      slug: uniqueSlug(),
+      displayName: 'Shop',
+      kitId: kit.id,
+    })
+    const body = createAppResponseSchema.parse(await res.json())
+    const [approval] = await db
+      .select()
+      .from(approvalRequests)
+      .where(eq(approvalRequests.id, body.approvalId ?? ''))
+    expect(approval?.context).toMatchObject({ kind: 'app.create', kitName: kit.name })
+  })
+
+  it('refuses a kit that has not passed its check (409) and one that does not exist (422)', async () => {
+    const { headers, tenant } = await signedIn('admin')
+    for (const status of ['failed', 'unchecked'] as const) {
+      const kit = await registerKit(status)
+      const res = await post('/api/apps', headers, {
+        slug: uniqueSlug(),
+        displayName: 'Shop',
+        kitId: kit.slug,
+      })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ code: 'kit_not_verified' })
+    }
+    const missing = await post('/api/apps', headers, {
+      slug: uniqueSlug(),
+      displayName: 'Shop',
+      kitId: 'no-such-kit',
+    })
+    expect(missing.status).toBe(422)
+    expect(await missing.json()).toMatchObject({ code: 'kit_not_found' })
+    // Refused before any write.
+    expect(await db.select().from(apps).where(eq(apps.tenantId, tenant.id))).toEqual([])
+  })
+
+  it('no kitId is the default kit, whatever its check status', async () => {
+    const { headers } = await signedIn('admin')
+    const { res } = await create(headers)
+    const body = createAppResponseSchema.parse(await res.json())
+    const defaultKit = await getDefaultKit(db)
+    expect(body.app.kitSlug).toBe(defaultKit?.slug)
   })
 })

@@ -205,6 +205,8 @@ const CORE_QUERY_KEYS = {
      * the detail's kit status.
      */
     upgrades: (appId: string) => ['apps', 'upgrades', appId] as const,
+    /** D36 K5: an import's dry run — the app and the kit `repo` at `ref` would be imported as. */
+    importDetect: (repo: string, ref: string) => ['apps', 'import-detect', repo, ref] as const,
   },
   /**
    * Launch P3: coding sessions (`/api/sessions`, `/api/apps/:id/sessions`, spec/07). The root is
@@ -336,6 +338,13 @@ const CORE_QUERY_KEYS = {
   kits: {
     all: ['platform', 'kits'] as const,
     list: ['platform', 'kits', 'list'] as const,
+    /** One kit with its manifest snapshot (`GET /api/platform/kits/:id`). */
+    detail: (id: string) => ['platform', 'kits', 'detail', id] as const,
+    /**
+     * D36 K5: `GET /api/kits` — the kits a new app may be cut from (any member). Under the same
+     * root so a catalogue change (a check, a new default) refreshes Create app's picker.
+     */
+    options: ['platform', 'kits', 'options'] as const,
   },
   /** Launch: `/api/platform/oidc` — the issuer's signing keys (spec/05); under `platform` too */
   oidcAdmin: {

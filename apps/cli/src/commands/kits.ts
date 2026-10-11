@@ -4,7 +4,8 @@
  *
  * - `kits ls` — every kit, the default first: slug, repo@pin, check status, apps.
  * - `kits show <kit>` — one kit (slug or id): its pin, the problems the last check found, and
- *   the manifest's essentials (`--json` prints the whole manifest snapshot).
+ *   what the manifest declares (init, release workflow, required check, upgrades, default
+ *   plugins — `kitManifestSummary`, as Platform → Kits shows it; `--json` prints it whole).
  * - `kits add <owner/name> --tag|--commit|--latest [--slug --name --description]` — register; the
  *   pin is resolved and the kit checked server-side. A kit that FAILS the check is still stored;
  *   its problems are printed and the command exits 1, so a script notices.
@@ -24,6 +25,7 @@ import {
   kitAddRequestSchema,
   kitDetailSchema,
   kitListResponseSchema,
+  kitManifestSummary,
   kitPinRequestSchema,
   kitRemoveResponseSchema,
 } from '@launch/shared/kits'
@@ -79,6 +81,17 @@ function detailLines(kit: KitDetail): string[] {
   ]
   const dynamic = dynamicLine(kit)
   if (dynamic) lines.push(dynamic)
+  if (kit.manifest) {
+    const declared = kitManifestSummary(kit.manifest)
+    lines.push(
+      '',
+      `Init      ${declared.init}`,
+      `Release   .github/workflows/${declared.releaseWorkflow}`,
+      `Check     ${declared.requiredCheck}`,
+      `Upgrades  ${declared.upgrades ? 'yes' : 'no — its apps are never behind'}`,
+      `Plugins   ${declared.plugins.length ? declared.plugins.join(', ') : 'none'}`
+    )
+  }
   if (kit.latestCheck?.error)
     lines.push(chalk.yellow(`Last lookup failed: ${kit.latestCheck.error}`))
   if (kit.problems.length > 0) {
@@ -266,7 +279,9 @@ export async function runKitsRemove(
 export function registerKitsCommands(program: Command, action: ActionWrapper): void {
   const kits = program
     .command('kits')
-    .description('the kits apps are built from (platform administrators; `login --admin`)')
+    .description(
+      'the kit catalogue (platform administrators; `login --admin`) — any member: `apps kits`'
+    )
   kits
     .command('ls')
     .description('every registered kit, the default first')

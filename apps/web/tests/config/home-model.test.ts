@@ -67,6 +67,8 @@ const app = (overrides: Partial<AppCatalogueItem> = {}): AppCatalogueItem => ({
   latestDeploy: deploy(),
   thumbnail: null,
   kit: null,
+  kitSlug: 'rocketflare',
+  kitName: 'Rocketflare',
   ...overrides,
 })
 

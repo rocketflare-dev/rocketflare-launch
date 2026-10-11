@@ -4,11 +4,15 @@
  * checked before it is sent (exit 1 listing the issues); a refusal is the server's sentence (exit
  * 1); a 403 exits 3; `--json` prints the parsed body.
  *
- * - `create <name> [--slug] [--description] [--team] [--no-deploy-staging] [--data] [--follow]` —
- *   "Create app": the slug is suggested from the name as the dialog does; below the `app.create`
+ * - `create <name> [--slug] [--description] [--team] [--kit] [--no-deploy-staging] [--data] [--follow]`
+ *   — "Create app": the slug is suggested from the name as the dialog does; `--kit <slug>` picks
+ *   the kit (D36 K5 — `apps kits` lists them; default: the default kit); below the `app.create`
  *   role the answer is an approval to wait on. `--follow` polls the launch run step by step to
  *   its end (exit 1 when it fails).
- * - `import <owner/name> [--ref] [--team]` — "Import app" (admins).
+ * - `kits` — the kits an app can be created from (`GET /api/kits`, any member): the picker's list.
+ * - `import <owner/name> [--ref] [--team] [--dry-run]` — "Import app" (admins); the kit is
+ *   detected from the repo. `--dry-run` is the dialog's preview: what would be imported, from
+ *   which kit, writing nothing.
  * - `set <app> [--name] [--description] [--team] [--data]` — `PATCH /:id` (admins).
  * - `ship-settings <app> [--ship staging|pr] [--review none|app_owners|groups] [--review-team …]`
  *   — where a session's Ship ends and who reviews it (owners and admins); no flag prints it.
@@ -23,6 +27,7 @@
  * `apps.ts` calls `registerAppsManageCommands(apps, action)` from its own registration.
  */
 
+import { kitOptionsResponseSchema } from '@launch/shared/kits'
 import { approvalPath } from '@launch/shared/launch-approvals'
 import {
   type AppBranchProtection,
@@ -35,6 +40,8 @@ import {
   appOidcClientSecretResponseSchema,
   appThumbnailRefreshResponseSchema,
   importAppRequestSchema,
+  importDetectRequestSchema,
+  importDetectResponseSchema,
   putAppShipSettingsRequestSchema,
   SESSION_SHIP_MODES,
   SHIP_REVIEW_MODES,
@@ -66,7 +73,7 @@ import {
   parseBody,
   readDataArg,
 } from '../utils/input'
-import { formatDate } from '../utils/output'
+import { formatDate, renderTable } from '../utils/output'
 import { ENVIRONMENT_LABELS } from './app-words'
 import { pipelineStepLines } from './apps'
 
@@ -170,6 +177,8 @@ export interface AppsCreateOptions extends FollowOptions {
   slug?: string
   description?: string
   team?: string
+  /** D36 K5: the kit's slug (or id); the server's default kit when absent. */
+  kit?: string
   deployStaging?: boolean
   data?: string
   follow?: boolean
@@ -190,6 +199,7 @@ export async function runAppsCreate(
       slug: options.slug ?? base.slug ?? (displayName ? slugFromName(displayName) : undefined),
       description: options.description,
       ownerGroupId: options.team,
+      kitId: options.kit,
     }),
   }
   if (options.deployStaging === false)
@@ -228,23 +238,55 @@ export async function runAppsCreate(
   )
 }
 
+/** `launch apps kits` — the kits a new app may be cut from, the default first. */
+export async function runAppsKits(ctx: CommandContext): Promise<void> {
+  const client = requireClient(ctx)
+  const { data, raw } = await client.request('GET', '/api/kits', {
+    schema: kitOptionsResponseSchema,
+  })
+  ctx.out.data(raw, () =>
+    renderTable(data.kits, [
+      { header: 'Kit', value: k => `${k.slug}${k.isDefault ? chalk.cyan(' *') : ''}` },
+      { header: 'Name', value: k => k.name },
+      { header: 'Version', value: k => k.version ?? chalk.dim('unreleased') },
+      { header: 'About', value: k => k.description ?? '' },
+    ])
+  )
+}
+
 export async function runAppsImport(
   ctx: CommandContext,
   repo: string,
-  options: { ref?: string; team?: string } = {}
+  options: { ref?: string; team?: string; dryRun?: boolean } = {}
 ): Promise<void> {
+  const client = requireClient(ctx)
+  if (options.dryRun) {
+    const body = parseBody(importDetectRequestSchema, defined({ repo, ref: options.ref }))
+    const { data, raw } = await client.request('POST', '/api/apps/import/detect', {
+      schema: importDetectResponseSchema,
+      body,
+    })
+    ctx.out.data(raw, () =>
+      [
+        `${data.repo}@${data.ref} would be imported as ${data.displayName} (${data.slug}).`,
+        `Kit       ${data.kit.name} (${data.kit.slug})${data.kitVersion ? ` ${data.kitVersion}` : ''}`,
+        `Manifest  ${data.manifest}`,
+        chalk.dim(`  Nothing was written. Import it: ${ctx.binName} apps import ${data.repo}`),
+      ].join('\n')
+    )
+    return
+  }
   const body = parseBody(
     importAppRequestSchema,
     defined({ repo, ref: options.ref, ownerGroupId: options.team })
   )
-  const client = requireClient(ctx)
   const { data, raw } = await client.request('POST', '/api/apps/import', {
     schema: appDetailSchema,
     body,
   })
   ctx.out.data(raw, () =>
     [
-      `${chalk.green('✓')} Imported ${data.displayName} (${data.slug}) from ${body.repo}.`,
+      `${chalk.green('✓')} Imported ${data.displayName} (${data.slug}) from ${body.repo}${data.kitName ? `, a ${data.kitName} app` : ''}.`,
       chalk.dim(`  ${ctx.binName} apps show ${data.slug}`),
     ].join('\n')
   )
@@ -639,6 +681,10 @@ export function registerAppsManageCommands(apps: Command, action: ActionWrapper)
     .option('--slug <slug>', 'the app’s slug (default: from the name) — it names its hostnames')
     .option('--description <text>', 'what the app is for')
     .option('--team <groupId>', 'the owner team (a group id — `launch groups list`)')
+    .option(
+      '--kit <slug>',
+      'the kit to build it from (`launch apps kits`; default: the default kit)'
+    )
     .option('--no-deploy-staging', 'do not deploy Staging as part of the launch')
     .option('--data <json|@file|->', 'the request body as JSON (flags win)')
     .option('--follow', 'follow the launch step by step until it ends')
@@ -648,7 +694,12 @@ export function registerAppsManageCommands(apps: Command, action: ActionWrapper)
     .description('import an existing app from its repository, owner/name (admins)')
     .option('--ref <ref>', 'a branch, tag or commit (default: the default branch)')
     .option('--team <groupId>', 'the owner team (a group id)')
+    .option('--dry-run', 'show what would be imported, and from which kit, writing nothing')
     .action(action((ctx, cmd) => runAppsImport(ctx, cmd.args[0] ?? '', cmd.opts())))
+  apps
+    .command('kits')
+    .description('the kits an app can be created from (`create --kit <slug>`), the default first')
+    .action(action(ctx => runAppsKits(ctx)))
   apps
     .command('set <app>')
     .description('change an app’s name, description or owner team (admins)')

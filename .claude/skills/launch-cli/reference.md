@@ -17,7 +17,7 @@ takes `--json`; ids accept an 8-character prefix where noted in `--help`.
 | Thing | Read | Act |
 |---|---|---|
 | coding session | `sessions show <id>` · `sessions logs <id> [--follow --type --since --limit]` · `sessions ls <app> [--all]` · `sessions attachments <id>` · `sessions attachment <id> <aid> --out` | `sessions start\|say [--follow --attach]\|ship\|end\|resume\|cancel\|withdraw\|landing-retry\|budget\|attach\|preview-url` |
-| app | `apps ls` · `apps show <app>` · `apps pipeline <app> [--kind]` · `apps operations <app>` · `apps health <app> [--hours]` · `apps upgrades <app>` | `apps create [--follow]\|import\|set\|teardown\|rescaffold\|health-check\|config-scan\|upgrade\|ship-settings\|branch-protection` · `apps pipeline retry\|cancel` · `apps sign-in …` · `apps thumbnail get\|refresh` |
+| app | `apps ls` · `apps show <app>` · `apps pipeline <app> [--kind]` · `apps operations <app>` · `apps health <app> [--hours]` · `apps upgrades <app>` | `apps create [--kit <slug>] [--follow]\|import [--dry-run]\|kits\|set\|teardown\|rescaffold\|health-check\|config-scan\|upgrade\|ship-settings\|branch-protection` · `apps pipeline retry\|cancel` · `apps sign-in …` · `apps thumbnail get\|refresh` |
 | deploys | `deploys ls <app>` · `deploys latest <app>` | `deploys production <app>` · `deploys approve\|reject <app> <ticket>` |
 | releases | `releases ls\|show\|chain <app> [<ver>]` · `releases promotion <app>` | `releases create\|promote [--wait]\|retry\|rollback\|cancel` |
 | approvals | `approvals ls [--box --status --kind --app]` · `approvals show <id>` · `approvals count` | `approvals approve\|reject\|withdraw <id>` |
@@ -52,7 +52,7 @@ takes `--json`; ids accept an 8-character prefix where noted in `--help`.
 |---|---|
 | `admin` | `sessions [--scope]` · `drain` · `undrain` · `tenants list\|show\|suspend\|reinstate` · `users list\|show\|block\|unblock\|grant-admin\|revoke-admin` · `flags list\|set\|overrides\|override\|clear` |
 | `platform` | `setup` · `settings [set]` · `credentials set\|check\|remove <kind>` · `public-url check` · `kit tags\|pin\|check\|reset` · `agents set` · `sandbox set` · `oidc keys\|rotate` · `access-requests list\|approve\|reject` |
-| `kits` | `ls` · `show <kit>` · `add <owner/name> --tag\|--commit\|--latest [--slug --name --description]` · `check <kit>` · `pin <kit> --tag\|--commit\|--latest` · `default <kit>` · `rm <kit>` (admin key; D36 K1) |
+| `kits` | `ls` · `show <kit>` · `add <owner/name> --tag\|--commit\|--latest [--slug --name --description]` · `check <kit>` · `pin <kit> --tag\|--commit\|--latest` · `default <kit>` · `rm <kit>` (admin key; D36 K1; `show` prints what the manifest declares) — what a member may create from: `apps kits` (D36 K5) |
 
 ## Input conventions
 

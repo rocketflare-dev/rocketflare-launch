@@ -181,8 +181,55 @@ describe('CataloguePage', () => {
     fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'acme/nope' } })
     fireEvent.submit(form)
     expect(await screen.findByText(/has no \.rocketflare\.json/)).toBeInTheDocument()
-    expect(screen.getByText(/carry \.rocketflare\.json at the repo root/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/carries launch\.kit\.json, or its app manifest/, { selector: '.alert *' })
+    ).toBeInTheDocument()
     expect(requestBody(fetchMock, 'POST /api/apps/import')).toEqual({ repo: 'acme/nope' })
+  })
+
+  it('says which kit a typed repo was built from before importing it (D36 K5)', async () => {
+    const fetchMock = stubFetch({
+      '/api/apps': { items: [], appsDomain: null },
+      'POST /api/apps/import/detect': {
+        repo: 'acme/shop',
+        ref: 'main',
+        manifest: '.launch-app.json',
+        slug: 'shop',
+        displayName: 'Shop',
+        kitVersion: '0.1.0',
+        kit: {
+          id: '22222222-3333-4444-8555-666666666666',
+          slug: 'acme-kit',
+          name: 'Acme kit',
+          detectedBy: 'kit-file',
+        },
+      },
+    })
+    renderWithProviders(<CataloguePage />, { session: makeSession() })
+    fireEvent.click(await screen.findByRole('button', { name: /Import app/ }))
+    fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'acme/shop' } })
+    const found = await screen.findByTestId('import-detect', {}, { timeout: 3000 })
+    expect(found).toHaveTextContent('Acme kit')
+    expect(found).toHaveTextContent('0.1.0')
+    expect(found).toHaveTextContent('Shop')
+    expect(requestBody(fetchMock, 'POST /api/apps/import/detect')).toEqual({ repo: 'acme/shop' })
+  })
+
+  it('says an unregistered kit cannot be imported, with who can add it', async () => {
+    stubFetch({
+      '/api/apps': { items: [], appsDomain: null },
+      'POST /api/apps/import/detect': errorResponse(
+        422,
+        'acme/shop@main was built from the kit "acme-internal", which Launch has not registered.',
+        'kit_not_registered'
+      ),
+    })
+    renderWithProviders(<CataloguePage />, { session: makeSession() })
+    fireEvent.click(await screen.findByRole('button', { name: /Import app/ }))
+    fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'acme/shop' } })
+    const found = await screen.findByTestId('import-detect', {}, { timeout: 3000 })
+    expect(found).toHaveTextContent('"acme-internal"')
+    expect(found).toHaveTextContent('registers that kit under Settings → Kits')
   })
 })
 

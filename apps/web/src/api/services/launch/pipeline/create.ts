@@ -6,8 +6,11 @@
  * 1. The slug is checked (`newAppSlugProblem`: spec/04's rules plus no `launch-` prefix → 400),
  *    the Workflow binding must exist and Setup must be finished (apps domain, Cloudflare, Neon,
  *    the GitHub App → 503 — the codes the create modal maps), the owner group must be the
- *    tenant's — all BEFORE any write, so a refusal leaves nothing behind. A taken slug is 409.
- * 2. One transaction: the `apps` row (`source='created'`, `status='requested'`, `launch_run_id`),
+ *    tenant's, and the kit (`kitId`, D36 K5 — `kits/options.ts`) must exist (422 `kit_not_found`)
+ *    and be verified or the default (409 `kit_not_verified`) — all BEFORE any write, so a refusal
+ *    leaves nothing behind. A taken slug is 409.
+ * 2. One transaction: the `apps` row (`source='created'`, `status='requested'`, `launch_run_id`,
+ *    the chosen kit's id and manifest snapshot),
  *    both `app_environments` rows named by the adapter (`names`), the creator in `app_owners`,
  *    and `app.create.requested` — whose summary carries the run id and options a retry reuses.
  * 3. `APP_LAUNCH_WORKFLOW.create({ id: runId, params })`. If that fails the app is marked `failed`
@@ -42,7 +45,8 @@ import { newId } from '../../../utils/core/ids'
 import { assertGroupInTenant, getAppRow } from '../apps'
 import { type AuditActor, recordAudit, SYSTEM_ACTOR } from '../audit'
 import { adapterForKit, kitManifestOf, type TemplateAdapter } from '../kits/adapter'
-import { ensureDefaultKit } from '../kits/store'
+import { kitForNewApp } from '../kits/options'
+import type { KitRow } from '../kits/store'
 import {
   loadPipelineSettings,
   missingSetup,
@@ -84,6 +88,8 @@ export interface CreateAppOptions {
 export interface CreateAppResult {
   app: AppRow
   runId: string
+  /** The kit the app is cut from (D36 K5). */
+  kit: KitRow
 }
 
 /** Steps 1–3 in one call: the P2 path, kept for the Workflow tests' harness (`LaunchHarness`). */
@@ -136,12 +142,13 @@ export async function requestApp(
   }
   const appsDomain = requireAppsDomain(settings)
   if (input.ownerGroupId) await assertGroupInTenant(db, tenantId, input.ownerGroupId)
+  // D36: the app belongs to the kit it is cut from, for life — the one the request names (K5:
+  // verified, else 409; unknown, 422), else the default. K2: it keeps that kit's manifest
+  // (`apps.kit_manifest`), the one its adapter is built from.
+  const kit = await kitForNewApp(db, input.kitId)
 
   const runId = newId()
   const options = { deployStaging: input.options.deployStaging }
-  // D36 K1: the app belongs to the kit it is cut from, for life — the default kit until K5's picker.
-  // K2: and it keeps that kit's manifest (`apps.kit_manifest`), the one its adapter is built from.
-  const kit = await ensureDefaultKit(db)
   const kitManifest = kitManifestOf(kit)
   const ports = typeof portsOf === 'function' ? portsOf(adapterForKit(kit)) : portsOf
   let app: AppRow
@@ -199,6 +206,7 @@ export async function requestApp(
             displayName: row.displayName,
             runId,
             host: ports.names(input.slug, 'staging', appsDomain).host,
+            kit: kit.slug,
             ...options,
           },
         },
@@ -213,7 +221,7 @@ export async function requestApp(
     }
     throw err
   }
-  return { app, runId }
+  return { app, runId, kit }
 }
 
 /**

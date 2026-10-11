@@ -171,6 +171,38 @@ export const importAppRequestSchema = z.object({
 })
 export type ImportAppRequest = z.infer<typeof importAppRequestSchema>
 
+/** `POST /api/apps/import/detect` — what an import of `repo` (at `ref`) would record; writes nothing. */
+export const importDetectRequestSchema = importAppRequestSchema.pick({ repo: true, ref: true })
+export type ImportDetectRequest = z.infer<typeof importDetectRequestSchema>
+
+/**
+ * How an import knew the repo's kit (D36 K5): its root `launch.kit.json` (`kit-file`), the app
+ * manifest's `kit.id` / `kit.name` (`app-manifest`), or — neither naming one — a Rocketflare copy
+ * from before the contract, recognised by its `.rocketflare.json` / `launch.plugins.json` (`legacy`).
+ */
+export const IMPORT_KIT_SOURCES = ['kit-file', 'app-manifest', 'legacy'] as const
+export const importKitSourceSchema = z.enum(IMPORT_KIT_SOURCES)
+export type ImportKitSource = z.infer<typeof importKitSourceSchema>
+
+/** The answer to a detect: the app an import would register, and the registered kit it matched. */
+export const importDetectResponseSchema = z.object({
+  repo: z.string(),
+  ref: z.string(),
+  /** The app manifest read (`.rocketflare.json`, …). */
+  manifest: z.string(),
+  slug: z.string(),
+  displayName: z.string(),
+  /** The kit version the copy records, when it records one. */
+  kitVersion: z.string().nullable(),
+  kit: z.object({
+    id: z.string().uuid(),
+    slug: z.string(),
+    name: z.string(),
+    detectedBy: importKitSourceSchema,
+  }),
+})
+export type ImportDetectResponse = z.infer<typeof importDetectResponseSchema>
+
 /**
  * An app's identity file, read leniently: `.rocketflare.json` (`app {slug, display, domain}`,
  * `kit {version, commit}`) or the `launch.plugins.json` shape (`app {…}`, `kitVersion`). Anything
@@ -285,6 +317,12 @@ export const appSummarySchema = z.object({
    * upgrade". Defaulted so an older answer parses.
    */
   kit: kitStatusSchema.nullable().default(null),
+  /**
+   * D36 K5: the kit the app was created from or imported into (`apps.kit_id`) — its catalogue slug
+   * and name, null for an app whose kit was removed. Defaulted so an older answer parses.
+   */
+  kitSlug: z.string().nullable().default(null),
+  kitName: z.string().nullable().default(null),
 })
 export type AppSummary = z.infer<typeof appSummarySchema>
 

@@ -344,6 +344,24 @@ Each phase is shippable on its own, and Rocketflare-only Launch keeps working af
   - Upgrades run against each app's own kit.
   - Copy that names "Rocketflare" (`KitVersionCard`, `CataloguePage`, `CreateAppModal`,
     `ImportAppModal`) names the app's kit instead.
+  - **Built (2026-10-10).** As above, at Settings → Kits (`/settings/kit`, the Kit version card
+    over the catalogue: Check, Re-pin, Make default, Details — what the manifest declares — and
+    Remove, disabled with its reason). Where it differs from this section:
+    - the picker offers every `verified` kit **plus the default whatever its status** (the
+      built-in row is `unchecked` until an admin runs Check, and a request with no kit uses it
+      anyway); members read them through a new `GET /api/kits` (`launch apps kits`) that answers
+      only id, slug, name, description, icon and the pinned tag; the picker is hidden with one
+      kit, and `KitPicker` is self-contained so the interview's brief can host it;
+    - `kitId` takes an id or a slug (422 `kit_not_found`, 409 `kit_not_verified`, checked before
+      any write); the `app.create` approval's context names the kit;
+    - import detects the kit from the repo's `launch.kit.json` first (a copy of a contract kit
+      keeps it), then the app manifest's `kit.id` / `kit.name`, and a pre-contract Rocketflare
+      copy by its file; an unregistered kit is 422 `kit_not_registered`; any registered kit may be
+      imported into, checked or not. `POST /api/apps/import/detect` (`launch apps import
+      --dry-run`) is the dialog's preview;
+    - the scaffold still reads the DEFAULT kit's pin: K3 must cut a created app at its own kit's
+      pin (`kits/options.ts` `pinForApp`), so a non-default pick is end to end only with K3;
+    - the manifest's `icon` reaches the picker but is not drawn.
 - **K6: kit-side work, landed by PR.**
   - The `launch-kit` repo.
   - Rocketflare's `launch.kit.json`.

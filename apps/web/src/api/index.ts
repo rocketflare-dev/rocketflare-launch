@@ -47,6 +47,7 @@ import { healthRouter } from './routes/health'
 import { invitationsRouter } from './routes/invitations'
 import { inviteRouter } from './routes/invite'
 import { keysRouter } from './routes/keys'
+import { kitOptionsRouter } from './routes/kit-options'
 import { kitsRouter } from './routes/kits'
 import { meRouter } from './routes/me'
 import { membersRouter } from './routes/members'
@@ -191,6 +192,9 @@ const mounts: readonly (readonly [string, Hono<AppEnv>, MiddlewareHandler?])[] =
   ['/api/evals', evalsRouter],
   // Launch (spec/05, 06, 08): the app registry, who may sign in to each app, and the audit log.
   ['/api/apps', appsRouter],
+  // D36 K5: the kits a new app may be cut from (Create app's picker); the catalogue itself is
+  // `/api/platform/kits`, platform admins only.
+  ['/api/kits', kitOptionsRouter],
   ['/api/app-access', appAccessRouter],
   ['/api/audit', auditRouter],
   // Launch P3 (spec/07): one coding session by id — lifecycle, chat, ship (three routers, one

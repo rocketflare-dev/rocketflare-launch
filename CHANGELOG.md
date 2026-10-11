@@ -51,6 +51,19 @@
   repo in the apps organisation, checks the copy, and deletes the repo — archiving it when the
   GitHub App may not delete. The kit shows `checking` meanwhile; it is `verified` only when the
   static check passed and no dynamic check at its pin failed (migration 0051, `kits.dynamic_check`).
+- **Pick the kit, detect it on import, manage the catalogue (D36 K5).** With two or more kits on
+  offer, Create app starts with a Kit field — every kit that passes its check plus the default,
+  which is preselected; with one, the dialog is unchanged. `POST /api/apps` takes an optional
+  `kitId` (id or slug): an unknown kit is 422 `kit_not_found`, one that has not passed its check is
+  409 `kit_not_verified`. Members read the kits on offer through the new `GET /api/kits` (`launch
+  apps kits`); `launch apps create --kit <slug>`. Import now works out the kit from the repo — its
+  `launch.kit.json`, else its app manifest's `kit` — and refuses a kit Launch has not registered
+  (422 `kit_not_registered`); the Import dialog says which kit it found before you import
+  (`POST /api/apps/import/detect`, `launch apps import --dry-run`). Settings → Kit version is now
+  Settings → Kits: each kit can be checked, re-pinned, made the default, removed (never the default
+  or a kit with apps) and opened to see what its manifest declares; `launch kits show` prints the
+  same. App pages, the catalogue and approvals name the app's kit (`kitSlug`/`kitName` on every app)
+  instead of saying Rocketflare.
 
 - **Pi turns survive long work, and their spend is never lost.** A Pi turn polled its Durable
   Object four times a second from the turn's Workflow step; an 8-minute turn died with

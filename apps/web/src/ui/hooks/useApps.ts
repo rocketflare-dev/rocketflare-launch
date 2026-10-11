@@ -29,6 +29,8 @@ import {
   appOperationListResponseSchema,
   appThumbnailRefreshResponseSchema,
   type ImportAppRequest,
+  type ImportDetectRequest,
+  importDetectResponseSchema,
   type PutAppShipSettingsRequest,
   type UpdateAppRedirectUrisRequest,
   type UpdateAppRequest,
@@ -94,6 +96,24 @@ export function useImportApp() {
       // The modal renders the failure itself (a 422 names the missing file), so no toast.
       api.post('/api/apps/import', body, { schema: appDetailSchema, showErrorToast: false }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.apps.all }),
+  })
+}
+
+/**
+ * D36 K5: an import's dry run — what `repo` (at `ref`) would be imported as, and from which kit.
+ * Null input: nothing asked yet. The modal renders a refusal itself; no retry on a 422.
+ */
+export function useImportDetect(input: ImportDetectRequest | null) {
+  return useQuery({
+    queryKey: queryKeys.apps.importDetect(input?.repo ?? '', input?.ref ?? ''),
+    queryFn: () =>
+      api.post('/api/apps/import/detect', input, {
+        schema: importDetectResponseSchema,
+        showErrorToast: false,
+      }),
+    enabled: input !== null,
+    retry: false,
+    staleTime: 60_000,
   })
 }
 

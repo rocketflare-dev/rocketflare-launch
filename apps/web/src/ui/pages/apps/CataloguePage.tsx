@@ -83,6 +83,15 @@ function StatusTag({ app }: { app: AppCatalogueItem }) {
   )
 }
 
+/**
+ * The app's kit and version as the catalogue shows it — `Rocketflare 0.15.0` once the server names
+ * the kit (D36 K5), `kit 0.15.0` from an older one. Pure.
+ */
+export function kitLabel(app: Pick<AppCatalogueItem, 'kitName' | 'templateVersion'>): string {
+  const name = app.kitName ?? 'kit'
+  return app.templateVersion ? `${name} ${app.templateVersion}` : `${name}, version unknown`
+}
+
 function Meta({ app }: { app: AppCatalogueItem }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary">
@@ -92,9 +101,7 @@ function Meta({ app }: { app: AppCatalogueItem }) {
       <span aria-hidden="true" className="text-muted">
         ·
       </span>
-      <span className="font-mono">
-        {app.templateVersion ? `kit ${app.templateVersion}` : 'kit unknown'}
-      </span>
+      <span className="font-mono">{kitLabel(app)}</span>
       {app.kit && requiresUpgradeLabel(app.kit) && <span>{requiresUpgradeLabel(app.kit)}</span>}
     </div>
   )
@@ -217,6 +224,7 @@ function AppTable({ apps }: { apps: AppCatalogueItem[] }) {
                   {app.ownerGroup?.name ?? 'No team'}
                 </td>
                 <td className="text-xs text-secondary">
+                  {app.kitName && <span className="block">{app.kitName}</span>}
                   <span className="font-mono">{app.templateVersion ?? '—'}</span>
                   {app.kit && requiresUpgradeLabel(app.kit) && (
                     <span className="block">{requiresUpgradeLabel(app.kit)}</span>
@@ -336,7 +344,7 @@ export default function CataloguePage() {
     <div>
       <PageHeader
         title="Apps"
-        description="Every Rocketflare app the company runs, and whether it is answering."
+        description="Every app the company runs, and whether it is answering."
         actions={allApps.length > 0 ? actions || undefined : undefined}
       />
 
@@ -354,8 +362,8 @@ export default function CataloguePage() {
           message={canManage ? 'Launch your first app' : 'No apps in the catalogue yet'}
           description={
             canManage
-              ? 'Name it, and Launch creates the repository from the Rocketflare template, its database, storage and sign-in, and deploys staging. Already have a Rocketflare app on GitHub? Import it instead.'
-              : 'An administrator creates or imports the company’s Rocketflare apps; they appear here with their live health.'
+              ? 'Name it, and Launch creates the repository from a kit, its database, storage and sign-in, and deploys staging. Already have an app built from one on GitHub? Import it instead.'
+              : 'An administrator creates or imports the company’s apps; they appear here with their live health.'
           }
           action={
             canManage ? (
