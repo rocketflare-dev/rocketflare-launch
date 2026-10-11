@@ -14,9 +14,11 @@ import {
 } from '@launch/shared/launch-setup'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { KITS_POLL_MS, kitsPollInterval } from '@/ui/hooks/useKits'
 import CodingAgents from '@/ui/pages/platform/CodingAgents'
 import Connection from '@/ui/pages/platform/Connection'
 import Kit from '@/ui/pages/platform/Kit'
+import { cleanupText, statusText } from '@/ui/pages/platform/kit/KitsCard'
 import {
   makeSession,
   makeUser,
@@ -43,6 +45,18 @@ const KITS = [
     manifestSource: 'fallback',
     checkedAt: '2026-10-01T00:00:00.000Z',
     latestCheck: null,
+    // D36 K3: the last scaffold (dynamic) check passed, and its test repo is gone.
+    dynamicCheck: {
+      id: '33333333-4444-4555-8666-777777777777',
+      status: 'passed',
+      commit: DEFAULT_TEMPLATE_PIN.commit,
+      repo: 'acme-apps/launch-kit-check-rocketflare-33333333',
+      runUrl: 'https://github.com/acme-apps/launch-kit-check-rocketflare-33333333/actions/runs/1',
+      problems: [],
+      cleanup: 'deleted',
+      startedAt: '2026-10-01T00:00:00.000Z',
+      finishedAt: '2026-10-01T00:06:00.000Z',
+    },
     appCount: 3,
     createdAt: '2026-10-01T00:00:00.000Z',
     updatedAt: '2026-10-01T00:00:00.000Z',
@@ -85,7 +99,11 @@ const page = (step: SetupOverview['steps'][number]['id']) =>
     return <Connection step={step} />
   }
 
-function render(current: SetupOverview = overview, Page: () => JSX.Element = page('cloudflare')) {
+function render(
+  current: SetupOverview = overview,
+  Page: () => JSX.Element = page('cloudflare'),
+  kits: readonly unknown[] = KITS
+) {
   const fetchMock = stubFetch({
     '/api/platform/setup': current,
     'PUT /api/platform/setup/template-pin': current,
@@ -100,7 +118,7 @@ function render(current: SetupOverview = overview, Page: () => JSX.Element = pag
       ],
       latest: '0.17.1',
     },
-    '/api/platform/kits': { kits: KITS },
+    '/api/platform/kits': { kits },
     'POST /api/platform/kits': { ...KITS[1], manifest: null },
     [`POST /api/platform/kits/${KITS[1]?.id}/check`]: { ...KITS[1], manifest: null },
     [`/api/platform/kits/${KITS[1]?.id}`]: { ...KITS[1], manifest: LAUNCH_KIT_MANIFEST },
@@ -743,6 +761,87 @@ describe('Settings → Kit version → Kits (D36 K1)', () => {
     expect(list).toHaveTextContent(
       LAUNCH_KIT_MANIFEST.upgrade ? 'Supported' : 'Not declared: its apps are never shown as behind'
     )
+  })
+
+  it('shows the last scaffold check: result, commit, its run and its test repo (D36 K3)', async () => {
+    render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    const line = await within(card).findByRole('group', { name: 'Last scaffold check' })
+    expect(line).toHaveTextContent('Scaffold check passed')
+    expect(line).toHaveTextContent(DEFAULT_TEMPLATE_PIN.commit.slice(0, 7))
+    expect(within(line).getByRole('link', { name: 'View run' })).toHaveAttribute(
+      'href',
+      KITS[0].dynamicCheck.runUrl
+    )
+    expect(line).toHaveTextContent('Its test repo was deleted.')
+  })
+
+  it('a kit whose scaffold check runs reads Checking, and cannot start another', async () => {
+    const checking = {
+      ...KITS[1],
+      status: 'checking',
+      problems: [],
+      dynamicCheck: {
+        ...KITS[0].dynamicCheck,
+        status: 'running',
+        commit: KITS[1].pin.commit,
+        repo: 'acme-apps/launch-kit-check-acme-kit-44444444',
+        runUrl: null,
+        cleanup: null,
+        finishedAt: null,
+      },
+    }
+    render(overview, Kit, [KITS[0], checking])
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    expect(within(card).getByText('Checking')).toBeInTheDocument()
+    expect(within(card).getByText('Scaffold check running')).toBeInTheDocument()
+    expect(
+      within(card).getByText(/Running in acme-apps\/launch-kit-check-acme-kit-44444444/)
+    ).toBeInTheDocument()
+    const [, acmeRun] = within(card).getAllByRole('button', { name: 'Run the scaffold check' })
+    expect(acmeRun).toBeDisabled()
+    // The list re-reads while it runs, and stops once it settles.
+    expect(kitsPollInterval([KITS[0], checking] as never)).toBe(KITS_POLL_MS)
+    expect(kitsPollInterval(KITS as never)).toBe(false)
+  })
+
+  it('runs the scaffold check, from the row and from Re-pin (?dynamic=1)', async () => {
+    const fetchMock = render(overview, Kit)
+    const card = await screen.findByRole('region', { name: 'Kits' })
+    await within(card).findByText('Acme kit')
+    const urls = () =>
+      fetchMock.mock.calls.map(
+        ([input, init]) =>
+          `${init?.method ?? 'GET'} ${new URL(String(input), 'http://x').pathname}${new URL(String(input), 'http://x').search}`
+      )
+    const [, acmeRun] = within(card).getAllByRole('button', { name: 'Run the scaffold check' })
+    fireEvent.click(acmeRun as HTMLElement)
+    await waitFor(() =>
+      expect(urls()).toContain(`POST /api/platform/kits/${KITS[1].id}/check?dynamic=1`)
+    )
+    fireEvent.click(within(card).getAllByRole('button', { name: 'Re-pin' })[1] as HTMLElement)
+    const form = within(card).getByRole('form', { name: 'Re-pin Acme kit' })
+    fireEvent.change(within(form).getByRole('combobox', { name: 'Tag' }), {
+      target: { value: '1.1.0' },
+    })
+    fireEvent.click(within(form).getByRole('checkbox', { name: /Also run the scaffold check/ }))
+    fireEvent.click(within(form).getByRole('button', { name: 'Pin' }))
+    await waitFor(() =>
+      expect(urls()).toContain(`PUT /api/platform/kits/${KITS[1].id}/pin?dynamic=1`)
+    )
+  })
+
+  it('names the states and the test repo in words', () => {
+    expect(statusText({ status: 'checking', problems: [] }).text).toBe('Checking')
+    expect(statusText({ status: 'unchecked', problems: [] }).text).toBe('Not checked')
+    expect(cleanupText({ status: 'failed', repo: 'o/r', cleanup: 'archived' })).toMatch(
+      /o\/r was archived: the GitHub App may not delete/
+    )
+    expect(cleanupText({ status: 'passed', repo: 'o/r', cleanup: 'failed' })).toMatch(
+      /could not be removed: delete it by hand/
+    )
+    expect(cleanupText({ status: 'failed', repo: null, cleanup: null })).toBeNull()
   })
 
   it('removes a kit after asking; never the default, and says why', async () => {

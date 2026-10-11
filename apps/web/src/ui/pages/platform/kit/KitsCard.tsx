@@ -1,9 +1,14 @@
 /**
- * Settings → Kits' catalogue (D36 K1, K5): the kits apps can be built from, one row each — name,
- * repo and pin, the conformance check's result (its problems spelled out when it failed), how many
- * apps were made from it — with, per row:
+ * Settings → Kits' catalogue (D36 K1, K3, K5): the kits apps can be built from, one row each —
+ * name, repo and pin, the conformance check's result (its problems spelled out when it failed;
+ * `Checking` while a scaffold check runs), the last scaffold (dynamic) check — passed, failed or
+ * running, at which commit, a link to its GitHub Actions run, and what became of its throwaway
+ * repo — and how many apps were made from it — with, per row:
  *
- * - **Check** — re-read the manifest and re-run the check at the pin;
+ * - **Check** — re-read the manifest and re-run the static check at the pin;
+ * - **Run the scaffold check** — the same, then the kit's scaffold job for real against a
+ *   throwaway repo (`?dynamic=1`; minutes, so it is enqueued and the list re-reads while it runs —
+ *   `kitsPollInterval`). Re-pin and Add offer it as a checkbox;
  * - **Re-pin** — a release tag (picked from the repo's tags or typed), a commit or branch, or
  *   Follow latest, checked at the new pin before it is stored;
  * - **Make default** — the kit Create app preselects and a request with no kit is cut from;
@@ -13,10 +18,12 @@
  *   app keeps its kit for life); asks first.
  *
  * Below the list, a form registers another kit: its repo and a pin (Follow latest, a tag, a
- * commit). The default kit's version is also the Kit version card above.
+ * commit). The default kit's version is also the Kit version card above. Only a `verified` kit
+ * (and the default) is offered by Create app: `checking` is not, until its scaffold check passes.
  */
 import {
   type Kit,
+  type KitDynamicCheck,
   type KitPinRequest,
   kitAddRequestSchema,
   kitManifestSummary,
@@ -27,6 +34,7 @@ import { type FormEvent, useId, useState } from 'react'
 import { Combobox } from '@/ui/components/Combobox'
 import { ConfirmModal, FieldError } from '@/ui/components/shared'
 import {
+  kitCheckRunning,
   useAddKit,
   useCheckKit,
   useKit,
@@ -46,13 +54,98 @@ export function pinLabel(kit: Pick<Kit, 'pin' | 'pinIsCodeDefault'>): string {
   return kit.pinIsCodeDefault ? `${at}, Launch's default` : at
 }
 
-function statusText(kit: Kit): { text: string; className: string } {
+/** The row's check status in words. Pure. */
+export function statusText(kit: Pick<Kit, 'status' | 'problems'>): {
+  text: string
+  className: string
+} {
   if (kit.status === 'verified') return { text: 'Conforms', className: 'text-success' }
+  if (kit.status === 'checking') return { text: 'Checking', className: 'text-secondary' }
   if (kit.status === 'failed') {
     const n = kit.problems.length
     return { text: `${n} problem${n === 1 ? '' : 's'}`, className: 'text-error' }
   }
   return { text: 'Not checked', className: 'text-muted' }
+}
+
+const DYNAMIC_RESULT: Record<KitDynamicCheck['status'], { text: string; className: string }> = {
+  queued: { text: 'Scaffold check queued', className: 'text-secondary' },
+  running: { text: 'Scaffold check running', className: 'text-secondary' },
+  passed: { text: 'Scaffold check passed', className: 'text-success' },
+  failed: { text: 'Scaffold check failed', className: 'text-error' },
+}
+
+/** What became of a scaffold check's throwaway repo, or null when there is nothing to say. Pure. */
+export function cleanupText(
+  check: Pick<KitDynamicCheck, 'status' | 'repo' | 'cleanup'>
+): string | null {
+  const repo = check.repo
+  if (check.cleanup === 'deleted') return 'Its test repo was deleted.'
+  if (check.cleanup === 'archived') {
+    return `Its test repo ${repo ?? ''} was archived: the GitHub App may not delete repositories, so delete it by hand.`
+  }
+  if (check.cleanup === 'failed') {
+    return `Its test repo ${repo ?? ''} could not be removed: delete it by hand.`
+  }
+  if (repo && (check.status === 'queued' || check.status === 'running')) {
+    return `Running in ${repo}, removed when it finishes.`
+  }
+  return null
+}
+
+/** The last scaffold (dynamic) check: result, commit, when, its run, and its test repo. */
+function DynamicCheckLine({ check }: { check: KitDynamicCheck }) {
+  const result = DYNAMIC_RESULT[check.status]
+  const at = check.finishedAt ?? check.startedAt
+  const cleanup = cleanupText(check)
+  const running = check.status === 'queued' || check.status === 'running'
+  return (
+    <div className="text-xs space-y-0.5" role="group" aria-label="Last scaffold check">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        {running && <span className="loading loading-spinner loading-xs" aria-hidden="true" />}
+        <span className={result.className}>{result.text}</span>
+        <span className="text-muted">
+          at <span className="font-mono">{shortSha(check.commit)}</span>
+        </span>
+        <time className="text-muted" dateTime={at.toISOString()} title={formatDateTime(at)}>
+          {running ? `started ${timeAgo(check.startedAt)}` : timeAgo(at)}
+        </time>
+        {check.runUrl && (
+          <a className="link" href={check.runUrl} target="_blank" rel="noreferrer">
+            View run
+          </a>
+        )}
+      </div>
+      {cleanup && <p className="text-muted">{cleanup}</p>}
+    </div>
+  )
+}
+
+/** The "also run the scaffold check" checkbox Re-pin and Add share. */
+function DynamicOption({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-2 text-sm">
+      <input
+        type="checkbox"
+        className="checkbox checkbox-sm mt-0.5"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+      />
+      <span>
+        Also run the scaffold check
+        <span className="block text-xs text-muted">
+          Runs the kit's scaffold job against a throwaway repo once the files check passes. It takes
+          a few minutes; the kit is not offered for new apps until it passes.
+        </span>
+      </span>
+    </label>
+  )
 }
 
 /** Why a kit cannot be removed, or null when it can. Pure. */
@@ -177,6 +270,7 @@ function RepinForm({ kit, onDone }: { kit: Kit; onDone: () => void }) {
   const pin = usePinKit()
   const [mode, setMode] = useState<PinMode>(kit.pin.follow === 'latest' ? 'latest' : 'tag')
   const [value, setValue] = useState('')
+  const [dynamic, setDynamic] = useState(false)
   const [invalid, setInvalid] = useState<string>()
 
   function onSubmit(event: FormEvent) {
@@ -192,7 +286,7 @@ function RepinForm({ kit, onDone }: { kit: Kit; onDone: () => void }) {
       return
     }
     setInvalid(undefined)
-    pin.mutate({ id: kit.id, pin: parsed.data }, { onSuccess: onDone })
+    pin.mutate({ id: kit.id, pin: parsed.data, dynamic }, { onSuccess: onDone })
   }
 
   return (
@@ -202,6 +296,7 @@ function RepinForm({ kit, onDone }: { kit: Kit; onDone: () => void }) {
       aria-label={`Re-pin ${kit.name}`}
     >
       <PinFields mode={mode} onMode={setMode} value={value} onValue={setValue} repo={kit.repo} />
+      <DynamicOption checked={dynamic} onChange={setDynamic} />
       <FieldError message={invalid} />
       {pin.error && (
         <p className="text-xs text-error" role="alert">
@@ -281,6 +376,8 @@ function KitRow({ kit }: { kit: Kit }) {
   const rowId = useId()
   const busy = check.isPending || makeDefault.isPending || remove.isPending
   const status = statusText(kit)
+  const running = kitCheckRunning(kit)
+  const checkingDynamic = check.isPending && check.variables?.dynamic === true
   const error = check.error ?? makeDefault.error ?? remove.error
   const blocker = removeBlocker(kit)
   const toggle = (panel: 'details' | 'pin') => setOpen(open === panel ? null : panel)
@@ -298,6 +395,9 @@ function KitRow({ kit }: { kit: Kit }) {
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <span className={status.className}>
+            {kit.status === 'checking' && (
+              <span className="loading loading-spinner loading-xs mr-1" aria-hidden="true" />
+            )}
             {status.text}
             {kit.checkedAt && (
               <time
@@ -319,9 +419,22 @@ function KitRow({ kit }: { kit: Kit }) {
           type="button"
           className="btn btn-xs"
           disabled={busy}
-          onClick={() => check.mutate(kit.id)}
+          onClick={() => check.mutate({ id: kit.id })}
         >
-          {check.isPending ? 'Checking…' : 'Check'}
+          {check.isPending && !checkingDynamic ? 'Checking…' : 'Check'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs btn-ghost"
+          disabled={busy || running}
+          title={
+            running
+              ? 'A scaffold check is running'
+              : "Run the kit's scaffold job against a throwaway repo (a few minutes)"
+          }
+          onClick={() => check.mutate({ id: kit.id, dynamic: true })}
+        >
+          {checkingDynamic ? 'Starting…' : 'Run the scaffold check'}
         </button>
         <button
           type="button"
@@ -367,8 +480,11 @@ function KitRow({ kit }: { kit: Kit }) {
           )}
         </span>
       </div>
-      {kit.status === 'failed' && kit.problems.length > 0 && (
-        <ul className="text-xs text-error list-disc pl-5 space-y-0.5">
+      {kit.dynamicCheck && <DynamicCheckLine check={kit.dynamicCheck} />}
+      {kit.status !== 'verified' && kit.problems.length > 0 && (
+        <ul
+          className={`text-xs list-disc pl-5 space-y-0.5 ${kit.status === 'failed' ? 'text-error' : 'text-warning'}`}
+        >
           {kit.problems.map(p => (
             <li key={p}>{p}</li>
           ))}
@@ -404,6 +520,7 @@ function AddKitForm() {
   const [repo, setRepo] = useState('')
   const [mode, setMode] = useState<PinMode>('latest')
   const [ref, setRef] = useState('')
+  const [dynamic, setDynamic] = useState(false)
   const [invalid, setInvalid] = useState<string | undefined>()
   const repoValid = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo.trim())
 
@@ -420,13 +537,17 @@ function AddKitForm() {
       return
     }
     setInvalid(undefined)
-    add.mutate(parsed.data, {
-      onSuccess: () => {
-        setRepo('')
-        setRef('')
-        setMode('latest')
-      },
-    })
+    add.mutate(
+      { ...parsed.data, dynamic },
+      {
+        onSuccess: () => {
+          setRepo('')
+          setRef('')
+          setMode('latest')
+          setDynamic(false)
+        },
+      }
+    )
   }
 
   return (
@@ -448,6 +569,7 @@ function AddKitForm() {
         onValue={setRef}
         repo={repoValid ? repo.trim() : null}
       />
+      <DynamicOption checked={dynamic} onChange={setDynamic} />
       <FieldError message={invalid} />
       {add.error && (
         <p className="text-xs text-error" role="alert">

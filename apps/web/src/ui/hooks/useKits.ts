@@ -2,9 +2,12 @@
  * The kit catalogue (D36 K1): `/api/platform/kits` (`canAdministerPlatform`). Every mutation
  * answers with the kit, and invalidates the catalogue AND the setup overview — the default kit's
  * pin is the Kit version card's template pin. K5 adds the member-level list Create app's picker
- * reads (`GET /api/kits`, `useKitOptions`), one kit's detail, re-pin and remove.
+ * reads (`GET /api/kits`, `useKitOptions`), one kit's detail, re-pin and remove. K3's dynamic
+ * (scaffold) check is `dynamic: true` on add, check and re-pin (`?dynamic=1`); while a kit is
+ * `checking` the list re-reads every {@link KITS_POLL_MS} (no realtime event carries it).
  */
 import {
+  type Kit,
   type KitAddRequest,
   type KitPinRequest,
   kitDetailSchema,
@@ -18,11 +21,31 @@ import { queryKeys } from '@/ui/lib/query-keys'
 
 const BASE = '/api/platform/kits'
 
+/** How often the catalogue re-reads while a dynamic check runs (its job polls GitHub each minute). */
+export const KITS_POLL_MS = 15_000
+
+/** Is a dynamic (scaffold) check of this kit still running? Pure. */
+export function kitCheckRunning(kit: Pick<Kit, 'status' | 'dynamicCheck'>): boolean {
+  const dynamic = kit.dynamicCheck?.status
+  return kit.status === 'checking' || dynamic === 'queued' || dynamic === 'running'
+}
+
+/** `refetchInterval` for the catalogue: poll while any kit's dynamic check runs. Pure. */
+export function kitsPollInterval(
+  kits: readonly Pick<Kit, 'status' | 'dynamicCheck'>[] | undefined
+): number | false {
+  return kits?.some(kitCheckRunning) ? KITS_POLL_MS : false
+}
+
+/** `?dynamic=1` when the scaffold check is asked for too. */
+const dynamicQuery = (dynamic: boolean | undefined) => (dynamic ? '?dynamic=1' : '')
+
 export function useKits(enabled = true) {
   return useQuery({
     queryKey: queryKeys.kits.list,
     queryFn: () => api.get(BASE, { schema: kitListResponseSchema }),
     enabled,
+    refetchInterval: q => kitsPollInterval(q.state.data?.kits),
   })
 }
 
@@ -56,21 +79,27 @@ function useInvalidateKits() {
     ])
 }
 
-/** Register a kit: the server resolves the pin and runs the conformance check. */
+/** Register a kit: the server resolves the pin and runs the conformance check (`dynamic`: both). */
 export function useAddKit() {
   const invalidate = useInvalidateKits()
   return useMutation({
-    mutationFn: (body: KitAddRequest) => api.post(BASE, body, { schema: kitDetailSchema }),
+    mutationFn: ({ dynamic, ...body }: KitAddRequest & { dynamic?: boolean }) =>
+      api.post(`${BASE}${dynamicQuery(dynamic)}`, body, { schema: kitDetailSchema }),
     onSuccess: () => invalidate(),
   })
 }
 
-/** Re-read the manifest and re-run the check at the kit's pin. */
+/**
+ * Re-read the manifest and re-run the check at the kit's pin; `dynamic` also starts the scaffold
+ * check (enqueued — the kit answers `checking`, and the list polls until it settles).
+ */
 export function useCheckKit() {
   const invalidate = useInvalidateKits()
   return useMutation({
-    mutationFn: (id: string) =>
-      api.post(`${BASE}/${id}/check`, undefined, { schema: kitDetailSchema }),
+    mutationFn: ({ id, dynamic }: { id: string; dynamic?: boolean }) =>
+      api.post(`${BASE}/${id}/check${dynamicQuery(dynamic)}`, undefined, {
+        schema: kitDetailSchema,
+      }),
     onSuccess: () => invalidate(),
   })
 }
@@ -89,8 +118,8 @@ export function useMakeDefaultKit() {
 export function usePinKit() {
   const invalidate = useInvalidateKits()
   return useMutation({
-    mutationFn: ({ id, pin }: { id: string; pin: KitPinRequest }) =>
-      api.put(`${BASE}/${id}/pin`, pin, { schema: kitDetailSchema }),
+    mutationFn: ({ id, pin, dynamic }: { id: string; pin: KitPinRequest; dynamic?: boolean }) =>
+      api.put(`${BASE}/${id}/pin${dynamicQuery(dynamic)}`, pin, { schema: kitDetailSchema }),
     onSuccess: () => invalidate(),
   })
 }
