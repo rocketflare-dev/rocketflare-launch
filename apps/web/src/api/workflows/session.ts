@@ -515,7 +515,10 @@ export class SessionWorkflow extends WorkflowEntrypoint<AppBindings, SessionWork
         // for a new one now the session is ready (a request, never the build; never a failure).
         const reason = boot.refresh
         if (reason) {
-          await run('prebuild.request', s => prebuildRequestStep(s, { reason, after: 'boot' }))
+          const checkedAt = boot.check?.checkedAt
+          await run('prebuild.request', s =>
+            prebuildRequestStep(s, { reason, after: 'boot', checkedAt })
+          )
         }
       }
       if (claim.start !== 'cleanup') merged = (await this.loop(run, step, bootId)).merged

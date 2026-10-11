@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A boot asks for a new prebuild even when the database clock runs behind the Worker.** Whether a
+  prebuild "newer than the one this boot found" exists compared the prebuild's `built_at` (the
+  Worker's clock) with the session's `created_at` (Postgres's `now()`); a database a few
+  milliseconds behind deferred the request. `prebuild.check` now records when it looked
+  (`checkedAt`, the Worker's clock) and `prebuild.request` compares with that.
 - **Settings → Kits is easier to scan.** One list, one row per kit — name, repo, version and how
   it is pinned, a coloured status dot and word, apps — with Check and a ⋯ menu (Run the scaffold
   check, Re-pin…, Make default, Remove…); Add a kit opens a dialog. Each kit has its own page

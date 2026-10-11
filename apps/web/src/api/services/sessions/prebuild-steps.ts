@@ -80,6 +80,12 @@ export interface PrebuildCheckResult {
   /** None this session could use: ask for one once the boot is done (`prebuild.request`). */
   refresh: boolean
   reason?: string
+  /**
+   * When the boot looked, on the Worker's clock (ISO): a prebuild saved after it is newer than
+   * the one this boot found, so `prebuild.request` asks for nothing. `built_at` is stamped on the
+   * same clock — never compare it with a database `now()` (`sessions.created_at`).
+   */
+  checkedAt?: string
 }
 
 /**
@@ -93,12 +99,14 @@ export async function prebuildCheckStep(scope: StepScope): Promise<PrebuildCheck
   const coding = (CODING_SESSION_KINDS as readonly string[]).includes(session.kind)
   const mode = prebuildModeFor(scope.cfg, host)
   if (!coding || !mode) return { usable: false, refresh: false }
+  const now = scope.now()
+  const checkedAt = now.toISOString()
   const row = await loadPrebuild(scope.db, session.tenantId, session.appId)
-  const why = unusablePrebuild(row, scope.cfg, host, scope.now())
-  if (!why) return { usable: true, refresh: false }
+  const why = unusablePrebuild(row, scope.cfg, host, now)
+  if (!why) return { usable: true, refresh: false, checkedAt }
   await recordPrebuildEvent(scope, 0, { status: 'skipped', mode, reason: why.reason })
   // Built for the other host or mode: not rebuilt for this one (no local/remote ping-pong).
-  return { usable: false, refresh: why.rebuild, reason: why.reason }
+  return { usable: false, refresh: why.rebuild, reason: why.reason, checkedAt }
 }
 
 export interface PrebuildRestoreResult {
@@ -220,12 +228,14 @@ export async function prebuildRestoreStep(
 /**
  * Step `prebuild.request` (after a first boot) and `prebuild.refresh#N` (after a merge Launch
  * made): ask for a new prebuild of the session's app on its sandbox host (`requestPrebuild`).
- * `notBuiltSince`: the session's start for a boot — a prebuild saved since is already newer than
- * the one it found — or now for a merge. Never throws: a prebuild never fails a session.
+ * `notBuiltSince`: when the boot looked (`checkedAt`, the Worker's clock, like `built_at`) — a
+ * prebuild saved since is already newer than the one it found — or now for a merge. A boot whose
+ * check predates `checkedAt` falls back to the session's start. Never throws: a prebuild never
+ * fails a session.
  */
 export async function prebuildRequestStep(
   scope: StepScope,
-  input: { reason: string; after: 'boot' | 'merge' }
+  input: { reason: string; after: 'boot' | 'merge'; checkedAt?: string }
 ): Promise<{ requested: boolean; reason: string }> {
   try {
     const session = await loadSession(scope)
@@ -235,7 +245,12 @@ export async function prebuildRequestStep(
       appId: session.appId,
       host: sandboxHostOf(session),
       now,
-      notBuiltSince: input.after === 'boot' ? session.createdAt : now,
+      notBuiltSince:
+        input.after === 'merge'
+          ? now
+          : input.checkedAt
+            ? new Date(input.checkedAt)
+            : session.createdAt,
     })
     if (!result.requested) {
       // Why nothing was asked for (a build in flight, the container cap, a recent failure…).
