@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **An app's sign-in redirect comes from its kit.** Launch registered every app's OIDC client with
+  Rocketflare's callback (`/auth/oidc/callback`), so a meta-kit app's sign-in to `/auth/callback`
+  was refused ("not one it registered"). The kit contract's `launchProvides.oidc` now has
+  `callbackPath` and `signedOutPath` (Rocketflare's by default), and the client's redirect and
+  post-logout URIs are derived from them. An app registered before this keeps its URIs: fix them
+  with `launch apps sign-in redirect-uris <app>`.
 - **Check now on every kit that follows latest.** A kit's page offered Check now only for the
   default kit; any kit following latest now has it (`POST /api/platform/kits/:id/latest`,
   `launch kits latest <kit>`): it moves to a newer release if there is one and checks the kit

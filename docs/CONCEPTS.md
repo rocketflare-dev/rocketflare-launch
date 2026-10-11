@@ -4722,6 +4722,7 @@ K3's and K4's). What it reads from where:
 | `names`, `kvTitle`, `namingProblems` | `worker.naming`, `worker.titles` (`kits/names.ts`) | create, `cloudflare`, `scaffold.verify` |
 | `writeConfig` | `launchProvides` (`kits/toml.ts`) | `write_config` |
 | `secrets`, `secretTargets` | `launchProvides.{databaseUrl, oidc.clientSecret, bootstrapAdmins, emailApiKey, generated}` | `worker_secrets`, `email` |
+| `auth.{callbackPath, signedOutPath}` | `launchProvides.oidc.{callbackPath, signedOutPath}` (default Rocketflare's `/auth/oidc/callback`, `/login?signedOut=1`) | `oidc_client`: the app's registered redirect and post-logout URIs (`oidc-clients.ts`) |
 | `database` | `database.{roles, extensions}` | `neon` (`provision-neon.ts`) |
 | `release`, `health`, `requiredCheck` | `release`, `health`, `ci.requiredCheck` | the staging deploy, Deploy to production, the tag/release runs, `/ci/deploy`'s caller check; the health poll and the launching page; the `launch` ruleset, its diagnosis, the app detail (`AppDetail.requiredCheck`, Settings → Shipping's copy) and a landing's CI verdict |
 | `declaredConfig` | `declaredConfig.{optional, plain, pluginManifests}` | grants detection (§18.20) |

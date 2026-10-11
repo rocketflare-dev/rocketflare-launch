@@ -98,6 +98,8 @@ describe('the Rocketflare fallback manifest (Appendix A)', () => {
       issuer: p.oidc.issuer,
       clientId: p.oidc.clientId,
       clientSecret: p.oidc.clientSecret,
+      callbackPath: '/auth/oidc/callback',
+      signedOutPath: '/login?signedOut=1',
     }).toEqual(rocketflareAdapter.auth)
     const vars = launchVars({
       appUrl: 'https://acme.example.com',

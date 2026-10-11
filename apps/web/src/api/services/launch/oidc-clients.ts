@@ -6,9 +6,10 @@
  * - **The secret exists in plaintext exactly once**: `randomToken(32)`, returned in the create /
  *   rotate response and stored only as `hashToken(secret)` — the token endpoint compares hashes in
  *   constant time. `secret_hint` (the last four characters) lets an admin tell two apart.
- * - **Redirect URIs are derived, then editable**: `{url}/auth/oidc/callback` and
- *   `{url}/login?signedOut=1` for every environment with a URL — the kit relying party's own
- *   paths (P1 plan decision 6). `PATCH …/redirect-uris` replaces them (a vanity host, a dev URL).
+ * - **Redirect URIs are derived, then editable**: `{url}{callbackPath}` and `{url}{signedOutPath}`
+ *   for every environment with a URL — the relying party's own paths, from the app's kit manifest
+ *   (`launchProvides.oidc`, D36; Rocketflare's `/auth/oidc/callback` and `/login?signedOut=1` by
+ *   default). `PATCH …/redirect-uris` replaces them (a vanity host, a dev URL).
  * - **The issuer is `cfg.APP_URL`** with no trailing slash (decision 5), and the snippet is
  *   `appOidcConfigSnippet` from the shared contract, so the UI and the response say the same thing.
  * - Audited: `oidc_client.created`, `oidc_client.secret_rotated`,
@@ -28,13 +29,10 @@ import { ApiError, ConflictError, isUniqueViolation, NotFoundError } from '../..
 import { hashToken } from '../../utils/core/hash'
 import { randomToken } from '../../utils/core/ids'
 import { type AuditActor, recordAudit } from './audit'
+import { adapterFor } from './kits/adapter'
 
 /** Public client ids are `lc_…` ("Launch client"), globally unique. */
 export const CLIENT_ID_PREFIX = 'lc_'
-
-/** The relying party's callback and signed-out landing, relative to an environment's URL. */
-export const RP_CALLBACK_PATH = '/auth/oidc/callback'
-export const RP_SIGNED_OUT_PATH = '/login?signedOut=1'
 
 export function toAppOidcClient(row: OidcClientRow): AppOidcClient {
   return {
@@ -94,8 +92,14 @@ async function requireClient(db: Database, tenantId: string, appId: string) {
   return row
 }
 
+/** The relying party's callback and signed-out landing, relative to an environment's URL. */
+export interface RpPaths {
+  callbackPath: string
+  signedOutPath: string
+}
+
 /** Every environment's callback and signed-out URL, staging first. */
-async function derivedRedirectUris(db: Database, tenantId: string, appId: string) {
+async function derivedRedirectUris(db: Database, tenantId: string, appId: string, paths: RpPaths) {
   const envs = await db
     .select({ name: appEnvironments.name, url: appEnvironments.url })
     .from(appEnvironments)
@@ -105,8 +109,8 @@ async function derivedRedirectUris(db: Database, tenantId: string, appId: string
     .map(e => e.url?.replace(/\/+$/, ''))
     .filter((u): u is string => Boolean(u))
   return {
-    redirectUris: urls.map(u => `${u}${RP_CALLBACK_PATH}`),
-    postLogoutRedirectUris: urls.map(u => `${u}${RP_SIGNED_OUT_PATH}`),
+    redirectUris: urls.map(u => `${u}${paths.callbackPath}`),
+    postLogoutRedirectUris: urls.map(u => `${u}${paths.signedOutPath}`),
   }
 }
 
@@ -121,7 +125,8 @@ export async function createAppOidcClient(
   if (await getAppOidcClient(db, tenantId, app.id)) {
     throw new ConflictError('This app already has an OIDC client', 'oidc_client_exists')
   }
-  const uris = await derivedRedirectUris(db, tenantId, app.id)
+  const { auth } = await adapterFor(db, app)
+  const uris = await derivedRedirectUris(db, tenantId, app.id, auth)
   if (uris.redirectUris.length === 0) {
     throw new ApiError(
       422,

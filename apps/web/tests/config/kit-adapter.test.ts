@@ -268,3 +268,22 @@ describe('resolution (no database needed when the app carries its manifest)', ()
     expect(adapterForKit(null).manifest).toEqual(rocketflareFallbackManifest())
   })
 })
+
+describe("the relying party's paths (launchProvides.oidc)", () => {
+  it("default to Rocketflare's, and a kit may name its own callback and signed-out landing", () => {
+    expect(adapter.auth).toMatchObject({
+      callbackPath: '/auth/oidc/callback',
+      signedOutPath: '/login?signedOut=1',
+    })
+    expect(rocketflareAdapter.auth.callbackPath).toBe('/auth/oidc/callback')
+    const raw = JSON.parse(kitFile('launch.kit.json'))
+    raw.launchProvides.oidc.callbackPath = '/auth/callback'
+    raw.launchProvides.oidc.signedOutPath = '/'
+    const own = manifestAdapter(parseKitManifest(JSON.stringify(raw)))
+    expect(own.auth).toMatchObject({ callbackPath: '/auth/callback', signedOutPath: '/' })
+    for (const bad of ['auth/callback', '//evil.example/cb', 'https://x/cb', '/a#b']) {
+      raw.launchProvides.oidc.callbackPath = bad
+      expect(() => parseKitManifest(JSON.stringify(raw)), bad).toThrow()
+    }
+  })
+})

@@ -32,6 +32,16 @@ export const PROVISIONABLE_BINDING_KINDS = [
   'assets',
 ] as const
 
+/** Rocketflare's relying-party paths, the contract's defaults (`launchProvides.oidc`). */
+export const KIT_OIDC_CALLBACK_PATH = '/auth/oidc/callback'
+export const KIT_OIDC_SIGNED_OUT_PATH = '/login?signedOut=1'
+
+/** A path on the app's own origin: starts with one `/`, no scheme, no host, no fragment. */
+const rpPathSchema = z
+  .string()
+  .max(300)
+  .regex(/^\/(?!\/)[^\s#]*$/, 'a path on the app, starting with /')
+
 const kitIdSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]{1,38}[a-z0-9]$/, 'lowercase letters, digits and dashes (3-40)')
@@ -122,6 +132,13 @@ const launchProvidesBlock = z
         label: envNameSchema.optional(),
         /** A var set to `true` so OIDC is the only sign-in method. */
         only: envNameSchema.optional(),
+        /**
+         * Where the app's sign-in returns to, relative to an environment's URL: Launch registers
+         * `{url}{callbackPath}` as the client's redirect URI. Absent: Rocketflare's.
+         */
+        callbackPath: rpPathSchema.default(KIT_OIDC_CALLBACK_PATH),
+        /** Where a sign-out lands (the post-logout redirect URI). Absent: Rocketflare's. */
+        signedOutPath: rpPathSchema.default(KIT_OIDC_SIGNED_OUT_PATH),
       })
       .passthrough(),
     bootstrapAdmins: envNameSchema.optional(),

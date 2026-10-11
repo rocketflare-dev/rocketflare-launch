@@ -158,7 +158,14 @@ export interface TemplateAdapter {
   release: { workflowFile: string; environmentInput: string }
   health: { live: string; ready: string }
   /** The var and secret names the app reads for OIDC sign-in (spec/05). */
-  auth: { issuer: string; clientId: string; clientSecret: string }
+  auth: {
+    issuer: string
+    clientId: string
+    clientSecret: string
+    /** The relying party's paths Launch registers on the app's OIDC client. */
+    callbackPath: string
+    signedOutPath: string
+  }
   /** The check branch protection requires and a landing waits for (`ci.requiredCheck`). */
   requiredCheck: string
   /** The Neon roles and extensions the pipeline creates (`database`). */
@@ -281,7 +288,13 @@ export function manifestAdapter(manifest: KitManifest): TemplateAdapter {
       environmentInput: manifest.release.environmentInput,
     },
     health: { live: manifest.health.live, ready: manifest.health.ready },
-    auth: { issuer: p.oidc.issuer, clientId: p.oidc.clientId, clientSecret: p.oidc.clientSecret },
+    auth: {
+      issuer: p.oidc.issuer,
+      clientId: p.oidc.clientId,
+      clientSecret: p.oidc.clientSecret,
+      callbackPath: p.oidc.callbackPath,
+      signedOutPath: p.oidc.signedOutPath,
+    },
     requiredCheck: manifest.ci.requiredCheck,
     database: {
       migratorRole: manifest.database.roles.migrator,
