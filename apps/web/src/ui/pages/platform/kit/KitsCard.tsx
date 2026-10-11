@@ -29,7 +29,7 @@ import {
   kitManifestSummary,
   kitPinRequestSchema,
 } from '@launch/shared/kits'
-import { shortSha } from '@launch/shared/launch-setup'
+import { isKitRepo, normalizeKitRepo, shortSha } from '@launch/shared/launch-setup'
 import { type FormEvent, useId, useState } from 'react'
 import { Combobox } from '@/ui/components/Combobox'
 import { ConfirmModal, FieldError } from '@/ui/components/shared'
@@ -522,7 +522,7 @@ function AddKitForm() {
   const [ref, setRef] = useState('')
   const [dynamic, setDynamic] = useState(false)
   const [invalid, setInvalid] = useState<string | undefined>()
-  const repoValid = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo.trim())
+  const repoValid = isKitRepo(repo)
 
   function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -557,7 +557,7 @@ function AddKitForm() {
         <span className="block font-medium mb-1">Kit repository</span>
         <input
           className="input input-bordered input-sm w-full font-mono"
-          placeholder="owner/name"
+          placeholder="owner/name or https://github.com/owner/name"
           value={repo}
           onChange={e => setRepo(e.target.value)}
         />
@@ -567,7 +567,7 @@ function AddKitForm() {
         onMode={setMode}
         value={ref}
         onValue={setRef}
-        repo={repoValid ? repo.trim() : null}
+        repo={repoValid ? normalizeKitRepo(repo) : null}
       />
       <DynamicOption checked={dynamic} onChange={setDynamic} />
       <FieldError message={invalid} />

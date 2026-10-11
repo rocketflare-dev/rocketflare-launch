@@ -24,8 +24,11 @@ import {
   DEFAULT_TEMPLATE_PIN,
   isCommitPin,
   isFollowLatestPin,
+  isKitRepo,
+  kitRepoSchema,
   LAUNCH_SETTING_KEYS,
   latestKitTag,
+  normalizeKitRepo,
   SETUP_SETTING_KEYS,
   sortKitTagsNewestFirst,
   templatePinLabel,
@@ -313,6 +316,27 @@ describe('P2 settings', () => {
       false
     )
     expect(templatePinSchema.safeParse({ ...old, follow: 'main' }).success).toBe(false)
+  })
+
+  it('a kit repository may be pasted as a GitHub URL or remote; it is stored as owner/name', () => {
+    for (const pasted of [
+      'rocketflare-dev/launch-kit',
+      '  https://github.com/rocketflare-dev/launch-kit  ',
+      'https://github.com/rocketflare-dev/launch-kit/',
+      'https://github.com/rocketflare-dev/launch-kit.git',
+      'https://www.github.com/rocketflare-dev/launch-kit/tree/main/apps',
+      'http://github.com/rocketflare-dev/launch-kit?tab=readme',
+      'github.com/rocketflare-dev/launch-kit',
+      'git@github.com:rocketflare-dev/launch-kit.git',
+    ]) {
+      expect(normalizeKitRepo(pasted), pasted).toBe('rocketflare-dev/launch-kit')
+      expect(isKitRepo(pasted), pasted).toBe(true)
+      expect(kitRepoSchema.parse(pasted), pasted).toBe('rocketflare-dev/launch-kit')
+    }
+    for (const bad of ['https://gitlab.com/a/b', 'https://github.com/a', 'a', 'a/b/c', '']) {
+      expect(isKitRepo(bad), bad).toBe(false)
+      expect(kitRepoSchema.safeParse(bad).success, bad).toBe(false)
+    }
   })
 
   it('the latest release is the highest X.Y.Z tag; pre-releases and other tags never are', () => {

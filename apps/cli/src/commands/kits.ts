@@ -292,7 +292,7 @@ export function registerKitsCommands(program: Command, action: ActionWrapper): v
     .action(action((ctx, cmd) => runKitsShow(ctx, cmd.args[0] as string)))
   kits
     .command('add <repo>')
-    .description('register a kit repo (owner/name), resolved and checked')
+    .description('register a kit repo (owner/name or its GitHub URL), resolved and checked')
     .option('--tag <tag>', 'a release tag')
     .option('--commit <ref>', 'a commit SHA or a branch name')
     .option('--latest', 'follow the newest release')

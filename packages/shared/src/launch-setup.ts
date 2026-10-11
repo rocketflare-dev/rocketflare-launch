@@ -181,10 +181,32 @@ export const LAUNCH_SETTING_KEYS = [
 export const launchSettingKeySchema = z.enum(LAUNCH_SETTING_KEYS)
 export type LaunchSettingKey = z.infer<typeof launchSettingKeySchema>
 
+const KIT_REPO_RE = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/
+
+/**
+ * A kit repository as `owner/name`, from what a person is likely to paste: `owner/name`, a GitHub
+ * URL (`https://github.com/owner/name`, with or without `www.`, `.git`, a trailing slash or a
+ * `/tree/…` path), or an SSH remote (`git@github.com:owner/name.git`). Anything else is returned
+ * trimmed and unchanged, so the schema's `owner/name` check reports it.
+ */
+export function normalizeKitRepo(input: string): string {
+  const value = input.trim()
+  const match =
+    /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s#?]+)(?:[/#?].*)?$/i.exec(value) ??
+    /^git@github\.com:([^/\s]+)\/([^/\s]+)$/i.exec(value)
+  if (!match) return value
+  return `${match[1]}/${match[2].replace(/\.git$/i, '')}`
+}
+
+/** Is `input` a kit repository {@link normalizeKitRepo} can read as `owner/name`? */
+export function isKitRepo(input: string): boolean {
+  return KIT_REPO_RE.test(normalizeKitRepo(input))
+}
+
 export const kitRepoSchema = z
   .string()
-  .trim()
-  .regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'owner/name')
+  .transform(normalizeKitRepo)
+  .pipe(z.string().regex(KIT_REPO_RE, 'owner/name or a GitHub URL'))
 
 /**
  * A kit pin — since D36 K1 the DEFAULT KIT's (`kits.pin` + its repo, `@launch/shared/kits`), what

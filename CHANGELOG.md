@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A kit repository can be pasted as a URL.** Settings → Kits, `launch kits add` and the kit pin
+  accept `https://github.com/owner/name` (with `.git`, a trailing slash or a `/tree/…` path) and
+  `git@github.com:owner/name.git` as well as `owner/name`, and store `owner/name`
+  (`normalizeKitRepo` in `@launch/shared/launch-setup`).
 - **A kit catalogue (D36 K1).** Launch now keeps a catalogue of kits — `kits`, with the built-in
   Rocketflare kit as the default, created from your `template_pin` (migration 0049) — and every app
   records the kit it was made from (`apps.kit_id`). A platform admin registers another kit by repo

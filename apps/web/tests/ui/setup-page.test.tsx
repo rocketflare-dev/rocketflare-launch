@@ -713,7 +713,7 @@ describe('Settings → Kit version → Kits (D36 K1)', () => {
     const repo = within(form).getByRole('textbox', { name: 'Kit repository' })
     fireEvent.change(repo, { target: { value: 'not a repo' } })
     fireEvent.click(within(form).getByRole('button', { name: 'Add kit' }))
-    expect(await within(card).findByText('owner/name')).toBeInTheDocument()
+    expect(await within(card).findByText('owner/name or a GitHub URL')).toBeInTheDocument()
     expect(requestBody(fetchMock, 'POST /api/platform/kits')).toBeUndefined()
 
     fireEvent.change(repo, { target: { value: 'acme/acme-kit' } })
