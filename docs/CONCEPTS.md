@@ -1646,7 +1646,7 @@ itself. Migration 0027 backfilled it from each ticket's `deploy.activated` audit
 Staging is auto-approved; production claims a live pre-approval bound to the run's ref (a granted
 Promote, or "Deploy to production" — §18.17), or opens `pending` plus a `deploy.production`
 approval that an owner or admin decides (inbox or app page) within the job's `WAIT_SECONDS`. Upload parses the toml (`smol-toml`) and `binding-check.ts` allows only the app's
-recorded KV ids, queues, bucket and workflows, in-script Durable Objects, `ai`, `assets` and vars,
+recorded KV ids, queues, bucket and workflows, in-script Durable Objects, `ai`, `assets`, `version_metadata` and vars,
 refusing every other binding kind, any route and a newer DO migration tag, each as `"<kind>
 <binding>=<value>"` — a refusal is 403, the ticket `failed`, and no Neon call. Otherwise the assets
 and version go up (`keep_bindings: ['secret_text']`, `RELEASE_VERSION`), the `migrator` password is

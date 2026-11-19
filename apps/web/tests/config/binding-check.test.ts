@@ -130,6 +130,19 @@ describe('checkBindings', () => {
     expect(result.migrationTag).toBe('v1')
   })
 
+  it('lets [version_metadata] through and maps it: the Worker reads its own version, nothing else', () => {
+    const result = check('[version_metadata]\nbinding = "CF_VERSION_METADATA"')
+    expect(result.refused).toEqual([])
+    expect(result.bindings).toContainEqual({
+      type: 'version_metadata',
+      name: 'CF_VERSION_METADATA',
+    })
+  })
+
+  it('refuses a [version_metadata] with no binding name', () => {
+    expect(check('[version_metadata]').refused).toEqual(['version_metadata {}'])
+  })
+
   const rows: Array<[string, string, string[]]> = [
     // Another app's resources — the S1 attack, kind by kind.
     [

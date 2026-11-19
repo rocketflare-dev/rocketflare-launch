@@ -19,7 +19,10 @@
  * - `durable_objects.bindings` with no `script_name`, or this Worker's own;
  * - `workflows` whose `name` is recorded, with no `script_name` or this Worker's own;
  * - `ai`, `assets`, `[vars]`, and the settings that bind nothing (`compatibility_*`, `placement`,
- *   `observability`, `limits`, `triggers`, the build options).
+ *   `observability`, `limits`, `triggers`, the build options);
+ * - `[version_metadata]` — the Worker's OWN version id and tag, read-only. It reaches no resource
+ *   in the account (no id, no name to point elsewhere), so there is nothing to check but the
+ *   binding name.
  *
  * **Refused**, everything else — any binding kind not above (`services`, `hyperdrive`,
  * `d1_databases`, `vectorize`, …, and any top-level key this module does not know, because an
@@ -71,6 +74,7 @@ const ALLOWED_BINDING_KEYS = new Set([
   'ai',
   'assets',
   'vars',
+  'version_metadata',
 ])
 
 /**
@@ -136,7 +140,6 @@ const REFUSED_KINDS: Record<string, string[]> = {
   browser: [],
   tail_consumers: ['service'],
   unsafe: [],
-  version_metadata: [],
   images: [],
   pipelines: ['pipeline'],
   route: [],
@@ -326,6 +329,11 @@ export function checkBindings(config: Table, target: BindingCheckTarget): Bindin
     const binding = str(config.ai.binding)
     if (binding) bindings.push({ type: 'ai', name: binding })
     else refused.push(refusal('ai', undefined, config.ai))
+  }
+  if (isTable(config.version_metadata)) {
+    const binding = str(config.version_metadata.binding)
+    if (binding) bindings.push({ type: 'version_metadata', name: binding })
+    else refused.push(refusal('version_metadata', undefined, config.version_metadata))
   }
   if (isTable(config.assets) && str(config.assets.binding)) {
     bindings.push({ type: 'assets', name: config.assets.binding as string })
