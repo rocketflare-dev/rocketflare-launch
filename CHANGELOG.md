@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The deploy gateway lets `[version_metadata]` through.** The binding gives a Worker its own
+  version id and tag, read-only, and reaches no resource, so the binding check now maps it
+  (`{ type: 'version_metadata' }`) instead of refusing the deploy. The kit conformance check
+  accepts it too. Rocketflare 0.39 binds it so an agent run records which deploy it ran on, and a
+  kit that declares it no longer fails conformance or its first deploy.
 - **New apps are cut from Rocketflare 0.18.1** (`DEFAULT_TEMPLATE_PIN`, commit `7a2b3d5`), the
   first default with its own `launch.kit.json`, so Launch drives a new app from the kit's declared
   contract rather than the built-in fallback manifest. The session image warms its pnpm store from

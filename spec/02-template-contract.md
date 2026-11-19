@@ -57,7 +57,7 @@ with its kit (`kit_id`) and kit version. An upgrade moves an app forward within 
 version tag deploys staging, a published release deploys production, `workflow_dispatch` takes the
 environment input, `id-token: write`); both tomls with placeholder ids, names that follow the
 naming rule and only binding kinds Launch provisions (KV, Queues, R2, Durable Objects, Workflows,
-AI, assets); the `live` and `ready` routes; sign-in driven by the mapped OIDC vars; a `CLAUDE.md`
+AI, assets, version metadata); the `live` and `ready` routes; sign-in driven by the mapped OIDC vars; a `CLAUDE.md`
 or `AGENTS.md`. The static conformance check (`services/launch/kits/conformance.ts`) proves the
 files; the dynamic check (`services/launch/kits/dynamic-check.ts`, opt-in) runs the kit's
 scaffold job against a throwaway private repo and checks the copy (D36 K3, CONCEPTS §18.24).
